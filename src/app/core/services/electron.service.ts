@@ -10,7 +10,6 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
-import type { ShowNarrationRequest } from '@shared/queue/engine-types';
 import type {
   VlmConvertRequest,
   VlmConvertResult,
@@ -2486,16 +2485,6 @@ export class ElectronService {
   onShowBookConversion(callback: (projectDir: string) => void): () => void {
     if (!this.isElectron) return () => {};
     return (window as any).electron.window.onShowBookConversion(callback);
-  }
-
-  /**
-   * Main asked this window to open the narration dialog on a version — the far
-   * side of a Narrate pressed on the hosted Foundry's provenance tree. Main
-   * window only; see the preload declaration for what it carries and why.
-   */
-  onShowNarration(callback: (request: ShowNarrationRequest) => void): () => void {
-    if (!this.isElectron) return () => {};
-    return (window as any).electron.window.onShowNarration(callback);
   }
 
   async precomputeDiffPair(originalPath: string, targetPath: string): Promise<{ success: boolean; cached?: boolean; chapters?: number; error?: string }> {

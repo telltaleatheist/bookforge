@@ -34,7 +34,6 @@ import type { BookResetSummary } from '../shared/processing/reset-book';
 import type {
   QueueNotice,
   QueueSnapshot,
-  ShowNarrationRequest,
   QueueJob as QueueEngineJob,
   QueueStep as QueueEngineStep,
 } from '../shared/queue/engine-types';
@@ -1402,19 +1401,6 @@ export interface ElectronAPI {
     showBookConversion: (projectDir: string) => Promise<{ success: boolean; error?: string }>;
     /** Main asked THIS window to queue a conversion. Main window only. */
     onShowBookConversion: (callback: (projectDir: string) => void) => () => void;
-    /**
-     * Main asked THIS window to open the narration dialog on a version.
-     *
-     * The other side of a press on Foundry's provenance tree: the operation
-     * resolved which book and which exported EPUB the step belongs to, raised
-     * this window, and handed the answer over — because a narration is a dozen
-     * decisions and this app has exactly one surface that asks them.
-     *
-     * `foundry` is the lineage the run has to carry back: it rides on the job so
-     * the rows BookForge pushes onto that tree name the step they hang under.
-     * Main window only.
-     */
-    onShowNarration: (callback: (request: ShowNarrationRequest) => void) => () => void;
     /**
      * Does ANY BookForge window have focus? The completion toasts show in the
      * focused window only, and a renderer can see its own focus and nothing
@@ -3023,11 +3009,6 @@ const electronAPI: ElectronAPI = {
       const listener = (_e: any, projectDir: string) => callback(projectDir);
       ipcRenderer.on('app:show-book-conversion', listener);
       return () => { ipcRenderer.removeListener('app:show-book-conversion', listener); };
-    },
-    onShowNarration: (callback: (request: ShowNarrationRequest) => void) => {
-      const listener = (_e: any, request: ShowNarrationRequest) => callback(request);
-      ipcRenderer.on('app:show-narration', listener);
-      return () => { ipcRenderer.removeListener('app:show-narration', listener); };
     },
   },
   plugins: {

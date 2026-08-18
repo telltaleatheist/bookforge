@@ -2331,7 +2331,7 @@ function setupIpcHandlers(): void {
   /**
    * A window asked for this project's pages to be read into a book.
    *
-   * Same shape, same reason, as `app:show-narration` above: the picker is often
+   * The picker is often
    * its own BrowserWindow with no nav rail and NO QUEUE — the queue is a
    * renderer-side scheduler that lives in the main window and persists its state
    * through main. A second window enqueueing into its own copy would write a

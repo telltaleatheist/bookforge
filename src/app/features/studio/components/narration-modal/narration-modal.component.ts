@@ -28,10 +28,21 @@
  *
  * ── Why the jobs are not built here ─────────────────────────────────────────
  *
- * They are built by `queue/jobs/narration-run.ts`, which the Process page asks
- * for the same three requests. Two doors composing their own runs is how one of
- * them ends up a field behind the other, and the field that goes missing is
- * always the one nobody notices until an hour of GPU has been spent.
+ * They are built by `queue/jobs/narration-run.ts`, over the shared description
+ * in `shared/queue/narration-run.ts` that the Process page and the Narrate
+ * operation in Foundry's window both ask for the same run. Three doors composing
+ * their own runs is how one of them ends up a field behind the others, and the
+ * field that goes missing is always the one nobody notices until an hour of GPU
+ * has been spent.
+ *
+ * ── This dialog no longer serves Foundry ────────────────────────────────────
+ *
+ * It used to take a `foundry` lineage input, because a Narrate pressed on
+ * Foundry's provenance tree raised this window and opened this dialog over the
+ * exported version. Owen's ruling of 2026-08-18 put that dialog in Foundry's own
+ * window instead, and main queues the run there (`bookforge.narrate`,
+ * electron/main.ts). So this dialog is once again about a press on a row of this
+ * page, and every run it queues belongs on nobody's tree.
  */
 import { Component, ChangeDetectionStrategy, computed, inject, input, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
@@ -49,7 +60,6 @@ import {
 } from '../../../queue/jobs/narration-run';
 import { engineCaps, selectableEngines } from '../../../language-learning/models/tts-engine-registry';
 import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
-import type { FoundryJobLineage } from '@shared/queue/engine-types';
 
 /** The basename of a path, for showing WHICH file without the whole path. */
 function fileName(fullPath: string): string {
@@ -325,17 +335,6 @@ export class NarrationModalComponent {
   readonly coverPath = input<string>('');
   readonly outputFilename = input<string>('');
   readonly isArticle = input<boolean>(false);
-  /**
-   * The Foundry ledger step this narration was ordered from, when it was.
-   *
-   * Null for every ordinary press. It is not a setting and this dialog never
-   * shows it — it is carried through to the queued run because that run is the
-   * only thing that survives to push rows back onto the tree the press came
-   * from (see `FoundryJobLineage`), and this dialog is the one point the two
-   * halves of that hand-off meet.
-   */
-  readonly foundry = input<FoundryJobLineage | null>(null);
-
   readonly cancelled = output<void>();
   /** Rows are in the queue. The host closes and tells the user where to watch. */
   readonly queued = output<{ jobs: number }>();
@@ -552,10 +551,6 @@ export class NarrationModalComponent {
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },
         workflowId,
-        // On the MASTER, because the composition's first step is what becomes
-        // the engine's job — every later step is appended to it, and the lineage
-        // is a fact about the run rather than about one of its steps.
-        ...(this.foundry() === null ? {} : { foundry: this.foundry()! }),
       });
       for (const job of jobs) {
         await this.queue.addJob({ ...job, workflowId, parentJobId: master.id });

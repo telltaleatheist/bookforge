@@ -345,28 +345,6 @@ export interface FoundryJobLineage {
 }
 
 /**
- * "Open the narration dialog on THIS version" — main's push to the main window.
- *
- * Sent by the Narrate host operation (electron/main.ts) after it has resolved
- * the two things a press on Foundry's tree knows and the dialog cannot look up:
- * which book of this library the Foundry project is, and which exported EPUB of
- * it to read. Everything else the dialog asks for itself.
- *
- * `variantPath` travels beside `variantId` because the dialog is `required` on
- * both — Owen's rule that the run's document is the one the press was on, never
- * one looked up on the far side.
- */
-export interface ShowNarrationRequest {
-  /** The BookForge project directory, absolute. */
-  projectDir: string;
-  /** The version to narrate, and its file. */
-  variantId: string;
-  variantPath: string;
-  /** Carried onto the job the dialog queues. See {@link FoundryJobLineage}. */
-  foundry: FoundryJobLineage;
-}
-
-/**
  * Something the queue has to say about work it did NOT accept.
  *
  * `StepFinished` is news about a step that ran; this is news about a run that

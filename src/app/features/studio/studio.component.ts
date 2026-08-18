@@ -30,12 +30,10 @@ import { DiffRequest } from './components/project-files/project-files.component'
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { SettingsService } from '../../core/services/settings.service';
-import { NarrationHandoffService } from '../../core/services/narration-handoff.service';
 import { NoticeService } from '../../core/services/notice.service';
 import { looseMatch } from '../../shared/search';
 import { samePath } from '@shared/document/same-path';
 import { isBookPath } from '@shared/document/book-path';
-import type { ShowNarrationRequest } from '@shared/queue/engine-types';
 
 /**
  * StudioComponent - Unified workspace for books and articles
@@ -361,8 +359,6 @@ import type { ShowNarrationRequest } from '@shared/queue/engine-types';
                       [projectDir]="selectedItem()?.projectDir || ''"
                       [item]="selectedItem()"
                       [refreshTrigger]="filesRefreshTrigger()"
-                      [narrateRequest]="versionsNarrateRequest()"
-                      (narrateHandled)="onVersionsNarrateHandled()"
                       (open)="openInFoundry($event)"
                       (exportDoc)="exportDocument($event)"
                       (exportAudio)="exportM4b($event)"
@@ -1533,7 +1529,6 @@ export class StudioComponent implements OnInit, OnDestroy {
   private readonly electronService = inject(ElectronService);
   private readonly libraryService = inject(LibraryService);
   private readonly settingsService = inject(SettingsService);
-  private readonly narrationHandoff = inject(NarrationHandoffService);
   /** Where receipts and partial-condition reports go instead of a modal. */
   private readonly notices = inject(NoticeService);
 
@@ -1716,8 +1711,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   // wizard watches this to jump to the TTS step with the original run's settings.
   readonly continueRequest = signal(0);
 
-  // Bumped when narration is asked for — by a document row's Process button, or
-  // by the picker's Next arriving through `app:show-narration`. The wizard
+  // Bumped when narration is asked for by a document row's Process button. The wizard
   // watches this to stand on the TTS step. Distinct from continueRequest, which
   // resumes an interrupted render and refuses when there is nothing to resume.
   readonly narrationRequest = signal(0);
@@ -1725,51 +1719,17 @@ export class StudioComponent implements OnInit, OnDestroy {
   /**
    * The project list has been read at least once.
    *
-   * The narration hand-off needs it: the request can arrive before this window
-   * has any projects loaded (the shell navigates here the moment main sends the
-   * event), and looking a book up in an empty list would report it missing when
-   * nothing is missing. This is not a copy of anything — it is this component's
-   * own lifecycle, which nothing else can answer.
+   * The open-request hand-off needs it: a request can arrive before this window
+   * has any projects loaded, and looking a book up in an empty list would report
+   * it missing when nothing is missing. This is not a copy of anything — it is
+   * this component's own lifecycle, which nothing else can answer.
    */
   private readonly itemsLoaded = signal(false);
 
   /**
-   * Narration was asked for elsewhere — the picker's Next, via the shell.
-   *
-   * Consumed here rather than delivered by a listener because this component is
-   * lazily routed and is usually NOT mounted when the request is made; see
-   * NarrationHandoffService. Taking it empties it, which is what lets the same
-   * book be handed over twice.
-   */
-  private readonly narrationHandoffEffect = effect(() => {
-    if (!this.itemsLoaded()) return;
-    const request = this.narrationHandoff.pending();
-    if (request === null) return;
-    this.narrationHandoff.take();
-    void this.openNarrationFor(request);
-  }, { allowSignalWrites: true });
-
-  /**
-   * The narration hand-off, handed DOWN to the versions page.
-   *
-   * A signal rather than a call because `app-studio-versions` is created by the
-   * template when a book is selected — at the moment the hand-off arrives it may
-   * not exist yet, and it re-reads its rows asynchronously even once it does. So
-   * the request is put here and the versions page consumes it when its rows are
-   * in. Cleared on consumption (`narrateHandled`), so re-narrating the same
-   * version a second time is a change and fires again.
-   */
-  readonly versionsNarrateRequest = signal<ShowNarrationRequest | null>(null);
-
-  onVersionsNarrateHandled(): void {
-    this.versionsNarrateRequest.set(null);
-  }
-
-  /**
    * A book was asked for from outside Studio — the queue's completion toast.
    *
-   * Same shape and same reason as the narration hand-off above: the request is
-   * left with StudioService because this component is lazily routed and is
+   * The request is left with StudioService because this component is lazily routed and is
    * usually not mounted when the toast is clicked, and it is TAKEN so a later
    * visit does not re-open a book the user has since moved on from. Gated on
    * `itemsLoaded` because a book cannot be looked up in a list that has not been
@@ -2255,54 +2215,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     // answers an empty one with "No EPUB available for processing".
     void this.onFileChanged();
     this.narrationRequest.update(n => n + 1);
-  }
-
-  /**
-   * Narrate was pressed on a book's provenance tree, and the shell brought us
-   * here.
-   *
-   * Selecting the project is the whole reason this is not just a route: the
-   * versions page draws the SELECTED book, so a hand-off that only switched tabs
-   * would open the dialog over whichever book happened to be open.
-   *
-   * IT LANDS ON THE VERSIONS PAGE, not on the Process wizard, because the
-   * narration DIALOG is what the operation promised: main already resolved the
-   * one version to read, and the wizard would ask that question again from the
-   * top. The request is handed down rather than acted on, because the versions
-   * page owns its rows and has to have read them before it can open a dialog
-   * over one — see `versionsNarrateRequest`.
-   *
-   * The list is re-read FIRST, every time. The book being handed over may have
-   * gained its exported EPUB moments ago, so whatever this window is holding
-   * predates it; it also makes the missing-project message a measurement rather
-   * than a report about a list that was already old.
-   */
-  private async openNarrationFor(request: ShowNarrationRequest): Promise<void> {
-    await this.studioService.loadAll();
-
-    // Archived books are searched too: being archived is not being gone, and a
-    // book somebody just pressed Narrate on is one the user is plainly still
-    // working on. Matched with samePath because the two spellings come from
-    // different hands — main resolves with backslashes on Windows, the studio
-    // list joins with forward slashes — and two spellings of one directory are
-    // not two books.
-    const item = [...this.studioService.books(), ...this.studioService.archived()]
-      .find(b => !!b.projectDir && samePath(b.projectDir, request.projectDir));
-
-    if (!item) {
-      void this.electronService.showMessageDialog({
-        title: 'Could not open narration',
-        message: `BookForge has no project at ${request.projectDir}, so there is no book to `
-          + 'narrate. It may have been deleted or moved since the Foundry window was opened.',
-        type: 'error',
-      });
-      return;
-    }
-
-    this.openInWorkspace(item);
-    this.mainTab.set('files');
-    this.versionsPanel.set('none');
-    this.versionsNarrateRequest.set(request);
   }
 
   /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue
