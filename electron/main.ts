@@ -1275,6 +1275,25 @@ async function invokeFoundryNarrate(
   const meta = got.manifest.metadata;
 
   /*
+   * The manifest stores the cover LIBRARY-RELATIVE ("media/cover_x.png"); the
+   * run carries it ABSOLUTE — that is the shape the assembler writes into the
+   * M4B and the shape the queue tray takes the library root back off to draw
+   * the job's thumbnail. The renderer's own door does the same join
+   * (studio.service.ts) before its modal ever sees the book.
+   */
+  let coverPath = '';
+  if (meta.coverPath !== undefined && meta.coverPath !== '') {
+    const coverAbsolute = path.join(manifestService.getLibraryBasePath(), meta.coverPath);
+    if (!fsSync.existsSync(coverAbsolute)) {
+      throw new Error(
+        `${projectId}'s manifest names a cover (${meta.coverPath}) that is not in the library's `
+        + 'media folder, so the audiobook\'s art cannot be written. Fix or clear the cover on the '
+        + 'book\'s page and press Start again.');
+    }
+    coverPath = coverAbsolute;
+  }
+
+  /*
    * The enhancement pass runs only when its environment is installed, on the
    * modal's own gate (`rvcInstalled`): a run that named an RVC model with no
    * rvc-env behind it would fail an hour in, inside the step, at the point the
@@ -1304,7 +1323,7 @@ async function invokeFoundryNarrate(
       title: meta.title,
       author: meta.author,
       year: meta.year ?? '',
-      coverPath: meta.coverPath ?? '',
+      coverPath,
       outputFilename: meta.outputFilename ?? '',
       // A Foundry project is a book. Articles are never made in that window, and
       // the manifest says which this is rather than this side assuming.
