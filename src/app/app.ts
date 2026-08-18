@@ -392,6 +392,16 @@ export class App implements OnInit {
       route: '/studio'
     },
     {
+      // Directly under Library, above Live TTS — Owen's placement: the chip in
+      // the title bar shows the queue, but the tab is how he actually opens it,
+      // and a reach he makes constantly belongs at the top of the rail. (It was
+      // demoted below Enhance for a day when the chip arrived; overruled.)
+      id: 'queue',
+      icon: '\u{23F3}', // Hourglass emoji
+      label: 'Queue',
+      route: '/queue'
+    },
+    {
       id: 'live-tts',
       icon: '\u{1F3A4}', // Microphone emoji
       label: 'Live TTS',
@@ -402,18 +412,6 @@ export class App implements OnInit {
       icon: '\u{2728}', // Sparkles emoji
       label: 'Enhance',
       route: '/enhance'
-    },
-    {
-      // DEMOTED (2026-08-17). The queue tab is the DETAIL view now — the whole
-      // queue is readable from the title-bar chip in every window, and the
-      // tray's "Open queue details →" is the front door to this page. It kept
-      // the slot directly under Library while it was the only way to see the
-      // queue at all; sitting there now would say the queue is a place you go
-      // to rather than something that is always on screen.
-      id: 'queue',
-      icon: '\u{23F3}', // Hourglass emoji
-      label: 'Queue',
-      route: '/queue'
     },
     {
       id: 'settings',
