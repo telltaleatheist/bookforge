@@ -499,6 +499,50 @@ test('SEVERAL chains REFUSE without an id, and the refusal names them both', asy
     'the second chain has no working copy yet and must say so');
 });
 
+test('the PROJECT-WIDE provenance listing covers every chain instead of refusing', async () => {
+  const dir = await makeLegacyProject('provenance-across-chains');
+  await manifestService.ensureBookFamilies(dir);
+  await addSecondEdition(dir, 'Killing America. Second edition.epub', SECOND_BYTES);
+
+  // A diff on each chain, the later one on the SECOND — so the merge has to
+  // order by time rather than by chain to keep "in execution order" true.
+  const manifest = readManifest(dir);
+  const first = manifest.families.find(
+    (f) => path.basename(f.source.path) === 'Killing America.epub');
+  const secondFamily = manifest.families.find(
+    (f) => path.basename(f.source.path) === 'Killing America. Second edition.epub');
+  first.epub.appliedPasses = [
+    { kind: 'footnotes', at: '2026-08-02T00:00:00.000Z', params: {}, diff: 'passes/p1/diff.json' },
+  ];
+  secondFamily.epub = {
+    path: 'source/Killing America. Second edition.working.epub',
+    modifiedAt: '2026-08-04T00:00:00.000Z',
+    appliedPasses: [
+      { kind: 'simplify', at: '2026-08-04T00:00:00.000Z', params: {}, diff: 'passes/p2/diff.json' },
+    ],
+  };
+  writeManifest(dir, manifest);
+
+  // WHY this one does not refuse: nobody pressed a button. The versions page
+  // asks it on load, under a head that is about the project, and the refusal's
+  // own sentence ("Press the button on the version you mean") is addressed to a
+  // user who did not act. It drew a red banner over an ordinary two-version
+  // project until 2026-08-18.
+  const diffs = await manifestService.listPassDiffs(dir);
+  assert.deepStrictEqual(diffs.map((d) => d.kind), ['footnotes', 'simplify'],
+    'the project-wide listing did not cover both chains, in execution order');
+  assert.strictEqual(diffs[0].absPath, path.join(dir, 'passes', 'p1', 'diff.json'));
+
+  // Told WHICH, it is still that chain's list alone...
+  const firstOnly = await manifestService.listPassDiffs(dir, first.id);
+  assert.deepStrictEqual(firstOnly.map((d) => d.kind), ['footnotes']);
+  // ...and a name that matches nothing is still an error, not an empty list.
+  await assert.rejects(
+    () => manifestService.listPassDiffs(dir, 'fam-deadbeef'),
+    /no working chain called fam-deadbeef/,
+    'a named chain that is not there must not silently list nothing');
+});
+
 test('an id that names no chain refuses, listing the chains there are', async () => {
   const dir = await makeLegacyProject('unknown-id');
   await manifestService.ensureBookFamilies(dir);

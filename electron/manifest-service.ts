@@ -2264,6 +2264,46 @@ export async function familyForListing(
 }
 
 /**
+ * The chains a PROJECT-WIDE provenance listing covers — all of them.
+ *
+ * ── Why this is not `familyForListing` ──────────────────────────────────────
+ *
+ * `familyForListing` answers "WHICH book" and still refuses when a project has
+ * several, because most of its callers are about to name a file: the book to
+ * open, the narration copy to cut, the records a reset will clear. Refusing
+ * there is right — nobody pressed a button, so nobody said which.
+ *
+ * "What's been done to this book" is not that question. The versions page runs
+ * it on LOAD, under a section head that is about the project, and there is no
+ * button to press: `resolveFamily`'s sentence ("Press the button on the version
+ * you mean") is addressed to a user who did not act. It painted a red banner
+ * over an ordinary two-version project — measured 2026-08-18 on
+ * Killing_America…(2024), which has two archive EPUBs and therefore two chains
+ * — while the badges beside it, which read the same fact through `soleFamily`,
+ * quietly said "nothing has been done". Two readers of one record disagreeing,
+ * and both wrong.
+ *
+ * So the project-wide answer is the project-wide answer: every chain's passes,
+ * merged. Nothing is guessed and nothing is hidden — a project with two books
+ * has had things done to both, and the section says so.
+ *
+ * A caller that NAMES a family still gets exactly that chain, and still gets
+ * `resolveFamily`'s refusal when the name matches nothing.
+ */
+export async function familiesForProvenanceListing(
+  projectDir: string,
+  familyId?: string
+): Promise<BookFamily[]> {
+  const manifest = await readManifestAt(projectDir);
+  const families = manifest.families ?? [];
+  if (familyId === undefined) return families;
+
+  const answer = resolveFamily(families, familyId, path.basename(projectDir));
+  if (answer.refusal !== null) throw new Error(answer.refusal);
+  return [answer.family];
+}
+
+/**
  * The family an OPEN is about, said by the FILE being opened.
  *
  * ── Why a third resolver, beside the act's and the listing's ────────────────
@@ -5112,7 +5152,14 @@ export async function readAppliedPasses(
   return resolved?.family.epub?.appliedPasses ?? [];
 }
 
-/** Every pass that has a diff, in execution order, with the diff resolved. */
+/**
+ * Every pass that has a diff, in execution order, with the diff resolved.
+ *
+ * WITHOUT a familyId this reads across EVERY chain — see
+ * `familiesForProvenanceListing`. The versions page's "What's been done" is a
+ * section about the PROJECT, and it asks this on load without anybody having
+ * pressed anything.
+ */
 export async function listPassDiffs(projectDir: string, familyId?: string): Promise<Array<{
   kind: AppliedPassKind;
   at: string;
@@ -5120,9 +5167,14 @@ export async function listPassDiffs(projectDir: string, familyId?: string): Prom
   relPath: string;
   absPath: string;
 }>> {
-  const resolved = await familyForListing(projectDir, familyId);
-  return (resolved?.family.epub?.appliedPasses ?? [])
+  const families = await familiesForProvenanceListing(projectDir, familyId);
+  return families
+    .flatMap((family) => family.epub?.appliedPasses ?? [])
     .filter((p) => !!p.diff)
+    // Execution order across the chains, not chain-by-chain: two books read in
+    // the same project were worked on interleaved, and the badges above them
+    // take "the last of this kind" off the end of this list.
+    .sort((a, b) => a.at.localeCompare(b.at))
     .map((p) => ({
       kind: p.kind,
       at: p.at,

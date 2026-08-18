@@ -390,7 +390,13 @@ export class StudioService {
         // against `outputs.epub`. The stage copies this replaced are gone for the
         // mono pipeline, and scanning for them would have answered "no" for every
         // book processed by the pass pipeline.
-        const appliedPasses = soleFamily<BookFamily>(manifest.families ?? [])?.epub?.appliedPasses ?? [];
+        // Across EVERY chain, not the sole one. This is the same project-wide
+        // provenance question `listPassDiffs` answers for the versions page's
+        // badges, and the two must give the same answer: reading it through
+        // `soleFamily` said "nothing has been done" for a project with two
+        // archive EPUBs, while the diff listing beside it refused out loud.
+        const appliedPasses = (manifest.families ?? [])
+          .flatMap((f: BookFamily) => f.epub?.appliedPasses ?? []);
         const hasSimplified = appliedPasses.some((p: AppliedPass) => p.kind === 'simplify');
         // `detection` counts: it is the pass that turns a run directory into a
         // book, so a project carrying it has a processed EPUB even when the OCR
@@ -704,7 +710,10 @@ export class StudioService {
 
         // Same provenance rule as books — see loadBooks.
         const chain = soleFamily<BookFamily>(manifest.families ?? []);
-        const appliedPasses = chain?.epub?.appliedPasses ?? [];
+        // Provenance across every chain — see loadBooks for why this one is not
+        // read off `chain`.
+        const appliedPasses = (manifest.families ?? [])
+          .flatMap((f: BookFamily) => f.epub?.appliedPasses ?? []);
         // `detection` counts: it is the pass that turns a run directory into a
         // book, so a project carrying it has a processed EPUB even when the OCR
         // repair was skipped (a born-digital PDF needs no repairing).
