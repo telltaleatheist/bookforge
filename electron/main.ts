@@ -2063,19 +2063,40 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
  * the handler, and `once('closed')` on the same window twice would sweep twice
  * for one close.
  */
-function openFoundryWindowAndReconcileOnClose(
+async function openFoundryWindowAndReconcileOnClose(
   projectDir?: string,
   opts?: { document?: string },
-): void {
+): Promise<void> {
   /*
    * The narrate dialog's fields, recomputed now — the moment the contract calls
    * for ("values resolved live at mount time, so the voice list is current") and
    * the honest reading of it: this press is when BookForge is up, its window has
    * its settings loaded, and the voices on disk are the ones the user will be
-   * offered. NOT awaited, because opening the window must not wait behind two
-   * disk reads, and the offers are asked for after the renderer has booted.
+   * offered.
+   *
+   * AWAITED, AND THAT IS THE WHOLE OF A BUG OWEN REPORTED ON 2026-08-18: "the
+   * narrate button in the bottom left of the foundry window is disappearing and
+   * disabling seemingly at random."
+   *
+   * It was fire-and-forget, on the reasoning that "opening the window must not
+   * wait behind two disk reads, and the offers are asked for after the renderer
+   * has booted". The second half is not true. Foundry's HostOpsService asks
+   * `host-ops:offers` ONCE, in its constructor, at renderer boot — there is no
+   * re-ask and no push that revises it — and the action menu draws a host act
+   * only if `offer.form !== undefined` (a formless act would run an hours-long
+   * job on one click, so it lives in the tree footer instead). `form` is a getter
+   * over `narrateOffer`, which this function is what fills in.
+   *
+   * So the two were racing, and the race decided whether Narrate existed in that
+   * window for its whole life. The refresh is not two disk reads: it round-trips
+   * `executeJavaScript` into BookForge's renderer for the saved settings, dynamic-
+   * imports two modules, scans the installed voices and lists every component. The
+   * Foundry renderer boots from a warm bundle. Whichever finished first won.
+   *
+   * A window opens a few hundred milliseconds later now. That is the correct
+   * trade: the alternative is a button that is sometimes not there.
    */
-  void refreshFoundryNarrateForm();
+  await refreshFoundryNarrateForm();
   const created: BrowserWindow[] = [];
   const capture = (_event: unknown, win: BrowserWindow): void => { created.push(win); };
   app.once('browser-window-created', capture);
@@ -8500,7 +8521,7 @@ function setupIpcHandlers(): void {
       await fs.mkdir(foundryProjectsDir(), { recursive: true });
       const key = await manifestService.readFoundryProject(projectDir);
       if (key === null) {
-        openFoundryWindowAndReconcileOnClose(undefined, document ? { document } : undefined);
+        await openFoundryWindowAndReconcileOnClose(undefined, document ? { document } : undefined);
         return { success: true, opened: 'bare' as const };
       }
       const hostedDir = path.join(foundryProjectsDir(), key);
@@ -8516,7 +8537,7 @@ function setupIpcHandlers(): void {
           + 'project itself so Foundry does not import the file as a new one.');
         document = undefined;
       }
-      openFoundryWindowAndReconcileOnClose(
+      await openFoundryWindowAndReconcileOnClose(
         hostedDir,
         document ? { document } : undefined,
       );
