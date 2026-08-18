@@ -79,12 +79,23 @@ import { type FoundryHost, recordHost } from './host';
 import { type HostOperation, recordHostNodeActions, recordHostOperations } from './host-ops';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
-import { listProjects, onImportLanded } from './projects';
+import { ledgerOf, listProjects, onImportLanded, readManifest } from './projects';
 import * as vllm from './vllm-server';
+import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
-import { originalOf } from '../shared/original';
+import { stepOf } from '../shared/ledger';
+import { fold, originalOf } from '../shared/original';
+import type { ExportLanding, Job, JobRequest } from '../shared/types';
 
 export type { FoundryHost, HostOperation };
+/*
+ * THE LANDING'S OWN SHAPE, through the seam a host imports. It is declared in
+ * `shared/types.ts` with every other announcement, and re-exported here so that a
+ * host typing the answer to `exportEpubFromStep` — or its own `onExport` — has one
+ * import for the whole contract rather than a reach past this file into modules
+ * that are Foundry's business.
+ */
+export type { ExportLanding };
 export { hostedLibraryDir } from './host';
 /*
  * THE HOST-OPERATIONS SOCKET, re-exported through the seam a host actually
@@ -286,16 +297,34 @@ function applyContentSecurityPolicy(): void {
  * until two Foundries were fighting over one queue.
  */
 export function mountFoundry(host?: FoundryHost): void {
-  if (host !== undefined) {
-    recordHost(host);
-    /*
-     * The export announcement is wired HERE rather than inside the queue,
-     * because the queue must not know what a host is: it registers a listener in
-     * the same shape as `onQueueChanged`, and this is the one place that knows
-     * there is somebody to tell. Wrapped, because a host's handler throwing is a
-     * host's problem and a landed export is already on disk — see the call.
-     */
-    queue.onExportLanded((landing) => {
+  /*
+   * ── EVERY EXPORT THAT LANDS, HEARD ONCE AND PASSED ON TWICE ────────────────
+   *
+   * The queue publishes a landing into ONE slot (`onExportLanded`) and there are
+   * two things in this process that want it: the HOST, whose versions list gains a
+   * row, and any unattended export this seam is in the middle of making
+   * (`exportEpubFromStep`). So the slot is taken here, once, and the fan-out lives
+   * on this side of it — a second `queue.onExportLanded` would silently replace
+   * the first, which is exactly the failure a single slot is meant to make loud.
+   *
+   * THE HOST IS TOLD FIRST. A waiter's continuation is where the host is asked to
+   * do something ABOUT the export it has just been told exists, so the order that
+   * cannot surprise anybody is announcement before answer. Both are asynchronous
+   * on the far side and the exact interleaving after that is the host's own
+   * business; what this guarantees is which of them was OFFERED first.
+   *
+   * WIRED HERE RATHER THAN INSIDE THE QUEUE, because the queue must not know what
+   * a host is: it publishes in `onQueueChanged`'s shape, and this is the one place
+   * that knows there is somebody to tell. The host's call is wrapped, because a
+   * host's handler throwing is a host's problem and a landed export is already on
+   * disk — see the call.
+   *
+   * REGISTERED WITH OR WITHOUT A HOST. Standalone nothing waits and nobody is
+   * told, so the listener runs, matches nothing and returns — which is cheaper
+   * than a second registration path to keep in step with this one.
+   */
+  queue.onExportLanded((landing) => {
+    if (host !== undefined) {
       try {
         host.onExport(landing);
       } catch (err) {
@@ -304,7 +333,13 @@ export function mountFoundry(host?: FoundryHost): void {
           + `${err instanceof Error ? err.message : String(err)}. The export itself landed.`,
         );
       }
-    });
+    }
+    for (const waiting of [...awaitingExports]) {
+      if (fold(waiting.path) === fold(landing.path)) waiting.landed(landing);
+    }
+  });
+  if (host !== undefined) {
+    recordHost(host);
     // First contact, for the host that asked to hear it — how the bare-window
     // import door (Import via Foundry) tells the host which project key its
     // book was given. Optional where onExport is not; see FoundryHost.
@@ -424,6 +459,197 @@ export function openFoundryWindow(
       console.error(`[mount] ${projectDir} could not be opened: ${err.message}`);
     });
   });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The EPUB a host's act needs, made without anybody pressing anything
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * ONE EXPORT THIS PROCESS IS WAITING ON — a path, and what to do when it lands.
+ *
+ * The path is the identity because it is the queue's own: `enqueue` refuses to
+ * hold two live jobs writing one file and hands back the pending one instead
+ * (`pendingFor`), so at any moment at most one run in this app is going to
+ * produce this name. Matching on it therefore matches OUR job even when the
+ * queue answered our enqueue with somebody else's — which is the ordinary case
+ * when a person pressed Export on the same row a second earlier.
+ */
+interface AwaitedExport {
+  path: string;
+  landed(landing: ExportLanding): void;
+}
+
+const awaitingExports = new Set<AwaitedExport>();
+
+/**
+ * MAKE THE EPUB OF ONE STEP, unattended, and answer with the landing.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, on finding narrate offered only where a file already existed: *"i dont
+ * think its intuitive to know you have to create an epub before you can narrate.
+ * i think we should make any of the steps possible to narrate. if they arent
+ * doing it from an epub then we export the epub automatically and then run the
+ * task they assigned."*
+ *
+ * A host's act consumes a FINISHED FILE, and a person standing on a translation
+ * three rows into their history has words rather than a file. The old answer was
+ * to offer the act only on `final/` rows and let them go and make one; this is
+ * the other answer, and it is the one that matches what somebody means when they
+ * press Narrate on a step. THE HOST DECIDES WHEN TO ASK: it declares its act on
+ * both currencies (`HostOperationOffer.appliesTo`), and when an invoke arrives
+ * naming a step it has no export for, it calls this.
+ *
+ * ── What it is, and what it deliberately is not ─────────────────────────────
+ *
+ * IT IS THE EXPORT DIALOG'S OWN PATH WITH NOBODY IN FRONT OF IT. The same
+ * `planExport`, the same `JobRequest` the dialog composes, the same queue, the
+ * same landing — because an export made for a host must be indistinguishable
+ * from an export somebody pressed for: same name in `final/`, same rotation of
+ * the predecessor, same row in the tray, same announcement to whoever is
+ * listening. A second, quieter route to a filed document would be a second truth
+ * about what an export is.
+ *
+ * IT ASKS NOTHING, and it can afford not to. The dialog has exactly one question
+ * — the format — and this one is an EPUB by definition: it exists because a host
+ * act wants the book as a file, and `epub` is what that means. Every other
+ * decision an export makes is main's already (the pixels, the bank, the
+ * translation's words, the derived book with the changes replayed into it).
+ *
+ * IT IS NOT HELD. A rendering never is (electron/job-queue.ts): it is arithmetic
+ * over a bank already on the disk, seconds, no model — so nothing waits for
+ * anybody to find the shelf and press Start, which would be the one way an
+ * unattended call could hang forever.
+ *
+ * ── The answer, and the two ways it ends ────────────────────────────────────
+ *
+ * The promise settles when the JOB does, never on a timer. It resolves with the
+ * landing — the same `ExportLanding` the host's `onExport` was handed a moment
+ * earlier, path included, so the caller can run its act against the file without
+ * composing a path of its own. It rejects when the run ends without filing
+ * anything: the engine's own stderr for a failure, a sentence for a cancel or for
+ * a row somebody removed from the shelf while it waited.
+ *
+ * A REFUSAL AT PLAN TIME IS THROWN BEFORE ANY OF THAT, in main's own words —
+ * the book nobody has read, the reading that was interrupted, the changes that
+ * would not replay. Those sentences are written to be shown to a person, and the
+ * host is expected to put them in front of one rather than paraphrase them.
+ */
+export async function exportEpubFromStep(
+  projectDir: string,
+  stepId: string,
+): Promise<ExportLanding> {
+  /*
+   * THE PROJECT AND ITS BOOK, resolved the way the deep link resolves them one
+   * function up: `listProjects` and `originalOf`, so a host naming a project gets
+   * the same document a click on that book's row would open. The plan only needs
+   * the path to find the project — it resolves the pixels out of `archive/` for
+   * itself — but it must be a path this app actually holds, which is precisely
+   * what a project summary is the record of.
+   */
+  const project = (await listProjects()).find((row) => fold(row.dir) === fold(projectDir));
+  if (project === undefined) {
+    throw new Error(`${projectDir} is not a project in this app's library.`);
+  }
+  const original = originalOf(project.documents);
+  if (original === null) {
+    throw new Error(`${projectDir} holds no document to export from.`);
+  }
+  /*
+   * AND THE ROW, PROVED AGAINST THE LEDGER. `stepOf` refuses by name for an id
+   * this project's history does not have, which is the honest answer to a host
+   * that has held a step id since before somebody deleted the step — and it is
+   * the same refusal every other door in this app gives for the same mistake.
+   */
+  const step = stepOf(ledgerOf(await readManifest(project.dir)), stepId);
+  const plan = await planExport(original.path, 'epub', step);
+  const request: JobRequest = {
+    kind: 'epub',
+    // The pixels, as always: the plan resolved the archived original rather than
+    // trusting whatever document anybody was looking at.
+    inputPath: plan.sourcePath,
+    outputPath: plan.outputPath,
+    readingsPath: plan.readingsPath,
+    // TERMINAL. Without it the landing files the result as a rendering of the
+    // project — a documents row, a live file something later could be built on —
+    // which is precisely what an export is not.
+    export: true,
+    // The translation's words, the language to declare the book as, and the book
+    // with this step's changes already replayed into it: carried from the plan,
+    // never composed, exactly as the dialog carries them.
+    ...(plan.records !== undefined ? { records: plan.records } : {}),
+    ...(plan.language !== undefined ? { language: plan.language } : {}),
+    ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+  };
+
+  return new Promise<ExportLanding>((resolve, reject) => {
+    let over = false;
+    const waiting: AwaitedExport = {
+      path: plan.outputPath,
+      landed: (landing) => {
+        if (over) return;
+        over = true;
+        awaitingExports.delete(waiting);
+        stopWatching();
+        resolve(landing);
+      },
+    };
+    /*
+     * BOTH HALVES ARE ARMED BEFORE THE ENQUEUE, and the order is load-bearing
+     * rather than tidy. `enqueue` is synchronous and pumps the queue on the way
+     * out — a job that loses its request settles inside that call, before this
+     * function has resumed — so a listener registered afterwards would miss the
+     * one ending it exists to catch.
+     */
+    awaitingExports.add(waiting);
+    const stopWatching = queue.onJobSettled((row) => {
+      if (over || fold(row.outputPath) !== fold(plan.outputPath)) return;
+      over = true;
+      awaitingExports.delete(waiting);
+      stopWatching();
+      reject(unfiled(row));
+    });
+    /*
+     * THE STEP IS THE PARENT, which is what makes the tray row and the landing
+     * both say where this export came from (`ProjectFinal.stepId`,
+     * `ExportLanding.stepId`). The IPC door resolves that from the project's
+     * POSITION because a person pressing Export is standing on what they mean;
+     * here the ask names its own row, and passing the position instead would file
+     * a host's export against wherever the window happened to be pointing.
+     */
+    queue.enqueue(request, step.id);
+  });
+}
+
+/**
+ * WHY THIS JOB FILED NOTHING — the sentence a waiter is rejected with.
+ *
+ * The engine's own stderr where there is one, never paraphrased: it names the
+ * missing Python, the block it choked on, the page it could not read, and a
+ * summary written here would be this app editing the only account of what
+ * happened. The other three arms are states the queue can end in with nothing on
+ * disk to point at, and each says which one it was — including `done`, which
+ * would mean the run succeeded and the landing never came, and which is worth an
+ * astonished sentence rather than a silent wait.
+ */
+function unfiled(row: Job): Error {
+  const file = path.basename(row.outputPath);
+  if (row.state === 'failed') {
+    return new Error(row.error === undefined
+      ? `Making ${file} failed, and the run said nothing about why.`
+      : row.error);
+  }
+  if (row.state === 'cancelled') {
+    return new Error(`Making ${file} was cancelled before it finished.`);
+  }
+  if (row.state === 'done') {
+    return new Error(
+      `${file} was made, but nothing filed it into the project's tray — so there is no export to `
+      + 'hand back.',
+    );
+  }
+  return new Error(`Making ${file} was taken out of the queue before it ran.`);
 }
 
 /**

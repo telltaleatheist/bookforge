@@ -165,13 +165,82 @@ export function onExportLanded(listener: (landing: ExportLanding) => void): void
   exportLanded = listener;
 }
 
-export function listJobs(): Job[] {
-  // A copy: the renderer's mirror must not be able to reach back into the truth.
-  return jobs.map((job) => ({
+/**
+ * The third thing this queue publishes: ONE JOB IS OVER — settled in whatever
+ * state, or taken out of the list before it ever ran.
+ *
+ * ── What could not be learned without it ────────────────────────────────────
+ *
+ * A job that FAILS announces nothing. `onExportLanded` above fires only where
+ * there is something to file, which is exactly right for a landing and useless
+ * to anybody waiting for an answer: an unattended export ordered from outside
+ * this window (`exportEpubFromStep`, electron/mount.ts) has to hear "the engine
+ * refused" as surely as it hears "here is the file", or the caller waits for a
+ * landing that is never coming. The alternative was a poll over `listJobs`,
+ * which is a loop asking a question this module already knows the answer to.
+ *
+ * ── It fires LAST, and that ordering is the contract ────────────────────────
+ *
+ * After the tray row, after the announcement, after everything a settle
+ * produces. A waiter matching a landing must see the landing FIRST or it would
+ * reject a job that succeeded — so "settled" here means "and nothing else is
+ * coming from this job", which is the only reading that makes it usable as an
+ * ending. `changed()` cannot carry this for the same reason: it fires the
+ * instant a state is written, with the landing still ahead of it.
+ *
+ * ── A ROW REMOVED COUNTS, and that is not a stretched definition ────────────
+ *
+ * `remove` takes a held or queued job out of the list entirely — it never
+ * settles, it is simply gone — and a caller waiting on it would wait forever.
+ * What it hears is this, with the row's own state on it, which is honest: this
+ * job left the queue without producing anything.
+ *
+ * MANY LISTENERS, unlike the two above, and they unsubscribe. Each waiter is
+ * about ONE job and lives for as long as that job does, so a single slot would
+ * mean two unattended exports fighting over it; the returned function is how a
+ * waiter stops listening the moment its own job is over.
+ */
+const settleListeners = new Set<(job: Job) => void>();
+
+export function onJobSettled(listener: (job: Job) => void): () => void {
+  settleListeners.add(listener);
+  return () => { settleListeners.delete(listener); };
+}
+
+/**
+ * Say that this job is over — see `onJobSettled` for what that promises.
+ *
+ * A COPY, on `listJobs`' rule: a listener outside this module must not be handed
+ * the row itself. AND EVERY LISTENER RUNS whatever the last one did, because one
+ * waiter's bug is not another waiter's ending — the same posture the export
+ * announcement takes one call up.
+ */
+function settled(job: Job): void {
+  const row = copyOf(job);
+  for (const listener of [...settleListeners]) {
+    try {
+      listener(row);
+    } catch (err) {
+      console.error(
+        `[queue] a settle listener threw for ${job.outputPath}: `
+        + `${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
+}
+
+/** One row as anything outside this module may hold it: deep enough to be safe. */
+function copyOf(job: Job): Job {
+  return {
     ...job,
     progress: job.progress ? { ...job.progress } : null,
     envProgress: job.envProgress ? { ...job.envProgress } : null,
-  }));
+  };
+}
+
+export function listJobs(): Job[] {
+  // A copy: the renderer's mirror must not be able to reach back into the truth.
+  return jobs.map(copyOf);
 }
 
 function changed(): void {
@@ -455,6 +524,10 @@ export function remove(id: string): void {
   requests.delete(id);
   envRequests.delete(id);
   changed();
+  // The row is gone rather than finished, and anybody waiting on it has to hear
+  // that too — see `onJobSettled`, which counts this as an ending because for a
+  // waiter it is the only one it will ever get.
+  settled(job);
   /*
    * Removing can be the thing that empties the queue, and the drain signal lives
    * in pump()'s nothing-to-do branch — which nothing else would visit. Same
@@ -532,6 +605,7 @@ export function cancel(id: string): void {
     // mention that file again — see `sweepDerivedBook`.
     void sweepDerivedBook(requests.get(job.id));
     changed();
+    settled(job);
     // A cancel can be the thing that empties the queue, and the drain signal
     // lives in pump()'s nothing-to-do branch — which nothing else would visit.
     void pump();
@@ -992,6 +1066,7 @@ async function pump(): Promise<void> {
     next.state = 'failed';
     next.error = 'The job lost its configuration before it started.';
     changed();
+    settled(next);
     void pump();
     return;
   }
@@ -1065,6 +1140,7 @@ async function pump(): Promise<void> {
       next.error = err instanceof Error ? err.message : String(err);
       next.finishedAt = Date.now();
       changed();
+      settled(next);
       starting = false;
       void pump();
       return;
@@ -1173,6 +1249,7 @@ async function pump(): Promise<void> {
       next.error = `The temporary folder for this job could not be made: ${(err as Error).message}`;
       next.finishedAt = Date.now();
       changed();
+      settled(next);
       starting = false;
       void pump();
       return;
@@ -1246,6 +1323,7 @@ async function pump(): Promise<void> {
         next.error = err instanceof Error ? err.message : String(err);
         next.finishedAt = Date.now();
         changed();
+        settled(next);
         starting = false;
         void pump();
         return;
@@ -1607,6 +1685,7 @@ async function pump(): Promise<void> {
        * in its own words.
        */
       await materializeTranslation(next.outputPath);
+      settled(next);
       void pump();
       return;
     }
@@ -1683,6 +1762,14 @@ async function pump(): Promise<void> {
           );
         }
       }
+      /*
+       * AND ANYBODY WAITING ON THIS JOB IS TOLD AFTER THE HOST IS, which is the
+       * ordering `onJobSettled` promises rather than an accident of where the
+       * line sits. A waiter watching for the landing of this file has to have
+       * SEEN that landing before it hears the job is over, or it would read a
+       * successful export as an ending with nothing in it.
+       */
+      settled(next);
       void pump();
       return;
     }
@@ -1717,6 +1804,7 @@ async function pump(): Promise<void> {
         ? 'The facsimile of those pages is ready.'
         : 'The book at that step is ready.';
       changed();
+      settled(next);
       void pump();
       return;
     }
@@ -1814,6 +1902,10 @@ async function pump(): Promise<void> {
     );
   }
   changed();
+  // The three arms above return before this line, each saying it for itself
+  // after whatever that landing produced; what reaches here is a cancel, a
+  // failure, and the rendering whose landing is a catalogue row.
+  settled(next);
   void pump();
 }
 
@@ -1960,6 +2052,7 @@ async function runEnvInstall(job: Job): Promise<void> {
     job.state = 'failed';
     job.error = 'The install lost its configuration before it started.';
     changed();
+    settled(job);
     void pump();
     return;
   }
@@ -1997,5 +2090,6 @@ async function runEnvInstall(job: Job): Promise<void> {
     job.error = result.detail;
   }
   changed();
+  settled(job);
   void pump();
 }

@@ -10,7 +10,7 @@ import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
  * what a stage can do.
  */
 import {
-  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom, hasEpubExport,
+  canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom, canTranslateFrom,
 } from '@shared/stages';
 import { fold } from '@shared/original';
 
@@ -307,10 +307,19 @@ import { UiService } from '../../core/ui.service';
           GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
           Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
           has selected cant run tts then its grayed out."* \`hostReady\` is the
-          same predicate the press itself refuses by (\`hasEpubExport\`,
-          shared/stages.ts), so the gray and the sentence cannot disagree; the
-          title says what would make it light up, because a disabled control
-          that keeps its enabled hover is a control that explains nothing.
+          same predicate the press itself refuses by
+          (\`canRunHostActFrom\`, shared/stages.ts), so the gray and the
+          sentence cannot disagree; the title says what would make it light up,
+          because a disabled control that keeps its enabled hover is a control
+          that explains nothing.
+
+          WHAT THE GRAY MEANS CHANGED WITH OWEN'S SECOND RULING — *"i dont
+          think its intuitive to know you have to create an epub before you can
+          narrate"* — and it is a smaller gray than it was. It used to mean
+          "nothing has been exported yet", which shut the button on books whose
+          words were all there; it means "there is no book AT THIS STAGE" now,
+          which is the unread scan and the import row and nothing else. The
+          export these acts consume is made for them when there is none.
         -->
         @for (act of hostActs(); track act.id) {
           <button
@@ -319,7 +328,8 @@ import { UiService } from '../../core/ui.service';
             [disabled]="!hostReady()"
             [title]="hostReady()
               ? act.label + ' — handled by the app Foundry is running inside'
-              : act.label + ' — export the book first; this act reads the finished EPUB'"
+              : act.label + ' — there is no book at the step you are standing on, and this act is '
+                + 'made from one'"
             (click)="runHostAct(act.id)"
           >
             <span class="menu-icon">♪</span>
@@ -557,45 +567,42 @@ export class ActionMenuComponent {
   protected readonly hostActs = computed(() => {
     if (this.target() === null) return NO_ACTS;
     /*
-     * BOTH SPELLINGS OF "ACTS ON THE FINISHED BOOK" REACH THE DOCK, and that is
-     * not a hedge — it is what this button already aims at. The menu resolves its
-     * target to the project's EXPORT (per 9a/9b: the export's own step where the
-     * catalogue recorded one), so an act declaring `export` is precisely on
-     * subject here, and an act still declaring `book` — which is every host that
-     * has not re-vendored since the member was added — must keep reaching the
-     * button it reached yesterday. The tree is where the two spellings genuinely
-     * separate, because there a `book` op belongs on the steps and an `export` op
-     * belongs on the `final/` rows.
+     * BOTH SPELLINGS OF "ACTS ON THE FINISHED BOOK" REACH THE DOCK, and after
+     * this wave they reach it aiming at two different things. An act consuming
+     * the BOOK is pressed against the step somebody is standing on — the menu's
+     * own subject, and the case Owen's ruling is about; an act consuming only the
+     * EXPORT is pressed against the project's one finished EPUB, exactly as it
+     * has been. `runHostAct` is where that fork is taken and argued.
+     *
+     * DEDUPED BY ID, because a host declaring BOTH currencies on one act — which
+     * is what this wave makes possible and what a narrate should now say — is
+     * answered by both calls, and one operation must not draw two identical rows
+     * in a list of things you can do.
      */
-    return [...this.hostOps.offersFor('book'), ...this.hostOps.offersFor('export')]
-      .filter((offer) => offer.form !== undefined);
+    const both = [...this.hostOps.offersFor('book'), ...this.hostOps.offersFor('export')];
+    return both.filter((offer, at) =>
+      offer.form !== undefined && both.findIndex((one) => one.id === offer.id) === at);
   });
 
   /**
-   * WHAT A MENU ACT WOULD RUN AGAINST — the book's export target, per 9a/9b.
+   * WHICH PROJECT A MENU ACT IS ABOUT — the book in front of you, as a folder.
    *
-   * ── The same rule the export row follows, reached from the menu ────────────
+   * It is the same resolution every act on this menu makes, kept as one computed
+   * because the host's acts ask it three times over (whether to draw them at all,
+   * whether they are possible from here, and what to send with the press) and
+   * three readings of "which book am I looking at" in one component is how two of
+   * them come to disagree.
    *
-   * The tree's export row knows its own provenance (`ProjectFinal.stepId`); the
-   * menu has no row in hand, so it works out which export the book has. ONE
-   * EXPORT IS THE ANSWER — its recorded step where there is one, and the position
-   * as the documented fallback, exactly as `nodeIdFor` resolves it in the tree.
+   * WHAT IT DOES NOT DECIDE ANY MORE is what the press NAMES. That was this
+   * computed's whole docblock — the project's one exported EPUB, refusing where
+   * there were two — and it is `runHostAct`'s business now, because the answer
+   * depends on what the act says it consumes: a step for an act that takes the
+   * book, that same one-export-or-refuse for an act that takes only the file.
    *
-   * TWO OR MORE AND THE MENU REFUSES rather than choosing. *"Today
-   * narrate-from-any-node resolves to 'the project's one exported EPUB' and
-   * refuses when there are two."* That refusal is the letter's own description of
-   * today's behaviour and it is the right one here: a book exported at three
-   * positions has three candidates and this menu cannot know which the person
-   * means — the tree can, because they clicked a row. The sentence says so and
-   * says where to go instead.
-   *
-   * NULL MEANS THE BUTTON IS NOT DRAWN AT ALL, which is only the case with no
-   * book in front of you. A book with no EPUB export yet draws the button
-   * GRAYED — that is Owen's ruling (2026-08-17 21:45) REVERSING what this
-   * paragraph used to promise ("still draws the button and refuses in a
-   * sentence on the press"): present and disabled like Translate and Simplify,
-   * with the title carrying "export it first" so the way to light it up is
-   * still said where the button is. See `hostReady`.
+   * NULL MEANS THE BUTTONS ARE NOT DRAWN AT ALL, which is only the case with no
+   * book in front of you. A book at a stage the acts cannot run from draws them
+   * GRAYED instead — present and disabled like Translate and Simplify, with the
+   * title saying what would light them up. See `hostReady`.
    */
   private readonly target = computed<string | null>(() => {
     const tab = this.stage.activeDocument();
@@ -604,23 +611,61 @@ export class ActionMenuComponent {
   });
 
   /**
-   * WHETHER THE HOST'S ACTS HAVE A FILE TO CONSUME — this menu's gray.
+   * WHETHER THE HOST'S ACTS CAN BE RUN FROM WHERE THE PERSON IS STANDING — this
+   * menu's gray.
    *
-   * `hasEpubExport` (shared/stages.ts) is the same predicate `runHostAct`
-   * refuses by, which is that module's whole rule: the gray and the sentence
-   * cannot come to different answers. The finer refusals — two candidate
-   * exports, settings a host misses — stay at press time and with the host,
-   * because a catalogue row cannot know them.
+   * ── It moved off the export tray, and that is Owen's ruling ────────────────
+   *
+   * It was `hasEpubExport`: no finished EPUB, no press. *"i dont think its
+   * intuitive to know you have to create an epub before you can narrate. i think
+   * we should make any of the steps possible to narrate. if they arent doing it
+   * from an epub then we export the epub automatically and then run the task they
+   * assigned."* So the question is what the STAGE can do rather than what the
+   * project happens to have lying in `final/`, and the answer is
+   * `canRunHostActFrom` (shared/stages.ts) — `hasBookAt` by another name, which
+   * is the same test the Export button beside this one greys by, because the
+   * export is what would be made.
+   *
+   * ASKED OF THE STANDING STEP, which is the position this menu has always aimed
+   * at: every other act here reads `standingIn` and this one had no step in it at
+   * all, because a fact about a tray does not have one. The tree asks the same
+   * question of the ROW under the pointer (`offersFor`), and the two agree
+   * because they are one function with a different step in it.
+   *
+   * The finer refusals — a voice the host does not have, a queue that will not
+   * take the work — stay at press time and with the host, because a catalogue row
+   * cannot know them.
    */
   protected readonly hostReady = computed<boolean>(() => {
     const dir = this.target();
     if (dir === null) return false;
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-    return hasEpubExport(project);
+    return canRunHostActFrom(project, this.ledger.standingIn(dir));
   });
 
   /**
-   * Press one: work out the target, then open the host's questions in our card.
+   * Press one: work out what this act is aimed at, then open the host's questions
+   * in our card.
+   *
+   * ── TWO KINDS OF ACT REACH THIS BUTTON, AND THEY AIM AT DIFFERENT THINGS ───
+   *
+   * AN ACT THAT CONSUMES THE BOOK aims at the STEP the person is standing on —
+   * the same id the tree row for that step would send, which is the whole of why
+   * it can be pressed from here at all. What it does with a step that has no
+   * export behind it is the host's business: it asks Foundry to make one
+   * (`exportEpubFromStep`, electron/mount.ts) and then runs the work, which is
+   * Owen's ruling and the reason this branch exists.
+   *
+   * AN ACT THAT CONSUMES ONLY THE FINISHED FILE keeps every refusal it had. It
+   * has said it reads an export and nothing else, so a press has to name one, and
+   * a book with none — or with two, which this menu cannot choose between — is a
+   * sentence rather than a guess. That is unchanged behaviour for a host that has
+   * not moved its act onto the book.
+   *
+   * WHICH KIND THIS IS, ASKED THROUGH THE ONE RULE. `offersFor('book')` is
+   * `offeredFrom` (shared/host-ops.ts), the same function the tree gates on, so a
+   * declaration that reaches the tree's step rows and a declaration that takes
+   * this branch cannot come apart.
    *
    * EVERY REFUSAL IS A SENTENCE ON THE STRIP, which is this menu's own habit for
    * a button that cannot grey itself out against a fact this deep in the model.
@@ -628,6 +673,27 @@ export class ActionMenuComponent {
   protected runHostAct(operationId: string): void {
     const dir = this.target();
     if (dir === null) return;
+    if (this.hostOps.offersFor('book').some((offer) => offer.id === operationId)) {
+      const standing = this.ledger.standingIn(dir);
+      if (standing === null) {
+        /*
+         * NO POSITION TO NAME. `standingIn` answers null while a project's
+         * history is still in flight — `hasBookAt` deliberately reads that
+         * silence as "not the import" so the button is not greyed on a guess —
+         * and a press in that window has nothing to send. Saying so is the honest
+         * answer; sending the root would be a fabricated provenance, and the host
+         * echoes this id into every row it pushes back.
+         */
+        this.notices.notice.set(
+          'This book’s history has not finished loading in this window, so there is no step to '
+          + 'run this from yet. Give it a moment and press again.',
+        );
+        return;
+      }
+      void this.router.navigateByUrl('/');
+      this.ui.openHostOp({ operationId, projectDir: dir, nodeId: standing.id });
+      return;
+    }
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
     /*
      * THE EPUBS, not the whole tray: what these acts consume is the finished
@@ -639,9 +705,14 @@ export class ActionMenuComponent {
      */
     const exports = (project?.exports ?? []).filter((made) => made.kind === 'epub');
     if (exports.length === 0) {
-      // Unreachable from the button now that it grays (`hostReady` is this
-      // same predicate) — kept because a sentence behind a gate costs nothing
-      // and a silent return behind a stale repaint would cost an evening.
+      /*
+       * AND THIS IS REACHABLE AGAIN, which it was not while the gray was
+       * `hasEpubExport`. The button now greys on what the STAGE can do, so an act
+       * that consumes only the finished file can be pressed over a book that has
+       * none — and the honest answer is the sentence, because an act that did not
+       * say it consumes the book is an act this menu must not make an export for
+       * on its own initiative.
+       */
       this.notices.notice.set(
         'There is nothing finished to work from yet — export this book first, and the act will '
         + 'have a file to consume.',

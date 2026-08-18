@@ -1075,8 +1075,20 @@ export async function correctBookBlock(
 export async function materializeBook(
   projectDir: string,
   into: string,
+  /**
+   * THE STEP TO BUILD FOR, when it is not the position — `openBookAtPosition`'s
+   * own parameter, exposed because a caller can want a book for a row the pointer
+   * is not standing on.
+   *
+   * The export that arrives from outside the window is the case that asked for
+   * it: a host ordering an act from a step in the tree needs the EPUB of THAT
+   * step, and the person may be standing three rows away (`exportEpubFromStep`,
+   * electron/mount.ts). Null and absent both mean the position, which is every
+   * export somebody pressed the button for.
+   */
+  from: LedgerStep | null = null,
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
-  const read = await openBookAtPosition(projectDir);
+  const read = await openBookAtPosition(projectDir, from);
   if (!read.ok) return read;
   const { at, parsed, ops, tip } = read.opened;
 

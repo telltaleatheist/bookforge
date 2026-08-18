@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **fd99b39** — *"fix(renderer): the host's form stops splitting lines — a toggle reads across, numbers pair up"* |
+| Source sha | **d5b236c** — *"feat(host-ops): narrate from any step — an act may consume the book, and the export is made for it"* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -84,7 +84,20 @@ beside it, adjacent numbers pair two to a row (the translate dialog's
 `.pair`, as `.row.two`), selects/text stay full-width, help notes live in a
 per-field `.cell` under the half they explain, card 460→520px. One file,
 renderer-internal; no channel, shared type, or preload surface moved (94/94
-blobs at fd99b39).
+blobs at fd99b39). `d5b236c` is Owen's narrate-from-any-step ruling ("if they
+arent doing it from an epub then we export the epub automatically"): the
+mount seam gains `exportEpubFromStep(projectDir, stepId) →
+Promise<ExportLanding>` (the export dialog's own plan/enqueue/landing path
+with nobody in front of it; `ExportLanding` re-exported through mount),
+`HostOperation.appliesTo` widens to `NodeOutput | readonly NodeOutput[]` (a
+single value behaves byte-identically — a host that has not moved is
+untouched), `job-queue` gains a multi-listener `onJobSettled` firing AFTER
+the landing, the `workspace.ts` facsimile-name conflation splits into
+`forStep`/`keyedTo`, and the action menu's host-act gray moves from
+`hasEpubExport` onto `canRunHostActFrom` (= `hasBookAt`, one predicate for
+gray and refusal alike) with book-consuming acts pressing the standing
+step's own id. No IPC channel added or renamed; the `appliesTo` payload
+widening carries a dated row in `IPC-CHANNELS.md` (94/94 blobs at d5b236c).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

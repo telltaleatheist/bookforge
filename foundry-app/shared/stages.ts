@@ -179,23 +179,68 @@ export function canExportFrom(
 }
 
 /**
- * IS THERE A FINISHED EPUB TO WORK FROM — the possibility behind the HOST's
- * formed acts on the dock.
+ * CAN THE HOST'S OWN ACTS BE RUN FROM HERE.
  *
- * Owen's ruling for the rail (2026-08-17 21:45, via the bridge): *"if the step
- * the user has selected cant run tts then its grayed out"* — present and
- * disabled like Translate and Simplify, never a press that answers with a
- * refusal. What those acts consume is the finished FILE (`NodeOutput`'s
- * `'export'`), and ZERO EPUB EXPORTS IS THE GRAYED STATE — BookForge's own
- * words for its narrate's honest first approximation. The precise judge stays
- * the host's invoke (two candidate exports, missing settings), exactly as
- * every predicate here stops at what a catalogue row can say and leaves the
- * dialogs their own refusals.
+ * ── The ruling that moved this off the export tray ──────────────────────────
+ *
+ * It used to be `hasEpubExport` — zero finished EPUBs was the grayed state, on
+ * the reasoning that what a host act consumes is a FILE and a project with no
+ * file has nothing to offer one. Owen overturned the premise rather than the
+ * gray: *"i dont think its intuitive to know you have to create an epub before
+ * you can narrate. i think we should make any of the steps possible to narrate.
+ * if they arent doing it from an epub then we export the epub automatically and
+ * then run the task they assigned."*
+ *
+ * So the question is no longer "is there a file" but "COULD THERE BE ONE" — and
+ * that is `hasBookAt`, exactly and by name: the same test that decides whether an
+ * export is possible from this stage, because the export is what would be made.
+ * A stage that can be exported can be narrated; a stage that cannot — the unread
+ * scan, the import row somebody stepped back to — can be neither, and the button
+ * greys for the same reason the Export button beside it does.
+ *
+ * ── Why it is a named act rather than a call to `hasBookAt` ─────────────────
+ *
+ * `canSimplifyFrom`'s reason, said about somebody else's operations: the surfaces
+ * that gate the host's acts and the surface that refuses one must read ONE
+ * function, and that function has to be named for the act so that the day a host
+ * act grows a condition an export does not have, there is a body to put it in
+ * rather than a shared predicate to fork.
+ *
+ * IT IS THE PROJECT'S SIDE OF THE ANSWER AND NOT THE WHOLE OF IT. Whether the
+ * host can actually do the work — a voice it has, a queue that will take it — is
+ * the host's own to refuse at invoke, exactly as every predicate here stops at
+ * what a catalogue row can say and leaves the dialogs their own sentences.
+ */
+export function canRunHostActFrom(
+  project: ProjectSummary | null,
+  standing: LedgerStep | null,
+): boolean {
+  return hasBookAt(project, standing);
+}
+
+/**
+ * IS THERE A FINISHED EPUB IN THE TRAY ALREADY.
+ *
+ * ── What it stopped meaning, which is worth saying plainly ──────────────────
+ *
+ * It was the gate on the host's acts (*"if the step the user has selected cant
+ * run tts then its grayed out"*, 2026-08-17 21:45) and it is not any more: an act
+ * that can have its EPUB made for it is possible from a step that has none, so a
+ * test about the tray was answering a question about capability with a fact about
+ * history. `canRunHostActFrom` above is that gate now.
+ *
+ * WHAT IT STILL ANSWERS IS TRUE AND IS A DIFFERENT QUESTION: has this book been
+ * exported yet — which is "does an act ordered here need one made for it first",
+ * the decision a host takes on its own side of the seam before it asks Foundry to
+ * export (`exportEpubFromStep`, electron/mount.ts). No surface in this app reads
+ * it today; it is kept because the question is real and because the honest home
+ * for it is beside the other stage predicates rather than inlined wherever it is
+ * next needed.
  *
  * NO `standing` PARAMETER, on `canReadPages`'s reasoning: the tray of finished
  * files is a fact about the PROJECT, not about the row somebody is standing on.
  * `exports` lists only files still on disk, so a tray somebody tidied by hand
- * answers false rather than graying a button open over a ghost.
+ * answers false rather than claiming a ghost.
  */
 export function hasEpubExport(project: ProjectSummary | null): boolean {
   return (project?.exports ?? []).some((made) => made.kind === 'epub');

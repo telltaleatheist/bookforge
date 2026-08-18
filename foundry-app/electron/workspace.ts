@@ -208,7 +208,9 @@ export async function planFacsimile(
   inputPath: string,
   step: LedgerStep,
 ): Promise<WorkspacePlan> {
-  return (await planRendering(inputPath, 'pdf', GENERATED, step)).plan;
+  // The same step twice, and it is the one product for which that is honest: a
+  // facsimile is made FROM the reading and named FOR it. See `planRendering`.
+  return (await planRendering(inputPath, 'pdf', GENERATED, step, step)).plan;
 }
 
 /**
@@ -266,8 +268,25 @@ export async function planFacsimile(
 export async function planExport(
   inputPath: string,
   kind: ConversionKind = 'epub',
+  /**
+   * THE ROW TO EXPORT, when the asking did not come from the pointer.
+   *
+   * Every export a person presses is an export of where they are standing, which
+   * is null and is what this parameter has meant by its absence since the door
+   * existed. What is not a press is the export a HOST orders from a step in the
+   * tree — Owen's ruling that any step can be narrated, and that the EPUB is made
+   * for them when there is none (`exportEpubFromStep`, electron/mount.ts) — and
+   * that ask names its own row, because the person may be standing anywhere.
+   *
+   * IT IS NOT THE FACSIMILE PARAMETER, and the two were one thing until this
+   * wave. `planRendering` took a single step and read it as both "render from
+   * here" and "name the file after this row", which is true of a facsimile and
+   * false of everything else: an export from a step is still the BOOK's export
+   * and still lands on the book's own name in `final/`. See that function.
+   */
+  from: LedgerStep | null = null,
 ): Promise<WorkspacePlan> {
-  const planned = await planRendering(inputPath, kind, FINAL);
+  const planned = await planRendering(inputPath, kind, FINAL, from);
   if (!planned.compiles) return planned.plan;
   /*
    * ── THE BOOK WITH THE CHANGES IN IT, WRITTEN OUT FOR THE ENGINE ────────────
@@ -292,7 +311,7 @@ export async function planExport(
    * candidate and is worse: everything in there is drawn, swept and reasoned
    * about by the ledger, and a file nobody can name would be the one exception.
    */
-  const derived = await materializeBook(planned.dir, path.join(os.tmpdir(), 'foundry'));
+  const derived = await materializeBook(planned.dir, path.join(os.tmpdir(), 'foundry'), from);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE. `materializeBook` answers in
    * words for everything a person can be told about — a book file whose bank has
@@ -420,16 +439,37 @@ async function planRendering(
   kind: ConversionKind,
   layer: RenderingLayer,
   /**
-   * THE STEP THIS RENDERING IS ABOUT, when it is about one rather than about the
-   * position. See `planFacsimile`, which is the only caller that passes it
-   * and the header that argues for it.
+   * THE ROW THIS RENDERING IS MADE FROM, when it is not the position. See
+   * `planFacsimile` and `planExport`, the two callers that pass it, and the
+   * header that argues for it.
    *
-   * It changes exactly three of the answers below — which corrections are applied,
-   * which translation's words go in, and what the file is called — and deliberately
-   * nothing else: the pixels, the completion refusal and the rotation rule are the
-   * same facts about the same project however this plan was reached.
+   * It changes which corrections are applied, which reading's bank is replayed
+   * and whose words go in the blocks — and deliberately nothing else: the pixels,
+   * the completion refusal and the rotation rule are the same facts about the
+   * same project however this plan was reached.
    */
   forStep: LedgerStep | null = null,
+  /**
+   * THE ROW THE FILE IS NAMED AFTER — a facsimile's read step, and nothing else.
+   *
+   * ── Why this is a second parameter and not the one above ───────────────────
+   *
+   * It was the one above, and the conflation was invisible while a facsimile was
+   * the only rendering that named a step at all: "a step was passed" and "this
+   * product is keyed to that step" were the same fact, so one parameter carried
+   * both. They came apart the moment an EXPORT could be asked for from a row the
+   * pointer is not on (`planExport`). That export is still the BOOK's — it lands
+   * in the tray under the book's own name, beside the copy somebody exported by
+   * hand, and rotates the predecessor aside like any other — and a plan that read
+   * "a step was passed" as "name it for the step" would have filed it as
+   * `<stem>.<id8>.epub`: a payload's name on a document nothing owns, in a
+   * folder a person opens.
+   *
+   * SO THE TWO QUESTIONS ARE ASKED SEPARATELY. `forStep` says where the words
+   * come from; this says what the product is called. A facsimile passes the same
+   * step to both because for a facsimile they genuinely are one answer.
+   */
+  keyedTo: LedgerStep | null = null,
 ): Promise<PlannedRendering> {
   const { dir } = await importDocument(inputPath, 'pdf');
   /*
@@ -611,8 +651,10 @@ async function planRendering(
    * A FACSIMILE IS NAMED FOR ITS READ STEP — `<stem>.<id8>.pdf` — the scheme
    * readings already use, composed by the ledger (`facsimileFile`) so that the
    * plan, the resolution that draws the row and the sweep that removes it when
-   * the reading goes cannot come to three answers. It is the only rendering that
-   * still passes a step, and `planFacsimile` is the only caller that does.
+   * the reading goes cannot come to three answers. `planFacsimile` is the only
+   * caller that keys a product to a step, which is why the test below is `keyedTo`
+   * and not "was a step passed at all": an export made from a named row is made
+   * from a step and is not keyed to one.
    *
    * AN EXPORT KEEPS THE HUMAN NAME, because `final/` is a tray a person opens and
    * nothing in it is anybody's payload: `<book> (hu).epub`, beside `<book>.epub`.
@@ -620,13 +662,20 @@ async function planRendering(
    * second rotates the first aside, which is exactly what `rotateFinal` exists for
    * wherever a name is composed rather than chosen.
    *
+   * AND THE LANGUAGE IN THAT NAME IS THE ROW'S, not the pointer's. `translated`
+   * comes out of the pipeline resolved for `forStep`, so an export ordered from a
+   * step standing under a Hungarian translation is `<book> (hu).epub` however far
+   * away the person happens to be standing — which is the same file the pointer
+   * would have composed had they walked there first, and that agreement is the
+   * whole point of resolving both from one step.
+   *
    * THE THIRD ARM IS GONE WITH THE THING IT NAMED. A per-step CAST — a save's or
    * a translation's own EPUB in `generated/` — was a document made so a pane had
    * files to unpack; the proof sheet replays the step instead, so there is no file
    * to name (docs/RENDERER.md §7).
    */
-  const file = forStep !== null
-    ? facsimileFile(stem, forStep.id)
+  const file = keyedTo !== null
+    ? facsimileFile(stem, keyedTo.id)
     : translated === null
       ? generatedFileFor(stem, kind)
       : generatedFileFor(`${stem} (${languageTagFor(translated.language)})`, kind);

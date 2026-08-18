@@ -101,21 +101,31 @@ export const CHAINABLE_FROM: Readonly<Record<HostNodeState, boolean>> = {
  * an audio node, and Assemble is never offered on a book. Written here rather
  * than in the component because the component is not the place a policy about
  * somebody else's operations should live.
+ *
+ * IT TAKES A DECLARATION OF EITHER SHAPE and asks it the one question. A host
+ * naming a single currency is answered by a comparison, exactly as it always
+ * was; a host naming several is answered by asking whether this one is among
+ * them. Both are the same sentence — "does this act consume what this row makes"
+ * — and neither is a special case built into the rule.
  */
 export function offeredFrom(
   offers: readonly HostOperationOffer[],
   produces: NodeOutput,
 ): readonly HostOperationOffer[] {
-  /*
-   * STILL ONE COMPARISON after the union grew to three, and keeping it one is
-   * what made the growth safe. A member added here as a SPECIAL CASE — "export
-   * rows also get the book ops" — would have been the old behaviour preserved by
-   * an exception rather than by a rule, and the exception would have had to be
-   * remembered at every future member. Export rows produce `export`; a host that
-   * wants an act there declares `export`; a host still declaring `book` reaches
-   * exactly what it always reached.
-   */
-  return offers.filter((offer) => offer.appliesTo === produces);
+  return offers.filter((offer) => consumes(offer.appliesTo, produces));
+}
+
+/**
+ * Does an operation declaring this consume what a node producing that makes?
+ *
+ * THE ONE PLACE THE TWO SHAPES OF `appliesTo` ARE READ, so that a surface asking
+ * the question cannot answer it a second way — which is the same reason
+ * `offeredFrom` exists at all, one level down. `typeof` rather than
+ * `Array.isArray` because the single form IS a string and the list form never
+ * is: a test about what the value is beats a test about what it is not.
+ */
+function consumes(declared: NodeOutput | readonly NodeOutput[], produces: NodeOutput): boolean {
+  return typeof declared === 'string' ? declared === produces : declared.includes(produces);
 }
 
 /**
@@ -156,17 +166,33 @@ export interface HostOperationOffer {
    *
    * `book` is offered from every LEDGER STEP that has words behind it — a
    * reading, a save, a translation. `export` is offered from `final/` rows and
-   * nowhere else. An operation that reads a finished FILE (a narration does)
-   * should say `export`, or it will be offered on stages where the only possible
-   * outcome is a refusal — which is the ruling this member was added for
-   * (`NodeOutput`, shared/types.ts).
+   * nowhere else. An operation that reads a finished FILE (a narration does) can
+   * say `export` and be offered nowhere a press could only refuse — which is the
+   * ruling that member was added for (`NodeOutput`, shared/types.ts).
    *
-   * A HOST STILL SAYING `book` IS NOT BROKEN and is not corrected here. Its
-   * operation lands on ledger steps exactly as it always has; this app does not
-   * second-guess a declaration, because the host is the only side that knows what
-   * its own act consumes.
+   * ── AND IT MAY NAME MORE THAN ONE, WHICH IS OWEN'S SECOND RULING ───────────
+   *
+   * *"i dont think its intuitive to know you have to create an epub before you
+   * can narrate. i think we should make any of the steps possible to narrate. if
+   * they arent doing it from an epub then we export the epub automatically and
+   * then run the task they assigned."* An act that can make its own input is an
+   * act that belongs on BOTH currencies — on the step, where a person is standing
+   * when they decide, and on the export, where the file they already made is —
+   * and before this it had to choose one of the two places to be wrong in.
+   *
+   * A LIST IS A DECLARATION AND NEVER A FALLBACK. It says the host will accept a
+   * press from either kind of row, which is a promise about the host's own invoke
+   * — Foundry hands over the id of whatever was pressed and knows nothing about
+   * what the host does to turn a step into a file. The seam that makes the
+   * promise keepable is `exportEpubFromStep` (electron/mount.ts).
+   *
+   * A HOST DECLARING A SINGLE VALUE IS UNCHANGED IN EVERY RESPECT. One string
+   * behaves exactly as one string always did (`offeredFrom` reads both shapes
+   * through one test), which is the compatibility promise this widening is only
+   * safe under — and a host still saying `book` alone is not corrected here,
+   * because the host is the only side that knows what its own act consumes.
    */
-  appliesTo: NodeOutput;
+  appliesTo: NodeOutput | readonly NodeOutput[];
   /**
    * WHAT TO ASK THE PERSON BEFORE RUNNING IT — declared by the host, drawn by
    * Foundry, and absent for an operation that has nothing to ask.

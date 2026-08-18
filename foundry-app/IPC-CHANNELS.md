@@ -80,6 +80,24 @@ a name-collision audit.
   an op still declaring `'book'` still lands on every book-producing step exactly
   as before. Recorded here because a keeper that parses names would not see it.
 
+### Payloads that changed on 2026-08-18, inside channels that did not
+
+- `HostOperationOffer.appliesTo` on `host-ops:offers` accepts **a list as well as
+  a single value** — `NodeOutput | readonly NodeOutput[]`. It is a pure widening:
+  `offeredFrom` reads both shapes through one test, so an operation declaring one
+  string is offered exactly where it always was, and **a host that never sends a
+  list is unaffected in every respect**. What the list buys is an act that belongs
+  on BOTH currencies — `['book', 'export']` — which is Owen's ruling
+  (2026-08-18): *"i dont think its intuitive to know you have to create an epub
+  before you can narrate … if they arent doing it from an epub then we export the
+  epub automatically and then run the task they assigned."* An act declared on
+  `'book'` is offered from ledger steps, where there may be no export yet; the
+  seam that makes that keepable is `exportEpubFromStep` in `app/electron/mount.ts`
+  (a main-process function, not a channel — nothing in this table changes).
+  **No channel changed and no payload field was added or removed**; one field
+  accepts one more shape. Recorded here because a keeper that parses names would
+  not see it.
+
 **`host-ops` was invented rather than found**, and the reason belongs in this
 file: it is the host-operations socket (the provenance tree's audio work, ordered
 from a BookForge that has mounted this app), and a BRAND-NEW family is the one
