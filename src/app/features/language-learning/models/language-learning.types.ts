@@ -2,6 +2,8 @@
  * Language Learning Types - Type definitions for the language learning feature
  */
 
+import type { TTSEngine } from '@shared/tts/engine-caps';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Project Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -77,7 +79,16 @@ export const SUPPORTED_LANGUAGES: SupportedLanguage[] = [
 // ─────────────────────────────────────────────────────────────────────────────
 
 export type AIProvider = 'ollama' | 'claude' | 'openai';
-export type TTSEngine = 'xtts' | 'orpheus' | 'voxtral' | 'f5';
+/**
+ * The engine ids, re-exported from where the capability table keys itself.
+ *
+ * The union used to be declared here, which put the list of engines in a file
+ * only the Angular program compiles — and BookForge's MAIN process now has to
+ * name an engine, because it composes the Narrate dialog Foundry draws out of
+ * that engine's capabilities (`@shared/tts/engine-caps`). One definition, read
+ * from both programs; every importer of this file is unaffected.
+ */
+export type { TTSEngine };
 
 export interface LanguageLearningJobConfig {
   type: 'language-learning';
