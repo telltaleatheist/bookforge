@@ -30,6 +30,20 @@
  *    is "export the book first", not "there is no file called that".
  *  - THE MATCH IS ON THE BASENAME, since the id carries a project-relative path
  *    (`final/Book.epub`) and the manifest records the filed name (`Book.epub`).
+ *
+ * ── And since narrate-from-any-step, three more ─────────────────────────────
+ *
+ *  - A STEP IS ANSWERED WITH ITS OWN FILE OR WITH NONE. Never with another
+ *    step's, and never with "the only one there is" — that is an audiobook of
+ *    words the user was not standing on, delivered an hour of GPU later, and it
+ *    is the one wrong answer nothing downstream could notice.
+ *  - "I DO NOT KNOW" IS NOT A MATCH. Every export filed before Foundry announced
+ *    the step, and every export the tray sweep found, carries no `stepId`. Those
+ *    records ask for an export rather than claiming the press, which costs one
+ *    re-export and buys a library that heals itself as it is used.
+ *  - THE AUTO-EXPORT ARM BELONGS TO STEPS ALONE. A press that named a file is
+ *    still refused when the name is not there — the identity law does not grow a
+ *    second chance.
  */
 
 const assert = require('assert');
@@ -54,8 +68,17 @@ const test = (name, fn) => tests.push({ name, fn });
 
 const PROJECT = 'Working_Towards_the_Fuhrer_-_Ian_Kershaw_(1993)';
 
-/** One export, as `foundrySource.fileName` records it. */
-const ex = (id, fileName) => ({ id, fileName });
+/**
+ * One export, as `foundrySource` records it.
+ *
+ * `stepId` is OMITTED rather than nulled when it is not given, because that is
+ * what an old record looks like on disk — every export filed before Foundry
+ * announced the step, and every export the tray sweep found. The fixtures below
+ * that pass two arguments are therefore not shorthand: they are the pre-`stepId`
+ * library, and the cases built on them are the compatibility cases.
+ */
+const ex = (id, fileName, stepId) => (
+  stepId === undefined ? { id, fileName } : { id, fileName, stepId });
 
 const ONE = [ex('v-1', 'Working Towards the Fuhrer (en).epub')];
 const TWO = [
@@ -68,6 +91,8 @@ const pressed = (file) => `export:final/${file}`;
 
 /** A ledger step id: randomUUID, no colon. */
 const STEP = '7c1e0b4a-2f65-4a1e-9a3b-15d0c4e8f2aa';
+/** A second one, for the step nothing in the library came from. */
+const OTHER_STEP = 'b0f24d17-88ac-4d3e-8f01-6a9e2c33bb47';
 
 // ── exportFileOfNodeId ──────────────────────────────────────────────────────
 
@@ -185,6 +210,117 @@ test('the project id appears in the refusals, since it is the folder the user go
   assert.throws(
     () => target.chooseNarrationExport(STEP, [], PROJECT),
     new RegExp(PROJECT.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')));
+});
+
+// ── The door: which of the three answers a press gets ───────────────────────
+//
+// `resolveNarrationTarget` is what the invoke path actually asks, and it exists
+// because Owen ruled that a step can be narrated: "if they arent doing it from
+// an epub then we export the epub automatically and then run the task they
+// assigned." So there is a third answer beside "this variant" and "no" — and it
+// is the one the cases below are mostly about, because it is the answer that
+// costs a re-export when it is wrong in one direction and narrates the wrong
+// words when it is wrong in the other.
+
+/** The exports of a library where each file knows the step it came from. */
+const STAMPED = [
+  ex('v-1', 'Working Towards the Fuhrer (en).epub', STEP),
+  ex('v-2', 'Working Towards the Fuhrer (de).epub', OTHER_STEP),
+];
+
+test('a step id that exactly one export was cast from resolves that export', () => {
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(STEP, STAMPED, PROJECT),
+    { kind: 'variant', variantId: 'v-1' });
+});
+
+test('the other step among the same two resolves the other export', () => {
+  // Both directions, for the reason the named cases test both: "it happened to
+  // pick the right one" and "it picks the first one" are indistinguishable from
+  // one assertion.
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(OTHER_STEP, STAMPED, PROJECT),
+    { kind: 'variant', variantId: 'v-2' });
+});
+
+test('a step nothing was cast from asks for an export rather than refusing', () => {
+  const unknown = 'e5b1c9d0-4a77-4d61-9c22-0f8e4b1a6d33';
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(unknown, STAMPED, PROJECT),
+    { kind: 'export-from-step', stepId: unknown });
+});
+
+test('a step is never answered with another step\'s file, even when it is the only one', () => {
+  // The failure this forbids, and the whole reason the step arm does not fall
+  // through to uniqueness: narrating the one export in the tray would hand back
+  // an audiobook of words the user was not standing on.
+  const only = [ex('v-1', 'Working Towards the Fuhrer (en).epub', OTHER_STEP)];
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(STEP, only, PROJECT),
+    { kind: 'export-from-step', stepId: STEP });
+});
+
+test('records that predate stepId ask for an export — unknown is never read as a match', () => {
+  // The pre-`stepId` library, exactly as it sits on disk today: one EPUB, filed
+  // before Foundry announced the step. It cannot say where it came from, so it
+  // does not answer, and the book is exported once. After that landing the
+  // record knows its step and the next press resolves instantly.
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(STEP, ONE, PROJECT),
+    { kind: 'export-from-step', stepId: STEP });
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(STEP, TWO, PROJECT),
+    { kind: 'export-from-step', stepId: STEP });
+});
+
+test('a project with no exports at all asks for one, rather than saying "export it first"', () => {
+  // The export-first refusal is still right for a press that NAMED a file (below);
+  // it is exactly wrong for a step press, which is a person asking for the file
+  // to be made.
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(STEP, [], PROJECT),
+    { kind: 'export-from-step', stepId: STEP });
+});
+
+test('two exports from ONE step refuse in the uniqueness rule\'s own words', () => {
+  // A re-export under a name the book's metadata changed leaves two rows with
+  // one provenance. Which was meant is the question a nameless press has always
+  // asked, so it is asked of these two and not answered a second way.
+  const bothFromOneStep = [
+    ex('v-1', 'Working Towards the Fuhrer (en).epub', STEP),
+    ex('v-2', 'Working Towards the Fuhrer (1993).epub', STEP),
+  ];
+  assert.throws(
+    () => target.resolveNarrationTarget(STEP, bothFromOneStep, PROJECT),
+    (err) => {
+      assert.match(err.message, /has exported 2 EPUBs/);
+      assert.match(err.message, /does not say which one it is/);
+      return true;
+    });
+});
+
+test('a named press goes through the door unchanged, identity law and all', () => {
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(
+      pressed('Working Towards the Fuhrer (de).epub'), TWO, PROJECT),
+    { kind: 'variant', variantId: 'v-2' });
+  // And the stamps play no part in it: a press that names a file names the answer.
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(
+      pressed('Working Towards the Fuhrer (en).epub'), STAMPED, PROJECT),
+    { kind: 'variant', variantId: 'v-1' });
+});
+
+test('a named press is still REFUSED rather than exported, however wrong the name', () => {
+  // The auto-export arm belongs to steps alone. A press on an export row that
+  // this library has no version for is a mismatch to say out loud — exporting
+  // something in its place would answer a question nobody asked.
+  assert.throws(
+    () => target.resolveNarrationTarget(pressed('A Book Nobody Exported.epub'), TWO, PROJECT),
+    /has no exported EPUB filed/);
+  assert.throws(
+    () => target.resolveNarrationTarget(pressed('Anything.epub'), [], PROJECT),
+    /has no exported EPUB from this project/);
 });
 
 (async () => {

@@ -20,10 +20,10 @@
  * pressed the button ON that document, so second-guessing it with a uniqueness
  * rule would refuse a press that carried no ambiguity at all.
  *
- * A STEP-SHAPED id resolves by uniqueness instead, because it carried no file:
- * two EPUB exports under two names mean the press did not say which, and
- * picking one because of which step it came from would be this side inventing a
- * linkage that does not exist.
+ * A STEP-SHAPED id names no file, so it is answered by the step's own exports
+ * and then by uniqueness among them: two files under two names mean the press
+ * did not say which, and choosing one on any other ground would be this side
+ * inventing a preference the press did not express.
  *
  * ── WHY THE ORDER OF THE REFUSALS IS LOAD-BEARING ───────────────────────────
  *
@@ -33,6 +33,28 @@
  * sentence that sends the user hunting for a missing file when what they
  * actually need is to export the book once. The export-first sentence is the
  * useful one, and it wins.
+ *
+ * ── AND SINCE OWEN'S SECOND RULING, A STEP CAN MAKE ITS OWN FILE ────────────
+ *
+ * *"i dont think its intuitive to know you have to create an epub before you can
+ * narrate. i think we should make any of the steps possible to narrate. if they
+ * arent doing it from an epub then we export the epub automatically and then run
+ * the task they assigned."*
+ *
+ * That does not change the law above; it adds a THIRD answer beside "this
+ * variant" and "no", and `resolveNarrationTarget` is where the three meet. A
+ * press on a ledger step asks which exports were CAST FROM THAT STEP
+ * (`FoundryVariantSource.stepId`), and none is no longer a refusal — it is the
+ * signal to go and make one. Which is why the decision stopped being a string:
+ * "make the file first" is an instruction and cannot be spelled as a variant id.
+ *
+ * The uniqueness rule survives inside that answer rather than beside it. One
+ * step CAN be behind two filed exports — a re-export under a name the book's
+ * metadata changed, most plainly — and choosing between them is the very
+ * question `chooseNarrationExport` already answers, asked of the exports from
+ * that step instead of of all of them. So a step press with two files behind it
+ * refuses in the same words a nameless press always did, and nothing about
+ * "which of these did you mean" is written twice.
  */
 
 /** One exported EPUB, reduced to what the choice actually needs. */
@@ -44,7 +66,40 @@ export interface NarrationExport {
    * which is what an `export:` id's project-relative path is matched against.
    */
   readonly fileName: string;
+  /**
+   * THE LEDGER STEP THIS EXPORT WAS CAST FROM, when the landing that filed it
+   * said so — `FoundryVariantSource.stepId`.
+   *
+   * ABSENT MEANS "I DO NOT KNOW", never "no step", and the two would be the same
+   * value if this were spelled as an empty string. Every export filed before
+   * Foundry began announcing the step has none, and every export a sweep found
+   * sitting in a tray has none either, because a sweep reads files rather than
+   * announcements. Absent can therefore never equal a pressed step id, which is
+   * exactly the behaviour those records should have: they cannot answer the
+   * question, so they do not.
+   */
+  readonly stepId?: string;
 }
+
+/**
+ * WHAT A NARRATION SHOULD READ — either a file this library already holds, or
+ * the instruction to go and make one.
+ *
+ * A UNION AND NOT A NULLABLE STRING, because "make it first" is not a missing
+ * answer. A caller that had to read absence as an instruction would be a caller
+ * that cannot tell "no file, go and export step X" from "this decision failed",
+ * and those two want opposite things done about them.
+ */
+export type NarrationTarget =
+  /** This variant, already filed. `variantId` is the manifest's own id. */
+  | { readonly kind: 'variant'; readonly variantId: string }
+  /**
+   * NOTHING THIS PROJECT HAS FILED CAME FROM THAT STEP, so the file has to be
+   * made from it before anything can read it. `stepId` is the pressed id
+   * verbatim — the caller hands it straight back to Foundry, which proves it
+   * against its own ledger and refuses by name for a step that is not there.
+   */
+  | { readonly kind: 'export-from-step'; readonly stepId: string };
 
 /**
  * The project-relative file an `export:`-shaped node id names, or null.
@@ -61,7 +116,14 @@ export function exportFileOfNodeId(nodeId: string): string | null {
 }
 
 /**
- * The variant id this press means, or a refusal saying why there is not one.
+ * WHICH OF THESE FILES THE PRESS MEANT — the half of the decision whose answer
+ * must be one of the exports it was handed.
+ *
+ * Reached through `resolveNarrationTarget`, which is the door, and reached twice
+ * for two different lists: ALL of a project's exports when the press named a
+ * file, and only the exports cast from one step when it named a step. That is
+ * what lets the identity law, the missing-name refusal and the "you have not
+ * said which" refusal be written once and asked of both.
  *
  * `projectId` appears only in the refusals — it is the folder name the user
  * would go looking at — and never in the choosing.
@@ -73,11 +135,12 @@ export function chooseNarrationExport(
 ): string {
   if (exported.length === 0) {
     /*
-     * NO AUTO-EXPORT, and that is a decision rather than an omission. Exporting
-     * is Foundry's act with Foundry's dialog choices — which format, from which
-     * step, under what name — and a host that ran one on the user's behalf would
-     * be guessing every one of them. The user is one button away from making the
-     * real choice.
+     * NOTHING TO CHOOSE FROM, and this function does not make files. Auto-export
+     * is a real answer since Owen's ruling, but it belongs to a press that named
+     * a STEP — a step is a point in the book's history and there is a definite
+     * file to cast from it. A press that named a FILE this library does not hold
+     * has named something exporting cannot produce, so the honest answer is still
+     * the sentence, and `resolveNarrationTarget` is where the two are told apart.
      */
     throw new Error(
       `${projectId} has no exported EPUB from this project, and narration reads a book file. `
@@ -112,4 +175,64 @@ export function chooseNarrationExport(
   }
 
   return exported[0]!.id;
+}
+
+/**
+ * THE WHOLE ANSWER TO "WHAT DOES THIS PRESS WANT NARRATED" — the door.
+ *
+ * ── The two currencies, and why one function answers both ───────────────────
+ *
+ * Narrate is declared on `['book', 'export']` now, so the id that arrives is
+ * either an export row's `export:<file>` or a ledger step's bare uuid, and which
+ * it is decides the whole shape of the answer rather than a detail inside it. A
+ * caller that branched on the id shape itself and then asked two different
+ * questions would be a caller where the export path and the step path could come
+ * to disagree about what a filed export is — which is the drift the pure module
+ * exists to make untestable.
+ *
+ * ── A NAMED PRESS IS UNCHANGED IN EVERY RESPECT ─────────────────────────────
+ *
+ * It goes to `chooseNarrationExport` whole: the identity law, the zero-exports
+ * refusal that wins over it, the basename join. An export row press behaves
+ * exactly as it did before any of this, which is the compatibility promise the
+ * widening is only safe under.
+ *
+ * ── A STEP PRESS ASKS ITS OWN QUESTION, AND NEVER THE OTHER ONE ─────────────
+ *
+ * Which exports were cast FROM THIS STEP — nothing else. It deliberately does
+ * NOT fall through to "well, there is only one export, they must have meant
+ * that": an export sitting in the tray may have been made from a completely
+ * different point in the book's history, and narrating it because it was the
+ * only one there would hand back an audiobook of words the user was not standing
+ * on. Making the file is cheap (an export is arithmetic over a bank already on
+ * disk, seconds, no model) and it is CORRECT, so the honest answer to "none of
+ * these came from here" is to go and make the one that did.
+ *
+ * That is also why an old record — one filed before the step was announced, or
+ * found by the sweep — reads as a miss rather than as a match. It cannot say
+ * which step it came from, and treating "unknown" as "yours" is the substitution
+ * this codebase refuses everywhere else. The cost is one re-export, after which
+ * the record knows its own step and the next press resolves instantly.
+ */
+export function resolveNarrationTarget(
+  nodeId: string,
+  exported: readonly NarrationExport[],
+  projectId: string,
+): NarrationTarget {
+  if (exportFileOfNodeId(nodeId) !== null) {
+    return { kind: 'variant', variantId: chooseNarrationExport(nodeId, exported, projectId) };
+  }
+
+  const fromStep = exported.filter((v) => v.stepId === nodeId);
+  if (fromStep.length === 0) {
+    return { kind: 'export-from-step', stepId: nodeId };
+  }
+  /*
+   * ONE STEP, MORE THAN ONE FILE is rare and it is real: a re-export under a
+   * name the book's metadata changed leaves two rows whose provenance is the
+   * same step. Which of them the press meant is precisely the question a
+   * nameless press has always asked, so it is asked of these — the same words,
+   * the same refusal, one implementation.
+   */
+  return { kind: 'variant', variantId: chooseNarrationExport(nodeId, fromStep, projectId) };
 }

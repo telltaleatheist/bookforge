@@ -40,7 +40,7 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // Type-only: the module itself is loaded lazily like every other epub-processor
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
-import type { ExportProvenance, ResolvedProjectVariant } from './manifest-types';
+import type { ExportProvenance, ProjectVariant, ResolvedProjectVariant } from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
@@ -91,7 +91,7 @@ import {
   type NarrateOffer,
   type NarrateVoiceOption,
 } from './foundry-narrate-form';
-import { chooseNarrationExport } from './foundry-narrate-target';
+import { resolveNarrationTarget } from './foundry-narrate-target';
 // The ONE description of what a narration run consists of — the same one the
 // narration modal asks. See shared/queue/narration-run.ts for why it is shared.
 import { buildNarrationSteps } from '../shared/queue/narration-run';
@@ -171,16 +171,15 @@ interface FoundryExportLanding {
   /**
    * THE LEDGER STEP THIS EXPORT WAS CAST FROM, when Foundry knew one.
    *
-   * Added to the announcement at foundry@a32c087, out of the gap this side has
-   * always named: `foundryNarrationTarget` can say what a project has exported
-   * and cannot say which step produced it, so two exports are a refusal.
+   * Added to the announcement at foundry@a32c087, out of the gap this side had
+   * always named: `foundryNarrationTarget` could say what a project has exported
+   * and could not say which step produced it, so two exports were a refusal.
    *
-   * DECLARED AND NOT YET CONSUMED, deliberately. Making it useful means
-   * recording it on `FoundryVariantSource` so the versions page can match a
-   * press on a step to the file that step made, and that is a change to what
-   * BookForge writes about its own versions — a wave of its own. The field is
-   * mirrored now so the contract is complete here and the absence is visible as
-   * an unread field rather than as a fact nobody knew had arrived.
+   * RECORDED ON `FoundryVariantSource` the moment it arrives, which is what a
+   * press on a STEP resolves against — the whole of Owen's narrate-from-any-step
+   * ruling rests on this field surviving into the manifest. A landing whose step
+   * was dropped here would be a version nothing can match, and the only symptom
+   * would be a book that re-exports itself on every press.
    *
    * ABSENT MEANS "I DO NOT KNOW", never "no step": every export that landed
    * before the field existed has none.
@@ -233,9 +232,23 @@ interface FoundryHostOperation {
    * 'export' arrived with foundry 1c7d6c9 (Owen's per-stage ruling: "the only
    * options that exist are the ones that are possible for that stage"): export
    * rows produce it and ledger steps never do, so an operation that reads a
-   * book FILE — narrate — is drawn only where the file exists.
+   * book FILE is drawn only where the file exists.
+   *
+   * AND IT MAY NAME MORE THAN ONE SINCE foundry d5b236c, which is the other half
+   * of narrate-from-any-step. A list is a PROMISE about this host's own invoke —
+   * that it will accept a press from either kind of row and do whatever turning a
+   * step into a file requires — and Foundry keeps nothing on its side but the
+   * offer. So widening a declaration here without teaching the invoke to resolve
+   * the new shape would draw a button that could only refuse, which is the exact
+   * failure the 'export' member was added to remove.
+   *
+   * A SINGLE VALUE IS UNCHANGED IN EVERY RESPECT, which is why enhance and
+   * assemble below still say one word: they consume audio BookForge itself is
+   * making, and there is no second currency they could be pressed from.
    */
-  readonly appliesTo: 'book' | 'audio' | 'export';
+  readonly appliesTo:
+    | 'book' | 'audio' | 'export'
+    | readonly ('book' | 'audio' | 'export')[];
   /**
    * What the form dialog's submit button says (foundry e8396b4). Only the host
    * knows whether an invoke runs work now or files it — ours enqueue held, so
@@ -351,6 +364,33 @@ interface FoundryMountModule {
    * display row with the lifetime of OUR queue — see electron/foundry-host-nodes.ts.
    */
   setHostNodes(projectDir: string, nodes: readonly HostNode[]): void;
+  /**
+   * MAKE THE EPUB OF ONE LEDGER STEP, unattended, and answer with the landing.
+   *
+   * The seam's half of Owen's ruling — *"if they arent doing it from an epub then
+   * we export the epub automatically and then run the task they assigned"* — and
+   * the only reason narrate can be declared on `book` at all. It runs Foundry's
+   * own export path with nobody in front of it: the same plan, the same queue,
+   * the same file in `final/`, the same announcement, so an export made for this
+   * host is indistinguishable from one somebody pressed for.
+   *
+   * IT IS NOT HELD and it is not a model run — an export is arithmetic over a
+   * bank already on disk — so awaiting it is seconds rather than an unbounded
+   * wait on somebody finding the shelf.
+   *
+   * THE HOST IS TOLD FIRST. Foundry hands the landing to `onExport` and only then
+   * settles this promise, so by the time it resolves our announcement handler has
+   * been ENTERED but not necessarily finished. Anything this side needs recorded
+   * about the landing it must therefore record itself, from the landing it is
+   * given, rather than assume the callback got there — see
+   * `registerFoundryExportLanding`, which is written to be run twice.
+   *
+   * ITS REJECTIONS ARE FOUNDRY'S OWN SENTENCES, written to be shown to a person:
+   * the book nobody has read, the changes that would not replay, the engine's own
+   * stderr. They are surfaced verbatim, never paraphrased — this side knows less
+   * about why an export failed than the sentence does.
+   */
+  exportEpubFromStep(projectDir: string, stepId: string): Promise<FoundryExportLanding>;
 }
 
 /**
@@ -817,14 +857,66 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
     return;
   }
 
-  const matchDir = matches[0]!.dir;
+  try {
+    await registerFoundryExportLanding(matches[0]!.dir, key, landing);
+  } catch (err) {
+    // An announcement is news, not a button: there is nobody standing in front of
+    // it to be refused, so the sentence goes to the log and the file stays where
+    // Foundry left it. The narration door catches the same throw and puts it in
+    // front of the person who pressed something.
+    console.error(`[foundry-host] ${(err as Error).message}`);
+  }
+}
 
+/**
+ * RECORD ONE LANDING AS A VERSION OF ONE BOOK — the act both doors perform.
+ *
+ * ── Why it is a function rather than a step inside the announcement ─────────
+ *
+ * Since Owen's narrate-from-any-step ruling there are two ways a landing reaches
+ * this library. Foundry announces every export to `onExport`, and a narration
+ * pressed on a step that had no export ASKS for one (`exportEpubFromStep`) and is
+ * handed the same landing back. Foundry tells the host first and settles the
+ * caller second, so at the moment the narration has its landing our own handler
+ * has merely STARTED — it is asynchronous, and every record it keeps is a file.
+ *
+ * The narration therefore cannot wait for the announcement to have finished, and
+ * must not: a version it did not see is a version it cannot narrate, and polling
+ * the manifest until one appeared would be this side inventing a handshake the
+ * seam deliberately does not have. So it records the landing ITSELF, from the
+ * landing it was given, through this — and filing the same export twice is made
+ * harmless rather than avoided (`fileFoundryExportAsVersion` serializes per file;
+ * `addFoundryOutputVariant` replaces a version matching key+name in place). Two
+ * calls leave one row, which is the same outcome as re-exporting by hand.
+ *
+ * ── The book is the caller's to have proved ────────────────────────────────
+ *
+ * `bookDir` and `key` are arguments and not questions asked here, because the two
+ * callers know the answer for different reasons and one of them knows it EARLIER:
+ * the narration resolved which book this project belongs to before it decided to
+ * export anything at all. Asking a second time would be a second answer to
+ * "whose project is this", and the pair could disagree the day a mapping changed
+ * mid-run.
+ *
+ * ── EVERY REFUSAL IS THROWN, and the callers differ about what to do ───────
+ *
+ * A press is owed a sentence where the button was; an announcement is owed a log
+ * line. Both are the same refusal, so it is written once and raised, and each
+ * caller says it in its own place.
+ *
+ * Answers with the variant the landing became, because the narration's next act
+ * is to read that version's file.
+ */
+async function registerFoundryExportLanding(
+  bookDir: string,
+  key: string,
+  landing: FoundryExportLanding,
+): Promise<string> {
   if (!FOUNDRY_EXPORT_KINDS.includes(landing.kind)) {
-    console.error(
-      `[foundry-host] "${landing.title}" was exported as kind "${landing.kind}", which is not a `
-      + `kind the versions page holds (${FOUNDRY_EXPORT_KINDS.join(', ')}). Nothing was recorded `
-      + `for ${path.basename(matchDir)}.`);
-    return;
+    throw new Error(
+      `"${landing.title}" was exported as kind "${landing.kind}", which is not a kind the versions `
+      + `page holds (${FOUNDRY_EXPORT_KINDS.join(', ')}). Nothing was recorded for `
+      + `${path.basename(bookDir)}.`);
   }
 
   // The library-root containment check that stood here is gone with the reason
@@ -836,13 +928,18 @@ async function recordFoundryExportLanding(landing: FoundryExportLanding): Promis
 
   // NOW, because Foundry has just this instant told us the file exists. The
   // sweep is the caller that knows better than now(); this one does not.
-  const filed = await fileFoundryExportAsVersion(
-    matchDir, key, landing.path, landing.title, new Date().toISOString());
-  if (!filed) return;
+  const variantId = await fileFoundryExportAsVersion(
+    bookDir, key, landing.path, landing.title, new Date().toISOString(), landing.stepId);
+  if (variantId === null) {
+    throw new Error(
+      `"${landing.title}" could not be recorded as a version of ${path.basename(bookDir)}; the `
+      + 'reason is in the log above. The file is where Foundry left it.');
+  }
   // Every window: the versions page can be open in more than one, the shelf is
   // drawn in another, and the row must appear where the user is rather than
   // where the export was started.
-  broadcastToAllWindows('foundry-host:versions-changed', { projectDir: matchDir });
+  broadcastToAllWindows('foundry-host:versions-changed', { projectDir: bookDir });
+  return variantId;
 }
 
 /**
@@ -938,40 +1035,58 @@ function sayToUser(kicker: string, title: string, message: string): void {
 }
 
 /**
- * THE BOOK a Foundry project belongs to, and the EPUB it has exported.
+ * THE BOOK a Foundry project belongs to, and the EPUB a narration will read —
+ * making that EPUB if the press was on a step that has not produced one.
  *
- * ── What can be known, and what deliberately cannot ─────────────────────────
+ * ── What can be known ───────────────────────────────────────────────────────
  *
  * The mapping from project to book is exact: a manifest records the project KEY
- * and a key belongs to one book (`foundryProjectClaims`). What is NOT exact — and
- * this is a gap in the socket rather than something to paper over here — is WHICH
- * LEDGER STEP an export was made from. Foundry's `ExportLanding` carries "no
- * bytes, no step, no ledger" by its own written design, an export is not a ledger
- * action at all (`StepAction` has no `export` member), and `FoundryVariantSource`
- * therefore records `projectKey` + `fileName` and nothing about a step.
+ * and a key belongs to one book (`foundryProjectClaims`). WHICH LEDGER STEP an
+ * export was made from used to be the gap — an export is not a ledger action at
+ * all (`StepAction` has no `export` member) — and Foundry closed it by carrying
+ * the step on the landing (`ExportLanding.stepId`), which this library now keeps
+ * on the version (`FoundryVariantSource.stepId`). So the join a step press needs
+ * exists, and it is a recorded fact rather than an inference.
  *
- * So this answers the question that CAN be answered — "what has this project
- * exported as a book?" — and refuses by name when the answer is not unique. In
- * the ordinary case it is: Foundry rewrites the same file in `final/` on every
- * re-export and a landing that matches on key+name replaces that version in
- * place, so a project the user has exported forty times still has exactly one
- * EPUB version.
- *
- * ── AND SINCE FOUNDRY'S WAVE 11, THE PRESS CAN NAME THE FILE ────────────────
+ * ── THE PRESS CAN NAME THE FILE ─────────────────────────────────────────────
  *
  * A press on an export row (and the rail's TTS button) sends
- * `export:<project-relative file>` as the node id — `exportNodeId` in their
- * shared/host-ops.ts, derived from the catalogue's own `ProjectFinal.file`,
- * and a reserved prefix on the socket. When the id is that shape, the named
- * file IS the answer: the user pressed the button ON that document, which is
- * Owen's identity law word for word, and second-guessing it with a uniqueness
- * rule would refuse a press that carried no ambiguity at all. The named file
- * still has to BE one of this project's exported EPUBs — a name this library
- * has no version for is refused with both lists in the sentence.
+ * `export:<file>` as the node id — `exportNodeId` in their shared/host-ops.ts,
+ * derived from the catalogue's own `ProjectFinal.file`, and a reserved prefix on
+ * the socket. When the id is that shape, the named file IS the answer: the user
+ * pressed the button ON that document, which is Owen's identity law word for
+ * word. The named file still has to BE one of this project's exported EPUBs — a
+ * name this library has no version for is refused with both lists in the
+ * sentence.
  *
- * A step-shaped id still resolves by uniqueness: two EPUB exports under two
- * names mean the press carried no file, and picking one because of which step
- * it came from would be this side inventing linkage that does not exist.
+ * ── OR IT CAN NAME A STEP, AND THEN THE FILE IS MADE ────────────────────────
+ *
+ * Owen: *"i dont think its intuitive to know you have to create an epub before
+ * you can narrate. i think we should make any of the steps possible to narrate.
+ * if they arent doing it from an epub then we export the epub automatically and
+ * then run the task they assigned."*
+ *
+ * So a bare ledger uuid asks which of this book's versions came FROM that step.
+ * One did: that is the file, and nothing is exported. None did: Foundry is asked
+ * to make one (`exportEpubFromStep`), the landing is filed as a version through
+ * the same door the announcement files it through, and the narration reads that.
+ *
+ * IT NEVER SETTLES FOR A DIFFERENT STEP'S FILE. An export sitting in the tray may
+ * have been cast from a completely different point in the book's history, and
+ * narrating it because it was the only one there would hand back an audiobook of
+ * words the user was not standing on. The choice itself is
+ * `resolveNarrationTarget` (electron/foundry-narrate-target.ts), where a keeper
+ * reaches every branch from a hand-built array.
+ *
+ * ── WHAT THE RUN HANGS UNDER IS THE FILE, NEVER THE STEP ────────────────────
+ *
+ * Owen's standing ruling is that ghost audio rows hang under the EPUB row, and
+ * that is a fact about the FILE the narration read rather than about which button
+ * was pressed to start it. So this answers with the export's own node id as well
+ * — `export:<fileName>`, the id Foundry's tree mints for that row — and the job's
+ * lineage carries that instead of the pressed step. With an auto-export the row
+ * is in the tree by the time the job is queued, so the ghosts land under it
+ * exactly as they do for a press made on the row itself.
  */
 interface FoundryNarrationTarget {
   /** The BookForge project directory, absolute. */
@@ -979,6 +1094,13 @@ interface FoundryNarrationTarget {
   /** The exported EPUB's variant id, and its file. */
   variantId: string;
   variantPath: string;
+  /**
+   * The node id of the EXPORT ROW this file is, as Foundry's tree mints it
+   * (`exportNodeId`: `export:` + the tray's own file name). What the job's
+   * lineage is stamped with, so the narration's rows hang under the book rather
+   * than under whatever was pressed to start it.
+   */
+  exportNodeId: string;
 }
 
 async function foundryNarrationTarget(
@@ -1003,42 +1125,101 @@ async function foundryNarrationTarget(
   const bookDir = matches[0]!.dir;
 
   const projectId = path.basename(bookDir);
-  const got = await manifestService.getManifest(projectId);
-  if (!got.manifest) {
-    throw new Error(
-      `${projectId} could not be read (${got.error || 'no reason given'}), so its versions could `
-      + 'not be looked at.');
-  }
-  /*
-   * EPUB EXPORTS OF THIS PROJECT, and only those. `foundrySource` is present
-   * exactly on versions an export landed (and is cleared when one is promoted to
-   * the user's own file), so this is the set of files Foundry made — never the
-   * book's own archive copy, which Foundry never wrote and which narrating here
-   * would silently substitute for the edit the user just made.
+
+  /**
+   * This project's EPUB exports, read fresh. A function because it is asked
+   * TWICE on the auto-export path — once to decide, once to find the row the new
+   * landing became — and a captured list would be the state of the library
+   * before the export that was made to change it.
+   *
+   * `foundrySource` is present exactly on versions an export landed (and is
+   * cleared when one is promoted to the user's own file), so this is the set of
+   * files Foundry made — never the book's own archive copy, which Foundry never
+   * wrote and which narrating here would silently substitute for the edit the
+   * user just made.
    */
-  const exported = manifestService.getVariants(got.manifest).variants.filter((v) =>
-    v.foundrySource?.projectKey === key && v.format.toLowerCase() === 'epub');
+  const exportedEpubs = async () => {
+    const got = await manifestService.getManifest(projectId);
+    if (!got.manifest) {
+      throw new Error(
+        `${projectId} could not be read (${got.error || 'no reason given'}), so its versions could `
+        + 'not be looked at.');
+    }
+    return manifestService.getVariants(got.manifest).variants.filter((v) =>
+      v.foundrySource?.projectKey === key && v.format.toLowerCase() === 'epub');
+  };
 
   /*
-   * WHICH ONE THE PRESS MEANT is a decision about values and lives in
+   * WHAT THE PRESS MEANT is a decision about values and lives in
    * `foundry-narrate-target.ts`, where `test-foundry-narrate-target.js` reaches
    * every branch — including the two-EPUB cases, which no library on any of
-   * these machines has yet been able to produce. Everything above this line is
-   * the part that needs claims, a manifest and a disk.
+   * these machines has yet been able to produce. Everything around it is the
+   * part that needs claims, a manifest, a disk and the seam.
    *
    * The `bf-node:`-shaped guard is NOT here: it belongs to the press rather
    * than to the choice, and lives at the top of `invokeFoundryNarrate`.
    */
-  const chosenId = chooseNarrationExport(
+  const exported = await exportedEpubs();
+  const choice = resolveNarrationTarget(
     nodeId,
-    exported.map((v) => ({ id: v.id, fileName: v.foundrySource!.fileName })),
+    exported.map((v) => ({
+      id: v.id,
+      fileName: v.foundrySource!.fileName,
+      ...(v.foundrySource!.stepId === undefined ? {} : { stepId: v.foundrySource!.stepId }),
+    })),
     projectId,
   );
-  const variant = exported.find((v) => v.id === chosenId)!;
+
+  if (choice.kind === 'variant') {
+    return narrationTargetOf(bookDir, exported.find((v) => v.id === choice.variantId)!);
+  }
+
+  /*
+   * NOTHING THIS LIBRARY HOLDS CAME FROM THAT STEP, so Foundry is asked to cast
+   * it — its own export path with nobody in front of it. Whatever it rejects
+   * with travels out of here UNTOUCHED: those are sentences main.ts on their side
+   * wrote to be shown to a person (the book nobody has read, the changes that
+   * would not replay, the engine's own stderr), and a paraphrase would be this
+   * process editing the only account of what happened.
+   */
+  const landing = await foundryMount.exportEpubFromStep(projectDir, choice.stepId);
+  /*
+   * FILED HERE AND NOT LEFT TO THE ANNOUNCEMENT. Foundry tells the host first and
+   * settles this promise second, so `recordFoundryExportLanding` has been entered
+   * by now and — being asynchronous, as every record it keeps is a file — has
+   * almost certainly not finished. Waiting on a callback the seam gives us no
+   * handle to would be a handshake this side invented; filing the landing we were
+   * handed is the fact itself. Both callers reach one idempotent door, so the two
+   * leave one version between them.
+   */
+  const variantId = await registerFoundryExportLanding(bookDir, key, landing);
+  const filed = (await exportedEpubs()).find((v) => v.id === variantId);
+  if (filed === undefined) {
+    throw new Error(
+      `${projectId} exported "${landing.title}" from that step and recorded it, but the version is `
+      + 'not on the book\'s list a moment later, so there is nothing to narrate. Open the book\'s '
+      + 'versions page to see what is there.');
+  }
+  return narrationTargetOf(bookDir, filed);
+}
+
+/**
+ * The chosen version, joined to the two paths a narration is started from.
+ *
+ * `exportNodeId` is minted from the tray's own FILE NAME rather than from the
+ * variant's path in `output/`, because the id has to be the one FOUNDRY's tree
+ * mints for the same row (`exportNodeId`, shared/host-ops.ts, over
+ * `ProjectFinal.file`). BookForge renames a landing on the way in — an export is
+ * filed under the book's descriptive name — so the variant's own file name is
+ * the wrong string here, and `foundrySource.fileName` is the tray spelling kept
+ * for exactly this kind of join.
+ */
+function narrationTargetOf(bookDir: string, variant: ProjectVariant): FoundryNarrationTarget {
   return {
     bookDir,
     variantId: variant.id,
     variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
+    exportNodeId: `export:${variant.foundrySource!.fileName}`,
   };
 }
 
@@ -1179,8 +1360,22 @@ async function refreshFoundryNarrateForm(): Promise<void> {
 }
 
 /**
- * NARRATE — pressed on a ledger step, asked about in Foundry's own window, and
- * queued here.
+ * NARRATE — pressed on a ledger step or on an export row, asked about in
+ * Foundry's own window, and queued here.
+ *
+ * ── WHICH BOOK IT READS, AND WHERE THAT BOOK COMES FROM ─────────────────────
+ *
+ * `foundryNarrationTarget` answers both, and on a step press it may MAKE the
+ * file before answering (Owen: "if they arent doing it from an epub then we
+ * export the epub automatically and then run the task they assigned"). That is
+ * the arm that makes this operation's `appliesTo: ['book', 'export']` an honest
+ * declaration rather than a button drawn where it can only refuse — the two are
+ * one change and neither is correct without the other.
+ *
+ * Its refusals — this library's own, and Foundry's when an export will not
+ * plan — are said in BOTH windows: thrown, so the tree says them at the button,
+ * and pushed through `sayToUser`, so they are still on screen when the user comes
+ * back over. Nothing is queued when one is raised.
  *
  * ── What this used to do, and why it stopped ────────────────────────────────
  *
@@ -1233,9 +1428,18 @@ async function invokeFoundryNarrate(
   settings: Record<string, unknown>,
 ): Promise<void> {
   if (decodeNodeId(nodeId) !== null) {
-    // A node WE minted. Narrate applies to `book` and our nodes all produce
-    // audio, so Foundry's own `offeredFrom` never offers it here — reaching this
-    // means the two sides disagree about the offers, which is worth saying.
+    /*
+     * A node WE minted. Narrate applies to books and to exports; our own nodes
+     * all produce audio, so Foundry's `offeredFrom` never offers it here, and
+     * reaching this means the two sides disagree about the offers.
+     *
+     * IT MUST STAY IN FRONT OF THE STEP ARM. A `bf-node:` id carries a colon and
+     * so is not export-shaped, which would make it step-shaped to the resolver —
+     * and a step-shaped id nothing was cast from now ASKS FOR AN EXPORT. Without
+     * this guard, pressing Narrate on a narration would send one of our own ids
+     * to Foundry as a ledger step, and the disagreement would surface as their
+     * refusal about a step id rather than as the true sentence.
+     */
     throw new Error(
       'Narrate was pressed on a row BookForge is making, and a narration reads a book rather '
       + 'than audio. Press it on one of the book\'s own steps.');
@@ -1421,7 +1625,16 @@ async function invokeFoundryNarrate(
      */
     title: meta.title,
     projectId: target.bookDir,
-    foundry: { projectDir, parentStepId: nodeId },
+    /*
+     * THE LINEAGE NAMES THE EPUB, NOT WHAT WAS PRESSED. Foundry echoes this id
+     * back as every ghost row's `parentStepId`, and Owen's standing ruling is
+     * that those rows hang under the export the narration read — which stays
+     * true when the press was made on a STEP, because the file that step made is
+     * still the thing being narrated. `target.exportNodeId` is the tree's own id
+     * for that row, so a press on the step and a press on the file put their
+     * rows in exactly the same place.
+     */
+    foundry: { projectDir, parentStepId: target.exportNodeId },
     documentPath: target.variantPath,
     documentLabel: path.basename(target.variantPath),
     steps: [{
@@ -1674,16 +1887,25 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     label: 'Narrate',
     kind: 'narrate',
     /*
-     * EXPORT ROWS ONLY, since foundry 1c7d6c9. Narration reads a book FILE, and
-     * the exported EPUB is the only node that IS one — a Narrate drawn on a
-     * ledger step could only refuse ("no exported EPUB from this project"),
-     * which is the button Owen ruled out of existence: "the only options that
-     * exist are the ones that are possible for that stage." Foundry's export
-     * rows produce 'export' now, its steps never do, and this flip and that
-     * re-vendor land in the same commit because at 1c7d6c9 a narrate still
-     * saying 'book' would appear on steps ONLY — the exact inverse.
+     * BOTH CURRENCIES, which is Owen's ruling: "i dont think its intuitive to
+     * know you have to create an epub before you can narrate. i think we should
+     * make any of the steps possible to narrate. if they arent doing it from an
+     * epub then we export the epub automatically and then run the task they
+     * assigned."
+     *
+     * It said 'export' alone from foundry 1c7d6c9, on the earlier ruling that
+     * "the only options that exist are the ones that are possible for that
+     * stage" — and it was drawn only on export rows because a Narrate on a step
+     * could then only refuse. Neither ruling is being reversed: what changed is
+     * that a step press is now POSSIBLE, because `invokeFoundryNarrate` makes
+     * the file the step is missing (`exportEpubFromStep`). The list is that
+     * promise, and it is only honest while that arm exists — see the invoke.
+     *
+     * 'book' is every ledger step with words behind it; 'export' is the `final/`
+     * rows. Keeping both is what makes a press on the file the user already made
+     * read it rather than export it a second time.
      */
-    appliesTo: 'export',
+    appliesTo: ['book', 'export'],
     // The engine enqueues held; releasing is the queue's decision. Same words
     // as BookForge's own modal button, for the same run (Owen: "the button
     // shouldnt say start if it isnt going to start").

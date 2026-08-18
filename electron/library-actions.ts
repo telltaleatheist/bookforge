@@ -651,6 +651,13 @@ export async function addFoundryOutputVariant(
     parentVariantId: string | null;
     /** When this export APPEARED — now() for a live landing, the file's mtime for a swept one. */
     landedAt: string;
+    /**
+     * The ledger step Foundry cast this export from, when the landing said so.
+     * Absent is "unknown" and is written as an absent field rather than as an
+     * empty string, so the record cannot claim a step it was never told about —
+     * see {@link FoundryVariantSource.stepId}.
+     */
+    stepId?: string;
   },
   landingTitle: string,
 ): Promise<{ success: boolean; variantId?: string; replaced?: boolean; error?: string }> {
@@ -690,6 +697,11 @@ export async function addFoundryOutputVariant(
                 // parent is whatever the mapping says NOW.
                 parentVariantId: provenance.parentVariantId,
                 landedAt,
+                // Rebuilt rather than merged over the old record, which is what
+                // makes a landing that names no step CLEAR the one that was
+                // there. The file has been overwritten; a step kept from the
+                // previous export would describe bytes that are gone.
+                ...(provenance.stepId === undefined ? {} : { stepId: provenance.stepId }),
               } satisfies FoundryVariantSource,
             }
           : v);
@@ -737,6 +749,7 @@ export async function addFoundryOutputVariant(
         fileName: provenance.fileName,
         parentVariantId: provenance.parentVariantId,
         landedAt,
+        ...(provenance.stepId === undefined ? {} : { stepId: provenance.stepId }),
       },
     };
 

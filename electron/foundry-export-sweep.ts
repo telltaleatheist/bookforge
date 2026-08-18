@@ -66,19 +66,59 @@ import { addFoundryOutputVariant, sameFoundryExportFile } from './library-action
 export const FOUNDRY_EXPORT_KINDS: readonly string[] = ['epub', 'txt', 'pdf'];
 
 /**
- * FILE ONE EXPORT AS A VERSION OF ONE BOOK — the act both doors perform.
+ * ONE FILING PER FILE AT A TIME — the lane a landing waits its turn in.
  *
- * Two callers reach this: the live announcement (`recordFoundryExportLanding`,
- * electron/main.ts) and the sweep below. By the time either calls it the hard
- * part is done — the book is known, the key is known, the kind is admitted — and
- * what is left is the part that must not be written twice: read the parent from
- * the mapping, hand the file to `addFoundryOutputVariant`, and say what
- * happened.
+ * ── The race this closes, which arrived with the auto-export ────────────────
+ *
+ * `addFoundryOutputVariant` decides whether a landing REPLACES an existing
+ * version or adds a new one by reading the manifest, and it reads it OUTSIDE the
+ * lock its later write takes. That was harmless while the callers were a live
+ * announcement and a startup sweep, because no two of those ever described the
+ * same file at the same moment.
+ *
+ * Owen's narrate-from-any-step ruling makes them do exactly that. A step press
+ * with no export behind it asks Foundry to make one, and Foundry announces the
+ * landing to `onExport` a beat before it answers the caller with it — so the
+ * announcement's filing and the narration's filing are two calls about one file,
+ * in flight together, both finding no existing version and both adding one. The
+ * user would get two identical rows on the versions page and a narration reading
+ * whichever won.
+ *
+ * ── Why a lane rather than a wider lock ────────────────────────────────────
+ *
+ * The thing that must not interleave is the read-decide-write about ONE FILE, so
+ * that is what is serialized: two exports of two books still file at once, and a
+ * sweep of a twelve-file tray is unaffected because it was already sequential.
+ * A lock around the whole act would have made the sweep wait on the announcement
+ * of a book it is not touching, for no fact it protects.
+ *
+ * A FAILED FILING DOES NOT POISON THE LANE. The next caller waits for the
+ * previous one to SETTLE and then does its own work regardless of how that one
+ * ended — a landing that could not be recorded is a reason to say so, never a
+ * reason to refuse the next landing of the same file.
+ */
+const filingLanes = new Map<string, Promise<unknown>>();
+
+/**
+ * FILE ONE EXPORT AS A VERSION OF ONE BOOK — the act every door performs.
+ *
+ * Three callers reach this: the live announcement (`recordFoundryExportLanding`,
+ * electron/main.ts), the narration that made its own export (the same file's
+ * `registerFoundryExportLanding`), and the sweep below. By the time any of them
+ * calls it the hard part is done — the book is known, the key is known, the kind
+ * is admitted — and what is left is the part that must not be written three
+ * times: read the parent from the mapping, hand the file to
+ * `addFoundryOutputVariant`, and say what happened.
  *
  * `landedAt` is passed rather than taken; see `addFoundryOutputVariant`. The
  * live path says now (Foundry has just told us), the sweep says the file's mtime
  * (the file has been sitting there, and its mtime is the only witness left to
  * when it appeared).
+ *
+ * `stepId` is the same kind of fact and is passed for the same reason: the
+ * announcement carries it, and a sweep — which reads a directory and not an
+ * announcement — has nothing to pass and says so by passing nothing. See
+ * `FoundryVariantSource.stepId`.
  *
  * DELIBERATELY DOES NOT BROADCAST. The live path tells the windows about the one
  * landing it just made; the sweep tells them once per project, after landing
@@ -86,16 +126,51 @@ export const FOUNDRY_EXPORT_KINDS: readonly string[] = ['epub', 'txt', 'pdf'];
  * a sweep of a twelve-file tray redraw every open versions page twelve times, so
  * the choice belongs to the caller and is stated at both of them.
  *
- * Answers whether a version now exists for this file — which is what a sweep
- * needs in order to know whether it has anything to announce.
+ * ANSWERS WITH THE VERSION'S ID, or null when nothing was filed. It used to
+ * answer whether — enough for the sweep, which only needs to know if it has
+ * anything to announce — and the narration door needs the version itself, since
+ * the file it is about to read is that row's file. Deriving it a second time
+ * from (key, fileName) at the caller would be a second answer to "which row is
+ * this landing", and the two would differ the first time either was touched.
  */
-export async function fileFoundryExportAsVersion(
+export function fileFoundryExportAsVersion(
   bookDir: string,
   projectKey: string,
   filePath: string,
   title: string,
   landedAt: string,
-): Promise<boolean> {
+  stepId?: string,
+): Promise<string | null> {
+  /*
+   * The lane is per (book, file), matched the way the re-export branch matches:
+   * the key exactly, the name case-insensitively (`sameFoundryExportFile`).
+   *
+   * `|` joins them because it is the one character none of the three can hold —
+   * a Windows path, a project folder name and a file name are all forbidden it —
+   * so two different triples can never collapse into one lane the way they could
+   * under a separator that is legal inside a name.
+   */
+  const lane = `${bookDir}|${projectKey}|${path.basename(filePath).toLowerCase()}`;
+  const ahead = filingLanes.get(lane);
+  const mine = (ahead === undefined ? Promise.resolve() : ahead.then(() => undefined, () => undefined))
+    .then(() => fileOneFoundryExport(bookDir, projectKey, filePath, title, landedAt, stepId));
+  filingLanes.set(lane, mine);
+  // Cleared only by the call that is still the last one in the lane, so a
+  // landing queued behind this one is never orphaned by this one finishing.
+  void mine.then(() => undefined, () => undefined).then(() => {
+    if (filingLanes.get(lane) === mine) filingLanes.delete(lane);
+  });
+  return mine;
+}
+
+async function fileOneFoundryExport(
+  bookDir: string,
+  projectKey: string,
+  filePath: string,
+  title: string,
+  landedAt: string,
+  stepId: string | undefined,
+): Promise<string | null> {
   // WHICH VERSION this export derives from, from the mapping the import wrote.
   // Read here rather than remembered: the user can re-import a different version
   // into the same Foundry project between two exports, and the parent is
@@ -119,19 +194,32 @@ export async function fileFoundryExportAsVersion(
   const landed = await addFoundryOutputVariant(
     path.basename(bookDir),
     filePath,
-    { projectKey, fileName: path.basename(filePath), parentVariantId, landedAt },
+    {
+      projectKey,
+      fileName: path.basename(filePath),
+      parentVariantId,
+      landedAt,
+      ...(stepId === undefined ? {} : { stepId }),
+    },
     title,
   );
   if (!landed.success) {
     console.error(
       `[foundry-host] "${title}" could not be added to ${path.basename(bookDir)} as a `
       + `version: ${landed.error}. The file is where Foundry left it; nothing lists it.`);
-    return false;
+    return null;
   }
   console.log(
     `[foundry-host] "${title}" ${landed.replaced ? 're-exported over' : 'landed as'} a `
     + `version of ${path.basename(bookDir)} (output/, variant ${landed.variantId}).`);
-  return true;
+  // A success with no id is a shape `addFoundryOutputVariant` does not produce
+  // and could only mean the two sides had come apart about what filing returns.
+  if (landed.variantId === undefined) {
+    throw new Error(
+      `"${title}" was filed as a version of ${path.basename(bookDir)} without an id, so nothing `
+      + 'can point at the row it made.');
+  }
+  return landed.variantId;
 }
 
 /** What a sweep did, for the caller that logs it and for the tests that pin it. */
@@ -290,7 +378,14 @@ export async function sweepFoundryExportTrays(
         // in `ExportLanding.title` (`path.basename(outputPath)`, job-queue.ts).
         // A swept row and an announced row are therefore named the same thing,
         // and the user cannot tell which door a version came through.
-        if (await fileFoundryExportAsVersion(book.dir, key, abs, entry.name, landedAt)) {
+        //
+        // NO STEP IS PASSED, and that is the truth rather than an omission: a
+        // sweep reads a directory, and a directory does not say which point in a
+        // book's history each file was cast from. Foundry's own catalogue does
+        // (`ProjectFinal.stepId`), and reading it here is a wave of its own; what
+        // the absence costs meanwhile is one re-export the first time somebody
+        // presses Narrate on the step behind a swept file.
+        if (await fileFoundryExportAsVersion(book.dir, key, abs, entry.name, landedAt) !== null) {
           landedHere++;
         } else {
           result.refused++;

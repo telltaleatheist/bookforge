@@ -193,6 +193,30 @@ export interface FoundryVariantSource {
   parentVariantId: string | null;
   /** ISO timestamp of the landing this record describes; refreshed on re-export. */
   landedAt: string;
+  /**
+   * THE LEDGER STEP FOUNDRY CAST THIS EXPORT FROM, when the landing said so.
+   *
+   * What it buys is a press on a STEP. Narrate is offered on every step that has
+   * words behind it (Owen: "i dont think its intuitive to know you have to create
+   * an epub before you can narrate"), and the first thing such a press asks is
+   * whether this library already holds the file that step made. Without this
+   * field the question has no answer at all, and every step press would re-export
+   * a book that was already exported a minute earlier.
+   *
+   * ABSENT MEANS "I DO NOT KNOW", never "no step", and the distinction is the
+   * whole compatibility story: every version filed before Foundry began
+   * announcing the step has none, and so does every version the tray sweep found,
+   * because a sweep reads files rather than announcements. An absent value can
+   * never match a pressed step id, which is the correct behaviour for a record
+   * that cannot answer the question — it re-exports once, learns its step from
+   * that landing, and answers instantly afterwards.
+   *
+   * REFRESHED WITH THE FILE on a re-export, and cleared with it when the new
+   * landing carries no step. The record describes the bytes that are there now,
+   * and keeping the old step against a new file would be a claim about where
+   * those bytes came from that nothing supports.
+   */
+  stepId?: string;
 }
 
 export interface AudiobookAnalysisManifestEntry {
