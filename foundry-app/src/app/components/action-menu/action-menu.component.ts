@@ -11,6 +11,7 @@ import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
  */
 import {
   canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom, canTranslateFrom,
+  hostActPositionFrom,
 } from '@shared/stages';
 import { fold } from '@shared/original';
 
@@ -287,18 +288,25 @@ import { UiService } from '../../core/ui.service';
           because a disabled control that keeps its enabled hover is a control
           that explains nothing.
 
-          WHAT THE GRAY MEANS CHANGED WITH OWEN'S SECOND RULING — *"i dont
-          think its intuitive to know you have to create an epub before you can
-          narrate"* — and it is a smaller gray than it was. It used to mean
-          "nothing has been exported yet", which shut the button on books whose
-          words were all there; it means "there is no book AT THIS STAGE" now,
-          which is the unread scan and the import row and nothing else. The
-          export these acts consume is made for them when there is none.
+          WHAT THE GRAY MEANS HAS NARROWED TWICE, and it is now as small as it
+          can honestly be. It began as "nothing has been exported yet", which
+          shut the button on books whose words were all there, and Owen's second
+          ruling — *"i dont think its intuitive to know you have to create an
+          epub before you can narrate"* — replaced it with "there is no book at
+          this stage": the unread scan AND the import row. The import row went
+          too (2026-08-18, *"it should be available pretty much anywhere the
+          user clicks"*), because that refusal is about acts that DERIVE a new
+          thing from where you stand and a host act derives nothing — it names
+          provenance and names what to export, and the import row's book is the
+          reading's book. So the gray means ONE thing now: THIS BOOK HAS NO
+          BOOK, which is a scan nobody has read. The export these acts consume is
+          made for them when there is none, and the press sends the reading's
+          step when it is ordered from the row above it (\`hostActPositionFrom\`).
 
-          NEITHER BEHAVIOUR CHANGED WHEN THE ROWS MOVED. The gray is the same
-          predicate, the press is the same press, and the two neighbours these
-          rows now sit between grey by the same shape of test — which is part of
-          why the position reads as natural.
+          THE UNREAD SCAN STAYS GREY ON PURPOSE. There is no bank, so there is
+          nothing to mint an EPUB from and nothing for the host to consume — and
+          Read is already the act offered on that stage, which is the same
+          ruling's other half rather than a gap in this one.
         -->
         @for (act of hostActs(); track act.id) {
           <button
@@ -307,8 +315,8 @@ import { UiService } from '../../core/ui.service';
             [disabled]="!hostReady()"
             [title]="hostReady()
               ? act.label + ' — handled by the app Foundry is running inside'
-              : act.label + ' — there is no book at the step you are standing on, and this act is '
-                + 'made from one'"
+              : act.label + ' — this book’s pages have not been read yet, and this act is '
+                + 'made from the words in them'"
             (click)="runHostAct(act.id)"
           >
             <span class="menu-icon">♪</span>
@@ -659,17 +667,24 @@ export class ActionMenuComponent {
    * intuitive to know you have to create an epub before you can narrate. i think
    * we should make any of the steps possible to narrate. if they arent doing it
    * from an epub then we export the epub automatically and then run the task they
-   * assigned."* So the question is what the STAGE can do rather than what the
-   * project happens to have lying in `final/`, and the answer is
-   * `canRunHostActFrom` (shared/stages.ts) — `hasBookAt` by another name, which
-   * is the same test the Export button beside this one greys by, because the
-   * export is what would be made.
+   * assigned."* So the question is what CAN BE MADE rather than what the project
+   * happens to have lying in `final/`, and the answer is `canRunHostActFrom`
+   * (shared/stages.ts).
    *
-   * ASKED OF THE STANDING STEP, which is the position this menu has always aimed
-   * at: every other act here reads `standingIn` and this one had no step in it at
-   * all, because a fact about a tray does not have one. The tree asks the same
-   * question of the ROW under the pointer (`offersFor`), and the two agree
-   * because they are one function with a different step in it.
+   * ── And it stopped asking about the position at all ───────────────────────
+   *
+   * It used to be `hasBookAt` by another name, greying wherever the Export
+   * button beside it greys — which included the import row, and which is what
+   * Owen was hitting when he said the button *"is disappearing and disabling
+   * seemingly at random."* Clicking the top row of a book is an ordinary thing
+   * to do. The import refusal belongs to acts that DERIVE from the position, a
+   * host act derives nothing from it, and the whole argument is written down at
+   * the predicate rather than repeated here.
+   *
+   * SO THIS IS A FACT ABOUT THE BOOK, and there is no step in it — the predicate
+   * takes none. What the position still decides is what the PRESS names, which
+   * is `runHostAct`'s business and is the reason the two are separate questions
+   * (`hostActPositionFrom`).
    *
    * The finer refusals — a voice the host does not have, a queue that will not
    * take the work — stay at press time and with the host, because a catalogue row
@@ -679,7 +694,7 @@ export class ActionMenuComponent {
     const dir = this.target();
     if (dir === null) return false;
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
-    return canRunHostActFrom(project, this.ledger.standingIn(dir));
+    return canRunHostActFrom(project);
   });
 
   /**
@@ -694,6 +709,15 @@ export class ActionMenuComponent {
    * export behind it is the host's business: it asks Foundry to make one
    * (`exportEpubFromStep`, electron/mount.ts) and then runs the work, which is
    * Owen's ruling and the reason this branch exists.
+   *
+   * WITH ONE POSITION RESOLVED RATHER THAN SENT AS IT STANDS: the import row.
+   * The gray lets a press through there now, and the import is the one id that
+   * must not travel — the host takes it straight back to `exportEpubFromStep`,
+   * whose `canExportFrom` still refuses the import, so the press would end as a
+   * refusal in somebody else's log. `hostActPositionFrom` (shared/stages.ts) is
+   * the whole of that rule: an import names the reading under it, everything
+   * else names itself, and a lineage line drawn under the reading is the honest
+   * one because the reading's book is what the work was made from.
    *
    * AN ACT THAT CONSUMES ONLY THE FINISHED FILE keeps every refusal it had. It
    * has said it reads an export and nothing else, so a press has to name one, and
@@ -729,8 +753,24 @@ export class ActionMenuComponent {
         );
         return;
       }
+      const named = hostActPositionFrom(this.ledger.historyFor(dir)?.ledger ?? null, standing);
+      if (named === null) {
+        /*
+         * THE IMPORT ROW OVER A BOOK WHOSE READING IS NOT IN ITS HISTORY, which
+         * is the one state this can be: a bank filled outside this app leaves
+         * `reading.done` true with no `read` step to name (see
+         * `hostActPositionFrom`). Sending the import instead would hand the host
+         * a position its own export path declines, so the honest answer is to
+         * say where the press WILL work — which is any row below the top one.
+         */
+        this.notices.notice.set(
+          'This book’s reading is not recorded in its history, so an act ordered from the top '
+          + 'row has no step to name. Click the step you want it made from and press again.',
+        );
+        return;
+      }
       void this.router.navigateByUrl('/');
-      this.ui.openHostOp({ operationId, projectDir: dir, nodeId: standing.id });
+      this.ui.openHostOp({ operationId, projectDir: dir, nodeId: named.id });
       return;
     }
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;

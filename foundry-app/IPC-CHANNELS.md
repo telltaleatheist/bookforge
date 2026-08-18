@@ -2,7 +2,7 @@
 
 Every channel name this app owns, enumerated from `app/electron` rather than
 from memory, regenerated on 2026-08-18 (the host status chip: two doors and one
-push, all in `host-ops:`). It exists
+push; then the offers push, which is a push and no door at all). It exists
 because of the fifth thing Foundry owes BookForge before the first copy: *"A
 channel audit. Enumerate both apps' IPC names once before the copy; Foundry's
 are namespaced, so this is a check, not a design"*
@@ -122,6 +122,29 @@ contract is spelled out in the handoff's `#foundrynotes`.
   draws them and interprets none of them. **Nothing is drawn at all when the
   status is null**, which is standalone always.
 
+### One name added on 2026-08-18 — offers can be revised
+
+**A push, and NOT a door: the `ipcMain.handle` count below is unchanged at 71.**
+Said plainly because a keeper counting handles should not go looking for a
+seventy-second one.
+
+- `host-ops:offers-changed` (push, broadcast) carries the whole
+  `{ operations, nodeActions }` answer — the same `HostOffers` shape
+  `host-ops:offers` returns, composed by the same function in main
+  (`hostOffers`, `app/electron/host-ops.ts`), so a window that asked and a
+  window that was pushed at cannot hold different facts.
+- **What it is for**: `host-ops:offers` is asked once, at first paint, and used
+  to be the last word — a host whose own form legitimately changed while a
+  Foundry window was up (a voice installed since, a setting changed since, an
+  act it can no longer honour) had no way to publish it. The host pushes now,
+  with `setHostOperations` on the mount seam; `setHostStatus`'s mechanics
+  exactly, one surface along.
+- **The renderer replaces BOTH halves on a push** and merges nothing, because
+  what crosses is "here is everything I offer now" rather than a delta.
+- **A host that never calls it is unchanged in every respect**, and standalone
+  nothing ever pushes it. The subscription that never fires costs a window one
+  listener.
+
 **`host-ops` was invented rather than found**, and the reason belongs in this
 file: it is the host-operations socket (the provenance tree's audio work, ordered
 from a BookForge that has mounted this app), and a BRAND-NEW family is the one
@@ -215,8 +238,8 @@ cannot report a failure. They are registered in one function, `registerIpc`
 
 ## Pushes main makes at the renderer
 
-Thirteen, and every one of them is a state change the renderer holds a mirror of
-or a question it has to answer. Seven go to every window through `broadcast`
+Fourteen, and every one of them is a state change the renderer holds a mirror of
+or a question it has to answer. Eight go to every window through `broadcast`
 (`app/electron/window.ts`); the rest are sent to one window's `webContents`.
 
 | Channel | What it says |
@@ -227,6 +250,7 @@ or a question it has to answer. Seven go to every window through `broadcast`
 | `document:relocated` | An opened document moved onto the project's working copy; the tab follows. |
 | `env:install-progress` | An environment install changed phase. |
 | `host-ops:changed` | The host pushed what it is making in one project — the whole set, every time. |
+| `host-ops:offers-changed` | The host revised what it OFFERS — the whole `{operations, nodeActions}` answer again, replacing what `host-ops:offers` said. |
 | `host-ops:status-changed` | The host pushed what it is doing at all — the whole value, every time. Null clears the chrome's chip. |
 | `menu:action` | A menu item the renderer has to carry out, because it acts on a tab. |
 | `project:open` | Stand in this project — the hosted deep link, sent once as the window loads. |

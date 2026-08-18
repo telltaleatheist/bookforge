@@ -135,10 +135,20 @@ export interface FoundryHost {
    * the whole design; `HostOperation` is declared there because `invoke` is a
    * function and functions do not cross the preload).
    *
-   * READ ONCE, AT MOUNT. There is one host and one mount, so this is a fact for
-   * the lifetime of the process — the same reason `app:hosted` is asked once and
-   * never pushed. What DOES change while the app runs is what the host is making
-   * (`setHostNodes`), which is a push and is deliberately the other thing.
+   * READ ONCE, AT MOUNT, AND IT IS A FIRST WORD RATHER THAN A LAST ONE. There is
+   * one host and one mount, so this field is read exactly once — but what it
+   * declares is not frozen by that: `setHostOperations` (electron/mount.ts)
+   * replaces the whole list and pushes it at every window, for the host whose own
+   * form legitimately changed while the app was up. It was frozen until
+   * 2026-08-18, and the thing that reasoning conflated is worth naming: a fact
+   * asked once and a fact that cannot change are different, and only `hosted()`
+   * is really the second kind.
+   *
+   * A HOST THAT NEVER REVISES IT IS UNCHANGED IN EVERY RESPECT — this field
+   * stands for the life of the process, which is what every host does today.
+   * What ALSO changes while the app runs is what the host is making
+   * (`setHostNodes`) and what it is doing (`setHostStatus`), and all three are
+   * pushes for the same reason: only the host knows when its own state moved.
    */
   hostOperations?: readonly HostOperation[];
 }

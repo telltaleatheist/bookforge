@@ -13,10 +13,11 @@
  * #bookforgenotes 2026-08-17).
  *
  * So the tree grows a socket rather than an audio feature. A host registers
- * OPERATIONS at `mountFoundry` and pushes NODES with `setHostNodes`; Foundry
- * draws both in the card grammar it draws its own steps in, and knows nothing
- * whatever about narration. Standalone, nobody registers anything, the socket
- * answers with two empty lists, and the tree is exactly the tree.
+ * OPERATIONS at `mountFoundry` (and may revise them afterwards with
+ * `setHostOperations`) and pushes NODES with `setHostNodes`; Foundry draws both
+ * in the card grammar it draws its own steps in, and knows nothing whatever
+ * about narration. Standalone, nobody registers anything, the socket answers
+ * with two empty lists, and the tree is exactly the tree.
  *
  * ── THE LEDGER STAYS PURE, and that is the rule this file exists to keep ────
  *
@@ -317,6 +318,39 @@ export interface HostOpField {
   max?: number;
   /** One sentence under the control, in the dialog's own note voice. Optional. */
   help?: string;
+}
+
+/**
+ * EVERYTHING THE HOST HAS ON OFFER, as of now — the answer to `host-ops:offers`
+ * and the payload of `host-ops:offers-changed`, which are ONE SHAPE on purpose.
+ *
+ * ── Why it is a type rather than two object literals ────────────────────────
+ *
+ * The read and the push carry the same fact: what does the host register. They
+ * were an inline `{ operations, nodeActions }` at the door and would have been a
+ * second inline one at the push, which is the shape this codebase refuses
+ * everywhere else — two spellings of one fact are two answers waiting to
+ * disagree, and the disagreement would present as a window whose act list
+ * silently differs from the one it would get on reload. Named once, both sides
+ * of both doors are typed by it, and main composes it in one function
+ * (`hostOffers`, electron/host-ops.ts).
+ *
+ * ── BOTH HALVES ARE READ OUT OF ONE REGISTRATION ────────────────────────────
+ *
+ * `operations` is what the host declared; `nodeActions` is whether it registered
+ * a way to retry and dismiss its own failed work. They travel together because
+ * they are asked in the same breath by the same component and because a second
+ * channel for the boolean would be one more name for BookForge's collision
+ * keeper to audit — the argument `host-ops:offers` was shaped by in the first
+ * place, and the reason a REVISION carries both rather than only the list that
+ * changed.
+ *
+ * STANDALONE IT IS AN EMPTY LIST AND FALSE, which is the tree drawing exactly
+ * what it drew before this socket existed.
+ */
+export interface HostOffers {
+  operations: HostOperationOffer[];
+  nodeActions: boolean;
 }
 
 /**

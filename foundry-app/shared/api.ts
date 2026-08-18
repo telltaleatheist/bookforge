@@ -8,7 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { BookOutcome } from './book';
-import type { HostNodeAction, HostOperationOffer, HostStatus } from './host-ops';
+import type { HostNodeAction, HostOffers, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type { BookOp } from './ops';
 import type { ReReadPrompt } from './reread';
@@ -828,9 +828,14 @@ export interface FoundryApi {
    *
    * ── The doors, and why the renderer needs each of them ─────────────────────
    *
-   * `offers` is asked ONCE, like `hosted()`: a host registers its operations at
-   * mount and nothing can change them while the process lives, so a subscription
-   * for them would be one that never fires. `nodes` is the first paint — a window
+   * `offers` IS THE FIRST PAINT AND `onOffersChanged` IS EVERY REVISION AFTER
+   * IT. It was asked ONCE, like `hosted()`, on the reasoning that a host
+   * registers its operations at mount and nothing can change them while the
+   * process lives — and that conflated a fact ASKED once with a fact that CANNOT
+   * change. A host whose own form legitimately moves while the window is up (a
+   * voice installed since, a setting changed since, an act it can no longer
+   * honour) had no way to publish it, and a subscription that never fires for
+   * every host that never revises costs nothing. `nodes` is the first paint — a window
    * that opened after the host had already pushed has to be able to catch up —
    * and `onChanged` is every push after that, carrying the whole set for one
    * project on `queue.onChanged`'s precedent.
@@ -855,16 +860,19 @@ export interface FoundryApi {
    */
   hostOps: {
     /**
-     * Everything the host registered at mount — its operations, and whether a
+     * Everything the host has on offer as of now — its operations, and whether a
      * failed node's Retry and Dismiss have anywhere to go.
      *
-     * ONE ANSWER FOR ONE QUESTION. Both halves are facts about the same mount and
-     * are read out of the same registration, so asking them separately would be
-     * two round trips that could disagree. Standalone the operations are empty and
-     * `nodeActions` is false, which is the tree drawing exactly what it drew
-     * before the socket existed.
+     * ONE ANSWER FOR ONE QUESTION. Both halves are facts about the same
+     * registration, so asking them separately would be two round trips that could
+     * disagree. Standalone the operations are empty and `nodeActions` is false,
+     * which is the tree drawing exactly what it drew before the socket existed.
+     *
+     * IT IS A FIRST PAINT AND NOT A FINAL ANSWER — see `onOffersChanged`, and
+     * note that the two carry ONE type so that a seeded answer and a pushed one
+     * cannot be different shapes of the same fact.
      */
-    offers(): Promise<{ operations: HostOperationOffer[]; nodeActions: boolean }>;
+    offers(): Promise<HostOffers>;
     /**
      * Retry or dismiss a host node that FAILED — the pair the tree draws on a
      * failed card, and only when `offers().nodeActions` said somebody is
@@ -907,6 +915,23 @@ export interface FoundryApi {
     ): Promise<void>;
     /** Every push, whole set, one project. Returns its own unsubscribe. */
     onChanged(listener: (pushed: HostNodes) => void): () => void;
+    /**
+     * THE HOST REVISED WHAT IT OFFERS — the whole answer again, replacing what
+     * `offers` said.
+     *
+     * The same shape the read answers, on purpose: what the host publishes is
+     * "here is everything I offer now", never a delta, so a renderer holding it
+     * replaces both halves and has nothing to reconcile. Fires only for a host
+     * that calls `setHostOperations` (electron/mount.ts) — standalone, and for
+     * every host that declares its acts once at mount, this never fires and
+     * nothing about the window changes.
+     *
+     * IT RACES THE READ, and the subscriber is responsible for that: arm this
+     * BEFORE asking, and let a push that has already arrived win over an answer
+     * composed before it. `onStatusChanged` carries the same warning for the same
+     * reason (`HostOpsService`, which is where both guards live).
+     */
+    onOffersChanged(listener: (pushed: HostOffers) => void): () => void;
     /**
      * WHAT THE HOST IS DOING RIGHT NOW, and whether the chip may be pressed.
      *

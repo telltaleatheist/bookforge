@@ -26,18 +26,26 @@ import { api } from './foundry';
 @Injectable({ providedIn: 'root' })
 export class HostOpsService {
   /**
-   * What the host registered at mount — asked once, and once is right: there is
-   * one process and one mount, so this cannot change while the page lives (the
-   * same fact `hosted()` is, and for the same reason).
+   * WHAT THE HOST OFFERS, as of the last thing it said about it.
+   *
+   * Asked once at first paint and REPLACED BY EVERY PUSH after that. It was
+   * asked once and left alone — there is one process and one mount, so it could
+   * not change while the page lived — and the thing that reasoning conflated is
+   * the one `hosted()` really is: a fact asked once is not the same as a fact
+   * that cannot change. A host whose voices were installed while this window was
+   * up could not publish them, and the window would have gone on offering the
+   * form it was told about at startup until somebody reopened it.
    */
   private readonly registered = signal<readonly HostOperationOffer[]>([]);
 
   /**
    * WHETHER A FAILED NODE'S RETRY AND DISMISS HAVE ANYWHERE TO GO.
    *
-   * The other half of the same mount-time answer (`host-ops:offers`), held
-   * beside the operations because it is the same fact: what did the host
-   * register. False standalone and false for a host that contributed operations
+   * The other half of the same answer (`host-ops:offers`), held beside the
+   * operations because it is the same fact: what did the host register — and
+   * replaced beside them on every revision, because the push carries the whole
+   * answer rather than the half that moved. False standalone, and false for a
+   * host that contributed operations
    * without a way to retry one — and the tree draws the pair only when it is
    * true, because a button that silently does nothing is the one outcome this
    * socket must not have.
@@ -79,7 +87,36 @@ export class HostOpsService {
 
   constructor() {
     if (!api) return;
+    /*
+     * WHAT THE HOST OFFERS: THE FIRST PAINT, AND EVERY REVISION AFTER IT.
+     *
+     * The read used to be the whole story, because the offers were a mount-time
+     * fact and mount happens once. A host may revise them now
+     * (`setHostOperations`, electron/mount.ts) — voices installed since,
+     * settings changed since — and this is the same arrangement the chip below
+     * uses, one surface along.
+     *
+     * THE SUBSCRIPTION IS ARMED FIRST AND THE READ DEFERS TO IT, for the reason
+     * spelled out at the status pair: a round trip takes a turn or two, and a
+     * host that revised inside that window would have its push overwritten by an
+     * answer composed before it — leaving the menu offering acts the host has
+     * already withdrawn until it happened to revise again. `heard` is the whole
+     * guard, and it is a local rather than a field because nothing outside this
+     * constructor has any business asking whether the first answer was stale.
+     *
+     * BOTH HALVES ARE REPLACED TOGETHER because the push carries both: it is the
+     * same `{operations, nodeActions}` the read answers (`HostOffers`,
+     * shared/host-ops.ts), so there is no merge to get wrong and no second shape
+     * for one fact.
+     */
+    let heardOffers = false;
+    api.hostOps.onOffersChanged((pushed) => {
+      heardOffers = true;
+      this.registered.set(pushed.operations);
+      this.actionable.set(pushed.nodeActions);
+    });
     void api.hostOps.offers().then((answer) => {
+      if (heardOffers) return;
       this.registered.set(answer.operations);
       this.actionable.set(answer.nodeActions);
     });

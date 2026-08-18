@@ -11,7 +11,7 @@ import { CHAINABLE_FROM, PRODUCES_OF, exportNodeId, exportOfNodeId } from '@shar
  * structural rather than repeated.
  */
 import {
-  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
+  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom, hostActPositionFrom,
 } from '@shared/stages';
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
@@ -2368,7 +2368,22 @@ export class OpenDocumentsComponent {
     if (act.host !== null) {
       if (row.dir === null) return;
       const nodeId = this.nodeIdFor(row);
-      if (nodeId === null) return;
+      if (nodeId === null) {
+        /*
+         * A ROW THAT CANNOT SAY WHAT IT WOULD ACT ON GETS A SENTENCE, not a
+         * click that does nothing — this socket's own standing rule, applied to
+         * the one refusal `nodeIdFor` can now make: an import row over a book
+         * whose reading is not recorded in its history (`hostActPositionFrom`,
+         * shared/stages.ts). It was a silent return while the only way to reach
+         * it was a row with no dir, no step and no name, which is a state this
+         * panel cannot draw.
+         */
+        this.notices.notice.set(
+          'This book’s reading is not recorded in its history, so an act ordered from this row '
+          + 'has no step to name. Click the step you want it made from and press again.',
+        );
+        return;
+      }
       if (act.form) {
         this.ui.openHostOp({ operationId: act.host, projectDir: row.dir, nodeId });
         return;
@@ -2395,8 +2410,16 @@ export class OpenDocumentsComponent {
    * A HOST NODE names itself: the host minted the id, so chaining onto work that
    * has not finished is expressed by handing the id straight back.
    *
-   * A POSITION names its step. That is what "from here" has always sent, and the
-   * host resolves it against whatever mapping it keeps.
+   * A POSITION names its step — EXCEPT AN IMPORT, WHICH NAMES THE READING UNDER
+   * IT. That is what "from here" has always sent, and the host resolves it
+   * against whatever mapping it keeps; the one substitution is
+   * `hostActPositionFrom` (shared/stages.ts), because the host takes this id
+   * back to `exportEpubFromStep` and that path still refuses the import row.
+   * Today this panel can only reach the substitution's second answer — a root
+   * row offers the host's acts only where the import IS the book, and an import
+   * that is the book names itself — so nothing about a press changes here. It is
+   * wired anyway, because the rule about which id a host act may carry is one
+   * rule and the two press sites must not hold two versions of it.
    *
    * AN EXPORT names THE STEP IT WAS MADE FROM (`Row.madeFrom`), which is the
    * whole point of 9a: *"narrate on a step should mean 'the export made from this
@@ -2415,12 +2438,16 @@ export class OpenDocumentsComponent {
    * fabricated provenance. Sending the position is honest about being a fallback
    * and preserves the behaviour the letter asked to preserve.
    *
-   * NULL WHEN THERE IS NOTHING AT ALL, and the caller draws no button rather than
-   * one that cannot say what it would act on.
+   * NULL WHEN THERE IS NOTHING AT ALL — and the caller now says so on the strip
+   * rather than returning quietly, because the one reachable null is a real
+   * refusal with a real reason (see `run`).
    */
   private nodeIdFor(row: Row): string | null {
     if (row.node !== null) return row.node.id;
-    if (row.step !== null) return row.step.id;
+    if (row.step !== null) {
+      const held = row.dir === null ? null : this.ledger.historyFor(row.dir);
+      return hostActPositionFrom(held?.ledger ?? null, row.step)?.id ?? null;
+    }
     /*
      * AN EXPORT ROW NAMES ITSELF, and this line is Owen's third ruling.
      *

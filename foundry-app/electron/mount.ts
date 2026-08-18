@@ -116,6 +116,21 @@ export { setHostNodes } from './host-ops';
  */
 export { setHostStatus } from './host-ops';
 export type { HostStatus } from '../shared/host-ops';
+/*
+ * AND THE THIRD PUSH DOOR: THE ACTS THEMSELVES, REVISED.
+ *
+ * `hostOperations` on the mount seam is the host's FIRST word about what it
+ * offers, not its last one. A host whose own form changes while the window is up
+ * — a voice installed since, a setting changed since, an operation it can no
+ * longer honour — calls this with the whole list it now offers, and every
+ * Foundry window replaces its copy. Same mechanics as `setHostNodes` and
+ * `setHostStatus`: the whole value, no diffs, nothing validated on this side.
+ *
+ * A HOST THAT NEVER CALLS IT IS UNCHANGED. The mount-time declaration stands for
+ * the life of the process, which is what every host does today, and the ask the
+ * renderer already makes at startup answers exactly what it always answered.
+ */
+export { setHostOperations } from './host-ops';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────

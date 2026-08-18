@@ -14,10 +14,15 @@
  * ── What lives here, and how long ───────────────────────────────────────────
  *
  * Both halves are process-level and both die with the process, which is right
- * for what they are. The OPERATIONS are the host's mount-time declaration and
- * cannot change while the process lives (`mountFoundry` runs once). The NODES
- * are a mirror of the host's own queue, and a mirror is not a store: Foundry
- * writes none of this to disk, reconciles none of it on startup, and remembers
+ * for what they are. The OPERATIONS are the host's declaration — made at mount,
+ * and revisable afterwards with `setHostOperations` for a host whose own form
+ * legitimately changed while the window was up (voices installed since, settings
+ * changed since). They were fixed for the life of the process until 2026-08-18,
+ * on the reasoning that `mountFoundry` runs once; what that missed is that a
+ * mount-time answer and an UNCHANGING one are not the same thing, and the socket
+ * had no way to say so out loud. The NODES are a mirror of the host's own queue,
+ * and a mirror is not a store: Foundry writes none of this to disk, reconciles
+ * none of it on startup, and remembers
  * nothing about a project the host stops talking about. If BookForge restarts
  * and pushes nothing, there were never any audio nodes, which is the honest
  * answer — the queue that knew about them is gone too.
@@ -30,7 +35,7 @@
  * of the arrangement rather than a flag anybody has to remember to check.
  */
 import type { HostNode, HostOperationKind, NodeOutput } from '../shared/types';
-import type { HostNodeAction, HostOperationOffer, HostStatus } from '../shared/host-ops';
+import type { HostNodeAction, HostOffers, HostOperationOffer, HostStatus } from '../shared/host-ops';
 import { fold } from '../shared/original';
 import { broadcast } from './window';
 
@@ -92,15 +97,66 @@ export interface HostOperation extends HostOperationOffer {
 let operations: readonly HostOperation[] = [];
 
 /**
- * Said once, by `mountFoundry`, and only when a host passed some.
+ * Said by `mountFoundry` when a host passed some, and again by
+ * `setHostOperations` whenever the host revises them.
  *
- * REPLACES RATHER THAN APPENDS. There is one host and one mount; a second call
- * is a bug in the host's startup, and `mountFoundry` itself already refuses to
- * be idempotent about registration (`ipcMain.handle` throws on the second
- * mount), so this cannot be reached twice by anything but a test.
+ * REPLACES RATHER THAN APPENDS, and that is what makes a revision expressible at
+ * all: the host sends the whole list it now offers and this becomes it, so an
+ * operation the host has dropped is gone rather than lingering because nothing
+ * ever said the word "remove". `setHostNodes`' rule, one surface along.
+ *
+ * IT IS THE QUIET HALF. This writes and says nothing; `setHostOperations` below
+ * writes and tells every window. Mount uses this one because there is no window
+ * to tell yet — `registerIpc` and the first load both come after — and a
+ * broadcast into an empty list of windows is a message nobody could have heard.
  */
 export function recordHostOperations(offered: readonly HostOperation[]): void {
   operations = [...offered];
+}
+
+/**
+ * EVERYTHING THE HOST HAS ON OFFER, composed in ONE PLACE — the body of the
+ * `host-ops:offers` answer and the payload of every `host-ops:offers-changed`
+ * push.
+ *
+ * One function rather than two object literals, on `HostOffers`' argument
+ * (shared/host-ops.ts): a window that asked and a window that was pushed at must
+ * hold the same fact, and the only way to guarantee that is for both to be this
+ * expression. `nodeActions` is re-read here rather than passed in, because
+ * whether the host takes retries is a fact about the callback it registered and
+ * not about the list it is revising — a host that changed its voices has not
+ * changed whether Retry has anywhere to go.
+ */
+export function hostOffers(): HostOffers {
+  return { operations: hostOperationOffers(), nodeActions: hostTakesNodeActions() };
+}
+
+/**
+ * THE PUSH DOOR FOR THE OFFERS THEMSELVES: this is what the host offers, as of
+ * now.
+ *
+ * ── The gap this closes ─────────────────────────────────────────────────────
+ *
+ * `host-ops:offers` is asked ONCE, in the renderer's constructor, and until this
+ * existed nothing could revise it — so a host whose form legitimately changed
+ * while the window was up (a voice installed since, a setting changed since, an
+ * operation it can no longer offer) had no way to publish it. A re-ask was the other
+ * candidate and the push is better for `setHostStatus`' reason exactly: only the
+ * host knows when its own state moved, and a renderer polling for a change it
+ * cannot predict is a renderer guessing at somebody else's schedule.
+ *
+ * `setHostStatus`'s MECHANICS, DELIBERATELY IDENTICAL. The whole value on every
+ * change rather than a diff, because a diff between two processes goes wrong
+ * silently and stays wrong; no validation, because this app cannot know what the
+ * host's acts are; and the window redraws from what it was last given.
+ *
+ * NOTHING IS PUSHED STANDALONE, because nothing calls this: with no host there
+ * is no revision to make, the renderer's one ask answers empty as it always did,
+ * and a Foundry nobody mounted is unchanged in every respect.
+ */
+export function setHostOperations(offered: readonly HostOperation[]): void {
+  recordHostOperations(offered);
+  broadcast('host-ops:offers-changed', hostOffers());
 }
 
 /**
@@ -394,3 +450,4 @@ export type { HostNode, HostOperationKind, HostOperationOffer, NodeOutput };
 export type { HostNodeAction } from '../shared/host-ops';
 export type { HostOpField } from '../shared/host-ops';
 export type { HostStatus } from '../shared/host-ops';
+export type { HostOffers } from '../shared/host-ops';

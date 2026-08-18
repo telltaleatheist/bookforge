@@ -42,8 +42,8 @@ import {
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
 import { hosted } from './host';
 import {
-  actOnHostNode, hostNodesFor, hostOpensStatus, hostOperationOffers, hostStatus,
-  hostTakesNodeActions, invokeHostOperation, openHostStatus,
+  actOnHostNode, hostNodesFor, hostOffers, hostOpensStatus, hostStatus,
+  invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
@@ -211,7 +211,10 @@ export function registerIpc(): void {
    * the socket is collision-safe by construction rather than by re-running an
    * audit every time it grows a door. It has grown three since — the
    * failed-node pair and the chrome's status chip — and that promise is what
-   * made each of them free.
+   * made each of them free. A fourth name arrived on 2026-08-18 and is NOT a
+   * door: `host-ops:offers-changed` is a broadcast, so it is registered where
+   * every push in this app is (`broadcast`, electron/window.ts) and the count
+   * below is unchanged by it.
    *
    * EVERY ONE IS REGISTERED WHETHER OR NOT ANYBODY MOUNTED A HOST. The
    * renderer asks the same questions in both worlds and gets an empty list or a
@@ -228,11 +231,13 @@ export function registerIpc(): void {
    * the same question as the first (what did the host register), asked in the
    * same round trip the renderer already makes at startup, and it adds no channel
    * name for BookForge's collision keeper to audit. See `hostTakesNodeActions`.
+   *
+   * AND THE ANSWER IS COMPOSED WHERE THE PUSH COMPOSES IT. `host-ops:offers-changed`
+   * carries this very shape now that a host may revise its acts, and a door and a
+   * broadcast spelling one fact twice are two answers waiting to disagree — so
+   * both are `hostOffers()` and there is no second literal to keep in step.
    */
-  ipcMain.handle('host-ops:offers', () => ({
-    operations: hostOperationOffers(),
-    nodeActions: hostTakesNodeActions(),
-  }));
+  ipcMain.handle('host-ops:offers', () => hostOffers());
   ipcMain.handle('host-ops:nodes', (_event, projectDir: string) => hostNodesFor(projectDir));
   /*
    * The user pressed one of the host's acts, from a node in the tree.

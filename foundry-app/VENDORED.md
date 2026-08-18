@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **8691110** — *"feat(host-ops): a status chip in the chrome — the host says what it is doing, in its own words, or says nothing"* |
+| Source sha | **29c40a0** — *Wave 15: the import row orders a host act, and the host may revise its offers* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -109,7 +109,27 @@ null)` through the mount seam (per process, not per project), optional
 `status-changed` being a push in the push table, not a handle. Standalone
 Foundry draws nothing — the chip's host element is display:none until a host
 pushes, so the un-hosted window is unchanged in every pixel (95/95 blobs at
-8691110).
+8691110). `29c40a0` is Wave 15, both halves of Owen's narrate report
+("the narrate button in the bottom left of the foundry window is disappearing
+and disabling seemingly at random") that were NOT ours to fix: (a) the import
+row orders a host act — `canRunHostActFrom` is now `hasBookAt` MINUS the import
+clause and nothing else, `hasBookAt` itself byte-for-byte unchanged, and the new
+`hostActPositionFrom(ledger, standing)` decides what the press names (an import
+names its NEWEST reading; everything else names itself; a bank with no read step
+in the ledger REFUSES with a sentence rather than sending a node whose own export
+path would decline it). Consequence to expect rather than debug: a narration
+ordered from the import row hangs under the READING in the tree, because we echo
+the nodeId verbatim. (b) `setHostOperations(operations)` + the
+`host-ops:offers-changed` push, mirroring `status-changed` — the offers were asked
+ONCE at renderer boot and nothing could revise them, so a voice installed after
+the window came up was invisible until it was closed and reopened;
+`refreshFoundryNarrateForm` now pushes on every recompute, in both directions
+(a refresh that FAILED has revised the form too). Handles stay 71 — a push is not
+a handle — and the push table goes 13 → 14. Still grey where it should be: an
+UNREAD scan has no bank for `exportEpubFromStep` to mint from, and Read is
+already the act offered there. NOT in the diff and available on request: the
+TREE's root row for a read scan still offers no host acts, because that gate is
+the row's `produces` rather than this predicate (95/95 blobs at 29c40a0).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

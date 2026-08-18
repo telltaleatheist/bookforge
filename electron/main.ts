@@ -437,6 +437,28 @@ interface FoundryMountModule {
    * about why an export failed than the sentence does.
    */
   exportEpubFromStep(projectDir: string, stepId: string): Promise<FoundryExportLanding>;
+  /**
+   * REVISE THE REGISTERED OPERATIONS IN A WINDOW THAT IS ALREADY OPEN.
+   *
+   * The other half of Owen's narrate report (2026-08-18: "the narrate button …
+   * is disappearing and disabling seemingly at random"). Our half was a race —
+   * `refreshFoundryNarrateForm` was not awaited, so the form was sometimes still
+   * null when the window asked (fixed in 577a70db). This is the half that await
+   * cannot reach: Foundry asked `host-ops:offers` ONCE, in its HostOpsService
+   * constructor, and nothing could revise the answer for the life of the window.
+   * So a voice installed — or a setting changed — after the window came up was
+   * invisible to it until the user closed and reopened.
+   *
+   * Foundry 29c40a0 added the push (`host-ops:offers-changed`, mirroring
+   * `status-changed` one surface along), and this is the call that fires it. The
+   * WHOLE list every time, replace not merge — `setHostNodes` and `setHostStatus`
+   * take the same posture for the same reason.
+   *
+   * ABSENCE IS NOT A STATE THIS SIDE HANDLES: the seam is vendored, so the method
+   * exists whenever the mount does. A host that never calls it simply keeps the
+   * first paint, which is what every version before this one had.
+   */
+  setHostOperations(operations: readonly FoundryHostOperation[]): void;
 }
 
 /**
@@ -1403,6 +1425,26 @@ async function refreshFoundryNarrateForm(): Promise<void> {
     console.error(
       `[foundry-host] Narrate will ask nothing in Foundry's window: ${(err as Error).message}`);
   }
+  /*
+   * SAID TO A WINDOW THAT IS ALREADY OPEN — the half of Owen's report the await
+   * could not reach.
+   *
+   * Foundry reads `host-ops:offers` once, at renderer boot. Awaiting the refresh
+   * before the window opens (577a70db) makes the FIRST paint deterministic and
+   * nothing more: a second press of Open on a window already up recomputes this
+   * form and, before Foundry 29c40a0, had no way to tell anyone. The user who
+   * installed a voice and pressed Open again got the offers from boot.
+   *
+   * IN BOTH DIRECTIONS, which is why it is outside the try. A refresh that FAILED
+   * has revised the form too — to no form at all — and a window still drawing the
+   * old one would offer questions this process can no longer answer.
+   *
+   * Standalone Foundry never sees this: the push has no listener until a window
+   * is up, and `setHostOperations` on a mount with no window is a write nobody
+   * reads. So calling it unconditionally here is right; there is no "is anyone
+   * listening" this side should be guessing at.
+   */
+  foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
 }
 
 /**

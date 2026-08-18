@@ -31,13 +31,19 @@
  *
  * ── PURE, AND OVER RECORDS RATHER THAN OVER SERVICES ────────────────────────
  *
- * Every function below takes the project summary and the step being asked about,
- * and reads nothing else. No injection, no signals, no disk: a possibility is a
- * fact about a catalogue row and a ledger row, so it is computable wherever both
- * are in hand — the dock (which asks about the standing step), the tree (which
- * asks about the row under the pointer), and the dialogs (which ask about the
- * position they are aimed at). That is the only shape in which one function can
- * serve all three.
+ * Every function below takes records — the project summary, the step being asked
+ * about, and in one case the ledger those steps came out of — and reads nothing
+ * else. No injection, no signals, no disk: a possibility is a fact about a
+ * catalogue row and a ledger row, so it is computable wherever both are in hand —
+ * the dock (which asks about the standing step), the tree (which asks about the
+ * row under the pointer), and the dialogs (which ask about the position they are
+ * aimed at). That is the only shape in which one function can serve all three.
+ *
+ * THE ONE FUNCTION THAT TAKES THE WHOLE LEDGER is `hostActPositionFrom`, and it
+ * is not a possibility at all — it is what a press SENDS once a possibility has
+ * said yes. It sits here because it is the direct consequence of the refusal
+ * `canRunHostActFrom` drops, and a reader who has just been told the import row
+ * may order a host act must find, in the next paragraph, what such a press names.
  *
  * ── THE STEP ARGUMENT IS "AS IF STANDING THERE" ─────────────────────────────
  *
@@ -47,8 +53,9 @@
  * row is "would this be possible if I were standing here", which is the same
  * question with a different step in it.
  */
+import { importedAsEpub } from './ledger';
 import { bookRow } from './original';
-import type { LedgerStep, ProjectSummary } from './types';
+import type { LedgerStep, ProjectLedger, ProjectSummary } from './types';
 
 /**
  * DID THIS BOOK ARRIVE AS A BOOK — an EPUB rather than a scan?
@@ -71,7 +78,7 @@ export function arrivedAsBook(project: ProjectSummary | null): boolean {
 }
 
 /**
- * IS THERE A BOOK AT THIS STAGE — the fact three of Foundry's four acts turn on.
+ * IS THERE A BOOK AT THIS STAGE — the fact THIS APP'S OWN acts turn on.
  *
  * ── Two conditions, and the second is the one people forget ─────────────────
  *
@@ -84,6 +91,15 @@ export function arrivedAsBook(project: ProjectSummary | null): boolean {
  * act from there would quietly work on the book they had just stepped away from
  * (docs/WORKBENCH.md §6c: *"Translate on … the import row = disabled. Same rule
  * for Export and Metadata"*).
+ *
+ * THAT SECOND CONDITION IS ABOUT DERIVATION, WHICH IS WHY IT IS NOT UNIVERSAL.
+ * Every act named in §6c makes A NEW THING OUT OF THE POSITION, and the mistake
+ * being prevented is a real one: a translation of the untouched scan, made
+ * because somebody clicked the top row to look at their PDF and then pressed
+ * Translate. An act that does not derive from the position has no such mistake
+ * to make, and the host's do not — `canRunHostActFrom` drops this clause and
+ * argues why where it drops it. Nothing else does, and a new act reaching for a
+ * predicate should take this one unless it can say the same sentence.
  *
  * EXCEPT WHERE THE IMPORT ROW IS THE BOOK. That second refusal is about stepping
  * back PAST a reading, and a project that arrived as a book has no such step to
@@ -191,12 +207,49 @@ export function canExportFrom(
  * if they arent doing it from an epub then we export the epub automatically and
  * then run the task they assigned."*
  *
- * So the question is no longer "is there a file" but "COULD THERE BE ONE" — and
- * that is `hasBookAt`, exactly and by name: the same test that decides whether an
- * export is possible from this stage, because the export is what would be made.
- * A stage that can be exported can be narrated; a stage that cannot — the unread
- * scan, the import row somebody stepped back to — can be neither, and the button
- * greys for the same reason the Export button beside it does.
+ * So the question is no longer "is there a file" but "COULD THERE BE ONE" — the
+ * export is what would be made, so a stage an export could be made from is a
+ * stage a host act can run from.
+ *
+ * ── And the ruling that took the import row back out of the gray ────────────
+ *
+ * Owen, using the hosted window (2026-08-18, over the switchboard): *"the
+ * narrate button in the bottom left of the foundry window is disappearing and
+ * disabling seemingly at random. it should be available pretty much anywhere the
+ * user clicks."* Clicking the top row of a book is an ordinary thing to do —
+ * it is where you go to look at the scan you imported — and from the chair, a
+ * button that greys when you click there and lights when you click one row down
+ * is not a rule, it is randomness.
+ *
+ * SO THIS IS `hasBookAt` MINUS EXACTLY ONE CLAUSE, and the one it drops is the
+ * import refusal. What is left is that predicate's first condition, asked in the
+ * same words and answering the same way: the pages have been read, or the book
+ * arrived as one. An unread scan is still no, a document with no project behind
+ * it is still no, and a book whose history this window is still loading is still
+ * yes — there is no position left in the question for that silence to be
+ * mistaken for the import.
+ *
+ * THE CLAUSE GOES BECAUSE A HOST ACT DOES NOT DERIVE FROM THE POSITION. §6c's
+ * refusal is about acts that make a NEW THING out of where you are standing, and
+ * stepping back past a reading to translate the untouched scan is a mistake
+ * worth preventing. A host act makes nothing here: its position names
+ * PROVENANCE — which row the work is recorded as coming from, echoed straight
+ * back into the tree — and names WHAT TO EXPORT for it to consume. Neither of
+ * those is ambiguous at the import row, because THE IMPORT ROW'S BOOK IS THE
+ * READING'S BOOK: a project has one book, the import is the row above it, and
+ * there is nothing else a narrate ordered from there could mean.
+ *
+ * FOUNDRY'S OWN ACTS KEEP THE CLAUSE — `canTranslateFrom`, `canSimplifyFrom`,
+ * `canExportFrom` and the metadata gate are untouched by this, and `hasBookAt`
+ * itself is untouched, which is what makes that sentence checkable rather than a
+ * promise.
+ *
+ * AN UNREAD SCAN IS STILL GREY, and deliberately: no reading means no bank,
+ * which means no book, which means there is nothing for `exportEpubFromStep` to
+ * mint the file this act would consume. That is not the ruling failing to reach
+ * a case — it is the ruling's other half working, because Read is the act
+ * already offered there and it is the one everything else is waiting on
+ * (`canReadPages`).
  *
  * ── Why it is a named act rather than a call to `hasBookAt` ─────────────────
  *
@@ -204,18 +257,101 @@ export function canExportFrom(
  * that gate the host's acts and the surface that refuses one must read ONE
  * function, and that function has to be named for the act so that the day a host
  * act grows a condition an export does not have, there is a body to put it in
- * rather than a shared predicate to fork.
+ * rather than a shared predicate to fork. That day has arrived, which is this
+ * body — the delegation was never the point, the shared answer was.
+ *
+ * NO STEP IS ASKED ANY MORE, on `canReadPages`'s precedent exactly. Once the one
+ * clause that read the position is gone, what is left is a fact about the
+ * PROJECT — does this book have a book — and a parameter kept for the shape of
+ * the family would be a parameter every caller has to compute and no reader can
+ * trust. What the position decides is what the press SENDS, which is the
+ * function below.
  *
  * IT IS THE PROJECT'S SIDE OF THE ANSWER AND NOT THE WHOLE OF IT. Whether the
  * host can actually do the work — a voice it has, a queue that will take it — is
  * the host's own to refuse at invoke, exactly as every predicate here stops at
  * what a catalogue row can say and leaves the dialogs their own sentences.
  */
-export function canRunHostActFrom(
-  project: ProjectSummary | null,
+export function canRunHostActFrom(project: ProjectSummary | null): boolean {
+  if (project === null) return false;
+  return project.reading.done || arrivedAsBook(project);
+}
+
+/**
+ * THE POSITION A HOST ACT ORDERED FROM THIS ROW SHOULD NAME — the other half of
+ * the ruling above, and the half a press reads.
+ *
+ * ── Why the gray and the id are two different questions ─────────────────────
+ *
+ * The gray asks whether the act is POSSIBLE from here and now answers yes at the
+ * import row. The press asks what to put in the invoke's `nodeId`, and there the
+ * import is the one answer that cannot be sent: the host takes that id back to
+ * `exportEpubFromStep` (electron/mount.ts) to make the file its work consumes,
+ * and that path is `canExportFrom` — which still refuses the import, because an
+ * export DOES derive from the position. Sending the import would hand somebody
+ * else's queue a node whose own export path declines it, which is a refusal
+ * arriving in another application's log instead of on the strip where the button
+ * was pressed.
+ *
+ * SO AN IMPORT NAMES THE READING AND EVERYTHING ELSE NAMES ITSELF. That is the
+ * whole rule, and it is the same sentence the gray is argued on: the import
+ * row's book is the reading's book, so a press there is an order about the
+ * reading, said one row too high.
+ *
+ * ── THE LINEAGE CONSEQUENCE, which is worth stating out loud ────────────────
+ *
+ * The host echoes the invoke's `nodeId` into `HostNode.parentStepId` verbatim
+ * (shared/host-ops.ts), so a narration ordered from the import row comes back
+ * hanging under the READING in the tree, not under the row that was clicked.
+ * That is honest — the work was made from the reading's book — and drawing it
+ * under the import would be the fabrication: it would claim audio was made from
+ * an untouched scan that has no words in it.
+ *
+ * ── The three answers, in the order they are asked ──────────────────────────
+ *
+ * NOT AN IMPORT: ITSELF. A reading, a save, a translation, an edit — every one
+ * of them is a position an export can be made from, and the press has always
+ * sent exactly this.
+ *
+ * AN IMPORT WITH A READING UNDER IT: THAT READING. A reading's parent is always
+ * the import (`originOf`, shared/ledger.ts, argues why), so the readings are
+ * precisely the import's `read` children and no walk is needed to find them. THE
+ * NEWEST WINS where a book has been read twice into two branches — a re-run
+ * replaces in place and only a genuinely different question (another page range)
+ * branches, so this is rare, and the newest pass is the one whose bank the
+ * project's book is. It is a choice rather than a deduction, and a person who
+ * meant the other pass has a row of its own to press.
+ *
+ * AN IMPORT THAT IS ITSELF THE BOOK: ITSELF, and this is not a fallback. A
+ * project that arrived as an EPUB has one step in its whole ledger and that row
+ * IS the book (`arrivedAsBook`); there is no reading to name and none is
+ * missing. `importedAsEpub` is the ledger's own way of saying so, asked here
+ * because this function is given a ledger rather than a catalogue row.
+ *
+ * ── AND NULL IS A REFUSAL, NOT A FALLBACK TO THE IMPORT ─────────────────────
+ *
+ * A scan whose bank exists but whose ledger holds no `read` step is a real
+ * state: `summarise` accepts the engine's own completion marker beside a bank as
+ * evidence of a reading, so a bank filled by `foundry vlm-read` from a terminal
+ * makes `reading.done` true with nothing in the history to name. The gray lets
+ * the press through and this cannot answer it, so it says nothing and the caller
+ * says a sentence. Sending the import instead would be handing the host an id
+ * whose export declines — the exact failure this function exists to prevent —
+ * and doing it silently.
+ */
+export function hostActPositionFrom(
+  ledger: ProjectLedger | null,
   standing: LedgerStep | null,
-): boolean {
-  return hasBookAt(project, standing);
+): LedgerStep | null {
+  if (ledger === null || standing === null) return null;
+  if (standing.action !== 'import') return standing;
+  let reading: LedgerStep | null = null;
+  for (const step of ledger.steps) {
+    if (step.action !== 'read' || step.parent !== standing.id) continue;
+    if (reading === null || step.createdAt >= reading.createdAt) reading = step;
+  }
+  if (reading !== null) return reading;
+  return importedAsEpub(ledger) ? standing : null;
 }
 
 /**

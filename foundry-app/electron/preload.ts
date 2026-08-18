@@ -9,7 +9,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import type { FoundryApi, MenuAction } from '../shared/api';
-import type { HostStatus } from '../shared/host-ops';
+import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type {
   AppQuestion,
   Asked,
@@ -206,6 +206,13 @@ const api: FoundryApi = {
     invoke: (operationId, projectDir, nodeId, settings) =>
       ipcRenderer.invoke('host-ops:invoke', operationId, projectDir, nodeId, settings),
     onChanged: (listener) => subscribe<HostNodes>('host-ops:changed', listener),
+    /*
+     * THE ACTS THEMSELVES, REVISED. The same shape `offers` answers, pushed
+     * whole whenever the host's own form changes (`HostOffers`,
+     * shared/host-ops.ts) — one more subscription in the same three-shape family
+     * the rows and the chip already use.
+     */
+    onOffersChanged: (listener) => subscribe<HostOffers>('host-ops:offers-changed', listener),
     /*
      * The chip in the chrome. Three doors in the same three shapes as the rows
      * above — a read for the first paint, a push for every change, an invoke for
