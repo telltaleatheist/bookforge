@@ -8,7 +8,56 @@
  * on a shell that will not take a for-loop.
  */
 const { execFileSync } = require('child_process');
+const fs = require('fs');
 const path = require('path');
+
+/**
+ * REFUSE A STALE BUILD BEFORE RUNNING A SINGLE SUITE.
+ *
+ * The suites load COMPILED modules out of dist/electron, so a source-green tree
+ * with an old dist reports red — and the failure names the test, which is the
+ * wrong end to start debugging from (it cost a real debugging round on
+ * 2026-08-18, on both machines' account). Newest source mtime vs newest compiled
+ * mtime is a cheap honest proxy: tsc rewrites its outputs on every run, so a
+ * compile that happened after the last edit always wins this comparison.
+ */
+function newestMtime(root, extension) {
+  let newest = 0;
+  const walk = (dir) => {
+    let entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { return; }
+    for (const entry of entries) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(full);
+      else if (entry.isFile() && entry.name.endsWith(extension)) {
+        const mtime = fs.statSync(full).mtimeMs;
+        if (mtime > newest) newest = mtime;
+      }
+    }
+  };
+  walk(root);
+  return newest;
+}
+
+const repo = path.join(__dirname, '..');
+const newestSource = Math.max(
+  newestMtime(path.join(repo, 'electron'), '.ts'),
+  newestMtime(path.join(repo, 'shared'), '.ts'),
+  newestMtime(path.join(repo, 'packages', 'quire', 'src'), '.ts'),
+);
+const newestCompiled = newestMtime(path.join(repo, 'dist', 'electron'), '.js');
+if (newestCompiled === 0) {
+  console.error(
+    'dist/electron holds no compiled output, and the keepers load compiled modules. '
+    + 'Run: npx tsc -p tsconfig.electron.json');
+  process.exit(1);
+}
+if (newestSource > newestCompiled) {
+  console.error(
+    'dist/electron is older than the TypeScript sources, so the keepers would test a build '
+    + 'that no longer matches the code. Run: npx tsc -p tsconfig.electron.json');
+  process.exit(1);
+}
 
 const SUITES = [
   'test-editor-state-store',
