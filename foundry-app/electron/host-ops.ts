@@ -30,7 +30,7 @@
  * of the arrangement rather than a flag anybody has to remember to check.
  */
 import type { HostNode, HostOperationKind, NodeOutput } from '../shared/types';
-import type { HostNodeAction, HostOperationOffer } from '../shared/host-ops';
+import type { HostNodeAction, HostOperationOffer, HostStatus } from '../shared/host-ops';
 import { fold } from '../shared/original';
 import { broadcast } from './window';
 
@@ -280,6 +280,111 @@ export function hostNodesFor(projectDir: string): readonly HostNode[] {
   return nodesByProject.get(fold(projectDir))?.nodes ?? [];
 }
 
+/**
+ * WHAT THE HOST IS DOING RIGHT NOW, or null — the chip in this window's chrome.
+ *
+ * ONE VALUE FOR THE PROCESS, and not one per project, which is the difference
+ * between this and `nodesByProject` above. A host node describes a thing being
+ * made FROM A PARTICULAR BOOK and belongs on that book's tree; a status
+ * describes the host's own queue, which is one queue no matter which book this
+ * window happens to be standing in. Keying it by project would make the chip go
+ * blank when somebody opened a second book, which is precisely the moment they
+ * would want to know what was still running.
+ *
+ * NULL IS THE STARTING VALUE AND THE ENDING ONE. Standalone nobody ever writes
+ * it; hosted, the host clears it with `setHostStatus(null)` when its queue
+ * drains, and the chip leaves the chrome. Both are the same state and neither is
+ * a fallback standing in for an answer.
+ */
+let status: HostStatus | null = null;
+
+/**
+ * THE OTHER PUSH DOOR: this is what the host is doing, as of now.
+ *
+ * `setHostNodes`'s mechanics exactly, and for its reasons — the whole value on
+ * every change rather than a diff, because a diff between two processes is a
+ * thing that goes wrong silently and stays wrong, and this one is four fields.
+ * The host is expected to call it on every movement of its own queue; Foundry
+ * has no timer, polls nothing, and advances no number by itself.
+ *
+ * NULL IS A REAL STATEMENT and is pushed like any other. It means "I have
+ * nothing to say", the chip leaves, and the chrome is Foundry's alone — the
+ * standalone appearance, reached from the hosted state, which is what makes the
+ * chip conditional by construction rather than by a flag somebody has to
+ * remember to check.
+ *
+ * NOTHING IN THE VALUE IS VALIDATED. A percent above a hundred, a headline of
+ * three hundred characters, a pending count that disagrees with the nodes on the
+ * tree: all of them are drawn as given. This app cannot know what the host's
+ * queue holds, so a correction here would be a guess overwriting the only side
+ * that knows (shared/host-ops.ts carries the whole of that rule).
+ */
+export function setHostStatus(pushed: HostStatus | null): void {
+  status = pushed;
+  broadcast('host-ops:status-changed', pushed);
+}
+
+/**
+ * What a window asks when it first paints — for a window that opened after the
+ * host had already pushed.
+ *
+ * `hostNodesFor`'s reason exactly: every push after this one arrives on its own,
+ * and this is the one message a late window would otherwise have missed.
+ */
+export function hostStatus(): HostStatus | null {
+  return status;
+}
+
+/**
+ * WHETHER A CLICK ON THE CHIP HAS ANYWHERE TO GO — the probe the chrome draws by.
+ *
+ * `hostTakesNodeActions`'s rule, one surface along: `onStatusOpen` is optional
+ * (electron/host.ts), so a host may describe its queue without offering a way
+ * into it, and a chip that looked pressable and did nothing would be the one
+ * outcome this socket must not have. Registered, the chip is a button; not
+ * registered, it is a readout — and the difference is visible before anybody
+ * touches it.
+ */
+let statusOpen: (() => void) | null = null;
+
+/** Said once, by `mountFoundry`, and only when the host registered the callback. */
+export function recordHostStatusOpen(handler: () => void): void {
+  statusOpen = handler;
+}
+
+/** True when the chip has somewhere to send a click. */
+export function hostOpensStatus(): boolean {
+  return statusOpen !== null;
+}
+
+/**
+ * The chip was clicked: ask the host to open whatever it thinks this is about.
+ *
+ * WHAT THAT MEANS IS ENTIRELY THE HOST'S. Raising its own queue window is the
+ * obvious reading and it is not the only one — Foundry passes nothing, decides
+ * nothing, and changes nothing here afterwards; the next `setHostStatus` push is
+ * the only thing that reaches this window.
+ *
+ * IT REFUSES BY NAME RATHER THAN RETURNING QUIETLY, on `actOnHostNode`'s rule.
+ * The renderer does not draw a pressable chip without the probe above, so the
+ * only way to see this sentence is a renderer and a host that disagree — which
+ * is exactly the case a silent return would hide.
+ *
+ * SYNCHRONOUS, UNLIKE THE INVOKE DOORS, because the callback is: raising a
+ * window is not work anybody waits on, and a signature that could be awaited
+ * would invite a host to do something here that the person who clicked would
+ * have to stand still for. A throw still travels back over the door — the
+ * handler is a promise on the renderer's side either way.
+ */
+export function openHostStatus(): void {
+  if (statusOpen === null) {
+    throw new Error(
+      'The app Foundry is running inside did not offer anywhere for this to open.',
+    );
+  }
+  statusOpen();
+}
+
 /*
  * Re-exported so a host that types its own operation array has one import for
  * the whole socket, and so `mount.ts` — the seam a host actually reads — can
@@ -288,3 +393,4 @@ export function hostNodesFor(projectDir: string): readonly HostNode[] {
 export type { HostNode, HostOperationKind, HostOperationOffer, NodeOutput };
 export type { HostNodeAction } from '../shared/host-ops';
 export type { HostOpField } from '../shared/host-ops';
+export type { HostStatus } from '../shared/host-ops';

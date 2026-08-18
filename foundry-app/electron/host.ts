@@ -93,6 +93,38 @@ export interface FoundryHost {
    */
   onNodeAction?(projectDir: string, nodeId: string, action: HostNodeAction): void | Promise<void>;
   /**
+   * SOMEBODY CLICKED THE STATUS CHIP IN FOUNDRY'S CHROME.
+   *
+   * ── What the chip is, and why the click is optional ─────────────────────────
+   *
+   * The host pushes a line about its own work (`setHostStatus`,
+   * electron/host-ops.ts) and Foundry draws it in the top corner of its window —
+   * the one surface in this app's chrome that belongs to somebody else. That
+   * much is a READOUT and needs nothing from the host but the words.
+   *
+   * REGISTERING THIS IS WHAT MAKES THE CHIP CLICKABLE, and not registering it is
+   * a complete answer. A host with a window of its own to raise says so here and
+   * the chip grows a cursor, a hover and a press; a host with nowhere to send
+   * somebody leaves it out and the chip stays a readout, drawn without any
+   * affordance suggesting otherwise. That probe is the `openable` field on the
+   * status answer (`host-ops:status`), on `onNodeAction`'s rule exactly — a
+   * button that silently does nothing is the one outcome this socket must not
+   * have.
+   *
+   * WHAT IT DOES IS ENTIRELY THE HOST'S BUSINESS. Raising its own queue window
+   * is the obvious reading and Foundry does not require it: nothing is passed,
+   * nothing is expected back, and no change is made in this window. What reaches
+   * the chip afterwards is the next `setHostStatus` push, which is how every
+   * fact about the host's work arrives.
+   *
+   * SYNCHRONOUS AND VOID, unlike `onNodeAction`. That one is a button whose
+   * outcome the person waits on, so its rejection travels back to be said where
+   * the button was; this is "bring your window forward", which either happened
+   * or did not, and a person who clicked has already looked away from this
+   * window to find out.
+   */
+  onStatusOpen?(): void;
+  /**
    * ACTS THE HOST CONTRIBUTES TO THE PROVENANCE TREE — narration, enhancement,
    * assembly: the audio half of a pipeline whose text half is this app.
    *

@@ -7,6 +7,7 @@ import { InspectorComponent } from './components/inspector/inspector.component';
 import { ConfirmDialogComponent } from './components/confirm-dialog/confirm-dialog.component';
 import { ExportDialogComponent } from './components/export-dialog/export-dialog.component';
 import { HostOpDialogComponent } from './components/host-op-dialog/host-op-dialog.component';
+import { HostStatusComponent } from './components/host-status/host-status.component';
 import { OcrDialogComponent } from './components/ocr-dialog/ocr-dialog.component';
 import { OpenDocumentsComponent } from './components/open-documents/open-documents.component';
 import { MetadataDialogComponent } from './components/metadata-dialog/metadata-dialog.component';
@@ -27,6 +28,14 @@ import { api } from './core/foundry';
  * pinned to its foot — whatever route is open in the middle, and the inspector
  * on the right, with the queue shelf floating over all of it and the dialogs
  * over everything.
+ *
+ * AND, ABOVE ALL OF THAT, A ROW THAT IS USUALLY NOT THERE. The host status chip
+ * is the one surface in this window's chrome that belongs to the application
+ * Foundry is mounted inside: it says what that application is doing, in that
+ * application's own words, and it is drawn at all only while somebody is
+ * pushing one (`HostStatusComponent`). Standalone the row has no height, no
+ * padding and no element — the chip's own host is display:none — so the window
+ * this app opens for itself is unchanged in every pixel.
  *
  * THE DOCK HAS BEEN IN THREE PLACES AND IS IN THE SIDEBAR NOW. It began as an
  * 88-pixel column on the left beside a 220-pixel document list — 308 pixels of a
@@ -86,11 +95,31 @@ import { api } from './core/foundry';
     RouterOutlet, OpenDocumentsComponent, InspectorComponent,
     QueueShelfComponent, OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, MetadataDialogComponent,
-    ConfirmDialogComponent, HostOpDialogComponent,
+    ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="shell">
+      <!--
+        THE TOP ROW, AND IT BELONGS TO WHOEVER IS RUNNING THIS APP.
+
+        The window has the OS's own title bar and nothing of its own under it,
+        which was right for as long as everything on screen was about the book.
+        Hosted, it is not: the host runs a queue this app knows nothing about,
+        and in the host's own windows that queue's state is in the top corner
+        where a glance finds it. So the shell's column grows a first row for it,
+        pinned to the right where a status belongs, above everything that is
+        about a document.
+
+        IT COSTS THE STANDALONE APP NOTHING AND NOT NEARLY NOTHING. The chip's
+        host element is display:none until a host pushes something, and its
+        padding is on that same element, so this row occupies no pixels at all
+        in a window nobody mounted (see the component). Inside the flex column
+        rather than fixed over it, deliberately: a chip floating at z-index over
+        the inspector would be furniture nobody could move off the panel it
+        landed on, and this is chrome, not an overlay.
+      -->
+      <app-host-status />
       <div class="body">
         <!--
           THE LEFT SIDEBAR IS PERMANENT CHROME NOW, and that is Owen's sixth
@@ -160,13 +189,14 @@ import { api } from './core/foundry';
   styles: [`
     :host { display: block; height: 100vh; }
     /*
-      ONE ROW, AND THE COLUMN IT USED TO BE IS GONE WITH THE DOCK. \`.shell\` was
-      a column — the body above, the tool dock along the bottom — and the dock has
-      moved into the left sidebar (Owen, 2026-08-17 22:30), so what is left is the
-      body and the overlays. The column survives as a one-child flex rather than
-      being flattened away, because the shelf and the dialogs are its siblings and
+      THE COLUMN THE DOCK LEFT BEHIND, PUT BACK TO WORK. \`.shell\` was a column —
+      the body above, the tool dock along the bottom — and the dock moved into the
+      left sidebar (Owen, 2026-08-17 22:30), leaving a one-child flex that was kept
+      rather than flattened, because the shelf and the dialogs are its siblings and
       a \`display: block\` here would take the body's own height management with
-      it.
+      it. It has a second child again: the host status chip's row, above the body,
+      which is nothing at all in a window nobody mounted and a top row when there
+      is one (\`HostStatusComponent\`).
 
       \`min-height: 0\` still earns its place on the row: without it a flex item
       does not shrink below its content, and a long tree would push the sidebar's

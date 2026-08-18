@@ -1,7 +1,7 @@
 import { Injectable, signal } from '@angular/core';
 
 import { offeredFrom } from '@shared/host-ops';
-import type { HostNodeAction, HostOperationOffer } from '@shared/host-ops';
+import type { HostNodeAction, HostOperationOffer, HostStatus } from '@shared/host-ops';
 import { fold } from '@shared/original';
 import type { HostNode, NodeOutput } from '@shared/types';
 
@@ -55,11 +55,55 @@ export class HostOpsService {
   /** The projects this window has already asked about. See `ensure`. */
   private readonly asked = new Set<string>();
 
+  /**
+   * WHAT THE HOST IS DOING RIGHT NOW, or null — the chip in the window's chrome.
+   *
+   * NOT KEYED BY PROJECT, which is the one way it differs from everything else
+   * this class holds. A host node describes a thing being made from a particular
+   * book; this describes the host's own queue, which is one queue whichever book
+   * is open. Main keeps it the same way (electron/host-ops.ts).
+   *
+   * NULL IS THE CHIP NOT BEING DRAWN, and it is the starting value: standalone
+   * nothing ever sets it, so the chrome is this app's alone by doing nothing at
+   * all rather than by a check somebody has to remember.
+   */
+  private readonly status = signal<HostStatus | null>(null);
+
+  /**
+   * WHETHER A CLICK ON THE CHIP HAS ANYWHERE TO GO — `actionable`'s twin, one
+   * surface along, and read for the same reason: the affordance is drawn only
+   * where somebody is listening, because a chip that looked pressable and did
+   * nothing is the one outcome this socket must not have.
+   */
+  private readonly statusOpenable = signal(false);
+
   constructor() {
     if (!api) return;
     void api.hostOps.offers().then((answer) => {
       this.registered.set(answer.operations);
       this.actionable.set(answer.nodeActions);
+    });
+    /*
+     * THE CHIP'S FIRST PAINT AND EVERY PUSH AFTER IT. The read exists for the
+     * window that opened AFTER the host had already pushed — `ensure`'s reason,
+     * without the per-project bookkeeping, because there is one status and this
+     * window asks for it once.
+     *
+     * THE SUBSCRIPTION IS ARMED FIRST AND THE READ DEFERS TO IT. A round trip
+     * takes a turn or two, and a host whose queue moved inside that window would
+     * have its push overwritten by an answer composed before it — the chip would
+     * then sit on a stale line until the host's queue happened to move again.
+     * `heard` is the whole guard: once anything has been pushed, the first-paint
+     * answer is old news and only its `openable` half is worth keeping.
+     */
+    let heard = false;
+    api.hostOps.onStatusChanged((pushed) => {
+      heard = true;
+      this.status.set(pushed);
+    });
+    void api.hostOps.status().then((answer) => {
+      this.statusOpenable.set(answer.openable);
+      if (!heard) this.status.set(answer.status);
     });
     /*
      * THE WHOLE SET FOR ONE PROJECT, on every push. It replaces rather than
@@ -185,6 +229,36 @@ export class HostOpsService {
   async nodeAction(projectDir: string, nodeId: string, action: HostNodeAction): Promise<void> {
     if (!api) return;
     await api.hostOps.nodeAction(projectDir, nodeId, action);
+  }
+
+  /**
+   * WHAT THE HOST IS DOING RIGHT NOW, for the chip in the chrome — null when
+   * there is nothing to draw, which is standalone always.
+   *
+   * The signal itself, handed out rather than copied: the chip reads it in a
+   * template and a push has to repaint it. Nothing in this app reads INTO it —
+   * the words are the host's and are drawn as they arrived (shared/host-ops.ts).
+   */
+  hostStatus(): HostStatus | null {
+    return this.status();
+  }
+
+  /** True when a click on the chip has somewhere to go. See `takesNodeActions`. */
+  opensStatus(): boolean {
+    return this.statusOpenable();
+  }
+
+  /**
+   * The chip was clicked. What happens is the host's — raising its own window is
+   * the obvious reading and this app neither asks for nor inspects the result.
+   *
+   * THE REJECTION IS THE CALLER'S TO SHOW, on `invoke`'s rule. It can only be
+   * reached by a chip drawn pressable over a host that registered nothing, which
+   * is a disagreement worth seeing rather than swallowing.
+   */
+  async openStatus(): Promise<void> {
+    if (!api) return;
+    await api.hostOps.openStatus();
   }
 }
 

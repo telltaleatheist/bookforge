@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **d5b236c** — *"feat(host-ops): narrate from any step — an act may consume the book, and the export is made for it"* |
+| Source sha | **8691110** — *"feat(host-ops): a status chip in the chrome — the host says what it is doing, in its own words, or says nothing"* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -98,6 +98,17 @@ the landing, the `workspace.ts` facsimile-name conflation splits into
 gray and refusal alike) with book-consuming acts pressing the standing
 step's own id. No IPC channel added or renamed; the `appliesTo` payload
 widening carries a dated row in `IPC-CHANNELS.md` (94/94 blobs at d5b236c).
+`2934adc`+`8691110` are Owen's next two rulings in one refresh: the host's
+formed acts move up the action menu to sit right after Simplify ("right next
+to translate and simplify"), and the window chrome gains the HOST STATUS
+CHIP — the one surface a host may draw there: `HostStatus {headline,
+detail?, percent?, pending?}` in shared/host-ops.ts, `setHostStatus(status |
+null)` through the mount seam (per process, not per project), optional
+`FoundryHost.onStatusOpen` making the chip clickable, three new channels
+`host-ops:status` / `status-changed` / `status-open` (72 total). Standalone
+Foundry draws nothing — the chip's host element is display:none until a host
+pushes, so the un-hosted window is unchanged in every pixel (95/95 blobs at
+8691110).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

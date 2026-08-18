@@ -70,26 +70,41 @@ import { UiService } from '../../core/ui.service';
  *
  * ── THE ORDER, WHICH IS THE POINT OF CALLING IT ORDERED ────────────────────
  *
- * Three groups, divided by rules, and the middle one is the pipeline in the
- * order it runs:
+ * Three groups, divided by rules:
  *
  *   NAVIGATION — Home, Documents. Neither makes anything; they are where you go
  *   and what you look at, so they sit above the rule rather than inside the list
  *   of acts. Putting Home first is unchanged and still right: it is the way back.
  *
- *   THE PIPELINE — Read the pages, Translate, Simplify, Export, Metadata, then
- *   whatever the host contributes. This is the book's own life in sequence: the
- *   pages are read, the words are worked on, the finished thing is filed, and the
- *   audio is made from that. EXPORT MOVED DOWN in this wave — it used to sit
- *   directly after OCR, from the days when reading and generating were two halves
- *   of one button — and it belongs after the acts that change the words, because
- *   exporting before translating is exporting the wrong book. METADATA IS LAST OF
- *   OURS because it is a record ABOUT the book rather than a step in making one;
- *   it is here rather than beside Settings because what it edits is the book's own
- *   claim about itself, which is the book's business and not the app's.
+ *   THE ACTS — Read the pages, Translate, Simplify, whatever the host
+ *   contributes, Export, Metadata. Read is first because nothing else is
+ *   possible before the pages have been; Export is after everything that changes
+ *   the words, because exporting before translating is exporting the wrong book;
+ *   and METADATA IS LAST because it is a record ABOUT the book rather than a step
+ *   in making one — it is here rather than beside Settings because what it edits
+ *   is the book's own claim about itself, which is the book's business and not
+ *   the app's.
  *
  *   AND SETTINGS, BELOW A RULE OF ITS OWN — unchanged, for the reason it always
  *   had: it is not a tool, it is where you go when the tools are not the answer.
+ *
+ * ── THE HOST'S ACTS MOVED UP, AND RUN ORDER IS NO LONGER THE WHOLE ARGUMENT ─
+ *
+ * This block used to argue itself entirely from the pipeline: the acts stood in
+ * the order the book is made, so the host's audio work — which is made FROM the
+ * export — stood last of the acts, after Export and Metadata. Owen moved it
+ * (2026-08-18): *"there should be a narration button in the options sidebar
+ * menu, right next to translate and simplify. it makes sense for it to be
+ * there."*
+ *
+ * SO THE ORDER IS RUN ORDER WHERE THAT IS STILL WHAT SOMEBODY IS READING, and
+ * Owen's grouping where it is not. A menu is not a sequence being stepped
+ * through; it is a list being searched, and what a person searching it holds in
+ * mind is what the act is AIMED AT. Translate, Simplify and a narration all take
+ * the book in front of you and make another version of it. Export files what is
+ * already there and Metadata edits a claim about it — different asks, and the
+ * three that are alike now sit together. Run order still decides everything
+ * else, and nothing about how these rows behave changed with their position.
  *
  * ICON BESIDE LABEL, WHICH IS THE RULING SPELLED OUT: *"[icon] [action], one
  * after another."* The words were always there — they used to sit UNDER the glyph
@@ -162,10 +177,11 @@ import { UiService } from '../../core/ui.service';
         </button>
       </div>
 
-      <!-- THE PIPELINE, IN THE ORDER IT RUNS. Read the pages, then the acts
-           that change the words, then the finished file, then the record about
-           it — and last whatever the host contributes, because audio is made
-           from the export the row above produces. -->
+      <!-- THE ACTS. Read the pages, then everything that makes another version
+           of the book — Translate, Simplify, and whatever the host contributes,
+           which is where Owen put it — then the finished file, then the record
+           about it. See the class docblock for the order and what displaced the
+           run-order argument that used to settle all of it. -->
       <div class="menu-acts">
         <!--
           THE TWO HALVES OF WHAT USED TO BE ONE BUTTON, side by side and in the
@@ -222,6 +238,83 @@ import { UiService } from '../../core/ui.service';
           <span class="menu-icon">≈</span>
           <span class="menu-label">Simplify</span>
         </button>
+
+        <!--
+          ── AND THE HOST'S OWN ACTS, RIGHT HERE, WHICH IS OWEN'S PLACEMENT ───
+
+          *"there should be a narration button in the options sidebar menu,
+          right next to translate and simplify. it makes sense for it to be
+          there."* (Owen, 2026-08-18.)
+
+          THIS DISPLACES AN ARGUMENT THIS FILE USED TO MAKE, and the old one is
+          worth stating so the new one is read as a decision rather than a
+          drift. These rows sat LAST among the acts, on run order: everything
+          above makes the words and this makes something out of them, so the
+          audio came after the export it was made from. That is true of the
+          PIPELINE and it turned out not to be true of the MENU. A person
+          reading a list of things they can do is not stepping through a
+          sequence — they are looking for the act they came for — and the acts
+          that belong together in that reading are the ones aimed at the same
+          thing. Translate, Simplify and a narration all take the book in front
+          of you and make another version of it; Export files what is there and
+          Metadata edits a record about it. Owen put the host's acts with the
+          three they are like, and that is the order this menu keeps.
+
+          RUN ORDER SURVIVES WHERE IT IS STILL THE TRUTH: read the pages first,
+          the acts that make another version next, the finished file after them,
+          the record about it last. What moved is one group, from the end of the
+          list to the middle of it, because that is where somebody looks for it.
+
+          NOT ONE STRING HERE NAMES AN ACT. The label, the hover and the icon
+          all come off the offer the host registered — this app has never
+          contained the word "narrate" and does not start now, Owen's own
+          sentence notwithstanding. The amber is the menu's existing tint for
+          the host's work, the same one the tree draws audio cards in.
+
+          STANDALONE THIS LOOP RUNS ZERO TIMES: no host, no operations,
+          \`hostActs()\` is empty, and the menu is exactly this app's own acts. There is no
+          \`hosted()\` branch here because there does not need to be one — the
+          emptiness is the guard, and this position costs a standalone window
+          nothing at all.
+        -->
+        <!--
+          GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
+          Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
+          has selected cant run tts then its grayed out."* \`hostReady\` is the
+          same predicate the press itself refuses by
+          (\`canRunHostActFrom\`, shared/stages.ts), so the gray and the
+          sentence cannot disagree; the title says what would make it light up,
+          because a disabled control that keeps its enabled hover is a control
+          that explains nothing.
+
+          WHAT THE GRAY MEANS CHANGED WITH OWEN'S SECOND RULING — *"i dont
+          think its intuitive to know you have to create an epub before you can
+          narrate"* — and it is a smaller gray than it was. It used to mean
+          "nothing has been exported yet", which shut the button on books whose
+          words were all there; it means "there is no book AT THIS STAGE" now,
+          which is the unread scan and the import row and nothing else. The
+          export these acts consume is made for them when there is none.
+
+          NEITHER BEHAVIOUR CHANGED WHEN THE ROWS MOVED. The gray is the same
+          predicate, the press is the same press, and the two neighbours these
+          rows now sit between grey by the same shape of test — which is part of
+          why the position reads as natural.
+        -->
+        @for (act of hostActs(); track act.id) {
+          <button
+            class="menu-item audio"
+            [class.active]="ui.hostOpOpen()?.operationId === act.id"
+            [disabled]="!hostReady()"
+            [title]="hostReady()
+              ? act.label + ' — handled by the app Foundry is running inside'
+              : act.label + ' — there is no book at the step you are standing on, and this act is '
+                + 'made from one'"
+            (click)="runHostAct(act.id)"
+          >
+            <span class="menu-icon">♪</span>
+            <span class="menu-label">{{ act.label }}</span>
+          </button>
+        }
 
         <!--
           EXPORT, WHICH THIS SLOT USED TO CALL GENERATE. Same place, same glyph,
@@ -282,60 +375,6 @@ import { UiService } from '../../core/ui.service';
              of its own: this menu names ACTS, and picking between an
              EPUB, plain text and a reprint of the pages is one decision about
              one act, made where the rest of that act is described. -->
-
-        <!--
-          ── AND THE HOST'S OWN ACTS, WHEN THERE IS A HOST ────────────────────
-
-          *"Owen wants the dialog in the Foundry window, like translate/simplify
-          — and a narrate button on the nav rail besides."* (BookForge →
-          Foundry, 2026-08-18.) These sit at the end of the acts because they
-          are the end of the pipeline: everything above makes the words, and
-          this makes something out of them.
-
-          NOT ONE STRING HERE NAMES AN ACT. The label, the hover and the icon
-          all come off the offer the host registered — this app has never
-          contained the word "narrate" and does not start now. The amber is the
-          menu's existing tint for the host's work, the same one the tree draws
-          audio cards in.
-
-          STANDALONE THIS LOOP RUNS ZERO TIMES: no host, no operations,
-          \`hostActs()\` is empty, and the menu is exactly this app's own acts. There is no
-          \`hosted()\` branch here because there does not need to be one — the
-          emptiness is the guard.
-        -->
-        <!--
-          GRAYED WHEN THE STAGE CANNOT RUN IT, exactly like Translate and
-          Simplify — Owen's ruling (2026-08-17 21:45): *"if the step the user
-          has selected cant run tts then its grayed out."* \`hostReady\` is the
-          same predicate the press itself refuses by
-          (\`canRunHostActFrom\`, shared/stages.ts), so the gray and the
-          sentence cannot disagree; the title says what would make it light up,
-          because a disabled control that keeps its enabled hover is a control
-          that explains nothing.
-
-          WHAT THE GRAY MEANS CHANGED WITH OWEN'S SECOND RULING — *"i dont
-          think its intuitive to know you have to create an epub before you can
-          narrate"* — and it is a smaller gray than it was. It used to mean
-          "nothing has been exported yet", which shut the button on books whose
-          words were all there; it means "there is no book AT THIS STAGE" now,
-          which is the unread scan and the import row and nothing else. The
-          export these acts consume is made for them when there is none.
-        -->
-        @for (act of hostActs(); track act.id) {
-          <button
-            class="menu-item audio"
-            [class.active]="ui.hostOpOpen()?.operationId === act.id"
-            [disabled]="!hostReady()"
-            [title]="hostReady()
-              ? act.label + ' — handled by the app Foundry is running inside'
-              : act.label + ' — there is no book at the step you are standing on, and this act is '
-                + 'made from one'"
-            (click)="runHostAct(act.id)"
-          >
-            <span class="menu-icon">♪</span>
-            <span class="menu-label">{{ act.label }}</span>
-          </button>
-        }
       </div>
 
       <div class="menu-foot">
@@ -386,7 +425,7 @@ import { UiService } from '../../core/ui.service';
     }
 
     /*
-      THREE GROUPS, TWO RULES. Navigation, then the pipeline, then Settings —
+      THREE GROUPS, TWO RULES. Navigation, then the acts, then Settings —
       the class docblock carries the order and its reasons. The rules are what
       make this an ORDERED list rather than eight buttons in a column: without
       them the eye reads one run of equals and the sequence says nothing.

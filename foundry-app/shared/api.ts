@@ -8,7 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { BookOutcome } from './book';
-import type { HostNodeAction, HostOperationOffer } from './host-ops';
+import type { HostNodeAction, HostOperationOffer, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type { BookOp } from './ops';
 import type { ReReadPrompt } from './reread';
@@ -826,7 +826,7 @@ export interface FoundryApi {
    * THE HOST-OPERATIONS SOCKET, from the renderer's side — what somebody else's
    * application has contributed to this app's provenance tree.
    *
-   * ── Three doors, and why the renderer needs all three ───────────────────────
+   * ── The doors, and why the renderer needs each of them ─────────────────────
    *
    * `offers` is asked ONCE, like `hosted()`: a host registers its operations at
    * mount and nothing can change them while the process lives, so a subscription
@@ -842,9 +842,16 @@ export interface FoundryApi {
    * from something this app made, one of the host's own nodes when it was chained
    * onto work that has not finished yet.
    *
-   * STANDALONE IT IS TWO EMPTY LISTS AND A DOOR NOBODY OPENS, which is why the
-   * tree needs no branch for "is this app hosted": there is nothing to offer and
-   * nothing to draw, so it draws what it always drew.
+   * `status` IS THE ONE THAT IS NOT ABOUT A BOOK. The three above describe work
+   * ordered from a row and land on that row; the status describes the host's own
+   * queue and lands in the window's top corner, once, whichever book is open.
+   * Same three shapes as everything else here — a read for the first paint, a
+   * push for every change, an invoke for the click — so nothing about it is a
+   * new kind of thing to learn.
+   *
+   * STANDALONE IT IS TWO EMPTY LISTS, A NULL AND A DOOR NOBODY OPENS, which is
+   * why the tree needs no branch for "is this app hosted": there is nothing to
+   * offer and nothing to draw, so it draws what it always drew.
    */
   hostOps: {
     /**
@@ -900,6 +907,31 @@ export interface FoundryApi {
     ): Promise<void>;
     /** Every push, whole set, one project. Returns its own unsubscribe. */
     onChanged(listener: (pushed: HostNodes) => void): () => void;
+    /**
+     * WHAT THE HOST IS DOING RIGHT NOW, and whether the chip may be pressed.
+     *
+     * The first paint of the chrome's chip, for a window that opened after the
+     * host had already pushed. `null` is the ordinary answer — standalone
+     * always, and hosted until the host has something to say — and it means the
+     * chip is not drawn at all rather than drawn empty (`HostStatus`,
+     * shared/host-ops.ts).
+     *
+     * `openable` IS THE PROBE THE AFFORDANCE IS DRAWN BY. True only where the
+     * host registered `FoundryHost.onStatusOpen`; false leaves the chip a
+     * readout, with no cursor, no hover and no press — because a chip that
+     * looked pressable and did nothing is the outcome this socket must not have.
+     * It rides on this answer rather than on a door of its own for
+     * `offers().nodeActions`' reason exactly.
+     */
+    status(): Promise<{ status: HostStatus | null; openable: boolean }>;
+    /** Every push of it, whole value. Null clears the chip. Returns its own unsubscribe. */
+    onStatusChanged(listener: (pushed: HostStatus | null) => void): () => void;
+    /**
+     * The chip was clicked — ask the host to open whatever it thinks this is
+     * about. Sent only when `status().openable` said somebody is listening;
+     * rejects by name otherwise.
+     */
+    openStatus(): Promise<void>;
   };
 
   engineInfo(): Promise<EngineInfo>;

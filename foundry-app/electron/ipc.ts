@@ -42,7 +42,8 @@ import {
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
 import { hosted } from './host';
 import {
-  actOnHostNode, hostNodesFor, hostOperationOffers, hostTakesNodeActions, invokeHostOperation,
+  actOnHostNode, hostNodesFor, hostOpensStatus, hostOperationOffers, hostStatus,
+  hostTakesNodeActions, invokeHostOperation, openHostStatus,
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
@@ -201,19 +202,20 @@ export function registerIpc(): void {
   ipcMain.handle('app:hosted', () => hosted());
 
   /*
-   * ── THE HOST-OPERATIONS SOCKET — three doors in a family BookForge owns
-   *    nothing in ───────────────────────────────────────────────────────────
+   * ── THE HOST-OPERATIONS SOCKET — a family BookForge owns nothing in ───────
    *
    * `host-ops:` was chosen for exactly that reason. Hosting is additive only
    * while no FULL channel name is shared, and every family this app has ever
    * used was audited against the host's registry once (docs/IPC-CHANNELS.md);
    * a brand-new family with a hyphen in it cannot collide with anything, so
    * the socket is collision-safe by construction rather than by re-running an
-   * audit every time it grows a door.
+   * audit every time it grows a door. It has grown three since — the
+   * failed-node pair and the chrome's status chip — and that promise is what
+   * made each of them free.
    *
-   * ALL THREE ARE REGISTERED WHETHER OR NOT ANYBODY MOUNTED A HOST. The
-   * renderer asks the same questions in both worlds and gets an empty list
-   * standalone (electron/host-ops.ts): a door that existed only when hosted
+   * EVERY ONE IS REGISTERED WHETHER OR NOT ANYBODY MOUNTED A HOST. The
+   * renderer asks the same questions in both worlds and gets an empty list or a
+   * null standalone (electron/host-ops.ts): a door that existed only when hosted
    * would be a renderer that has to know which world it woke up in before it
    * can draw a tree.
    */
@@ -285,6 +287,36 @@ export function registerIpc(): void {
     (_event, projectDir: string, nodeId: string, action: HostNodeAction) =>
       actOnHostNode(projectDir, nodeId, action),
   );
+
+  /*
+   * ── THE STATUS CHIP — the one thing a host may draw in this window's chrome ─
+   *
+   * WHAT THE HOST IS DOING NOW, AND WHETHER A CLICK ON IT GOES ANYWHERE.
+   *
+   * Both in one answer, on `host-ops:offers`' precedent exactly: they are read
+   * out of one registration, they are wanted in the same breath by the same
+   * component, and a second channel for the probe would be one more name for
+   * BookForge's collision keeper to audit for a boolean. Null standalone and
+   * null for a host that has pushed nothing, which is the chip not being drawn
+   * at all — the chrome is Foundry's alone unless somebody says otherwise
+   * (shared/host-ops.ts, `HostStatus`).
+   */
+  ipcMain.handle('host-ops:status', () => ({
+    status: hostStatus(),
+    openable: hostOpensStatus(),
+  }));
+  /*
+   * THE CHIP WAS CLICKED. What that means is the host's own — raising its queue
+   * window is the obvious reading and Foundry neither requires nor inspects it
+   * (`FoundryHost.onStatusOpen`).
+   *
+   * IT REFUSES BY NAME for a host that registered nothing, and the renderer
+   * should never send it in that case: the chip is drawn WITHOUT a press when
+   * `openable` is false, so the only way to reach this sentence is a renderer
+   * and a host that disagree about what was registered. Said out loud rather
+   * than returned quietly, on `host-ops:invoke`'s rule.
+   */
+  ipcMain.handle('host-ops:status-open', () => openHostStatus());
 
   ipcMain.handle('dialog:open-document', () => promptForDocument());
 

@@ -1,8 +1,8 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-17 (host-ops round 2: the failed-node door,
-two payloads that grew, and the third `NodeOutput` member). It exists
+from memory, regenerated on 2026-08-18 (the host status chip: two doors and one
+push, all in `host-ops:`). It exists
 because of the fifth thing Foundry owes BookForge before the first copy: *"A
 channel audit. Enumerate both apps' IPC names once before the copy; Foundry's
 are namespaced, so this is a check, not a design"*
@@ -98,6 +98,30 @@ a name-collision audit.
   accepts one more shape. Recorded here because a keeper that parses names would
   not see it.
 
+### Three names added on 2026-08-18 — the host status chip
+
+The first thing a host may draw in Foundry's own CHROME, rather than inside a
+list Foundry already draws. Two doors and one push, all in `host-ops:`, which
+is why they cost nothing to audit; the rows are in the tables below and the
+contract is spelled out in the handoff's `#foundrynotes`.
+
+- `host-ops:status` (invoke) answers `{ status: HostStatus | null; openable:
+  boolean }` — the first paint, for a window that opened after the host had
+  already pushed. `openable` is the probe the affordance is drawn by, riding on
+  this answer for `host-ops:offers`' reason exactly: same question, same round
+  trip, no extra name to audit.
+- `host-ops:status-changed` (push, broadcast) carries `HostStatus | null`, the
+  whole value on every change. **Null is a real statement** — it clears the chip
+  and the chrome goes back to being Foundry's alone.
+- `host-ops:status-open` (invoke) hands a click on the chip to the host's
+  `onStatusOpen`. It refuses by name for a host that registered none, and the
+  renderer never sends it in that case, because the chip is drawn as a readout
+  rather than as a button when `openable` is false.
+- `HostStatus` is four fields, all the host's own words or numbers:
+  `headline` (required), `detail?`, `percent?` (0–100), `pending?`. Foundry
+  draws them and interprets none of them. **Nothing is drawn at all when the
+  status is null**, which is standalone always.
+
 **`host-ops` was invented rather than found**, and the reason belongs in this
 file: it is the host-operations socket (the provenance tree's audio work, ordered
 from a BookForge that has mounted this app), and a BRAND-NEW family is the one
@@ -110,7 +134,7 @@ family most likely to grow doors.
 
 ## Doors the renderer knocks on
 
-All 69 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
+All 71 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
 purpose: a renderer that cannot tell whether main heard it is a renderer that
 cannot report a failure. They are registered in one function, `registerIpc`
 (`app/electron/ipc.ts`), which `mountFoundry` calls.
@@ -144,6 +168,8 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `host-ops:node-action` | Retry or dismiss a host node that FAILED — the pair the tree draws on a failed card. |
 | `host-ops:nodes` | One project's host-contributed nodes as they now stand — the first paint. |
 | `host-ops:offers` | What the host registered at mount: its operations (with their forms), and whether failed nodes can be retried. |
+| `host-ops:status` | What the host is doing right now, for the chip in this window's chrome — and whether a click on it goes anywhere. Null standalone. |
+| `host-ops:status-open` | The chip was clicked: hand it to the host's `onStatusOpen`. Refuses by name for a host that registered none. |
 | `ledger:delete` | Delete a step and sweep its payload. |
 | `ledger:describe-delete` | What that step delete would take with it. |
 | `ledger:document-at` | The document the project's position resolves to; admits it to the allow-list. |
@@ -189,8 +215,8 @@ cannot report a failure. They are registered in one function, `registerIpc`
 
 ## Pushes main makes at the renderer
 
-Twelve, and every one of them is a state change the renderer holds a mirror of
-or a question it has to answer. Six go to every window through `broadcast`
+Thirteen, and every one of them is a state change the renderer holds a mirror of
+or a question it has to answer. Seven go to every window through `broadcast`
 (`app/electron/window.ts`); the rest are sent to one window's `webContents`.
 
 | Channel | What it says |
@@ -201,6 +227,7 @@ or a question it has to answer. Six go to every window through `broadcast`
 | `document:relocated` | An opened document moved onto the project's working copy; the tab follows. |
 | `env:install-progress` | An environment install changed phase. |
 | `host-ops:changed` | The host pushed what it is making in one project — the whole set, every time. |
+| `host-ops:status-changed` | The host pushed what it is doing at all — the whole value, every time. Null clears the chrome's chip. |
 | `menu:action` | A menu item the renderer has to carry out, because it acts on a tab. |
 | `project:open` | Stand in this project — the hosted deep link, sent once as the window loads. |
 | `projects:changed` | Something in the library moved. No payload: the renderer asks for the list. |

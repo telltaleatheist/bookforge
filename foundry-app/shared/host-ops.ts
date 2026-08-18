@@ -339,6 +339,57 @@ export interface HostOpField {
 export type HostNodeAction = 'retry' | 'dismiss';
 
 /**
+ * WHAT THE HOST IS DOING RIGHT NOW — the ONE surface a host may draw in this
+ * window's chrome.
+ *
+ * ── Why the chrome has a door in it at all ──────────────────────────────────
+ *
+ * Everything else in this socket lands INSIDE something Foundry already draws:
+ * an operation becomes a button in a list of acts, a node becomes a card under
+ * the step it was ordered from. Both are rows in a grammar this app owns. A
+ * host's queue is not a row — it is a fact about somebody else's application
+ * that is true while the person is standing in this window, and the place an
+ * application says such a thing is its top corner. So the socket grows exactly
+ * one more surface, and it is deliberately the smallest one that can carry the
+ * fact: two lines, a number and a count.
+ *
+ * ── IT IS WORDS THE HOST CHOSE, AND FOUNDRY COMPOSES NONE OF THEM ───────────
+ *
+ * The same rule the whole socket is built on. Foundry does not know what the
+ * host's queue holds, cannot name what it is making, and would be guessing if it
+ * tried — so what crosses is a sentence somebody else wrote, drawn verbatim,
+ * never abbreviated, never re-cased, never re-ordered against anything. Nothing
+ * in this app reads `headline` for meaning; it reads it for LENGTH, and only to
+ * decide where to put the ellipsis.
+ *
+ * ── NULL AND ABSENT ARE THE STANDALONE GUARANTEE ────────────────────────────
+ *
+ * No host, or a host that has pushed nothing, or a host that pushed `null` to
+ * say it is finished: in all three the chrome is Foundry's alone and the chip is
+ * not drawn at all — not empty, not a placeholder, not there. That is why every
+ * field but `headline` is optional and why the whole thing is nullable: a host
+ * with nothing to say says nothing, and the window it is standing in looks
+ * exactly as it looked before anybody mounted it.
+ *
+ * ── It is a MIRROR and not a store ──────────────────────────────────────────
+ *
+ * `HostNode`'s lifetime, exactly: nothing here is written to disk, reconciled on
+ * startup or remembered about a host that went away. The host pushes on every
+ * change of its own state and Foundry draws what it was last given, which is the
+ * only correct lifetime for a description of a queue in another process.
+ */
+export interface HostStatus {
+  /** One line, the host's own words (e.g. what it is doing right now). */
+  readonly headline: string;
+  /** A second, dimmer line. Optional. */
+  readonly detail?: string;
+  /** 0–100 when the host can say how far along the work is. */
+  readonly percent?: number;
+  /** How many more things wait behind the current one, when the host counts. */
+  readonly pending?: number;
+}
+
+/**
  * THE NODE ID THAT NAMES AN EXPORT ROW — `export:<project-relative file>`.
  *
  * ── The ruling, and why an id had to be minted for it ──────────────────────

@@ -9,6 +9,7 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 
 import type { FoundryApi, MenuAction } from '../shared/api';
+import type { HostStatus } from '../shared/host-ops';
 import type {
   AppQuestion,
   Asked,
@@ -205,6 +206,16 @@ const api: FoundryApi = {
     invoke: (operationId, projectDir, nodeId, settings) =>
       ipcRenderer.invoke('host-ops:invoke', operationId, projectDir, nodeId, settings),
     onChanged: (listener) => subscribe<HostNodes>('host-ops:changed', listener),
+    /*
+     * The chip in the chrome. Three doors in the same three shapes as the rows
+     * above — a read for the first paint, a push for every change, an invoke for
+     * the click — carrying words this app never composes and never reads for
+     * meaning (`HostStatus`, shared/host-ops.ts).
+     */
+    status: () => ipcRenderer.invoke('host-ops:status'),
+    onStatusChanged: (listener) =>
+      subscribe<HostStatus | null>('host-ops:status-changed', listener),
+    openStatus: () => ipcRenderer.invoke('host-ops:status-open'),
   },
 
   engineInfo: () => ipcRenderer.invoke('engine:info'),

@@ -76,7 +76,9 @@ import { net, protocol, session } from 'electron';
 import { bookFigureFile } from './book';
 import { openDocument } from './documents';
 import { type FoundryHost, recordHost } from './host';
-import { type HostOperation, recordHostNodeActions, recordHostOperations } from './host-ops';
+import {
+  type HostOperation, recordHostNodeActions, recordHostOperations, recordHostStatusOpen,
+} from './host-ops';
 import { registerIpc } from './ipc';
 import * as queue from './job-queue';
 import { ledgerOf, listProjects, onImportLanded, readManifest } from './projects';
@@ -104,6 +106,16 @@ export { hostedLibraryDir } from './host';
  * past `mount.ts` into modules that are Foundry's own business.
  */
 export { setHostNodes } from './host-ops';
+/*
+ * AND THE CHIP IN THE CHROME, which is the socket's second push door.
+ * `setHostNodes` says what the host is making OF A PARTICULAR BOOK and lands on
+ * that book's tree; this says what the host is doing AT ALL and lands in the
+ * window's top corner, once, whichever book is open. Null clears it and the
+ * chrome goes back to being Foundry's alone — see electron/host-ops.ts, and
+ * `FoundryHost.onStatusOpen` for what a click on it asks.
+ */
+export { setHostStatus } from './host-ops';
+export type { HostStatus } from '../shared/host-ops';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -382,6 +394,17 @@ export function mountFoundry(host?: FoundryHost): void {
      */
     const nodeAction = host.onNodeAction?.bind(host);
     if (nodeAction !== undefined) recordHostNodeActions(nodeAction);
+    /*
+     * AND WHERE A CLICK ON THE STATUS CHIP GOES.
+     *
+     * Bound and registered exactly as the pair above, and OPTIONAL in the same
+     * drawn way: without it the chrome's chip is a readout rather than a button
+     * (`hostOpensStatus` is the probe the renderer asks). A host that pushes a
+     * status and registers nothing here has said "here is what I am doing" and
+     * not "here is where to see more", which is a complete thing to say.
+     */
+    const statusOpen = host.onStatusOpen?.bind(host);
+    if (statusOpen !== undefined) recordHostStatusOpen(statusOpen);
   }
   applyContentSecurityPolicy();
   registerFileProtocol();
