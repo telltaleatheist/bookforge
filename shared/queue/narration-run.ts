@@ -268,10 +268,22 @@ function assemblyOutputDir(projectDir: string): string {
   return `${projectDir.replace(/\\/g, '/')}/output`;
 }
 
-/** What the audiobook rows call themselves. One derivation, two steps. */
-function audiobookMetadata(book: NarrationRunBook): NarrationRunMetadata {
+/**
+ * A STEP'S NAME IS ITS ACT, and the book rides beside it.
+ *
+ * These rows used to call themselves by the BOOK's title, and Owen read the
+ * result off the queue card of his first Foundry-pressed narration
+ * (2026-08-17): an assembly step labelled "Flashpoint Of Revival" — *"it
+ * should say 'assembly' or something instead of the name of the book, so the
+ * user knows which step is happening."* A row's `title` is what every queue
+ * surface prints as its label, so it names the WORK, exactly as the TTS step
+ * always has; the book's name travels in `bookTitle`, the same slot the TTS
+ * step carries it in, for any surface that wants to say both.
+ */
+function actMetadata(book: NarrationRunBook, act: string): NarrationRunMetadata {
   return {
-    title: book.title,
+    title: act,
+    bookTitle: book.title,
     author: book.author,
     ...(book.year ? { year: book.year } : {}),
   };
@@ -355,7 +367,7 @@ export function narrationRvcStep(
     type: 'rvc-enhancement',
     bfpPath: book.projectDir,
     variantId: book.variantId,
-    metadata: audiobookMetadata(book),
+    metadata: actMetadata(book, 'Enhance'),
     config: {
       type: 'rvc-enhancement',
       // Filled at run time by session discovery — see the doc comment above.
@@ -379,7 +391,7 @@ export function narrationReassemblyStep(
     type: 'reassembly',
     bfpPath: book.projectDir,
     variantId: book.variantId,
-    metadata: audiobookMetadata(book),
+    metadata: actMetadata(book, 'Assembly'),
     config: {
       type: 'reassembly',
       // Filled at run time by session discovery, as above.

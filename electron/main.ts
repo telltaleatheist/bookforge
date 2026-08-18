@@ -1375,7 +1375,14 @@ async function invokeFoundryNarrate(
 
   const first = steps[0]!;
   const job = queueEngine.enqueue({
-    title: first.metadata.title,
+    /*
+     * THE JOB IS THE BOOK; THE STEPS ARE THE ACTS. This used to take the first
+     * step's own title, which made the whole card read "TTS" — Owen, off his
+     * first Foundry-pressed narration (2026-08-17): "it should specify which
+     * book we're narrating, not say 'tts'." The step rows already name their
+     * work (TTS / Enhance / Assembly, shared/queue/narration-run.ts).
+     */
+    title: meta.title,
     projectId: target.bookDir,
     foundry: { projectDir, parentStepId: nodeId },
     documentPath: target.variantPath,
