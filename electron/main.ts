@@ -91,6 +91,7 @@ import {
   type NarrateOffer,
   type NarrateVoiceOption,
 } from './foundry-narrate-form';
+import { chooseNarrationExport } from './foundry-narrate-target';
 // The ONE description of what a narration run consists of — the same one the
 // narration modal asks. See shared/queue/narration-run.ts for why it is shared.
 import { buildNarrationSteps } from '../shared/queue/narration-run';
@@ -980,21 +981,6 @@ interface FoundryNarrationTarget {
   variantPath: string;
 }
 
-/**
- * The project-relative file an `export:`-shaped node id names, or null.
- *
- * `export:` is a reserved prefix on the host-ops socket (foundry e8396b4,
- * their shared/host-ops.ts `exportNodeId`/`exportOfNodeId`): the id an export
- * row's press — and the rail's TTS button — sends instead of a ledger step id.
- * Our own minted ids (`bf-node:job:step`) cannot collide with it, and engine
- * step ids carry no colon at all.
- */
-function exportFileOfNodeId(nodeId: string): string | null {
-  if (!nodeId.startsWith('export:')) return null;
-  const file = nodeId.slice('export:'.length);
-  return file === '' ? null : file;
-}
-
 async function foundryNarrationTarget(
   projectDir: string,
   nodeId: string,
@@ -1033,55 +1019,27 @@ async function foundryNarrationTarget(
   const exported = manifestService.getVariants(got.manifest).variants.filter((v) =>
     v.foundrySource?.projectKey === key && v.format.toLowerCase() === 'epub');
 
-  if (exported.length === 0) {
-    /*
-     * NO AUTO-EXPORT, and that is a decision rather than an omission. Exporting
-     * is Foundry's act with Foundry's dialog choices — which format, from which
-     * step, under what name — and a host that ran one on the user's behalf would
-     * be guessing every one of them. The user is one button away from making the
-     * real choice.
-     */
-    throw new Error(
-      `${projectId} has no exported EPUB from this project, and narration reads a book file. `
-      + 'Export the book from Foundry first (it lands on the version list as a version), then '
-      + 'press Narrate again.');
-  }
-  const target = (variant: (typeof exported)[number]): FoundryNarrationTarget => ({
+  /*
+   * WHICH ONE THE PRESS MEANT is a decision about values and lives in
+   * `foundry-narrate-target.ts`, where `test-foundry-narrate-target.js` reaches
+   * every branch — including the two-EPUB cases, which no library on any of
+   * these machines has yet been able to produce. Everything above this line is
+   * the part that needs claims, a manifest and a disk.
+   *
+   * The `bf-node:`-shaped guard is NOT here: it belongs to the press rather
+   * than to the choice, and lives at the top of `invokeFoundryNarrate`.
+   */
+  const chosenId = chooseNarrationExport(
+    nodeId,
+    exported.map((v) => ({ id: v.id, fileName: v.foundrySource!.fileName })),
+    projectId,
+  );
+  const variant = exported.find((v) => v.id === chosenId)!;
+  return {
     bookDir,
     variantId: variant.id,
     variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
-  });
-
-  /*
-   * THE PRESS NAMED A FILE — resolve that file and no other. The id carries the
-   * catalogue's project-relative path; `FoundryVariantSource.fileName` records
-   * the basename every landing was filed under, so the basename is the join.
-   * Uniqueness is not asked: the user pressed the button ON this document
-   * (Owen's identity law), and a project with two exports is exactly when the
-   * named one matters.
-   */
-  const named = exportFileOfNodeId(nodeId);
-  if (named !== null) {
-    const base = named.split('/').pop()!;
-    const variant = exported.find((v) => v.foundrySource!.fileName === base);
-    if (variant === undefined) {
-      throw new Error(
-        `The press named "${named}", but ${projectId}'s version list has no exported EPUB filed `
-        + `under that name — it has ${exported.map((v) => v.foundrySource!.fileName).join(', ')}. `
-        + 'Export the book from Foundry again, then press Narrate on the new row.');
-    }
-    return target(variant);
-  }
-
-  if (exported.length > 1) {
-    throw new Error(
-      `This Foundry project has exported ${exported.length} EPUBs — `
-      + `${exported.map((v) => v.foundrySource!.fileName).join(', ')} — and this press does not `
-      + 'say which one it is. Press Narrate on the export row itself, or start the narration '
-      + `from the version you want on ${projectId}'s versions page.`);
-  }
-
-  return target(exported[0]!);
+  };
 }
 
 // ── The saved narration settings, read from the one store that has them ─────
