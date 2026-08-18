@@ -61,6 +61,13 @@ a name-collision audit.
   only where the host registered `FoundryHost.onNodeAction`. It rides here rather
   than on a channel of its own because it is the same question in the same round
   trip, and a new name would be one more thing to audit.
+- `HostOperationOffer.submitLabel?: string` joined the offer on
+  `host-ops:offers` — the word the in-window dialog puts on its submit button.
+  Owen: *"the button shouldnt say start if it isnt going to start, it should say
+  add to queue."* Only the host knows whether its invoke runs the work now or
+  files it, so the word is the host's to declare; **absent keeps Foundry's
+  existing default ("Start")**, so a host that declares nothing is unaffected.
+  One more optional field inside an existing payload — no channel changed.
 - `NodeOutput` — the vocabulary of `HostOperationOffer.appliesTo` on
   `host-ops:offers`, and of `HostNode`'s implied output — grew a third member,
   `'export'`, beside `'book'` and `'audio'`. **No channel changed and no payload

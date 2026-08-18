@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **69998c7** — *"fix(renderer): the export row answers the click its offer was waiting for, and the rail grays instead of refusing"* |
+| Source sha | **e8396b4** — *"feat(app): six rulings from the first narrate — the dock lives in the sidebar, and an export row has a name"* |
 | Copied on | 2026-08-17 |
-| Copied by | `git -C <foundry> archive 69998c7 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive e8396b4 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -62,7 +62,15 @@ open on it; pickRow's old premise "nothing is ever made from an export" was
 made false by Wave 10 itself), only the EPUB export row produces 'export'
 (a txt/reprint offering a file-consuming act could only refuse), and the
 rail's formed host acts gray on the new `hasEpubExport` predicate instead of
-refusing at press (94/94 blobs at 69998c7).
+refusing at press. `e8396b4` is Wave 11 — Owen's six rulings off the first
+real narrate press: no "from here" label on export rows, the dialog's submit
+says what the host declares (`HostOperationOffer.submitLabel?`, BookForge
+declares "Add to queue"), export rows are addressable (`export:<file>` node
+ids — a RESERVED prefix on the socket — sent by both the row's press and the
+rail, so ghost audio rows hang under the EPUB card), the EPUB export nests
+under its provenance step, the sidebar widened, and the rail's buttons moved
+into the sidebar bottom with the tree scrolling above (94/94 blobs at
+e8396b4).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

@@ -272,14 +272,18 @@ import { api } from '../../core/foundry';
       position: fixed;
       right: 16px;
       /*
-        CLEAR OF THE DOCK. The tool rail runs along the bottom of the window now,
-        and this pill is fixed at z-index 900 — above the rail's 40 — so 16px
-        would put it squarely over the Settings button at the dock's right-hand
-        end. The ladder is unchanged and still holds (viewer < shield 30 <
-        rail 40 < shelf 900 < dialogs 1200); what changed is that the shelf has
-        to be told where the bottom of the DOCUMENT area is, which is the token.
+        THE CORNER, AND NOTHING TO CLEAR ANY MORE.
+
+        This used to lift itself by the dock's own height token — the tool rail
+        ran along the bottom of the window, this pill is fixed at z-index 900,
+        and 16px would have put it squarely over the Settings button at the
+        dock's right-hand end. The dock is pinned inside the left sidebar now
+        (Owen, 2026-08-17 22:30), so the bottom-right corner of the window is
+        empty and the pill sits in it. The ladder is unchanged and still holds
+        (viewer < shelf 900 < dialogs 1200); what went is the one thing the
+        shelf had to be TOLD, which is why the token went with it.
       */
-      bottom: calc(var(--rail-h) + 16px);
+      bottom: 16px;
       z-index: 900;
       width: 320px;
       max-width: calc(100vw - 32px);

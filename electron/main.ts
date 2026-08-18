@@ -236,6 +236,12 @@ interface FoundryHostOperation {
    */
   readonly appliesTo: 'book' | 'audio' | 'export';
   /**
+   * What the form dialog's submit button says (foundry e8396b4). Only the host
+   * knows whether an invoke runs work now or files it — ours enqueue held, so
+   * "Start" was a one-word lie Owen caught. Absent keeps Foundry's default.
+   */
+  readonly submitLabel?: string;
+  /**
    * WHAT TO ASK THE PERSON BEFORE RUNNING IT, drawn by Foundry in its own window.
    *
    * ABSENT IS NOT EMPTY. An operation with no `form` invokes the instant it is
@@ -948,9 +954,23 @@ function sayToUser(kicker: string, title: string, message: string): void {
  * the ordinary case it is: Foundry rewrites the same file in `final/` on every
  * re-export and a landing that matches on key+name replaces that version in
  * place, so a project the user has exported forty times still has exactly one
- * EPUB version. Two means they exported under two names, and picking one of them
- * because the press came from a particular step would be this side inventing the
- * very linkage that does not exist.
+ * EPUB version.
+ *
+ * ── AND SINCE FOUNDRY'S WAVE 11, THE PRESS CAN NAME THE FILE ────────────────
+ *
+ * A press on an export row (and the rail's TTS button) sends
+ * `export:<project-relative file>` as the node id — `exportNodeId` in their
+ * shared/host-ops.ts, derived from the catalogue's own `ProjectFinal.file`,
+ * and a reserved prefix on the socket. When the id is that shape, the named
+ * file IS the answer: the user pressed the button ON that document, which is
+ * Owen's identity law word for word, and second-guessing it with a uniqueness
+ * rule would refuse a press that carried no ambiguity at all. The named file
+ * still has to BE one of this project's exported EPUBs — a name this library
+ * has no version for is refused with both lists in the sentence.
+ *
+ * A step-shaped id still resolves by uniqueness: two EPUB exports under two
+ * names mean the press carried no file, and picking one because of which step
+ * it came from would be this side inventing linkage that does not exist.
  */
 interface FoundryNarrationTarget {
   /** The BookForge project directory, absolute. */
@@ -960,7 +980,25 @@ interface FoundryNarrationTarget {
   variantPath: string;
 }
 
-async function foundryNarrationTarget(projectDir: string): Promise<FoundryNarrationTarget> {
+/**
+ * The project-relative file an `export:`-shaped node id names, or null.
+ *
+ * `export:` is a reserved prefix on the host-ops socket (foundry e8396b4,
+ * their shared/host-ops.ts `exportNodeId`/`exportOfNodeId`): the id an export
+ * row's press — and the rail's TTS button — sends instead of a ledger step id.
+ * Our own minted ids (`bf-node:job:step`) cannot collide with it, and engine
+ * step ids carry no colon at all.
+ */
+function exportFileOfNodeId(nodeId: string): string | null {
+  if (!nodeId.startsWith('export:')) return null;
+  const file = nodeId.slice('export:'.length);
+  return file === '' ? null : file;
+}
+
+async function foundryNarrationTarget(
+  projectDir: string,
+  nodeId: string,
+): Promise<FoundryNarrationTarget> {
   const key = foundryLandingKey(projectDir);
   const claims = await foundryProjectClaims();
   const matches = claims.filter((c) => c.key !== null && c.key === key);
@@ -1008,20 +1046,42 @@ async function foundryNarrationTarget(projectDir: string): Promise<FoundryNarrat
       + 'Export the book from Foundry first (it lands on the version list as a version), then '
       + 'press Narrate again.');
   }
-  if (exported.length > 1) {
-    throw new Error(
-      `This Foundry project has exported ${exported.length} EPUBs — `
-      + `${exported.map((v) => v.foundrySource!.fileName).join(', ')} — and nothing records which `
-      + 'step each came from, so BookForge cannot tell which one this is. Start the narration '
-      + `from the version you want on ${projectId}'s versions page.`);
-  }
-
-  const variant = exported[0]!;
-  return {
+  const target = (variant: (typeof exported)[number]): FoundryNarrationTarget => ({
     bookDir,
     variantId: variant.id,
     variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
-  };
+  });
+
+  /*
+   * THE PRESS NAMED A FILE — resolve that file and no other. The id carries the
+   * catalogue's project-relative path; `FoundryVariantSource.fileName` records
+   * the basename every landing was filed under, so the basename is the join.
+   * Uniqueness is not asked: the user pressed the button ON this document
+   * (Owen's identity law), and a project with two exports is exactly when the
+   * named one matters.
+   */
+  const named = exportFileOfNodeId(nodeId);
+  if (named !== null) {
+    const base = named.split('/').pop()!;
+    const variant = exported.find((v) => v.foundrySource!.fileName === base);
+    if (variant === undefined) {
+      throw new Error(
+        `The press named "${named}", but ${projectId}'s version list has no exported EPUB filed `
+        + `under that name — it has ${exported.map((v) => v.foundrySource!.fileName).join(', ')}. `
+        + 'Export the book from Foundry again, then press Narrate on the new row.');
+    }
+    return target(variant);
+  }
+
+  if (exported.length > 1) {
+    throw new Error(
+      `This Foundry project has exported ${exported.length} EPUBs — `
+      + `${exported.map((v) => v.foundrySource!.fileName).join(', ')} — and this press does not `
+      + 'say which one it is. Press Narrate on the export row itself, or start the narration '
+      + `from the version you want on ${projectId}'s versions page.`);
+  }
+
+  return target(exported[0]!);
 }
 
 // ── The saved narration settings, read from the one store that has them ─────
@@ -1240,7 +1300,7 @@ async function invokeFoundryNarrate(
 
   let target: FoundryNarrationTarget;
   try {
-    target = await foundryNarrationTarget(projectDir);
+    target = await foundryNarrationTarget(projectDir, nodeId);
   } catch (err) {
     const message = (err as Error).message;
     sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
@@ -1647,6 +1707,10 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
      * saying 'book' would appear on steps ONLY — the exact inverse.
      */
     appliesTo: 'export',
+    // The engine enqueues held; releasing is the queue's decision. Same words
+    // as BookForge's own modal button, for the same run (Owen: "the button
+    // shouldnt say start if it isnt going to start").
+    submitLabel: 'Add to queue',
     /*
      * A GETTER, not a captured array — the same reason `libraryDir` is one at the
      * mount call. Foundry reads this on every `host-ops:offers`, so a getter is a

@@ -170,14 +170,19 @@ import { UiService } from '../../core/ui.service';
         <footer class="foot">
           <button class="ghost" (click)="ui.closeHostOp()">Cancel</button>
           <!--
-            START, AND NOT THE ACT'S OWN NAME. "Narrate" is already the title of
-            this card and the label of the button that opened it; a third copy on
-            the primary would be the same word three times, and it is the one
-            string here that has to be true of an operation this app has never
-            heard of.
+            THE HOST'S OWN WORD FOR WHAT PRESSING DOES, where it declared one.
+            Owen: *"the button shouldnt say start if it isnt going to start, it
+            should say add to queue"* — and only the host knows which of those
+            its invoke will do (\`HostOperationOffer.submitLabel\`).
+
+            THE DEFAULT IS STILL "START", AND STILL NOT THE ACT'S OWN NAME.
+            "Narrate" is already the title of this card and the label of the
+            button that opened it; a third copy on the primary would be the same
+            word three times, and the fallback has to be true of an operation
+            this app has never heard of.
           -->
           <button class="primary" [disabled]="busy()" (click)="start()">
-            {{ busy() ? 'Starting…' : 'Start' }}
+            {{ busy() ? working() : submit() }}
           </button>
         </footer>
       } @else {
@@ -331,6 +336,38 @@ export class HostOpDialogComponent {
 
   /** The card's title: the act's own label, and nothing this app invented. */
   protected readonly title = computed(() => this.offer()?.label ?? 'This act');
+
+  /**
+   * What the submit button says at rest — the host's word, or Foundry's default.
+   *
+   * TRIMMED AND FALLING BACK ON EMPTY, because a host that declares an empty
+   * string has declared nothing and a button with no words on it is worse than
+   * one with the wrong word.
+   */
+  protected readonly submit = computed(() => {
+    const declared = this.offer()?.submitLabel?.trim() ?? '';
+    return declared.length > 0 ? declared : 'Start';
+  });
+
+  /**
+   * And what it says while the host is answering.
+   *
+   * DERIVED FROM THE SAME WORD rather than declared separately: a host that says
+   * "Add to queue" wants "Adding to queue…" while it waits, and asking it for
+   * both would be asking it to conjugate its own verb for a dialog it cannot
+   * see. The transformation is the crudest one that reads correctly for the
+   * shapes a submit label actually takes ("Start", "Add to queue", "Narrate"),
+   * and the ellipsis carries the rest of the meaning.
+   */
+  protected readonly working = computed(() => {
+    const word = this.submit();
+    const first = word.split(' ')[0] ?? word;
+    const rest = word.slice(first.length);
+    const ing = first.endsWith('e') && !first.endsWith('ee')
+      ? `${first.slice(0, -1)}ing`
+      : `${first}ing`;
+    return `${ing}${rest}…`;
+  });
 
   /** The fields to draw, or null for an operation the registry does not hold. */
   protected readonly fields = computed<readonly HostOpField[] | null>(() => {

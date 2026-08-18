@@ -200,6 +200,32 @@ export interface HostOperationOffer {
    * has to learn a new word.
    */
   form?: readonly HostOpField[];
+  /**
+   * WHAT THE DIALOG'S SUBMIT BUTTON SAYS — the host's word for what pressing it
+   * does, or absent for Foundry's own default.
+   *
+   * ── One word that was a lie ────────────────────────────────────────────────
+   *
+   * Owen, after the first real narrate (2026-08-17 22:30): *"the button
+   * shouldnt say start if it isnt going to start, it should say add to
+   * queue."* BookForge's engine ENQUEUES held — releasing the work is a
+   * separate queue decision — so a dialog that said Start promised something
+   * the press could not deliver, and the host's own modal for the same run had
+   * been saying "Add to queue" all along.
+   *
+   * ── Why it is the HOST's to declare ────────────────────────────────────────
+   *
+   * Because only the host knows. Foundry hands the answers over and gets a
+   * promise back; whether the far side runs the work immediately, files it
+   * behind three other books, or asks its own scheduler is invisible from this
+   * process and always will be. A word Foundry chose would be a guess about
+   * somebody else's queue — which is what "Start" was.
+   *
+   * ABSENT KEEPS TODAY'S DEFAULT, which is the compatibility promise: a host
+   * that declares nothing gets the button it has been getting, and this is one
+   * more optional field rather than a shape anybody has to migrate to.
+   */
+  submitLabel?: string;
 }
 
 /**
@@ -285,3 +311,72 @@ export interface HostOpField {
  * (`setHostNodes`), which is the same way it arrived.
  */
 export type HostNodeAction = 'retry' | 'dismiss';
+
+/**
+ * THE NODE ID THAT NAMES AN EXPORT ROW — `export:<project-relative file>`.
+ *
+ * ── The ruling, and why an id had to be minted for it ──────────────────────
+ *
+ * Owen, after the first real narrate (2026-08-17 22:30): *"the ghost rows must
+ * hang under the EPUB export row, not under 'Applied changes'."* The host echoes
+ * the invoke's `nodeId` into every node it pushes back
+ * (`HostNode.parentStepId`, verbatim — BookForge's own foundry-host-nodes.ts),
+ * so the tree hangs a narration wherever the press said it came from. An export
+ * row's press used to send the STEP the export was made from, which is why the
+ * ghosts landed on the step. To hang them under the export, the press has to
+ * send an id that names the export.
+ *
+ * ── Every constraint it is built to, in order ──────────────────────────────
+ *
+ * STABLE ACROSS REPAINTS AND PUSHES. It is derived from `ProjectFinal.file` —
+ * the catalogue's own identity for the row, project-relative with forward
+ * slashes — and from nothing about rendering. Two paints of one tree mint the
+ * same string; a host that pushed a node an hour ago still matches the row after
+ * the panel has been rebuilt a hundred times. Deriving it from an index in the
+ * exports array or from a row's position would have been an id that moved when
+ * somebody exported a second format.
+ *
+ * IT CANNOT COLLIDE WITH A LEDGER STEP ID. Those are `randomUUID()` — hex and
+ * dashes, no colon anywhere (electron/book.ts mints them) — so no step can ever
+ * wear this shape. That matters in one direction in particular: the tree looks
+ * host nodes up by parent id against BOTH indexes, and a step whose id happened
+ * to equal an export's would hang somebody's narration under the wrong card.
+ *
+ * IT CANNOT COLLIDE WITH ANOTHER EXPORT of the same book, because `final/` holds
+ * one file per name and the catalogue keeps one row per file (`recordFinal`
+ * replaces rather than appends).
+ *
+ * A HOST'S OWN NODE IDS ARE THE ONE THING FOUNDRY CANNOT PROVE ANYTHING ABOUT,
+ * and the prefix is the whole of the defence: a host minting ids that begin
+ * `export:` would be a host colliding with a documented reserved shape, which is
+ * a thing to say on the bridge rather than a thing to defend against in code.
+ *
+ * ── It is deliberately not opaque ──────────────────────────────────────────
+ *
+ * A host reading this in a log sees which file the act was ordered against,
+ * which is the whole point of a socket whose ids cross a process boundary: an
+ * id nobody can read is an id nobody can debug. It is also why the file is not
+ * hashed — the catalogue's spelling IS the identity, and a digest would be a
+ * second identity to keep in step with it.
+ *
+ * THE HOST NEED NOT UNDERSTAND IT. BookForge resolves an unrecognised nodeId
+ * through its unique-EPUB fallback, so a press from an export row works today
+ * with no change on their side; what the id buys is the LINEAGE — the parent it
+ * comes back wearing.
+ */
+export function exportNodeId(file: string): string {
+  return `export:${file}`;
+}
+
+/**
+ * The project-relative file an export-named node id points at, or null when the
+ * id is not one of ours.
+ *
+ * THE ONE PLACE THE SHAPE IS READ BACK, so the tree's matching and the minting
+ * above cannot drift apart. Null for a ledger step id and for a host's own node
+ * id, which is exactly what the caller wants to know: whether this parent names
+ * an export row or something else.
+ */
+export function exportOfNodeId(nodeId: string): string | null {
+  return nodeId.startsWith('export:') ? nodeId.slice('export:'.length) : null;
+}

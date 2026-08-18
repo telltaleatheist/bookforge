@@ -13,7 +13,6 @@ import { MetadataDialogComponent } from './components/metadata-dialog/metadata-d
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { QueueShelfComponent } from './components/queue-shelf/queue-shelf.component';
-import { ToolRailComponent } from './components/tool-rail/tool-rail.component';
 import { BookStacksService } from './core/book-stacks.service';
 import { OpenDocumentsService } from './core/documents.service';
 import { NoticeService } from './core/notice.service';
@@ -24,18 +23,27 @@ import { UiService } from './core/ui.service';
 import { api } from './core/foundry';
 
 /**
- * The shell: the open-documents panel on the left, whatever route is open in the
- * middle, the inspector on the right, and the tool dock along the BOTTOM — with
- * the queue shelf floating over all of it and the dialogs over everything.
+ * The shell: the LIBRARY SIDEBAR on the left — the tree above, the tool dock
+ * pinned to its foot — whatever route is open in the middle, and the inspector
+ * on the right, with the queue shelf floating over all of it and the dialogs
+ * over everything.
  *
- * THE DOCK MOVED OFF THE LEFT EDGE. It was an 88-pixel column beside a
- * 220-pixel document list, so 308 pixels of a window whose whole job is showing
- * pages were furniture before a book began. Along the bottom it costs about 58
- * pixels of height, which no page needs, and the width goes back to the
- * documents. The z-index ladder is untouched by the move (viewer < rail 40 <
- * shelf 900 < dialogs 1200): the dock is a flex row rather than a floating bar,
- * so it overlaps nothing, and the one thing that DID overlap it — the shelf's
- * pill, fixed at the bottom right — lifts itself by the dock's own height token.
+ * THE DOCK HAS BEEN IN THREE PLACES AND IS IN THE SIDEBAR NOW. It began as an
+ * 88-pixel column on the left beside a 220-pixel document list — 308 pixels of a
+ * window whose whole job is showing pages, furniture before a book began — and
+ * moved to a row along the bottom, where it cost about 58 pixels of height that
+ * no page needed. Owen moved it a second time (2026-08-17 22:30): *"lets move
+ * the nav rail buttons to the left side, pinned to the bottom of the tree
+ * sidebar. the tree can be pinned to the top, and if it extends past available
+ * space… the user can scroll down to see more of the tree."*
+ *
+ * SO THE WINDOW IS ONE ROW AGAIN and the buttons cost no height at all: they sit
+ * under a tree that was already there, in a panel that was already that wide.
+ * What the bottom row bought — a dock as wide as the window — is also what it
+ * cost, because the tree beside it kept growing and the two were spending the
+ * same screen. The z-index ladder is untouched by the move (viewer < shelf 900 <
+ * dialogs 1200): the dock is inside a flex column now and overlaps nothing, and
+ * the shelf's pill no longer has a dock along the bottom to lift itself over.
  * (There was a rung at 30 for the workspace's drag SHIELD, a sheet of glass over
  * every pane so a book could be dropped onto an <iframe>; it went with the panes
  * — docs/PLAN.md §4, unit 8b.)
@@ -74,7 +82,7 @@ import { api } from './core/foundry';
 @Component({
   selector: 'app-root',
   imports: [
-    RouterOutlet, ToolRailComponent, OpenDocumentsComponent, InspectorComponent,
+    RouterOutlet, OpenDocumentsComponent, InspectorComponent,
     QueueShelfComponent, OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, MetadataDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent,
@@ -83,18 +91,28 @@ import { api } from './core/foundry';
   template: `
     <div class="shell">
       <div class="body">
-        @if (documentsUp()) {
-          <!-- Collapsed, it is a 30px stub holding the button that brings it
-               back. The class is set HERE, on the element the shell's flex row
-               measures, so the width change and the flag are one pass. -->
-          <app-open-documents [class.shut]="!ui.documentsShown()" />
-        }
+        <!--
+          THE LEFT SIDEBAR IS PERMANENT CHROME NOW, and that is Owen's sixth
+          ruling arriving rather than a change of mind about empty panels. It
+          used to be drawn only when there was something to LIST — *"an empty
+          list is 220 pixels of nothing taken off Home"* — and the dock's
+          buttons lived in a row along the bottom of the window. The buttons are
+          inside this panel now, so an unrendered sidebar would be an app with
+          no Settings, no Home and no Documents button on the one screen it
+          opens on. The justification inverted with the contents: a panel
+          holding the app's tools is not nothing.
+
+          Collapsed it is a 30px stub — the reopen button at the top, the tools
+          icon-only at the bottom — so putting the library away never puts the
+          dock away with it. The class is set HERE, on the element the shell's
+          flex row measures, so the width change and the flag are one pass.
+        -->
+        <app-open-documents [class.shut]="!ui.documentsShown()" />
         <main class="main"><router-outlet /></main>
         @if (inspectorUp()) {
           <app-inspector />
         }
       </div>
-      <app-tool-rail />
       <app-queue-shelf />
 
       @if (ui.ocrOpen()) {
@@ -140,9 +158,20 @@ import { api } from './core/foundry';
   `,
   styles: [`
     :host { display: block; height: 100vh; }
-    /* A column now: the documents and the dock. \`min-height: 0\` on the row is
-       what stops a long chapter list pushing the dock off the bottom of the
-       window — a flex item does not shrink below its content without it. */
+    /*
+      ONE ROW, AND THE COLUMN IT USED TO BE IS GONE WITH THE DOCK. \`.shell\` was
+      a column — the body above, the tool dock along the bottom — and the dock has
+      moved into the left sidebar (Owen, 2026-08-17 22:30), so what is left is the
+      body and the overlays. The column survives as a one-child flex rather than
+      being flattened away, because the shelf and the dialogs are its siblings and
+      a \`display: block\` here would take the body's own height management with
+      it.
+
+      \`min-height: 0\` still earns its place on the row: without it a flex item
+      does not shrink below its content, and a long tree would push the sidebar's
+      own pinned dock past the bottom of the window instead of scrolling inside
+      the panel.
+    */
     .shell { display: flex; flex-direction: column; height: 100%; }
     .body { display: flex; flex: 1; min-height: 0; }
     .main { flex: 1; min-width: 0; height: 100%; overflow: hidden; }
@@ -196,22 +225,26 @@ export class App {
   protected readonly ui = inject(UiService);
   private readonly router = inject(Router);
 
-  /**
-   * The panel is in the DOM when there is something to list, and nothing else.
+  /*
+   * `documentsUp` STOOD HERE AND IS DELETED, which is the sixth ruling's one
+   * structural consequence.
    *
-   * It used to also test `documentsShown`, which is now the panel's own business:
-   * put away, it draws a 30-pixel stub holding the collapse button, so the button
-   * that brings it back is where the button that put it away was. What this still
-   * decides is the empty case — an empty list is 220 pixels of nothing taken off
-   * Home, which is the one screen in this app that wants the window, and there is
-   * nothing to collapse to a stub either. It comes back by itself with the first
-   * document, and `documentsShown` remembers what the user chose across that.
+   * It answered "is there anything to list", and the panel was drawn only when
+   * it was true: an empty list was 220 pixels of nothing taken off Home, which
+   * is the one screen in this app that wants the window. Every word of that was
+   * right while the panel held a list and nothing else.
+   *
+   * THE PANEL HOLDS THE APP'S TOOLS NOW. Home, Documents, Read, Export,
+   * Translate, Simplify, Metadata and Settings are pinned to its bottom (Owen,
+   * 2026-08-17 22:30), so a sidebar that removed itself when nothing was open
+   * would remove the only route to Settings from the screen the app STARTS on.
+   * An empty tree above a full dock is not nothing, so the gate had nothing left
+   * to protect and the panel is permanent chrome.
+   *
+   * WHAT THE USER CAN STILL DO IS COLLAPSE IT, which is `documentsShown` and is
+   * unchanged — and the stub it collapses to keeps the tools, icon-only, for the
+   * same reason this gate went.
    */
-  // The panel stays up for a project the window is still IN, tabs or none —
-  // its tree is the door back to every step, and hiding the door with the
-  // last tab would strand the empty workspace it was closed into.
-  protected readonly documentsUp = computed(
-    () => this.documents.tabs().length > 0 || this.stage.heldProject() !== null);
 
   /**
    * The inspector is up when there is something to inspect.

@@ -3,7 +3,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } 
 import { Router } from '@angular/router';
 
 import { typeLabel } from '@shared/documents';
-import { CHAINABLE_FROM, PRODUCES_OF } from '@shared/host-ops';
+import { CHAINABLE_FROM, PRODUCES_OF, exportNodeId, exportOfNodeId } from '@shared/host-ops';
 /*
  * WHAT IS POSSIBLE FROM A STAGE — one function per act, shared with the dock's
  * buttons and with the dialogs' own refusals (shared/stages.ts). The footer is
@@ -33,6 +33,7 @@ import { OpenDocumentsService, type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
+import { ToolRailComponent } from '../tool-rail/tool-rail.component';
 
 /**
  * The LIBRARY, down the left — one provenance tree per open book, and since the
@@ -278,7 +279,7 @@ import { UiService } from '../../core/ui.service';
  */
 @Component({
   selector: 'app-open-documents',
-  imports: [NgTemplateOutlet],
+  imports: [NgTemplateOutlet, ToolRailComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
@@ -287,6 +288,20 @@ import { UiService } from '../../core/ui.service';
       place — the top-left corner of the window — or collapsing the list is a
       gesture with no visible way out except a keyboard chord and a dock item
       nobody knows are there. Thirty pixels is the price.
+    -->
+    <!--
+      ── THE SIDEBAR IS THE TREE AND THE TOOLS, IN THAT ORDER ────────────────
+      *"lets move the nav rail buttons to the left side, pinned to the bottom of
+      the tree sidebar. the tree can be pinned to the top, and if it extends past
+      available space… the user can scroll down to see more of the tree."*
+      (Owen, 2026-08-17 22:30.) The dock had a row of the window to itself along
+      the bottom; it has this panel's foot instead, and the height it used to
+      cost goes back to the page.
+
+      THE DOCK IS OUTSIDE THE COLLAPSE BRANCH ON PURPOSE. Put away, this panel
+      is a 30-pixel stub — and if the tools went away with the tree, collapsing
+      the library would take Settings, Home and every other act off the screen
+      with it. So the stub keeps them, icon-only, at the width it has.
     -->
     @if (!ui.documentsShown()) {
       <div class="stub">
@@ -620,15 +635,27 @@ import { UiService } from '../../core/ui.service';
               Inside the card and only on the selected one, which is the whole
               idea: the question a person is asking when they click a step is
               "what can I do from this", and the answer belongs where they asked
-              it rather than on a dock at the bottom of the window that says
-              nothing about which node it would act on. The dock still works and
+              it rather than on a dock — which, even now that the dock is at
+              the foot of this same panel, says nothing about which node it
+              would act on. The dock still works and
               still means the same thing; this is a second door onto the same
               acts, aimed by the same mechanism (the position) at the node whose
               footer it is.
             -->
             @if (row.key === picked() && acts().length > 0) {
               <div class="ops">
-                <span class="lbl">from here</span>
+                <!--
+                  "FROM HERE" IS TRUE OF A POSITION AND NOT OF AN EXPORT.
+                  Owen: *"it shouldnt say 'from here' next to it. just make it
+                  a button that can be pressed."* The label earns its place on a
+                  step, where several acts are offered and the words say what
+                  they have in common — things are made FROM that row. An export
+                  row has ONE act, and a label introducing a list of one is
+                  chrome explaining a button that explains itself.
+                -->
+                @if (row.kind === 'root' || row.kind === 'step') {
+                  <span class="lbl">from here</span>
+                }
                 @for (act of acts(); track act.id) {
                   <button
                     class="op"
@@ -748,6 +775,11 @@ import { UiService } from '../../core/ui.service';
       }
     </div>
     }
+
+    <!-- Pinned to the foot in both states; compact (icons alone, one column)
+         while the panel is a stub, because a 76px label cannot draw in 30px of
+         width and a truncated one would be worse than the icon by itself. -->
+    <app-tool-rail [compact]="!ui.documentsShown()" />
   `,
   styles: [`
     /*
@@ -766,27 +798,50 @@ import { UiService } from '../../core/ui.service';
       room for the tree by default"* (2026-08-17). 288 was the FLOOR under which
       a card stops reading, and a floor is not a default — a tree four levels deep
       spends 72 of those pixels on lanes before a word of a title. So the number
-      is 288 plus the fifth the user asked for, and the panel is still put away
-      with one click on the corner button.
+      was 288 plus the fifth the user asked for.
+
+      384 IS THE SAME PERSON ASKING AGAIN, HOURS LATER, FOR THE SAME REASON:
+      *"the tree is getting bigger and requires a bit more space"* (2026-08-17
+      22:30). And it had: exports moved under their provenance step and host
+      nodes moved under the exports, so the deepest ordinary book went from three
+      levels of indent to five — 90 pixels of lane before a title, on cards that
+      now also carry a footer of buttons and, at the bottom of this same panel, a
+      dock that used to have a row of the window to itself. TWICE-WIDENED IS
+      WORTH NAMING AS SUCH rather than quietly re-deriving: this panel is the
+      app's navigator, it has grown what it draws twice, and both numbers came
+      from the person using it. It is still put away with one click on the corner
+      button, which is what keeps a widening cheap.
     */
     :host {
-      display: block;
-      width: 346px;
-      min-width: 346px;
+      display: flex;
+      flex-direction: column;
+      width: 384px;
+      min-width: 384px;
       height: 100%;
     }
+    /*
+      THE TREE TAKES WHAT IS LEFT AND THE DOCK KEEPS ITS OWN HEIGHT — which is
+      the whole of "pinned to the top… the user can scroll down to see more".
+      \`min-height: 0\` is what makes the scrolling happen INSIDE the panel
+      rather than pushing the dock off the bottom of the window: a flex item does
+      not shrink below its content without it, and the tree's content is
+      unbounded.
+    */
+    .panel, .stub { flex: 1; min-height: 0; }
+    app-tool-rail { flex: 0 0 auto; }
     /* Collapsed, the HOST narrows to the stub's width, because the shell's flex
        row measures the host and not the panel inside it — a stub drawn inside a
-       346px host would be 30 pixels of button beside 316 of nothing. The class
+       384px host would be 30 pixels of button beside 354 of nothing. The class
        is put on by the shell (see App's template) rather than by a host binding
        here, so the element carrying it is invalidated by the same change
        detection pass that reads the flag. */
     :host(.shut) { width: 30px; min-width: 30px; }
+    /* The stub is a column too, so its one button sits at the top and the
+       compact dock keeps the foot. */
+    .stub { display: flex; flex-direction: column; }
 
     .stub {
-      display: flex;
-      justify-content: center;
-      height: 100%;
+      align-items: center;
       padding-top: 8px;
       background: var(--bg-elevated);
       border-right: 1px solid var(--border-default);
@@ -1491,8 +1546,35 @@ export class OpenDocumentsComponent {
         && (step.parent === null || !ids.has(step.parent)));
 
       /*
-       * THE TERMINAL FILES — the exports, children of the root, at the Book's
-       * own indent and with no arrow.
+       * THE TERMINAL FILES — the exports, each drawn under the STEP IT WAS MADE
+       * FROM, and under the book itself only where nothing recorded one.
+       *
+       * ── "RECORDS WHAT WAS MADE, NEVER THE POSITION" IS OVERRULED ───────────
+       *
+       * This block used to hang every export off the ROOT, at the Book's own
+       * indent, on a doctrine written into three comments here: the tray records
+       * what was made and not where it was made from; an export card draws NO
+       * lineage line because the tray does not record a position and this panel
+       * will not guess one. The doctrine was true when it was written — `final[]`
+       * held a file, a kind and a date and genuinely could not say more.
+       *
+       * IT IS FALSE NOW BECAUSE THE CATALOGUE LEARNED. Wave 9 put `stepId` on
+       * every export row precisely so the provenance could stop being guessed,
+       * and Owen looked at the result and ruled (2026-08-17 22:30): *"the epub
+       * should be a child of 'applied changes'. right now it looks like it's a
+       * child of 'the book'."* An export IS made from a position; the tree knows
+       * which; drawing it anywhere else is the panel withholding a fact it holds.
+       *
+       * SO THE LINEAGE IS DRAWN, and the sentence under the card changed with it
+       * — a narration is made from an export now, so *"nothing is made from it"*
+       * was two rulings out of date.
+       *
+       * A NULL `madeFrom` KEEPS THE OLD HOME, and that is where the old doctrine
+       * survives as a fallback rather than as a rule: catalogues written before
+       * `stepId` existed have exports whose provenance genuinely is unknown, and
+       * the honest place for a file whose parent nobody recorded is under the
+       * book it belongs to. See `orphanExports` below, which is where that is
+       * decided.
        *
        * Main sends them newest first with a PROJECT-RELATIVE path
        * (`ProjectSummary.exports`), which is this codebase's oldest house rule
@@ -1528,10 +1610,19 @@ export class OpenDocumentsComponent {
            * so it stays exactly the word it has always been.
            */
           title: label,
-          // NOT A LINEAGE LINE. The tray records what was made and when, never
-          // the position it was made at, and a card that said "from the Book"
-          // would be this panel inventing a parent it does not have.
-          said: 'a finished file — nothing is made from it',
+          /*
+           * WHAT IT IS, AND WHAT IS MADE FROM IT — both changed with the
+           * ruling. The card used to say *"a finished file — nothing is made
+           * from it"* and drew no lineage, because the tray recorded no
+           * position and this panel would not invent one. It records one now
+           * (`ProjectFinal.stepId`), the card is drawn under it, and a
+           * narration IS made from this file — so the old sentence was wrong
+           * twice over in one line.
+           *
+           * `from` IS LEFT TO THE PARENT-NAMING PASS BELOW, which spells the
+           * step's own title the way every other child of a step does.
+           */
+          said: 'the finished file — audio work is made from this',
           state: whenOn(made.madeAt),
           icon: 'ft-out',
           dot: 'file',
@@ -1589,6 +1680,15 @@ export class OpenDocumentsComponent {
           produces: made.kind === 'epub' ? 'export' : null,
           // Its provenance, where the catalogue recorded one (`ProjectFinal.stepId`).
           madeFrom: made.stepId ?? null,
+          /*
+           * THE ID A PRESS ON THIS ROW HANDS THE HOST — `export:<file>`, minted
+           * from the catalogue's own spelling of the file and from nothing about
+           * this render (`exportNodeId`, shared/host-ops.ts, which carries the
+           * whole argument). It is what makes a narration come back wearing this
+           * row as its parent instead of the step the export was made from,
+           * which is Owen's third ruling.
+           */
+          nodeId: exportNodeId(made.file),
         });
       }
 
@@ -1725,14 +1825,110 @@ export class OpenDocumentsComponent {
         claimed.add(row.key);
       }
 
+      /*
+       * ── THE EXPORTS, INDEXED BY THE STEP THEY WERE MADE FROM ───────────────
+       *
+       * Owen's fourth ruling (2026-08-17 22:30). `madeFrom` has been on the row
+       * since Wave 9 and was drawn nowhere; this is the index that puts it on
+       * screen. A row whose provenance names a step in THIS project's ledger is
+       * emitted by the walk, as that step's own child; everything else falls to
+       * `orphanExports` and keeps the home the tray doctrine gave it.
+       *
+       * NAMING A STEP THIS PROJECT DOES NOT HOLD COUNTS AS ORPHANED, which is
+       * not defensive: a delete can take the step an export was made from while
+       * the file itself stays in `final/` (the tray is the user's and is never
+       * swept by a step delete), so this is the ordinary end state of deleting a
+       * reading somebody had already exported from.
+       */
+      const exportsByStep = new Map<string, Row[]>();
+      const orphanExports: Row[] = [];
+      for (const row of terminals) {
+        const parent = row.madeFrom;
+        if (parent === null || !ids.has(parent)) {
+          orphanExports.push(row);
+          continue;
+        }
+        const already = exportsByStep.get(parent);
+        if (already === undefined) exportsByStep.set(parent, [row]);
+        else already.push(row);
+      }
+
+      /*
+       * AND THE HOST NODES AN EXPORT ROW OWNS — the ghost narrations, indexed by
+       * the export id they came back wearing.
+       *
+       * The host echoes the invoke's nodeId into `parentStepId` verbatim, so a
+       * narration ordered from an export row arrives with `export:<file>` in the
+       * field the ledger's own children are indexed by. `hosted` above cannot
+       * hold them: its keys are step ids, and a lookup there would never match.
+       * Reading them out by the same spelling the press minted is the whole of
+       * the join (`exportNodeId` / `exportOfNodeId`, shared/host-ops.ts).
+       *
+       * A NODE WHOSE PARENT NAMES AN EXPORT THIS PROJECT NO LONGER HAS draws
+       * nowhere, which is `setHostNodes`' own documented posture for a parent the
+       * tree cannot find — Foundry does not refuse a push, it simply has nowhere
+       * to hang it.
+       */
+      const hostedOnExports = new Map<string, HostNode[]>();
+      for (const node of this.hostOps.nodesFor(project.dir)) {
+        if (exportOfNodeId(node.parentStepId) === null) continue;
+        const already = hostedOnExports.get(node.parentStepId);
+        if (already === undefined) hostedOnExports.set(node.parentStepId, [node]);
+        else already.push(node);
+      }
+
+      /**
+       * Draw one export row and whatever the host is making from it.
+       *
+       * ── An export has children now, which is the composition of two rulings ─
+       *
+       * Ruling three puts the narrations under the export; ruling four puts the
+       * export under its step. Together the tree reads Book → … → Applied
+       * changes → EPUB export → the narration — which is the pipeline in the
+       * order it happened, and is what Owen was describing when he said the epub
+       * looked like a child of the book.
+       *
+       * SO IT GROWS AN ARROW, and only when it has something under it. `expanded`
+       * has been null on every export since the row existed — *"an export never
+       * gets one; it is terminal, and an arrow on it would promise something
+       * under it"* — and that sentence is now true only of an export nobody has
+       * made anything from. The promise is kept either way: an arrow appears
+       * exactly when there is something to reveal.
+       */
+      const emitExport = (row: Row, depth: number): void => {
+        const jobs = row.nodeId === null ? [] : hostedOnExports.get(row.nodeId) ?? [];
+        const shown = !collapsed.has(row.key);
+        rows.push({
+          ...row,
+          depth,
+          expanded: jobs.length === 0 ? null : shown,
+        });
+        if (!shown) return;
+        /*
+         * THE GHOST SAYS WHICH FILE IT IS BEING MADE FROM, which is the export's
+         * own card title ("EPUB"). Before the ruling these rows hung under a
+         * STEP and named it; hanging under the file and naming nothing would
+         * have been a lineage line drawn and then left blank.
+         */
+        for (const node of jobs) rows.push(hostRow(project, node, row.title, depth + 1));
+      };
+
       // ── The tree itself, root first ──────────────────────────────────────
       const rootKey = `${project.key}:root`;
       const rootKids = origin === null
         ? stranded
         : [...kids.get(origin.id) ?? [], ...stranded];
       const rootHostNodes = origin === null ? [] : hosted.get(origin.id) ?? [];
+      /*
+       * THE ORPHANS RATHER THAN EVERY TERMINAL, now that most exports are drawn
+       * deeper: a book whose only export hangs under a step still has children
+       * (that step is one), so the count is only wrong in the direction that
+       * would matter if a project's ENTIRE contents were exports with parents —
+       * which cannot happen, because a step with an export under it is itself a
+       * child of the root.
+       */
       const rootHasChildren =
-        rootKids.length + rootHostNodes.length + terminals.length + extras.length > 0;
+        rootKids.length + rootHostNodes.length + orphanExports.length + extras.length > 0;
       const rootOpen = !collapsed.has(rootKey);
       const rows: Row[] = [{
         ...blank,
@@ -1797,6 +1993,15 @@ export class OpenDocumentsComponent {
           if (!shown) return;
           for (const kid of under) walk(kid, depth + 1);
           /*
+           * THE FILES MADE FROM THIS STEP, between its ledger children and the
+           * host's work — see the index above for the ruling. Before the steps'
+           * own children would have put an export above a translation made from
+           * the same row; after the host's nodes would have put a finished file
+           * below the work being made from it. Between them is the order the
+           * pipeline actually runs in.
+           */
+          for (const made of exportsByStep.get(step.id) ?? []) emitExport(made, depth + 1);
+          /*
            * THE HOST'S OWN WORK, AFTER THE STEPS MADE FROM THE SAME PLACE.
            *
            * Last rather than first, and it is the honest order: the ledger's
@@ -1805,11 +2010,24 @@ export class OpenDocumentsComponent {
            * narration drawn above a finished translation would put the plan
            * above the record.
            */
-          for (const node of jobs) rows.push(hostRow(project, node, step, depth + 1));
+          for (const node of jobs) {
+            rows.push(hostRow(project, node, parentNameOf(project, step), depth + 1));
+          }
         };
         for (const step of rootKids) walk(step, 1);
-        for (const node of rootHostNodes) rows.push(hostRow(project, node, origin, 1));
-        rows.push(...terminals, ...extras);
+        for (const node of rootHostNodes) {
+          rows.push(hostRow(project, node, parentNameOf(project, origin), 1));
+        }
+        /*
+         * AND THE EXPORTS NOBODY RECORDED A PARENT FOR, at the Book's own indent
+         * — the home every export had before the ruling, kept for exactly the
+         * rows that still have nothing better to say. A catalogue written before
+         * `ProjectFinal.stepId` existed has files whose provenance is genuinely
+         * unknown, and inventing one for them would be the guess the old tray
+         * doctrine was right to refuse.
+         */
+        for (const made of orphanExports) emitExport(made, 1);
+        rows.push(...extras);
       }
 
       out.push({
@@ -2203,6 +2421,22 @@ export class OpenDocumentsComponent {
   private nodeIdFor(row: Row): string | null {
     if (row.node !== null) return row.node.id;
     if (row.step !== null) return row.step.id;
+    /*
+     * AN EXPORT ROW NAMES ITSELF, and this line is Owen's third ruling.
+     *
+     * It used to answer `madeFrom` — the STEP the export was made from — which
+     * was the most precise thing it could say before the row had a name of its
+     * own, and which is exactly why the ghost rows landed on "Applied changes":
+     * the host echoes the invoke's nodeId into every node it pushes back, so a
+     * press that said "the step" produced narrations parented on the step. The
+     * row has a name now (`exportNodeId`), so the press says the export and the
+     * work comes back hanging under it.
+     *
+     * `madeFrom` STAYS BELOW AS THE FALLBACK, for a row that somehow has no
+     * name — which cannot happen for an export today and costs one line to
+     * survive if a future row kind grows a provenance without one.
+     */
+    if (row.nodeId !== null) return row.nodeId;
     if (row.madeFrom !== null) return row.madeFrom;
     if (row.dir === null) return null;
     return this.ledger.standingIn(row.dir)?.id ?? null;
@@ -2753,6 +2987,16 @@ interface Row {
    * in that case.
    */
   madeFrom: string | null;
+  /**
+   * WHAT A PRESS ON THIS ROW NAMES ITSELF AS, when the row is a thing a host
+   * act can be ordered from and is not a ledger step.
+   *
+   * Today that is export rows alone (`exportNodeId`). A step names itself by its
+   * own id and a host node by the host's, both of which `nodeIdFor` reads
+   * directly off the row — this field exists for the one kind of row whose
+   * identity is a catalogue file rather than a record with an id.
+   */
+  nodeId: string | null;
   /** The host's own row, for `kind === 'host'`. Null everywhere else. */
   node: HostNode | null;
   /**
@@ -2825,6 +3069,7 @@ const blank = {
   why: null,
   produces: null,
   madeFrom: null,
+  nodeId: null,
   depth: 0,
   dir: null,
   current: false,
@@ -2865,7 +3110,17 @@ interface Group {
  * number that changes is what the eye goes to and the message is already on the
  * progress line underneath.
  */
-function hostRow(project: ProjectSummary, node: HostNode, parent: LedgerStep | null, depth: number): Row {
+/**
+ * One of the host's own rows.
+ *
+ * `parentName` IS RESOLVED BY THE CALLER RATHER THAN A STEP RESOLVED HERE, and
+ * the change is Owen's third ruling arriving: a narration can now hang under an
+ * EXPORT ROW, which is not a `LedgerStep` and never will be. Asking for the
+ * words rather than for the record is what lets one function draw a ghost under
+ * a step, under the import, and under a finished file — see `parentNameOf` for
+ * the step half, which is the sentence this function used to compose itself.
+ */
+function hostRow(project: ProjectSummary, node: HostNode, parentName: string | null, depth: number): Row {
   const failed = node.state === 'failed';
   const running = node.state === 'running';
   return {
@@ -2877,8 +3132,10 @@ function hostRow(project: ProjectSummary, node: HostNode, parent: LedgerStep | n
     // The parent named the same way a ledger child names it — and a node hung
     // off the IMPORT says the book's own name, because that is what the root's
     // card says and a lineage line has to point at something the reader can see.
-    from: parent === null ? null : parent.parent === null ? project.title : titleForStep(parent),
-    said: parent === null ? node.detail : null,
+    from: parentName,
+    // A card with a lineage line does not also say what it is: the line already
+    // said where it came from, and the host's own sentence rides in `state`.
+    said: parentName === null ? node.detail : null,
     state: running && node.progress !== undefined
       ? `${Math.round(node.progress.percent)}%`
       : failed ? 'failed' : node.detail,
@@ -2903,6 +3160,19 @@ function hostRow(project: ProjectSummary, node: HostNode, parent: LedgerStep | n
     planned: node.state === 'queued',
     expanded: null,
   };
+}
+
+/**
+ * What a ghost hung under a LEDGER row calls its parent.
+ *
+ * A node hung off the IMPORT says the book's own name, because that is what the
+ * root's card says and a lineage line has to point at something the reader can
+ * see; every other step says its own derived title. Lifted out of `hostRow` when
+ * that function stopped being able to assume its parent was a step at all.
+ */
+function parentNameOf(project: ProjectSummary, step: LedgerStep | null): string | null {
+  if (step === null) return null;
+  return step.parent === null ? project.title : titleForStep(step);
 }
 
 /**

@@ -125,6 +125,15 @@ export function hostOperationOffers(): HostOperationOffer[] {
     kind: operation.kind,
     appliesTo: operation.appliesTo,
     ...(operation.form !== undefined ? { form: operation.form } : {}),
+    /*
+     * AND THE SUBMIT WORD, OMITTED WHEN ABSENT for `form`'s reason exactly: the
+     * dialog's test is "did the host declare one", and a key present holding
+     * nothing answers that differently depending on how it is asked. THE STRIP
+     * IS EXPLICIT, so a field added to the offer type and forgotten here simply
+     * never reaches the renderer — which is why this list is worth the two lines
+     * per field it costs.
+     */
+    ...(operation.submitLabel !== undefined ? { submitLabel: operation.submitLabel } : {}),
   }));
 }
 

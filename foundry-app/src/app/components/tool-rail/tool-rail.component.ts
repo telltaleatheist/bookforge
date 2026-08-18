@@ -1,7 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
 import { Router, RouterLink, RouterLinkActive } from '@angular/router';
 
-import type { HostOperationOffer } from '@shared/host-ops';
+import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
 /*
  * THE POSSIBILITY PREDICATES, shared with the dialogs that refuse and with the
  * tree that offers — see shared/stages.ts. This dock held the original of three
@@ -24,19 +24,34 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 
 /**
- * The dock — Home, the tools, and the gear, along the BOTTOM of the window.
+ * The dock — Home, the tools, and the gear, AT THE FOOT OF THE LIBRARY SIDEBAR.
  *
- * IT USED TO BE A COLUMN DOWN THE LEFT, 88 pixels wide for the whole session,
+ * ── It has been in three places, and the third is the user's ────────────────
+ *
+ * IT BEGAN AS A COLUMN DOWN THE LEFT, 88 pixels wide for the whole session,
  * beside a 220-pixel document list: 308 pixels of chrome before a page of a book
- * began. Horizontal, it costs about 60 pixels of height and gives all of that
- * width back to the pages, which is the thing this window exists to show. The
- * model is an iPhone control bar or the Mac dock — the tools live along the
- * bottom edge, in reach, out of the way of the document.
+ * began. It moved to a ROW ALONG THE BOTTOM, which gave all of that width back
+ * to the pages and cost about 60 pixels of height instead — the iPhone control
+ * bar's arrangement, tools in reach and out of the way of the document.
  *
- * ICON OVER LABEL SURVIVED THE MOVE, deliberately. Icons alone are a rail you
+ * OWEN MOVED IT AGAIN (2026-08-17 22:30): *"lets move the nav rail buttons to
+ * the left side, pinned to the bottom of the tree sidebar. the tree can be
+ * pinned to the top, and if it extends past available space… the user can scroll
+ * down to see more of the tree."* The row along the bottom had stopped being
+ * free: the library tree it sat beneath had grown twice in a day — exports under
+ * their steps, host nodes under the exports — and a full-width dock and a
+ * widening sidebar were spending the same screen. Inside the sidebar the buttons
+ * cost NO height at all, because the panel was already that tall and that wide.
+ *
+ * WHAT THE MOVE COST is the centring: the tools used to be balanced on the
+ * window's own midline by a three-column grid. In 384 pixels they wrap into rows
+ * instead, which is a plainer arrangement and the honest one for a known width.
+ *
+ * ICON OVER LABEL SURVIVED BOTH MOVES, deliberately. Icons alone are a rail you
  * have to hover to read, and this app's tools are not the four everybody already
- * knows: "Select" is a curation mode nobody has met before, and a glyph would
- * teach nobody anything.
+ * knows: a glyph for Read or for Simplify would teach nobody anything. The one
+ * place the labels DO go is `compact` — the sidebar collapsed to a 30-pixel stub
+ * — where there is no width to draw a word in and the hover is all there is.
  *
  * HOME IS THE FIRST ITEM and it is not a route: it is "no tab is active", so
  * pressing it puts the documents down without closing them and pressing a tab
@@ -46,6 +61,9 @@ import { UiService } from '../../core/ui.service';
   selector: 'app-tool-rail',
   imports: [RouterLink, RouterLinkActive],
   changeDetection: ChangeDetectionStrategy.OnPush,
+  // Reflected onto the host so the compact rules can be written as `:host(...)`
+  // — the element the sidebar lays out is this one, so the class belongs on it.
+  host: { '[class.compact]': 'compact()' },
   template: `
     <nav class="rail">
       <div class="rail-brand" title="Foundry">⬙</div>
@@ -257,58 +275,46 @@ import { UiService } from '../../core/ui.service';
   `,
   styles: [`
     /*
-      A ROW ALONG THE BOTTOM. The height is a token (--rail-h, styles.scss)
-      rather than a number written here, because the queue shelf floats over the
-      window at z-index 900 and has to sit ABOVE this dock rather than on top of
-      its right-hand end — the shelf reads the same token to lift itself, and two
-      hand-kept numbers would drift into a pill covering the Settings button.
-    */
-    /*
-      THE TOOLS ARE CENTRED ON THE WINDOW, not on the space left over beside
-      Settings — and that distinction is the whole reason this is a grid and no
-      longer a flex row with the tools packed left.
+      ── A BLOCK AT THE FOOT OF THE SIDEBAR, WHERE IT USED TO BE A ROW ────────
 
-      Centring inside the remaining space would put the group off-centre by half
-      the Settings slot's width, which is invisible on a narrow window and
-      obvious on a wide one against a centred page. A 1fr / tools / 1fr grid
-      gives the brand and the Settings foot columns that SHARE the leftover
-      equally, so whatever those two weigh the middle column's centre is the
-      window's centre.
+      *"lets move the nav rail buttons to the left side, pinned to the bottom of
+      the tree sidebar."* (Owen, 2026-08-17 22:30.) Everything below that used to
+      be about balancing a row across the whole window — a three-column grid so
+      the tools were centred on the WINDOW rather than on the space left beside
+      Settings, a \`minmax(0, auto)\` middle track so a narrow window scrolled the
+      tools instead of widening the dock, side tracks that shared the leftover
+      equally. None of it survives the move and none of it is missed: the dock is
+      384 pixels wide now, which is a known width, so the buttons WRAP into rows
+      instead of being centred and scrolled.
 
-      The middle track is minmax(0, auto) rather than a bare auto: auto alone
-      cannot shrink below its content, so a window too narrow for the tools
-      would push the grid wider than the dock instead of letting the tools
-      scroll. With a floor of 0 the track shrinks, .rail-tools scrolls inside
-      it, and the group is start-aligned exactly when it no longer fits —
-      centring an overflowing row would scroll its FIRST item off the left edge,
-      which is worse than a row that begins at the left.
+      WRAPPING RATHER THAN A FIXED GRID OF N COLUMNS. The panel has one width
+      today and the temptation is \`repeat(4, 1fr)\`; a wrap keeps the same look at
+      that width and does not break the day somebody drags the window narrow
+      enough for the shell to squeeze this panel, or the day the panel's own
+      width changes again — which it has, twice, both times because the user
+      asked (see the host rule in open-documents).
 
-      The side tracks keep grid's automatic minimum (their own content), so the
-      Settings item is never clipped by the balancing.
+      NO HEIGHT TOKEN ANY MORE. \`--rail-h\` existed so the queue shelf's floating
+      pill could lift itself over a dock along the bottom edge; the dock is not
+      along the bottom edge, so the pill has nothing to clear and the block takes
+      the height its rows need.
     */
     .rail {
       flex: 0 0 auto;
       width: 100%;
-      height: var(--rail-h);
-      display: grid;
-      grid-template-columns: 1fr minmax(0, auto) 1fr;
-      align-items: center;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
       background: var(--bg-elevated);
       border-top: 1px solid var(--border-default);
-      padding: 0 10px;
-      z-index: 40;
+      padding: 8px 6px;
     }
 
-    .rail-brand {
-      justify-self: start;
-      font-size: 20px;
-      color: var(--accent);
-      padding: 0 12px 0 4px;
-    }
+    /* The brand went with the row. It was the window's own mark at the left end
+       of a full-width dock; in a panel that already says LIBRARY at its head it
+       would be a second title for the same column. */
+    .rail-brand { display: none; }
 
-    /* The tools scroll sideways rather than shrinking: a narrow window must not
-       squeeze seven labels into unreadable stubs, and the dock is the one place
-       every mode in this app is named. */
     /*
       THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
       that an act belonging to another application reads as one at a glance
@@ -317,18 +323,19 @@ import { UiService } from '../../core/ui.service';
     */
     .rail-item.audio .rail-icon { color: var(--audio); }
 
+    /* The tools wrap into as many rows as they need. \`min-width: 0\` so a
+       squeezed panel shrinks the block rather than overflowing the sidebar. */
     .rail-tools {
-      display: flex; flex-direction: row; align-items: center;
+      display: flex; flex-flow: row wrap; align-items: flex-start;
       gap: 4px; min-width: 0;
-      overflow-x: auto; overflow-y: hidden;
     }
-    /* Settings stays parked at the right-hand end, divider and all. It is not
-       a tool — it is where you go when the tools are not the answer. */
+    /* Settings keeps its divider and its own row. It is not a tool — it is where
+       you go when the tools are not the answer — and the line that said so along
+       the left edge of a row says it along the top edge of a column. */
     .rail-foot {
-      display: flex; flex-direction: row; align-items: center;
-      justify-self: end;
-      border-left: 1px solid var(--border-subtle);
-      padding-left: 8px; margin-left: 8px;
+      display: flex; flex-flow: row wrap; align-items: center;
+      border-top: 1px solid var(--border-subtle);
+      padding-top: 6px;
     }
 
     .rail-item {
@@ -348,6 +355,22 @@ import { UiService } from '../../core/ui.service';
       text-decoration: none;
       transition: background-color 150ms ease, color 150ms ease;
     }
+
+    /*
+      ── COMPACT: THE DOCK AT THIRTY PIXELS ────────────────────────────────────
+
+      The panel collapses to a stub and the tools go with it rather than
+      disappearing — putting the library away must not put Settings away. What
+      fits in 30 pixels is the icon and nothing else, so the labels go and the
+      items stack in one column. The TITLE attribute is already on every button
+      (it always was), so the words are one hover away, which is the same trade
+      the panel's own collapse makes.
+    */
+    :host(.compact) .rail { padding: 6px 2px; gap: 4px; }
+    :host(.compact) .rail-tools { flex-direction: column; flex-wrap: nowrap; gap: 2px; }
+    :host(.compact) .rail-foot { flex-direction: column; }
+    :host(.compact) .rail-item { width: 26px; padding: 5px 0; }
+    :host(.compact) .rail-label { display: none; }
     .rail-item:hover { background: var(--bg-hover); color: var(--text-primary); }
     .rail-item:disabled { opacity: 0.35; cursor: default; }
     .rail-item:disabled:hover { background: transparent; color: var(--text-secondary); }
@@ -387,6 +410,17 @@ import { UiService } from '../../core/ui.service';
   `],
 })
 export class ToolRailComponent {
+  /**
+   * DRAWN AT THE WIDTH OF A STUB — icons alone, one column.
+   *
+   * Set by the sidebar when the library is collapsed. It is an input rather than
+   * this component reading `UiService.documentsShown` for itself, because what it
+   * describes is the SPACE THIS COMPONENT HAS BEEN GIVEN and not a fact about the
+   * app: the day something else hosts the dock in a narrow place, it says so the
+   * same way rather than teaching this class a second thing to check.
+   */
+  readonly compact = input(false);
+
   protected readonly hosted = hosted;
   protected readonly ui = inject(UiService);
   protected readonly documents = inject(OpenDocumentsService);
@@ -525,19 +559,25 @@ export class ToolRailComponent {
       return;
     }
     /*
-     * ONE EXPORT, AND ITS OWN PROVENANCE WHERE THE CATALOGUE RECORDED ONE. The
-     * fallback to the standing step is `nodeIdFor`'s, for `nodeIdFor`'s reason:
-     * it is the id the tree would have sent a moment ago, which is exactly the
-     * input the host's unique-export fallback was written against — not a claim
-     * about where the bytes came from.
+     * ONE EXPORT, AND THE PRESS NAMES THAT EXPORT — the same id the tree's own
+     * press on the same file would send (`exportNodeId`, shared/host-ops.ts).
+     *
+     * IT USED TO SEND THE EXPORT'S PROVENANCE STEP, falling back to the standing
+     * one, and both are wrong for the same reason Owen's third ruling gives: the
+     * host echoes this id into every node it pushes back, so a rail press that
+     * named a STEP put the narration under that step in the tree while a tree
+     * press on the very same file put it under the file. Two doors onto one act
+     * that disagreed about where the result belongs is the shape this codebase
+     * refuses everywhere else; the dock aims at the export, so the dock says the
+     * export.
+     *
+     * NO FALLBACK IS NEEDED ANY MORE. The old one existed because a
+     * pre-`stepId` catalogue had no provenance to send; the file's own name is
+     * always available, so the one branch that could answer null is gone.
      */
-    const nodeId = exports[0]?.stepId ?? this.ledger.standingIn(dir)?.id ?? null;
-    if (nodeId === null) {
-      this.notices.notice.set(
-        'This book has no history to name a starting point with yet.',
-      );
-      return;
-    }
+    const target = exports[0];
+    if (target === undefined) return;
+    const nodeId = exportNodeId(target.file);
     void this.router.navigateByUrl('/');
     this.ui.openHostOp({ operationId, projectDir: dir, nodeId });
   }

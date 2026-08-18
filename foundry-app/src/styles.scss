@@ -63,12 +63,18 @@
 
   --focus-ring: 0 0 0 2px rgba(34, 211, 238, 0.4);
 
-  /* How tall the dock along the bottom is. A TOKEN because two things read it:
-     the dock itself (app-tool-rail) and the queue shelf, which floats over the
-     window at z-index 900 and lifts itself by exactly this much so its pill sits
-     above the dock rather than over the Settings button at the dock's right-hand
-     end. Two hand-kept numbers would drift the first time the dock changed. */
-  --rail-h: 58px;
+  /*
+   * `--rail-h` STOOD HERE AND IS GONE WITH THE GEOMETRY IT DESCRIBED.
+   *
+   * It was how tall the dock along the bottom of the window was, and it was a
+   * token because TWO things read it — the dock itself, and the queue shelf,
+   * which floats at z-index 900 and lifted itself by exactly this much so its
+   * pill sat above the dock rather than over the Settings button. The dock is
+   * pinned inside the left sidebar now (Owen, 2026-08-17 22:30): it takes the
+   * height its rows need, nothing floats over it, and the shelf's corner is
+   * empty. A token with one reader and no second opinion to prevent is a number
+   * with an extra step in front of it.
+   */
 
   --scrollbar-track: #2a2824;
   --scrollbar-thumb: #06b6d4;
