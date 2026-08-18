@@ -32,12 +32,13 @@ import type {
   JobType, QueueJob as EngineJob, QueueNotice, QueueStep as EngineStep,
 } from '@shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '@shared/queue/engine-types';
+import { JOB_GERUND } from '@shared/queue/job-words';
 
 import { ToastService } from '../../../core/services/toast.service';
 import { isStandaloneWindow, shouldAnnounceHere } from '../../../core/window-role';
 import { StudioService } from '../../studio/services/studio.service';
 import { formatDuration } from './job-eta.service';
-import { JOB_GERUND, QueueTrayService } from './queue-tray.service';
+import { QueueTrayService } from './queue-tray.service';
 import { QueueService } from './queue.service';
 
 /** The engine's step-finished wire shape. Mirrors StepFinished in queue-engine.ts. */

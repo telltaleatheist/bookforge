@@ -1309,6 +1309,15 @@ export interface ElectronAPI {
      * was recorded; this exists so the user is told rather than left wondering.
      */
     onUnmatchedExport: (callback: (event: { key: string; title: string }) => void) => () => void;
+    /**
+     * Somebody clicked the status chip in the hosted Foundry's chrome, and main
+     * has raised this window. Show them the queue the chip describes.
+     *
+     * MAIN WINDOW ONLY, unlike the three announcements above: main sends it to
+     * `mainWindow` alone, because a standalone popup has no nav rail and no
+     * route to /queue to land on.
+     */
+    onOpenQueue: (callback: () => void) => () => void;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -2972,6 +2981,13 @@ const electronAPI: ElectronAPI = {
         callback(event);
       ipcRenderer.on('foundry-host:unmatched-export', listener);
       return () => { ipcRenderer.removeListener('foundry-host:unmatched-export', listener); };
+    },
+    // The status chip in Foundry's chrome was pressed. Main has already raised
+    // this window; all that is left is the route.
+    onOpenQueue: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('foundry-host:open-queue', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:open-queue', listener); };
     },
   },
   document: {

@@ -1568,6 +1568,15 @@ export class ElectronService {
     if (!this.isElectron) return () => { /* nothing subscribed */ };
     return (window as any).electron.foundryHost.onUnmatchedExport(callback);
   }
+  /**
+   * The status chip in the hosted Foundry's chrome was clicked, and main has
+   * raised this window. Only the MAIN window hears it — the route is the second
+   * half of the gesture and a popup has nowhere to put it.
+   */
+  onFoundryOpenQueue(callback: () => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onOpenQueue(callback);
+  }
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Direct EPUB Save (saves edited EPUB back to source file)

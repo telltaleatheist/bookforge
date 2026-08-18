@@ -452,6 +452,16 @@ export class App implements OnInit {
     });
     this.destroyRef.onDestroy(unsubscribeConversion);
 
+    // The status chip in the hosted Foundry window describes THIS app's queue,
+    // and clicking it means "show me the thing that line is about". Main has
+    // already raised this window by the time the event arrives; the route is the
+    // rest of the gesture, and it lives here because the shell owns the router
+    // and the queue page may not be mounted.
+    const unsubscribeOpenQueue = this.electron.onFoundryOpenQueue(() => {
+      void this.router.navigate(['/queue']);
+    });
+    this.destroyRef.onDestroy(unsubscribeOpenQueue);
+
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release
     // newer than the pin). Listening here — in the shell, beside the dock —
