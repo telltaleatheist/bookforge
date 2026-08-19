@@ -308,12 +308,23 @@ export async function sweepFoundryExportTrays(
     if (key === undefined) continue;
     const claim = {
       dir: manifestService.getProjectPath(manifest.projectId),
+      /*
+       * BOTH SPELLINGS OF "THIS BOOK ALREADY HAS THAT FILE".
+       *
+       * `foundrySource` is an export on loan; `promotedFrom` is one the user
+       * KEPT, moved into archive/ as one of the book's own. Reading only the
+       * first is the bug Owen hit on 2026-08-19: promotion deletes
+       * `foundrySource`, so the tray file stopped matching anything, and this
+       * sweep landed it a second time into the position he had just cleared.
+       *
+       * A promoted file is the strongest possible "already landed" — the user
+       * went out of their way to say it is theirs — so it belongs in this set
+       * ahead of, not instead of, the on-loan case.
+       */
       landed: manifestService.getVariants(manifest).variants
-        .filter((v) => !!v.foundrySource)
-        .map((v) => ({
-          projectKey: v.foundrySource!.projectKey,
-          fileName: v.foundrySource!.fileName,
-        })),
+        .map((v) => v.foundrySource ?? v.promotedFrom)
+        .filter((src): src is NonNullable<typeof src> => !!src)
+        .map((src) => ({ projectKey: src.projectKey, fileName: src.fileName })),
     };
     const seen = byKey.get(key);
     if (seen === undefined) byKey.set(key, [claim]);

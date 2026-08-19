@@ -838,7 +838,18 @@ export async function promoteVariantToArchive(
       const cur = manifestService.getVariants(mf);
       mf.variants = cur.variants.map((v) => {
         if (v.id !== variantId) return v;
-        const promoted = { ...v, path: `archive/${name}` };
+        /*
+         * THE PROVENANCE MOVES RATHER THAN DYING. `foundrySource` has to go — it
+         * is what draws "Temporary — keep" and what nests the row under its
+         * parent, and neither is true of a file that is now one of the book's
+         * own. But the EXPORT SWEEP builds its already-landed set from that same
+         * field, so simply deleting it told the sweep that the file still sitting
+         * in Foundry's tray had never been taken: the next sweep landed it again
+         * as a SECOND version, in the position the user had just cleared. That is
+         * what Owen hit on 2026-08-19, and his Pokemon project was carrying two
+         * archive versions and a re-landed export when it was found.
+         */
+        const promoted = { ...v, path: `archive/${name}`, promotedFrom: v.foundrySource };
         delete promoted.foundrySource;
         return promoted;
       });

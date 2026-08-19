@@ -183,6 +183,27 @@ export interface ProjectVariant {
    * the test for "render this nested under its parent".
    */
   foundrySource?: FoundryVariantSource;
+  /**
+   * THIS VERSION *WAS* A FOUNDRY EXPORT AND THE USER KEPT IT — the record that
+   * survives the promotion.
+   *
+   * `promoteVariantToArchive` deletes `foundrySource`, deliberately: the row is
+   * one of the book's own files now, it must stop drawing "Temporary — keep",
+   * and it must stop being nested under a parent.
+   *
+   * But the export sweep builds its ALREADY-LANDED set from `foundrySource`, so
+   * deleting it told the sweep that the file still sitting in Foundry's tray had
+   * never been taken — and the next sweep landed it AGAIN as a second version.
+   * Owen hit exactly that on 2026-08-19: he pressed Keep, then Open in Foundry,
+   * and watched a new EPUB appear in the position he had just cleared. His
+   * Pokemon project was carrying two archive versions and a re-landed export when
+   * it was found.
+   *
+   * So the provenance is kept and only its MEANING changes: `foundrySource` says
+   * "this is Foundry's file, on loan"; this says "this WAS Foundry's file, and it
+   * is ours now". The sweep reads both, which is what closes the loop.
+   */
+  promotedFrom?: FoundryVariantSource;
 }
 
 /**

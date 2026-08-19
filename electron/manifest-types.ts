@@ -268,6 +268,18 @@ export interface ProjectVariant {
    * {@link FoundryVariantSource}.
    */
   foundrySource?: FoundryVariantSource;
+  /**
+   * THIS VERSION *WAS* A FOUNDRY EXPORT AND THE USER KEPT IT.
+   *
+   * Promotion deletes `foundrySource` so the row stops offering "Temporary —
+   * keep" and stops nesting — but the export sweep builds its already-landed set
+   * from that same field, so deleting it told the sweep the file still in
+   * Foundry's tray had never been taken, and the next sweep landed it AGAIN.
+   * Owen watched a version reappear in the position he had just cleared
+   * (2026-08-19). The provenance is kept; only its meaning changes. See the
+   * fuller note on the renderer's mirror of this interface.
+   */
+  promotedFrom?: FoundryVariantSource;
 }
 
 /**
