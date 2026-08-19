@@ -239,14 +239,66 @@ function toManifestPath(projectId: string, absolutePath: string): string {
  * Get the absolute path to a project folder
  */
 export function getProjectPath(projectId: string): string {
-  return path.join(getProjectsPath(), projectId);
+  return resolveUnderProjects(projectId);
+}
+
+/**
+ * A project id OR an already-resolved project directory, landed on the right
+ * folder either way.
+ *
+ * ── One name, two contracts — which cost a real bug ─────────────────────────
+ *
+ * `projectId` means the FOLDER NAME under the projects root here, and
+ * `path.join(root, id)` is correct for that. But a `StudioItem`'s `id` for a book
+ * is the ABSOLUTE project directory (studio.service.ts builds it as
+ * `${projectsPath}/${manifest.projectId}`), and the same word is used for both
+ * all the way down. Joining an absolute second argument does not resolve it — it
+ * concatenates — so an absolute id produced
+ * `Z:\...\projects\Z:\...\projects\Book`, which exists nowhere, and every reader
+ * downstream answered "Project not found".
+ *
+ * Owen hit it on the player window (2026-08-19): "Some audiobooks may be missing
+ * from this list — Project not found". The versions page had been surviving the
+ * same value only because it normalises first — a private `projectId()` helper
+ * that takes the last segment — so the two callers passed DIFFERENT VALUES
+ * through the SAME door, and only one of them had done the conversion.
+ *
+ * `path.resolve` returns an absolute second argument unchanged and joins a
+ * relative one, so both shapes land on the same directory and every caller of
+ * `getProjectPath`/`getManifestPath` is fixed at once rather than one call site
+ * at a time. For every id that already worked the result is byte-identical.
+ *
+ * ── The containment check is new protection, not a new risk ────────────────
+ *
+ * `resolve` will follow a `..` out of the projects tree — but so would `join`,
+ * so this is a hole that was already open and is closed here. A path that lands
+ * outside the root is refused BY NAME rather than read: the ids reaching this
+ * function come from manifests, IPC arguments and window query strings, and
+ * "read the manifest of a directory the caller named" is exactly the shape that
+ * should not be reachable from a renderer.
+ */
+function resolveUnderProjects(projectId: string): string {
+  const root = path.resolve(getProjectsPath());
+  const resolved = path.resolve(root, projectId);
+  const within = resolved === root || resolved.startsWith(root + path.sep);
+  if (!within) {
+    throw new Error(
+      `"${projectId}" resolves to ${resolved}, which is outside this library's projects folder `
+      + `(${root}). A project is addressed by its own folder name or its own path, and nothing `
+      + 'else is read.',
+    );
+  }
+  return resolved;
 }
 
 /**
  * Get the absolute path to a project's manifest.json
  */
 export function getManifestPath(projectId: string): string {
-  return path.join(getProjectsPath(), projectId, MANIFEST_FILENAME);
+  // Through the same door as getProjectPath, so an id and an absolute project
+  // directory cannot resolve to two different places depending on which of the
+  // two functions a caller happened to reach for. See resolveUnderProjects.
+  return path.join(resolveUnderProjects(projectId), MANIFEST_FILENAME);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
