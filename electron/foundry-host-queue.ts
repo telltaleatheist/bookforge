@@ -387,7 +387,16 @@ function fold(p: string): string { return p.replace(/\\/g, '/').replace(/\/+$/, 
  * rather than against everything.
  */
 function productOf(request: FoundryJobRequest): string {
-  const product = request.readingsPath ?? request.outputPath;
+  /*
+   * KEYED OFF THE KIND, not off which field happens to be present, and the first
+   * cut got this wrong in a way only a test found: it read
+   * `readingsPath ?? outputPath`, and A RENDERING CARRIES BOTH — it READS the
+   * bank and WRITES the file. So every rendering deduped against the read that
+   * fills the same bank and was handed that read's row back, which would have
+   * made "Export" after a read silently return the reading's row and start
+   * nothing. Same split `rowOf` reports, for the same reason.
+   */
+  const product = request.kind === 'read' ? request.readingsPath : request.outputPath;
   return typeof product === 'string' && product !== '' ? fold(product) : '';
 }
 
@@ -437,8 +446,20 @@ function anyFoundryStepRunning(): boolean {
  */
 let wasRunning = false;
 
-/** Arm the two pushes. Called once, from main, after the mount is up. */
+/**
+ * Arm the two pushes. Called once, from main, after the mount is up.
+ *
+ * IDEMPOTENT, and that is a guard rather than a convenience: both listeners
+ * below are appended to sets the engine never clears, so a second arming would
+ * push every project's rows twice and say "drained" twice for one drain — which
+ * on Foundry's side is a keep-warm timer armed, cancelled and armed again. There
+ * is one caller today; this makes a second one harmless instead of subtle.
+ */
+let armed = false;
+
 export function watchFoundryQueue(): void {
+  if (armed) return;
+  armed = true;
   /*
    * IDLE IS ASKED AFTER THE PUMP HAS DECIDED, not when the queue changed.
    *

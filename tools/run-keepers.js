@@ -91,6 +91,7 @@ const SUITES = [
   'test-foundry-host',
   'test-foundry-host-nodes',
   'test-foundry-host-status',
+  'test-foundry-host-queue',
   'test-foundry-narrate-form',
   'test-foundry-narrate-target',
   'test-foundry-landing',
