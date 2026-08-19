@@ -495,7 +495,40 @@ function checkLineage(child: QueueStep, parent: QueueStep | null): void {
 }
 
 /** Put a whole run in the queue. Held unless the caller says otherwise. */
-export function enqueue(spec: JobSpec): QueueJob {
+/**
+ * Options for a caller that cannot be re-entered.
+ *
+ * `deferPump` — mint the row, notify, and decide what runs on a LATER turn.
+ *
+ * ── The one caller that needs it, and why it is not the default ─────────────
+ *
+ * `enqueue` ends with `changed(); pump();`, inline, same tick. `pump()` calls
+ * `void launch(...)`, and `launch` runs synchronously as far as
+ * `await mod.run(ctx)` — which itself runs synchronously as far as the module's
+ * first await. So a step can begin EXECUTING inside the enqueue that created it.
+ *
+ * For every caller in this app that is exactly right: the press wants the work
+ * started, and the stack it started on is this one.
+ *
+ * It is wrong for the Foundry host queue (electron/foundry-host-queue.ts). There,
+ * enqueue is called BY Foundry, from inside its own IPC handler, and the step
+ * this engine would pick runs by calling back INTO Foundry (`runJob`). Pumping
+ * inline re-enters Foundry from inside its own enqueue, before that call has even
+ * returned the row it is waiting for. Foundry's agent refused the mirror of this
+ * on their side — `exportEpubFromStep` enqueues, so a host act that called it
+ * from inside our scheduler would have the scheduler awaiting itself — and this
+ * is the same bug with the arrow reversed (agreed on the channel, 2026-08-18).
+ *
+ * DEFERRED, NOT SKIPPED. The pump still happens, on a clean stack, one turn
+ * later; the row is still minted synchronously, which is the guarantee Foundry's
+ * shelf actually needs ("pressing Add cannot leave a moment where nothing has
+ * appeared").
+ */
+export interface EnqueueOptions {
+  deferPump?: boolean;
+}
+
+export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
   if (!spec.steps || spec.steps.length === 0) {
     throw new Error('A queued run with no steps would do nothing, so it is not queued.');
   }
@@ -531,7 +564,8 @@ export function enqueue(spec: JobSpec): QueueJob {
 
   jobs.push(job);
   changed();
-  pump();
+  if (opts?.deferPump === true) setImmediate(() => pump());
+  else pump();
   return job;
 }
 

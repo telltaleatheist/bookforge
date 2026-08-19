@@ -47,6 +47,11 @@ export const JOB_GERUND: Record<JobType, string> = {
   'translate-pass': 'Translating',
   'footnote-refs': 'Cleaning',
   'vlm-convert': 'Reading',
+  // Work ordered in the hosted Foundry window. One word for read, render and
+  // translate, because the chip says it while the row is RUNNING and what the
+  // engine is doing at that moment is making the book — the row's own title
+  // carries which act it is.
+  'foundry-job': 'Making',
 };
 
 /** What a finished job of this type produced — the tray card's kicker. */
@@ -65,4 +70,8 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   'translate-pass': 'Translated text',
   'footnote-refs': 'Footnote clean-up',
   'vlm-convert': 'EPUB conversion',
+  // What a Foundry job leaves behind, said in the one word true of all three: a
+  // read leaves the bank, a rendering leaves the file, a translate leaves the
+  // records. Each is a page of the book the window is making.
+  'foundry-job': 'Foundry work',
 };

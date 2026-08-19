@@ -11,6 +11,7 @@ import { registerStepModule } from '../queue-engine';
 import { bilingualAssemblyStep, bilingualCleanupStep, bilingualTranslationStep } from './bilingual';
 import { bookAnalysisStep } from './book-analysis';
 import { generateSentencesStep } from './generate-sentences';
+import { foundryJobStep } from './foundry-job';
 import { footnoteRefsStep, simplifyStep, translatePassStep } from './pass';
 import { reassemblyStep } from './reassembly';
 import { rvcEnhancementStep } from './rvc-enhancement';
@@ -33,6 +34,7 @@ export function registerAllStepModules(): void {
     generateSentencesStep,
     videoAssemblyStep,
     vlmConvertStep,
+    foundryJobStep,
     bilingualCleanupStep,
     bilingualTranslationStep,
     bilingualAssemblyStep,

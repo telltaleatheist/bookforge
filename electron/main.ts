@@ -85,6 +85,14 @@ import {
 // the top corner of the hosted window. The reading of a snapshot is pure and
 // lives beside the rows' one, for the same reason.
 import { hostStatusOf, type HostStatus } from './foundry-host-status';
+// BookForge's queue, offered to the hosted Foundry window — Owen's ruling of
+// 2026-08-18 that a press inside that window is scheduled here, not there. The
+// mapping and the two pushes live beside the rows' and the chip's, for the same
+// reason they do.
+import {
+  foundryHostQueue, setFoundrySeam, watchFoundryQueue,
+  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions, type FoundrySettled,
+} from './foundry-host-queue';
 // The narrate operation's dialog: the fields Foundry is asked to draw, and the
 // reading of the answers it hands back. Pure decisions, kept out of this file.
 import {
@@ -349,6 +357,37 @@ interface FoundryHostRecord {
    * `mountFoundry` runs exactly once, so a second registration is unreachable.
    */
   readonly hostOperations?: readonly FoundryHostOperation[];
+  /**
+   * THE QUEUE A PRESS IN THE HOSTED WINDOW GOES INTO — Owen's ruling of
+   * 2026-08-18, "we need to centralize the queue in bookforge."
+   *
+   * When Foundry reads this, its own `enqueue` mints nothing locally: it calls
+   * `enqueue` here and returns the row we minted, and the hosted shelf mirrors
+   * our list rather than keeping a second one that can disagree. Absent — or a
+   * Foundry that predates the seam and ignores it — is today's behaviour exactly.
+   *
+   * `enqueue` IS SYNCHRONOUS, deliberately, on both sides: their shelf's rule is
+   * that pressing Add cannot leave a moment where nothing has appeared, and our
+   * engine's enqueue mints and returns without awaiting anything. What it must
+   * NOT do is start the work on that same stack — see EnqueueOptions in
+   * queue-engine.ts, and foundry-host-queue.ts for the re-entrancy it avoids.
+   *
+   * WHAT DOES NOT COME THROUGH HERE: anything the host ordered through the mount
+   * seam. `exportEpubFromStep` enqueues on their side, and our narrate calls it
+   * from inside a running row of ours — routing that back into this queue would
+   * have our scheduler awaiting itself.
+   */
+  readonly hostQueue?: {
+    enqueue(
+      request: FoundryJobRequest,
+      parentStep: string | null,
+      projectDir: string,
+    ): FoundryJobRow;
+    cancel(id: string): Promise<void>;
+    remove(id: string): Promise<void>;
+    start(): void;
+    rows(projectDir: string): readonly FoundryJobRow[];
+  };
 }
 
 interface FoundryMountModule {
@@ -459,6 +498,56 @@ interface FoundryMountModule {
    * first paint, which is what every version before this one had.
    */
   setHostOperations(operations: readonly FoundryHostOperation[]): void;
+  /**
+   * RUN ONE FOUNDRY JOB NOW — the execution half of the centralized queue.
+   *
+   * Owen's ruling of 2026-08-18 split the two: BookForge decides WHEN, Foundry
+   * still does the work, because Foundry's runner owns the ledger writes, the
+   * bank, the working-tree rotations and the export landings, and a second
+   * implementation of any of it over here would be two copies of one truth.
+   *
+   * IT STILL MINTS A FOUNDRY ROW and still fires their `onJobSettled` /
+   * `onExportLanded` — their constraint, and load-bearing for US: those listeners
+   * are what `exportEpubFromStep` awaits and what our node reconciliation reads,
+   * so a `runJob` that bypassed the row would break our own narrate. What
+   * disappears in hosted mode is the WAITING; a row is born running.
+   *
+   * OPTIONAL, because the seam is arriving: 29c40a0 does not have it. A row that
+   * reaches this and finds nothing FAILS WITH A SENTENCE (foundry-host-queue.ts)
+   * rather than falling back to Foundry's own queue, which is the thing the
+   * ruling removed.
+   */
+  runJob?(
+    request: FoundryJobRequest,
+    opts: FoundryRunJobOptions,
+  ): Promise<FoundrySettled>;
+  /**
+   * The rows for one project, pushed — their shelf's mirror of OUR queue.
+   *
+   * `setHostNodes`' mechanics exactly, which is what their agent asked for
+   * ("SAME SHAPE AS host-ops:nodes/changed… copy it rather than inventing"): the
+   * WHOLE set every time, replace not merge, because a row that has left our
+   * queue has left it and a merge would keep a finished read on their shelf
+   * forever. Optional for `runJob`'s reason.
+   */
+  setHostQueueRows?(projectDir: string, rows: readonly FoundryJobRow[]): void;
+  /**
+   * OUR QUEUE HAS NO FOUNDRY WORK RUNNING — the one signal their vLLM reading
+   * server's lifetime hangs on.
+   *
+   * They derive keep-warm-or-tear-down from their own queue draining, and
+   * centralizing would have broken that silently: their list is empty after every
+   * job once we schedule, so the drain signal would fire between every pair of
+   * our rows. They asked for this instead of a count they would have to
+   * interpret, "because the knowledge lives where the scheduler is and a hint I
+   * have to interpret is a second scheduler in disguise".
+   *
+   * RUNNING, NOT "running or queued" — their narrowing, and they are right: a
+   * read queued behind two hours of TTS would otherwise hold a twenty-gigabyte
+   * server's VRAM for the whole narration, against the card this exists to
+   * protect. Optional for `runJob`'s reason.
+   */
+  foundryQueueIdle?(): void;
 }
 
 /**
@@ -1443,8 +1532,35 @@ async function refreshFoundryNarrateForm(): Promise<void> {
    * is up, and `setHostOperations` on a mount with no window is a write nobody
    * reads. So calling it unconditionally here is right; there is no "is anyone
    * listening" this side should be guessing at.
+   *
+   * ── ITS FAILURE MUST NOT REACH THE CALLER, and that is not a swallow ────────
+   *
+   * bookforge-mac-2 found this by reading the diff (2026-08-19): putting the push
+   * outside the catch made it the ONE statement in this function that can reject,
+   * and this function is AWAITED before the Foundry window opens. Foundry's
+   * `broadcast` (foundry-app/electron/window.ts) is an unguarded
+   * `win.webContents.send` over `BrowserWindow.getAllWindows()`, and hosted, that
+   * list is BookForge's windows too. A live window whose webContents has died —
+   * an ordinary crashed renderer — makes `send` throw, the rejection travels out
+   * of here, and THE FOUNDRY WINDOW NEVER OPENS. Owen's original bug was a button
+   * that vanished; that one would be the whole window not appearing, reading as
+   * a completely unrelated fault.
+   *
+   * So the push is isolated, and LOUDLY: nothing is substituted and nothing is
+   * hidden — the console gets the reason — but a notification to an already-open
+   * window is not a thing the opening of a window may hinge on. The real guard
+   * belongs one place further in, inside `broadcast`, where it also covers
+   * `setHostNodes` and `setHostStatus`; that is Foundry's file and has been asked
+   * for on the channel.
    */
-  foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
+  try {
+    foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
+  } catch (err) {
+    console.error(
+      '[foundry-host] The revised narrate form could not be pushed to the Foundry window: '
+      + `${(err as Error).message}. A window that is already open keeps the offers it read at `
+      + 'boot; the next one it opens will read these.');
+  }
 }
 
 /**
@@ -12381,7 +12497,55 @@ app.whenReady().then(async () => {
     // the two announcements above: an operation is a button the user pressed,
     // and its refusal has to reach the tree that asked.
     hostOperations: FOUNDRY_HOST_OPERATIONS,
+    /*
+     * OWEN'S RULING OF 2026-08-18: "we need to centralize the queue in bookforge.
+     * foundry has their own queue but things shouldnt be queued in foundry's
+     * queue from within bookforge."
+     *
+     * Offered unconditionally. A Foundry build that predates the seam ignores an
+     * option it does not read, which is exactly today's behaviour; the build that
+     * has it routes what a PERSON PRESSED in the hosted window through here
+     * instead of through its own list. Nothing else changes hands: work this host
+     * ordered through the mount seam stays on Foundry's internal path, because
+     * calling them IS the scheduling decision and routing it back would have our
+     * scheduler awaiting itself (see foundry-host-queue.ts).
+     */
+    hostQueue: foundryHostQueue,
   });
+  /*
+   * Hand the mount's own three functions back to the queue module, and arm the
+   * two pushes. AFTER the mount, because none of them exist to hand over until
+   * Foundry has been mounted — and injected rather than imported because main is
+   * the only file that knows where the subtree sits (`setGpuHolderProbe`'s
+   * precedent in the engine itself).
+   *
+   * NULL IS A REAL ANSWER for all three: a subtree that predates the seam offers
+   * none of them, a row that tries to run says so in a sentence, and the pushes
+   * simply do not fire. What is NOT done here is a fallback to Foundry's own
+   * queue, which is the thing the ruling removed.
+   */
+  setFoundrySeam({
+    runJob: typeof foundryMount.runJob === 'function'
+      ? (request, opts) => foundryMount.runJob!(request, opts)
+      : null,
+    setQueueRows: typeof foundryMount.setHostQueueRows === 'function'
+      ? (dir, rows) => foundryMount.setHostQueueRows!(dir, rows)
+      : null,
+    queueIdle: typeof foundryMount.foundryQueueIdle === 'function'
+      ? () => foundryMount.foundryQueueIdle!()
+      : null,
+  });
+  watchFoundryQueue();
+  if (typeof foundryMount.runJob !== 'function') {
+    // Said once, at startup, where it is actionable — not per row, and not
+    // swallowed. Until the seam lands, work ordered in the hosted window is
+    // still Foundry's to schedule.
+    logger.warn(
+      'The hosted Foundry engine has no queue seam (runJob), so work ordered inside its window '
+      + 'is still scheduled by Foundry rather than by BookForge. Refresh the vendored subtree '
+      + 'once the seam lands.',
+    );
+  }
   logger.info('Hosted Foundry mounted', { libraryDir: foundryDataRoot() });
 
   // ── The rows BookForge contributes to that tree ──────────────────────────

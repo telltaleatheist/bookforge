@@ -52,7 +52,23 @@ export type JobType =
   | 'simplify'
   | 'translate-pass'
   | 'footnote-refs'
-  | 'vlm-convert';
+  | 'vlm-convert'
+  /**
+   * WORK ORDERED INSIDE THE HOSTED FOUNDRY WINDOW — read the pages, render the
+   * book, translate it. Owen's ruling of 2026-08-18: "we need to centralize the
+   * queue in bookforge. foundry has their own queue but things shouldnt be
+   * queued in foundry's queue from within bookforge."
+   *
+   * ONE TYPE FOR ALL OF IT, with the kind on the config, because what differs
+   * between a read and a rendering is what the engine is asked — not how this
+   * queue treats the row. `resource()` is where the difference that matters to
+   * THIS engine lives: a read is the GPU, a rendering is arithmetic over a bank
+   * already on disk.
+   *
+   * Foundry still EXECUTES it. This engine decides when (see
+   * electron/queue-steps/foundry-job.ts, and foundry-host-queue.ts for the seam).
+   */
+  | 'foundry-job';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
