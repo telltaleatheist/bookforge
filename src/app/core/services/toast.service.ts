@@ -90,6 +90,23 @@ export class ToastService {
     this.show({ tone: 'success', kicker: 'Notice', title: line, meta: '', cover: null, action: null, plain: true });
   }
 
+  /**
+   * Say one sentence about something that FAILED — the same plain shape as
+   * {@link line}, in the failure tone, and (like every failure toast) it stays up
+   * until the user dismisses it.
+   *
+   * This is what an action that didn't work says. It is not for a surface that
+   * has no content to show: "the list could not be read" has to stay on screen
+   * next to the empty list, because a toast that has come and gone leaves the
+   * user looking at a blank page with no reason for it.
+   */
+  problem(text: string): void {
+    const line = text.trim();
+    if (!line) throw new Error('ToastService.problem was given an empty message');
+    if (this._toasts().some(t => t.plain && t.title === line)) return;
+    this.show({ tone: 'failure', kicker: 'Didn’t work', title: line, meta: '', cover: null, action: null, plain: true });
+  }
+
   dismiss(id: number): void {
     const timer = this.timers.get(id);
     if (timer) {

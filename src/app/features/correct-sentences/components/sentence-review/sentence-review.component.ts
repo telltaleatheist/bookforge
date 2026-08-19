@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy, Component, ElementRef, OnDestroy, computed, effect, inject, input, output, signal, viewChild,
 } from '@angular/core';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { ToastService } from '../../../../core/services/toast.service';
 import { CandidateSet, CorrectSentencesSession, ReviewRow } from '../../models/correct-sentences.types';
 
 /**
@@ -25,13 +26,6 @@ import { CandidateSet, CorrectSentencesSession, ReviewRow } from '../../models/c
         <div class="rv-title">Review &amp; regenerate</div>
         <span class="rv-count">{{ visibleRows().length }}</span>
       </header>
-
-      @if (error()) {
-        <div class="rv-banner">
-          <span>{{ error() }}</span>
-          <button class="rv-ghost" (click)="error.set(null)">Dismiss</button>
-        </div>
-      }
 
       <div class="rv-list">
         @for (row of visibleRows(); track row.index) {
@@ -96,8 +90,6 @@ import { CandidateSet, CorrectSentencesSession, ReviewRow } from '../../models/c
     .rv-title { flex: 1; text-align: center; font-weight: 600; color: var(--text-primary); }
     .rv-count { min-width: 22px; text-align: center; font-size: 12px; font-weight: 700; color: var(--accent-primary); }
 
-    .rv-banner { display: flex; align-items: center; gap: 12px; padding: 8px 14px; background: color-mix(in srgb, var(--error, #ff453a) 12%, transparent); color: var(--error, #ff453a); font-size: 13px; }
-    .rv-banner span { flex: 1; }
     .rv-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 12px; color: var(--text-secondary); }
     .rv-ghost { padding: 7px 14px; border: 1px solid var(--border-default); border-radius: 8px; background: transparent; color: var(--text-secondary); cursor: pointer; }
 
@@ -136,6 +128,7 @@ import { CandidateSet, CorrectSentencesSession, ReviewRow } from '../../models/c
 })
 export class SentenceReviewComponent implements OnDestroy {
   private readonly electron = inject(ElectronService);
+  private readonly toasts = inject(ToastService);
   private readonly audioRef = viewChild<ElementRef<HTMLAudioElement>>('audio');
 
   readonly session = input.required<CorrectSentencesSession>();
@@ -147,7 +140,6 @@ export class SentenceReviewComponent implements OnDestroy {
   readonly rows = signal<ReviewRow[]>([]);
   readonly generating = signal(false);
   readonly progress = signal<{ done: number; total: number }>({ done: 0, total: 0 });
-  readonly error = signal<string | null>(null);
   readonly playingKey = signal<string | null>(null);
   readonly isPlaying = signal(false);
 
@@ -220,7 +212,7 @@ export class SentenceReviewComponent implements OnDestroy {
       const res = await this.electron.correctSentencesCommit({
         projectDir: this.projectDir(), index: row.index, sourceFlacPath: opt.path,
       });
-      if (!res?.success) { this.error.set(res?.error || 'Commit failed.'); return; }
+      if (!res?.success) { this.toasts.problem(res?.error || 'That take could not be saved into the book.'); return; }
     }
     this.updateRow(row.index, (r) => ({ ...r, resolved: true }));
     if (this.visibleRows().length === 0) this.done.emit();
@@ -235,7 +227,7 @@ export class SentenceReviewComponent implements OnDestroy {
         const res = await this.electron.correctSentencesCommit({
           projectDir: this.projectDir(), index: r.index, sourceFlacPath: opt.path,
         });
-        if (!res?.success) { this.error.set(res?.error || 'Commit failed.'); return; }
+        if (!res?.success) { this.toasts.problem(res?.error || 'That take could not be saved into the book.'); return; }
       }
       this.updateRow(r.index, (x) => ({ ...x, resolved: true }));
     }
@@ -252,7 +244,6 @@ export class SentenceReviewComponent implements OnDestroy {
 
   private async generateFor(indices: number[], overrides: Record<number, string>): Promise<void> {
     this.generating.set(true);
-    this.error.set(null);
     this.progress.set({ done: 0, total: indices.length * 3 });
     const jobId = `correct-${indices.join('_')}-${indices.length}`;
     this.currentJobId = jobId;
@@ -262,7 +253,7 @@ export class SentenceReviewComponent implements OnDestroy {
     this.generating.set(false);
     this.currentJobId = null;
     if (!res?.success || !res.data) {
-      this.error.set(res?.error || 'Generation failed.');
+      this.toasts.problem(res?.error || 'Those sentences could not be re-recorded.');
       return;
     }
     // Merge the fresh takes into the existing rows, preserving each row's edited text.

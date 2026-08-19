@@ -636,6 +636,55 @@ async function copyDirOutOfWsl(sourceUnc: string, destDir: string): Promise<void
 }
 
 /**
+ * Give a WSL-spawned worker a session dir it can actually READ, and say where to
+ * delete the staging afterwards.
+ *
+ * buildWslBashCommand maps a drive letter to /mnt/<letter> unconditionally, but WSL
+ * auto-mounts FIXED drives only. With the library on the mapped titan share there is
+ * no /mnt/z at all, so `--session_dir Z:\…` reached the guest as a path that does not
+ * exist and every Correct Sentences re-roll died on e2a's "Session directory not
+ * found" (hit live 2026-08-19, on a book whose own render had worked — generation
+ * builds its session INSIDE WSL, so only work that points the guest back at the
+ * Windows-side cache was ever exposed).
+ *
+ * The worker READS session-state.json out of this dir and nothing else — the audio it
+ * produces goes to --sentences_dir, and the Orpheus model comes from the voice args —
+ * so staging just that file is sufficient. It goes through the \\wsl$ UNC, which works
+ * for EVERY source the host can read (fixed, mapped, or UNC), so this needs no mount
+ * probe to be correct — the same reasoning that makes prepareSession stage the ebook
+ * unconditionally rather than testing for /mnt.
+ */
+async function stageSessionStateForWsl(
+  sessionDir: string
+): Promise<{ guestSessionDir: string; stagedUnc: string | null }> {
+  // Already on WSL's own filesystem: the guest reads it natively, nothing to stage.
+  if (isWslUncPath(sessionDir)) {
+    return { guestSessionDir: uncToWslPath(sessionDir), stagedUnc: null };
+  }
+
+  const processDir = findE2aProcessDir(sessionDir);
+  if (!processDir) {
+    throw new Error(
+      `No session-state.json under ${sessionDir}, so this session cannot be staged for WSL.`
+    );
+  }
+
+  const guestSessionDir = `${getWslE2aPath()}/tmp/staged-session-${crypto.randomUUID()}`;
+  const stagedUnc = wslPathToWindows(guestSessionDir);
+  // load_session_state looks for <session_dir>/<process>/session-state.json — one level
+  // down, always — so the state is staged under a process dir even when the source kept
+  // it at the top level.
+  const stagedProcessDir = path.join(stagedUnc, path.basename(processDir));
+  await fs.mkdir(stagedProcessDir, { recursive: true });
+  await fs.copyFile(
+    path.join(processDir, 'session-state.json'),
+    path.join(stagedProcessDir, 'session-state.json')
+  );
+  console.log(`[PARALLEL-TTS] Staged session state for WSL: ${processDir} -> ${guestSessionDir}`);
+  return { guestSessionDir, stagedUnc };
+}
+
+/**
  * Cache the full TTS session folder from e2a tmp into the project for permanent storage.
  * After caching, the original session in e2a tmp is removed.
  *
@@ -3426,6 +3475,21 @@ export async function regenerateSentenceIndices(
 
   fsSync.mkdirSync(targetSentencesDir, { recursive: true });
 
+  // A WSL worker cannot read the session from wherever WE hold it — a library on a
+  // mapped network drive has no /mnt entry in the guest at all. Stage the state it
+  // needs onto WSL's own filesystem and hand it that path instead.
+  let sessionDirArg = sessionDir;
+  let stagedSessionUnc: string | null = null;
+  if (shouldUseWslForSpawn(settings.ttsEngine)) {
+    try {
+      const staged = await stageSessionStateForWsl(sessionDir);
+      sessionDirArg = staged.guestSessionDir;
+      stagedSessionUnc = staged.stagedUnc;
+    } catch (err: any) {
+      return { success: false, converted: 0, failedIndices: indices, error: err?.message || String(err) };
+    }
+  }
+
   // Build args mirroring startWorker's lightweight (worker.py) branch, but for a
   // discrete index list writing into a scratch sentences dir.
   let args: string[];
@@ -3436,7 +3500,7 @@ export async function regenerateSentenceIndices(
       ...pythonInvocation(settings.ttsEngine).args,
       workerPath,
       '--session', sessionId,
-      '--session_dir', sessionDir,
+      '--session_dir', sessionDirArg,
       '--sentences_dir', targetSentencesDir,
       '--device', deviceArg,
       '--tts_engine', settings.ttsEngine,
@@ -3512,7 +3576,7 @@ export async function regenerateSentenceIndices(
     ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
   });
 
-  return await new Promise<RegenerateIndicesResult>((resolve) => {
+  const runWorker = () => new Promise<RegenerateIndicesResult>((resolve) => {
     let converted = 0;
     let resultJson: any = null;
     let stderrTail = '';
@@ -3573,6 +3637,22 @@ export async function regenerateSentenceIndices(
       }
     });
   });
+
+  try {
+    return await runWorker();
+  } finally {
+    // The staged state is scratch: it exists only for the life of this worker. A
+    // failed sweep is said out loud but never fails the regeneration — the audio
+    // is already made, and losing it over a leftover 200 kB of JSON would be the
+    // cleanup deciding the verdict.
+    if (stagedSessionUnc) {
+      try {
+        await fs.rm(stagedSessionUnc, { recursive: true, force: true });
+      } catch (err) {
+        console.warn(`[PARALLEL-TTS] Could not remove staged session state at ${stagedSessionUnc}:`, err);
+      }
+    }
+  }
 }
 
 function startWorker(

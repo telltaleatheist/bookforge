@@ -5,6 +5,7 @@ import { QueueService } from '../../../queue/services/queue.service';
 import { ReassemblyJobConfig } from '../../../queue/models/queue.types';
 import { CorrectSentencesSession } from '../../models/correct-sentences.types';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { ToastService } from '../../../../core/services/toast.service';
 
 interface AssembleMetadata {
   title: string;
@@ -94,6 +95,7 @@ interface AssembleMetadata {
 export class CorrectAssembleComponent implements OnInit {
   private readonly queue = inject(QueueService);
   private readonly electron = inject(ElectronService);
+  private readonly toasts = inject(ToastService);
 
   readonly session = input.required<CorrectSentencesSession>();
   readonly audiobookFolder = input('');
@@ -176,7 +178,10 @@ export class CorrectAssembleComponent implements OnInit {
       });
       this.queued.set(true);
     } catch (e: any) {
-      this.error.set(e?.message || 'Failed to queue rebuild.');
+      // A press that didn't take. The panel itself is intact and still offers the
+      // button, so this is toast news, not a standing condition of the surface —
+      // unlike the gap-provenance failure above, which explains a missing field.
+      this.toasts.problem(e?.message || 'The rebuild could not be queued.');
     } finally {
       this.working.set(false);
     }

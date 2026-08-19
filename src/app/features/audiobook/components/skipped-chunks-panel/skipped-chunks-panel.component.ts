@@ -8,6 +8,7 @@ import { Component, input, output, signal, computed, inject, OnChanges, SimpleCh
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { ElectronService } from '../../../../core/services/electron.service';
+import { ToastService } from '../../../../core/services/toast.service';
 import { SkippedChunk } from '../../../queue/models/queue.types';
 
 @Component({
@@ -469,6 +470,7 @@ import { SkippedChunk } from '../../../queue/models/queue.types';
 })
 export class SkippedChunksPanelComponent implements OnChanges {
   private electronService = inject(ElectronService);
+  private readonly toasts = inject(ToastService);
 
   // Inputs
   readonly skippedChunksPath = input<string | null>(null);
@@ -562,7 +564,10 @@ export class SkippedChunksPanelComponent implements OnChanges {
     // (that's what TTS reads from), not the original
     const epubPath = this.cleanedEpubPath() || this.originalEpubPath();
     if (!epubPath) {
-      this.error.set('No EPUB path available');
+      // Saving is an ACTION, so its failures go to the toast stack. The error()
+      // signal below stays reserved for "this panel could not be loaded", which
+      // has to remain on screen next to the empty list it explains.
+      this.toasts.problem('There is no EPUB behind this panel to save the edit into.');
       return;
     }
 
@@ -605,10 +610,10 @@ export class SkippedChunksPanelComponent implements OnChanges {
 
         this.cancelEditing();
       } else {
-        this.error.set(result.error || 'Failed to save edit');
+        this.toasts.problem(result.error || 'That edit could not be saved into the EPUB.');
       }
     } catch (err) {
-      this.error.set((err as Error).message);
+      this.toasts.problem((err as Error).message);
     } finally {
       this.saving.set(false);
     }
