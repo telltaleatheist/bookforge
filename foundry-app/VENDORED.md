@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **92ab737** — *the reflow race, the struck-picture X, and env-install rows in the hosted shelf* |
+| Source sha | **b2b8562** — *the workbench draws emphasis and tables instead of the characters that describe them* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -192,7 +192,30 @@ multiply cannot lighten, so the X approaches invisibility over a near-black
 region of a plate. (c) ENV-INSTALL ROWS are unioned into the hosted shelf at
 BookForge's request — and drawing the row made its cross reachable, so their
 `cancel`/`remove` now test the KIND before forwarding rather than assuming no row
-in the shelf is theirs (95/95 blobs at 92ab737).
+in the shelf is theirs (95/95 blobs at 92ab737). `73e7147` is a MODE-ONLY commit
+— the four `tools/*.sh` committed 100644, which bookforge-mac-2 found by trying
+to build the engine on a Mac; verified here as 0 insertions and 0 deletions, so
+the engine binary stands. `b2b8562` is Wave 18, Owen's ruling on what the
+workbench draws: *"it should never show html tags on the workbench, it should
+just show the product of the tags"*. (a) `productOf` consolidated to one function
+on their side, the debt they owed after BookForge shipped the mirror-image bug.
+(b) EMPHASIS — `app/shared/inline.ts` restates the engine's inline rules on the
+app side, deliberately NOT shared code, because the app never imports the engine,
+it SPAWNS it; verified by equivalence over all 734 asterisk-bearing blocks in the
+library, compared character by character with per-character bold/italic flags,
+zero disagreements. (c) THE TABLE draws a grid, and the sanitiser is stronger
+than an allowlist: not one character of the model's string becomes markup — the
+fragment is read into rows, cells and two clamped integers and the component
+draws THAT. No innerHTML, no bypassSecurityTrust, nothing a later hand can relax;
+a fragment it cannot parse prints as prose under a sentence saying so, never
+blank. CORRECTION CARRIED WITH IT: their earlier claim that the engine escaped
+`**` into the EPUB — and therefore that BookForge's TTS had been reading
+asterisks aloud — WAS FALSE. `src/vlm/dots.ts:492` has converted `**bold**` to
+`<strong>` for as long as the function has existed, both EPUB writers reach it,
+and an EPUB on disk carries `<strong>` with zero asterisks. Owen saw the
+workbench, never the EPUB. BookForge had already closed the question by the other
+route: e2a's `chars_remove` maps `*` to a space in `normalize_text`, so nothing
+was ever spoken (95/95 blobs at b2b8562).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

@@ -29,6 +29,16 @@
  * has to find exactly what the engine would have found, or a book that is edited
  * and a book that is re-read would disagree about where its numbers are.
  *
+ * ── AND SINCE WAVE 18, THE EMPHASIS TOO ────────────────────────────────────
+ *
+ * `inlineEmphasis` at the foot of this file is the same arrangement for the
+ * other half of the model's inline dialect: the `**bold**` and `*italic*` the
+ * emitter turns into `<strong>` and `<em>` (`dotsInline`, src/vlm/dots.ts) and
+ * the renderer must draw as the same two effects, or the page a person edits and
+ * the book they export are two different books. The engine is the reference
+ * implementation and has been since long before the renderer existed; this side
+ * restates the two expressions and cites it, exactly as the entries above do.
+ *
  * If the engine's alphabet grows, BOTH sides grow.
  */
 
@@ -111,4 +121,153 @@ export function superscriptRuns(text: string): PrintedRun[] {
     runs.push({ at: match.index, len: match[0].length, printed: printedNoteNumber(match[0])! });
   }
   return runs;
+}
+
+// ── emphasis ────────────────────────────────────────────────────────────────
+
+/**
+ * `dotsInline`'s own two emphasis patterns, in `dotsInline`'s own order
+ * (src/vlm/dots.ts) — the third statement of them in this repo, after the
+ * emitter's and `src/translate/textmask.ts`'s, and named here for the same
+ * reason that one names them: the app never imports a line of the engine, so the
+ * alphabet is written again with the engine's file cited as the contract.
+ *
+ * STRONG FIRST, and the order is the meaning. It is what decides that
+ * `**a *b* c**` is one bold span with an italic inside it rather than two
+ * adjacent italics around a stray pair of asterisks. `textmask.ts` makes the
+ * same argument at the same two expressions; if the engine's pair ever changes,
+ * all three change together.
+ *
+ * WHAT THE MODEL ACTUALLY EMITS, measured before any of this was written rather
+ * than assumed. Across every bank in the user's library: `**bold**` and
+ * `*italic*` in quantity, `***` never, `_underscores_` never, `~~` never,
+ * backticks never, `[text](href)` never. So the subset is exactly these two and
+ * there is no general Markdown parser here — the model's dialect is two effects
+ * wide and this is those two.
+ *
+ * FUNCTIONS RATHER THAN CONSTANTS, which is `superscriptRun` above's rule
+ * applied to two more expressions: they carry `g`, so they carry `lastIndex`,
+ * and this file's standing answer to that is a fresh matcher per scan rather
+ * than a shared cursor and an argument about which callers happen to reset it.
+ */
+function strongPairs(): RegExp {
+  return /\*\*(?=\S)([\s\S]*?\S)\*\*/g;
+}
+
+function italicPairs(): RegExp {
+  return /(?<![*\w])\*(?=\S)([\s\S]*?\S)\*(?!\w)/g;
+}
+
+/** This character is one of the four asterisks of a matched pair — not content. */
+export const INLINE_DROPPED = 1;
+/** This character is inside a `**bold**` pair. */
+export const INLINE_STRONG = 2;
+/** This character is inside an `*italic*` pair. */
+export const INLINE_ITALIC = 4;
+
+/**
+ * The emphasis of every character of one block's text, or null when there is
+ * none to have.
+ *
+ * ── WHY THIS ANSWERS PER CHARACTER RATHER THAN HANDING BACK MARKUP ──────────
+ *
+ * Because THE BANK AND THE BOOK FILE DO NOT CHANGE, and everything else follows
+ * from that. Foundry's edit ops index into a block's text BY CHARACTER OFFSET —
+ * a split names a cut at an offset, a delete names `from` and `len`, and a
+ * `BookRef` carries an offset into the block it points into (shared/ops.ts).
+ * Strip the four asterisks of a pair at reflow and every offset after them in
+ * that block moves by four, so replaying an already-curated project would land
+ * its strikes and its splits in the wrong places, silently, on a file nobody
+ * touched. **So nothing upstream of a screen is allowed to interpret `**`.**
+ * Interpretation happens where text is DISPLAYED and nowhere else, and if a
+ * later hand is tempted to tidy the markers out of the bank, this paragraph is
+ * why they must not.
+ *
+ * Answering per character is what makes that possible. The renderer already
+ * cuts a block at the reference-number offsets the engine resolved, and those
+ * offsets are into the SOURCE STRING; a function that handed back a tree of
+ * spans, or a string of markup, would be answering in a coordinate system the
+ * caller cannot line up with the one its markers are in. One code per source
+ * character lines up by construction.
+ *
+ * ── UNBALANCED MARKERS DEGRADE TO LITERAL TEXT, and this is not a nicety ────
+ *
+ * It is the direct cost of the decision above. Because the markers stay in the
+ * text, a person can cut a block in half between them: a split at an offset
+ * inside a `**…**` pair leaves an opening `**` at the end of one block and a
+ * closing `**` at the start of the next, and a strike over a range does the
+ * same. A greedy parser handed `**Kari Lake` would find no partner, and a
+ * forgiving one would bold the rest of the paragraph — or, worse, run on into
+ * the next pair and bold the words between two unrelated phrases. Both
+ * expressions above require their partner: no partner, no match, and the
+ * asterisks stay on the page as the characters they are. That is the same
+ * answer the engine gives, and it is the honest one — an asterisk that means
+ * nothing should LOOK like an asterisk that means nothing, because the person
+ * looking at it is the one who can put it right.
+ *
+ * It also covers what the model does with lists, for free: `* Intercede for
+ * your city` is a bullet and not an italic, and the leading marker survives
+ * only because `(?=\S)` refuses an asterisk followed by a space. There are
+ * nine such rows in the user's library and not one of them should be italic.
+ *
+ * ── The two passes, and why the second reads a doctored string ──────────────
+ *
+ * The emitter runs its italic expression over a string in which every matched
+ * `**` has already become a `<strong>` tag, so the lookaround either side of a
+ * candidate `*` sees a `>` where the bold markers used to be. To match that
+ * exactly WITHOUT moving any offset, the second pass here reads a copy of the
+ * text in which those same asterisks have been overwritten with `>` — one
+ * character for one character, the same character the emitter's tags end in, so
+ * the same candidates match and every index still means what it meant.
+ *
+ * WHAT DOES NOT MIRROR THE EMITTER, said out loud: the emitter nests elements,
+ * so a pathological `***word***` makes it emit crossed tags. Codes per character
+ * cannot cross, so the same input draws here as bold-and-italic over the whole
+ * run. No bank in the library contains a `***`, the divergence needs one, and
+ * the alternative — reproducing malformed markup in a renderer that has no
+ * markup to malform — would be mirroring a defect rather than a rule.
+ */
+export function inlineEmphasis(text: string): Uint8Array | null {
+  // The overwhelmingly common block has no asterisk in it at all, and it should
+  // cost one scan and no allocation to say so.
+  if (!text.includes('*')) return null;
+
+  const codes = new Uint8Array(text.length);
+  let found = false;
+
+  /*
+   * `split('')` AND NOT `[...text]`, and it is not a style choice. The spread
+   * splits by CODE POINT, so one emoji becomes one element while `match.index`
+   * and `text.length` count UTF-16 CODE UNITS — and a single astral character
+   * anywhere before a marker would put every index after it one out, silently
+   * emphasising the wrong words. Code units all the way through, so the
+   * residual lines up with the source character for character.
+   */
+  const residual = text.split('');
+  for (const match of text.matchAll(strongPairs())) {
+    const at = match.index;
+    const end = at + match[0].length;
+    // A match is `**` + at least one non-space + `**`, so the two pairs never
+    // overlap and the interior is never empty.
+    for (const marker of [at, at + 1, end - 2, end - 1]) {
+      codes[marker] = INLINE_DROPPED;
+      residual[marker] = '>';
+    }
+    for (let i = at + 2; i < end - 2; i += 1) codes[i]! |= INLINE_STRONG;
+    found = true;
+  }
+
+  for (const match of residual.join('').matchAll(italicPairs())) {
+    const at = match.index;
+    const end = at + match[0].length;
+    codes[at] = INLINE_DROPPED;
+    codes[end - 1] = INLINE_DROPPED;
+    // The interior may contain a `>` standing in for a bold marker; that
+    // character is already dropped and stays dropped — the flag set on it here
+    // is never read, because dropped is asked first.
+    for (let i = at + 1; i < end - 1; i += 1) codes[i]! |= INLINE_ITALIC;
+    found = true;
+  }
+
+  return found ? codes : null;
 }

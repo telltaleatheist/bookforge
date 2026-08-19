@@ -20,6 +20,8 @@ import type { BookLoad, BookRow } from '@shared/book';
 // dialog's cards, the queue's row and this pane's sentences all print the same
 // table, so a mode cannot be one thing in the history and another on a tooltip.
 import { REWRITE_LABELS } from '@shared/ledger';
+// The model's inline dialect, mirrored from the emitter's — see `cut`.
+import { INLINE_DROPPED, INLINE_ITALIC, INLINE_STRONG, inlineEmphasis } from '@shared/inline';
 import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from '@shared/ops';
 
 import { api } from '../../core/foundry';
@@ -30,6 +32,7 @@ import { type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { editionFlow, editionPieces } from './edition';
 import { chapterOrder, flowNeighbours, seamJoins, sharedAnchor } from './flow';
+import { readTable, type TableRow } from './table';
 
 /**
  * THE BOOK — a proof sheet on a dark workbench, and the one surface this app
@@ -172,6 +175,15 @@ interface Marker {
 interface Piece {
   text: string;
   marker: Marker | null;
+  /**
+   * The model's emphasis over this run — `**bold**` and `*italic*`, decided by
+   * `inlineEmphasis` (shared/inline) and drawn as the effect rather than as the
+   * characters. See `cut` for the whole argument; the short of it is that the
+   * markers stay in the bank because ops index into it by character offset, and
+   * a display surface is the only place they may be interpreted.
+   */
+  strong: boolean;
+  italic: boolean;
 }
 
 /** One block, with everything the sheet has to know to draw it. */
@@ -223,6 +235,16 @@ interface Line {
   seamInto: string | null;
   /** Indented like a printed paragraph — not the first of the book, not after a heading. */
   indent: boolean;
+  /**
+   * The grid, for a `Table` block and for nothing else — §18c.
+   *
+   * Null on every other category, and null on a Table whose markup this app
+   * REFUSED to read, which is the visible failure rather than a blank block:
+   * the template prints the model's string as prose and says why, exactly as
+   * this block was drawn before it had a case of its own. See ./table for the
+   * allowlist and for what happens to what it rejects.
+   */
+  table: TableRow[] | null;
   /** The hairline above the first note of a page's group of them. */
   opensNotes: boolean;
   /** What is unlinked about this block, for the amber flag in the right gutter. */
@@ -317,6 +339,24 @@ const SCROLL_SETTLE_MS = 400;
       template, asked which it is, instead of two that must be kept saying the
       same thing about a superscript.
     -->
+    <!--
+      \`bold\` AND \`italic\` ARE THE MODEL'S OWN EMPHASIS, DRAWN AS THE EFFECT —
+      §18b. The vision model writes \`**bold**\` and \`*italic*\` into a block's
+      text and the emitter has always turned those into \`<strong>\` and \`<em>\`;
+      this sheet drew the asterisks. It now draws what they mean.
+
+      THE MARKERS ARE STILL IN THE FILE and always will be: the ops index into
+      block text by character offset, so removing four characters upstream would
+      move every offset after them and misplace an already-curated project's
+      strikes. The cut is made in \`cut()\`, which is where that argument is
+      written out; here there is only a class.
+
+      A CLASS AND NOT A \`<strong>\`/\`<em>\` ELEMENT, deliberately: every run in
+      this template is already an element for the whitespace reason above, and
+      wrapping some of them in a second one would be three more branches to keep
+      saying the same thing — on a workbench whose whole job is to show a person
+      what the export will look like, where the effect IS the information.
+    -->
     <ng-template #words let-line let-plain="plain">
       @for (piece of line.pieces; track $index) {
         @if (piece.marker; as marker) {
@@ -330,7 +370,11 @@ const SCROLL_SETTLE_MS = 400;
               number it has. NO JUMP, NO COUPLING, NO AMBER: the link is the
               apparatus of a reader, and this is the page, not a reader.
             -->
-            <sup class="ref">{{ piece.text }}</sup>
+            <sup
+              class="ref"
+              [class.bold]="piece.strong"
+              [class.italic]="piece.italic"
+            >{{ piece.text }}</sup>
           } @else {
             <span
               class="marker"
@@ -338,12 +382,18 @@ const SCROLL_SETTLE_MS = 400;
               [class.unlinked]="marker.note === null"
               [class.struck]="marker.struck"
               [class.lit]="marker.note !== null && lit() === marker.note"
+              [class.bold]="piece.strong"
+              [class.italic]="piece.italic"
               (pointerenter)="light(marker.note)"
               (pointerleave)="light(null)"
             >{{ piece.text }}</span>
           }
         } @else {
-          <span class="run">{{ piece.text }}</span>
+          <span
+            class="run"
+            [class.bold]="piece.strong"
+            [class.italic]="piece.italic"
+          >{{ piece.text }}</span>
         }
       }
     </ng-template>
@@ -443,12 +493,87 @@ const SCROLL_SETTLE_MS = 400;
             }
           </figure>
         }
+        @case ('Table') {
+          <!--
+            §18c — THE GRID, DRAWN. A Table block's text is the model's own HTML
+            and the export has always written a real table out of it
+            (\`checkTableHtml\`, src/vlm/dots.ts); the bench set it as a paragraph
+            and a person proofing their book saw angle brackets. It now draws.
+
+            NOT ONE CHARACTER OF THE MODEL'S STRING BECOMES MARKUP. \`readTable\`
+            (./table) reads the fragment into rows, cells and two clamped
+            integers, and every one of those crosses into this template as an
+            interpolation Angular escapes. There is no \`innerHTML\` here and
+            there must never be one: the string arrived from a language model
+            over a socket, and that we asked for it is not a provenance.
+
+            THIS IS NOT THE GRID EDITOR, which stays deferred out loud. Nothing
+            below is clickable and nothing below writes an op — the block goes on
+            being selected, struck and curated by the chrome around it, because
+            all of that is about the BLOCK and this is only what is inside it.
+          -->
+          @if (line.table; as grid) {
+            <!--
+              The wrapper scrolls, and it is the whole reason there is one: a
+              nine-column table in a book set to a reading measure is wider than
+              the paper, and a page that scrolls sideways as a whole would take
+              the margins, the gutters and every mark in them along with it.
+            -->
+            <div class="tablewrap">
+              <table [style.font-size.em]="line.size">
+                @for (row of grid; track $index) {
+                  <tr [class.head]="row.head">
+                    @for (cell of row.cells; track $index) {
+                      @if (cell.header) {
+                        <th
+                          [attr.colspan]="cell.colspan"
+                          [attr.rowspan]="cell.rowspan"
+                        >{{ cell.text }}</th>
+                      } @else {
+                        <td
+                          [attr.colspan]="cell.colspan"
+                          [attr.rowspan]="cell.rowspan"
+                        >{{ cell.text }}</td>
+                      }
+                    }
+                  </tr>
+                }
+              </table>
+            </div>
+          } @else {
+            <!--
+              THE REFUSAL, AND IT IS VISIBLE. A fragment with no rows this app
+              will read is printed as what it is — the model's own string, set as
+              prose, exactly as this block was drawn before it had a case. A
+              sanitiser whose rejection is a blank space would take a paragraph
+              of somebody's book off the page with nothing said about it.
+
+              The sentence beside it is BENCH CHROME and not part of the book, so
+              it is absent from the edition for the same reason the page ghosts
+              and the amber flags are: the edition is what the export will be,
+              and the export writes the model's fragment whatever this app made
+              of it.
+            -->
+            @if (!plain) {
+              <p class="table-refused">
+                This block is a table, and its markup could not be read as one. The words
+                are printed below as they arrived.
+              </p>
+            }
+            <p class="para set-off" [style.font-size.em]="line.size">
+              <ng-container
+                *ngTemplateOutlet="words; context: { $implicit: line, plain: plain }"
+              ></ng-container>
+            </p>
+          }
+        }
         @default {
           <!--
-            Text, and — with a class and nothing else — a table, a formula and a
-            list item. Their own shapes are later waves (a table grid editor was
-            deferred out loud); rendering what the model read, plainly, is not a
-            placeholder for that, it is what the words are.
+            Text, and — with a class and nothing else — a formula and a list
+            item. Their own shapes are later waves; rendering what the model
+            read, plainly, is not a placeholder for that, it is what the words
+            are. TABLE HAS ITS OWN CASE NOW (§18c, above) and is no longer one
+            of the categories this paragraph stands in for.
           -->
           <p
             class="para"
@@ -955,12 +1080,29 @@ const SCROLL_SETTLE_MS = 400;
                 <span class="peek-what">{{ card.label }} · ≈ {{ card.page }}</span>
                 <button type="button" class="peek-go" (click)="travel(card.target)">Go there</button>
               </div>
+              <!--
+                THE CARD SETS THE COUNTERPART THE WAY THE PAGE SETS IT, emphasis
+                included. It draws the same \`pieces\` the sheet does, so the
+                asterisks are already gone from them; leaving the classes off
+                here would show a note in roman on the card and in italics eight
+                lines down, which is one book disagreeing with itself about a
+                title.
+              -->
               <p class="peek-words" [class.struck-words]="card.struck">
                 @for (piece of card.pieces; track $index) {
                   @if (piece.marker; as marker) {
-                    <span class="marker plain" [class.hot]="marker.note === peekFrom()">{{ piece.text }}</span>
+                    <span
+                      class="marker plain"
+                      [class.hot]="marker.note === peekFrom()"
+                      [class.bold]="piece.strong"
+                      [class.italic]="piece.italic"
+                    >{{ piece.text }}</span>
                   } @else {
-                    <span class="run">{{ piece.text }}</span>
+                    <span
+                      class="run"
+                      [class.bold]="piece.strong"
+                      [class.italic]="piece.italic"
+                    >{{ piece.text }}</span>
                   }
                 }
               </p>
@@ -1672,6 +1814,45 @@ const SCROLL_SETTLE_MS = 400;
     .plate-page { color: var(--ink-muted); font-size: 10px; font-style: italic; }
     .plate-img { display: block; max-width: 100%; margin: 0 auto; border-radius: var(--radius); }
 
+    /*
+     * ── §18c THE GRID ────────────────────────────────────────────────────────
+     *
+     * Hairlines in the paper's own faint ink and nothing else: no zebra, no
+     * fill, no rounded corners. A table in a book is ruled type, and the marks
+     * that would make this look like a spreadsheet would be this app inventing
+     * an appearance the exported book is not going to have — the EPUB writes
+     * the model's own grid and lets the reading system set it.
+     *
+     * THE WRAPPER IS THE ONLY THING THAT SCROLLS. A wide table must not widen
+     * the paper, because the paper's width is the measure the whole book is set
+     * to and the gutters, rails and margin chips are positioned against it.
+     */
+    .tablewrap { max-width: 100%; margin: 1em 0; overflow-x: auto; }
+    table { border-collapse: collapse; margin: 0 auto; }
+    td, th {
+      padding: 0.28em 0.6em;
+      border: 1px solid var(--ink-faint);
+      text-align: left;
+      vertical-align: top;
+    }
+    th { font-weight: 600; }
+    tr.head th { border-bottom-width: 2px; }
+    /*
+     * THE REFUSAL SAYS ITSELF IN THE APP'S OWN AMBER, the ink this sheet already
+     * uses for "something about this block did not resolve" (\`.flag\`). It is on
+     * the paper rather than in a gutter because it is about the words directly
+     * under it, and it is deliberately a full sentence: a person who sees a wall
+     * of angle brackets should be told that this app looked at them and could
+     * not make a table of them, not left to wonder whether it tried.
+     */
+    .table-refused {
+      margin: 0 0 0.5em;
+      color: var(--ink-flag);
+      font-size: 11px;
+      font-style: italic;
+      line-height: 1.5;
+    }
+
     /* §4 — an unjoined page turn, drawn where it falls: between the two
        paragraphs, centered, hairline rules either side, and INVISIBLE until
        either neighbour is hovered — the seam is an offer, not a decoration,
@@ -1786,6 +1967,27 @@ const SCROLL_SETTLE_MS = 400;
       height: 2px;
       background: color-mix(in srgb, var(--ink-chapter) 35%, transparent);
     }
+
+    /*
+     * ── §18b — THE MODEL'S EMPHASIS, SET AS TYPE ─────────────────────────────
+     *
+     * \`**bold**\` and \`*italic*\` arrive as characters in the block's text and
+     * are drawn as the effect (\`cut()\` says why they stay in the file). These
+     * two rules are the whole of the treatment, and they are deliberately the
+     * PLAINEST possible statement of it: the serif this page is set in has a
+     * real bold and a real italic, and asking for anything more here — a tint, a
+     * weight of our own choosing — would be the workbench inventing typography
+     * the export is not going to use. The finished book gets \`<strong>\` and
+     * \`<em>\` from the emitter and lets the reading system set them; the bench
+     * says the same thing in the same two words.
+     *
+     * The selectors are bare so that they land wherever a run does: in the
+     * prose, in a caption, in a heading, on a reference number that fell inside
+     * an emphasised phrase, and on the peek card, which sets its counterpart
+     * with the same pieces.
+     */
+    .bold { font-weight: 700; }
+    .italic { font-style: italic; }
 
     /* §4 — a reference number is a real element, not a superscript in a string. */
     .marker {
@@ -4792,6 +4994,14 @@ function linesOf(
     out.push({
       row,
       pieces: cut(row.text, markers),
+      /*
+       * READ ONCE, HERE, AND NEVER FROM THE TEMPLATE. Parsing a fragment is a
+       * `DOMParser` document per call, and a template expression is re-evaluated
+       * on every change detection — so a table asked for its grid from the
+       * template would build one document per row per keystroke. This pass runs
+       * when the replayed rows change, which is when the answer can change.
+       */
+      table: row.category === 'Table' ? readTable(row.text) : null,
       colour: pdfCategoryColour(row.category),
       label: pdfCategoryLabel(row.category),
       size: marks.size(row.category),
@@ -4838,7 +5048,8 @@ function sizeOf(book: BookLoad, category: string): number {
 }
 
 /**
- * One block's text, cut at the reference numbers printed in it.
+ * One block's text, cut at the reference numbers printed in it AND at every
+ * change of the model's emphasis.
  *
  * BY OFFSET AND NEVER BY SEARCHING FOR THE DIGITS — the engine resolved these
  * with the page in front of it, and a marker found by matching text lands on
@@ -4846,16 +5057,103 @@ function sizeOf(book: BookLoad, category: string): number {
  * text and non-overlapping, all three PROVEN by the parser (`parseBookFile`,
  * shared/book.ts) rather than assumed here, which is what lets this be one
  * forward walk with nothing to decide.
+ *
+ * ── §18b: THE EMPHASIS IS AN EFFECT HERE AND CHARACTERS EVERYWHERE ELSE ─────
+ *
+ * The vision model writes `**bold**` and `*italic*` into a block's text, and
+ * until now every layer of this program treated them as prose: the emitter has
+ * turned them into `<strong>` and `<em>` since it was written, but this sheet
+ * drew four asterisks around the name of every person who blurbed the book. The
+ * user's ruling was that the effect should reach both — *"the bank should
+ * display it correctly, basically."*
+ *
+ * **THE BANK AND THE BOOK FILE DO NOT CHANGE, AND THIS IS WHERE SOMEBODY WILL
+ * BE TEMPTED.** The obvious tidy-up is to strip the markers once, at reflow,
+ * and be done with them. It would corrupt every project already curated.
+ * Foundry's edit ops index into block text BY CHARACTER OFFSET — a split names
+ * a cut at an offset, a delete names `from` and `len`, a `BookRef` carries an
+ * offset into the block it points into (shared/ops.ts, whose own comment says a
+ * text edit invalidates every ref offset into that block). Taking four
+ * characters out of a block moves every offset after them by four, and a replay
+ * would then land that project's strikes and splits four characters off, on a
+ * file nobody edited, with nothing raised. So the markers stay in the text, and
+ * INTERPRETATION HAPPENS ONLY WHERE TEXT IS DISPLAYED — here, and in the
+ * emitter. There is no third place.
+ *
+ * Which is why this is one function and not a second pass afterwards: the
+ * reference-number offsets and the emphasis codes are both offsets into the
+ * SAME source string, so the two cuts are interleaved in one walk and can never
+ * disagree about which characters they are talking about. A run of the words
+ * ends wherever either of them says it does.
+ *
+ * WHAT THE EDITOR SEES IS UNTOUCHED. The block editor renders `line.row.text`
+ * verbatim, on the standing ruling that what is being edited is the model's
+ * SOURCE STRING — asterisks and superscript digits included — and the caret
+ * arithmetic a split is made from (`caretOffsetIn`) counts that string and not
+ * this one. An edit therefore still commits exactly the characters the bank
+ * holds, and the effect comes back the moment the editor closes.
  */
 function cut(text: string, markers: readonly Marker[]): Piece[] {
-  if (markers.length === 0) return [{ text, marker: null }];
-  const pieces: Piece[] = [];
-  let at = 0;
-  for (const marker of markers) {
-    if (marker.at > at) pieces.push({ text: text.slice(at, marker.at), marker: null });
-    pieces.push({ text: text.slice(marker.at, marker.at + marker.len), marker });
-    at = marker.at + marker.len;
+  const codes = inlineEmphasis(text);
+  if (markers.length === 0 && codes === null) {
+    return [{ text, marker: null, strong: false, italic: false }];
   }
-  if (at < text.length) pieces.push({ text: text.slice(at), marker: null });
+
+  const pieces: Piece[] = [];
+  /*
+   * ONE CURSOR OVER THE CHARACTERS, and a run is closed whenever anything about
+   * it changes. It is ONE walk and not a marker walk with an emphasis walk
+   * after it, because two walks over one string are two chances to disagree
+   * about where character forty is — and it costs nothing to avoid, since a run
+   * is never anything but a SLICE of the source: a dropped character always
+   * closes the run, so no run ever has to span a gap.
+   *
+   * A `null` code array is the ordinary block with no emphasis in it, which is
+   * most of the book: every character is plain, nothing is dropped, and the walk
+   * reduces to exactly the marker cuts it has always made.
+   */
+  let start = 0;
+  let runStrong = false;
+  let runItalic = false;
+  let runMarker: Marker | null = null;
+  const close = (end: number): void => {
+    if (end > start) {
+      pieces.push({
+        text: text.slice(start, end), marker: runMarker, strong: runStrong, italic: runItalic,
+      });
+    }
+    start = end;
+  };
+
+  /** Which marker covers this character, or null — the markers arrive sorted. */
+  let next = 0;
+  for (let i = 0; i < text.length; i += 1) {
+    while (next < markers.length && markers[next]!.at + markers[next]!.len <= i) next += 1;
+    const over = markers[next];
+    const marker = over !== undefined && over.at <= i ? over : null;
+    const code = codes?.[i] ?? 0;
+    /*
+     * THE FOUR ASTERISKS OF A MATCHED PAIR ARE NOT ON THE PAGE. They are still
+     * in the file, still counted by every offset, and simply not drawn — which
+     * is the whole of what "interpret at display" means. An UNMATCHED asterisk
+     * is never dropped (shared/inline's own argument), so a block that a strike
+     * or a split cut mid-pair shows its markers as the characters they are
+     * rather than swallowing the rest of the paragraph into a bold run.
+     */
+    if ((code & INLINE_DROPPED) !== 0) {
+      close(i);
+      start = i + 1;
+      continue;
+    }
+    const strong = (code & INLINE_STRONG) !== 0;
+    const italic = (code & INLINE_ITALIC) !== 0;
+    if (marker !== runMarker || strong !== runStrong || italic !== runItalic) {
+      close(i);
+      runMarker = marker;
+      runStrong = strong;
+      runItalic = italic;
+    }
+  }
+  close(text.length);
   return pieces;
 }

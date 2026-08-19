@@ -160,6 +160,54 @@ import type {
  */
 type EngineRequest = JobRequest | TranslateRequest;
 
+/**
+ * WHAT THIS REQUEST PRODUCES — the one answer, in one place.
+ *
+ * A row's `outputPath` is three things at once: the file Reveal shows, the
+ * identity `pendingFor` dedupes on, and the thing a person asking "where did
+ * that go?" is pointed at. For most jobs it is the document the run writes. For
+ * the two whose real product is not a document it is that product instead:
+ *
+ * - **A READING PRODUCES ITS BANK.** `vlm-read` writes no document at all —
+ *   `readings/<key>.jsonl` is the expensive, irreplaceable thing the hours of
+ *   GPU bought, and everything a person eventually reads is generated from it
+ *   afterwards for nothing.
+ * - **A TRANSLATION PRODUCES ITS RECORDS.** Since D2 a translate run writes
+ *   per-block answers rather than a book; the book is materialised from them by
+ *   a cast that costs seconds. So the records file is what collides, what is
+ *   worth showing, and what the row is.
+ * - **EVERYTHING ELSE PRODUCES ITS OUTPUT**, which is the ordinary case and
+ *   needs no argument.
+ *
+ * ── WHY THIS IS A FUNCTION AND NOT THREE CORRECT COPIES ─────────────────────
+ *
+ * It was three, and all three were right: `enqueueHere`, `enqueueTranslate` and
+ * `runJob` each spelled as much of the rule as its own argument type could
+ * reach. Three correct copies of one rule is a defect with a delay on it — the
+ * day the rule gains a fourth kind, or one copy is edited under time pressure,
+ * the copies stop agreeing and NOTHING FAILS LOUDLY. The failure is a dedupe
+ * that quietly matches the wrong row.
+ *
+ * That is not a hypothetical. BookForge — Foundry's host, over the same queue
+ * shape — shipped exactly this defect: `readingsPath ?? outputPath`, which made
+ * every rendering dedupe against the READ that fills the same bank, so a person
+ * pressing Generate got handed the hours-long reading row instead of a
+ * conversion. Their own diagnosis, kept here in their words because it is the
+ * whole reason this function exists: *"I had written the correct rule once and
+ * the wrong rule twice, three functions apart."*
+ *
+ * So the rule lives here, the three callers ask, and there is no second place
+ * for it to be true in a slightly different way. It takes the WIDE request type
+ * on purpose — `enqueueHere` can only ever hand it a `JobRequest` and
+ * `enqueueTranslate` only ever a `TranslateRequest`, and narrowing the parameter
+ * to fit either one would put the fork back where it came from.
+ */
+function productOf(request: EngineRequest): string {
+  if (request.kind === 'read') return request.readingsPath;
+  if (request.kind === 'translate') return request.recordsPath;
+  return request.outputPath;
+}
+
 const jobs: Job[] = [];
 /**
  * The job holding the slot, and the one gesture that stops it. Deliberately not
@@ -572,15 +620,12 @@ export function enqueueHere(
   parentStep: string | null = null,
 ): Job {
   /*
-   * WHAT THIS JOB PRODUCES, which for a reading is the BANK.
-   *
-   * `outputPath` is the identity a row is deduped on and the thing Reveal shows,
-   * and a reading has no document to point at — so it points at what it actually
-   * makes. That is not a placeholder: `readings/<key>.jsonl` is the expensive,
-   * irreplaceable product of the run, it is the file a second Add would collide
-   * over, and it is the one a person asking "where did that go?" should be shown.
+   * WHAT THIS JOB PRODUCES, which for a reading is the BANK — asked of
+   * `productOf`, which is the only place that rule is written down. The argument
+   * for why it is a function rather than the ternary that used to stand here is
+   * at `productOf` itself.
    */
-  const outputPath = request.kind === 'read' ? request.readingsPath : request.outputPath;
+  const outputPath = productOf(request);
   const already = pendingFor(outputPath);
   if (already) return already;
 
@@ -715,18 +760,17 @@ export function enqueueTranslate(
   if (host !== null) return host.enqueue(request, parentStep);
   /*
    * WHAT THIS JOB PRODUCES, which for a translation is now the RECORDS — the same
-   * sentence `enqueue` makes about a reading and its bank, and for the same
-   * reason. A translation writes no document any more: it writes per-block answers
-   * that a cast turns into a book afterwards. So the identity a row is deduped on
-   * and the file Reveal shows is the file the run actually makes.
+   * question `enqueueHere` asks about a reading and its bank, asked of the same
+   * function so the two can never answer it differently. See `productOf`.
    */
-  const already = pendingFor(request.recordsPath);
+  const outputPath = productOf(request);
+  const already = pendingFor(outputPath);
   if (already) return already;
 
   const job: Job = {
     id: randomUUID(),
     inputPath: request.inputPath,
-    outputPath: request.recordsPath,
+    outputPath,
     kind: 'translate',
     state: 'held',
     progress: null,
@@ -2521,11 +2565,12 @@ export async function runJob(
   const parentStep = opts.parentStep ?? null;
   /*
    * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
-   * `enqueueTranslate` compose theirs — the same output identity (a reading's
-   * BANK, a translation's RECORDS, the product otherwise), the same rewrite
-   * title, the same `forStep` — because a row is what the shelf, the landings and
-   * the guards all read, and a second way of building one would be a second
-   * answer to what a job is.
+   * `enqueueTranslate` compose theirs — the same output identity (asked of
+   * `productOf`, which all three now share rather than each spelling as much of
+   * the rule as its own argument type could reach), the same rewrite title, the
+   * same `forStep` — because a row is what the shelf, the landings and the guards
+   * all read, and a second way of building one would be a second answer to what a
+   * job is.
    *
    * NO DEDUPE, and that is the one deliberate difference. `enqueueHere` hands
    * back an existing row rather than let two runs write one file, and that rule
@@ -2538,9 +2583,7 @@ export async function runJob(
   const job: Job = {
     id: randomUUID(),
     inputPath: request.inputPath,
-    outputPath: request.kind === 'read'
-      ? request.readingsPath
-      : request.kind === 'translate' ? request.recordsPath : request.outputPath,
+    outputPath: productOf(request),
     kind: request.kind,
     state: 'running',
     progress: null,
