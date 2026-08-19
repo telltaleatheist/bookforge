@@ -131,16 +131,16 @@ export type FoundryRunner =
  */
 let runner: FoundryRunner | null = null;
 let pushRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null = null;
-let sayIdle: (() => void) | null = null;
+let sayDrained: (() => void) | null = null;
 
 export function setFoundrySeam(seam: {
   runJob: FoundryRunner | null;
   setQueueRows: ((projectDir: string, rows: readonly FoundryJobRow[]) => void) | null;
-  queueIdle: (() => void) | null;
+  drained: (() => void) | null;
 }): void {
   runner = seam.runJob;
   pushRows = seam.setQueueRows;
-  sayIdle = seam.queueIdle;
+  sayDrained = seam.drained;
 }
 
 /** The runner, or the sentence saying why this row cannot run. */
@@ -408,7 +408,7 @@ export function watchFoundryQueue(): void {
     const running = anyFoundryStepRunning();
     if (wasRunning && !running) {
       wasRunning = false;
-      if (sayIdle !== null) sayIdle();
+      if (sayDrained !== null) sayDrained();
     } else if (!wasRunning && running) {
       wasRunning = true;
     }

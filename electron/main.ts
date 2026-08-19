@@ -546,8 +546,17 @@ interface FoundryMountModule {
    * read queued behind two hours of TTS would otherwise hold a twenty-gigabyte
    * server's VRAM for the whole narration, against the card this exists to
    * protect. Optional for `runJob`'s reason.
+   *
+   * NAMED FOR THE DIRECTION IT TRAVELS. It was `foundryQueueIdle` until Foundry
+   * asked for this spelling before building against the other one, and the reason
+   * is a collision rather than taste: `foundryBusy()` is already on this seam and
+   * is a QUERY — it RETURNS `{windowOpen, jobsPending}` and we call it to ask. A
+   * `foundryQueueIdle()` beside it reads as the same shape, when it is the
+   * opposite direction of travel and answers nothing. `hostQueueDrained` says
+   * whose queue and what happened, and its tense is what stops the next reader
+   * treating it as state they may poll.
    */
-  foundryQueueIdle?(): void;
+  hostQueueDrained?(): void;
 }
 
 /**
@@ -12526,8 +12535,8 @@ app.whenReady().then(async () => {
     setQueueRows: typeof foundryMount.setHostQueueRows === 'function'
       ? (dir, rows) => foundryMount.setHostQueueRows!(dir, rows)
       : null,
-    queueIdle: typeof foundryMount.foundryQueueIdle === 'function'
-      ? () => foundryMount.foundryQueueIdle!()
+    drained: typeof foundryMount.hostQueueDrained === 'function'
+      ? () => foundryMount.hostQueueDrained!()
       : null,
   });
   watchFoundryQueue();
