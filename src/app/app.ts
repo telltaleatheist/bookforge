@@ -71,16 +71,27 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
           <div class="titlebar-spacer"></div>
         </ng-container>
 
-        <!-- The queue's face. In EVERY window — main and the standalone
-             listen/editor/alignment popups alike — because the queue is main's
-             and every window mirrors it. Deliberately NOT suppressed with the
-             nav rail: the rail is navigation this window has no use for, and
-             this is a readout every window has a use for. It sits in the
-             titlebar-right slot, which the window chrome already marks
-             no-drag for its buttons. -->
-        <ng-container titlebar-right>
-          <app-queue-chip />
-        </ng-container>
+        <!-- The queue's face — in the MAIN window only.
+
+             It used to be in every window, and the reasoning was that the queue
+             is main's, every window mirrors it, and a readout is something any
+             window has a use for. Owen ruled otherwise on 2026-08-19, looking at
+             the player: *"it has a queue button on the bookforge player window.
+             queue doesnt need to be in that window"* — and he is right about
+             what these windows ARE. A popup opened on one book is a place you
+             went to do one thing; the queue is the main window's subject, and a
+             chip that navigates nowhere from here is chrome asking to be
+             explained.
+
+             Suppressed on the SAME test as the nav rail, which turns out to be
+             the honest grouping after all: isStandaloneWindow() is already the
+             answer to "is this a single-purpose popup", and both the rail and
+             this are things such a window has no use for. -->
+        @if (!isStandaloneWindow()) {
+          <ng-container titlebar-right>
+            <app-queue-chip />
+          </ng-container>
+        }
 
         <!-- Main content area with nav rail -->
         <div class="app-layout">
