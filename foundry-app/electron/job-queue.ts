@@ -370,12 +370,60 @@ const hostRowsByProject = new Map<string, readonly FoundryJobRow[]>();
  * (electron/mount.ts) and the delete guards read, and they must go on counting a
  * host-ordered run that is writing into a folder somebody is about to erase.
  * This is about what is DRAWN, not about what is known.
+ *
+ * ── THE ONE EXCEPTION, AND IT IS AN EXCEPTION THAT CANNOT DISAGREE ──────────
+ *
+ * An env install is appended. BookForge asked for it after seeing one vanish
+ * from the shelf mid-download — *"an install is real work with real progress and
+ * the shelf is the window's answer to what is this machine doing"* — and it is
+ * safe for a reason that is structural rather than careful: AN ENV INSTALL NEVER
+ * ROUTES (16e — it is a precondition of the engine running at all, not GPU work,
+ * and sending one through a host queue would deadlock the first install behind a
+ * job that needs it). So an install exists in exactly one of the two lists, by
+ * construction, and no row can be drawn twice — which is the entire hazard the
+ * never-a-merge rule above exists to prevent. That rule is unchanged for
+ * everything it was written about: every row that CAN be in both lists is drawn
+ * from the host's alone.
  */
 export function shelfJobs(): Job[] {
   if (hostQueue() === null) return listJobs();
   const rows: Job[] = [];
   for (const held of hostRowsByProject.values()) rows.push(...held.map(copyOf));
-  return rows;
+  return [...rows, ...jobs.filter((job) => job.kind === 'env-install').map(copyOf)];
+}
+
+/**
+ * THE ONE ID IN A HOSTED SHELF THAT DID NOT COME FROM THE HOST — and the reason
+ * drawing a row is never only about drawing it.
+ *
+ * ── What making a row visible costs ─────────────────────────────────────────
+ *
+ * `cancel` and `remove` route hosted, unconditionally, because until now every id
+ * a hosted shelf could hand back came off a row the HOST had pushed — that
+ * premise is written into `remove`'s own docblock. `shelfJobs` appending the env
+ * installs makes it false: the shelf draws an install, the shelf's ✕ is bound to
+ * that row (`queue.remove` while it is queued, `queue.cancel` once it is
+ * running), and a press would forward one of OUR ids into a list that has never
+ * heard of it. The download would go on downloading and the button would look
+ * broken, which is a worse defect than the invisible row 17c set out to fix.
+ *
+ * ── Why the test is the KIND and not "is it in our list" ────────────────────
+ *
+ * Because our list also holds the rows `runJob` mints for work the HOST
+ * scheduled, and a cancel of one of those belongs to the host: it chose when that
+ * job ran and its own list is what the shelf is drawing. The thing that makes an
+ * install different is not where its row is kept, it is that IT NEVER ROUTED —
+ * 16e, an install is a precondition of the engine running rather than GPU work.
+ * A gesture must go back through the same door the work went out of, and for an
+ * install that door was always the internal one. This is `cancelEnvInstalls`'
+ * rule (which has always refused to send an install's id to the host) reaching
+ * the two gestures a person can now actually press.
+ *
+ * An id belonging to no row of ours answers false and routes, which is the
+ * ordinary case and the whole of the host's queue.
+ */
+function ourEnvInstall(id: string): boolean {
+  return jobs.some((job) => job.id === id && job.kind === 'env-install');
 }
 
 /**
@@ -805,11 +853,15 @@ export function start(): number {
  *
  * HOSTED, THE ROW IS THE HOST'S AND SO IS THE REMOVAL. The id came off a row the
  * host pushed; there is no row of ours by that name, and searching for one would
- * be this app answering a question about somebody else's list.
+ * be this app answering a question about somebody else's list. WITH ONE
+ * EXCEPTION AS OF 17c, and it is an exception to the premise rather than to the
+ * rule: a hosted shelf now also draws our env installs, so an id off that shelf
+ * can be one of ours after all. `ourEnvInstall` is the whole of the test and
+ * carries the argument.
  */
 export function remove(id: string): void {
   const host = hostQueue();
-  if (host !== null) {
+  if (host !== null && !ourEnvInstall(id)) {
     forwardToHost('remove', host.remove === undefined ? undefined : () => { host.remove?.(id); });
     return;
   }
@@ -903,7 +955,9 @@ export function enqueueEnvInstall(request: EnvInstallRequest, reason?: string): 
  */
 export function cancel(id: string): void {
   const host = hostQueue();
-  if (host !== null) {
+  // An install is ours however this window is hosted, and its ✕ is reachable in
+  // the hosted shelf now that 17c draws the row — see `ourEnvInstall`.
+  if (host !== null && !ourEnvInstall(id)) {
     forwardToHost('cancel', host.cancel === undefined ? undefined : () => { host.cancel?.(id); });
     return;
   }

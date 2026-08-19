@@ -494,6 +494,46 @@ async function ensureReadingBook(
     // The engine's own words to the terminal, with the paths that make them
     // actionable; the sentence the person reads says what happened to the book.
     console.error(`[book] ${at.bank} could not be reflowed into ${at.book}: ${made.reason ?? ''}`);
+    /*
+     * ── A REFUSAL WITH A BOOK ON THE DISK IS A DIFFERENT FACT, AND THE OLD
+     *    SENTENCE TOLD SOMEBODY THE OPPOSITE OF IT ────────────────────────────
+     *
+     * There are two ways to arrive here with a file at `at.book` even though the
+     * check at the top of this function found none. The reflow is written
+     * atomically — a temp file beside the target, then a rename (src/vlm/book-run
+     * writes it that way on purpose) — so a run that fails leaves WHATEVER WAS
+     * THERE BEFORE completely intact. And the window between that `exists` and
+     * this call is real: `remakeBookFile` may land its own rename inside it, in
+     * which case the file this run then failed to overwrite is the good one that
+     * landing just wrote.
+     *
+     * The sentence that used to be here — "the pages this book was read from
+     * could not be turned into a book" — is a statement about the READING, and it
+     * is false in this branch. A person who reads it about a project whose book is
+     * sitting right there concludes that hours of GPU produced nothing and goes
+     * and runs them again. That is the most expensive wrong answer this app is
+     * capable of giving.
+     *
+     * SO THE BOOK ON THE DISK IS OPENED, and the refusal goes to the terminal
+     * beside the engine's own words — which is exactly `remakeBookFile`'s posture
+     * (electron/job-queue.ts) for the same event on the other side of the wall,
+     * and it is safe for a reason that is not "probably fine": the loader hashes
+     * the receipt and refuses any book whose `bankSha` no longer matches it, by
+     * name, a few lines further down. If this file is the reflow of a bank that
+     * has since moved, the person gets that refusal and its accurate sentence
+     * rather than a stale book drawn as a current one. If it matches, it IS the
+     * current book, and refusing to draw it because a redundant second attempt to
+     * make it again failed would be this app arguing with a file it had already
+     * finished making.
+     */
+    if (await exists(at.book)) {
+      console.error(
+        `[book] ${at.book} could not be made again, so the one already on the disk is what is being `
+        + 'shown. Nothing about the reading is lost; if that book was made from an older bank the '
+        + 'load refuses it by name a moment from now.',
+      );
+      return { ok: true, path: at.book };
+    }
     return {
       ok: false,
       reason: 'The pages this book was read from could not be turned into a book. The engine '

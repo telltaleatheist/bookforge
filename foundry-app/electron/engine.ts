@@ -20,6 +20,7 @@ import * as path from 'node:path';
 import { app } from 'electron';
 
 import { hosted } from './host';
+import { fold } from '../shared/original';
 import type {
   DocumentMetadata,
   DoctorResult,
@@ -416,6 +417,85 @@ export interface BookOutcome {
 }
 
 /**
+ * ONE WRITER PER BOOK FILE — the lock that was missing, and whose absence cost a
+ * user their figures on 2026-08-19.
+ *
+ * ── The defect, exactly ─────────────────────────────────────────────────────
+ *
+ * Two places in this app write the same book file and neither knew about the
+ * other. `remakeBookFile` (electron/job-queue.ts) rebuilds it the moment a
+ * reading lands, because a fresh bank makes the old book stale by definition.
+ * `ensureReadingBook` (electron/book.ts) builds it when somebody opens the book
+ * and there is no file yet. Those two events are ONE EVENT in ordinary use: the
+ * read finishes, the window is told, the person clicks straight into the book
+ * that just appeared. `ensureReadingBook`'s only guard was
+ * \`if (await exists(at.book)) return\` — a check-then-act with an await in the
+ * middle of it, which is the classic shape of a race and not a lock at all. The
+ * file does not exist until the FIRST engine renames its temp file into place at
+ * the very end of its run, so for the whole minute that run takes, `exists`
+ * answers false and a second engine is spawned over the same target.
+ *
+ * Two engines over one target is not merely wasteful. `cutFigures`
+ * (src/vlm/book-run.ts) clears `readings/<key>.images/` at the top of its run,
+ * deliberately, so that a regeneration cannot leave the crop of a figure that is
+ * now named something else sitting beside the one that is. The second engine
+ * reached that rm while the first was still writing crops into the directory,
+ * and Windows — which will not unlink a file another process holds open — raised
+ * EBUSY partway through. With different timing it would not have raised anything
+ * at all: it would simply have deleted crops the first run had already finished,
+ * and the book would have come out naming plates that are not on the disk.
+ *
+ * ── Why the fix is HERE and not at the two call sites ───────────────────────
+ *
+ * Because a lock at the call sites is a lock two future callers can forget to
+ * take, and there is already a third writer of book files in this module
+ * (`writeEpubBook`) reached through the same check-then-act. The contended
+ * resource is the OUT PATH, so the gate belongs where the out path is named,
+ * which is here. A second caller for a path already being written AWAITS THE
+ * FIRST RUN and answers with its outcome — which is the true answer to their
+ * question, because a book file is a pure function of the receipt it is made
+ * from and one run over that receipt is what both of them wanted.
+ *
+ * AND WHY A RETRY LADDER WOULD HAVE BEEN THE WRONG FIX. It was the first thing
+ * proposed on the channel, when the lock was assumed to be somebody else's — a
+ * network share, an antivirus scanner. It is not: the lock was OURS, held by our
+ * own second process, and a retry would have let the second engine win the rm a
+ * few hundred milliseconds later and delete the first run's finished crops with
+ * no error anywhere. It would have hidden a data race behind a green tick. The
+ * ladder is still worth having, and it is in `cutFigures` where a genuinely
+ * external holder would be met — labelled there as defence in depth, and only as
+ * that.
+ *
+ * FOLDED, on the house rule every path key in this app obeys: on Windows one
+ * file arrives spelled three ways and two spellings of one path would be two
+ * entries in this map, which is no gate at all. Resolved first, because a
+ * relative path and its absolute twin are the same file too.
+ *
+ * THE ENTRY IS CLEARED WHEN THE RUN SETTLES, FAILURE INCLUDED. A refusal that
+ * left its promise in the map would answer every future open of that book with
+ * the same stale sentence for the life of the process, and the ordinary cure for
+ * a refused reflow — fix whatever it complained about and open the book again —
+ * would stop working.
+ */
+const writingBook = new Map<string, Promise<BookOutcome>>();
+
+/** See `writingBook`. One run per target path; everybody else awaits it. */
+function oneWriterOf(outPath: string, write: () => Promise<BookOutcome>): Promise<BookOutcome> {
+  const key = fold(path.resolve(outPath));
+  const running = writingBook.get(key);
+  if (running !== undefined) {
+    console.log(
+      `[engine] ${outPath} is already being written by a run in flight, so this caller waits for `
+      + 'that run instead of starting a second engine over the same file.',
+    );
+    return running;
+  }
+  const started = write().finally(() => { writingBook.delete(key); });
+  writingBook.set(key, started);
+  return started;
+}
+
+/**
  * Reflow a readings bank into the book file:
  * `foundry vlm-book --readings <bank.jsonl> --out <book.jsonl>`.
  *
@@ -438,41 +518,53 @@ export interface BookOutcome {
  * is at the path would either fail on nothing or read a stale file from an
  * earlier run, and both are worse than the sentence.
  *
+ * SERIALISED PER TARGET PATH by `oneWriterOf`, whose docblock carries the whole
+ * argument. Two callers for one book file get one engine and one answer, and the
+ * caller who arrived second waits rather than racing the first one's figures out
+ * from under it.
+ *
  * `--pdf` AND `--language` ARE PASSED ONLY WHERE THE CALLER HAS THEM. The PDF
  * buys one thing — the figure crops, cut once into `readings/<key>.images/` —
  * and without it the engine cuts nothing and says so; the language goes in the
  * book's header, and the engine's default (`en`) is the engine's own documented
  * rule rather than a spelling this side repeats.
  */
-export async function writeBookFile(
+export function writeBookFile(
   readingsPath: string,
   outPath: string,
   opts: { pdfPath: string | null; language: string | null },
 ): Promise<BookOutcome> {
-  const args = ['vlm-book', '--readings', readingsPath, '--out', outPath];
-  if (opts.pdfPath !== null) args.push('--pdf', opts.pdfPath);
-  if (opts.language !== null) args.push('--language', opts.language);
-  const run = runEngine(args);
-  /*
-   * The same two minutes `stampEpub` and `finalizeEpub` allow, for work of the
-   * same order over the same book — a few hundred pages of banked answers parsed,
-   * reflowed and written once. Past that nothing is happening and a pane is
-   * waiting on it with `Opening the book…` on screen.
-   */
-  const timer = setTimeout(() => run.cancel(), 120_000);
-  const result = await run.done.finally(() => clearTimeout(timer));
+  return oneWriterOf(outPath, async () => {
+    const args = ['vlm-book', '--readings', readingsPath, '--out', outPath];
+    if (opts.pdfPath !== null) args.push('--pdf', opts.pdfPath);
+    if (opts.language !== null) args.push('--language', opts.language);
+    const run = runEngine(args);
+    /*
+     * The same two minutes `stampEpub` and `finalizeEpub` allow, for work of the
+     * same order over the same book — a few hundred pages of banked answers parsed,
+     * reflowed and written once. Past that nothing is happening and a pane is
+     * waiting on it with `Opening the book…` on screen.
+     *
+     * THE CLOCK STARTS WHEN THIS RUN STARTS, which is why the gate is outside the
+     * timer and not inside it. A caller that waits for somebody else's run is not
+     * being timed out at two minutes into its own wait; it is riding a run that
+     * has its own two minutes and will answer when that run answers.
+     */
+    const timer = setTimeout(() => run.cancel(), 120_000);
+    const result = await run.done.finally(() => clearTimeout(timer));
 
-  if (result.code !== 0) {
-    const said = result.stderr.trim() || result.stdout.trim();
-    const unknown = result.code === 2 && /unknown command/i.test(said);
-    return {
-      ok: false,
-      reason: unknown
-        ? `vlm-book is not in this engine build (${engineCommand().source}).`
-        : said || `The engine exited ${result.code} with nothing to say.`,
-    };
-  }
-  return { ok: true, reason: null };
+    if (result.code !== 0) {
+      const said = result.stderr.trim() || result.stdout.trim();
+      const unknown = result.code === 2 && /unknown command/i.test(said);
+      return {
+        ok: false,
+        reason: unknown
+          ? `vlm-book is not in this engine build (${engineCommand().source}).`
+          : said || `The engine exited ${result.code} with nothing to say.`,
+      };
+    }
+    return { ok: true, reason: null };
+  });
 }
 
 /**
@@ -502,25 +594,36 @@ export async function writeBookFile(
  *
  * NEVER THROWS, on `writeBookFile`'s rule and for its reason — this runs on the
  * way into a pane.
+ *
+ * SERIALISED PER TARGET PATH THROUGH THE SAME GATE, and it needs it for the same
+ * reason rather than by symmetry: `ensureReadingBook`'s check-then-act guards
+ * BOTH of its branches, so two windows opening one imported-EPUB project at once
+ * spawn two explodes over one file; and `viewExportedBook` has the same shape
+ * over a temp cache two tabs can want at the same instant. A project is never
+ * both a bank and a container, so a caller can never be handed the other
+ * command's answer for its path — and if that ever stopped being true, one book
+ * at one path is still the only correct outcome.
  */
-export async function writeEpubBook(epubPath: string, outPath: string): Promise<BookOutcome> {
-  const run = runEngine(['vlm-book', '--epub', epubPath, '--out', outPath]);
-  // The same two minutes the reflow allows, for work of the same order: one
-  // container unzipped, a few dozen documents parsed, one file written.
-  const timer = setTimeout(() => run.cancel(), 120_000);
-  const result = await run.done.finally(() => clearTimeout(timer));
+export function writeEpubBook(epubPath: string, outPath: string): Promise<BookOutcome> {
+  return oneWriterOf(outPath, async () => {
+    const run = runEngine(['vlm-book', '--epub', epubPath, '--out', outPath]);
+    // The same two minutes the reflow allows, for work of the same order: one
+    // container unzipped, a few dozen documents parsed, one file written.
+    const timer = setTimeout(() => run.cancel(), 120_000);
+    const result = await run.done.finally(() => clearTimeout(timer));
 
-  if (result.code !== 0) {
-    const said = result.stderr.trim() || result.stdout.trim();
-    const unknown = result.code === 2 && /unknown (command|option)|--epub/i.test(said);
-    return {
-      ok: false,
-      reason: unknown
-        ? `vlm-book cannot explode an EPUB in this engine build (${engineCommand().source}).`
-        : said || `The engine exited ${result.code} with nothing to say.`,
-    };
-  }
-  return { ok: true, reason: null };
+    if (result.code !== 0) {
+      const said = result.stderr.trim() || result.stdout.trim();
+      const unknown = result.code === 2 && /unknown (command|option)|--epub/i.test(said);
+      return {
+        ok: false,
+        reason: unknown
+          ? `vlm-book cannot explode an EPUB in this engine build (${engineCommand().source}).`
+          : said || `The engine exited ${result.code} with nothing to say.`,
+      };
+    }
+    return { ok: true, reason: null };
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

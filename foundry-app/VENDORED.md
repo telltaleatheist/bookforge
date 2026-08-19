@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **d1dd5b6** — *the queue seam: work ordered in a hosted window is scheduled by the host* |
+| Source sha | **92ab737** — *the reflow race, the struck-picture X, and env-install rows in the hosted shelf* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -166,7 +166,33 @@ nothing here subscribes, but anything that ever waits on a read that way HANGS
 rather than fails), an env-install row is invisible in the hosted shelf until
 they union it in, and the enqueue dedupe moved to us with the scheduling — see
 `productOf` in electron/foundry-host-queue.ts, which keeps their rule that the
-OUTPUT is the identity (94/94 blobs at d1dd5b6).
+OUTPUT is the identity (94/94 blobs at d1dd5b6). `92ab737` IS THE FIRST REFRESH
+SINCE THE COPY BEGAN THAT MOVES THE ENGINE — `src/vlm/book-run.ts` is outside
+`app/`, so `dist/foundry-windows-x64.exe` had to be rebuilt
+(`bash tools/release-build.sh windows-x64` in the Foundry checkout), not just the
+subtree. Three fixes: (a) THE REFLOW RACE — `writeBookFile` now holds one
+in-flight promise per folded output path, so a second caller awaits the first
+instead of spawning a rival engine. That race is what produced Owen's "could not
+be turned into a book" refusal on a book that HAD been made: the queue's reflow
+and the window's `ensureReadingBook` ran together, and the second deleted crops
+the first was still writing (EBUSY at image #41). The gate is at the chokepoint
+rather than at the two call sites, so the next caller is serialised by
+construction; `writeEpubBook` got the same gate because `ensureReadingBook`'s
+check-then-act guards both branches. A retry ladder on EBUSY/EPERM/EACCES is in
+as DEFENCE IN DEPTH and its docblock says so in as many words — we both nearly
+shipped the ladder AS the fix. And a reflow failure with a book already on disk
+now RETURNS that book instead of claiming none exists. (b) THE STRUCK-PICTURE X —
+BookForge's diagnosis: the mark is a background-image on `.body` and a plate is
+opaque CONTENT painted over it, so prose showed the X through its glyph gaps and
+a picture hid it entirely. `figure::after` carries the same gradients over the
+plate, keeps the growth on `background-size`, keeps `mix-blend-mode: multiply`,
+and is named in the reduced-motion list; the body's own mark is suppressed under
+`:has(figure)` or a narrow plate wears two marks at two sizes. Named cost:
+multiply cannot lighten, so the X approaches invisibility over a near-black
+region of a plate. (c) ENV-INSTALL ROWS are unioned into the hosted shelf at
+BookForge's request — and drawing the row made its cross reachable, so their
+`cancel`/`remove` now test the KIND before forwarding rather than assuming no row
+in the shelf is theirs (95/95 blobs at 92ab737).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

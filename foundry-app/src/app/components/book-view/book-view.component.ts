@@ -1331,6 +1331,30 @@ const SCROLL_SETTLE_MS = 400;
     /* ── §3 Struck: the proofreader's cancel ──────────────────────────────── */
 
     /*
+     * THE MARK ITSELF, STATED ONCE. Two thin diagonals in the iron red at 50%,
+     * which is the whole of the X. It is a custom property rather than two
+     * literals because there are now TWO CARRIERS for it — the paint behind a
+     * block of prose and the paint over a plate, for the reason the next two
+     * docblocks argue — and two hand-copied gradients are two marks that drift
+     * the first time somebody adjusts the weight of one of them. Nothing about
+     * the ink moved: this is the same declaration that used to sit inline in
+     * \`.block.struck .body\`, character for character.
+     */
+    .block {
+      --strike-x:
+        linear-gradient(to bottom right,
+          transparent calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
+          transparent calc(50% + 1px)),
+        linear-gradient(to top right,
+          transparent calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
+          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
+          transparent calc(50% + 1px));
+    }
+
+    /*
      * COPIED FROM RENDERER-DESIGN.md §3 AND NOT REINTERPRETED. Line-through in
      * the iron red at 55%, the whole block at .45, and the X drawn as two thin
      * diagonal linear-gradients in the same ink at 50% with \`mix-blend-mode:
@@ -1343,22 +1367,22 @@ const SCROLL_SETTLE_MS = 400;
      * (landed rule), so there is no toggle anywhere that hides it — what leaves
      * the mark out is the EDITION, which is a projection and not a view of this
      * one.
+     *
+     * A BACKGROUND IS STILL RIGHT HERE AND IS WRONG ONE RULE DOWN, which is the
+     * whole of the Picture defect and is worth stating on the rule that is
+     * correct rather than only on the one that had to change. Glyphs cover a few
+     * percent of the box they sit in, so paint behind prose reads as ink UNDER
+     * the words, which is exactly what a proofreader's stroke is; and it costs no
+     * element, no stacking context and no layout. A plate covers all of its box,
+     * so the same paint is simply behind an opaque object and cannot be seen.
+     * Prose does not move onto an overlay to keep the two consistent — the
+     * consistency that matters is the MARK, and that is now one declaration.
      */
     .block.struck .body {
       opacity: 0.45;
       text-decoration: line-through;
       text-decoration-color: color-mix(in srgb, var(--ink-strike) 55%, transparent);
-      background-image:
-        linear-gradient(to bottom right,
-          transparent calc(50% - 1px),
-          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
-          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
-          transparent calc(50% + 1px)),
-        linear-gradient(to top right,
-          transparent calc(50% - 1px),
-          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% - 1px),
-          color-mix(in srgb, var(--ink-strike) 50%, transparent) calc(50% + 1px),
-          transparent calc(50% + 1px));
+      background-image: var(--strike-x);
       background-repeat: no-repeat;
       mix-blend-mode: multiply;
       /* On strike the X fades and scales in; on restore it lifts. Scaling the
@@ -1371,6 +1395,82 @@ const SCROLL_SETTLE_MS = 400;
         background-size var(--t-med) var(--ease);
     }
     .block:not(.struck) .body { background-size: 0% 0%; }
+
+    /*
+     * ── §3 THE SAME MARK, OVER A PLATE ─────────────────────────────────────
+     *
+     * A struck Picture used to change state in every way except the one that
+     * says struck. The plate dimmed to .45 and the caption took the line-through
+     * — both of those are on \`.body\` and both land — while the X, which is
+     * PAINT, sat behind an opaque image and was invisible. The user's words for
+     * it were that it "kind of" happens in the background, which is an exact
+     * description of a background.
+     *
+     * SO THE PICTURE, AND ONLY THE PICTURE, GETS THE MARK AS INK OVER THE PLATE.
+     * \`figure\` is the Picture case's own element and appears nowhere else in
+     * this template, so the selector needs no class plumbed through the switch
+     * and no \`:has()\` to find one — the element IS the condition. It covers the
+     * figure rather than the body so that the mark is the size of the thing it
+     * cancels: a crop narrower than the column would otherwise take an X sized to
+     * the column with two thirds of it crossing empty paper.
+     *
+     * AND THE BODY'S OWN PAINT IS TURNED OFF UNDER A FIGURE, which is the half of
+     * this that is easy to miss. Left on, a picture would carry TWO marks — one
+     * sized to the body showing in the margins either side of a narrow plate, and
+     * one sized to the figure — and where no plate was ever cut, the dashed empty
+     * frame is transparent, so both would be fully visible, at two sizes, crossing
+     * each other. One block, one X.
+     *
+     * ── The three things carried across from the rule above ────────────────
+     *
+     * (1) THE ANIMATION IS ON \`background-size\`, and it needs BOTH halves of the
+     * pair or the mark pops into existence instead of growing across. So the
+     * pseudo-element exists at all times and is 0%×0% when the block is not
+     * struck, exactly as \`.body\` is — a pseudo-element that only existed under
+     * \`.struck\` would have nothing to transition from and nothing to lift on
+     * restore.
+     *
+     * (2) \`mix-blend-mode\` MAKES THIS AN ISOLATED THING, and the isolation is
+     * already where it needs to be. A blended element blends with the backdrop of
+     * the nearest ancestor that forms a group, and \`.body\` forms one twice over
+     * — \`content-visibility: auto\` implies paint containment, and a struck body
+     * is at \`opacity: .45\`. So the multiply happens against the PLATE and the
+     * body's own tint, then the whole composite fades to 45% over the paper. The
+     * mark reads as ink on the picture rather than as a decal over the sheet,
+     * which is the same sentence RENDERER-DESIGN §3 wrote about prose.
+     *
+     * The honest cost of multiply is that it darkens and cannot lighten, so
+     * across a region of a plate that is already near black the X approaches
+     * invisibility. That is accepted rather than worked around: the alternative
+     * is a normal-blend stroke, which reads as a sticker laid on the photograph
+     * on every ordinary plate to buy back the rare one, and the two halves that
+     * always land — the dim and the struck caption — carry the state there. THE
+     * DARK THEME IS NOT A FACTOR AND IT IS WORTH SAYING WHY: the sheet's palette
+     * is fixed light (§1 declares \`--paper\` and \`--ink-strike\` as constants and
+     * this file has no \`prefers-color-scheme\` in it); the only token that follows
+     * the shell's theme is \`--bench\`, the ground BEHIND the paper, and no mark
+     * ever blends against it.
+     *
+     * (3) REDUCED MOTION covers selectors by name down at the bottom of this
+     * sheet, and a new selector is not in that list until it is put there. It is.
+     *
+     * \`pointer-events: none\` because every gesture on this surface — hover,
+     * select, the context menu — is bound on the block, and an overlay that ate
+     * them would make a struck picture the one block nobody can restore.
+     */
+    figure::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      pointer-events: none;
+      background-image: var(--strike-x);
+      background-repeat: no-repeat;
+      background-size: 0% 0%;
+      mix-blend-mode: multiply;
+      transition: background-size var(--t-med) var(--ease);
+    }
+    .block.struck figure::after { background-size: 100% 100%; }
+    .block.struck .body:has(figure) { background-image: none; }
 
     /* ── §3 Editing: the block IS the editor ─────────────────────────────── */
 
@@ -1556,7 +1656,10 @@ const SCROLL_SETTLE_MS = 400;
     blockquote { margin: 0.8em 2.2em; }
     .note { margin-bottom: 0.35em; }
 
-    figure { margin: 1em 0; text-align: center; }
+    /* \`relative\` for one reason and it is not layout: it is the containing block
+       for the strike mark a struck picture wears, which §3 argues at length. A
+       figure has no positioned descendant of its own, so nothing else moves. */
+    figure { position: relative; margin: 1em 0; text-align: center; }
     figcaption { margin-top: 0.4em; font-style: italic; }
     .plate {
       display: flex;
@@ -1927,8 +2030,12 @@ const SCROLL_SETTLE_MS = 400;
      */
 
     @media (prefers-reduced-motion: reduce) {
+      /* BY NAME, WHICH IS WHY A NEW SELECTOR HAS TO BE ADDED HERE RATHER THAN
+         INHERITING THE INTENT. \`figure::after\` is the struck picture's mark and
+         is the newest of them; it is listed once, on the rule that declares the
+         transition, so both of its states are covered. */
       .body, .rail, .marker, .flag .pill, .seam, .sheet,
-      .block.struck .body, .marker.struck { transition-duration: 0ms; }
+      .block.struck .body, .marker.struck, figure::after { transition-duration: 0ms; }
     }
   `],
 })
