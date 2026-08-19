@@ -107,17 +107,30 @@ export interface FoundryJobRow {
   finishedAt?: number;
 }
 
-export type FoundrySettled = { ok: true } | { ok: false; error: string };
-
 export interface FoundryRunJobOptions {
   parentStep: string | null;
   signal: AbortSignal;
   onProgress(progress: FoundryJobProgress): void;
 }
 
-/** What the mount must offer for a row of ours to be runnable at all. */
+/**
+ * What the mount must offer for a row of ours to be runnable at all.
+ *
+ * IT RESOLVES WITH THE SETTLED ROW, not with a result of our own devising, and
+ * that was Foundry's correction mid-build (channel, 2026-08-19). My first written
+ * signature returned `{ok:true} | {ok:false, error}` — two arms for an outcome
+ * their `JobState` spells in three. CANCELLED IS NOT FAILED: somebody spent GPU
+ * and took it back deliberately, and nothing went wrong. Collapsed into `ok:false`
+ * it arrives here indistinguishable from a crash, lands the step as `failed`
+ * wearing an error for something nobody did, and — because `retry()` resets
+ * failed steps — leaves the scheduler free to restart work the user just stopped.
+ *
+ * The row already carries `state` and `error`, and it is the same object the rows
+ * push carries, so there is ONE description of what happened rather than two that
+ * can drift.
+ */
 export type FoundryRunner =
-  (request: FoundryJobRequest, opts: FoundryRunJobOptions) => Promise<FoundrySettled>;
+  (request: FoundryJobRequest, opts: FoundryRunJobOptions) => Promise<FoundryJobRow>;
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The seam, injected

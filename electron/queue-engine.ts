@@ -778,6 +778,37 @@ export async function remove(jobId: string): Promise<void> {
 }
 
 /** Move a run before another one. Position is the queue's only ordering. */
+/**
+ * SAY THAT THIS STEP'S WORK WAS STOPPED RATHER THAN BROKEN — for a runner whose
+ * work can be stopped somewhere this engine's `cancel()` does not reach.
+ *
+ * ── The one case, and why the flag cannot be inferred ───────────────────────
+ *
+ * `settleStep` tells a cancellation from a failure by `stopRequested`, which
+ * `cancel()` is the only writer of. That is complete for everything this engine
+ * starts and stops itself.
+ *
+ * It is not complete for a step whose work runs in ANOTHER process that has its
+ * own stop. A Foundry job can be stopped inside Foundry; the row comes back
+ * saying `cancelled`, nothing here requested it, and without this the module's
+ * only way to report it is to throw — which files a deliberate stop as a FAILURE.
+ * That is wrong twice over: it puts an error message on a row where nobody did
+ * anything wrong, and a failed step is what `retry()` resets, so the scheduler
+ * would be free to start work the user had just stopped.
+ *
+ * Setting the flag instead lands the step where a stop belongs — HELD and
+ * interrupted for a resumable module, `cancelled` otherwise — which is the same
+ * place our own Stop button puts it.
+ *
+ * IGNORED FOR A STEP THAT IS NOT RUNNING. There is nothing to annotate on a row
+ * that has already settled, and a late report is a message in flight rather than
+ * a state to resurrect — `recordStageProgress` refuses on the same reasoning.
+ */
+export function noteStepStopped(stepId: string): void {
+  const live = runningSteps.get(stepId);
+  if (live) live.stopRequested = true;
+}
+
 export function reorder(jobId: string, beforeJobId: string | null): void {
   const from = jobs.findIndex((j) => j.id === jobId);
   if (from < 0) throw new Error(`There is no run "${jobId}" in the queue.`);

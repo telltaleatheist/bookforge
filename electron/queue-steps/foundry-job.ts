@@ -34,6 +34,7 @@
  * a narration can both hold the card, because each queue believes it is the only
  * one. Declaring the resource here is what ends that: one card, one arbiter.
  */
+import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
 import { foundryRunner } from '../foundry-host-queue';
@@ -104,7 +105,7 @@ export const foundryJobStep: StepModule = {
      * fall back to Foundry's own queue, which is the exact thing the ruling
      * removed. `foundryRunner()` throws that sentence.
      */
-    const settled = await foundryRunner()(config.request, {
+    const row = await foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
       onProgress: (progress) => {
@@ -123,10 +124,27 @@ export const foundryJobStep: StepModule = {
       },
     });
 
-    if (settled.ok === false) {
+    /*
+     * A STOP IS NOT A FAILURE, and the row is what lets this side tell them
+     * apart. Foundry's JobState spells three outcomes; this engine derives its
+     * own from `stopRequested`, which only its `cancel()` writes — complete for a
+     * stop that came through our door (their shelf forwards to `hostQueue.cancel`)
+     * and blind to one taken inside Foundry.
+     *
+     * So a cancelled row is REPORTED as a stop before it is thrown. `stopIsResumable`
+     * is true here, so it lands HELD and interrupted — the pages already banked
+     * are kept and pressing Start resumes — which is exactly where our own Stop
+     * button puts it. Without the note it would land `failed`, wearing an error
+     * for something nobody did wrong, and be eligible for `retry()`.
+     */
+    if (row.state === 'cancelled') {
+      noteStepStopped(ctx.stepId);
+      throw new Error(`${config.label} was stopped.`);
+    }
+    if (row.state === 'failed') {
       // Foundry's own sentence, verbatim. This side knows less about why the
       // engine stopped than the engine's words do.
-      throw new Error(settled.error);
+      throw new Error(row.error ?? `${config.label} failed, and Foundry did not say why.`);
     }
 
     /*

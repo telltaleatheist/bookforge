@@ -91,7 +91,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // reason they do.
 import {
   foundryHostQueue, setFoundrySeam, watchFoundryQueue,
-  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions, type FoundrySettled,
+  type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions,
 } from './foundry-host-queue';
 // The narrate operation's dialog: the fields Foundry is asked to draw, and the
 // reading of the answers it hands back. Pure decisions, kept out of this file.
@@ -520,7 +520,7 @@ interface FoundryMountModule {
   runJob?(
     request: FoundryJobRequest,
     opts: FoundryRunJobOptions,
-  ): Promise<FoundrySettled>;
+  ): Promise<FoundryJobRow>;
   /**
    * The rows for one project, pushed — their shelf's mirror of OUR queue.
    *
