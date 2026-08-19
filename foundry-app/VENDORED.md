@@ -10,8 +10,8 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **b2b8562** — *the workbench draws emphasis and tables instead of the characters that describe them* |
-| Copied on | 2026-08-18 |
+| Source sha | **f8c8d6a** — *an env download folder the distro cannot see is refused before the download, not after* |
+| Copied on | 2026-08-19 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
@@ -215,7 +215,29 @@ asterisks aloud — WAS FALSE. `src/vlm/dots.ts:492` has converted `**bold**` to
 and an EPUB on disk carries `<strong>` with zero asterisks. Owen saw the
 workbench, never the EPUB. BookForge had already closed the question by the other
 route: e2a's `chars_remove` maps `*` to a space in `normalize_text`, so nothing
-was ever spoken (95/95 blobs at b2b8562).
+was ever spoken (95/95 blobs at b2b8562). `961a726`+`f8c8d6a` are Foundry's
+answer to a defect BookForge reported from the OTHER side of the same wall: WSL
+auto-mounts FIXED drives only, so a mapped drive is a network path wearing a
+letter and no string test tells it from `C:`. `env-install.ts` downloads the
+five-gigabyte environment archive to `FOUNDRY_ENV_TMP` — which exists precisely
+so a machine with a small system SSD can send it somewhere roomier, and on a
+machine like this one the roomier place IS the NAS — then hands that path to the
+distro so its own tar can unpack it. Where BookForge STAGES (right for a few
+kilobytes of session state, wrong for 5 GB), Foundry REFUSES EARLY: a new
+`networkPathBehind()` asks the filesystem which share a path really lives on,
+checked right after the temp dir is made and only when a distro is involved, so
+the cost is a second rather than a whole download. Three limits they drew
+deliberately — the host-side unpack reads the archive with Node and is happy on a
+share, so no distro means no check (refusing there would break a working case);
+an unresolvable path answers `null`, because "I could not tell" must never read
+as "network drive"; and `toWslPath` stays PURE, with its docblock corrected —
+it claimed a protection it only half had, which is what made this cost them an
+hour. `f8c8d6a` itself repairs a PLAN.md entry that a `String.replace` had
+spliced 1,507 lines into (`wsl$` + `` ` `` is JavaScript's "everything before the
+match"), caught because the commit stat said 1549 insertions where 45 were
+expected. No IPC change — still 71 handles, 14 pushes — and nothing outside
+`app/` moved, verified here rather than taken, so the engine binary stands
+(96/96 blobs at f8c8d6a).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
@@ -227,8 +249,9 @@ committed to regenerating it from source on every wave.
 **Edit in the Foundry repo and re-copy. Never here.** A fix made in this
 directory is lost the next time the subtree is refreshed, and worse, it makes
 the two copies disagree while both look authoritative. If something in here is
-wrong, it is wrong in Foundry — say so on the message channel
-(`E:\agent-bridge\bookforge-to-foundry.md`) and take the next sha.
+wrong, it is wrong in Foundry — say so on the `bookforge-sync` switchboard
+channel (the `E:\agent-bridge` file pair it replaced was deleted 2026-08-18) and
+take the next sha.
 
 The one exception is this file, which is BookForge's own note about the copy.
 

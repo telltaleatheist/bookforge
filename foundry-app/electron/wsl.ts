@@ -24,6 +24,7 @@
  * line becomes a different program.
  */
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
+import fs from 'node:fs';
 
 /** The conda installs we look for, in the order the engine's own probe uses. */
 const CONDA_ROOTS = ['~/anaconda3', '~/miniconda3', '~/miniforge3'] as const;
@@ -126,6 +127,12 @@ export function bashArgs(distro: string, command: string): string[] {
  * no such mapping at all and is refused rather than mangled into something that
  * would silently resolve to nothing.
  *
+ * That refusal is not the whole guard, and reading it as one is the mistake this
+ * note exists to prevent: a MAPPED drive is a network path wearing a letter, and
+ * `Z:\x` passes every test here on its way to a `/mnt/z` that does not exist.
+ * Only the filesystem can tell the two apart — `networkPathBehind` below — and
+ * this function stays pure rather than asking it.
+ *
  * Pure, so the conversion is checkable without a distro.
  */
 export function toWslPath(windowsPath: string): string {
@@ -141,6 +148,31 @@ export function toWslPath(windowsPath: string): string {
     throw new Error(`${windowsPath} is not an absolute Windows path, so it has no WSL spelling.`);
   }
   return `/mnt/${drive[1].toLowerCase()}${normalised.slice(2)}`;
+}
+
+/**
+ * The UNC path a Windows path really lives on, or null if it is on a local disk.
+ *
+ * WSL2 auto-mounts FIXED drives only. A drive letter mapped to a share — `Z:`
+ * for `\\TITAN\iO` — gets no mount at all, so a guest handed `/mnt/z/…` is sent
+ * somewhere that cannot exist while the file sits there perfectly readable on
+ * the host. Nothing about the spelling distinguishes it from `C:`, which is why
+ * `toWslPath`'s string rules cannot catch it, and why this asks the OS instead:
+ * `realpath.native` answers `\\TITAN\iO` for the mapped drive and `C:\` for the
+ * real one.
+ *
+ * A path that cannot be resolved answers null — "I could not tell" must not read
+ * as "it is a network drive" and refuse an install over a missing directory.
+ * Not pure, unlike the rest of this section: call it once, before the work.
+ */
+export function networkPathBehind(windowsPath: string): string | null {
+  let resolved: string;
+  try {
+    resolved = fs.realpathSync.native(windowsPath);
+  } catch {
+    return null;
+  }
+  return resolved.replace(/\\/g, '/').startsWith('//') ? resolved : null;
 }
 
 /**

@@ -59,7 +59,15 @@ import {
   verifyHash,
 } from './env-downloader';
 import { readSettings, writeSettings } from './settings';
-import { checkVllm, listDistros, runInDistro, shellQuote, streamInDistro, toWslPath } from './wsl';
+import {
+  checkVllm,
+  listDistros,
+  networkPathBehind,
+  runInDistro,
+  shellQuote,
+  streamInDistro,
+  toWslPath,
+} from './wsl';
 import { VLLM_URL } from './vllm-server';
 import { readJson } from '../shared/json';
 import type {
@@ -335,6 +343,21 @@ async function run(
   }
 
   const tempDir = makeTempDir();
+  // WSL2 auto-mounts FIXED drives only, so a download folder on a mapped network
+  // drive is invisible to the distro that has to unpack it — and FOUNDRY_ENV_TMP
+  // is exactly how a machine with a small system disk ends up pointing at one.
+  // Checked here rather than left to toWslPath, because there it would surface
+  // only after five gigabytes had been fetched to a place that cannot be used.
+  const share = distro === null ? null : networkPathBehind(tempDir);
+  if (share !== null) {
+    await removeTempDir(tempDir);
+    return {
+      ok: false,
+      pythonPath: null,
+      detail: `The download folder ${tempDir} is on the network share ${share}, which ${distro} cannot see: `
+        + 'WSL mounts local drives only. Point FOUNDRY_ENV_TMP at a folder on a local drive and try again.',
+    };
+  }
   const archivePath = path.join(tempDir, asset.archive);
 
   try {
