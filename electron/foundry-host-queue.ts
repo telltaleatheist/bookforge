@@ -417,18 +417,59 @@ export function watchFoundryQueue(): void {
   onQueueChanged(() => {
     if (pushRows === null) return;
     /*
-     * One push per project that HAS rows. A project with none is not pushed an
-     * empty list on every unrelated queue change: their shelf asks `rows()` when
-     * it opens a book, and pushing emptiness at projects nobody mentioned would
-     * be this side broadcasting the absence of news.
+     * One push per project that has rows — AND ONE EMPTY PUSH, ONCE, for a
+     * project that has just stopped having them.
+     *
+     * ── Why the empty edge is not "broadcasting the absence of news" ──────────
+     *
+     * The first cut pushed only projects that HAD rows, by analogy with
+     * `setHostNodes`: a tree asks about a book when it opens one, so pushing
+     * emptiness at books nobody mentioned would be noise. Foundry's agent found
+     * the flaw in their own analogy (channel, 2026-08-19): the host-nodes tree is
+     * per-project, but THE QUEUE SHELF IS NOT. It mirrors one global list —
+     * `api.queue.onChanged((jobs) => this.all.set(jobs))`, every job in the
+     * process, no project filter — because "what is this machine doing" is the
+     * question it exists to answer.
+     *
+     * Against a replace-what-you-are-told mirror, silence is not neutral. Book
+     * A's last Foundry row settles and is swept, A drops out of the map, nothing
+     * is pushed for A — and A's stale rows sit on their shelf for the life of the
+     * window, because a mirror that is never told is never corrected.
+     *
+     * So emptiness is pushed exactly ONCE, on the falling edge, and never again
+     * until that project has rows to lose. Same discipline as the idle signal and
+     * for the same reason: it is the one piece of news the other side cannot
+     * infer, and repeating it would be a heartbeat.
      */
-    const byProject = new Map<string, FoundryJobRow[]>();
+    const byProject = new Map<string, { dir: string; rows: FoundryJobRow[] }>();
     for (const { step } of foundrySteps()) {
       const dir = configOf(step)!.projectDir;
-      const held = byProject.get(dir);
-      if (held) held.push(rowOf(step));
-      else byProject.set(dir, [rowOf(step)]);
+      // Folded, because Windows spells one path three ways and two spellings
+      // would push two lists for one book — each replacing the other.
+      const key = fold(dir);
+      const held = byProject.get(key);
+      if (held) held.rows.push(rowOf(step));
+      else byProject.set(key, { dir, rows: [rowOf(step)] });
     }
-    for (const [dir, rows] of byProject) pushRows(dir, rows);
+
+    for (const [key, { dir, rows }] of byProject) {
+      pushed.set(key, dir);
+      pushRows(dir, rows);
+    }
+    for (const [key, dir] of [...pushed]) {
+      if (byProject.has(key)) continue;
+      pushed.delete(key);
+      pushRows(dir, []);
+    }
   });
 }
+
+/**
+ * The projects we have pushed a non-empty list for, and the spelling we pushed
+ * it under.
+ *
+ * Held so the falling edge can be seen at all: "this project has no rows" is only
+ * news the first time, and the pushed spelling is kept rather than re-derived so
+ * the empty list lands on the same key the rows did.
+ */
+const pushed = new Map<string, string>();
