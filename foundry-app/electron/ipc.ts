@@ -238,7 +238,28 @@ export function registerIpc(): void {
    * both are `hostOffers()` and there is no second literal to keep in step.
    */
   ipcMain.handle('host-ops:offers', () => hostOffers());
-  ipcMain.handle('host-ops:nodes', (_event, projectDir: string) => hostNodesFor(projectDir));
+  /*
+   * ONE PROJECT'S HOST NODES — and, on the way past, the host's QUEUE rows for it.
+   *
+   * ── Why two answers ride one ask ──────────────────────────────────────────
+   *
+   * This is the moment main learns that a window is drawing a particular book,
+   * and it is the only such moment: `queue:list` is global and names no project,
+   * because the shelf has always been one list across the library. A host that
+   * keeps its own queue pushes per project (`setHostQueueRows`), so a window that
+   * opened AFTER the host's last push would draw an empty shelf until something
+   * moved — the same gap `hostNodesFor` exists to close for the tree, one line up.
+   *
+   * IT ADDS NO CHANNEL, which is the reason it rides here rather than arriving as
+   * a door of its own: the count in docs/IPC-CHANNELS.md stays where it is and
+   * BookForge's keeper has nothing new to audit. A host that offers no `rows` is
+   * unaffected, and standalone the seed is a function call that returns at its
+   * first line.
+   */
+  ipcMain.handle('host-ops:nodes', (_event, projectDir: string) => {
+    queue.seedHostQueueRows(projectDir);
+    return hostNodesFor(projectDir);
+  });
   /*
    * The user pressed one of the host's acts, from a node in the tree.
    *
@@ -1826,7 +1847,18 @@ export function registerIpc(): void {
     return dir === null ? null : positionStepId(dir);
   };
 
-  ipcMain.handle('queue:list', () => queue.listJobs());
+  /*
+   * ── WHAT THE SHELF DRAWS, WHICH IS NOT ALWAYS FOUNDRY'S OWN LIST ──────────
+   *
+   * `shelfJobs` rather than `listJobs`, and the difference only exists hosted:
+   * with a host queue registered, the rows in this window are the HOST's, pushed
+   * per project and accumulated into the one global list this mirror has always
+   * been (electron/job-queue.ts). Standalone the two functions answer the same
+   * array. The PUSH on `queue:changed` below is the same expression, because a
+   * window that asked and a window that was pushed at must not hold different
+   * facts — `hostOffers`' rule, one family along.
+   */
+  ipcMain.handle('queue:list', () => queue.shelfJobs());
   ipcMain.handle('queue:enqueue', async (_event, request: JobRequest) => queue.enqueue(
     request,
     // The BANK for a reading, the rendering's output otherwise — the same
@@ -1911,6 +1943,12 @@ export function registerIpc(): void {
   ipcMain.handle('vllm:set-keep-warm', (_event, minutes: number) =>
     writeAppSettings({ keepServerWarmMinutes: minutes }).keepServerWarmMinutes);
 
+  /*
+   * The whole list on every mutation — and hosted, the whole list is the HOST's
+   * (`shelfJobs`, electron/job-queue.ts). The queue hands it over already
+   * composed rather than this line choosing, so the door above and this push
+   * cannot answer differently.
+   */
   queue.onQueueChanged((jobs) => broadcast('queue:changed', jobs));
   /*
    * THE LIBRARY CHANGED, said out loud, which it never used to be.

@@ -45,6 +45,27 @@
  * no operations and nobody pushing, both doors answer empty, and the tree is
  * exactly the tree.
  *
+ * ── The queue socket, which is the sixth thing ──────────────────────────────
+ *
+ *     mountFoundry({ …, hostQueue })           the host schedules
+ *     runJob(request, opts)                    …and Foundry does the work
+ *     setHostQueueRows(projectDir, rows)       …and the shelf draws the host's
+ *     hostQueueDrained()                       …and the host says when it is over
+ *
+ * One machine's GPU needs one owner, and hosted there were two schedulers: this
+ * app's `pump()` and the host's engine, neither able to see the other's list. So
+ * a host may take the deciding over. It never takes the WORK: the ledger writes,
+ * the bank, the rotations and the export landings stay here, because two copies
+ * of that bookkeeping is how two apps start disagreeing about what a book is.
+ *
+ * ONLY WHAT A PERSON PRESSED IN THIS WINDOW ROUTES. An export the host itself
+ * ordered (`exportEpubFromStep`, below) stays on Foundry's internal queue, and
+ * the essay at that call is the most important paragraph in the socket.
+ *
+ * REGISTERED OR NOT, IT COSTS THE STANDALONE APP NOTHING: with no host queue,
+ * every door in electron/job-queue.ts behaves exactly as it did before this
+ * existed, and `runJob` is a function nobody calls.
+ *
  * ── What is NOT here, deliberately ──────────────────────────────────────────
  *
  * THE MENU. `Menu.setApplicationMenu` is process-global — it replaces the menu of
@@ -132,6 +153,33 @@ export type { HostStatus } from '../shared/host-ops';
  */
 export { setHostOperations } from './host-ops';
 export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, NodeOutput } from '../shared/types';
+/*
+ * ── AND THE QUEUE SOCKET: ONE MACHINE'S GPU HAS ONE OWNER ───────────────────
+ *
+ * Owen ruled it (docs/PLAN.md, Wave 16): *"we need to centralize the queue in
+ * bookforge."* A host that registers `hostQueue` on the mount does the DECIDING;
+ * these three are what Foundry offers back.
+ *
+ *     runJob(request, {parentStep, onProgress, signal})   execute one, now
+ *     setHostQueueRows(projectDir, rows)                  what your queue holds
+ *     hostQueueDrained()                                  and when it is empty
+ *
+ * `runJob` resolves with the settled `Job` ROW — `state` says `done`, `failed` or
+ * `cancelled` and `error` carries the engine's own words. The row rather than a
+ * result type, because a result type cannot say cancelled, and a cancel filed as
+ * a failure is how a host's retry restarts work a person just stopped.
+ *
+ * `setHostQueueRows` is in the `setHost*` family by shape and by purpose, and it
+ * comes from the queue rather than from `host-ops.ts` because the module that
+ * publishes the shelf's mirror must be the module that holds what the shelf
+ * draws — two modules answering "what is in the queue" is the one thing this
+ * whole wave exists to prevent.
+ *
+ * ABSENT, ALL THREE ARE UNREACHED and Foundry queues exactly as it always has.
+ */
+export { hostQueueDrained, runJob, setHostQueueRows } from './job-queue';
+export type { FoundryHostQueue } from './host';
+export type { FoundryJobRow, Job, JobRequest, TranslateRequest } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // foundry-file:// — how a book's figures reach the page
@@ -656,7 +704,41 @@ export async function exportEpubFromStep(
      * here the ask names its own row, and passing the position instead would file
      * a host's export against wherever the window happened to be pointing.
      */
-    queue.enqueue(request, step.id);
+    /*
+     * ── `enqueueHere`, AND THIS IS THE LEAST OBVIOUS LINE IN THE WAVE ─────────
+     *
+     * Wave 16 gave a host the option of owning the queue: `queue.enqueue` hands
+     * the request to `hostQueue.enqueue` when one is registered, and the host's
+     * pump calls `runJob` when it decides. That is right for everything a PERSON
+     * presses in this window — a reading, a generate, an export from the dialog —
+     * because those are the jobs that compete for the GPU the host is scheduling.
+     *
+     * IT IS EXACTLY WRONG HERE, AND THE FAILURE IS A DEADLOCK RATHER THAN AN
+     * INEFFICIENCY. This function exists because the host asked for it: an act
+     * declared on `'book'` was pressed on a step with no export, so the host
+     * called `exportEpubFromStep` and is AWAITING the promise this returns. By
+     * making that call the host has already made the scheduling decision — it
+     * knows what it is running and it is running it now. Routing this enqueue
+     * would push the export back into the host's own queue from inside a call
+     * that queue is blocked on: their scheduler would be waiting for a landing
+     * that cannot happen until their scheduler runs the row it has just been
+     * handed. Two correct-looking rules, one hang, and it would look like a
+     * Foundry export that never finishes.
+     *
+     * SO THE RULE IS ABOUT THE DOOR SOMEBODY CAME THROUGH, not about the kind of
+     * job: work ordered through the mount seam is Foundry's own, runs on
+     * Foundry's own queue, and is invisible to the host's scheduler by design.
+     * The same reasoning makes environment installs unroutable
+     * (`enqueueEnvInstall`) — an install is a precondition of the engine running
+     * at all, and filing one behind a queue is filing it behind the job that
+     * needs it.
+     *
+     * EVERYTHING ELSE ABOUT THIS EXPORT IS UNCHANGED, which is the whole promise
+     * one function up: same plan, same request, same rotation, same `final/` name,
+     * same tray row, same landing, same announcement. A host cannot tell this
+     * export from one somebody pressed for, and neither can the tray.
+     */
+    queue.enqueueHere(request, step.id);
   });
 }
 

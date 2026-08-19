@@ -661,6 +661,23 @@ export interface Job {
   finishedAt?: number;
 }
 
+/**
+ * ONE ROW OF A QUEUE, UNDER THE NAME A HOST IMPORTS IT BY.
+ *
+ * It is `Job` — the very shape the shelf draws and the queue publishes — and it
+ * is an alias rather than a second declaration for exactly that reason: a host
+ * running Foundry's work in its own scheduler (docs/PLAN.md, Wave 16) hands rows
+ * BACK across the seam (`setHostQueueRows`) and mints them going in
+ * (`FoundryHostQueue.enqueue`), so the two sides must be describing one shape or
+ * the mirror would be two lists that can disagree about what a job is.
+ *
+ * WHY THE SECOND NAME EXISTS AT ALL: `Job` is Foundry's own word for a row in
+ * Foundry's own queue, and a host reading `Job` in its own file would reasonably
+ * ask whose job. This name says whose. Nothing is added and nothing is optional
+ * that was not — a widening here would be a widening of the shelf.
+ */
+export type FoundryJobRow = Job;
+
 // ─────────────────────────────────────────────────────────────────────────────
 // `foundry doctor --json` — the engine's contract, version 1
 // ─────────────────────────────────────────────────────────────────────────────

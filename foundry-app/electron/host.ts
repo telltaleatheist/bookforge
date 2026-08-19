@@ -18,7 +18,9 @@
  * the whole reason the record is here rather than in `mount.ts`, the module that
  * writes it and that sits at the top of everything.
  */
-import type { ExportLanding, ImportLanding } from '../shared/types';
+import type {
+  ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TranslateRequest,
+} from '../shared/types';
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
@@ -35,6 +37,85 @@ import type { HostOperation } from './host-ops';
  * and WHAT CAME OUT, because an export is the moment Foundry produces something
  * the host's own pipeline consumes.
  */
+/**
+ * THE HOST'S OWN QUEUE, offered to Foundry so that ONE SCHEDULER OWNS THE GPU.
+ *
+ * ── The ruling, and the hazard behind it ────────────────────────────────────
+ *
+ * Owen, 2026-08-18: *"we need to centralize the queue in bookforge. foundry has
+ * their own queue but things shouldnt be queued in foundry's queue from within
+ * bookforge."* It is urgent rather than tidy: BookForge's engine schedules on a
+ * declared `gpu` resource and Foundry's `pump()` is a second scheduler that
+ * knows nothing about it, so a Foundry reading and a host's narration can both
+ * hold the same card. One machine's GPU needs one owner.
+ *
+ * ── The split: they decide WHEN, we still do the WORK ───────────────────────
+ *
+ * A host that registers this takes over the SCHEDULING and nothing else. It
+ * never reimplements the ledger writes, the bank, the rotations or the export
+ * landings — two copies of that bookkeeping is how two apps start disagreeing
+ * about what a book is. What crosses is: a request goes out (`enqueue`), and
+ * the host calls `runJob` on the mount seam when its own pump says now.
+ *
+ * ── ABSENT IS TODAY, EXACTLY ────────────────────────────────────────────────
+ *
+ * Standalone Foundry passes no host at all, and a host that has not moved
+ * registers no queue: every door below is unreached, `pump()` schedules as it
+ * always has, and the shelf draws Foundry's own rows. This is `appliesTo`'s
+ * compatibility posture, one socket along — a field nobody sets changes nothing.
+ *
+ * ── ONLY WHAT A PERSON PRESSED IN THIS WINDOW ROUTES ────────────────────────
+ *
+ * Work the host itself ordered through the mount seam (`exportEpubFromStep`)
+ * stays on Foundry's internal path, deliberately. See `enqueue` there, and the
+ * essay at the branch in electron/job-queue.ts: routing a call the host is
+ * already awaiting would re-enter the host's scheduler from inside it.
+ */
+export interface FoundryHostQueue {
+  /**
+   * FILE THIS WORK IN THE HOST'S QUEUE, and hand back the row that stands for it.
+   *
+   * SYNCHRONOUS, AND THAT IS PART OF THE CONTRACT rather than a convenience:
+   * Foundry's own `enqueue` is synchronous so that the shelf row exists in the
+   * same turn as the press, and the IPC door that calls it answers with the row.
+   * A host is expected to DEFER ITS OWN PUMP — file the row, return it, start the
+   * work on the next turn — so that nothing has begun before this returns.
+   *
+   * `parentStep` is Foundry's position at the press, resolved by the door before
+   * it called (`Job.parentStep`), and it is handed straight back to `runJob`
+   * later: it decides what the product is recorded as being made FROM, and a
+   * pointer that moves while the row waits must not change that.
+   *
+   * THE ROW IS THE HOST'S OWN. Its `id` is the host's — it is what `cancel` and
+   * `remove` will name — and Foundry mints nothing for it until `runJob` runs it.
+   */
+  enqueue(request: JobRequest | TranslateRequest, parentStep: string | null): FoundryJobRow;
+  /**
+   * The gestures the shelf makes, forwarded by id — the host's id, off the host's
+   * own row.
+   *
+   * EACH IS OPTIONAL AND AN ABSENT ONE IS SAID OUT LOUD, never quietly answered
+   * by Foundry's own list: the id belongs to a queue this app does not own, so
+   * there is nothing here to fall back TO. A host that offers a queue and no
+   * `cancel` has said its rows are not cancellable from this window, which is a
+   * complete thing to say and is logged where it happens.
+   */
+  cancel?(id: string): void;
+  remove?(id: string): void;
+  /** Release whatever the host is holding for a person to press Start on. */
+  start?(): void;
+  clearFinished?(): void;
+  /**
+   * EVERY ROW THE HOST HOLDS FOR ONE PROJECT — the first paint, for a window that
+   * opened after the host's last push.
+   *
+   * `setHostNodes`/`hostNodesFor`'s arrangement exactly, and for its reason: the
+   * pushes carry every change afterwards, and this is the one message a late
+   * window would otherwise have missed. Asked when a window draws a book.
+   */
+  rows?(projectDir: string): readonly FoundryJobRow[];
+}
+
 export interface FoundryHost {
   /**
    * The library root, `<libraryDir>/projects` and all. It wins over the app's
@@ -151,6 +232,26 @@ export interface FoundryHost {
    * pushes for the same reason: only the host knows when its own state moved.
    */
   hostOperations?: readonly HostOperation[];
+  /**
+   * THE HOST'S QUEUE, IF IT KEEPS ONE — where work a person presses in this
+   * window is filed instead of in Foundry's own list.
+   *
+   * OPTIONAL, AND ITS ABSENCE IS THE WHOLE OF THE COMPATIBILITY STORY. Foundry's
+   * own shell passes no host; a host that has not moved passes no queue; both get
+   * the queue this app has always had, scheduled by `pump()`, drawn from Foundry's
+   * own rows. Nothing about the socket shows up until somebody puts something in
+   * it — `hostOperations`' rule, one field down.
+   *
+   * READ AT THE DOORS AND NOWHERE ELSE. The routing is decided in the five
+   * exported gestures of electron/job-queue.ts and in no function beneath them:
+   * everything that actually RUNS a job is one code path, shared by the pump and
+   * by `runJob`, so a hosted run and a standalone run cannot drift.
+   *
+   * See `FoundryHostQueue` above for what a host owes when it registers one, and
+   * `runJob`/`setHostQueueRows`/`hostQueueDrained` on the mount seam for the three
+   * things Foundry offers back.
+   */
+  hostQueue?: FoundryHostQueue;
 }
 
 let host: FoundryHost | null = null;

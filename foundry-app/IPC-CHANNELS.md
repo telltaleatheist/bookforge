@@ -2,7 +2,9 @@
 
 Every channel name this app owns, enumerated from `app/electron` rather than
 from memory, regenerated on 2026-08-18 (the host status chip: two doors and one
-push; then the offers push, which is a push and no door at all). It exists
+push; then the offers push, which is a push and no door at all; then the
+centralized queue, which added **nothing at all to either table** — see the
+section on it below). It exists
 because of the fifth thing Foundry owes BookForge before the first copy: *"A
 channel audit. Enumerate both apps' IPC names once before the copy; Foundry's
 are namespaced, so this is a check, not a design"*
@@ -145,6 +147,44 @@ seventy-second one.
   nothing ever pushes it. The subscription that never fires costs a window one
   listener.
 
+### No name added on 2026-08-18 — the queue centralizes in the host
+
+**NOTHING IN EITHER TABLE MOVED. Counted from source, not from memory: 71
+`ipcMain.handle` call sites, 71 channel names, zero `ipcMain.on`; 14 pushes, 8 of
+them broadcasts.** Said this plainly because the wave is a large one and a keeper
+reading the changelog would reasonably go looking for a seventy-second door.
+
+Owen ruled that the queue centralizes in BookForge (docs/PLAN.md, Wave 16) —
+BookForge's engine schedules on a declared `gpu` resource and Foundry's pump was
+a second scheduler that could not see it, so one machine's GPU had two owners.
+What crosses for that is **main-process functions on the mount seam, not
+channels**, exactly as `exportEpubFromStep` did in Wave 13:
+
+- `runJob(request, {parentStep, onProgress, signal})` resolves with the settled
+  `Job` row. The ROW and not a result type, because `JobState` distinguishes
+  `done`, `failed` and `cancelled` and a result type cannot say cancelled — a
+  cancel filed as a failure is how a host's retry restarts work a person stopped.
+- `setHostQueueRows(projectDir, rows)` — the `setHost*` family's shape, and the
+  rows are `FoundryJobRow`, which IS `Job`.
+- `hostQueueDrained()` — the host's queue has drained of Foundry work.
+- `mountFoundry({ …, hostQueue })` is what the host registers to take the
+  deciding over. Absent, everything below behaves exactly as it did.
+
+**Two existing channels carry a different LIST hosted, in the same shape.**
+`queue:list` (door) and `queue:changed` (push) both answer `Job[]`, unchanged —
+but with a host queue registered the array is the HOST's rows rather than
+Foundry's, accumulated across projects from `setHostQueueRows` and keyed by the
+folded directory. It is never a merge: hosted, one side is doing the scheduling
+and that side's list is the one the shelf draws. Standalone, and for any host
+that registers no queue, both answer exactly what they always answered.
+
+**`host-ops:nodes` gained a second job and no second name.** It is the moment
+main learns a window is drawing a particular book — `queue:list` is global and
+names no project — so it also asks the host for that project's queue rows
+(`FoundryHostQueue.rows`, optional) and seeds the mirror. The first paint for the
+shelf, riding on the first paint for the tree, for the reason every rider in this
+file rides: no new name for the collision keeper to audit.
+
 **`host-ops` was invented rather than found**, and the reason belongs in this
 file: it is the host-operations socket (the provenance tree's audio work, ordered
 from a BookForge that has mounted this app), and a BRAND-NEW family is the one
@@ -208,13 +248,13 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `projects:delete` | Delete a project directory, for real. |
 | `projects:describe` | What that project delete would destroy, in words and bytes. |
 | `projects:list` | Home's listing: one row per book, with what is in it. |
-| `queue:cancel` | Cancel one job. |
-| `queue:clear-finished` | Clear the settled rows out of the shelf. |
-| `queue:enqueue` | Queue a reading or a rendering; captures the project's position as the parent step. |
-| `queue:enqueue-translate` | Queue a translation or a simplification. |
-| `queue:list` | The queue, for the renderer's mirror. |
-| `queue:remove` | Remove a held or settled row. |
-| `queue:start` | Release everything held at this moment. |
+| `queue:cancel` | Cancel one job. Forwarded to the host's queue where one is registered. |
+| `queue:clear-finished` | Clear the settled rows out of the shelf. Forwarded to the host's queue as well, where one is registered. |
+| `queue:enqueue` | Queue a reading or a rendering; captures the project's position as the parent step. Filed in the host's queue instead, where one is registered — this door is a person pressing something. |
+| `queue:enqueue-translate` | Queue a translation or a simplification. Routed like `queue:enqueue`. |
+| `queue:list` | The queue, for the renderer's mirror — the host's rows where a host queue is registered, Foundry's own otherwise. |
+| `queue:remove` | Remove a held or settled row. Forwarded to the host's queue where one is registered. |
+| `queue:start` | Release everything held at this moment. Forwarded to the host's queue where one is registered. |
 | `reading:confirm-re-read` | Compose the "read this book again?" card, which spends GPU on a yes. |
 | `recents:clear` | Forget every recent. |
 | `recents:forget` | Forget one. |
@@ -255,7 +295,7 @@ or a question it has to answer. Eight go to every window through `broadcast`
 | `menu:action` | A menu item the renderer has to carry out, because it acts on a tab. |
 | `project:open` | Stand in this project — the hosted deep link, sent once as the window loads. |
 | `projects:changed` | Something in the library moved. No payload: the renderer asks for the list. |
-| `queue:changed` | The whole job list, on every mutation. |
+| `queue:changed` | The whole job list, on every mutation — the host's rows hosted, Foundry's own otherwise. Same shape either way. |
 | `vllm:status-changed` | The reading server's status changed. |
 | `window:closing` | The window is going; ask the open documents and answer on `window:let-go`. |
 

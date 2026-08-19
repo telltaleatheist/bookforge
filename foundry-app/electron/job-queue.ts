@@ -82,6 +82,36 @@
  * startup provisioner queue five gigabytes that then sat there until a shelf the
  * user has never opened was expanded and pressed. The batch this file exists to
  * make possible is a batch of BOOKS; an install is plumbing.
+ *
+ * ── A HOST MAY OWN THE SCHEDULING, AND THIS FILE SPLITS IN TWO FOR IT ────────
+ *
+ * Owen ruled it (docs/PLAN.md, Wave 16): *"we need to centralize the queue in
+ * bookforge."* One machine's GPU needs one owner, and hosted there are two
+ * schedulers — this one and the host's, which knows nothing about it.
+ *
+ * So the file has always been two things in one body: a SCHEDULER that decides
+ * which row goes next, and an EXECUTOR that turns a row into an engine run and a
+ * landing. They are two functions now. `pump()` is the scheduler and is
+ * unchanged in what it does; `executeJob()` is everything that used to happen
+ * after the row was chosen, and `runJob()` is the second door onto it — execute
+ * THIS, now, because somebody else did the deciding.
+ *
+ * THE DIVISION IS: THEY DECIDE WHEN, WE STILL DO THE WORK. A host's queue never
+ * reimplements the ledger writes, the bank, the rotations or the export landings,
+ * because two copies of that bookkeeping is how two apps start disagreeing about
+ * what a book is. A job ordered by the host is minted as a row here, runs through
+ * the same `executeJob`, lands the same products and publishes the same
+ * announcements. What disappears in hosted mode is the WAITING — the row is born
+ * `running`, because the waiting already happened in somebody else's list.
+ *
+ * ROUTED VERSUS INTERNAL IS A DOOR, NOT A FLAG. Every exported gesture in this
+ * file is either a door a PERSON reached through the window (`enqueue`,
+ * `enqueueTranslate`, `cancel`, `remove`, `start`, `clearFinished` — these route
+ * when a host queue is registered) or a door FOUNDRY ITSELF reached for
+ * (`enqueueHere`, `cancelHere`, `enqueueEnvInstall`, `runJob` — these never
+ * route). Nothing below the doors consults anything: `pump`, `executeJob` and
+ * every landing are the same code in both worlds, so there is no flag for a
+ * function to forget.
  */
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, promises as fsp } from 'node:fs';
@@ -93,6 +123,7 @@ import { materializeTranslation } from './book';
 import { parseProgressLine, runEngine, writeBookFile } from './engine';
 import { ENV_SPECS } from './env-catalog';
 import { destFor, installEnv } from './env-install';
+import { foundryHost, type FoundryHostQueue } from './host';
 import {
   bookAtPosition,
   generatedRoleFor,
@@ -115,8 +146,9 @@ import {
 import { readSettings } from './settings';
 import { ensureServer, isLocalVllmEndpoint, noteQueueBusy, noteQueueIdle } from './vllm-server';
 import { REWRITE_LABELS } from '../shared/ledger';
+import { fold } from '../shared/original';
 import type {
-  ConversionKind, EnvInstallRequest, ExportLanding, Job, JobRequest, TranslateRequest,
+  ConversionKind, EnvInstallRequest, ExportLanding, FoundryJobRow, Job, JobRequest, TranslateRequest,
 } from '../shared/types';
 
 /**
@@ -135,6 +167,28 @@ const jobs: Job[] = [];
  * common except that both must stop when the row's ✕ is pressed.
  */
 let running: { id: string; cancel(): void } | null = null;
+/**
+ * THE RUNS NOBODY HERE SCHEDULED — one entry per live `runJob`, keyed by row id.
+ *
+ * ── Why they are beside the slot rather than in it ──────────────────────────
+ *
+ * `running` is the pump's SERIAL SLOT and its meaning is "the internal queue's
+ * one engine". A job the host's scheduler chose must not take that slot, in
+ * either direction: it must not WAIT for it (the host said now, and `runJob`
+ * that waited would hang the host's pump on a queue it cannot see), and it must
+ * not HOLD it (a host that calls `exportEpubFromStep` and awaits the answer while
+ * a three-hour reading runs would be waiting for that reading — a deadlock built
+ * out of two correct-looking rules).
+ *
+ * What they are for is the same two things the slot is for: a ✕, and a quit. So
+ * `cancelHere` looks here when the slot is not this row, and `shutdown` stops
+ * every one of them.
+ *
+ * EMPTY STANDALONE, ALWAYS. Nothing calls `runJob` without a host queue to have
+ * scheduled it, so every reader of this map answers exactly as it did before the
+ * map existed.
+ */
+const detachedRuns = new Map<string, () => void>();
 let notify: (jobs: Job[]) => void = () => { /* set by main */ };
 
 /** Where the queue publishes. Called on every mutation, with the whole list. */
@@ -243,12 +297,202 @@ export function listJobs(): Job[] {
   return jobs.map(copyOf);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The host's queue, when there is one — the routing, and the mirrored shelf
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE ONE QUESTION THE DOORS ASK, and the only place anything in this file asks
+ * it.
+ *
+ * ── Why it is a function and not a flag ─────────────────────────────────────
+ *
+ * Because a flag would have to be SET, which means a mount-order bug is a
+ * silently unrouted queue. The host record is written once by `mountFoundry`
+ * (electron/host.ts) and read here on every call, so the answer cannot go stale
+ * and there is nothing to keep in step.
+ *
+ * ── And why nothing beneath the doors calls it ──────────────────────────────
+ *
+ * The routing decision belongs to the DOOR somebody came through, and by the
+ * time a job is executing the decision has been made — twice over, because a
+ * routed job comes back through `runJob` having been chosen by the host. If
+ * `executeJob` or a landing asked this question, a hosted run and a standalone
+ * run would be two behaviours in one body, which is exactly the drift the split
+ * exists to prevent. Grep this name: it appears in the six routed doors, in the
+ * drain, and in the two functions that mirror the host's rows. Nowhere else.
+ */
+function hostQueue(): FoundryHostQueue | null {
+  return foundryHost()?.hostQueue ?? null;
+}
+
+/**
+ * EVERY ROW THE HOST HOLDS, KEYED BY THE FOLDED PROJECT DIRECTORY.
+ *
+ * ── Why per project going in and one list coming out ────────────────────────
+ *
+ * The host pushes per project, because that is how it knows its own work — a
+ * queue row is about a book. The SHELF is one global list across every project
+ * (app/src/app/core/queue.service.ts holds a single signal, set from
+ * `queue:changed`), and hosted it must draw the host's work for the whole
+ * machine rather than only the book that happens to be open. So the pushes
+ * accumulate here and flatten on the way out.
+ *
+ * FOLDED, on the house rule every path key in this app obeys: on Windows one
+ * directory arrives spelled three ways, and a host pushing under
+ * `E:\Bookforge\projects\Twain-a1b2` while another push says `e:/bookforge/...`
+ * would be two spellings of one project holding two sets of rows. Whole paths,
+ * never basenames.
+ *
+ * AN EMPTY PUSH IS THE ONE PIECE OF NEWS THE MIRROR CANNOT INFER, and it is kept
+ * as a real statement rather than deleted: a project whose last row finished
+ * says so once, on the falling edge, and the entry stays holding an empty list.
+ * `setHostNodes`' rule exactly, one socket along.
+ */
+const hostRowsByProject = new Map<string, readonly FoundryJobRow[]>();
+
+/**
+ * WHAT A WINDOW DRAWS — the host's rows where there is a host queue, ours where
+ * there is not.
+ *
+ * ── Never a merge, and that is the point ────────────────────────────────────
+ *
+ * Hosted, a job a person pressed for is filed in the host's list and comes back
+ * to us only when the host decides to run it — at which moment `runJob` mints a
+ * row of our own for it, because the landings, the settle and the export
+ * announcement are all things a ROW carries. Publishing both lists would put the
+ * host's row for that work beside ours, and the two would disagree the instant
+ * one of them moved: two cards for one book, one of them stale. So there is one
+ * answer to "what is in the queue" and it is the answer belonging to whoever is
+ * doing the scheduling.
+ *
+ * OUR ROWS ARE STILL THERE AND STILL TRUE — `listJobs` is what `foundryBusy`
+ * (electron/mount.ts) and the delete guards read, and they must go on counting a
+ * host-ordered run that is writing into a folder somebody is about to erase.
+ * This is about what is DRAWN, not about what is known.
+ */
+export function shelfJobs(): Job[] {
+  if (hostQueue() === null) return listJobs();
+  const rows: Job[] = [];
+  for (const held of hostRowsByProject.values()) rows.push(...held.map(copyOf));
+  return rows;
+}
+
+/**
+ * THE PUSH DOOR: these are the host's rows for this project, as of now.
+ *
+ * `setHostNodes`'s mechanics deliberately — the whole set every time, no diffs,
+ * nothing validated on this side — for that door's reasons: a diff protocol
+ * between two processes goes wrong silently and stays wrong, and a queue is a
+ * handful of rows.
+ *
+ * THE EMPTY LIST IS AGREED AND IS SENT EXACTLY ONCE, on the falling edge: a
+ * project that loses its last row. Without it a global mirror could never learn
+ * that a project it was told about has gone quiet, because every other push is
+ * about a project that still has something in it.
+ *
+ * NOTHING IS VALIDATED. A row naming a file in no project of ours, a state this
+ * app would never write, a row for a book the window has never opened: all drawn
+ * as given. Foundry cannot know what the host's queue holds, and a correction
+ * here would be this app overruling the only side that does.
+ */
+export function setHostQueueRows(projectDir: string, rows: readonly FoundryJobRow[]): void {
+  hostRowsByProject.set(fold(projectDir), rows.map(copyOf));
+  changed();
+}
+
+/**
+ * THE FIRST PAINT, asked when a window draws a book.
+ *
+ * `hostNodesFor`'s reason exactly: every push after this one arrives on its own,
+ * and a window that opened after the host's last push would otherwise be drawing
+ * a queue it was never told about. Asked of the host, stored through the same
+ * door the pushes use, so there is one place a row can come from.
+ *
+ * A HOST THAT OFFERS NO `rows` IS NOT AN ERROR and is not a fallback: it has said
+ * its queue is push-only, and the window will draw its work as soon as something
+ * moves. A THROW is caught, because this rides on an unrelated question the tree
+ * asks (`host-ops:nodes`) and a host's mistake here must not break the tree.
+ */
+export function seedHostQueueRows(projectDir: string): void {
+  const host = hostQueue();
+  if (host?.rows === undefined) return;
+  try {
+    setHostQueueRows(projectDir, host.rows(projectDir));
+  } catch (err) {
+    console.error(
+      `[queue] the host could not say what it holds for ${projectDir}: `
+      + `${err instanceof Error ? err.message : String(err)}`,
+    );
+  }
+}
+
+/**
+ * THE HOST'S QUEUE HAS DRAINED OF FOUNDRY WORK — the drain signal, when the
+ * deciding is not ours.
+ *
+ * ── Why this has to exist rather than be derived ────────────────────────────
+ *
+ * The reading server's lifetime hangs off queue drain (`noteQueueIdle`,
+ * electron/vllm-server.ts) and `keepServerWarmMinutes` DEFAULTS TO 0
+ * (electron/app-settings.ts), which is not a short timer — it is an immediate
+ * `stopServer`. Under a host queue this app's own list is empty between every
+ * pair of the host's rows, because the rows live in the host's list until the
+ * moment each one runs. Deriving drain from our list would therefore tear the
+ * server down after every job and a batch of N readings would pay N model
+ * starts, which is twenty gigabytes loaded N times to read one shelf of books.
+ *
+ * SO THE HOST SAYS IT, AFTER ITS OWN PUMP HAS CHOSEN — it is the only side that
+ * knows whether anything is still coming. BUSY STAYS OURS, because every job
+ * start already says so from inside `executeJob`, through `runJob` as much as
+ * through `pump`, and a busy signal always beats a pending idle timer.
+ */
+export function hostQueueDrained(): void {
+  noteQueueIdle(readAppSettings().keepServerWarmMinutes);
+}
+
 function changed(): void {
-  notify(listJobs());
+  notify(shelfJobs());
+}
+
+/**
+ * A PERSON PRESSED SOMETHING IN THIS WINDOW AND IT WANTS A CONVERSION.
+ *
+ * ── This is the routed door, and `enqueueHere` is the internal one ──────────
+ *
+ * With a host queue registered, this hands the request to the host and answers
+ * with the host's own row: nothing is minted here, nothing is held here, and the
+ * host's pump decides when. With no host queue — standalone Foundry, and every
+ * host that has not moved — it is `enqueueHere` and the behaviour below is
+ * exactly what it has always been.
+ *
+ * ── ONLY WHAT A PERSON PRESSED ROUTES, AND THE LINE MATTERS ─────────────────
+ *
+ * The whole of the rule is written where it is easiest to get wrong — at
+ * `exportEpubFromStep`'s enqueue in electron/mount.ts, which calls `enqueueHere`
+ * and must never call this. What reaches THIS function is the `queue:*` IPC
+ * doors: a person, in the hosted window, pressing Read or Export or Generate.
+ *
+ * THE ANSWER IS THE HOST'S ROW, UNINSPECTED. It is a `Job` because the host
+ * mints it in our shape (`FoundryHostQueue.enqueue`), and it goes straight back
+ * out over `queue:enqueue` to the renderer, which compares its id against the
+ * mirror to tell an added row from a duplicate. That comparison works on the
+ * host's ids for the same reason it works on ours: the mirror is the host's list
+ * hosted, so both sides of the comparison come from one place.
+ */
+export function enqueue(request: JobRequest, parentStep: string | null = null): Job {
+  const host = hostQueue();
+  if (host !== null) return host.enqueue(request, parentStep);
+  return enqueueHere(request, parentStep);
 }
 
 /**
  * Put a conversion in the queue, HELD.
+ *
+ * THE INTERNAL DOOR: it never routes, whoever is hosting. Foundry's own
+ * unattended work comes through here — an export the host ORDERED through the
+ * mount seam, which by ordering it has already scheduled — and so does every
+ * enqueue when nobody has registered a queue of their own.
  *
  * Returns the EXISTING row when one is already waiting or running to write the
  * same file, which is `enqueueEnvInstall`'s rule applied to the thing it
@@ -258,7 +502,7 @@ function changed(): void {
  * because that is what collides; the same book converted to an EPUB and to a
  * PDF is two different files and therefore two honest rows.
  */
-export function enqueue(
+export function enqueueHere(
   request: JobRequest,
   /**
    * The project's position, RESOLVED BY THE CALLER BEFORE IT CALLED.
@@ -407,12 +651,20 @@ const envRequests = new Map<string, EnvInstallRequest>();
  * for the length of a book and a conversion holds a vision model for the length
  * of another; running both means two models resident on one GPU, which on the
  * hardware this is built for is an out-of-memory failure four hours in.
+ *
+ * IT ROUTES LIKE `enqueue`, and it has no `…Here` twin for one reason: nothing
+ * inside this app orders a translation. Every translation in Foundry's history
+ * arrived from a person filling in the Translate dialog, so this door has exactly
+ * one caller and the branch below IS the door deciding. A second, unrouted door
+ * would be a name nobody could prove the need for.
  */
 export function enqueueTranslate(
   request: TranslateRequest,
   /** The position at the press. See `enqueue` above and `Job.parentStep`. */
   parentStep: string | null = null,
 ): Job {
+  const host = hostQueue();
+  if (host !== null) return host.enqueue(request, parentStep);
   /*
    * WHAT THIS JOB PRODUCES, which for a translation is now the RECORDS — the same
    * sentence `enqueue` makes about a reading and its bank, and for the same
@@ -466,6 +718,31 @@ export function enqueueTranslate(
 }
 
 /**
+ * ONE GESTURE OFF THE SHELF, HANDED TO WHOEVER OWNS THE ROW.
+ *
+ * The four gestures below (`start`, `remove`, `cancel`, `clearFinished`) name a
+ * row by id, and hosted those ids are the HOST's — off the host's own rows, which
+ * are what the shelf drew. So there is nothing here to do locally and nothing to
+ * fall back to: this app cannot cancel a row it never minted.
+ *
+ * AN ABSENT GESTURE IS SAID OUT LOUD. Each member of `FoundryHostQueue` past
+ * `enqueue` is optional, so a host may offer a queue whose rows this window
+ * cannot cancel — which is a complete thing for a host to say, and is not the
+ * same as Foundry quietly cancelling something of its own instead. The console
+ * line is the honest record of a press that had nowhere to go.
+ */
+function forwardToHost(gesture: string, act: (() => void) | undefined): void {
+  if (act === undefined) {
+    console.error(
+      `[queue] the app Foundry is running inside keeps its own queue and offers no ${gesture} `
+      + 'for its rows, so that press did nothing here.',
+    );
+    return;
+  }
+  act();
+}
+
+/**
  * Release everything held, in the order it was added, and let the queue drain.
  *
  * EVERYTHING HELD AT THIS MOMENT, and nothing after it. A job enqueued while
@@ -477,8 +754,19 @@ export function enqueueTranslate(
  * Returns how many it let go, so the caller can say so. Ordering is the array's,
  * which is insertion order, which is what the shelf shows: releasing is a state
  * change and never a reshuffle.
+ *
+ * HOSTED, IT IS THE HOST'S BATCH BEING RELEASED and the answer is 0 — which is
+ * the literal truth rather than a shrug: zero of FOUNDRY's rows were released,
+ * because hosted there are none to release. The count is used by the door to say
+ * so in the shelf's own words, and the shelf hosted is drawing the host's list,
+ * which the host's own push will correct a moment later.
  */
 export function start(): number {
+  const host = hostQueue();
+  if (host !== null) {
+    forwardToHost('Start', host.start?.bind(host));
+    return 0;
+  }
   let released = 0;
   for (const job of jobs) {
     if (job.state !== 'held') continue;
@@ -514,8 +802,17 @@ export function start(): number {
  * remembered the move. Both rotations happen in `pump()` now, one line before the
  * engine starts, so a row removed from here has touched no file at all and there
  * is nothing for a removal to undo.
+ *
+ * HOSTED, THE ROW IS THE HOST'S AND SO IS THE REMOVAL. The id came off a row the
+ * host pushed; there is no row of ours by that name, and searching for one would
+ * be this app answering a question about somebody else's list.
  */
 export function remove(id: string): void {
+  const host = hostQueue();
+  if (host !== null) {
+    forwardToHost('remove', host.remove === undefined ? undefined : () => { host.remove?.(id); });
+    return;
+  }
   const index = jobs.findIndex((job) => job.id === id);
   if (index < 0) return;
   const job = jobs[index]!;
@@ -544,6 +841,16 @@ export function remove(id: string): void {
  * running: the startup provisioner and a user's Install button can easily arrive
  * at the same conclusion seconds apart, and two rows downloading five gigabytes
  * into one directory is the worst outcome available.
+ *
+ * ── IT NEVER ROUTES TO A HOST QUEUE, whoever is hosting ─────────────────────
+ *
+ * An install is not GPU work being scheduled: it is the PRECONDITION of the
+ * engine running at all, and half of them are ordered by the startup provisioner
+ * before anybody has pressed anything. Filing one in a host's queue would put it
+ * behind whatever that queue is holding — including, in the ordinary case, the
+ * very job that cannot run until the install has finished. The queue this app
+ * keeps for itself is exactly the size of that argument: installs, and the
+ * unattended exports a host asks for by name.
  */
 export function enqueueEnvInstall(request: EnvInstallRequest, reason?: string): Job {
   const pending = jobs.find(
@@ -586,13 +893,45 @@ export function enqueueEnvInstall(request: EnvInstallRequest, reason?: string): 
  * to stop and no record worth keeping; the gesture for a batch item somebody has
  * changed their mind about is `remove`, which leaves no row behind. The shelf
  * routes accordingly and this stays the operation for a run that is under way.
+ *
+ * THE ROUTED DOOR, with `cancelHere` below it. Hosted, the ✕ names one of the
+ * host's rows and the host is the only side that can stop it — even for work
+ * that is running through `runJob` at this moment, because the host asked for
+ * that run and holds the row people are looking at. Foundry's own gestures on
+ * its own rows (`cancelEnvInstalls`, and the abort signal a `runJob` carries)
+ * go to `cancelHere` and cannot be routed away.
  */
 export function cancel(id: string): void {
+  const host = hostQueue();
+  if (host !== null) {
+    forwardToHost('cancel', host.cancel === undefined ? undefined : () => { host.cancel?.(id); });
+    return;
+  }
+  cancelHere(id);
+}
+
+/**
+ * Cancel one of FOUNDRY's OWN rows, whoever is hosting — the internal door.
+ *
+ * ── The two live children, and why the lookup has two halves ────────────────
+ *
+ * `running` is the pump's single slot: one engine at a time, which is the serial
+ * invariant this whole file is built on. A run started by `runJob` is NOT in that
+ * slot — it was scheduled by somebody else and must not wait behind, or be waited
+ * behind by, the internal queue — so its cancel lives in `detachedRuns` beside it.
+ * Both are "the child this row is", and a cancel asks for whichever one this row
+ * has. Standalone `detachedRuns` is always empty and this reads exactly as it
+ * always did.
+ */
+export function cancelHere(id: string): void {
   const job = jobs.find((j) => j.id === id);
   if (!job) return;
-  if (job.state === 'running' && running?.id === id) {
-    running.cancel();
-    return; // the close handler settles the state
+  if (job.state === 'running') {
+    const stop = running?.id === id ? running.cancel : detachedRuns.get(id);
+    if (stop !== undefined) {
+      stop();
+      return; // the close handler settles the state
+    }
   }
   // Queued, or running-but-not-yet-spawned: a job waiting for the reading
   // server to come up is `running` with no child of its own, and a cancel that
@@ -648,16 +987,22 @@ async function sweepDerivedBook(request: EngineRequest | undefined): Promise<voi
 /**
  * Stop whichever environment install is going, from anywhere.
  *
- * Routed through `cancel` rather than reaching into the installer, because the
- * queue is what decides a row's final STATE: an abort that bypassed it settled
- * the install as `failed` with "Cancelled." as its error — technically true, and
- * a red exclamation mark in the shelf for something the user themselves asked to
- * stop.
+ * Routed through `cancelHere` rather than reaching into the installer, because
+ * the queue is what decides a row's final STATE: an abort that bypassed it
+ * settled the install as `failed` with "Cancelled." as its error — technically
+ * true, and a red exclamation mark in the shelf for something the user themselves
+ * asked to stop.
+ *
+ * `cancelHere` AND NOT `cancel`, and this is the line that proves the internal
+ * doors were worth having. An install is never in a host's queue (see
+ * `enqueueEnvInstall`), so a cancel that routed would send one of OUR ids into a
+ * list that has never heard of it — and the download would go on running while
+ * the app reported it stopped.
  */
 export function cancelEnvInstalls(): void {
   for (const job of [...jobs]) {
     if (job.kind === 'env-install' && (job.state === 'running' || job.state === 'queued')) {
-      cancel(job.id);
+      cancelHere(job.id);
     }
   }
 }
@@ -671,8 +1016,22 @@ export function cancelEnvInstalls(): void {
  * "finished" by any reading — and it is also the only state a user can be
  * accumulating deliberately. A Clear that swept away the batch somebody was
  * halfway through assembling would be the most expensive button in the app.
+ *
+ * ── HOSTED IT DOES BOTH, WHICH IS NOT A FALLBACK ────────────────────────────
+ *
+ * The press is forwarded, because the rows on screen are the host's and clearing
+ * them is the host's to do. And then Foundry's own finished rows are cleared as
+ * well — not as a second guess at the same list, but because there IS a second
+ * list hosted and it is invisible: every job the host runs through `runJob` mints
+ * a row here, and those rows would otherwise accumulate for the life of the
+ * process with nothing in the window able to reach them. One press, two lists,
+ * neither of them the other's answer.
  */
 export function clearFinished(): void {
+  const host = hostQueue();
+  if (host !== null) {
+    forwardToHost('Clear finished', host.clearFinished?.bind(host));
+  }
   for (let i = jobs.length - 1; i >= 0; i -= 1) {
     const job = jobs[i];
     if (job && job.state !== 'held' && job.state !== 'queued' && job.state !== 'running') {
@@ -684,10 +1043,20 @@ export function clearFinished(): void {
   changed();
 }
 
-/** Quit, or a window closing on us: nothing is left holding a GPU. */
+/**
+ * Quit, or a window closing on us: nothing is left holding a GPU.
+ *
+ * BOTH KINDS OF LIVE CHILD, because there are two now: the pump's one engine and
+ * whatever a host's scheduler has running through `runJob`. A quit that stopped
+ * only the first would leave the host's reading holding twenty gigabytes with
+ * nothing left to report to — which is the exact hazard this function exists for,
+ * arriving through the newer door.
+ */
 export function shutdown(): void {
   running?.cancel();
   running = null;
+  for (const stop of [...detachedRuns.values()]) stop();
+  detachedRuns.clear();
 }
 
 /**
@@ -1040,6 +1409,37 @@ function endpointFor(): string | null {
  */
 let starting = false;
 
+/**
+ * ONE RUN'S TWO WIRES OUT — who holds its cancel, and who hears it talk.
+ *
+ * ── Why the executor takes these rather than deciding for itself ────────────
+ *
+ * `executeJob` is the whole of what a job DOES, and there are two callers with
+ * two different answers to exactly two questions. `pump()` puts the live child in
+ * the serial slot, because it is the internal queue's one engine; `runJob` puts
+ * it in `detachedRuns`, because it was scheduled elsewhere and must neither wait
+ * for the slot nor block it. `pump()` has nobody to report progress to beyond the
+ * row; `runJob` has a caller that asked for the lines.
+ *
+ * EVERYTHING ELSE IS THE SAME CODE — the rotations, the server wait, the seeding,
+ * the metadata stamp, the landings, the sweeps, the announcements. That is the
+ * point of the split: a job the host scheduled and a job somebody pressed Start
+ * on are the same job, and if this interface ever grows a third member that
+ * changes what a run DOES, the split has gone wrong.
+ */
+interface RunWires {
+  /**
+   * The live engine child, the moment it exists — and the cancel that stops it.
+   * Called ONCE per run: `handle` is reassigned for the metadata stamp and this
+   * closure reads it, so the ✕ follows whichever engine is actually running.
+   */
+  claim(cancel: () => void): void;
+  /** The last child has exited, whichever way. */
+  release(): void;
+  /** Every line the engine wrote, for a caller watching from outside the row. */
+  watch?(line: string): void;
+}
+
 async function pump(): Promise<void> {
   if (running !== null || starting) return;
   // `queued` only, which is the whole of the hold: a `held` job is invisible
@@ -1047,12 +1447,42 @@ async function pump(): Promise<void> {
   // a flag every path through this function would have to remember to consult.
   const next = jobs.find((job) => job.state === 'queued');
   if (!next) {
-    // The queue just drained: nothing running, nothing starting, nothing
-    // waiting. The reading server's lifetime follows the queue's
-    // (electron/vllm-server.ts) — stopped now by default, or after the
-    // keep-warm window the user set. Every job's end funnels through here, so
-    // this is the one place drain can be declared.
-    noteQueueIdle(readAppSettings().keepServerWarmMinutes);
+    /*
+     * The queue just drained: nothing running, nothing starting, nothing
+     * waiting. The reading server's lifetime follows the queue's
+     * (electron/vllm-server.ts) — stopped now by default, or after the
+     * keep-warm window the user set. Every job's end funnels through here, so
+     * this is the one place THIS queue's drain can be declared.
+     *
+     * ── AND THIS QUEUE IS NOT THE ONLY QUEUE ANY MORE ───────────────────────
+     *
+     * Under a host queue the internal list holds only what Foundry orders for
+     * itself — the unattended exports a host asks for by name, and environment
+     * installs — while every job a person pressed for is in the host's list and
+     * arrives here one at a time through `runJob`. So an empty list here is NOT
+     * the machine going quiet, and the host says when its own queue has drained
+     * of Foundry work (`hostQueueDrained`).
+     *
+     * WHICH IS WHY `runJob` ENDS WITHOUT PUMPING — see the essay at its return.
+     * If it pumped, this branch would be reached between every pair of the host's
+     * rows and would stop the reading server after each one. What still reaches
+     * here under a host queue is the internal path going quiet: an environment
+     * install finishing, or an export the host ordered by name.
+     *
+     * BOTH SIGNALS ARE SAFE TOGETHER, because busy always beats idle: every job
+     * start says `noteQueueBusy` from inside `executeJob`, however it was
+     * scheduled, and that cancels whatever countdown was armed. So the worst an
+     * early idle can normally do is stop a server nothing is using.
+     *
+     * NORMALLY — EXCEPT FOR THE ONE CASE THIS GUARD CLOSES.
+     * `keepServerWarmMinutes` DEFAULTS TO 0, and `noteQueueIdle(0)` is not a short
+     * timer: it stops the server outright, now, with no window for a busy signal
+     * to beat. A run started through `runJob` is deliberately outside the serial
+     * slot, so without this test an environment install finishing while a host's
+     * READING was posting pages would find an empty internal list and tear the
+     * server out from under it. A live run holds the drain, whoever scheduled it.
+     */
+    if (detachedRuns.size === 0) noteQueueIdle(readAppSettings().keepServerWarmMinutes);
     return;
   }
 
@@ -1072,6 +1502,50 @@ async function pump(): Promise<void> {
   }
 
   /*
+   * ── THE SERIAL SLOT IS CLAIMED HERE, AND THE WORK HAPPENS THERE ───────────
+   *
+   * `starting` covers the gap between choosing this row and the child existing —
+   * the server wait is an await, and it is the one window in which a second pump
+   * could see `running === null`, find the next queued job and put two engines on
+   * one GPU. It is set before the first await inside `executeJob` and cleared
+   * either by the claim (the child exists; `running` guards it from there) or by
+   * this line when the run is over, including every early failure inside.
+   */
+  starting = true;
+  await executeJob(next, request, {
+    claim: (cancel) => {
+      running = { id: next.id, cancel };
+      starting = false;
+    },
+    release: () => { running = null; },
+  });
+  starting = false;
+  void pump();
+}
+
+/**
+ * RUN THIS JOB — the executor, and the whole of what a job DOES.
+ *
+ * ── What it is, and what it deliberately is not ─────────────────────────────
+ *
+ * It was the second half of `pump()` and it is a function because there are two
+ * ways to decide that a job should run now: this app's own serial queue, and a
+ * host's scheduler calling `runJob` (docs/PLAN.md, Wave 16). It does not choose,
+ * it does not wait, it does not pump: it takes a row that is about to be running
+ * and carries it all the way to its landing.
+ *
+ * NOTHING IN HERE ASKS WHO SCHEDULED IT. There is no host test in this function
+ * or in anything it calls, which is what makes a hosted run and a standalone run
+ * the same run — the two differences are the two members of `RunWires`.
+ *
+ * IT RETURNS WHEN THE ROW IS SETTLED, and the row itself is the answer: mutated
+ * in place, exactly as it always was, so a caller can read `state` and `error`
+ * off it afterwards. Nothing is thrown from here — an engine that refuses is a
+ * `failed` row with the engine's own words on it, which is what every reader of
+ * this queue already understands.
+ */
+async function executeJob(next: Job, request: EngineRequest, wires: RunWires): Promise<void> {
+  /*
    * ── THE JOB THAT LANDS IN THE TRAY INSTEAD OF THE WORKSHOP ────────────────
    *
    * Everything below this line — the server wait, the spawn, the cancel, the
@@ -1089,17 +1563,23 @@ async function pump(): Promise<void> {
     && request.kind !== 'translate'
     && request.export === true;
 
-  starting = true;
   next.state = 'running';
   next.startedAt = Date.now();
   next.message = `Starting ${path.basename(next.inputPath)}…`;
   changed();
 
-  // Whatever idle countdown was armed, a conversion is starting — and not only
-  // an endpoint-mode one: under `auto` the ENGINE probes port 8000 for itself
-  // and will happily read through a still-warm server this app owns, so a
-  // timer allowed to keep ticking here could pull the backend out from under a
-  // running book.
+  /*
+   * Whatever idle countdown was armed, a conversion is starting — and not only
+   * an endpoint-mode one: under `auto` the ENGINE probes port 8000 for itself
+   * and will happily read through a still-warm server this app owns, so a
+   * timer allowed to keep ticking here could pull the backend out from under a
+   * running book.
+   *
+   * BUSY STAYS FOUNDRY'S EVEN WHEN THE DECIDING IS NOT. It is said from in here
+   * rather than from the scheduler above, so a job the host chose says it as
+   * surely as one the pump chose — which is the half of the drain rule that does
+   * not move when a host takes the queue over (`hostQueueDrained`).
+   */
   noteQueueBusy();
 
   /*
@@ -1141,15 +1621,11 @@ async function pump(): Promise<void> {
       next.finishedAt = Date.now();
       changed();
       settled(next);
-      starting = false;
-      void pump();
       return;
     }
     // Cancelled while the server was coming up — see `cancel`. Re-read rather
     // than test `next.state`, which the compiler still believes is 'running'.
     if (jobs.find((job) => job.id === next.id)?.state === 'cancelled') {
-      starting = false;
-      void pump();
       return;
     }
   }
@@ -1250,8 +1726,6 @@ async function pump(): Promise<void> {
       next.finishedAt = Date.now();
       changed();
       settled(next);
-      starting = false;
-      void pump();
       return;
     }
   }
@@ -1324,8 +1798,6 @@ async function pump(): Promise<void> {
         next.finishedAt = Date.now();
         changed();
         settled(next);
-        starting = false;
-        void pump();
         return;
       }
     }
@@ -1443,6 +1915,23 @@ async function pump(): Promise<void> {
       next.progress = progress;
     }
     changed();
+    /*
+     * AND OUT TO WHOEVER ASKED TO HEAR IT, after the row has been updated and
+     * published. A caller watching from outside (`runJob`'s `onProgress`) is
+     * reading the same lines the shelf is drawing, so it must not see one the
+     * mirror has not been told about — and its throw is not this run's problem,
+     * on `settled`'s rule: one listener's bug is not another's engine.
+     */
+    if (wires.watch !== undefined) {
+      try {
+        wires.watch(line);
+      } catch (err) {
+        console.error(
+          `[queue] a progress listener threw for ${next.outputPath}: `
+          + `${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
   };
 
   /*
@@ -1462,12 +1951,15 @@ async function pump(): Promise<void> {
   /*
    * THE CANCEL FOLLOWS THE LIVE CHILD. `handle` is reassigned before the metadata
    * stamp and the closure reads it, so the ✕ kills whichever engine is actually
-   * running rather than a child that has already exited — and `running` stays set
-   * across the gap between them, so no second `pump()` can slip a job in beside
-   * this one and put two engines on one GPU.
+   * running rather than a child that has already exited — and whoever is holding
+   * this run holds it across the gap between them, so no second `pump()` can slip
+   * a job in beside this one and put two engines on one GPU.
+   *
+   * HANDED OUT RATHER THAN STORED, because the two schedulers hold it in two
+   * places: the pump's serial slot, or `detachedRuns` for a run the host's queue
+   * chose. See `RunWires`.
    */
-  running = { id: next.id, cancel: () => handle.cancel() };
-  starting = false;
+  wires.claim(() => handle.cancel());
 
   let result = await handle.done;
   /*
@@ -1492,7 +1984,9 @@ async function pump(): Promise<void> {
     handle = runEngine(stamping, watch);
     result = await handle.done;
   }
-  running = null;
+  // No child of this job's is alive from here on: the slot, or the detached
+  // registry, gives it up. See `RunWires`.
+  wires.release();
   next.finishedAt = Date.now();
 
   /*
@@ -1613,7 +2107,6 @@ async function pump(): Promise<void> {
        * bank and the reprint is something a person asks for.
        */
       await landReadProducts(next.outputPath, next.inputPath);
-      void pump();
       return;
     }
     /*
@@ -1686,7 +2179,6 @@ async function pump(): Promise<void> {
        */
       await materializeTranslation(next.outputPath);
       settled(next);
-      void pump();
       return;
     }
     /*
@@ -1770,7 +2262,6 @@ async function pump(): Promise<void> {
        * successful export as an ending with nothing in it.
        */
       settled(next);
-      void pump();
       return;
     }
     /*
@@ -1805,7 +2296,6 @@ async function pump(): Promise<void> {
         : 'The book at that step is ready.';
       changed();
       settled(next);
-      void pump();
       return;
     }
     /*
@@ -1906,7 +2396,172 @@ async function pump(): Promise<void> {
   // after whatever that landing produced; what reaches here is a cancel, a
   // failure, and the rendering whose landing is a catalogue row.
   settled(next);
-  void pump();
+}
+
+/**
+ * RUN THIS JOB NOW, BECAUSE SOMEBODY ELSE'S SCHEDULER SAYS SO — the second door
+ * onto `executeJob`, and the mount seam's own (electron/mount.ts).
+ *
+ * ── What it is for ──────────────────────────────────────────────────────────
+ *
+ * A host that keeps its own queue (`FoundryHostQueue`) takes over the DECIDING
+ * and nothing else. Its pump reaches this: here is a request, here is the
+ * position it was ordered from, run it. There is no waiting, no hold, no place
+ * in this app's list — the waiting already happened, in a list this app cannot
+ * see, and asking a person to press Start twice would be the hold applied to a
+ * commitment somebody already made.
+ *
+ * ── IT STILL MINTS A ROW, AND THAT IS THE LOAD-BEARING PART ─────────────────
+ *
+ * The obvious shortcut — spawn the engine, resolve — would break the host's own
+ * narrate. A ROW is what carries `parentStep` into the landing, what
+ * `onExportLanded` is composed from, what `onJobSettled` publishes, what
+ * `exportEpubFromStep` awaits, and what the delete guards and `foundryBusy` count
+ * when somebody asks whether a folder is safe to erase. So a job the host
+ * scheduled gets exactly the same row a job somebody pressed for gets — born
+ * `running`, because that is the one thing that is genuinely different about it.
+ *
+ * ── The answer is the ROW, and it is the row for a reason ───────────────────
+ *
+ * Two written contracts disagreed here before either side built against them: a
+ * `Settled` type that does not exist in this codebase, and a `{ok} | {ok,error}`
+ * result reasonably derived from it. BOTH ARE WRONG THE SAME WAY — neither can
+ * say CANCELLED. `JobState` (shared/types.ts) distinguishes `done`, `failed` and
+ * `cancelled` deliberately: a cancel is somebody spending GPU and then taking it
+ * back, not a failure, and filing one as a failure is how a host's retry restarts
+ * work a person just stopped. The row already spells all three, plus the engine's
+ * own words in `error` — and it is the very shape the host mints going in and
+ * pushes back through `setHostQueueRows`, so there is ONE account of what happened
+ * rather than two that can drift.
+ *
+ * IT RESOLVES RATHER THAN REJECTS, whatever the state. A failed run is not an
+ * exception here: it is a fact about a row, reported the way this queue has always
+ * reported it.
+ */
+export async function runJob(
+  request: EngineRequest,
+  opts: {
+    /**
+     * The project's position at the moment the person pressed — carried by the
+     * host from its own `enqueue` and handed straight back, never re-read here.
+     * `Job.parentStep` holds the whole argument: a pointer that moves while a row
+     * waits must not change what the run is recorded as being made from, and
+     * hosted the waiting is longer, not shorter.
+     */
+    parentStep?: string | null;
+    /** Every line the engine writes, as it writes it. The row gets them too. */
+    onProgress?: (line: string) => void;
+    /**
+     * STOP THIS RUN — mapped onto exactly what the ✕ does to a running job.
+     *
+     * It is `cancelHere` and not `cancel`, deliberately: this row is Foundry's
+     * own, and a cancel that routed would hand our id to the host's list, which
+     * has never heard of it, while the engine went on reading. An abort that
+     * arrives before the child exists is the same gesture the shelf makes on a
+     * job waiting for the reading server — the row settles `cancelled` and the
+     * run notices at the next checkpoint.
+     */
+    signal?: AbortSignal;
+  } = {},
+): Promise<Job> {
+  const parentStep = opts.parentStep ?? null;
+  /*
+   * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
+   * `enqueueTranslate` compose theirs — the same output identity (a reading's
+   * BANK, a translation's RECORDS, the product otherwise), the same rewrite
+   * title, the same `forStep` — because a row is what the shelf, the landings and
+   * the guards all read, and a second way of building one would be a second
+   * answer to what a job is.
+   *
+   * NO DEDUPE, and that is the one deliberate difference. `enqueueHere` hands
+   * back an existing row rather than let two runs write one file, and that rule
+   * belongs to whoever is SCHEDULING: a host with its own queue has already
+   * decided that this should run now, and answering "no, have this other row
+   * instead" would be Foundry overruling a decision it was told about rather than
+   * asked for. What protects the file is the same thing that protects it there —
+   * one scheduler.
+   */
+  const job: Job = {
+    id: randomUUID(),
+    inputPath: request.inputPath,
+    outputPath: request.kind === 'read'
+      ? request.readingsPath
+      : request.kind === 'translate' ? request.recordsPath : request.outputPath,
+    kind: request.kind,
+    state: 'running',
+    progress: null,
+    ...(request.kind === 'translate' && request.rewrite !== undefined
+      ? { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` }
+      : {}),
+    ...(request.kind !== 'read' && request.kind !== 'translate' && request.forStep !== undefined
+      ? { forStep: request.forStep }
+      : {}),
+    parentStep,
+    createdAt: Date.now(),
+  };
+  jobs.push(job);
+  requests.set(job.id, request);
+  changed();
+
+  /*
+   * THE ABORT IS ARMED BEFORE THE RUN, not inside it, so a signal that is already
+   * aborted — or that fires while the reading server is coming up, minutes before
+   * there is a child to kill — reaches the same `cancelHere` the ✕ reaches. The
+   * listener is dropped in `finally`: a host that keeps one controller per row
+   * would otherwise leave this queue holding a reference to every row it ever ran.
+   */
+  const abort = (): void => { cancelHere(job.id); };
+  opts.signal?.addEventListener('abort', abort, { once: true });
+  /*
+   * A SIGNAL THAT WAS ALREADY ABORTED SPAWNS NOTHING, and it is worth the four
+   * lines: a host whose user cancelled between its own pump choosing this row and
+   * this call arriving would otherwise get a full engine run out of a request it
+   * had already withdrawn. The row is settled `cancelled` by the same gesture the
+   * ✕ makes and handed straight back, so the answer is the honest one rather than
+   * a run nobody wanted.
+   */
+  if (opts.signal?.aborted === true) {
+    abort();
+    opts.signal.removeEventListener('abort', abort);
+    return copyOf(job);
+  }
+
+  try {
+    await executeJob(job, request, {
+      /*
+       * OUTSIDE THE SERIAL SLOT, which is `detachedRuns`' whole argument: this run
+       * was scheduled by somebody who cannot see that slot, so it must neither
+       * wait for it nor hold it. The internal queue goes on doing its own work
+       * beside this — an environment install, an export the host asked for by
+       * name — and one machine's GPU has one owner because the HOST is scheduling,
+       * not because this file is serialising two lists it cannot compare.
+       */
+      claim: (cancel) => { detachedRuns.set(job.id, cancel); },
+      release: () => { detachedRuns.delete(job.id); },
+      ...(opts.onProgress !== undefined ? { watch: opts.onProgress } : {}),
+    });
+  } finally {
+    opts.signal?.removeEventListener('abort', abort);
+    detachedRuns.delete(job.id);
+  }
+  /*
+   * ── AND IT DOES NOT PUMP, WHICH IS THE LINE THE READING SERVER LIVES ON ────
+   *
+   * Every other ending in this file calls `pump()`, because every other ending is
+   * the internal queue's turn coming round. This one is not: a detached run never
+   * took the serial slot and never set `starting`, so nothing in the internal
+   * queue was ever waiting on it — an install or a host-ordered export enqueued
+   * while this ran started immediately, on its own enqueue's pump.
+   *
+   * WHAT A PUMP HERE WOULD DO IS STOP THE READING SERVER. `pump()` declares drain
+   * in its nothing-to-do branch, the internal list is empty between every pair of
+   * the host's rows, and `keepServerWarmMinutes` defaults to 0 — which is an
+   * immediate `stopServer`, not a countdown. A batch of ten readings would pay ten
+   * model loads for a queue that never actually went quiet. Drain hosted is the
+   * host's to declare, once, when its own pump has nothing left
+   * (`hostQueueDrained`).
+   */
+  return copyOf(job);
 }
 
 /**

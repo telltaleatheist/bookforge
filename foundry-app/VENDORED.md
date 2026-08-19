@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c999195** — *broadcast() skips a destroyed window or a destroyed webContents* |
+| Source sha | **d1dd5b6** — *the queue seam: work ordered in a hosted window is scheduled by the host* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -145,7 +145,28 @@ throughout `pump()`, so a throw unwinds between a row being marked running and
 the engine being spawned, or straight out of `enqueue()` into a person's press.
 One line, and it covers `setHostNodes`, `setHostStatus`, `queue:changed`,
 `projects:changed`, `vllm:status-changed` and `env:install-progress` (94/94 blobs
-at c999195).
+at c999195). `d1dd5b6` IS THE QUEUE SEAM — Owen's ruling of 2026-08-18, "we need
+to centralize the queue in bookforge… things shouldnt be queued in foundry's
+queue from within bookforge". `mountFoundry({hostQueue})`: when a host supplies
+one, a press in the hosted window mints no local row — Foundry calls our
+`enqueue` and returns the row WE minted, and its shelf mirrors our list. Three
+new exports come back the other way: `runJob(request, {parentStep, onProgress,
+signal})` executes ONE job now and resolves with the settled `Job` row (a row is
+born running; nothing is held or queued locally), `setHostQueueRows(projectDir,
+rows)` pushes our rows at their shelf, `hostQueueDrained()` is how their vLLM
+reading server learns our queue has no Foundry work RUNNING. ROUTING IS A DOOR
+RATHER THAN A FLAG — `enqueue`/`cancel`/`remove`/`start`/`clearFinished` route;
+`enqueueHere`/`cancelHere`/`enqueueEnvInstall`/`runJob` cannot, so no path can
+half-route — and a `runJob` run sits OUTSIDE their serial slot deliberately: it
+must not wait for the slot and must not hold it, or a host awaiting
+`exportEpubFromStep` behind a three-hour read would deadlock. Env installs stay
+theirs (a precondition of the engine running at all). Three things they REPORTED
+rather than quietly fixed: a reading never fires `onJobSettled` (pre-existing;
+nothing here subscribes, but anything that ever waits on a read that way HANGS
+rather than fails), an env-install row is invisible in the hosted shelf until
+they union it in, and the enqueue dedupe moved to us with the scheduling — see
+`productOf` in electron/foundry-host-queue.ts, which keeps their rule that the
+OUTPUT is the identity (94/94 blobs at d1dd5b6).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

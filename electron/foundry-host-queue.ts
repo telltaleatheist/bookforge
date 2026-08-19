@@ -274,6 +274,35 @@ export const foundryHostQueue = {
    * was not looking at. Now it is held in the list he is looking at.
    */
   enqueue(request: FoundryJobRequest, parentStep: string | null, projectDir: string): FoundryJobRow {
+    /*
+     * TWO ROWS WRITING ONE FILE IS THE WORST OUTCOME AVAILABLE, so a second press
+     * for the same product returns the row that is already there.
+     *
+     * THE RULE CAME WITH THE SCHEDULING. Foundry's own enqueue deduped on the
+     * output path — "the second run overwrites the first while the first is still
+     * reading, and the file on disk ends up neither" — and once a press routes
+     * here, that guard only exists if this side keeps it. They flagged the
+     * obligation rather than assuming I would notice (channel, 2026-08-19); it
+     * would otherwise have been a hole nobody owned, which is the characteristic
+     * way a responsibility gets lost when it crosses a seam.
+     *
+     * THE OUTPUT IS THE IDENTITY, theirs exactly: a read is identified by the
+     * BANK it fills (`readingsPath`), a rendering by the file it writes. The same
+     * book made into an EPUB and into a PDF is two different files and therefore
+     * two honest rows.
+     *
+     * NON-TERMINAL ONLY. A finished row is history, and pressing Read again on a
+     * book whose read is done is a person asking for it to be done AGAIN — which
+     * is a legitimate act and gets its own row.
+     */
+    const identity = productOf(request);
+    if (identity !== '') {
+      for (const { step } of foundrySteps()) {
+        if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+        if (productOf(configOf(step)!.request) === identity) return rowOf(step);
+      }
+    }
+
     const label = labelFor(request);
     const config: FoundryJobStepConfig = {
       type: 'foundry-job',
@@ -347,6 +376,20 @@ export const foundryHostQueue = {
 
 /** Windows spells one path three ways; one project must not be two lists. */
 function fold(p: string): string { return p.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); }
+
+/**
+ * WHAT THIS REQUEST MAKES — the thing two rows would collide over.
+ *
+ * A read's product is its BANK and a rendering's is its file, which is the same
+ * split `rowOf` reports as `outputPath`. Folded, because a dedupe that compared
+ * two spellings of one Windows path would let the collision through it exists to
+ * prevent. Empty for a request naming neither, which is deduped against nothing
+ * rather than against everything.
+ */
+function productOf(request: FoundryJobRequest): string {
+  const product = request.readingsPath ?? request.outputPath;
+  return typeof product === 'string' && product !== '' ? fold(product) : '';
+}
 
 /** What the row is called, in BookForge's queue and on their shelf. */
 function labelFor(request: FoundryJobRequest): string {
