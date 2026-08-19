@@ -531,6 +531,7 @@ export class JobStepComponent {
       case 'translate-pass': return 'Translate';
       case 'footnote-refs': return 'Remove footnote references';
       case 'vlm-convert': return 'Convert to EPUB';
+      case 'foundry-job': return 'Foundry';
     }
   }
 

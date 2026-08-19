@@ -43,11 +43,13 @@
 import {
   cancel as engineCancel,
   enqueue as engineEnqueue,
+  onAfterPump,
   onQueueChanged,
   remove as engineRemove,
   snapshot,
   start as engineStart,
 } from './queue-engine';
+import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -293,6 +295,29 @@ export const foundryHostQueue = {
   start(): void { engineStart(); },
 
   /**
+   * Sweep the settled rows — their `queue:clear-finished`, which hosted must
+   * sweep OURS or it clears an empty local list while the rows stay on screen.
+   *
+   * FOUNDRY'S ROWS ONLY, which is a deliberate narrowing of our own
+   * `clearFinished()`. That one sweeps every finished job in BookForge's queue,
+   * and a press on Foundry's shelf must not silently clear a narration history in
+   * a window the user is not looking at. The button sweeps what the shelf draws.
+   *
+   * ACROSS ALL PROJECTS rather than the open one, matching their own local
+   * semantics (their `clearFinished` is global over their queue). Flagged to them
+   * on the channel — if their shelf means "this book's finished rows", this takes
+   * a projectDir and nothing else changes.
+   */
+  async clearFinished(): Promise<void> {
+    for (const { job, step } of foundrySteps()) {
+      if (!TERMINAL_STEP_STATUSES.has(step.status)) continue;
+      // A Foundry run is one job of one step, so removing the job removes
+      // exactly the row their shelf is asking about.
+      await engineRemove(job.id);
+    }
+  },
+
+  /**
    * Every Foundry row for one project, in the order this queue holds them.
    *
    * THE WHOLE SET, every time — `setHostNodes`' rule in the other direction. A
@@ -358,7 +383,28 @@ let wasRunning = false;
 
 /** Arm the two pushes. Called once, from main, after the mount is up. */
 export function watchFoundryQueue(): void {
-  onQueueChanged(() => {
+  /*
+   * IDLE IS ASKED AFTER THE PUMP HAS DECIDED, not when the queue changed.
+   *
+   * The first cut read it from `onQueueChanged` and that was wrong in the
+   * ORDINARY case rather than an edge one. `changed()` fires the moment a step
+   * settles, before the scheduler has looked at what is queued behind it — so two
+   * reads batched would have gone: A settles, nothing is running yet because B is
+   * still queued, we say idle, and Foundry stops its reading server OUTRIGHT
+   * (their default keepServerWarmMinutes is 0 — no timer, an immediate
+   * stopServer). The pump then launches B, which pays a full model reload. N
+   * reads become N model starts.
+   *
+   * After the decision the same predicate is right everywhere: a Foundry step was
+   * launched (not idle, the batch pays one start), something else was launched
+   * with a read queued behind it (idle — free the VRAM for the narration, and the
+   * read pays one reload when its turn comes, which is the case the narrow rule
+   * was chosen for), or nothing was launched (idle).
+   *
+   * It also closes the `deferPump` window for free: nothing can emit in the gap
+   * between a row being minted and the pump running.
+   */
+  onAfterPump(() => {
     const running = anyFoundryStepRunning();
     if (wasRunning && !running) {
       wasRunning = false;
@@ -366,7 +412,9 @@ export function watchFoundryQueue(): void {
     } else if (!wasRunning && running) {
       wasRunning = true;
     }
+  });
 
+  onQueueChanged(() => {
     if (pushRows === null) return;
     /*
      * One push per project that HAS rows. A project with none is not pushed an

@@ -4,7 +4,7 @@
 
 import { AIProvider } from '../../../core/models/ai-config.types';
 import type { PassJobConfig } from '@shared/processing/pass-types';
-import type { FoundryJobLineage } from '@shared/queue/engine-types';
+import type { FoundryJobLineage, JobType as EngineJobType } from '@shared/queue/engine-types';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -26,28 +26,29 @@ export const RATE_WINDOW_MIN_SECONDS = 45;
  */
 export type CleanupStages = 'ocr' | 'tts' | 'both';
 
-// Job types supported by the queue
-export type JobType = 'tts-conversion' | 'translation' | 'rvc-enhancement' | 'reassembly' | 'bilingual-cleanup' | 'bilingual-translation' | 'bilingual-assembly' | 'video-assembly' | 'audiobook' | 'book-analysis' | 'generate-sentences'
-  // Processing passes. One job per pass, chained in the user's order against ONE
-  // project. Both run through the same main-process handler; the pass kind is in
-  // the config, and both read and rewrite the project's book EPUB.
-  //
-  // Making the book is not a pass — but it IS queueable. `vlm-convert` runs the
-  // document stage main already owns (one per project, cancellable, surviving a
-  // renderer reload); the queue only decides WHEN. It was deliberately absent
-  // until Aug 2026 because a conversion is started from the picker and there was
-  // nothing to schedule; what changed is batching — ninety minutes of one GPU
-  // each, so a shelf of books has to be able to run overnight in order.
-  //
-  // It does NOT revive the retired document-pipeline vocabulary below
-  // ('document-get-text', 'document-blocks', 'document-reflow',
-  // 'foundry-footnotes' and the 'foundry-*' scan chain). Those were PASSES that
-  // reimplemented stages; this is the stage itself, queued.
-  // 'footnote-refs' is the digits-only reference strip over the book. It is
-  // chainable like the other passes, though its usual door is the synchronous
-  // one — it finishes in seconds, so a queue row for it is normally a row that
-  // is already done.
-  | 'simplify' | 'translate-pass' | 'footnote-refs' | 'vlm-convert';
+/**
+ * Job types supported by the queue: THE ENGINE'S LIST, plus the one this side
+ * has that the engine does not.
+ *
+ * ── Why this is derived and not written out ─────────────────────────────────
+ *
+ * It WAS written out — the engine's fourteen members, restated here by hand — and
+ * on 2026-08-19 that cost main. `foundry-job` was added to the engine's union
+ * for the centralized queue seam (aa3c6dbb) and this copy did not get it, so the
+ * two assignments below (`QueueJob.type`, `CreateJobRequest.type`) stopped
+ * compiling and the Angular bundle failed outright. The app did not start on any
+ * machine that pulled it. bookforge-mac-2 found it in seven seconds of `ng build`
+ * and, correctly, refused to paper over it with a fifteenth hand-copied member.
+ *
+ * A duplicated wire type is a lockstep contract with nothing enforcing the step,
+ * and this file's own comment at `CreateJobRequest.config` already said so about
+ * the same class of bug: "One list, in one place." Now it is one list.
+ *
+ * `audiobook` IS THIS SIDE'S OWN and is why the type is a union rather than a
+ * re-export: it names a renderer-only row the engine never schedules, and it is
+ * read in ~50 places here. It has no engine member and must not gain one.
+ */
+export type JobType = EngineJobType | 'audiobook';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([

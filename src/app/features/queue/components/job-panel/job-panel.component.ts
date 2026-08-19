@@ -40,6 +40,10 @@ const TYPE_ICONS: Record<JobType, string> = {
   'footnote-refs': '\u{1F4CE}',
   // Making the book: a vision model reading pictures of pages.
   'vlm-convert': '\u{1F5A5}',
+  // Work ordered inside the hosted Foundry window and scheduled here. The SAME
+  // glyph as the conversion above, deliberately: to the person watching, it is
+  // the same act — a vision model reading pages — seen from the other window.
+  'foundry-job': '\u{1F5A5}',
 };
 
 const TYPE_LABELS: Record<JobType, string> = {
@@ -58,6 +62,10 @@ const TYPE_LABELS: Record<JobType, string> = {
   'translate-pass': 'Translate',
   'footnote-refs': 'Remove footnote references',
   'vlm-convert': 'Convert to EPUB',
+  // The row's own title says which act it is (Read the pages / Make the EPUB /
+  // Translate — see labelFor in electron/foundry-host-queue.ts), so the type
+  // label says where the work came from, which is the fact the title omits.
+  'foundry-job': 'Foundry',
 };
 
 @Component({

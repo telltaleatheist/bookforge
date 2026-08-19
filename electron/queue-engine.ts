@@ -955,6 +955,36 @@ function slotsInUse(resource: StepResource): number {
  * Idempotent and cheap: it is called after every state change, and a pass that
  * can start nothing does nothing.
  */
+/**
+ * Listeners run when the pump has FINISHED DECIDING what to launch.
+ *
+ * ── Why a hook here and not on `onQueueChanged` ─────────────────────────────
+ *
+ * Because "nothing of yours is running" is only true after the scheduler has had
+ * its turn. `changed()` fires the instant a step settles — BEFORE the pump has
+ * looked at what is queued behind it — so a listener reading state there sees a
+ * transient trough between one step ending and the next starting.
+ *
+ * That trough is not cosmetic for the Foundry seam. Foundry tears its vLLM
+ * reading server down on our idle signal, and its default `keepServerWarmMinutes`
+ * is 0 — an immediate `stopServer`, no timer. Two reads batched (the ordinary way
+ * anybody works through a shelf) would have gone: A settles, changed() fires,
+ * nothing is running yet because B is still queued, we say idle, the server
+ * stops, the pump then launches B, and B pays a full model reload. N reads, N
+ * model starts, minutes each. Foundry's agent caught it in review of the first
+ * cut and it was their own rule that produced it (channel, 2026-08-19).
+ *
+ * Asked after the decision, the same predicate is right in every case: the pump
+ * launched a Foundry step (no idle), launched something else while one waits
+ * (idle — free the VRAM, pay one reload later), or launched nothing (idle).
+ */
+const afterPumpListeners = new Set<() => void>();
+
+export function onAfterPump(listener: () => void): () => void {
+  afterPumpListeners.add(listener);
+  return () => { afterPumpListeners.delete(listener); };
+}
+
 export function pump(): void {
   if (!running) return;
   let admissionBlocked = false;
@@ -1004,6 +1034,22 @@ export function pump(): void {
   } else if (admissionRecheckTimer) {
     clearTimeout(admissionRecheckTimer);
     admissionRecheckTimer = null;
+  }
+
+  /*
+   * The decision is made; anyone who needs to read "what is running now" may.
+   * Each listener is isolated — one watcher's throw is not another's, and none of
+   * them may unwind the scheduler. That last clause is not hypothetical: an
+   * unguarded push inside Foundry's own pump was exactly this bug on their side
+   * (foundry c999195), where a throw would leave a row marked running with
+   * nothing running.
+   */
+  for (const listener of [...afterPumpListeners]) {
+    try {
+      listener();
+    } catch (err) {
+      console.error(`[queue] an after-pump listener threw: ${(err as Error).message}`);
+    }
   }
 }
 
