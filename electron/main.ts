@@ -1533,34 +1533,29 @@ async function refreshFoundryNarrateForm(): Promise<void> {
    * reads. So calling it unconditionally here is right; there is no "is anyone
    * listening" this side should be guessing at.
    *
-   * ── ITS FAILURE MUST NOT REACH THE CALLER, and that is not a swallow ────────
+   * ── UNWRAPPED, AND THAT IS DELIBERATE — the history is worth keeping ───────
    *
-   * bookforge-mac-2 found this by reading the diff (2026-08-19): putting the push
-   * outside the catch made it the ONE statement in this function that can reject,
-   * and this function is AWAITED before the Foundry window opens. Foundry's
-   * `broadcast` (foundry-app/electron/window.ts) is an unguarded
-   * `win.webContents.send` over `BrowserWindow.getAllWindows()`, and hosted, that
-   * list is BookForge's windows too. A live window whose webContents has died —
-   * an ordinary crashed renderer — makes `send` throw, the rejection travels out
-   * of here, and THE FOUNDRY WINDOW NEVER OPENS. Owen's original bug was a button
-   * that vanished; that one would be the whole window not appearing, reading as
-   * a completely unrelated fault.
+   * bookforge-mac-2 read this diff on 2026-08-19 and noticed that putting the
+   * push outside the catch made it the ONE statement in this function that could
+   * reject — and this function is AWAITED before the Foundry window opens.
+   * Foundry's `broadcast` was an unguarded `win.webContents.send` over
+   * `BrowserWindow.getAllWindows()`, which HOSTED is BookForge's windows too, so
+   * a live window whose webContents had died (an ordinary crashed renderer) would
+   * throw, the rejection would travel out of here, and the Foundry window would
+   * never open. Owen's original bug was a button that vanished; that one would
+   * have been the whole window not appearing.
    *
-   * So the push is isolated, and LOUDLY: nothing is substituted and nothing is
-   * hidden — the console gets the reason — but a notification to an already-open
-   * window is not a thing the opening of a window may hinge on. The real guard
-   * belongs one place further in, inside `broadcast`, where it also covers
-   * `setHostNodes` and `setHostStatus`; that is Foundry's file and has been asked
-   * for on the channel.
+   * It was briefly wrapped here. It is not any more, at Foundry's request and on
+   * their better argument: the guard landed in `broadcast` itself (foundry
+   * c999195), which is the one place that covers `setHostNodes`, `setHostStatus`
+   * and — the caller neither side had thought of — the queue's own
+   * `changed()`/`queue:changed` push, which is called throughout their pump and
+   * needed no await to be structural. With the loop guarded, anything thrown here
+   * is a REAL failure of this call, and a wrap would hide exactly the signal
+   * worth seeing. Nothing in this file defends against a regression in that loop;
+   * that is their file and their keeper.
    */
-  try {
-    foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
-  } catch (err) {
-    console.error(
-      '[foundry-host] The revised narrate form could not be pushed to the Foundry window: '
-      + `${(err as Error).message}. A window that is already open keeps the offers it read at `
-      + 'boot; the next one it opens will read these.');
-  }
+  foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
 }
 
 /**

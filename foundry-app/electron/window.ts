@@ -40,9 +40,44 @@ export function foundryWindow(): BrowserWindow | null {
   return mainWindow;
 }
 
-/** One push to every window. The renderer holds mirrors; main holds the truth. */
+/**
+ * One push to every window. The renderer holds mirrors; main holds the truth.
+ *
+ * ── THE GUARD, AND WHY ONE COMPARISON EARNS THIS MUCH PROSE ─────────────────
+ *
+ * `webContents.send` THROWS on a webContents that has been destroyed, and the
+ * list this walks is not ours. `BrowserWindow.getAllWindows()` is the PROCESS's
+ * windows, so hosted it returns BookForge's as well — and the renderer most
+ * likely to be gone is the one this app did not create, cannot watch, and is not
+ * told about. Standalone the omission was very nearly unfalsifiable; hosted it is
+ * another application's lifecycle throwing inside ours.
+ *
+ * WHAT A THROW HERE ACTUALLY COSTS, in the two places it is not merely a lost
+ * push:
+ *
+ *   - `setHostOperations` is called from the host's narrate-form refresh, and
+ *     that refresh is AWAITED before the Foundry window is opened. A throw on
+ *     that path is not a missed revision, it is a WINDOW THAT NEVER APPEARS —
+ *     an entry point killed by a crashed renderer somewhere else, wearing none
+ *     of the symptoms of its own cause.
+ *   - The queue's `changed()` calls its one listener unguarded and that listener
+ *     is this function. A throw unwinds back into `pump()` between the moment a
+ *     row is marked `running` and the moment the engine is spawned, or out of
+ *     `enqueue()` into the press that called it — job bookkeeping torn in half
+ *     by a window nobody was looking at.
+ *
+ * SO THE LOOP SURVIVES A DEAD WINDOW RATHER THAN DISCOVERING IT. Both halves are
+ * asked because they are different objects with different lifetimes: a window
+ * can outlive its contents, which is exactly the state a renderer crash leaves
+ * behind.
+ *
+ * Found by BookForge's Mac session reading Wave 15's diff (2026-08-18) and
+ * reported as unproven-but-argued. The chain was right, and the queue half above
+ * is worse than the one it was reported for.
+ */
 export function broadcast(channel: string, payload: unknown): void {
   for (const win of BrowserWindow.getAllWindows()) {
+    if (win.isDestroyed() || win.webContents.isDestroyed()) continue;
     win.webContents.send(channel, payload);
   }
 }

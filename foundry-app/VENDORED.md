@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **29c40a0** — *Wave 15: the import row orders a host act, and the host may revise its offers* |
+| Source sha | **c999195** — *broadcast() skips a destroyed window or a destroyed webContents* |
 | Copied on | 2026-08-18 |
 | Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
 
@@ -130,6 +130,22 @@ UNREAD scan has no bank for `exportEpubFromStep` to mint from, and Read is
 already the act offered there. NOT in the diff and available on request: the
 TREE's root row for a read scan still offers no host acts, because that gate is
 the row's `produces` rather than this predicate (95/95 blobs at 29c40a0).
+`c999195` is ONE LINE in `electron/window.ts` and it closes a defect that had
+been reachable in every hosted build since the queue started broadcasting.
+`broadcast` sent to `win.webContents` for every `BrowserWindow.getAllWindows()`
+with no guard; `getAllWindows()` filters destroyed WINDOWS but not a live window
+whose WEBCONTENTS has died, which is what a crashed renderer leaves — and HOSTED,
+that list is BookForge's windows too, so the exposure exists only in the
+configuration standalone Foundry cannot produce. Found by bookforge-mac-2 reading
+the 15b diff: `setHostOperations` had become the one statement in an AWAITED
+`refreshFoundryNarrateForm` that could reject, which would have meant the Foundry
+window never opening. The queue path is worse and older: their `changed()` is an
+unguarded `notify(listJobs())` wired to `broadcast('queue:changed')` and called
+throughout `pump()`, so a throw unwinds between a row being marked running and
+the engine being spawned, or straight out of `enqueue()` into a person's press.
+One line, and it covers `setHostNodes`, `setHostStatus`, `queue:changed`,
+`projects:changed`, `vllm:status-changed` and `env:install-progress` (94/94 blobs
+at c999195).
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
