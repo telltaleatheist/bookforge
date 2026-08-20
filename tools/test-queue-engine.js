@@ -260,6 +260,52 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
 });
 
+test('a persisted step is re-asked what resource it needs; a finished one is not', async () => {
+  // A build that changes its mind about a step type must be able to say so
+  // about work already queued — assembly moved from 'gpu' to 'cpu' for plain
+  // ffmpeg runs, and rows composed before that would otherwise keep holding
+  // the card for work that never touches it. History keeps what it ran with.
+  const dir = path.join(SCRATCH, 'resource-reload');
+  fs.mkdirSync(dir, { recursive: true });
+
+  engine.clearStepModules();
+  const gpuMod = fakeModule('tts-conversion', { resource: () => 'gpu' });
+  engine.registerStepModule(gpuMod);
+  engine.setGpuLockProbe(() => null);
+  engine.setGpuHolderProbe(() => null);
+  await engine.configure({ stateDir: dir });
+
+  // One run that FINISHES (history), one that stays held (a plan).
+  const ran = engine.enqueue({
+    title: 'Finished book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+  gpuMod.runs[0].resolve();
+  await settle();
+
+  const held = engine.enqueue({
+    title: 'Planned book',
+    release: false,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } }],
+  });
+  assert.strictEqual(stepsOf(held.id)[0].resource, 'gpu');
+  assert.strictEqual(stepsOf(ran.id)[0].status, 'done');
+  await engine.persist();
+
+  // The same queue, reloaded by a build whose module now says 'cpu'.
+  engine.clearStepModules();
+  engine.registerStepModule(fakeModule('tts-conversion', { resource: () => 'cpu' }));
+  await engine.configure({ stateDir: dir });
+
+  assert.strictEqual(stepsOf(held.id)[0].resource, 'cpu',
+    'an unfinished step takes the resource THIS build says it needs');
+  assert.strictEqual(stepsOf(ran.id)[0].resource, 'gpu',
+    'a finished step keeps what it actually ran with — that is history, not a plan');
+});
+
 test('thermal readings accumulate onto the running GPU step and settle into its analytics', async () => {
   const gpu = fakeModule('tts-conversion');
   await fresh('thermal-analytics', [gpu]);

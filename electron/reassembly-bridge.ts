@@ -1210,7 +1210,20 @@ export async function startReassembly(
   }
   if (resolvedGap !== undefined && !gapDir) {
     const srcSentences = path.join(config.processDir, 'chapters', 'sentences');
-    gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
+    /*
+     * BESIDE THE STAGING DIR, not in the shared scratch.
+     *
+     * This used to be `<e2a tmp>/gap-<jobId>` — the same directory the startup
+     * sweep empties wholesale. On 2026-08-19 that sweep deleted a live
+     * assembly's gap-normalised sentences 90 seconds after they were written,
+     * and e2a answered "Sentences directory not found" for a path we had just
+     * built. The sweep now spares work the queue still wants, but the deeper
+     * point stands: this set belongs to ONE step of ONE assembly, is consumed
+     * by that assembly alone, and is cleaned with it at every terminal point —
+     * which is exactly the discipline the staging dir already has. Shared
+     * scratch was never the right shelf for it.
+     */
+    gapDir = path.join(config.outputDir, `.gap-${jobId}`);
     // Track for merge-and-delete NOW; a later stage that consumes it re-points the
     // tracker and deletes this dir itself (mirrors the denoise scratch handling).
     activeRvcDirs.set(jobId, gapDir);

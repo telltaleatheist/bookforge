@@ -1528,6 +1528,24 @@ async function loadState(): Promise<boolean> {
 function reviveInterrupted(): void {
   for (const job of jobs) {
     for (const step of job.steps) {
+      /*
+       * THE MODULE IS THE AUTHORITY ON WHAT A STEP NEEDS, so a step that has
+       * not run yet is re-asked on every load.
+       *
+       * `resource` is persisted with the step, which was right while it could
+       * only have come from the module — but a build that changes its mind
+       * must be able to say so about work already in the queue. It changed its
+       * mind for real: assembly declared `gpu` wholesale until plain ffmpeg
+       * assemblies moved to the CPU pool, and without this the rows composed
+       * before that change would keep holding the card for work that never
+       * touches it, which is the exact behaviour the change removed.
+       *
+       * Terminal steps keep what they ran with: that is history, not a plan.
+       */
+      if (!TERMINAL_STEP_STATUSES.has(step.status)) {
+        const mod = modules.get(step.type);
+        if (mod) step.resource = mod.resource(step.config ?? {});
+      }
       const retired = RETIRED_JOB_TYPES.get(step.type);
       if (retired && step.status !== 'done') {
         step.status = 'failed';

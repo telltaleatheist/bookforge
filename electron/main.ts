@@ -2329,6 +2329,34 @@ async function sweepDirContents(dir: string): Promise<void> {
     return; /* dir doesn't exist yet / volume offline — nothing to clean */
   }
 
+  /*
+   * WORK THAT IS STILL COMING BACK IS NOT A LEFTOVER.
+   *
+   * This sweep's whole licence was "nothing is converting yet at startup, so
+   * everything here is from a dead run". That premise died when assembly moved
+   * off the GPU pool: a CPU-lane assembly survives differently, and the queue
+   * persists steps that are held-and-interrupted precisely so they can be
+   * picked up from what is on disk. Deleting their scratch is deleting the
+   * thing Start was going to read.
+   *
+   * It bit for real on 2026-08-19: a gap-normalised sentence set
+   * (`gap-<stepId>`) was swept out from under a running assembly, and e2a
+   * answered "Sentences directory not found" for a path we had written 90
+   * seconds earlier.
+   *
+   * So anything NAMED FOR a step the queue still has plans for is kept. The
+   * queue's own persisted state is the authority — asked here rather than
+   * inferred from mtimes, because "recent" is not the same fact as "wanted".
+   */
+  const live = await liveStepIds();
+  if (live.size > 0) {
+    const kept = names.filter((name) => [...live].some((id) => name.includes(id)));
+    if (kept.length > 0) {
+      console.log(`[MAIN] Keeping ${kept.length} scratch item(s) belonging to unfinished queue steps.`);
+      names = names.filter((name) => !kept.includes(name));
+    }
+  }
+
   try {
     const { rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
     await rescueOrphanedScratchSessions(dir);
@@ -2342,6 +2370,31 @@ async function sweepDirContents(dir: string): Promise<void> {
     )
   );
   if (names.length) console.log(`[MAIN] Cleaned ${names.length} item(s) from e2a tmp: ${dir}`);
+}
+
+/**
+ * The ids of steps the queue has not finished with — every step that is not
+ * terminal, whatever state it is otherwise in.
+ *
+ * Read from the ENGINE, which has already loaded its persisted state by the
+ * time the sweep runs. Empty on any failure, which makes the sweep behave
+ * exactly as it did before this existed: an unreadable queue is not a reason to
+ * keep every leftover forever.
+ */
+async function liveStepIds(): Promise<Set<string>> {
+  const ids = new Set<string>();
+  try {
+    const { snapshot } = await import('./queue-engine.js');
+    for (const job of snapshot().jobs) {
+      for (const step of job.steps) {
+        if (step.status === 'done' || step.status === 'failed' || step.status === 'cancelled') continue;
+        ids.add(step.id);
+      }
+    }
+  } catch (err) {
+    console.warn('[MAIN] Could not ask the queue what it still needs before sweeping:', err);
+  }
+  return ids;
 }
 
 async function cleanE2aTmpDir(): Promise<void> {
