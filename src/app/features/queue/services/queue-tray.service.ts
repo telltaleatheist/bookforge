@@ -57,6 +57,18 @@ export interface LaneView extends BenchLane {
    * file; see `QueueTrayService` docs and the design note on the page.
    */
   eta: string | null;
+  /**
+   * The measured throughput — "7.2x realtime (2,040 words/min · 150 sent/min)"
+   * — or null until an honest window exists (two progress flushes at least 45s
+   * apart; see JobEtaService.rateSample). The redesign dropped this line and
+   * Owen missed it within the hour: on a long render the RATE is the number
+   * that says whether tonight is going well, not the percentage.
+   */
+  speed: string | null;
+  /** "128 / 1,617" — chunks done over total, when the step counts them. */
+  count: string | null;
+  /** Ticking elapsed for the step in this lane. Null before it has begun. */
+  elapsed: string | null;
 }
 
 /** A still row, plus its book's cover. */
@@ -128,11 +140,23 @@ export class QueueTrayService {
 
   /** The three slots, always all three. */
   readonly lanes = computed<LaneView[]>(() =>
-    benchLanes(this.queue.snapshot()).map(lane => ({
-      ...lane,
-      cover: lane.occupant ? this.coverForJobId(lane.occupant.jobId) : null,
-      eta: lane.occupant ? this.etaFor(lane.occupant.stepId) : null,
-    })));
+    benchLanes(this.queue.snapshot()).map((lane) => {
+      // The legacy row is the ETA adapter: JobEtaService measures against it.
+      const row = lane.occupant
+        ? this.queue.jobs().find(r => r.id === lane.occupant!.stepId) ?? null
+        : null;
+      const seconds = row ? this.eta.etaSeconds(row, stagesFor(row)) : null;
+      return {
+        ...lane,
+        cover: lane.occupant ? this.coverForJobId(lane.occupant.jobId) : null,
+        eta: seconds === null ? null : `${formatDuration(seconds)} left`,
+        speed: row ? this.eta.speedLabel(row) : null,
+        count: row?.totalChunksInJob
+          ? `${(row.chunksCompletedInJob ?? 0).toLocaleString()} / ${row.totalChunksInJob.toLocaleString()}`
+          : null,
+        elapsed: row && row.startedAt ? this.eta.elapsedDisplay(row) : null,
+      };
+    }));
 
   /** Failures, each with the sentence the engine wrote. */
   readonly failures = computed<FailedView[]>(() =>
@@ -239,25 +263,6 @@ export class QueueTrayService {
   }
 
   // ── Measurement ──────────────────────────────────────────────────────────
-
-  /**
-   * The measured time left for one running step, or null.
-   *
-   * Reads through the mirror's legacy row because that is what JobEtaService
-   * measures against — it holds a throughput sample per step id, taken when a
-   * chunk completes and HELD between completions, which is the arithmetic that
-   * keeps speed and ETA from disagreeing. Nothing about that belongs here.
-   *
-   * There is no equivalent for a whole run, deliberately. The steps behind the
-   * running one have never been timed on this book, so summing a measurement
-   * with a guess would produce a number that looks measured.
-   */
-  private etaFor(stepId: string): string | null {
-    const row = this.queue.jobs().find(r => r.id === stepId);
-    if (!row) return null;
-    const seconds = this.eta.etaSeconds(row, stagesFor(row));
-    return seconds === null ? null : `${formatDuration(seconds)} left`;
-  }
 
   /** What a lane's step is saying about itself while a percentage cannot move. */
   detailFor(lane: LaneView): string {

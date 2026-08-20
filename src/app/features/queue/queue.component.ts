@@ -159,6 +159,22 @@ import { QueueTrayService } from './services/queue-tray.service';
                 @if (tray.detailFor(lane); as detail) {
                   <div class="detail">{{ detail }}</div>
                 }
+
+                <!-- The measurements. Rate is the number a long render is judged
+                     by; absent until an honest window exists, never estimated. -->
+                @if (lane.count || lane.speed || lane.elapsed) {
+                  <div class="measures">
+                    @if (lane.count) {
+                      <div class="ro"><div class="k">Sentences</div><div class="v">{{ lane.count }}</div></div>
+                    }
+                    @if (lane.speed) {
+                      <div class="ro"><div class="k">Rate</div><div class="v">{{ lane.speed }}</div></div>
+                    }
+                    @if (lane.elapsed) {
+                      <div class="ro"><div class="k">Elapsed</div><div class="v">{{ lane.elapsed }}</div></div>
+                    }
+                  </div>
+                }
               } @else if (lane.hold) {
                 <div class="held-off">
                   <div class="act warn-text">Waiting for the card</div>
@@ -561,6 +577,28 @@ import { QueueTrayService } from './services/queue-tray.service';
       font-size: 0.6875rem;
       color: var(--text-tertiary);
       margin-top: 7px;
+    }
+
+    .measures {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 4px 18px;
+      margin-top: 10px;
+      padding-top: 9px;
+      border-top: 1px solid var(--border-subtle);
+    }
+
+    .measures .k {
+      font-size: 0.5625rem;
+      letter-spacing: 0.1em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .measures .v {
+      font-size: 0.75rem;
+      color: var(--text-primary);
+      font-variant-numeric: tabular-nums;
     }
 
     .held-off { padding: 4px 0 2px; }

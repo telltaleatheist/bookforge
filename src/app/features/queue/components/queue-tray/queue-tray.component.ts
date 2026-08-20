@@ -142,6 +142,10 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                 }
               }
 
+              @if (lane.speed; as speed) {
+                <div class="detail rate">{{ speed }}</div>
+              }
+
               @if (tray.detailFor(lane); as detail) {
                 <div class="detail">{{ detail }}</div>
               }
@@ -464,6 +468,11 @@ import { QueueTrayService } from '../../services/queue-tray.service';
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+    }
+
+    .detail.rate {
+      color: var(--text-secondary);
+      font-variant-numeric: tabular-nums;
     }
 
     .lane-acts { display: flex; gap: 6px; margin-top: 8px; }
