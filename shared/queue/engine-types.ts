@@ -226,6 +226,18 @@ export interface StepProgress {
    * full secondary bar sitting under the chunk bar.
    */
   activeBatch?: ActiveBatchProgress;
+  /**
+   * Why ADMISSION refused to start this step, in the sentence the scheduler
+   * composed — external training holds the lock, or another process holds the
+   * card. Present only while the refusal stands.
+   *
+   * Separate from `message`, which also carries it, because a reader has to be
+   * able to tell "the queue is being held off the GPU" from "a step is saying
+   * what it is doing", and prose cannot be asked which one it is. A surface that
+   * inferred a hold from the presence of a message would call a narration's own
+   * status line a blockage the first time one arrived on a queued row.
+   */
+  admissionHold?: string;
 }
 
 /**

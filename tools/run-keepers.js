@@ -84,6 +84,7 @@ const SUITES = [
   'test-epub-provenance-lifecycle',
   'test-processing-chain',
   'test-queue-engine',
+  'test-queue-bench',
   'test-library-lock',
   'test-job-timing',
   'test-vlm-convert-plan',

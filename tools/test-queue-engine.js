@@ -260,6 +260,67 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
 });
 
+test('a hold is recorded as its own field, not only as prose', async () => {
+  // The tray asks "is this row being held off the card?" and must not have to
+  // guess it from `message`, which also carries whatever a step says about
+  // itself. See StepProgress.admissionHold and shared/queue/bench.ts.
+  const gpu = fakeModule('tts-conversion');
+  await fresh('gpu-hold-field', [gpu]);
+  engine.setGpuLockProbe(() => 'lora train, epoch 7');
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  const held = stepsOf(job.id)[0];
+  assert.match(held.progress.admissionHold, /lora train, epoch 7/);
+
+  engine.setGpuLockProbe(() => null);
+  engine.pump();
+  await settle();
+
+  // Cleared, not left standing: `launch` blanks progress wholesale, so a hold
+  // surviving the start would mean the step never really started.
+  const started = stepsOf(job.id)[0];
+  assert.strictEqual(started.progress.admissionHold, undefined,
+    'a hold that outlives the blockage names a lock that is gone');
+});
+
+test('a full pool retires a stale hold rather than leaving it on the row', async () => {
+  // Admission is not asked once the pool is full, so a hold recorded before our
+  // OWN work took the card would sit there naming an external lock. The reader
+  // orders "no slot" above "admission" for this reason, and the engine retires
+  // the answer it is no longer asking for.
+  const gpu = fakeModule('tts-conversion');
+  await fresh('gpu-hold-stale', [gpu]);
+  engine.setGpuLockProbe(() => 'external render');
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate one', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } },
+      { type: 'tts-conversion', label: 'Narrate two', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.ok(stepsOf(job.id).every((s) => s.progress.admissionHold !== undefined),
+    'both rows are held off the card while the external lock stands');
+
+  // The lock goes; the first row takes the one GPU slot and the second cannot.
+  engine.setGpuLockProbe(() => null);
+  engine.pump();
+  await settle();
+
+  const [first, second] = stepsOf(job.id);
+  assert.strictEqual(first.status, 'running');
+  assert.strictEqual(second.progress.admissionHold, undefined,
+    'the row now waiting on OUR card must not still name somebody else\'s job');
+});
+
 test('the lock clearing is NOTICED — nothing else calls pump for it', async () => {
   // The training chain deletes its lock file and touches nothing in this
   // engine. The refused pump must arm its own recheck, or the queue waits

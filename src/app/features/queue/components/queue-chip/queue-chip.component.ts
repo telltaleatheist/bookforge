@@ -7,9 +7,13 @@
  * looking at the library. The nav rail is suppressed in standalone windows; this
  * deliberately is not.
  *
- * Three forms, and they are genuinely different states rather than one form with
+ * Four forms, and they are genuinely different states rather than one form with
  * blanks in it:
  *   running — cover, meter, "Narrating <book>", the running step's percentage.
+ *   blocked — work is being held OFF the card by something outside this app.
+ *             This is the form that earns its keep: from the outside a queue
+ *             holding work off somebody else's GPU looks exactly like an idle
+ *             one, and it is the state a user is most likely to read as a hang.
  *   pending — no meter and no percentage, because nothing is moving; just the
  *             count of runs waiting, so pressing it is obviously worth doing.
  *   empty   — a quiet icon. Still a button: the tray is where Start lives, and a
@@ -21,6 +25,7 @@
  * window body, and would be draggable.
  */
 
+import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, ViewChild, computed, inject } from '@angular/core';
 import { ConnectedPosition, OverlayModule } from '@angular/cdk/overlay';
 
@@ -31,7 +36,7 @@ import { QueueTrayComponent } from '../queue-tray/queue-tray.component';
   selector: 'app-queue-chip',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [OverlayModule, QueueTrayComponent],
+  imports: [DecimalPipe, OverlayModule, QueueTrayComponent],
   template: `
     <button
       type="button"
@@ -39,28 +44,43 @@ import { QueueTrayComponent } from '../queue-tray/queue-tray.component';
       cdkOverlayOrigin
       #origin="cdkOverlayOrigin"
       [class.running]="chip().state === 'running'"
+      [class.blocked]="chip().state === 'blocked'"
       [class.quiet]="chip().state === 'empty'"
       [attr.aria-expanded]="tray.open()"
       aria-haspopup="dialog"
       [attr.aria-label]="ariaLabel()"
       (click)="tray.toggle()"
     >
-      @if (chip().state === 'running') {
-        @if (chip().cover) {
-          <img class="mini" [src]="chip().cover" alt="" />
-        } @else {
-          <span class="mini mini-blank" aria-hidden="true"></span>
+      @switch (chip().state) {
+        @case ('running') {
+          @if (chip().cover) {
+            <img class="mini" [src]="chip().cover" alt="" />
+          } @else {
+            <span class="mini mini-blank" aria-hidden="true"></span>
+          }
+          <span class="meter" aria-hidden="true"><i></i><i></i><i></i></span>
+          <span class="what">{{ chip().verb }} <b>{{ chip().title }}</b></span>
+          <!-- A step that has measured nothing shows no percentage rather than
+               a zero it never reported. -->
+          @if (chip().percent !== null) {
+            <span class="pct">{{ chip().percent | number:'1.0-0' }}%</span>
+          }
         }
-        <span class="meter" aria-hidden="true"><i></i><i></i><i></i></span>
-        <span class="what">{{ chip().verb }} <b>{{ chip().title }}</b></span>
-        <span class="pct">{{ chip().percent }}%</span>
-      } @else {
-        <span class="glyph" aria-hidden="true">⏳</span>
-        @if (chip().state === 'empty') {
-          <span class="what quiet-text">Queue</span>
+        @case ('blocked') {
+          <span class="glyph" aria-hidden="true">&#9888;</span>
+          <span class="what">Waiting for the card</span>
+        }
+        @default {
+          <span class="glyph" aria-hidden="true">⏳</span>
+          @if (chip().state === 'empty') {
+            <span class="what quiet-text">Queue</span>
+          }
         }
       }
 
+      @if (chip().failed > 0) {
+        <span class="badge bad">{{ chip().failed }}</span>
+      }
       @if (chip().pending > 0) {
         <span class="badge">{{ chip().pending }}</span>
       }
@@ -106,6 +126,14 @@ import { QueueTrayComponent } from '../queue-tray/queue-tray.component';
     }
 
     .chip.running { border-color: var(--accent); }
+
+    .chip.blocked {
+      border-color: var(--warning);
+      color: var(--warning-text);
+    }
+
+    .chip.blocked .what { color: var(--warning-text); }
+    .chip.blocked .glyph { color: var(--warning-text); }
 
     .chip.quiet {
       background: transparent;
@@ -166,6 +194,13 @@ import { QueueTrayComponent } from '../queue-tray/queue-tray.component';
       flex: none;
     }
 
+    /* Failures get their own badge beside the waiting count, not folded into
+       it: "3 waiting" and "1 failed" are different requests of the user. */
+    .badge.bad {
+      background: var(--warning-bg);
+      color: var(--color-danger);
+    }
+
     /* The equalizer: three bars, the only motion in the title bar. */
     .meter {
       display: inline-flex;
@@ -212,7 +247,13 @@ export class QueueChipComponent {
   readonly ariaLabel = computed(() => {
     const chip = this.chip();
     if (chip.state === 'running') {
-      return `${chip.verb} ${chip.title}, ${chip.percent} percent. Open the queue tray.`;
+      const where = chip.percent === null
+        ? 'progress not yet measured'
+        : `${Math.round(chip.percent)} percent`;
+      return `${chip.verb} ${chip.title}, ${where}. Open the queue tray.`;
+    }
+    if (chip.state === 'blocked') {
+      return `${chip.hold} Open the queue tray.`;
     }
     if (chip.state === 'pending') {
       return `${chip.pending} runs waiting. Open the queue tray.`;
