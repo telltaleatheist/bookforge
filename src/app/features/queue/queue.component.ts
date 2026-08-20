@@ -135,6 +135,27 @@ import { QueueTrayService } from './services/queue-tray.service';
                   <i [style.width.%]="busy.percent ?? 0"></i>
                 </div>
 
+                <!-- The stage breakdown, because the headline number alone cannot
+                     show life: an Orpheus batch reports no completions for
+                     minutes while the stages under it are moving. -->
+                @if (busy.stages.length > 0) {
+                  <div class="stages">
+                    @for (stage of busy.stages; track stage.name) {
+                      <div class="stage-row" [class.on]="stage.status === 'running'">
+                        <span class="s-name">{{ stage.label }}</span>
+                        <span class="bar thin" [class.done]="stage.status === 'complete'">
+                          <i [style.width.%]="stage.pct"></i>
+                        </span>
+                        <span class="s-val">
+                          @if (stage.status === 'complete') { done }
+                          @else if (stage.status === 'pending') { — }
+                          @else { {{ stage.pct | number:'1.0-0' }}% }
+                        </span>
+                      </div>
+                    }
+                  </div>
+                }
+
                 @if (tray.detailFor(lane); as detail) {
                   <div class="detail">{{ detail }}</div>
                 }
@@ -516,6 +537,25 @@ import { QueueTrayService } from './services/queue-tray.service';
     }
 
     .bar.dim i { background: transparent; }
+
+    .stages { display: grid; gap: 5px; margin-top: 10px; }
+
+    .stage-row {
+      display: grid;
+      grid-template-columns: 96px 1fr 42px;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.625rem;
+      color: var(--text-tertiary);
+    }
+
+    .stage-row.on { color: var(--text-primary); }
+
+    .stage-row .bar.thin { height: 4px; margin-top: 0; }
+    .stage-row .bar.done i { background: var(--text-muted); }
+
+    .s-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .s-val { text-align: right; font-variant-numeric: tabular-nums; }
 
     .detail {
       font-size: 0.6875rem;

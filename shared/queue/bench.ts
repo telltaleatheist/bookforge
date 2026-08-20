@@ -34,6 +34,7 @@ import {
   RESOURCE_SLOTS,
   TERMINAL_STEP_STATUSES,
   jobStatus,
+  type JobStageProgress,
   type QueueJob,
   type QueueSnapshot,
   type QueueStep,
@@ -218,6 +219,17 @@ export interface LaneOccupant {
   message?: string;
   /** What the running STAGE is doing when its own percentage cannot move. */
   detail?: string;
+  /**
+   * The step's stage breakdown, when it reports one. Empty when it does not.
+   *
+   * On the bench because the overall percentage is NOT enough to show life. An
+   * Orpheus worker renders 64 sentences as one batch and reports no completions
+   * until the whole batch lands, so the headline number can sit at 0 for many
+   * minutes on a run that is working perfectly — while "Preparing" and "Loading
+   * voice model" underneath it are moving the entire time. Drawing only the
+   * headline made a healthy run look stalled (Owen, 2026-08-19).
+   */
+  stages: JobStageProgress[];
 }
 
 /** One slot of one pool. */
@@ -261,6 +273,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           percent: step.progress.percent ?? null,
           ...(step.progress.message === undefined ? {} : { message: step.progress.message }),
           ...(step.progress.detail === undefined ? {} : { detail: step.progress.detail }),
+          stages: step.progress.stages ?? [],
         });
       }
     }

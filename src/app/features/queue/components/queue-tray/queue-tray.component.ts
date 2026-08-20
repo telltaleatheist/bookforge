@@ -129,6 +129,19 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                 <i [style.width.%]="busy.percent ?? 0"></i>
               </div>
 
+              <!-- Only the stage that is RUNNING, and only in the shelf: 452px
+                   cannot hold four rows per lane, and the stage that is moving
+                   is the one that answers "is this alive?". -->
+              @for (stage of busy.stages; track stage.name) {
+                @if (stage.status === 'running') {
+                  <div class="stage-line">
+                    <span class="s-name">{{ stage.label }}</span>
+                    <span class="bar thin"><i [style.width.%]="stage.pct"></i></span>
+                    <span class="s-val">{{ stage.pct | number:'1.0-0' }}%</span>
+                  </div>
+                }
+              }
+
               @if (tray.detailFor(lane); as detail) {
                 <div class="detail">{{ detail }}</div>
               }
@@ -429,6 +442,20 @@ import { QueueTrayService } from '../../services/queue-tray.service';
     /* A step that has measured nothing gets no coloured bar — an empty track is
        "nothing reported", and a bar at zero is a claim it never made. */
     .bar.dim i { background: transparent; }
+
+    .stage-line {
+      display: grid;
+      grid-template-columns: 92px 1fr 34px;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 10px;
+      color: var(--text-secondary);
+    }
+
+    .stage-line .bar.thin { height: 4px; margin-top: 0; }
+    .s-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .s-val { text-align: right; font-variant-numeric: tabular-nums; }
 
     .detail {
       font-size: 10.5px;
