@@ -1,25 +1,45 @@
 /**
- * The queue tray — the dropdown under the top-bar chip.
+ * The queue shelf — the dropdown under the top-bar chip.
  *
- * One card per RUN, with a row per step and a short connector between them, so
- * the shape on screen is the shape the engine holds: a chain with lineage, not a
- * flat list of tasks that happen to share a book. The state grammar is the same
- * one Foundry's provenance tree uses — solid check for done, pulsing ring for
- * running, dashed hollow for waiting or held — because they are two views of one
- * pipeline and a user should not have to learn it twice.
+ * ── The bands, in the order they matter ─────────────────────────────────────
  *
- * It draws from QueueTrayService and acts through it. Nothing here decides
- * anything about the queue; every control is a sentence sent to main.
+ *   Needs you   — failures. Empty almost always, and therefore worth reading
+ *                 when it is not.
+ *   On the bench— the THREE SLOTS, always all three, occupied or free. This is
+ *                 the shelf's centre of gravity: allocating one GPU slot and two
+ *                 CPU slots is the entire job of the scheduler, and until this
+ *                 redesign no surface drew them.
+ *   Up next     — everything waiting, each row saying WHY it is waiting in a
+ *                 sentence. Five distinct reasons that used to render alike.
+ *   Finished    — one line. History, drawn as history.
+ *
+ * A band with nothing in it is not drawn, so the panel is short when the queue
+ * is quiet and long only when there is genuinely that much to say.
+ *
+ * ── It is not a dead end any more ───────────────────────────────────────────
+ *
+ * The old shelf could start a held run and pause the engine, and every other
+ * intent ended at "Open queue details →" — which re-listed what you were already
+ * looking at. Stop, retry, start and remove all live here now. Nothing here
+ * DECIDES anything: every control is a sentence sent through QueueTrayService to
+ * main, which owns the queue.
+ *
+ * The state grammar (solid check for done, pulsing ring for running, dashed
+ * hollow for waiting or held) is the one Foundry's provenance tree uses, because
+ * they are two views of one pipeline and a user should not have to learn it
+ * twice.
  */
 
+import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, ElementRef, inject, output } from '@angular/core';
 import { Router } from '@angular/router';
 
-import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service';
+import { QueueTrayService } from '../../services/queue-tray.service';
 
 @Component({
   selector: 'app-queue-tray',
   standalone: true,
+  imports: [DecimalPipe],
   changeDetection: ChangeDetectionStrategy.OnPush,
   host: {
     'role': 'dialog',
@@ -31,87 +51,157 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
     <div class="tray">
       <div class="tray-head">
         <span class="eyebrow">Queue</span>
-        <button type="button" class="btn accent" (click)="toggleQueue()">
+        <span class="engine" [class.paused]="!tray.isRunning()">
+          <span class="led" aria-hidden="true"></span>
+          {{ tray.isRunning() ? 'Running' : 'Paused' }}
+        </span>
+        <button type="button" class="btn accent push" (click)="toggleQueue()">
           {{ tray.isRunning() ? '❚❚ Pause' : '▶ Start' }}
         </button>
-        <button type="button" class="btn" (click)="clearFinished()">Clear finished</button>
       </div>
 
-      @if (tray.jobs().length === 0) {
-        <div class="tray-empty">Nothing is queued.</div>
-      }
-
-      @for (job of tray.jobs(); track job.id) {
-        <div class="job" [class.held]="job.held">
-          <div class="goal">
-            @if (job.cover) {
-              <img class="cover" [src]="job.cover" alt="" />
-            } @else {
-              <span class="cover cover-blank" aria-hidden="true"></span>
-            }
-            <div class="goal-text">
-              <h4>{{ job.title }}</h4>
-              <div class="kicker">{{ job.kicker }}</div>
-            </div>
-            <div class="goal-right">
-              @if (job.held) {
-                <button type="button" class="start" (click)="start(job)">▶ Start</button>
+      <!-- ── Needs you ─────────────────────────────────────────────────── -->
+      @if (tray.failures().length > 0) {
+        <div class="sec attention">
+          <span>Needs you · {{ tray.failures().length }}</span>
+          <span class="rule"></span>
+        </div>
+        @for (run of tray.failures(); track run.stepId) {
+          <div class="attn">
+            <div class="attn-top">
+              @if (run.cover) {
+                <img class="cover sm" [src]="run.cover" alt="" />
               } @else {
-                <span>{{ job.right }}</span>
+                <span class="cover sm blank" aria-hidden="true"></span>
               }
+              <div class="min">
+                <div class="attn-title">{{ run.title }} · {{ run.label }} failed</div>
+              </div>
+            </div>
+            <p class="attn-msg">{{ run.error }}</p>
+            <div class="attn-acts">
+              <button type="button" class="tiny bad" (click)="retry(run.stepId)">Retry this step</button>
+              <button type="button" class="tiny" (click)="remove(run.jobId)">Remove</button>
             </div>
           </div>
+        }
+      }
 
-          @for (step of job.steps; track step.id) {
-            @if (!$first) {
-              <div class="vline" aria-hidden="true"></div>
-            }
-            <div class="jstep" [class.active]="step.running">
-              <span
-                class="sdot"
-                [class.done]="step.status === 'done'"
-                [class.run]="step.running"
-                [class.wait]="step.idle"
-                [class.bad]="step.status === 'failed' || step.status === 'cancelled'"
-                aria-hidden="true"
-              >
-                @if (step.status === 'done') {
-                  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
-                       stroke-width="3.4" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M4 12.5l5 5L20 6.5" />
-                  </svg>
+      <!-- ── On the bench ──────────────────────────────────────────────── -->
+      <div class="sec">
+        <span>On the bench · {{ busyLanes() }} of {{ tray.lanes().length }} slots</span>
+        <span class="rule"></span>
+      </div>
+
+      @for (lane of tray.lanes(); track lane.resource + lane.index) {
+        <div
+          class="lane"
+          [class.gpu]="lane.resource === 'gpu'"
+          [class.warn]="lane.hold"
+          [class.free]="!lane.occupant"
+        >
+          <div class="slot">
+            <b>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }}</b>
+            {{ lane.index }} of {{ lane.of }}
+          </div>
+
+          <div class="lane-body">
+            @if (lane.occupant; as busy) {
+              <div class="lane-top">
+                @if (lane.cover) {
+                  <img class="cover" [src]="lane.cover" alt="" />
+                } @else {
+                  <span class="cover blank" aria-hidden="true"></span>
                 }
-              </span>
-              <span class="nm">{{ step.name }}</span>
-              <div
-                class="pbar"
-                [class.idle]="!step.running && step.percent === 0"
-                [class.bad]="step.status === 'failed' || step.status === 'cancelled'"
-              >
-                <i [style.width.%]="step.percent"></i>
+                <div class="min grow">
+                  <div class="act">{{ busy.verb }} <span>· {{ busy.label }}</span></div>
+                  <div class="sub">{{ busy.title }}</div>
+                </div>
+                <div class="right">
+                  @if (busy.percent !== null) {
+                    <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
+                  }
+                  <div class="eta">{{ lane.eta ?? 'not timed yet' }}</div>
+                </div>
               </div>
-              <span class="pv">{{ step.right }}</span>
-            </div>
-          }
+
+              <div class="bar" [class.dim]="busy.percent === null">
+                <i [style.width.%]="busy.percent ?? 0"></i>
+              </div>
+
+              @if (tray.detailFor(lane); as detail) {
+                <div class="detail">{{ detail }}</div>
+              }
+
+              <div class="lane-acts">
+                <button type="button" class="tiny bad" (click)="stop(busy.stepId)">Stop</button>
+              </div>
+            } @else if (lane.hold) {
+              <div class="act warn-text">Waiting for the card</div>
+              <span class="why warn"><span class="dot" aria-hidden="true"></span>{{ lane.hold }}</span>
+            } @else {
+              <div class="free-text">Free — nothing queued wants this slot</div>
+            }
+          </div>
         </div>
       }
 
+      <!-- ── Up next ───────────────────────────────────────────────────── -->
+      @if (tray.waiting().length > 0) {
+        <div class="sec">
+          <span>Up next · {{ tray.waiting().length }}</span>
+          <span class="rule"></span>
+        </div>
+        @for (row of tray.waiting(); track row.stepId) {
+          <div class="qrow">
+            @if (row.cover) {
+              <img class="cover xs" [src]="row.cover" alt="" />
+            } @else {
+              <span class="cover xs blank" aria-hidden="true"></span>
+            }
+            <div class="min">
+              <div class="qact">{{ row.label }} <em>· {{ row.title }}</em></div>
+              <span class="why" [class.warn]="row.reason.kind === 'admission'">
+                <span class="dot" aria-hidden="true"></span>{{ row.reason.sentence }}
+              </span>
+            </div>
+            <div class="qright">
+              @if (row.startable) {
+                <button type="button" class="tiny go" (click)="start(row.stepId)">
+                  ▶ {{ row.reason.kind === 'stopped' ? 'Resume' : 'Start' }}
+                </button>
+              }
+              <button type="button" class="tiny" (click)="remove(row.jobId)">Remove</button>
+            </div>
+          </div>
+        }
+      }
+
+      @if (tray.lanes().length > 0 && busyLanes() === 0 && tray.waiting().length === 0) {
+        <div class="empty">
+          Nothing is queued. Narrate a book from its versions page, or order a read in the
+          Foundry window.
+        </div>
+      }
+
+      <!-- ── Finished ──────────────────────────────────────────────────── -->
       @if (tray.finished().count > 0) {
         <div class="done-row">
           <span class="okd" [class.bad]="tray.finished().failed.length > 0" aria-hidden="true"></span>
-          <span>
+          <span class="min">
             {{ tray.finished().count }} finished today —
             @if (tray.finished().failed.length === 0) {
-              <span class="ok">all good</span>
+              <span class="ok">{{ tray.finished().titles.join(', ') }}</span>
             } @else {
               <span class="bad-text">{{ tray.finished().failed.join(', ') }} failed</span>
             }
           </span>
+          <button type="button" class="btn" (click)="clearFinished()">Clear</button>
         </div>
       }
 
       <div class="tray-foot">
-        <button type="button" class="details" (click)="openDetails()">Open queue details →</button>
+        <button type="button" class="details" (click)="openDetails()">Open the queue →</button>
         <span class="ambient">live in every window</span>
       </div>
     </div>
@@ -119,7 +209,7 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
   styles: [`
     :host {
       display: block;
-      width: 430px;
+      width: 452px;
       max-width: calc(100vw - 24px);
       background: var(--bg-surface);
       border: 1px solid var(--border-subtle);
@@ -133,14 +223,19 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
     :host:focus { outline: none; }
 
     .tray {
-      max-height: min(70vh, 620px);
+      max-height: min(72vh, 680px);
       overflow-y: auto;
     }
+
+    .min { min-width: 0; }
+    .grow { flex: 1; }
+
+    /* ── Head ──────────────────────────────────────────────────────────── */
 
     .tray-head {
       display: flex;
       align-items: center;
-      gap: 8px;
+      gap: 9px;
       padding: 10px 14px;
       border-bottom: 1px solid var(--border-subtle);
       position: sticky;
@@ -156,6 +251,25 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
       text-transform: uppercase;
       color: var(--text-tertiary);
     }
+
+    .engine {
+      display: inline-flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 11px;
+      color: var(--text-secondary);
+    }
+
+    .engine .led {
+      width: 6px;
+      height: 6px;
+      border-radius: 50%;
+      background: var(--success);
+    }
+
+    .engine.paused .led { background: var(--text-muted); }
+
+    .push { margin-left: auto; }
 
     .btn {
       display: inline-flex;
@@ -174,161 +288,141 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
     .btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
 
     .btn.accent {
-      margin-left: auto;
       border-color: transparent;
       background: var(--accent-subtle);
       color: var(--accent);
       font-weight: 600;
     }
 
-    .tray-empty {
-      padding: 22px 14px;
-      text-align: center;
-      color: var(--text-tertiary);
-      font-size: 12px;
-    }
+    /* ── Section rules ─────────────────────────────────────────────────── */
 
-    .job {
-      border-bottom: 1px solid var(--border-subtle);
-      padding: 11px 14px 12px;
-    }
-
-    .job.held {
-      background: repeating-linear-gradient(
-        45deg,
-        transparent 0 10px,
-        var(--hover-bg) 10px 20px
-      );
-    }
-
-    .goal {
+    .sec {
       display: flex;
       align-items: center;
-      gap: 9px;
-      margin-bottom: 9px;
+      gap: 8px;
+      padding: 10px 14px 5px;
+      font-size: 9.5px;
+      font-weight: 700;
+      letter-spacing: 1.3px;
+      text-transform: uppercase;
+      color: var(--text-muted);
     }
 
+    .sec .rule { flex: 1; height: 1px; background: var(--border-subtle); }
+    .sec.attention { color: var(--color-danger); }
+    .sec.attention .rule { background: var(--color-danger); opacity: 0.3; }
+
+    /* ── Covers ────────────────────────────────────────────────────────── */
+
     .cover {
-      width: 30px;
-      height: 44px;
+      width: 22px;
+      height: 32px;
       border-radius: 4px;
       flex: none;
       object-fit: cover;
       background: var(--bg-input);
-    }
-
-    .cover-blank {
       display: block;
-      border: 1px solid var(--border-subtle);
     }
 
-    .goal-text { min-width: 0; }
+    .cover.sm { width: 20px; height: 28px; }
+    .cover.xs { width: 20px; height: 28px; }
+    .cover.blank { border: 1px solid var(--border-subtle); }
 
-    .goal-text h4 {
-      margin: 0;
+    /* ── Needs you ─────────────────────────────────────────────────────── */
+
+    .attn {
+      margin: 0 14px 9px;
+      border: 1px solid var(--color-danger);
+      background: var(--bg-elevated);
+      border-radius: 8px;
+      padding: 10px 11px;
+    }
+
+    .attn-top { display: flex; align-items: center; gap: 8px; }
+    .attn-title { font-size: 12px; font-weight: 600; }
+
+    .attn-msg {
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin: 7px 0 9px;
+      line-height: 1.45;
+    }
+
+    .attn-acts { display: flex; gap: 6px; }
+
+    /* ── Lanes ─────────────────────────────────────────────────────────── */
+
+    .lane {
+      display: grid;
+      grid-template-columns: 48px 1fr;
+      gap: 10px;
+      padding: 9px 14px 11px;
+      border-left: 2px solid transparent;
+    }
+
+    .lane + .lane { border-top: 1px solid var(--border-subtle); }
+    .lane.gpu { border-left-color: var(--accent); }
+    .lane.gpu.warn { border-left-color: var(--warning-text); }
+    .lane.free { border-left-color: var(--border-default); }
+
+    .slot {
+      font-size: 9px;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      color: var(--text-muted);
+      padding-top: 2px;
+      line-height: 1.35;
+    }
+
+    .slot b {
+      display: block;
+      color: var(--text-tertiary);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 1px;
+    }
+
+    .lane-body { min-width: 0; }
+    .lane-top { display: flex; align-items: center; gap: 8px; }
+
+    .act {
       font-size: 12.5px;
       font-weight: 600;
+      color: var(--text-primary);
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
     }
 
-    .kicker {
+    .act span { font-weight: 400; color: var(--text-secondary); }
+    .act.warn-text { color: var(--warning-text); }
+
+    .sub {
       font-size: 10.5px;
       color: var(--text-tertiary);
-      margin-top: 1px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
     }
 
-    .goal-right {
-      margin-left: auto;
-      padding-left: 8px;
-      font-size: 11px;
-      color: var(--text-tertiary);
+    .right {
       text-align: right;
       flex: none;
       font-variant-numeric: tabular-nums;
     }
 
-    .start {
-      border: none;
-      background: transparent;
-      color: var(--accent);
-      font-weight: 600;
-      font-size: 11px;
-      font-family: inherit;
-      cursor: pointer;
-      padding: 2px 4px;
-      border-radius: 4px;
-    }
+    .pct { font-size: 13px; color: var(--accent); font-weight: 600; }
+    .eta { font-size: 10px; color: var(--text-tertiary); }
 
-    .start:hover { background: var(--accent-subtle); }
-
-    .jstep {
-      display: flex;
-      align-items: center;
-      gap: 9px;
-      padding: 4px 0 4px 4px;
-    }
-
-    .sdot {
-      width: 14px;
-      height: 14px;
-      border-radius: 50%;
-      flex: none;
-      display: grid;
-      place-items: center;
-      box-sizing: border-box;
-    }
-
-    .sdot svg { width: 9px; height: 9px; }
-
-    .sdot.done {
-      background: var(--accent);
-      color: var(--text-inverse);
-    }
-
-    .sdot.run { border: 2px solid var(--accent); }
-
-    .sdot.run::after {
-      content: '';
-      width: 5px;
-      height: 5px;
-      border-radius: 50%;
-      background: var(--accent);
-      animation: tray-pulse 1.4s ease-in-out infinite;
-    }
-
-    .sdot.wait { border: 2px dashed var(--text-muted); }
-
-    .sdot.bad { background: var(--color-danger); }
-
-    @keyframes tray-pulse {
-      0%, 100% { opacity: 0.35; transform: scale(0.75); }
-      50% { opacity: 1; transform: scale(1); }
-    }
-
-    .nm {
-      font-size: 12px;
-      width: 150px;
-      flex: none;
-      color: var(--text-secondary);
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-
-    .jstep.active .nm { color: var(--text-primary); font-weight: 500; }
-
-    .pbar {
-      flex: 1;
-      min-width: 0;
+    .bar {
       height: 5px;
       border-radius: 3px;
       background: var(--bg-input);
       overflow: hidden;
+      margin-top: 8px;
     }
 
-    .pbar i {
+    .bar i {
       display: block;
       height: 100%;
       border-radius: 3px;
@@ -336,27 +430,113 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
       transition: width 0.4s ease;
     }
 
-    .pbar.idle i { background: var(--border-default); }
+    /* A step that has measured nothing gets no coloured bar — an empty track is
+       "nothing reported", and a bar at zero is a claim it never made. */
+    .bar.dim i { background: transparent; }
 
-    /* How far a step got before it stopped, in the colour of why it stopped. */
-    .pbar.bad i { background: var(--color-danger); }
-
-    .pv {
-      width: 74px;
-      text-align: right;
+    .detail {
       font-size: 10.5px;
       color: var(--text-tertiary);
-      font-variant-numeric: tabular-nums;
+      margin-top: 6px;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .lane-acts { display: flex; gap: 6px; margin-top: 8px; }
+
+    .free-text {
+      font-size: 11.5px;
+      color: var(--text-muted);
+      padding-top: 7px;
+      font-style: italic;
+    }
+
+    /* ── The reason a row is still ─────────────────────────────────────── */
+
+    .why {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 10.5px;
+      color: var(--text-tertiary);
+      background: var(--bg-input);
+      border-radius: 3px;
+      padding: 2px 7px;
+      margin-top: 5px;
+      max-width: 100%;
+    }
+
+    .why.warn { color: var(--warning-text); background: var(--bg-elevated); }
+
+    .why .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
       flex: none;
     }
 
-    .jstep.active .pv { color: var(--accent); }
+    /* ── Up next ───────────────────────────────────────────────────────── */
 
-    .vline {
-      margin-left: 10px;
-      width: 2px;
-      height: 6px;
-      background: var(--border-subtle);
+    .qrow {
+      display: grid;
+      grid-template-columns: 20px 1fr auto;
+      align-items: center;
+      gap: 9px;
+      padding: 7px 14px;
+    }
+
+    .qrow + .qrow { border-top: 1px solid var(--border-subtle); }
+
+    .qact {
+      font-size: 12px;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .qact em { font-style: normal; color: var(--text-tertiary); }
+
+    .qright { display: flex; align-items: center; gap: 6px; }
+
+    .tiny {
+      font-size: 10.5px;
+      padding: 3px 9px;
+      border-radius: 5px;
+      border: 1px solid var(--border-default);
+      background: transparent;
+      color: var(--text-secondary);
+      cursor: pointer;
+      font-family: inherit;
+      white-space: nowrap;
+    }
+
+    .tiny:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+    .tiny.go {
+      border-color: transparent;
+      background: var(--accent-subtle);
+      color: var(--accent);
+      font-weight: 600;
+    }
+
+    .tiny.bad {
+      border-color: transparent;
+      background: var(--bg-elevated);
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
+    /* ── Finished / foot ───────────────────────────────────────────────── */
+
+    .empty {
+      padding: 22px 14px;
+      text-align: center;
+      color: var(--text-tertiary);
+      font-size: 12px;
+      line-height: 1.5;
     }
 
     .done-row {
@@ -365,21 +545,20 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
       gap: 9px;
       padding: 9px 14px;
       color: var(--text-tertiary);
-      font-size: 12px;
-      border-bottom: 1px solid var(--border-subtle);
+      font-size: 11.5px;
+      border-top: 1px solid var(--border-subtle);
     }
 
     .okd {
-      width: 8px;
-      height: 8px;
+      width: 7px;
+      height: 7px;
       border-radius: 50%;
       background: var(--success);
       flex: none;
     }
 
     .okd.bad { background: var(--color-danger); }
-
-    .ok { color: var(--success); }
+    .ok { color: var(--text-secondary); }
     .bad-text { color: var(--color-danger); }
 
     .tray-foot {
@@ -404,12 +583,10 @@ import { QueueTrayService, TrayJobView } from '../../services/queue-tray.service
     }
 
     .details:hover { color: var(--accent); }
-
     .ambient { color: var(--text-muted); }
 
     @media (prefers-reduced-motion: reduce) {
-      .sdot.run::after { animation: none; opacity: 1; }
-      .pbar i { transition: none; }
+      .bar i { transition: none; }
     }
   `],
 })
@@ -420,6 +597,11 @@ export class QueueTrayComponent {
 
   /** The panel wants to go away — Escape, or a control that navigates. */
   readonly dismiss = output<void>();
+
+  /** How many slots are in use, for the band's own heading. */
+  busyLanes(): number {
+    return this.tray.lanes().filter(lane => lane.occupant !== null).length;
+  }
 
   /** Take focus so Escape reaches the panel without the user tabbing to it. */
   focus(): void {
@@ -434,8 +616,20 @@ export class QueueTrayComponent {
     await this.tray.clearFinished();
   }
 
-  async start(job: TrayJobView): Promise<void> {
-    await this.tray.startJob(job.id);
+  async start(stepId: string): Promise<void> {
+    await this.tray.startStep(stepId);
+  }
+
+  async stop(stepId: string): Promise<void> {
+    await this.tray.stopStep(stepId);
+  }
+
+  async retry(stepId: string): Promise<void> {
+    await this.tray.retryStep(stepId);
+  }
+
+  async remove(jobId: string): Promise<void> {
+    await this.tray.removeRun(jobId);
   }
 
   openDetails(): void {

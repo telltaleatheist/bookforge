@@ -974,6 +974,18 @@ function parentOf(step: QueueStep): QueueStep | null {
   return null;
 }
 
+/**
+ * Retire a recorded GPU hold. A no-op when there is none, so it is safe to call
+ * on every pass of the pump; it touches progress only when something changed,
+ * because a snapshot pushed on every tick is a snapshot nobody can diff.
+ */
+function clearAdmissionHold(step: QueueStep): void {
+  if (step.progress.admissionHold === undefined) return;
+  const { admissionHold: _retired, ...rest } = step.progress;
+  step.progress = rest;
+  touchProgress();
+}
+
 function slotsInUse(resource: StepResource): number {
   let n = 0;
   for (const live of runningSteps.values()) if (live.resource === resource) n += 1;
@@ -1035,19 +1047,38 @@ export function pump(): void {
       if (step.status !== 'queued') continue;
       const parent = parentOf(step);
       if (parent && parent.status !== 'done') { step.status = 'waiting'; continue; }
-      if (slotsInUse(step.resource) >= RESOURCE_SLOTS[step.resource]) continue;
+      if (slotsInUse(step.resource) >= RESOURCE_SLOTS[step.resource]) {
+        // The pool being full IS this row's reason, and it outranks whatever
+        // admission last said — a hold recorded before our own work took the
+        // card would otherwise sit on the row naming an external lock that may
+        // be long gone. Admission is not even asked below in this case, so this
+        // is the only place that stale answer can be retired.
+        clearAdmissionHold(step);
+        continue;
+      }
       if (step.resource === 'gpu') {
         const admission = gpuAdmission();
         if (!admission.ok) {
           // Said on the row, not swallowed. A queue that appears to be doing
           // nothing is indistinguishable from a broken one.
+          //
+          // Written to BOTH fields: `message` because every existing readout
+          // shows it, and `admissionHold` because a surface has to be able to
+          // ask "is this row being held off the card?" without guessing at
+          // prose. See StepProgress.admissionHold.
           admissionBlocked = true;
-          if (step.progress.message !== admission.reason) {
-            step.progress = { ...step.progress, message: admission.reason };
+          if (step.progress.admissionHold !== admission.reason) {
+            step.progress = {
+              ...step.progress,
+              message: admission.reason,
+              admissionHold: admission.reason,
+            };
             touchProgress();
           }
           continue;
         }
+        // Admission passed and a slot is free, so this step launches on the next
+        // line and `launch` blanks its progress wholesale. Nothing to clear.
       }
       void launch(job, step);
     }

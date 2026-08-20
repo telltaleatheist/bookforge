@@ -155,7 +155,7 @@ export class QueueToastsService {
         kicker: 'Run failed',
         title: job.title,
         meta: `${event.label}: ${event.error ?? 'no reason given.'}`,
-        cover: this.tray.jobs().find(card => card.id === job.id)?.cover ?? null,
+        cover: this.tray.coverForJobId(job.id),
         action: this.openAction(job),
       });
       return;
@@ -166,7 +166,7 @@ export class QueueToastsService {
       kicker: `Finished ${JOB_GERUND[event.type].toLowerCase()}`,
       title: job.title,
       meta: this.successMeta(job, event),
-      cover: this.tray.jobs().find(card => card.id === job.id)?.cover ?? null,
+      cover: this.tray.coverForJobId(job.id),
       action: this.openAction(job),
     });
   }

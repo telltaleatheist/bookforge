@@ -1,204 +1,310 @@
 /**
- * Queue Component - Main page for the unified processing queue
+ * The queue page — the same four bands the shelf draws, with room to breathe.
+ *
+ * ── What this replaces ──────────────────────────────────────────────────────
+ *
+ * A left list of rows beside a right panel that was empty half the time. The
+ * list duplicated the shelf; the panel, with nothing selected, followed whatever
+ * was RUNNING — which is how a narration's assembly step came to appear on
+ * screen only once it had started. Worse, the two surfaces spoke different
+ * dialects: the shelf spoke the engine's shape (a run, its steps, their
+ * lineage), the page spoke the retired flat one (master rows, child rows,
+ * `parentJobId`) translated on the fly.
+ *
+ * Both read `shared/queue/bench.ts` now, so there is one description of the
+ * queue and one set of words for it.
+ *
+ * ── The bands ───────────────────────────────────────────────────────────────
+ *
+ *   Needs you    — failures, with the engine's own sentence and the controls
+ *                  that resolve them. Not drawn when there are none.
+ *   On the bench — the three slots, always all three. The GPU card is the
+ *                  largest object on the page because the card is the resource
+ *                  the user schedules their day around.
+ *   Up next      — grouped by BOOK, each group drawing its chain with real
+ *                  lineage, every still step saying why it is still.
+ *   Finished     — today's work as history: what it produced and how long it
+ *                  took, in a table, not as more rows that look live.
+ *
+ * ── Detail expands in place ─────────────────────────────────────────────────
+ *
+ * Clicking a step opens its full readout (stages, workers, measurements) under
+ * the step itself, rendered by the same `app-job-step` the old panel used. The
+ * legacy row it needs is looked up by step id through the mirror — that
+ * projection is still the input JobEtaService measures against, and re-deriving
+ * throughput here would be a second opinion about a number that must not have
+ * two.
  */
 
-import { Component, inject, signal, computed, OnInit, OnDestroy, DestroyRef, ViewChild } from '@angular/core';
-import { CommonModule } from '@angular/common';
-import {
-  SplitPaneComponent,
-  ToolbarComponent,
-  ToolbarItem,
-  DesktopButtonComponent
-} from '../../creamsicle-desktop';
-import { QueueService } from './services/queue.service';
-import { JobEtaService } from './services/job-eta.service';
+import { Component, computed, inject, signal } from '@angular/core';
+import { DatePipe, DecimalPipe } from '@angular/common';
+
+import type { BookPlan, FinishedRun } from '@shared/queue/bench';
+import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { ElectronService } from '../../core/services/electron.service';
-import { JobListComponent } from './components/job-list/job-list.component';
-import { JobPanelComponent } from './components/job-panel/job-panel.component';
-import { QueueJob } from './models/queue.types';
+import { ToastService } from '../../core/services/toast.service';
+import { JobDetailsComponent } from './components/job-details/job-details.component';
+import { JobStepComponent } from './components/job-step/job-step.component';
+import { JobEtaService } from './services/job-eta.service';
+import { QueueService } from './services/queue.service';
+import { QueueTrayService } from './services/queue-tray.service';
 
 @Component({
   selector: 'app-queue',
   standalone: true,
-  imports: [
-    CommonModule,
-    SplitPaneComponent,
-    ToolbarComponent,
-    DesktopButtonComponent,
-    JobListComponent,
-    JobPanelComponent
-  ],
+  imports: [DatePipe, DecimalPipe, ToolbarComponent, JobStepComponent, JobDetailsComponent],
   template: `
-    <!-- Toolbar -->
-    <desktop-toolbar
-      [items]="toolbarItems()"
-      (itemClicked)="onToolbarAction($event)"
-    >
-    </desktop-toolbar>
+    <desktop-toolbar [items]="toolbarItems()" (itemClicked)="onToolbarAction($event)" />
 
-    <div class="queue-container">
-      <desktop-split-pane [primarySize]="320" [minSize]="250" [maxSize]="500">
-        <!-- Left Panel: Job List -->
-        <div pane-primary class="jobs-panel">
-          <div class="panel-header">
-            <h3>Processing Queue</h3>
-            <div class="header-actions">
-              @if (completedCount() > 0 || errorCount() > 0) {
-                <desktop-button
-                  variant="ghost"
-                  size="xs"
-                  title="Clear completed and errors"
-                  (click)="clearCompleted()"
-                >
-                  Clear Done
-                </desktop-button>
-              }
-              @if (queueService.jobs().length > 0) {
-                <desktop-button
-                  variant="ghost"
-                  size="xs"
-                  title="Clear all jobs from queue"
-                  (click)="clearAll()"
-                >
-                  Clear All
-                </desktop-button>
-              }
-            </div>
-          </div>
+    <div class="page">
 
-          <div class="queue-stats">
-            <div class="stat">
-              <span class="stat-value">{{ pendingCount() }}</span>
-              <span class="stat-label">Pending</span>
-            </div>
-            <div class="stat">
-              <span class="stat-value">{{ completedCount() }}</span>
-              <span class="stat-label">Complete</span>
-            </div>
-            @if (errorCount() > 0) {
-              <div class="stat error">
-                <span class="stat-value">{{ errorCount() }}</span>
-                <span class="stat-label">Errors</span>
-              </div>
-            }
-          </div>
+      <!-- ── Needs you ─────────────────────────────────────────────────── -->
+      @if (tray.failures().length > 0) {
+        <section class="band">
+          <header class="band-head bad">
+            <h2>Needs you · {{ tray.failures().length }}</h2>
+          </header>
 
-          <div class="jobs-list-container">
-            <!-- Active jobs (pending/processing) -->
-            @if (activeJobs().length > 0) {
-              <app-job-list
-                [jobs]="activeJobs()"
-                [stepsByJob]="stepsByJob()"
-                [selectedJobId]="selectedJobId()"
-                (remove)="removeJob($event)"
-                (retry)="retryJob($event)"
-                (cancel)="cancelJob($event)"
-                (select)="selectJob($event)"
-                (reorder)="reorderJobs($event)"
-                (runNow)="runJobStandalone($event)"
-                (resume)="resumeStoppedJob($event)"
-              />
-            } @else if (finishedJobs().length === 0) {
-              <div class="empty-jobs">
-                <p>No jobs in queue</p>
-              </div>
-            }
-
-            <!-- Completed jobs accordion -->
-            @if (finishedJobs().length > 0) {
-              <div class="completed-accordion">
-                <button
-                  class="accordion-header"
-                  (click)="completedExpanded.set(!completedExpanded())"
-                >
-                  <span class="accordion-icon">{{ completedExpanded() ? '▼' : '▶' }}</span>
-                  <span class="accordion-title">Completed</span>
-                  <span class="accordion-count">{{ finishedJobs().length }}</span>
-                </button>
-                @if (completedExpanded()) {
-                  <div class="accordion-content">
-                    <app-job-list
-                      [jobs]="finishedJobs()"
-                      [stepsByJob]="stepsByJob()"
-                      [selectedJobId]="selectedJobId()"
-                      (remove)="removeJob($event)"
-                      (retry)="retryJob($event)"
-                      (cancel)="cancelJob($event)"
-                      (select)="selectJob($event)"
-                      (reorder)="reorderJobs($event)"
-                      (runNow)="runJobStandalone($event)"
-                    />
-                  </div>
+          @for (run of tray.failures(); track run.stepId) {
+            <article class="card failed">
+              <div class="card-head">
+                @if (run.cover) {
+                  <img class="cover" [src]="run.cover" alt="" />
+                } @else {
+                  <span class="cover blank" aria-hidden="true"></span>
                 }
-              </div>
-            }
-          </div>
-
-        </div>
-
-        <!-- Right Panel: Selected Job / Current Job / Empty State -->
-        <div pane-secondary class="details-panel">
-          @switch (rightPanel().view) {
-            @case ('job') {
-              <!-- One view for everything: overall bar + total estimate, every step
-                   with its own bars, and the job's details beside them. -->
-              <app-job-panel
-                [job]="$any(rightPanel()).job"
-                [steps]="$any(rightPanel()).steps"
-                [collapsedStepIds]="collapsedStepIds()"
-                (cancel)="cancelJob($event)"
-                (remove)="removeJob($event)"
-                (retry)="retryJob($event)"
-                (runNow)="runJobStandalone($event)"
-                (resume)="resumeStoppedJob($event)"
-                (toggleStep)="toggleStep($event)"
-                (showInFolder)="showInFolder($event)"
-              />
-            }
-            @case ('empty') {
-              <div class="empty-state">
-                <div class="empty-icon">&#9881;</div>
-                <h2>Processing Queue</h2>
-                <p>Add jobs from the Audiobook Producer to process them automatically.</p>
-                <div class="instructions">
-                  <h4>How to use:</h4>
-                  <ol>
-                    <li>Go to the Audiobook Producer</li>
-                    <li>Select an EPUB file</li>
-                    <li>Choose "Add to Queue" for OCR Cleanup or TTS Conversion</li>
-                    <li>Return here and click "Start Processing"</li>
-                  </ol>
+                <div class="min">
+                  <h3>{{ run.title }} · {{ run.label }}</h3>
+                  @if (run.finishedAt) {
+                    <div class="sub">Failed {{ run.finishedAt | date:'shortTime' }}</div>
+                  }
+                </div>
+                <div class="acts">
+                  <button type="button" class="btn bad" (click)="retry(run.stepId)">Retry this step</button>
+                  <button type="button" class="btn" (click)="remove(run.jobId)">Remove</button>
                 </div>
               </div>
-            }
-            @case ('idle') {
-              <div class="idle-state">
-                @if (queueService.isRunning()) {
-                  <div class="idle-icon">&#10003;</div>
-                  <h3>Queue Running</h3>
-                  <p>Waiting for next job to process.</p>
+              <p class="error">{{ run.error }}</p>
+            </article>
+          }
+        </section>
+      }
+
+      <!-- ── On the bench ──────────────────────────────────────────────── -->
+      <section class="band">
+        <header class="band-head">
+          <h2>On the bench</h2>
+          <span class="note">{{ busyLanes() }} of {{ tray.lanes().length }} slots in use</span>
+        </header>
+
+        <div class="lanes">
+          @for (lane of tray.lanes(); track lane.resource + lane.index) {
+            <article
+              class="lcard"
+              [class.gpu]="lane.resource === 'gpu'"
+              [class.warn]="lane.hold"
+              [class.idle]="!lane.occupant && !lane.hold"
+            >
+              <div class="lcard-slot">
+                <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+                @if (lane.occupant; as busy) {
+                  <button type="button" class="btn bad xs" (click)="stop(busy.stepId)">Stop</button>
+                }
+              </div>
+
+              @if (lane.occupant; as busy) {
+                <div class="lcard-book">
+                  @if (lane.cover) {
+                    <img class="cover lg" [src]="lane.cover" alt="" />
+                  } @else {
+                    <span class="cover lg blank" aria-hidden="true"></span>
+                  }
+                  <div class="min grow">
+                    <div class="act">{{ busy.verb }} <span>· {{ busy.label }}</span></div>
+                    <div class="sub">{{ busy.title }}</div>
+                  </div>
+                  <div class="right">
+                    @if (busy.percent !== null) {
+                      <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
+                    }
+                    <div class="eta">{{ lane.eta ?? 'not timed yet' }}</div>
+                  </div>
+                </div>
+
+                <div class="bar" [class.dim]="busy.percent === null">
+                  <i [style.width.%]="busy.percent ?? 0"></i>
+                </div>
+
+                @if (tray.detailFor(lane); as detail) {
+                  <div class="detail">{{ detail }}</div>
+                }
+              } @else if (lane.hold) {
+                <div class="held-off">
+                  <div class="act warn-text">Waiting for the card</div>
+                  <p class="why-long">{{ lane.hold }}</p>
+                </div>
+              } @else {
+                <div class="free">
+                  <div class="free-head">Free</div>
+                  <div class="free-sub">Nothing queued wants this slot</div>
+                </div>
+              }
+            </article>
+          }
+        </div>
+      </section>
+
+      <!-- ── Up next ───────────────────────────────────────────────────── -->
+      @if (tray.plans().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Up next</h2>
+            <span class="note">{{ plannedSteps() }} steps across {{ tray.plans().length }} books</span>
+          </header>
+
+          @for (plan of tray.plans(); track plan.key) {
+            <article class="card">
+              <div class="card-head">
+                @if (plan.cover) {
+                  <img class="cover" [src]="plan.cover" alt="" />
                 } @else {
-                  <div class="idle-icon">&#9654;</div>
-                  <h3>Ready to Process</h3>
-                  <p>{{ activeJobs().length }} job(s) in queue</p>
-                  <p class="hint">Click a job to view details</p>
-                  @if (activeJobs().length > 0) {
-                    <desktop-button
-                      variant="primary"
-                      size="md"
-                      (click)="startQueue()"
-                    >
-                      Start Processing
-                    </desktop-button>
+                  <span class="cover blank" aria-hidden="true"></span>
+                }
+                <div class="min">
+                  <h3>{{ plan.title }}</h3>
+                  <div class="sub">{{ planSummary(plan) }}</div>
+                </div>
+                <div class="acts">
+                  @if (plan.allHeld) {
+                    <button type="button" class="btn go" (click)="startPlan(plan)">▶ Start this book</button>
+                  }
+                  @for (jobId of plan.jobIds; track jobId) {
+                    <button type="button" class="btn" (click)="remove(jobId)">Remove</button>
+                  }
+                </div>
+              </div>
+
+              <div class="chain">
+                @for (step of plan.steps; track step.stepId) {
+                  <div class="cstep" [class.on]="step.status === 'running'">
+                    <span class="spine" aria-hidden="true"></span>
+                    <span
+                      class="sdot"
+                      [class.run]="step.status === 'running'"
+                      [class.wait]="step.status === 'waiting' || step.status === 'queued'"
+                      [class.held]="step.status === 'held'"
+                      aria-hidden="true"
+                    ></span>
+
+                    <button type="button" class="cname" (click)="toggleStep(step.stepId)">
+                      {{ step.label }}
+                    </button>
+
+                    <span class="cmid">
+                      @if (step.reason; as reason) {
+                        <span class="why" [class.warn]="reason.kind === 'admission'">
+                          <span class="dot" aria-hidden="true"></span>{{ reason.sentence }}
+                        </span>
+                      } @else {
+                        <span class="why on-bench">
+                          <span class="dot" aria-hidden="true"></span>on the bench
+                        </span>
+                      }
+                    </span>
+
+                    <span class="cright">
+                      @if (step.percent !== null) {
+                        {{ step.percent | number:'1.0-0' }}%
+                      } @else if (step.status !== 'running') {
+                        not timed on this book
+                      }
+                      @if (step.startable) {
+                        <button type="button" class="btn go xs" (click)="start(step.stepId)">
+                          ▶ {{ step.reason?.kind === 'stopped' ? 'Resume' : 'Start' }}
+                        </button>
+                      }
+                    </span>
+                  </div>
+
+                  @if (expanded().has(step.stepId)) {
+                    @if (rowFor(step.stepId); as row) {
+                      <div class="expand">
+                        <div class="expand-cols">
+                          <app-job-step [job]="row" [expanded]="true" />
+                          <app-job-details [job]="row" (showInFolder)="showInFolder($event)" />
+                        </div>
+                      </div>
+                    } @else {
+                      <div class="expand">
+                        <p class="sub">This step has not reported anything yet.</p>
+                      </div>
+                    }
                   }
                 }
               </div>
-            }
+            </article>
           }
-        </div>
-      </desktop-split-pane>
-    </div>
+        </section>
+      }
 
+      @if (tray.plans().length === 0 && busyLanes() === 0 && tray.failures().length === 0) {
+        <section class="band">
+          <div class="empty">
+            <h2>Nothing is queued</h2>
+            <p>
+              Narrate a book from its versions page, or order a read in the Foundry window.
+              Work started anywhere in BookForge is scheduled here.
+            </p>
+          </div>
+        </section>
+      }
+
+      <!-- ── Finished ──────────────────────────────────────────────────── -->
+      @if (finished().length > 0) {
+        <section class="band">
+          <header class="band-head">
+            <h2>Finished today · {{ finished().length }}</h2>
+            <span class="note">
+              {{ tray.finished().failed.length }} failed
+              <button type="button" class="btn" (click)="clearFinished()">Clear finished</button>
+            </span>
+          </header>
+
+          <table class="ftable">
+            <thead>
+              <tr>
+                <th>Book</th><th>Act</th><th>Produced</th>
+                <th class="num">Took</th><th class="num">Finished</th><th></th>
+              </tr>
+            </thead>
+            <tbody>
+              @for (run of finished(); track run.stepId) {
+                <tr>
+                  <td class="b">{{ run.title }}</td>
+                  <td>{{ run.label }}</td>
+                  <td class="path">
+                    @if (run.outputPath) {
+                      <button type="button" class="link" (click)="showInFolder(run.outputPath!)">
+                        {{ fileName(run.outputPath) }}
+                      </button>
+                    } @else {
+                      —
+                    }
+                  </td>
+                  <td class="num">{{ took(run) }}</td>
+                  <td class="num">{{ run.finishedAt | date:'shortTime' }}</td>
+                  <td>
+                    <span class="pill" [class.ok]="run.status === 'done'" [class.bad]="run.status === 'failed'">
+                      {{ run.status }}
+                    </span>
+                  </td>
+                </tr>
+              }
+            </tbody>
+          </table>
+        </section>
+      }
+    </div>
   `,
   styles: [`
     :host {
@@ -206,530 +312,573 @@ import { QueueJob } from './models/queue.types';
       flex-direction: column;
       height: 100%;
       width: 100%;
+      min-height: 0;
     }
 
-    .queue-container {
+    .page {
       flex: 1;
+      overflow-y: auto;
+      padding: 4px 20px 40px;
+      background: var(--bg-base);
+    }
+
+    .min { min-width: 0; }
+    .grow { flex: 1; }
+
+    /* ── Bands ─────────────────────────────────────────────────────────── */
+
+    .band { margin-top: 20px; }
+
+    .band-head {
+      display: flex;
+      align-items: baseline;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+
+    .band-head h2 {
+      margin: 0;
+      font-size: 0.6875rem;
+      font-weight: 700;
+      letter-spacing: 0.13em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+
+    .band-head.bad h2 { color: var(--color-danger); }
+
+    .band-head .note {
+      margin-left: auto;
+      font-size: 0.6875rem;
+      color: var(--text-muted);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+
+    /* ── Cards ─────────────────────────────────────────────────────────── */
+
+    .card {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      margin-bottom: 10px;
       overflow: hidden;
     }
 
-    .jobs-panel {
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      background: var(--bg-sidebar);
+    .card.failed {
+      border-color: var(--color-danger);
+      background: var(--bg-elevated);
     }
 
-    .panel-header {
+    .card-head {
       display: flex;
       align-items: center;
-      justify-content: space-between;
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--border-default);
-
-      h3 {
-        margin: 0;
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
+      gap: 11px;
+      padding: 11px 14px;
     }
 
-    .header-actions {
-      display: flex;
-      gap: 0.25rem;
-    }
-
-    .queue-stats {
-      display: flex;
-      gap: 1rem;
-      padding: 0.75rem 1rem;
-      border-bottom: 1px solid var(--border-subtle);
-      background: var(--bg-base);
-    }
-
-    .stat {
-      display: flex;
-      align-items: baseline;
-      gap: 0.375rem;
-
-      &.error {
-        color: var(--error);
-      }
-    }
-
-    .stat-value {
-      font-size: 1rem;
+    .card-head h3 {
+      margin: 0;
+      font-size: 0.8125rem;
       font-weight: 600;
       color: var(--text-primary);
-
-      .error & {
-        color: var(--error);
-      }
     }
 
-    .stat-label {
+    .sub { font-size: 0.6875rem; color: var(--text-tertiary); }
+
+    .acts { margin-left: auto; display: flex; gap: 6px; flex: none; }
+
+    .error {
+      margin: 0;
+      padding: 0 14px 12px;
       font-size: 0.75rem;
       color: var(--text-secondary);
+      line-height: 1.5;
+      white-space: pre-wrap;
     }
 
-    .jobs-list-container {
-      flex: 1;
-      overflow-y: auto;
-      padding: 0.75rem;
+    /* ── Covers ────────────────────────────────────────────────────────── */
+
+    .cover {
+      width: 26px;
+      height: 38px;
+      border-radius: 4px;
+      flex: none;
+      object-fit: cover;
+      background: var(--bg-input);
+      display: block;
     }
 
-    .empty-jobs {
-      text-align: center;
-      padding: 2rem;
+    .cover.lg { width: 34px; height: 50px; }
+    .cover.blank { border: 1px solid var(--border-subtle); }
+
+    /* ── Buttons ───────────────────────────────────────────────────────── */
+
+    .btn {
+      font-family: inherit;
+      font-size: 0.6875rem;
+      padding: 4px 10px;
+      border-radius: 5px;
+      border: 1px solid var(--border-default);
+      background: transparent;
       color: var(--text-secondary);
-      font-size: 0.875rem;
+      cursor: pointer;
+      white-space: nowrap;
     }
 
-    .completed-accordion {
-      margin-top: 1rem;
-      border-top: 1px solid var(--border-subtle);
-      padding-top: 0.75rem;
+    .btn:hover { color: var(--text-primary); border-color: var(--border-strong); }
+
+    .btn.go {
+      border-color: transparent;
+      background: var(--accent-subtle);
+      color: var(--accent);
+      font-weight: 600;
     }
 
-    .accordion-header {
+    .btn.bad {
+      border-color: transparent;
+      background: var(--warning-bg);
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
+    .btn.xs { padding: 2px 8px; font-size: 0.625rem; }
+
+    /* ── Lanes ─────────────────────────────────────────────────────────── */
+
+    .lanes {
+      display: grid;
+      grid-template-columns: 1.7fr 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 1000px) { .lanes { grid-template-columns: 1fr; } }
+
+    .lcard {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-top: 2px solid var(--border-default);
+      border-radius: 8px;
+      padding: 11px 13px 13px;
+      min-width: 0;
+    }
+
+    .lcard.gpu { border-top-color: var(--accent); }
+    .lcard.warn { border-top-color: var(--warning); }
+    .lcard.idle { border-style: dashed; border-top-style: solid; }
+
+    .lcard-slot {
       display: flex;
       align-items: center;
-      gap: 0.5rem;
-      width: 100%;
-      padding: 0.5rem;
+      gap: 8px;
+      margin-bottom: 10px;
+      font-size: 0.5625rem;
+      letter-spacing: 0.12em;
+      text-transform: uppercase;
+      color: var(--text-muted);
+    }
+
+    .lcard-slot button { margin-left: auto; }
+
+    .lcard-book { display: flex; gap: 10px; align-items: flex-start; }
+
+    .act {
+      font-size: 0.875rem;
+      font-weight: 600;
+      color: var(--text-primary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .act span { font-weight: 400; color: var(--text-secondary); }
+    .act.warn-text { color: var(--warning-text); }
+
+    .right { text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+    .pct { font-size: 1.0625rem; font-weight: 600; color: var(--accent); }
+    .eta { font-size: 0.625rem; color: var(--text-tertiary); }
+
+    .bar {
+      height: 5px;
+      border-radius: 3px;
+      background: var(--bg-input);
+      overflow: hidden;
+      margin-top: 10px;
+    }
+
+    .bar i {
+      display: block;
+      height: 100%;
+      border-radius: 3px;
+      background: linear-gradient(90deg, var(--accent-hover), var(--accent));
+      transition: width 0.4s ease;
+    }
+
+    .bar.dim i { background: transparent; }
+
+    .detail {
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      margin-top: 7px;
+    }
+
+    .held-off { padding: 4px 0 2px; }
+
+    .why-long {
+      margin: 6px 0 0;
+      font-size: 0.6875rem;
+      color: var(--warning-text);
+      line-height: 1.45;
+    }
+
+    .free { padding: 12px 0 6px; text-align: center; }
+    .free-head { font-size: 0.75rem; color: var(--text-tertiary); }
+    .free-sub { font-size: 0.625rem; color: var(--text-muted); margin-top: 3px; }
+
+    /* ── The chain ─────────────────────────────────────────────────────── */
+
+    .chain { padding: 0 14px 10px; }
+
+    .cstep {
+      display: grid;
+      grid-template-columns: 16px 160px 1fr auto;
+      align-items: center;
+      gap: 10px;
+      padding: 5px 0;
+      position: relative;
+    }
+
+    .spine {
+      position: absolute;
+      left: 7px;
+      top: -4px;
+      bottom: -4px;
+      width: 2px;
+      background: var(--border-default);
+    }
+
+    .cstep:first-child .spine { top: 50%; }
+    .cstep:last-child .spine { bottom: 50%; }
+
+    .sdot {
+      width: 15px;
+      height: 15px;
+      border-radius: 50%;
+      position: relative;
+      z-index: 1;
+      background: var(--bg-surface);
+      box-sizing: border-box;
+      display: grid;
+      place-items: center;
+    }
+
+    .sdot.run { border: 2px solid var(--accent); }
+
+    .sdot.run::after {
+      content: '';
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: var(--accent);
+      animation: q-pulse 1.4s ease-in-out infinite;
+    }
+
+    .sdot.wait { border: 2px dashed var(--text-muted); }
+    .sdot.held { border: 2px dashed var(--text-tertiary); background: var(--bg-input); }
+
+    @keyframes q-pulse {
+      0%, 100% { opacity: 0.35; transform: scale(0.75); }
+      50% { opacity: 1; transform: scale(1); }
+    }
+
+    .cname {
+      font-family: inherit;
+      font-size: 0.75rem;
+      text-align: left;
+      color: var(--text-secondary);
       background: transparent;
       border: none;
-      border-radius: 4px;
+      padding: 0;
       cursor: pointer;
-      color: var(--text-secondary);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .cname:hover { color: var(--accent); }
+    .cstep.on .cname { color: var(--text-primary); font-weight: 600; }
+
+    .cmid { min-width: 0; }
+
+    .why {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      background: var(--bg-input);
+      border-radius: 3px;
+      padding: 2px 8px;
+      max-width: 100%;
+    }
+
+    .why.warn { color: var(--warning-text); background: var(--warning-bg); }
+    .why.on-bench { color: var(--accent); background: var(--accent-subtle); }
+
+    .why .dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: currentColor;
+      flex: none;
+    }
+
+    .cright {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+      font-variant-numeric: tabular-nums;
+      white-space: nowrap;
+    }
+
+    .expand {
+      margin: 2px 0 8px 26px;
+      border-left: 2px solid var(--border-default);
+      padding: 8px 0 4px 14px;
+    }
+
+    /* The step's own bars beside the facts about it — the two halves the old
+       right-hand panel showed one at a time behind a "Sub-tasks" toggle. */
+    .expand-cols {
+      display: grid;
+      grid-template-columns: 1.4fr 1fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    @media (max-width: 900px) { .expand-cols { grid-template-columns: 1fr; } }
+
+    /* ── Finished ──────────────────────────────────────────────────────── */
+
+    .ftable {
+      width: 100%;
+      border-collapse: collapse;
       font-size: 0.75rem;
-      font-weight: 500;
+    }
+
+    .ftable th {
+      text-align: left;
+      font-size: 0.5625rem;
+      font-weight: 400;
+      letter-spacing: 0.11em;
       text-transform: uppercase;
-      letter-spacing: 0.05em;
-      transition: background 0.15s;
-
-      &:hover {
-        background: var(--bg-hover);
-      }
+      color: var(--text-muted);
+      padding: 0 10px 6px 0;
+      border-bottom: 1px solid var(--border-subtle);
     }
 
-    .accordion-icon {
-      font-size: 0.625rem;
-      opacity: 0.7;
+    .ftable td {
+      padding: 7px 10px 7px 0;
+      border-bottom: 1px solid var(--border-subtle);
+      color: var(--text-secondary);
     }
 
-    .accordion-title {
-      flex: 1;
+    .ftable td.b { color: var(--text-primary); }
+    .ftable td.num { text-align: right; font-variant-numeric: tabular-nums; }
+    .ftable th.num { text-align: right; }
+
+    .link {
+      font-family: inherit;
+      font-size: inherit;
+      background: transparent;
+      border: none;
+      padding: 0;
+      color: var(--accent);
+      cursor: pointer;
       text-align: left;
     }
 
-    .accordion-count {
-      background: var(--bg-elevated);
-      padding: 0.125rem 0.5rem;
-      border-radius: 10px;
-      font-size: 0.6875rem;
+    .pill {
+      display: inline-block;
+      font-size: 0.5625rem;
+      padding: 1px 8px;
+      border-radius: 9px;
+      background: var(--bg-input);
+      color: var(--text-tertiary);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
     }
 
-    .accordion-content {
-      padding-top: 0.5rem;
-    }
+    .pill.ok { background: var(--accent-subtle); color: var(--accent); }
+    .pill.bad { background: var(--warning-bg); color: var(--color-danger); }
 
-    .details-panel {
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      background: var(--bg-base);
-      padding: 1rem;
-    }
+    /* ── Empty ─────────────────────────────────────────────────────────── */
 
-    .empty-state,
-    .idle-state {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      height: 100%;
+    .empty {
       text-align: center;
-      padding: 2rem;
-      color: var(--text-secondary);
+      padding: 48px 20px;
+      color: var(--text-tertiary);
     }
 
-    .empty-icon,
-    .idle-icon {
-      font-size: 3rem;
-      margin-bottom: 1rem;
-      opacity: 0.5;
-    }
-
-    .empty-state h2,
-    .idle-state h3 {
-      margin: 0 0 0.5rem 0;
-      font-size: 1.25rem;
+    .empty h2 {
+      margin: 0 0 8px;
+      font-size: 1.125rem;
       font-weight: 600;
       color: var(--text-primary);
     }
 
-    .empty-state p,
-    .idle-state p {
-      margin: 0 0 1rem 0;
-      max-width: 350px;
+    .empty p { margin: 0 auto; max-width: 44ch; font-size: 0.8125rem; line-height: 1.55; }
+
+    @media (prefers-reduced-motion: reduce) {
+      .sdot.run::after { animation: none; opacity: 1; }
+      .bar i { transition: none; }
     }
-
-    .idle-state desktop-button {
-      margin-top: 0.5rem;
-    }
-
-    .idle-state .hint {
-      font-size: 0.75rem;
-      color: var(--text-muted);
-      margin-top: 0.5rem;
-    }
-
-
-    .instructions {
-      text-align: left;
-      background: var(--bg-elevated);
-      padding: 1rem 1.5rem;
-      border-radius: 8px;
-      border: 1px solid var(--border-subtle);
-
-      h4 {
-        margin: 0 0 0.75rem 0;
-        font-size: 0.875rem;
-        font-weight: 600;
-        color: var(--text-primary);
-      }
-
-      ol {
-        margin: 0;
-        padding-left: 1.25rem;
-
-        li {
-          margin-bottom: 0.375rem;
-          font-size: 0.875rem;
-
-          &:last-child {
-            margin-bottom: 0;
-          }
-        }
-      }
-    }
-
-  `]
+  `],
 })
-export class QueueComponent implements OnInit, OnDestroy {
-  readonly queueService = inject(QueueService);
+export class QueueComponent {
+  readonly tray = inject(QueueTrayService);
+  private readonly queueService = inject(QueueService);
   private readonly electronService = inject(ElectronService);
-  private readonly destroyRef = inject(DestroyRef);
-  private readonly jobEta = inject(JobEtaService);
+  private readonly eta = inject(JobEtaService);
+  private readonly toasts = inject(ToastService);
 
-  // Selected job state
-  readonly selectedJobId = signal<string | null>(null);
+  /** Steps whose full readout the user has opened. Closed is the default. */
+  readonly expanded = signal<ReadonlySet<string>>(new Set());
 
-  // Steps the user has explicitly folded away. Expanded is the default — the panel
-  // exists to show everything at once — so this tracks the exceptions, not the rule.
-  readonly collapsedStepIds = signal<Set<string>>(new Set());
+  readonly finished = computed(() => this.tray.finishedToday());
 
-  // Diff modal state
-
-  // Computed: get the selected job object
-  readonly selectedJob = computed(() => {
-    const id = this.selectedJobId();
-    if (!id) return null;
-    return this.queueService.jobs().find(j => j.id === id) || null;
-  });
-
-  /**
-   * Single computed driving the entire right panel, as a discriminated union so the
-   * template is one flat @switch.
-   *
-   *   'job'   — the selected job (or, with nothing selected, whatever is running):
-   *             overall progress, every step, and the details, all at once.
-   *   'empty' — no jobs at all
-   *   'idle'  — jobs exist but none selected and nothing running
-   *
-   * A standalone job reports itself as its own single step, so the panel has one
-   * shape to render whether or not the job is part of a workflow.
-   *
-   * The anchor is resolved UP to the run it belongs to before anything is read off
-   * it. With nothing selected the panel follows whatever is RUNNING, which is a
-   * workflow CHILD, and a child knows only itself — so a narration run showed the TTS
-   * step as the entire job and the assembly queued behind it appeared on screen only
-   * once it started, carrying its own five minutes into the master's Elapsed field.
-   * The run is what the panel is about; its later steps are rows from the moment they
-   * are queued.
-   */
-  readonly rightPanel = computed<
-    | { view: 'job'; job: QueueJob; steps: QueueJob[] }
-    | { view: 'empty' }
-    | { view: 'idle' }
-  >(() => {
-    const anchor = this.selectedJob() ?? this.queueService.currentJob();
-
-    if (anchor) {
-      const master = anchor.parentJobId
-        ? this.queueService.jobs().find(j => j.id === anchor.parentJobId)
-        : anchor;
-      // A child whose master row has been cleared out from under it is still a job,
-      // and it is then a run of one — the same shape as a standalone.
-      const job = master === undefined ? anchor : master;
-      const steps = this.queueService.getChildJobs(job.id);
-      // A workflow whose children haven't been created yet still needs a step to show.
-      return { view: 'job', job, steps: steps.length > 0 ? steps : [job] };
-    }
-
-    if (this.queueService.jobs().length === 0) {
-      return { view: 'empty' };
-    }
-
-    return { view: 'idle' };
-  });
-
-  // Computed: active jobs (pending + processing), excluding sub-jobs
-  readonly activeJobs = computed(() => {
-    // 'stopped' rows stay in the ACTIVE list — they're paused work waiting for an
-    // explicit resume (▶/Start), not finished work.
-    return this.queueService.jobs().filter(j => (j.status === 'pending' || j.status === 'processing' || j.status === 'stopped') && !j.parentJobId);
-  });
-
-  // Computed: finished jobs (complete + error), excluding sub-jobs
-  readonly finishedJobs = computed(() => {
-    return this.queueService.jobs().filter(j => (j.status === 'complete' || j.status === 'error') && !j.parentJobId);
-  });
-
-  /**
-   * The tasks belonging to each listed run, keyed by the run's row id.
-   *
-   * Built once per jobs() change and shared by both lists, so a run's whole task
-   * list is on screen the moment it is queued — not only once one of them is
-   * selected, and not only once a task starts.
-   */
-  readonly stepsByJob = computed<ReadonlyMap<string, QueueJob[]>>(() => {
-    const byMaster = new Map<string, QueueJob[]>();
-    for (const job of this.queueService.jobs()) {
-      if (!job.parentJobId) continue;
-      const steps = byMaster.get(job.parentJobId);
-      if (steps === undefined) byMaster.set(job.parentJobId, [job]);
-      else steps.push(job);
-    }
-    return byMaster;
-  });
-
-  // Local stats excluding sub-jobs
-  readonly pendingCount = computed(() => this.queueService.jobs().filter(j => j.status === 'pending' && !j.parentJobId).length);
-  readonly completedCount = computed(() => this.queueService.jobs().filter(j => j.status === 'complete' && !j.parentJobId).length);
-  readonly errorCount = computed(() => this.queueService.jobs().filter(j => j.status === 'error' && !j.parentJobId).length);
-
-  // Accordion state
-  readonly completedExpanded = signal(false);
-
-  // Toolbar
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
-    const isRunning = this.queueService.isRunning();
-    const hasCurrentJob = !!this.queueService.currentJob();
-    // Stopped jobs count as startable: Start is the explicit consent that flips
-    // them back to pending and resumes from their cached progress.
-    const hasPendingJobs = this.queueService.pendingJobs().length > 0
-      || this.queueService.jobs().some(j => j.status === 'stopped');
-
-    // State: paused while job is still finishing
-    const isPausing = !isRunning && hasCurrentJob;
-
-    const items: ToolbarItem[] = [];
-
-    // Start/Resume button - visible when not running (queue stopped or paused)
-    if (!isRunning) {
-      items.push({
-        id: 'start',
-        type: 'button',
-        icon: '\u25B6', // ▶
-        label: isPausing ? 'Resume' : 'Start',
-        tooltip: isPausing
-          ? 'Resume queue (process next job after current completes)'
-          : 'Start queue processing (resumes stopped jobs)',
-        disabled: !hasPendingJobs && !isPausing
-      });
-    }
-
-    // Pause button - visible when running OR when pausing (to show state)
-    if (isRunning || isPausing) {
-      items.push({
-        id: isPausing ? 'pausing' : 'pause',
-        type: 'button',
-        icon: '\u23F8', // ⏸
-        label: isPausing ? 'Pausing...' : 'Pause',
-        tooltip: isPausing
-          ? 'Queue will stop after current job completes'
-          : 'Pause queue (current job will complete, next job won\'t start)',
-        disabled: isPausing
-      });
-    }
-
-    // Stop button - visible when there's a current job
-    if (hasCurrentJob) {
-      items.push({
-        id: 'stop',
-        type: 'button',
-        icon: '\u25A0', // ■
-        label: 'Stop',
-        tooltip: 'Stop immediately and reset current job to pending'
-      });
-    }
-
-    items.push(
+    const isRunning = this.tray.isRunning();
+    return [
+      isRunning
+        ? {
+          id: 'pause',
+          type: 'button',
+          icon: '⏸',
+          label: 'Pause',
+          tooltip: 'Stop claiming new work. Anything already running keeps going.',
+        }
+        : {
+          id: 'start',
+          type: 'button',
+          icon: '▶',
+          label: 'Start',
+          tooltip: 'Claim work as slots free up.',
+        },
       {
         id: 'refresh',
         type: 'button',
-        icon: '\u21BB',
+        icon: '↻',
         label: 'Refresh',
-        tooltip: 'Re-sync with background jobs (use after app rebuild)'
+        tooltip: 'Re-read the queue from the app’s main process.',
       },
       { id: 'sep1', type: 'divider' },
-      { id: 'spacer', type: 'spacer' }
-    );
-
-    return items;
+      { id: 'spacer', type: 'spacer' },
+    ];
   });
 
-  ngOnInit(): void {
-    // Progress message updates happen via IPC
+  busyLanes(): number {
+    return this.tray.lanes().filter(lane => lane.occupant !== null).length;
   }
 
-  ngOnDestroy(): void {
-    // Cleanup handled by DestroyRef
+  plannedSteps(): number {
+    return this.tray.plans().reduce((total, plan) => total + plan.steps.length, 0);
+  }
+
+  /** "3 steps · 1 on the bench", or "2 steps · held". */
+  planSummary(plan: BookPlan): string {
+    const count = `${plan.steps.length} step${plan.steps.length === 1 ? '' : 's'}`;
+    if (plan.allHeld) return `${count} · held, not started`;
+    const running = plan.steps.filter(s => s.status === 'running').length;
+    return running > 0 ? `${count} · ${running} on the bench` : `${count} · waiting`;
   }
 
   /**
-   * A queue command whose answer nobody is waiting for, with its refusal SAID.
+   * The mirror's legacy row for a step, or null.
    *
-   * Every one of these is now a call into main (the queue lives there), so it
-   * can be refused — "that step has already started", "there is no run by that
-   * id". Dropped on the floor, the button would look like it did nothing, which
-   * is the failure mode this whole wave exists to remove.
+   * Null is a real answer during the beat between a step being composed and the
+   * first `queue:changed` carrying it, and the template says so rather than
+   * rendering an empty readout that would look like a step reporting nothing.
    */
+  rowFor(stepId: string) {
+    return this.queueService.jobs().find(row => row.id === stepId) ?? null;
+  }
+
+  toggleStep(stepId: string): void {
+    const next = new Set(this.expanded());
+    if (next.has(stepId)) next.delete(stepId);
+    else next.add(stepId);
+    this.expanded.set(next);
+  }
+
+  /** How long a finished step took, from its own timestamps. */
+  took(run: FinishedRun): string {
+    if (!run.startedAt || !run.finishedAt) return '—';
+    const seconds = (new Date(run.finishedAt).getTime() - new Date(run.startedAt).getTime()) / 1000;
+    if (!Number.isFinite(seconds) || seconds < 0) return '—';
+    const s = Math.floor(seconds);
+    if (s < 60) return `${s}s`;
+    const hours = Math.floor(s / 3600);
+    const minutes = Math.floor((s % 3600) / 60);
+    if (hours > 0) return `${hours}h ${String(minutes).padStart(2, '0')}m`;
+    return `${minutes}m ${s % 60}s`;
+  }
+
+  fileName(filePath: string): string {
+    const parts = filePath.replace(/\\/g, '/').split('/');
+    return parts[parts.length - 1];
+  }
+
+  // ── Controls ─────────────────────────────────────────────────────────────
+  //
+  // Every one of these is a call into main, which can refuse — "that step has
+  // already started", "there is no run by that id". A refusal is SAID, because a
+  // button that appears to do nothing is the failure mode this whole redesign
+  // exists to remove.
+
   private report(work: Promise<unknown>): void {
     void work.catch((err: unknown) => {
-      console.error('[QUEUE]', err instanceof Error ? err.message : err);
+      this.toasts.problem(err instanceof Error ? err.message : String(err));
     });
   }
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
-      case 'start':
-        this.report(this.queueService.startQueue());
-        break;
-      case 'pause':
-        this.report(this.queueService.pauseQueue());
-        break;
-      case 'stop':
-        this.report(this.queueService.stopQueue());
-        break;
-      case 'refresh':
-        this.report(this.queueService.refreshFromBackend());
-        break;
+      case 'start': this.report(this.queueService.startQueue()); break;
+      case 'pause': this.report(this.queueService.pauseQueue()); break;
+      case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
     }
   }
 
-  async removeJob(jobId: string): Promise<void> {
-    if (this.collapsedStepIds().has(jobId)) {
-      const next = new Set(this.collapsedStepIds());
-      next.delete(jobId);
-      this.collapsedStepIds.set(next);
-    }
-    // Removing a MASTER takes its whole workflow with it (queue.service:1904-1910),
-    // so the selection has to be checked against every row that is about to go —
-    // not just the one that was clicked. Left pointing at a removed child, the
-    // detail panel silently falls back to `currentJob()` and shows a different
-    // job's progress under the row the user had open.
-    const removed = this.queueService.jobs().find(j => j.id === jobId);
-    const goingIds = new Set<string>([jobId]);
-    if (removed?.workflowId && !removed.parentJobId) {
-      for (const j of this.queueService.jobs()) {
-        if (j.workflowId === removed.workflowId) goingIds.add(j.id);
-      }
-    }
-    const selected = this.selectedJobId();
-    if (selected !== null && goingIds.has(selected)) {
-      this.selectedJobId.set(null);
-    }
-    this.jobEta.forget(jobId);
-    await this.queueService.removeJob(jobId);
+  start(stepId: string): void {
+    this.eta.forget(stepId);
+    this.report(this.tray.startStep(stepId));
   }
 
-  retryJob(jobId: string): void {
-    // A retry reuses the job id, so the previous run's throughput measurement has to
-    // go with it — otherwise the fresh run inherits the old run's speed and ETA.
-    this.jobEta.forget(jobId);
-    this.report(this.queueService.retryJob(jobId));
+  startPlan(plan: BookPlan): void {
+    this.report(this.tray.startPlan(plan));
   }
 
-  cancelJob(jobId: string): void {
-    this.report(this.queueService.cancelJob(jobId));
+  stop(stepId: string): void {
+    this.report(this.tray.stopStep(stepId));
   }
 
-  resumeStoppedJob(jobId: string): void {
-    this.jobEta.forget(jobId);
-    this.report(this.queueService.resumeStoppedJob(jobId));
+  retry(stepId: string): void {
+    this.report(this.tray.retryStep(stepId));
   }
 
-  async showInFolder(filePath: string): Promise<void> {
-    await this.electronService.showItemInFolder(filePath);
+  remove(jobId: string): void {
+    this.report(this.tray.removeRun(jobId));
   }
 
-  reorderJobs(event: { fromId: string; toId: string }): void {
-    this.report(this.queueService.reorderJobsById(event.fromId, event.toId));
+  clearFinished(): void {
+    this.report(this.tray.clearFinished());
   }
 
-  clearCompleted(): void {
-    this.forgetEtaFor(this.finishedJobs());
-    this.report(this.queueService.clearCompleted());
+  showInFolder(filePath: string): void {
+    this.report(this.electronService.showItemInFolder(filePath));
   }
-
-  clearAll(): void {
-    this.forgetEtaFor(this.queueService.jobs());
-    this.report(this.queueService.clearAll());
-  }
-
-  /** Drop cached throughput/stage state for jobs leaving the queue. */
-  private forgetEtaFor(jobs: QueueJob[]): void {
-    for (const job of jobs) {
-      this.jobEta.forget(job.id);
-      for (const child of this.queueService.getChildJobs(job.id)) {
-        this.jobEta.forget(child.id);
-      }
-    }
-  }
-
-  startQueue(): void {
-    this.report(this.queueService.startQueue());
-  }
-
-  /**
-   * Run a job standalone (doesn't chain to next job when complete)
-   * Allows running multiple jobs in parallel - useful for reassembly while TTS is running
-   */
-  async runJobStandalone(jobId: string): Promise<void> {
-    const success = await this.queueService.runJobStandalone(jobId);
-    if (!success) {
-      console.error('[Queue] Failed to start standalone job:', jobId);
-    }
-  }
-
-  selectJob(jobId: string): void {
-    // Clicking the already-selected job is a no-op — it must not disturb which
-    // steps the user has folded away.
-    if (this.selectedJobId() === jobId) return;
-    this.selectedJobId.set(jobId);
-  }
-
-  /** Fold a step away, or bring it back. Steps start expanded. */
-  toggleStep(stepId: string): void {
-    const next = new Set(this.collapsedStepIds());
-    if (next.has(stepId)) next.delete(stepId);
-    else next.add(stepId);
-    this.collapsedStepIds.set(next);
-  }
-
-
 }
