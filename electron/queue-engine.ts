@@ -70,6 +70,8 @@ import {
   type ArtifactKind,
   type ArtifactRef,
   type FoundryJobLineage,
+  type GpuThermalReading,
+  type GpuThermalSummary,
   type JobStageProgress,
   type JobType,
   type QueueJob,
@@ -353,6 +355,7 @@ export function snapshot(): QueueSnapshot {
   // A deep-enough copy: the mirror must not be able to reach back into the truth.
   return {
     running,
+    ...(gpuThermal === null ? {} : { gpuThermal: { ...gpuThermal } }),
     jobs: jobs.map((job) => ({
       ...job,
       steps: job.steps.map((step) => ({
@@ -925,6 +928,93 @@ export function retry(target: { jobId?: string; stepId?: string }): void {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
+// GPU thermal telemetry
+// ────────────────────────────────────────────────────────────────────────────
+//
+// The SAMPLING lives in main (electron/gpu-thermal-sampler.ts) — this engine
+// imports nothing that can run a process, which is what keeps it keeper-
+// testable. What lives here is the RECORD: the latest reading for the snapshot,
+// and a per-step accumulator so a finished run's analytics can say what the
+// card went through — which is how "the Himmler run was slow" stops being a
+// mystery and becomes "the card spent 40 minutes throttled".
+
+let gpuThermal: GpuThermalReading | null = null;
+
+interface ThermalAccumulator {
+  samples: number;
+  maxTempC: number;
+  sumTempC: number;
+  throttledSeconds: number;
+  /** When the previous sample landed, for crediting throttled wall-time. */
+  lastAt: number;
+}
+
+const thermalByStep = new Map<string, ThermalAccumulator>();
+
+/**
+ * Record a reading, or `null` for "nothing is sampling any more".
+ *
+ * Accumulates onto every RUNNING GPU step (the pool has one slot, so in
+ * practice one). Throttled time is credited as the gap since the previous
+ * sample when the CURRENT sample reports a throttle — wall-clock between
+ * samples is what the card actually spent, and counting fixed intervals would
+ * overcharge the first sample and undercharge a cadence change.
+ */
+export function recordGpuThermal(reading: GpuThermalReading | null): void {
+  if (reading === null) {
+    if (gpuThermal === null) return;
+    gpuThermal = null;
+    changed();
+    return;
+  }
+  gpuThermal = reading;
+  const now = new Date(reading.at).getTime();
+  for (const live of runningSteps.values()) {
+    if (live.resource !== 'gpu') continue;
+    const acc = thermalByStep.get(live.stepId);
+    if (acc === undefined) {
+      thermalByStep.set(live.stepId, {
+        samples: 1,
+        maxTempC: reading.tempC,
+        sumTempC: reading.tempC,
+        throttledSeconds: 0,
+        lastAt: now,
+      });
+      continue;
+    }
+    acc.samples += 1;
+    acc.maxTempC = Math.max(acc.maxTempC, reading.tempC);
+    acc.sumTempC += reading.tempC;
+    if (reading.throttleActive && now > acc.lastAt) {
+      acc.throttledSeconds += (now - acc.lastAt) / 1000;
+    }
+    acc.lastAt = now;
+  }
+  changed();
+}
+
+/** Whether anything is on the card — the sampler asks before spending a process. */
+export function hasRunningGpuStep(): boolean {
+  for (const live of runningSteps.values()) {
+    if (live.resource === 'gpu') return true;
+  }
+  return false;
+}
+
+/** The finished step's thermal story, for its analytics. Consumes the accumulator. */
+function takeThermalSummary(stepId: string): GpuThermalSummary | null {
+  const acc = thermalByStep.get(stepId);
+  thermalByStep.delete(stepId);
+  if (acc === undefined || acc.samples === 0) return null;
+  return {
+    samples: acc.samples,
+    maxTempC: acc.maxTempC,
+    avgTempC: Math.round((acc.sumTempC / acc.samples) * 10) / 10,
+    throttledSeconds: Math.round(acc.throttledSeconds),
+  };
+}
+
+// ────────────────────────────────────────────────────────────────────────────
 // GPU admission
 // ────────────────────────────────────────────────────────────────────────────
 
@@ -1231,6 +1321,17 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
   const stopped = live?.stopRequested === true;
   runningSteps.delete(step.id);
   step.finishedAt = new Date().toISOString();
+
+  // What the card went through, onto the run's analytics — however it ended.
+  // A run that was stopped BECAUSE the machine was cooking is exactly the one
+  // whose thermal story matters. Analytics flow verbatim to the project ledger,
+  // so this is how a slow week becomes attributable after the fact.
+  const thermal = takeThermalSummary(step.id);
+  if (thermal !== null && step.resource === 'gpu') {
+    const analytics = (step.analytics ?? {}) as Record<string, unknown>;
+    analytics['gpuThermal'] = thermal;
+    step.analytics = analytics;
+  }
 
   if (outcome.ok) {
     step.status = 'done';

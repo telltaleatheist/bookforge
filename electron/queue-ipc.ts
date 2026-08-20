@@ -26,6 +26,7 @@ import { app, ipcMain } from 'electron';
 
 import { broadcastToAllWindows } from './document-stage-run';
 import { gpuHolder } from './gpu-arbiter';
+import { startGpuThermalSampler } from './gpu-thermal-sampler';
 import * as engine from './queue-engine';
 import { registerAllStepModules } from './queue-steps';
 import type { AppendStepSpec, JobSpec } from './queue-engine';
@@ -54,6 +55,9 @@ export async function startQueueEngine(): Promise<void> {
     stateDir: app.getPath('userData'),
     gpuHolder,
   });
+  // Thermal telemetry: samples only while a GPU step runs, disables itself on
+  // machines with no nvidia-smi. See electron/gpu-thermal-sampler.ts.
+  startGpuThermalSampler();
   registerQueueIpc();
 }
 

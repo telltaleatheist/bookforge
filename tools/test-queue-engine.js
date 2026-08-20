@@ -260,6 +260,74 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
 });
 
+test('thermal readings accumulate onto the running GPU step and settle into its analytics', async () => {
+  const gpu = fakeModule('tts-conversion');
+  await fresh('thermal-analytics', [gpu]);
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  // Three samples, 20s apart by their own timestamps: cool, then two throttled.
+  const at = (s) => new Date(1755640000000 + s * 1000).toISOString();
+  engine.recordGpuThermal({ tempC: 71, throttleActive: false, at: at(0) });
+  engine.recordGpuThermal({ tempC: 86, throttleActive: true, at: at(20) });
+  engine.recordGpuThermal({ tempC: 87, fanPct: 96, throttleActive: true, at: at(40) });
+
+  // The snapshot carries the LATEST reading while sampling is live.
+  assert.strictEqual(engine.snapshot().gpuThermal.tempC, 87);
+  assert.strictEqual(engine.snapshot().gpuThermal.throttleActive, true);
+
+  gpu.runs[0].resolve();
+  await settle();
+
+  const step = stepsOf(job.id)[0];
+  const thermal = step.analytics && step.analytics.gpuThermal;
+  assert.ok(thermal, 'a GPU run that was sampled must carry its thermal story');
+  assert.strictEqual(thermal.samples, 3);
+  assert.strictEqual(thermal.maxTempC, 87);
+  assert.strictEqual(thermal.avgTempC, 81.3);
+  // Throttled wall-time is the gap since the PREVIOUS sample when the current
+  // one reports a throttle: 0→20 (arrived throttled) + 20→40 (still throttled).
+  assert.strictEqual(thermal.throttledSeconds, 40);
+});
+
+test('a null reading clears the snapshot, and an unsampled run carries no thermal story', async () => {
+  const gpu = fakeModule('tts-conversion');
+  await fresh('thermal-clear', [gpu]);
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  engine.recordGpuThermal({ tempC: 74, throttleActive: false, at: new Date().toISOString() });
+  assert.strictEqual(engine.snapshot().gpuThermal.tempC, 74);
+  engine.recordGpuThermal(null);
+  assert.strictEqual(engine.snapshot().gpuThermal, undefined,
+    'a stale temperature must not describe a card nothing is sampling');
+
+  // A second run that never gets a sample: analytics gain NO invented thermal key.
+  gpu.runs[0].resolve();
+  await settle();
+  const two = engine.enqueue({
+    title: 'Book two',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } }],
+  });
+  await settle();
+  gpu.runs[1].resolve();
+  await settle();
+  const step = stepsOf(two.id)[0];
+  assert.ok(!step.analytics || step.analytics.gpuThermal === undefined,
+    'no samples means no story — never a fabricated one');
+});
+
 test('a stage detail can be CLEARED, not only set', async () => {
   // The bridge sets "Loading model weights…" when a worker starts loading and
   // clears it when the model is loaded. Both guards on the way here used

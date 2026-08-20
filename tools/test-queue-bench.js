@@ -271,6 +271,22 @@ test('an occupied GPU slot carries no hold, so a busy card never reads as blocke
   assert.strictEqual(lanes[0].hold, null);
 });
 
+test('the GPU lane carries the thermal reading; CPU lanes never do', () => {
+  const running = step({ id: 's_r', status: 'running' });
+  const s = snap([job([running])]);
+  s.gpuThermal = { tempC: 86, fanPct: 96, throttleActive: true, at: '2026-08-19T22:40:00.000Z' };
+  const lanes = bench.benchLanes(s);
+  assert.strictEqual(lanes[0].thermal.tempC, 86);
+  assert.strictEqual(lanes[0].thermal.throttleActive, true);
+  assert.strictEqual(lanes[1].thermal, null);
+  assert.strictEqual(lanes[2].thermal, null);
+});
+
+test('no reading means no thermal on any lane — absent, not zero', () => {
+  const lanes = bench.benchLanes(snap([]));
+  assert.ok(lanes.every((l) => l.thermal === null));
+});
+
 // ── The bands ───────────────────────────────────────────────────────────────
 
 test('needsYou lists failed steps with the engine\'s own words', () => {

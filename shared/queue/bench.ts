@@ -34,6 +34,7 @@ import {
   RESOURCE_SLOTS,
   TERMINAL_STEP_STATUSES,
   jobStatus,
+  type GpuThermalReading,
   type JobStageProgress,
   type QueueJob,
   type QueueSnapshot,
@@ -245,6 +246,13 @@ export interface BenchLane {
    * because nothing wants it, which is a different fact and reads differently.
    */
   hold: string | null;
+  /**
+   * The card's latest reading, on the GPU lane only, while something samples.
+   * `throttleActive` on it is the warning: the driver itself saying the card is
+   * slowing down — which is what "the run is mysteriously slow" looked like
+   * from the outside before this existed.
+   */
+  thermal: GpuThermalReading | null;
 }
 
 /**
@@ -292,6 +300,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
         hold: occupant === null && index === occupants.length + 1
           ? admissionHoldFor(snapshot, resource)
           : null,
+        thermal: resource === 'gpu' ? (snapshot.gpuThermal ?? null) : null,
       });
     }
   }

@@ -405,6 +405,40 @@ export interface QueueJob {
   finishedAt?: string;
 }
 
+/**
+ * What the graphics card reported while a GPU step was running.
+ *
+ * Sampled by main (nvidia-smi, ~20s cadence), recorded onto the engine, carried
+ * on the snapshot, and NEVER persisted — a temperature is a fact about now.
+ *
+ * `throttleActive` is the DRIVER'S OWN verdict (the thermal bits of
+ * clocks_event_reasons.active), not a threshold this app invented. That is the
+ * difference between "the card says it is slowing itself down" and "we think
+ * 84° sounds hot" — the first is a measurement; found live on 2026-08-19, when
+ * a narration ran ~15% under its band at 86° with SW thermal slowdown active
+ * and a fan already at 96%.
+ */
+export interface GpuThermalReading {
+  tempC: number;
+  fanPct?: number;
+  powerW?: number;
+  clocksMhz?: number;
+  clocksMaxMhz?: number;
+  /** The driver reports a THERMAL slowdown in force right now. */
+  throttleActive: boolean;
+  /** ISO timestamp of the sample. */
+  at: string;
+}
+
+/** What a whole run experienced thermally, merged into its analytics at settle. */
+export interface GpuThermalSummary {
+  samples: number;
+  maxTempC: number;
+  avgTempC: number;
+  /** Seconds of the run the driver spent in thermal slowdown. */
+  throttledSeconds: number;
+}
+
 /** The engine's whole published state. */
 export interface QueueSnapshot {
   jobs: QueueJob[];
@@ -413,6 +447,12 @@ export interface QueueSnapshot {
    * a step that is already running (you stop those one at a time, deliberately).
    */
   running: boolean;
+  /**
+   * The card's latest reading while a GPU step runs; absent otherwise. Absent is
+   * the answer when nothing samples (no GPU step, or no nvidia-smi on this
+   * machine) — never a stale reading and never an invented one.
+   */
+  gpuThermal?: GpuThermalReading;
 }
 
 /**

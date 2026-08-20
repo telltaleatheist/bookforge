@@ -98,11 +98,15 @@ import { QueueTrayService } from '../../services/queue-tray.service';
           class="lane"
           [class.gpu]="lane.resource === 'gpu'"
           [class.warn]="lane.hold"
+          [class.hot]="lane.thermal?.throttleActive"
           [class.free]="!lane.occupant"
         >
           <div class="slot">
             <b>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }}</b>
             {{ lane.index }} of {{ lane.of }}
+            @if (lane.thermal; as thermal) {
+              <span class="temp" [class.hot]="thermal.throttleActive">{{ thermal.tempC }}°</span>
+            }
           </div>
 
           <div class="lane-body">
@@ -140,6 +144,13 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                     <span class="s-val">{{ stage.pct | number:'1.0-0' }}%</span>
                   </div>
                 }
+              }
+
+              @if (lane.thermal?.throttleActive) {
+                <span class="why hot-why">
+                  <span class="dot" aria-hidden="true"></span>
+                  Running hot — the card is throttling itself
+                </span>
               }
 
               @if (lane.speed; as speed) {
@@ -376,7 +387,23 @@ import { QueueTrayService } from '../../services/queue-tray.service';
     .lane + .lane { border-top: 1px solid var(--border-subtle); }
     .lane.gpu { border-left-color: var(--accent); }
     .lane.gpu.warn { border-left-color: var(--warning-text); }
+    .lane.gpu.hot { border-left-color: var(--color-danger); }
     .lane.free { border-left-color: var(--border-default); }
+
+    .temp {
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+      text-transform: none;
+      color: var(--text-tertiary);
+    }
+
+    .temp.hot { color: var(--color-danger); font-weight: 700; }
+
+    .why.hot-why {
+      color: var(--color-danger);
+      background: var(--warning-bg);
+      margin-top: 7px;
+    }
 
     .slot {
       font-size: 9px;

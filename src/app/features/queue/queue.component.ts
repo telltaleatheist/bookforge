@@ -103,6 +103,7 @@ import { QueueTrayService } from './services/queue-tray.service';
               class="lcard"
               [class.gpu]="lane.resource === 'gpu'"
               [class.warn]="lane.hold"
+              [class.hot]="lane.thermal?.throttleActive"
               [class.idle]="!lane.occupant && !lane.hold"
             >
               <!-- No per-slot Stop: Pause stops the run, and a second control for
@@ -110,7 +111,23 @@ import { QueueTrayService } from './services/queue-tray.service';
                    something different from "Pause" in the first place. -->
               <div class="lcard-slot">
                 <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
+                @if (lane.thermal; as thermal) {
+                  <span class="temp" [class.hot]="thermal.throttleActive">
+                    {{ thermal.tempC }}°C
+                    @if (thermal.fanPct !== undefined) { · fan {{ thermal.fanPct }}% }
+                  </span>
+                }
               </div>
+
+              <!-- The driver's own verdict, not a threshold this app invented.
+                   Said above the work because it explains the number below it:
+                   a throttled card is why a healthy run misses its band. -->
+              @if (lane.thermal?.throttleActive) {
+                <div class="hot-note">
+                  Running hot — the card is throttling itself, so this run is
+                  slower than the machine can go. Check fans and airflow.
+                </div>
+              }
 
               @if (lane.occupant; as busy) {
                 <div class="lcard-book">
@@ -503,7 +520,30 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .lcard.gpu { border-top-color: var(--accent); }
     .lcard.warn { border-top-color: var(--warning); }
+    /* A throttling card outranks the accent: heat is the fact of the moment. */
+    .lcard.hot { border-top-color: var(--color-danger); }
     .lcard.idle { border-style: dashed; border-top-style: solid; }
+
+    .temp {
+      margin-left: auto;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0;
+      text-transform: none;
+      font-size: 0.625rem;
+      color: var(--text-tertiary);
+    }
+
+    .temp.hot { color: var(--color-danger); font-weight: 700; }
+
+    .hot-note {
+      font-size: 0.6875rem;
+      line-height: 1.45;
+      color: var(--color-danger);
+      background: var(--warning-bg);
+      border-radius: 5px;
+      padding: 6px 9px;
+      margin-bottom: 10px;
+    }
 
     .lcard-slot {
       display: flex;
