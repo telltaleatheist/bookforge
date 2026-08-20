@@ -119,6 +119,8 @@ interface StepFinishedEvent {
   label: string;
   projectId?: string;
   success: boolean;
+  /** What it settled as. A user stop is `held`, which `success` cannot say. */
+  status: StepStatus;
   outputPath?: string;
   error?: string;
   analytics?: { jobId: string; [key: string]: unknown };

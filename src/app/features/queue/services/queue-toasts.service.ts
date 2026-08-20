@@ -29,7 +29,7 @@ import { DestroyRef, Injectable, NgZone, inject } from '@angular/core';
 import { Router } from '@angular/router';
 
 import type {
-  JobType, QueueJob as EngineJob, QueueNotice, QueueStep as EngineStep,
+  JobType, QueueJob as EngineJob, QueueNotice, QueueStep as EngineStep, StepStatus,
 } from '@shared/queue/engine-types';
 import { TERMINAL_STEP_STATUSES } from '@shared/queue/engine-types';
 import { JOB_GERUND } from '@shared/queue/job-words';
@@ -49,6 +49,8 @@ interface StepFinishedEvent {
   label: string;
   projectId?: string;
   success: boolean;
+  /** What the step settled as — see StepFinished.status in the engine. */
+  status: StepStatus;
   outputPath?: string;
   error?: string;
 }
@@ -140,6 +142,19 @@ export class QueueToastsService {
   private async announce(event: StepFinishedEvent): Promise<void> {
     const job = this.queue.snapshot().jobs.find(j => j.id === event.jobId);
     if (!job) return;
+
+    /*
+     * A STOP IS NOT NEWS. The user pressed the button; telling them it happened
+     * is a notification about their own gesture, and telling them it FAILED —
+     * which is what this did, because a stop reports `success: false` with no
+     * error — is worse than saying nothing.
+     *
+     * Both stopped shapes are silent: `held` is the resumable one (the step
+     * keeps what it rendered and offers Resume), `cancelled` the one whose work
+     * could not be picked up. Neither is a failure, and both are already drawn
+     * as themselves on the bench and in the shelf.
+     */
+    if (event.status === 'held' || event.status === 'cancelled') return;
 
     const wasLast = this.wasTheLastStep(job, event.stepId);
     if (event.success && !wasLast) return;

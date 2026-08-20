@@ -107,7 +107,11 @@ function mapProgress(p: Record<string, unknown>): StepReport {
     },
   };
   if (p['stages'] !== undefined) report.stages = p['stages'] as never;
-  if (p['stageDetail'] !== undefined) report.detail = p['stageDetail'] as string;
+  // ALWAYS sent, null when the bridge has none. The bridge sets a detail when a
+  // worker starts loading its model and CLEARS it when the model is loaded; a
+  // guard that only forwarded a present value dropped every clear, so the line
+  // it set was permanent. Same discipline as activeBatch above.
+  report.detail = (p['stageDetail'] as string | undefined) ?? null;
   return report;
 }
 

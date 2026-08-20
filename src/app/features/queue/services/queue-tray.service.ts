@@ -326,8 +326,21 @@ export class QueueTrayService {
   // control is "go and look somewhere else" is a status readout with an exit
   // link, which is what the old one was.
 
+  /**
+   * Pause, and MEAN it — Owen's ruling, 2026-08-19.
+   *
+   * Pause used to stop the queue CLAIMING work while leaving the running step
+   * going, which meant pressing it while a nine-hour narration held the card did
+   * nothing you could see for nine hours. It now stops the work as well, which
+   * is safe because a stop is resumable by construction: cancelling a running
+   * step settles it `held` + `wasInterrupted`, so Start picks it up from what is
+   * already rendered rather than from sentence zero.
+   *
+   * That is also why there is no separate Stop control anywhere: with Pause
+   * stopping the run, a second button would be the same act under two names.
+   */
   async toggleQueue(): Promise<void> {
-    if (this.queue.isRunning()) await this.queue.pauseQueue();
+    if (this.queue.isRunning()) await this.queue.stopQueue();
     else await this.queue.startQueue();
   }
 
@@ -339,11 +352,6 @@ export class QueueTrayService {
   /** Release every run in a book's plan, in order. */
   async startPlan(plan: BookPlan): Promise<void> {
     for (const jobId of plan.jobIds) await this.queue.runJobStandalone(jobId);
-  }
-
-  /** Stop the step in a lane. The work it has banked stays on disk. */
-  async stopStep(stepId: string): Promise<void> {
-    await this.queue.cancelJob(stepId);
   }
 
   async retryStep(stepId: string): Promise<void> {

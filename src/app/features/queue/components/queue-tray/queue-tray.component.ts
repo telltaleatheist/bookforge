@@ -132,10 +132,6 @@ import { QueueTrayService } from '../../services/queue-tray.service';
               @if (tray.detailFor(lane); as detail) {
                 <div class="detail">{{ detail }}</div>
               }
-
-              <div class="lane-acts">
-                <button type="button" class="tiny bad" (click)="stop(busy.stepId)">Stop</button>
-              </div>
             } @else if (lane.hold) {
               <div class="act warn-text">Waiting for the card</div>
               <span class="why warn"><span class="dot" aria-hidden="true"></span>{{ lane.hold }}</span>
@@ -618,10 +614,6 @@ export class QueueTrayComponent {
 
   async start(stepId: string): Promise<void> {
     await this.tray.startStep(stepId);
-  }
-
-  async stop(stepId: string): Promise<void> {
-    await this.tray.stopStep(stepId);
   }
 
   async retry(stepId: string): Promise<void> {

@@ -260,6 +260,38 @@ test('an external GPU lock holds the queue, and the row says why', async () => {
   assert.strictEqual(gpu.runs.length, 1, 'and it starts the moment the lock is gone');
 });
 
+test('a stage detail can be CLEARED, not only set', async () => {
+  // The bridge sets "Loading model weights…" when a worker starts loading and
+  // clears it when the model is loaded. Both guards on the way here used
+  // `!== undefined`, so the clear was dropped twice and the line was permanent:
+  // the queue announced a model was loading for the whole run after it had
+  // loaded (Owen, 2026-08-19). null is the answer "nothing to say"; OMITTING
+  // detail still means "no opinion, leave it alone".
+  const gpu = fakeModule('tts-conversion');
+  await fresh('detail-clear', [gpu]);
+  const job = engine.enqueue({
+    title: 'Book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  const run = gpu.runs[0];
+  run.ctx.report({ detail: 'Loading model weights…' });
+  assert.strictEqual(stepsOf(job.id)[0].progress.detail, 'Loading model weights…');
+
+  // An unrelated emit carrying no opinion must NOT wipe it.
+  run.ctx.report({ percent: 3 });
+  assert.strictEqual(stepsOf(job.id)[0].progress.detail, 'Loading model weights…',
+    'omitting detail means no opinion, not "blank it"');
+
+  // null is the clear.
+  run.ctx.report({ detail: null });
+  assert.strictEqual(stepsOf(job.id)[0].progress.detail, undefined,
+    'the model finished loading; the line saying it is loading must go');
+});
+
 test('a hold is recorded as its own field, not only as prose', async () => {
   // The tray asks "is this row being held off the card?" and must not have to
   // guess it from `message`, which also carries whatever a step says about

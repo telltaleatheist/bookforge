@@ -105,11 +105,11 @@ import { QueueTrayService } from './services/queue-tray.service';
               [class.warn]="lane.hold"
               [class.idle]="!lane.occupant && !lane.hold"
             >
+              <!-- No per-slot Stop: Pause stops the run, and a second control for
+                   the same act under another name is how "Stop" came to mean
+                   something different from "Pause" in the first place. -->
               <div class="lcard-slot">
                 <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
-                @if (lane.occupant; as busy) {
-                  <button type="button" class="btn bad xs" (click)="stop(busy.stepId)">Stop</button>
-                }
               </div>
 
               @if (lane.occupant; as busy) {
@@ -759,14 +759,15 @@ export class QueueComponent {
           type: 'button',
           icon: '⏸',
           label: 'Pause',
-          tooltip: 'Stop claiming new work. Anything already running keeps going.',
+          tooltip: 'Stop the queue AND what it is running. Anything stopped resumes '
+            + 'from what it has already rendered.',
         }
         : {
           id: 'start',
           type: 'button',
           icon: '▶',
           label: 'Start',
-          tooltip: 'Claim work as slots free up.',
+          tooltip: 'Claim work as slots free up, and resume anything that was stopped.',
         },
       {
         id: 'refresh',
@@ -847,8 +848,9 @@ export class QueueComponent {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
+      // Pause stops the RUN, not just the claiming — see QueueTrayService.toggleQueue.
       case 'start': this.report(this.queueService.startQueue()); break;
-      case 'pause': this.report(this.queueService.pauseQueue()); break;
+      case 'pause': this.report(this.queueService.stopQueue()); break;
       case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
     }
   }
@@ -860,10 +862,6 @@ export class QueueComponent {
 
   startPlan(plan: BookPlan): void {
     this.report(this.tray.startPlan(plan));
-  }
-
-  stop(stepId: string): void {
-    this.report(this.tray.stopStep(stepId));
   }
 
   retry(stepId: string): void {

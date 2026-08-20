@@ -91,10 +91,20 @@ export interface StepReport {
   percent?: number;
   message?: string;
   /**
-   * What the running stage is doing. NULLISH-KEPT: a one-off event (a download
-   * note) carries none, and blanking would flicker away the line mid-run.
+   * What the running stage is doing.
+   *
+   * OMITTED means "no opinion, leave it alone" — a one-off event (a download
+   * note) carries none, and blanking on every unrelated emit would flicker the
+   * line away mid-run. `null` means "there is nothing to say now", and CLEARS
+   * it.
+   *
+   * The distinction is load-bearing and was missing: with `undefined` serving
+   * both roles, a detail could be set and never removed. "Loading model
+   * weights…" is set when a worker starts loading and cleared when it finishes
+   * — and the clear was dropped, so the queue announced that a model was
+   * loading for the entire nine hours after it had loaded (Owen, 2026-08-19).
    */
-  detail?: string;
+  detail?: string | null;
   /** Stage bars. Nullish-kept, for the same reason. */
   stages?: JobStageProgress[];
   /**
@@ -303,6 +313,19 @@ export interface StepFinished {
   label: string;
   projectId?: string;
   success: boolean;
+  /**
+   * What the step SETTLED AS, which `success` cannot express.
+   *
+   * `success` is a boolean over three outcomes: it finished, it failed, or the
+   * USER STOPPED IT. A stop settles as `held` + `wasInterrupted` — resumable,
+   * deliberate, and not news — but it reported `success: false` with no error,
+   * so every listener that branched on the boolean announced "Run failed … no
+   * reason given" for a button the user had just pressed themselves.
+   *
+   * Carried as the status rather than a `stopped` flag because the status is the
+   * fact; a flag would be this one consumer's question baked into the event.
+   */
+  status: StepStatus;
   outputPath?: string;
   error?: string;
   analytics?: unknown;
@@ -1248,6 +1271,7 @@ function settleStep(job: QueueJob, step: QueueStep, outcome: StepOutcome): void 
     label: step.label,
     projectId: job.projectId,
     success: step.status === 'done',
+    status: step.status,
     outputPath: step.output?.path,
     error: step.error,
     analytics: step.analytics,
@@ -1264,7 +1288,10 @@ function applyReport(step: QueueStep, update: StepReport): void {
   if (update.message !== undefined) progress.message = update.message;
   // Nullish-kept: a one-off event carries no breakdown, and erasing the bars on
   // those would flicker them away mid-run.
-  if (update.detail !== undefined) progress.detail = update.detail;
+  // `in`, not `!== undefined`: null is an ANSWER here (nothing to say), and the
+  // guard that could not tell it from "no opinion" is why a stage detail could
+  // be set and never cleared. Same shape as activeBatch below.
+  if ('detail' in update) progress.detail = update.detail ?? undefined;
   if (update.stages !== undefined) progress.stages = update.stages;
   // Replaced, including to nothing: a landed batch must not leave a full bar.
   if ('activeBatch' in update) progress.activeBatch = update.activeBatch ?? undefined;
