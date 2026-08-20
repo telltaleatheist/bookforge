@@ -906,6 +906,23 @@ export async function saveSessionMetadata(
  * Matches the assembly logic from parallel-tts-bridge.ts
  */
 export async function startReassembly(
+  /**
+   * A STEP id, whatever this parameter is called.
+   *
+   * The live caller is queue-steps/reassembly.ts, which passes `ctx.stepId`,
+   * and the scratch directories named from it (`.gap-<id>`, `denoise-<id>`) are
+   * therefore step-named — which is exactly what lets the startup sweep spare
+   * them by matching against the queue's non-terminal STEP ids
+   * (`liveStepIds` in main.ts). Not renamed to `stepId` because the name also
+   * appears as the `jobId` key in every reassembly log record and in the job
+   * analytics, and changing a persisted field name to make a parameter read
+   * better is a cost paid by everything that reads those records.
+   *
+   * The other caller — the `reassembly:start` IPC — passes an unconstrained id,
+   * and its renderer wrapper has no callers, so nothing live goes through it.
+   * If that door is ever wired back up, it must pass a step id or the sweep
+   * will not recognise its scratch (bookforge-mac-2's review, 2026-08-20).
+   */
   jobId: string,
   config: ReassemblyConfig,
   mainWindow: BrowserWindow | null

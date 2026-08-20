@@ -2385,9 +2385,14 @@ async function liveStepIds(): Promise<Set<string>> {
   const ids = new Set<string>();
   try {
     const { snapshot } = await import('./queue-engine.js');
+    const { TERMINAL_STEP_STATUSES } = await import('../shared/queue/engine-types.js');
     for (const job of snapshot().jobs) {
       for (const step of job.steps) {
-        if (step.status === 'done' || step.status === 'failed' || step.status === 'cancelled') continue;
+        // The shared set, not a copy of its members: it exists "for a membership
+        // test that cannot go stale", and an inline triple here is the one site
+        // that would not follow a fourth terminal status (bookforge-mac-2's
+        // review, 2026-08-20).
+        if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
         ids.add(step.id);
       }
     }
@@ -12493,8 +12498,18 @@ app.whenReady().then(async () => {
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
   applyE2aScratchDir();
-  // Religiously clear the e2a tmp dir on every startup — nothing is converting
-  // yet, so any leftovers are from prior/failed/interrupted runs.
+  /*
+   * Clear the e2a tmp dir, EXCEPT what the queue still has plans for.
+   *
+   * The old licence here read "nothing is converting yet, so any leftovers are
+   * from prior/failed/interrupted runs". That expired when assembly left the
+   * GPU pool — see sweepDirContents. What makes the exception work is the line
+   * ABOVE this one being `await startQueueEngine()` (earlier in this function):
+   * the engine has loaded and revived its persisted state by now, so
+   * `liveStepIds` has something true to answer with. Stated because the two
+   * sites are seventy lines apart and an ordering nobody names is an ordering
+   * somebody moves (bookforge-mac-2's review, 2026-08-20).
+   */
   void cleanE2aTmpDir();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────
