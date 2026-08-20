@@ -706,8 +706,24 @@ export function splitIntoSentences(
  * char limit for English). The normal audiobook pipeline runs through e2a, which
  * caps sentence length itself; the streaming TTS API path feeds sentences straight
  * to the worker pool, so it must cap them here or long sentences get cut off.
+ *
+ * THIS IS AN XTTS NUMBER AND ONLY XTTS SHOULD GET IT. It was the default for every
+ * streaming caller until 2026-08-19, which meant Orpheus — whose limit is a token
+ * budget an order of magnitude larger — had its sentences broken at commas for a
+ * ceiling that is not its own. Orpheus callers pass `orpheusStreamMaxChars(voice)`
+ * (orpheus-models.ts), the same voice-manifest channel the audiobook path reads.
  */
 const TTS_MAX_CHARS = 240;
+
+/**
+ * A piece shorter than this is not worth being its own TTS inference: the model
+ * gets no context, and the reader hears an isolated fragment with a pause on each
+ * side of it. Mirrors e2a's `SENTENCE_MIN_CHARS` floor (lib/core.py
+ * `_sentence_min_chars`, same 25-char default), which the audiobook path has always
+ * applied and this one never did — a 249-char sentence against a 240 cap produced
+ * a 238-char piece and the orphan `"religion)."`, spoken alone.
+ */
+const MIN_SEGMENT_CHARS = 25;
 
 /**
  * Sentence-split for the streaming TTS path, then break any sentence that exceeds
@@ -715,6 +731,9 @@ const TTS_MAX_CHARS = 240;
  * as a last resort), re-packing small pieces to keep the segment count low. Unlike
  * splitIntoSentences this is safe to sub-split because there's no translation
  * alignment to preserve — each segment is just one TTS inference.
+ *
+ * `maxChars` defaults to the XTTS limit; an Orpheus caller MUST pass its own — see
+ * TTS_MAX_CHARS above.
  */
 export function splitForTts(text: string, locale: string = 'en', maxChars: number = TTS_MAX_CHARS): string[] {
   const out: string[] = [];
@@ -743,6 +762,17 @@ function capSegment(sentence: string, maxChars: number): string[] {
     const last = packed[packed.length - 1];
     if (last && last.length + 1 + piece.length <= maxChars) packed[packed.length - 1] = `${last} ${piece}`;
     else packed.push(piece);
+  }
+  // Starvation floor, AFTER packing: the greedy packer fills to the cap and leaves
+  // whatever is left over, so a sentence a few chars past the cap ends in a scrap.
+  // Absorb it into its neighbour even though that exceeds maxChars — a cap is a
+  // guard against truncation, and going a few percent over it costs far less than
+  // speaking one word on its own. Nothing here can produce a piece longer than
+  // maxChars + MIN_SEGMENT_CHARS.
+  for (let i = packed.length - 1; i > 0; i--) {
+    if (packed[i].length >= MIN_SEGMENT_CHARS) continue;
+    packed[i - 1] = `${packed[i - 1]} ${packed[i]}`;
+    packed.splice(i, 1);
   }
   return packed;
 }

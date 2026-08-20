@@ -1216,6 +1216,50 @@ export function orpheusVoiceCapsForModel(model: OrpheusModel): OrpheusVoiceCaps 
 }
 
 /**
+ * Orpheus packing cap when no voice declares one. e2a's own batch default is 350
+ * (lib/core.py, raised from 200 on 2026-07-12 for prosody, with a comment reading
+ * "450 fails everywhere"). That verdict was reached against a fleet that included
+ * rohan-v2, since proven to be a broken training recipe; the EOS-safe voices this
+ * app actually ships (deathstalker, owen, thirdreich) were 0/126 on the chunks that
+ * broke it, and Owen reports 450 clean in listening. Set here, deliberately ABOVE
+ * e2a's default, on his call — the truncation guards downstream (the token cap and
+ * the chars/sec rate guard) are what actually catch a runaway, and they are per-voice.
+ *
+ * A voice that declares `maxChars` overrides this, which is the real fix: the number
+ * belongs on the voice, not in a constant.
+ */
+export const ORPHEUS_STREAM_MAX_CHARS = 450;
+
+/**
+ * The packing cap for one STREAMING Orpheus voice — the streaming half of the rule
+ * the audiobook path has always applied (parallel-tts-bridge → ORPHEUS_MAX_CHARS).
+ *
+ * Streaming used to split at a hard-coded 240, which is XTTS's per-inference limit
+ * and has nothing to do with Orpheus; a 249-char sentence came out as 238 chars plus
+ * the word "religion)." spoken on its own. The voice manifest already carries
+ * `maxChars` and the resident server is already handed it — orpheus_stream.py accepts
+ * it and ignores it BY NAME, because packing is the caller's job. This is the caller
+ * doing it.
+ *
+ * Resolution failure is NOT fatal here: the voice has already been loaded by the time
+ * anything is split, so a throw would be a new failure on a working read. Fall back to
+ * the shared default and say so, rather than refusing to speak.
+ */
+export function orpheusStreamMaxChars(voice: string): number {
+  try {
+    const model = resolveOrpheusModel(voice, 'stream');
+    const declared = model ? orpheusVoiceCapsForModel(model).maxChars : undefined;
+    return declared ?? ORPHEUS_STREAM_MAX_CHARS;
+  } catch (err) {
+    console.warn(
+      `[orpheus-models] could not resolve packing cap for '${voice}' `
+      + `(${(err as Error).message}); using ${ORPHEUS_STREAM_MAX_CHARS}`,
+    );
+    return ORPHEUS_STREAM_MAX_CHARS;
+  }
+}
+
+/**
  * The FINAL-encode ffmpeg audio-filter chain declared on an Orpheus voice's manifest
  * entry, or undefined when the voice declares none (or is not a resolvable custom
  * voice — a stock/hand-dropped/unknown id). This is the SHARED read-path handler for

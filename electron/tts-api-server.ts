@@ -504,7 +504,13 @@ export class TtsApiServer {
     }
 
     const { splitForTts } = await import('./bilingual-processor.js');
-    const sentences = splitForTts(text, 'en');
+    // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
+    // audiobook path reads for ORPHEUS_MAX_CHARS. Every other engine keeps
+    // splitForTts's XTTS default, which is the only engine that number describes.
+    const maxChars = getSelectedEngineName() === 'orpheus'
+      ? (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice)
+      : undefined;
+    const sentences = splitForTts(text, 'en', maxChars);
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
       return;
