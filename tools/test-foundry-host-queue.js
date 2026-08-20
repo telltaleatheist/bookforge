@@ -117,6 +117,73 @@ const readRequest = (key = 'k1', project = PROJ) => ({
   language: 'en',
 });
 
+// ── The contract as FOUNDRY calls it ─────────────────────────────────────────
+//
+// Their job-queue sends host.enqueue(request, parentStep) — TWO arguments, the
+// project derived from the request. This suite once called only our three-arg
+// signature, which is how a row with projectDir undefined reached production
+// and crashed every snapshot push after it (2026-08-19, first live routed
+// enqueue). These cases test the derivation the wiring now performs.
+
+test('projectDirFromRequest derives the project the way Foundry itself would', () => {
+  const root = path.join(SCRATCH, 'projects-root');
+  const project = path.join(root, 'My_Book');
+  const derived = host.projectDirFromRequest(root, {
+    kind: 'read',
+    inputPath: path.join(project, 'archive', 'book.pdf'),
+    readingsPath: path.join(project, 'readings', 'k1.jsonl'),
+  });
+  assert.strictEqual(derived, project);
+
+  // A rendering names its file via outputPath, which wins as the identity path.
+  const rendered = host.projectDirFromRequest(root, {
+    kind: 'render',
+    inputPath: path.join(project, 'archive', 'book.pdf'),
+    outputPath: path.join(root, 'Other_Book', 'final', 'book.epub'),
+  });
+  assert.strictEqual(rendered, path.join(root, 'Other_Book'));
+});
+
+test('a request naming nothing under the projects root is REFUSED, not filed under undefined', () => {
+  const root = path.join(SCRATCH, 'projects-root');
+  assert.throws(
+    () => host.projectDirFromRequest(root, {
+      kind: 'read',
+      inputPath: 'C:\\somewhere\\else\\book.pdf',
+    }),
+    /cannot be filed under a project/,
+    'undefined here is the crash this function exists to prevent');
+});
+
+test('a persisted row with no projectDir does not crash the shelf push', async () => {
+  // The wound tonight's live run took: a step minted through the two-arg call
+  // sat in the queue with projectDir undefined, and every queue:changed pass
+  // died at fold(undefined). Such a row is now treated as not-a-Foundry-row —
+  // it runs and settles in OUR queue; it just cannot be filed on their shelf.
+  const mod = await fresh('no-projectdir');
+  const pushes = [];
+  host.setFoundrySeam({
+    runJob: null,
+    setQueueRows: (dir, rows) => pushes.push({ dir, rows }),
+    drained: null,
+  });
+
+  engine.enqueue({
+    title: 'poisoned',
+    release: false,
+    steps: [{
+      type: 'foundry-job',
+      label: 'Read the pages',
+      config: { type: 'foundry-job', request: readRequest(), parentStep: null, label: 'Read' },
+      sourceRef: { kind: 'none' },
+    }],
+  });
+  // The enqueue's own changed() already ran the listener; reaching here at all
+  // is the assertion that fold(undefined) no longer throws. rows() must agree.
+  assert.deepStrictEqual(host.foundryHostQueue.rows(PROJ), [],
+    'a row that names no project belongs to no project');
+});
+
 // ── The row comes back, and nothing has started ─────────────────────────────
 
 test('enqueue returns the row SYNCHRONOUSLY and starts nothing on that stack', async () => {

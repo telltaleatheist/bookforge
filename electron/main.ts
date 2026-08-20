@@ -90,7 +90,7 @@ import { hostStatusOf, type HostStatus } from './foundry-host-status';
 // mapping and the two pushes live beside the rows' and the chip's, for the same
 // reason they do.
 import {
-  foundryHostQueue, setFoundrySeam, watchFoundryQueue,
+  foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
   type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions,
 } from './foundry-host-queue';
 // The narrate operation's dialog: the fields Foundry is asked to draw, and the
@@ -378,11 +378,17 @@ interface FoundryHostRecord {
    * have our scheduler awaiting itself.
    */
   readonly hostQueue?: {
-    enqueue(
-      request: FoundryJobRequest,
-      parentStep: string | null,
-      projectDir: string,
-    ): FoundryJobRow;
+    /**
+     * TWO ARGUMENTS, because two is what Foundry sends. Their job-queue calls
+     * `host.enqueue(request, parentStep)` and derives the project from the
+     * request internally; our seam once declared a third `projectDir` parameter
+     * they never promised, the keeper tested our signature instead of their
+     * call, and the first live routed enqueue (2026-08-19) minted a row with
+     * `projectDir: undefined` that crashed every snapshot push after it. The
+     * wiring below derives the project from the request's own paths
+     * (`projectDirFromRequest`) before our module sees it.
+     */
+    enqueue(request: FoundryJobRequest, parentStep: string | null): FoundryJobRow;
     cancel(id: string): Promise<void>;
     remove(id: string): Promise<void>;
     start(): void;
@@ -12513,8 +12519,20 @@ app.whenReady().then(async () => {
      * ordered through the mount seam stays on Foundry's internal path, because
      * calling them IS the scheduling decision and routing it back would have our
      * scheduler awaiting itself (see foundry-host-queue.ts).
+     *
+     * `enqueue` is ADAPTED, not passed through: Foundry sends (request,
+     * parentStep) and our module files rows by project, so the project is
+     * derived HERE from the request's own paths — main is the file that knows
+     * where the projects root sits. A request naming no file under that root is
+     * refused at this door with the paths in the sentence (see
+     * projectDirFromRequest), never enqueued under `undefined` to poison every
+     * snapshot push after — which is what the first live routed enqueue did.
      */
-    hostQueue: foundryHostQueue,
+    hostQueue: {
+      ...foundryHostQueue,
+      enqueue: (request, parentStep) => foundryHostQueue.enqueue(
+        request, parentStep, projectDirFromRequest(foundryProjectsDir(), request)),
+    },
   });
   /*
    * Hand the mount's own three functions back to the queue module, and arm the

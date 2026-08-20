@@ -58,7 +58,23 @@ export const reassemblyStep: StepModule = {
   // it is given, and says so below when given neither.
   consumes: null,
   produces: 'm4b',
-  resource: () => 'gpu',
+  /*
+   * THE RESOURCE FOLLOWS THE CONFIG — Owen's observation, 2026-08-19: "as soon
+   * as the GPU is freed and a job moves to assembly, assembly can be done on
+   * the CPU, so the next job in line can take the GPU slot".
+   *
+   * A plain assembly is ffmpeg: concat, encode, chapter markers — CPU work
+   * (the Orpheus-only-WSL refactor runs it natively on CPU by design). It was
+   * declared 'gpu' wholesale, which had a nine-hour narration waiting behind
+   * an encode that never touches the card. What genuinely needs the card is
+   * declared ON the config: RVC enhancement and the final denoise both run
+   * models. De-ring is an ffmpeg filter and does not count.
+   *
+   * Same shape as foundry-job's resourceFor: the type is one, the resource is
+   * the config's.
+   */
+  resource: (config: Record<string, unknown>) =>
+    (config['rvcEnhancement'] || config['finalDenoise'] === true) ? 'gpu' : 'cpu',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as ReassemblyStepConfig;

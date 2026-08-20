@@ -40,6 +40,8 @@
  * rather than imported, so a change on their side is a compile error in a file
  * whose comments say what the field meant, instead of a silent retype.
  */
+import * as path from 'node:path';
+
 import {
   cancel as engineCancel,
   enqueue as engineEnqueue,
@@ -183,7 +185,53 @@ export interface FoundryJobStepConfig {
 function configOf(step: QueueStep): FoundryJobStepConfig | null {
   if (step.type !== 'foundry-job') return null;
   const config = step.config as unknown as FoundryJobStepConfig;
-  return config?.request ? config : null;
+  // projectDir is checked BESIDE request, not assumed: rows minted before the
+  // wiring supplied it (Foundry has only ever called enqueue with two
+  // arguments — found live 2026-08-19, when one such row made every
+  // queue:changed listener pass crash at fold(undefined) and the Foundry shelf
+  // went silent for the life of the step). A config without it is treated as
+  // not a Foundry row: it still runs and settles in OUR queue and tray; it
+  // just cannot be filed under a project it never named.
+  return config?.request && typeof config.projectDir === 'string' ? config : null;
+}
+
+/**
+ * The PROJECT a request belongs to, derived from the files it names — the same
+ * rule Foundry's own `projectDirOf` applies (first path segment under the
+ * projects root), because the two sides must file one request under one
+ * project.
+ *
+ * ── Why this exists ─────────────────────────────────────────────────────────
+ *
+ * Our seam declared `enqueue(request, parentStep, projectDir)`; Foundry's code
+ * has only ever CALLED `enqueue(request, parentStep)` — it derives the project
+ * from the request internally and never promised a third argument. The
+ * mismatch sat unnoticed because the keeper called our signature rather than
+ * theirs, and fired on the first live routed enqueue (2026-08-19). The wiring
+ * in main.ts now derives before our module, through this function.
+ *
+ * THROWS when no named file lives under the projects root: a request that
+ * cannot be filed under a project is refused at the door with the paths in the
+ * sentence, not enqueued under `undefined` to crash every snapshot push after.
+ */
+export function projectDirFromRequest(
+  projectsRoot: string,
+  request: FoundryJobRequest,
+): string {
+  const candidates = [request.outputPath, request.readingsPath, request.inputPath];
+  for (const candidate of candidates) {
+    if (typeof candidate !== 'string' || candidate.length === 0) continue;
+    const inside = path.relative(projectsRoot, path.resolve(candidate));
+    if (inside.length === 0 || inside.startsWith('..') || path.isAbsolute(inside)) continue;
+    const first = inside.split(path.sep)[0];
+    if (first === undefined || first.length === 0) continue;
+    return path.join(projectsRoot, first);
+  }
+  throw new Error(
+    `This ${request.kind} request names no file inside the Foundry projects folder `
+    + `(${projectsRoot}), so it cannot be filed under a project. It named: `
+    + `${candidates.filter((c): c is string => typeof c === 'string').join(', ') || 'nothing'}.`,
+  );
 }
 
 /**
