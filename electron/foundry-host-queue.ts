@@ -261,6 +261,26 @@ function stateOf(step: QueueStep): FoundryJobState {
  * which is exactly what their row models — and every gesture they send back
  * (cancel, remove) names what they were given.
  */
+/**
+ * What this step has to say about itself in THEIR shape, or null.
+ *
+ * Null is the honest answer for a row that has said nothing — nothing counted,
+ * nothing to report — because their shelf draws "no progress yet" differently
+ * from "0 of 0", and an object of undefineds is how the second got shown for
+ * the first.
+ */
+function progressOf(step: QueueStep): FoundryJobProgress | null {
+  const done = step.metrics.chunksCompletedInJob;
+  const total = step.metrics.totalChunksInJob;
+  const message = step.progress.message;
+  if (done === undefined && total === undefined && message === undefined) return null;
+  return {
+    ...(done === undefined ? {} : { done }),
+    ...(total === undefined ? {} : { total }),
+    ...(message === undefined ? {} : { message }),
+  };
+}
+
 function rowOf(step: QueueStep): FoundryJobRow {
   const config = configOf(step);
   const request = config?.request;
@@ -272,9 +292,19 @@ function rowOf(step: QueueStep): FoundryJobRow {
     outputPath: String(request?.readingsPath ?? request?.outputPath ?? ''),
     kind: (request?.kind ?? 'read') as FoundryJobKind,
     state: stateOf(step),
-    progress: step.progress
-      ? { done: undefined, total: undefined, message: step.progress.message }
-      : null,
+    /*
+     * THEIR COUNTS, HANDED BACK. `done`/`total` were hardcoded undefined here —
+     * this side thinks in percentages — and their shelf interpolates them
+     * straight into its own line, so a healthy read displayed "Reading
+     * undefined / undefined pages" (Owen, 2026-08-20). The step module now
+     * keeps the counts Foundry sent (queue-steps/foundry-job.ts), and they go
+     * home the way they arrived.
+     *
+     * NULL WHEN THERE IS NOTHING TO SAY, rather than an object full of blanks:
+     * a row that has not started has no progress, which is a different fact
+     * from a row at zero, and their shelf can draw the difference.
+     */
+    progress: progressOf(step),
     title: config?.label,
     error: step.error,
     message: step.progress?.message,

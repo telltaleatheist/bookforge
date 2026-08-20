@@ -120,6 +120,16 @@ export const foundryJobStep: StepModule = {
         ctx.report({
           percent: total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0,
           message: progress.note ?? progress.message,
+          /*
+           * THE COUNTS ARE KEPT, not just divided into a percentage.
+           *
+           * They came from Foundry and Foundry's own shelf renders them back
+           * ("Reading 41 / 317 pages"), so dropping them here is what made that
+           * line read "Reading undefined / undefined pages" on a job that was
+           * running perfectly (Owen, 2026-08-20). A percentage cannot be
+           * un-divided, so the round trip has to carry the originals.
+           */
+          ...(total > 0 ? { metrics: { chunksCompletedInJob: done, totalChunksInJob: total } } : {}),
         });
       },
     });

@@ -117,6 +117,58 @@ const readRequest = (key = 'k1', project = PROJ) => ({
   language: 'en',
 });
 
+// ── Progress goes home the way it arrived ────────────────────────────────────
+
+test('a row with no progress reports NULL, not an object full of blanks', async () => {
+  await fresh('progress-null');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const row = host.foundryHostQueue.enqueue(readRequest(), null, PROJ);
+  assert.strictEqual(row.progress, null,
+    'their shelf draws "not started" differently from "0 of 0"');
+});
+
+test('the counts Foundry sent come back on the row, through the REAL step module', async () => {
+  // The whole round trip, because the bug spanned two files: the step module
+  // divided the counts into a percentage and dropped them, and the row builder
+  // hardcoded them undefined. The suite's fake module cannot show that — it
+  // never calls the seam — so this one case registers the real one.
+  await fresh('progress-counts');
+  engine.clearStepModules();
+  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
+
+  let onProgress = null;
+  host.setFoundrySeam({
+    runJob: (_request, opts) => {
+      onProgress = opts.onProgress;
+      return new Promise(() => {}); // never settles; we only want the reporter
+    },
+    setQueueRows: null,
+    drained: null,
+  });
+
+  // A RENDER, not a read: reads arrive held by design, and this is about
+  // progress rather than release.
+  const row = host.foundryHostQueue.enqueue({
+    kind: 'render',
+    inputPath: `${PROJ}\\archive\\book.pdf`,
+    outputPath: `${PROJ}\\final\\book.epub`,
+  }, null, PROJ);
+  engine.start();
+  host.foundryHostQueue.start();
+  await settle();
+
+  assert.ok(onProgress, 'the real module called the seam and handed it a reporter');
+  onProgress({ done: 41, total: 317 });
+  await settle();
+
+  const [updated] = host.foundryHostQueue.rows(PROJ);
+  assert.strictEqual(updated.progress.done, 41, 'their count went home');
+  assert.strictEqual(updated.progress.total, 317);
+  // And our own bar still derives from the same numbers.
+  const step = engine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === row.id);
+  assert.strictEqual(step.progress.percent, 13);
+});
+
 // ── The contract as FOUNDRY calls it ─────────────────────────────────────────
 //
 // Their job-queue sends host.enqueue(request, parentStep) — TWO arguments, the
