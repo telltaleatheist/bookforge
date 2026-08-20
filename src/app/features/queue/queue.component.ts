@@ -598,7 +598,10 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .stage-row {
       display: grid;
-      grid-template-columns: 96px 1fr 42px;
+      /* Wide enough for the longest label this pipeline produces ("Assembling
+         audiobook", "Converting sentences") — the LABEL is the information and
+         the bar is decoration, so the bar shrinks, never the words. */
+      grid-template-columns: 128px 1fr 42px;
       align-items: center;
       gap: 8px;
       font-size: 0.625rem;

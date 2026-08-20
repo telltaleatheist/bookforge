@@ -476,7 +476,9 @@ import { QueueTrayService } from '../../services/queue-tray.service';
 
     .stage-line {
       display: grid;
-      grid-template-columns: 92px 1fr 34px;
+      /* Room for "Converting sentences" in full — the words carry the meaning,
+         so the bar gives way, not the label. */
+      grid-template-columns: 124px 1fr 34px;
       align-items: center;
       gap: 8px;
       margin-top: 6px;
