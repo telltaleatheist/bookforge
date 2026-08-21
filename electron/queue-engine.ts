@@ -115,6 +115,12 @@ export interface StepReport {
    * moving again.
    */
   activeBatch?: ActiveBatchProgress | null;
+  /**
+   * Which pass a Foundry row's counts are counting. Set on every count, because
+   * a run can change pass mid-flight (the endpoint route rasterises the whole
+   * book before it reads it) and a stale phase would label pages as blocks.
+   */
+  foundryPhase?: 'render' | 'read' | 'translate';
   /** Measurements. Merged key by key; a key that is absent is left alone. */
   metrics?: Partial<StepMetrics>;
 }
@@ -1396,6 +1402,7 @@ function applyReport(step: QueueStep, update: StepReport): void {
   if (update.stages !== undefined) progress.stages = update.stages;
   // Replaced, including to nothing: a landed batch must not leave a full bar.
   if ('activeBatch' in update) progress.activeBatch = update.activeBatch ?? undefined;
+  if (update.foundryPhase !== undefined) progress.foundryPhase = update.foundryPhase;
   step.progress = progress;
 
   if (update.metrics) {

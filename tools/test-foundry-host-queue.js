@@ -127,11 +127,17 @@ test('a row with no progress reports NULL, not an object full of blanks', async 
     'their shelf draws "not started" differently from "0 of 0"');
 });
 
-test('the counts Foundry sent come back on the row, through the REAL step module', async () => {
+test('the engine\'s own LINE comes back on the row as a count, through the REAL step module', async () => {
   // The whole round trip, because the bug spanned two files: the step module
   // divided the counts into a percentage and dropped them, and the row builder
   // hardcoded them undefined. The suite's fake module cannot show that — it
   // never calls the seam — so this one case registers the real one.
+  //
+  // AND THE FAKE BELOW WAS ITSELF WRONG, which is why this case is worth more
+  // than it looks: written on 2026-08-20 it called `onProgress({done, total})`,
+  // a shape Foundry has never sent. It passed, because both sides of it were my
+  // own belief. Foundry's declaration is `(line: string) => void` and always
+  // was, so the fake now hands over the STRING their engine writes.
   await fresh('progress-counts');
   engine.clearStepModules();
   engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
@@ -158,12 +164,23 @@ test('the counts Foundry sent come back on the row, through the REAL step module
   await settle();
 
   assert.ok(onProgress, 'the real module called the seam and handed it a reporter');
-  onProgress({ done: 41, total: 317 });
+
+  // A line that is NOT a count first: it becomes the note, and leaves the row
+  // with no progress at all — which is a different statement from zero.
+  onProgress('vlm-convert: page 12 SKIPPED — already in the bank');
+  await settle();
+  const [noted] = host.foundryHostQueue.rows(PROJ);
+  assert.strictEqual(noted.progress, null, 'prose is not progress');
+  assert.strictEqual(noted.note, 'vlm-convert: page 12 SKIPPED — already in the bank');
+
+  onProgress('page 41/317: rendered');
   await settle();
 
   const [updated] = host.foundryHostQueue.rows(PROJ);
-  assert.strictEqual(updated.progress.done, 41, 'their count went home');
+  assert.strictEqual(updated.progress.page, 41, 'their count went home, in their field');
   assert.strictEqual(updated.progress.total, 317);
+  assert.strictEqual(updated.progress.phase, 'render', 'and it says which pass it counted');
+  assert.strictEqual(updated.note, null, 'a count CLEARS the note — that is what makes it mean "since"');
   // And our own bar still derives from the same numbers.
   const step = engine.snapshot().jobs.flatMap((j) => j.steps).find((s) => s.id === row.id);
   assert.strictEqual(step.progress.percent, 13);

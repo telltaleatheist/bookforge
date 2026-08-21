@@ -84,15 +84,29 @@ export interface FoundryJobRequest {
   [field: string]: unknown;
 }
 
+/**
+ * Their `JobProgress` (foundry-app/shared/types.ts), mirrored FIELD FOR FIELD.
+ *
+ * It was `{done?, total?, message?, note?}` here — a shape I invented, which
+ * their shelf has never read. Their shelf interpolates `progress.page` and
+ * `progress.total`, so a healthy read drew "Reading undefined / undefined
+ * pages" (Owen, 2026-08-20) from a row that was, on this side, working
+ * perfectly.
+ *
+ * ALL THREE FIELDS ARE REQUIRED because they are required there. A partial
+ * progress is not a weaker statement, it is the undefined again.
+ */
 export interface FoundryJobProgress {
-  done?: number;
-  total?: number;
-  message?: string;
-  /** Their "not a count" line — see `Job.note`. What tells working from wedged. */
-  note?: string | null;
+  /**
+   * A count of finished things out of a known total — pages on a read or a
+   * rendering, BLOCKS on a translate, which is why `phase` travels with it.
+   */
+  page: number;
+  total: number;
+  phase: 'render' | 'read' | 'translate';
 }
 
-/** Their `Job`, as their shelf draws it. */
+/** Their `Job` (`FoundryJobRow = Job`), as their shelf draws it. */
 export interface FoundryJobRow {
   id: string;
   inputPath: string;
@@ -102,7 +116,15 @@ export interface FoundryJobRow {
   progress: FoundryJobProgress | null;
   title?: string;
   error?: string;
+  /** The last line the engine wrote — the job log, one line deep. */
   message?: string;
+  /**
+   * The last thing the engine said that was NOT a count, cleared the moment a
+   * count arrives. Their field, their semantics: it is what tells a person
+   * watching a frozen fraction that the engine is talking, not wedged — and a
+   * person who believes a job is hung kills it.
+   */
+  note?: string | null;
   parentStep?: string | null;
   createdAt: number;
   startedAt?: number;
@@ -112,7 +134,24 @@ export interface FoundryJobRow {
 export interface FoundryRunJobOptions {
   parentStep: string | null;
   signal: AbortSignal;
-  onProgress(progress: FoundryJobProgress): void;
+  /**
+   * EVERY LINE THE ENGINE WRITES, AS A STRING. Not a parsed object.
+   *
+   * Their declaration is `onProgress?: (line: string) => void`
+   * (foundry-app/electron/job-queue.ts) and it always was. Mine said it handed
+   * over a `FoundryJobProgress`, so `progress.done` read `undefined` off a
+   * string on every line, `total > 0` never became true, and no hosted read
+   * reported a count, a bar or a note from the day the seam landed until
+   * 2026-08-21. Foundry answered the question I asked about their engine by
+   * quoting their own signature back at me.
+   *
+   * DECLARED AS A PROPERTY, NOT A METHOD, and that is the part that keeps it
+   * fixed: method syntax is checked BIVARIANTLY, so a `(line: string) => void`
+   * assigned where a `(p: FoundryJobProgress) => void` is declared typechecks
+   * clean. Property syntax under strictFunctionTypes refuses it at the seam
+   * mount, which is where the mirror is actually crossed.
+   */
+  onProgress: (line: string) => void;
 }
 
 /**
@@ -262,23 +301,92 @@ function stateOf(step: QueueStep): FoundryJobState {
  * (cancel, remove) names what they were given.
  */
 /**
+ * A line the engine wrote → a count, or null because it was not one.
+ *
+ * A MIRROR OF `parseProgressLine` (foundry-app/electron/engine.ts), kept here
+ * rather than imported. The vendored subtree is a SEALED snapshot reached
+ * through exactly one door — `mount.ts` — and `parseProgressLine` is not on it;
+ * requiring `foundry-app/dist/electron/engine.js` by path would work today and
+ * would make a private function of theirs into an unannounced dependency they
+ * could break without knowing (the same refusal as `networkPathBehind`,
+ * channel 2026-08-19). `tools/test-foundry-progress.js` reads THEIR file and
+ * fails if these patterns drift from it, so the copy cannot rot in silence.
+ *
+ * The order is theirs and each step of it is load-bearing:
+ *
+ *  1. `page 3/317: rendered` — a rendering counting what it writes. Ungated,
+ *     because the line carries no command prefix.
+ *  2. `translate: block 412/2081 (…)` — BLOCKS, not pages, matched on the word
+ *     `block` so the retry notices (`attempt 2/3`) cannot be read as progress.
+ *  3. The `vlm-read:` / `vlm-convert:` GATE, and only then a page count. Without
+ *     the gate `attempt 2/3` renders as 67% and the bar leaps because an answer
+ *     was RETRIED — which is the whole reason their function exists.
+ *  4. The PARENTHESISED form before the bare one, because `page 143 (7/180)`
+ *     also contains `page 143` and would be read by the second pattern as a
+ *     count of 143 out of nothing.
+ */
+export function parseFoundryProgressLine(line: string): FoundryJobProgress | null {
+  const trimmed = line.trim();
+
+  const rendered = /^page\s+(\d+)\/(\d+):\s+rendered$/.exec(trimmed);
+  if (rendered) {
+    return { phase: 'render', page: Number(rendered[1]), total: Number(rendered[2]) };
+  }
+
+  const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  if (block) {
+    return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
+  }
+
+  if (!trimmed.startsWith('vlm-read:') && !trimmed.startsWith('vlm-convert:')) return null;
+
+  /*
+   * THE ENDPOINT ROUTE: `vlm-read: page 143 (7/180) — 4,212 chars, …`. The
+   * numerator is PAGES COMPLETED and is monotonic; the leading 143 is the page
+   * NUMBER and arrives out of order, because this route reads N at a time. The
+   * denominator is the post-`--skip-pages` count, so the pair is a true
+   * fraction of the work.
+   */
+  const viaEndpoint = /\bpage\s+\d+\s+\((\d+)\/(\d+)\)/.exec(trimmed);
+  if (viaEndpoint) {
+    return { phase: 'read', page: Number(viaEndpoint[1]), total: Number(viaEndpoint[2]) };
+  }
+
+  /*
+   * THE LOCAL ROUTE: `vlm-read: page 12/180 — 1650x2200, …`. Here the numerator
+   * is THE PAGE NUMBER — a POSITION, not a count of work done — and the
+   * denominator is the whole document rather than the pages this run was asked
+   * for. CONSEQUENCE, KEPT DELIBERATELY: a `--skip-pages` run stops short of
+   * its own denominator and the bar never lands on full, on a job that finished
+   * correctly. Foundry's own shelf accepts the same short landing; the
+   * alternative is a bar that reports a different quantity on each route, which
+   * is worse than one that stops early.
+   */
+  const local = /\bpage\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  if (local) {
+    return { phase: 'read', page: Number(local[1]), total: Number(local[2]) };
+  }
+
+  return null;
+}
+
+/**
  * What this step has to say about itself in THEIR shape, or null.
  *
- * Null is the honest answer for a row that has said nothing — nothing counted,
- * nothing to report — because their shelf draws "no progress yet" differently
- * from "0 of 0", and an object of undefineds is how the second got shown for
- * the first.
+ * Null is the honest answer for a row that has said nothing — nothing counted —
+ * because their shelf draws "no progress yet" differently from "0 of 0", and an
+ * object of undefineds is how the second got shown for the first.
+ *
+ * A ROW WITH ONLY A MESSAGE STILL HAS NO PROGRESS. `message` and `note` are
+ * fields of the ROW there, not of the count, and folding prose into this object
+ * is what made it possible to return a progress with no numbers in it at all.
  */
 function progressOf(step: QueueStep): FoundryJobProgress | null {
-  const done = step.metrics.chunksCompletedInJob;
+  const page = step.metrics.chunksCompletedInJob;
   const total = step.metrics.totalChunksInJob;
-  const message = step.progress.message;
-  if (done === undefined && total === undefined && message === undefined) return null;
-  return {
-    ...(done === undefined ? {} : { done }),
-    ...(total === undefined ? {} : { total }),
-    ...(message === undefined ? {} : { message }),
-  };
+  const phase = step.progress.foundryPhase;
+  if (page === undefined || total === undefined || phase === undefined) return null;
+  return { page, total, phase };
 }
 
 function rowOf(step: QueueStep): FoundryJobRow {
@@ -293,14 +401,14 @@ function rowOf(step: QueueStep): FoundryJobRow {
     kind: (request?.kind ?? 'read') as FoundryJobKind,
     state: stateOf(step),
     /*
-     * THEIR COUNTS, HANDED BACK. `done`/`total` were hardcoded undefined here —
-     * this side thinks in percentages — and their shelf interpolates them
-     * straight into its own line, so a healthy read displayed "Reading
-     * undefined / undefined pages" (Owen, 2026-08-20). The step module now
-     * keeps the counts Foundry sent (queue-steps/foundry-job.ts), and they go
-     * home the way they arrived.
+     * THEIR COUNTS, HANDED BACK IN THEIR SHAPE. This field was filled from a
+     * progress object of my own invention, and their shelf reads `page` and
+     * `total` off it, so a healthy read displayed "Reading undefined /
+     * undefined pages" (Owen, 2026-08-20). The step module now parses the
+     * engine's own lines (queue-steps/foundry-job.ts) and the numbers go home
+     * the way they arrived.
      *
-     * NULL WHEN THERE IS NOTHING TO SAY, rather than an object full of blanks:
+     * NULL WHEN NOTHING HAS BEEN COUNTED, rather than an object full of blanks:
      * a row that has not started has no progress, which is a different fact
      * from a row at zero, and their shelf can draw the difference.
      */
@@ -308,6 +416,18 @@ function rowOf(step: QueueStep): FoundryJobRow {
     title: config?.label,
     error: step.error,
     message: step.progress?.message,
+    /*
+     * THE NOTE IS `detail`, and the two are the same idea arrived at twice: the
+     * last thing said that was NOT a count, cleared by the next count. Ours
+     * already carries exactly that (StepProgress.detail — "what the stage is
+     * doing when its own percentage cannot move for minutes") and already has
+     * the clearing semantics, since reporting `detail: null` erases it while
+     * omitting the field leaves it alone.
+     *
+     * NULL, NOT UNDEFINED, when there is nothing to say — their field is
+     * `note?: string | null` and null is its resting state.
+     */
+    note: step.progress?.detail ?? null,
     parentStep: config?.parentStep ?? null,
     createdAt: Date.parse(step.addedAt),
     startedAt: step.startedAt ? Date.parse(step.startedAt) : undefined,

@@ -245,6 +245,19 @@ export interface StepProgress {
    * status line a blockage the first time one arrived on a queued row.
    */
   admissionHold?: string;
+  /**
+   * Foundry rows only: which pass the counts in `metrics` are counting.
+   *
+   * It travels because the quantity changes with it — a read and a rendering
+   * count PAGES, a translate counts BLOCKS — and their shelf, which draws these
+   * rows back to the person who ordered them, says which. A bar that silently
+   * changed units mid-run would be the same lie as a bar that changed scale.
+   *
+   * Its ABSENCE is also load-bearing: nothing has been counted yet, which is a
+   * different statement from a count of zero, and `progressOf` returns null on
+   * it rather than sending a progress with no numbers in it.
+   */
+  foundryPhase?: 'render' | 'read' | 'translate';
 }
 
 /**

@@ -37,7 +37,7 @@
 import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
-import { foundryRunner } from '../foundry-host-queue';
+import { foundryRunner, parseFoundryProgressLine } from '../foundry-host-queue';
 import type { FoundryJobStepConfig } from '../foundry-host-queue';
 
 /**
@@ -108,28 +108,51 @@ export const foundryJobStep: StepModule = {
     const row = await foundryRunner()(config.request, {
       parentStep: config.parentStep,
       signal: ctx.signal,
-      onProgress: (progress) => {
-        /*
-         * Their counts, our bar. `note` is the line Foundry keeps for the case a
-         * bar cannot express — a block the model is arguing with, minutes with no
-         * count moving — and it is exactly what a person watching decides whether
-         * to kill a job on, so it is carried into the message rather than dropped.
-         */
-        const done = progress.done ?? 0;
-        const total = progress.total ?? 0;
-        ctx.report({
-          percent: total > 0 ? Math.min(100, Math.round((done / total) * 100)) : 0,
-          message: progress.note ?? progress.message,
+      /*
+       * ONE RAW LINE OF THE ENGINE'S STDERR, and the parse is ours to do.
+       *
+       * This callback used to be declared as taking a parsed `{done, total}`
+       * object, which Foundry has never sent — so `progress.done ?? 0` read a
+       * property off a string, every count was 0, `total > 0` never became
+       * true, and no hosted read reported anything at all between the seam
+       * landing and 2026-08-21. Their `Job` has always been built by parsing
+       * these same strings; there is no parsed-progress door for a host.
+       */
+      onProgress: (line) => {
+        const counted = parseFoundryProgressLine(line);
+        if (counted === null) {
           /*
-           * THE COUNTS ARE KEPT, not just divided into a percentage.
+           * NOT A COUNT, so it BECOMES the note — the line the shelf shows when
+           * the fraction cannot move: a block the model is arguing with, a page
+           * refused for a cap, a retry. It is what a person watching decides
+           * whether to kill a run on, and a frozen bar with nothing beside it is
+           * indistinguishable from a wedge.
            *
-           * They came from Foundry and Foundry's own shelf renders them back
-           * ("Reading 41 / 317 pages"), so dropping them here is what made that
-           * line read "Reading undefined / undefined pages" on a job that was
-           * running perfectly (Owen, 2026-08-20). A percentage cannot be
-           * un-divided, so the round trip has to carry the originals.
+           * `message` takes it too, because their `Job.message` is the job log
+           * one line deep — every line, counted or not.
            */
-          ...(total > 0 ? { metrics: { chunksCompletedInJob: done, totalChunksInJob: total } } : {}),
+          ctx.report({ message: line, detail: line });
+          return;
+        }
+        ctx.report({
+          percent: counted.total > 0
+            ? Math.min(100, Math.round((counted.page / counted.total) * 100))
+            : 0,
+          message: line,
+          /*
+           * A COUNT CLEARS THE NOTE, and that is what makes the note mean
+           * "since". Their rule, kept exactly: a note that lingered would still
+           * be on screen ten pages later, which is the same lie in the other
+           * direction. Null erases; omitting the field would leave it standing.
+           */
+          detail: null,
+          foundryPhase: counted.phase,
+          /*
+           * THE COUNTS ARE KEPT, not just divided into a percentage. Their shelf
+           * renders them back as "Reading 41 / 317 pages", and a percentage
+           * cannot be un-divided, so the round trip has to carry the originals.
+           */
+          metrics: { chunksCompletedInJob: counted.page, totalChunksInJob: counted.total },
         });
       },
     });
