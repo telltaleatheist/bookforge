@@ -55,8 +55,11 @@ import { QueueTrayService } from '../../services/queue-tray.service';
           <span class="led" aria-hidden="true"></span>
           {{ tray.isRunning() ? 'Running' : 'Paused' }}
         </span>
-        <button type="button" class="btn accent push" (click)="toggleQueue()">
-          {{ tray.isRunning() ? '❚❚ Pause' : '▶ Start' }}
+        <button type="button" class="btn accent push" (click)="toggleQueue()"
+                [title]="tray.isRunning()
+                  ? 'Stop the queue and everything it is running. To stop just one step, use its own Stop button below.'
+                  : 'Claim work as slots free up, and resume anything that was stopped.'">
+          {{ tray.isRunning() ? '❚❚ Pause everything' : '▶ Start' }}
         </button>
       </div>
 
@@ -126,6 +129,15 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                     <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
                   }
                   <div class="eta">{{ lane.eta ?? 'not timed yet' }}</div>
+                  <!-- The shelf's per-slot Stop, matching the queue page's. At
+                       452px the label is the verb alone and the sentence lives
+                       in the tooltip — but it is a LABELLED button, not a bare
+                       glyph: the control that takes work off the card should
+                       not be the one you have to guess at. -->
+                  <button type="button" class="tiny stop" (click)="stopStep(busy.stepId)"
+                          title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause everything above to stop it all.">
+                    ■ Stop
+                  </button>
                 </div>
               </div>
 
@@ -195,7 +207,11 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                   ▶ {{ row.reason.kind === 'stopped' ? 'Resume' : 'Start' }}
                 </button>
               }
-              <button type="button" class="tiny" (click)="remove(row.jobId)">Remove</button>
+              <!-- "Cancel", not "Remove". Removing sounds like deleting the
+                   book; what this does is take the step out of the queue and
+                   leave every file it produced alone. -->
+              <button type="button" class="tiny stop" (click)="remove(row.stepId)"
+                      title="Take this step out of the queue. Nothing already rendered is deleted.">✕ Cancel</button>
             </div>
           </div>
         }
@@ -452,12 +468,12 @@ import { QueueTrayService } from '../../services/queue-tray.service';
     }
 
     .pct { font-size: 13px; color: var(--accent); font-weight: 600; }
-    .eta { font-size: 10px; color: var(--text-tertiary); }
+    .eta { font-size: 10px; color: var(--text-secondary); }
 
     .bar {
       height: 5px;
       border-radius: 3px;
-      background: var(--bg-input);
+      background: var(--progress-track);
       overflow: hidden;
       margin-top: 8px;
     }
@@ -466,7 +482,7 @@ import { QueueTrayService } from '../../services/queue-tray.service';
       display: block;
       height: 100%;
       border-radius: 3px;
-      background: linear-gradient(90deg, var(--accent-hover), var(--accent));
+      background: linear-gradient(90deg, var(--accent-hover), var(--progress-fill));
       transition: width 0.4s ease;
     }
 
@@ -483,12 +499,17 @@ import { QueueTrayService } from '../../services/queue-tray.service';
       gap: 8px;
       margin-top: 6px;
       font-size: 10px;
-      color: var(--text-secondary);
+      color: var(--progress-label);
     }
 
     .stage-line .bar.thin { height: 4px; margin-top: 0; }
     .s-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .s-val { text-align: right; font-variant-numeric: tabular-nums; }
+    .s-val {
+      text-align: right;
+      font-variant-numeric: tabular-nums;
+      color: var(--progress-value);
+      font-weight: 600;
+    }
 
     .detail {
       font-size: 10.5px;
@@ -590,6 +611,23 @@ import { QueueTrayService } from '../../services/queue-tray.service';
       font-weight: 600;
     }
 
+    /* Outlined, not filled — stopping a step keeps everything it rendered, so
+       it must be FINDABLE without reading as "throw this away". */
+    .tiny.stop {
+      border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
+    .tiny.stop:hover {
+      border-color: var(--color-danger);
+      background: var(--bg-elevated);
+      color: var(--color-danger);
+    }
+
+    /* The lane's Stop sits under the ETA in a right-aligned column. */
+    .right .tiny.stop { margin-top: 5px; }
+
     /* ── Finished / foot ───────────────────────────────────────────────── */
 
     .empty {
@@ -685,8 +723,22 @@ export class QueueTrayComponent {
     await this.tray.retryStep(stepId);
   }
 
-  async remove(jobId: string): Promise<void> {
-    await this.tray.removeRun(jobId);
+  /** Stop the step on one slot, leaving the queue running. */
+  async stopStep(stepId: string): Promise<void> {
+    await this.tray.stopStep(stepId);
+  }
+
+  /**
+   * Take one row out of the queue — a whole run (the failure cards) or a single
+   * step (the Up next rows), whichever id the caller holds.
+   *
+   * Up next passes the STEP id deliberately. A chain is one run of several
+   * steps, so removing by run id took out the steps beside the one the button
+   * sat on; `removeRun` cancels just the step when its run has others, and
+   * removes the run when it does not.
+   */
+  async remove(rowId: string): Promise<void> {
+    await this.tray.removeRun(rowId);
   }
 
   openDetails(): void {

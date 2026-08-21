@@ -341,12 +341,28 @@ export class QueueTrayService {
    * step settles it `held` + `wasInterrupted`, so Start picks it up from what is
    * already rendered rather than from sentence zero.
    *
-   * That is also why there is no separate Stop control anywhere: with Pause
-   * stopping the run, a second button would be the same act under two names.
+   * Pause is the WHOLE-QUEUE gesture. `stopStep` below is the narrow one, and
+   * they are not the same act under two names: Pause stops the engine as well,
+   * so nothing starts after it; stopping one step leaves the engine running and
+   * the slot is claimed by whatever is next. Both are resumable for the same
+   * reason — a cancelled step settles `held` + `wasInterrupted`.
    */
   async toggleQueue(): Promise<void> {
     if (this.queue.isRunning()) await this.queue.stopQueue();
     else await this.queue.startQueue();
+  }
+
+  /**
+   * Stop ONE running step, leaving the queue running.
+   *
+   * The bench used to offer nothing here on the reasoning that Pause covered it
+   * (see `toggleQueue`). It does not: "take this book off the card and get on
+   * with the next one" was only reachable by pausing everything, and Owen could
+   * not find a way to do it at all (2026-08-21). The step keeps what it has
+   * rendered and comes back `held`, so Start resumes it from there.
+   */
+  async stopStep(stepId: string): Promise<void> {
+    await this.queue.cancelJob(stepId);
   }
 
   /** Release one held or stopped step. */
@@ -357,6 +373,17 @@ export class QueueTrayService {
   /** Release every run in a book's plan, in order. */
   async startPlan(plan: BookPlan): Promise<void> {
     for (const jobId of plan.jobIds) await this.queue.runJobStandalone(jobId);
+  }
+
+  /**
+   * Take every run in a book's plan out of the queue.
+   *
+   * Sequential, and NOT wrapped in a catch: if the second run refuses, the
+   * caller says so and the first is genuinely gone. Swallowing that would leave
+   * the page claiming a book was cancelled while half its chain still ran.
+   */
+  async cancelPlan(plan: BookPlan): Promise<void> {
+    for (const jobId of plan.jobIds) await this.removeRun(jobId);
   }
 
   async retryStep(stepId: string): Promise<void> {

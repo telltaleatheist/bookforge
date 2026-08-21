@@ -107,9 +107,14 @@ import { QueueTrayService } from './services/queue-tray.service';
               [class.hot]="lane.thermal?.throttleActive"
               [class.idle]="!lane.occupant && !lane.hold"
             >
-              <!-- No per-slot Stop: Pause stops the run, and a second control for
-                   the same act under another name is how "Stop" came to mean
-                   something different from "Pause" in the first place. -->
+              <!-- The per-slot Stop, restored 2026-08-21.
+                   It was left out on the reasoning that Pause already stopped
+                   the run, so a second control would be the same act twice. It
+                   is not the same act: Pause stops the ENGINE too, so nothing
+                   starts after it, while this frees one slot and lets the queue
+                   carry on. Without it, "take this book off the card and get on
+                   with the next one" had no button anywhere, and Owen went
+                   looking for one. The wording says which is which. -->
               <div class="lcard-slot">
                 <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
                 @if (lane.thermal; as thermal) {
@@ -117,6 +122,14 @@ import { QueueTrayService } from './services/queue-tray.service';
                     {{ thermal.tempC }}°C
                     @if (thermal.fanPct !== undefined) { · fan {{ thermal.fanPct }}% }
                   </span>
+                }
+                @if (lane.occupant; as running) {
+                  <button
+                    type="button"
+                    class="btn stop"
+                    (click)="stopStep(running.stepId)"
+                    title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause in the toolbar to stop everything."
+                  >■ Stop this step</button>
                 }
               </div>
 
@@ -250,13 +263,24 @@ import { QueueTrayService } from './services/queue-tray.service';
                   <h3>{{ plan.title }}</h3>
                   <div class="sub">{{ planSummary(plan) }}</div>
                 </div>
+                <!-- ONE Cancel, whatever the book's shape. This looped over
+                     plan.jobIds and drew a button per run, so a book whose
+                     chain spans two runs showed two identical "Remove"s with
+                     nothing to tell them apart — which is most of why the
+                     controls here read as confusing. The act is the same for
+                     every run in the plan, so it is said once and applied to
+                     all of them (cancelPlan). -->
                 <div class="acts">
                   @if (plan.allHeld) {
                     <button type="button" class="btn go" (click)="startPlan(plan)">▶ Start this book</button>
                   }
-                  @for (jobId of plan.jobIds; track jobId) {
-                    <button type="button" class="btn" (click)="remove(jobId)">Remove</button>
-                  }
+                  <button
+                    type="button"
+                    class="btn stop"
+                    (click)="cancelPlan(plan)"
+                    [title]="'Take this book out of the queue — ' + plan.steps.length
+                      + ' step' + (plan.steps.length === 1 ? '' : 's') + '. Nothing already rendered is deleted.'"
+                  >✕ Cancel this book</button>
                 </div>
               </div>
 
@@ -298,6 +322,26 @@ import { QueueTrayService } from './services/queue-tray.service';
                         <button type="button" class="btn go xs" (click)="start(step.stepId)">
                           ▶ {{ step.reason?.kind === 'stopped' ? 'Resume' : 'Start' }}
                         </button>
+                      }
+                      <!-- Every step in the chain can be dropped on its own, and
+                           the word changes with what dropping it MEANS: a running
+                           step is stopped (and keeps what it rendered), a waiting
+                           one is simply taken out. Same call either way — the
+                           engine settles a cancelled step held. -->
+                      @if (step.status === 'running') {
+                        <button
+                          type="button"
+                          class="btn stop xs"
+                          (click)="stopStep(step.stepId)"
+                          title="Stop this step and free its slot. It keeps what it has rendered; Start resumes from there."
+                        >■ Stop</button>
+                      } @else {
+                        <button
+                          type="button"
+                          class="btn stop xs"
+                          (click)="cancelStep(step.stepId)"
+                          title="Take this step out of the queue. Nothing already rendered is deleted."
+                        >✕ Cancel</button>
                       }
                     </span>
                   </div>
@@ -521,6 +565,22 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .btn.xs { padding: 2px 8px; font-size: 0.625rem; }
 
+    /* Stopping running work is destructive-looking but not destructive — the
+       step comes back held with everything it rendered. So: outlined in the
+       danger colour (findable at a glance on a busy card) rather than filled
+       (which would read as "this throws the work away"). */
+    .btn.stop {
+      border-color: color-mix(in srgb, var(--color-danger) 45%, transparent);
+      color: var(--color-danger);
+      font-weight: 600;
+    }
+
+    .btn.stop:hover {
+      border-color: var(--color-danger);
+      background: var(--warning-bg);
+      color: var(--color-danger);
+    }
+
     /* ── Lanes ─────────────────────────────────────────────────────────── */
 
     .lanes {
@@ -578,7 +638,14 @@ import { QueueTrayService } from './services/queue-tray.service';
       color: var(--text-muted);
     }
 
-    .lcard-slot button { margin-left: auto; }
+    /* The slot strip is set in small uppercase tracking; a button inside it is a
+       button, not more of the strip's label. */
+    .lcard-slot .btn {
+      margin-left: auto;
+      font-size: 0.6875rem;
+      letter-spacing: 0;
+      text-transform: none;
+    }
 
     .lcard-book { display: flex; gap: 10px; align-items: flex-start; }
 
@@ -596,12 +663,12 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .right { text-align: right; flex: none; font-variant-numeric: tabular-nums; }
     .pct { font-size: 1.0625rem; font-weight: 600; color: var(--accent); }
-    .eta { font-size: 0.625rem; color: var(--text-tertiary); }
+    .eta { font-size: 0.625rem; color: var(--text-secondary); }
 
     .bar {
       height: 5px;
       border-radius: 3px;
-      background: var(--bg-input);
+      background: var(--progress-track);
       overflow: hidden;
       margin-top: 10px;
     }
@@ -610,7 +677,7 @@ import { QueueTrayService } from './services/queue-tray.service';
       display: block;
       height: 100%;
       border-radius: 3px;
-      background: linear-gradient(90deg, var(--accent-hover), var(--accent));
+      background: linear-gradient(90deg, var(--accent-hover), var(--progress-fill));
       transition: width 0.4s ease;
     }
 
@@ -627,31 +694,42 @@ import { QueueTrayService } from './services/queue-tray.service';
       align-items: center;
       gap: 8px;
       font-size: 0.625rem;
-      color: var(--text-tertiary);
+      color: var(--progress-label);
     }
 
     .stage-row.on { color: var(--text-primary); }
+    .stage-row .s-val { color: var(--progress-value); font-weight: 600; }
 
     .stage-row .bar.thin { height: 4px; margin-top: 0; }
-    .stage-row .bar.done i { background: var(--text-muted); }
+
+    /* A finished stage still has to be READABLE. This was --text-muted, which
+       in dark mode is $neutral-600 laid on a $neutral-800 track — the bar that
+       says "this part is done" was the one bar you could not see (Owen,
+       2026-08-21). Done now reads near-white: settled, not live, but present. */
+    .stage-row .bar.done i { background: var(--progress-fill-done); }
 
     /* Quieter than the stage bars above it: this measures work that has not
        landed yet, and it must not out-shout the bar that measures work that
-       has. Short track, muted fill, the words carrying the detail. */
+       has. Short track, the words carrying the detail.
+
+       This is the MLX/Mac bar — on Windows an Orpheus batch reports per chunk
+       and this never draws, so its dimness was only ever visible on Mac runs,
+       and only there did it have to be legible. Quiet is now a lighter grey
+       against a real track, not a fill the same value as the track. */
     .batch-row {
       display: flex;
       align-items: center;
       gap: 8px;
       margin-top: 6px;
       font-size: 11px;
-      color: var(--text-muted);
+      color: var(--progress-label);
     }
     .batch-row .bar.thin.batch {
       height: 3px;
       margin-top: 0;
       flex: 0 0 120px;
     }
-    .batch-row .bar.thin.batch i { background: var(--text-muted); }
+    .batch-row .bar.thin.batch i { background: var(--progress-fill-quiet); }
     .batch-text { white-space: nowrap; }
 
     .s-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -915,14 +993,19 @@ export class QueueComponent {
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
     const isRunning = this.tray.isRunning();
     return [
+      // "everything" earns its place now that each slot and each step carries
+      // its own Stop: without it the toolbar button and the card button read as
+      // two spellings of one act, which is the confusion the labels exist to
+      // prevent. This one takes the whole queue down; those take one step off.
       isRunning
         ? {
           id: 'pause',
           type: 'button',
           icon: '⏸',
-          label: 'Pause',
-          tooltip: 'Stop the queue AND what it is running. Anything stopped resumes '
-            + 'from what it has already rendered.',
+          label: 'Pause everything',
+          tooltip: 'Stop the queue AND everything it is running. Anything stopped '
+            + 'resumes from what it has already rendered. To stop just one step, '
+            + 'use the Stop button on its slot.',
         }
         : {
           id: 'start',
@@ -1038,6 +1121,25 @@ export class QueueComponent {
 
   remove(jobId: string): void {
     this.report(this.tray.removeRun(jobId));
+  }
+
+  /** Stop the step on a slot, leaving the queue running. See tray.stopStep. */
+  stopStep(stepId: string): void {
+    this.report(this.tray.stopStep(stepId));
+  }
+
+  /**
+   * Take one waiting step out. `removeRun` is the same call the failure cards
+   * use: for a step inside a multi-step run it cancels just that step, and for a
+   * run with nothing else in it it removes the run.
+   */
+  cancelStep(stepId: string): void {
+    this.report(this.tray.removeRun(stepId));
+  }
+
+  /** Take every run in a book's plan out of the queue. */
+  cancelPlan(plan: BookPlan): void {
+    this.report(this.tray.cancelPlan(plan));
   }
 
   clearFinished(): void {
