@@ -874,9 +874,9 @@ const AUDIO_EXTS = new Set([
       background: var(--bg-elevated); font-size: 0.78rem;
     }
     .vc-label { color: var(--text-secondary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .vc-bar { flex: 1; height: 6px; background: var(--bg-base); border-radius: 3px; overflow: hidden; }
-    .vc-fill { height: 100%; background: var(--accent-primary, #06b6d4); transition: width 0.2s ease; }
-    .vc-pct { color: var(--text-secondary); min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
+    .vc-bar { flex: 1; height: 6px; background: var(--progress-track); border-radius: 3px; overflow: hidden; }
+    .vc-fill { height: 100%; background: var(--progress-fill); transition: width 0.2s ease; }
+    .vc-pct { color: var(--progress-value); font-weight: 600; min-width: 34px; text-align: right; font-variant-numeric: tabular-nums; }
     .vrow {
       border: 1px solid var(--border-default, rgba(255,255,255,0.07));
       border-radius: 8px; margin-bottom: 8px; background: var(--bg-elevated);
@@ -1905,11 +1905,27 @@ export class StudioVersionsComponent {
     this.transcriptEligibilityKnown.set(facts.every(f => f.transcript !== 'deriving'));
   }
 
-  /** Who narrated an audiobook: its own narrator metadata (user-set, or from an
-   *  imported file's tag) if present, else the TTS voice that rendered it. */
+  /**
+   * Who narrated an audiobook: its own narrator metadata (user-set, or from an
+   * imported file's tag) if present, else — for a TTS RENDER ONLY — the voice
+   * that rendered it.
+   *
+   * `ttsVoice` is a PROJECT-wide fact: one voice, read from the durable TTS
+   * session's provenance. Handing it to every audiobook without narrator
+   * metadata credited a human reading to whatever model last rendered the same
+   * book — Owen's own reading of God's People was shown as narrated by
+   * `thirdreich` because a TTS version of the book exists alongside it.
+   *
+   * `professionallyRead` is the test, and it is a definite boolean here:
+   * `getVariants()` stamps one on every audiobook variant. A professionally
+   * read version with no narrator tag has no answer, and says nothing rather
+   * than borrowing one.
+   */
   narratorFor(v: ProjectVariant): string {
     const own = (v.metadata?.narrator || '').trim();
-    return own || (this.ttsVoice() || '').trim();
+    if (own) return own;
+    if (v.professionallyRead) return '';
+    return (this.ttsVoice() || '').trim();
   }
 
   variantIcon(v: ProjectVariant): string { return v.kind === 'audiobook' ? '\u{1F3A7}' : '\u{1F4D6}'; }
