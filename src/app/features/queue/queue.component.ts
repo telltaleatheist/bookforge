@@ -39,6 +39,7 @@
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
 
+import { batchLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { ElectronService } from '../../core/services/electron.service';
@@ -175,6 +176,21 @@ import { QueueTrayService } from './services/queue-tray.service';
 
                 @if (tray.detailFor(lane); as detail) {
                   <div class="detail">{{ detail }}</div>
+                }
+
+                <!-- Inside the MLX batch. The stage bar above it is HONESTLY at
+                     0% — not one sentence file has landed — while most of the
+                     batch's rows have finished, so without this the card says
+                     nothing is happening for ten minutes at a time. -->
+                @if (busy.activeBatch; as batch) {
+                  <div class="batch-row">
+                    @if (batch.fraction !== undefined) {
+                      <span class="bar thin batch">
+                        <i [style.width.%]="batch.fraction * 100"></i>
+                      </span>
+                    }
+                    <span class="batch-text">{{ batchLabel(batch) }}</span>
+                  </div>
                 }
 
                 <!-- The measurements. Rate is the number a long render is judged
@@ -613,6 +629,25 @@ import { QueueTrayService } from './services/queue-tray.service';
     .stage-row .bar.thin { height: 4px; margin-top: 0; }
     .stage-row .bar.done i { background: var(--text-muted); }
 
+    /* Quieter than the stage bars above it: this measures work that has not
+       landed yet, and it must not out-shout the bar that measures work that
+       has. Short track, muted fill, the words carrying the detail. */
+    .batch-row {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-top: 6px;
+      font-size: 11px;
+      color: var(--text-muted);
+    }
+    .batch-row .bar.thin.batch {
+      height: 3px;
+      margin-top: 0;
+      flex: 0 0 120px;
+    }
+    .batch-row .bar.thin.batch i { background: var(--text-muted); }
+    .batch-text { white-space: nowrap; }
+
     .s-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .s-val { text-align: right; font-variant-numeric: tabular-nums; }
 
@@ -909,6 +944,12 @@ export class QueueComponent {
   plannedSteps(): number {
     return this.tray.plans().reduce((total, plan) => total + plan.steps.length, 0);
   }
+
+  /**
+   * "batch 83/94 sentences · 3.3k tokens". Shared with the queue page's step
+   * rows (shared/queue/bench.ts) — one batch, one wording.
+   */
+  readonly batchLabel = batchLabel;
 
   /** "3 steps · 1 on the bench", or "2 steps · held". */
   planSummary(plan: BookPlan): string {

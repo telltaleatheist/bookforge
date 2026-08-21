@@ -60,6 +60,17 @@ export interface ActiveBatchProgress {
   fraction?: number;
   batchNo?: number;
   batchCount?: number;
+  /**
+   * When THIS batch's decode began (epoch ms), so a surface can say how long it
+   * has been running. Set when the batch is first seen and carried unchanged
+   * through its heartbeats; a new batch restarts it.
+   *
+   * Timed separately from the step because a batch is its own unit of work: the
+   * step's elapsed folds in every batch before this one plus the model load, and
+   * "13 minutes" against THIS batch is the number that says whether the decode
+   * is running at its usual cadence.
+   */
+  startedAt?: number;
 }
 
 /** Internal carry-over between heartbeats of the same batch. */
@@ -142,6 +153,7 @@ export function advanceBatch(prev: ActiveBatchState | undefined, hb: MlxHeartbea
     fraction = Math.min(1, Math.max(0, fraction));
   }
 
+  const now = Date.now();
   return {
     rowsTotal: hb.rowsTotal,
     rowsDone: hb.rowsDone,
@@ -150,9 +162,12 @@ export function advanceBatch(prev: ActiveBatchState | undefined, hb: MlxHeartbea
     fraction,
     batchNo: hb.batchNo,
     batchCount: hb.batchCount,
+    // Carried for the SAME batch, restarted for a new one — the same test that
+    // resets the fraction, for the same reason: batches are independent units.
+    startedAt: sameBatch ? prev!.startedAt ?? now : now,
     lastStep: step,
     key,
-    updatedAt: Date.now(),
+    updatedAt: now,
   };
 }
 
@@ -166,5 +181,6 @@ export function toActiveBatchProgress(state: ActiveBatchState): ActiveBatchProgr
     fraction: state.fraction,
     batchNo: state.batchNo,
     batchCount: state.batchCount,
+    startedAt: state.startedAt,
   };
 }

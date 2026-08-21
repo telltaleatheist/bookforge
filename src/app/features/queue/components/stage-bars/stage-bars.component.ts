@@ -11,6 +11,7 @@
 import { Component, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { ActiveBatchProgress, JobStageProgress } from '../../models/queue.types';
+import { batchLabel } from '@shared/queue/bench';
 
 @Component({
   selector: 'app-stage-bars',
@@ -208,27 +209,8 @@ export class StageBarsComponent {
   readonly batch = input<ActiveBatchProgress | undefined>(undefined);
 
   /**
-   * "batch 12/95 sentences · 1.3k tokens" — rows first (the thing being waited on),
-   * tokens second (how deep the decode is). Each clause is dropped when the engine
-   * didn't report it rather than filled in with a guess.
+   * "batch 12/95 sentences · 1.3k tokens". The shared one (shared/queue/bench.ts)
+   * because the bench card draws the same batch and must word it identically.
    */
-  batchLabel(b: ActiveBatchProgress): string {
-    const parts: string[] = [];
-    parts.push(b.rowsDone !== undefined
-      ? `batch ${b.rowsDone}/${b.rowsTotal} sentences`
-      : `batch of ${b.rowsTotal} sentences`);
-    parts.push(`${this.compactTokens(b.tokenStep)} tokens`);
-    // Which sub-batch of the current engine call this is — only worth saying when
-    // the call was split into several (a batch too deep to run at full width).
-    if (b.batchNo !== undefined && b.batchCount !== undefined && b.batchCount > 1) {
-      parts.push(`part ${b.batchNo}/${b.batchCount}`);
-    }
-    return parts.join(' · ');
-  }
-
-  /** 1259 → "1.3k". Token counts run to four digits and only the magnitude matters. */
-  private compactTokens(n: number): string {
-    if (n < 1000) return String(n);
-    return `${(n / 1000).toFixed(1)}k`;
-  }
+  readonly batchLabel = batchLabel;
 }

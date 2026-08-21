@@ -192,6 +192,13 @@ export interface ActiveBatchProgress {
   fraction?: number;
   batchNo?: number;
   batchCount?: number;
+  /**
+   * When THIS batch's decode began (epoch ms). Timed separately from the step:
+   * the step's elapsed folds in the model load and every batch before this one,
+   * so it cannot say whether the decode running right now is on its usual
+   * cadence. Absent against an engine build that reported no batch.
+   */
+  startedAt?: number;
 }
 
 /** Per-worker progress for a parallel TTS render. */

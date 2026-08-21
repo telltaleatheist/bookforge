@@ -34,6 +34,7 @@ import {
   RESOURCE_SLOTS,
   TERMINAL_STEP_STATUSES,
   jobStatus,
+  type ActiveBatchProgress,
   type GpuThermalReading,
   type JobStageProgress,
   type QueueJob,
@@ -231,6 +232,59 @@ export interface LaneOccupant {
    * headline made a healthy run look stalled (Owen, 2026-08-19).
    */
   stages: JobStageProgress[];
+  /**
+   * Progress INSIDE the MLX batch decoding right now, when one is.
+   *
+   * The stage breakdown above is not enough either. On Mac an Orpheus batch is
+   * ~96 chunks in ONE atomic decode: "Converting sentences" sits at 0% for ten
+   * minutes because not one file has landed, while 83 of the batch's 94 rows
+   * have actually finished. This is the only number that moves in that window,
+   * and the bench dropped it on the floor until now (Owen, 2026-08-20).
+   */
+  activeBatch?: ActiveBatchProgress;
+}
+
+/**
+ * "batch 12/95 sentences · 1.3k tokens" — rows first (the thing being waited
+ * on), tokens second (how deep the decode is). Each clause is dropped when the
+ * engine didn't report it rather than filled in with a guess.
+ *
+ * Here rather than in a component because BOTH the bench card and the queue
+ * page's step rows draw this, and one batch must not be described in two
+ * vocabularies (the same reason the rest of this module is here).
+ */
+export function batchLabel(b: ActiveBatchProgress, now: number = Date.now()): string {
+  const parts: string[] = [];
+  parts.push(b.rowsDone !== undefined
+    ? `batch ${b.rowsDone}/${b.rowsTotal} sentences`
+    : `batch of ${b.rowsTotal} sentences`);
+  parts.push(`${compactTokens(b.tokenStep)} tokens`);
+  // Which sub-batch of the current engine call this is — only worth saying when
+  // the call was split into several (a batch too deep to run at full width).
+  if (b.batchNo !== undefined && b.batchCount !== undefined && b.batchCount > 1) {
+    parts.push(`part ${b.batchNo}/${b.batchCount}`);
+  }
+  // THIS batch's own clock. The step's elapsed cannot say this: it folds in the
+  // model load and every batch already finished, so it grows all run while the
+  // number a reader wants — how long this decode has been going, against the
+  // ~13 minutes one usually takes — is only here.
+  if (b.startedAt !== undefined) {
+    const seconds = Math.max(0, Math.round((now - b.startedAt) / 1000));
+    parts.push(elapsedWords(seconds));
+  }
+  return parts.join(' · ');
+}
+
+/** 795 → "13m 15s", 42 → "42s". Minutes first: a decode runs in minutes. */
+function elapsedWords(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/** 1259 → "1.3k". Token counts run to four digits and only the magnitude matters. */
+function compactTokens(n: number): string {
+  if (n < 1000) return String(n);
+  return `${(n / 1000).toFixed(1)}k`;
 }
 
 /** One slot of one pool. */
@@ -281,6 +335,9 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           percent: step.progress.percent ?? null,
           ...(step.progress.message === undefined ? {} : { message: step.progress.message }),
           ...(step.progress.detail === undefined ? {} : { detail: step.progress.detail }),
+          ...(step.progress.activeBatch === undefined
+            ? {}
+            : { activeBatch: step.progress.activeBatch }),
           stages: step.progress.stages ?? [],
         });
       }
