@@ -366,21 +366,22 @@ interface ImportProgress {
       width: 100%;
       max-width: 280px;
       height: 4px;
-      background: var(--border-default);
+      background: var(--progress-track);
       border-radius: 2px;
       overflow: hidden;
     }
 
     .progress-fill {
       height: 100%;
-      background: var(--color-primary);
+      background: var(--progress-fill);
       border-radius: 2px;
       transition: width 0.3s ease;
     }
 
     .progress-count {
       font-size: 12px;
-      color: var(--text-muted);
+      color: var(--progress-value);
+      font-weight: 600;
       margin: 0;
     }
 

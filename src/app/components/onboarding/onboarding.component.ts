@@ -238,8 +238,8 @@ const STEP_ORDER: OnboardingStep[] = ['welcome', 'library', 'ready'];
       }
 
       .completed & {
-        background: var(--accent-success);
-        border-color: var(--accent-success);
+        background: var(--success);
+        border-color: var(--success);
         color: white;
       }
     }
@@ -253,7 +253,7 @@ const STEP_ORDER: OnboardingStep[] = ['welcome', 'library', 'ready'];
       transition: background 0.2s;
 
       &.completed {
-        background: var(--accent-success);
+        background: var(--success);
       }
     }
 

@@ -135,6 +135,21 @@ $cyan-900: #164e63;
   --info-bg: rgba(59, 130, 246, 0.1);
 
   // -------------------------------------------------------------------------
+  // Progress
+  // -------------------------------------------------------------------------
+  // Bars are SURFACES, and before these existed they were painted with TEXT
+  // tokens — a completed stage bar was `--text-muted`, which in dark mode is
+  // $neutral-600 on a $neutral-800 track: a finished bar you could not see
+  // (Owen, 2026-08-21). Text tokens are tuned for contrast against a
+  // background as GLYPHS; a 4px solid block needs more.
+  --progress-track: #{$neutral-200};
+  --progress-fill: #{$cyan-500};
+  --progress-fill-done: #{$neutral-700};   // "done" reads as settled, not live
+  --progress-fill-quiet: #{$neutral-400};  // sub-unit bars (e.g. the MLX batch)
+  --progress-label: #{$neutral-600};       // the stage's name
+  --progress-value: #{$neutral-800};       // the number beside it
+
+  // -------------------------------------------------------------------------
   // Shadows
   // -------------------------------------------------------------------------
   --shadow-xs: #{$shadow-xs};
@@ -263,6 +278,19 @@ $cyan-900: #164e63;
   --info: #60a5fa;
   --info-text: #60a5fa;
   --info-bg: rgba(96, 165, 250, 0.12);
+
+  // -------------------------------------------------------------------------
+  // Progress
+  // -------------------------------------------------------------------------
+  // See the light block for why these are not text tokens. Dark is the theme
+  // that was actually broken: `--text-muted` ($neutral-600) as a bar fill over
+  // `--bg-input` ($neutral-800) is barely two steps of the ramp apart.
+  --progress-track: #{$neutral-800};
+  --progress-fill: #{$cyan-400};
+  --progress-fill-done: #{$neutral-50};    // near-white: a finished bar is READ, not scanned past
+  --progress-fill-quiet: #{$neutral-400};
+  --progress-label: #{$neutral-400};
+  --progress-value: #{$neutral-50};
 
   // -------------------------------------------------------------------------
   // Shadows (more subtle in dark mode)

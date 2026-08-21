@@ -144,8 +144,8 @@ import { conversionEtaSeconds, formatEta, formatPageRate } from '@shared/vlm/eta
     .route-copy { min-width: 0; display: flex; flex: 1; flex-direction: column; gap: 2px; }
     .route-copy strong { overflow: hidden; font-size: 0.86rem; text-overflow: ellipsis; white-space: nowrap; }
     .route-kicker { color: var(--text-secondary); font-size: 0.68rem; }
-    .bar { height: 8px; overflow: hidden; border-radius: 99px; background: var(--bg-elevated); }
-    .fill { height: 100%; border-radius: 99px; background: var(--accent-primary, #06b6d4);
+    .bar { height: 8px; overflow: hidden; border-radius: 99px; background: var(--progress-track); }
+    .fill { height: 100%; border-radius: 99px; background: var(--progress-fill);
       transition: width 0.25s ease-out; }
     .bar.waiting .fill { opacity: 0.35; }
     .counts { margin-top: 7px; display: flex; justify-content: space-between; gap: 10px;

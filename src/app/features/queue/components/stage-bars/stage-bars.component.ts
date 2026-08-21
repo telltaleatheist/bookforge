@@ -83,14 +83,14 @@ import { batchLabel } from '@shared/queue/bench';
       flex: 1;
       min-width: 0;
       height: 5px;
-      background: var(--bg-sunken);
+      background: var(--progress-track);
       border-radius: 3px;
       overflow: hidden;
     }
 
     .stage-fill {
       height: 100%;
-      background: var(--accent);
+      background: var(--progress-fill);
       border-radius: 3px;
       transition: width 0.3s ease;
     }
@@ -98,7 +98,8 @@ import { batchLabel } from '@shared/queue/bench';
     .stage-pct {
       flex: 0 0 2.75rem;
       font-size: 0.6875rem;
-      color: var(--text-secondary);
+      color: var(--progress-value);
+      font-weight: 600;
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
@@ -128,14 +129,19 @@ import { batchLabel } from '@shared/queue/bench';
       flex: 0 1 8rem;
       min-width: 0;
       height: 3px;
-      background: var(--bg-sunken);
+      background: var(--progress-track);
       border-radius: 2px;
       overflow: hidden;
     }
 
+    /* The Mac/MLX bar. A 55%-transparent color-mix let the dark track show
+       through a fill already close to it in value, so on Mac runs — the only
+       runs that draw this row — it read as an empty track. Quiet is now a
+       lighter grey at full opacity: still subordinate to the stage bar above,
+       but visibly a bar. */
     .batch-fill {
       height: 100%;
-      background: color-mix(in srgb, var(--accent) 55%, transparent);
+      background: var(--progress-fill-quiet);
       border-radius: 2px;
       transition: width 0.4s ease;
     }
@@ -144,7 +150,7 @@ import { batchLabel } from '@shared/queue/bench';
       flex: 1 1 auto;
       min-width: 0;
       font-size: 0.625rem;
-      color: var(--text-tertiary);
+      color: var(--progress-label);
       font-variant-numeric: tabular-nums;
       overflow: hidden;
       text-overflow: ellipsis;

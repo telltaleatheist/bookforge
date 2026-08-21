@@ -171,11 +171,11 @@ export interface TTSProgress {
       }
 
       .progress-bg {
-        stroke: var(--bg-subtle);
+        stroke: var(--progress-track);
       }
 
       .progress-fill {
-        stroke: var(--accent-primary);
+        stroke: var(--progress-fill);
         stroke-linecap: round;
         transition: stroke-dashoffset 0.3s ease;
       }
@@ -185,7 +185,7 @@ export interface TTSProgress {
       }
 
       .complete & .progress-fill {
-        stroke: var(--accent-success);
+        stroke: var(--success);
       }
 
       .progress-text {
@@ -220,7 +220,7 @@ export interface TTSProgress {
         color: var(--text-primary);
 
         &.success {
-          color: var(--accent-success);
+          color: var(--success);
         }
 
         &.error {
@@ -264,14 +264,14 @@ export interface TTSProgress {
 
     .progress-bar {
       height: 8px;
-      background: var(--bg-subtle);
+      background: var(--progress-track);
       border-radius: 4px;
       overflow: hidden;
     }
 
     .progress-bar-fill {
       height: 100%;
-      background: var(--accent-primary);
+      background: var(--progress-fill);
       border-radius: 4px;
       transition: width 0.3s ease;
 
@@ -285,7 +285,7 @@ export interface TTSProgress {
       }
 
       .complete & {
-        background: var(--accent-success);
+        background: var(--success);
       }
     }
 
@@ -298,7 +298,7 @@ export interface TTSProgress {
       margin-top: 0.5rem;
       text-align: center;
       font-size: 0.75rem;
-      color: var(--text-muted);
+      color: var(--progress-label);
     }
 
     .log-section {

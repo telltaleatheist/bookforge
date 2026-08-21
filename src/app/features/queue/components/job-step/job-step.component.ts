@@ -227,14 +227,14 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
     .step-track {
       height: 4px;
       margin: 0.375rem 0 0 1.15rem;
-      background: var(--bg-sunken);
+      background: var(--progress-track);
       border-radius: 2px;
       overflow: hidden;
     }
 
     .step-fill {
       height: 100%;
-      background: var(--accent);
+      background: var(--progress-fill);
       border-radius: 2px;
       transition: width 0.3s ease;
 
@@ -304,14 +304,14 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
       flex: 1;
       min-width: 0;
       height: 5px;
-      background: var(--bg-sunken);
+      background: var(--progress-track);
       border-radius: 3px;
       overflow: hidden;
     }
 
     .worker-fill {
       height: 100%;
-      background: var(--accent);
+      background: var(--progress-fill);
       border-radius: 3px;
       transition: width 0.3s ease;
 
@@ -322,7 +322,8 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
     .worker-pct {
       flex: 0 0 2.25rem;
       font-size: 0.6875rem;
-      color: var(--text-secondary);
+      color: var(--progress-value);
+      font-weight: 600;
       text-align: right;
       font-variant-numeric: tabular-nums;
     }
