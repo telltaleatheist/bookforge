@@ -28,7 +28,7 @@ import { listProjects, getProjectPath, getLibraryBasePath, getProjectsPath, effe
 import { scanLibrary, extractCover, getAbsolutePath, isArchiveEntry, projectIdOfEntry } from './ebook-library';
 import { getFfprobePath, getFfmpegPath } from './tool-paths';
 import { extractVttFromM4b } from './metadata-tools';
-import { getPdfInfo, renderPdfPage } from './ebook-render';
+import { getPdfInfo, renderPdfPage, shutdownEbookRender } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
 import { ReaderStreamBridge } from './reader-stream-bridge';
 import { readerAudioStore } from './reader-audio-store';
@@ -298,9 +298,53 @@ export class BookshelfServer {
   // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
   private readerStream = new ReaderStreamBridge();
 
+  // ── Main-thread stall diagnostics (see the middleware in setupRoutes) ──────
+  /** A request taking at least this long is worth a line. Streaming a whole m4b
+   *  legitimately passes it, which is why the lag log below is the real signal. */
+  private static readonly SLOW_REQUEST_MS = 500;
+  /** The loop is expected to drift a few ms. This much means something ran to
+   *  completion without yielding, and the desktop window was frozen for it. */
+  private static readonly LAG_THRESHOLD_MS = 200;
+  private static readonly LAG_SAMPLE_MS = 100;
+  /** "GET /api/vtt" for every request currently open, so a stall can be blamed. */
+  private readonly inFlight = new Set<string>();
+  private lagTimer: ReturnType<typeof setInterval> | null = null;
+
   constructor() {
     this.app = express();
     this.setupRoutes();
+  }
+
+  /**
+   * Watch the main thread for stalls while the server is up.
+   *
+   * A setInterval that fires late by more than its period was BLOCKED — the
+   * loop had no chance to run it. That is the same thread Electron uses to
+   * answer the desktop window, so a stall here IS the frozen UI, measured
+   * rather than inferred. Naming the in-flight requests turns "the app hangs
+   * sometimes" into "GET /api/cover held the thread for 3.1s".
+   *
+   * Cheap enough to leave on: one timer at 10 Hz that does a subtraction.
+   */
+  private startLagWatch(): void {
+    if (this.lagTimer) return;
+    let last = Date.now();
+    this.lagTimer = setInterval(() => {
+      const now = Date.now();
+      const lag = now - last - BookshelfServer.LAG_SAMPLE_MS;
+      last = now;
+      if (lag < BookshelfServer.LAG_THRESHOLD_MS) return;
+      const blamed = this.inFlight.size > 0 ? [...this.inFlight].join(', ') : 'nothing (not this server)';
+      console.warn(`[BookshelfServer] MAIN THREAD STALLED ${lag}ms — in flight: ${blamed}`);
+    }, BookshelfServer.LAG_SAMPLE_MS);
+    // Never hold the process open for a diagnostic.
+    this.lagTimer.unref?.();
+  }
+
+  private stopLagWatch(): void {
+    if (!this.lagTimer) return;
+    clearInterval(this.lagTimer);
+    this.lagTimer = null;
   }
 
   private setupRoutes(): void {
@@ -346,6 +390,36 @@ export class BookshelfServer {
       // `code` lets the client distinguish "wrong key" from a plain failure and
       // prompt for it, rather than treating the server as unreachable.
       res.status(401).json({ error: 'access key required', code: 'ACCESS_KEY' });
+    });
+
+    // ── Who is blocking the desktop? ─────────────────────────────────────────
+    //
+    // Serving the phone runs in the SAME process that answers the desktop
+    // window's IPC, so a handler that spends real time on the main thread
+    // freezes the app on the PC. Owen hit exactly that opening an audiobook
+    // (2026-08-21), and three plausible causes measured clean — the m4b sidecar
+    // hash (453 MB in 1.2s, zero event-loop lag), libuv threadpool starvation
+    // (20 small reads went 10ms → 13ms under a double 453 MB stream), and the
+    // PDF reader (real, ~5.7s, and now moved to a worker thread — but he was
+    // opening an audiobook).
+    //
+    // So this stops the guessing: every request is timed, and a lag sampler
+    // names the requests that were IN FLIGHT while the loop stalled. A slow
+    // request is not itself the bug — streaming a 453 MB m4b to the phone
+    // SHOULD take a while and blocks nothing. A stalled loop is the bug, and
+    // only the pairing of the two says which handler caused it.
+    this.app.use('/api', (req: Request, res: Response, next: NextFunction) => {
+      const started = Date.now();
+      const label = `${req.method} ${req.path}`;
+      this.inFlight.add(label);
+      res.on('close', () => {
+        this.inFlight.delete(label);
+        const ms = Date.now() - started;
+        if (ms >= BookshelfServer.SLOW_REQUEST_MS) {
+          console.log(`[BookshelfServer] SLOW ${label} took ${ms}ms`);
+        }
+      });
+      next();
     });
 
     // API Routes
@@ -492,6 +566,7 @@ export class BookshelfServer {
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
         console.log(`[BookshelfServer] Started on port ${this.port}`);
+        this.startLagWatch();
         resolve();
       });
 
@@ -600,8 +675,13 @@ export class BookshelfServer {
   }
 
   async stop(): Promise<void> {
+    this.stopLagWatch();
     await Promise.all([...this.analysisStreamSessions.values()].map(session => this.disposeAnalysisStreamSession(session)));
     this.analysisStreamSessions.clear();
+    // The reader's mupdf worker exists only to serve this server; with the
+    // server down it has nothing to answer, and its WASM heap should not sit
+    // out the five-minute idle timer.
+    await shutdownEbookRender();
     return new Promise((resolve) => {
       if (this.server) {
         this.server.close(() => {

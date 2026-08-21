@@ -1,83 +1,137 @@
 /**
  * Ebook page rendering for the Bookshelf web reader.
  *
- * PDFs are rasterized to PNG here (server-side) via mupdf and streamed to the
- * phone browser, which keeps the client light. EPUBs are NOT handled here — the
- * web reader renders those reflowably with epub.js on the client.
+ * PDFs are rasterized to PNG via mupdf and streamed to the phone browser, which
+ * keeps the client light. EPUBs are NOT handled here — the web reader renders
+ * those reflowably with epub.js on the client.
  *
- * This is deliberately DECOUPLED from the desktop PDF editor's mupdf worker
- * (electron/pdf-worker-proxy + pdf-analyzer): it uses its own mupdf instance in
- * the main process and its own serialization lock, so a reader request can never
- * disturb (or be disturbed by) an active editing session.
+ * ── This is a PROXY, and that is the whole point ─────────────────────────────
  *
- * mupdf's WASM state is single-threaded and corrupts under concurrent calls, so
- * every WASM operation runs behind `runLocked` (a promise chain). A one-document
- * cache avoids re-reading a large PDF from disk on every page, and a small PNG
- * LRU smooths scrolling back over already-rendered pages.
+ * The mupdf work lives in `ebook-render-worker.ts`, one dedicated worker thread.
+ * It used to run right here, in the Electron main process, and every reader
+ * request — `readFileSync` of the whole PDF, `openDocument`, `toPixmap`,
+ * `asPNG` — is synchronous WASM that blocks whatever thread it is on. So
+ * opening a book on the phone froze the DESKTOP window for several seconds
+ * while it rendered (Owen, 2026-08-21): the main thread is also the thread that
+ * answers the renderer's IPC.
+ *
+ * It stays DECOUPLED from the desktop PDF editor's worker (pdf-worker-proxy):
+ * its own worker, its own mupdf instance, its own lock, so a reader request can
+ * never disturb (or be disturbed by) an active editing session. mupdf's WASM
+ * state is single-threaded and corrupts under concurrent calls, which is why
+ * the isolation matters more than the extra thread costs.
+ *
+ * The worker is spawned lazily and terminated after five minutes idle, so a
+ * library nobody is reading from the phone holds no WASM heap.
  */
 
-import * as fs from 'fs';
+import { Worker } from 'worker_threads';
+import * as fs from 'fs/promises';
 import * as path from 'path';
 
-// mupdf's TypeScript surface varies between versions; the calls used here
-// (openDocument / countPages / loadPage / getBounds / toPixmap / asPNG) are
-// stable across 1.2x. Type the module loosely to avoid version-coupling.
-type Mupdf = typeof import('mupdf');
+// ── The worker ───────────────────────────────────────────────────────────────
 
-let mupdfPromise: Promise<Mupdf> | null = null;
-function getMupdf(): Promise<Mupdf> {
-  // Memoize the dynamic import (mupdf is an ESM module).
-  return (mupdfPromise ??= import('mupdf'));
+const IDLE_TIMEOUT = 5 * 60 * 1000;
+
+interface PendingCall {
+  resolve: (value: any) => void;
+  reject: (reason: any) => void;
 }
 
-// ── Serialization lock ─────────────────────────────────────────────────────────
-let lockChain: Promise<unknown> = Promise.resolve();
-function runLocked<T>(fn: () => Promise<T> | T): Promise<T> {
-  const result = lockChain.then(() => fn());
-  // Keep the chain alive even if this task rejects.
-  lockChain = result.then(() => undefined, () => undefined);
-  return result;
+let worker: Worker | null = null;
+const pending = new Map<string, PendingCall>();
+let requestCounter = 0;
+let idleTimer: ReturnType<typeof setTimeout> | null = null;
+
+function workerPath(): string {
+  return path.join(__dirname, 'ebook-render-worker.js');
 }
 
-// ── One-document cache (keyed by path + mtime) ───────────────────────────────────
-interface OpenDoc {
-  key: string;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  doc: any;
+function resetIdleTimer(): void {
+  if (idleTimer) clearTimeout(idleTimer);
+  idleTimer = setTimeout(() => {
+    idleTimer = null;
+    if (pending.size > 0 || !worker) return;
+    console.log('[ebook-render] Worker terminated (idle)');
+    const dying = worker;
+    worker = null;
+    // The open document and its WASM heap go with it; the next call reopens.
+    void dying.terminate();
+  }, IDLE_TIMEOUT);
 }
-let openDoc: OpenDoc | null = null;
 
-function docKey(absPath: string, mtimeMs: number): string {
-  return `${absPath}::${mtimeMs}`;
+function ensureWorker(): Worker {
+  if (worker) return worker;
+
+  const w = new Worker(workerPath());
+  console.log('[ebook-render] Worker started');
+
+  w.on('message', (msg: any) => {
+    const call = pending.get(msg?.requestId);
+    if (!call) return;
+    pending.delete(msg.requestId);
+    if (msg.type === 'result') call.resolve(msg.result);
+    else if (msg.type === 'error') call.reject(new Error(msg.error));
+  });
+
+  // A mupdf WASM out-of-memory abort calls process.exit and takes the whole
+  // worker with it — no JS error to catch. Every in-flight call must be
+  // REJECTED rather than left hanging, or the reader request never answers and
+  // the phone spins forever.
+  w.on('error', (err) => failAll(w, err));
+  w.on('exit', (code) => {
+    if (worker === w) worker = null;
+    failAll(w, new Error(`Ebook render worker exited unexpectedly (code ${code})`));
+  });
+
+  worker = w;
+  return w;
 }
 
-/** Run `fn` with the (cached) open document, holding the WASM lock throughout. */
-async function withDoc<T>(absPath: string, fn: (mupdf: Mupdf, doc: any) => T): Promise<T> {
-  const mupdf = await getMupdf();
-  const st = fs.statSync(absPath);
-  const key = docKey(absPath, st.mtimeMs);
-  return runLocked(() => {
-    if (!openDoc || openDoc.key !== key) {
-      if (openDoc) {
-        try { openDoc.doc.destroy(); } catch { /* already gone */ }
-        openDoc = null;
-      }
-      const data = fs.readFileSync(absPath);
-      openDoc = { key, doc: mupdf.Document.openDocument(data, mimeFor(absPath)) };
-    }
-    return fn(mupdf, openDoc.doc);
+function failAll(dead: Worker, err: Error): void {
+  if (worker === dead) worker = null;
+  for (const [id, call] of pending) {
+    pending.delete(id);
+    call.reject(err);
+  }
+}
+
+function call<T>(method: string, args: unknown[]): Promise<T> {
+  const w = ensureWorker();
+  const requestId = `er-${++requestCounter}`;
+  resetIdleTimer();
+  return new Promise<T>((resolve, reject) => {
+    pending.set(requestId, { resolve, reject });
+    w.postMessage({ type: 'call', requestId, method, args });
   });
 }
 
-function mimeFor(absPath: string): string {
-  const ext = path.extname(absPath).toLowerCase();
-  if (ext === '.pdf') return 'application/pdf';
-  if (ext === '.xps') return 'application/oxps';
-  if (ext === '.cbz') return 'application/x-cbz';
-  return 'application/pdf';
+/** Shut the worker down — called from the app's quit path. */
+export async function shutdownEbookRender(): Promise<void> {
+  if (idleTimer) { clearTimeout(idleTimer); idleTimer = null; }
+  const dying = worker;
+  worker = null;
+  if (dying) await dying.terminate();
+}
+
+// ── Document identity ────────────────────────────────────────────────────────
+
+/**
+ * A document's cache key: path plus mtime, so an edited file is never served
+ * from a stale open handle. The stat is ASYNC — a sync one here would put a
+ * (small, but real) filesystem wait back on the thread this whole file exists
+ * to keep free, and on a network library that wait is not small.
+ */
+async function docKey(absPath: string): Promise<string> {
+  const st = await fs.stat(absPath);
+  return `${absPath}::${st.mtimeMs}`;
 }
 
 // ── PNG LRU (keyed by doc key + page + scale) ────────────────────────────────────
+//
+// On THIS side of the thread boundary: a hit must not cost a round trip, and
+// scrolling back over already-rendered pages is the common case.
+
 const PNG_CACHE_MAX = 24;
 const pngCache = new Map<string, Buffer>();
 
@@ -115,42 +169,8 @@ export interface PdfInfo {
 }
 
 export async function getPdfInfo(absPath: string): Promise<PdfInfo> {
-  return withDoc(absPath, (_mupdf, doc) => {
-    const pages: number = doc.countPages();
-    let aspect = 0.7727; // ≈ US Letter, until we read page 1's real bounds
-    if (pages > 0) {
-      const page = doc.loadPage(0);
-      try {
-        const [x0, y0, x1, y1] = page.getBounds();
-        const w = x1 - x0;
-        const h = y1 - y0;
-        if (w > 0 && h > 0) aspect = w / h;
-      } finally {
-        try { page.destroy(); } catch { /* ignore */ }
-      }
-    }
-    return { pages, aspect, outline: readOutline(doc) };
-  });
-}
-
-/** Flatten mupdf's nested outline into { title, page, depth }. Best-effort. */
-function readOutline(doc: any): PdfOutlineItem[] {
-  let raw: any[] | null = null;
-  try { raw = doc.loadOutline(); } catch { raw = null; }
-  if (!raw || !Array.isArray(raw)) return [];
-
-  const out: PdfOutlineItem[] = [];
-  const walk = (items: any[], depth: number): void => {
-    for (const it of items) {
-      const title = typeof it?.title === 'string' ? it.title.trim() : '';
-      // mupdf exposes the target as a 0-indexed `page` number on the item.
-      const page = Number.isInteger(it?.page) && it.page >= 0 ? it.page : 0;
-      if (title) out.push({ title, page, depth });
-      if (Array.isArray(it?.down) && it.down.length) walk(it.down, depth + 1);
-    }
-  };
-  walk(raw, 0);
-  return out;
+  const key = await docKey(absPath);
+  return call<PdfInfo>('info', [absPath, key]);
 }
 
 /**
@@ -159,24 +179,13 @@ function readOutline(doc: any): PdfOutlineItem[] {
  */
 export async function renderPdfPage(absPath: string, pageNum: number, scale: number): Promise<Buffer> {
   const safeScale = Math.min(Math.max(scale, 0.5), 4);
-  const st = fs.statSync(absPath);
-  const cacheKey = `${docKey(absPath, st.mtimeMs)}::${pageNum}::${safeScale}`;
+  const key = await docKey(absPath);
+  const cacheKey = `${key}::${pageNum}::${safeScale}`;
   const cached = pngCacheGet(cacheKey);
   if (cached) return cached;
 
-  const buf = await withDoc(absPath, (mupdf, doc) => {
-    let page: any = null;
-    let pixmap: any = null;
-    try {
-      page = doc.loadPage(pageNum);
-      const matrix = mupdf.Matrix.scale(safeScale, safeScale);
-      pixmap = page.toPixmap(matrix, mupdf.ColorSpace.DeviceRGB, false, true);
-      return Buffer.from(pixmap.asPNG());
-    } finally {
-      try { pixmap?.destroy(); } catch { /* ignore */ }
-      try { page?.destroy(); } catch { /* ignore */ }
-    }
-  });
+  const png = await call<Uint8Array>('page', [absPath, key, pageNum, safeScale]);
+  const buf = Buffer.from(png.buffer, png.byteOffset, png.byteLength);
   pngCacheSet(cacheKey, buf);
   return buf;
 }
