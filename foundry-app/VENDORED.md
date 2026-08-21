@@ -254,11 +254,21 @@ front door to a library BookForge owns. 15 files added, none removed, 111/111
 blobs hash-verified. IPC: the new `capture:` family, nine names (eight doors and
 one push), a family BookForge owns nothing in — so collision-safe by
 construction, and the keeper agrees. **THE ENGINE MOVED and its binary is
-STALE:** `src/vlm/` took four commits since `dist/foundry-windows-x64.exe` was
-built (2026-08-18), including `--pages` never being registered, a runaway
-becoming an empty page, and a refused page naming the cap that stopped it. The
-subtree here is current; the binary a hosted read spawns is not, until
+STALE:** `git log f8c8d6a..f858e41 -- src` names **seven** commits, all dated
+2026-08-20, and `dist/foundry-windows-x64.exe` was built 2026-08-18 23:19 — so
+every one of them is on the wrong side of it. `--pages` was parsed and never
+registered (so it was never reachable at all), the token cap belongs to the book
+rather than the model and is asked at the send, a refused page names the cap that
+stopped it, a runaway becomes an empty page, and a read takes PAGES. The subtree
+here is current; the binary a hosted read spawns is not, until
 `bash tools/release-build.sh windows-x64` is run in the Foundry checkout.
+SCOPE THE COUNT TO `src`, NOT `src/vlm` — the build entry is `src/cli.ts`
+(`tools/release-build.sh:113`), and `--pages` lives in `src/commands.ts`, so the
+narrower path misses it. And scope it to the FETCHED RANGE, never `--since` from
+HEAD: run from a checkout that is behind (the pinned subtree is one by
+construction) `git log` cannot walk to commits that exist only ahead of it, and
+answers with a clean nothing — the staleness being tested for is the staleness
+that hides the evidence. bookforge-mac-2 hit exactly that, 2026-08-21.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
