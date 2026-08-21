@@ -198,7 +198,13 @@ import { QueueTrayService } from './services/queue-tray.service';
                 @if (lane.count || lane.speed || lane.elapsed) {
                   <div class="measures">
                     @if (lane.count) {
-                      <div class="ro"><div class="k">Sentences</div><div class="v">{{ lane.count }}</div></div>
+                      <!-- CHUNKS, not sentences. lane.count is
+                           chunksCompletedInJob/totalChunksInJob, and a chunk packs
+                           2-3 sentences — so this read ~3.6x lower than the book's
+                           real sentence count and disagreed with the sent/min beside
+                           it, which IS raw sentences (Owen, 2026-08-20). Same
+                           distinction the analytics panel already draws. -->
+                      <div class="ro"><div class="k">Chunks</div><div class="v">{{ lane.count }}</div></div>
                     }
                     @if (lane.speed) {
                       <div class="ro"><div class="k">Rate</div><div class="v">{{ lane.speed }}</div></div>
