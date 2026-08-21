@@ -1209,7 +1209,10 @@ export function orpheusVoiceCapsForModel(model: OrpheusModel): OrpheusVoiceCaps 
   if (overlay.maxChars !== undefined) caps.maxChars = overlay.maxChars;
   if (overlay.maxCharsPerSec !== undefined) caps.maxCharsPerSec = overlay.maxCharsPerSec;
   if (overlay.repPenalty !== undefined) caps.repPenalty = overlay.repPenalty;
-  // EOS boost is vLLM-only by nature — declared via backends.vllm, never flat.
+  // EOS boost is per-backend, never flat: each backend's processor is its own
+  // port (vLLM `_eos_boost_processor`; MLX `_mlx_eos_boost_processor` since
+  // 2026-08-21, which clamps the start under the MLX token cap), so a voice
+  // opts in per backend and an overlay without the keys stays boost-free.
   if (overlay.eosBoost !== undefined) caps.eosBoost = overlay.eosBoost;
   if (overlay.eosBoostStart !== undefined) caps.eosBoostStart = overlay.eosBoostStart;
   return caps;

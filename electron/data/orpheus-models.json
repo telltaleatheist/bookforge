@@ -43,6 +43,12 @@
           "repPenalty": 1.1,
           "eosBoost": 8,
           "eosBoostStart": 2.0
+        },
+        "mlx": {
+          "repPenalty": 1.1,
+          "eosBoost": 8,
+          "eosBoostStart": 2.0,
+          "_note": "2026-08-21: MLX boost port trial. Same pair as backends.vllm — the ramp arithmetic is identical, but the MLX port (orpheus.py _mlx_eos_boost_processor) clamps the start to 0.9*MLX_MAX_TOKENS (~3,330), because at eosBoostStart 2.0 a 500-char chunk's natural start (~4,600) sits past the 3,700 cap and the boost could never fire for exactly the rows that still cap (2 in 623 chunks after the rep-window fix, both ~500-char slow-delivery passages; the window fix took cap hits 52 -> 2, this targets the residue). Legit-slowest 500-char render is ~3,050 tokens (p05 13.78 ch/s), under the clamped start. Listen-gate before trusting: a boost firing at 3,330 touches only renders already past the legitimate slow tail, but nobody has EAR-checked a boosted MLX render yet."
         }
       },
       "_maxCharsNote": "500 (2026-07-27), raised from the 350 default in core.py. That default carries the note '450 fails everywhere — keep the cap ≤~350', but that verdict was reached on 2026-07-12 against rohan-v2, which the SAME comment calls a broken training recipe (38s clips / max_seq_length 4096 → 19% runaway). The way 450 failed was EOS failure — chunks reaching the 3700-token cap without emitting end-of-audio — which is exactly the defect tr_ownbed1_ep248 eliminated (0 failures in 1500 chunks, 900 boost-off + 600 boosted). So the old verdict is stale evidence for this checkpoint and is being re-tested on a Witnesses re-run. HEADROOM: 3700 audio tokens ÷ 84 tok/s = 44.0 s; at the measured worst case (~450 chars needing up to 3400 tokens) MEASURED from 1928 real renders: the p05 (slowest) rate is 13.78 ch/s, so the 44.0 s budget is exhausted at ~540 chars and 500 uses ~93% of it at that worst-case rate (71% at median). The old ~8-tokens-per-char rule of thumb was ~40% conservative. Anything overshooting now hits the early-truncation guard and re-renders split. Raising ORPHEUS_MAX_TOKENS toward ~3950 (the 4096 context minus prompt) would buy ~500-520. Beyond that needs max_model_len > 4096, i.e. running the model past its 2048 fine-tuning length — untested. REVERT: delete this key to fall back to 350. NOTE maxChars is a PREP cap, so a book must be re-prepped, not just re-rendered.",
