@@ -84,7 +84,7 @@
  * then have to go and delete by hand, which is not a kindness, it is a lie about
  * what the button did.
  */
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { constants as fsconst, createReadStream, promises as fsp, type Dirent } from 'node:fs';
 import * as path from 'node:path';
 
@@ -106,6 +106,7 @@ import type {
   ProjectFinal,
   ProjectGenerated,
   ProjectGeneratedRole,
+  ProjectArchive,
   ProjectLedger,
   ProjectManifest,
   ProjectReading,
@@ -116,15 +117,19 @@ import type {
   RewriteMode,
   StepCasualty,
   StepDeletion,
+  StepLedgerView,
   StepRow,
 } from '../shared/types';
 import { WHY_HANDMADE, WHY_IMPORTED, WHY_MODEL_PASS } from '../shared/types';
 import { spokenStem } from '../shared/documents';
 import { readJson } from '../shared/json';
+import type { ArchiveRecord } from '../shared/steps';
 import { STEP_LABELS, migrateToSteps, readTypeRecords } from '../shared/steps';
 import {
   A_BOOK_OF_ITS_OWN,
+  appendStep,
   askedOf,
+  captureStep,
   chainsWithout,
   chronological,
   deleteCost,
@@ -137,6 +142,7 @@ import {
   mergedMetadata,
   metadataInEffect,
   migrateLedger,
+  mintedStep,
   orphanedBanks,
   originOf,
   originStep,
@@ -160,6 +166,7 @@ import {
   type ReadAsk,
 } from '../shared/ledger';
 import { GENERATED_ROLE_FOR } from '../shared/documents';
+import { CAPTURE_RECIPE_PAYLOAD, emptyRecipe, recipeBytes } from '../shared/capture';
 // The records `parts` grammar is the overlay's target grammar — one spelling,
 // three readers — so the validator is the same function the curation uses.
 // One spelling for a path, so Windows' three become one — and the same one the
@@ -589,7 +596,34 @@ function readDocuments(
   if (Array.isArray(row['documents'])) {
     return healImport(readTypeRecords(row['documents']), archive, layers);
   }
-  return migrateToSteps(readGenerated(row['generated']), archive, layers);
+  return migrateToSteps(readGenerated(row['generated']), documentArchive(archive), layers);
+}
+
+/**
+ * The archive AS A DOCUMENT, or nothing — the one narrowing, said once.
+ *
+ * ── Why a folder of pages is not a row in the catalogue ─────────────────────
+ *
+ * `documents` lists FILE TYPES, and every one of them is a thing this app can
+ * open: a click on a row opens it, `originalOf` picks one to be the book, a
+ * delete of one is a delete of a file. A minted pages directory is none of
+ * those. Filing it as a document would put a row on Home whose path is a FOLDER,
+ * and the first click on it would hand a directory to a PDF reader.
+ *
+ * IT IS STILL THE PROJECT'S ORIGIN — irreplaceable, the thing everything else is
+ * made from — and that fact lives where it has always lived for a mint: in the
+ * LEDGER, as the mint step whose payload names the directory. The catalogue
+ * answers "what can I open"; the ledger answers "what happened". Only the second
+ * of those questions has an answer here.
+ *
+ * SO THE MIGRATION AND THE HEAL BOTH SEE null, which is exactly right for both:
+ * a v1 catalogue predates capture entirely and can never carry one, and the heal
+ * exists to put back a document row that a writer forgot — and no writer was
+ * ever supposed to write this one.
+ */
+function documentArchive(archive: ProjectManifest['archive']): ArchiveRecord | null {
+  if (archive === null || archive.kind === 'pages') return null;
+  return { file: archive.file, kind: archive.kind };
 }
 
 /**
@@ -629,9 +663,10 @@ function healImport(
   archive: ProjectManifest['archive'],
   layers: { archive: string; generated: string },
 ): ProjectTypeRecord[] {
-  if (archive === null) return records;
-  if (records.some((record) => record.kind === archive.kind)) return records;
-  return [...migrateToSteps([], archive, layers), ...records];
+  const document = documentArchive(archive);
+  if (document === null) return records;
+  if (records.some((record) => record.kind === document.kind)) return records;
+  return [...migrateToSteps([], document, layers), ...records];
 }
 
 function readArchive(value: unknown): ProjectManifest['archive'] {
@@ -639,7 +674,8 @@ function readArchive(value: unknown): ProjectManifest['archive'] {
   const row = value as Record<string, unknown>;
   const file = row['file'];
   const kind = row['kind'];
-  if (typeof file !== 'string' || (kind !== 'pdf' && kind !== 'epub')) return null;
+  if (typeof file !== 'string') return null;
+  if (kind !== 'pdf' && kind !== 'epub' && kind !== 'pages') return null;
   return {
     file,
     kind,
@@ -988,6 +1024,78 @@ export function onImportLanded(listener: (landing: ImportLanding) => void): void
   importLanded = listener;
 }
 
+/**
+ * Make an empty project for photographs, and give it its first step.
+ *
+ * ── WHY THIS IS NOT `importDocument` WITH A THIRD KIND ──────────────────────
+ *
+ * Every project above is born FROM A FILE and keyed by the hash of that file’s
+ * bytes, which is what makes importing the same book twice land in the same
+ * folder. A capture project has no file yet: it must exist EMPTY, so that a
+ * light table has somewhere to put the first photograph. So it is keyed from a
+ * random id instead, and this comment says so rather than leaving a reader to
+ * wonder why one project in the library is not content-addressed.
+ *
+ * THE KEY NEVER CHANGES ON A RE-MINT. A project is its identity, not its
+ * current PDF: minting again produces a new step and a new document inside the
+ * same folder, and a key that followed the newest PDF would draw one project
+ * as two rows on Home.
+ *
+ * THE TITLE IS WHAT THE PERSON TYPED, and the stem with it — there is no
+ * filename to take either from. An empty title becomes “Photographs” rather
+ * than an empty row on Home. One shot: the stem never changes after creation,
+ * because renaming files under somebody is not a thing a catalogue does.
+ *
+ * THE STEP IS APPENDED HERE, WITH AN EMPTY RECIPE, and `captureStep` carries
+ * the argument for why that is forced rather than tidy.
+ */
+export async function createCaptureProject(title: string): Promise<ImportedDocument> {
+  const named = title.trim().length > 0 ? title.trim() : 'Photographs';
+  const key = `${slugify(named)}-${randomBytes(4).toString('hex')}`;
+  const dir = path.join(projectsDir(), key);
+  return withCreatedProject(dir, key, named, async (manifest) => {
+    /*
+     * ONLY INTO AN EMPTY LEDGER, on `importDocument`’s reason: a create that
+     * somehow met an existing project must not write a second account of where
+     * its photographs came from. The random key makes that collision very
+     * nearly impossible, which is not the same as impossible.
+     */
+    /*
+     * THE RECIPE IS WRITTEN BEFORE THE STEP THAT POINTS AT IT, and in the same
+     * function, which it was not for one build. Creation appended a capture step
+     * whose payload is `capture/recipe.json` and left the FILE to whoever called
+     * next — so calling this alone produced a project that refused to open, and
+     * a crash between the two calls left one on disk permanently. A step is the
+     * retained payload of an action; minting one whose payload does not exist is
+     * writing a promise the project cannot keep.
+     */
+    await writeAtomically(
+      path.join(dir, ...CAPTURE_RECIPE_PAYLOAD.split('/')),
+      Buffer.from(recipeBytes(emptyRecipe())),
+    );
+    if (ledgerOf(manifest).steps.length === 0) {
+      manifest.ledger = {
+        steps: [captureStep(
+          randomUUID(),
+          CAPTURE_RECIPE_PAYLOAD,
+          manifest.createdAt > 0 ? manifest.createdAt : Date.now(),
+        )],
+      };
+      await writeManifest(dir, manifest);
+    }
+    // A project was made. Home has no other way to hear about it.
+    announceProjects();
+    return {
+      dir,
+      // No document exists yet, which is the whole point of this arrival: the
+      // recipe stands in the entry slot until a mint makes one.
+      entry: CAPTURE_RECIPE_PAYLOAD,
+      key: manifest.key,
+      stem: manifest.stem,
+      notice: null,
+    };
+  });
+}
 export async function importDocument(
   filePath: string,
   kind: 'pdf' | 'epub',
@@ -1339,7 +1447,24 @@ async function landStep(
  */
 async function destroyPayload(dir: string, payload: string): Promise<void> {
   const target = path.join(dir, ...payload.split('/'));
-  await fsp.rm(target, { force: true, recursive: false });
+  /*
+   * `recursive` IS DECIDED BY WHAT IS THERE, and it is deliberately not just
+   * `true`. A payload has always been one file, and `recursive: false` was the
+   * guard that said so: a payload that turned out to name a directory was a
+   * bookkeeping fault worth failing on rather than a licence to empty a folder.
+   *
+   * A MINT'S PAYLOAD IS NOW A DIRECTORY (`recordMint`), so that guard has become
+   * the thing that strands one. Left as it was, discarding a mint logs "could
+   * not be removed from the disk" and leaves several hundred megabytes of page
+   * images that nothing in Foundry names — the exact orphan the guard existed to
+   * make visible, produced by the guard.
+   *
+   * So the question is asked of the disk instead: a folder is removed as a
+   * folder, and anything else keeps the old refusal. `stat` rather than a test
+   * on the name, because a payload's name says nothing about what it is.
+   */
+  const folder = await fsp.stat(target).then((it) => it.isDirectory()).catch(() => false);
+  await fsp.rm(target, { force: true, recursive: folder });
 }
 
 /**
@@ -1355,18 +1480,7 @@ async function destroyPayload(dir: string, payload: string): Promise<void> {
  * list from before its own gesture or painted twice. What a caller gets back now
  * is the whole answer to what it just did.
  */
-export interface LedgerView {
-  ledger: ProjectLedger;
-  /**
-   * `chronological`'s rows, composed HERE rather than in the renderer.
-   *
-   * The ordering and the quiet "from Read" annotation are the two things the flat
-   * list gets wrong if anybody re-derives them, and the renderer re-deriving them
-   * would be a second implementation of the one concession this design makes to
-   * the tree. Main holds the ledger; main says what the list looks like.
-   */
-  rows: StepRow[];
-}
+export type LedgerView = StepLedgerView;
 
 /**
  * One project's history, as the library needs it.
@@ -1385,12 +1499,134 @@ export interface LedgerView {
  * stops asking. A manifest that EXISTS but will not parse still throws — that is
  * a book somebody needs to fix a file for, and silence would bury it.
  */
+/**
+ * WHICH STEP THE BOOK ON THE SHELF CAME FROM — one resolution, two surfaces.
+ *
+ * ── What "the book on the shelf" turned out to mean, measured ───────────────
+ *
+ * Three candidates were proposed and two were wrong, each in a way no typecheck
+ * could see:
+ *
+ *   the newest mint step   wrong after a delete of a NEWER mint: it is right
+ *                          here by luck, and it is a second derivation of a
+ *                          question the catalogue already answers
+ *   `manifest.archive`     wrong TWICE. A delete that destroys the file it names
+ *                          nulls it while an older mint and its file survive and
+ *                          Home goes on listing them (documents 1, missing
+ *                          false, the file really there) — so the sentence would
+ *                          go silent over a real difference. And after a
+ *                          searchable conversion the archive still names the
+ *                          MINT while the shelf shows the converted book
+ *   the pdf CHAIN          right, and it is what the catalogue means by this
+ *                          book's history: `documents[kind=pdf].steps`, oldest
+ *                          first
+ *
+ * Home opens `working/<stem>.pdf` — the LIVE copy — in every state where one
+ * exists, and falls back to the origin when it does not. The live copy is made
+ * from the chain's tip (measured: a searchable conversion moves the working
+ * row's `from` onto `generated/<stem>.pdf`), so the tip is the handle on the
+ * book a person is actually looking at.
+ *
+ * ── Why it WALKS DOWN rather than reading the tip alone ─────────────────────
+ *
+ * A conversion appends to this same chain and lands above the mint — measured,
+ * not read: `recordGenerated` puts `generated/<stem>.pdf` at the tip with kind
+ * `convert`, and no ledger step names it. Reading the tip alone would therefore
+ * answer "nothing" for a project that has been carried FURTHEST, and the
+ * sentence would work for a book somebody stopped after minting and stop
+ * working for one they finished.
+ *
+ * So the tip decides WHICH BOOK, and the nearest step at or below it carrying an
+ * arrangement decides WHAT IT WAS MADE FROM. A searchable PDF made from mint B
+ * really was minted from B's arrangement, and saying so stays true.
+ *
+ * NO KIND-SNIFFING ANYWHERE IN HERE (ruled): it does not ask whether a step is a
+ * mint, a conversion or an import — it asks which chain entry a ledger step
+ * names, and steps that carry an arrangement are mints because only a mint
+ * records one. A test on `action` or on a label would be a second spelling of
+ * "is this a mint", free to drift from `mintedStep` the day another action
+ * starts recording one.
+ *
+ * Null when the chain holds nothing a ledger step names, which is a genuinely
+ * empty shelf and an imported book alike — silence, as ruled, because nothing
+ * can be honestly claimed either way.
+ */
+function currentBookStep(manifest: ProjectManifest, ledger: ProjectLedger): LedgerStep | null {
+  const chain = manifest.documents.find((row) => row.kind === 'pdf')?.steps ?? [];
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const named = chain[index]!.file;
+    const step = ledger.steps.find((row) => row.payload === named);
+    if (step !== undefined) return step;
+  }
+  /*
+   * ── A BOOK WITH NO CHAIN TO WALK, WHICH IS EVERY MINTED-TO-PAGES PROJECT ───
+   *
+   * The walk above asks the PDF's chain which files exist and then asks the
+   * ledger which step made each one. A mint that writes pages files no document
+   * at all (`documentArchive`), so the chain is empty and the walk answers
+   * null — and it answers null for a project that HAS been minted, twice, which
+   * is the loudest thing this function can get wrong while looking correct.
+   *
+   * WHAT IT COSTS IF IT IS WRONG, because it is not obvious from here: this is
+   * `LedgerView.current`, and `currentArrangement` is built on it. Null means
+   * the renderer's `mintedFrom` is null, which means THE DIVERGENCE SENTENCE
+   * NEVER APPEARS AGAIN and the mint button never says "Finish again" — a
+   * feature quietly un-shipping itself with nothing on screen to say so.
+   *
+   * SO THE LEDGER IS ASKED DIRECTLY, and the test is the one this function
+   * already trusts one paragraph up: a step carrying an ARRANGEMENT is a mint,
+   * because only a mint records one. No kind-sniffing, no test on an action or a
+   * label — the same rule, applied where there is no chain to apply it through.
+   * The newest such step is the book on the shelf, exactly as the chain's tip is.
+   */
+  for (let index = ledger.steps.length - 1; index >= 0; index -= 1) {
+    const step = ledger.steps[index]!;
+    if (typeof step.params?.['arrangement'] === 'string') return step;
+  }
+  return null;
+}
+
+/**
+ * The view, composed where the manifest is still in hand.
+ *
+ * Every `LedgerView` in this file goes through here, because `current` cannot be
+ * derived from the ledger alone — it needs the catalogue's chain — and a second
+ * composition site would be a view that forgot to answer the question.
+ */
+function viewOf(manifest: ProjectManifest, ledger: ProjectLedger = ledgerOf(manifest)): LedgerView {
+  return {
+    ledger,
+    rows: chronological(ledger),
+    current: currentBookStep(manifest, ledger)?.id ?? null,
+  };
+}
+
+/**
+ * WHAT THE BOOK ON THE SHELF WAS MINTED FROM, for the light table's footer.
+ *
+ * The other half of `currentBookStep`, exported as its own door so that the
+ * sentence and the row marker are one resolution rather than two — the light
+ * table has no ledger view to read `current` off, and a second walk composed in
+ * `capture.ts` would be the two-things-one-name defect arriving in the feature
+ * built to stop it.
+ *
+ * NULL IS SILENCE, and it means three different true things: no book on the
+ * shelf, a book that predates the field, or a book this app did not mint. None
+ * of them can honestly claim the recipe has or has not moved on, and the footer
+ * says nothing for all three.
+ */
+export async function currentArrangement(dir: string): Promise<string | null> {
+  const resolved = deletableProjectDir(dir);
+  if (!await exists(path.join(resolved, MANIFEST))) return null;
+  const manifest = await readManifest(resolved);
+  return currentBookStep(manifest, ledgerOf(manifest))?.params?.arrangement ?? null;
+}
+
 export async function readStepLedger(dir: string): Promise<LedgerView | null> {
   const proven = deletableProjectDir(dir);
   if (!await exists(path.join(proven, MANIFEST))) return null;
   const manifest = await readManifest(proven);
-  const ledger = ledgerOf(manifest);
-  return { ledger, rows: chronological(ledger) };
+  return viewOf(manifest);
 }
 
 /**
@@ -1408,12 +1644,14 @@ export async function readStepLedger(dir: string): Promise<LedgerView | null> {
  */
 export async function goToStep(dir: string, stepId: string): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const ledger = await withManifest(resolved, async (manifest) => {
+  // Composed INSIDE, where the manifest is still in hand: `current` reads the
+  // catalogue's chain and the ledger alone cannot answer it.
+  const view = await withManifest(resolved, async (manifest) => {
     const standing = stepOf(ledgerOf(manifest), stepId);
     const next: ProjectLedger = { ...ledgerOf(manifest), position: standing.id };
     manifest.ledger = next;
     await writeManifest(resolved, manifest);
-    return next;
+    return viewOf(manifest, next);
   });
   // The tabs of this project repaint from the position, and Home's rows are
   // derived from what the ledger calls current. Both hear about it the one way
@@ -1422,7 +1660,7 @@ export async function goToStep(dir: string, stepId: string): Promise<LedgerView>
   // The rows are the same rows — a pointer move changes no step and no order —
   // and they are composed again anyway, because a caller that had to know which
   // of these answers is worth redrawing would be a caller deriving the list.
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -1796,17 +2034,155 @@ export async function deletableStep(dir: string, stepId: string): Promise<StepSu
  * doors ask it, the describe and the delete, so the card is never drawn for
  * something the click would refuse.
  */
+/**
+ * The archive record a project should hold once the file it named is destroyed.
+ *
+ * THE CATALOGUE DECIDES, not the ledger and not a guess: the newest entry on
+ * this kind's chain that still lives under `archive/` and is still on disk. That
+ * is the same chain `currentBookStep` walks, so the archive and the shelf cannot
+ * disagree about which book this project has.
+ *
+ * `contentKey` IS RE-TAKEN FROM THE BYTES rather than carried over, because it
+ * is the one field that describes the FILE rather than the project — carrying
+ * the dead mint's key onto a surviving one would be a record that reads as
+ * healthy and identifies the wrong document. `originPath` is carried, because it
+ * says where this project's content came from and that has not changed: every
+ * mint of a capture project names the same recipe.
+ */
+async function archiveAfterLoss(
+  resolved: string,
+  manifest: ProjectManifest,
+  dying: ProjectArchive,
+): Promise<ProjectArchive | null> {
+  /*
+   * ── A PAGES ARCHIVE HAS NO CHAIN, SO THE LEDGER IS ASKED ──────────────────
+   *
+   * The walk below re-points the archive at the newest SURVIVING file on the
+   * dying kind's chain, and it is the fix for a measured bug: after two mints,
+   * discarding the newer one left the older mint's step and file both alive
+   * while the archive went null, so the catalogue held an openable book that
+   * nothing named. A minted-to-pages project files no chain at all
+   * (`documentArchive`), which would put it straight back into that state —
+   * with the older mint's directory, hundreds of megabytes of it, still there.
+   *
+   * The ledger answers the same question for it, by the same rule
+   * `currentBookStep` uses: a step carrying an ARRANGEMENT is a mint, and the
+   * newest surviving one is the book on the shelf. It runs AFTER
+   * `manifest.ledger` has been replaced by the surviving ledger, so the steps
+   * being walked are the ones that are left.
+   */
+  if (dying.kind === 'pages') {
+    const steps = ledgerOf(manifest).steps;
+    for (let index = steps.length - 1; index >= 0; index -= 1) {
+      const step = steps[index]!;
+      if (typeof step.params?.['arrangement'] !== 'string') continue;
+      const parts = step.payload.split('/');
+      if (parts.length !== 2 || parts[0] !== ARCHIVE) continue;
+      const file = parts[1]!;
+      const onDisk = path.join(resolved, ARCHIVE, file);
+      if (!await exists(onDisk)) continue;
+      return {
+        file,
+        kind: 'pages',
+        contentKey: await pagesKey(onDisk, step.params['arrangement']),
+        originPath: dying.originPath,
+      };
+    }
+    return null;
+  }
+  const chain = manifest.documents.find((row) => row.kind === dying.kind)?.steps ?? [];
+  for (let index = chain.length - 1; index >= 0; index -= 1) {
+    const parts = chain[index]!.file.split('/');
+    if (parts.length !== 2 || parts[0] !== ARCHIVE) continue;
+    const file = parts[1]!;
+    const onDisk = path.join(resolved, ARCHIVE, file);
+    if (!await exists(onDisk)) continue;
+    return {
+      file,
+      kind: dying.kind,
+      contentKey: createHash('sha256').update(await fsp.readFile(onDisk)).digest('hex').slice(0, 8),
+      originPath: dying.originPath,
+    };
+  }
+  return null;
+}
+
 export async function deleteStep(dir: string, stepId: string): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const { ledger, orphans, sweeps } = await withManifest(resolved, async (manifest) => {
+  const { view, orphans, sweeps } = await withManifest(resolved, async (manifest) => {
     const deletion = deleteSubtree(ledgerOf(manifest), stepId);
     const banks = new Set(orphanedBanks(deletion, manifest.key));
     const destroyed = destroyedBy(deletion, manifest.key);
     const planned = await planStepSweep(resolved, destroyed, banks, manifest, deletion.removed);
     manifest.ledger = deletion.ledger;
     manifest.documents = chainsWithout(manifest.documents, destroyed);
+    /*
+     * ── THE ARCHIVE GOES WITH ITS FILE, AND THE LIVE COPY GOES WITH BOTH ───
+     *
+     * `recordMint` sets `manifest.archive` and the minted step inside one
+     * `withManifest` precisely so "a project can never hold one without the
+     * other" — and until now the delete broke that promise from the far side,
+     * taking the step and the file and leaving the archive naming both.
+     *
+     * WHAT THAT COST IS NOT A STALE FIELD. `listProjects` falls back to the
+     * archive when a project lists no documents — a rescue for a project whose
+     * file is real but unlisted — so emptying `documents` is exactly what
+     * switches the fallback on. It rebuilt an origin row out of the dead
+     * archive, Home went on showing a PDF, and a capture project could never
+     * get its light table back however much was discarded.
+     *
+     * REACHABLE ONLY SINCE WAVE 20, which is why it sat here unfound: in an
+     * imported project the origin step IS the root, and `deleteSubtree` refuses
+     * the root by name, so nothing could ever destroy the archived file. A
+     * capture project is the first whose root is something else — the
+     * photographs — which made the archive deletable for the first time.
+     *
+     * The live copy in `working/` goes too. It was made FROM the payload that
+     * has just been destroyed, so leaving it is leaving a book in the folder
+     * that no step names and nothing can explain — `planSweep` takes rotated
+     * predecessors and unpacked trees, not this, because until now no delete
+     * could reach a file a working row was made from.
+     */
+    const razed = new Set(destroyed);
+    if (manifest.archive !== null && razed.has(`${ARCHIVE}/${manifest.archive.file}`)) {
+      /*
+       * ── RE-POINTED RATHER THAN NULLED, WHICH IS THE OTHER HALF OF THE FIX ──
+       *
+       * Nulling it repaired the one-mint case and broke the two-mint one. After
+       * mint, Mint again, delete-the-newest, the OLDER mint's step and file both
+       * survive and the catalogue goes on listing it: Home shows a book, marks
+       * it present, and opens it. Measured. So a null archive left this manifest
+       * holding a listed, openable PDF with nothing naming it — `recordMint`'s
+       * promise ("a project can never hold one without the other") broken again,
+       * by the line written to restore it.
+       *
+       * The visible cost was on the row: `reading.needed` keys off
+       * `archive?.kind === 'pdf'`, so the project stopped advertising that a
+       * real unread book needed reading. Right when the file is gone, wrong when
+       * a survivor is still there — one line, and which case it met decided
+       * whether it was a fix.
+       *
+       * So the archive follows the catalogue: the newest surviving `archive/`
+       * entry on the same chain, freshly keyed off the bytes that are actually
+       * there, and null only when nothing is left — which is a genuinely empty
+       * shelf and is what the one-mint discard still gets.
+       */
+      manifest.archive = await archiveAfterLoss(resolved, manifest, manifest.archive);
+    }
+    const orphanedCopies = manifest.working.files.filter((row) => razed.has(row.from));
+    manifest.working.files = manifest.working.files.filter((row) => !razed.has(row.from));
     await writeManifest(resolved, manifest);
-    return { ledger: deletion.ledger, orphans: destroyed, sweeps: planned };
+    return {
+      // Composed here for `viewOf`'s reason, and this is the call that most
+      // needs it: a delete is the one gesture that can MOVE the current book,
+      // by destroying the file the catalogue's chain tip named.
+      view: viewOf(manifest, deletion.ledger),
+      orphans: destroyed,
+      sweeps: [...planned, ...orphanedCopies.map((row) => ({
+        ...emptySweep(),
+        files: [path.join(resolved, WORKING, row.file)],
+      }))],
+    };
   });
   for (const payload of orphans) {
     try {
@@ -1836,7 +2212,7 @@ export async function deleteStep(dir: string, stepId: string): Promise<LedgerVie
     }
   }
   announceProjects();
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -1859,13 +2235,203 @@ export async function deleteStep(dir: string, stepId: string): Promise<LedgerVie
  * knows what a curate step does to it, which is the point of putting the rule in
  * the ledger rather than at this call site.
  */
+
+/**
+ * The PAGES a mint made, filed as this project’s origin.
+ *
+ * ── IT USED TO BE A PDF, AND OWEN RULED THAT IT DOES NOT NEED TO BE ─────────
+ *
+ * *"i agree that this doesnt need to be a pdf. if the user explicitly wants to
+ * export it as one, they can. but the ultimate goal here is to generate a bank
+ * with the vlm"*. The mint had been assembling one JPEG per page into an
+ * image-only PDF, and the next thing that happened to that PDF was a rasteriser
+ * turning it back into one image per page. The pages ARE the book; a container
+ * that existed only to be undone is a step this stage can simply not take.
+ *
+ * WHAT THE ENGINE TAKES INSTEAD is `vlm-read --pages <dir>`, which reads page
+ * images as they are with no rasteriser involved — already merged, already
+ * verified against three of Owen’s real photographs (src/vlm/read.ts,
+ * `sourceFor`). This is the app half of that seam.
+ *
+ * ── TWO WRITES, ONE COMMIT POINT, AND THAT IS THE WHOLE POINT ───────────────
+ *
+ * A minted step alone leaves `manifest.archive` null, and `reading.needed` keys
+ * off the archive’s kind — so the ledger would show a book nothing downstream
+ * would ever offer to read. The archive and the step are set inside ONE
+ * `withManifest`, so a project can never hold one without the other.
+ *
+ * ── AND IT FILES NO DOCUMENT, WHICH IS THE OTHER HALF OF THE CHANGE ────────
+ *
+ * There is no `recordStep(manifest, 'pdf', …)` here any more and no live copy in
+ * `working/`. `documents` lists FILE TYPES THIS APP CAN OPEN, and a folder is
+ * not one — `documentArchive` is where that rule is written down and why. So a
+ * captured project keeps the empty document list it had all evening, Home goes
+ * on opening its light table, and what the row SAYS about it changes with the
+ * mint rather than staying "photographs" forever (home.component.ts).
+ *
+ * TWO CAPABILITIES ARE LOST UNTIL SOMEBODY BUILDS THEM, and they are named here
+ * rather than discovered: there are NO FIGURE CROPS for a captured book, because
+ * `vlm-book` cuts a Picture row’s image out of a PDF page and there is no PDF to
+ * cut from (`bookAtPosition.pdf` is null for this kind, by the test that was
+ * already there); and THE IMAGE PDF IS GONE UNTIL THE EXPORT EXISTS, which is
+ * the on-demand PDF Owen said a person could ask for.
+ *
+ * ── A RE-MINT IS A NEW DOCUMENT AND MUST NOT LAND ON THE OLD ONE ────────────
+ *
+ * Every mint writes its own file in `archive/`, named apart from the last one:
+ * readings hang off the STEP, whose payload is that path, and overwriting it
+ * would silently re-point every reading of the first mint at pages that are not
+ * the ones it read.
+ *
+ * The append is safe for a second reason worth writing down, because it looks
+ * like luck and is not: `recordLanding` would normally look for a step to
+ * REPLACE when the same action lands under the same parent with the same params
+ * — which is exactly the shape of a re-mint — but `reRunTarget` refuses any
+ * candidate whose retention is `irreplaceable`. The retention that makes the
+ * discard warning honest is the same field that stops a re-mint eating the
+ * document before it. This builds the step directly regardless, so the
+ * guarantee does not rest on a helper’s exclusion list staying as it is.
+ *
+ * WORKING/ STILL HOLDS ONE PDF, which is the app’s rule and not this one’s, so a
+ * re-mint replaces the live copy. THE EARLIER MINT’S ROW STILL OPENS ANYWAY, and
+ * this paragraph used to say it did not — measured with both mints present:
+ * standing on the newer one resolves to `working/index.pdf` and standing on the
+ * older one resolves to `archive/index.pdf`, which is on disk and is that mint’s
+ * own book. `documentOfStep` answers with the step’s payload when no working row
+ * was made from it, so losing the live copy costs the row nothing but the layer
+ * it opens from. Wave 21b rules on that behaviour — older mints stay reachable by
+ * standing on their step — so the comment was the half that was wrong.
+ */
+/**
+ * EIGHT HEX CHARACTERS FOR A FOLDER OF PAGES — `archive.contentKey`, which
+ * stands for "which import is this".
+ *
+ * ── Why it is not the bytes ─────────────────────────────────────────────────
+ *
+ * For a file it was that file's own sha256. There is no one file here, and
+ * streaming several hundred megabytes of JPEG through a hash to fill in a field
+ * that nothing in this app compares against would be minutes of disk spent on a
+ * label. What a mint IS, is a page count, a size and the arrangement it was
+ * printed from: two mints agreeing on all three are the same shoot printed
+ * twice, and that is the whole of what this key ever had to say.
+ *
+ * MEASURED OFF THE DISK RATHER THAN TAKEN FROM THE WRITER, because the writer's
+ * count is a claim about what it meant to do and this is a fact about what is
+ * there — and the one failure this key could hide is a mint that wrote fewer
+ * pages than it thought.
+ */
+async function pagesKey(dir: string, arrangement: string): Promise<string> {
+  const names = (await fsp.readdir(dir)).sort();
+  let bytes = 0;
+  for (const name of names) bytes += (await fsp.stat(path.join(dir, name))).size;
+  return createHash('sha256')
+    .update(`${names.length}:${bytes}:${arrangement}`).digest('hex').slice(0, 8);
+}
+
+/**
+ * What a minted PDF is called, in the app's voice.
+ *
+ * ONE SPELLING FOR THREE WRITERS: the ledger step, the per-type chain, and
+ * `mintedStep`'s own default all say these words. A label is STORED rather than
+ * derived, so two spellings would sit side by side in one project's history and
+ * read as two different events that happened to the same file.
+ */
+const MINTED_LABEL = 'The pages you minted';
+
+/**
+ * `arrangement` IS PASSED IN RATHER THAN READ HERE, and the reason is not module
+ * layout. It is `arrangementOf` applied to the recipe THE MINT WAS BEGUN FROM —
+ * the same read that produced the page list the renderer rasterized — so the
+ * string describes the book that was actually printed even if somebody edited
+ * the recipe in the minutes it took to print. Reading the file again at this end
+ * would record what the recipe says NOW, which is the one thing it must not be.
+ */
+export async function recordMint(
+  dir: string,
+  /**
+   * A FUNCTION THAT MOVES THE PAGES IN, given the directory to put them in, and
+   * answering what it wrote.
+   *
+   * The caller owns the pixels — they are staged inside the project and the move
+   * is a rename on one volume (electron/capture.ts) — and this function owns the
+   * NAME, because the name has to be unused and only the manifest knows which
+   * names a project has already spent. Inverting it would mean composing the
+   * name here, handing it back, and trusting the caller to have used that one.
+   */
+  fill: (into: string) => Promise<number>,
+  arrangement: string,
+): Promise<LedgerStep> {
+  const resolved = deletableProjectDir(dir);
+  const step = await withManifest(resolved, async (manifest) => {
+    const ledger = ledgerOf(manifest);
+    const capture = ledger.steps.find((row) => row.action === 'capture');
+    if (capture === undefined) {
+      throw new ProjectError(
+        `${path.basename(resolved)} has no capture step, so there are no photographs for a mint to be `
+        + 'made from. Only a project that arrived as photographs can be minted.',
+      );
+    }
+
+    /*
+     * Named apart from every mint before it, for the reason it always was:
+     * readings hang off the STEP, whose payload is this name, and re-using it
+     * would silently re-point every reading of the first mint at pages that are
+     * not the ones it read. A DIRECTORY now rather than a file — same rule, one
+     * fewer extension.
+     */
+    await fsp.mkdir(path.join(resolved, ARCHIVE), { recursive: true });
+    let name = `${manifest.stem} pages`;
+    for (let n = 2; await exists(path.join(resolved, ARCHIVE, name)); n++) {
+      name = `${manifest.stem} pages (${n})`;
+    }
+    const into = path.join(resolved, ARCHIVE, name);
+    await fsp.mkdir(into, { recursive: true });
+    /*
+     * A FAILED FILL TAKES ITS DIRECTORY WITH IT. The manifest is not written
+     * when this throws — `withManifest` writes at the end of the callback — so a
+     * directory left behind would be one nothing names, AND it would shift the
+     * next mint's name to `(2)` by being in the way of the loop above. The
+     * throw is re-raised: the caller settles the shelf row on it.
+     */
+    let written: number;
+    try {
+      written = await fill(into);
+    } catch (err) {
+      await fsp.rm(into, { recursive: true, force: true }).catch(() => { /* best effort */ });
+      throw err;
+    }
+    if (written === 0) {
+      await fsp.rm(into, { recursive: true, force: true }).catch(() => { /* best effort */ });
+      throw new ProjectError(
+        `The mint of ${path.basename(resolved)} wrote no pages, so there is no book to file.`,
+      );
+    }
+
+    const archived = `${ARCHIVE}/${name}`;
+    manifest.archive = {
+      file: name,
+      kind: 'pages',
+      contentKey: await pagesKey(into, arrangement),
+      // There is no path this came from: it was made here, out of photographs
+      // this project already holds. The recipe is the honest answer.
+      originPath: path.join(resolved, ...CAPTURE_RECIPE_PAYLOAD.split('/')),
+    };
+
+    const minted = mintedStep(randomUUID(), capture.id, archived, Date.now(), arrangement, MINTED_LABEL);
+    manifest.ledger = appendStep(ledger, minted);
+    await writeManifest(resolved, manifest);
+    return minted;
+  });
+  announceProjects();
+  return step;
+}
 export async function recordCuration(
   dir: string,
   payload: string,
   params: LedgerParams,
 ): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const ledger = await withManifest(resolved, async (manifest) => {
+  const view = await withManifest(resolved, async (manifest) => {
     const landing = await landStep(manifest, {
       action: 'curate',
       parent: null,
@@ -1881,10 +2447,10 @@ export async function recordCuration(
       );
     }
     await writeManifest(resolved, manifest);
-    return landing.ledger;
+    return viewOf(manifest, landing.ledger);
   });
   announceProjects();
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -1919,7 +2485,7 @@ export async function recordMetadata(
   params: LedgerParams,
 ): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const ledger = await withManifest(resolved, async (manifest) => {
+  const view = await withManifest(resolved, async (manifest) => {
     const landing = await landStep(manifest, {
       action: 'metadata',
       parent: null,
@@ -1935,10 +2501,10 @@ export async function recordMetadata(
       );
     }
     await writeManifest(resolved, manifest);
-    return landing.ledger;
+    return viewOf(manifest, landing.ledger);
   });
   announceProjects();
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -1977,7 +2543,7 @@ export async function recordBookEdit(
   stepId: string,
 ): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const ledger = await withManifest(resolved, async (manifest) => {
+  const view = await withManifest(resolved, async (manifest) => {
     const landing = await landStep(manifest, {
       action: 'edit',
       parent: null,
@@ -1994,10 +2560,10 @@ export async function recordBookEdit(
       );
     }
     await writeManifest(resolved, manifest);
-    return landing.ledger;
+    return viewOf(manifest, landing.ledger);
   });
   announceProjects();
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -2020,7 +2586,7 @@ export async function recordBookEditAmend(
   count: number,
 ): Promise<LedgerView> {
   const resolved = deletableProjectDir(dir);
-  const ledger = await withManifest(resolved, async (manifest) => {
+  const view = await withManifest(resolved, async (manifest) => {
     const held = ledgerOf(manifest);
     const standing = positionOf(held);
     if (standing === null || standing.action !== 'edit') {
@@ -2043,10 +2609,10 @@ export async function recordBookEditAmend(
     const row = manifest.ledger?.steps.find((step) => step.id === standing.id);
     if (row !== undefined) row.params = { ...row.params, ops: count };
     await writeManifest(resolved, manifest);
-    return ledgerOf(manifest);
+    return viewOf(manifest);
   });
   announceProjects();
-  return { ledger, rows: chronological(ledger) };
+  return view;
 }
 
 /**
@@ -2317,6 +2883,23 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
   bank: string;
   book: string;
   pdf: string | null;
+  /**
+   * THE PHOTOGRAPHED PAGES, when the book was minted from a shoot.
+   *
+   * A SECOND FIELD RATHER THAN A SECOND MEANING FOR `pdf`, and the difference is
+   * a sentence somebody reads. `pdf` answers "what document can be rasterised
+   * here" — the figure-cropper's question, and its honest answer for a captured
+   * book is nothing, because there is no document to cut a Picture row out of.
+   * A pane asking "is there paper behind this book" would get the same null and
+   * conclude the opposite of the truth: a photographed book has MORE paper
+   * behind it than any other kind, and it would be the one book in the app that
+   * denied having any.
+   *
+   * So the two facts are kept apart at the source. Exactly one of these is ever
+   * non-null; a caller that wants "any pixels at all" asks for both, and a
+   * caller that wants a PDF asks for the one it can actually open.
+   */
+  pages: string | null;
   language: string | null;
   epub: string | null;
   receipt: string;
@@ -2327,6 +2910,11 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
   const reading = readingInEffect(ledgerOf(manifest), at);
   const language = reading?.params?.language ?? null;
   const pdf = manifest.archive !== null && manifest.archive.kind === 'pdf'
+    ? path.join(resolved, ARCHIVE, manifest.archive.file)
+    : null;
+  // The mint's own output, under its own name. `archive.file` is a DIRECTORY for
+  // this kind and the composition is otherwise identical — see `ProjectArchive`.
+  const pages = manifest.archive !== null && manifest.archive.kind === 'pages'
     ? path.join(resolved, ARCHIVE, manifest.archive.file)
     : null;
   /*
@@ -2349,6 +2937,7 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
     manifest,
     reading,
     bank,
+    pages,
     /*
      * THE BOOK FILE IS `readings/<key>.book.jsonl` EITHER WAY, and that is not a
      * coincidence to be tidied up. `readingBank` composes `readings/<key>.jsonl`
@@ -2704,7 +3293,7 @@ export async function standForDocument(dir: string, absolutePath: string): Promi
   const ledger = ledgerOf(manifest);
   const wanted = await stepStandingFor(resolved, manifest, absolutePath);
   if (wanted === null || wanted === positionOf(ledger)?.id) {
-    return { ledger, rows: chronological(ledger) };
+    return viewOf(manifest, ledger);
   }
   return goToStep(resolved, wanted);
 }
@@ -4375,6 +4964,13 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
       // offering a next step for a folder this app cannot describe.
       reading: { done: false, needed: false, pages: 0 },
       filed: false,
+      // A catalogue that will not parse cannot say what kind of project this is,
+      // and claiming `capture` here would send Home to open a light table over a
+      // folder it has already failed to describe. `problem` is what this row says.
+      capture: false,
+      // Same answer for the same reason: the archive is a field of the catalogue
+      // that would not parse, so nothing can be said about what it names.
+      pages: false,
       // Nothing can be listed out of a catalogue that will not parse, and guessing
       // at a tray by reading the directory would offer files this app cannot say
       // it made. The row offers Reveal, which is the honest door into a folder.
@@ -4464,7 +5060,24 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
    * `managed` is false: this document is the user's own file, and it is in
    * `archive/` precisely because they still have it.
    */
-  if (documents.length === 0 && manifest.archive !== null) {
+  /*
+   * A PAGES ARCHIVE IS REFUSED HERE BY NAME, and this is the site that decides
+   * what a captured project opens on.
+   *
+   * The fallback exists so that a project with an import and no catalogued row
+   * still shows the book — and it composes the row out of `archive.kind`. Hand
+   * it a pages archive and it fabricates a `ProjectDocument` whose kind is
+   * 'pages' and whose PATH IS A DIRECTORY: `originalOf` would pick it, Home
+   * would open a folder as a book, and the failure would surface with no visible
+   * connection to the mint that caused it.
+   *
+   * So a captured project keeps an EMPTY document list, which is what it had all
+   * evening while somebody was photographing, and Home's capture branch goes on
+   * opening the light table. What the row SAYS about it is the row's own
+   * business (home.component.ts) and is no longer the same sentence before and
+   * after a mint.
+   */
+  if (documents.length === 0 && manifest.archive !== null && manifest.archive.kind !== 'pages') {
     const liveFile = `${manifest.stem}${manifest.archive.kind === 'pdf' ? '.pdf' : '.epub'}`;
     const liveLayer = manifest.archive.kind === 'pdf' ? WORKING : GENERATED;
     const live = path.join(dir, liveLayer, liveFile);
@@ -4506,6 +5119,14 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
     documents,
     reading: await readingState(dir, manifest),
     filed: manifest.final.length > 0,
+    // The ledger already knows: a capture step is written at creation and is the
+    // root of such a project. No recipe is read and no directory is listed.
+    capture: ledgerOf(manifest).steps.some((step) => step.action === 'capture'),
+    // THE CATALOGUE, not the disk. `manifest.archive` is set and cleared in the
+    // same `withManifest` as the mint step and its discard, so it is the field
+    // that cannot disagree with the history — and a listing that stat'd a
+    // directory per project would make opening Home slower per book somebody owns.
+    pages: manifest.archive?.kind === 'pages',
     exports: await filedDocuments(dir, manifest),
     facsimiles: await facsimilesOf(dir, manifest),
     problem: null,
@@ -4619,7 +5240,12 @@ async function readingState(
     || await hasBytes(banked);
   return {
     done,
-    needed: !done && manifest.archive?.kind === 'pdf',
+    // PAGES COUNT AS PIXELS. The question this answers is "are there pages here
+    // that nobody has paid a model to read", and a photographed book is the
+    // clearest yes in the app — it is the one kind that cannot have arrived with
+    // text in it. An EPUB is still excluded for the reason it always was: it is
+    // never OCR'd, `book = f(epub)`.
+    needed: !done && (manifest.archive?.kind === 'pdf' || manifest.archive?.kind === 'pages'),
     pages: recorded ? manifest.reading?.pages ?? 0 : 0,
   };
 }

@@ -29,7 +29,7 @@ import { api } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { OpenDocumentsService, type Tab } from '../../core/documents.service';
+import { OpenDocumentsService, pathIsProject, type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
@@ -335,6 +335,13 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
             <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2"
                   stroke-linecap="round" />
           </symbol>
+          <!-- A camera: photographs before they are pages. Beside ft-scan, which is
+               a scanned SHEET and the thing a light table is not yet. -->
+          <symbol id="ft-capture" viewBox="0 0 24 24">
+            <path d="M4 8h3l2-2h6l2 2h3v11H4z M12 16.5a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"
+                  fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"
+                  stroke-linecap="round" />
+          </symbol>
           <symbol id="ft-scan" viewBox="0 0 24 24">
             <path d="M7 3h8l4 4v14H7z M15 3v4h4 M10 12h6 M10 16h6" fill="none" stroke="currentColor"
                   stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
@@ -533,6 +540,20 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
               </div>
               <!-- WHEN, or what the host says about it: the same slot, because
                    both answer "where is this up to". -->
+              <!--
+                WHICH ROW IS THE BOOK YOU HAVE NOW.
+
+                Two mints produce two rows that both read "The pages you
+                minted", and that label is RIGHT -- it says what the act did and
+                stays true forever, which is the property a stored label should
+                have. What it cannot say is which one Home opens, because that
+                stops being true the moment the next mint lands. So the label
+                stays and the standing among siblings is derived here, at render,
+                from main's answer.
+              -->
+              @if (row.onTheShelf) {
+                <span class="shelf" title="This is the book this project opens">on the shelf</span>
+              }
               @if (row.state !== null) {
                 <span class="state">{{ row.state }}</span>
               }
@@ -1054,6 +1075,20 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
       anything. It is NOT the same statement the ring below makes — see the
       class docblock on standing against selected.
     */
+    /* Quiet, and a word rather than a dot: a dot would need a legend, and this
+       appears beside rows whose own names are identical -- the one place in this
+       list where a reader is actively asking which is which. */
+    .shelf {
+      flex: 0 0 auto;
+      align-self: center;
+      padding: 1px 7px;
+      border-radius: 99px;
+      background: var(--ok-soft);
+      color: var(--ok);
+      font-size: 10px;
+      white-space: nowrap;
+    }
+
     .card.standing { background: var(--accent-faint); }
     .card.standing .name { color: var(--accent); }
 
@@ -1477,6 +1512,10 @@ export class OpenDocumentsComponent {
       const history = this.ledger.historyFor(project.dir);
       const problem = this.ledger.problemFor(project.dir);
       const standing = this.ledger.standingIn(project.dir)?.id ?? null;
+      // Which step the book on the shelf was minted from -- main's one
+      // resolution, read and never re-derived. Null for every project that has
+      // no book, which is every project that is not a capture project today.
+      const shelf = history?.current ?? null;
 
       /*
        * WHETHER THERE IS A BOOK IN THIS PROJECT AT ALL, asked once per book and
@@ -1795,7 +1834,7 @@ export class OpenDocumentsComponent {
          * announcing itself as a copy the reader went and opened by hand — the
          * exact confusion the merge of steps and documents exists to end.
          */
-        if (row.tab?.kind === 'book') {
+        if (row.tab !== null && row.tab !== undefined && pathIsProject(row.tab)) {
           claimed.add(row.key);
           continue;
         }
@@ -1814,7 +1853,11 @@ export class OpenDocumentsComponent {
          * allowed to fall back to; the honest answer is that this is a copy the
          * reader went and opened themselves, with the path one hover away.
          */
-        const named = row.tab === null ? '' : typeLabel(row.tab.kind);
+        // Only a FILE-backed tab can be a loose copy — both directory kinds are
+        // claimed above and never reach here. Asked explicitly rather than left to
+        // narrowing, which could prove it while there were two kinds and cannot
+        // now that there are three.
+        const named = row.tab?.kind === 'pdf' ? typeLabel(row.tab.kind) : '';
         extras.push({
           ...row,
           title: named.length > 0 ? named : row.title,
@@ -1987,6 +2030,7 @@ export class OpenDocumentsComponent {
             step,
             produces: hasBook && (arrivedAsBook || step.action !== 'import') ? 'book' : null,
             current: step.id === standing,
+            onTheShelf: step.id === shelf,
             stale: step.stale === true,
             expanded: under.length + jobs.length === 0 ? null : shown,
           });
@@ -3034,6 +3078,18 @@ interface Row {
   produces: NodeOutput | null;
   /** True on the one card the book is standing on. */
   current: boolean;
+  /**
+   * True on the one step the BOOK ON THE SHELF was made from.
+   *
+   * NOT `current`, which is one card away in this same interface and means
+   * something else entirely: `current` is where the PERSON is standing, this is
+   * which mint Home opens. They are usually the same row and they come apart
+   * exactly when it matters -- after a second mint, or after deleting one --
+   * which is the whole reason this exists. Two things sharing a name is the
+   * defect this feature has paid for four times; two things with different
+   * names, next to each other, is the cheap version of not paying again.
+   */
+  onTheShelf: boolean;
   /** True for a step made from something that has been replaced since. */
   stale: boolean;
   /** True for a node that has not happened yet: dashed line, hollow dot. */
@@ -3100,6 +3156,7 @@ const blank = {
   depth: 0,
   dir: null,
   current: false,
+  onTheShelf: false,
   stale: false,
   planned: false,
   expanded: null,
@@ -3322,6 +3379,10 @@ function extensionOf(payload: string): string {
 function iconForTab(tab: Tab): string {
   // The book wears the reading's own mark, because the book IS the reading — the
   // same symbol `iconForStep` gives the card that opens it.
+  // A light table is neither a book nor a page: it is the photographs before
+  // either exists, and drawing it as a page would announce it as a document the
+  // reader went and opened by hand.
+  if (tab.kind === 'capture') return 'ft-capture';
   return tab.kind === 'book' ? 'ft-book' : 'ft-page';
 }
 
@@ -3380,6 +3441,16 @@ function titleForStep(step: LedgerStep): string {
   switch (step.action) {
     case 'import':
       return 'The original';
+    /*
+     * A NOUN, on the same precedent as "The original" and "The book": what a
+     * person wants off this card is the artifact, not the act. Standing here is
+     * standing on the photographs — there is no document in this project until a
+     * mint makes one.
+     *
+     * AND WITHOUT IT THE `default` BELOW CALLS THIS CARD "Translated".
+     */
+    case 'capture':
+      return 'The photographs';
     /*
      * THE READING IS THE BOOK, which is the ruling this title has always kept:
      * *"we shouldnt call the working files 'epub' until we export"* — the thing

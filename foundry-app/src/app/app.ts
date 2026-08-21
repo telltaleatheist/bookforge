@@ -13,9 +13,12 @@ import { OpenDocumentsComponent } from './components/open-documents/open-documen
 import { MetadataDialogComponent } from './components/metadata-dialog/metadata-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
+import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
+import { CaptureProgressComponent } from './components/capture-progress/capture-progress.component';
 import { QueueShelfComponent } from './components/queue-shelf/queue-shelf.component';
 import { BookStacksService } from './core/book-stacks.service';
-import { OpenDocumentsService } from './core/documents.service';
+import { CaptureService } from './core/capture.service';
+import { OpenDocumentsService, pathIsProject } from './core/documents.service';
 import { NoticeService } from './core/notice.service';
 import { PositionSyncService } from './core/position-sync.service';
 import { ProjectsService } from './core/projects.service';
@@ -96,6 +99,7 @@ import { api } from './core/foundry';
     QueueShelfComponent, OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, MetadataDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
+    CaptureNewDialogComponent, CaptureProgressComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -165,6 +169,19 @@ import { api } from './core/foundry';
         <app-metadata-dialog />
       }
 
+      @if (ui.captureNewOpen()) {
+        <app-capture-new-dialog />
+      }
+
+      <!--
+        NOT IN UiService's ONE-QUESTION LIST, and not gated on a flag at all.
+        That list exists because a modal is a QUESTION and only one can be asked
+        at a time; this is a REPORT about work already under way, so only()
+        closing it when something else opens would be exactly wrong. It draws
+        while the service says an intake is running and not otherwise.
+      -->
+      <app-capture-progress />
+
       <!--
         THE HOST'S OWN ACT, CONFIGURED IN THIS WINDOW. Opened by a request
         rather than a boolean (\`UiService.hostOpOpen\`), because unlike the five
@@ -182,7 +199,7 @@ import { api } from './core/foundry';
       <app-confirm-dialog />
 
       @if (dropping()) {
-        <div class="drop-veil"><span>Drop a PDF to open it</span></div>
+        <div class="drop-veil"><span>{{ dropSays() }}</span></div>
       }
     </div>
   `,
@@ -227,6 +244,7 @@ import { api } from './core/foundry';
 })
 export class App {
   private readonly documents = inject(OpenDocumentsService);
+  private readonly captures = inject(CaptureService);
   private readonly stage = inject(StageService);
   private readonly notices = inject(NoticeService);
   private readonly stacks = inject(BookStacksService);
@@ -302,7 +320,9 @@ export class App {
   protected readonly inspectorUp = computed(() => {
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
-    if (tab.kind === 'book') return true;
+    // A light table is a project's own surface exactly as a book is: it has a
+    // history, it has steps, and the 260 pixels are what the person came for.
+    if (pathIsProject(tab)) return true;
     const project = this.projects.projectFor(tab.path);
     return project !== null && project.problem === null;
   });
@@ -527,15 +547,67 @@ export class App {
     if (this.dragDepth === 0) this.dropping.set(false);
   }
 
+  /**
+   * WHAT A DROP WOULD MEAN RIGHT NOW, said on the veil before it happens.
+   *
+   * The veil promised "Drop a PDF to open it" whatever was on screen, which
+   * was true until a light table could be on screen and is a lie the moment one
+   * is. It is the same sentence `onDrop` acts on, read off the same tab, so
+   * the two cannot drift into promising one thing and doing another.
+   */
+  protected readonly dropSays = computed(() =>
+    this.intaking() === null ? 'Drop a PDF to open it' : 'Drop photographs to add them',
+  );
+
+  /**
+   * The capture project a dropped file would go INTO, or null for the document
+   * door.
+   *
+   * ── Why this is at the window and not in the grid ──────────────────────────
+   *
+   * The grid HAS a drop strip, and it was not enough: it is a strip down one
+   * side, so a drop anywhere else on the light table — the table itself, the
+   * empty state, the header — fell past it to this handler and was offered to
+   * the document admission, which answered "IMG_0238.HEIC is not something
+   * Foundry opens". That is what Owen saw in the first minutes of the
+   * acceptance run.
+   *
+   * The fix is not a bigger rectangle. This handler exists precisely because
+   * "dropping a book at the app is not aiming at a rectangle" (the docblock
+   * above), and photographs deserve the same: WITH A CAPTURE PROJECT IN FRONT,
+   * a file dropped anywhere in the window means intake. The strip stays, so the
+   * gesture still has somewhere obvious to aim if somebody wants to.
+   *
+   * Read from the FRONT TAB rather than from the router or a mode flag, because
+   * the front tab is the thing a person believes they are dropping onto — and
+   * it is the same fact `dropSays` puts on the veil.
+   */
+  private readonly intaking = computed(() => {
+    const tab = this.stage.activeDocument();
+    return tab !== null && tab.kind === 'capture' ? tab : null;
+  });
+
   @HostListener('window:drop', ['$event'])
   protected onDrop(event: DragEvent): void {
     if (!carriesFiles(event)) return;
     event.preventDefault();
     this.dragDepth = 0;
     this.dropping.set(false);
+    const files = Array.from(event.dataTransfer?.files ?? []);
+
+    const front = this.intaking();
+    if (front !== null) {
+      // One call with every file: intake copies, hashes and decodes them as a
+      // batch and answers once with what it did and would not do. Handing them
+      // over one at a time would be a recipe write per photograph and a notice
+      // bar that overwrites itself twenty-six times.
+      void this.captures.intake(front.path, files);
+      return;
+    }
+
     // Every file, not just the first: a drop of three books is three tabs, which
     // is the whole reason there are tabs.
-    for (const file of Array.from(event.dataTransfer?.files ?? [])) {
+    for (const file of files) {
       void this.documents.openDropped(file);
     }
   }

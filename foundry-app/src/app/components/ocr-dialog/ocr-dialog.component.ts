@@ -169,7 +169,17 @@ import { api } from '../../core/foundry';
         </footer>
       } @else {
         <div class="body empty">
-          <p>Open a PDF first — reading the pages is a thing you do to a document you have in front of you.</p>
+          <!--
+            THE LIGHT TABLE IS NOT NOTHING. Somebody photographing a book has a
+            project open and is one press from having pages; telling them to open
+            a PDF is an instruction about the wrong app. The two sentences differ
+            in what to do next, which is the only thing an empty state is for.
+          -->
+          @if (photographing()) {
+            <p>Finish the pages first — reading is a thing you do to a book that has been made.</p>
+          } @else {
+            <p>Open a PDF first — reading the pages is a thing you do to a document you have in front of you.</p>
+          }
         </div>
         <footer class="foot">
           <button class="ghost" (click)="ui.closeOcr()">Close</button>
@@ -335,9 +345,51 @@ export class OcrDialogComponent {
    */
   private readonly picked = signal<string | null>(null);
 
-  /** Every PDF open in the app, which is the set this dialog can queue from. */
-  protected readonly sources = computed(
-    () => [...new Set(this.documents.tabs().filter((tab) => tab.kind === 'pdf').map((tab) => tab.path))]);
+  /**
+   * Every book open in the app whose PAGES a model could read.
+   *
+   * ── Why a capture project is in this list ───────────────────────────────────
+   *
+   * A minted book used to be a PDF and arrived here as one. It is a folder of
+   * page images now (`recordMint`, electron/projects.ts) and is deliberately not
+   * catalogued as a document, so there is no tab of kind `pdf` for it and no
+   * path for this list to hold — and the OCR door on Home is gated on the
+   * project having a document, so THE ONE KIND OF BOOK THAT CANNOT ARRIVE WITH
+   * TEXT IN IT had no way left to order a reading.
+   *
+   * THE ALTERNATIVE WAS A BUTTON ON THE CAPTURE RAIL, and it was rejected on
+   * what this dialog holds: `--skip-pages` and `--language`. A photographed book
+   * has covers, endpapers and blank leaves at the front, so it is MORE likely to
+   * need a page range than an imported PDF, not less — a rail button that
+   * enqueued straight past this form would have taken both choices away from
+   * precisely the books that need them.
+   *
+   * A CAPTURE TAB'S PATH IS THE PROJECT DIRECTORY, which is what `planReading`
+   * recognises on the other side (it asks whether the path IS a project rather
+   * than taking a second argument). And it is offered only once the project has
+   * pages: before the mint there is nothing on the disk to read, and offering it
+   * would queue three hours of GPU against a folder that does not exist yet.
+   */
+  protected readonly sources = computed(() => [...new Set(this.documents.tabs()
+    .filter((tab) => tab.kind === 'pdf'
+      || (tab.kind === 'capture' && (this.projects.projectFor(tab.path)?.pages ?? false)))
+    .map((tab) => tab.path))]);
+
+  /**
+   * A light table is open and has nothing to read yet — photographs, no mint.
+   *
+   * Asked of the same two facts the source list is: a capture tab, and whether
+   * its project has pages. The negative half is what makes this a different
+   * sentence rather than the same one said twice.
+   */
+  protected readonly photographing = computed(() => this.documents.tabs()
+    .some((tab) => tab.kind === 'capture' && !(this.projects.projectFor(tab.path)?.pages ?? false)));
+
+  /** Is this candidate a folder of photographed pages rather than a document? */
+  protected pagesSource(candidate: string): boolean {
+    return this.projects.projectFor(candidate)?.pages === true
+      && this.documents.tabs().some((tab) => tab.kind === 'capture' && tab.path === candidate);
+  }
 
   protected readonly source = computed(() => {
     const chosen = this.picked();
@@ -361,7 +413,12 @@ export class OcrDialogComponent {
    */
   private readonly suggested = computed(() => {
     const tab = this.stage.activeDocument();
-    return tab !== null && tab.kind === 'pdf' ? tab.path : null;
+    if (tab === null) return null;
+    // The light table in front of you is the book in front of you, once it has
+    // pages. `sources` is the one rule about what may be read, so it is asked
+    // rather than repeated here.
+    if (tab.kind === 'capture') return this.sources().includes(tab.path) ? tab.path : null;
+    return tab.kind === 'pdf' ? tab.path : null;
   });
 
   protected pick(filePath: string): void {
@@ -391,6 +448,11 @@ export class OcrDialogComponent {
    * belongs.
    */
   protected optionFor(filePath: string): string {
+    // A folder of photographs is not one of the three file types `typeLabel`
+    // names, and calling it "PDF" would be the option lying about what it is.
+    // The qualifier exists so two rows of one project are told apart, and that
+    // is exactly the work this phrase does.
+    if (this.pagesSource(filePath)) return qualify(this.nameFor(filePath), null, 'photographed pages');
     return qualify(this.nameFor(filePath), 'pdf', '');
   }
 
@@ -541,6 +603,14 @@ export class OcrDialogComponent {
          * one copy, which is the whole of the working-copy model.
          */
         inputPath: plan.sourcePath,
+        /*
+         * AND WHAT THAT PATH IS, which main answered from the project's own
+         * catalogue. It selects `--pdf` or `--pages` at the command line
+         * (`argsFor`) and is never re-derived there: by the time the job runs,
+         * the only thing left to ask the path is whether it happens to be a
+         * directory, which is a guess where this is a fact.
+         */
+        inputKind: plan.sourceKind,
         readingsPath: plan.readingsPath,
         /*
          * Carried, never re-minted. The bank above may be named after this id —

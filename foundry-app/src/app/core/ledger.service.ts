@@ -19,6 +19,21 @@ import { api } from './foundry';
 export interface StepHistory {
   ledger: ProjectLedger;
   rows: StepRow[];
+  /**
+   * THE STEP THE BOOK ON THE SHELF CAME FROM, main's `LedgerView.current`,
+   * carried rather than recomputed.
+   *
+   * It is the answer to "which of these rows is the book I have now", which two
+   * mints make a real question: both say "The pages you minted", both are true
+   * forever, and only one of them is what Home opens. Main walks the
+   * catalogue's pdf chain to decide it, and a renderer that worked it out from
+   * dates would be a second opinion about which book somebody is looking at --
+   * wrong first on exactly the delete that makes the two answers differ.
+   *
+   * REQUIRED, so that adding it enumerated every place a history is built
+   * rather than leaving one quietly without it.
+   */
+  current: string | null;
 }
 
 /** What this window knows about one project's history, including "it will not read". */
@@ -202,7 +217,11 @@ export class LedgerService {
         this.held.set(held);
         return;
       }
-      this.put(key, { dir: projectDir, history: { ledger: view.ledger, rows: view.rows }, problem: null });
+      this.put(key, {
+        dir: projectDir,
+        history: { ledger: view.ledger, rows: view.rows, current: view.current },
+        problem: null,
+      });
     } catch (err) {
       if (this.issued.get(key) !== ticket) return;
       // Main's words, kept as main wrote them. The accordion prints this where the

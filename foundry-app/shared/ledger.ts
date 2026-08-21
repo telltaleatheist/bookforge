@@ -60,6 +60,7 @@
  */
 
 import {
+  STEP_ACTIONS,
   WHY_HANDMADE,
   WHY_IMPORTED,
   WHY_MODEL_PASS,
@@ -92,8 +93,15 @@ export class StepLedgerError extends Error {
   }
 }
 
-/** Every action there is, in the order a project meets them. */
-export const STEP_ACTIONS = ['import', 'read', 'curate', 'translate', 'metadata', 'edit'] as const;
+/*
+ * `STEP_ACTIONS` now lives beside `StepAction` in shared/types.ts, which
+ * DERIVES the union from it — see the argument there. It was declared here and
+ * the union was declared there, and the two disagreed for exactly as long as it
+ * took to write a capture project to disk and try to read it back.
+ *
+ * Re-exported because this is where every reader of the ledger looks for it.
+ */
+export { STEP_ACTIONS };
 
 /**
  * EVERY REWRITE THERE IS, and the two or three words a row calls it by.
@@ -138,6 +146,13 @@ function isRewriteMode(said: string): said is RewriteMode {
  */
 export const RETENTION_OF: Readonly<Record<StepAction, LedgerStep['retention']>> = {
   import: 'irreplaceable',
+  /*
+   * AN ARRIVAL, ON `import`'s CLAUSE OF THE RULE RATHER THAN A NEW ONE. What a
+   * capture step holds is an afternoon in an archive with a book that does not
+   * leave the building, plus hand-placed quads over every page of it. No run
+   * remakes either at any price.
+   */
+  capture: 'irreplaceable',
   read: 'expensive',
   curate: 'irreplaceable',
   translate: 'expensive',
@@ -183,7 +198,24 @@ export const RETENTION_OF: Readonly<Record<StepAction, LedgerStep['retention']>>
  * declare, by name). It is a field this app reads and never writes.
  */
 export const PARAMS_OF: Readonly<Record<StepAction, readonly (keyof LedgerParams)[]>> = {
-  import: [],
+  /*
+   * `arrangement` IS THE ONE THING AN ARRIVAL CAN BE ASKED ABOUT AFTERWARDS, and
+   * it is here for mints rather than for imports in general — an import with a
+   * parent is a mint (see `mintedStep`), and a mint is the one arrival this app
+   * MAKES rather than receives. What it was made from is a fact about the recipe
+   * at that instant, which nothing else can recover once the recipe moves on;
+   * every other import's file came from outside and has no arrangement to record.
+   * Absent is the ordinary state and always legal — every mint before Wave 21b,
+   * and every import that is not a mint.
+   */
+  import: ['arrangement'],
+  /*
+   * NOTHING, for `import`'s reason: an arrival was not ASKED for, it happened.
+   * How many photos there were and how many pages they became is a fact about
+   * the recipe on disk, which is the payload — a params bag repeating it would
+   * be two copies of one number with no rule about which wins.
+   */
+  capture: [],
   read: ['skipPages', 'language', 'generation', 'pages', 'completedAt'],
   curate: ['generation', 'amendments'],
   translate: ['language', 'bank', 'from', 'rewrite'],
@@ -246,6 +278,12 @@ export const PARAMS_OF: Readonly<Record<StepAction, readonly (keyof LedgerParams
  */
 export const RETAINED_BESIDE_YOU: Readonly<Record<StepAction, boolean>> = {
   import: false,
+  /*
+   * THE POINTER STANDS ON IT, like an import. A capture IS the position a
+   * project occupies until something is minted from it: there is no other row
+   * to be standing on, and nothing beside it to be retained.
+   */
+  capture: false,
   read: false,
   curate: true,
   translate: false,
@@ -364,7 +402,21 @@ export const RETAINED_BESIDE_YOU: Readonly<Record<StepAction, boolean>> = {
  * second English row beside the one they asked to redo.
  */
 const MINTED_BY_THE_RUN: Readonly<Record<StepAction, readonly (keyof LedgerParams)[]>> = {
-  import: [],
+  /*
+   * `arrangement` IS AN ANSWER AND NOT A QUESTION — it is read off the recipe as
+   * the mint begins, not typed by anybody — so it belongs on this side of the
+   * split for the same reason `generation` and `pages` do. Nothing depends on it
+   * today: `reRunTarget` never returns an irreplaceable step and every mint is
+   * one, so two mints are two rows however this table reads. It is written down
+   * anyway, because the day that changes the alternative is a second mint of the
+   * same photographs REPLACING the first for having been made from a recipe that
+   * had moved on — the mint's own docblock argues at length that an append is
+   * the only honest answer there.
+   */
+  import: ['arrangement'],
+  // No run mints anything for an arrival, and `PARAMS_OF.capture` is empty in
+  // any case. Here so the table stays exhaustive.
+  capture: [],
   read: ['generation', 'pages', 'completedAt'],
   curate: [],
   translate: ['bank', 'from'],
@@ -388,7 +440,18 @@ export function emptyLedger(): ProjectLedger {
 }
 
 /**
- * The origin — the import, and the only step whose parent is null.
+ * The origin — an IMPORT, and one of the two steps a project can be rooted at.
+ *
+ * IT IS NO LONGER THE ONLY NULL-PARENTED STEP and this line used to say it was.
+ * `captureStep` below is the other root: a project that arrived as photographs
+ * is rooted at the capture rather than at a document, because there is no
+ * document until something is minted. `parseLedger` still enforces exactly ONE
+ * root per ledger, so the two are alternatives and never neighbours.
+ *
+ * NOR IS EVERY IMPORT NULL-PARENTED ANY MORE, which is the other half of what
+ * this comment got wrong. `mintedStep` makes an import step WITH a parent, and
+ * that is the whole marker distinguishing a minted PDF from an imported one —
+ * see the argument there.
  *
  * It is not produced by a queue job and never was: importing is a file copy, and
  * the thing it retains is the untouched original, which is irreplaceable for the
@@ -406,6 +469,107 @@ export function originStep(
   label = 'Imported',
 ): LedgerStep {
   return { id, parent: null, action: 'import', payload, retention: RETENTION_OF.import, createdAt, label };
+}
+
+/**
+ * The other origin — the one a project gets when it arrives as PHOTOGRAPHS.
+ *
+ * ── A SIBLING OF `originStep` AND NOT A PARAMETER ON IT ─────────────────────
+ *
+ * The two are the same shape and mean different things, and a function called
+ * `originStep` that sometimes returns a capture step would be one name over two
+ * meanings — the defect this feature has already found four times in its own
+ * plan. Reading either of these tells you what it makes without checking what
+ * was passed to it.
+ *
+ * ── APPENDED AT CREATION, WITH AN EMPTY RECIPE, WHICH IS FORCED ─────────────
+ *
+ * The light table belongs to the CAPTURE STEP rather than to a project that has
+ * no PDF yet (docs/CAPTURE.md), so the step has to exist before the photographs
+ * do: no step, no light table, and nowhere for the first photograph to land. A
+ * capture step whose recipe holds zero photographs is therefore the ordinary
+ * first state of one of these projects and not a hole in the record — the same
+ * shape as the empty ledger an adoption leaves behind.
+ *
+ * IRREPLACEABLE, on the import clause of the rule rather than a new one. What
+ * it stands for is an afternoon in an archive with a book that does not leave
+ * the building, and hand-placed corners over every page of it. No run remakes
+ * either at any price.
+ *
+ * THE ID IS AN ARGUMENT for `originStep`s reason: this module holds no clock
+ * and no randomness on purpose, and main mints both.
+ */
+export function captureStep(
+  id: string,
+  payload: string,
+  createdAt: number,
+  label = labelFor('capture'),
+): LedgerStep {
+  return { id, parent: null, action: 'capture', payload, retention: RETENTION_OF.capture, createdAt, label };
+}
+
+/**
+ * The PDF a mint made out of a capture — an import step WITH a parent.
+ *
+ * ── WHY THIS IS AN `import` AND NOT AN ACTION OF ITS OWN ────────────────────
+ *
+ * A minted PDF has to behave downstream exactly as an imported scan does, and
+ * SEVEN places decide that by asking whether the step they are standing on is
+ * an import: `hasBookAt` and `hostActPositionFrom` (shared/stages.ts),
+ * `positionView`’s sheet (below), `documentOfStep` (electron/projects.ts), and
+ * three renderer sites. Measured, not assumed. With `import` all seven are
+ * right with no edits: there is no book until something reads the PDF, the host
+ * acts on the reading rather than on the PDF row, and standing here opens the
+ * live copy. A new action would have made every one of them silently wrong in
+ * the same direction, and a missed one would not fail — it would just offer a
+ * person a translation of a book that does not exist yet.
+ *
+ * ── AND THE PARENT IS THE MARKER, WHICH COSTS NOTHING TO ADD ────────────────
+ *
+ * `originStep` is the ONLY other place that builds an `import` step and it
+ * hard-codes `parent: null`. So an import step with a parent is, by
+ * construction, a mint — no new action, no new field, and nothing to keep in
+ * sync. The parent is also FORCED rather than merely tidy: a capture ledger is
+ * already rooted at its capture step, and `parseLedger` refuses a ledger with
+ * two roots, so a null-parented mint would not load at all.
+ *
+ * ── IRREPLACEABLE, AND THAT IS NOT A HEDGE ─────────────────────────────────
+ *
+ * Retention is settled by the action (`parseLedger` refuses a step that
+ * disagrees), so this is `irreplaceable` whether or not we like it — but it is
+ * also true, for a reason that is easy to miss. The photographs and the recipe
+ * do survive, so another mint is always possible; what cannot be recovered is
+ * THIS document. A re-mint appends a NEW step, and the readings hanging off the
+ * old one do not follow it. Discarding this destroys the thing every reading of
+ * it was about. The discard wording is what had to change, not the field.
+ *
+ * ── THE ARRANGEMENT IS REQUIRED, WHICH IS THE POINT OF PUTTING IT HERE ──────
+ *
+ * `params.arrangement` is what the light table compares the live recipe against
+ * to know whether the book on the shelf is behind it, and it can only ever be
+ * recorded AT the mint — once the recipe moves on, nothing can recover what it
+ * looked like. So it is an argument rather than something a caller remembers to
+ * set afterwards: a mint step that exists without it is a mint nothing can ever
+ * say anything true about, and the type is where that is cheapest to prevent.
+ */
+export function mintedStep(
+  id: string,
+  parent: string,
+  payload: string,
+  createdAt: number,
+  arrangement: string,
+  label = 'The pages you minted',
+): LedgerStep {
+  return {
+    id,
+    parent,
+    action: 'import',
+    payload,
+    params: { arrangement },
+    retention: RETENTION_OF.import,
+    createdAt,
+    label,
+  };
 }
 
 /**
@@ -433,6 +597,18 @@ export function labelFor(action: StepAction, params?: LedgerParams): string {
   switch (action) {
     case 'import':
       return 'Imported';
+    /*
+     * AN ARRIVAL SAYS WHAT ARRIVED, and a capture arrived as pictures. It takes
+     * no count the way a read does because `PARAMS_OF.capture` is empty on
+     * purpose: how many photographs there are is a fact about the recipe, which
+     * is this step's payload, and a label is not a record.
+     *
+     * IT NEEDS A CASE AT ALL because the `default` below is the translate
+     * branch: without this line every capture row in every ledger would be
+     * stamped "Translated", and no typecheck would ever say so.
+     */
+    case 'capture':
+      return 'Photographs';
     case 'read':
       return params?.pages === undefined || params.pages <= 0 ? 'Read' : `Read (${params.pages} pages)`;
     case 'curate':
@@ -754,7 +930,7 @@ function readStep(entry: unknown, index: number): LedgerStep {
  * a forgotten clause here means a page range checked as if it were a page count
  * and refused for being a string. Everything not in here is a whole number.
  */
-const WORDS = ['bank', 'from', 'generation', 'language', 'skipPages'] as const;
+const WORDS = ['arrangement', 'bank', 'from', 'generation', 'language', 'skipPages'] as const;
 
 function isWord(key: keyof LedgerParams): key is typeof WORDS[number] {
   return (WORDS as readonly string[]).includes(key);
@@ -2062,9 +2238,26 @@ export function deleteCost(step: LedgerStep): string {
           + 'you typed — this is the record of them, so what is lost is that anything made from '
           + 'here stops carrying them.';
       }
-      return step.action === 'import'
-        ? `Discarding “${step.label}” destroys ${WHY_IMPORTED}. There is nowhere to fetch it back from.`
-        : `Discarding “${step.label}” destroys ${WHY_HANDMADE}. No run remakes it, at any price.`;
+      if (step.action === 'import') {
+        /*
+         * AN IMPORT WITH A PARENT IS A MINT (see `mintedStep`), and the two owe a
+         * person completely different sentences. The old one said "the only copy
+         * of this document Foundry knows of — nobody knows where it came from",
+         * which is false twice over about a minted PDF: Foundry knows exactly
+         * where it came from, and it is not the only copy of anything — the
+         * photographs are, and they are staying.
+         *
+         * WHAT IS ACTUALLY LOST IS THE READINGS. A re-mint is a new document and
+         * nothing hung off this one follows it across, so the honest warning is
+         * about the work done ON these pages rather than about the pages.
+         */
+        return step.parent === null
+          ? `Discarding “${step.label}” destroys ${WHY_IMPORTED}. There is nowhere to fetch it back from.`
+          : `Discarding “${step.label}” destroys the pages you minted and every reading hung off them. `
+            + 'The photographs and their recipe stay, so you can mint again — but a new mint is a new '
+            + 'document, and readings do not follow it.';
+      }
+      return `Discarding “${step.label}” destroys ${WHY_HANDMADE}. No run remakes it, at any price.`;
     case 'expensive':
       return `Discarding “${step.label}” costs a paid run to undo: ${WHY_MODEL_PASS}.`;
     default:
@@ -2134,8 +2327,39 @@ export function currentStandard(ledger: ProjectLedger): Partial<Record<StepActio
  * learns the new boundary and the other does not, and the two disagree about
  * where one reading's story ends while both look correct.
  */
+/**
+ * Is the position an ARRIVAL — a row the project began at, rather than
+ * something made out of an earlier row?
+ *
+ * ── ONE TABLE, TWO VOCABULARIES, AND DELIBERATELY NOT A SECOND TABLE ────────
+ *
+ * `BOUNDS_THE_WALK` below answers this in the walker s words: a walk up a chain
+ * stops at a row that was not made from anything. `stages.ts` asks the same
+ * question in the reader s words — is there a book at this position, or is this
+ * where the project came in? — and a step bounds the walk exactly when it is an
+ * arrival. Same fact, so it reads the same table; a second table with the same
+ * two `true`s in it would be a second answer waiting to disagree the day a
+ * third arrival kind appears.
+ *
+ * ── NULL IS NOT AN ARRIVAL, WHICH KEEPS AN EXISTING PROMISE ─────────────────
+ *
+ * `stages.ts` documents that a step this window has not read yet answers TRUE to
+ * "is there a book here", deliberately, so that a project does not have every
+ * act greyed for the first moment it is on screen. Answering `false` here is
+ * what preserves that: the caller negates this, and null must not become "you
+ * are standing on an arrival".
+ */
+export function standsOnAnArrival(step: LedgerStep | null): boolean {
+  return step !== null && BOUNDS_THE_WALK[step.action];
+}
 const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
   import: true,
+  /*
+   * A BOUNDARY, exactly as an import is: it is the bottom of its chain. A walk
+   * up looking for a bank or a curation that reached a capture row has reached
+   * the beginning of the project, and must stop there rather than fall off it.
+   */
+  capture: true,
   read: true,
   curate: false,
   translate: false,
@@ -2348,6 +2572,9 @@ export function curationInEffect(
  */
 const DISPLAYS_ITSELF: Readonly<Record<StepAction, boolean>> = {
   import: false,
+  // A capture froze nobody's corrections — there is no book yet for corrections
+  // to be about. `import`'s answer, for `import`'s reason.
+  capture: false,
   read: false,
   curate: true,
   translate: false,
@@ -2773,6 +3000,19 @@ export function mergedMetadata(
  */
 export const A_BOOK_OF_ITS_OWN: Readonly<Record<StepAction, boolean>> = {
   import: true,
+  /*
+   * FALSE, AND IT IS THE ONE ENTRY IN THESE TABLES ANSWERING A QUESTION THIS
+   * ACTION DOES NOT FIT. The table asks: is this row a book of its own, or
+   * another state of the project's one flowing book? A capture is neither — it
+   * is what exists BEFORE there is a book. `true` would send
+   * `documentAtPosition` off to resolve a directory of photographs as a
+   * document; `false` sends it to ask the project what it holds, and until a
+   * mint lands the honest answer is nothing.
+   *
+   * P3's audit walks this against a real capture project and writes the verdict
+   * into docs/CAPTURE.md, rather than leaving it resting on this comment.
+   */
+  capture: false,
   read: false,
   curate: false,
   translate: true,

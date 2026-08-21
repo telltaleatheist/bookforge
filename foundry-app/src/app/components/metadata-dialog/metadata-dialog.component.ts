@@ -3,7 +3,7 @@ import { FormsModule } from '@angular/forms';
 
 import { qualify } from '@shared/documents';
 import { fold } from '@shared/original';
-import type { DocumentMetadata, ProjectLedger, StepRow } from '@shared/types';
+import type { DocumentMetadata, StepLedgerView } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
@@ -535,7 +535,7 @@ export class MetadataDialogComponent {
    * off their own disk has no project to file a step in, and a patch with no
    * changed fields is a read that happened to be spelled as a Save.
    */
-  private adopt(tab: Tab, history: { ledger: ProjectLedger; rows: StepRow[] } | undefined): void {
+  private adopt(tab: Tab, history: StepLedgerView | undefined): void {
     if (history === undefined) return;
     const project = this.projects.projectFor(tab.path);
     // The directory AS MAIN SPELLS IT, which is what every call back to main is

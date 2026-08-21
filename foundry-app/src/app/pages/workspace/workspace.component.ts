@@ -4,6 +4,7 @@ import { CompareColumnComponent } from '../../components/compare/compare-column.
 import { HomeComponent } from '../../components/home/home.component';
 import { NoticeBarComponent } from '../../components/notice-bar/notice-bar.component';
 import { ViewerComponent } from '../../components/viewer/viewer.component';
+import { hosted } from '../../core/foundry';
 import { ProjectsService } from '../../core/projects.service';
 import { PositionSyncService } from '../../core/position-sync.service';
 import { StageService } from '../../core/stage.service';
@@ -53,6 +54,44 @@ import { StageService } from '../../core/stage.service';
  * state rather than three.
  *
  * NOTHING IS SHOWN AND NOTHING IS HELD: Home, which is where the app begins.
+ *
+ * ── HOSTED, THAT THIRD STATE IS NOT HOME, AND THIS IS THE ONLY PLACE IT COULD
+ *    BE STOPPED ───────────────────────────────────────────────────────────────
+ *
+ * *"foundry is building out a book builder. i dont think thatll need to exist in
+ * bookforge so we'll need to make sure the user never reaches the home/library
+ * of foundry. thats only a foundry function."* (2026-08-20)
+ *
+ * `<app-home />` is written down exactly once in this app, on the line below, so
+ * every route to Home is a route to THIS BRANCH — which is why the refusal is
+ * here rather than spread over the gestures that lead to it. Two of those routes
+ * were measured in a hosted window before this was written, and both are
+ * ordinary:
+ *
+ *  - A HOSTED WINDOW WHOSE DOCUMENT NEVER ARRIVES. `openFoundryWindow` resolves
+ *    the deep link and, for a project with nothing openable in it, logs and
+ *    sends nothing — so no tab lands, `heldProject` is never set, and this
+ *    branch drew Foundry's Home and stayed there. It also drew it for the beat
+ *    between the window loading and the document arriving on every ordinary
+ *    hosted open.
+ *  - CLOSING THE SHOWN DOCUMENT WITH ANOTHER STILL OPEN. The list is not empty,
+ *    so `leaveIfHostedAndEmpty` does not fire; the pointer is deliberately not
+ *    repaired on close ("a stale pointer is not an error to be repaired, it is
+ *    Home" — documents.service.ts), so the held bench appears, and its *Back to
+ *    the library* released the project and landed here. Two clicks, with a book
+ *    still open.
+ *
+ * WHAT IT SHOWS INSTEAD IS A BENCH AND NOT A BLANKED HOME. A Home with its
+ * contents guarded away is somewhere a person can still be stranded — the
+ * standing rule for this is 82a3763, which CLOSES a hosted window rather than
+ * falling through to Home when it runs out of tabs. Closing cannot be the answer
+ * here: a hosted window has nothing open for the moment between loading and its
+ * document arriving, and a window that shut on "nothing open" would shut before
+ * the file got there (documents.service.ts says so, and that is why its own rule
+ * is asked from the close GESTURE and never from a count).
+ *
+ * So the empty hosted workspace is quiet, has no doors, and leaves the way back
+ * where it already is: the tree on the left, which is the host's own book.
  *
  * ── And the notice bar is above all three ────────────────────────────────────
  *
@@ -115,7 +154,29 @@ import { StageService } from '../../core/stage.service';
       <div class="held">
         <p class="held-title">{{ title }}</p>
         <p class="held-hint">Nothing is open. Click a step in the tree to open it here.</p>
-        <button type="button" class="held-leave" (click)="leave()">Back to the library</button>
+        <!--
+          THE WAY OUT IS TO THE LIBRARY, SO HOSTED THERE IS NOWHERE FOR IT TO GO.
+          \`leave()\` releases the held project, and an empty workspace with no
+          project held is Home — so this button is a door onto Foundry's own
+          library, which a hosted window must not have (see the class docblock).
+        -->
+        @if (!hosted()) {
+          <button type="button" class="held-leave" (click)="leave()">Back to the library</button>
+        }
+      </div>
+    } @else if (hosted()) {
+      <!--
+        HOSTED, THE EMPTY WORKSPACE IS A BENCH AND NEVER HOME — see the class
+        docblock for the two routes this closes.
+
+        It says only what is true from here. A window can be empty because the
+        document it was opened for has not arrived yet, or because the deep link
+        found nothing openable and gave up (\`openFoundryWindow\`, electron/mount.ts),
+        and this branch cannot tell those apart — so it names neither, and the
+        host's own window is where the reason belongs.
+      -->
+      <div class="held">
+        <p class="held-hint">Nothing is open in this window.</p>
       </div>
     } @else {
       <app-home />
@@ -191,6 +252,17 @@ import { StageService } from '../../core/stage.service';
   `],
 })
 export class WorkspaceComponent {
+  /**
+   * Whether somebody else is running this app — the switch that decides whether
+   * this window may show Home at all.
+   *
+   * Asked here rather than passed in, exactly as `HomeComponent` and the action
+   * menu ask it: it is a fact about the process, answered once from main
+   * (`app:hosted`), and threading it through an input would make it look like a
+   * property of the workspace that a caller could disagree with.
+   */
+  protected readonly hosted = hosted;
+
   protected readonly stage = inject(StageService);
   private readonly positions = inject(PositionSyncService);
   private readonly projects = inject(ProjectsService);
@@ -198,7 +270,9 @@ export class WorkspaceComponent {
   /**
    * The held project's title, or null when there is none to hold — a project
    * deleted from the library since it was held answers null too, which is what
-   * sends the empty workspace back to Home rather than naming a ghost.
+   * sends the empty workspace on rather than naming a ghost. Standalone that
+   * next stop is Home; hosted it is the quiet bench, which is the whole of the
+   * difference and is decided in the template rather than here.
    */
   protected readonly heldTitle = computed(() => {
     const held = this.stage.heldProject();

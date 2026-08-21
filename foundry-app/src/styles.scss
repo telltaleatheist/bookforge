@@ -53,6 +53,7 @@
   --ok: #4ade80;
   --warn: #fbbf24;
   --error: #f87171;
+  --ok-soft: rgba(74, 222, 128, 0.12);
   --warn-soft: rgba(251, 191, 36, 0.12);
   --error-soft: rgba(248, 113, 113, 0.12);
 
@@ -116,7 +117,58 @@ button, input, select, textarea {
   color: inherit;
 }
 
-input, select, textarea {
+/*
+ * A BUTTON NOBODY STYLED MUST STILL BE READABLE.
+ *
+ * The rule above gives every button the page COLOUR and nothing else, so an
+ * unstyled button kept the user agents own light background under this themes
+ * near-white text -- white on white, unreadable, and invisible to every gate we
+ * run because none of them renders a pixel. Owen met it as "all the buttons are
+ * white with light text" the first time capture put buttons on screen that no
+ * component had dressed.
+ *
+ * This is a FLOOR, not a style. It is the quietest thing that is legible: the
+ * app surface, the app border, the app text. Every component that dresses its
+ * own buttons still wins -- Angular emulated encapsulation gives component
+ * rules an attribute selector and therefore higher specificity than this bare
+ * element one -- so nothing that looks right today changes.
+ *
+ * It belongs here rather than in each component for the reason outputSizeFor
+ * belongs in shared: eight copies of one visual decision is a drift machine,
+ * and the ninth copy is always the one somebody forgets.
+ */
+button {
+  background: var(--bg-input);
+  border: 1px solid var(--border-default);
+  border-radius: var(--radius-md);
+  padding: 6px 12px;
+  cursor: pointer;
+}
+button:hover:not(:disabled) { border-color: var(--border-strong); background: var(--bg-hover); }
+button:disabled { opacity: 0.5; cursor: default; }
+
+/*
+ * THE TEXT-FIELD FLOOR, AND IT IS NOT A FLOOR FOR EVERY `input`.
+ *
+ * `width: 100%` and a 10px inset are right for a thing you type into and wrong
+ * for a thing you tick. Written bare, this rule stretched every checkbox in the
+ * app to the full width of its column and gave it a padding box to sit in — so
+ * the label beside it was squeezed into whatever was left, and "Two pages"
+ * wrapped onto two lines with the words nowhere near the box. Owen found it on
+ * the capture editor's tick; the confirm dialog's standing checkbox had the same
+ * defect and had simply never been looked at.
+ *
+ * EXCLUDED HERE RATHER THAN UNDONE AT EACH TICK, which is this file's own
+ * argument one rule up: a visual decision spelled at every call site is a drift
+ * machine, and the copy somebody forgets is the one that ships. Both checkboxes
+ * in the app were already carrying a local `accent-color` rule and NEITHER had
+ * thought to undo the width, which is the evidence for fixing it at the source.
+ *
+ * Checkbox and radio only. Every other input type — text, search, number, file,
+ * range, colour — either wants the field treatment or is rare enough that a
+ * component dressing it can win on specificity, as the note above explains.
+ */
+input:not([type='checkbox']):not([type='radio']), select, textarea {
   background: var(--bg-input);
   border: 1px solid var(--border-default);
   border-radius: var(--radius-md);
@@ -125,6 +177,9 @@ input, select, textarea {
   transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
               box-shadow 100ms cubic-bezier(0, 0, 0.2, 1);
 }
+/* A tick is as big as a tick. Stated so that the flex row it usually sits in
+   cannot squeeze it, which is the other half of what went wrong above. */
+input[type='checkbox'], input[type='radio'] { flex: none; margin: 0; }
 input::placeholder, textarea::placeholder { color: var(--text-muted); }
 input:hover:not(:focus), select:hover, textarea:hover:not(:focus) {
   border-color: var(--border-strong);

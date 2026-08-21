@@ -3,7 +3,7 @@ import { Injectable, effect, inject, signal, untracked } from '@angular/core';
 import { positionPicture, positionView, type PositionView } from '@shared/ledger';
 import { fold } from '@shared/original';
 
-import { normalise, OpenDocumentsService, type Tab } from './documents.service';
+import { normalise, OpenDocumentsService, pathIsProject, type Tab } from './documents.service';
 import { LedgerService } from './ledger.service';
 import { NoticeService } from './notice.service';
 import { ProjectsService } from './projects.service';
@@ -394,7 +394,10 @@ export class PositionSyncService {
      * is showing that chain's own reading, which is the same book — so there is
      * nothing to correct there either.
      */
-    if (subject.kind === 'book') return;
+    // Neither directory kind has a reading position for main to be asked about.
+    // A book tab shows whatever reading put it there; a capture tab shows
+    // photographs, which no step has read yet and none may ever read.
+    if (pathIsProject(subject)) return;
     const dir = this.documents.projectDirOf(subject);
     if (dir === null) return;
     const key = fold(dir);

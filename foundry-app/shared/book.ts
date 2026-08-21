@@ -400,6 +400,51 @@ export interface BookLoad {
   /** Where the figures are served, ending in `/`, or null when none were cut. */
   figures: string | null;
   /**
+   * THE PIXELS THIS BOOK WAS READ OFF, so a block can be shown where it stood.
+   *
+   * *"i want to hover over a block and see that page of the original beside
+   * it."* Every row already carries the address — `page`, `box`, `pageWidth`,
+   * `pageHeight` — and until now the pane had the address of a document it had
+   * no way to open: a `book` tab's path is the PROJECT directory, and nothing on
+   * the load named the scan. This is that name, and it is the whole of the new
+   * door.
+   *
+   * NULL IS AN ORDINARY ANSWER AND MEANS TWO TRUE THINGS. A book that arrived as
+   * an EPUB has never had pages — its rows are all `page: 0`, the no-page frame
+   * (`BookRow.page`) — so there is nothing to show and the pane says so rather
+   * than drawing an empty frame. And a project whose archived original is gone
+   * answers the same way, because the honest sentence is identical: this book
+   * cannot show you its paper.
+   *
+   * IT IS THE ARCHIVED ORIGINAL AND NOT THE WORKING COPY, which is the same
+   * choice `planReading` makes for the same reason (electron/workspace.ts): what
+   * the reading photographed is the immutable copy in `archive/`, and after a
+   * searchable conversion the working copy is type on blank paper with none of
+   * the pixels the blocks were read from. A peek at the wrong one would be a
+   * picture of a page this book was not made from.
+   */
+  originalPath: string | null;
+  /**
+   * THE PHOTOGRAPHED PAGES THIS BOOK WAS READ OFF, when that is what it was.
+   *
+   * A SECOND FIELD AND NOT A WIDENING OF `originalPath`, mirroring the choice
+   * `bookAtPosition` already made between `pdf` and `pages` and for the same
+   * reason: the two are not interchangeable to whoever is about to open one.
+   * `originalPath` answers *"what document can be rasterised"*; this answers
+   * *"where are the page images"*, and a directory handed to something expecting
+   * a PDF is a failure at the far end of the app from the decision that caused
+   * it.
+   *
+   * IT EXISTS BECAUSE THE ALTERNATIVE WAS A LIE. A captured project's archive is
+   * a DIRECTORY of photographed pages, so `at.pdf` is null for it and the glance
+   * card's sentence for a null scan — *"it arrived as a book rather than as a
+   * scan"* — would be said over a book that has 25 photographs of paper. The
+   * card still cannot draw one; what this buys is that it stops claiming they do
+   * not exist. Rendering them is the open work (docs/PLAN.md), and this is the
+   * field it will read when somebody does it.
+   */
+  originalPages: string | null;
+  /**
    * The translation this position stands under, or null for a book in its own
    * language — and with it, the source the aligned view draws in its left column.
    */

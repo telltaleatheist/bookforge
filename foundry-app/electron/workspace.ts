@@ -88,6 +88,7 @@ import {
   generatedFileFor,
   importDocument,
   ledgerOf,
+  projectDirOf,
   readManifest,
   readingBank,
   readingIsComplete,
@@ -159,18 +160,62 @@ export async function planReading(
    */
   asked: ReadAsk = {},
 ): Promise<ReadingPlan> {
-  const { dir, key } = await importDocument(inputPath, 'pdf');
-  const sourcePath = await archiveOriginal(dir) ?? inputPath;
+  /*
+   * ── WHAT WAS POINTED AT, WHICH IS NO LONGER ALWAYS A DOCUMENT ─────────────
+   *
+   * A captured book has no document to point at — the mint writes a folder of
+   * page images and files no row in the catalogue (`recordMint`) — so the OCR
+   * dialog offers THE PROJECT, and what arrives here is a project directory.
+   *
+   * IT IS RECOGNISED BY BEING ONE rather than by a second argument saying so. A
+   * path IS a project directory exactly when the app's own "which project is
+   * this in" answers the path itself; a document one layer down answers the
+   * folder above it. So the two asks are told apart by a fact about the path,
+   * which is what `importDocument` already does when it recognises a document
+   * this app is holding — and a caller cannot get the flag wrong, because there
+   * is no flag.
+   */
+  const resolved = path.resolve(inputPath);
+  const asProject = projectDirOf(resolved) === resolved ? resolved : null;
+  const dir = asProject ?? (await importDocument(inputPath, 'pdf')).dir;
+  const manifest = await readManifest(dir);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
   const bank = await bankForReading(dir, asked);
+  /*
+   * PAGES OR A PDF, decided by the project's own catalogue and CARRIED rather
+   * than sniffed at the far end. `archiveOriginal` composes `archive/<file>`
+   * either way — for this kind that name is a directory, which is exactly what
+   * `vlm-read --pages` takes (see `ProjectArchive`).
+   */
+  const sourceKind = manifest.archive?.kind === 'pages' ? 'pages' : 'pdf';
+  const sourcePath = await archiveOriginal(dir) ?? inputPath;
+  /*
+   * A DIRECTORY THAT IS NOT THERE IS REFUSED HERE rather than three hours later.
+   * A reading of a PDF fails at the engine with a sentence naming the file, and
+   * fails within a second because the first thing it does is open it. A pages
+   * read that was pointed at a folder somebody moved would be handed to the
+   * queue, held behind whatever else is waiting, and refused when its turn came.
+   */
+  if (sourceKind === 'pages' && !await isDirectory(sourcePath)) {
+    throw new ProjectError(
+      `${manifest.title} says its pages are in ${sourcePath} and that folder is not there, so there `
+      + 'is nothing to read.',
+    );
+  }
   return {
-    key,
+    key: manifest.key,
     sourcePath,
+    sourceKind,
     readingsPath: bank.readingsPath,
     // Minted with the path and spent at the landing, so the file and the row agree
     // about which reading the bank belongs to. See `ReadRequest.stepId`.
     stepId: bank.stepId,
   };
+}
+
+/** Is there a folder there? Missing and not-a-folder are one answer. */
+async function isDirectory(target: string): Promise<boolean> {
+  return fsp.stat(target).then((it) => it.isDirectory()).catch(() => false);
 }
 
 /**

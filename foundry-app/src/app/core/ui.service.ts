@@ -64,6 +64,9 @@ export class UiService {
   readonly simplifyOpen = signal(false);
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
+
+  /** Naming a book before photographing it. See CaptureNewDialogComponent. */
+  readonly captureNewOpen = signal(false);
   /**
    * THE HOST'S OWN OPERATION DIALOG — the only one of these that carries data.
    *
@@ -181,6 +184,7 @@ export class UiService {
     this.translateOpen,
     this.simplifyOpen,
     this.metadataOpen,
+    this.captureNewOpen,
     this.confirmOpen,
   ] as const;
 
@@ -194,6 +198,14 @@ export class UiService {
      * sibling somebody forgot to clear is a bug that only appears in one order.
      */
     this.hostOpOpen.set(null);
+  }
+
+  openCaptureNew(): void {
+    this.only(this.captureNewOpen);
+  }
+
+  closeCaptureNew(): void {
+    this.captureNewOpen.set(false);
   }
 
   openOcr(): void {

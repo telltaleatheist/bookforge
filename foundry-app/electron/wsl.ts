@@ -183,6 +183,20 @@ export function networkPathBehind(windowsPath: string): string | null {
  * here: a destination under `/mnt/c/Users/Some One/…` is the ordinary case, and
  * an unquoted space there is two arguments and a tar that writes half its
  * contents somewhere unexpected.
+ *
+ * WHAT THIS GUARDS AND WHAT IT CANNOT (measured on the other side of the
+ * vendoring, bookforge-sync seq 111, 2026-08-19): this function guards
+ * WORD-SPLITTING in the guest bash. It cannot guard the TRANSPORT --
+ * wsl.exe applies exactly ONE pass of backslash-halving to its argv
+ * before any bash exists, deterministic and quote-blind, so a UNC
+ * device string loses a backslash from each pair however it is quoted.
+ * Every current caller crosses forward-slash guest paths (toWslPath
+ * output), which is why this is a latent rule and not a live bug -- but
+ * a future caller sending anything with backslashes must DOUBLE them
+ * before argv, or send the command on stdin (bash -s), which the pass
+ * does not touch. A quoting function that claimed to make the crossing
+ * safe would be the false-safety-comment shape; this one names its
+ * boundary instead.
  */
 export function shellQuote(value: string): string {
   return `'${value.replace(/'/g, `'\\''`)}'`;

@@ -88,7 +88,36 @@ import { api, hosted } from './foundry';
  * every other tab the project is the folder the file is IN, and for this one the
  * path IS the project.
  */
-export type TabKind = 'pdf' | 'book';
+export type TabKind = 'pdf' | 'book' | 'capture';
+
+/**
+ * WHETHER THIS TAB'S `path` IS A DIRECTORY RATHER THAN A FILE.
+ *
+ * Named because it is the question seven sites were asking and none of them
+ * said so: they tested `kind === 'book'` and MEANT "the path is a project, so
+ * do not treat it as bytes". Adding `capture` as a third kind made every one of
+ * those seven silently wrong — the same defaulting-switch shape the capture
+ * feature has now met four times in one evening, most recently as seven
+ * predicates branching on a step's action.
+ *
+ * So the property gets a name and the sites ask for the property. A fourth kind
+ * whose path is a directory joins by being added HERE, and a fourth kind whose
+ * path is a file changes nothing — which is the difference between a decision
+ * recorded once and a decision re-taken correctly seven times.
+ *
+ * The two directory kinds are otherwise nothing alike: a `book` tab is a
+ * reading of a finished book and a `capture` tab is a light table of
+ * photographs that are not a book yet. They share a filesystem fact, not a
+ * nature, and every site that cares about the nature still asks about the kind.
+ *
+ * IT IS A TYPE PREDICATE and that is not decoration: the sites it replaces were
+ * narrowing `kind` by testing it, and one of them passes the narrowed kind to a
+ * function that only accepts `pdf`. A plain boolean compiled everywhere except
+ * there, where it failed loudly — which is the behaviour worth having.
+ */
+export function pathIsProject(tab: Tab): tab is Tab & { kind: 'book' | 'capture' } {
+  return tab.kind === 'book' || tab.kind === 'capture';
+}
 
 export interface Tab {
   id: string;
@@ -502,9 +531,56 @@ export class OpenDocumentsService {
    * questions about a TAB, which is why the answer stays here.
    */
   projectDirOf(tab: Tab): string | null {
-    if (tab.kind !== 'book') return this.projects.projectFor(tab.path)?.dir ?? null;
-    const key = fold(tab.path);
-    return this.projects.items().find((project) => fold(project.dir) === key)?.dir ?? null;
+    /*
+     * ONE QUESTION, ONE ANSWER, AND THE BRANCH THAT USED TO BE HERE WAS A BUG.
+     *
+     * ── Owen's report ─────────────────────────────────────────────────────────
+     *
+     * *"when i export an epub and then click on it in foundry, the narrate
+     * button disappears, but a narrate button appears inside the epub's worktree
+     * item. i dont care if theres a narrate button on the epub in the worktree
+     * but the narrate button should not disappear if the user clicks epub.
+     * thats the exact opposite behavior of what it should be."*
+     *
+     * ── Why it disappeared, which is not where anybody was looking ───────────
+     *
+     * This used to ask `pathIsProject` first and, for a book tab, look the path
+     * up as a project DIRECTORY by exact match. That is true of the tab
+     * `bookTabIn` makes, whose path IS a project. IT IS FALSE OF THE ONE
+     * `openExportView` MAKES: that is also `kind: 'book'`, and its path is an
+     * EPUB FILE in `final/`. So the exact-directory lookup found nothing, this
+     * returned null, and `ActionMenu.hostReady` — which asks only whether the
+     * project can run a host act — had no project to ask about.
+     *
+     * So it was never Narrate that vanished. EVERY host act vanished at once,
+     * because the window had stopped being able to say which book was in front
+     * of it. The tree's export row kept its button because that path asks what
+     * the ROW produces (`produces: 'export'`) and never comes through here,
+     * which is exactly the inversion Owen described: the button left the place
+     * that had lost the project and stayed in the place that had not.
+     *
+     * ── The fix is a deletion, and it is provably not a change ───────────────
+     *
+     * `projectFor` already answers both shapes in one comparison — it tests
+     * `target === dir || target.startsWith(dir + '/')`, and its own docblock
+     * argues the equality case at length ("THE DIRECTORY ITSELF IS IN ITS OWN
+     * PROJECT"), added when the proof sheet hit this same class from the other
+     * side. So the branch was asking a narrower version of a question the
+     * fallback already answered correctly, and removing it gives the identical
+     * answer for every tab whose path IS a project and a right answer for the
+     * one whose path is not.
+     *
+     * ── What is still true, and is somebody else's to fix ───────────────────
+     *
+     * `pathIsProject` STILL CLAIMS THAT EVERY BOOK TAB'S PATH IS A DIRECTORY,
+     * and that claim is false for an export view. It is not repaired here
+     * because it is a type predicate seven other sites narrow on, and this
+     * defect needed one of them corrected rather than seven audited at speed.
+     * The honest discriminator is already on the tab: `viewOnly` is set in
+     * exactly one place, `openExportView`, and means precisely "this book tab is
+     * a finished file rather than a project".
+     */
+    return this.projects.projectFor(tab.path)?.dir ?? null;
   }
 
   // ── Naming ───────────────────────────────────────────────────────────────
@@ -538,7 +614,7 @@ export class OpenDocumentsService {
    * have a name CHOSEN for it follows.
    */
   private titleFor(tab: Tab): string {
-    return tab.kind === 'book' ? this.projectTitleOf(tab.path) : this.nameFor(tab.path);
+    return pathIsProject(tab) ? this.projectTitleOf(tab.path) : this.nameFor(tab.path);
   }
 
   /**
@@ -636,8 +712,16 @@ export class OpenDocumentsService {
    * imported EPUB's origin row answers sheet=true (positionView owns that test),
    * so such a project opens onto its book — the only surface it has.
    */
-  async openProject(projectDir: string, originalPath: string, managed = false): Promise<void> {
-    await this.openFile(originalPath, managed);
+  async openProject(projectDir: string, originalPath: string | null, managed = false): Promise<void> {
+    /*
+     * NO DOCUMENT MEANS THE LIGHT TABLE, which is the same answer Home's row
+     * gives for the same project (`openProject`, home.component.ts). A captured
+     * book has no catalogued document before its first mint and none after one
+     * either, so a host's Edit-in-Foundry has to land somewhere — and the
+     * surface the person was working on is the table.
+     */
+    if (originalPath === null) this.show(this.captureTabIn(projectDir));
+    else await this.openFile(originalPath, managed);
     if (this.ledger.historyFor(projectDir) === null) await this.ledger.refresh(projectDir);
   }
 
@@ -751,6 +835,30 @@ export class OpenDocumentsService {
     const already = this.all().find((tab) => tab.kind === 'book' && fold(tab.path) === key);
     if (already !== undefined) return already.id;
     const made = this.blankTab('book', projectDir, this.projectTitleOf(projectDir));
+    this.all.update((tabs) => [...tabs, made]);
+    return made.id;
+  }
+
+  /**
+   * This project's LIGHT TABLE tab, made if it has none yet. Never a second one.
+   *
+   * `bookTabIn` one flight up with one word changed, and deliberately not
+   * generalised with it: the two differ in what they are FOR, and a shared
+   * factory taking a kind would be a function whose two callers share only the
+   * three lines that any tab factory has. What they do share — that the path is
+   * a project directory — is `pathIsProject`, which is the part worth naming.
+   *
+   * Made here rather than through `openFile` for the same reason a book tab is:
+   * there is no path for main to decide about. The recipe arrives over
+   * `capture:recipe-load`, which admits nothing, and a door answering "yes, you
+   * may open this directory" would be a door granting access to a folder for
+   * being asked about it.
+   */
+  captureTabIn(projectDir: string): string {
+    const key = fold(projectDir);
+    const already = this.all().find((tab) => tab.kind === 'capture' && fold(tab.path) === key);
+    if (already !== undefined) return already.id;
+    const made = this.blankTab('capture', projectDir, this.projectTitleOf(projectDir));
     this.all.update((tabs) => [...tabs, made]);
     return made.id;
   }
@@ -1430,6 +1538,14 @@ export class OpenDocumentsService {
     if (tab.kind === 'book') {
       this.notices.notice.set(
         `${tab.title} is the book itself, not a file — Export files a finished copy of it.`);
+      return;
+    }
+    if (tab.kind === 'capture') {
+      // Same shape, different sentence: there is no book here yet to export, and
+      // the thing a person would want saved does not exist until they mint it.
+      this.notices.notice.set(
+        `${tab.title} is a table of photographs, not a file — Mint makes the pages, and they `
+        + 'are saved into the project as they are made.');
       return;
     }
     try {

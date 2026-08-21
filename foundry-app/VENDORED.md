@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f8c8d6a** — *an env download folder the distro cannot see is refused before the download, not after* |
-| Copied on | 2026-08-19 |
-| Copied by | `git -C <foundry> archive 1430bef app \| tar -x --strip-components=1` |
+| Source sha | **f858e41** — *the gutter wins its own knob* |
+| Copied on | 2026-08-21 |
+| Copied by | `git -C <foundry> archive f858e41 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -238,6 +238,27 @@ match"), caught because the commit stat said 1549 insertions where 45 were
 expected. No IPC change — still 71 handles, 14 pushes — and nothing outside
 `app/` moved, verified here rather than taken, so the engine binary stands
 (96/96 blobs at f8c8d6a).
+`f858e41` is 105 commits and the biggest refresh since the copy began — Owen's
+capture stage (photograph a book, light table, crop/turn/split, mint to pages)
+plus the two fixes BookForge asked for over the switchboard. **The narrate fix
+is `a7d88bf`, and it was never narrate:** every host act vanished at once,
+because `projectDirOf` asked `pathIsProject` first and looked a book tab's path
+up as a project DIRECTORY by exact match — true of the tab `bookTabIn` makes,
+FALSE of the one `openExportView` makes, whose path is an EPUB in `final/`. So
+the window could not say which book was in front of it and `ActionMenu.hostReady`
+had nothing to ask about; the tree's export row kept its button because that path
+asks what the ROW produces. **The hosted-Home guard is `0ab0e51`** — two routes
+reached Foundry's Home in a hosted window, a deep link that resolves to nothing
+openable and closing the shown document with another still open; both drew a
+front door to a library BookForge owns. 15 files added, none removed, 111/111
+blobs hash-verified. IPC: the new `capture:` family, nine names (eight doors and
+one push), a family BookForge owns nothing in — so collision-safe by
+construction, and the keeper agrees. **THE ENGINE MOVED and its binary is
+STALE:** `src/vlm/` took four commits since `dist/foundry-windows-x64.exe` was
+built (2026-08-18), including `--pages` never being registered, a runaway
+becoming an empty page, and a refused page naming the cap that stopped it. The
+subtree here is current; the binary a hosted read spawns is not, until
+`bash tools/release-build.sh windows-x64` is run in the Foundry checkout.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
@@ -288,6 +309,13 @@ npm run build      # tsc -p tsconfig.electron.json  -> dist/electron + dist/shar
 
 `dist/` and `node_modules/` here are build output and are gitignored by the
 subtree's own `.gitignore` (which came with the copy).
+
+**`npm ci`, not `npm install`, when the refresh moves `package.json`.** f858e41
+added two runtime deps (`libheif-js`, `pdf-lib` — the capture stage decodes
+phone photographs), and the lockfile arrives with the copy already naming them.
+`npm ci` installs exactly what that lockfile says and never writes
+`package.json`; `npm install <pkg>` on this machine has been observed rewriting
+a package.json and dropping its `scripts` block entirely.
 
 ## What BookForge imports
 

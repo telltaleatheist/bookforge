@@ -13,6 +13,7 @@ import type { HostOffers, HostStatus } from '../shared/host-ops';
 import type {
   AppQuestion,
   Asked,
+  CaptureIntakeProgress,
   CloseAnswer,
   EnvInstallProgress,
   HostNodes,
@@ -260,12 +261,24 @@ const api: FoundryApi = {
     setKeepWarm: (minutes) => ipcRenderer.invoke('vllm:set-keep-warm', minutes),
   },
 
+  capture: {
+    create: (title) => ipcRenderer.invoke('capture:create', title),
+    intake: (projectDir, paths) => ipcRenderer.invoke('capture:intake', projectDir, paths),
+    onIntakeProgress: (listener) => subscribe<CaptureIntakeProgress>('capture:intake-progress', listener),
+    recipeLoad: (projectDir) => ipcRenderer.invoke('capture:recipe-load', projectDir),
+    remove: (projectDir, photoIds) => ipcRenderer.invoke('capture:remove', projectDir, photoIds),
+    recipeSave: (projectDir, recipe) => ipcRenderer.invoke('capture:recipe-save', projectDir, recipe),
+    mintBegin: (projectDir) => ipcRenderer.invoke('capture:mint-begin', projectDir),
+    mintPage: (mintId, index, jpeg) => ipcRenderer.invoke('capture:mint-page', mintId, index, jpeg),
+    mintCommit: (mintId) => ipcRenderer.invoke('capture:mint-commit', mintId),
+    mintAbort: (mintId) => ipcRenderer.invoke('capture:mint-abort', mintId),
+  },
   onDocumentOpened: (listener) => subscribe<string>('document:opened', listener),
   onDocumentRelocated: (listener) =>
     subscribe<{ from: string; to: string }>('document:relocated', listener),
   onNavigate: (listener) => subscribe<string>('app:navigate', listener),
   onProjectOpen: (listener) =>
-    subscribe<{ dir: string; originalPath: string; managed: boolean }>('project:open', listener),
+    subscribe<{ dir: string; originalPath: string | null; managed: boolean }>('project:open', listener),
   onMenuAction: (listener) => subscribe<MenuAction>('menu:action', listener),
   // The window is going and the documents in it have not been asked yet. The
   // payload is nothing — what is open is the renderer's own business, and this

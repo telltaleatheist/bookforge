@@ -148,7 +148,8 @@ import { ensureServer, isLocalVllmEndpoint, noteQueueBusy, noteQueueIdle } from 
 import { REWRITE_LABELS } from '../shared/ledger';
 import { fold } from '../shared/original';
 import type {
-  ConversionKind, EnvInstallRequest, ExportLanding, FoundryJobRow, Job, JobRequest, TranslateRequest,
+  ConversionKind, EnvInstallRequest, ExportLanding, FoundryJobRow, Job, JobKind, JobRequest,
+  TranslateRequest,
 } from '../shared/types';
 
 /**
@@ -437,7 +438,10 @@ export function shelfJobs(): Job[] {
   if (hostQueue() === null) return listJobs();
   const rows: Job[] = [];
   for (const held of hostRowsByProject.values()) rows.push(...held.map(copyOf));
-  return [...rows, ...jobs.filter((job) => job.kind === 'env-install').map(copyOf)];
+  // Every row of ours that never routed, not just the installs: a mint is
+  // minutes long and drawing nothing for it while hosted would leave a person
+  // watching an app that looks idle while it works.
+  return [...rows, ...jobs.filter((job) => NEVER_ROUTED[job.kind]).map(copyOf)];
 }
 
 /**
@@ -470,8 +474,52 @@ export function shelfJobs(): Job[] {
  * An id belonging to no row of ours answers false and routes, which is the
  * ordinary case and the whole of the host's queue.
  */
-function ourEnvInstall(id: string): boolean {
-  return jobs.some((job) => job.id === id && job.kind === 'env-install');
+/**
+ * Which kinds of row NEVER went out through the host, and are therefore ours
+ * to draw and ours to stop.
+ *
+ * ── A TABLE, BECAUSE THE LAST SPELLING OF THIS WAS A LITERAL AND IT AGED ────
+ *
+ * This test used to be `kind === 'env-install'`, written when an install was
+ * the only work this process did on its own. A MINT is the second: it is
+ * rasterized by the renderer under somebody’s hands, it never routes, and the
+ * host has never heard of its id. Three sites asked the old question and all
+ * three were wrong for a mint — two would have forwarded our id into a list
+ * that does not contain it (the work carries on, the button looks broken), and
+ * `shelfJobs` would have drawn no row at all for a minutes-long operation while
+ * hosted, leaving no progress and nothing to press.
+ *
+ * As a `Record<JobKind, …>` the compiler names every kind the day one is added,
+ * which is the same reason the ledger’s per-action tables are tables. A literal
+ * could not, and did not.
+ *
+ * THE QUESTION IS "DID IT ROUTE", NOT "IS IT IN OUR LIST" — the distinction the
+ * old docblock drew and it still holds: our list also holds rows `runJob` mints
+ * for work the HOST scheduled, and a gesture on one of those belongs to the
+ * host. A gesture must go back through the same door the work went out of.
+ */
+const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
+  // Engine work. It routes: the host chose when it ran.
+  epub: false,
+  txt: false,
+  pdf: false,
+  read: false,
+  translate: false,
+  // A precondition of the engine running rather than GPU work (16e).
+  'env-install': true,
+  // Renderer-driven and interactive. It never entered the host’s queue and
+  // never took the serial slot, so nothing over there can stop it or draw it.
+  mint: true,
+};
+
+/**
+ * Is this id one of OUR rows — one that never routed?
+ *
+ * An id belonging to no row of ours answers false and routes, which is the
+ * ordinary case and the whole of the host’s queue.
+ */
+function neverRouted(id: string): boolean {
+  return jobs.some((job) => job.id === id && NEVER_ROUTED[job.kind]);
 }
 
 /**
@@ -899,13 +947,13 @@ export function start(): number {
  * host pushed; there is no row of ours by that name, and searching for one would
  * be this app answering a question about somebody else's list. WITH ONE
  * EXCEPTION AS OF 17c, and it is an exception to the premise rather than to the
- * rule: a hosted shelf now also draws our env installs, so an id off that shelf
- * can be one of ours after all. `ourEnvInstall` is the whole of the test and
- * carries the argument.
+ * rule: a hosted shelf also draws the rows that never routed -- our env
+ * installs, and now our mints -- so an id off that shelf can be one of ours
+ * after all. `neverRouted` is the whole of the test and carries the argument.
  */
 export function remove(id: string): void {
   const host = hostQueue();
-  if (host !== null && !ourEnvInstall(id)) {
+  if (host !== null && !neverRouted(id)) {
     forwardToHost('remove', host.remove === undefined ? undefined : () => { host.remove?.(id); });
     return;
   }
@@ -999,9 +1047,9 @@ export function enqueueEnvInstall(request: EnvInstallRequest, reason?: string): 
  */
 export function cancel(id: string): void {
   const host = hostQueue();
-  // An install is ours however this window is hosted, and its ✕ is reachable in
-  // the hosted shelf now that 17c draws the row — see `ourEnvInstall`.
-  if (host !== null && !ourEnvInstall(id)) {
+  // A row that never routed is ours however this window is hosted, and its ✕ is
+  // reachable in the hosted shelf now that it draws the row — see `neverRouted`.
+  if (host !== null && !neverRouted(id)) {
     forwardToHost('cancel', host.cancel === undefined ? undefined : () => { host.cancel?.(id); });
     return;
   }
@@ -1021,6 +1069,93 @@ export function cancel(id: string): void {
  * has. Standalone `detachedRuns` is always empty and this reads exactly as it
  * always did.
  */
+/*
+ * ── THE MINT ROW, WHICH IS A ROW AND NOT A JOB THE PUMP RUNS ────────────────
+ *
+ * A mint is minutes of work and it belongs on the shelf with progress and a
+ * cancel, exactly like a read. It must NEVER occupy the serial slot.
+ *
+ * WHY NOT, PRECISELY. `pump` runs one job at a time (`running !== null` is the
+ * whole gate), and that serialisation exists because the engine is one process
+ * against one GPU: two reads at once are slower than two reads in a row. A mint
+ * is neither — the rasterizing happens in the RENDERER, driven by a person who
+ * is watching it, and main only assembles what arrives. Putting it in the slot
+ * would mean a read queued behind somebody cropping photographs waits for them
+ * to finish, and a mint queued behind a read cannot start until the GPU does,
+ * which for an interactive stage reads as the button being broken.
+ *
+ * THE MECHANISM IS THE STATE AND NOT A FLAG. `pump` selects `state === queued`
+ * and nothing else, so a row born `running` is invisible to it — no exclusion
+ * list to keep up to date, no second gate to remember. The same trick the hold
+ * uses in reverse, and it means a mint and a read genuinely run at once.
+ *
+ * `env-install` is the precedent for a row the OCR panel never enqueued, and
+ * this departs from it in exactly one way: an install DOES take the slot
+ * (`pump` dispatches it), because an install and a read compete for the same
+ * disk and the same network. A mint competes with nothing.
+ */
+export function beginMint(projectDir: string, title: string, pages: number): string {
+  const job: Job = {
+    id: randomUUID(),
+    // No document exists yet — that is what this row is making. The project
+    // directory is what the shelf can usefully reveal.
+    inputPath: projectDir,
+    outputPath: projectDir,
+    kind: 'mint',
+    title,
+    // BORN RUNNING. See above: `queued` would put it in the pump's path, and
+    // `held` would wait for a start gesture that already happened.
+    state: 'running',
+    // `render` because that is literally the pass: the renderer is rasterizing
+    // page quads, and the shelf already knows how to say "page 3/27: rendered".
+    progress: { page: 0, total: pages, phase: 'render' },
+    envProgress: null,
+    createdAt: Date.now(),
+  };
+  jobs.push(job);
+  changed();
+  return job.id;
+}
+
+/** One more page is in the book. */
+export function noteMintPage(id: string, page: number): void {
+  const job = jobs.find((row) => row.id === id);
+  if (job === undefined || job.state !== 'running') return;
+  job.progress = { page, total: job.progress?.total ?? page, phase: 'render' };
+  changed();
+}
+
+/**
+ * Has somebody pressed the ✕ on this mint?
+ *
+ * THE MINT ASKS RATHER THAN BEING TOLD, because the work is happening on the
+ * other side of the bridge: `cancelHere` can set this row to `cancelled` in a
+ * microsecond, but the renderer is midway through rasterizing a page and will
+ * keep sending. So the session checks this as each page arrives and refuses the
+ * next one — the cancel takes effect within one page rather than instantly, and
+ * nothing has to reach into the renderer to stop it.
+ */
+export function mintCancelled(id: string): boolean {
+  const job = jobs.find((row) => row.id === id);
+  return job === undefined || job.state === 'cancelled';
+}
+
+/** The mint finished, or it did not. */
+export function settleMint(id: string, outcome: { file: string } | { error: string }): void {
+  const job = jobs.find((row) => row.id === id);
+  if (job === undefined || job.state !== 'running') return;
+  if ('file' in outcome) {
+    job.state = 'done';
+    job.outputPath = outcome.file;
+    job.progress = { page: job.progress?.total ?? 0, total: job.progress?.total ?? 0, phase: 'render' };
+  } else {
+    job.state = 'failed';
+    job.error = outcome.error;
+  }
+  job.finishedAt = Date.now();
+  changed();
+  settled(job);
+}
 export function cancelHere(id: string): void {
   const job = jobs.find((j) => j.id === id);
   if (!job) return;
@@ -1264,8 +1399,21 @@ function argsFor(
   /*
    * ── READING THE PAGES ────────────────────────────────────────────────────
    *
-   * `foundry vlm-read --pdf X --readings Y`. It fills the bank, drops the
-   * completion marker beside it, and writes no document at all.
+   * `foundry vlm-read --pdf X --readings Y`, or `--pages <dir>` where the pages
+   * are already pictures. It fills the bank, drops the completion marker beside
+   * it, and writes no document at all.
+   *
+   * TWO FLAGS AND NEVER BOTH, which is the engine's own rule and is stated
+   * there rather than defended here: *"a reading is of exactly one thing"*, and
+   * `sourceFor` (src/vlm/read.ts) refuses a run that passes both rather than
+   * resolving it by a precedence nobody would agree about. This end cannot pass
+   * both — `ReadRequest.inputKind` is one value and it selects the flag — so the
+   * refusal is unreachable from this app, which is where an unreachable refusal
+   * belongs.
+   *
+   * ABSENT MEANS `--pdf`. The queue survives restarts, so rows enqueued by a
+   * build that predates the mint's change are still on the shelf, and every one
+   * of them is a reading of a PDF.
    *
    * NO `--out` AND NO `--format`, which is the whole of the split on the command
    * line: this run has no opinion about what the book will eventually be, and it
@@ -1274,7 +1422,8 @@ function argsFor(
    * reading — so neither can be asked for while it is being configured.
    */
   if (request.kind === 'read') {
-    const args = ['vlm-read', '--pdf', request.inputPath, '--readings', request.readingsPath];
+    const flag = request.inputKind === 'pages' ? '--pages' : '--pdf';
+    const args = ['vlm-read', flag, request.inputPath, '--readings', request.readingsPath];
     if (request.skipPages && request.skipPages.trim().length > 0) {
       args.push('--skip-pages', request.skipPages.trim());
     }

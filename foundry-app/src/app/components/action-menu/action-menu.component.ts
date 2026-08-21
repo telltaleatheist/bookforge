@@ -176,6 +176,44 @@ import { UiService } from '../../core/ui.service';
           <span class="menu-icon">☰</span>
           <span class="menu-label">Documents</span>
         </button>
+
+        <!--
+          THE WAY BACK TO THE PHOTOGRAPHS, and it is ABOVE THE RULE on purpose.
+
+          A mint is a SNAPSHOT of the recipe rather than its funeral: the bank
+          and the recipe survive it, and until Wave 21b there was simply no
+          surface that reached them again. Owen minted, found he had not turned
+          the pages, and there was no door -- Home opens the PDF once an
+          original exists, which is correct and was the whole trap.
+
+          IT LIVES HERE RATHER THAN ON THE HOME ROW because the door belongs
+          where the person is standing when they want it, which is looking at
+          the book; Home stays a single door onto a project. And it sits with
+          Home and Documents rather than among the acts because THE LIGHT TABLE
+          IS A PLACE. Mint is an act and is deferred from this menu for exactly
+          that reason -- a row naming somewhere you can go is a different kind
+          of entry from one that performs something.
+
+          HIDDEN, NOT DISABLED, WHICH BREAKS THIS MENU'S USUAL RULE. Translate
+          and Simplify stay visible and gray on a book they cannot run on,
+          because they are tools that might apply to it later. A project that
+          did not arrive as photographs has none and never will, so a permanent
+          gray row would be furniture rather than an education. Asked of the
+          summary's own capture field, never inferred from an empty document
+          list -- that field exists because emptiness is ALSO what a broken
+          project looks like (types.ts says so at length).
+        -->
+        @if (photographs(); as dir) {
+          <button
+            class="menu-item"
+            [class.active]="atTheTable()"
+            title="The photographs this book was made from, and the crops and turns still to set"
+            (click)="editPhotographs(dir)"
+          >
+            <span class="menu-icon">▣</span>
+            <span class="menu-label">Edit the photographs</span>
+          </button>
+        }
       </div>
 
       <!-- THE ACTS. Read the pages, then everything that makes another version
@@ -989,6 +1027,43 @@ export class ActionMenuComponent {
   protected simplify(): void {
     void this.router.navigateByUrl('/');
     this.ui.openSimplify();
+  }
+
+  /**
+   * THE CAPTURE PROJECT THE PERSON IS STANDING IN, or null -- and null is what
+   * hides the row rather than graying it (see the template).
+   *
+   * `projectFor` answers for BOTH tabs that can be open here without a second
+   * reading: a minted PDF is a file inside the project directory, and the light
+   * table's own tab holds that directory as its path, which `projectFor`
+   * matches by equality on purpose (its docblock names the proof sheet as the
+   * case that taught it). So one call covers "looking at the book" and "already
+   * at the table", and the second is what `atTheTable` then lights.
+   */
+  protected readonly photographs = computed<string | null>(() => {
+    const tab = this.stage.activeDocument();
+    if (tab === null) return null;
+    const project = this.projects.projectFor(tab.path);
+    return project !== null && project.capture ? project.dir : null;
+  });
+
+  /** Lit while the table IS what is open, the way Home lights with nothing open. */
+  protected readonly atTheTable = computed<boolean>(
+    () => this.stage.activeDocument()?.kind === 'capture');
+
+  /**
+   * Opens the table, or returns to the one already open.
+   *
+   * `captureTabIn` is idempotent by construction -- it hands back the existing
+   * tab for a project that already has one rather than making a second, which
+   * matters more here than on Home: this row is reachable FROM the table, so
+   * without that the door out of the room would put a second copy of the room
+   * beside it. The navigate is the neighbours' habit, for the case where this
+   * menu is drawn over a route that is not the workspace.
+   */
+  protected editPhotographs(dir: string): void {
+    void this.router.navigateByUrl('/');
+    this.documents.show(this.documents.captureTabIn(dir));
   }
 
   /**

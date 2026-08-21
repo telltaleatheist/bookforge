@@ -15,6 +15,12 @@ import type { ReReadPrompt } from './reread';
 import type {
   AppQuestion,
   BackendSettingsPatch,
+  CaptureCreated,
+  CaptureIntaken,
+  CaptureIntakeProgress,
+  CaptureMintBegun,
+  CaptureOpened,
+  CaptureRecipe,
   CloseAnswer,
   CloseWarning,
   ConversionKind,
@@ -34,6 +40,7 @@ import type {
   MetadataOutcome,
   MetadataWriteOutcome,
   PdfMetadataFields,
+  LedgerStep,
   ProjectLedger,
   ProjectSummary,
   QuestionAnswer,
@@ -46,6 +53,7 @@ import type {
   SetupRequest,
   SetupResult,
   StepDeletion,
+  StepLedgerView,
   StepRow,
   TranslateRequest,
   TranslationPlan,
@@ -425,7 +433,7 @@ export interface FoundryApi {
      * listed on Home with the reason on its row, and this is the same refusal
      * reaching the same strip.
      */
-    read(projectDir: string): Promise<{ ledger: ProjectLedger; rows: StepRow[] } | null>;
+    read(projectDir: string): Promise<StepLedgerView | null>;
     /**
      * Stand on a different step. Answers with the ledger and rows as they now
      * stand — the same rows, since a pointer move changes no step and no order.
@@ -440,7 +448,7 @@ export interface FoundryApi {
      * different ledgers, and standing somewhere plausible instead would show
      * somebody a book they did not ask for.
      */
-    go(projectDir: string, stepId: string): Promise<{ ledger: ProjectLedger; rows: StepRow[] }>;
+    go(projectDir: string, stepId: string): Promise<StepLedgerView>;
     /**
      * Stand on whichever step this document belongs to. Answers exactly as `go`
      * does, and answers with the ledger UNCHANGED when the document belongs to no
@@ -473,7 +481,7 @@ export interface FoundryApi {
      * not parse, like everything else here. A path belonging to no step is an
      * ordinary answer, not a refusal.
      */
-    standFor(projectDir: string, filePath: string): Promise<{ ledger: ProjectLedger; rows: StepRow[] }>;
+    standFor(projectDir: string, filePath: string): Promise<StepLedgerView>;
     /**
      * WHICH DOCUMENT BELONGS ON SCREEN AT THIS PROJECT'S POSITION — absolute, or
      * null when the position names no document of its own.
@@ -553,7 +561,7 @@ export interface FoundryApi {
      * It really deletes. Nothing is rotated aside and there is no copy anywhere
      * else; a payload that survives is one another step still names.
      */
-    delete(projectDir: string, stepId: string): Promise<{ ledger: ProjectLedger; rows: StepRow[] }>;
+    delete(projectDir: string, stepId: string): Promise<StepLedgerView>;
   };
 
   /**
@@ -637,14 +645,14 @@ export interface FoundryApi {
      * thing is a refusal they can act on, not a sheet quietly redrawn as though
      * nothing had been pressed.
      */
-    apply(projectDir: string, ops: readonly BookOp[]): Promise<{ ledger: ProjectLedger; rows: StepRow[] }>;
+    apply(projectDir: string, ops: readonly BookOp[]): Promise<StepLedgerView>;
     /**
      * Rewrite the tip edit step's own file to this list — the consolidating
      * Apply. Refuses (rejects) when the position is no longer an amendable tip;
      * the pane shows the sentence and the person presses Apply again, which
      * lands a step of its own. See amendBookOps, electron/book.ts.
      */
-    amend(projectDir: string, ops: readonly BookOp[]): Promise<{ ledger: ProjectLedger; rows: StepRow[] }>;
+    amend(projectDir: string, ops: readonly BookOp[]): Promise<StepLedgerView>;
     /**
      * A finished export in this library's tray, exploded and answered in
      * book:load's own shape, read-only — ops empty, tip null, no translation
@@ -1030,6 +1038,88 @@ export interface FoundryApi {
     setKeepWarm(minutes: number): Promise<number>;
   };
 
+  /**
+   * ── THE CAPTURE STAGE, WHICH IS UPSTREAM OF EVERYTHING ELSE HERE ─────────
+   *
+   * A project can now arrive as PHOTOGRAPHS (docs/CAPTURE.md): originals copied
+   * in and never touched again, a recipe of splits and quads over them, and a
+   * mint that assembles an image-only PDF. FROM THE MINTED PDF ONWARD NOTHING
+   * IN THIS INTERFACE CHANGES — the read, the book, narrate and export never
+   * learn the stage exists.
+   *
+   * `projectDir` AND NOT `projectId`. docs/CAPTURE.md writes the table rows as
+   * `{projectId, …}`; there is no such thing in this codebase, where a project
+   * is addressed by its directory and every neighbouring door above takes
+   * exactly that. Spelling it the doc's way would put a second name on a thing
+   * that already has one.
+   *
+   * PIXELS CROSS THIS BRIDGE IN ONE DIRECTION ONLY. Working copies and
+   * thumbnails are never IPC bytes: they reach the page through the
+   * `foundry-file:` door as an img element, allow-listed by the token these
+   * calls hand back. What crosses here is the finished page JPEG, renderer to
+   * main, one page at a time, so no whole book is ever resident in one heap.
+   */
+  capture: {
+    /**
+     * Make an empty capture project and answer with everywhere it lives.
+     *
+     * THE ONLY DOOR IN THIS APP THAT CREATES A PROJECT WITHOUT A FILE. Every
+     * other project is born by importing a document and keyed by the hash of its
+     * bytes; photographs have to have somewhere to land before any of them
+     * exist, so this one is keyed from a random id and hands back the directory
+     * that is now the only handle on it. The recipe and token come back in the
+     * same round trip, so the create path never needs a load after it.
+     */
+    create(title: string): Promise<CaptureCreated>;
+    /**
+     * Copy the named files in, hash them, decode, read their capture times, and
+     * append them to the recipe. Late arrivals inherit the settings of the photo
+     * before them — except where the aspect rule refuses the copy.
+     *
+     * ANSWERS WITH WHAT IT WOULD NOT DO, as well as what it did: a drop that
+     * contained files this stage does not read, or photographs this project
+     * already holds, must not look identical to a drop that worked.
+     */
+    intake(projectDir: string, paths: string[]): Promise<CaptureIntaken>;
+    /**
+     * Where an intake has got to, once per photograph, while it runs.
+     *
+     * A PUSH BECAUSE THE INVOKE CANNOT SPEAK UNTIL IT IS DONE, and it is not
+     * done for the better part of a minute. `env:install-progress` is the
+     * precedent and this follows it exactly, down to returning the unsubscribe.
+     */
+    onIntakeProgress(listener: (progress: CaptureIntakeProgress) => void): () => void;
+    /** The recipe, and the door token that makes its pictures loadable. */
+    recipeLoad(projectDir: string): Promise<CaptureOpened>;
+    /**
+     * Take photographs out of the project altogether, and answer with what is
+     * left.
+     *
+     * NOT A STRIKE. A strike leaves a photograph in the project and out of the
+     * book; this deletes the recipe entry, the working copy, the thumbnail AND
+     * the original, together, so nothing is orphaned. The bank copies go too,
+     * which is safe to say because they ARE copies — the dragged-in files still
+     * exist where they came from, and the confirm says so with the count.
+     *
+     * A LIST, NOT ONE ID, because the marquee selects a handful and the person
+     * answered one confirm about all of them. One call, one recipe write, one
+     * answer. Refused while a mint of this project is running.
+     */
+    remove(projectDir: string, photoIds: string[]): Promise<CaptureRecipe>;
+    /** The whole document, every time. The renderer debounces; this does not. */
+    recipeSave(projectDir: string, recipe: CaptureRecipe): Promise<void>;
+    /**
+     * Open a mint. MAIN COMPUTES THE FINAL LIST — strikes filtered, order
+     * applied, sizes decided — and the renderer rasterizes exactly that list.
+     */
+    mintBegin(projectDir: string): Promise<CaptureMintBegun>;
+    /** One rectified page, in the order `mintBegin` listed them. */
+    mintPage(mintId: string, index: number, jpeg: ArrayBuffer): Promise<void>;
+    /** Write the PDF, append the step, set the archive. Answers with the step. */
+    mintCommit(mintId: string): Promise<LedgerStep>;
+    /** Give up. Nothing is left behind and no step is appended. */
+    mintAbort(mintId: string): Promise<void>;
+  };
   onDocumentOpened(listener: (absolutePath: string) => void): () => void;
   /**
    * A document this app opened has MOVED to the copy it actually works on.
@@ -1077,8 +1167,15 @@ export interface FoundryApi {
    * that BookForge can build against it; the tab this should open is a wave of
    * its own (docs/PLAN.md, Wave 7).
    */
+  /*
+   * `originalPath` IS NULL FOR A PROJECT WITH NO DOCUMENT, which since the mint
+   * stopped writing a PDF means every captured book. The opening is still an
+   * opening — what it lands on is the light table — and a null here is the
+   * honest way to say "this project has no file to put on screen", where the
+   * alternatives were a fabricated path and a door that refused.
+   */
   onProjectOpen(
-    listener: (project: { dir: string; originalPath: string; managed: boolean }) => void,
+    listener: (project: { dir: string; originalPath: string | null; managed: boolean }) => void,
   ): () => void;
   /** File→Save As / Close Tab, which are accelerators on the menu. */
   onMenuAction(listener: (action: MenuAction) => void): () => void;

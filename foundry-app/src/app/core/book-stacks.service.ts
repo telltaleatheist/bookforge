@@ -316,6 +316,20 @@ export class BookStacksService {
      * does, because a chord that quietly did nothing is this function's own
      * definition of a failure nobody can act on.
      */
+    if (tab.kind === 'capture') {
+      /*
+       * A LIGHT TABLE HAS NO STACK BY DESIGN, and the sentence has to say so
+       * rather than send somebody to a book that does not exist yet. Corners,
+       * splits, strikes and order are written to the recipe as they are made
+       * (`CaptureService`, debounced), which is the opposite trade from the book
+       * viewer's: nothing is held back, so there is nothing to take back.
+       */
+      this.notices.notice.set(
+        `Changes to ${tab.title} are kept as you make them, so there is nothing to undo. `
+        + 'Corners, splits and order can each be changed back by hand.',
+      );
+      return;
+    }
     this.notices.notice.set(
       `There is nothing to undo in ${tab.title}. Changes are made on the book — open it from the `
       + 'step you want to work from, and undo takes them back until you apply them.',

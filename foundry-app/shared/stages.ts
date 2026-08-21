@@ -53,7 +53,7 @@
  * row is "would this be possible if I were standing here", which is the same
  * question with a different step in it.
  */
-import { importedAsEpub } from './ledger';
+import { importedAsEpub, standsOnAnArrival } from './ledger';
 import { bookRow } from './original';
 import type { LedgerStep, ProjectLedger, ProjectSummary } from './types';
 
@@ -114,11 +114,30 @@ export function arrivedAsBook(project: ProjectSummary | null): boolean {
  * standing preference for a door that opens onto an explanation over one shut on
  * a guess.
  */
+/*
+ * ── AND A CAPTURE STEP IS AN ARRIVAL TOO, WHICH THIS ASKED WRONG ────────────
+ *
+ * The last clause used to read `standing?.action !== 'import'`, naming the one
+ * arrival that existed when it was written. Once a project could also arrive as
+ * PHOTOGRAPHS, that spelling answered TRUE for somebody standing on the capture
+ * step of a project that had been read — offering Translate, Simplify and
+ * Export while the position is a light table with no document in it at all.
+ *
+ * That is precisely the mistake the docblock above says this clause exists to
+ * prevent — "a translation of the untouched scan, made because somebody clicked
+ * the top row to look at their PDF and then pressed Translate" — and
+ * photographs are further from a book than an untouched scan is. So this is the
+ * clause meaning what it always said, not a new policy.
+ *
+ * MEASURED, not reasoned: the predicates were asked of a real capture project at
+ * every position (Merge 5 audit). Before the fix, standing on the capture step
+ * with a reading done answered `hasBookAt = true`.
+ */
 export function hasBookAt(project: ProjectSummary | null, standing: LedgerStep | null): boolean {
   if (project === null) return false;
   const arrived = arrivedAsBook(project);
   if (!project.reading.done && !arrived) return false;
-  return arrived || standing?.action !== 'import';
+  return arrived || !standsOnAnArrival(standing);
 }
 
 /**
@@ -344,7 +363,15 @@ export function hostActPositionFrom(
   standing: LedgerStep | null,
 ): LedgerStep | null {
   if (ledger === null || standing === null) return null;
-  if (standing.action !== 'import') return standing;
+  /*
+   * THE SAME CORRECTION AS `hasBookAt`: this named `import` when `import` was
+   * the only arrival. Standing on a capture step it used to hand the host act
+   * THE CAPTURE STEP — pointing a host run at a directory of photographs. Now it
+   * falls through to the walk below, finds no reading parented to the capture
+   * (readings hang off the minted PDF), and answers null: nothing to act on from
+   * here, which is the truth.
+   */
+  if (!standsOnAnArrival(standing)) return standing;
   let reading: LedgerStep | null = null;
   for (const step of ledger.steps) {
     if (step.action !== 'read' || step.parent !== standing.id) continue;

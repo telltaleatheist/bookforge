@@ -30,7 +30,7 @@
  * long.
  */
 /**
- * The five things the queue can be holding.
+ * The things the queue can be holding.
  *
  * `read` IS THE ONE THAT COSTS ANYTHING, and separating it out is the change the
  * whole front door turned on. A conversion used to be one act: read three
@@ -45,8 +45,17 @@
  * queue holds both because both spawn the engine; everything else about them
  * differs, starting with the fact that one waits for a person to press Start and
  * the other must never.
+ *
+ * `mint` IS THE SECOND MEMBER THAT SPAWNS NOTHING, after `env-install`, and the
+ * sentence above about the engine is the reason it needs saying here. A mint is
+ * the capture stage assembling a PDF out of photographs (docs/CAPTURE.md): the
+ * pixels are rectified in the RENDERER, one page at a time, so the row exists to
+ * be seen and cancelled rather than to be run. It must never occupy the queue's
+ * serial engine slot — an interactive mint sitting in it would hold a reading
+ * behind it for minutes — and `env-install` is the precedent for a row the pump
+ * hands to something other than `executeJob`.
  */
-export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate';
+export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate' | 'mint';
 
 /**
  * What the OCR panel can ask for. An env install is never enqueued this way.
@@ -140,6 +149,17 @@ export interface ReadRequest {
   kind: 'read';
   /** The pixels: `WorkspacePlan.sourcePath`, which is the archived original. */
   inputPath: string;
+  /**
+   * WHAT THAT PATH IS — `ReadingPlan.sourceKind`, carried the one hop from the
+   * plan to the command line.
+   *
+   * OPTIONAL, AND ABSENT MEANS `pdf`. A job enqueued by a build that predates
+   * this carries none, and a reading of a PDF is what every one of them is; the
+   * queue is persisted across restarts, so a required field here would be a
+   * shelf full of rows that no longer parse. The same argument `stepId` makes
+   * two fields down.
+   */
+  inputKind?: ReadSourceKind;
   /** `--readings`. The product of this job, not an input to it. */
   readingsPath: string;
   /** `--skip-pages`, verbatim: "3,17,19-24". Pages that are not part of the book. */
@@ -997,10 +1017,44 @@ export interface WorkspacePlan {
  * engine's own rule (resume, or archive and re-read) and this app has never had
  * a flag that could second-guess it.
  */
+/**
+ * WHAT THE PIXELS OF A BOOK ARE, which is now two things.
+ *
+ * `pdf` is a document to rasterise and `pages` is a directory of page images in
+ * reading order — the mint's own output, read as it is with no rasteriser
+ * involved at all. They reach the engine as `--pdf <file>` and `--pages <dir>`,
+ * which is the whole of the difference on a command line.
+ *
+ * ── Why this is not `VlmSource` said again ──────────────────────────────────
+ *
+ * The engine's union (src/vlm/bridge.ts) carries `paths` for the pages case: the
+ * ORDERED LIST, after `sourceFor` has resolved a directory into one. That is
+ * what the engine holds AFTER the ask; this is the ask. Composing the list on
+ * this side would be a second implementation of the ordering rule — the one the
+ * engine's own docblock says is the caller's and is never re-derived — written
+ * down here only to be thrown away at a flag that takes a folder.
+ *
+ * So this mirrors THE TWO FLAGS rather than the far side's resolved shape, and
+ * the ordering stays in one place.
+ */
+export type ReadSourceKind = 'pdf' | 'pages';
+
 export interface ReadingPlan {
   key: string;
   /** The pixels — `archive/`, which nothing in this app ever writes. */
   sourcePath: string;
+  /**
+   * WHICH FLAG THE PATH ABOVE IS FOR, decided by main and carried rather than
+   * sniffed at the other end.
+   *
+   * It is answered HERE because this is where the project's catalogue is in
+   * hand: the caller pointed at a document or at a project, and what that
+   * project's archive turned out to BE is a fact about the project rather than
+   * about the ask. A consumer that re-derived it by asking whether the path is a
+   * directory would be guessing, at the far end of a bridge, at something that
+   * was certain at this one.
+   */
+  sourceKind: ReadSourceKind;
   /**
    * The bank THIS reading fills, which is no longer one path per project.
    *
@@ -1154,9 +1208,28 @@ export type ProjectDocumentKind = 'pdf' | 'epub' | 'txt';
  * before projects existed, and inventing an original would be a guess.
  */
 export interface ProjectArchive {
-  /** The name inside `archive/`. A NAME, never a path: the folder is implied. */
+  /**
+   * The name inside `archive/`. A NAME, never a path: the folder is implied.
+   *
+   * A DIRECTORY'S NAME WHEN THE KIND IS `pages`, and that is the whole of the
+   * difference. Everything that composes a path from this joins it to `archive/`
+   * and hands the result to something that opens it; a folder of page images is
+   * opened by `vlm-read --pages`, which takes a directory, so the composition
+   * is unchanged and only its destination knows.
+   */
   file: string;
-  kind: 'pdf' | 'epub';
+  /**
+   * WHAT THE IMPORT IS. `pages` is a folder of page images in reading order —
+   * what a mint writes now — and it is a THIRD value rather than a flag beside
+   * `pdf` because every site that branches here is choosing what to open, what to
+   * hand a command line, or what to call the thing on screen, and none of those
+   * has an answer that is "a PDF, but".
+   *
+   * OLD MANIFESTS ARE UNTOUCHED BY CONSTRUCTION: nothing writes `pages` but the
+   * mint, so a project imported as a scan or an EPUB reads back exactly as it
+   * did. `readArchive` admits the third value and still refuses anything else.
+   */
+  kind: 'pdf' | 'epub' | 'pages';
   /** The 8 hex characters the project key ends in — the content hash. */
   contentKey: string;
   /**
@@ -1808,6 +1881,8 @@ export const WHY_IMPORTED =
   'the only copy of this document Foundry knows of — nobody knows where it came from';
 export const WHY_MODEL_PASS =
   'hours of GPU: a model read every page of it';
+export const WHY_MINTED =
+  'the pages you minted and every reading hung off them';
 export const WHY_HANDMADE =
   'changes you made by hand, which nothing can reproduce';
 
@@ -2060,6 +2135,49 @@ export interface ProjectSummary {
   /** True once anything has been filed into `final/`. */
   filed: boolean;
   /**
+   * Did this project arrive as PHOTOGRAPHS?
+   *
+   * ── AND WHY IT IS A FIELD RATHER THAN SOMETHING HOME WORKS OUT ─────────────
+   *
+   * A capture project between New Project and its first mint holds no documents
+   * at all, and that is its healthy state for as long as somebody is
+   * photographing a book. Home disables a row with no document and tags it
+   * "nothing to open", which for these is false twice over: there is plenty to
+   * open, and nothing is missing.
+   *
+   * IT MUST NOT BE INFERRED FROM AN EMPTY DOCUMENT LIST, which is the whole
+   * reason this field exists (P2, feature channel seq 54). An empty list is
+   * ALSO exactly what a project whose files have gone missing looks like — that
+   * is the case the "nothing to open" tag was written for. Inferring capture
+   * from emptiness would turn a genuinely broken project into a light table and
+   * swallow the one message that would have told somebody their files were gone.
+   *
+   * ANSWERED FROM THE LEDGER, not from the directory: the capture step is
+   * written at creation and is the root of these projects, so the catalogue
+   * already knows without opening the recipe or listing a folder.
+   */
+  capture: boolean;
+  /**
+   * THIS PROJECT'S BOOK IS A FOLDER OF PAGE IMAGES — it has been minted.
+   *
+   * ── Why a listing has to carry this at all ──────────────────────────────────
+   *
+   * `capture` says a project arrived as photographs and never stops being true.
+   * `documents` is empty for a captured project BEFORE its first mint and after
+   * it, because a mint files no document (`documentArchive`, electron/projects.ts).
+   * So the two facts every surface actually wants to tell apart — "somebody is
+   * still photographing this" and "this is a finished book waiting to be read" —
+   * were indistinguishable from a summary, and Home said "photographs" and
+   * offered the light table for both.
+   *
+   * IT IS NOT `minted`. What a caller does with it is decide whether there are
+   * PIXELS HERE THAT A MODEL COULD READ, which is a question about what is on
+   * the disk now rather than about an event in the history; a project whose
+   * mint step was discarded is not minted and has no pages, and both of those
+   * are this one field going false together.
+   */
+  pages: boolean;
+  /**
    * The terminal documents this project has produced — what the left nav lists,
    * indented under the project row.
    *
@@ -2287,7 +2405,7 @@ export type MetadataWriteOutcome =
   | {
     ok: true;
     metadata: DocumentMetadata;
-    landed?: { ledger: ProjectLedger; rows: StepRow[] };
+    landed?: StepLedgerView;
   }
   | { ok: false; reason: string };
 
@@ -2423,7 +2541,59 @@ export type DocumentMetadata =
  * Apply and watching every change vanish off the paper. See `RETAINED_BESIDE_YOU`
  * in shared/ledger.ts, where that is said once.
  */
-export type StepAction = 'import' | 'read' | 'curate' | 'translate' | 'metadata' | 'edit';
+/*
+ * `capture` IS AN ARRIVAL, and the only one besides `import` — the row a project
+ * begins with when it began as PHOTOGRAPHS rather than as a document
+ * (docs/CAPTURE.md). Its payload is the capture directory: the originals, which
+ * are the bank of that stage, plus the recipe that says how they become pages.
+ *
+ * IRREPLACEABLE, on `import`'s clause of the retention rule rather than on a new
+ * one. The originals are somebody's afternoon in an archive with a book that does
+ * not leave the building; nothing regenerates them at any price, and the recipe
+ * beside them is hand-made decisions about where the pages are.
+ *
+ * IT IS NOT A BOOK OF ITS OWN AND IT IS NOT A STATE OF ONE EITHER, which is the
+ * one place this action does not fit the questions the tables in shared/ledger.ts
+ * ask. It is what exists BEFORE there is a book: until a mint appends a step
+ * carrying a PDF, the project has no document at all, and every predicate that
+ * asks "is there a book here" must go on answering no. The entries are written
+ * with that reading and each says so; P3's audit walks them one at a time against
+ * a real capture project and writes the verdict into docs/CAPTURE.md.
+ */
+export type StepAction = typeof STEP_ACTIONS[number];
+
+/**
+ * Every action there is, in the order a project meets them.
+ *
+ * ── THE LIST IS THE TRUTH AND THE TYPE IS DERIVED FROM IT ───────────────────
+ *
+ * These used to be two declarations: this array in `shared/ledger.ts`, and a
+ * hand-written union here. `parseLedger` checks a stored action against the
+ * ARRAY, so the array is what decides whether a project on disk will open —
+ * and nothing checked the two against each other.
+ *
+ * WHAT THAT COST, EXACTLY, because it is the whole argument for this shape:
+ * `capture` was added to the union, and the compiler dutifully named all seven
+ * `Record<StepAction, …>` tables that needed an entry. The array was not one of
+ * them. So a capture project was created, a capture step was written to disk,
+ * and every later read of that project was REFUSED by the validator — "capture,
+ * which is not something this app does" — about a step this app had just
+ * written itself. The type said yes and the file said no.
+ *
+ * Deriving the union from the array makes the array the only place the set
+ * lives, so widening it is one edit and the compiler goes back to naming every
+ * consequence. The `Record<StepAction, …>` tables next door already worked this
+ * way; this is the same lesson, learned again by a validator instead of a table.
+ */
+export const STEP_ACTIONS = [
+  'import',
+  'capture',
+  'read',
+  'curate',
+  'translate',
+  'metadata',
+  'edit',
+] as const;
 
 /**
  * What was ASKED FOR, and what the run recorded about the answer.
@@ -2525,6 +2695,35 @@ export interface LedgerParams {
    * `LISTS` in shared/ledger.ts.
    */
   fields?: string[];
+  /**
+   * `import` (a MINT) — the arrangement these pages were printed from.
+   *
+   * `arrangementOf` (shared/capture.ts) fingerprints the mint input as
+   * `mintBegin` builds it, and this is where that string is kept so the question
+   * can still be asked afterwards. What it is FOR is one sentence on the light
+   * table: the recipe goes on being edited after a mint, and the footer says —
+   * quietly, and only while it is true — that the book on the shelf was minted
+   * from an earlier arrangement. The live side is recomputed from the recipe;
+   * this is the side that has to be remembered, because nothing else in the
+   * project records what the recipe LOOKED LIKE at that instant.
+   *
+   * ON THE STEP RATHER THAN THE MANIFEST, because it is per-mint and
+   * `manifest.archive` is single-valued: an arrangement kept there would be lost
+   * the moment there was a second mint, and standing on an older mint could
+   * never say anything honest about what THAT one was made from.
+   *
+   * IT IS THE ARRANGEMENT AS THE MINT BEGAN, not as it committed — the string is
+   * taken from the same read of the recipe that produced the page list the
+   * renderer rasterized, so it describes the book that was actually printed even
+   * if somebody edited the recipe while it printed.
+   *
+   * ABSENT ON EVERY MINT MADE BEFORE THIS EXISTED, and absent MEANS SILENCE
+   * rather than agreement or disagreement: a project that never recorded one is
+   * a project where nothing can honestly be claimed either way, and the surface
+   * says nothing until the next mint records one. Absent on ordinary imports
+   * too, which have no arrangement to record — their file came from outside.
+   */
+  arrangement?: string;
   /**
    * `translate` — the translation bank this run wrote, project-relative.
    *
@@ -2703,6 +2902,56 @@ export interface ProjectLedger {
  * that was worked straight through draws as a plain list with no annotations at
  * all, and the one book where somebody branched shows exactly where.
  */
+/**
+ * ONE PROJECT'S HISTORY AS IT CROSSES THE BRIDGE — the ledger, the rows main
+ * composed for it, and which step the book on the shelf came from.
+ *
+ * ── Why this is a name and was seven literals ───────────────────────────────
+ *
+ * Six doors in `api.ts` and `MetadataWriteOutcome.landed` each spelled
+ * `{ ledger, rows }` out in full. That was harmless while the shape had two
+ * fields and main's own `LedgerView` had the same two -- and it stopped being
+ * harmless the moment main grew a third: every one of those seven declarations
+ * went on describing a two-field object, so `current` crossed the wire on every
+ * call and was INVISIBLE to the renderer, which could not read a field its own
+ * types said was not there.
+ *
+ * Seven spellings of one shape do not disagree until somebody changes the
+ * shape, which is exactly when they all do at once.
+ *
+ * `current` IS REQUIRED, following main's ruling for the same field: every call
+ * that answers with a view answers after DOING something, and a delete is
+ * precisely the gesture that moves it. Optional would have meant "set on the
+ * read path and quietly missing from the mutation that changed it".
+ */
+export interface StepLedgerView {
+  ledger: ProjectLedger;
+  /**
+   * `chronological`'s rows, composed in MAIN rather than in the renderer.
+   *
+   * The ordering and the quiet "from Read" annotation are the two things the flat
+   * list gets wrong if anybody re-derives them, and the renderer re-deriving them
+   * would be a second implementation of the one concession this design makes to
+   * the tree. Main holds the ledger; main says what the list looks like.
+   */
+  rows: StepRow[];
+  /**
+   * THE STEP THE BOOK ON THE SHELF CAME FROM, or null when nothing is on it.
+   *
+   * `currentBookStep`'s answer, carried here so that the two surfaces that need
+   * it read ONE resolution: the row marker that tells two identical "The pages
+   * you minted" rows apart after a re-mint, and the light table's divergence
+   * sentence, which reads this step's `params.arrangement`. Deriving it twice is
+   * how the two would come to disagree about which book a person is looking at.
+   *
+   * REQUIRED RATHER THAN OPTIONAL, deliberately: every call that answers with a
+   * view answers after doing something, and a delete is exactly the gesture that
+   * MOVES this. An optional field would have been set on the read path and
+   * quietly missing from the mutation that changed it.
+   */
+  current: string | null;
+}
+
 export interface StepRow {
   step: LedgerStep;
   /** The parent's label, when the chain jumps. Null when it does not. */
@@ -2788,4 +3037,500 @@ export interface StepDeletion {
    * from numbers would arrive at "and 3 other items" within a month.
    */
   belongings: string | null;
+}
+
+/**
+ * ── THE CAPTURE STAGE'S RECIPE ───────────────────────────────────────────────
+ *
+ * docs/CAPTURE.md is the plan of record and this is its schema in TypeScript.
+ * A project that arrived as PHOTOGRAPHS keeps its originals untouched and
+ * content-addressed, and everything a person does to them lives here: the split
+ * line, the four-corner quads, the strikes and the order. Nothing edits an
+ * original, so every page in a minted PDF is derivable from originals + recipe.
+ *
+ * ── PLAIN CURRENT STATE, NOT AN OPS JOURNAL, and the divergence is deliberate ─
+ *
+ * The derived book replays ops because strikes must survive a regenerated bank.
+ * Here nothing upstream ever regenerates — the originals are immutable bytes —
+ * so there is nothing to replay onto and a journal would be machinery with no
+ * customer. Same non-destructive guarantee, simpler mechanism. The renderer
+ * reads and writes the whole document; it is kilobytes for hundreds of photos.
+ *
+ * ── ONE UNIT FOR THE WHOLE FILE ──────────────────────────────────────────────
+ *
+ * EVERY COORDINATE HERE IS A FRACTION OF THE WORKING COPY, 0..1 — quads and
+ * `split.x` alike. It is written as one rule because the alternative was two:
+ * the schema once pinned quads in absolute pixels while `split.x` was already a
+ * fraction, and the first real shoot proved why that could not stand. Twenty-six
+ * of its twenty-seven photos are 4032x3024 and one is 5712x4284, so an absolute
+ * quad copied onto the odd one landed outside the image.
+ *
+ * NORMALIZING DOES NOT MAKE COPYING SAFE, AND NOTHING ABOUT THE UNIT COULD.
+ * After the decoder's upright rotation those same twenty-six photos are PORTRAIT
+ * and the odd one stays LANDSCAPE, and a normalized quad copied across that
+ * boundary is a silent STRETCH — in bounds, plausible, wrong, and invisible all
+ * the way into the PDF. The precondition is SAME SHAPE, which is why apply-to-all
+ * and late-drop inheritance skip any photo whose aspect differs by more than 2%
+ * and say which ones they skipped. See docs/CAPTURE.md, "The recipe, exactly".
+ */
+export type CapturePoint = readonly [x: number, y: number];
+
+/**
+ * Four corners, and THE ORDER IS THE ORIENTATION: top-left, top-right,
+ * bottom-right, bottom-left OF THE OUTPUT PAGE. The rotate gesture permutes the
+ * assignment and there is no separate rotation field to disagree with it — one
+ * value, one meaning.
+ */
+export type CaptureQuad = readonly [CapturePoint, CapturePoint, CapturePoint, CapturePoint];
+
+/**
+ * THE SAME FOUR CORNERS IN WORKING-COPY PIXELS, and a separate name because
+ * the unit is the whole difference.
+ *
+ * The recipe is fractions end to end. Pixels exist in exactly two places: the
+ * list `capture:mint-begin` hands the renderer, and the rectify shader's own
+ * input.
+ *
+ * THE NAME IS DISCIPLINE, NOT ENFORCEMENT. This is an alias, so TypeScript
+ * cannot tell the two apart, and a fractions quad handed to something that
+ * wants pixels COMPILES SILENTLY — measured on the read-back (channel seq
+ * 30), which caught this comment promising a compile error it cannot give.
+ * A real brand would stop the recipe being plain JSON literals, a worse
+ * trade. So the rule is the one geometry.ts already states: every crossing
+ * between the units goes through an explicit conversion, and a reader who
+ * sees a bare assignment between these two names should treat it as a bug
+ * until shown otherwise — the compiler will not raise it.
+ */
+export type PixelQuad = CaptureQuad;
+
+/**
+ * THE GUTTER, AS TWO ENDPOINTS RIDING OPPOSITE EDGES OF THE PAGE THEY CUT.
+ *
+ * ── Why a segment, when one number said it for a whole wave ────────────────
+ *
+ * This was `{ x }`: one fraction along the quad, which can only ever draw a
+ * cut PARALLEL TO THE SIDES. A book laid open under a phone is never quite
+ * square to it, so the gutter leans a degree or two — and a straight cut
+ * through a leaning gutter takes a sliver of the facing page onto both
+ * leaves, at the binding, where the words are tightest. Two endpoints, each
+ * dragged along an edge, draw the lean as ONE gesture. A spread photographed
+ * on its side is the same gesture on the other pair of edges.
+ *
+ * ── OPPOSITE EDGES IS THE CONSTRAINT EVERYTHING ELSE RESTS ON ─────────────
+ *
+ * A segment between opposite edges cuts a quadrilateral into two
+ * quadrilaterals. A segment between ADJACENT edges cuts a corner off: a
+ * triangle and a pentagon, and the mint can print neither — it rectifies FOUR
+ * corners onto a rectangle and has no other shape. So the constraint is what
+ * keeps "both halves are printable pages" true, and `halvesOf` REFUSES a
+ * segment that does not resolve to an opposite pair rather than approximating
+ * one.
+ *
+ * ── Fractions of the working copy, WHICH `{x}` DELIBERATELY WAS NOT ───────
+ *
+ * `x` was measured ALONG THE QUAD, so the gutter stayed on the gutter while
+ * somebody dragged the crop in around it. These are points on the PHOTOGRAPH,
+ * like every other coordinate in this file — so a corner dragged after a split
+ * leaves the endpoints exactly where they were, no longer on any edge.
+ *
+ * That is tolerable for one reason, and it is worth naming rather than
+ * discovering: THE QUADS ARE AUTHORITATIVE and this is only the handle’s own
+ * memory of where it was let go. `halvesOf` re-seats each endpoint on the edge
+ * nearest it before cutting, so a segment left behind by a re-crop is
+ * corrected rather than trusted.
+ */
+export interface CaptureSplit {
+  a: CapturePoint;
+  b: CapturePoint;
+}
+
+/** One page of the book: a quad on some photo, struck or not. */
+export interface CapturePage {
+  /** `<photoId>:<n>`. */
+  id: string;
+  quad: CaptureQuad;
+  /**
+   * A retake, a blur, a shot of the desk. Struck pages stay on the grid the way
+   * struck rows stay on the workbench, and the mint leaves them out.
+   */
+  struck: boolean;
+  /**
+   * THIS PAGE WAS SET BY HAND, so a later apply-to-all leaves it alone.
+   *
+   * The staged editor stamps one crop over every same-shaped page, and then a
+   * person flips through fixing the ones the stamp got wrong. Those fixes are
+   * the most expensive work in this stage — one page at a time, by eye — and
+   * the next press of APPLY TO ALL would erase every one of them. So a fix
+   * records that it WAS a fix: the re-stamp skips the pages carrying this mark,
+   * names them in the notice voice, and an explicit override is the only way to
+   * overwrite them.
+   *
+   * ── ON DISK, WHICH IS THE WHOLE POINT ────────────────────────────────────
+   *
+   * A flag held in the editor would protect the outliers until the modal
+   * closed. Stored, the protection outlives the session: a project reopened
+   * next week still knows which pages a person set themselves, and the
+   * re-stamp somebody runs then still cannot silently destroy that work.
+   *
+   * ── OPTIONAL, AND NOTHING IN MAIN CONSULTS IT ────────────────────────────
+   *
+   * Absent means false — which is every page of every recipe written before
+   * Wave 21, and no migration is needed to say so. The mint does not read it
+   * and no rule here keys on it. The validator does two things with it and
+   * only two: it CARRIES it, and it refuses a non-boolean. Carrying is not
+   * optional politeness — the validator rebuilds every page field by field, so
+   * a field it did not name would be silently DELETED on the next read, and
+   * the mark would not survive one save.
+   */
+  byHand?: boolean;
+}
+
+/** Where a photo's capture time came from, because a guess must say it is one. */
+export type CaptureTimeSource =
+  /** EXIF `DateTimeOriginal` with `OffsetTimeOriginal` beside it: a real instant. */
+  | 'exif-offset'
+  /** EXIF wall time with no offset tag, read in THIS machine's zone. A guess. */
+  | 'exif-local'
+  /** No EXIF time at all. The file's mtime, which is when it was copied at best. */
+  | 'mtime';
+
+/** One photographed spread — or one page, once somebody has split it. */
+export interface CapturePhoto {
+  /** The sha of the ORIGINAL bytes. The identity of everything derived from it. */
+  id: string;
+  /**
+   * Relative to the capture directory: `originals/<sha>.<ext>`, extension kept.
+   *
+   * NAMED HERE AND UNREACHABLE FROM THE RENDERER, which is not a contradiction.
+   * The original is HEIC, which Chromium cannot decode, so it is the one file
+   * the grid must never point an `img` at — and the capture door serves only
+   * `derived/`, so no URL a renderer can compose reaches it at all. This field
+   * is provenance: it says which bytes everything else here was made from.
+   */
+  file: string;
+  /**
+   * The upright PNG, as the DOOR names it — a plain basename, not a path.
+   *
+   * `foundry-file://capture/<token>/<workingCopy>` is the whole address. It is
+   * stored rather than composed from the id because a convention held in two
+   * heads across a bridge is discovered as a wall of broken images rather than
+   * as an error, and because the layout on disk then belongs to intake alone.
+   */
+  workingCopy: string;
+  /** The 640 px JPEG the grid draws, same door, same basename rule. */
+  thumb: string;
+  /**
+   * WHAT THE PERSON CALLED IT — the basename of the file they dragged in.
+   *
+   * ── A PERSON MUST NEVER BE SHOWN A SHA ──────────────────────────────────
+   *
+   * Everything else here is content-addressed, which is right for storage and
+   * useless for a sentence: Owen ran apply-to-all and was told "Left alone:
+   * originals/493d3fd7….heic (a different shape)" about a photograph he knows
+   * as IMG_0238.HEIC. The surface was not reaching for the wrong field — there
+   * was no field, and nothing on disk remembered the name.
+   *
+   * ── OPTIONAL, AND THAT IS NOT TIDINESS ─────────────────────────────────
+   *
+   * Recipes written before this field existed CANNOT BE MIGRATED: the original
+   * filename is not derivable from anything kept — the copy is named by hash,
+   * and where it was dragged from was never recorded. So a project intaken
+   * yesterday has photographs with no name and always will, and making this
+   * required would refuse to open the one project that actually has photographs
+   * in it tonight.
+   *
+   * A surface that has no name must say something a person can act on -- the
+   * position in the grid is the honest stand-in, never the sha.
+   */
+  name?: string;
+  /**
+   * The DECODED working copy's dimensions — never EXIF's.
+   *
+   * EXIF describes the STORED grid and the decoder returns the UPRIGHT one, and
+   * on the acceptance shoot they disagree: EXIF says 4032x3024 for a file
+   * libheif hands back as 3024x4032. Both are correct about different grids,
+   * which is exactly the shape of defect this project keeps paying for, so the
+   * recipe records the one the editor draws on and the mint samples from and
+   * never mentions the other. It is stored rather than re-derived because the
+   * aspect test above must be answerable without decoding anything.
+   */
+  width: number;
+  height: number;
+  /** ISO-8601 UTC instant. See `takenAtSource` for how much to believe it. */
+  takenAt: string;
+  takenAtSource: CaptureTimeSource;
+  /**
+   * The editor's split-line handle, kept so re-dragging can re-derive the two
+   * quads. THE QUADS ARE AUTHORITATIVE for the mint; this is the gesture's own
+   * state — two endpoints riding opposite edges of the page, in working-copy
+   * fractions like everything else here. See `CaptureSplit` for why it is a
+   * segment and what re-seats it when the crop moves under it.
+   *
+   * A recipe written before Wave 21 holds `{ x }`, and reading one turns it
+   * into the vertical segment it always meant — the fraction's two points on
+   * the top and bottom edges of the page it was cutting.
+   */
+  split: CaptureSplit | null;
+  /**
+   * One before a split, two after, in the original's slot.
+   *
+   * THE HALF HOLDING THE PAGE'S TOP-LEFT CORNER COMES FIRST. That is the same
+   * answer as "left then right" for every vertical cut, and the right answer
+   * for a spread photographed on its side, where the cut runs across and the
+   * halves are above and below. It needs no orientation field to consult
+   * because the corner order IS the orientation: turn the photograph and the
+   * top-left corner moves with it, so the halves re-order themselves into
+   * reading order for free.
+   */
+  pages: CapturePage[];
+}
+
+/** `capture/recipe.json`, read and written whole. */
+export interface CaptureRecipe {
+  version: 1;
+  photos: CapturePhoto[];
+  /** Every page id in reading order, STRUCK INCLUDED — the mint filters them. */
+  order: string[];
+  /**
+   * THE PERSON SAYING THEY HAVE DONE IT — the prepare rail's ticks, and the only
+   * thing on that rail nothing can derive.
+   *
+   * THE TICK AND THE STATUS BESIDE IT ARE TWO DIFFERENT SENTENCES. The status is
+   * derived and says what the file holds ("25 cropped — 3 by hand"); the tick is
+   * a person saying they are done with that verb, and THE DERIVATION NEVER
+   * CLEARS ONE. A shoot with no spreads in it must be tickable on "split
+   * spreads" without lying, and no rule can know the pages are turned right —
+   * the portrait advertisement in Owen's shoot is the same shape as the volume,
+   * so a derived turned-done would lie exactly where being wrong costs most.
+   *
+   * WHY IT IS ON THE RECIPE RATHER THAN THE PHOTOGRAPH: the person is answering
+   * about the book. "Have you turned the pages" is one question with one answer,
+   * not twenty-seven answers that would then need a rule for what the twenty-
+   * seven of them mean together.
+   *
+   * OPTIONAL, AND SO IS EVERY MEMBER, for `byHand`'s reason: absent means false,
+   * every recipe ever written is already valid, and no migration has to invent an
+   * answer on behalf of somebody who has not been asked yet. Which is also what
+   * makes the mint gate honest on Owen's finished book — it asks him three
+   * questions he has never been asked, rather than assuming he would have said
+   * yes.
+   *
+   * CARRIED, REFUSED IF WRONGLY TYPED, CONSULTED BY NOTHING IN MAIN. `mintBegin`
+   * does not read it and neither does the mint: the gate is the rail's, because
+   * a person who wants to mint from the keyboard has not lied to anybody.
+   */
+  prepared?: CapturePrepared;
+  /**
+   * THE BOOK'S OWN CROP AND CUT — the noun this stage spent three waves without.
+   *
+   * See `CaptureStanding`. Absent means nobody has pressed *Crop all* yet, which
+   * is every recipe written before Wave 24 and every project on its first
+   * evening. There is no migration and that is a decision: deriving a standing
+   * from an existing recipe would mean guessing which of twenty-five crops is
+   * the book's, and an invisible decision is the exact thing this field exists
+   * to abolish.
+   */
+  book?: CaptureStanding;
+}
+
+/**
+ * WHAT THE BOOK'S PAGES LOOK LIKE WHEN NOBODY HAS SAID OTHERWISE.
+ *
+ * ── The absence this fills ─────────────────────────────────────────────────
+ *
+ * `CapturePage.byHand` is not a property of a page. It is a property of what a
+ * future button press will do to that page — which is why, for three waves, its
+ * control could not be named after an outcome and had to be named after a
+ * policy: *"Let apply-to-all change it again"*. Nobody holds policies in their
+ * head. They hold objects.
+ *
+ * Apply-to-all was a verb with no noun. It copied from whichever photograph
+ * somebody happened to be standing on and was then gone — there was no *the
+ * book's crop* to look at, to return a page to, or to offer a fresh photograph.
+ * Every awkward thing on that surface descended from that one absence, including
+ * the split line that reset to dead centre on every step, because with no book's
+ * cut the only fallbacks were "this photograph's" and "the middle".
+ *
+ * ── IT IS STORED, AND IT IS ONLY EVER SET THROUGH A PAGE ───────────────────
+ *
+ * There is no editor for the book's crop and there deliberately is not one: a
+ * crop cannot be judged against a page you cannot see, so a "representative
+ * photograph" would send a person straight to the awkward frame — where dragging
+ * detaches it from the very thing they were trying to set. *Crop all* is the
+ * only writer.
+ *
+ * ── THE SHAPE IS PART OF THE CROP, NOT METADATA ABOUT IT ───────────────────
+ *
+ * A quad is fractions of a frame, so it only means the same region on a frame of
+ * the same proportions. Copied onto a differently shaped photograph the
+ * fractions resolve in bounds, plausible, and silently STRETCHED all the way
+ * into the finished PDF. `sameShape` is the guard and it needs something to
+ * compare against, so the standing carries the frame it was drawn for rather
+ * than pointing at a photograph that may since have been removed.
+ */
+export interface CaptureStanding {
+  /**
+   * The whole SHEET, before any cut — the same quad `joinedQuad` reassembles,
+   * with the dimensions of the photograph it was placed on.
+   *
+   * The sheet and not the pages, for the reason `turned` in capture.service.ts
+   * argues at length: turning two halves independently keeps their old reading
+   * order, and a half turn swaps which one reads first. A standing that stored
+   * halves would hand a photograph facing the other way its pages backwards.
+   */
+  crop?: { quad: CaptureQuad; width: number; height: number };
+  /**
+   * Where the book is cut, or absent for a book of single pages.
+   *
+   * In the same fraction space as `crop.quad` and only meaningful beside it —
+   * `halvesOf` re-seats it onto whatever sheet it is given, so it survives a
+   * turn without needing one of its own.
+   */
+  cut?: CaptureSplit;
+}
+
+/**
+ * The three verbs of the prepare rail, each true only if a person said so.
+ *
+ * Deliberately NOT a `Record<string, boolean>`: the three verbs are the three
+ * the rail draws, and a fourth arriving as data rather than as a decision is how
+ * a surface acquires a row nobody designed.
+ */
+export interface CapturePrepared {
+  /** "Turn pages" — ticked, never derived. See `CaptureRecipe.prepared`. */
+  turned?: boolean;
+  /** "Place the crop" — ticked beside a status derived from the quads. */
+  cropped?: boolean;
+  /** "Split spreads" — ticked beside a count of the photographs with a split. */
+  split?: boolean;
+}
+
+/**
+ * What a load or an intake answers with.
+ *
+ * THE TOKEN IS WHY THIS IS NOT JUST THE RECIPE. Working copies and thumbnails
+ * reach the renderer only through the `foundry-file:` door, and that door is an
+ * ALLOW-LIST rather than a path check: `foundry-file://capture/<token>/<name>`
+ * answers only for a token main minted for this project. A renderer talked into
+ * asking for something else gets a 403 rather than meeting a cleverer path test
+ * that has to stay right forever. Same decision `book:load` already makes.
+ */
+export interface CaptureOpened {
+  recipe: CaptureRecipe;
+  token: string;
+  /**
+   * WHAT THE BOOK ON THE SHELF WAS MINTED FROM, or null for silence.
+   *
+   * `arrangementOf` applied to the recipe of the mint the shelf's book descends
+   * from (`currentArrangement`, electron/projects.ts). The light table compares
+   * it against `arrangementOf(recipe)` computed live from the recipe it is
+   * holding, and says — quietly, and only while the two differ — that the book
+   * on the shelf was minted from an earlier arrangement.
+   *
+   * ONE STRING AND NOT A BOOLEAN, so that the comparison happens on the side
+   * that knows what the person is currently looking at. The live side moves on
+   * every edit; this side moves at exactly one moment, `mintCommit`, which the
+   * table itself drives and hears the answer from — which is why delivering it
+   * at open time is not stale.
+   *
+   * NULL MEANS SILENCE rather than agreement: no book, a book minted before the
+   * field existed, or a book this app did not mint. Nothing can be honestly
+   * claimed either way for any of the three.
+   */
+  mintedFrom: string | null;
+}
+
+/**
+ * What `capture:create` answers with — an empty project that already exists.
+ *
+ * THE DIRECTORY IS THE POINT. Every other project in this app is born by
+ * importing a file, and is keyed by the content hash of that file; a capture project
+ * must exist EMPTY, before there is any content to hash, so it is keyed from a
+ * random id at creation instead and its directory is the only handle anything
+ * has on it. One round trip: the caller receives the directory, the recipe and
+ * the door token together, and never needs a load on the create path.
+ */
+export interface CaptureCreated extends CaptureOpened {
+  projectDir: string;
+}
+
+/**
+ * What `capture:intake` answers with — the recipe, and what it would not do.
+ *
+ * MORE THAN `CaptureOpened` BECAUSE THE ALTERNATIVE IS SILENCE. A person drags
+ * in a folder; some of it is already here, and some of it is a file this stage
+ * does not read. Answering with the recipe alone makes both outcomes look
+ * identical to a successful import of nothing, and the person is left counting
+ * cards to work out what happened to their afternoon. The surface says what
+ * arrived, what was already here, and what was refused and why.
+ */
+/**
+ * How far an intake has got, pushed once per photograph while it runs.
+ *
+ * ── WHY A PUSH AND NOT A RETURN VALUE ───────────────────────────────────────
+ *
+ * `capture:intake` is one invoke that takes about two seconds PER PHOTOGRAPH —
+ * on the acceptance shoot, the better part of a minute. Owen dropped 27 and got
+ * a window he could not even move, with nothing on screen to say the app was
+ * working rather than dead. A promise that resolves at the end cannot say
+ * anything at all until there is nothing left to say.
+ *
+ * `env:install-progress` is the precedent, followed exactly: main broadcasts
+ * during the invoke, the renderer subscribes through preload, and the invoke
+ * still answers with the whole result when it finishes.
+ *
+ * `done` COUNTS FINISHED PHOTOGRAPHS AND `file` NAMES THE ONE IN HAND, so a
+ * modal can read "3 of 27 — IMG_0214.HEIC" without arithmetic. `done` is
+ * therefore behind `file` by one photograph, which is the honest pairing: the
+ * named file is the work being done, not work already done.
+ */
+export interface CaptureIntakeProgress {
+  projectDir: string;
+  /** Photographs finished. Zero while the first one is being read. */
+  done: number;
+  /** How many were asked for, refusals and duplicates included. */
+  total: number;
+  /** The basename of the photograph in hand. */
+  file: string;
+}
+
+export interface CaptureIntaken extends CaptureOpened {
+  /** How many photographs this intake added. */
+  added: number;
+  /** Filenames whose bytes this project already held — copied once, not twice. */
+  duplicates: string[];
+  /** What was not read, each with a sentence saying why. */
+  refused: { file: string; why: string }[];
+}
+
+/**
+ * One page for the renderer to rasterize, as `capture:mint-begin` lists them.
+ *
+ * MAIN COMPUTES THE LIST AND THE RENDERER RENDERS EXACTLY THAT LIST — strikes
+ * filtered, order applied, sizes decided, once, on the side that owns the recipe.
+ *
+ * AND THE QUAD HERE IS IN PIXELS WHILE THE RECIPE'S IS A FRACTION, which is the
+ * one place those two units meet, so the field name carries the difference
+ * rather than a reader's memory. Main has to denormalize anyway to work out the
+ * output size, and doing it once here means the multiply never happens twice on
+ * two sides of the bridge against two ideas of how big the working copy is.
+ */
+export interface CaptureMintPage {
+  pageId: string;
+  /** The working copy's `<name>`, for use with the token on the door. */
+  workingCopy: string;
+  /** Corners in WORKING-COPY PIXELS, already multiplied out. */
+  quadPx: PixelQuad;
+  /** What main measured the working copy to be, for the renderer to assert. */
+  sourceWidth: number;
+  sourceHeight: number;
+  /** The rectified page's size — the quad's opposite-edge maxima. */
+  outWidth: number;
+  outHeight: number;
+}
+
+/** The mint session `capture:mint-begin` opens. */
+export interface CaptureMintBegun {
+  mintId: string;
+  pages: CaptureMintPage[];
 }

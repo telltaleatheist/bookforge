@@ -25,6 +25,18 @@ import { app, BrowserWindow, dialog, ipcMain, shell } from 'electron';
 import { readAppSettings, writeAppSettings } from './app-settings';
 import { cancelSetup, setupWslEnv } from './backend-setup';
 import {
+  ensureCapture,
+  intakePhotos,
+  mintAbort,
+  mintBegin,
+  mintCommit,
+  mintPage,
+  onIntakeProgress,
+  openCapture,
+  removePhotos,
+  writeRecipe,
+} from './capture';
+import {
   amendBookOps,
   applyBookOps,
   correctBookBlock,
@@ -48,6 +60,7 @@ import {
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
 import {
+  createCaptureProject,
   deletableStep,
   deleteDocument,
   deleteProject,
@@ -90,6 +103,7 @@ import type {
   AppQuestion,
   Asked,
   BackendSettingsPatch,
+  CaptureRecipe,
   CloseAnswer,
   CloseWarning,
   ConversionKind,
@@ -99,6 +113,7 @@ import type {
   JobRequest,
   MetadataPatch,
   MetadataWriteOutcome,
+  StepLedgerView,
   ProjectDocument,
   ProjectFacsimile,
   ProjectFinal,
@@ -1390,7 +1405,7 @@ export function registerIpc(): void {
     inside: string,
     kind: MetadataPatch['kind'],
     patch: Record<string, string | undefined>,
-  ): Promise<{ ledger: ProjectLedger; rows: StepRow[] } | undefined> => {
+  ): Promise<StepLedgerView | undefined> => {
     const fields: Record<string, string> = {};
     for (const [field, value] of Object.entries(patch)) {
       if (typeof value !== 'string' || value.trim().length === 0) continue;
@@ -1580,6 +1595,71 @@ export function registerIpc(): void {
       + 'then delete the step.');
   };
 
+  /*
+   * ── THE CAPTURE STAGE, REGISTERED AND NOT YET ANSWERING ───────────────────
+   *
+   * Merge 1 is the CONTRACT and nothing else: these seven exist so the renderer
+   * can be written and typechecked against real declarations while main is
+   * still being filled in (docs/CAPTURE.md, work packages). They refuse by name
+   * rather than by silence, because a door that resolves undefined is a bug
+   * report about the renderer and a door that throws is a true sentence about
+   * the app.
+   *
+   * REGISTERED HERE AND NOT BEHIND A FLAG. A channel that appears later is a
+   * channel `docs/IPC-CHANNELS.md` cannot enumerate and the audit cannot see;
+   * the seven names are the contract, and the contract is what ships first.
+   */
+
+  /*
+   * `capture:create` MAKES A PROJECT, which no other door here does. It answers
+   * with the directory because that directory is the only handle anything has
+   * on a project keyed from a random id rather than from a document — and with
+   * the recipe and token beside it, so the light table opens in one round trip
+   * rather than creating and then immediately loading.
+   */
+  ipcMain.handle('capture:create', async (_event, title: string) => {
+    const made = await createCaptureProject(title);
+    return { projectDir: made.dir, ...(await ensureCapture(made.dir)) };
+  });
+  /*
+   * INTAKE IS THE LONG ONE. Every photograph is copied, hashed, decoded, encoded
+   * to a lossless working copy and thumbnailed, one at a time — seconds each,
+   * and the acceptance shoot is twenty-seven of them. It is an `invoke` like the
+   * others because the contract says so; a person watching a spinner for a
+   * minute is a surface problem, and inventing a progress channel here would
+   * make it a protocol one.
+   */
+  ipcMain.handle('capture:intake', (_event, projectDir: string, paths: string[]) =>
+    intakePhotos(projectDir, paths));
+  ipcMain.handle('capture:recipe-load', (_event, projectDir: string) => openCapture(projectDir));
+  /*
+   * REMOVAL, WHICH IS THE ONE DOOR THAT DELETES ANYTHING IRREPLACEABLE. It is
+   * allowed to because the bank holds copies of files that still exist where
+   * the person dragged them from, and because the surface has already asked
+   * them, by name and by count. Refused while this project is being minted.
+   */
+  ipcMain.handle('capture:remove', (_event, projectDir: string, photoIds: string[]) =>
+    removePhotos(projectDir, photoIds));
+  /*
+   * SAVED WHOLE AND VALIDATED WHOLE. The renderer debounces; this does not, and
+   * it refuses a recipe it cannot read rather than writing it — a malformed
+   * recipe on disk is not a bug that throws, it is a project that will not open
+   * tomorrow, holding photographs nobody can remake.
+   */
+  ipcMain.handle('capture:recipe-save', (_event, projectDir: string, recipe: CaptureRecipe) =>
+    writeRecipe(projectDir, recipe));
+  /*
+   * THE MINT IS A SESSION AND NOT A CALL, which is why there are four of these.
+   * Main decides the list, the renderer sends back one finished page at a time,
+   * and the commit is the single point at which a document appears. Nothing is
+   * written into the project until then: a mint given up on halfway leaves the
+   * catalogue exactly as it found it.
+   */
+  ipcMain.handle('capture:mint-begin', (_event, projectDir: string) => mintBegin(projectDir));
+  ipcMain.handle('capture:mint-page', (_event, mintId: string, index: number, jpeg: ArrayBuffer) =>
+    mintPage(mintId, index, jpeg));
+  ipcMain.handle('capture:mint-commit', (_event, mintId: string) => mintCommit(mintId));
+  ipcMain.handle('capture:mint-abort', (_event, mintId: string) => mintAbort(mintId));
   ipcMain.handle('ledger:read', (_event, projectDir: string) => readStepLedger(projectDir));
   ipcMain.handle('ledger:go', (_event, projectDir: string, stepId: string) =>
     goToStep(projectDir, stepId));
@@ -1969,4 +2049,8 @@ export function registerIpc(): void {
   // Published beside the job row, not instead of it: the shelf reads the queue,
   // the settings card reads this, and neither of them owns the run.
   onEnvInstallProgress((progress) => broadcast('env:install-progress', progress));
+  // The same shape one door along: main talks while the invoke is still open,
+  // because an intake of a whole shoot is a minute long and a promise that
+  // resolves at the end cannot say anything until there is nothing to say.
+  onIntakeProgress((progress) => broadcast('capture:intake-progress', progress));
 }

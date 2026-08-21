@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, input } from '@angular/core';
 
+import { CaptureViewComponent } from '../capture-view/capture-view.component';
 import { BookViewComponent } from '../book-view/book-view.component';
 import { PdfViewComponent } from '../pdf-view/pdf-view.component';
 import type { Tab } from '../../core/documents.service';
@@ -49,11 +50,20 @@ import type { Tab } from '../../core/documents.service';
  */
 @Component({
   selector: 'app-viewer',
-  imports: [BookViewComponent, PdfViewComponent],
+  imports: [BookViewComponent, CaptureViewComponent, PdfViewComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (tab().kind === 'book') {
       <app-book-view [tab]="tab()" />
+    } @else if (tab().kind === 'capture') {
+      <!--
+        NOT DEFERRED, unlike the PDF branch below. That defer exists because
+        pdf.js is half a bundle nobody on Home has asked for; the light table is
+        two small components and a WebGL context created on demand, and a
+        placeholder frame between clicking a project and seeing its photographs
+        would be a cost with nothing bought.
+      -->
+      <app-capture-view [tab]="tab()" />
     } @else {
       <!--
         @defer, so pdf.js is its own chunk rather than half of the bundle the
