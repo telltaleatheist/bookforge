@@ -154,10 +154,11 @@ export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Pro
   // know which they are looking at. For a FILE nothing below changes: the fast
   // path is the same single rename it has always been, and every failure is the
   // same failure.
+  // Stat'd BEFORE the move: whichever path below runs, the source is gone by the
+  // time the cleanup at the bottom has to know which kind it was.
   const source = await statOrNull(fromAbsPath);
-  const destination = await statOrNull(toAbsPath);
 
-  if (await renameLanded(fromAbsPath, toAbsPath, source, destination)) return;
+  if (await renameLanded(fromAbsPath, toAbsPath)) return;
 
   const sibling = `${toAbsPath}.bookforge-tmp`;
   await copyArtifact(fromAbsPath, sibling);
@@ -209,7 +210,7 @@ async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promis
     await renameOntoDestination(fromAbsPath, toAbsPath);
     return;
   }
-  if (await renameLanded(fromAbsPath, toAbsPath, source, destination)) return;
+  if (await renameLanded(fromAbsPath, toAbsPath)) return;
 
   const displaced = `${toAbsPath}.bookforge-old`;
   await fs.promises.rm(displaced, { recursive: true, force: true });
@@ -248,22 +249,24 @@ function renameCanLand(source: fs.Stats | null, destination: fs.Stats | null): b
  * REPLACE_EXISTING performs exactly that move and returns success (measured on
  * win32 10.0.26100 by the PC session, 2026-08-22, against the reverse — a file
  * onto a directory — which IS EPERM there). Predicting either from the other
- * costs one machine an atomic rename it was entitled to.
+ * costs one machine an atomic rename it was entitled to, so this asks.
  *
- * So the shapes `renameCanLand` vouches for go through the full hold ladder,
- * and every other shape gets ONE attempt with no ladder: a refusal there is the
- * kernel's answer rather than a hold worth waiting on, and both callers have a
- * correct slower path ready for it.
+ * It asks THROUGH THE HOLD LADDER, for every shape. A first draft gave the
+ * shapes `renameCanLand` does not vouch for a single bare attempt, reasoning
+ * that their refusal is the kernel's answer rather than a hold. That reasoning
+ * skipped a case: EPERM on Windows means "somebody has this open right now" for
+ * a tree exactly as it does for a file, and the caller's fallback here is a COPY
+ * of the whole book — so a scanner touching a 1 GiB working copy for 300 ms
+ * would have bought a gigabyte of I/O to avoid waiting 300 ms. The ladder
+ * already tells the two apart: it retries only EPERM/EACCES/EBUSY, and a
+ * structural refusal (ENOTDIR, EISDIR, ENOTEMPTY, EXDEV) still throws on the
+ * first attempt and falls through immediately. The one shape that pays is a
+ * file replacing a directory on Windows, which waits out the ladder before
+ * taking a slower path it was always going to take.
  */
-async function renameLanded(
-  fromAbsPath: string,
-  toAbsPath: string,
-  source: fs.Stats | null,
-  destination: fs.Stats | null,
-): Promise<boolean> {
+async function renameLanded(fromAbsPath: string, toAbsPath: string): Promise<boolean> {
   try {
-    if (renameCanLand(source, destination)) await renameOntoDestination(fromAbsPath, toAbsPath);
-    else await fs.promises.rename(fromAbsPath, toAbsPath);
+    await renameOntoDestination(fromAbsPath, toAbsPath);
     return true;
   } catch {
     return false;
