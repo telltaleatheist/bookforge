@@ -96,16 +96,34 @@ app.on('window-all-closed', () => { /* the harness decides when it is done */ })
  * silently depending on one machine's disk. A missing fixture means this
  * environment cannot run this suite, and one sentence saying so beats a
  * ZIP_NOT_FOUND forty frames down.
+ *
+ * ── THE VARIABLE SAYS WHERE, NOT WHICH ──────────────────────────────────────
+ *
+ * It must still be Killing America. Most of what this suite asserts is now
+ * book-independent — the zip/directory contract, the stamped-key sum, floors
+ * where a fixture's exact count used to sit — and making it so caught a real
+ * defect the moment bookforge-mac-2 pointed it at a different book. But
+ * `testPagedImagesEachOnOnePage` is a REGRESSION test naming three specific
+ * plates in `OEBPS/bm01.xhtml`: mupdf slices two of them across a page break and
+ * CSS multi-column reproduces that failure exactly, which is the whole reason
+ * Paged.js was chosen. Those three ids are the evidence, not decoration, and a
+ * different book cannot supply them.
+ *
+ * So the fixture is fixed and its LOCATION is not — it sits on the shared
+ * library, which every machine mounts at a different path.
  */
 const KA = process.env.BOOKFORGE_KA_EPUB;
 if (!KA || !fs.existsSync(KA)) {
-  console.error('test-quire needs a real EPUB and BOOKFORGE_KA_EPUB does not name one.');
+  console.error('test-quire needs Killing America and BOOKFORGE_KA_EPUB does not name it.');
   console.error(KA
     ? `  BOOKFORGE_KA_EPUB is set to a file that is not there:\n    ${KA}`
     : '  BOOKFORGE_KA_EPUB is not set.');
-  console.error('  Point it at any structurally real EPUB, e.g. a book\'s archive/ original:');
-  console.error('    BOOKFORGE_KA_EPUB="<library>/projects/<book>/archive/<book>.epub" node tools/test-quire.js');
-  console.error('  It is only ever READ (stamped and exploded into scratch), never written.');
+  console.error('  It is on the shared library, reachable from every machine:');
+  console.error('    <library>/projects/Killing_America_-_Turning_the_Tide_on_the_Tsunami_of'
+    + '_Darkness_-_Gene_Bailey_(2024)/archive/Killing America. Bailey, Gene.epub');
+  console.error('  e.g.  Windows  Z:\\bookforge\\...   Mac  /Volumes/iO/bookforge/...');
+  console.error('  The variable says WHERE the book is on this machine, not WHICH book — see');
+  console.error('  the note above. It is only ever READ (stamped and exploded into scratch).');
   process.exit(1);
 }
 
@@ -226,11 +244,22 @@ async function testIdentity() {
       'quire saw a different number of stamps than the book has elements');
     assertEqual(report.unplaced.length, 0,
       `${report.unplaced.length} stamped element(s) got no page`);
-    // Named, so a change in the stamper's enumeration shows up here as a number
-    // rather than as a silent shift in what "every element" means.
-    assertEqual(stamp.textUnitCount, 1350, 'Killing America has 1350 text units');
-    assertEqual(stamp.imageElementCount, 10, 'Killing America has 10 image elements');
-    assertEqual(reference.length, 1360, 'Killing America has 1360 stamped keys in total');
+    /*
+     * THE RELATIONSHIP, not the book's numbers. These were 1350 / 10 / 1360 —
+     * Killing America's counts — which described the one file the fixture used to
+     * be welded to. Note what those constants actually encoded: 1350 + 10 = 1360.
+     * That sum is the property worth defending ("every text unit and every image
+     * gets exactly one stamped key, and nothing else does"), and unlike the
+     * constants it is true of every book.
+     *
+     * The original intent survives — "a change in the stamper's enumeration shows
+     * up here rather than as a silent shift in what 'every element' means" —
+     * because a stamper that dropped or double-counted a class breaks the sum.
+     */
+    assertEqual(stamp.textUnitCount + stamp.imageElementCount, reference.length,
+      `the stamped keys do not account for the book: ${stamp.textUnitCount} text units `
+      + `+ ${stamp.imageElementCount} images != ${reference.length} keys`);
+    assert(stamp.textUnitCount > 0, 'a book with no text units cannot exercise the stamper');
   } finally {
     await doc.close();
   }
@@ -635,9 +664,19 @@ async function testPagedCoverage() {
   assertEqual(run.strategyName, 'pagedjs-0.4.3', 'openDocument must default to Paged.js');
   assertEqual(run.report.unplaced.length, 0,
     `${run.report.unplaced.length} stamped element(s) got no page`);
-  assertEqual(run.report.stampedIds.length, 1360, 'quire must see all 1360 stamps');
+  /*
+   * FLOORS. These were `stampedIds.length === 1360` and `documents.length === 24`
+   * — Killing America's shape. The load-bearing assertion is `unplaced.length ===
+   * 0` above it: EVERY stamp got a page. The counts only stopped that from being
+   * vacuously true of a book with no stamps at all, and a floor does that for any
+   * book, where an exact number does it for one.
+   */
+  assert(run.report.stampedIds.length > 0,
+    'quire saw no stamps at all, so "every stamp got a page" means nothing');
   assert(run.pageCount > 100, `the book should run to well over 100 pages, got ${run.pageCount}`);
-  assertEqual(run.report.documents.length, 24, 'Killing America has 24 spine documents');
+  assert(run.report.documents.length > 1,
+    `a book laid out from ${run.report.documents.length} spine document(s) is too `
+    + 'simple to exercise multi-document pagination');
 }
 
 /**
@@ -649,7 +688,11 @@ async function testPagedCoverage() {
 async function testPagedImagesEachOnOnePage() {
   const run = await ka();
   const byId = pagesById(run.blocks.filter((b) => /#img\d+$/.test(b.id)));
-  assertEqual(byId.size, 10, 'Killing America has 10 image elements');
+  // A floor, not Killing America's ten. The assertion this test exists for is the
+  // `split` check below — every image on exactly ONE page — and a book with no
+  // images would satisfy that trivially.
+  assert(byId.size > 0,
+    'the book has no image elements, so "each image on one page" proves nothing');
   const split = [];
   for (const [id, pages] of byId) {
     if (pages.length !== 1) split.push(`${id} on pages ${pages.join(',')}`);
@@ -1390,6 +1433,20 @@ async function explodeEpub(epubPath, destDir) {
   reader.open();
   try {
     for (const name of reader.entryNames()) {
+      /*
+       * A FOLDER RECORD IS NOT A BOOK ENTRY — production's rule
+       * (electron/epub-container.ts:765, and twice more), stated here because
+       * this helper had been assuming no book carries one.
+       *
+       * A ZIP may hold zero-length `META-INF/`-style directory entries. Writing
+       * one as a file makes a FILE named `META-INF`, and the very next entry —
+       * `META-INF/container.xml` — then tries to mkdir over it and the explode
+       * dies with EEXIST before a single assertion runs. bookforge-mac-2 hit it
+       * (2026-08-21) the first time this suite was pointed at a publisher's EPUB
+       * rather than the one book it used to be welded to; Crisis of Conscience
+       * carries exactly three: META-INF/, images/, text/.
+       */
+      if (name.endsWith('/')) continue;
       const full = path.join(destDir, ...name.split('/'));
       fs.mkdirSync(path.dirname(full), { recursive: true });
       fs.writeFileSync(full, await reader.readEntry(name));
@@ -1429,8 +1486,37 @@ async function testDirectoryAndZipAreTheSameBook() {
     assertEqual(fromDir.sourceKind, 'directory',
       'the exploded book must report the container it came from');
 
-    const zipNames = fromZip.entryNames();
+    const rawZipNames = fromZip.entryNames();
     const dirNames = fromDir.entryNames();
+
+    /*
+     * WHAT THIS COMPARISON DOES ABOUT DIRECTORY ENTRIES, said out loud — because
+     * `packages/quire/src/epub/entry-source.ts:50-58` asks it to and this test is
+     * who it was asking:
+     *
+     *   "A directory is not an entry. The directory source lists files only; a
+     *    ZIP lists what its central directory holds, and a ZIP MAY carry
+     *    zero-length `EPUB/`-style directory entries that an exploded copy of the
+     *    same book cannot reproduce. No EPUB BookForge writes carries them, but a
+     *    publisher's might — so anything comparing the two sets entry for entry
+     *    has to say what it does about those rather than assume there are none."
+     *
+     * It ASSUMED there were none, and got away with it only because the fixture
+     * was welded to one book that had none. Crisis of Conscience carries three
+     * (META-INF/, images/, text/): zip 317, directory 314, the difference exactly
+     * those names. The zip reader is right, the directory reader is right, and
+     * an entry-for-entry equality between them is the thing that is wrong.
+     *
+     * So the folder records are excluded from the ZIP side and the exclusion is
+     * itself asserted below — a filter nobody checks is how the assumption got in.
+     */
+    const folderRecords = rawZipNames.filter((n) => n.endsWith('/'));
+    const zipNames = rawZipNames.filter((n) => !n.endsWith('/'));
+
+    assert(dirNames.every((n) => !n.endsWith('/')),
+      'the directory reader named a folder record, which it cannot have walked as a file: '
+      + `[${dirNames.filter((n) => n.endsWith('/')).slice(0, 5).join(', ')}]`);
+
     const inZip = new Set(zipNames);
     const inDir = new Set(dirNames);
     const missing = zipNames.filter((n) => !inDir.has(n));
@@ -1439,7 +1525,10 @@ async function testDirectoryAndZipAreTheSameBook() {
       `the two containers do not name the same entries — the directory is missing `
       + `[${missing.slice(0, 5).join(', ')}] and has [${extra.slice(0, 5).join(', ')}] the zip does not`);
     assertEqual(dirNames.length, zipNames.length,
-      'the two containers report a different number of entries');
+      'the two containers report a different number of FILE entries'
+      + (folderRecords.length > 0
+        ? ` (the zip also holds ${folderRecords.length} folder record(s): ${folderRecords.join(', ')})`
+        : ''));
     /*
      * A FLOOR, NOT A FIXTURE'S EXACT COUNT. This asserted `=== 40`, which
      * described one specific file on one disk — so the moment the fixture became
@@ -1474,7 +1563,11 @@ async function testDirectoryAndZipAreTheSameBook() {
       'the two containers parsed different spines out of the same book');
     assertEqual(JSON.stringify(fromDir.spineWarnings), JSON.stringify(fromZip.spineWarnings),
       'the two containers disagree about what the spine could not resolve');
-    assertEqual(fromZip.spine.length, 24, 'Killing America has 24 spine documents');
+    // The line above already asserts the two spines are IDENTICAL, which is the
+    // real property. This was `=== 24` and added nothing to it except a
+    // dependence on one book; as a floor it still earns its place, because two
+    // empty spines would stringify equal.
+    assert(fromZip.spine.length > 0, 'the book parsed to an empty spine in both containers');
 
     // And the bytes behind every one of those names, not merely the names.
     for (const name of zipNames) {
