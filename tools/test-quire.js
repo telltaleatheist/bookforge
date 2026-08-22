@@ -78,8 +78,36 @@ Quire.registerScheme();
 // does, so the default is turned off explicitly.
 app.on('window-all-closed', () => { /* the harness decides when it is done */ });
 
-const KA = 'C:\\Users\\tellt\\AppData\\Local\\Temp\\claude\\C--Users-tellt-Projects-bookforge'
-  + '\\086cf711-ae6e-4b04-8dab-8263f60b671f\\scratchpad\\ka-archive-copy.epub';
+/**
+ * The KA fixture — a real EPUB, named by the ENVIRONMENT rather than hard-coded.
+ *
+ * This was an absolute path into a Claude session's scratchpad:
+ * `…\claude\C--Users-tellt-Projects-bookforge\086cf711-…\scratchpad\ka-archive-copy.epub`.
+ * A scratchpad is swept, and that one had been: bookforge-mac-2 flagged the path
+ * as unrunnable on macOS (2026-08-21) and it turned out to be already dead HERE
+ * too — the session directory survives, the EPUB in it does not. So the suite was
+ * failing on both machines for a reason that has nothing to do with quire.
+ *
+ * Nothing noticed because `tools/run-keepers.js` does not list this suite. Its
+ * 44 are green and this is not one of them, which is the difference between "the
+ * keepers pass" and "the tests pass".
+ *
+ * NO FALLBACK PATH, deliberately. A guessed default would put this back to
+ * silently depending on one machine's disk. A missing fixture means this
+ * environment cannot run this suite, and one sentence saying so beats a
+ * ZIP_NOT_FOUND forty frames down.
+ */
+const KA = process.env.BOOKFORGE_KA_EPUB;
+if (!KA || !fs.existsSync(KA)) {
+  console.error('test-quire needs a real EPUB and BOOKFORGE_KA_EPUB does not name one.');
+  console.error(KA
+    ? `  BOOKFORGE_KA_EPUB is set to a file that is not there:\n    ${KA}`
+    : '  BOOKFORGE_KA_EPUB is not set.');
+  console.error('  Point it at any structurally real EPUB, e.g. a book\'s archive/ original:');
+  console.error('    BOOKFORGE_KA_EPUB="<library>/projects/<book>/archive/<book>.epub" node tools/test-quire.js');
+  console.error('  It is only ever READ (stamped and exploded into scratch), never written.');
+  process.exit(1);
+}
 
 let passed = 0;
 const failures = [];
@@ -1412,7 +1440,21 @@ async function testDirectoryAndZipAreTheSameBook() {
       + `[${missing.slice(0, 5).join(', ')}] and has [${extra.slice(0, 5).join(', ')}] the zip does not`);
     assertEqual(dirNames.length, zipNames.length,
       'the two containers report a different number of entries');
-    assertEqual(zipNames.length, 40, 'Killing America has 40 entries');
+    /*
+     * A FLOOR, NOT A FIXTURE'S EXACT COUNT. This asserted `=== 40`, which
+     * described one specific file on one disk — so the moment the fixture became
+     * nameable (BOOKFORGE_KA_EPUB, above) the number was a promise no other book
+     * could keep, and pointing the suite at a real EPUB with 41 entries failed
+     * here while every assertion about QUIRE passed.
+     *
+     * The floor still earns its place, though, and is not decoration: the two
+     * assertions above compare the readers to EACH OTHER, and two readers that
+     * both returned nothing would agree perfectly. This is what stops the
+     * agreement from being vacuous.
+     */
+    assert(zipNames.length > 3,
+      `a book with ${zipNames.length} entr(y/ies) is too small for the two readers to `
+      + 'agree about anything — check BOOKFORGE_KA_EPUB names a real book');
 
     // The normalization, named. A directory walk on Windows produces backslashes
     // unless something stops it, and one of those in an entry name would be a
