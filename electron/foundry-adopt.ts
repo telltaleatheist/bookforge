@@ -1028,6 +1028,10 @@ async function copyProjectInto(
     await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
     throw err;
   }
+  // So the copy carries the original's own timestamp rather than the moment it
+  // was made — see `stampCopyFromSource`. A copy that is younger than its source
+  // reads as "the hosted side has newer work", which it never does at this point.
+  await stampCopyFromSource(sourceDir, hostedDir);
 }
 
 /**
@@ -1071,6 +1075,54 @@ function freshnessSentence(freshness: CopyFreshness): string {
   }
 }
 
+/**
+ * Are these the same moment, as far as two filesystems can agree?
+ *
+ * Exact equality is the wrong test even though `stampCopyFromSource` writes the
+ * source's own mtime onto the copy: the library lives on an SMB share here, and
+ * a share is free to round what it stores. Two seconds is the coarsest
+ * granularity in common use (FAT's), so anything inside it is the same write as
+ * far as this question goes — and nobody edits a project and re-adopts it inside
+ * two seconds in a way this needs to notice.
+ */
+function sameInstant(a: Date, b: Date): boolean {
+  return Math.abs(a.getTime() - b.getTime()) <= 2000;
+}
+
+/**
+ * Give the copy the ORIGINAL's timestamp, so "has the source changed since we
+ * copied it?" is answerable by comparing the two.
+ *
+ * WITHOUT THIS, A COPY IS ALWAYS NEWER THAN ITS ORIGINAL, and the comparison
+ * above reports `hosted-newer` for every freshly-copied project — the resting
+ * state of a copy misread as "the hosted window did work here". bookforge-mac-2
+ * caught that within minutes of it landing, by running an adopt-then-re-adopt
+ * through this module's own harness: the sentence refuted itself in its own
+ * parentheses, claiming one side was newer while printing two identical
+ * timestamps. `current` was unreachable in the same stroke, because the only way
+ * to reach it was exact-millisecond equality between a file and its copy.
+ *
+ * Stamping costs no new state — no sidecar, no watermark, nothing for a sync to
+ * carry or lose. The catalogue's mtime simply goes on meaning what it meant
+ * before it was copied.
+ *
+ * Best-effort by design: a share that refuses `utimes` leaves the copy younger
+ * than its source, which reads as `hosted-newer` — the direction that DECLINES
+ * to overwrite. A failure here can cost a refresh; it cannot cost work.
+ */
+async function stampCopyFromSource(sourceDir: string, hostedDir: string): Promise<void> {
+  try {
+    const source = await fs.stat(path.join(sourceDir, 'project.json'));
+    await fs.utimes(path.join(hostedDir, 'project.json'), source.atime, source.mtime);
+  } catch (err) {
+    console.warn(
+      `[foundry-adopt] The copy of "${path.basename(hostedDir)}" could not be stamped with its `
+      + `original's timestamp (${(err as Error).message}). It will read as newer than the original `
+      + 'until something rewrites it, so a later adopt will decline to refresh it rather than '
+      + 'refresh it wrongly.');
+  }
+}
+
 /** Local wall-clock, to the minute — these are compared by a person, not a program. */
 function stamp(at: Date): string {
   return at.toLocaleString(undefined, {
@@ -1084,11 +1136,19 @@ function stamp(at: Date): string {
  * ── Why an mtime and not the ledger ─────────────────────────────────────────
  *
  * The catalogue's own mtime answers exactly the question being asked — "has the
- * original changed since we copied it?" — because the copy's mtime IS the moment
- * it was copied (`fs.cp` does not carry mtimes across, measured on this machine),
- * so the two are directly comparable without this side learning to read Foundry's
- * ledger. Reading their step list to count steps would be a second, worse copy of
- * a shape they own and change.
+ * original changed since we copied it?" — without this side learning to read
+ * Foundry's ledger. Reading their step list to count steps would be a second,
+ * worse copy of a shape they own and change.
+ *
+ * IT ONLY ANSWERS IT BECAUSE THE COPY IS STAMPED. `fs.cp` is not consistent
+ * about carrying mtimes: measured 2026-08-22, win32 PRESERVES them exactly (0 ms
+ * delta, on local disk and on the SMB library share alike) while macOS does NOT
+ * (bookforge-mac-2, same day). A comparison resting on that would have been
+ * right on one machine and wrong on the other — which is exactly what happened:
+ * this shipped depending on non-preservation, was correct on macOS's behaviour
+ * in one branch and on Windows's in another, and reported "your copy is NEWER"
+ * for every untouched copy on the Mac. `stampCopyFromSource` removes the
+ * dependence rather than picking a side.
  *
  * ── THE ONE THING THIS CANNOT SEE, said rather than hidden ──────────────────
  *
@@ -1123,8 +1183,8 @@ async function refreshHostedCopy(
     return { kind: 'absent' };
   }
 
+  if (sameInstant(hostedAt, sourceAt)) return { kind: 'current' };
   if (hostedAt > sourceAt) return { kind: 'hosted-newer', sourceAt, hostedAt };
-  if (hostedAt >= sourceAt) return { kind: 'current' };
 
   // STAGE, DISPLACE, LAND — three renames, none of them the shape Windows
   // refuses. A staged tree cannot simply be renamed ONTO the old one: a
@@ -1156,6 +1216,7 @@ async function refreshHostedCopy(
     await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
     return { kind: 'failed', why: (err as Error).message };
   }
+  await stampCopyFromSource(sourceDir, hostedDir);
   await fs.rm(superseded, { recursive: true, force: true }).catch((err: Error) => {
     console.error(
       `[foundry-adopt] The copy of "${key}" was brought up to date, but the one it replaced could `

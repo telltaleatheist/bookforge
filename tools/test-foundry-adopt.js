@@ -577,9 +577,56 @@ test('re-adopting an already-mapped project brings its stale copy forward', run(
     `the refreshed tray is what reconcile then reads: ${again.exportsLanded}`);
 }));
 
+// WHICH MACHINE WATCHES THE NEXT TWO FAIL: not this one, if this one is Windows.
+//
+// `fs.cp` preserves mtimes on win32 (measured 2026-08-22: 0 ms delta, local disk
+// and SMB share alike) and does not on macOS. So the bug these were written for
+// — an untouched copy reading as NEWER than its original — cannot reproduce on
+// Windows, where a fresh copy already carries the source's timestamp and the
+// comparison happens to come out right. They are still real gates; the Mac is
+// the machine they bite on. Stated here so a green run on Windows is not
+// mistaken for these having been exercised.
+test('re-adopting with NOTHING changed says up to date, not "newer"', run(async (w) => {
+  // The regression bookforge-mac-2 caught minutes after the refresh landed: a
+  // copy is BY CONSTRUCTION younger than the file it was copied from, so
+  // `hostedAt > sourceAt` was the resting state of every fresh copy and every
+  // no-op re-adopt claimed the library's copy was newer than Foundry's — while
+  // printing two identical timestamps in its own sentence. `current` was
+  // unreachable at the same time, needing exact-millisecond equality between a
+  // file and its copy. The fix stamps the copy with the source's own mtime.
+  const source = makeFoundryProject(w.standalone, 'Krause-e4e4e4e4');
+  assert.strictEqual((await doAdopt(w, source)).outcome, 'adopted');
+
+  const again = await doAdopt(w, source);
+  assert.strictEqual(again.outcome, 'already-mapped');
+  assert.ok(/already up to date/.test(again.message),
+    `a no-op re-adopt must say nothing changed: ${again.message}`);
+  assert.ok(!/NEWER/.test(again.message),
+    `a copy is younger than its original; that is not the hosted side doing work: ${again.message}`);
+}));
+
+test('the copy carries the ORIGINAL\'s timestamp, not the moment it was copied', run(async (w) => {
+  // The mechanism under the test above, asserted directly: without this the
+  // comparison cannot mean what it says, and every branch of it drifts.
+  const source = makeFoundryProject(w.standalone, 'Krause-f5f5f5f5');
+  assert.strictEqual((await doAdopt(w, source)).outcome, 'adopted');
+
+  const sourceAt = fs.statSync(path.join(source, 'project.json')).mtime.getTime();
+  const copyAt = fs.statSync(path.join(w.hosted, 'Krause-f5f5f5f5', 'project.json')).mtime.getTime();
+  assert.ok(Math.abs(copyAt - sourceAt) <= 2000,
+    `the copy should carry the source's mtime; source ${sourceAt}, copy ${copyAt}`);
+}));
+
 test('a hosted copy NEWER than the source is never overwritten, and says so', run(async (w) => {
   const source = makeFoundryProject(w.standalone, 'Krause-b1b1b1b1');
   assert.strictEqual((await doAdopt(w, source)).outcome, 'adopted');
+
+  // This test used to pass without the touch below, because a fresh copy already
+  // read as newer — so it could not tell "the hosted window did work" from "this
+  // is a copy", and would have kept passing with the detection removed entirely.
+  const untouched = await doAdopt(w, source);
+  assert.ok(!/NEWER/.test(untouched.message),
+    `the hosted-newer verdict must require actual hosted work: ${untouched.message}`);
 
   // The hosted window edits its own copy; the standalone original does not move.
   const hostedCatalogue = path.join(w.hosted, 'Krause-b1b1b1b1', 'project.json');
