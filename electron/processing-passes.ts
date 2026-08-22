@@ -151,21 +151,13 @@ export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Pro
   // exploded directory so that editing one chapter writes one entry. The move is
   // the same move either way — copy beside the destination, land it with one
   // rename — but the two steps that assumed a file (`copyFile`, `unlink`) have to
-  // know which they are looking at, and a directory cannot be renamed ONTO
-  // anything that already exists. For a FILE nothing below changes: the fast
+  // know which they are looking at. For a FILE nothing below changes: the fast
   // path is the same single rename it has always been, and every failure is the
   // same failure.
   const source = await statOrNull(fromAbsPath);
   const destination = await statOrNull(toAbsPath);
 
-  if (renameCanLand(source, destination)) {
-    try {
-      await renameOntoDestination(fromAbsPath, toAbsPath);
-      return;
-    } catch {
-      // fall through to the copy-beside-the-destination path
-    }
-  }
+  if (await renameLanded(fromAbsPath, toAbsPath, source, destination)) return;
 
   const sibling = `${toAbsPath}.bookforge-tmp`;
   await copyArtifact(fromAbsPath, sibling);
@@ -202,17 +194,23 @@ async function copyArtifact(fromAbsPath: string, toAbsPath: string): Promise<voi
  * The last step: the staged copy becomes the destination.
  *
  * For a file landing on a file — or on nothing — this is the one rename it always
- * was. A DIRECTORY cannot be renamed onto anything already there, so the old
- * book is stepped aside first and put back if the landing fails; the
- * moment that matters is still a single rename, and there is never a window in
- * which the destination holds half of each book.
+ * was, hold-retries and all. Every other shape ASKS the kernel before assuming:
+ * a rename that lands is always better than a rename that steps aside first, and
+ * which shapes land is a property of the filesystem, not something this file can
+ * predict (see `renameLanded`). Only when the kernel refuses is the old book
+ * stepped aside and put back if the landing fails; the moment that matters is
+ * still a single rename, and there is never a window in which the destination
+ * holds half of each book.
  */
 async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
+  const source = await statOrNull(fromAbsPath);
   const destination = await statOrNull(toAbsPath);
-  if (renameCanLand(await statOrNull(fromAbsPath), destination)) {
+  if (renameCanLand(source, destination)) {
     await renameOntoDestination(fromAbsPath, toAbsPath);
     return;
   }
+  if (await renameLanded(fromAbsPath, toAbsPath, source, destination)) return;
+
   const displaced = `${toAbsPath}.bookforge-old`;
   await fs.promises.rm(displaced, { recursive: true, force: true });
   await renameOntoDestination(toAbsPath, displaced);
@@ -228,20 +226,48 @@ async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promis
 }
 
 /**
- * Can this move be ONE rename onto the destination, or does the old book have to
- * be stepped aside first?
+ * Is a plain rename the DESIGNED path for this shape — the one whose refusal is
+ * worth waiting out — or merely something the filesystem might allow?
  *
- * A directory cannot be renamed onto anything that already exists — not onto a
- * directory, and not onto a FILE either (the kernel answers ENOTDIR; Windows
- * answers EPERM, which is worse, because it looks exactly like the transient
- * hold `renameOntoDestination` retries for two seconds). Neither can a file be
- * renamed onto a directory. So the single rename is available only when nothing
- * is there, or when neither side is a tree — every other shape lands through
- * the displace-and-put-back path, which is atomic at the moment that counts.
+ * Nothing at the destination, or neither side a tree: that rename is the whole
+ * design, it is expected to succeed, and a refusal is the transient hold
+ * `renameOntoDestination` retries for two seconds. Anything else is a maybe,
+ * and `renameLanded` asks rather than predicts.
  */
 function renameCanLand(source: fs.Stats | null, destination: fs.Stats | null): boolean {
   if (destination === null) return true;
   return source?.isDirectory() !== true && !destination.isDirectory();
+}
+
+/**
+ * Try to land the move in ONE rename. True if it landed.
+ *
+ * Whether a rename can replace something of the OTHER kind is a property of the
+ * filesystem, and this file had it wrong in both directions. POSIX refuses a
+ * directory onto a non-directory with ENOTDIR; Win32's MoveFileEx with
+ * REPLACE_EXISTING performs exactly that move and returns success (measured on
+ * win32 10.0.26100 by the PC session, 2026-08-22, against the reverse — a file
+ * onto a directory — which IS EPERM there). Predicting either from the other
+ * costs one machine an atomic rename it was entitled to.
+ *
+ * So the shapes `renameCanLand` vouches for go through the full hold ladder,
+ * and every other shape gets ONE attempt with no ladder: a refusal there is the
+ * kernel's answer rather than a hold worth waiting on, and both callers have a
+ * correct slower path ready for it.
+ */
+async function renameLanded(
+  fromAbsPath: string,
+  toAbsPath: string,
+  source: fs.Stats | null,
+  destination: fs.Stats | null,
+): Promise<boolean> {
+  try {
+    if (renameCanLand(source, destination)) await renameOntoDestination(fromAbsPath, toAbsPath);
+    else await fs.promises.rename(fromAbsPath, toAbsPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** `stat`, with "nothing is there" as an answer rather than an exception. */
