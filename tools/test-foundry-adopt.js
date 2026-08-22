@@ -665,6 +665,186 @@ test('no .adopting- or .superseded- scratch survives a refresh', run(async (w) =
   assert.deepStrictEqual(strays, [], `scratch folders were left behind: ${strays.join(', ')}`);
 }));
 
+// ── Reload from Foundry: the third door ───────────────────────────────────
+//
+// `refreshAdoptedProject` is the button on a book that already HAS a project.
+// It exists because the refresh adoption performs was unreachable once a book
+// claimed the project: `listAdoptableFoundryProjects` filters claimed keys out,
+// so there was no press to make. What these pin is the half that is new — that
+// it moves ONLY the files that differ, that it deletes what the original no
+// longer has, and that every way it can decline says which one it was.
+
+const doReload = (w, bookDir) =>
+  adopt.refreshAdoptedProject(bookDir, w.hosted, w.standalone, w.onChanged);
+
+/** Put a step document in a project, as Foundry's working files sit. */
+function addWorkingFile(projectDir, name, bytes) {
+  const dir = path.join(projectDir, 'working');
+  fs.mkdirSync(dir, { recursive: true });
+  fs.writeFileSync(path.join(dir, name), bytes);
+  return path.join(dir, name);
+}
+
+test('reload brings across ONLY the files that changed', run(async (w) => {
+  // The whole point of the button as Owen asked for it: "just the files that
+  // would be affected by it". A project is mostly its imported original; a
+  // reload that rewrote all of it would cost a gigabyte to carry a paragraph.
+  const source = makeFoundryProject(w.standalone, 'Krause-11111111');
+  addWorkingFile(source, 'step-1.html', 'ONE');
+  addWorkingFile(source, 'step-2.html', 'TWO');
+  const first = await doAdopt(w, source);
+  assert.strictEqual(first.outcome, 'adopted');
+
+  // One document is rewritten in standalone Foundry, and the catalogue with it.
+  addWorkingFile(source, 'step-2.html', 'TWO, TRANSLATED');
+  touchLater(path.join(source, 'working', 'step-2.html'), 60_000);
+  touchLater(path.join(source, 'project.json'), 60_000);
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'refreshed', res.reason || res.message);
+  // The catalogue and the one document. NOT the original, not step-1.
+  assert.strictEqual(res.filesCopied, 2,
+    `only the changed files should be written: ${res.message}`);
+  assert.strictEqual(res.filesRemoved, 0);
+
+  const copy = path.join(w.hosted, 'Krause-11111111');
+  assert.strictEqual(
+    fs.readFileSync(path.join(copy, 'working', 'step-2.html'), 'utf-8'), 'TWO, TRANSLATED',
+    'the file that changed came across');
+  assert.strictEqual(
+    fs.readFileSync(path.join(copy, 'working', 'step-1.html'), 'utf-8'), 'ONE',
+    'the file that did not change is still there');
+}));
+
+test('reload removes what the original no longer has', run(async (w) => {
+  // The honest half of "reload": a step deleted in Foundry must not stand in
+  // the copy forever — the copy is what the hosted window opens.
+  const source = makeFoundryProject(w.standalone, 'Krause-22222222');
+  addWorkingFile(source, 'struck.html', 'GONE SOON');
+  const first = await doAdopt(w, source);
+  assert.ok(fs.existsSync(path.join(w.hosted, 'Krause-22222222', 'working', 'struck.html')));
+
+  fs.rmSync(path.join(source, 'working', 'struck.html'));
+  touchLater(path.join(source, 'project.json'), 60_000);
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'refreshed', res.reason || res.message);
+  assert.strictEqual(res.filesRemoved, 1, res.message);
+  assert.ok(!fs.existsSync(path.join(w.hosted, 'Krause-22222222', 'working', 'struck.html')),
+    'the deleted step is gone from the copy too');
+}));
+
+test('reload leaves the standalone project byte-identical', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-33333333');
+  addWorkingFile(source, 'step.html', 'WORK');
+  const first = await doAdopt(w, source);
+  touchLater(path.join(source, 'project.json'), 60_000);
+  await doReload(w, path.join(w.library, 'projects', first.projectId));
+
+  assert.strictEqual(fs.readFileSync(path.join(source, 'working', 'step.html'), 'utf-8'), 'WORK');
+  assert.strictEqual(
+    fs.readFileSync(path.join(source, 'archive', ORIGINAL_NAME), 'utf-8'), ORIGINAL_BYTES,
+    "standalone Foundry's library is another program's data");
+}));
+
+test('a reload with nothing to bring says it is up to date, and does not lie about it', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-44444444');
+  const first = await doAdopt(w, source);
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'current', res.reason || res.message);
+  assert.ok(/already up to date/.test(res.message), res.message);
+  assert.ok(!/NEWER/.test(res.message),
+    `a copy resting at its source is not the hosted side doing work: ${res.message}`);
+}));
+
+test('a reload declines when the hosted copy is the newer one', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-55555555');
+  const first = await doAdopt(w, source);
+
+  // The hosted window exported something; the standalone original did not move.
+  const copy = path.join(w.hosted, 'Krause-55555555');
+  addExport(copy, 'hosted-only.epub', Buffer.from('HOSTED'));
+  touchLater(path.join(copy, 'project.json'), 60_000);
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'declined', res.reason || res.message);
+  assert.ok(/NEWER/.test(res.message), res.message);
+  assert.ok(fs.existsSync(path.join(copy, 'final', 'hosted-only.epub')),
+    'a reload must never overwrite hosted work with an older original');
+}));
+
+test('a reload restores a copy that has gone missing', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-66666666');
+  const first = await doAdopt(w, source);
+  fs.rmSync(path.join(w.hosted, 'Krause-66666666'), { recursive: true, force: true });
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'refreshed', res.reason || res.message);
+  assert.ok(/was missing/.test(res.message), res.message);
+  assert.ok(fs.existsSync(path.join(w.hosted, 'Krause-66666666', 'archive', ORIGINAL_NAME)),
+    'the book\'s mapping names a folder the hosted window opens; it must be there');
+}));
+
+test('a reload lands an export made in standalone since the last press', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-77777777');
+  const first = await doAdopt(w, source);
+  addExport(source, 'krause (en).epub', Buffer.from('EXPORTED LATER'));
+  touchLater(path.join(source, 'project.json'), 60_000);
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'refreshed', res.reason || res.message);
+  assert.strictEqual(res.exportsLanded, 1, res.message);
+  const landed = manifestService.getVariants(w.manifestOf(first.projectId)).variants
+    .filter((v) => v.foundrySource);
+  assert.strictEqual(landed.length, 1, 'the export is on the versions page');
+}));
+
+test('a book with no Foundry project is refused rather than guessed at', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-88888888');
+  const first = await doAdopt(w, source);
+  // Any book will do — this one simply has its mapping taken away.
+  const bookDir = path.join(w.library, 'projects', first.projectId);
+  const mf = JSON.parse(fs.readFileSync(path.join(bookDir, 'manifest.json'), 'utf-8'));
+  delete mf.foundryProject;
+  fs.writeFileSync(path.join(bookDir, 'manifest.json'), JSON.stringify(mf, null, 2));
+
+  const res = await doReload(w, bookDir);
+  assert.strictEqual(res.outcome, 'refused');
+  assert.ok(/not joined to a Foundry project/.test(res.reason), res.reason);
+  assert.ok(/Nothing was changed/.test(res.reason), res.reason);
+}));
+
+test('a project that exists only inside BookForge is refused by name', run(async (w) => {
+  // The ordinary state of a book imported through the hosted window: there is
+  // no standalone copy anywhere, and the sentence must say that rather than
+  // reporting a missing folder.
+  const orphan = makeFoundryProject(w.hosted, 'Hosted-99999999');
+  const first = await doAdopt(w, orphan);
+  assert.strictEqual(first.outcome, 'adopted');
+
+  const res = await doReload(w, path.join(w.library, 'projects', first.projectId));
+  assert.strictEqual(res.outcome, 'refused');
+  assert.ok(/only inside BookForge/.test(res.reason), res.reason);
+}));
+
+test('findStandaloneSource answers the button, and null covers every way there is none', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-aaaaaaaa');
+  const found = await adopt.findStandaloneSource(w.standalone, 'Krause-aaaaaaaa');
+  assert.ok(found !== null, 'a project that is there is offered');
+  assert.strictEqual(found.dir, source);
+  assert.strictEqual(
+    found.modifiedAt, fs.statSync(path.join(source, 'project.json')).mtime.toISOString());
+
+  assert.strictEqual(await adopt.findStandaloneSource(null, 'Krause-aaaaaaaa'), null,
+    'no standalone Foundry on this machine');
+  assert.strictEqual(await adopt.findStandaloneSource(w.standalone, 'no-such-1234abcd'), null,
+    'no folder under that key');
+  const empty = path.join(w.standalone, 'empty-1234abcd');
+  fs.mkdirSync(empty, { recursive: true });
+  assert.strictEqual(await adopt.findStandaloneSource(w.standalone, 'empty-1234abcd'), null,
+    'a folder with no catalogue is not a source');
+}));
+
 test('a root that does not exist is not a refusal', run(async (w) => {
   const listing = await adopt.listAdoptableFoundryProjects(
     path.join(w.root, 'no', 'such', 'place'), path.join(w.root, 'nor', 'here'));

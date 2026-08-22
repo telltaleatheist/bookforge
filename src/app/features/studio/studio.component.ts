@@ -33,6 +33,7 @@ import { SettingsService } from '../../core/services/settings.service';
 import { NoticeService } from '../../core/services/notice.service';
 import { looseMatch } from '../../shared/search';
 import { samePath } from '@shared/document/same-path';
+import type { FoundryStandaloneSource } from '@shared/foundry/adopt-types';
 import { isBookPath } from '@shared/document/book-path';
 
 /**
@@ -302,6 +303,20 @@ import { isBookPath } from '@shared/document/book-path';
                   [title]="foundryButtonTitle()"
                   (click)="openInFoundry()"
                 >{{ foundryButtonLabel() }}</button>
+
+                <!-- Only for a book that HAS a project: bring the copy this
+                     library holds forward from the standalone Foundry project it
+                     was adopted from. Greyed rather than hidden when there is no
+                     standalone project to read — a control that vanishes teaches
+                     nobody why. -->
+                @if (foundryProjectKey() !== null) {
+                  <button
+                    class="btn-foundry btn-foundry-reload"
+                    [disabled]="!canReloadFromFoundry() || reloadingFromFoundry()"
+                    [title]="reloadButtonTitle()"
+                    (click)="reloadFromFoundry()"
+                  >{{ reloadingFromFoundry() ? 'Reloading…' : 'Reload from Foundry' }}</button>
+                }
 
                 <!-- Finalize button for articles on Content tab only -->
                 @if (selectedItem()!.type === 'article' && mainTab() === 'content') {
@@ -1218,6 +1233,14 @@ import { isBookPath } from '@shared/document/book-path';
       }
     }
 
+    /* The same shape as the door beside it, one weight lighter: reloading is a
+       maintenance act, and the pair must not read as two equal choices. */
+    .btn-foundry-reload {
+      margin-left: 6px;
+      font-weight: 500;
+      color: var(--text-secondary);
+    }
+
     .btn-finalize {
       margin-left: 8px;
       padding: 6px 16px;
@@ -1433,6 +1456,11 @@ import { isBookPath } from '@shared/document/book-path';
       bottom: 24px;
       left: 50%;
       transform: translateX(-50%);
+      /* A Foundry reload reports in a sentence, not a phrase. Bounded so it
+         wraps in the middle of the window instead of running to both edges. */
+      max-width: min(560px, calc(100vw - 48px));
+      text-align: center;
+      line-height: 1.45;
       padding: 10px 20px;
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
@@ -1823,9 +1851,11 @@ export class StudioComponent implements OnInit, OnDestroy {
         // handles; the reason belongs in the log rather than in a label.
         console.error('[studio] Could not read the Foundry project mapping:', res.error);
         this.foundryProjectKey.set(null);
+        this.foundryStandaloneSource.set(null);
         return;
       }
       this.foundryProjectKey.set(res.key ?? null);
+      this.foundryStandaloneSource.set(res.standaloneSource ?? null);
     });
   }, { allowSignalWrites: true });
 
@@ -1840,6 +1870,76 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.foundryProjectKey() === null
       ? 'Import this book into Foundry'
       : "Edit this book's text in Foundry");
+
+  /**
+   * The STANDALONE Foundry project this book was adopted from, if there still is
+   * one. Read on the same trip as the mapping — see `foundryHostProject`.
+   *
+   * Null is the ordinary state of a book whose project was made in the hosted
+   * window: there is no second copy anywhere for a reload to read.
+   */
+  readonly foundryStandaloneSource = signal<FoundryStandaloneSource | null>(null);
+
+  /** True while a reload is in flight, so the button cannot be pressed twice. */
+  readonly reloadingFromFoundry = signal(false);
+
+  readonly canReloadFromFoundry = computed(() =>
+    this.foundryProjectKey() !== null && this.foundryStandaloneSource() !== null);
+
+  /**
+   * The whole of what a greyed Reload button is owed, and the whole of what a
+   * live one promises.
+   *
+   * The date is the point: "reload" is worth pressing when the standalone
+   * project was worked on since, and the only way to judge that from the button
+   * is to be told when that was.
+   */
+  readonly reloadButtonTitle = computed(() => {
+    const source = this.foundryStandaloneSource();
+    if (source === null) {
+      return "This book's Foundry project only exists inside BookForge — there is no standalone "
+        + 'project to reload it from.';
+    }
+    return 'Bring across work done in standalone Foundry (last worked on '
+      + `${new Date(source.modifiedAt).toLocaleString()}). Only the files that changed are copied.`;
+  });
+
+  /**
+   * RELOAD: bring this book's Foundry copy forward from the standalone project.
+   *
+   * The outcomes divide into two shapes and are shown in two places, on purpose.
+   * A press that DID something — or deliberately did not, because the copy here
+   * is ahead — reports in the toast, which is where every other result of a
+   * press in this workspace lands. A press that could not be carried out at all
+   * gets the dialog, because a refusal is a paragraph and a paragraph in a toast
+   * is gone before it is read.
+   */
+  async reloadFromFoundry(): Promise<void> {
+    const dir = this.selectedItem()?.projectDir ?? '';
+    if (!dir || this.reloadingFromFoundry()) return;
+    this.reloadingFromFoundry.set(true);
+    try {
+      const res = await this.electronService.foundryHostReload(dir);
+      if (!res.success || !res.result || res.result.outcome === 'refused') {
+        await this.electronService.showMessageDialog({
+          title: 'Could not reload from Foundry',
+          message: res.result?.outcome === 'refused'
+            ? res.result.reason
+            : (res.error || 'The reload failed. See the log for why.'),
+          type: 'error',
+        });
+        return;
+      }
+      this.exportStatus.set(res.result.message);
+      setTimeout(() => this.exportStatus.set(null), 8000);
+      // The copy moved, so the date the button reports has too. Re-read through
+      // the same trigger a landing uses rather than writing the signal here —
+      // one path to that state, whichever end changed it.
+      this.foundryMappingTrigger.update((v) => v + 1);
+    } finally {
+      this.reloadingFromFoundry.set(false);
+    }
+  }
 
   /**
    * Open the Foundry window on the selected book.

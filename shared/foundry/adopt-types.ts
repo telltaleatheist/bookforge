@@ -117,3 +117,58 @@ export interface AdoptableListing {
    */
   refusals: string[];
 }
+
+/**
+ * A standalone Foundry project a book of ours was adopted FROM, if one is still
+ * there — what "Reload from Foundry" would read.
+ *
+ * Carried on the mapping answer rather than asked for separately because the
+ * button that needs it is drawn from that same read: a book with a mapping and
+ * no standalone counterpart is the ordinary state of a project that was made in
+ * the hosted window, and its Reload button is disabled with this as the reason.
+ */
+export interface FoundryStandaloneSource {
+  /** The standalone project folder, absolute. */
+  dir: string;
+  /** When its catalogue was last written, ISO — the "worked on" date. */
+  modifiedAt: string;
+}
+
+/**
+ * What one press of Reload from Foundry did.
+ *
+ * FOUR OUTCOMES AND NOT A BOOLEAN, because "nothing came across" has three
+ * different meanings and the user pressed the button to learn which. Nothing was
+ * there to bring (`current`); something was there and this side declined to take
+ * it (`declined`); or the press could not be carried out at all (`refused`).
+ */
+export type FoundryRefreshResult =
+  | {
+      /** Nothing was done, and this sentence says why. */
+      outcome: 'refused';
+      reason: string;
+    }
+  | {
+      /** The copy already matched the original. Exports may still have landed. */
+      outcome: 'current';
+      message: string;
+      exportsLanded: number;
+    }
+  | {
+      /**
+       * The hosted copy is NEWER than the standalone original, so it was left
+       * alone. A refusal to overwrite work, not a failure.
+       */
+      outcome: 'declined';
+      message: string;
+      exportsLanded: number;
+    }
+  | {
+      outcome: 'refreshed';
+      message: string;
+      /** How many files were written — the "just the files affected" count. */
+      filesCopied: number;
+      /** How many the original no longer has, and the copy no longer holds. */
+      filesRemoved: number;
+      exportsLanded: number;
+    };

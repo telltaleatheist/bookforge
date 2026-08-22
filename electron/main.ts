@@ -64,11 +64,13 @@ import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTra
 // state; see the header of electron/foundry-adopt.ts.
 import {
   adoptFoundryProject,
+  findStandaloneSource,
   foundryLandingKey,
   foundryProjectClaims,
   isInside,
   listAdoptableFoundryProjects,
   recordFoundryImportLanding,
+  refreshAdoptedProject,
   standaloneFoundryProjectsRoot,
 } from './foundry-adopt';
 // The other half of the host-operations socket: the ids that come back on an
@@ -963,6 +965,23 @@ function foundryDataRoot(): string {
  */
 function foundryProjectsDir(): string {
   return path.join(foundryDataRoot(), 'projects');
+}
+
+/**
+ * Where STANDALONE Foundry keeps its projects, or null if there is none here.
+ *
+ * `app.getPath('appData')` is the ROAMING folder — `%APPDATA%` on Windows,
+ * `~/Library/Application Support` on macOS — which is where a standalone Electron
+ * app’s userData sits under its product name. Foundry’s is "Foundry"; its
+ * app-settings.json is what names its library.
+ *
+ * Written once because three handlers ask it now (the adoptables list, the
+ * mapping read that decides whether Reload is live, and the reload itself), and
+ * three copies of a path derivation is how they would come to look in different
+ * places for the same folder.
+ */
+async function standaloneFoundryRoot(): Promise<string | null> {
+  return standaloneFoundryProjectsRoot(path.join(app.getPath('appData'), 'Foundry'));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -8673,7 +8692,20 @@ function setupIpcHandlers(): void {
     try {
       if (!projectDir || !fsSync.existsSync(projectDir)) return { success: false, error: 'Project not found' };
       const key = await manifestService.readFoundryProject(projectDir);
-      return { success: true, key, dir: key === null ? null : path.join(foundryProjectsDir(), key) };
+      // `standaloneSource` rides along on this read rather than getting a channel
+      // of its own: the workspace asks this question once per selected book, and
+      // the Reload button is drawn from the same answer that decides whether the
+      // Foundry button says "Edit" or "Import". A second round trip would let the
+      // two disagree for a frame.
+      const standaloneSource = key === null
+        ? null
+        : await findStandaloneSource(await standaloneFoundryRoot(), key);
+      return {
+        success: true,
+        key,
+        dir: key === null ? null : path.join(foundryProjectsDir(), key),
+        standaloneSource,
+      };
     } catch (err) { console.error('[foundry-host:project]', err); return { success: false, error: (err as Error).message }; }
   });
 
@@ -8789,12 +8821,7 @@ function setupIpcHandlers(): void {
    */
   ipcMain.handle('foundry-host:adoptables', async () => {
     try {
-      // `app.getPath('appData')` is the ROAMING folder — `%APPDATA%` on Windows,
-      // `~/Library/Application Support` on macOS — which is where a standalone
-      // Electron app's userData sits under its product name. Foundry's is
-      // "Foundry"; its app-settings.json is what names its library.
-      const standalone = await standaloneFoundryProjectsRoot(
-        path.join(app.getPath('appData'), 'Foundry'));
+      const standalone = await standaloneFoundryRoot();
       const listing = await listAdoptableFoundryProjects(foundryProjectsDir(), standalone);
       return { success: true, ...listing };
     } catch (err) {
@@ -8837,6 +8864,43 @@ function setupIpcHandlers(): void {
       return { success: result.outcome !== 'refused', result };
     } catch (err) {
       console.error('[foundry-host:adopt]', err);
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * RELOAD an already-adopted book from the standalone project it came from.
+   *
+   * The third door, and the one the other two left missing: adoption refreshes
+   * the copy on every press, but a project a book already claims is filtered out
+   * of the Adopt list, so after the first adoption there was no press to make.
+   * The act itself is electron/foundry-adopt.ts, same as the other two; what is
+   * here is the same short list — WHERE the roots are, and WHO TO TELL.
+   */
+  ipcMain.handle('foundry-host:reload', async (_event, bookDir: string) => {
+    try {
+      if (typeof bookDir !== 'string' || !path.isAbsolute(bookDir)) {
+        return {
+          success: false,
+          error: `Reloading needs the full path of a book in this library, and “${bookDir}” is `
+            + 'not one. Nothing was changed.',
+        };
+      }
+      const result = await refreshAdoptedProject(
+        bookDir,
+        foundryProjectsDir(),
+        await standaloneFoundryRoot(),
+        (dir) => {
+          // Only the versions half is broadcast per notification here. A reload
+          // cannot change a mapping — the mapping is what made it possible — so
+          // sending `project-changed` would be telling the workspace to re-read a
+          // record nothing wrote.
+          broadcastToAllWindows('foundry-host:versions-changed', { projectDir: dir });
+        },
+      );
+      return { success: result.outcome !== 'refused', result };
+    } catch (err) {
+      console.error('[foundry-host:reload]', err);
       return { success: false, error: (err as Error).message };
     }
   });

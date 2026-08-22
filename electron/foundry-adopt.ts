@@ -63,6 +63,8 @@ import type {
   AdoptableFoundryProject,
   AdoptableListing,
   BlockedFoundryProject,
+  FoundryRefreshResult,
+  FoundryStandaloneSource,
 } from '../shared/foundry/adopt-types';
 
 export type {
@@ -70,6 +72,8 @@ export type {
   AdoptableFoundryProject,
   AdoptableListing,
   BlockedFoundryProject,
+  FoundryRefreshResult,
+  FoundryStandaloneSource,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -850,8 +854,8 @@ export async function adoptFoundryProject(
         return {
           outcome: 'refused',
           reason: `“${signature.title}” is already copied into ${hostedProjectsRoot}, and that copy `
-            + `could not be brought up to date: ${freshness.why}. Nothing was adopted; both the `
-            + 'project and the copy are untouched.',
+            + `could not be brought up to date. ${freshnessSentence(freshness)} Nothing was `
+            + 'adopted, and the project itself was not touched.',
         };
       }
     }
@@ -1043,36 +1047,57 @@ async function copyProjectInto(
  */
 type CopyFreshness =
   | { kind: 'in-place' }
-  | { kind: 'absent' }
   | { kind: 'unreadable'; why: string }
   | { kind: 'current' }
-  | { kind: 'refreshed'; sourceAt: Date; hostedAt: Date }
+  | { kind: 'restored'; filesCopied: number }
+  | { kind: 'refreshed'; sourceAt: Date; hostedAt: Date; filesCopied: number; filesRemoved: number }
   | { kind: 'hosted-newer'; sourceAt: Date; hostedAt: Date }
-  | { kind: 'failed'; why: string };
+  /**
+   * `partial` is the price of mirroring instead of replacing wholesale: a
+   * refresh that dies half-way has already written some files. It is SAID rather
+   * than hidden, because the answer to it — press again — is different from the
+   * answer to a refresh that never started.
+   */
+  | { kind: 'failed'; why: string; partial: boolean };
 
 /** One sentence for the user about what happened to the copy. Never silence. */
 function freshnessSentence(freshness: CopyFreshness): string {
   switch (freshness.kind) {
     case 'in-place':
       return 'It is already the copy this library uses, so there was nothing to bring across.';
-    case 'absent':
-      return 'Its copy in this library is missing — nothing was brought across.';
+    case 'restored':
+      return `Its copy in this library was missing, and all `
+        + `${countOfFiles(freshness.filesCopied)} of it ${freshness.filesCopied === 1 ? 'was' : 'were'} `
+        + 'copied across again.';
     case 'unreadable':
       return `Its copy in this library could not be compared with the original (${freshness.why}), `
         + 'so nothing was brought across.';
     case 'current':
       return 'Its copy here was already up to date.';
     case 'refreshed':
-      return `Its copy here was brought up to date — the original had changed at `
-        + `${stamp(freshness.sourceAt)}, and the copy was made at ${stamp(freshness.hostedAt)}.`;
+      return `Its copy here was brought up to date: ${countOfFiles(freshness.filesCopied)} came `
+        + `across from work done at ${stamp(freshness.sourceAt)}`
+        + (freshness.filesRemoved > 0
+          ? `, and ${countOfFiles(freshness.filesRemoved)} the original no longer has `
+            + `${freshness.filesRemoved === 1 ? 'was' : 'were'} removed`
+          : '')
+        + `, replacing a copy that stood at ${stamp(freshness.hostedAt)}.`;
     case 'hosted-newer':
       return `Its copy here is NEWER than the original (${stamp(freshness.hostedAt)} against `
         + `${stamp(freshness.sourceAt)}), so it was left alone rather than overwritten with older `
         + 'work.';
     case 'failed':
       return `Its copy here could not be brought up to date (${freshness.why}), so it was left `
-        + 'exactly as it was.';
+        + (freshness.partial
+          ? 'part-way updated — press again to finish it; nothing that reached it is wrong, and '
+            + 'its catalogue still reads as the older copy until the whole of it lands.'
+          : 'exactly as it was.');
   }
+}
+
+/** "3 files" / "1 file" — used where a count is read mid-sentence. */
+function countOfFiles(n: number): string {
+  return `${n} file${n === 1 ? '' : 's'}`;
 }
 
 /**
@@ -1138,6 +1163,129 @@ function stamp(at: Date): string {
 }
 
 /**
+ * The one name the mirror below never touches on its own — it is landed LAST, by
+ * hand, as the record that the rest of the refresh finished.
+ */
+const CATALOGUE = 'project.json';
+
+/** What a mirror pass wrote and unwrote, counted for the sentence the user reads. */
+interface MirrorTally {
+  copied: number;
+  removed: number;
+}
+
+/**
+ * MAKE `destDir` MATCH `sourceDir`, touching only the files that differ.
+ *
+ * ── Why not simply replace the folder ───────────────────────────────────────
+ *
+ * Because Owen asked for the other thing, and he was right to: *"just the files
+ * that would be affected by it"* (2026-08-22). A Foundry project is mostly the
+ * imported original and its page images — "star gods" is 1.03 GiB — and the work
+ * a reload is FOR is a catalogue and a handful of step documents. Copying the
+ * whole gigabyte across an SMB share to bring forty kilobytes of it is the kind
+ * of cost that makes a button nobody presses.
+ *
+ * ── What "differ" means here, and what it misses ────────────────────────────
+ *
+ * SIZE AND MODIFICATION TIME, not content. This is rsync’s quick check and it
+ * carries rsync’s blind spot: a file rewritten to the same length within the
+ * same `sameInstant` window as the copy it replaces reads as unchanged and is
+ * not brought across. Hashing both sides would close that and would also read
+ * every byte of the gigabyte this exists to avoid — the same cost as copying it,
+ * for a case that needs an editor to write the same number of bytes in the same
+ * second. The trade is deliberate; it is named here so nobody has to rediscover
+ * it from a file that did not update.
+ *
+ * ── Why the timestamps are written rather than inherited ────────────────────
+ *
+ * `fs.copyFile` does not carry an mtime, and `fs.cp` carries one on win32 and
+ * not on macOS (both measured 2026-08-22 — see `refreshHostedCopy`). Every file
+ * this writes is stamped from its source explicitly, so the NEXT pass’s
+ * comparison means the same thing on every platform. That is the lesson
+ * `stampCopyFromSource` exists for, applied per file.
+ *
+ * ── What it deletes ─────────────────────────────────────────────────────────
+ *
+ * Anything in the copy the original no longer has. A mirror that only added
+ * would leave a step the user deleted in Foundry standing in the copy forever,
+ * and the copy is what the hosted window opens — so the deletion is the honest
+ * half of "reload". It is bounded to this project’s folder and nothing above it.
+ *
+ * ── Not atomic, and that is survivable ──────────────────────────────────────
+ *
+ * The stage-and-rename this replaced could not leave a half-updated project;
+ * this can. What makes it safe is the ORDER: `CATALOGUE` is excluded here and
+ * landed last by the caller, so a pass that dies half-way leaves a copy whose
+ * project.json still reads as older than the source. The next press mirrors
+ * again, converges on what is left, and lands the catalogue. Idempotence is
+ * doing the work atomicity used to.
+ */
+async function mirrorInto(
+  sourceDir: string,
+  destDir: string,
+  tally: MirrorTally,
+  skip: ReadonlySet<string>,
+): Promise<void> {
+  const sourceEntries = await fs.readdir(sourceDir, { withFileTypes: true });
+  const destEntries = await fs.readdir(destDir, { withFileTypes: true });
+  const inSource = new Set(sourceEntries.map((e) => e.name));
+
+  for (const entry of destEntries) {
+    if (skip.has(entry.name)) continue;
+    if (inSource.has(entry.name)) continue;
+    await fs.rm(path.join(destDir, entry.name), { recursive: true, force: true });
+    tally.removed++;
+  }
+
+  for (const entry of sourceEntries) {
+    if (skip.has(entry.name)) continue;
+    const from = path.join(sourceDir, entry.name);
+    const to = path.join(destDir, entry.name);
+
+    if (entry.isDirectory()) {
+      // A FILE may stand where a folder belongs — the two trees are only as
+      // related as the last refresh left them.
+      let clash = false;
+      try { clash = !(await fs.stat(to)).isDirectory(); } catch { /* absent */ }
+      if (clash) await fs.rm(to, { recursive: true, force: true });
+      await fs.mkdir(to, { recursive: true });
+      await mirrorInto(from, to, tally, NOTHING_HELD_BACK);
+      continue;
+    }
+
+    if (!entry.isFile()) {
+      // A symlink, or something a filesystem knows about that this walk does
+      // not. Replaced wholesale rather than compared, because "unchanged" is
+      // not defined for it here and guessing would be the wrong kind of clever.
+      await fs.rm(to, { recursive: true, force: true });
+      await fs.cp(from, to, { recursive: true, verbatimSymlinks: true });
+      tally.copied++;
+      continue;
+    }
+
+    const source = await fs.stat(from);
+    let unchanged = false;
+    let occupied = false;
+    try {
+      const dest = await fs.stat(to);
+      occupied = true;
+      unchanged = dest.isFile()
+        && dest.size === source.size
+        && sameInstant(dest.mtime, source.mtime);
+    } catch { /* absent — it is copied below */ }
+    if (unchanged) continue;
+    if (occupied) await fs.rm(to, { recursive: true, force: true });
+    await fs.copyFile(from, to);
+    await fs.utimes(to, source.atime, source.mtime);
+    tally.copied++;
+  }
+}
+
+/** Passed to every recursive call: only the TOP level holds back the catalogue. */
+const NOTHING_HELD_BACK: ReadonlySet<string> = new Set<string>();
+
+/**
  * Bring the hosted copy forward to the source, when the source is the newer one.
  *
  * ── Why an mtime and not the ledger ─────────────────────────────────────────
@@ -1201,52 +1349,222 @@ async function refreshHostedCopy(
     return { kind: 'unreadable', why: (err as Error).message };
   }
   try {
-    hostedAt = (await fs.stat(path.join(hostedDir, 'project.json'))).mtime;
+    hostedAt = (await fs.stat(path.join(hostedDir, CATALOGUE))).mtime;
   } catch {
-    return { kind: 'absent' };
+    // THE COPY IS GONE. It used to be reported and left gone, which is the one
+    // answer that helps nobody: the book’s mapping names a folder the hosted
+    // window would open, and there is nothing there. The original is right here,
+    // so it is copied across again in full — there is no partial copy to mirror
+    // against.
+    try {
+      await copyProjectInto(sourceDir, hostedProjectsRoot, hostedDir);
+    } catch (err) {
+      return { kind: 'failed', why: (err as Error).message, partial: false };
+    }
+    return { kind: 'restored', filesCopied: await countFiles(hostedDir) };
   }
 
   if (sameInstant(hostedAt, sourceAt)) return { kind: 'current' };
   if (hostedAt > sourceAt) return { kind: 'hosted-newer', sourceAt, hostedAt };
 
-  // STAGE, DISPLACE, LAND — three renames, none of them the shape Windows
-  // refuses. A staged tree cannot simply be renamed ONTO the old one: a
-  // directory landing on a directory is EPERM on win32 and no amount of waiting
-  // changes that (measured, 2026-08-22), so the old copy steps aside first and
-  // every rename this makes is a tree landing where nothing is.
-  const staging = path.join(
-    hostedProjectsRoot, `.adopting-${key}-${process.pid}-${Date.now()}`);
-  const superseded = path.join(
-    hostedProjectsRoot, `.superseded-${key}-${process.pid}-${Date.now()}`);
+  // MIRROR, THEN LAND THE CATALOGUE. This used to stage a whole second copy of
+  // the project beside the old one and swap them with three renames — correct,
+  // atomic, and a gigabyte of writes to carry across a catalogue and two step
+  // documents. See `mirrorInto` for the trade that replaced it, and for why the
+  // catalogue is held back to the end.
+  const tally: MirrorTally = { copied: 0, removed: 0 };
   try {
-    await fs.cp(sourceDir, staging, { recursive: true });
+    await mirrorInto(sourceDir, hostedDir, tally, HOLD_BACK_CATALOGUE);
+    await fs.copyFile(path.join(sourceDir, CATALOGUE), path.join(hostedDir, CATALOGUE));
   } catch (err) {
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
-    return { kind: 'failed', why: (err as Error).message };
-  }
-  try {
-    await renameOntoDestination(hostedDir, superseded);
-  } catch (err) {
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
-    return { kind: 'failed', why: (err as Error).message };
-  }
-  try {
-    await renameOntoDestination(staging, hostedDir);
-  } catch (err) {
-    // The library must not be left with no copy at all: the old one goes back
-    // before this call admits it failed.
-    await renameOntoDestination(superseded, hostedDir).catch(() => { /* named below */ });
-    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
-    return { kind: 'failed', why: (err as Error).message };
+    return {
+      kind: 'failed',
+      why: (err as Error).message,
+      partial: tally.copied > 0 || tally.removed > 0,
+    };
   }
   await stampCopyFromSource(sourceDir, hostedDir);
-  await fs.rm(superseded, { recursive: true, force: true }).catch((err: Error) => {
-    console.error(
-      `[foundry-adopt] The copy of "${key}" was brought up to date, but the one it replaced could `
-      + `not be removed from ${superseded} (${err.message}). Delete that folder when nothing holds `
-      + 'it; the library is correct either way.');
-  });
-  return { kind: 'refreshed', sourceAt, hostedAt };
+  return {
+    kind: 'refreshed',
+    sourceAt,
+    hostedAt,
+    // The catalogue is one of the files that came across, and a count the user
+    // reads must not quietly omit the one file that is always in it.
+    filesCopied: tally.copied + 1,
+    filesRemoved: tally.removed,
+  };
+}
+
+/** The top-level skip set: the catalogue lands by hand, last. See `mirrorInto`. */
+const HOLD_BACK_CATALOGUE: ReadonlySet<string> = new Set([CATALOGUE]);
+
+/**
+ * How many files a tree holds. Only for the sentence a restore reports — the
+ * mirror counts what it writes as it writes it, and a whole-folder copy has no
+ * such tally to hand back.
+ */
+async function countFiles(dir: string): Promise<number> {
+  let n = 0;
+  for (const entry of await fs.readdir(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) n += await countFiles(path.join(dir, entry.name));
+    else n++;
+  }
+  return n;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Reload from Foundry
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The standalone project a book was adopted from, if standalone Foundry still
+ * has one under that key.
+ *
+ * Null covers three different things on purpose — no standalone Foundry on this
+ * machine, no folder under that key, no catalogue in it — because the caller
+ * does exactly one thing with all three: it draws the Reload button disabled.
+ * The act itself (`refreshAdoptedProject`) tells them apart in words, because a
+ * press is owed a reason and a greyed button is not.
+ */
+export async function findStandaloneSource(
+  standaloneProjectsRoot: string | null,
+  key: string,
+): Promise<FoundryStandaloneSource | null> {
+  if (standaloneProjectsRoot === null) return null;
+  const dir = path.join(standaloneProjectsRoot, key);
+  const modifiedAt = await catalogueDate(dir);
+  if (modifiedAt === null) return null;
+  return { dir, modifiedAt };
+}
+
+/**
+ * RELOAD ONE ALREADY-ADOPTED BOOK from the standalone project it came from.
+ *
+ * ── The gap this closes ─────────────────────────────────────────────────────
+ *
+ * Adoption brings a project forward every time it is pressed — but a project a
+ * book already claims is FILTERED OUT of the Adopt list
+ * (`listAdoptableFoundryProjects`, "a project belongs to exactly one book"), so
+ * after the first adoption there was no press to make. The refresh existed and
+ * was unreachable except through the browse-for-a-folder fallback. Owen asked
+ * for the button the day after the refresh landed: *"i think ill need a way to
+ * pull in the latest changes from foundry if more work was done there"*.
+ *
+ * ── What it touches, and what it deliberately does not ──────────────────────
+ *
+ * THE HOSTED COPY, by mirror — only the files that differ (see `mirrorInto`).
+ * Then the export trays, through the same sweep every other Foundry path uses,
+ * so an EPUB exported in standalone since the last press is on the versions
+ * page when this returns.
+ *
+ * IT DOES NOT RE-IMPORT THE BOOK. The book’s own `archive/` original is what it
+ * was made from and is immutable; re-minting it would mean a second book or a
+ * rewritten one, and neither is what "reload" means. It does not write the
+ * mapping either — the mapping is why this call is possible at all.
+ *
+ * IT NEVER OVERWRITES NEWER HOSTED WORK. `refreshHostedCopy` declines when the
+ * copy is ahead of the original, and that decline is reported as its own
+ * outcome rather than as a failure — the user pressed a button and is owed the
+ * difference between "there was nothing to bring" and "there was, and this side
+ * would not take it".
+ */
+export async function refreshAdoptedProject(
+  bookDir: string,
+  hostedProjectsRoot: string,
+  standaloneProjectsRoot: string | null,
+  onProjectChanged: (bookDir: string) => void,
+): Promise<FoundryRefreshResult> {
+  const book = path.basename(bookDir);
+
+  let key: string | null;
+  try {
+    key = await manifestService.readFoundryProject(bookDir);
+  } catch (err) {
+    return {
+      outcome: 'refused',
+      reason: `${book}’s manifest could not be read (${(err as Error).message}), so which Foundry `
+        + 'project it belongs to is unknown. Nothing was changed.',
+    };
+  }
+  if (key === null) {
+    return {
+      outcome: 'refused',
+      reason: `${book} is not joined to a Foundry project, so there is nothing to reload it from. `
+        + 'Nothing was changed.',
+    };
+  }
+
+  if (standaloneProjectsRoot === null) {
+    return {
+      outcome: 'refused',
+      reason: `There is no standalone Foundry on this machine — nothing names a library for it — `
+        + `so Foundry project "${key}" has nowhere newer to be reloaded from. Work done in the `
+        + 'Foundry window inside BookForge is already in this library. Nothing was changed.',
+    };
+  }
+  const sourceDir = path.join(standaloneProjectsRoot, key);
+  try {
+    // Read for its refusals, not for its fields: a folder that is not a readable
+    // project must be named as such BEFORE anything is mirrored out of it.
+    await readFoundryProjectSignature(sourceDir);
+  } catch (err) {
+    if (!(err instanceof NotAFoundryProjectError)) throw err;
+    if (err.kind === 'no-catalogue') {
+      return {
+        outcome: 'refused',
+        reason: `Standalone Foundry has no project "${key}" at ${sourceDir}. This book’s project `
+          + 'lives only inside BookForge, so there is nothing to reload from. Nothing was changed.',
+      };
+    }
+    return { outcome: 'refused', reason: err.message };
+  }
+
+  const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key);
+  if (freshness.kind === 'failed' || freshness.kind === 'unreadable') {
+    return {
+      outcome: 'refused',
+      reason: `Foundry project "${key}" could not be reloaded from ${sourceDir}. `
+        + freshnessSentence(freshness),
+    };
+  }
+
+  // The tray is swept whatever the copy did — an export can be sitting in a copy
+  // that is otherwise current, if the last press landed the files and the sweep
+  // did not run. It never replaces a version that already exists, so a press
+  // that brings nothing across costs nothing here either.
+  const exportsLanded = await reconcile(hostedProjectsRoot, key, onProjectChanged);
+  // EVERY `Its` in a freshness sentence needs an antecedent, and inside adoption
+  // it had one — the project had just been named in the sentence before. A
+  // reload reports into a toast on the workspace, where nothing has been named
+  // at all, so the subject is supplied here rather than by writing a second set
+  // of sentences that would drift from the first.
+  const said = `This book is Foundry project "${key}". ${freshnessSentence(freshness)}`;
+  const landed = exportsLanded > 0
+    ? ` ${exportsLanded} export${exportsLanded === 1 ? '' : 's'} `
+      + `${exportsLanded === 1 ? 'is' : 'are'} now on its versions page.`
+    : '';
+
+  if (freshness.kind === 'hosted-newer') {
+    return {
+      outcome: 'declined',
+      message: `${said}${landed}`,
+      exportsLanded,
+    };
+  }
+  if (freshness.kind === 'current' || freshness.kind === 'in-place') {
+    return {
+      outcome: 'current',
+      message: `${said}${landed}`,
+      exportsLanded,
+    };
+  }
+  return {
+    outcome: 'refreshed',
+    message: `${said}${landed}`,
+    filesCopied: freshness.filesCopied,
+    filesRemoved: freshness.kind === 'restored' ? 0 : freshness.filesRemoved,
+    exportsLanded,
+  };
 }
 
 /** Undo a copy this call made, so a failed adoption can simply be retried. */

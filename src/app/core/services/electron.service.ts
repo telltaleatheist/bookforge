@@ -26,6 +26,8 @@ import type {
   AdoptResult as FoundryAdoptOutcome,
   AdoptableFoundryProject as FoundryAdoptable,
   BlockedFoundryProject as FoundryBlocked,
+  FoundryRefreshResult,
+  FoundryStandaloneSource,
 } from '@shared/foundry/adopt-types';
 import type { PassDiffFile } from '../models/diff.types';
 
@@ -1497,8 +1499,20 @@ export class ElectronService {
   // hosted window brings its own IPC; `foundry:*` is the foundry CLI's. Rows
   // arrive with `absPath` already resolved by main — nothing here joins a path.
 
-  /** The project KEY and its resolved directory; both null when the book has none. */
-  async foundryHostProject(projectDir: string): Promise<{ success: boolean; key?: string | null; dir?: string | null; error?: string }> {
+  /**
+   * The project KEY and its resolved directory; both null when the book has none.
+   *
+   * `standaloneSource` is the project in standalone Foundry this book was adopted
+   * from, when one is still there — what Reload from Foundry would read. Null for
+   * a book whose project only ever existed inside BookForge.
+   */
+  async foundryHostProject(projectDir: string): Promise<{
+    success: boolean;
+    key?: string | null;
+    dir?: string | null;
+    standaloneSource?: FoundryStandaloneSource | null;
+    error?: string;
+  }> {
     if (this.isElectron) return (window as any).electron.foundryHost.project(projectDir);
     return { success: false, error: 'Not running in Electron' };
   }
@@ -1549,6 +1563,20 @@ export class ElectronService {
     error?: string;
   }> {
     if (this.isElectron) return (window as any).electron.foundryHost.adopt(sourceDir);
+    return { success: false, error: 'Not running in Electron' };
+  }
+  /**
+   * Bring an already-adopted book’s Foundry copy forward from the standalone
+   * project it came from — only the files that differ — and land any export that
+   * has appeared in its tray since. A hosted copy that is AHEAD of the original
+   * is left alone and says so; that is an outcome, not an error.
+   */
+  async foundryHostReload(bookDir: string): Promise<{
+    success: boolean;
+    result?: FoundryRefreshResult;
+    error?: string;
+  }> {
+    if (this.isElectron) return (window as any).electron.foundryHost.reload(bookDir);
     return { success: false, error: 'Not running in Electron' };
   }
   /** Pick a Foundry project folder by hand — for one in neither searched place. */

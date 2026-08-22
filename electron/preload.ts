@@ -21,6 +21,8 @@ import type {
   AdoptableFoundryProject as FoundryAdoptableProject,
   BlockedFoundryProject as FoundryBlockedProject,
   AdoptResult as FoundryAdoptResult,
+  FoundryRefreshResult,
+  FoundryStandaloneSource,
 } from '../shared/foundry/adopt-types';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
 // imported rather than re-declared (see shared/processing/pass-types.ts).
@@ -1264,9 +1266,22 @@ export interface ElectronAPI {
    * foundry CLI, and the hosted window brings its own IPC.
    */
   foundryHost: {
-    /** The project KEY and its resolved directory, or nulls when the book has none. */
-    project: (projectDir: string) =>
-      Promise<{ success: boolean; key?: string | null; dir?: string | null; error?: string }>;
+    /**
+     * The project KEY and its resolved directory, or nulls when the book has none.
+     *
+     * `standaloneSource` is the project in STANDALONE Foundry’s own library that
+     * this book was adopted from, when one is still there. Null is the ordinary
+     * state of a book whose project was made in the hosted window, and it is what
+     * draws the Reload button disabled — the reason in words belongs to a press,
+     * not to a greyed control.
+     */
+    project: (projectDir: string) => Promise<{
+      success: boolean;
+      key?: string | null;
+      dir?: string | null;
+      standaloneSource?: FoundryStandaloneSource | null;
+      error?: string;
+    }>;
     /**
      * Open the Foundry window on this book — deep-linked into its project, or
      * bare when it has none yet (the Import-via-Foundry door). `opened` says
@@ -1299,6 +1314,14 @@ export interface ElectronAPI {
      */
     adopt: (sourceDir: string) =>
       Promise<{ success: boolean; result?: FoundryAdoptResult; error?: string }>;
+    /**
+     * Bring an already-adopted book’s hosted copy forward from the standalone
+     * project it came from — only the files that differ — and land any export
+     * that has appeared in its tray since. Never overwrites a hosted copy that is
+     * ahead of the original; that is reported as its own outcome.
+     */
+    reload: (bookDir: string) =>
+      Promise<{ success: boolean; result?: FoundryRefreshResult; error?: string }>;
     /** Pick a project folder by hand — the fallback for one in neither place. */
     browseForProject: () =>
       Promise<{ success: boolean; folderPath?: string; canceled?: boolean; error?: string }>;
@@ -2966,6 +2989,7 @@ const electronAPI: ElectronAPI = {
     // Foundry's own library, and orphans in our hosted root that no book maps.
     adoptables: () => ipcRenderer.invoke('foundry-host:adoptables'),
     adopt: (sourceDir: string) => ipcRenderer.invoke('foundry-host:adopt', sourceDir),
+    reload: (bookDir: string) => ipcRenderer.invoke('foundry-host:reload', bookDir),
     browseForProject: () => ipcRenderer.invoke('foundry-host:browse-for-project'),
     // A Foundry landing changed this book's VERSIONS. Named for what it means
     // since 2026-08-17: an export is copied in and minted as a variant, so what
