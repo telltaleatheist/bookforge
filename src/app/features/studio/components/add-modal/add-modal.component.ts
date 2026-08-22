@@ -1,4 +1,4 @@
-import { Component, inject, signal, input, output, effect, HostListener } from '@angular/core';
+import { Component, inject, signal, computed, input, output, effect, HostListener } from '@angular/core';
 import { CommonModule } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { StudioService } from '../../services/studio.service';
@@ -6,7 +6,10 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { NoticeService } from '../../../../core/services/notice.service';
 import { StudioItem } from '../../models/studio.types';
 import { ImportMetadataModalComponent, ImportMetadata } from '../import-metadata-modal/import-metadata-modal.component';
-import type { AdoptableFoundryProject as FoundryAdoptable } from '@shared/foundry/adopt-types';
+import type {
+  AdoptableFoundryProject as FoundryAdoptable,
+  BlockedFoundryProject as FoundryBlocked,
+} from '@shared/foundry/adopt-types';
 
 interface ImportProgress {
   total: number;
@@ -148,7 +151,7 @@ interface ImportProgress {
 
             @if (adoptLoading()) {
               <p class="adopt-empty">Looking for Foundry projects…</p>
-            } @else if (adoptables().length === 0) {
+            } @else if (adoptEmpty()) {
               <p class="adopt-empty">No Foundry projects left to adopt.</p>
             } @else {
               <ul class="adopt-list">
@@ -177,6 +180,36 @@ interface ImportProgress {
                     </button>
                   </li>
                 }
+                <!--
+                  THE ONES THAT CANNOT BE TAKEN, drawn rather than explained.
+
+                  Greyed and last, with the reason on hover and the button
+                  disabled rather than gone: a control that vanishes leaves the
+                  user wondering whether they mis-remembered, and this list's
+                  whole job is to account for the projects on disk.
+                -->
+                @for (project of adoptBlocked(); track project.dir) {
+                  <li class="adopt-row adopt-row-blocked">
+                    <div class="adopt-row-text">
+                      <span class="adopt-name" [title]="project.dir">{{ project.key }}</span>
+                      <!--
+                        The reason is SHOWN and not only hovered: hover is not
+                        discoverable and does not exist on a touch screen. The
+                        title carries it too, for the case the line is ellipsed.
+                      -->
+                      <span class="adopt-meta" [title]="project.reason">
+                        {{ project.origin === 'standalone' ? 'Foundry library' : 'In this library' }}
+                        @if (project.modifiedAt) {
+                          · edited {{ formatAdoptDate(project.modifiedAt) }}
+                        }
+                        · {{ project.reason }}
+                      </span>
+                    </div>
+                    <button class="btn-adopt" disabled title="This project cannot be adopted.">
+                      Adopt
+                    </button>
+                  </li>
+                }
               </ul>
             }
 
@@ -191,6 +224,12 @@ interface ImportProgress {
             @if (adoptError()) {
               <p class="import-error adopt-message">{{ adoptError() }}</p>
             }
+            <!--
+              Only whole ROOTS that would not list survive as sentences. Anything
+              about a particular project is a greyed row above, because a
+              sentence about something you can see and point at beats a paragraph
+              about something that is not on screen.
+            -->
             @for (refusal of adoptRefusals(); track refusal) {
               <p class="url-warning adopt-message">{{ refusal }}</p>
             }
@@ -528,6 +567,27 @@ interface ImportProgress {
       }
     }
 
+    /* A project that cannot be taken. Dimmed as a whole rather than restyled
+       piece by piece, so it reads as one unavailable thing at a glance and
+       stays legible enough to identify — this row's job is to account for a
+       folder the user knows is on disk. The hover highlight is kept: it is what
+       makes the row feel like something you may point at and get a tooltip
+       from, which is the whole of the affordance now. */
+    .adopt-row-blocked {
+      opacity: 0.55;
+
+      .adopt-name {
+        color: var(--text-secondary);
+      }
+
+      /* The ROW is what is dimmed. Letting the button's own disabled opacity
+         multiply into it as well took the label to about a third of full
+         strength, which reads as a rendering fault rather than as unavailable. */
+      .btn-adopt:disabled {
+        opacity: 1;
+      }
+    }
+
     .adopt-row-text {
       flex: 1;
       min-width: 0;
@@ -650,7 +710,19 @@ export class AddModalComponent {
   // manifest maps. Listed on open (one IPC call), adopted one press at a time.
 
   readonly adoptables = signal<FoundryAdoptable[]>([]);
+  /**
+   * Projects that ARE projects and cannot be taken.
+   *
+   * Drawn in the same list, greyed, with `reason` on hover — Owen's ruling,
+   * 2026-08-22: *"i dont need an explanation if a book cant be adopted. just
+   * show it grayed out with a tooltip maybe"*. They were paragraphs under the
+   * list before, describing a project that was nowhere on screen.
+   */
+  readonly adoptBlocked = signal<FoundryBlocked[]>([]);
   readonly adoptRefusals = signal<string[]>([]);
+  /** Nothing to show at all — neither a project to take nor one to grey. */
+  readonly adoptEmpty = computed(
+    () => this.adoptables().length === 0 && this.adoptBlocked().length === 0);
   readonly adoptLoading = signal<boolean>(true);
   /** The project currently being adopted — one at a time, so the list can't race. */
   readonly adoptingDir = signal<string | null>(null);
@@ -675,12 +747,14 @@ export class AddModalComponent {
       const result = await this.electronService.foundryHostAdoptables();
       if (result.success) {
         this.adoptables.set(result.projects ?? []);
+        this.adoptBlocked.set(result.blocked ?? []);
         this.adoptRefusals.set(result.refusals ?? []);
       } else {
         // The list failing is NOT the same as an empty list, and must not look
         // like one: an empty list says "there is nothing to adopt", which would
         // be a lie about a library that could not be read.
         this.adoptables.set([]);
+        this.adoptBlocked.set([]);
         this.adoptRefusals.set([]);
         this.adoptError.set(
           `Foundry projects could not be looked for: ${result.error || 'no reason given'}`);

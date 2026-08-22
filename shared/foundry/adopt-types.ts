@@ -69,14 +69,51 @@ export type AdoptResult =
       reason: string;
     };
 
+/**
+ * A Foundry project that IS one and cannot be adopted anyway.
+ *
+ * Kept apart from `AdoptableFoundryProject` rather than folded into it with
+ * nullable fields, because the fields that make a project adoptable — the
+ * original's kind, its title out of the catalogue — are exactly the ones that
+ * could not be read. A row that carried them as `null` would invite every
+ * consumer to ask whether this one is real, and one of them would get it wrong.
+ */
+export interface BlockedFoundryProject {
+  /** The project key — the folder's name. All we can be sure of. */
+  key: string;
+  /** The folder, absolute. Shown on hover so the user can go and look. */
+  dir: string;
+  /** Which half of the search found it — same meaning as on an adoptable. */
+  origin: 'standalone' | 'hosted';
+  /**
+   * Why it cannot be adopted, in ONE clause and no more.
+   *
+   * This is tooltip text, not a paragraph: the row itself already says the
+   * project cannot be taken, so the reason only has to answer "why not" for
+   * somebody who stopped to ask. The long form these were written as is still
+   * what `adoptFoundryProject` throws when something presses through anyway.
+   */
+  reason: string;
+  /** When its catalogue was last written, ISO — or null if that could not be read. */
+  modifiedAt: string | null;
+}
+
 /** What `listAdoptableFoundryProjects` answers. */
 export interface AdoptableListing {
   projects: AdoptableFoundryProject[];
   /**
-   * Folders that were passed over and why, one sentence each. NOT an error and
-   * NOT hidden: a user who expected to see their project here needs the reason,
-   * and a folder that is not a project is a perfectly ordinary thing to find in
-   * somebody's library.
+   * Projects that cannot be adopted, to be DRAWN rather than explained: the row
+   * is greyed with `reason` on hover. Owen's ruling, 2026-08-22 — *"i dont need
+   * an explanation if a book cant be adopted. just show it grayed out with a
+   * tooltip maybe"* — after an unadoptable project put a four-line paragraph
+   * under the list while the project it was about was nowhere on screen.
+   */
+  blocked: BlockedFoundryProject[];
+  /**
+   * What could not even be looked at: a root that would not list. NOT per
+   * project — anything about a specific project is a `blocked` row now, because
+   * a sentence about a thing you can see beats a sentence about a thing you
+   * cannot.
    */
   refusals: string[];
 }

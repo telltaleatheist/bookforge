@@ -467,7 +467,7 @@ test('a settings file that names no library falls to where Foundry itself would 
     "Foundry at its defaults keeps them in ~/Documents/Foundry, and that is where we look");
 }));
 
-test('a stray folder is passed over silently; an unreadable catalogue is named', run(async (w) => {
+test('a stray folder is passed over silently; an unreadable catalogue is a greyed ROW', run(async (w) => {
   fs.mkdirSync(path.join(w.hosted, 'somebodys-folder'), { recursive: true });
   const broken = path.join(w.hosted, 'half-a-project');
   fs.mkdirSync(broken, { recursive: true });
@@ -475,9 +475,72 @@ test('a stray folder is passed over silently; an unreadable catalogue is named',
 
   const listing = await adopt.listAdoptableFoundryProjects(w.hosted, null);
   assert.deepStrictEqual(listing.projects, []);
-  assert.strictEqual(listing.refusals.length, 1,
-    'a folder with no catalogue is somebody’s folder; one with a broken catalogue is news');
-  assert.ok(/half-a-project/.test(listing.refusals[0]), listing.refusals[0]);
+
+  // Owen's ruling, 2026-08-22: a project that cannot be adopted is DRAWN and
+  // greyed, not explained in a paragraph beside a list it is absent from. The
+  // folder with no catalogue stays silent — that one is somebody's folder and
+  // not a project that failed.
+  assert.strictEqual(listing.blocked.length, 1,
+    'a folder with no catalogue is somebody’s folder; one with a broken catalogue is a row');
+  assert.strictEqual(listing.blocked[0].key, 'half-a-project');
+  assert.strictEqual(listing.blocked[0].origin, 'hosted');
+  assert.deepStrictEqual(listing.refusals, [],
+    'nothing about a single project is prose any more');
+
+  // The tooltip has to be a tooltip: one clause, and not the paragraph the
+  // press-time refusal still throws.
+  const { reason } = listing.blocked[0];
+  assert.ok(reason.length <= 80, `the row's reason is a tooltip, not a paragraph: ${reason}`);
+  assert.ok(!/Nothing was adopted/.test(reason),
+    'the row is not the answer to a press, so it must not talk about what was adopted');
+}));
+
+test('every unadoptable shape is a row, and each says something different', run(async (w) => {
+  // One folder per refusal `readFoundryProjectSignature` can raise, so a new one
+  // added without a short form shows up here as a duplicate rather than as a
+  // tooltip nobody notices is wrong.
+  const shapes = {
+    'not-json': '{ not json',
+    'not-an-object': '[]',
+    'wrong-version': JSON.stringify({ version: 9, key: 'k', archive: { file: 'a.pdf', kind: 'pdf' } }),
+    'no-key': JSON.stringify({ version: 2, archive: { file: 'a.pdf', kind: 'pdf' } }),
+    'no-original': JSON.stringify({ version: 2, key: 'no-original' }),
+    'missing-file': JSON.stringify({ version: 2, key: 'missing-file', archive: { file: 'gone.pdf', kind: 'pdf' } }),
+  };
+  for (const [name, body] of Object.entries(shapes)) {
+    const dir = path.join(w.hosted, name);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(path.join(dir, 'project.json'), body);
+  }
+
+  const listing = await adopt.listAdoptableFoundryProjects(w.hosted, null);
+  assert.deepStrictEqual(listing.projects, []);
+  assert.strictEqual(listing.blocked.length, Object.keys(shapes).length,
+    'every unadoptable project is offered as a row to grey');
+  assert.deepStrictEqual(listing.refusals, []);
+
+  const reasons = listing.blocked.map((b) => b.reason);
+  assert.strictEqual(new Set(reasons).size, reasons.length,
+    `two shapes share a tooltip, so one of them is unexplained: ${reasons.join(' | ')}`);
+  for (const reason of reasons) {
+    assert.ok(reason.length <= 80, `not a tooltip: ${reason}`);
+  }
+}));
+
+test('a project that is adoptable in one root is never ALSO greyed from the other', run(async (w) => {
+  // The same key readable hosted and broken standalone. Offering it and greying
+  // it in one list is the single outcome that reads as a bug rather than as an
+  // answer, so `listAdoptableFoundryProjects` drops the blocked twin.
+  const key = 'two-faced-abcd1234';
+  fs.mkdirSync(path.join(w.standalone, key), { recursive: true });
+  fs.writeFileSync(path.join(w.standalone, key, 'project.json'), '{ not json');
+  makeFoundryProject(w.hosted, key, { title: 'Two Faced' });
+
+  const listing = await adopt.listAdoptableFoundryProjects(w.hosted, w.standalone);
+  assert.strictEqual(listing.projects.length, 1, 'the readable one is offered');
+  assert.strictEqual(listing.projects[0].key, key);
+  assert.deepStrictEqual(listing.blocked, [],
+    'the broken twin is dropped rather than drawn beside the row that works');
 }));
 
 test('a root that does not exist is not a refusal', run(async (w) => {

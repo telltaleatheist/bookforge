@@ -62,9 +62,15 @@ import type {
   AdoptResult,
   AdoptableFoundryProject,
   AdoptableListing,
+  BlockedFoundryProject,
 } from '../shared/foundry/adopt-types';
 
-export type { AdoptResult, AdoptableFoundryProject, AdoptableListing };
+export type {
+  AdoptResult,
+  AdoptableFoundryProject,
+  AdoptableListing,
+  BlockedFoundryProject,
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The shared vocabulary: paths, claims, and the mapping act
@@ -335,6 +341,19 @@ export class NotAFoundryProjectError extends Error {
   constructor(
     message: string,
     readonly kind: 'no-catalogue' | 'unreadable',
+    /**
+     * The same refusal in ONE clause, for the greyed row's tooltip.
+     *
+     * `message` is written for somebody who just pressed a button and is owed a
+     * paragraph. The list is the other case: the project is drawn, greyed, and
+     * the reason is a hover — so it has to fit on one line and must not repeat
+     * what the row already shows. Both exist because they are answering
+     * different questions, not because one is a summary of the other.
+     *
+     * Defaulted to `message` so a refusal added later is never silently
+     * tooltip-less; it will simply be too long, which is visible.
+     */
+    readonly short: string = message,
   ) {
     super(message);
   }
@@ -369,12 +388,14 @@ export async function readFoundryProjectSignature(
   } catch (err) {
     throw new NotAFoundryProjectError(
       `${catalogue} is not JSON (${(err as Error).message}), so it cannot be read as a Foundry `
-      + 'catalogue. Nothing was adopted.', 'unreadable');
+      + 'catalogue. Nothing was adopted.', 'unreadable',
+      'Its project.json is not valid JSON.');
   }
   if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
     throw new NotAFoundryProjectError(
       `${catalogue} is not an object, so it is not a project catalogue. Nothing was adopted.`,
-      'unreadable');
+      'unreadable',
+      'Its project.json is not a catalogue.');
   }
   const row = parsed as Record<string, unknown>;
 
@@ -383,14 +404,16 @@ export async function readFoundryProjectSignature(
   if (row['version'] !== 1 && row['version'] !== 2) {
     throw new NotAFoundryProjectError(
       `${catalogue} is version ${String(row['version'])}, and Foundry catalogues of versions 1 `
-      + 'and 2 are the ones BookForge knows how to read. Nothing was adopted.', 'unreadable');
+      + 'and 2 are the ones BookForge knows how to read. Nothing was adopted.', 'unreadable',
+      `Catalogue version ${String(row['version'])} — BookForge reads 1 and 2.`);
   }
 
   const key = row['key'];
   if (typeof key !== 'string' || key.length === 0) {
     throw new NotAFoundryProjectError(
       `${catalogue} names no key, so nothing says which book that folder is. Nothing was adopted.`,
-      'unreadable');
+      'unreadable',
+      'Its catalogue names no key.');
   }
 
   const archive = row['archive'];
@@ -403,7 +426,8 @@ export async function readFoundryProjectSignature(
     throw new NotAFoundryProjectError(
       `The Foundry project "${key}" records no imported original — its catalogue's archive names `
       + 'no file. Adoption makes a BookForge book out of the file a project was made from, and '
-      + 'there is no such file here. Nothing was adopted.', 'unreadable');
+      + 'there is no such file here. Nothing was adopted.', 'unreadable',
+      'No imported original — its catalogue records no file to make a book from.');
   }
 
   const originalPath = path.join(dir, 'archive', file);
@@ -413,7 +437,8 @@ export async function readFoundryProjectSignature(
     throw new NotAFoundryProjectError(
       `The Foundry project "${key}" says its original is archive/${file}, and there is no file `
       + `at ${originalPath}. The book it was made from cannot be adopted without it. Nothing was `
-      + 'adopted.', 'unreadable');
+      + 'adopted.', 'unreadable',
+      `Its original, archive/${file}, is missing.`);
   }
 
   // Foundry's own rule, mirrored rather than improved on: the title where the
@@ -528,6 +553,9 @@ export async function listAdoptableFoundryProjects(
 
   const refusals: string[] = [];
   const byKey = new Map<string, AdoptableFoundryProject>();
+  // Same dedupe rule as `byKey`, for the same reason: hosted is walked second
+  // and overwrites the standalone row for a key found in both.
+  const blockedByKey = new Map<string, BlockedFoundryProject>();
 
   // Hosted SECOND so it overwrites the standalone entry for the same key — see
   // the dedupe note above.
@@ -568,9 +596,19 @@ export async function listAdoptableFoundryProjects(
         if (!(err instanceof NotAFoundryProjectError)) throw err;
         // A folder with no project.json is SILENT — it is somebody's folder,
         // not a project that failed. One that HAS a catalogue this side cannot
-        // read is named, because the user is looking for a project they know is
-        // there and the reason it is missing from the list is the answer.
-        if (err.kind === 'unreadable') refusals.push(err.message);
+        // read is DRAWN, greyed, with the short reason on hover: the user is
+        // looking for a project they know is there, and a row they can see and
+        // point at answers that better than a paragraph under a list the
+        // project is absent from (Owen's ruling, 2026-08-22).
+        if (err.kind === 'unreadable' && !claimed.has(entry.name)) {
+          blockedByKey.set(entry.name, {
+            key: entry.name,
+            dir,
+            origin,
+            reason: err.short,
+            modifiedAt: await catalogueDate(dir),
+          });
+        }
         continue;
       }
 
@@ -581,13 +619,18 @@ export async function listAdoptableFoundryProjects(
       // name it has now.
       if (claimed.has(entry.name)) continue;
 
-      let modifiedAt: string;
-      try {
-        modifiedAt = (await fs.stat(path.join(dir, 'project.json'))).mtime.toISOString();
-      } catch (err) {
-        refusals.push(
-          `${dir} is a Foundry project whose catalogue could not be dated `
-          + `(${(err as Error).message}), so it is not offered.`);
+      // Read a moment ago, so a failure here means it went away underneath us.
+      // Drawn greyed rather than explained, same as any other reason it cannot
+      // be taken — a row the user can see beats a sentence about one they cannot.
+      const modifiedAt = await catalogueDate(dir);
+      if (modifiedAt === null) {
+        blockedByKey.set(entry.name, {
+          key: entry.name,
+          dir,
+          origin,
+          reason: 'Its catalogue could not be read just now.',
+          modifiedAt: null,
+        });
         continue;
       }
 
@@ -604,7 +647,25 @@ export async function listAdoptableFoundryProjects(
   }
 
   const projects = [...byKey.values()].sort((a, b) => b.modifiedAt.localeCompare(a.modifiedAt));
-  return { projects, refusals };
+
+  // A key that is adoptable somewhere wins outright. The two maps are filled
+  // from two roots, so the same key can be a readable project in one and a
+  // broken one in the other; offering it AND greying it in the same list is the
+  // one outcome that would read as a bug rather than as an answer.
+  const blocked = [...blockedByKey.values()]
+    .filter((b) => !byKey.has(b.key))
+    .sort((a, b) => (b.modifiedAt ?? '').localeCompare(a.modifiedAt ?? ''));
+
+  return { projects, blocked, refusals };
+}
+
+/** The catalogue's mtime as ISO, or null when it cannot be read. */
+async function catalogueDate(dir: string): Promise<string | null> {
+  try {
+    return (await fs.stat(path.join(dir, 'project.json'))).mtime.toISOString();
+  } catch {
+    return null;
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

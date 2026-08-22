@@ -19,6 +19,7 @@ import type { JobStageProgress } from './job-stages';
 // second spelling of them here could only ever be a spelling that drifts.
 import type {
   AdoptableFoundryProject as FoundryAdoptableProject,
+  BlockedFoundryProject as FoundryBlockedProject,
   AdoptResult as FoundryAdoptResult,
 } from '../shared/foundry/adopt-types';
 // Types only — this module compiles to nothing at runtime, so the wire shapes are
@@ -1276,12 +1277,17 @@ export interface ElectronAPI {
     /**
      * Foundry projects this library has never seen — standalone Foundry's own
      * library, and orphans in our hosted root that no book's manifest maps.
-     * `refusals` are folders passed over, one sentence each; they are shown, not
-     * swallowed.
+     *
+     * `blocked` are projects that ARE projects and cannot be adopted; they are
+     * drawn greyed with their one-clause `reason` on hover, rather than
+     * explained in a paragraph beside a list they are absent from. `refusals`
+     * is what is left: a root that would not list at all, which has no row to
+     * be shown on.
      */
     adoptables: () => Promise<{
       success: boolean;
       projects?: FoundryAdoptableProject[];
+      blocked?: FoundryBlockedProject[];
       refusals?: string[];
       error?: string;
     }>;

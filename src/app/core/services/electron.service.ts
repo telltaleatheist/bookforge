@@ -25,6 +25,7 @@ import type { DocumentStageProgressEvent } from '@shared/document/pipeline-types
 import type {
   AdoptResult as FoundryAdoptOutcome,
   AdoptableFoundryProject as FoundryAdoptable,
+  BlockedFoundryProject as FoundryBlocked,
 } from '@shared/foundry/adopt-types';
 import type { PassDiffFile } from '../models/diff.types';
 
@@ -1527,6 +1528,8 @@ export class ElectronService {
   async foundryHostAdoptables(): Promise<{
     success: boolean;
     projects?: FoundryAdoptable[];
+    /** Projects that cannot be adopted — drawn greyed, `reason` on hover. */
+    blocked?: FoundryBlocked[];
     refusals?: string[];
     error?: string;
   }> {
