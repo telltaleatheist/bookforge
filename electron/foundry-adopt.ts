@@ -1082,8 +1082,15 @@ function freshnessSentence(freshness: CopyFreshness): string {
  * source's own mtime onto the copy: the library lives on an SMB share here, and
  * a share is free to round what it stores. Two seconds is the coarsest
  * granularity in common use (FAT's), so anything inside it is the same write as
- * far as this question goes — and nobody edits a project and re-adopts it inside
- * two seconds in a way this needs to notice.
+ * far as this question goes.
+ *
+ * WHAT THE WINDOW COSTS, chosen rather than inherited (bookforge-mac-2's note,
+ * 2026-08-22): it also swallows a GENUINE hosted write that lands within two
+ * seconds of the stamp — that project reads as `current` and a later refresh
+ * would overwrite it. The trade is deliberate. Rounding is a property of the
+ * filesystem and happens on every comparison; a hosted export landing inside the
+ * two seconds between copying a project and stamping it is a race nobody has
+ * hit. Narrowing the window would trade a certainty for a coincidence.
  */
 function sameInstant(a: Date, b: Date): boolean {
   return Math.abs(a.getTime() - b.getTime()) <= 2000;
@@ -1159,6 +1166,22 @@ function stamp(at: Date): string {
  * hosted copy that was ALSO edited would take the hosted edits with it. The
  * hosted window and standalone Foundry editing the same project between two
  * adoptions is the case that would need a real three-way answer.
+ *
+ * ── HOSTED-NEWER IS DETECTABLE, WHICH WAS NOT OBVIOUS ───────────────────────
+ *
+ * It only means something if the hosted window actually rewrites the copy's
+ * catalogue when it does work. It does, for the two kinds that matter, read out
+ * of the vendored subtree at 644831a by bookforge-mac-2: an EXPORT writes the
+ * captured step into the tray row (`foundry-app/electron/job-queue.ts`, the
+ * `exporting` branch — "so that a host reading `project.json` afterwards learns
+ * what a host listening at this instant learns from the announcement"), and a
+ * GENERATED BOOK records its origin there too. So after the stamp, the ONLY way
+ * `hostedAt` can exceed `sourceAt` is the hosted window having done something.
+ *
+ * NOT every kind of hosted work was enumerated. If some in-place edit lands
+ * without touching `project.json`, that class is invisible here and falls under
+ * the divergence limit above — Foundry owns that list. What is closed is the
+ * case Owen hit.
  */
 async function refreshHostedCopy(
   sourceDir: string,
