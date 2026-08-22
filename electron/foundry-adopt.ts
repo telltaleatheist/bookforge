@@ -766,6 +766,16 @@ export async function adoptFoundryProject(
   }
   if (existing.length === 1) {
     const bookDir = existing[0]!.dir;
+
+    // BRING THE COPY FORWARD FIRST, so the tray this reconciles is the CURRENT
+    // one. Adoption used to be copy-once: a project adopted on Monday and worked
+    // on in standalone Foundry on Tuesday stayed, in this library, exactly as it
+    // was on Monday — and pressing adopt again said "already in this library"
+    // and reconciled a tray four steps out of date. Owen paid for that on
+    // Reinhold Krause (2026-08-22): adopted 04:53 with three steps, translated,
+    // simplified and struck standalone until 07:24, re-imported, and the
+    // three-step copy stood with nothing said about it.
+    const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key);
     const landed = await reconcile(hostedProjectsRoot, key, onProjectChanged);
     return {
       outcome: 'already-mapped',
@@ -775,10 +785,10 @@ export async function adoptFoundryProject(
       exportsLanded: landed,
       message:
         `“${signature.title}” is already in this library as ${path.basename(bookDir)}, joined to `
-        + `Foundry project "${key}". Nothing was adopted again`
+        + `Foundry project "${key}". ${freshnessSentence(freshness)}`
         + (landed > 0
-          ? `; ${landed} export${landed === 1 ? '' : 's'} sitting in its tray ${landed === 1 ? 'was' : 'were'} added to its versions.`
-          : '.'),
+          ? ` ${landed} export${landed === 1 ? '' : 's'} from its tray ${landed === 1 ? 'was' : 'were'} added to its versions.`
+          : ''),
     };
   }
 
@@ -827,8 +837,24 @@ export async function adoptFoundryProject(
         };
       }
     }
-    // occupantKey === signature.key: the SAME project is already here. Left
-    // exactly as it is — the hosted copy may hold work the source does not.
+    // occupantKey === signature.key: the SAME project is already here, claimed
+    // by no book. It used to be left exactly as it was, on the reasoning that
+    // the hosted copy may hold work the source does not — true, and the reason
+    // `refreshHostedCopy` declines when the hosted side is newer. What that
+    // reasoning missed is the other direction: an orphan copy left from an
+    // earlier adoption is routinely OLDER than the project that made it, and
+    // leaving it meant minting a book from a stale original.
+    if (occupantKey !== null) {
+      const freshness = await refreshHostedCopy(sourceDir, hostedProjectsRoot, key);
+      if (freshness.kind === 'failed') {
+        return {
+          outcome: 'refused',
+          reason: `“${signature.title}” is already copied into ${hostedProjectsRoot}, and that copy `
+            + `could not be brought up to date: ${freshness.why}. Nothing was adopted; both the `
+            + 'project and the copy are untouched.',
+        };
+      }
+    }
   }
 
   // The original, as it stands in the copy the host will use. Re-read rather
@@ -1002,6 +1028,141 @@ async function copyProjectInto(
     await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
     throw err;
   }
+}
+
+/**
+ * What the hosted copy was, relative to the source, when adoption looked.
+ *
+ * `hosted-newer` is a real answer and not a failure: the hosted copy is the one
+ * the hosted Foundry window edits, so it can legitimately be ahead. What it must
+ * never be is silently overwritten.
+ */
+type CopyFreshness =
+  | { kind: 'in-place' }
+  | { kind: 'absent' }
+  | { kind: 'unreadable'; why: string }
+  | { kind: 'current' }
+  | { kind: 'refreshed'; sourceAt: Date; hostedAt: Date }
+  | { kind: 'hosted-newer'; sourceAt: Date; hostedAt: Date }
+  | { kind: 'failed'; why: string };
+
+/** One sentence for the user about what happened to the copy. Never silence. */
+function freshnessSentence(freshness: CopyFreshness): string {
+  switch (freshness.kind) {
+    case 'in-place':
+      return 'It is already the copy this library uses, so there was nothing to bring across.';
+    case 'absent':
+      return 'Its copy in this library is missing — nothing was brought across.';
+    case 'unreadable':
+      return `Its copy in this library could not be compared with the original (${freshness.why}), `
+        + 'so nothing was brought across.';
+    case 'current':
+      return 'Its copy here was already up to date.';
+    case 'refreshed':
+      return `Its copy here was brought up to date — the original had changed at `
+        + `${stamp(freshness.sourceAt)}, and the copy was made at ${stamp(freshness.hostedAt)}.`;
+    case 'hosted-newer':
+      return `Its copy here is NEWER than the original (${stamp(freshness.hostedAt)} against `
+        + `${stamp(freshness.sourceAt)}), so it was left alone rather than overwritten with older `
+        + 'work.';
+    case 'failed':
+      return `Its copy here could not be brought up to date (${freshness.why}), so it was left `
+        + 'exactly as it was.';
+  }
+}
+
+/** Local wall-clock, to the minute — these are compared by a person, not a program. */
+function stamp(at: Date): string {
+  return at.toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
+  });
+}
+
+/**
+ * Bring the hosted copy forward to the source, when the source is the newer one.
+ *
+ * ── Why an mtime and not the ledger ─────────────────────────────────────────
+ *
+ * The catalogue's own mtime answers exactly the question being asked — "has the
+ * original changed since we copied it?" — because the copy's mtime IS the moment
+ * it was copied (`fs.cp` does not carry mtimes across, measured on this machine),
+ * so the two are directly comparable without this side learning to read Foundry's
+ * ledger. Reading their step list to count steps would be a second, worse copy of
+ * a shape they own and change.
+ *
+ * ── THE ONE THING THIS CANNOT SEE, said rather than hidden ──────────────────
+ *
+ * Two mtimes cannot detect DIVERGENCE. If both sides were worked on since the
+ * copy, this reports whichever is later and refreshes or declines on that basis;
+ * it cannot know the other side also moved. It is safe in the direction that
+ * matters — hosted-newer never overwrites — but a source-newer refresh over a
+ * hosted copy that was ALSO edited would take the hosted edits with it. The
+ * hosted window and standalone Foundry editing the same project between two
+ * adoptions is the case that would need a real three-way answer.
+ */
+async function refreshHostedCopy(
+  sourceDir: string,
+  hostedProjectsRoot: string,
+  key: string,
+): Promise<CopyFreshness> {
+  // The source IS the copy — an orphan already under the hosted root. There is
+  // no second place for it to be brought forward from.
+  if (isInside(hostedProjectsRoot, sourceDir)) return { kind: 'in-place' };
+
+  const hostedDir = path.join(hostedProjectsRoot, key);
+  let sourceAt: Date;
+  let hostedAt: Date;
+  try {
+    sourceAt = (await fs.stat(path.join(sourceDir, 'project.json'))).mtime;
+  } catch (err) {
+    return { kind: 'unreadable', why: (err as Error).message };
+  }
+  try {
+    hostedAt = (await fs.stat(path.join(hostedDir, 'project.json'))).mtime;
+  } catch {
+    return { kind: 'absent' };
+  }
+
+  if (hostedAt > sourceAt) return { kind: 'hosted-newer', sourceAt, hostedAt };
+  if (hostedAt >= sourceAt) return { kind: 'current' };
+
+  // STAGE, DISPLACE, LAND — three renames, none of them the shape Windows
+  // refuses. A staged tree cannot simply be renamed ONTO the old one: a
+  // directory landing on a directory is EPERM on win32 and no amount of waiting
+  // changes that (measured, 2026-08-22), so the old copy steps aside first and
+  // every rename this makes is a tree landing where nothing is.
+  const staging = path.join(
+    hostedProjectsRoot, `.adopting-${key}-${process.pid}-${Date.now()}`);
+  const superseded = path.join(
+    hostedProjectsRoot, `.superseded-${key}-${process.pid}-${Date.now()}`);
+  try {
+    await fs.cp(sourceDir, staging, { recursive: true });
+  } catch (err) {
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
+    return { kind: 'failed', why: (err as Error).message };
+  }
+  try {
+    await renameOntoDestination(hostedDir, superseded);
+  } catch (err) {
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
+    return { kind: 'failed', why: (err as Error).message };
+  }
+  try {
+    await renameOntoDestination(staging, hostedDir);
+  } catch (err) {
+    // The library must not be left with no copy at all: the old one goes back
+    // before this call admits it failed.
+    await renameOntoDestination(superseded, hostedDir).catch(() => { /* named below */ });
+    await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
+    return { kind: 'failed', why: (err as Error).message };
+  }
+  await fs.rm(superseded, { recursive: true, force: true }).catch((err: Error) => {
+    console.error(
+      `[foundry-adopt] The copy of "${key}" was brought up to date, but the one it replaced could `
+      + `not be removed from ${superseded} (${err.message}). Delete that folder when nothing holds `
+      + 'it; the library is correct either way.');
+  });
+  return { kind: 'refreshed', sourceAt, hostedAt };
 }
 
 /** Undo a copy this call made, so a failed adoption can simply be retried. */

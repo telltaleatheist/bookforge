@@ -543,6 +543,81 @@ test('a project that is adoptable in one root is never ALSO greyed from the othe
     'the broken twin is dropped rather than drawn beside the row that works');
 }));
 
+// ── Re-adopting brings the copy forward ────────────────────────────────────
+//
+// Adoption was copy-once. Owen adopted Reinhold Krause at 04:53 with three
+// steps, worked on it in standalone Foundry until 07:24, re-imported, and the
+// three-step copy stood — while the message said "already in this library.
+// Nothing was adopted again" and reconciled a tray four steps out of date.
+
+/** Push a file's mtime forward, so "the source changed after we copied" is real. */
+function touchLater(file, msLater) {
+  const at = new Date(fs.statSync(file).mtime.getTime() + msLater);
+  fs.utimesSync(file, at, at);
+  return at;
+}
+
+test('re-adopting an already-mapped project brings its stale copy forward', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-a82de0d9');
+  const first = await doAdopt(w, source);
+  assert.strictEqual(first.outcome, 'adopted');
+
+  // Work happens in standalone Foundry AFTER the copy: a new export lands in
+  // its tray and the catalogue is rewritten.
+  addExport(source, 'krause (en).epub', Buffer.from('EPUB-EN'));
+  touchLater(path.join(source, 'project.json'), 60_000);
+
+  const again = await doAdopt(w, source);
+  assert.strictEqual(again.outcome, 'already-mapped');
+
+  const copied = path.join(w.hosted, 'Krause-a82de0d9', 'final', 'krause (en).epub');
+  assert.ok(fs.existsSync(copied), 'the export made after the first adoption reached the copy');
+  assert.ok(/brought up to date/.test(again.message), again.message);
+  assert.ok(again.exportsLanded >= 1,
+    `the refreshed tray is what reconcile then reads: ${again.exportsLanded}`);
+}));
+
+test('a hosted copy NEWER than the source is never overwritten, and says so', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-b1b1b1b1');
+  assert.strictEqual((await doAdopt(w, source)).outcome, 'adopted');
+
+  // The hosted window edits its own copy; the standalone original does not move.
+  const hostedCatalogue = path.join(w.hosted, 'Krause-b1b1b1b1', 'project.json');
+  addExport(path.join(w.hosted, 'Krause-b1b1b1b1'), 'hosted-only.epub', Buffer.from('HOSTED'));
+  touchLater(hostedCatalogue, 60_000);
+
+  const again = await doAdopt(w, source);
+  assert.strictEqual(again.outcome, 'already-mapped');
+  assert.ok(/NEWER/.test(again.message), again.message);
+  assert.ok(
+    fs.existsSync(path.join(w.hosted, 'Krause-b1b1b1b1', 'final', 'hosted-only.epub')),
+    'work that exists only in the hosted copy survived the re-adoption');
+}));
+
+test('an unclaimed stale copy is refreshed before the book is minted from it', run(async (w) => {
+  // The orphan case: a copy left under the hosted root that no book claims. It
+  // used to be adopted as-is, so the book was minted from a stale original.
+  const source = makeFoundryProject(w.standalone, 'Krause-c2c2c2c2');
+  const orphan = makeFoundryProject(w.hosted, 'Krause-c2c2c2c2', { title: 'Stale Copy' });
+  addExport(source, 'fresh.epub', Buffer.from('FRESH'));
+  touchLater(path.join(source, 'project.json'), 60_000);
+
+  const res = await doAdopt(w, source);
+  assert.strictEqual(res.outcome, 'adopted');
+  assert.ok(fs.existsSync(path.join(orphan, 'final', 'fresh.epub')),
+    'the orphan copy was brought forward before the book was minted from it');
+}));
+
+test('no .adopting- or .superseded- scratch survives a refresh', run(async (w) => {
+  const source = makeFoundryProject(w.standalone, 'Krause-d3d3d3d3');
+  await doAdopt(w, source);
+  touchLater(path.join(source, 'project.json'), 60_000);
+  await doAdopt(w, source);
+
+  const strays = fs.readdirSync(w.hosted).filter((n) => n.startsWith('.'));
+  assert.deepStrictEqual(strays, [], `scratch folders were left behind: ${strays.join(', ')}`);
+}));
+
 test('a root that does not exist is not a refusal', run(async (w) => {
   const listing = await adopt.listAdoptableFoundryProjects(
     path.join(w.root, 'no', 'such', 'place'), path.join(w.root, 'nor', 'here'));
