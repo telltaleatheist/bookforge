@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **2dbd557** — *0.9.3: the number names one build again* |
+| Source sha | **644831a** — *hosted, the toast tray sits in the corner* |
 | Copied on | 2026-08-22 |
-| Copied by | `git -C <foundry> archive 2dbd557 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 644831a app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -343,6 +343,26 @@ BEFORE the release build so the tag names exactly one commit. The parenthesised
 sha in `--version` is still the only part that identifies a build, and Foundry's
 proposed version floor (their Wave 42) is specified to compare that sha rather
 than the number.
+
+`644831a` is ONE component and it closes something Owen saw: a hosted narrate
+refusal drew its toast *"elevated to halfway up the screen"*. The tray is
+`position: fixed; bottom: 424px`, an offset derived to clear the queue shelf —
+and hosted there is NO shelf (`d9ed267`, Owen's ruling), so it cleared a surface
+that was not there. Foundry had NAMED that cost in the tray's own docblock rather
+than missed it; what this side contributed was the separation: the motion they
+refused was a tray reading QUEUE STATE and moving under a reader's eye, whereas
+`hosted()` is fixed for the life of the window, so a hosted anchor is a second
+static layout and not a moving one. Taken verbatim as `:host(.hosted) { bottom:
+16px }` with the standalone gap untouched. 114/114 blobs; `IPC-CHANNELS.md`
+unchanged again, so still 84/84/84 and no channel moved; all 44 keepers green.
+
+Recorded for the next person who reads a refusal sentence and goes looking in the
+wrong repo: the OTHER half of that same report — narrate refusing from the nav
+tiles on a freshly-read book, while working from the EPUB tree row — was already
+fixed by `9317b3a` in the previous refresh. `shared/ledger.ts` has the account: an
+arrival weld made `hostActPositionFrom` answer null from a read step, *"refusing
+the host act on the very row that IS the reading it wanted"*. Two symptoms, one
+press, two different files, and only one of them was ever ours to look at.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

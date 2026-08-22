@@ -2,6 +2,7 @@ import {
   ChangeDetectionStrategy, Component, DestroyRef, HostListener, effect, inject, signal, untracked,
 } from '@angular/core';
 
+import { hosted } from '../../core/foundry';
 import { NoticeService } from '../../core/notice.service';
 
 /**
@@ -58,13 +59,23 @@ import { NoticeService } from '../../core/notice.service';
  * is, and the sentence about why some of it did not happen must not cover it.
  *
  * THE OFFSET IS FIXED AND THAT COSTS SOMETHING, named here rather than
- * discovered later. Most of the time the shelf is a collapsed pill 37px tall, or
- * — with no jobs, or hosted, where there is no shelf at all — nothing, and then
- * a toast floats with several hundred pixels of empty window under it. The
- * alternative is a tray that reads the queue's state and moves, and that is
- * worse in the way that matters: a sentence that jumps up the screen while
- * somebody is reading it, because a job they had nothing to do with finished. A
- * gap is quiet; motion under the eye is not.
+ * discovered later. Most of the time the shelf is a collapsed pill 37px tall,
+ * or — with no jobs — nothing, and then a toast floats with several hundred
+ * pixels of empty window under it. The alternative is a tray that reads the
+ * queue's state and moves, and that is worse in the way that matters: a
+ * sentence that jumps up the screen while somebody is reading it, because a
+ * job they had nothing to do with finished. A gap is quiet; motion under the
+ * eye is not.
+ *
+ * HOSTED IS NOT THAT CASE, and Owen met the difference before this clause did
+ * (*"it was elevated to halfway up the screen"*, a hosted narrate refusal —
+ * relayed with the argument by the host side, 2026-08-22). Hosted there is NO
+ * shelf, ever (d9ed267, Owen's own ruling), and `hosted()` is fixed for the
+ * life of the window — so a hosted tray anchored in the corner is not a tray
+ * that moves, it is a second static layout. The anti-motion argument was about
+ * queue state changing under a reader's eye; a fact that cannot change during
+ * a session costs none of that. Standalone keeps the held gap exactly as
+ * chosen, because there the shelf CAN appear.
  *
  * z-index 1100: above the shelf (900) and the drag veil (1000), below the
  * dialogs (1200). A dialog is a question being asked right now and must not have
@@ -118,7 +129,7 @@ import { NoticeService } from '../../core/notice.service';
     Polite rather than assertive: a notice is news about something the person
     just did, not an alarm that should cut across what is being read to them.
   */
-  host: { 'role': 'status', 'aria-live': 'polite' },
+  host: { 'role': 'status', 'aria-live': 'polite', '[class.hosted]': 'hosted()' },
   template: `
     @for (toast of shown(); track toast.id) {
       <div class="toast">
@@ -150,6 +161,7 @@ import { NoticeService } from '../../core/notice.service';
     :host {
       position: fixed;
       right: 16px;
+      /* The standalone anchor; hosted overrides to the corner — see the header. */
       bottom: 424px;
       z-index: 1100;
       display: flex;
@@ -173,6 +185,12 @@ import { NoticeService } from '../../core/notice.service';
       max-height: calc(100vh - 440px);
       overflow: hidden;
     }
+    /*
+      Hosted: no shelf exists to clear (d9ed267), and hosted() cannot change
+      while the window lives -- a second static layout, not a moving anchor.
+      The header carries the whole argument.
+    */
+    :host(.hosted) { bottom: 16px; max-height: calc(100vh - 32px); }
 
     .toast {
       display: flex;
@@ -232,6 +250,9 @@ import { NoticeService } from '../../core/notice.service';
   `],
 })
 export class ToastTrayComponent {
+  /** Anchors the tray in the corner where no shelf can exist — see the header. */
+  protected readonly hosted = hosted;
+
   private readonly notices = inject(NoticeService);
 
   /** The cards on screen, oldest first — the last one is nearest the corner. */
