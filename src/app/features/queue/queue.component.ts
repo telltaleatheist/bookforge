@@ -155,11 +155,14 @@ import { QueueTrayService } from './services/queue-tray.service';
                     <div class="act">{{ busy.verb }} <span>· {{ busy.label }}</span></div>
                     <div class="sub">{{ busy.title }}</div>
                   </div>
+                  <!-- The percentage alone up here. The ETA moved down to the
+                       measurements (Owen, 2026-08-22): it is a measurement, it
+                       belongs with the others, and it reads better ending the
+                       row than tucked under the headline number. -->
                   <div class="right">
                     @if (busy.percent !== null) {
                       <div class="pct">{{ busy.percent | number:'1.0-0' }}%</div>
                     }
-                    <div class="eta">{{ lane.eta ?? 'not timed yet' }}</div>
                   </div>
                 </div>
 
@@ -208,9 +211,15 @@ import { QueueTrayService } from './services/queue-tray.service';
                 }
 
                 <!-- The measurements. Rate is the number a long render is judged
-                     by; absent until an honest window exists, never estimated. -->
-                @if (lane.count || lane.speed || lane.elapsed) {
-                  <div class="measures">
+                     by; absent until an honest window exists, never estimated.
+
+                     Drawn whenever the slot is busy, rather than only when
+                     something has been measured: the ETA cell below always says
+                     something — a duration or "not timed yet" — and a row that
+                     appeared partway through a run would move every other
+                     number down the card at the moment the reader was watching
+                     them. -->
+                <div class="measures">
                     @if (lane.count) {
                       <!-- CHUNKS, not sentences. lane.count is
                            chunksCompletedInJob/totalChunksInJob, and a chunk packs
@@ -226,8 +235,15 @@ import { QueueTrayService } from './services/queue-tray.service';
                     @if (lane.elapsed) {
                       <div class="ro"><div class="k">Elapsed</div><div class="v">{{ lane.elapsed }}</div></div>
                     }
-                  </div>
-                }
+                    <!-- Last, and pushed to the right edge so it lands under the
+                         stage rows' "done" column. Elapsed and ETA end up beside
+                         each other, which is the pairing a person actually reads:
+                         how long this has taken, and how long is left. -->
+                    <div class="ro eta-ro">
+                      <div class="k">ETA</div>
+                      <div class="v">{{ lane.eta ?? 'not timed yet' }}</div>
+                    </div>
+                </div>
               } @else if (lane.hold) {
                 <div class="held-off">
                   <div class="act warn-text">Waiting for the card</div>
@@ -515,12 +531,17 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .card-head h3 {
       margin: 0;
-      font-size: 0.8125rem;
+      font-size: 0.9375rem;
       font-weight: 600;
       color: var(--text-primary);
     }
 
     .sub { font-size: 0.6875rem; color: var(--text-tertiary); }
+
+    /* The book card's own sub-line only. The lane cards use .sub as well, and
+       those were not the ones that were hard to read — scoping this under
+       .card-head is what keeps the GPU/CPU slots exactly as they were. */
+    .card-head .sub { font-size: 0.8125rem; }
 
     .acts { margin-left: auto; display: flex; gap: 6px; flex: none; }
 
@@ -678,7 +699,6 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .right { text-align: right; flex: none; font-variant-numeric: tabular-nums; }
     .pct { font-size: 1.0625rem; font-weight: 600; color: var(--accent); }
-    .eta { font-size: 0.625rem; color: var(--text-secondary); }
 
     .bar {
       height: 5px;
@@ -778,6 +798,16 @@ import { QueueTrayService } from './services/queue-tray.service';
       font-variant-numeric: tabular-nums;
     }
 
+    /* Pushed to the far right so it sits under the stage rows' value column —
+       the "done" markers at the end of those bars — rather than trailing the
+       other measures at whatever offset they happen to end at. An auto margin
+       rather than a fixed width: the measures wrap, and a hard column would
+       have to guess how many made it onto the last line. */
+    .measures .eta-ro {
+      margin-left: auto;
+      text-align: right;
+    }
+
     .held-off { padding: 4px 0 2px; }
 
     .why-long {
@@ -795,12 +825,26 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .chain { padding: 0 14px 10px; }
 
+    /* THE QUEUE ITEM IS READ, NOT GLANCED AT — Owen, 2026-08-22: "its very,
+       very tiny. and very spaced out."
+
+       Two separate faults, and the spacing one was doing most of the damage.
+       The name sat in a FIXED 160px column, so every step whose label was
+       shorter than that — which is most of them — put a gap between the name
+       and its status, and then a flexible column put a second, larger gap before
+       the numbers. Three related facts about one step read as three unrelated
+       columns.
+
+       Now the name and its status are both content-sized and sit together, and
+       the one flexible column is at the END, holding the numbers against the
+       right edge where a ledger's numbers belong. The name still ellipsises: it
+       is capped, so a long label cannot push the status off the row. */
     .cstep {
       display: grid;
-      grid-template-columns: 16px 160px 1fr auto;
+      grid-template-columns: 16px minmax(0, 260px) minmax(0, max-content) 1fr;
       align-items: center;
       gap: 10px;
-      padding: 5px 0;
+      padding: 7px 0;
       position: relative;
     }
 
@@ -849,7 +893,7 @@ import { QueueTrayService } from './services/queue-tray.service';
 
     .cname {
       font-family: inherit;
-      font-size: 0.75rem;
+      font-size: 0.875rem;
       text-align: left;
       color: var(--text-secondary);
       background: transparent;
@@ -870,12 +914,19 @@ import { QueueTrayService } from './services/queue-tray.service';
       display: inline-flex;
       align-items: center;
       gap: 6px;
-      font-size: 0.6875rem;
+      font-size: 0.8125rem;
       color: var(--text-tertiary);
       background: var(--bg-input);
       border-radius: 3px;
       padding: 2px 8px;
       max-width: 100%;
+      /* Its column is content-sized now, so a long admission sentence would
+         otherwise push the numbers off the right edge. The column may shrink
+         below the text; this is what makes that degrade quietly instead. */
+      min-width: 0;
+      overflow: hidden;
+      white-space: nowrap;
+      text-overflow: ellipsis;
     }
 
     .why.warn { color: var(--warning-text); background: var(--warning-bg); }
@@ -893,10 +944,12 @@ import { QueueTrayService } from './services/queue-tray.service';
       display: flex;
       align-items: center;
       gap: 8px;
-      font-size: 0.6875rem;
+      font-size: 0.8125rem;
       color: var(--text-tertiary);
       font-variant-numeric: tabular-nums;
       white-space: nowrap;
+      /* The one flexible column ends here, so the numbers hold the right edge. */
+      justify-self: end;
     }
 
     /* Brighter than the percentage beside it, because it is the number a person
