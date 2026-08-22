@@ -46,6 +46,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { ToastService } from '../../core/services/toast.service';
 import { JobDetailsComponent } from './components/job-details/job-details.component';
 import { JobStepComponent } from './components/job-step/job-step.component';
+import { stagesFor } from './models/job-stages';
 import { JobEtaService } from './services/job-eta.service';
 import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
@@ -317,6 +318,20 @@ import { QueueTrayService } from './services/queue-tray.service';
                         {{ step.percent | number:'1.0-0' }}%
                       } @else if (step.status !== 'running') {
                         not timed on this book
+                      }
+                      <!--
+                        HOW LONG, beside HOW FAR. A percentage answers "how much
+                        is done" and nothing else, and this row is where a person
+                        looks to decide whether to wait — the lane card above
+                        carries the ETA, but it shows only the step that happens
+                        to hold a slot, and a book's chain is read here.
+
+                        Running steps only: a waiting step's ETA would be a
+                        prediction about a run that has not started and has
+                        nothing measured about it.
+                      -->
+                      @if (step.status === 'running' && etaFor(step.stepId); as eta) {
+                        <span class="ceta">{{ eta }}</span>
                       }
                       @if (step.startable) {
                         <button type="button" class="btn go xs" (click)="start(step.stepId)">
@@ -884,6 +899,13 @@ import { QueueTrayService } from './services/queue-tray.service';
       white-space: nowrap;
     }
 
+    /* Brighter than the percentage beside it, because it is the number a person
+       is actually here for: "how much longer" is the question, and "how far" is
+       the evidence for it. */
+    .ceta {
+      color: var(--text-secondary);
+    }
+
     .expand {
       margin: 2px 0 8px 26px;
       border-left: 2px solid var(--border-default);
@@ -1057,6 +1079,30 @@ export class QueueComponent {
    */
   rowFor(stepId: string) {
     return this.queueService.jobs().find(row => row.id === stepId) ?? null;
+  }
+
+  /**
+   * "1h 12m left" for a running step, or null when nothing honest can be said.
+   *
+   * Goes through `JobEtaService` rather than doing arithmetic here, because that
+   * service is where the ONE throughput sample per job lives: a second
+   * measurement taken in this component would drift against the lane card's and
+   * show two different answers for the same work on the same screen.
+   *
+   * `etaDisplay` never returns null — it says "Calculating…" or "Loading
+   * models…" while a rate is still being established, which is the honest
+   * answer and worth showing. Only the states it renders as `-` (not running,
+   * or already complete) collapse to null and draw nothing.
+   */
+  etaFor(stepId: string): string | null {
+    const row = this.rowFor(stepId);
+    if (!row) return null;
+    const display = this.eta.etaDisplay(row, stagesFor(row));
+    if (display === '-') return null;
+    // "Calculating…" and "Loading models…" are sentences about the measurement,
+    // not durations. Only a duration takes "left" — "Calculating… left" reads as
+    // a bug in the app rather than as a state of the work.
+    return display.endsWith('…') || display === 'Complete' ? display : `${display} left`;
   }
 
   toggleStep(stepId: string): void {
