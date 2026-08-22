@@ -151,15 +151,14 @@ export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Pro
   // exploded directory so that editing one chapter writes one entry. The move is
   // the same move either way — copy beside the destination, land it with one
   // rename — but the two steps that assumed a file (`copyFile`, `unlink`) have to
-  // know which they are looking at, and a directory cannot be renamed ONTO a
-  // directory that already exists. For a FILE nothing below changes: the fast
+  // know which they are looking at, and a directory cannot be renamed ONTO
+  // anything that already exists. For a FILE nothing below changes: the fast
   // path is the same single rename it has always been, and every failure is the
   // same failure.
   const source = await statOrNull(fromAbsPath);
   const destination = await statOrNull(toAbsPath);
-  const treeOntoTree = source?.isDirectory() === true && destination?.isDirectory() === true;
 
-  if (!treeOntoTree) {
+  if (renameCanLand(source, destination)) {
     try {
       await renameOntoDestination(fromAbsPath, toAbsPath);
       return;
@@ -202,15 +201,15 @@ async function copyArtifact(fromAbsPath: string, toAbsPath: string): Promise<voi
 /**
  * The last step: the staged copy becomes the destination.
  *
- * For a file — every case that exists today — this is the one rename it always
- * was. A DIRECTORY cannot be renamed onto a directory that is already there, so
- * the old one is stepped aside first and put back if the landing fails; the
+ * For a file landing on a file — or on nothing — this is the one rename it always
+ * was. A DIRECTORY cannot be renamed onto anything already there, so the old
+ * book is stepped aside first and put back if the landing fails; the
  * moment that matters is still a single rename, and there is never a window in
  * which the destination holds half of each book.
  */
 async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
   const destination = await statOrNull(toAbsPath);
-  if (destination === null || !destination.isDirectory()) {
+  if (renameCanLand(await statOrNull(fromAbsPath), destination)) {
     await renameOntoDestination(fromAbsPath, toAbsPath);
     return;
   }
@@ -226,6 +225,23 @@ async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promis
     throw err;
   }
   await fs.promises.rm(displaced, { recursive: true, force: true });
+}
+
+/**
+ * Can this move be ONE rename onto the destination, or does the old book have to
+ * be stepped aside first?
+ *
+ * A directory cannot be renamed onto anything that already exists — not onto a
+ * directory, and not onto a FILE either (the kernel answers ENOTDIR; Windows
+ * answers EPERM, which is worse, because it looks exactly like the transient
+ * hold `renameOntoDestination` retries for two seconds). Neither can a file be
+ * renamed onto a directory. So the single rename is available only when nothing
+ * is there, or when neither side is a tree — every other shape lands through
+ * the displace-and-put-back path, which is atomic at the moment that counts.
+ */
+function renameCanLand(source: fs.Stats | null, destination: fs.Stats | null): boolean {
+  if (destination === null) return true;
+  return source?.isDirectory() !== true && !destination.isDirectory();
 }
 
 /** `stat`, with "nothing is there" as an answer rather than an exception. */
