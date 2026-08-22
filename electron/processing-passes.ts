@@ -309,8 +309,18 @@ async function statOrNull(absPath: string): Promise<fs.Stats | null> {
  * papered over. Everything not shaped like a transient hold throws immediately:
  * EXDEV still means "copy beside the destination instead", ENOENT still means
  * the caller lied about the source.
+ *
+ * EXPORTED for `foundry-adopt`, whose staged copy lands the same way and hit the
+ * same refusal for real: Owen's "star gods" adoption died on
+ * `EPERM: … rename '<projects>/.adopting-star-gods-…' -> '<projects>/star-gods-…'`
+ * (2026-08-22, onto a library on Z:, an SMB share to the NAS). Nothing was at the
+ * destination, so that rename was the designed path rather than a maybe — the
+ * shape this ladder is for. Measured afterwards on the same share, with the same
+ * 1.03 GiB source: the identical copy-then-rename landed in 10 ms, so the refusal
+ * was a hold and not a structural no. Adoption had no ladder at all, so one
+ * unlucky instant became a failed adoption.
  */
-async function renameOntoDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
+export async function renameOntoDestination(fromAbsPath: string, toAbsPath: string): Promise<void> {
   const HOLDS = new Set(['EPERM', 'EACCES', 'EBUSY']);
   const DELAYS_MS = [50, 100, 200, 400, 600, 700];
   for (let attempt = 0; ; attempt++) {

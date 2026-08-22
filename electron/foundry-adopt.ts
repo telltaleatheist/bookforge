@@ -54,6 +54,7 @@ import * as manifestService from './manifest-service';
 import { importEpubProject } from './import-epub-project';
 import { FOUNDRY_EXPORT_KINDS, sweepFoundryExportTrays } from './foundry-export-sweep';
 import { normalizeFsPath } from './path-utils';
+import { renameOntoDestination } from './processing-passes';
 import { samePath } from '../shared/document/same-path';
 // The wire shapes, declared in shared/ because the renderer draws them and
 // cannot import out of electron/. See the header of that file.
@@ -906,6 +907,24 @@ async function originalFileOf(projectId: string): Promise<string | null> {
  * check — would read as a project and refuse to touch. The rename is within one
  * directory and therefore one volume, so it is the single instant at which the
  * project appears.
+ *
+ * THAT INSTANT CAN BE REFUSED, and it was: Owen's "star gods" adoption onto a
+ * library on Z: (an SMB share to the NAS) died with
+ * `EPERM: operation not permitted, rename '…/.adopting-star-gods-…' -> '…/star-gods-…'`
+ * with NOTHING at the destination. Windows answers EPERM while any process holds
+ * something in the tree open, and on a library the indexer walks and Defender
+ * scans that is a coin toss measured in milliseconds — the same one
+ * `renameOntoDestination` was written for. Measured on that share afterwards, with
+ * this same 1.03 GiB project: copy-then-rename landed in 10 ms, so the refusal was
+ * a hold rather than a no. This call site simply had no ladder, so one unlucky
+ * instant surfaced as a failed adoption with a syscall for an explanation.
+ *
+ * So the landing goes through the ONE ladder this app has for it rather than a
+ * second copy of the rule here. It is deliberately not `moveIntoPlace`: that
+ * answers a refusal by copying BESIDE the destination first, which here would be a
+ * second gigabyte written to the same directory the staging copy already sits in.
+ * The staging sibling is already beside the destination — the ladder is the whole
+ * of what this move needs, and a refusal that outlives it should be seen.
  */
 async function copyProjectInto(
   sourceDir: string,
@@ -917,7 +936,7 @@ async function copyProjectInto(
     hostedProjectsRoot, `.adopting-${path.basename(hostedDir)}-${process.pid}-${Date.now()}`);
   try {
     await fs.cp(sourceDir, staging, { recursive: true });
-    await fs.rename(staging, hostedDir);
+    await renameOntoDestination(staging, hostedDir);
   } catch (err) {
     await fs.rm(staging, { recursive: true, force: true }).catch(() => { /* named below */ });
     throw err;
