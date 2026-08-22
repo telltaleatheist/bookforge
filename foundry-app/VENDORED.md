@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **98031b0** — *Wave 41: the mint produces the founding document* |
-| Copied on | 2026-08-21 |
-| Copied by | `git -C <foundry> archive 98031b0 app \| tar -x --strip-components=1` |
+| Source sha | **2dbd557** — *0.9.3: the number names one build again* |
+| Copied on | 2026-08-22 |
+| Copied by | `git -C <foundry> archive 2dbd557 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -316,6 +316,33 @@ Wave 37 pages face). Closing it is two steps and neither is a subtree refresh:
 reinstalling the `foundry-cli` component from that artifact. Left undone here
 deliberately — it rewrites Owen's installed environment, which a vendor commit
 should not do.
+
+`2dbd557` is three commits and ONE app file. `9317b3a` is the whole of it —
+*a read is the book arriving, not the project arriving* — the arrival test gets its
+own table in `app/shared/ledger.ts`, after Owen hit a freshly-read book with
+Translate/Simplify/Export greyed and `hostActPositionFrom` answering null from the
+read step (Reinhold Krause, 2026-08-22). `3264e10` is docs-only (Wave 42 proposed,
+the engine version floor) and `2dbd557` is the version bump this side asked for,
+which touches the repo root and not `app/`. 114/114 blobs hash-verified;
+`IPC-CHANNELS.md` byte-identical and UNCHANGED from 98031b0 — no channel moved,
+so the count stands at 84/84/84. Build config and deps unmoved again; `npm run
+build` clean, ng 756.29 kB, budget WARNING only; all 44 keepers green.
+
+**THE ENGINE GAP THE LAST ENTRY RECORDED IS CLOSED, and the fix was a release
+rather than a hand-copy.** v0.9.3 is published from `2dbd557` with the
+four-platform asset set plus `checksums.txt`, and `api.github.com/.../releases/latest`
+answers it — so the managed `foundry-cli` component can do the install the way the
+machinery was built to, on every machine, instead of one binary being copied into
+place here. Two facts from that night worth keeping beside the last entry's
+warning: the published v0.9.2 (2026-08-17) was built from `92ab737` and carried
+only ONE of the seven engine commits this app depends on, so upgrading to it would
+have closed 60 of the 70 `src` commits and almost nothing that mattered; and
+`0.9.2` had come to name at least four distinct builds, because foundry's semver
+is a hand-edited `package.json` field that no build moves. The number was bumped
+BEFORE the release build so the tag names exactly one commit. The parenthesised
+sha in `--version` is still the only part that identifies a build, and Foundry's
+proposed version floor (their Wave 42) is specified to compare that sha rather
+than the number.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

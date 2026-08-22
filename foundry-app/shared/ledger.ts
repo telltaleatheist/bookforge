@@ -2364,15 +2364,26 @@ export function currentStandard(ledger: ProjectLedger): Partial<Record<StepActio
  * Is the position an ARRIVAL — a row the project began at, rather than
  * something made out of an earlier row?
  *
- * ── ONE TABLE, TWO VOCABULARIES, AND DELIBERATELY NOT A SECOND TABLE ────────
+ * ── THIS WAS `BOUNDS_THE_WALK` AND THE SHARING WAS A MEASURED DEFECT ────────
  *
- * `BOUNDS_THE_WALK` below answers this in the walker s words: a walk up a chain
- * stops at a row that was not made from anything. `stages.ts` asks the same
- * question in the reader s words — is there a book at this position, or is this
- * where the project came in? — and a step bounds the walk exactly when it is an
- * arrival. Same fact, so it reads the same table; a second table with the same
- * two `true`s in it would be a second answer waiting to disagree the day a
- * third arrival kind appears.
+ * The header that stood here argued the two vocabularies were one fact — "a
+ * step bounds the walk exactly when it is an arrival" — and ruled a second
+ * table a drift hazard. Owen's Reinhold Krause walk (2026-08-22) disproved
+ * the premise at exactly one row: he OCRed a fresh book and *"translate is
+ * disabled no matter where i click"*. A READ bounds the chain-walk, because a
+ * new pass over the pages begins there and an op from before it names blocks
+ * of somebody else's pass — and a read is NOT an arrival, because a read is
+ * the book ARRIVING: the one row every freshly-read project stands on is the
+ * one row every act should light from. The weld read the walker's `true` as
+ * the reader's, and greyed Translate, Simplify and Export on every book that
+ * had been read and not yet edited — invisible for weeks only because the
+ * standing workflow applied strikes before doing anything else. It also made
+ * `hostActPositionFrom` answer null from a read step, refusing the host act
+ * on the very row that IS the reading it wanted.
+ *
+ * So: two tables, one row apart, each named for its own question. The day a
+ * new StepAction appears, BOTH must be answered — the Record type is what
+ * makes forgetting one a compile error rather than a quiet default.
  *
  * ── NULL IS NOT AN ARRIVAL, WHICH KEEPS AN EXISTING PROMISE ─────────────────
  *
@@ -2383,8 +2394,19 @@ export function currentStandard(ledger: ProjectLedger): Partial<Record<StepActio
  * are standing on an arrival".
  */
 export function standsOnAnArrival(step: LedgerStep | null): boolean {
-  return step !== null && BOUNDS_THE_WALK[step.action];
+  return step !== null && AN_ARRIVAL[step.action];
 }
+const AN_ARRIVAL: Readonly<Record<StepAction, boolean>> = {
+  import: true,
+  capture: true,
+  /* The row the weld got wrong: a read is the book arriving, not the project
+     arriving — there is a book here, and every act may derive from it. */
+  read: false,
+  curate: false,
+  translate: false,
+  metadata: false,
+  edit: false,
+};
 const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
   import: true,
   /*
