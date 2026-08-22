@@ -158,7 +158,7 @@ export async function moveIntoPlace(fromAbsPath: string, toAbsPath: string): Pro
   // time the cleanup at the bottom has to know which kind it was.
   const source = await statOrNull(fromAbsPath);
 
-  if (await renameLanded(fromAbsPath, toAbsPath)) return;
+  if (await renameLanded(fromAbsPath, toAbsPath, await statOrNull(toAbsPath))) return;
 
   const sibling = `${toAbsPath}.bookforge-tmp`;
   await copyArtifact(fromAbsPath, sibling);
@@ -210,7 +210,7 @@ async function landOnDestination(fromAbsPath: string, toAbsPath: string): Promis
     await renameOntoDestination(fromAbsPath, toAbsPath);
     return;
   }
-  if (await renameLanded(fromAbsPath, toAbsPath)) return;
+  if (await renameLanded(fromAbsPath, toAbsPath, destination)) return;
 
   const displaced = `${toAbsPath}.bookforge-old`;
   await fs.promises.rm(displaced, { recursive: true, force: true });
@@ -246,31 +246,53 @@ function renameCanLand(source: fs.Stats | null, destination: fs.Stats | null): b
  * Whether a rename can replace something of the OTHER kind is a property of the
  * filesystem, and this file had it wrong in both directions. POSIX refuses a
  * directory onto a non-directory with ENOTDIR; Win32's MoveFileEx with
- * REPLACE_EXISTING performs exactly that move and returns success (measured on
- * win32 10.0.26100 by the PC session, 2026-08-22, against the reverse — a file
- * onto a directory — which IS EPERM there). Predicting either from the other
- * costs one machine an atomic rename it was entitled to, so this asks.
+ * REPLACE_EXISTING performs exactly that move in 2 ms. So this predicts
+ * nothing — it asks, and every shape gets its attempt.
  *
- * It asks THROUGH THE HOLD LADDER, for every shape. A first draft gave the
- * shapes `renameCanLand` does not vouch for a single bare attempt, reasoning
- * that their refusal is the kernel's answer rather than a hold. That reasoning
- * skipped a case: EPERM on Windows means "somebody has this open right now" for
- * a tree exactly as it does for a file, and the caller's fallback here is a COPY
- * of the whole book — so a scanner touching a 1 GiB working copy for 300 ms
- * would have bought a gigabyte of I/O to avoid waiting 300 ms. The ladder
- * already tells the two apart: it retries only EPERM/EACCES/EBUSY, and a
- * structural refusal (ENOTDIR, EISDIR, ENOTEMPTY, EXDEV) still throws on the
- * first attempt and falls through immediately. The one shape that pays is a
- * file replacing a directory on Windows, which waits out the ladder before
- * taking a slower path it was always going to take.
+ * What it decides is only whether to WAIT on a refusal, and that is a different
+ * question with a measured answer. On win32 EPERM is overloaded: it means both
+ * "somebody has this open right now" and "this move is impossible". The PC
+ * session pinned which is which by retrying an unheld rename 40 times over
+ * 4.3 s (2026-08-22) — `dir onto dir` and `file onto dir` answered EPERM every
+ * single time, while `dir onto file` landed on attempt 1. Both of the hopeless
+ * shapes are the same shape: THE DESTINATION IS A DIRECTORY THAT ALREADY
+ * EXISTS, which no rename replaces on either platform (POSIX answers ENOTEMPTY
+ * or EISDIR, and its one legal case — an EMPTY destination directory —
+ * succeeds immediately or not at all).
+ *
+ * So: waiting can only help when the destination is absent or is not a
+ * directory. Everywhere else the ladder would be waiting out a condition that
+ * never clears, and it was measurably doing so — 4.2 s per move, twice over
+ * (here and again in `landOnDestination` on the sibling), on `tree onto tree`,
+ * which is where EVERY phase-2 pass lands its book. That is 0.397 s of keeper
+ * suite becoming 12.998 s.
  */
-async function renameLanded(fromAbsPath: string, toAbsPath: string): Promise<boolean> {
+async function renameLanded(
+  fromAbsPath: string,
+  toAbsPath: string,
+  destination: fs.Stats | null,
+): Promise<boolean> {
   try {
-    await renameOntoDestination(fromAbsPath, toAbsPath);
+    if (waitingCouldHelp(destination)) await renameOntoDestination(fromAbsPath, toAbsPath);
+    else await fs.promises.rename(fromAbsPath, toAbsPath);
     return true;
   } catch {
     return false;
   }
+}
+
+/**
+ * Could waiting out a refusal change the answer? Only if the destination is not
+ * a directory that already exists — see `renameLanded` for the measurement.
+ *
+ * This is NOT the same question as `renameCanLand`, which asks whether a plain
+ * rename is the DESIGNED path. `tree onto file` is not designed-for and still
+ * worth waiting on: it lands in one rename where it is supported, so an EPERM
+ * there is a holder rather than a refusal, and the fallback is a copy of the
+ * whole book.
+ */
+function waitingCouldHelp(destination: fs.Stats | null): boolean {
+  return destination === null || !destination.isDirectory();
 }
 
 /** `stat`, with "nothing is there" as an answer rather than an exception. */
