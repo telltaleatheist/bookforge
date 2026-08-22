@@ -462,14 +462,27 @@ export const foundryHostQueue = {
    * through `runJob` before it had returned the row Foundry is waiting for. See
    * EnqueueOptions in queue-engine.ts.
    *
-   * HELD FOR A READ, RELEASED FOR EVERYTHING ELSE — their rule, kept exactly.
-   * The hold exists so that hours of GPU are never spent by the act of
-   * configuring them; a rendering spends none, so making it wait would be the
-   * mechanism applied to the case it was never about. What changes is only WHOSE
-   * Start releases it, and that is the whole of the fix for what Owen hit: he
-   * pressed Start, then added a second book, and their Start "releases everything
-   * held AT THAT MOMENT and nothing else" — so the second sat held in a list he
-   * was not looking at. Now it is held in the list he is looking at.
+   * EVERYTHING ARRIVES RELEASED. Reads used to arrive held, inherited from
+   * Foundry, whose reasoning was that hours of GPU must never be spent by the
+   * act of configuring them.
+   *
+   * That reasoning is sound IN FOUNDRY'S OWN PANE, where Add and Start are two
+   * gestures a step apart in one window: adding composes a batch, Start commits
+   * to it. It does not survive the crossing. Owen's ruling, 2026-08-21: "it wont
+   * be in the bookforge queue unless i intentionally, specifically sent it there
+   * because its ready. if it makes it to the bookforge queue, it means its ready
+   * to run."
+   *
+   * ROUTING HERE IS ALREADY THE DELIBERATE ACT, so the hold asked a second time
+   * for a commitment the person had made by sending it — and asking twice is not
+   * free. He added a VLM read, watched the card sit empty behind a finished TTS
+   * job, and started it by hand: queue running, GPU idle, nothing ahead of it,
+   * and the work sat because it waited on a gesture that had already happened.
+   * A held step is invisible to the pump BY DESIGN (it only ever claims
+   * `queued`), so nothing else was ever going to pick it up.
+   *
+   * The guard the hold provided is not lost, it moved: it now lives at the door
+   * into this queue, which is a door the user walks through on purpose.
    */
   enqueue(request: FoundryJobRequest, parentStep: string | null, projectDir: string): FoundryJobRow {
     /*
@@ -519,7 +532,7 @@ export const foundryHostQueue = {
         config: config as unknown as Record<string, unknown>,
         sourceRef: { kind: 'none' },
       }],
-      release: request.kind !== 'read',
+      release: true,
     }, { deferPump: true });
 
     const step = job.steps[0];

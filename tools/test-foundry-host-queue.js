@@ -152,8 +152,8 @@ test('the engine\'s own LINE comes back on the row as a count, through the REAL 
     drained: null,
   });
 
-  // A RENDER, not a read: reads arrive held by design, and this is about
-  // progress rather than release.
+  // A RENDER rather than a read, kept as-is: this test is about PROGRESS, and a
+  // render was the kind that arrived released back when the two differed.
   const row = host.foundryHostQueue.enqueue({
     kind: 'render',
     inputPath: `${PROJ}\\archive\\book.pdf`,
@@ -263,18 +263,24 @@ test('enqueue returns the row SYNCHRONOUSLY and starts nothing on that stack', a
   const row = host.foundryHostQueue.enqueue(readRequest(), null, PROJ);
   // The row exists before any await — this is Foundry's whole requirement.
   assert.ok(row && typeof row.id === 'string', 'no row came back');
-  assert.strictEqual(row.state, 'held', 'a read must arrive held');
+  assert.strictEqual(row.state, 'queued', 'a read must arrive ready to be claimed');
   assert.strictEqual(
     mod.runs.length, 0,
     'a step began executing inside enqueue — the pump was not deferred, and this '
     + 're-enters Foundry from inside its own enqueue call',
   );
+  /*
+   * AND THEN IT RUNS. This used to assert the opposite — that nothing ran after
+   * the await either, because a read arrived held. Reads arrive released now
+   * (see foundryHostQueue.enqueue), so the deferred pump has something to claim,
+   * and asserting the run is what keeps this test honest about the deferral: a
+   * pump that never fired at all would also have satisfied the old assertion.
+   */
   await settle();
-  // Still nothing: held is held, deferring the pump does not release it.
-  assert.strictEqual(mod.runs.length, 0, 'a held read ran without Start');
+  assert.strictEqual(mod.runs.length, 1, 'the deferred pump never claimed the released read');
 });
 
-test('a rendering is RELEASED while a read is HELD — Foundry\'s rule, kept', async () => {
+test('EVERY kind arrives RELEASED — routing across the seam IS the commitment', async () => {
   await fresh('release');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
 
@@ -286,12 +292,21 @@ test('a rendering is RELEASED while a read is HELD — Foundry\'s rule, kept', a
     readingsPath: `${PROJ}\\readings\\k1.jsonl`,
   }, null, PROJ);
 
-  assert.strictEqual(read.state, 'held', 'a read spends GPU and must wait for a person');
-  assert.strictEqual(
-    render.state, 'queued',
-    'a rendering is arithmetic over a bank already on disk; holding it applies the '
-    + 'mechanism to the case it was never about',
-  );
+  /*
+   * A READ USED TO ARRIVE HELD, and this test asserted it. Foundry's reasoning
+   * was that hours of GPU must never be spent by the act of configuring them,
+   * which is right in THEIR pane, where Add and Start are two gestures a step
+   * apart in one window.
+   *
+   * It does not survive the crossing. Sending work into this queue is itself the
+   * commitment (Owen, 2026-08-21: "if it makes it to the bookforge queue, it
+   * means its ready to run"), so the hold asked a second time for a decision
+   * already made — and a held step is invisible to the pump by construction (it
+   * only ever claims `queued`). The result was a VLM read sitting on an idle
+   * card behind a finished TTS job, waiting on a gesture that had happened.
+   */
+  assert.strictEqual(read.state, 'queued', 'a read must arrive ready to be claimed');
+  assert.strictEqual(render.state, 'queued', 'a rendering must arrive ready to be claimed');
 });
 
 // ── The dedupe that moved across the seam ───────────────────────────────────
