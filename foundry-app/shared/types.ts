@@ -17,17 +17,23 @@
  * `epub` is the only thing the engine casts. `env-install` is not a conversion
  * at all — it is the app fetching a prebuilt Python — but it shares the queue on
  * purpose: it is long, it is cancellable, and a conversion that needs the
- * environment must wait BEHIND it rather than race it. One serial queue gives
- * that for free.
+ * environment must wait BEHIND it rather than race it. One serial queue gave
+ * that for free; a board of lanes has to say it, and does (an install is
+ * `exclusive`, shared/queue-board.ts).
  *
  * `translate` is a conversion whose INPUT is an EPUB and whose output is
  * another one. It is not in `ConversionKind` and that is deliberate: a
  * conversion kind doubles as the output's file extension (see below), and a
  * file called `book.translate` is not a thing. Its output is named by
  * `planTranslation` instead, which knows the language tag belongs in the
- * middle. It shares the serial queue for the same reason an install does — it
- * holds a GPU for hours and two at once is two runs that each take twice as
- * long.
+ * middle. It shares the GPU lane with a reading for the reason that lane holds
+ * one job — it keeps a model resident for hours, and two at once is two runs
+ * that each take twice as long.
+ *
+ * WHICH RESOURCE EACH OF THESE NEEDS IS DECLARED ONCE, in shared/queue-board.ts,
+ * and both the scheduler and the shelf read it there. A kind added here without
+ * a row there fails the typecheck, which is the whole reason that table is a
+ * `Record` over this union.
  */
 /**
  * The things the queue can be holding.
@@ -50,10 +56,10 @@
  * sentence above about the engine is the reason it needs saying here. A mint is
  * the capture stage assembling a PDF out of photographs (docs/CAPTURE.md): the
  * pixels are rectified in the RENDERER, one page at a time, so the row exists to
- * be seen and cancelled rather than to be run. It must never occupy the queue's
- * serial engine slot — an interactive mint sitting in it would hold a reading
- * behind it for minutes — and `env-install` is the precedent for a row the pump
- * hands to something other than `executeJob`.
+ * be seen and cancelled rather than to be run. It must never occupy a slot on
+ * the board — an interactive mint sitting in one would hold a reading behind it
+ * for minutes — and `env-install` is the precedent for a row the pump hands to
+ * something other than `executeJob`.
  */
 export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate' | 'mint';
 
@@ -149,17 +155,16 @@ export interface ReadRequest {
   kind: 'read';
   /** The pixels: `WorkspacePlan.sourcePath`, which is the archived original. */
   inputPath: string;
-  /**
-   * WHAT THAT PATH IS — `ReadingPlan.sourceKind`, carried the one hop from the
-   * plan to the command line.
+  /*
+   * ── GRAVESTONE: `inputKind` (Wave 41) ─────────────────────────────────────
    *
-   * OPTIONAL, AND ABSENT MEANS `pdf`. A job enqueued by a build that predates
-   * this carries none, and a reading of a PDF is what every one of them is; the
-   * queue is persisted across restarts, so a required field here would be a
-   * shelf full of rows that no longer parse. The same argument `stepId` makes
-   * two fields down.
+   * An optional `ReadSourceKind` rode here for one hop, from `ReadingPlan` to the
+   * command line, so `argsFor` could spell `--pages` for a captured project whose
+   * archive was a folder. Owen: *"if we're building the bank from the images
+   * anyway maybe we should just build it from the pdf. why not? it would help
+   * maintain provenance, and nothing will be lost."* A reading is of a PDF, one
+   * input and one story, and the flag is spelled once with no field to carry.
    */
-  inputKind?: ReadSourceKind;
   /** `--readings`. The product of this job, not an input to it. */
   readingsPath: string;
   /** `--skip-pages`, verbatim: "3,17,19-24". Pages that are not part of the book. */
@@ -1017,44 +1022,40 @@ export interface WorkspacePlan {
  * engine's own rule (resume, or archive and re-read) and this app has never had
  * a flag that could second-guess it.
  */
-/**
- * WHAT THE PIXELS OF A BOOK ARE, which is now two things.
+/*
+ * ── GRAVESTONE: `ReadSourceKind` (Wave 41) ──────────────────────────────────
  *
- * `pdf` is a document to rasterise and `pages` is a directory of page images in
- * reading order — the mint's own output, read as it is with no rasteriser
- * involved at all. They reach the engine as `--pdf <file>` and `--pages <dir>`,
- * which is the whole of the difference on a command line.
+ * A two-member union stood here — `'pdf' | 'pages'` — mirroring the engine's two
+ * read flags, because a captured project's pixels were a directory of page
+ * images and an imported book's were a document. It was never `VlmSource` said
+ * again: the engine's union carries the RESOLVED ordered list and this was the
+ * ask, so the ordering rule stayed in exactly one place.
  *
- * ── Why this is not `VlmSource` said again ──────────────────────────────────
+ * The app has one kind of pixels again. A mint writes an image-only PDF
+ * (`recordMint`) and `healMintedArchive` gives one to every project made before
+ * it, so `ReadingPlan.sourcePath` is a PDF for every project this app can plan a
+ * reading of. Owen: *"if we're building the bank from the images anyway maybe we
+ * should just build it from the pdf. why not? it would help maintain provenance,
+ * and nothing will be lost."*
  *
- * The engine's union (src/vlm/bridge.ts) carries `paths` for the pages case: the
- * ORDERED LIST, after `sourceFor` has resolved a directory into one. That is
- * what the engine holds AFTER the ask; this is the ask. Composing the list on
- * this side would be a second implementation of the ordering rule — the one the
- * engine's own docblock says is the caller's and is never re-derived — written
- * down here only to be thrown away at a flag that takes a folder.
- *
- * So this mirrors THE TWO FLAGS rather than the far side's resolved shape, and
- * the ordering stays in one place.
+ * `vlm-read --pages` KEEPS ITS FLAG. That is the engine's surface area and it is
+ * documented on the command; what retired is this app's ability to be in two
+ * minds about which one it wants.
  */
-export type ReadSourceKind = 'pdf' | 'pages';
 
 export interface ReadingPlan {
   key: string;
   /** The pixels — `archive/`, which nothing in this app ever writes. */
   sourcePath: string;
-  /**
-   * WHICH FLAG THE PATH ABOVE IS FOR, decided by main and carried rather than
-   * sniffed at the other end.
+  /*
+   * ── GRAVESTONE: `sourceKind` (Wave 41) ────────────────────────────────────
    *
-   * It is answered HERE because this is where the project's catalogue is in
-   * hand: the caller pointed at a document or at a project, and what that
-   * project's archive turned out to BE is a fact about the project rather than
-   * about the ask. A consumer that re-derived it by asking whether the path is a
-   * directory would be guessing, at the far end of a bridge, at something that
-   * was certain at this one.
+   * A `ReadSourceKind` was answered here, where the project's catalogue is in
+   * hand, and carried to the command line so nothing had to sniff whether the
+   * path was a directory. There is nothing to decide: `sourcePath` is a PDF for
+   * every project this app can plan a reading of. See `planReading`, which
+   * carries Owen's provenance ruling in full.
    */
-  sourceKind: ReadSourceKind;
   /**
    * The bank THIS reading fills, which is no longer one path per project.
    *
@@ -1219,15 +1220,21 @@ export interface ProjectArchive {
    */
   file: string;
   /**
-   * WHAT THE IMPORT IS. `pages` is a folder of page images in reading order —
-   * what a mint writes now — and it is a THIRD value rather than a flag beside
-   * `pdf` because every site that branches here is choosing what to open, what to
-   * hand a command line, or what to call the thing on screen, and none of those
-   * has an answer that is "a PDF, but".
+   * WHAT THE IMPORT IS.
    *
-   * OLD MANIFESTS ARE UNTOUCHED BY CONSTRUCTION: nothing writes `pages` but the
-   * mint, so a project imported as a scan or an EPUB reads back exactly as it
-   * did. `readArchive` admits the third value and still refuses anything else.
+   * `pages` — a folder of page images in reading order — is READ-ONLY HISTORY as
+   * of Wave 41. It was what a mint wrote between `ecbf238` and there, and it was
+   * a third value rather than a flag beside `pdf` because every site that
+   * branches here is choosing what to open, what to hand a command line, or what
+   * to call the thing on screen, and none of those has an answer that is "a PDF,
+   * but". That was true of a folder and is the reason the folder had to go.
+   *
+   * NOTHING WRITES IT ANY MORE. A mint files a PDF (`recordMint`) and
+   * `healMintedArchive` rewrites every manifest that still says this into one
+   * that says `pdf`. The member survives so that a project on somebody's disk
+   * still PARSES on the launch that heals it — `readArchive` refusing the value
+   * would make an unhealed project unreadable in the same breath as taking away
+   * the only thing that could heal it.
    */
   kind: 'pdf' | 'epub' | 'pages';
   /** The 8 hex characters the project key ends in — the content hash. */
@@ -2157,26 +2164,22 @@ export interface ProjectSummary {
    * already knows without opening the recipe or listing a folder.
    */
   capture: boolean;
-  /**
-   * THIS PROJECT'S BOOK IS A FOLDER OF PAGE IMAGES — it has been minted.
+  /*
+   * ── GRAVESTONE: `pages` (Wave 41) ─────────────────────────────────────────
    *
-   * ── Why a listing has to carry this at all ──────────────────────────────────
+   * A boolean stood here meaning "this project's book is a folder of page images
+   * — it has been minted", and it had to exist because `documents` was EMPTY for
+   * a captured project both before its first mint and after it: a mint filed no
+   * document row, so "somebody is still photographing this" and "this is a
+   * finished book waiting to be read" were indistinguishable from a summary, and
+   * Home said *photographs* and offered the light table for both.
    *
-   * `capture` says a project arrived as photographs and never stops being true.
-   * `documents` is empty for a captured project BEFORE its first mint and after
-   * it, because a mint files no document (`documentArchive`, electron/projects.ts).
-   * So the two facts every surface actually wants to tell apart — "somebody is
-   * still photographing this" and "this is a finished book waiting to be read" —
-   * were indistinguishable from a summary, and Home said "photographs" and
-   * offered the light table for both.
-   *
-   * IT IS NOT `minted`. What a caller does with it is decide whether there are
-   * PIXELS HERE THAT A MODEL COULD READ, which is a question about what is on
-   * the disk now rather than about an event in the history; a project whose
-   * mint step was discarded is not minted and has no pages, and both of those
-   * are this one field going false together.
+   * A mint files its PDF now (`catalogueMint`, electron/projects.ts), so the
+   * question every consumer was really asking has a better answer they were all
+   * already computing: `originalOf(project) === null`. Before a mint there is no
+   * original; after one there is, and the project is ordinary. One question, one
+   * answer, and no third field to keep in agreement with the other two.
    */
-  pages: boolean;
   /**
    * The terminal documents this project has produced — what the left nav lists,
    * indented under the project row.
@@ -2286,13 +2289,13 @@ export interface RecentDocument {
  * lives and it is worth drawing; what it is not is a reason to interrupt
  * somebody on their way out of a tab.
  *
- * So what is left is two genuine losses. `modified` is "you have edited this
- * since the copy YOU chose was written" — a copy on the user's own disk that is
- * now behind, which closing does not fix and nothing else will mention.
- * `edits` is the other, and it is the one loss closing genuinely destroys: the
- * proof sheet's stack, in memory, scrapped by a close without Apply. Main writes
- * a different sentence for each, and a tab that owes neither closes without a
- * question.
+ * So what is left is two things worth a sentence. `modified` is "you have edited
+ * this since the copy YOU chose was written" — a copy on the user's own disk that
+ * is now behind, which closing does not fix and nothing else will mention.
+ * `edits` is the other: the proof sheet's stack, with no Apply behind it. It WAS
+ * a loss — scrapped by a close, until 2026-08-22 — and it is now a decision, one
+ * the card offers to make (see the field). Main writes a different sentence for
+ * each, and a tab that owes neither closes without a question.
  */
 export interface CloseWarning {
   title: string;
@@ -2303,11 +2306,15 @@ export interface CloseWarning {
    * How many changes are on the book pane's stack with no Apply behind them, or
    * null when this tab is not a book or has nothing waiting.
    *
-   * ── The one loss in this app that closing genuinely destroys ────────────────
+   * ── It used to be the one loss closing genuinely destroyed ──────────────────
    *
-   * It is in memory, it is the only copy, and the ruling is that closing without
-   * Apply scraps it (docs/RENDERER.md §3). So this is the rare case where "you
-   * will lose this" is the true sentence.
+   * The stack was in memory, it was the only copy, and the ruling was that
+   * closing without Apply scrapped it. Owen reversed that on 2026-08-22 after a
+   * real project lost real work to it: the stack is written to a sidecar as it is
+   * made and comes back the next time the book is opened at the same step, so
+   * closing costs nothing and only the card's own Discard throws anything away.
+   * What this count is FOR is unchanged — the card offers to record the work as a
+   * step, because a make-act built from the ledger is built without it.
    *
    * A COUNT AND NOT A LIST. The card says how much is at stake; what each op says
    * is on the paper behind the dialog, in the cancel marks and the changed
@@ -2329,6 +2336,95 @@ export interface CloseWarning {
  * happened anyway would have thrown away the very thing the answer asked to keep.
  */
 export type CloseAnswer = 'close' | 'save' | 'keep';
+
+/**
+ * THE MAKE-ACT THIS APP IS ABOUT TO RUN, named so a card can say which one it is.
+ *
+ * Four words rather than a sentence the renderer composes, because the sentences
+ * are main's (`ConfirmService`) and a caller that handed over prose would be the
+ * renderer writing its own copy for this app's one card. `host` is somebody
+ * else's act ordered through the socket — Foundry does not know what it makes,
+ * only that it consumes the book at a position.
+ */
+export type MakeAct = 'export' | 'translate' | 'simplify' | 'host';
+
+/**
+ * AND EVERY ACT THE UNAPPLIED CARD NOW STANDS IN FRONT OF, which is wider than
+ * the four above.
+ *
+ * ── Why a second union rather than a fifth member of `MakeAct` ──────────────
+ *
+ * Because `MakeAct` means something precise and useful — an act that MAKES a
+ * book out of the recorded steps — and half a dozen places lean on that meaning
+ * (`hostActPositionFrom` picks a node id for one, the action menu decides which
+ * press is one, the export's own refusals are about one). Standing on a
+ * different step makes nothing. It is the other half of Owen's ruling
+ * (2026-08-22): *"any action they take, whether it's switching to a different
+ * step or narrating or anything at all, should ask if they want to apply
+ * changes in a modal."* Adding `stand` to `MakeAct` would have made every one of
+ * those tests quietly wrong about a thing that is not a make-act at all; adding
+ * it here widens the CARD without widening the concept.
+ *
+ * `stand` COSTS SOMETHING REAL, which is why it is on the list. The stack is a
+ * delta against the step it was made on, so moving the pointer has always let it
+ * go (the pane says so on the notice strip). The card is what turns that from a
+ * thing somebody is told after the fact into a thing they decide.
+ */
+export type UnappliedAct = MakeAct | 'stand';
+
+/**
+ * THE WARNING BEFORE A MAKE-ACT RUNS PAST WORK NOBODY APPLIED.
+ *
+ * ── The defect this card exists for ─────────────────────────────────────────
+ *
+ * A chapter renamed and a paragraph retyped on the book pane, no second Apply,
+ * Export pressed — and the EPUB came out without either, silently (user report,
+ * 2026-08-21). It is not a bug in the export: every make-act is arithmetic over
+ * the LEDGER, the pane's stack is a delta that has not reached the ledger, and a
+ * book made from the ledger is therefore honest about the ledger and silent about
+ * the stack. The only thing missing was somebody saying so before hours of GPU
+ * went into the wrong book.
+ *
+ * IT IS THE CLOSING QUESTION'S TWIN AND SHARES ITS ARITHMETIC. `edits` is
+ * `unwritten` (shared/ops.ts), counted by the one function the pane's tray and
+ * the closing card already count with, because two counts of one fact is how a
+ * dialog comes to disagree with the button that opened it.
+ */
+export interface UnappliedWarning {
+  /** The book, as the tab names it — the card says which one it means. */
+  title: string;
+  /** How many changes are waiting with no Apply behind them. Never zero: no card is raised. */
+  edits: number;
+  /** Which act was pressed, so the card can name it. */
+  act: UnappliedAct;
+}
+
+/**
+ * How that question was answered.
+ *
+ * ── TWO BUTTONS AND A WAY OUT — Owen's refinement, 2026-08-22 ───────────────
+ *
+ * Verbatim: *"discard/apply changes. if they hit discard, it does whatever
+ * action they selected to the step theyre on after dropping changes they made.
+ * if they hit apply changes, the action they select is executed after applying
+ * all changes."* So the card asks one question with one shape wherever it is
+ * raised, and `cancel` is not a button any more — it is what Escape and a click
+ * outside the card answer, which is the app's own `dismissed` machinery
+ * (`AppQuestion.dismissed`) rather than a third choice competing with the two
+ * that mean something.
+ *
+ * `without` IS RETIRED AND THIS IS ITS GRAVESTONE. It meant *"continue without
+ * them"* — leave the stack on the page and make the older book anyway — and the
+ * argument for it was real: making the recorded book from a position you are
+ * standing on is a thing somebody can genuinely mean. It went because the
+ * question got wider. As a make-act's third answer it was a coherent choice; as
+ * an answer to *"you are about to move to another step"* it is meaningless (the
+ * move lets the stack go either way), and one card with three answers HERE and
+ * two answers THERE is two cards wearing one name. The narrow want it served is
+ * still reachable in two gestures nobody can misread: undo back to the recorded
+ * book, or stand on the step and press the act again.
+ */
+export type UnappliedAnswer = 'apply' | 'discard' | 'cancel';
 
 /**
  * How "Read this book again?" was answered.
@@ -3283,6 +3379,50 @@ export interface CapturePhoto {
    * reading order for free.
    */
   pages: CapturePage[];
+  /**
+   * THE BOOK STOPS MOVING THIS PHOTOGRAPH — one state where Wave 24 had two.
+   *
+   * Complete means exactly that and nothing more. Every global act skips it;
+   * nothing else in the project changes because of it. It is NOT a freeze and
+   * it is NOT an exclusion from the finished book: at Finish every photograph
+   * gets its pixels cut at whatever lines it holds, complete and follower
+   * alike. Complete is left out of the STAMP, never out of the MINT.
+   *
+   * ── ABSENT IS A DERIVATION, NOT A FALSE ──────────────────────────────────
+   *
+   * Absent means "ask the pages": a photograph any of whose pages carries
+   * `byHand` is complete. That is Owen's standing ruling — a hand-placed change
+   * is assumed correct — and reading it rather than storing it is what lets
+   * every project written before Wave 25 arrive with its hand-set pages already
+   * complete and NOTHING REWRITTEN. Same no-migration posture as the standing
+   * crop itself, and for the same reason: a migration here would have to guess.
+   *
+   * ── WHO WRITES IT, WHICH IS A SHORT LIST ON PURPOSE ─────────────────────
+   *
+   * The say-so (*This page is right*) writes true; release writes false. Those
+   * two are the only writers, because they are the only acts whose answer the
+   * pages cannot already give.
+   *
+   * And every act that PLACES a line — a corner dragged, a gutter slid, a crop
+   * cleared, a spread rejoined — DELETES this field rather than writing beside
+   * it. A photograph that was released and then re-placed must read complete
+   * again, and the derive is the one place that answer lives; a `false` left
+   * lying beside a hand-placed page would out-argue the hand that placed it.
+   * Wearing the book's crop deletes it too, for the mirror reason: a page that
+   * has just taken the standing is a follower by construction.
+   *
+   * ── `byHand` STAYS, AS PROVENANCE ────────────────────────────────────────
+   *
+   * It is not this field under another name. It records WHERE A LINE CAME FROM,
+   * which is what decides whether an act completes a page at all: taking the
+   * book's own cut leaves a photograph following (Wave 24's `cutHere` ruling),
+   * and sliding the line yourself completes it. Delete `byHand` and that
+   * distinction has nowhere to live.
+   *
+   * Carried by the validator and read by nothing in main, exactly as `byHand`
+   * is — see the note there, which is the third statement of the same contract.
+   */
+  complete?: boolean;
 }
 
 /** `capture/recipe.json`, read and written whole. */
@@ -3331,6 +3471,39 @@ export interface CaptureRecipe {
    * to abolish.
    */
   book?: CaptureStanding;
+  /**
+   * WHICH PASS THIS PROJECT IS IN — crop everything, then split everything.
+   *
+   * ── Why the order is worth storing at all ────────────────────────────────
+   *
+   * Owen: *"maybe my goal should be to crop the pages so theyre positioned
+   * right, then it moves to the page splitting after cropping is done. if
+   * cropping is done, page splits will almost certainly be lined up already."*
+   * That is the whole argument. Once the crops are applied every page is a
+   * squared, registered rectangle, so the gutter sits in nearly the same
+   * fractional place on all of them and ONE cut placed once fits the book. The
+   * pass is what makes that true by construction rather than by luck.
+   *
+   * It is also what lets each surface offer one kind of handle: corners in the
+   * crop pass, the line in the split pass. What is grabbable answers the
+   * question "am I changing this page or the book" before it is asked.
+   *
+   * ── ABSENT IS THE CROP PASS, and there is no `'crop'` to write ───────────
+   *
+   * Every recipe ever written is in the crop pass, which is where a project
+   * starts and where *Reopen crops* returns it. Storing the beginning would be
+   * storing a default, and the file stays silent about what nobody chose — the
+   * same rule `prepared` follows for its unticked verbs.
+   *
+   * ── IT IS A COMMITMENT POINT, NOT A SECOND RENDER ────────────────────────
+   *
+   * Apply moves the pass and lands the book's crop on the followers; from there
+   * every surface DRAWS the rectified projection. The pixels are still cut once,
+   * at Finish. Which is exactly what makes *Reopen crops* free: clearing this
+   * field costs nothing and destroys nothing, and the project reopens as it was
+   * left.
+   */
+  pass?: 'split';
 }
 
 /**
@@ -3439,6 +3612,21 @@ export interface CaptureOpened {
    */
   mintedFrom: string | null;
 }
+
+/*
+ * ── GRAVESTONE: `CaptureMintedPages` (Wave 41) ──────────────────────────────
+ *
+ * The payload of `capture:pages-load`: a mint's page images as plain basenames
+ * in reading order, plus a token that put their directory on the capture host's
+ * allow-list. It was a door of its own rather than part of the recipe because it
+ * described a different thing — a BOOK that had been made and would never be
+ * edited, against the photographs the light table is still arranging.
+ *
+ * There is no folder to list. The mint writes an image-only PDF and the minted
+ * row opens it through the ordinary document path, so pdf.js draws the pages and
+ * the app owes this stage no second viewer. The door, its preload arm, its
+ * `FoundryApi` member and `app-pages-view` retired with it.
+ */
 
 /**
  * What `capture:create` answers with — an empty project that already exists.

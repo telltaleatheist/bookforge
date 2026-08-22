@@ -11,6 +11,7 @@ import type { ProjectSummary } from '@shared/types';
 
 import { api, hosted } from '../../core/foundry';
 import { CaptureService } from '../../core/capture.service';
+import { IntakeWorkspaceService } from '../../core/intake-workspace.service';
 import { ProjectsService } from '../../core/projects.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
@@ -81,8 +82,29 @@ import { UiService } from '../../core/ui.service';
         <h1>Foundry</h1>
         <p>Recast a poorly scanned PDF into a clean EPUB.</p>
 
+        <!--
+          THE RECTANGLE IS STILL DECORATIVE AND NOW SAYS TWO THINGS.
+
+          Owen (2026-08-22): \`"the drop zone on the home page - lets have it
+          accept images (HEIC, PNG, JPG, etc) as input, not just PDF."\` It
+          already accepted them in the only sense that matters — the WHOLE
+          WINDOW takes the drop and always has (see App) — so what was missing
+          was not a handler on this element but a meaning for the files:
+          documents open, images go to the workspace. The seam is in the shell's
+          own drop handler, where every file the window is given can be sorted
+          at once; this rectangle goes on doing the one job it has ever had,
+          which is telling somebody the gesture exists.
+
+          Hosted it says what it always said: there is no workspace there
+          (\`IntakeWorkspaceService.available\`), so promising one would be an
+          invitation to a door that is not in the wall.
+        -->
         <div class="target">
-          <span>Drop a PDF anywhere in this window</span>
+          @if (workspace.available()) {
+            <span>Drop a PDF anywhere in this window — or photographs, to make a book from</span>
+          } @else {
+            <span>Drop a PDF anywhere in this window</span>
+          }
         </div>
 
         <div class="actions">
@@ -98,7 +120,26 @@ import { UiService } from '../../core/ui.service';
           @if (!hosted()) {
             <button class="ghost" (click)="ui.openCaptureNew()">Photograph a book…</button>
           }
-          <button class="ghost" (click)="ui.openOcr()">OCR…</button>
+          <!--
+            "OCR…" STOOD HERE AND IS GONE (Owen, 2026-08-22: \`"lets remove the
+            'OCR...' button from the homepage"\`).
+
+            It was the one button on this screen aimed at NOTHING. Every other
+            act here is about a book you have named by pressing it — a row, a
+            file dialog, a new project — and this one opened a card whose whole
+            job is to convert the document in front of you, on the one screen in
+            this app where there is no document in front of you. Pressed cold it
+            answered "Open a PDF first", which is a button telling somebody they
+            should not have pressed it.
+
+            THE READ IS NOT GONE, IT IS WHERE THE BOOK IS. Every row in the list
+            below that has pages nobody has read carries its own OCR pill, which
+            opens the book and then the card (\`readPages\`); the action menu at
+            the foot of the library offers the same act against the standing
+            position; and the tree's own "from here" footer offers it on the step
+            it would run from. Three doors, and all three of them know which book
+            they are about.
+          -->
           <button class="ghost" (click)="settings()">Settings</button>
         </div>
 
@@ -147,22 +188,23 @@ import { UiService } from '../../core/ui.service';
                     -->
                     @if (project.capture && projects.originalOf(project) === null) {
                       <!--
-                        TWO STATES WEARING ONE TAG UNTIL NOW. A capture project
-                        holds no documents before its first mint, and it holds no
-                        documents after one either -- a mint writes a folder of
-                        page images, which is not a file type anything opens, so
-                        it is deliberately not in the catalogue.
+                        TWO STATES WORE ONE TAG FOR TWO DAYS AND NOW WEAR ONE
+                        EACH BY BEING TWO DIFFERENT ROWS. A capture project held
+                        no documents before its first mint and none after one
+                        either, because a mint wrote a folder of page images and
+                        filed nothing in the catalogue -- so "photographs" was
+                        true all evening and went on being printed over a
+                        finished book, and a summary field had to be invented to
+                        tell them apart.
 
-                        So "photographs" was true all evening and went on being
-                        printed over a finished book. The row now says which of
-                        the two it is, because they differ in the only thing a
-                        row is for: what to do next.
+                        A mint files its PDF now, so a minted project has an
+                        original and never reaches this branch at all: it draws
+                        as the book it is, with the glyph and the tooltip every
+                        other book gets. What is left here is the one state this
+                        condition was always about -- photographs waiting to be
+                        made into pages.
                       -->
-                      @if (project.pages) {
-                        <span class="tag" title="The pages have been made — this book is ready to be read">pages</span>
-                      } @else {
-                        <span class="tag" title="Photographs waiting to be minted into pages">photographs</span>
-                      }
+                      <span class="tag" title="Photographs waiting to be minted into pages">photographs</span>
                     }
                     @if (!project.capture && projects.originalOf(project) === null) {
                       <span class="tag gone" title="Every document this project listed is missing from the disk">nothing to open</span>
@@ -186,18 +228,19 @@ import { UiService } from '../../core/ui.service';
                   short of the bank going away.
                 -->
                 <!--
-                  THE GATE USED TO BE "there is a document to open", because the
-                  button opens the book and then the dialog finds it there. A
-                  captured book has no document and the pixels are a folder, so
-                  that gate refused the one kind of book that CANNOT have arrived
-                  with text in it — the row offered nothing, and the dialog it
-                  would have opened had nothing in its list either.
+                  THE GATE IS "there is a document to open" AGAIN, which is
+                  where it started. It was widened at Wave 34 because a captured
+                  book had no document and its pixels were a folder, so the
+                  original gate refused the one kind of book that CANNOT have
+                  arrived with text in it — the row offered nothing, and the
+                  dialog it would have opened had nothing in its list either.
 
-                  reading.needed already says pages are here and unread, for
-                  both kinds. What differs is what the button has to open first,
-                  which is readPages' own business.
+                  A mint files its PDF now, so a captured book HAS a document
+                  and the two arms of that widening are one arm. reading.needed
+                  already says pages are here and unread; this says there is
+                  something to open them with.
                 -->
-                @if (project.reading.needed && (project.pages || projects.originalOf(project) !== null)) {
+                @if (project.reading.needed && projects.originalOf(project) !== null) {
                   <button
                     class="ocr"
                     (click)="void readPages(project)"
@@ -389,6 +432,8 @@ export class HomeComponent {
   protected readonly documents = inject(OpenDocumentsService);
   private readonly notices = inject(NoticeService);
   protected readonly ui = inject(UiService);
+  /** Read for one question: is there a workspace to promise? See the target. */
+  protected readonly workspace = inject(IntakeWorkspaceService);
   private readonly captures = inject(CaptureService);
   private readonly router = inject(Router);
 
@@ -504,12 +549,13 @@ export class HomeComponent {
   protected glyph(project: ProjectSummary): string {
     if (project.problem !== null) return '⚠';
     const original = this.projects.originalOf(project);
-    // Photographs before they are pages, and PAGES after. A capture project has
-    // no original to take a glyph from either way, and the empty-project glyph
-    // beside it means the opposite thing -- that everything is gone. The scan
-    // glyph is right for a minted book for the same reason it is right for an
+    // Photographs, and only photographs: a capture project reaches this line
+    // exactly while nothing has been minted from it, and the empty-project glyph
+    // beside it means the opposite thing -- that everything is gone. Once it has
+    // minted, it has an original and falls through to the scan glyph below,
+    // which is right for a minted book for the same reason it is right for an
     // imported one: what the row opens is a picture of paper.
-    if (project.capture && original === null) return project.pages ? '▦' : '▣';
+    if (project.capture && original === null) return '▣';
     if (original === null) return '⌸';
     return original.kind === 'epub' ? '▤' : '▦';
   }
@@ -521,14 +567,12 @@ export class HomeComponent {
     // The same lie the row told, in the tooltip. A capture project with no
     // original has everything it is supposed to have.
     if (original === null) {
-      // The light table either way -- it is what the row opens and saying
-      // otherwise would be a tooltip describing a door that is not there. What
-      // changes is what is on the table, which is the half worth saying.
-      if (project.capture) {
-        return project.pages
-          ? `Open the light table — the pages are made\n${project.dir}`
-          : `Open the light table\n${project.dir}`;
-      }
+      // The light table, because that is what the row opens and saying otherwise
+      // would be a tooltip describing a door that is not there. It said one of
+      // two sentences until Wave 41 — the second was "the pages are made" — and
+      // a minted project has an original now and never gets here, so there is
+      // one thing left to say.
+      if (project.capture) return `Open the light table\n${project.dir}`;
       return `${project.dir}\nNothing in this project is still on the disk.`;
     }
     return `Open ${original.label}\n${project.dir}`;
@@ -547,24 +591,18 @@ export class HomeComponent {
   protected async readPages(project: ProjectSummary): Promise<void> {
     const original = this.projects.originalOf(project);
     /*
-     * A CAPTURED BOOK OPENS ITS LIGHT TABLE FIRST, for exactly the reason an
-     * imported one opens its PDF: the dialog converts the book in front of you,
-     * and it finds a capture project through its open tab (`sources`,
-     * ocr-dialog.component.ts) precisely as it finds a PDF through one. There is
-     * no document to open here and never will be, so the tab IS the opening.
+     * A CAPTURED-BOOK ARM STOOD HERE (Wave 41's gravestone) opening the light
+     * table first, because a minted project had no document and the tab WAS the
+     * opening — the OCR dialog found a capture project through its open tab
+     * exactly as it finds a PDF through one.
      *
-     * NOT AWAITED, and it does not need to be: `captureTabIn` makes the tab
-     * synchronously in this process and shows it, where opening a file is a full
-     * round trip through main. The await one branch down exists because that
-     * round trip is what put "Open a PDF first" over a book somebody had just
-     * pointed at, and there is no round trip to lose that race with here.
+     * A minted project has an original, so it takes the branch below with every
+     * other book. What is left of the null case is a project with photographs
+     * and no mint, and there is nothing there to read: `reading.needed` is false
+     * for it (its archive is null), so this button is not drawn on that row at
+     * all and the guard has nothing to guard.
      */
-    if (original === null) {
-      if (!project.pages) return;
-      this.documents.show(this.documents.captureTabIn(project.dir));
-      this.ui.openOcr();
-      return;
-    }
+    if (original === null) return;
     /*
      * AWAITED, and the await is the whole of the fix. Opening a document is a
      * full round trip through main — it admits the path, records the recent and

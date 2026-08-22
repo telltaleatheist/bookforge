@@ -4,6 +4,7 @@ import {
 
 import { typeLabel } from '@shared/documents';
 import { fold } from '@shared/original';
+import { JOB_RESOURCE, LANES, SLOTS, laneOf, type JobResource, type Lane } from '@shared/queue-board';
 import type { Job } from '@shared/types';
 
 import { ProjectsService } from '../../core/projects.service';
@@ -11,7 +12,7 @@ import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { UiService } from '../../core/ui.service';
-import { api } from '../../core/foundry';
+import { api, hosted } from '../../core/foundry';
 
 /**
  * The queue shelf — docked bottom-right, collapsed to a pill, unrolling upward.
@@ -43,6 +44,31 @@ import { api } from '../../core/foundry';
  * START CARRIES THE COUNT. The number is what is being committed to, and a
  * disabled-but-present button keeps the footer from changing shape as rows come
  * and go.
+ *
+ * ── AND IT IS A BOARD NOW, WHICH IS WHY THERE ARE LANES ─────────────────────
+ *
+ * Owen: *"the queue shelf should probably look a bit more like the bookforge
+ * queue, where it has two cpu slots and one gpu slot, and i can see details
+ * about the step thats taking place."* The scheduler grew the lanes to match
+ * (docs/QUEUE-BOARD.md); this list draws them, off the SAME table the scheduler
+ * rations by (`JOB_RESOURCE`, shared/queue-board.ts) — one question, one answer,
+ * so a row can never be drawn under CPU while the pump holds it against the
+ * card.
+ *
+ * A LANE HEAD IS NOT FREE, so it is not always drawn. A shelf holding one lonely
+ * job would otherwise be two headers of ceremony over a single line, which is
+ * worse than the flat list it replaced. The rule: while every row in the shelf
+ * belongs to ONE lane, the list draws exactly as it always did; the moment the
+ * board holds work of two kinds, both lanes draw — the empty one included,
+ * because "the card is free while these two compile" is precisely the fact a
+ * board exists to show at a glance.
+ *
+ * THE DETAIL OWEN ASKED FOR IS ON THE ROW, not in the bar. A running row says
+ * the count (\`Reading 12 / 300 pages\`) and then, under it, whatever the engine
+ * last said that was not a count — the retry, the fallback, the block it is
+ * chewing on. That sentence used to be crammed onto the end of the count line
+ * after a dot and cut at eighty characters; it is the step somebody is trying to
+ * see, so it gets a line of its own.
  */
 @Component({
   selector: 'app-queue-shelf',
@@ -54,12 +80,25 @@ import { api } from '../../core/foundry';
       arrive some other way for anybody not watching the shelf. Polite rather
       than assertive: a job being queued is news, not an interruption.
     -->
+    <!--
+      HOSTED, THERE IS NO SHELF AT ALL. Owen's ruling, 2026-08-21, verbatim:
+      "when im in bookforge, the shelf shouldnt appear at all. thats the
+      hangup. bookforge should be using its own queue." The hosted window's
+      queue IS the host's (Wave 16); its rows draw in the host's own chrome
+      and its held reads are released from the host's queue page (the host
+      side traced held -> queued -> picked end to end, same day). A mirrored
+      shelf here was a second surface for the same work, and its only removal
+      was the row's ✕ — which cancels the job. The live region goes with it:
+      its sentences ("Press Start on the queue") are about a surface this
+      window no longer has.
+    -->
+    @if (!hosted()) {
     <p class="sr-only" role="status" aria-live="polite">{{ ui.shelfSaid() }}</p>
 
     @if (queue.jobs().length > 0) {
       <div class="shelf" [class.expanded]="ui.shelfExpanded()">
         <button class="shelf-head" (click)="ui.shelfExpanded.set(!ui.shelfExpanded())">
-          @if (queue.running()) {
+          @if (leading()) {
             <span class="spinner"></span>
           } @else if (queue.failed().length > 0) {
             <span class="mark bad">!</span>
@@ -70,7 +109,16 @@ import { api } from '../../core/foundry';
           <span class="chev">{{ ui.shelfExpanded() ? '▾' : '▴' }}</span>
         </button>
 
-        @if (queue.running(); as active) {
+        <!--
+          THE GLANCEABLE BAR FOLLOWS THE EXPENSIVE RUN. With three children on
+          one machine there is no single fraction that is true, and a bar that
+          tracked whichever row happened to be first in the list would jump
+          between a two-minute compile and a three-hour reading as rows landed.
+          The GPU lane's job is the one somebody is actually waiting on, so the
+          collapsed pill measures that one and the expanded board measures each
+          row for itself.
+        -->
+        @if (leading(); as active) {
           <div class="aggregate">
             <div class="bar"><div class="fill" [style.width.%]="percent(active)"></div></div>
           </div>
@@ -78,7 +126,24 @@ import { api } from '../../core/foundry';
 
         @if (ui.shelfExpanded()) {
           <div class="shelf-body">
-            @for (job of queue.jobs(); track job.id) {
+            @for (section of board(); track section.key) {
+            <!--
+              THE LANE, drawn only when the board holds more than one kind of
+              work — the component's own note carries the argument. The slot
+              count is the head's right-hand side because it is the fact that
+              makes this a board and not a list: two of two busy is a queue
+              behind it, one of two is room.
+            -->
+            @if (section.head !== null) {
+              <div class="lane" [attr.data-lane]="section.key" [title]="section.hint">
+                <span class="lane-name">{{ section.head }}</span>
+                <span class="lane-slots">{{ section.slots }}</span>
+              </div>
+            }
+            @if (section.head !== null && section.rows.length === 0) {
+              <div class="lane-idle">Nothing here</div>
+            }
+            @for (job of section.rows; track job.id) {
               <div class="row" [attr.data-state]="job.state">
                 <div class="row-top">
                   <!--
@@ -175,7 +240,20 @@ import { api } from '../../core/foundry';
                     <div class="bar" [class.indeterminate]="!determinate(job)">
                       <div class="fill" [style.width.%]="percent(job)"></div>
                     </div>
-                    <span class="sub">{{ progressText(job) }}</span>
+                    <span class="sub">{{ stepLine(job) }}</span>
+                    <!--
+                      THE STEP TAKING PLACE, which is the thing Owen could not
+                      see. The count says how far; this says what the engine is
+                      actually doing — the answer it rejected and is asking
+                      again, the page it fell back on, the record it is writing
+                      onto a finished book. It is only ever drawn when there IS
+                      a count, because without one the line above is already
+                      the engine's own words and saying them twice would be
+                      furniture.
+                    -->
+                    @if (stepDetail(job); as detail) {
+                      <span class="detail" [title]="job.note ?? job.message ?? ''">{{ detail }}</span>
+                    }
                   }
                   <!--
                     "Waiting for Start" and not "Queued", because the two are
@@ -223,6 +301,7 @@ import { api } from '../../core/foundry';
                 }
               </div>
             }
+            }
 
             <!--
               START IS THE PRIMARY ACTION AND SITS WHERE A PRIMARY ACTION SITS —
@@ -251,6 +330,7 @@ import { api } from '../../core/foundry';
           </div>
         }
       </div>
+    }
     }
   `,
   styles: [`
@@ -288,7 +368,24 @@ import { api } from '../../core/foundry';
       width: 320px;
       max-width: calc(100vw - 32px);
       display: flex;
-      flex-direction: column-reverse;
+      /*
+        THE HEAD IS THE TOP OF THE PANEL, which is where chrome goes.
+
+        This was column-reverse — the head hugged the bottom edge and the
+        panel grew upward past it — and the costume swap that produced is a
+        measured defect, not a taste: expanded, the JOB ROW sat on top wearing
+        a dark bar and an ✕ (a dialog titlebar to any eye, except its ✕
+        cancels the job), while the actual collapse control rendered at the
+        FOOT dressed as a status line. Owen clicked "the head" and reported
+        "nothing happens — it stays open"; he had clicked the row's bar,
+        because it is the thing that looks like a head. Two agents read the
+        toggle's logic and found it sound — the defect was never in the
+        logic. Plain column puts the one clickable strip where every panel
+        keeps its chrome; the fixed bottom edge still anchors the pill in the
+        corner, and the panel grows upward from under the head instead of
+        over it.
+      */
+      flex-direction: column;
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: var(--radius-lg);
@@ -346,6 +443,41 @@ import { api } from '../../core/foundry';
       overflow-y: auto;
     }
 
+    /*
+      THE LANE HEAD READS AS A RULE ACROSS THE LIST, not as a row.
+
+      It is sunken rather than elevated and it is the only uppercase thing in
+      the shelf, because the one mistake available here is a head that looks
+      clickable: every other strip in this panel either toggles or cancels, and
+      a label that borrowed their chrome would be pressed. Sticky, so the lane a
+      row belongs to is still legible when a long batch is scrolled — the body
+      is a 300px window and a board whose headers scroll away is a list again.
+    */
+    .lane {
+      position: sticky;
+      top: 0;
+      z-index: 1;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+      padding: 5px 12px;
+      background: var(--bg-sunken);
+      border-bottom: 1px solid var(--border-subtle);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+      text-transform: uppercase;
+      color: var(--text-tertiary);
+    }
+    .lane-name { flex: 1; min-width: 0; font-weight: 700; }
+    .lane-slots { flex: 0 0 auto; letter-spacing: 0; text-transform: none; color: var(--text-muted); }
+    /* The lane that is free says so in words rather than by being a gap. */
+    .lane-idle {
+      padding: 6px 12px;
+      font-size: 11px;
+      color: var(--text-muted);
+      border-bottom: 1px solid var(--border-subtle);
+    }
+
     .row {
       display: flex;
       flex-direction: column;
@@ -358,6 +490,21 @@ import { api } from '../../core/foundry';
     .name { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
     .sub { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    /*
+      THE STEP, WRAPPED TO TWO LINES AND NO MORE. The engine's sentences run
+      long — a rejected answer names the block and the attempt — and the whole
+      of one is in the hover; two lines is what a row can spend without the
+      shelf turning into a log window, which is what the terminal is for.
+    */
+    .detail {
+      font-size: 11px;
+      color: var(--text-muted);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      word-break: break-word;
+    }
     .sub.ok { color: var(--ok); }
     .sub.bad { color: var(--error); white-space: normal; }
     /*
@@ -422,6 +569,8 @@ import { api } from '../../core/foundry';
   `],
 })
 export class QueueShelfComponent {
+  /** Hosted, the whole component renders nothing — see the template's own note. */
+  protected readonly hosted = hosted;
   protected readonly queue = inject(QueueService);
   protected readonly ui = inject(UiService);
   private readonly documents = inject(OpenDocumentsService);
@@ -467,16 +616,41 @@ export class QueueShelfComponent {
   }
 
   /**
+   * WHAT THE COLLAPSED PILL MEASURES — the GPU lane's run, or the first one
+   * going.
+   *
+   * The bar has room for one fraction and the machine can be running three
+   * jobs, so the choice has to be made somewhere and this is where. The GPU
+   * lane wins because it is the lane that costs hours: a person glancing at the
+   * pill is asking how the reading is getting on, and a bar that tracked a
+   * thirty-second compile would answer a question nobody asked and then jump
+   * back. Null when nothing is running at all, which is what draws the ✓ or the !
+   * in the head.
+   */
+  protected readonly leading = computed(() => {
+    const active = this.queue.runningJobs();
+    return active.find((job) => laneOf(job.kind) === 'gpu') ?? active[0] ?? null;
+  });
+
+  /**
    * The pill's one line: what is running, and how many are waiting behind it.
-   * Jobs run one at a time, so "3 queued" is a wait, not a parallelism.
+   *
+   * "3 QUEUED" IS STILL A WAIT AND NOT A PARALLELISM, but it is no longer a
+   * wait behind ONE job — the board runs up to three at once (one GPU, two
+   * CPU), so the count of other live runs is said out loud rather than left for
+   * somebody to discover by expanding the shelf. The lead run names itself; the
+   * rest are a number, because three book titles in a 320px pill is three
+   * ellipses.
    */
   protected readonly headline = computed(() => {
-    const active = this.queue.running();
+    const active = this.leading();
+    const alsoRunning = this.queue.runningJobs().length - 1;
     const waiting = this.queue.queued().length;
     const held = this.queue.held().length;
     if (active) {
       const name = this.label(active);
       const behind = [
+        alsoRunning > 0 ? `${alsoRunning} more running` : null,
         waiting > 0 ? `${waiting} queued` : null,
         held > 0 ? `${held} held` : null,
       ].filter((part) => part !== null);
@@ -494,6 +668,76 @@ export class QueueShelfComponent {
     if (failed > 0) return `${failed} failed`;
     return `${this.queue.finished().length} finished`;
   });
+
+  /**
+   * THE BOARD AS THE LIST DRAWS IT — the lanes, in order, each with its rows.
+   *
+   * ── The one rule that decides whether there are heads at all ────────────────
+   *
+   * While every row in the shelf wants the same resource, this returns ONE
+   * section with no head and the whole list in it, and the shelf is exactly the
+   * shelf it has always been. That is the common case by a mile: a batch of
+   * readings, or one export. Heads appear the moment the board holds work of two
+   * kinds — and then BOTH lanes draw even if one of them is empty, because at
+   * that point the interesting fact is as often what is free as what is busy.
+   * An empty lane is a head and one grey line, which is cheap; two heads over
+   * one lonely job would not be.
+   *
+   * ── The two sections that are not lanes ─────────────────────────────────────
+   *
+   * An install holds every slot and a mint holds none (shared/queue-board.ts),
+   * so neither has an occupancy to report and neither draws when it has no rows.
+   * They are named for what they DO to the board rather than by what they are,
+   * because that is the fact a person reading a queue needs: one of them is why
+   * nothing else is moving, and the other is why something is moving that no
+   * lane accounts for.
+   *
+   * ORDER WITHIN A LANE IS QUEUE ORDER, untouched. Grouping is not sorting: the
+   * shelf shows the order somebody added things in, Start releases in that
+   * order, and the pump takes them in that order.
+   */
+  protected readonly board = computed<BoardSection[]>(() => {
+    const rows = this.queue.jobs();
+    const grouped = new Map<JobResource, Job[]>();
+    for (const job of rows) {
+      const resource = JOB_RESOURCE[job.kind];
+      const held = grouped.get(resource);
+      if (held === undefined) grouped.set(resource, [job]);
+      else held.push(job);
+    }
+    if (grouped.size <= 1) return [{ key: 'all', head: null, slots: '', hint: '', rows }];
+
+    const sections: BoardSection[] = [];
+    for (const lane of LANES) {
+      sections.push({
+        key: lane,
+        head: lane === 'gpu' ? 'GPU' : 'CPU',
+        slots: this.occupancy(lane),
+        hint: LANE_HINT[lane],
+        rows: grouped.get(lane) ?? [],
+      });
+    }
+    for (const resource of OFF_LANE) {
+      const held = grouped.get(resource);
+      if (held === undefined || held.length === 0) continue;
+      sections.push({
+        key: resource,
+        head: resource === 'exclusive' ? 'The whole machine' : 'Beside the lanes',
+        slots: '',
+        hint: LANE_HINT[resource],
+        rows: held,
+      });
+    }
+    return sections;
+  });
+
+  /** "1 of 1 running", or what is free — the right-hand side of a lane head. */
+  private occupancy(lane: Lane): string {
+    const busy = this.queue.runningJobs().filter((job) => laneOf(job.kind) === lane).length;
+    const total = SLOTS[lane];
+    if (busy > 0) return `${busy} of ${total} running`;
+    return total === 1 ? '1 slot free' : `${total} slots free`;
+  }
 
   /** What the Start button says to a screen reader, and on hover. */
   protected readonly startLabel = computed(() => {
@@ -515,7 +759,15 @@ export class QueueShelfComponent {
     return Math.min(100, Math.round((p.page / p.total) * 100));
   }
 
-  protected progressText(job: Job): string {
+  /**
+   * HOW FAR — the count, and nothing else on the line.
+   *
+   * It used to carry the engine's last sentence too, appended after a dot and
+   * cut at eighty characters, because the row had one line to say everything in.
+   * The step is what Owen asked to be able to see, so it moved to a line of its
+   * own (`stepDetail`) and this one went back to being the measurement.
+   */
+  protected stepLine(job: Job): string {
     if (job.kind === 'env-install') {
       const phase = job.envProgress?.phase;
       const verb = phase === 'download' ? 'Downloading'
@@ -535,10 +787,43 @@ export class QueueShelfComponent {
      * which is also the honest signal that this job runs for hours.
      */
     if (p.phase === 'translate') {
-      return note(`Translating ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`, job);
+      return `Translating ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
     }
     const verb = p.phase === 'render' ? 'Rendering' : 'Reading';
-    return note(`${verb} ${p.page} / ${p.total} pages`, job);
+    return `${verb} ${p.page} / ${p.total} pages`;
+  }
+
+  /**
+   * WHAT THE ENGINE IS ACTUALLY DOING — the step, under the count.
+   *
+   * ── Why a count alone cannot tell working from wedged ───────────────────────
+   *
+   * A block that draws a sixteen-thousand-character answer takes two minutes, is
+   * rejected, and is asked twice more: six minutes on one fraction with the
+   * engine talking the whole time. A shelf showing the fraction and nothing else
+   * is precisely what a hung job looks like, and a person watching a job they
+   * believe is hung kills it — an hour of GPU thrown away by the progress
+   * display. `Job.note` is the last thing said that was NOT a count, cleared by
+   * the next one, so it reads as "since the count last moved": empty on a run
+   * that is simply progressing, and full of exactly the right sentence on one
+   * that is retrying, falling back, or naming a block it could not do.
+   *
+   * NOTHING WITHOUT A COUNT, which is the one rule that keeps this from
+   * repeating the line above it: a job with no progress yet already shows its
+   * message there — "Starting the reading server…", "Writing the record onto
+   * it…" — and an install's line is composed from its phase. Saying either
+   * twice would be furniture.
+   *
+   * THE ENGINE'S OWN WORDS, merely shortened and stripped of the command prefix
+   * every line carries (the row already says which job this is). Paraphrasing a
+   * diagnostic is how a shelf ends up saying something the log does not.
+   */
+  protected stepDetail(job: Job): string {
+    if (job.kind === 'env-install' || job.progress === null) return '';
+    const said = (job.note ?? '').trim();
+    if (said.length === 0) return '';
+    const bare = said.replace(/^(translate|vlm-convert|vlm-read|vlm-book):\s*/, '');
+    return bare.length > DETAIL_CHARS ? `${bare.slice(0, DETAIL_CHARS - 1)}…` : bare;
   }
 
   /**
@@ -674,34 +959,43 @@ export class QueueShelfComponent {
   }
 }
 
-/**
- * The count, and what the engine has said since it last moved.
- *
- * A COUNT ALONE CANNOT TELL WORKING FROM WEDGED, and that is not a theoretical
- * complaint: a block that draws a sixteen-thousand-character answer takes two
- * minutes, is rejected, and is asked twice more — six minutes on one fraction
- * while the engine talks the whole time. This shelf showed the fraction and
- * nothing else, which is precisely what a hung job looks like, and a person
- * watching a job they believe is hung kills it.
- *
- * `note` is null on a run that is simply progressing (see Job.note), so the
- * ordinary case is the line it always was. The engine's own words are used
- * verbatim and merely shortened — paraphrasing a diagnostic is how the shelf
- * would end up saying something the log does not.
- */
-function note(count: string, job: Job): string {
-  const said = job.note?.trim();
-  if (said === undefined || said.length === 0) return count;
-  // The prefix is the command's, on every line, and it is redundant here: the
-  // row already says which job this is.
-  const bare = said.replace(/^(translate|vlm-convert):\s*/, '');
-  const short = bare.length > NOTE_CHARS ? `${bare.slice(0, NOTE_CHARS - 1)}…` : bare;
-  return `${count} · ${short}`;
+/** One lane of the board, or the whole list when there are no lanes to draw. */
+interface BoardSection {
+  /** `@for`'s identity: a resource, or `all` for the undivided list. */
+  key: string;
+  /** The lane's name, or null when this section is the flat list. */
+  head: string | null;
+  /** The occupancy, for the sections that have slots to count. */
+  slots: string;
+  /** What the head means, on hover — the one place the rule is spelled out. */
+  hint: string;
+  rows: Job[];
 }
 
 /**
- * How much of a note fits. The shelf row is one line and the count has to stay
- * readable at the left of it — a note that pushed the fraction off the row
- * would trade one missing fact for another.
+ * The two resources that are not lanes, drawn after them. Named here rather
+ * than inline so the order they draw in is a fact with a place to live.
  */
-const NOTE_CHARS = 80;
+const OFF_LANE: readonly JobResource[] = ['exclusive', 'unscheduled'];
+
+/**
+ * WHY A LANE IS WHAT IT IS, in a sentence, on hover.
+ *
+ * The board's numbers are Owen's ruling and the reasons behind them are real
+ * constraints (one card, one Python), so a person wondering why their export is
+ * waiting can find out without leaving the shelf. No filenames and no jargon:
+ * these are the same sentences the contract argues, said shorter.
+ */
+const LANE_HINT: Readonly<Record<string, string>> = {
+  gpu: 'One at a time: the graphics card is one, and two models on it is two runs that each take twice as long.',
+  cpu: 'Two at a time: compiling and reprinting are disk work, and two books at once contend for nothing.',
+  exclusive: 'An installation replaces the environment every other job runs in, so nothing runs beside it and nothing behind it starts first.',
+  unscheduled: 'Assembled in this window rather than by the engine, so it takes no slot and holds nothing up.',
+};
+
+/**
+ * How much of the engine's sentence fits under the count. Two lines of an
+ * eleven-pixel face in a 320px shelf; past that it is a log, and the terminal
+ * is where a log belongs. The whole line is on the hover either way.
+ */
+const DETAIL_CHARS = 160;

@@ -10,7 +10,7 @@
 import type { BookOutcome } from './book';
 import type { HostNodeAction, HostOffers, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
-import type { BookOp } from './ops';
+import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { ReReadPrompt } from './reread';
 import type {
   AppQuestion,
@@ -57,6 +57,8 @@ import type {
   StepRow,
   TranslateRequest,
   TranslationPlan,
+  UnappliedAnswer,
+  UnappliedWarning,
   WorkspacePlan,
   WslFacts,
 } from './types';
@@ -214,6 +216,37 @@ export interface FoundryApi {
    * at landing against the ledger as it stands then.
    */
   confirmReRead(prompt: ReReadPrompt): Promise<boolean>;
+  /**
+   * "These changes are not applied yet" — asked before Export, Translate,
+   * Simplify, a host act or a move to another step runs over a book with a stack
+   * waiting on it.
+   *
+   * THE LIST GREW ON 2026-08-22 and so did the weight of the answers. Owen:
+   * *"any action they take, whether it's switching to a different step or
+   * narrating or anything at all, should ask if they want to apply changes in a
+   * modal. discard/apply changes."* The act crossing this seam is therefore an
+   * `UnappliedAct` rather than a `MakeAct`, and the answer is one of two rather
+   * than one of three — see `UnappliedAnswer`, which carries the gravestone for
+   * the one that went.
+   *
+   * ── The defect ──────────────────────────────────────────────────────────────
+   *
+   * A chapter renamed, a paragraph retyped, no second Apply, Export pressed — and
+   * the EPUB came out without either, silently (user report, 2026-08-21). Every
+   * make-act in this app is arithmetic over the recorded STEPS, and the pane's
+   * stack is a delta that has not become one; the book that came out was honest
+   * about the ledger and silent about the page in front of the person.
+   *
+   * MAIN'S QUESTION AND THIS APP'S OWN CARD, on `confirmClose`'s rule and for its
+   * reason: the renderer hands over facts it is the only holder of — the count,
+   * the book, which act — and main composes, because the one thing the renderer
+   * must never do to this dialog is write its own copy.
+   *
+   * `'cancel'` IS WHAT AN UNANSWERED QUESTION MEANS, and it is now the only
+   * answer that changes nothing at all — the other two record a step or destroy
+   * a stack. A dismissal must never be read as consent to either.
+   */
+  confirmUnapplied(warning: UnappliedWarning): Promise<UnappliedAnswer>;
 
   /**
    * THE APP'S OWN CONFIRMATION CARD, HANDED TO THE BRIDGE ONCE AT STARTUP.
@@ -686,6 +719,36 @@ export interface FoundryApi {
      * are in front of the person, and a refusal is a thing they can act on.
      */
     correct(projectDir: string, id: string, text: string): Promise<BookOutcome>;
+    /**
+     * ── THE WORKING STACK, ON DISK — three doors that are not history ──────────
+     *
+     * `apply` and `amend` above write a STEP. These write the thing that has not
+     * become one yet, so that a window closing, a crash or a glance at another tab
+     * can never be the reason somebody's unapplied afternoon is gone (Owen's
+     * reversal of "closing without applying scraps it", 2026-08-22). Nothing in
+     * the ledger mentions this file, no replay reads it, and every book in this
+     * app draws identically whether it exists or not.
+     *
+     * `pendingSave` IS CALLED ON A DEBOUNCE, from the stacks registry, exactly as
+     * the light table's recipe is written (`CaptureService`). A stack with nothing
+     * waiting CLEARS rather than writing an empty file: "changed back to nothing"
+     * is one of the changes it is called for.
+     *
+     * `pendingRead` REFUSES OUT LOUD RATHER THAN ADOPTING. A stack made at another
+     * step is a delta against a book the person is no longer looking at, and
+     * replaying it here would apply their strikes to a document they made no
+     * decision about — so the outcome carries a sentence and a count, and the pane
+     * says what was let go. Its refusals name the file, which is the standing
+     * exception to this app's no-filenames rule: the one useful thing about a file
+     * that will not read is where it is.
+     *
+     * `pendingClear` HAS TWO CALLERS AND BOTH ARE A PERSON SPEAKING — an Apply,
+     * which has just recorded every one of these decisions, and the closing card's
+     * Discard. There is deliberately no third.
+     */
+    pendingSave(projectDir: string, stack: PendingStack): Promise<void>;
+    pendingRead(projectDir: string): Promise<PendingOutcome>;
+    pendingClear(projectDir: string): Promise<void>;
   };
 
   /**
@@ -805,7 +868,7 @@ export interface FoundryApi {
   queue: {
     list(): Promise<Job[]>;
     enqueue(request: JobRequest): Promise<Job>;
-    /** The same serial queue, a different command. See `TranslateRequest`. */
+    /** The same queue and the same GPU lane, a different command. See `TranslateRequest`. */
     enqueueTranslate(request: TranslateRequest): Promise<Job>;
     /**
      * Release everything currently HELD, in order. Answers with how many.
@@ -1091,6 +1154,16 @@ export interface FoundryApi {
     onIntakeProgress(listener: (progress: CaptureIntakeProgress) => void): () => void;
     /** The recipe, and the door token that makes its pictures loadable. */
     recipeLoad(projectDir: string): Promise<CaptureOpened>;
+    /*
+     * ── GRAVESTONE: `pagesLoad` (Wave 41) ─────────────────────────────────────
+     *
+     * The pages a mint made, in reading order, with the token that served them.
+     * It took the project and nothing else because the POSITION decided which
+     * mint — the same shape `book:load` has, for the same reason.
+     *
+     * The mint writes a PDF and the minted row opens it through the ordinary
+     * document path, so there is no listing for a renderer to ask for.
+     */
     /**
      * Take photographs out of the project altogether, and answer with what is
      * left.

@@ -6,10 +6,23 @@
  * kill ninety minutes of GPU. The renderer holds a MIRROR, pushed on every
  * change; it never holds the truth.
  *
- * SERIAL, always. The engine loads a document vision model and holds a GPU for
- * the length of a book; two of them on one machine is two runs that each take
- * twice as long, or an out-of-memory failure at page 200. `pump()` starts the
- * next queued job only when nothing is running.
+ * A BOARD OF SLOTS, AND IT WAS ONE SLOT UNTIL WAVE 35. The engine loads a
+ * document vision model and holds a GPU for the length of a book; two of THOSE
+ * on one machine is two runs that each take twice as long, or an out-of-memory
+ * failure at page 200. That is a fact about the CARD, and for a year it was
+ * enforced by there being exactly one slot in this file — which also meant a
+ * thirty-second EPUB compile sat behind a three-hour reading for no reason at
+ * all, because the compile wants a disk and never goes near the model.
+ *
+ * So the invariant is stated as what it always was: ONE GPU, because the card
+ * is one, and TWO CPU RUNS, because Owen said two and because two engine
+ * processes writing two different books contend for nothing this app has not
+ * already serialised (docs/QUEUE-BOARD.md §2). Which lane a job waits in is a
+ * fact about its KIND, declared once in shared/queue-board.ts and read by the
+ * scheduler here and by the shelf that draws the board. `pump()` starts the
+ * next queued job whose lane has a free slot; nothing preempts, nothing
+ * reorders, and a lane that is full is a lane whose rows wait exactly as the
+ * whole queue used to.
  *
  * A job that reads through the LOCAL vLLM endpoint waits for that server first
  * (electron/vllm-server.ts). The wait is part of the job, not a thing that
@@ -39,8 +52,11 @@
  * is nothing to commit to, so there is nothing for Start to mean — and a person
  * who pressed Generate and then had to find this shelf and press another button
  * would be confirming a decision they had already made. It is still QUEUED
- * rather than run beside whatever is going: one engine at a time is a fact about
- * the machine, and it holds however cheap the job is.
+ * rather than run beside whatever is going: the number of engines this machine
+ * runs at once is a fact about the machine, and it holds however cheap the job
+ * is. What CHANGED in Wave 35 is only the number — a cheap rendering waits for a
+ * CPU slot rather than for the card, so it no longer sits behind a reading it
+ * has nothing in common with.
  *
  * ── NO JOB IN HERE STARTS ANOTHER ONE ────────────────────────────────────────
  *
@@ -70,8 +86,16 @@
  * An `env-install` row is not a conversion, but it belongs here rather than
  * beside here. It is long, it is cancellable, and — the reason that decides it —
  * a conversion that needs the environment must wait BEHIND it. One serial queue
- * gives that ordering for free, where a downloader running alongside would let a
+ * gave that ordering for free, where a downloader running alongside would let a
  * run start against the Python it is halfway through replacing.
+ *
+ * A BOARD DOES NOT GIVE IT FOR FREE, SO THE BOARD SAYS IT OUT LOUD. An install
+ * is `exclusive` (shared/queue-board.ts): it starts only when every slot is
+ * free, nothing starts beside it, and nothing queued behind it starts before it
+ * does. That is the serial queue's ordering written as a rule instead of
+ * inherited from there having been only one slot — and it had to be written,
+ * because the alternative on a two-lane board is exactly the race the paragraph
+ * above forbids.
  *
  * IT STARTS ON ITS OWN, WHICH IS THE ONE EXCEPTION TO THE RULE ABOVE, and the
  * reason is that it ALREADY HAD ITS START GESTURE. An install arrives from a
@@ -147,6 +171,7 @@ import { readSettings } from './settings';
 import { ensureServer, isLocalVllmEndpoint, noteQueueBusy, noteQueueIdle } from './vllm-server';
 import { REWRITE_LABELS } from '../shared/ledger';
 import { fold } from '../shared/original';
+import { JOB_RESOURCE, SLOTS, type JobResource } from '../shared/queue-board';
 import type {
   ConversionKind, EnvInstallRequest, ExportLanding, FoundryJobRow, Job, JobKind, JobRequest,
   TranslateRequest,
@@ -211,23 +236,79 @@ function productOf(request: EngineRequest): string {
 
 const jobs: Job[] = [];
 /**
- * The job holding the slot, and the one gesture that stops it. Deliberately not
- * a `RunHandle`: an engine child and an in-process download have nothing in
- * common except that both must stop when the row's ✕ is pressed.
+ * ONE JOB THIS SCHEDULER HAS RUNNING, AND THE GESTURE THAT STOPS IT.
+ *
+ * Deliberately not a `RunHandle`: an engine child and an in-process download
+ * have nothing in common except that both must stop when the row's ✕ is
+ * pressed.
+ *
+ * ── Why `cancel` is nullable, and what null MEANS here ──────────────────────
+ *
+ * A slot is taken the moment `pump()` chooses the row, which is BEFORE there is
+ * a child to kill: a reading waits minutes for its server first. So null is
+ * "this job holds its slot but has spawned nothing yet", which is exactly the
+ * state the old code expressed by leaving `running` null through the wait — and
+ * `cancelHere` reads it the same way it always did, falling through to settle
+ * the row itself rather than calling a cancel that does not exist.
+ *
+ * It goes back to null at `release()`, when the last child of the run has
+ * exited and the landings are still ahead. That, too, is what the single slot
+ * did: `running = null` fired at the same point.
  */
-let running: { id: string; cancel(): void } | null = null;
+interface Slot {
+  readonly id: string;
+  /**
+   * WHAT THIS JOB IS HOLDING, resolved from its kind at the moment it started.
+   *
+   * Kept on the slot rather than re-derived from the row, so a lane's
+   * occupancy is counted from what is actually held. `unscheduled` cannot
+   * legitimately appear (a mint is born `running` and this scheduler only ever
+   * claims a `queued` row) and is admitted anyway, because the alternative is a
+   * cast asserting to the compiler something only a comment can promise.
+   */
+  readonly resource: JobResource;
+  cancel: (() => void) | null;
+}
+
+/**
+ * THE BOARD, AS OF NOW — every job this scheduler is running, keyed by row id.
+ *
+ * ── It replaces one variable, and the shape of the replacement is the point ──
+ *
+ * This was `running: {id, cancel} | null`, and beside it lived a `starting`
+ * flag covering the gap between choosing a row and its child existing. Both
+ * are gone into this map, and the flag is gone rather than generalised: a slot
+ * is TAKEN at the moment of choosing, so the window `starting` existed to
+ * cover — a second `pump()` seeing an empty slot during the reading server's
+ * minutes-long wait and putting two engines on one card — is closed by the
+ * occupancy itself instead of by a second variable that every path had to
+ * remember to clear. There is one fact now, and it is the one the drain, the
+ * cancel, the shutdown and the lane counts all read.
+ *
+ * EMPTY IS THE WHOLE OF "NOTHING IS RUNNING HERE", which is what makes the
+ * drain test below one line. `detachedRuns` is the other half and is
+ * deliberately not in this map — see its own note.
+ */
+const slots = new Map<string, Slot>();
 /**
  * THE RUNS NOBODY HERE SCHEDULED — one entry per live `runJob`, keyed by row id.
  *
  * ── Why they are beside the slot rather than in it ──────────────────────────
  *
- * `running` is the pump's SERIAL SLOT and its meaning is "the internal queue's
- * one engine". A job the host's scheduler chose must not take that slot, in
- * either direction: it must not WAIT for it (the host said now, and `runJob`
+ * `slots` is the pump's BOARD and its meaning is "what the internal queue is
+ * running". A job the host's scheduler chose must not take a slot on it, in
+ * either direction: it must not WAIT for one (the host said now, and `runJob`
  * that waited would hang the host's pump on a queue it cannot see), and it must
- * not HOLD it (a host that calls `exportEpubFromStep` and awaits the answer while
+ * not HOLD one (a host that calls `exportEpubFromStep` and awaits the answer while
  * a three-hour reading runs would be waiting for that reading — a deadlock built
  * out of two correct-looking rules).
+ *
+ * THE LANES DID NOT CHANGE THIS, and it is worth saying because a two-lane
+ * board looks like somewhere a host's run could be filed. It is not: the lanes
+ * are this scheduler's account of what IT decided to run, and a host's
+ * scheduler cannot see them, so a host run counted into a lane would be this
+ * app rationing slots against a decision it was told about rather than asked
+ * for. What a detached run DOES hold is the drain, for the reason at `pump`.
  *
  * What they are for is the same two things the slot is for: a ✕, and a quit. So
  * `cancelHere` looks here when the slot is not this row, and `shutdown` stops
@@ -1061,28 +1142,35 @@ export function cancel(id: string): void {
  *
  * ── The two live children, and why the lookup has two halves ────────────────
  *
- * `running` is the pump's single slot: one engine at a time, which is the serial
- * invariant this whole file is built on. A run started by `runJob` is NOT in that
- * slot — it was scheduled by somebody else and must not wait behind, or be waited
- * behind by, the internal queue — so its cancel lives in `detachedRuns` beside it.
- * Both are "the child this row is", and a cancel asks for whichever one this row
- * has. Standalone `detachedRuns` is always empty and this reads exactly as it
- * always did.
+ * `slots` is the pump's board: the jobs THIS scheduler decided to run, each
+ * holding a lane. A run started by `runJob` is NOT on it — it was scheduled by
+ * somebody else and must not wait behind, or be waited behind by, the internal
+ * queue — so its cancel lives in `detachedRuns` beside it. Both are "the child
+ * this row is", and a cancel asks for whichever one this row has. Standalone
+ * `detachedRuns` is always empty and this reads exactly as it always did.
+ *
+ * A SLOT WITH NO CHILD IN IT ANSWERS NULL AND FALLS THROUGH, which is the same
+ * answer the single slot gave by being null at the same two moments: while a
+ * reading waits for its server, and after the last child has exited with the
+ * landings still running. `??` treats that null exactly as it treated an absent
+ * slot, so the branch below settles the row itself — which is what keeps the ✕
+ * alive through the minutes a server takes to come up.
  */
 /*
  * ── THE MINT ROW, WHICH IS A ROW AND NOT A JOB THE PUMP RUNS ────────────────
  *
  * A mint is minutes of work and it belongs on the shelf with progress and a
- * cancel, exactly like a read. It must NEVER occupy the serial slot.
+ * cancel, exactly like a read. It must NEVER occupy a slot.
  *
- * WHY NOT, PRECISELY. `pump` runs one job at a time (`running !== null` is the
- * whole gate), and that serialisation exists because the engine is one process
- * against one GPU: two reads at once are slower than two reads in a row. A mint
- * is neither — the rasterizing happens in the RENDERER, driven by a person who
- * is watching it, and main only assembles what arrives. Putting it in the slot
- * would mean a read queued behind somebody cropping photographs waits for them
- * to finish, and a mint queued behind a read cannot start until the GPU does,
- * which for an interactive stage reads as the button being broken.
+ * WHY NOT, PRECISELY. `pump` rations the lanes because the engine is a process
+ * against a card and a disk: two reads at once are slower than two reads in a
+ * row. A mint is neither — the rasterizing happens in the RENDERER, driven by a
+ * person who is watching it, and main only assembles what arrives. Putting it in
+ * a lane would mean a read queued behind somebody cropping photographs waits for
+ * them to finish, and a mint queued behind a full lane cannot start until that
+ * lane frees, which for an interactive stage reads as the button being broken.
+ * The table says so in its own words: a mint is `unscheduled`
+ * (shared/queue-board.ts).
  *
  * THE MECHANISM IS THE STATE AND NOT A FLAG. `pump` selects `state === queued`
  * and nothing else, so a row born `running` is invisible to it — no exclusion
@@ -1090,9 +1178,10 @@ export function cancel(id: string): void {
  * uses in reverse, and it means a mint and a read genuinely run at once.
  *
  * `env-install` is the precedent for a row the OCR panel never enqueued, and
- * this departs from it in exactly one way: an install DOES take the slot
- * (`pump` dispatches it), because an install and a read compete for the same
- * disk and the same network. A mint competes with nothing.
+ * this departs from it in exactly one way: an install DOES take slots — every
+ * one of them (`pump` dispatches it as `exclusive`), because an install and a
+ * read compete for the same disk, the same network and the same Python. A mint
+ * competes with nothing.
  */
 export function beginMint(projectDir: string, title: string, pages: number): string {
   const job: Job = {
@@ -1160,7 +1249,7 @@ export function cancelHere(id: string): void {
   const job = jobs.find((j) => j.id === id);
   if (!job) return;
   if (job.state === 'running') {
-    const stop = running?.id === id ? running.cancel : detachedRuns.get(id);
+    const stop = slots.get(id)?.cancel ?? detachedRuns.get(id);
     if (stop !== undefined) {
       stop();
       return; // the close handler settles the state
@@ -1279,15 +1368,21 @@ export function clearFinished(): void {
 /**
  * Quit, or a window closing on us: nothing is left holding a GPU.
  *
- * BOTH KINDS OF LIVE CHILD, because there are two now: the pump's one engine and
- * whatever a host's scheduler has running through `runJob`. A quit that stopped
- * only the first would leave the host's reading holding twenty gigabytes with
- * nothing left to report to — which is the exact hazard this function exists for,
- * arriving through the newer door.
+ * BOTH KINDS OF LIVE CHILD, because there are two: whatever this scheduler has
+ * on the board and whatever a host's scheduler has running through `runJob`. A
+ * quit that stopped only the first would leave the host's reading holding twenty
+ * gigabytes with nothing left to report to — which is the exact hazard this
+ * function exists for, arriving through the newer door.
+ *
+ * EVERY SLOT, NOT THE SLOT. This used to be one `running?.cancel()` because
+ * there was one slot; a board that stopped only the first row it found would
+ * leave a second engine writing into a project while the app disappeared from
+ * around it. A slot whose child has not spawned yet holds null and is skipped —
+ * there is nothing to kill, and the process is going away regardless.
  */
 export function shutdown(): void {
-  running?.cancel();
-  running = null;
+  for (const slot of [...slots.values()]) slot.cancel?.();
+  slots.clear();
   for (const stop of [...detachedRuns.values()]) stop();
   detachedRuns.clear();
 }
@@ -1399,21 +1494,23 @@ function argsFor(
   /*
    * ── READING THE PAGES ────────────────────────────────────────────────────
    *
-   * `foundry vlm-read --pdf X --readings Y`, or `--pages <dir>` where the pages
-   * are already pictures. It fills the bank, drops the completion marker beside
-   * it, and writes no document at all.
+   * `foundry vlm-read --pdf X --readings Y`. It fills the bank, drops the
+   * completion marker beside it, and writes no document at all.
    *
-   * TWO FLAGS AND NEVER BOTH, which is the engine's own rule and is stated
-   * there rather than defended here: *"a reading is of exactly one thing"*, and
-   * `sourceFor` (src/vlm/read.ts) refuses a run that passes both rather than
-   * resolving it by a precedence nobody would agree about. This end cannot pass
-   * both — `ReadRequest.inputKind` is one value and it selects the flag — so the
-   * refusal is unreachable from this app, which is where an unreachable refusal
-   * belongs.
+   * ── ONE FLAG (Wave 41), AND THE ENGINE STILL HAS TWO ───────────────────────
    *
-   * ABSENT MEANS `--pdf`. The queue survives restarts, so rows enqueued by a
-   * build that predates the mint's change are still on the shelf, and every one
-   * of them is a reading of a PDF.
+   * This chose between `--pdf` and `--pages` off `ReadRequest.inputKind`, because
+   * a captured project's archive was a folder of photographs and the engine had
+   * learned to read one at Wave 21. Owen ended the choice: *"if we're building
+   * the bank from the images anyway maybe we should just build it from the pdf.
+   * why not? it would help maintain provenance, and nothing will be lost."* The
+   * mint writes the PDF, so there is one input and one story — bank ← PDF ←
+   * pages — and `planReading` states the provenance argument in full.
+   *
+   * `vlm-read --pages` IS UNTOUCHED AND STAYS. It is a capability of the command
+   * and works from a terminal exactly as it did; what retired is the app's
+   * selection of it. The engine's own *"a reading is of exactly one thing"*
+   * refusal for a run naming both is now unreachable from here twice over.
    *
    * NO `--out` AND NO `--format`, which is the whole of the split on the command
    * line: this run has no opinion about what the book will eventually be, and it
@@ -1422,8 +1519,7 @@ function argsFor(
    * reading — so neither can be asked for while it is being configured.
    */
   if (request.kind === 'read') {
-    const flag = request.inputKind === 'pages' ? '--pages' : '--pdf';
-    const args = ['vlm-read', flag, request.inputPath, '--readings', request.readingsPath];
+    const args = ['vlm-read', '--pdf', request.inputPath, '--readings', request.readingsPath];
     if (request.skipPages && request.skipPages.trim().length > 0) {
       args.push('--skip-pages', request.skipPages.trim());
     }
@@ -1647,14 +1743,77 @@ function endpointFor(): string | null {
   return settings.backend.endpointUrl?.trim() || null;
 }
 
-/**
- * True from the moment pump() claims a job until its engine child is recorded
- * in `running`. The server wait between those two points is an await — the one
- * window in this file where a second pump() could see `running === null`, find
- * the NEXT queued job, and break the serial invariant with two engines on one
- * GPU. `running` guards the child's lifetime; this guards the gap before it.
+/*
+ * `starting` USED TO LIVE HERE, and the board is why it does not any more.
+ *
+ * It was a boolean, true from the moment `pump()` chose a row until its engine
+ * child was recorded in `running` — because the reading server's wait sits
+ * between those two points as an await, and it was the one window in which a
+ * second `pump()` could see an empty slot, find the next queued job, and put two
+ * engines on one card. A slot is taken at the moment of CHOOSING now, before any
+ * await, so that window is closed by the occupancy that the next pump reads
+ * anyway. One fact instead of two that had to agree, and one less variable for
+ * an early-return path to leave set.
  */
-let starting = false;
+
+/**
+ * IS THERE ROOM FOR THIS RESOURCE RIGHT NOW — the whole of the rationing.
+ *
+ * ── The three answers, and why an install is not simply a third lane ────────
+ *
+ * A LANE has room when fewer than its slot count are held (`SLOTS`,
+ * shared/queue-board.ts) and no install is running. An INSTALL needs the whole
+ * board, because a conversion that starts against a Python being replaced is
+ * the one failure the shared queue was built to prevent — see the header. And
+ * `unscheduled` cannot get here from a queued row at all (a mint is born
+ * `running`); it answers true so that a row which somehow arrived in that state
+ * fails loudly through the missing-request branch, exactly as it did when the
+ * pump took any queued row it found, rather than sitting in the list forever
+ * and holding the drain open with it.
+ */
+function canStart(resource: JobResource): boolean {
+  if (resource === 'unscheduled') return true;
+  for (const slot of slots.values()) {
+    // An install holds every lane while it runs, so nothing joins it.
+    if (slot.resource === 'exclusive') return false;
+  }
+  if (resource === 'exclusive') return slots.size === 0;
+  let held = 0;
+  for (const slot of slots.values()) if (slot.resource === resource) held += 1;
+  return held < SLOTS[resource];
+}
+
+/**
+ * THE NEXT ROW THAT MAY START, or null when the board can take nothing.
+ *
+ * ── FIFO within a lane, and lanes do not queue behind each other ────────────
+ *
+ * The list is walked in QUEUE ORDER and the first startable row wins, so within
+ * one lane the order is exactly the order somebody added the jobs in — no
+ * priorities, nothing preempts, and releasing a batch is still a state change
+ * rather than a reshuffle (`start`). A CPU job DOES pass a GPU job that is
+ * waiting for the card, and that is the entire point of a board: they are not
+ * waiting for the same thing, and making the cheap one wait for the expensive
+ * one is what Wave 35 exists to end.
+ *
+ * ── AN INSTALL IS A BARRIER, AND THAT IS NOT AN OPTIMISATION ────────────────
+ *
+ * A queued install stops the walk whether or not it can start. Without that,
+ * a stream of cheap CPU rows would step over it indefinitely — and every one of
+ * them would be running against the environment the install is waiting to
+ * replace. One serial queue gave "a conversion that needs the environment waits
+ * BEHIND it" for free (header, 16e); on a board it has to be said, and this
+ * line is where it is said.
+ */
+function nextStartable(): Job | null {
+  for (const job of jobs) {
+    if (job.state !== 'queued') continue;
+    const resource = JOB_RESOURCE[job.kind];
+    if (resource === 'exclusive') return canStart(resource) ? job : null;
+    if (canStart(resource)) return job;
+  }
+  return null;
+}
 
 /**
  * ONE RUN'S TWO WIRES OUT — who holds its cancel, and who hears it talk.
@@ -1663,10 +1822,10 @@ let starting = false;
  *
  * `executeJob` is the whole of what a job DOES, and there are two callers with
  * two different answers to exactly two questions. `pump()` puts the live child in
- * the serial slot, because it is the internal queue's one engine; `runJob` puts
- * it in `detachedRuns`, because it was scheduled elsewhere and must neither wait
- * for the slot nor block it. `pump()` has nobody to report progress to beyond the
- * row; `runJob` has a caller that asked for the lines.
+ * the slot it took for this row on the board; `runJob` puts it in `detachedRuns`,
+ * because it was scheduled elsewhere and must neither wait for a slot nor hold
+ * one. `pump()` has nobody to report progress to beyond the row; `runJob` has a
+ * caller that asked for the lines.
  *
  * EVERYTHING ELSE IS THE SAME CODE — the rotations, the server wait, the seeding,
  * the metadata stamp, the landings, the sweeps, the announcements. That is the
@@ -1687,87 +1846,138 @@ interface RunWires {
   watch?(line: string): void;
 }
 
+/**
+ * THE SCHEDULER: fill every slot that can be filled, then say whether the board
+ * has gone quiet.
+ *
+ * ── It starts as many as it can, where it used to start one ─────────────────
+ *
+ * This was `if (something is running) return;` followed by one row and one
+ * `await`, and the await meant the scheduler's own call stack held the job for
+ * its entire life. A board cannot work that way — two CPU rows have to be
+ * started from ONE pass, or the second waits for the first — so the loop
+ * dispatches and does not await, and `runInSlot` calls back here when its row is
+ * over. The recursion is one level deep per ending, and every path through it is
+ * `void`ed, because nobody has ever awaited this function.
+ *
+ * THE SLOT IS TAKEN INSIDE THE LOOP, SYNCHRONOUSLY, BEFORE THE NEXT LOOK. That
+ * is the line the whole thing turns on: `runInSlot` reaches an await within
+ * microseconds and would otherwise still be invisible when `nextStartable` ran
+ * again, so the same row would be chosen twice and the same lane counted empty
+ * twice. Reserving here rather than inside the run is also what let `starting`
+ * be deleted.
+ *
+ * `queued` ONLY, which is the whole of the hold: a `held` job is invisible to
+ * `nextStartable` until `start()` changes its state, so the gate is the data
+ * rather than a flag every path through this function would have to consult.
+ */
 async function pump(): Promise<void> {
-  if (running !== null || starting) return;
-  // `queued` only, which is the whole of the hold: a `held` job is invisible
-  // here until `start()` changes its state, so the gate is the data rather than
-  // a flag every path through this function would have to remember to consult.
-  const next = jobs.find((job) => job.state === 'queued');
-  if (!next) {
-    /*
-     * The queue just drained: nothing running, nothing starting, nothing
-     * waiting. The reading server's lifetime follows the queue's
-     * (electron/vllm-server.ts) — stopped now by default, or after the
-     * keep-warm window the user set. Every job's end funnels through here, so
-     * this is the one place THIS queue's drain can be declared.
-     *
-     * ── AND THIS QUEUE IS NOT THE ONLY QUEUE ANY MORE ───────────────────────
-     *
-     * Under a host queue the internal list holds only what Foundry orders for
-     * itself — the unattended exports a host asks for by name, and environment
-     * installs — while every job a person pressed for is in the host's list and
-     * arrives here one at a time through `runJob`. So an empty list here is NOT
-     * the machine going quiet, and the host says when its own queue has drained
-     * of Foundry work (`hostQueueDrained`).
-     *
-     * WHICH IS WHY `runJob` ENDS WITHOUT PUMPING — see the essay at its return.
-     * If it pumped, this branch would be reached between every pair of the host's
-     * rows and would stop the reading server after each one. What still reaches
-     * here under a host queue is the internal path going quiet: an environment
-     * install finishing, or an export the host ordered by name.
-     *
-     * BOTH SIGNALS ARE SAFE TOGETHER, because busy always beats idle: every job
-     * start says `noteQueueBusy` from inside `executeJob`, however it was
-     * scheduled, and that cancels whatever countdown was armed. So the worst an
-     * early idle can normally do is stop a server nothing is using.
-     *
-     * NORMALLY — EXCEPT FOR THE ONE CASE THIS GUARD CLOSES.
-     * `keepServerWarmMinutes` DEFAULTS TO 0, and `noteQueueIdle(0)` is not a short
-     * timer: it stops the server outright, now, with no window for a busy signal
-     * to beat. A run started through `runJob` is deliberately outside the serial
-     * slot, so without this test an environment install finishing while a host's
-     * READING was posting pages would find an empty internal list and tear the
-     * server out from under it. A live run holds the drain, whoever scheduled it.
-     */
-    if (detachedRuns.size === 0) noteQueueIdle(readAppSettings().keepServerWarmMinutes);
-    return;
-  }
-
-  if (next.kind === 'env-install') {
-    await runEnvInstall(next);
-    return;
-  }
-
-  const request = requests.get(next.id);
-  if (!request) {
-    next.state = 'failed';
-    next.error = 'The job lost its configuration before it started.';
-    changed();
-    settled(next);
-    void pump();
-    return;
+  for (;;) {
+    const next = nextStartable();
+    if (next === null) break;
+    const slot: Slot = { id: next.id, resource: JOB_RESOURCE[next.kind], cancel: null };
+    slots.set(next.id, slot);
+    void runInSlot(next, slot);
   }
 
   /*
-   * ── THE SERIAL SLOT IS CLAIMED HERE, AND THE WORK HAPPENS THERE ───────────
+   * ── THE DRAIN, WHICH IS THREE FACTS AND HAS ALWAYS BEEN THREE FACTS ────────
    *
-   * `starting` covers the gap between choosing this row and the child existing —
-   * the server wait is an await, and it is the one window in which a second pump
-   * could see `running === null`, find the next queued job and put two engines on
-   * one GPU. It is set before the first await inside `executeJob` and cleared
-   * either by the claim (the child exists; `running` guards it from there) or by
-   * this line when the run is over, including every early failure inside.
+   * Nothing on the board, nothing waiting, and no live detached run. It used to
+   * read as "no row could be chosen, and nothing is running" because a single
+   * slot made those one question; on a board they are counted, and the count is
+   * the same three facts it always was (docs/QUEUE-BOARD.md §3).
+   *
+   * TREAT ANY CHANGE HERE AS A CORRECTNESS CHANGE. The reading server's lifetime
+   * follows the queue's (electron/vllm-server.ts) and `keepServerWarmMinutes`
+   * DEFAULTS TO 0 — which is not a short timer, it is `stopServer` now, with no
+   * window for a busy signal to beat it. An early drain therefore does not waste
+   * a little warmth; it pulls twenty gigabytes out from under whatever is still
+   * reading. On a board that hazard is LARGER than it was, because a CPU export
+   * finishing while a GPU reading posts pages is now an ordinary Tuesday: the
+   * export's ending calls this function, and if the test were "did I find
+   * anything to start" the answer would be no and the server would go. It is not
+   * that test. The reading holds its slot, `slots.size` is 1, and nothing is
+   * declared.
+   *
+   * ── AND THIS QUEUE IS NOT THE ONLY QUEUE ────────────────────────────────────
+   *
+   * Under a host queue the internal list holds only what Foundry orders for
+   * itself — the unattended exports a host asks for by name, and environment
+   * installs — while every job a person pressed for is in the host's list and
+   * arrives one at a time through `runJob`. So an empty board here is NOT the
+   * machine going quiet, and the host says when its own queue has drained of
+   * Foundry work (`hostQueueDrained`).
+   *
+   * WHICH IS WHY `runJob` ENDS WITHOUT PUMPING — see the essay at its return. If
+   * it pumped, this would be reached between every pair of the host's rows and
+   * would stop the reading server after each one. What still reaches here under a
+   * host queue is the internal path going quiet: an environment install
+   * finishing, or an export the host ordered by name.
+   *
+   * BOTH SIGNALS ARE SAFE TOGETHER, because busy always beats idle: every job
+   * start says `noteQueueBusy` from inside `executeJob`, however it was
+   * scheduled, and that cancels whatever countdown was armed. The `detachedRuns`
+   * clause is what closes the one crossing a busy signal cannot cover, for the
+   * `noteQueueIdle(0)` reason above: a live run holds the drain, whoever
+   * scheduled it.
+   *
+   * A MINT HOLDS NOTHING AND HOLDS NO DRAIN, unchanged from before the board. It
+   * takes no slot (`unscheduled`), it spawns no engine and it never addresses the
+   * reading server, so a capture being assembled while the queue empties declares
+   * drain exactly as it always did.
    */
-  starting = true;
-  await executeJob(next, request, {
-    claim: (cancel) => {
-      running = { id: next.id, cancel };
-      starting = false;
-    },
-    release: () => { running = null; },
-  });
-  starting = false;
-  void pump();
+  const waiting = jobs.some((job) => job.state === 'queued');
+  if (slots.size === 0 && !waiting && detachedRuns.size === 0) {
+    noteQueueIdle(readAppSettings().keepServerWarmMinutes);
+  }
+}
+
+/**
+ * ONE ROW, IN THE SLOT THE SCHEDULER ALREADY TOOK FOR IT.
+ *
+ * ── Why the slot is given rather than taken ─────────────────────────────────
+ *
+ * Because the taking is the scheduling. `pump()` reserved it before this
+ * function existed for this row (see its loop), and handing it down means there
+ * is exactly one place a slot can be claimed and exactly one place it can be
+ * given up — the `finally` below, whichever way the row ended, including the
+ * two early returns that used to each have to remember to pump.
+ *
+ * THE PUMP AT THE END IS THE ONE THAT USED TO SIT IN EVERY LANDING ARM (16f).
+ * It is here rather than inside `executeJob` because `executeJob` is shared with
+ * `runJob`, which must NOT pump — the essay at its return says why in full.
+ *
+ * THE SLOT OUTLIVES THE CHILD, DELIBERATELY. `release()` nulls the cancel when
+ * the last engine child exits, but the slot itself is held through the landings
+ * — the catalogue writes, the book file, the announcements — and is given up
+ * only when the whole run returns. That is what the single slot did (the pump
+ * did not look again until `executeJob` had returned), and it matters more now:
+ * a lane freed at the child's exit would let the next row's rotation start
+ * while the previous row's landing was still moving files in the same folder.
+ */
+async function runInSlot(job: Job, slot: Slot): Promise<void> {
+  try {
+    if (job.kind === 'env-install') {
+      await runEnvInstall(job, slot);
+      return;
+    }
+    const request = requests.get(job.id);
+    if (request === undefined) {
+      job.state = 'failed';
+      job.error = 'The job lost its configuration before it started.';
+      changed();
+      settled(job);
+      return;
+    }
+    await executeJob(job, request, {
+      claim: (cancel) => { slot.cancel = cancel; },
+      release: () => { slot.cancel = null; },
+    });
+  } finally {
+    slots.delete(job.id);
+    void pump();
+  }
 }
 
 /**
@@ -2775,12 +2985,12 @@ export async function runJob(
   try {
     await executeJob(job, request, {
       /*
-       * OUTSIDE THE SERIAL SLOT, which is `detachedRuns`' whole argument: this run
-       * was scheduled by somebody who cannot see that slot, so it must neither
-       * wait for it nor hold it. The internal queue goes on doing its own work
+       * OFF THE BOARD, which is `detachedRuns`' whole argument: this run was
+       * scheduled by somebody who cannot see the board, so it must neither wait
+       * for a slot nor hold one. The internal queue goes on doing its own work
        * beside this — an environment install, an export the host asked for by
        * name — and one machine's GPU has one owner because the HOST is scheduling,
-       * not because this file is serialising two lists it cannot compare.
+       * not because this file is rationing two lists it cannot compare.
        */
       claim: (cancel) => { detachedRuns.set(job.id, cancel); },
       release: () => { detachedRuns.delete(job.id); },
@@ -2794,10 +3004,10 @@ export async function runJob(
    * ── AND IT DOES NOT PUMP, WHICH IS THE LINE THE READING SERVER LIVES ON ────
    *
    * Every other ending in this file calls `pump()`, because every other ending is
-   * the internal queue's turn coming round. This one is not: a detached run never
-   * took the serial slot and never set `starting`, so nothing in the internal
-   * queue was ever waiting on it — an install or a host-ordered export enqueued
-   * while this ran started immediately, on its own enqueue's pump.
+   * a slot coming free. This one is not: a detached run never took a slot, so
+   * nothing on the board was ever waiting on it — an install or a host-ordered
+   * export enqueued while this ran started immediately, on its own enqueue's
+   * pump, subject only to the board's own occupancy.
    *
    * WHAT A PUMP HERE WOULD DO IS STOP THE READING SERVER. `pump()` declares drain
    * in its nothing-to-do branch, the internal list is empty between every pair of
@@ -2851,8 +3061,9 @@ type BookAtPosition = Awaited<ReturnType<typeof bookAtPosition>>;
  * the row it landed — a read is not retained beside you (`RETAINED_BESIDE_YOU`),
  * and a replace swaps into the step it re-ran and stands there too — so
  * `bookAtPosition` reads back exactly the reading this job just made: its bank,
- * the language it was asked in, and the archived original the figures are cut
- * out of. That is one source for four facts that would otherwise be composed
+ * the language it was asked in, and the archived pages the figures are cut out
+ * of — a document or a folder of photographs. That is one source for facts that
+ * would otherwise be composed
  * here from a request and a filename.
  *
  * AND IT IS CHECKED, because `recordReading` NEVER THROWS. A catalogue it could
@@ -2911,11 +3122,19 @@ async function landReadProducts(bankPath: string, readFrom: string): Promise<voi
  * refusal into a book somebody can read, and the log line is the announcement §2
  * asks for.
  *
- * THE FIGURES COME WITH IT AND ARE NOT THIS SIDE'S BUSINESS. `--pdf` is passed
- * whenever the archive is one, and the engine sweeps `readings/<key>.images/` and
- * re-cuts only the pages that carry Picture blocks (src/vlm/book-run.ts). A
+ * THE FIGURES COME WITH IT AND ARE NOT THIS SIDE'S BUSINESS. The archived
+ * original is passed as `--pdf` and the engine sweeps `readings/<key>.images/`,
+ * re-cutting only the pages that carry Picture blocks (src/vlm/book-run.ts). A
  * project whose original is an EPUB has no pages to cut and the engine says so —
  * an ordinary answer, not a hole.
+ *
+ * THE PAGES FACE WAS WAVE 37 AND IS GONE FROM THIS SIDE AT WAVE 41. It was a
+ * real hole: this call passed `--pdf` or nothing, so a captured project — whose
+ * archive was a FOLDER — landed its reading and reflowed with no source at all,
+ * cutting none of its figures; the book was valid, opened fine, and refused every
+ * picture at export months later. Wave 37 gave the engine `--pages` to close it;
+ * Wave 41 closed it one layer further back, by making a captured project's
+ * archive a PDF, so both faces of this call are one face again.
  *
  * A REFUSAL IS THE ENGINE'S OWN WORDS TO THE TERMINAL AND NOTHING ELSE. The bank
  * is real, it is complete, and it is what those hours bought; reporting the
@@ -2927,9 +3146,12 @@ async function landReadProducts(bankPath: string, readFrom: string): Promise<voi
 async function remakeBookFile(at: BookAtPosition): Promise<void> {
   console.log(
     `[job] the reading landed, so ${at.book} is being remade from ${at.bank}`
-    + `${at.pdf === null ? ' (no archived PDF, so no figures are cut)' : ''}.`,
+    + `${at.pdf === null ? ' (nothing archived to cut figures from)' : ''}.`,
   );
-  const made = await writeBookFile(at.bank, at.book, { pdfPath: at.pdf, language: at.language });
+  const made = await writeBookFile(at.bank, at.book, {
+    pdfPath: at.pdf,
+    language: at.language,
+  });
   if (!made.ok) {
     console.error(
       `[job] ${at.bank} could not be reflowed into ${at.book}: ${made.reason ?? ''}\n`
@@ -2939,7 +3161,21 @@ async function remakeBookFile(at: BookAtPosition): Promise<void> {
 }
 
 /**
- * The env-install branch, claiming the same slot a conversion would.
+ * The env-install branch, holding the WHOLE BOARD rather than one lane of it.
+ *
+ * ── Why it is exclusive, in one line each ───────────────────────────────────
+ *
+ * It replaces the Python every other job spawns, so nothing may run beside it;
+ * it is a download and a disk, so it does not belong to a lane; and a conversion
+ * that needs the environment must wait behind it, which is the whole reason an
+ * install is in this queue at all (the header, and 16e). `canStart` is where
+ * those three become a rule; this function is just the work.
+ *
+ * IT TAKES THE SLOT IT WAS GIVEN, exactly as `executeJob` does — the cancel goes
+ * into the slot the scheduler already reserved, and `runInSlot`'s `finally` gives
+ * it up. It used to set the serial slot and clear it itself, and it used to pump
+ * on the way out of both endings; both of those now happen in one place for both
+ * kinds of row.
  *
  * Every way this ends — not published, no distro chosen, a bad sha256, a
  * cancel — comes back as an `EnvInstallResult` with a sentence, because
@@ -2947,18 +3183,16 @@ async function remakeBookFile(at: BookAtPosition): Promise<void> {
  * "download this later" and "your download was corrupt" are different problems
  * with different fixes and a shared exit code would hide both.
  */
-async function runEnvInstall(job: Job): Promise<void> {
+async function runEnvInstall(job: Job, slot: Slot): Promise<void> {
   const request = envRequests.get(job.id);
   if (!request) {
     job.state = 'failed';
     job.error = 'The install lost its configuration before it started.';
     changed();
     settled(job);
-    void pump();
     return;
   }
 
-  starting = true;
   job.state = 'running';
   job.startedAt = Date.now();
   job.message = `Installing ${job.title ?? request.target}…`;
@@ -2970,14 +3204,10 @@ async function runEnvInstall(job: Job): Promise<void> {
     job.message = progress.detail;
     changed();
   });
-  running = {
-    id: job.id,
-    cancel: () => { cancelled = true; handle.cancel(); },
-  };
-  starting = false;
+  slot.cancel = () => { cancelled = true; handle.cancel(); };
 
   const result = await handle.done;
-  running = null;
+  slot.cancel = null;
   job.finishedAt = Date.now();
 
   if (result.ok) {
@@ -2992,5 +3222,8 @@ async function runEnvInstall(job: Job): Promise<void> {
   }
   changed();
   settled(job);
-  void pump();
+  // NO PUMP HERE. It used to be this function's last line, back when it also
+  // owned the slot; `runInSlot`'s `finally` gives the slot up and pumps for
+  // both kinds of row, and a pump from here would ask the board a question
+  // while this install still held every lane of it.
 }

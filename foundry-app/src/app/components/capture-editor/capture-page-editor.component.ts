@@ -148,6 +148,7 @@ import { Rectifier } from './rectify';
         <div
           class="picture"
           #picture
+          [class.page]="projecting()"
           [style.aspect-ratio]="turned().box"
           [style.width]="turned().slotWidth"
           [style.height]="turned().slotHeight"
@@ -177,6 +178,7 @@ import { Rectifier } from './rectify';
         <div
           class="spun"
           #spun
+          [class.texture]="projecting()"
           [style.width]="turned().spunWidth"
           [style.height]="turned().spunHeight"
           [style.transform]="turned().spin"
@@ -184,6 +186,12 @@ import { Rectifier } from './rectify';
           <!--
             (load) IS THE OTHER HALF OF THE REDRAW, and see repaint() for why an
             effect alone could not be.
+
+            IT IS STILL HERE IN THE SPLIT PASS AND IT IS THE TEXTURE THEN, not
+            the picture -- invisible rather than absent, exactly as the light
+            table's cards do it, because \`display: none\` would be a photograph
+            the browser never decodes and a canvas that never gets anything to
+            draw.
           -->
           <img
             #photo
@@ -193,71 +201,138 @@ import { Rectifier } from './rectify';
             draggable="false"
           />
 
-          <!--
-            The handles are an SVG in the picture's own fraction space
-            (viewBox 0 0 1 1), so nothing here has to know the pixel size of
-            the box it is drawn in, and a resize needs no recomputation.
-            \`vector-effect\` keeps the strokes one pixel wide at any scale.
-          -->
-          <svg class="handles" viewBox="0 0 1 1" preserveAspectRatio="none">
-            @for (quad of quads(); track $index) {
-              <polygon
-                class="outline"
-                vector-effect="non-scaling-stroke"
-                [attr.points]="outlineOf(quad)"
-              />
+          @if (!projecting()) {
+            <!--
+              The handles are an SVG in the picture's own fraction space
+              (viewBox 0 0 1 1), so nothing here has to know the pixel size of
+              the box it is drawn in, and a resize needs no recomputation.
+              \`vector-effect\` keeps the strokes one pixel wide at any scale.
+            -->
+            <svg class="handles" viewBox="0 0 1 1" preserveAspectRatio="none">
+              <!--
+                THE BOOK'S CROP, UNDER THIS PAGE'S OWN, so a deviation is a thing
+                you can SEE rather than a thing you have to remember.
+
+                A complete photograph sits out every Apply, which means the crop
+                it holds can drift arbitrarily far from the book's and nothing on
+                the surface would say so -- the page looks correct because it IS
+                what somebody placed. Drawn faint and dashed and BENEATH the real
+                outline, so it reads as a reference rather than as a second
+                choice: the solid line is the page that will be minted, always.
+
+                Absent when the two agree, because a control -- or a mark -- that
+                would change nothing is not shown, and a dashed line hiding
+                exactly under a solid one is noise on every page in the book.
+              -->
+              @if (ghost(); as book) {
+                <polygon
+                  class="ghost"
+                  vector-effect="non-scaling-stroke"
+                  [attr.points]="outlineOf(book)"
+                />
+              }
+              @for (quad of quads(); track $index) {
+                <polygon
+                  class="outline"
+                  vector-effect="non-scaling-stroke"
+                  [attr.points]="outlineOf(quad)"
+                />
+              }
+              @if (cut(); as line) {
+                <line
+                  class="split"
+                  vector-effect="non-scaling-stroke"
+                  [attr.x1]="line.a.point[0]" [attr.y1]="line.a.point[1]"
+                  [attr.x2]="line.b.point[0]" [attr.y2]="line.b.point[1]"
+                />
+              }
+            </svg>
+
+            <!--
+              Corner handles are DOM rather than SVG circles: they want a hit area
+              bigger than the dot a person aims at, and a CSS box gives that for
+              free at any zoom. Positioned in percentages, which is the same
+              fraction space the quads are already in.
+            -->
+            @for (handle of handles(); track handle.key) {
+              <span
+                class="handle"
+                [class.first]="handle.corner === 0"
+                [class.held]="held()?.quad === handle.quad && held()?.corner === handle.corner"
+                [style.left.%]="handle.at[0] * 100"
+                [style.top.%]="handle.at[1] * 100"
+              ></span>
             }
+
+            <!--
+              THE GUTTER'S TWO ENDS, EACH RIDING AN EDGE OF THE PAGE.
+
+              Drawn where the geometry resolves the end to, not at the stored endpoint:
+              the segment is gesture state and goes stale against a crop dragged
+              after it, so what is on screen is where the geometry says the end
+              actually sits. They are a different colour from the corners because
+              they do a different thing -- a corner moves the page, these move the
+              cut through it.
+            -->
             @if (cut(); as line) {
+              <span
+                class="gutter"
+                [class.held]="holdingSplit() === 'a'"
+                [style.left.%]="line.a.point[0] * 100"
+                [style.top.%]="line.a.point[1] * 100"
+              ></span>
+              <span
+                class="gutter"
+                [class.held]="holdingSplit() === 'b'"
+                [style.left.%]="line.b.point[0] * 100"
+                [style.top.%]="line.b.point[1] * 100"
+              ></span>
+            }
+          }
+        </div>
+
+        <!--
+          THE SPLIT PASS'S STAGE: THE PAGE, AND ONE LINE THROUGH IT.
+
+          Wave 25's Apply is a commitment point -- no pixels are cut until Finish,
+          but every surface starts drawing the rectified projection. The table
+          did it first (the cards); this is the same picture at workbench size,
+          off the same shader, drawn into a 2D canvas from the editor's ONE
+          rectifier so the window gains no second WebGL context.
+
+          THE CORNERS ARE NOT DRAWN AND NOT GRABBABLE HERE, which is the whole
+          argument for the pass being a pass: what is on the stage answers the
+          scope question before it is asked. The frame is settled; a handle that
+          re-opened it would put the crop pass back on top of the split pass and
+          undo the reason the cut fits every page at once.
+        -->
+        @if (projecting()) {
+          <canvas #face class="face" [class.drawn]="drawn()"></canvas>
+          <svg class="handles" viewBox="0 0 1 1" preserveAspectRatio="none">
+            @if (pageCut(); as line) {
               <line
                 class="split"
                 vector-effect="non-scaling-stroke"
-                [attr.x1]="line.a.point[0]" [attr.y1]="line.a.point[1]"
-                [attr.x2]="line.b.point[0]" [attr.y2]="line.b.point[1]"
+                [attr.x1]="line.a[0]" [attr.y1]="line.a[1]"
+                [attr.x2]="line.b[0]" [attr.y2]="line.b[1]"
               />
             }
           </svg>
-
-          <!--
-            Corner handles are DOM rather than SVG circles: they want a hit area
-            bigger than the dot a person aims at, and a CSS box gives that for
-            free at any zoom. Positioned in percentages, which is the same
-            fraction space the quads are already in.
-          -->
-          @for (handle of handles(); track handle.key) {
-            <span
-              class="handle"
-              [class.first]="handle.corner === 0"
-              [class.held]="held()?.quad === handle.quad && held()?.corner === handle.corner"
-              [style.left.%]="handle.at[0] * 100"
-              [style.top.%]="handle.at[1] * 100"
-            ></span>
-          }
-
-          <!--
-            THE GUTTER'S TWO ENDS, EACH RIDING AN EDGE OF THE PAGE.
-
-            Drawn where the geometry resolves the end to, not at the stored endpoint:
-            the segment is gesture state and goes stale against a crop dragged
-            after it, so what is on screen is where the geometry says the end
-            actually sits. They are a different colour from the corners because
-            they do a different thing -- a corner moves the page, these move the
-            cut through it.
-          -->
-          @if (cut(); as line) {
+          @if (pageCut(); as line) {
             <span
               class="gutter"
               [class.held]="holdingSplit() === 'a'"
-              [style.left.%]="line.a.point[0] * 100"
-              [style.top.%]="line.a.point[1] * 100"
+              [style.left.%]="line.a[0] * 100"
+              [style.top.%]="line.a[1] * 100"
             ></span>
             <span
               class="gutter"
               [class.held]="holdingSplit() === 'b'"
-              [style.left.%]="line.b.point[0] * 100"
-              [style.top.%]="line.b.point[1] * 100"
+              [style.left.%]="line.b[0] * 100"
+              [style.top.%]="line.b[1] * 100"
             ></span>
           }
-        </div>
+        }
         </div>
         </div>
 
@@ -359,8 +434,52 @@ import { Rectifier } from './rectify';
     .spun { position: absolute; top: 50%; left: 50%; transform-origin: center; }
     .picture img { display: block; width: 100%; height: 100%; }
 
+    /*
+     * THE SPLIT PASS'S STAGE.
+     *
+     * A ground of its own, because the thing on it is a PAGE: the shot's edges
+     * are gone, so there is nothing left to explain the dark surround a raw
+     * photograph brings with it, and this is also what is shown for the frame or
+     * two between the picture decoding and the rectify landing.
+     */
+    .picture.page { background: var(--bg-sunken); }
+    /*
+     * The photograph is the TEXTURE now, not the picture. Invisible rather than
+     * absent -- \`display: none\` would be a picture the browser never decodes and
+     * a canvas that never gets anything to draw -- and inert, so the layout it
+     * keeps for the crop pass cannot catch a pointer here.
+     */
+    .spun.texture { opacity: 0; pointer-events: none; }
+    /*
+     * It fades in rather than appearing, for the reason the cards do: the page is
+     * drawn a frame or two after the photograph loads, and a hard swap at that
+     * distance reads as a flicker in the stage rather than as a picture arriving.
+     */
+    .face {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      opacity: 0;
+      transition: opacity 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .face.drawn { opacity: 1; }
+
     .handles { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     .outline { fill: none; stroke: var(--accent, #4c9aff); stroke-width: 2; }
+    /*
+     * THE BOOK'S CROP: the same shape, said quietly. Dashed and half-faded and
+     * ONE pixel where the real outline is two, so at a glance there is never a
+     * question about which line is the page -- the solid one is what gets minted,
+     * on every photograph, in every state. Drawn first, so the outline that
+     * matters is the one on top.
+     */
+    .ghost {
+      fill: none;
+      stroke: var(--text-tertiary, #8a837a);
+      stroke-width: 1;
+      stroke-dasharray: 5 4;
+      opacity: 0.6;
+    }
     .split { stroke: var(--warn, #d08770); stroke-width: 2; stroke-dasharray: 6 4; }
     /*
      * THICKER UNDER THE HAND — the other half of the affordance, and the half
@@ -450,6 +569,40 @@ export class CapturePageEditorComponent {
    */
   readonly split = input<CaptureSplit | null>(null);
 
+  /**
+   * DRAW THE PAGE RATHER THAN THE PHOTOGRAPH — true through the split pass.
+   *
+   * ── It is a fact about the BOOK, so it is handed down ─────────────────────
+   *
+   * The pass belongs to the recipe and this component has never held one. It
+   * arrives as an input for the same reason the grid's does: every surface flips
+   * together at one commitment, and an editor deciding for itself would be a
+   * second answer to a question the table has already answered.
+   *
+   * ── WHAT IT CHANGES IS THE WHOLE STAGE, not a style ──────────────────────
+   *
+   * The picture becomes the rectified sheet — square, registered, upright,
+   * because the corner order is the orientation and rectifying spends it. The
+   * corner handles are neither drawn nor grabbable. And the coordinate space the
+   * pointer works in becomes THE PAGE'S own unit square rather than the
+   * photograph's, which is what `pageMap` exists to cross.
+   */
+  readonly projecting = input<boolean>(false);
+
+  /**
+   * THE BOOK'S CROP, DRAWN FAINT UNDER THIS PAGE'S OWN, or null for nothing.
+   *
+   * In this photograph's own fraction space and already turned to face the way
+   * this photograph does — the caller owes that, because relabelling a quad's
+   * corners is `turnedLike`'s job and this component has no standing to read.
+   *
+   * Null when there is nothing worth drawing, which the caller decides: no
+   * standing, a photograph of another shape, or a page that already holds the
+   * book's crop exactly. See the template for why the last of those is a
+   * refusal rather than an invisible coincidence.
+   */
+  readonly ghost = input<CaptureQuad | null>(null);
+
   /*
    * A `proposal` INPUT STOOD HERE, AND THE CHECKBOX RETIRED IT (Wave 24).
    *
@@ -488,6 +641,13 @@ export class CapturePageEditorComponent {
    * compile time and cannot go stale against a selector somebody renamed.
    */
   private readonly previewCanvases = viewChildren<ElementRef<HTMLCanvasElement>>('previewCanvas');
+  /**
+   * The split pass's stage canvas. Optional, because it exists only in that
+   * pass — a required query would throw the moment somebody reopened the crops.
+   */
+  private readonly face = viewChild<ElementRef<HTMLCanvasElement>>('face');
+  /** Whether the stage has the page in it yet — the fade, and nothing else. */
+  protected readonly drawn = signal(false);
 
   /** Which corner is under the pointer right now, or null between drags. */
   protected readonly held = signal<{ quad: number; corner: 0 | 1 | 2 | 3 } | null>(null);
@@ -549,7 +709,20 @@ export class CapturePageEditorComponent {
     const { width, height } = this.dimensions();
     const turns = turnsOf(this.quads()[0] ?? WHOLE_FRAME);
     const sideways = turns % 2 === 1;
-    const box = sideways ? height / width : width / height;
+    const shot = sideways ? height / width : width / height;
+    /*
+     * THE SLOT IS THE PAGE IN THE SPLIT PASS AND THE PHOTOGRAPH IN THE CROP
+     * PASS, and the two are different rectangles: the whole point of rectifying
+     * is that the frame's edges go away. `pageSize` is the mint's own measure,
+     * so the stage and the minted page are one rectangle at two sizes.
+     *
+     * The element INSIDE the slot keeps the photograph's own aspect either way,
+     * because in the split pass it is no longer the picture -- it is the
+     * texture, and a texture that has been squashed by a layout is still the
+     * same decoded pixels to `rectify`.
+     */
+    const page = this.pageSize();
+    const box = this.projecting() ? page.width / page.height : shot;
     const room = this.frameBox();
     // Until the frame has been measured the height binds, which is what this
     // editor did before it turned anything -- so the first paint is never worse
@@ -560,9 +733,63 @@ export class CapturePageEditorComponent {
       box: String(box),
       slotWidth: heightBinds ? 'auto' : '100%',
       slotHeight: heightBinds ? '100%' : 'auto',
-      spunWidth: sideways ? (100 / box) + '%' : '100%',
-      spunHeight: sideways ? (100 * box) + '%' : '100%',
+      spunWidth: sideways ? (100 / shot) + '%' : '100%',
+      spunHeight: sideways ? (100 * shot) + '%' : '100%',
       spin: 'translate(-50%, -50%) rotate(' + (turns * 90) + 'deg)',
+    };
+  });
+
+  /**
+   * HOW BIG THE PAGE THIS SHEET MAKES IS — the mint's own arithmetic.
+   *
+   * Through `outputSizeFor`, which is what decides how many pixels a rectified
+   * page actually gets, so the stage's box and the minted page are the same
+   * rectangle. Measuring the sheet's own spans here instead would be a second
+   * body of that rule, which is the shape this feature has already paid for
+   * three times over.
+   */
+  protected readonly pageSize = computed(() =>
+    outputSizeFor(toPixels(this.sheet() as FractionQuad, this.dimensions())));
+
+  /**
+   * THE MAP BETWEEN THE PHOTOGRAPH AND THE PAGE, both ways, or null when the
+   * four corners enclose nothing.
+   *
+   * ── Why the split pass needs one at all ──────────────────────────────────
+   *
+   * The stage draws the RECTIFIED sheet, so what is on screen is the page and
+   * not the photograph — and the recipe stores the gutter in the PHOTOGRAPH's
+   * fractions. Those two spaces are related by the same projective transform the
+   * shader runs, and by nothing simpler: a homography does not preserve ratios
+   * along a line, so "48% across the page" and "48% along the sheet's top edge"
+   * are two different points on any photograph with keystone in it. Reading the
+   * seat's own `at` and drawing it as a fraction of the stage would put the line
+   * beside the gutter it is supposed to be on, by more the more the shot leans.
+   *
+   * ── AND WHY THE ROUND TRIP MATTERS MORE THAN EITHER DIRECTION ────────────
+   *
+   * The pointer comes in through `toPhoto` and the drawn line goes out through
+   * `toPage`. They are exact inverses — one matrix and its adjugate — so a
+   * handle sits where the hand left it rather than creeping by a fraction of a
+   * per cent on every frame of a drag.
+   */
+  protected readonly pageMap = computed(() => pageMapFor(this.sheet()));
+
+  /**
+   * THE CUT IN THE PAGE'S OWN SPACE — the split pass's line, drawn and grabbed.
+   *
+   * The two ENDS are mapped and the segment between them is drawn straight,
+   * which is exact rather than an approximation: a projective map takes lines to
+   * lines, so the gutter is as straight on the rectified page as it was on the
+   * photograph.
+   */
+  protected readonly pageCut = computed<{ a: FractionPoint; b: FractionPoint } | null>(() => {
+    const line = this.cut();
+    const map = this.pageMap();
+    if (line === null || map === null) return null;
+    return {
+      a: map.toPage(line.a.point as FractionPoint),
+      b: map.toPage(line.b.point as FractionPoint),
     };
   });
 
@@ -687,6 +914,8 @@ export class CapturePageEditorComponent {
   );
 
   private rectifier: Rectifier | null = null;
+  /** What the stage currently holds, as a value. See `project`. */
+  private projected: string | null = null;
 
   constructor() {
     /*
@@ -727,8 +956,16 @@ export class CapturePageEditorComponent {
       const previews = this.previews();
       const quads = this.quads();
       const dimensions = this.dimensions();
+      // Read unconditionally, so the effect depends on the pass and the sheet as
+      // well: the stage has to be repainted when a project enters the split pass
+      // and when the gutter re-seats the halves under it.
+      const projecting = this.projecting();
+      const sheet = this.sheet();
       void this.source();
-      queueMicrotask(() => this.draw(previews, quads, dimensions));
+      queueMicrotask(() => {
+        this.draw(previews, quads, dimensions);
+        this.project(projecting, sheet);
+      });
     });
   }
 
@@ -742,6 +979,97 @@ export class CapturePageEditorComponent {
    */
   protected repaint(): void {
     this.draw(this.previews(), this.quads(), this.dimensions());
+    this.project(this.projecting(), this.sheet());
+  }
+
+  /**
+   * DRAW THE PAGE ON THE STAGE — the split pass's picture.
+   *
+   * ── The same rectifier the previews use, and that is the point ───────────
+   *
+   * `rectify.ts` is emphatic: browsers cap live WebGL contexts in the low tens
+   * and drop the oldest silently. This window already has the light table's one
+   * behind the modal; a second one for the stage would be a context per open, on
+   * a surface a person walks through twenty-five times an evening. So the stage
+   * borrows the editor's own, which is built lazily and disposed with the
+   * component, and copies out of it at once -- the rectifier owns ONE canvas and
+   * the previews overwrite it a microtask later.
+   *
+   * ── IT IS GUARDED BY VALUE, WHICH IS NOT AN OPTIMISATION ─────────────────
+   *
+   * `sheet()` is `joinedQuad(...)` and returns a fresh array every time the
+   * quads or the split change identity -- so sliding the gutter, which re-seats
+   * both halves on every pointermove, would otherwise re-upload a twelve
+   * megapixel texture and rebuild its mipmaps once per frame while the hand is
+   * moving. The sheet does not actually MOVE during a slide: the halves change
+   * and their join does not. Comparing the numbers is what notices that.
+   */
+  private project(projecting: boolean, sheet: CaptureQuad): void {
+    if (!projecting) {
+      // Back in the crop pass: the canvas went with the @if, so the fade has to
+      // be rearmed or the next projection would appear without one.
+      this.projected = null;
+      this.drawn.set(false);
+      return;
+    }
+    const target = this.face()?.nativeElement;
+    if (target === undefined) return;
+    const image = this.photo().nativeElement;
+    // BOTH checks, for `draw`'s measured reason: `complete` is the one that
+    // refuses a STALE picture -- the previous photograph, still in the element
+    // one microtask after the src changed -- and `naturalWidth` refuses a
+    // broken one. A stage left holding the page you just stepped away from is
+    // the worst of the three states, because it looks correct.
+    if (!image.complete || image.naturalWidth === 0) {
+      this.drawn.set(false);
+      return;
+    }
+
+    /*
+     * ROUNDED, and the rounding is the point rather than a tidy: a slid gutter
+     * rebuilds the halves and `joinedQuad` puts them back together, which
+     * returns the sheet it started from to within the float noise `slideSplit`
+     * measures at 5.6e-17. Compared exactly, that noise would defeat the guard
+     * on some frames and not others -- the worst kind of cost, because it would
+     * be invisible until somebody profiled a drag. Nine places is three
+     * thousandths of a pixel on a twelve-megapixel frame, which is far below
+     * anything the shader could sample differently.
+     */
+    const key = `${image.src}|${sheet.map(([x, y]) => `${x.toFixed(9)},${y.toFixed(9)}`).join(';')}`;
+    if (key === this.projected) return;
+
+    const { width, height } = this.pageSize();
+    const scale = Math.min(1, STAGE_PIXELS / Math.max(width, height));
+    const outWidth = Math.max(1, Math.round(width * scale));
+    const outHeight = Math.max(1, Math.round(height * scale));
+
+    this.rectifier ??= new Rectifier();
+    try {
+      const done = this.rectifier.rectify(
+        image,
+        // In the ELEMENT'S own pixels rather than the recipe's `dimensions`,
+        // exactly as the cards do it: the quad is fractions of the frame, and
+        // the frame in hand is whatever the decoder actually produced.
+        toPixels(sheet as FractionQuad, {
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+        }),
+        outWidth,
+        outHeight,
+      );
+      target.width = outWidth;
+      target.height = outHeight;
+      target.getContext('2d')?.drawImage(done.canvas, 0, 0);
+      this.projected = key;
+      this.drawn.set(true);
+    } catch {
+      /*
+       * Four corners that do not enclose a page — `homography` throws rather
+       * than drawing a degenerate smear. The stage keeps whatever it last had
+       * and stays quiet, because the surface that can fix it is the crop pass
+       * and the way back to it is on the rail.
+       */
+    }
   }
 
   protected outlineOf(quad: FractionQuad): string {
@@ -795,6 +1123,35 @@ export class CapturePageEditorComponent {
    * same walk.
    */
   private under(at: FractionPoint): Under | null {
+    /*
+     * THE SPLIT PASS ASKS A SHORTER QUESTION, IN A DIFFERENT SPACE.
+     *
+     * There are no corners on that stage -- not hidden, ABSENT, which is this
+     * surface's own rule -- so the walk is the cut's two ends and then the line
+     * between them, in the page's unit square, against the line that is actually
+     * drawn there. Ends before the line for the reason below: an end is always
+     * on the line and the reverse is not.
+     *
+     * `from` still carries the PHOTOGRAPH-space seats, because that is what
+     * `slideSplit` measures against and what the recipe stores. The pass changes
+     * where the hand is, never what a cut is.
+     */
+    if (this.projecting()) {
+      const page = this.pageCut();
+      const line = this.cut();
+      if (page === null || line === null) return null;
+      const across = this.picture().nativeElement.offsetWidth;
+      const radius = across === 0 ? 0 : 14 / across;
+      for (const which of ['a', 'b'] as const) {
+        const end = page[which];
+        if (Math.hypot(at[0] - end[0], at[1] - end[1]) <= radius) return { what: 'end', which };
+      }
+      if (distanceToEdge(at, page.a, page.b) <= radius) {
+        return { what: 'line', from: { a: line.a.point, b: line.b.point } };
+      }
+      return null;
+    }
+
     // THE SPUN ELEMENT, NOT THE SLOT: the radius is in the photograph's own
     // fraction space, and a rotation preserves lengths -- so the photograph's
     // on-screen x extent is the width it was LAID OUT at, whichever way round
@@ -852,7 +1209,7 @@ export class CapturePageEditorComponent {
   }
 
   protected grab(event: PointerEvent): void {
-    const at = this.fractionOf(event);
+    const at = this.stageOf(event);
     const found = this.under(at);
     if (found === null) return;
     if (found.what === 'corner') {
@@ -872,7 +1229,7 @@ export class CapturePageEditorComponent {
        * the wrong place. The seated points are where the line actually is,
        * which is where a slide has to start.
        */
-      this.slidFrom = { at, split: found.from };
+      this.slidFrom = { at: this.photoOf(at), split: found.from };
     }
     this.frame().nativeElement.setPointerCapture(event.pointerId);
   }
@@ -889,10 +1246,16 @@ export class CapturePageEditorComponent {
        * that can disagree about where it is, and this component has already paid
        * for that shape once in the two halves of the split gesture.
        */
-      this.over.set(this.under(this.fractionOf(event))?.what ?? null);
+      this.over.set(this.under(this.stageOf(event))?.what ?? null);
       return;
     }
-    const at = this.fractionOf(event);
+    /*
+     * THE GESTURE'S ARITHMETIC IS ALWAYS THE PHOTOGRAPH'S, whichever stage the
+     * hand is on. `seatSplit` and `slideSplit` cut the SHEET, and the sheet is
+     * four fractions of a photograph -- so the split pass crosses back here,
+     * once, and every line below it is the code the crop pass has always run.
+     */
+    const at = this.photoOf(this.stageOf(event));
 
     if (gutter !== null) {
       const split = this.split();
@@ -961,7 +1324,7 @@ export class CapturePageEditorComponent {
     // but nothing will say so until the pointer moves again, and a cursor that
     // reverted to the default on release would read as the handle vanishing
     // under a hand that had not moved.
-    this.over.set(this.under(this.fractionOf(event))?.what ?? null);
+    this.over.set(this.under(this.stageOf(event))?.what ?? null);
     // Asked of the FRAME, which is what took the capture. Asking the picture
     // would be asking an element that never holds one, so the release below
     // would never run and the next press would arrive already captured.
@@ -970,12 +1333,28 @@ export class CapturePageEditorComponent {
     }
   }
 
-  /** A pointer event's position as a fraction of the picture. */
-  private fractionOf(event: PointerEvent): FractionPoint {
+  /**
+   * A pointer event's position in THE STAGE'S OWN SPACE.
+   *
+   * Which is the photograph's fractions in the crop pass and the PAGE's unit
+   * square in the split pass, because the split pass draws the page. `photoOf`
+   * below is the one crossing between them, and it is deliberately a second call
+   * rather than folded in here: the hit test wants the space the picture is
+   * drawn in, and the geometry wants the space the recipe is stored in, and
+   * collapsing the two is how a gesture comes to be measured against a picture
+   * it is not on.
+   */
+  private stageOf(event: PointerEvent): FractionPoint {
     const box = this.picture().nativeElement.getBoundingClientRect();
     if (box.width === 0 || box.height === 0) return [0, 0];
     const u = (event.clientX - box.left) / box.width;
     const v = (event.clientY - box.top) / box.height;
+    /*
+     * THE RECTIFIED PAGE IS ALREADY THE WAY ROUND IT PRINTS, so there is no
+     * turn to undo: the corner order IS the orientation and the shader has
+     * already spent it. The slot's u and v are the page's own.
+     */
+    if (this.projecting()) return [u, v];
     /*
      * TURNED BACK, because the slot is the axis-aligned box on screen and the
      * quads live in the photograph's own space -- the same space only at turn
@@ -992,6 +1371,21 @@ export class CapturePageEditorComponent {
       case 3: return [1 - v, u];
       default: return [u, v];
     }
+  }
+
+  /**
+   * A STAGE POINT BACK ON THE PHOTOGRAPH — the identity in the crop pass.
+   *
+   * The recipe stores fractions of the working copy and nothing else does, so
+   * every gesture crosses here before it becomes geometry. A degenerate sheet
+   * (four corners that enclose no page) has no map, and the honest answer then
+   * is the point unchanged: the split pass cannot be entered on such a
+   * photograph anyway, and inventing a coordinate would move a gutter somewhere
+   * nobody pointed.
+   */
+  private photoOf(at: FractionPoint): FractionPoint {
+    if (!this.projecting()) return at;
+    return this.pageMap()?.toPhoto(at) ?? at;
   }
 
   /**
@@ -1072,6 +1466,140 @@ export class CapturePageEditorComponent {
 
 /** The unit box, for turning fractions into "pixels" of a 1x1 picture. */
 const UNIT: Dimensions = { width: 1, height: 1 };
+
+/**
+ * HOW MANY PIXELS THE SPLIT PASS'S STAGE DRAWS, on its longest edge.
+ *
+ * The modal is nearly the whole window and the stage is most of the modal, so
+ * this is a comfortable two-times for a large retina pane and stops there. It is
+ * also the ceiling that keeps the redraw affordable while somebody walks the
+ * book: the source is a full-resolution working copy, and asking for more than
+ * the pane can show is cost with nothing on the other side of it.
+ */
+const STAGE_PIXELS = 1600;
+
+/**
+ * THE PAGE AND THE PHOTOGRAPH, EACH IN THE OTHER'S TERMS.
+ *
+ * `toPhoto` takes the page's unit square onto the sheet, which is exactly the
+ * map the shader runs; `toPage` is its inverse. Points only — there is no matrix
+ * out here for anyone to hold, because the only two questions this surface asks
+ * are "where did the hand land on the photograph" and "where does the gutter
+ * fall on the page".
+ */
+interface PageMap {
+  toPhoto(at: FractionPoint): FractionPoint;
+  toPage(at: FractionPoint): FractionPoint;
+}
+
+/**
+ * The projective map for a sheet, or null when the four corners enclose no page.
+ *
+ * ── This is the SHADER'S transform, written a second time, said out loud ────
+ *
+ * `rectify.ts` builds the same closed form (Heckbert §2.2 — the unit-square case
+ * of the four-point fit, which is the one case with an exact solution) and hands
+ * it to WebGL as a column-major `mat3`. It is private there, and deliberately:
+ * that file's whole argument is that the preview and the mint must be ONE
+ * shader, and exporting a matrix would invite a second drawing path.
+ *
+ * What is needed here is not a drawing path. It is the same correspondence asked
+ * about ONE POINT AT A TIME, in both directions, on the CPU, so a pointer can be
+ * turned into a gutter and a gutter into a line on the stage. The alternative is
+ * to fake it from the seat's `at` — the fraction along the sheet's edge — and
+ * that is wrong by exactly the amount of keystone in the shot, which is to say
+ * wrong on every photograph of a book held under a phone.
+ *
+ * SO THE DUPLICATION IS NAMED RATHER THAN HIDDEN. If a third caller ever wants
+ * it, the lift is to `geometry.ts` — where every other rule about what a corner
+ * MEANS already lives — and this becomes an import. It is left here for now
+ * because W25-P3's fence is the editor, and a shared file grown by a package
+ * that only needed it once is how shared files fill up with one-offs.
+ *
+ * ── The corners are the recipe's pinned order ──────────────────────────────
+ *
+ * top-left, top-right, bottom-right, bottom-left OF THE OUTPUT PAGE, which is
+ * (0,0), (1,0), (1,1), (0,1) of the page's unit square in that order. So a
+ * turned photograph needs no special case anywhere in here: the turn is already
+ * in the order, and rectifying spends it.
+ */
+function pageMapFor(quad: CaptureQuad): PageMap | null {
+  const [[x0, y0], [x1, y1], [x2, y2], [x3, y3]] = quad;
+
+  const dx1 = x1 - x2;
+  const dx2 = x3 - x2;
+  const dx3 = x0 - x1 + x2 - x3;
+  const dy1 = y1 - y2;
+  const dy2 = y3 - y2;
+  const dy3 = y0 - y1 + y2 - y3;
+
+  let a: number;
+  let b: number;
+  let d: number;
+  let e: number;
+  let g: number;
+  let h: number;
+
+  if (dx3 === 0 && dy3 === 0) {
+    // A parallelogram — a straight-on shot, or a pure crop. The projective terms
+    // are exactly zero rather than nearly zero, so the map is affine and its
+    // inverse is exact: a page with no keystone gets none back.
+    a = x1 - x0;
+    b = x2 - x1;
+    d = y1 - y0;
+    e = y2 - y1;
+    g = 0;
+    h = 0;
+  } else {
+    const denominator = dx1 * dy2 - dx2 * dy1;
+    // Three corners collinear, or two coincident. `rectify` throws here; this
+    // returns null, because a hit test has somewhere sensible to go (nowhere)
+    // and a draw does not.
+    if (denominator === 0) return null;
+    g = (dx3 * dy2 - dx2 * dy3) / denominator;
+    h = (dx1 * dy3 - dx3 * dy1) / denominator;
+    a = x1 - x0 + g * x1;
+    b = x3 - x0 + h * x3;
+    d = y1 - y0 + g * y1;
+    e = y3 - y0 + h * y3;
+  }
+
+  /*
+   * M = [ a  b  x0 ]   taking (u, v, 1) on the page to (x, y, w) on the
+   *     [ d  e  y0 ]   photograph, with the divide by w being the whole of
+   *     [ g  h   1 ]   what makes it projective rather than affine.
+   *
+   * The inverse is the ADJUGATE over the determinant, which for a 3x3 is nine
+   * cofactors and no iteration — the same reason the forward form is closed:
+   * a solver here would leave a fraction of a per cent of skew in a page that
+   * has none, and a handle that drifts while the hand holds still is worse than
+   * one that is slightly in the wrong place.
+   */
+  const A = e - y0 * h;
+  const B = -(b - x0 * h);
+  const C = b * y0 - x0 * e;
+  const D = -(d - y0 * g);
+  const E = a - x0 * g;
+  const F = -(a * y0 - x0 * d);
+  const G = d * h - e * g;
+  const H = -(a * h - b * g);
+  const I = a * e - b * d;
+  const determinant = a * A + b * D + x0 * G;
+  if (determinant === 0) return null;
+
+  return {
+    toPhoto([u, v]: FractionPoint): FractionPoint {
+      const w = g * u + h * v + 1;
+      if (w === 0) return [u, v];
+      return [(a * u + b * v + x0) / w, (d * u + e * v + y0) / w];
+    },
+    toPage([x, y]: FractionPoint): FractionPoint {
+      const w = G * x + H * y + I;
+      if (w === 0) return [x, y];
+      return [(A * x + B * y + C) / w, (D * x + E * y + F) / w];
+    },
+  };
+}
 
 function clamp(value: number): number {
   return Math.min(1, Math.max(0, value));

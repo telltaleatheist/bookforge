@@ -36,38 +36,46 @@ import { api } from '../../core/foundry';
  * clicking again or by Escape (§4 of the sheet's own stylesheet). This is a
  * second card and it wears the same paper on purpose — a reader should not have
  * to learn two idioms for "a small sheet showing you the other thing" — but it
- * is a different gesture answering a different question, and conflating them
- * would be wrong in both directions. A peek is DELIBERATE and STAYS: you asked
- * for a note and it waits while you read it. A glance is INCIDENTAL and GOES:
- * it follows the pointer down the page and is gone the moment the pointer is.
- * So they have separate state, and both can be open at once without either one
- * having an opinion about the other.
+ * answers a different question, and conflating them would be wrong in both
+ * directions. A peek says what the OTHER HALF OF AN APPARATUS reads; a glance
+ * says what THIS PARAGRAPH LOOKED LIKE ON THE PRINTED PAGE. So they have
+ * separate state, and both can be open at once without either one having an
+ * opinion about the other.
  *
- * ── REST, NOT ENTER, and the difference is the whole feel of it ─────────────
+ * The two are now opened by the same KIND of gesture — a click — and that is
+ * the correction and not a collapse. It used to say here that a peek is
+ * deliberate and stays while a glance is incidental and goes; the second half
+ * of that was a description of a hover trigger, and the hover is gone.
  *
- * The trigger is a pointer that has STOPPED on a block, not one that has
- * crossed it. A pane of prose is a thing people sweep a pointer across on the
- * way to somewhere else, and a card that appeared on every crossing would flash
- * a dozen times on the way down a page — each flash costing a PDF page render.
- * The timer lives in the sheet's own pointerenter/pointerleave, so this
- * component is told to show a row or told to show nothing and never has to
- * reason about pointers.
+ * ── A CLICK, AND NOT A POINTER THAT STOPPED ────────────────────────────────
  *
- * The same delay is what makes the NO-PAGES answer bearable. A book that
- * arrived as an EPUB has no paper behind it, and this card says so in words —
- * which on an enter-triggered card would be a sentence flashing at somebody
- * reading, and on a rest-triggered one is a sentence that appears exactly when
- * a person stopped and waited to find out. They read it once and stop waiting.
+ * *"it should only appear when a block is actually clicked."* The card rides
+ * the click that already SELECTS a block — the one gesture, not a second one
+ * bolted beside it — so a reader who wants the page does what they were doing
+ * anyway, and a reader who wants neither is never shown one.
+ *
+ * WHAT THAT REPLACED IS WORTH KEEPING, because it was right for what it was:
+ * the trigger used to be a pointer that had STOPPED on a block for 180 ms, on
+ * the argument that a pane of prose is swept across on the way somewhere else
+ * and a card on every crossing would flash a dozen times down a page, each
+ * flash costing a PDF page render. That argument protected against the HOVER,
+ * and there is no hover left to protect against: a click happens once, when it
+ * is meant. The delay was also what made the NO-PAPER sentence bearable, and a
+ * click does that better — nothing is flashed at anybody, because nobody sees
+ * this card without having asked for it.
+ *
+ * This component was never told about any of it. It is handed a row or handed
+ * null, and it has never had to reason about pointers.
  *
  * ── ONE RENDER IN FLIGHT, AND THE OLD ONE IS CANCELLED, NOT AWAITED ─────────
  *
- * Resting on a block, moving to the next and resting again is the ordinary
- * gesture here, and pdf.js will happily queue every page it is asked for. So
- * each request cancels the outstanding render and bumps a generation, and a
- * task that resolves for a generation nobody is looking at draws nothing.
- * Without that, walking down a page of forty blocks leaves forty renders racing
- * to paint one canvas and the LAST to finish wins — which is not the one the
- * pointer is on.
+ * Clicking a block, then the next one, then the next is the ordinary gesture
+ * here, and pdf.js will happily queue every page it is asked for. So each
+ * request cancels the outstanding render and bumps a generation, and a task
+ * that resolves for a generation nobody is looking at draws nothing. Without
+ * that, walking down a page of forty blocks leaves forty renders racing to
+ * paint one canvas and the LAST to finish wins — which is not the one the
+ * reader is on.
  *
  * ── IT IS MOUNTED FOR THE LIFE OF THE PANE, AND EVERYTHING BELOW DEPENDS ON
  *    THAT ─────────────────────────────────────────────────────────────────
@@ -76,10 +84,10 @@ import { api } from '../../core/foundry';
  * this header — one worker built once and kept, a cache that makes the second
  * glance at a page free — are claims about state that survives a glance, and
  * they were BOTH FALSE for as long as book-view put this card up behind an @if
- * and took it down on every pointerleave. MEASURED, walking ten rests down one
- * book: ten pdf.js workers built, none terminated, every glance re-reading the
- * whole scan over IPC and re-parsing it, 0.7-1.0s each and never falling.
- * Mounted once, the same walk builds ONE worker and costs ~0.2s a glance.
+ * and took it down every time the card went away. MEASURED, walking ten glances
+ * down one book: ten pdf.js workers built, none terminated, every glance
+ * re-reading the whole scan over IPC and re-parsing it, 0.7-1.0s each and never
+ * falling. Mounted once, the same walk builds ONE worker and costs ~0.2s.
  *
  * The lesson is worth more than the fix: a docblock arguing for an economy is
  * not evidence there is one. Nothing in this file was wrong — the thing that
@@ -87,11 +95,11 @@ import { api } from '../../core/foundry';
  *
  * ── THE CACHE IS SMALL ON PURPOSE ──────────────────────────────────────────
  *
- * Every block on a printed page glances at the SAME page, so the second rest on
- * a page should cost nothing — but a book is hundreds of pages and a bitmap is
- * megabytes, so this holds CACHE_PAGES of them and evicts the oldest. Twelve is
- * roughly "the spread you are working on and what you just came from", which is
- * the whole of the locality a reader has.
+ * Every block on a printed page glances at the SAME page, so the second click
+ * on a page should cost nothing — but a book is hundreds of pages and a bitmap
+ * is megabytes, so this holds CACHE_PAGES of them and evicts the oldest. Twelve
+ * is roughly "the spread you are working on and what you just came from", which
+ * is the whole of the locality a reader has.
  *
  * page.cleanup() after every render, which is pdf.js's own door for releasing a
  * page's parsed operator list. Without it, a walk through a book leaves every
@@ -103,7 +111,7 @@ import { api } from '../../core/foundry';
  * whole surface leads to it — so a static import of pdf.js here would put half
  * a bundle in the chunk this window boots with, which is precisely what
  * viewer.component.ts defers the PDF branch to avoid. So the import is dynamic,
- * taken the first time somebody actually rests on a block, and a book nobody
+ * taken the first time somebody actually clicks a block, and a book nobody
  * glances at costs nothing at all.
  *
  * The worker is built the way app-pdf-view builds its own, for the reason its
@@ -119,8 +127,8 @@ import { api } from '../../core/foundry';
    * The card is mounted for the life of the pane (book-view's own comment at
    * the mount says what taking it down cost), so between glances there is a
    * bordered, shadowed, padded box with no content in it — which is a visible
-   * empty sliver pinned to the right margin, not an absence. `display: none`
-   * is the absence.
+   * empty sliver, not an absence. `.idle` is the absence; see the rule for
+   * which flavour of absence it is and why that choice is load-bearing.
    */
   host: { '[class.idle]': 'row() === null' },
   template: `
@@ -156,15 +164,27 @@ import { api } from '../../core/foundry';
     :host {
       position: absolute;
       /*
-        PINNED TO THE RIGHT MARGIN, AND THE TOP IS THE ONLY THING THE SHEET
-        SETS. The card used to be placed beside its block on both axes, which
-        meant the placement arithmetic needed this width as a number over there
-        — and a px constant in one file mirroring a rem width in this one
-        drifted the moment anybody looked: the app's root font is 13px, so the
-        constant said 256 about a box that renders at 195, the fit test failed
-        where it would have fitted, and the card landed on the paragraph being
-        read. Measured, not reasoned. The width is now declared exactly once,
-        here, and nothing outside this file needs to know it.
+        THE RIGHT MARGIN OF THE PAPER IS WHERE THE CARD FALLS BACK TO, and this
+        line is the whole of that fallback. It is what the sheet gets when the
+        window is too narrow to stand the card in the bench BESIDE the paper —
+        an ordinary laptop, and either column of the aligned pair — and it is
+        exactly where this card sat for the whole of Wave 23.
+
+        WHERE THE CARD PREFERS TO BE is outside the paper altogether, in the
+        workbench's dead space to the right of the sheet, covering nothing:
+        *"it should show up to the right of the page, outside of the visible
+        paper area — unless it won't fit."* That placement is an inline \`left\`
+        book-view writes when it fits, and an over-constrained absolute box
+        ignores its \`right\` in a left-to-right document, so the two placements
+        are one property and this rule needs no \`@media\` and no class.
+
+        THE WIDTH IS STILL DECLARED EXACTLY ONCE, HERE, and the fit test over
+        there READS it off the element rather than keeping a copy. A px constant
+        in one file mirroring a rem width in this one drifted the moment anybody
+        looked: the app's root font is 13px, so the constant said 256 about a box
+        that renders at 195, the fit test failed where it would have fitted, and
+        the card landed on the paragraph being read. Measured, not reasoned —
+        and now measured off the thing itself, which cannot drift at all.
       */
       right: 0.75rem;
       z-index: 4;
@@ -177,15 +197,43 @@ import { api } from '../../core/foundry';
       background: var(--paper-high);
       box-shadow: 0 2px 6px rgb(0 0 0 / .18), 0 8px 28px rgb(0 0 0 / .12);
       /*
-        IT CATCHES NOTHING. The card is put there BY a hover on the block behind
-        it, so a card that took the pointer would end that hover the instant it
-        appeared, close itself, reopen on the block, and flicker forever. The
-        note peek can take the pointer because a click put it there and a click
-        will take it away; this one may not, and the difference is the gesture.
+        IT CATCHES NOTHING, and the reason changed under it without the line
+        needing to.
+
+        IT USED TO BE FORCED: the card was put there by a HOVER on the block
+        behind it, so a card that took the pointer would have ended that hover
+        the instant it appeared, closed itself, reopened on the block and
+        flickered forever. A click put an end to that hazard — the peek card
+        takes the pointer for exactly this reason and always has.
+
+        IT IS NOW CHOSEN. The card falls back to sitting ON the paper when the
+        bench is too narrow to stand it beside one, and there it lies over the
+        prose of the very paragraph that was clicked. A box that swallowed
+        presses there would make a strip of the book unclickable and unselectable
+        with nothing on screen saying why; letting them through means the reader
+        clicks the paragraph under the card and the card re-aims at it, which is
+        the honest behaviour of a thing that is not really there.
       */
       pointer-events: none;
     }
-    :host(.idle) { display: none; }
+    /*
+      THE IDLE CARD IS HIDDEN BUT STILL LAID OUT, and \`visibility\` rather than
+      \`display\` is the whole of that.
+
+      \`display: none\` was right while nothing outside this file needed a number
+      from the box — and then the placement started asking the ELEMENT how wide
+      it is rather than keeping a copy of the answer (see the \`right\` rule above
+      for what a copy cost). A box with no layout has no width, so the FIRST
+      click of a session would have measured zero, failed the fit test, and put
+      the card on the paper — every time, in the one place a person would call it
+      broken rather than narrow.
+
+      What \`display: none\` bought is bought here too: the card is invisible, it
+      is out of the accessibility tree, and it takes no pointer. It is absolutely
+      positioned, so it takes no room in the flow either — the sliver this rule
+      exists to suppress cannot come back through this door.
+    */
+    :host(.idle) { visibility: hidden; }
     .frame {
       position: relative;
       display: block;
@@ -224,17 +272,21 @@ export class PageGlanceComponent {
    */
   readonly original = input.required<string | null>();
 
-  /**
-   * The photographed pages, for a book that was captured rather than scanned.
+  /*
+   * ── GRAVESTONE: `originalPages` (Wave 41) ─────────────────────────────────
    *
-   * READ ONLY TO SAY A TRUE SENTENCE, for now. This card cannot draw a page
-   * image yet — everything below it opens a PDF — so all this changes is WHICH
-   * silence the reader is told about: a captured book has paper, it is just
-   * paper this card has not learned to show. See `BookLoad.originalPages`.
+   * A second input stood here naming the folder of photographs a captured book
+   * was read off, and it was read ONLY to say a true sentence: this card could
+   * not draw a page image, everything below it opens a PDF, so all it changed
+   * was WHICH silence the reader was told about.
+   *
+   * A captured book's original is a PDF now (`recordMint`, electron/projects.ts),
+   * so `original` above is non-null for it and the machinery below this line
+   * draws the page — the outcome the second input was a placeholder for, reached
+   * by giving the book a container instead of teaching the card a second format.
    */
-  readonly originalPages = input.required<string | null>();
 
-  /** The block to show, or null for a pointer resting on nothing. */
+  /** The block to show, or null for a sheet with no card up. */
   readonly row = input.required<BookRow | null>();
 
   private readonly sheet = viewChild<ElementRef<HTMLCanvasElement>>('sheet');
@@ -243,7 +295,7 @@ export class PageGlanceComponent {
   private generation = 0;
   private task: { cancel(): void } | null = null;
   /**
-   * The open document, held as its promise so two rests share one open — AND
+   * The open document, held as its promise so two glances share one open — AND
    * THE SCAN IT IS THE OPEN OF.
    *
    * The path is half the value and not bookkeeping. This card outlives any one
@@ -273,17 +325,16 @@ export class PageGlanceComponent {
     const at = this.row();
     if (at === null) return null;
     /*
-     * THE CAPTURED BOOK IS ASKED ABOUT FIRST, because the sentence below is
-     * false about it. Its paper exists and was photographed page by page; what
-     * is missing is this card's ability to draw one, and saying "it arrived as
-     * a book rather than as a scan" over a project holding two dozen
-     * photographs would be the app telling a reader something it can see is
-     * untrue.
+     * A CAPTURED-BOOK ARM STOOD HERE (Wave 41's gravestone) saying that this
+     * book was read off photographed pages and the card could not show one. It
+     * existed because the sentence below is FALSE about such a book: its paper
+     * exists and was photographed page by page, and saying "it arrived as a book
+     * rather than as a scan" over a project holding two dozen photographs would
+     * be the app telling a reader something it can see is untrue.
+     *
+     * There is no such book any more. A mint's pages are bound into a PDF, so a
+     * captured book reaches the ordinary path and this card draws its paper.
      */
-    if (this.original() === null && this.originalPages() !== null && at.page > 0) {
-      return 'This book was read off photographed pages rather than a scan, and this card '
-        + 'cannot show one yet — the photographs are in the project, under its archive.';
-    }
     if (this.original() === null || at.page <= 0) {
       return 'This book has no paper behind it — it arrived as a book rather than as a scan, '
         + 'so there is no photograph of this block to show.';
@@ -337,9 +388,10 @@ export class PageGlanceComponent {
     /*
      * THE ONE EFFECT, and it is the whole engine of the component: a row
      * arrived, so draw its page. It reads `row` and `original` and nothing else,
-     * so a change to either re-runs it — and moving the card for the SAME row
-     * does not, which is what stops a slide down a column of blocks on one page
-     * from re-rendering that page for every block on it.
+     * so a change to either re-runs it — and MOVING the card does not. That is
+     * what makes book-view's re-placement on a pane resize free: the two
+     * placement signals are written, the row is not, and no page is re-rendered
+     * by dragging a window edge or opening the inspector.
      */
     effect(() => {
       const at = this.row();
@@ -401,7 +453,7 @@ export class PageGlanceComponent {
    * reads like a reason it should fail. Now that the card outlives a glance its
    * cache can be hit, so this was worth proving rather than routing around: the
    * draw was rewritten to hand the bitmap to a signal an effect painted, the
-   * old direct draw was put BACK IN and measured against repeat rests, and it
+   * old direct draw was put BACK IN and measured against repeat glances, and it
    * painted every time. Angular has refreshed the view by then. The indirection
    * bought nothing and was dropped. Cache hits land at ~210ms against a probe
    * whose own floor is 210ms; a fresh render of a page from an open document is
@@ -454,7 +506,7 @@ export class PageGlanceComponent {
   /**
    * pdf.js, on the first glance of this pane's life.
    *
-   * Built once and kept, so the worker is one thread rather than one per rest.
+   * Built once and kept, so the worker is one thread rather than one per glance.
    * The second caller to arrive while the import is in flight gets its own await
    * of the same dynamic import, which the module system already dedupes.
    */
@@ -535,8 +587,8 @@ export class PageGlanceComponent {
     try {
       await task.promise;
     } catch (err) {
-      // A cancelled render is this component working correctly — the pointer
-      // moved on — and is not a sentence anybody should be shown.
+      // A cancelled render is this component working correctly — the reader
+      // clicked the next block — and is not a sentence anybody should be shown.
       if (err instanceof Error && err.name === 'RenderingCancelledException') return null;
       throw err;
     } finally {

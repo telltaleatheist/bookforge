@@ -1,6 +1,5 @@
 import { Injectable, effect, inject, signal } from '@angular/core';
 
-import { unwritten } from '@shared/ops';
 import { fold } from '@shared/original';
 import type { JobKind } from '@shared/types';
 
@@ -87,6 +86,20 @@ import { api, hosted } from './foundry';
  * That is why `projectDirOf` has a case for this kind and nothing else does: for
  * every other tab the project is the folder the file is IN, and for this one the
  * path IS the project.
+ *
+ * ── GRAVESTONE: THE `pages` KIND (Wave 41) ─────────────────────────────────
+ *
+ * A fourth kind stood in this union for a captured book, which was a FOLDER of
+ * rectified page images: the mint wrote them and filed no document, because Owen
+ * had ruled the container out. So the one thing a `pdf` tab is for — a path
+ * pdf.js can be handed — did not exist for it, and pointing this app's one PDF
+ * viewer at a directory is how the app came to tell somebody their pages were no
+ * longer there while they sat on the disk.
+ *
+ * The mint writes the container again (`recordMint`, electron/projects.ts) and
+ * older projects are healed into one, so a captured book opens in a `pdf` tab
+ * like every other scan in the library. Three kinds, and the light table is the
+ * only one of them a captured project still needs of its own.
  */
 export type TabKind = 'pdf' | 'book' | 'capture';
 
@@ -105,10 +118,16 @@ export type TabKind = 'pdf' | 'book' | 'capture';
  * path is a file changes nothing — which is the difference between a decision
  * recorded once and a decision re-taken correctly seven times.
  *
- * The two directory kinds are otherwise nothing alike: a `book` tab is a
- * reading of a finished book and a `capture` tab is a light table of
- * photographs that are not a book yet. They share a filesystem fact, not a
- * nature, and every site that cares about the nature still asks about the kind.
+ * The two directory kinds are otherwise nothing alike: a `book` tab is a reading
+ * of a finished book and a `capture` tab is a light table of photographs that are
+ * not a book yet. They share a filesystem fact, not a nature, and every site that
+ * cares about the nature still asks about the kind.
+ *
+ * A FOURTH KIND JOINED HERE AND NOWHERE ELSE AND LEFT THE SAME WAY, which is this
+ * function's own promise kept twice. `pages` was added to the union above and to
+ * this line at Wave 34, and the seven sites that ask "is the path a directory"
+ * were correct for it before anybody looked at them; it was removed from the same
+ * two places at Wave 41, and they were correct again.
  *
  * IT IS A TYPE PREDICATE and that is not decoration: the sites it replaces were
  * narrowing `kind` by testing it, and one of them passes the narrowed kind to a
@@ -863,6 +882,21 @@ export class OpenDocumentsService {
     return made.id;
   }
 
+  /*
+   * ── GRAVESTONE: `pagesTabIn` (Wave 41) ─────────────────────────────────────
+   *
+   * This project's PAGE VIEW tab, made if it had none. It existed for Owen's
+   * *"i expected it to take me to a pdf-like layout (even if we havent assembled
+   * into a pdf officially yet) where i can scroll through each page as it would
+   * look in a pdf"*, and it was one tab per project with the POSITION deciding
+   * which mint's pages it drew — the book tab's shape, over pictures.
+   *
+   * The mint assembles the PDF now, so a minted row opens through `openFile`
+   * like any other document and lands in a `pdf` tab. The light table keeps its
+   * own tab (`captureTabIn`, above) because the photographs stay editable after a
+   * mint — that is what makes a re-mint possible at all.
+   */
+
   /**
    * The single tab factory. Shows an existing tab for the same file rather
    * than opening a second — two tabs onto one book are two scroll positions
@@ -1259,13 +1293,17 @@ export class OpenDocumentsService {
    * Home still lists the book. The DOT stays — `Tab.unsaved` is a fact worth
    * drawing — but it is not a reason to stop somebody on their way out.
    *
-   * ── ONE QUESTION FOR TWO LOSSES ─────────────────────────────────────────────
+   * ── ONE QUESTION FOR TWO STATES ─────────────────────────────────────────────
    *
-   * A book's filed copy can be out of date, and a scan's corrections can have no
-   * save to come back to. Main composes whichever of the two are true into one
-   * card, because this codebase has already ruled that a closing document is
-   * asked about once (`closeShowing`): a second dialog on top of the first is the
-   * app arguing with an answer it already has.
+   * A book's filed copy can be out of date, and a book pane can hold changes
+   * nobody applied. Main composes whichever of the two are true into one card,
+   * because this codebase has already ruled that a closing document is asked
+   * about once (`closeShowing`): a second dialog on top of the first is the app
+   * arguing with an answer it already has.
+   *
+   * IT SAID "TWO LOSSES" UNTIL 2026-08-22, and the second one has stopped being
+   * a loss — see the scrap-guard below for Owen's reversal and what the card asks
+   * now.
    *
    * ── And the offer to keep the work is a button, not advice ─────────────────
    *
@@ -1289,70 +1327,67 @@ export class OpenDocumentsService {
     const current = this.byId(id);
     if (current === null || !api) return 'go';
     /*
-     * ── THE SCRAP-GUARD, AND IT IS THE ONE REAL LOSS THIS CARD EVER DESCRIBES ──
+     * ── THE STACK, AND WHAT THIS CARD IS ACTUALLY ABOUT NOW ────────────────────
      *
      * The other thing this used to ask about — the block editor's uncommitted
      * CURATION — is gone with that editor, and it was never a loss: every strike
      * was already on disk and what ended was a way back. The book viewer's stack
-     * is the opposite — in memory, the only copy, and scrapped by closing, which is
-     * the ruling (docs/RENDERER.md §3: "Apply writes and clears; closing without
-     * applying scraps it"). It is asked about PER TAB: a stack belongs to one
-     * tab's book viewer and closing that tab is the moment it goes, whatever else
-     * is open onto the same book.
-     */
-    const stack = current.kind === 'book' ? this.stacks.bookStackFor(current.id) : null;
-    /*
-     * A BOOK TAB THAT IS NOT THE ONE SHOWN HAS NO LIVE VIEWER AND STILL HAS A
-     * STACK — the parked one (`BookStacksService`). Closing it from the library
-     * while another document is up would otherwise skip this question entirely and
-     * drop unwritten work with no sentence anywhere, which is the one loss this
-     * card exists to prevent.
+     * WAS the opposite: in memory, the only copy, and scrapped by closing, which
+     * was the ruling (docs/RENDERER.md §3: "Apply writes and clears; closing
+     * without applying scraps it").
      *
-     * READ AND NOT CLAIMED: the answer may be "keep", and a claim would have
-     * destroyed the work the person just said they wanted.
+     * OWEN REVERSED THAT RULING ON 2026-08-22, after a real project lost real
+     * work to it: the stack is written to a sidecar as it is made
+     * (`BookStacksService.rememberPending`) and comes back the next time the book
+     * is opened at the same step. So closing costs nothing by itself, and this
+     * card is no longer a warning — it is the offer to RECORD the work as a step,
+     * which matters because everything made from this book (an export, a
+     * translation, a rewrite) is built from the recorded steps and would be built
+     * without it. The one answer that still destroys is Discard, and that is now
+     * the only gesture in the app that can.
+     *
+     * IT IS STILL ASKED PER TAB, because a stack belongs to one tab's book viewer
+     * and closing that tab is the moment it stops being on screen, whatever else
+     * is open onto the same book.
+     *
+     * ── ONE COUNT AND ONE PRESS, AND NEITHER IS SPELLED HERE ANY MORE ──────────
+     *
+     * `unappliedIn` routes between the live viewer and the parked stack, and
+     * `applyUnapplied` makes the amend-or-land decision for whichever it is
+     * (`BookStacksService`). Both moved out of this function when the make-act
+     * gate needed the identical pair before an export: a second copy of either is
+     * how a dialog comes to disagree with the button that opened it.
      */
-    const parked = stack === null && current.kind === 'book'
-      ? this.stacks.parkedFor(current.id)
-      : null;
-    const edits = stack !== null && stack.pending() > 0
-      ? stack.pending()
-      : parked !== null && unwritten(parked.landed, parked.pending) > 0
-        ? unwritten(parked.landed, parked.pending)
-        : null;
-    if (!current.modified && edits === null) return 'go';
+    const edits = current.kind === 'book' ? this.stacks.unappliedIn(current.id) : 0;
+    if (!current.modified && edits === 0) return 'go';
 
     const answered = await api.confirmClose({
       title: current.title,
       modified: current.modified,
       savedPath: current.savedPath,
-      edits,
+      edits: edits > 0 ? edits : null,
     });
     if (answered === 'keep') return 'stay';
     /*
-     * A REFUSAL LEAVES THE TAB OPEN: closing anyway would throw away the very
-     * thing the answer asked to keep, and main's own sentence is already on the
-     * notice strip saying why it would not land.
+     * A REFUSAL LEAVES THE TAB OPEN: closing anyway would leave the work held
+     * rather than recorded when the answer asked for it recorded, and main's own
+     * sentence is already on the notice strip saying why it would not land.
      */
-    if (answered === 'save' && stack !== null) return await stack.apply() ? 'go' : 'stay';
-    if (answered === 'save' && parked !== null) {
-      /*
-       * APPLYING A PARKED STACK NEEDS NO VIEWER: the doors are main's
-       * (`book:amend` rewrites the tip the person was standing on;
-       * `book:apply` lands a step), and the viewer was only ever the thing that
-       * pressed them. Amend when the parked stack grew out of a recorded tip,
-       * exactly as the viewer itself decides.
-       */
-      try {
-        const history = parked.landed.length > 0
-          ? await api.book.amend(current.path, parked.pending)
-          : await api.book.apply(current.path, parked.pending);
-        this.ledger.adopt(current.path, history);
-        return 'go';
-      } catch (err) {
-        this.notices.notice.set(err instanceof Error ? err.message : String(err));
-        return 'stay';
-      }
-    }
+    if (answered === 'save' && edits > 0) return await this.stacks.applyUnapplied(current) ? 'go' : 'stay';
+    /*
+     * ── AND DISCARD IS THE ONE SANCTIONED SCRAP ────────────────────────────────
+     *
+     * The sidecar exists so that nothing but a person can throw unapplied work
+     * away; this is the person. It is awaited rather than fired, because closing
+     * the tab is what happens next and a clear still in flight would race a
+     * reopen that put the discarded stack straight back on the page.
+     *
+     * IT IS ONLY REACHED WHEN THERE WAS SOMETHING TO DISCARD. A card raised for
+     * the filed copy alone answers `close` too, and clearing a sidecar nobody
+     * asked about would be this app scrapping work on the strength of an answer
+     * to a different question.
+     */
+    if (answered === 'close' && edits > 0) await this.stacks.discardPending(current.path);
     return 'go';
   }
 
@@ -1418,8 +1453,13 @@ export class OpenDocumentsService {
     const tabs = this.all();
     if (!tabs.some((candidate) => candidate.id === id)) return;
 
-    // The parked stack goes with the tab — the closing question above already
-    // asked about it, so this is the scrap the person chose.
+    /*
+     * The parked stack goes with the tab, and this is now a HOUSEKEEPING line
+     * rather than the scrap it used to be: the map is this window's heap, and the
+     * work itself is on disk in the project's sidecar unless the closing question
+     * above was answered Discard (which clears it). So dropping the entry ends a
+     * copy, not the copy — a reopen of this book reads the work back.
+     */
     this.stacks.dropParked(id);
     this.all.set(tabs.filter((candidate) => candidate.id !== id));
     /*
@@ -1548,6 +1588,13 @@ export class OpenDocumentsService {
         + 'are saved into the project as they are made.');
       return;
     }
+    /*
+     * A THIRD BRANCH STOOD HERE for a `pages` tab (Wave 41's gravestone), saying
+     * that the pages were a folder rather than a file and that the container a
+     * Save would have produced was not built yet. It is built: the mint writes
+     * it, so a minted book reaches the ordinary Save below and copies out as the
+     * PDF it is.
+     */
     try {
       const destination = await api.documentSaveCopy(
         tab.path, suggestName(baseName(tab.path), '.pdf'));

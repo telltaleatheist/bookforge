@@ -402,7 +402,18 @@ import { api } from '../../core/foundry';
       color: transparent;
       cursor: text;
     }
-    .text ::ng-deep span::selection { background: rgba(6, 182, 212, 0.4); }
+    /*
+     * \`color: transparent\` HERE IS LOAD-BEARING. The app's global rule paints
+     * selected text near-white (styles.scss ::selection), and the cascade is
+     * per-property: this rule won the background and never declared a color,
+     * so the global's #faf9f7 re-inked the invisible text layer during every
+     * selection — a white ghost copy of the glyphs, offset from the canvas's
+     * printed ones by the layer's approximation (Owen, 2026-08-21, "is it
+     * revealing the hidden layer as white text?" — almost exactly). Over
+     * paper, the selected words are already printed beneath; selection here
+     * is a box, never a second inking.
+     */
+    .text ::ng-deep span::selection { background: rgba(6, 182, 212, 0.4); color: transparent; }
     .text.shown ::ng-deep span { color: #23201a; }
     /* Over the scan the hit is a BOX and the text under it stays invisible —
        painting it would double the ink the highlight is pointing at. The fill

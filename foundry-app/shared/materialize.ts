@@ -246,6 +246,37 @@ export function materialize(book: BookFile, ops: readonly BookOp[]): Materialize
       else already.push({ at: ref.at, len: ref.len });
     }
   }
+  /*
+   * AND EVERY LOOSE MARKER GOES WITH THEM — Owen's ruling, 2026-08-22,
+   * verbatim: *"i want to make sure the final footnote number doesnt make it
+   * to the epub if it isnt linked to a footnote thats present… i want to
+   * verify im not going to send the epub to tts and hear a bunch of numbers
+   * read out every other sentence."*
+   *
+   * Measured on his own Streicher export before this was written: 274 bare
+   * <sup> numbers in the finished EPUB, zero linked noterefs, and the book
+   * file's loose.markers held exactly those 274 — a book whose notes are
+   * ENDNOTES AT THE BACK, so the page-complete note model matched nothing
+   * and every printed number sailed through as literal text a narrator
+   * would read aloud.
+   *
+   * A loose marker is a run the recogniser identified as a note number and
+   * matched to no note. In the WORKING document it is a flag in the margin,
+   * kept so a person can hand-link it ({op:'link'} — a replayed link has
+   * already moved a marker out of loose before this runs, so a linked one is
+   * a ref and is kept). In the EDITION it is a number pointing at nothing,
+   * and this file's own standard applies: the derived file is the finished
+   * document. Cut through the same machinery as a struck note's number, so
+   * every offset behind it — real refs, other markers' records, parts —
+   * moves by exactly what came out. THE FACSIMILE IS UNTOUCHED, as ever:
+   * page-faithful is what a facsimile is for, and it forks before this.
+   */
+  for (const marker of replayed.loose.markers) {
+    if (!held.has(marker.block)) continue;
+    const already = cuts.get(marker.block);
+    if (already === undefined) cuts.set(marker.block, [{ at: marker.at, len: marker.len }]);
+    else already.push({ at: marker.at, len: marker.len });
+  }
   for (const runs of cuts.values()) runs.sort((one, other) => one.at - other.at);
 
   const rows: BookRow[] = [];
@@ -288,12 +319,15 @@ export function materialize(book: BookFile, ops: readonly BookOp[]): Materialize
     return { ...row, refs };
   });
 
+  /*
+   * NO LOOSE MARKER SURVIVES INTO THE DERIVED FILE, by construction: every
+   * one on a held block was cut out of the text above (Owen's ruling — an
+   * unlinked number must not reach the edition), so a record pointing at its
+   * own seam would be a coordinate about characters that are not there. The
+   * loose NOTES stay: a note nothing points at is still words a reader can
+   * read, and orphaning is the flag the header exists to carry.
+   */
   const markers: BookLooseMarker[] = [];
-  for (const marker of replayed.loose.markers) {
-    if (!held.has(marker.block)) continue;
-    const runs = cuts.get(marker.block);
-    markers.push(runs === undefined ? marker : { ...marker, at: mapped(marker.at, runs) });
-  }
   const loose: BookLoose = {
     markers,
     notes: [...new Set([...replayed.loose.notes.filter((id) => held.has(id)), ...orphaned])],
@@ -310,6 +344,17 @@ export function materialize(book: BookFile, ops: readonly BookOp[]): Materialize
         // The receipt this book is a pure function of, verbatim — including its
         // sha, which still identifies the bank underneath every id in the file.
         source: book.header.source,
+        /*
+         * AND WHAT BECAME OF THE PICTURES, VERBATIM TOO. A derived book's Picture
+         * rows name the parent's crops, in the parent's own images directory,
+         * because replaying an op moved no pixels. So the parent's marker is a
+         * true statement about this file, and DROPPING it would say something
+         * false in the other direction: absent means "an engine older than the
+         * marker wrote this" (`BookFigures`, shared/book.ts), which would send the
+         * ensure step off to read the rows of a book it could not have healed
+         * anyway. Absent in the parent stays absent here.
+         */
+        ...(book.header.figures !== undefined ? { figures: book.header.figures } : {}),
         chapters: rehungChapters(replayed.chapters, replayed.rows, held),
         typography: book.header.typography,
         /*
@@ -543,6 +588,9 @@ export function translated(
         // a loader standing at this position checks that sha against that bank,
         // which is exactly the check that should still pass here.
         source: book.header.source,
+        // And the figures are the parent's crops under the parent's names, for
+        // the same reason and with the same consequence — see `materialize`.
+        ...(book.header.figures !== undefined ? { figures: book.header.figures } : {}),
         chapters,
         // Measured off the boxes, and the boxes are the parent's: this says what
         // size the type was set in on the page, which translating did not change.

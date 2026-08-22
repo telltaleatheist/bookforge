@@ -646,10 +646,51 @@ export class PositionSyncService {
      * the proof sheet", asked in the module that already owns every other question
      * about a position.
      */
-    const onTheSheet = view.sheet;
-    const swapped = onTheSheet
+    /*
+     * ── AND A MINT ROW SHOWS ITS PDF, LIKE EVERY OTHER IMPORT (Wave 41) ──────
+     *
+     * A third branch stood here — `view.pages` routing to `app-pages-view` —
+     * because a minted book was a FOLDER of page images and the mint wrote no
+     * container. It was Owen's Wave 34 answer to the click that did nothing:
+     * *"when i do finalize, it creates 'this book' in the worktree. correct. but
+     * when i click it, i expected it to take me to a pdf-like layout (even if we
+     * havent assembled into a pdf officially yet) where i can scroll through each
+     * page as it would look in a pdf."*
+     *
+     * The parenthesis is now spent: the mint assembles the PDF (`recordMint`,
+     * electron/projects.ts), `documentOfStep` answers with it, and the row falls
+     * to `showDocument` — which opens it in pdf.js. That is the sentence above
+     * with the hedge removed, and it costs this function a branch instead of
+     * buying it one.
+     */
+    /*
+     * ── AND THE CAPTURE ROW SHOWS THE LIGHT TABLE, SAID OUT LOUD AT LAST ─────
+     *
+     * *"Standing on the capture step always shows the light table; standing on
+     * the minted step shows the PDF."* (docs/CAPTURE.md, the surface section.)
+     * The first half of that was true BY ACCIDENT until this wave: a capture row
+     * names no document, so it fell to `showDocument`'s empty branch, which
+     * reveals whichever of the project's tabs happens to be first — and a capture
+     * project had exactly one tab, so the accident was indistinguishable from the
+     * rule.
+     *
+     * It has two now. Leaving the promise resting on tab order would mean that
+     * clicking *The photographs* showed you the pages you minted whenever the
+     * table's tab had been closed and reopened, which is the door back to the
+     * corners quietly going missing — the one thing docs/CAPTURE.md's own reword
+     * was written to prevent.
+     *
+     * ASKED OF THE ACTION DIRECTLY rather than through a fourth field on
+     * `positionView`, and the difference from `pages` beside it is the whole
+     * argument: THAT test is `import` with a parent, which is a fact nobody reads
+     * off a call site correctly, and it is asked by two layers that must agree.
+     * This one is one word, asked in one place, and reads as what it means.
+     */
+    const swapped = view.sheet
       ? this.showBook(move)
-      : await this.showDocument(move, target);
+      : view.step?.action === 'capture'
+        ? this.showTable(move)
+        : await this.showDocument(move, target);
     /*
      * AND NOTHING IS DONE TO THE SCAN'S PAGES, which is where a loop used to be.
      *
@@ -837,8 +878,24 @@ export class PositionSyncService {
    * caller's.
    */
   private openTheSheet(move: PositionMove): void {
-    if (!move.now.view.sheet) return;
-    this.showBook(move);
+    if (move.now.view.sheet) {
+      this.showBook(move);
+      return;
+    }
+    /*
+     * A SECOND ARM STOOD HERE (Wave 41's gravestone) opening a minted project's
+     * PAGES, because a capture project had no document to open and every door
+     * into one therefore showed the LIGHT TABLE — right for a project being
+     * photographed and wrong for one whose pointer is on a book it had already
+     * made. Somebody who minted yesterday, quit, and reopened would have been put
+     * in front of the photographs with the row they were standing on highlighted
+     * in the tree beside them.
+     *
+     * A minted project has an original now, so `openProject` (home.component.ts)
+     * takes the ordinary door and lands on the position like any other book, and
+     * `showPosition` above puts the right thing on screen. The correction is made
+     * one layer up, where it is made for every project.
+     */
   }
 
   /**
@@ -886,6 +943,41 @@ export class PositionSyncService {
      */
     this.documents.bumpRevision(id);
     this.stage.reveal(id);
+    return false;
+  }
+
+  /*
+   * ── GRAVESTONE: `showPages` (Wave 41) ─────────────────────────────────────
+   *
+   * `showBook` with one word changed: one tab per project, named by the
+   * directory, contents re-asked whenever the pointer moved — over the folder of
+   * rectified page images a mint had written rather than over the project's
+   * blocks. The revision bump did more work here than it does for the book,
+   * because a project can hold TWO mints and standing on either row is two
+   * different books behind one tab path.
+   *
+   * A mint writes a PDF, so a minted row is a document row and `showDocument`
+   * shows it — and the two-mints case it existed for is served by the same
+   * machinery that serves a re-import: `documentOfStep` resolves the STEP's own
+   * payload, so standing on the older mint opens the older mint's book.
+   */
+
+  /**
+   * Put the project's LIGHT TABLE on screen — the photographs and their recipe.
+   *
+   * NO REVISION BUMP, and that is the one line of difference from the two above
+   * it. The book and the pages are both resolved AT THE POSITION, so a move
+   * between two rows changes what main would answer while the tab's path stands
+   * still — a re-ask is the only way the surface hears about it. A light table is
+   * not: there is exactly one recipe in a capture project, `CaptureService` holds
+   * it and writes it as gestures are made, and re-asking would throw away the
+   * open photograph and the pass somebody was in the middle of to reload a
+   * document that had not changed.
+   *
+   * ANSWERS FALSE for `showBook`'s reason — no PDF viewer is pointed anywhere.
+   */
+  private showTable(move: PositionMove): boolean {
+    this.stage.reveal(this.documents.captureTabIn(move.dir));
     return false;
   }
 }

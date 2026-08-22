@@ -1609,3 +1609,186 @@ export function unwritten(landed: readonly BookOp[], pending: readonly BookOp[])
     && landed[shared] === pending[shared]) shared += 1;
   return (landed.length - shared) + (pending.length - shared);
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The pending stack, as bytes — the sidecar that outlives the window
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE WORKING STACK AS A THING THAT CAN BE WRITTEN DOWN, and why it is a
+ * DIFFERENCE rather than the two lists it describes.
+ *
+ * ── The defect ──────────────────────────────────────────────────────────────
+ *
+ * The pane's stack was memory and nothing else: renaming a chapter, editing a
+ * paragraph and then exporting produced a book without either, because export
+ * replays the LEDGER and the stack had never reached it — and the stack was then
+ * scrapped outright when the window went (user report, 2026-08-21). Apply is
+ * still the only thing that writes a STEP; this is the thing that means an
+ * un-applied stack is never silently gone.
+ *
+ * ── Why `kept` and a tail, rather than `landed` and `pending` ───────────────
+ *
+ * Because `unwritten` above measures past the shared prefix BY IDENTITY, and
+ * identity does not survive a JSON round trip: two lists parsed out of one file
+ * share no objects, so a faithfully written `{landed, pending}` would read back
+ * as "every op on both sides is waiting". The invariant that makes the smaller
+ * shape exact is the pane's own: the working list starts as a copy of the tip's
+ * recorded ops, gestures only APPEND and undo only pops the tail, so the working
+ * list is forever some prefix of the recorded one followed by whatever was made
+ * since. `kept` is the length of that prefix and `tail` is what follows, so
+ * hydration is `[...tip.slice(0, kept), ...tail]` — the head is the very objects
+ * this load parsed, which is what `unwritten` needs to see.
+ *
+ * It also keeps the file HONEST ABOUT SIZE: what is on disk is the work that is
+ * not on disk anywhere else, and not a second copy of the step's own payload.
+ *
+ * `undone` IS THE REDO PILE and rides along because it is unwritten work too —
+ * ops the person took back and can put back, which no step records and nothing
+ * else remembers.
+ */
+export interface PendingStack {
+  /** How many of the tip step's own recorded ops the working list still begins with. */
+  kept: number;
+  /** What was made since — the ops no step has ever recorded. */
+  tail: readonly BookOp[];
+  /** What undo has taken off, oldest first, exactly as the pane holds it. */
+  undone: readonly BookOp[];
+}
+
+/**
+ * The sidecar's header line: the two facts that decide whether the stack below
+ * it still describes the book being opened.
+ *
+ * MAIN STAMPS BOTH, AND THAT IS THE POINT. The renderer knows what it changed;
+ * it does not know which receipt this project's book is a function of, and a
+ * renderer-supplied identity is a claim rather than evidence (`loadBook`'s own
+ * argument for hashing on main's side of the wall). So the pane hands over the
+ * stack and main writes down where it was standing when it did.
+ */
+export interface PendingStackHeader {
+  /**
+   * The step the stack grew from — the position, as main resolved it at the
+   * write, or null for a project whose history has no position yet.
+   *
+   * Ops are a DELTA against the book at one position (docs/RENDERER.md §3), so a
+   * stack recovered at another row would apply somebody's strikes to a document
+   * they made no decision about. This is the whole of that test.
+   */
+  step: string | null;
+  /**
+   * Sixteen hex of the receipt the book was made from — `bankSha`'s own value,
+   * hashed by main for `loadBook`'s reason and compared for it: a bank that moved
+   * invalidates every id these ops name.
+   */
+  receipt: string;
+}
+
+/** The whole sidecar, header and stack together. */
+export interface PendingStackFile extends PendingStackHeader, PendingStack {}
+
+/**
+ * What a recovery can say for itself — the answer `book:pending-read` gives.
+ *
+ * IT LIVES HERE RATHER THAN IN THE DOOR that answers it, because both ends need
+ * it: main composes one and the pane reads one, and a shape declared on main's
+ * side would be an electron import in `shared/api.ts`.
+ *
+ * A REFUSAL IS AN ANSWER AND NOT A THROW. "There is something held and it is not
+ * about the book you are opening" is a fact somebody has to be told a sentence
+ * about — the person moved to another step, or the reading underneath was remade
+ * — and it is not an error in anything. The count rides with it so the notice can
+ * be honest about the size of what was let go.
+ */
+export type PendingOutcome =
+  /** A stack that applies here, or `null` for the ordinary book with nothing held. */
+  | { ok: true; stack: PendingStack | null }
+  | { ok: false; reason: string; held: number };
+
+/** The word the first line carries, so a file that is not one is refused rather than read. */
+const PENDING_FILE = 'foundry-pending-stack';
+
+/**
+ * The pending stack → the bytes of the sidecar.
+ *
+ * A JSON HEADER LINE AND THEN THE OPS FILE, unchanged, which is the whole reason
+ * there is no second format here: the lines after the first are exactly what
+ * `formatOpsFile` writes for a step's payload and exactly what `parseOpsFile`
+ * proves, so an op word this build cannot replay is refused by the same sentence
+ * whether it arrived in a step or in a recovery.
+ *
+ * ONE BODY FOR TWO LISTS, split by a count in the header. The tail and the redo
+ * pile are both ops and both belong in the op serialization; giving each its own
+ * file would be two writes that can disagree, and a separator line inside a
+ * line-oriented format would be a second grammar to parse.
+ */
+export function formatPendingStack(held: PendingStackFile): string {
+  const header = {
+    file: PENDING_FILE,
+    version: 1,
+    step: held.step,
+    receipt: held.receipt,
+    kept: held.kept,
+    tail: held.tail.length,
+  };
+  return `${JSON.stringify(header)}\n${formatOpsFile([...held.tail, ...held.undone])}`;
+}
+
+/**
+ * The bytes back → the stack, or a refusal naming what was wrong with it.
+ *
+ * `parseOpsFile`'s rule, for its reason: one bad line takes the whole file down,
+ * because a stack assembled out of the lines that happened to parse is somebody's
+ * afternoon with holes in it, and they would go on editing a book that is not the
+ * one they left.
+ *
+ * THE LINE NUMBERS IN AN OP REFUSAL COUNT FROM THE HEADER, which is why the body
+ * is handed to `parseOpsFile` whole rather than sliced: the sentence names the
+ * line of the file somebody can open, not the line of a substring.
+ */
+export function parsePendingStack(text: string): PendingStackFile {
+  const cut = text.indexOf('\n');
+  const first = cut === -1 ? text : text.slice(0, cut);
+  let header: Record<string, unknown> | null;
+  try {
+    header = objectOf(JSON.parse(first));
+  } catch {
+    header = null;
+  }
+  if (header === null || header['file'] !== PENDING_FILE) {
+    throw new BookOpsError(
+      'The changes held for this book are in a format this program does not recognise, so they are '
+      + 'not put back on the page — a recovery it cannot read honestly is worse than none.',
+    );
+  }
+  const kept = offsetOf(header['kept'], 0);
+  const tailCount = offsetOf(header['tail'], 0);
+  const receipt = nameOf(header['receipt']);
+  const step = header['step'] === null ? null : nameOf(header['step']);
+  if (kept === null || tailCount === null || receipt === null
+    || (header['step'] !== null && step === null)) {
+    throw new BookOpsError(
+      'The changes held for this book do not say which step or which reading they were made '
+      + 'against, so there is no way to tell whether they still describe this book.',
+    );
+  }
+  /*
+   * THE HEADER LINE IS BLANKED RATHER THAN CUT OFF, so every op keeps the line
+   * number it has in the file. `parseOpsFile` skips blank lines, so the first
+   * line costs nothing and the arithmetic in a refusal stays true.
+   */
+  const ops = parseOpsFile(cut === -1 ? '' : `\n${text.slice(cut + 1)}`);
+  if (tailCount > ops.length) {
+    throw new BookOpsError(
+      `The changes held for this book claim ${tailCount} unrecorded changes and carry ${ops.length}, `
+      + 'so the file is not whole and is not put back on the page.',
+    );
+  }
+  return {
+    step,
+    receipt,
+    kept,
+    tail: ops.slice(0, tailCount),
+    undone: ops.slice(tailCount),
+  };
+}

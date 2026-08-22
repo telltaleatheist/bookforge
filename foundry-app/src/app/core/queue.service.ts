@@ -17,6 +17,21 @@ export class QueueService {
 
   readonly jobs = this.all.asReadonly();
 
+  /**
+   * EVERY RUN ON THE MACHINE, because there can be three of them.
+   *
+   * The queue is a board of slots since Wave 35 — one GPU, two CPU
+   * (shared/queue-board.ts) — so "what is running" stopped being a single row
+   * the day the lanes landed. Everything that draws the board reads this; the
+   * one below it is what the collapsed pill still needs.
+   */
+  readonly runningJobs = computed(() => this.all().filter((job) => job.state === 'running'));
+  /**
+   * ONE run, for the surfaces that have room for exactly one: the pill's
+   * spinner and its aggregate bar. The FIRST in queue order, which is what it
+   * has always been — the shelf picks the lane it prefers for the bar itself,
+   * because that is a drawing decision and this is a mirror.
+   */
   readonly running = computed(() => this.all().find((job) => job.state === 'running') ?? null);
   readonly queued = computed(() => this.all().filter((job) => job.state === 'queued'));
   /**

@@ -77,7 +77,7 @@ import type { LedgerStep, ProjectLedger } from './types';
  * a re-translation quietly asking a different model than the first run did, filling
  * one records file with answers in two voices.
  */
-export const DEFAULT_TRANSLATE_MODEL = 'qwen3:32b';
+export const DEFAULT_TRANSLATE_MODEL = 'qwen3.8:27b';
 
 /** Ollama's own default port, and where it is unless somebody moved it. */
 export const DEFAULT_OLLAMA_ENDPOINT = 'http://localhost:11434';

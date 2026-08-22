@@ -38,11 +38,20 @@ import type { Tab } from '../../core/documents.service';
  * like the PDF engine because there is no chunk to defer — it is this app's own
  * components over rows that arrive on an IPC call.
  *
- * THERE WERE FOUR KINDS AND THERE ARE TWO. `app-epub-view` rendered an unpacked
+ * A THIRD KIND THAT WAS NOT A FILE EITHER stood here for two days:
+ * `app-pages-view`, a captured book's PAGES — the folder of rectified images a
+ * mint wrote, scrolled like a PDF because that is what the person asked for and
+ * there was no PDF to give them. There is one now (Owen's later ruling,
+ * `recordMint`, electron/projects.ts), so a captured book arrives at the PDF
+ * branch with every other scan and the kind is retired. The LIGHT TABLE stays:
+ * one project has a table of photographs AND, once it has been minted, a book
+ * made from them.
+ *
+ * THE KINDS THAT WENT ARE NOT COMING BACK. `app-epub-view` rendered an unpacked
  * book in a sandboxed <iframe> and `app-html-editor` showed one of its chapters
  * as text beside it; both are deleted with the editing world they belonged to
- * (docs/RENDERER.md §7), and what is drawn here is a document this app SHOWS or
- * the book it EDITS.
+ * (docs/RENDERER.md §7). What is drawn here is a document this app SHOWS, the
+ * book it EDITS, or the light table a capture project arranges.
  *
  * The empty state is Home's job now, not this component's: this only ever runs
  * with a tab, and a viewer with nothing in it is a screen the workspace does not
@@ -65,6 +74,14 @@ import type { Tab } from '../../core/documents.service';
       -->
       <app-capture-view [tab]="tab()" />
     } @else {
+      <!--
+        A THIRD BRANCH STOOD HERE (Wave 41's gravestone) drawing
+        \`app-pages-view\`: the book a mint made, as pictures, because a mint
+        wrote rectified page images and no container. The mint assembles the PDF
+        now (Owen's later ruling, \`recordMint\`), so a minted book arrives at
+        the branch below and pdf.js draws it — which is the surface that brief
+        asked for in the first place.
+      -->
       <!--
         @defer, so pdf.js is its own chunk rather than half of the bundle the
         window boots with. The first screen of this app is Home, which has no

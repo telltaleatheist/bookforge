@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f858e41** — *the gutter wins its own knob* |
+| Source sha | **98031b0** — *Wave 41: the mint produces the founding document* |
 | Copied on | 2026-08-21 |
-| Copied by | `git -C <foundry> archive f858e41 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 98031b0 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -269,6 +269,53 @@ HEAD: run from a checkout that is behind (the pinned subtree is one by
 construction) `git log` cannot walk to commits that exist only ahead of it, and
 answers with a clean nothing — the staleness being tested for is the staleness
 that hides the evidence. bookforge-mac-2 hit exactly that, 2026-08-21.
+
+`98031b0` is 24 commits and seventeen waves, released by Owen ("looks good. lets
+release the re-vendor.") after the Wave 25 hand-test that seq 151 held it for.
+114/114 blobs hash-verified against `98031b0:app/`, plus `IPC-CHANNELS.md`
+byte-identical to `98031b0:docs/IPC-CHANNELS.md`. **`fd899bf` closes the hole
+this side reported** (switchboard seq 158): our `1ed04c1d` removed the hold and
+their `d9ed267` removed the hosted shelf, and together a hosted Add answered
+nothing anywhere. `ui.confirmQueued(said)` is the one door — hosted it writes
+the notice surface (a TOAST TRAY as of Wave 32), standalone it announces to the
+shelf's live region exactly as before — so the routing is one rule rather than
+a `hosted()` branch in four dialogs. Option (a) in all but name, and theirs, as
+it should have been. **IPC: the doc's own count was stale at 71 since 08-18 and
+is now correct.** Verified HERE from the vendored source rather than taken from
+the header: `84` `ipcMain.handle` call sites, `84` distinct channel names, zero
+duplicate registrations, zero `ipcMain.on` — and the collision keeper is green
+against it. Net channel deltas vs f858e41: **+ `book:confirm-unapplied`,
++ `book:pending-save` / `-read` / `-clear`** (waves 29/36, the unapplied-work
+guards); `capture:pages-load` was added in Wave 34 and REMOVED in Wave 41, so it
+never reaches us — `electron/ipc.ts:1692` carries its gravestone. The mount seam,
+`hostQueue` routing, `runJob` and `exportEpubFromStep` are UNCHANGED; all twelve
+seam exports rebuilt and present. Inherited but never executed hosted: the queue
+slot board (gpu 1 / cpu 2), the Home intake workspace, the action-menu tile grid,
+the capture two-pass rework. `package.json`, `package-lock.json`, `angular.json`
+and all three `tsconfig*.json` are unmoved by this refresh, so the existing
+`node_modules` stands and no install was run. `npm run build` clean; `ng build`
+756.21 kB, budget WARNING only.
+
+**THE HOSTED ENGINE IS 70 `src` COMMITS BEHIND, and it is NOT the binary this
+file has been warning about.** The f858e41 note pointed at
+`<foundry>/dist/foundry-windows-x64.exe`; that is not what a hosted read spawns.
+`engineCommand()` refuses its dev-checkout fallback when hosted, so the answer
+comes from BookForge: `main.ts` sets `FOUNDRY_BIN` from
+`resolveFoundryPath()` → `componentManager.resolveEntry('foundry-cli')`. On this
+machine that is
+`%APPDATA%\BookForge\components\foundry-cli\foundry.exe`, and it answers
+**`foundry 0.9.1 (72817c6)`**, installed 2026-08-11 — while the checkout's dist
+exe is `0.9.2 (92ab737)` and source is now 98031b0. Neither `FOUNDRY_CLI_PATH`
+nor `FOUNDRY_BIN` is set at User or Machine scope, so nothing overrides it. There
+is no version floor that would refuse: `effectiveFoundryVersion()` feeds
+staleness display, not a gate, so an old engine runs QUIETLY. Ten of those 70
+commits are the ones the vendored app now expects (`--pages` reachable at all,
+the per-book token cap, a refused page naming its cap, the reflow race, the
+Wave 37 pages face). Closing it is two steps and neither is a subtree refresh:
+`bash tools/release-build.sh windows-x64` in the Foundry checkout, then
+reinstalling the `foundry-cli` component from that artifact. Left undone here
+deliberately — it rewrites Owen's installed environment, which a vendor commit
+should not do.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

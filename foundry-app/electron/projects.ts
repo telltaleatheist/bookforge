@@ -90,6 +90,14 @@ import * as path from 'node:path';
 
 import { app } from 'electron';
 
+/*
+ * THE ONE FOREIGN LIBRARY IN THIS FILE, and it is here for the heal. A project
+ * minted before Wave 41 holds page images and no container; `pagesAsPdf` binds
+ * them into the one this app now files as the original. The mint's own assembly
+ * lives in electron/capture.ts, which is where the pixels are.
+ */
+import { PDFDocument } from 'pdf-lib';
+
 import { readAppSettings } from './app-settings';
 // An imported EPUB is stamped on the way in, by the engine — see `stampImported`.
 import { stampEpub } from './engine';
@@ -120,7 +128,7 @@ import type {
   StepLedgerView,
   StepRow,
 } from '../shared/types';
-import { WHY_HANDMADE, WHY_IMPORTED, WHY_MODEL_PASS } from '../shared/types';
+import { WHY_HANDMADE, WHY_IMPORTED, WHY_MINTED, WHY_MODEL_PASS } from '../shared/types';
 import { spokenStem } from '../shared/documents';
 import { readJson } from '../shared/json';
 import type { ArchiveRecord } from '../shared/steps';
@@ -142,6 +150,7 @@ import {
   mergedMetadata,
   metadataInEffect,
   migrateLedger,
+  mintedFromPhotographs,
   mintedStep,
   orphanedBanks,
   originOf,
@@ -610,16 +619,12 @@ function readDocuments(
  * those. Filing it as a document would put a row on Home whose path is a FOLDER,
  * and the first click on it would hand a directory to a PDF reader.
  *
- * IT IS STILL THE PROJECT'S ORIGIN — irreplaceable, the thing everything else is
- * made from — and that fact lives where it has always lived for a mint: in the
- * LEDGER, as the mint step whose payload names the directory. The catalogue
- * answers "what can I open"; the ledger answers "what happened". Only the second
- * of those questions has an answer here.
- *
- * SO THE MIGRATION AND THE HEAL BOTH SEE null, which is exactly right for both:
- * a v1 catalogue predates capture entirely and can never carry one, and the heal
- * exists to put back a document row that a writer forgot — and no writer was
- * ever supposed to write this one.
+ * NOTHING WRITES SUCH AN ARCHIVE ANY MORE (Wave 41): the mint files a PDF and
+ * catalogues it exactly as an import does, and `healMintedArchive` gives one to
+ * every project made before it. This narrowing survives as the transitional
+ * guard for a project read between launch and its heal, and as the answer for
+ * one that could not be healed — a folder is still not a document, however it
+ * got there.
  */
 function documentArchive(archive: ProjectManifest['archive']): ArchiveRecord | null {
   if (archive === null || archive.kind === 'pages') return null;
@@ -1453,11 +1458,16 @@ async function destroyPayload(dir: string, payload: string): Promise<void> {
    * guard that said so: a payload that turned out to name a directory was a
    * bookkeeping fault worth failing on rather than a licence to empty a folder.
    *
-   * A MINT'S PAYLOAD IS NOW A DIRECTORY (`recordMint`), so that guard has become
-   * the thing that strands one. Left as it was, discarding a mint logs "could
-   * not be removed from the disk" and leaves several hundred megabytes of page
-   * images that nothing in Foundry names — the exact orphan the guard existed to
-   * make visible, produced by the guard.
+   * A MINT'S PAYLOAD WAS A DIRECTORY between `ecbf238` and Wave 41, so that
+   * guard became the thing that stranded one. Left as it was, discarding a mint
+   * logged "could not be removed from the disk" and left several hundred
+   * megabytes of page images that nothing in Foundry named — the exact orphan the
+   * guard existed to make visible, produced by the guard.
+   *
+   * A MINT'S PAYLOAD IS A PDF AGAIN and the question below is answered `false`
+   * for it. The disk-asking survives because an unhealed project's mint step
+   * still names a folder until its heal lands, and because it is a better rule
+   * than the one it replaced: a payload's NAME says nothing about what it is.
    *
    * So the question is asked of the disk instead: a folder is removed as a
    * folder, and anything else keeps the old refusal. `stat` rather than a test
@@ -2061,7 +2071,7 @@ async function archiveAfterLoss(
    * dying kind's chain, and it is the fix for a measured bug: after two mints,
    * discarding the newer one left the older mint's step and file both alive
    * while the archive went null, so the catalogue held an openable book that
-   * nothing named. A minted-to-pages project files no chain at all
+   * nothing named. A minted-to-pages project filed no chain at all
    * (`documentArchive`), which would put it straight back into that state —
    * with the older mint's directory, hundreds of megabytes of it, still there.
    *
@@ -2070,6 +2080,13 @@ async function archiveAfterLoss(
    * newest surviving one is the book on the shelf. It runs AFTER
    * `manifest.ledger` has been replaced by the surviving ledger, so the steps
    * being walked are the ones that are left.
+   *
+   * TRANSITIONAL SINCE WAVE 41, and kept rather than retired on purpose. A mint
+   * files its PDF onto the `pdf` chain now, so a discard of one takes the
+   * ordinary walk below and this arm is unreachable for anything minted today.
+   * It stays because a project can be discarded from between its launch and its
+   * heal — and because the bug it fixes costs hundreds of megabytes and a
+   * catalogue that lies, which is a bad thing to re-earn for a saved branch.
    */
   if (dying.kind === 'pages') {
     const steps = ledgerOf(manifest).steps;
@@ -2306,14 +2323,19 @@ export async function deleteStep(dir: string, stepId: string): Promise<LedgerVie
  * EIGHT HEX CHARACTERS FOR A FOLDER OF PAGES — `archive.contentKey`, which
  * stands for "which import is this".
  *
+ * TRANSITIONAL SINCE WAVE 41. A mint's archive is a FILE again and its key is
+ * that file's own sha256 (`fileKey`); this survives for `archiveAfterLoss`'s
+ * pages arm, which is reachable only for a project discarded from between its
+ * launch and its heal.
+ *
  * ── Why it is not the bytes ─────────────────────────────────────────────────
  *
- * For a file it was that file's own sha256. There is no one file here, and
- * streaming several hundred megabytes of JPEG through a hash to fill in a field
- * that nothing in this app compares against would be minutes of disk spent on a
- * label. What a mint IS, is a page count, a size and the arrangement it was
- * printed from: two mints agreeing on all three are the same shoot printed
- * twice, and that is the whole of what this key ever had to say.
+ * For a file it was that file's own sha256. There is no one file in a pages
+ * archive, and streaming several hundred megabytes of JPEG through a hash to
+ * fill in a field that nothing in this app compares against would be minutes of
+ * disk spent on a label. What a mint IS, is a page count, a size and the
+ * arrangement it was printed from: two mints agreeing on all three are the same
+ * shoot printed twice, and that is the whole of what this key ever had to say.
  *
  * MEASURED OFF THE DISK RATHER THAN TAKEN FROM THE WRITER, because the writer's
  * count is a claim about what it meant to do and this is a fact about what is
@@ -2348,17 +2370,8 @@ const MINTED_LABEL = 'The pages you minted';
  */
 export async function recordMint(
   dir: string,
-  /**
-   * A FUNCTION THAT MOVES THE PAGES IN, given the directory to put them in, and
-   * answering what it wrote.
-   *
-   * The caller owns the pixels — they are staged inside the project and the move
-   * is a rename on one volume (electron/capture.ts) — and this function owns the
-   * NAME, because the name has to be unused and only the manifest knows which
-   * names a project has already spent. Inverting it would mean composing the
-   * name here, handing it back, and trusting the caller to have used that one.
-   */
-  fill: (into: string) => Promise<number>,
+  /** The assembled image-only PDF, bytes and all (`assemblePdf`, capture.ts). */
+  pdf: Buffer,
   arrangement: string,
 ): Promise<LedgerStep> {
   const resolved = deletableProjectDir(dir);
@@ -2372,52 +2385,16 @@ export async function recordMint(
       );
     }
 
-    /*
-     * Named apart from every mint before it, for the reason it always was:
-     * readings hang off the STEP, whose payload is this name, and re-using it
-     * would silently re-point every reading of the first mint at pages that are
-     * not the ones it read. A DIRECTORY now rather than a file — same rule, one
-     * fewer extension.
-     */
     await fsp.mkdir(path.join(resolved, ARCHIVE), { recursive: true });
-    let name = `${manifest.stem} pages`;
-    for (let n = 2; await exists(path.join(resolved, ARCHIVE, name)); n++) {
-      name = `${manifest.stem} pages (${n})`;
-    }
-    const into = path.join(resolved, ARCHIVE, name);
-    await fsp.mkdir(into, { recursive: true });
-    /*
-     * A FAILED FILL TAKES ITS DIRECTORY WITH IT. The manifest is not written
-     * when this throws — `withManifest` writes at the end of the callback — so a
-     * directory left behind would be one nothing names, AND it would shift the
-     * next mint's name to `(2)` by being in the way of the loop above. The
-     * throw is re-raised: the caller settles the shelf row on it.
-     */
-    let written: number;
-    try {
-      written = await fill(into);
-    } catch (err) {
-      await fsp.rm(into, { recursive: true, force: true }).catch(() => { /* best effort */ });
-      throw err;
-    }
-    if (written === 0) {
-      await fsp.rm(into, { recursive: true, force: true }).catch(() => { /* best effort */ });
-      throw new ProjectError(
-        `The mint of ${path.basename(resolved)} wrote no pages, so there is no book to file.`,
-      );
-    }
+    const named = await mintName(resolved, manifest.stem);
+    await writeAtomically(path.join(resolved, ARCHIVE, named.name), pdf);
+    await catalogueMint(resolved, manifest, named.name, async (into) => {
+      await writeAtomically(into, pdf);
+    });
 
-    const archived = `${ARCHIVE}/${name}`;
-    manifest.archive = {
-      file: name,
-      kind: 'pages',
-      contentKey: await pagesKey(into, arrangement),
-      // There is no path this came from: it was made here, out of photographs
-      // this project already holds. The recipe is the honest answer.
-      originPath: path.join(resolved, ...CAPTURE_RECIPE_PAYLOAD.split('/')),
-    };
-
-    const minted = mintedStep(randomUUID(), capture.id, archived, Date.now(), arrangement, MINTED_LABEL);
+    const minted = mintedStep(
+      randomUUID(), capture.id, named.archived, Date.now(), arrangement, MINTED_LABEL,
+    );
     manifest.ledger = appendStep(ledger, minted);
     await writeManifest(resolved, manifest);
     return minted;
@@ -2425,6 +2402,338 @@ export async function recordMint(
   announceProjects();
   return step;
 }
+
+/**
+ * A name in `archive/` this project has not spent, for the book a mint made.
+ *
+ * Named apart from every mint before it, for the reason it always was: readings
+ * hang off the STEP, whose payload is this name, and re-using it would silently
+ * re-point every reading of the first mint at pages that are not the ones it
+ * read. The stem stays the document's name; the suffix only appears once there
+ * is something to tell apart.
+ *
+ * ONE FUNCTION FOR TWO WRITERS. The mint spends a name and so does the heal
+ * (`healMintedArchive`), and the heal runs in a project that may already hold
+ * two mints' worth of folders — so the two must agree about which names are
+ * taken or a heal could land its PDF over a mint's.
+ */
+async function mintName(resolved: string, stem: string): Promise<{ name: string; archived: string }> {
+  let name = `${stem}.pdf`;
+  for (let n = 2; await exists(path.join(resolved, ARCHIVE, name)); n++) {
+    name = `${stem} (${n}).pdf`;
+  }
+  return { name, archived: `${ARCHIVE}/${name}` };
+}
+
+/**
+ * FILE A MINTED PDF THE WAY AN IMPORT FILES A SCAN — the manifest half of
+ * Owen's ruling, and the whole reason this wave exists.
+ *
+ * ── What a captured project stopped being able to answer ────────────────────
+ *
+ * Between `ecbf238` and this wave a mint wrote a folder and set
+ * `manifest.archive = {kind: 'pages', file: '<stem> pages'}`, and `documents`
+ * stayed EMPTY on purpose — a folder is not a file type anything opens, so
+ * filing it as a document row would have put a path to a directory in front of a
+ * PDF reader. That was the right call about a folder and the wrong shape for a
+ * project: every consumer that asks *"what file was this book made from"* got
+ * nothing. BookForge's adoption says it plainest — it refuses a project that
+ * *"records no imported original — its catalogue's archive names no file"*.
+ *
+ * Owen: *"the pdf can exist so it doesnt confuse bookforge or anything else"*,
+ * and *"the system isnt trying to sift through images, it's using the original
+ * pdf just like it normally would"*. So the mint now catalogues its book exactly
+ * as `importDocument` catalogues a scan somebody dragged in, and from that moment
+ * the project is ORDINARY: `originalOf` answers, Home draws a book, the three
+ * make-dialogs find a source, the figure cutter has a PDF to cut from, and a host
+ * reading the catalogue finds a file.
+ *
+ * ── THE FOUR WRITES, AND THEY ARE `importDocument`'s FOUR ───────────────────
+ *
+ *   1. `archive/<name>` — the origin of record, written by the caller before
+ *      this runs, because only the caller has the bytes and the heal's bytes
+ *      arrive a different way from the mint's.
+ *   2. `manifest.archive` — kind `pdf` now, which is what turns `reading.needed`,
+ *      `bookAtPosition.pdf` and `documentArchive` on for a captured book.
+ *   3. `working/<stem>.pdf` — the live copy, and `liveCopyOf` matches a working
+ *      row's `from` against the step's payload, so `archived` here and the
+ *      step's payload have to be the same string. Made through the caller's
+ *      `live` callback for the reason (1) is: the mint has the buffer in hand
+ *      and the heal would rather copy the file it just wrote than hold a second
+ *      copy of a shoot in memory.
+ *   4. The `documents` origin row — `recordStep(manifest, 'pdf', …)`, which is
+ *      what `readDocuments` builds `ProjectSummary.documents` out of and
+ *      therefore what `originalOf` picks from.
+ *
+ * NO `onlyIfEmpty` ON THE STEP, and that is the one place this deliberately
+ * differs from the import. An import may run twice over one book and must not
+ * write a second account of it; a RE-MINT is a genuinely new document, and the
+ * chain is the record of every book this project has minted. `recordStep`
+ * appends, `archiveAfterLoss` walks the same chain backwards when a mint is
+ * discarded, and the newest entry is the book on the shelf.
+ *
+ * THE LEDGER IS NOT TOUCHED HERE. A capture project's ledger already has a root
+ * — the photographs — so `originLedger` would be wrong twice over: it hard-codes
+ * `parent: null`, and `parseLedger` refuses a ledger with two roots. The mint
+ * step is the ledger's account of this book and the caller appends it.
+ */
+async function catalogueMint(
+  resolved: string,
+  manifest: ProjectManifest,
+  name: string,
+  live: (into: string) => Promise<void>,
+): Promise<void> {
+  const archived = `${ARCHIVE}/${name}`;
+  const liveFile = `${manifest.stem}.pdf`;
+  await fsp.mkdir(path.join(resolved, WORKING), { recursive: true });
+  await live(path.join(resolved, WORKING, liveFile));
+
+  manifest.archive = {
+    file: name,
+    kind: 'pdf',
+    contentKey: await fileKey(path.join(resolved, ARCHIVE, name)),
+    // There is no path this came from: it was made here, out of photographs
+    // this project already holds. The recipe is the honest answer.
+    originPath: path.join(resolved, ...CAPTURE_RECIPE_PAYLOAD.split('/')),
+  };
+  manifest.working.files = [
+    ...manifest.working.files.filter((row) => row.file !== liveFile),
+    { file: liveFile, kind: 'pdf', from: archived, madeAt: Date.now() },
+  ];
+  recordStep(manifest, 'pdf', {
+    file: archived,
+    label: MINTED_LABEL,
+    appliedAt: Date.now(),
+    kind: 'origin',
+    /*
+     * IRREPLACEABLE, AND IT IS NOT A COURTESY. The photographs behind this book
+     * may be the only copies of a document that exists nowhere else, and the
+     * arrangement that turned them into pages is somebody's evening. Discarding a
+     * mint has to warn like a deletion because it is one — and `reRunTarget`
+     * refuses to REPLACE any step whose retention is this, which is the same
+     * field that stops a re-mint eating the document before it.
+     */
+    retention: 'irreplaceable',
+    why: WHY_MINTED,
+  });
+}
+
+/** Eight hex characters of a file's own bytes — `archive.contentKey`. */
+async function fileKey(target: string): Promise<string> {
+  return createHash('sha256').update(await fsp.readFile(target)).digest('hex').slice(0, 8);
+}
+
+/**
+ * THE PROJECTS THIS PROCESS HAS ALREADY TRIED TO GIVE A CONTAINER TO, each held
+ * as the attempt itself so a caller can wait on one somebody else started.
+ *
+ * The figure heal's set, for the figure heal's reason (`figuresHealed`,
+ * electron/book.ts): a SUCCESSFUL heal answers "no" forever after, because the
+ * manifest it wrote says `kind: 'pdf'` and can never say `pages` again. What
+ * this also covers is the other ending — a heal that FAILS, on a folder somebody
+ * moved or a disk that filled — which would otherwise spawn one assembly per
+ * catalogue read, and a catalogue is read every time anything announces.
+ *
+ * Once per project per process is enough to learn that; the person's next launch
+ * tries again, which is right, because what was wrong may have been fixed in
+ * between.
+ *
+ * FOLDED WHOLE PATHS, never basenames — the rule this repo keeps everywhere.
+ */
+const containersHealed = new Map<string, Promise<void>>();
+
+/**
+ * A CAPTURED PROJECT MADE BEFORE THIS WAVE GETS ITS PDF — the migration half of
+ * Owen's ruling.
+ *
+ * ── What is on the disk, and what is missing ────────────────────────────────
+ *
+ * Two of Owen's books were minted while the mint wrote pictures and no
+ * container: `archive/<stem> pages/` full of `page-0001.jpg` upward, an archive
+ * record whose `file` is that FOLDER, and an empty `documents` list. Everything
+ * downstream that asks a project what it was made from gets nothing — which is
+ * the defect that opened this wave, reported from BookForge's adoption as *"its
+ * catalogue's archive names no file"*.
+ *
+ * Nothing about those projects is broken. The pages are all there, the bank is
+ * read, the book file is beside it. What is missing is one file, and this makes
+ * it, out of the pages the project already holds, and files it exactly as a mint
+ * now does (`catalogueMint`) — same archive record, same live copy, same
+ * `documents` origin row. After this runs the project is indistinguishable from
+ * one minted today, which is the whole point: there is no third kind of project.
+ *
+ * ── THE ORDER IS THE FOLDER'S OWN NAMES ─────────────────────────────────────
+ *
+ * `mintCommit` wrote `page-0001.jpg` upward, zero-padded to four digits,
+ * precisely so a plain lexicographic sort is reading order — verified against
+ * the writer that made these files rather than assumed. So `readdir().sort()` is
+ * the book, and nothing here re-derives the arrangement from the recipe: the
+ * recipe is editable and these pages are not, so the folder is the only record
+ * of what this book actually says and the only one that cannot have moved on.
+ *
+ * ── THE PAGES FOLDER IS KEPT, AND THAT IS NOT AN OVERSIGHT ──────────────────
+ *
+ * A HEAL NEVER DELETES USER DATA. The folder becomes unreferenced — the archive
+ * record names the PDF, the mint step's payload is re-pointed at the PDF, and
+ * nothing in the app lists a `pages` directory any more — and it stays on the
+ * disk anyway. These are the rectified pages of somebody's book, this app is
+ * mid-migration around them, and a migration that frees disk by erasing the
+ * thing it was migrating has no way to be sorry. (A NEW mint leaves no folder at
+ * all; the two are different because one is a fresh write and the other is
+ * somebody's existing project. `mintCommit` states that call.)
+ *
+ * ── HOW IT COMPOSES WITH THE FIGURE HEAL, WHICH IT MUST RUN BEFORE ──────────
+ *
+ * `ensureReadingBook` (electron/book.ts) remakes a book whose figures were never
+ * cut once a source exists. For these two projects the source was a folder and
+ * the reflow's `--pages` face only arrived at Wave 37; now it is a PDF and the
+ * ordinary `--pdf` face cuts them. THE ORDER MATTERS AND IS GUARANTEED BY THE
+ * CALL SITE: this is awaited at the top of `bookAtPosition`, which is what
+ * composes the `pdf` field the figure heal then reads, so the container exists
+ * before anything asks whether the figures do. PDF first, then figures.
+ *
+ * ── THE STEP'S PAYLOAD MOVES WITH IT ────────────────────────────────────────
+ *
+ * The mint step's payload named the folder, and readings hang off the step. It
+ * is re-pointed at the PDF in the same `withManifest` as everything else, so a
+ * project can never hold a step naming a folder beside an archive naming a file.
+ * That is safe for the reason the mint's own naming rule is safe: the payload
+ * identifies WHICH MINT, and this mint still has exactly one book — the same
+ * pages, in the same order, in a container.
+ *
+ * A REFUSAL IS A LOG LINE AND NOTHING ELSE. The project opened fine yesterday
+ * and opens fine today; what it loses is the doors this wave was opening. The
+ * caller is never failed over a migration.
+ */
+export function healMintedArchive(dir: string): Promise<void> {
+  const resolved = path.resolve(dir);
+  const key = resolved.toLowerCase();
+  /*
+   * ── THE ATTEMPT IS REMEMBERED AS A PROMISE, WHICH IS TWO RULES IN ONE ──────
+   *
+   * ONCE PER PROJECT PER PROCESS. `listProjects` fires this for every project in
+   * the library every time anything announces, and Home announces often; a guard
+   * that only remembered the projects it had HEALED would re-read every healthy
+   * catalogue in the library on each of those, and would spawn a fresh assembly
+   * every time for one whose folder had gone. Remembering the ATTEMPT rather
+   * than the outcome is the figure heal's own rule (`figuresHealed`,
+   * electron/book.ts) and it is safe here for a stronger reason: nothing in this
+   * app writes a `pages` archive any more, so a project found in order once is
+   * in order for the session.
+   *
+   * AND AN AWAITED CALLER JOINS AN ATTEMPT ALREADY RUNNING, which a `Set` could
+   * not do and which is the whole reason this is a `Map`. `listProjects` starts
+   * the heal WITHOUT waiting (a library screen must not stand behind a
+   * migration) and `bookAtPosition` AWAITS it (the container has to exist before
+   * `pdf` is composed from it). With a set of names, the second call would find
+   * the name already marked, return instantly, and read a manifest that the
+   * assembly still in flight had not finished rewriting — the ordering guarantee
+   * lost to the guard that was supposed to make it cheap.
+   *
+   * IT NEVER REJECTS: every failure is caught and logged inside, so a caller
+   * that awaits a heal is never failed by one.
+   */
+  const already = containersHealed.get(key);
+  if (already !== undefined) return already;
+  const attempt = healOnce(resolved);
+  containersHealed.set(key, attempt);
+  return attempt;
+}
+
+/** One attempt, start to finish. Never throws — see `healMintedArchive`. */
+async function healOnce(resolved: string): Promise<void> {
+  let manifest: ProjectManifest;
+  try {
+    manifest = await readManifest(resolved);
+  } catch {
+    // A catalogue that will not parse is `summarise`'s problem to report, in its
+    // own sentence. Nothing here can heal one and nothing here should say so.
+    return;
+  }
+  if (manifest.archive === null || manifest.archive.kind !== 'pages') return;
+
+  const folder = manifest.archive.file;
+  const from = path.join(resolved, ARCHIVE, folder);
+  try {
+    const names = (await fsp.readdir(from))
+      .filter((name) => MINTED_PAGE_TYPES.has(path.extname(name).toLowerCase()))
+      .sort();
+    if (names.length === 0) {
+      throw new ProjectError(`${from} holds no page images, so there is nothing to assemble.`);
+    }
+    console.warn(
+      `[projects] ${manifest.title} was minted before this app wrote a container, so its `
+      + `${names.length} pages are being assembled into one now. The pages stay where they are.`,
+    );
+    const pdf = await pagesAsPdf(from, names);
+    await withManifest(resolved, async (held) => {
+      // Re-read behind the lock: `readManifest` above was outside it, and a mint
+      // or a discard landing in between would make this heal an argument with a
+      // newer truth rather than a migration of an older one.
+      if (held.archive === null || held.archive.kind !== 'pages') return;
+      await fsp.mkdir(path.join(resolved, ARCHIVE), { recursive: true });
+      const named = await mintName(resolved, held.stem);
+      await writeAtomically(path.join(resolved, ARCHIVE, named.name), pdf);
+      await catalogueMint(resolved, held, named.name, async (into) => {
+        await fsp.copyFile(path.join(resolved, ARCHIVE, named.name), into);
+      });
+      const was = `${ARCHIVE}/${folder}`;
+      held.ledger = {
+        ...ledgerOf(held),
+        steps: ledgerOf(held).steps.map((step) => (
+          step.payload === was ? { ...step, payload: named.archived } : step
+        )),
+      };
+      await writeManifest(resolved, held);
+    });
+    announceProjects();
+  } catch (err) {
+    console.error(
+      `[projects] ${manifest.title} could not be given the container its pages belong in: `
+      + `${err instanceof Error ? err.message : String(err)}\n`
+      + 'The project is unchanged and its pages are untouched; it opens exactly as it did.',
+    );
+  }
+}
+
+/**
+ * What a minted page can be, so a stray file in the folder is not bound in.
+ *
+ * The mint wrote JPEG and nothing else; the others are here because a person
+ * looking at their own project folder is entitled to have put a PNG in it. This
+ * list is READ-ONLY history now — nothing writes such a folder any more — and it
+ * exists for exactly as long as somebody somewhere has an unhealed project.
+ */
+const MINTED_PAGE_TYPES = new Set(['.jpg', '.jpeg', '.png']);
+
+/**
+ * A folder of page images as one image-only PDF, in the order given.
+ *
+ * THE SAME CONTAINER THE MINT WRITES, and deliberately not the same code: the
+ * mint knows the page sizes it asked the renderer for, and a heal knows nothing
+ * except what is in the files. So the box is taken from the EMBEDDED IMAGE's own
+ * dimensions at the same nominal 300 dpi — pdf-lib reads them out of the JPEG's
+ * frame header — which for a page the mint itself rectified is the same number by
+ * a different route.
+ *
+ * A PNG IS EMBEDDED AS A PNG. `embedJpg` refuses one by name, and a folder a
+ * person has added to is exactly where one turns up.
+ */
+async function pagesAsPdf(dir: string, names: readonly string[]): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  for (const name of names) {
+    const bytes = await fsp.readFile(path.join(dir, name));
+    const png = path.extname(name).toLowerCase() === '.png';
+    const image = png ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
+    const width = (image.width * 72) / MINT_DPI;
+    const height = (image.height * 72) / MINT_DPI;
+    pdf.addPage([width, height]).drawImage(image, { x: 0, y: 0, width, height });
+  }
+  return Buffer.from(await pdf.save());
+}
+
+/** Nominal dots per inch for a healed page box. 72 points to the inch. */
+const MINT_DPI = 300;
 export async function recordCuration(
   dir: string,
   payload: string,
@@ -2882,39 +3191,43 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
   reading: LedgerStep | null;
   bank: string;
   book: string;
-  pdf: string | null;
-  /**
-   * THE PHOTOGRAPHED PAGES, when the book was minted from a shoot.
+  /*
+   * ── GRAVESTONE: `pages`, THE SECOND PIXEL FIELD (Wave 41) ─────────────────
    *
-   * A SECOND FIELD RATHER THAN A SECOND MEANING FOR `pdf`, and the difference is
-   * a sentence somebody reads. `pdf` answers "what document can be rasterised
-   * here" — the figure-cropper's question, and its honest answer for a captured
-   * book is nothing, because there is no document to cut a Picture row out of.
-   * A pane asking "is there paper behind this book" would get the same null and
-   * conclude the opposite of the truth: a photographed book has MORE paper
-   * behind it than any other kind, and it would be the one book in the app that
-   * denied having any.
+   * A `pages` field stood beside `pdf` from `ecbf238` to here, naming the FOLDER
+   * a mint wrote, because `pdf` had to keep meaning "a document that can be
+   * rasterised" and a captured book had none. Two facts, kept apart at the
+   * source, so that "there is a scan" and "the scan is a PDF" stayed separable.
    *
-   * So the two facts are kept apart at the source. Exactly one of these is ever
-   * non-null; a caller that wants "any pixels at all" asks for both, and a
-   * caller that wants a PDF asks for the one it can actually open.
+   * They are one fact again. A mint writes a PDF (`recordMint`) and a project
+   * that pre-dates that gets one at the top of this very function, so `pdf` is
+   * the honest answer for a photographed book exactly as it is for an imported
+   * one — which is Owen's *"just like it normally would"* arriving at the field
+   * that had to split to survive without it. The figure cutter, the glance card
+   * and the book loader all read `pdf` now, and there is no second field for
+   * them to disagree about.
    */
-  pages: string | null;
+  pdf: string | null;
   language: string | null;
   epub: string | null;
   receipt: string;
 }> {
   const resolved = deletableProjectDir(dir);
+  /*
+   * THE CONTAINER FIRST, AND THAT ORDERING IS LOAD-BEARING. A project minted
+   * before Wave 41 has its pages in a folder and no PDF at all; this composes
+   * `pdf` out of the manifest one line down, and `ensureReadingBook` then reads
+   * `pdf` to decide whether a figure-less book can be remade with its pictures.
+   * Healing here means the container exists before either question is asked.
+   * It is a no-op — one manifest read — for every project already in order, and
+   * once per project per process for one that is not.
+   */
+  await healMintedArchive(resolved);
   const manifest = await readManifest(resolved);
   const bank = readingBank(resolved, manifest, at);
   const reading = readingInEffect(ledgerOf(manifest), at);
   const language = reading?.params?.language ?? null;
   const pdf = manifest.archive !== null && manifest.archive.kind === 'pdf'
-    ? path.join(resolved, ARCHIVE, manifest.archive.file)
-    : null;
-  // The mint's own output, under its own name. `archive.file` is a DIRECTORY for
-  // this kind and the composition is otherwise identical — see `ProjectArchive`.
-  const pages = manifest.archive !== null && manifest.archive.kind === 'pages'
     ? path.join(resolved, ARCHIVE, manifest.archive.file)
     : null;
   /*
@@ -2937,7 +3250,6 @@ export async function bookAtPosition(dir: string, at: LedgerStep | null = null):
     manifest,
     reading,
     bank,
-    pages,
     /*
      * THE BOOK FILE IS `readings/<key>.book.jsonl` EITHER WAY, and that is not a
      * coincidence to be tidied up. `readingBank` composes `readings/<key>.jsonl`
@@ -3185,6 +3497,26 @@ async function documentOfStep(
      * pass needs. Where the live copy is NOT the original's own copy — a reprint
      * has replaced it — the archive is the only place the untouched scan still is,
      * and that is what the revert row is for.
+     */
+    /*
+     * ── A MINT NAMES ITS PDF, LIKE EVERY OTHER IMPORT ─────────────────────────
+     *
+     * A refusal stood here from Wave 34 to Wave 41: `if (mintedFromPhotographs)
+     * return null`, because a minted step's payload was `archive/<stem> pages`, a
+     * DIRECTORY, and every line below is about a FILE. `exists` says yes to a
+     * folder, so the row resolved to the directory, the renderer handed that to
+     * `openFile`, and the app announced that the pages were gone while they sat
+     * on the disk. Null was the honest answer to a question that should never
+     * have been asked, and `positionView.pages` routed the row to a page-scroller
+     * built for the occasion.
+     *
+     * The payload is a PDF now — for a mint because `recordMint` writes one, for
+     * an older project because `healMintedArchive` re-points the step at the one
+     * it assembled. So a minted row goes through the ordinary import arm below:
+     * the live copy in `working/` if this mint is the one that made it, the
+     * archived original otherwise, and pdf.js draws it. That is Owen's Wave 34
+     * expectation verbatim — *"i expected it to take me to a pdf-like layout"* —
+     * arriving as a PDF rather than as an imitation of one.
      */
     const live = view.step.action === 'import' ? await liveCopyOf(resolved, manifest, view.step.payload) : null;
     return await onDisk(resolved, live ?? view.step.payload);
@@ -4881,6 +5213,32 @@ export async function listProjects(): Promise<ProjectSummary[]> {
     return [];
   }
 
+  /*
+   * ── THE CONTAINER HEAL IS FIRED HERE AND NOT AWAITED ──────────────────────
+   *
+   * A project minted before Wave 41 has to get its PDF before anything can ask
+   * the catalogue what it was made from — Home's row, `originalOf`, a host's
+   * adoption — and a library listing is the earliest moment anything looks. So
+   * this is where it starts.
+   *
+   * NOT AWAITED, deliberately, and this is the one place the heal is not. Binding
+   * several hundred megabytes of JPEG into a container is seconds of disk, and a
+   * listing is what draws Home: awaiting it would hold the whole library screen
+   * behind a migration of one book in it. `healMintedArchive` announces when it
+   * lands, which is the same signal every other write in this file uses to say
+   * "the library changed" — so the row redraws itself as a book the moment the
+   * container exists, and the listing that started it stays instant.
+   *
+   * WHICH MEANS ONE LISTING CAN BE STALE, said out loud: a captured project read
+   * in the seconds before its heal completes draws as photographs with no book.
+   * That is what it drew yesterday, it is recoverable by doing nothing, and it is
+   * the only honest thing a catalogue can say about a file that is being made.
+   * The AWAITED heal at `bookAtPosition` is what guarantees the order everything
+   * downstream depends on.
+   */
+  for (const name of entries) {
+    void healMintedArchive(path.join(root, name));
+  }
   const summaries = await Promise.all(entries.map((name) => summarise(path.join(root, name), name)));
   return summaries.sort((a, b) => b.openedAt - a.openedAt);
 }
@@ -4968,9 +5326,6 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
       // and claiming `capture` here would send Home to open a light table over a
       // folder it has already failed to describe. `problem` is what this row says.
       capture: false,
-      // Same answer for the same reason: the archive is a field of the catalogue
-      // that would not parse, so nothing can be said about what it names.
-      pages: false,
       // Nothing can be listed out of a catalogue that will not parse, and guessing
       // at a tray by reading the directory would offer files this app cannot say
       // it made. The row offers Reveal, which is the honest door into a folder.
@@ -5061,21 +5416,20 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
    * `archive/` precisely because they still have it.
    */
   /*
-   * A PAGES ARCHIVE IS REFUSED HERE BY NAME, and this is the site that decides
-   * what a captured project opens on.
+   * A PAGES ARCHIVE IS STILL REFUSED HERE BY NAME, and after Wave 41 that is a
+   * guard against one moment rather than against a whole kind of project.
    *
-   * The fallback exists so that a project with an import and no catalogued row
-   * still shows the book — and it composes the row out of `archive.kind`. Hand
-   * it a pages archive and it fabricates a `ProjectDocument` whose kind is
-   * 'pages' and whose PATH IS A DIRECTORY: `originalOf` would pick it, Home
-   * would open a folder as a book, and the failure would surface with no visible
-   * connection to the mint that caused it.
+   * The fallback composes a `ProjectDocument` out of `archive.kind`. Hand it a
+   * pages archive and it fabricates one whose PATH IS A DIRECTORY: `originalOf`
+   * would pick it, Home would open a folder as a book, and the failure would
+   * surface with no visible connection to the mint that caused it.
    *
-   * So a captured project keeps an EMPTY document list, which is what it had all
-   * evening while somebody was photographing, and Home's capture branch goes on
-   * opening the light table. What the row SAYS about it is the row's own
-   * business (home.component.ts) and is no longer the same sentence before and
-   * after a mint.
+   * NO MINT WRITES ONE ANY MORE and `healMintedArchive` retires the ones that
+   * exist — but a listing can be composed in the seconds before a heal lands, or
+   * after one has failed, and a project in that state must draw as the capture
+   * project it still is rather than as a folder pretending to be a book. So the
+   * clause stays, as the transitional guard it now is, and it costs one string
+   * comparison.
    */
   if (documents.length === 0 && manifest.archive !== null && manifest.archive.kind !== 'pages') {
     const liveFile = `${manifest.stem}${manifest.archive.kind === 'pdf' ? '.pdf' : '.epub'}`;
@@ -5122,11 +5476,22 @@ async function summarise(dir: string, name: string): Promise<ProjectSummary> {
     // The ledger already knows: a capture step is written at creation and is the
     // root of such a project. No recipe is read and no directory is listed.
     capture: ledgerOf(manifest).steps.some((step) => step.action === 'capture'),
-    // THE CATALOGUE, not the disk. `manifest.archive` is set and cleared in the
-    // same `withManifest` as the mint step and its discard, so it is the field
-    // that cannot disagree with the history — and a listing that stat'd a
-    // directory per project would make opening Home slower per book somebody owns.
-    pages: manifest.archive?.kind === 'pages',
+    /*
+     * ── GRAVESTONE: `pages` (Wave 41) ────────────────────────────────────────
+     *
+     * A boolean stood here saying `archive.kind === 'pages'`, and it existed to
+     * tell two states of one capture project apart: photographs waiting to be
+     * minted, and the pages a mint had made. It had to exist because BOTH states
+     * held an empty `documents` list — the mint filed no catalogue row — so Home
+     * printed "photographs" over a finished book and the OCR dialog needed a
+     * second face to find one.
+     *
+     * A mint files its PDF now, so the question has a better answer that every
+     * surface was already asking: `originalOf(project) === null`. Before a mint
+     * there is no original and the row opens the light table; after one there is,
+     * and the project is ordinary in every way a row, a dialog or a host cares
+     * about. One question, one answer, no third field to keep in agreement.
+     */
     exports: await filedDocuments(dir, manifest),
     facsimiles: await facsimilesOf(dir, manifest),
     problem: null,
@@ -5240,11 +5605,17 @@ async function readingState(
     || await hasBytes(banked);
   return {
     done,
-    // PAGES COUNT AS PIXELS. The question this answers is "are there pages here
-    // that nobody has paid a model to read", and a photographed book is the
-    // clearest yes in the app — it is the one kind that cannot have arrived with
-    // text in it. An EPUB is still excluded for the reason it always was: it is
-    // never OCR'd, `book = f(epub)`.
+    /*
+     * A PHOTOGRAPHED BOOK IS A PDF NOW and this reads as one clause again. It
+     * said `'pdf' || 'pages'` for two days, because a mint wrote a folder and a
+     * captured book is the clearest unread book in the app — it is the one kind
+     * that cannot have arrived with text in it. The mint writes a container
+     * (`recordMint`) and older projects are healed into one, so `pdf` covers it.
+     *
+     * The `pages` arm is kept for the transitional moment `summarise`'s fallback
+     * is kept for: a project read between launch and its heal. An EPUB is still
+     * excluded for the reason it always was — it is never OCR'd, `book = f(epub)`.
+     */
     needed: !done && (manifest.archive?.kind === 'pdf' || manifest.archive?.kind === 'pages'),
     pages: recorded ? manifest.reading?.pages ?? 0 : 0,
   };

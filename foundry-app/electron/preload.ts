@@ -22,6 +22,7 @@ import type {
   ReReadAnswer,
   ServerStatus,
   SetupLogEvent,
+  UnappliedAnswer,
 } from '../shared/types';
 
 function subscribe<T>(channel: string, listener: (value: T) => void): () => void {
@@ -115,6 +116,19 @@ const api: FoundryApi = {
   confirmReRead: async (prompt) =>
     await ask<ReReadAnswer>('reading:confirm-re-read', prompt, 'leave') === 'again',
   /*
+   * AND THE THIRD, whose safe answer is `cancel` for the pair's reason exactly: a
+   * question nobody drew is a question nobody agreed to, and a yes here spends
+   * hours making a book without the changes on the page in front of somebody.
+   *
+   * IT IS THE ONLY SAFE DEFAULT NOW, WHERE IT USED TO BE THE SAFEST OF THREE. The
+   * retired `without` was at least defensible for a person who had pressed the
+   * button; the two answers left are apply (which writes a step nobody asked for)
+   * and discard (which destroys work), and neither is a thing to do on behalf of
+   * somebody who was never shown a card.
+   */
+  confirmUnapplied: (warning) =>
+    ask<UnappliedAnswer>('book:confirm-unapplied', warning, 'cancel'),
+  /*
    * REGISTERED, NEVER CALLED FROM HERE. The renderer hands its card in as the app
    * starts and this holds the reference for the calls above; see
    * `FoundryApi.drawQuestions` for why the drawing has to arrive from that side.
@@ -156,6 +170,10 @@ const api: FoundryApi = {
     amend: (projectDir, ops) => ipcRenderer.invoke('book:amend', projectDir, ops),
     view: (target) => ipcRenderer.invoke('book:view', target),
     correct: (projectDir, id, text) => ipcRenderer.invoke('book:correct', projectDir, id, text),
+    pendingSave: (projectDir, stack) =>
+      ipcRenderer.invoke('book:pending-save', projectDir, stack),
+    pendingRead: (projectDir) => ipcRenderer.invoke('book:pending-read', projectDir),
+    pendingClear: (projectDir) => ipcRenderer.invoke('book:pending-clear', projectDir),
   },
 
   library: {

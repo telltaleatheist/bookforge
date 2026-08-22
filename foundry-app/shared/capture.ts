@@ -47,6 +47,63 @@ import type {
 export const CAPTURE_RECIPE_PAYLOAD = 'capture/recipe.json';
 
 /**
+ * What the capture stage accepts — the ONE list, read from both sides.
+ *
+ * HEIC/HEIF decode through libheif, measured on the acceptance shoot. PNG and
+ * JPEG decode through Electron's own imaging (Owen, 2026-08-22, dragging 179
+ * screenshots: *"i just took screenshots of a book"* — a book photographed
+ * with a phone is HEIC, a book captured off a screen is PNG, and both are
+ * photographs of pages by this stage's own definition).
+ *
+ * THE v1 REFUSAL'S FEAR IS ANSWERED, NOT IGNORED. It refused JPEG because
+ * Electron might apply EXIF Orientation "by somebody else's rules" — the
+ * double-rotation hazard that nearly turned the index shoot 90° wrong. The
+ * answer is the same one the HEIC path settled on: THIS INTAKE APPLIES NO
+ * ROTATION OF ITS OWN, ever. Whatever grid the decoder hands over is the
+ * working copy; the light table shows it the moment it lands, and Turn — the
+ * stage's own instrument, one gesture — is how a person corrects a sideways
+ * frame, exactly as they already do for a spread shot lying on its side. A
+ * silent sideways copy was the fear; a VISIBLE sideways card with the tool
+ * beside it is the ordinary case this stage was built for. (Screenshots, the
+ * case that reopened this, carry no orientation at all.)
+ *
+ * ── IT MOVED HERE IN WAVE 38, AND THE MOVE IS THE WHOLE POINT ───────────────
+ *
+ * It was `READABLE` in electron/capture.ts, private to the process that does
+ * the decoding, which was right while MAIN was the only side with an opinion
+ * about what a photograph is. Home's drop zone now has one too: a dropped file
+ * has to be sorted into "this is a book" (the document door) or "this is a page
+ * of one" (the workspace) BEFORE any of it crosses the bridge, and a renderer
+ * carrying its own copy of five extensions would be two answers to the question
+ * this stage exists to answer once. So the set is here, where both programs
+ * compile against the same characters, and the refusal main writes is a refusal
+ * of exactly the files this side declined to keep.
+ */
+export const PHOTOGRAPH_TYPES: ReadonlySet<string> = new Set([
+  '.heic', '.heif', '.png', '.jpg', '.jpeg',
+]);
+
+/**
+ * Is this NAME one of them? The renderer's form of the question above.
+ *
+ * NO `path` MODULE, deliberately: this file is compiled into the browser bundle
+ * as well as into the main process, and `node:path` is not there. The extension
+ * is the last dot ONWARD, lowercased, which is what `path.extname` does for
+ * every shape that reaches here — a `File.name` from a drop, or a basename main
+ * already took off a resolved path. A name with no dot has no extension and is
+ * not a photograph, which is what the empty string falls out as.
+ *
+ * A dot at position zero is a dotfile and NOT an extension (`.heic` on its own
+ * is a hidden file called heic), which is `extname`'s own rule and is kept here
+ * so the two sides cannot disagree about a file nobody meant to drop.
+ */
+export function isPhotographName(name: string): boolean {
+  const dot = name.lastIndexOf('.');
+  if (dot <= 0) return false;
+  return PHOTOGRAPH_TYPES.has(name.slice(dot).toLowerCase());
+}
+
+/**
  * The pages a mint would produce, in the order it would produce them.
  *
  * ── THE THIRD TIME THIS RULE HAS HAD MORE THAN ONE BODY ─────────────────────

@@ -2,7 +2,6 @@ import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/c
 
 import { CompareColumnComponent } from '../../components/compare/compare-column.component';
 import { HomeComponent } from '../../components/home/home.component';
-import { NoticeBarComponent } from '../../components/notice-bar/notice-bar.component';
 import { ViewerComponent } from '../../components/viewer/viewer.component';
 import { hosted } from '../../core/foundry';
 import { ProjectsService } from '../../core/projects.service';
@@ -93,12 +92,17 @@ import { StageService } from '../../core/stage.service';
  * So the empty hosted workspace is quiet, has no doors, and leaves the way back
  * where it already is: the tree on the left, which is the host's own book.
  *
- * ── And the notice bar is above all three ────────────────────────────────────
+ * ── The notice bar stood above all three, and it is not here any more ────────
  *
- * Outside the branch, deliberately: what it says is about the WINDOW rather than
- * about any one document, and the state where it matters most — a bad file
- * dropped on an app with nothing open — is the state with no document to hang it
- * under.
+ * It was outside the branches on the argument that a notice is about the WINDOW
+ * rather than about any one document — and that argument was right, and is
+ * exactly why it does not belong on a route. This page is one of several the
+ * window can be showing, and a sentence raised from the action menu or the
+ * library panel with Settings on screen was raised into a component that was not
+ * rendered. The notices are a stack of cards in the corner now
+ * (`ToastTrayComponent`), mounted in the shell beside the queue shelf, alive
+ * whatever route is up; Owen's ruling and the design are in that component's own
+ * docblock. What is left on this page is the three states and nothing over them.
  *
  * ── Focusing the document moves the position onto it ─────────────────────────
  *
@@ -122,11 +126,9 @@ import { StageService } from '../../core/stage.service';
  */
 @Component({
   selector: 'app-workspace',
-  imports: [CompareColumnComponent, HomeComponent, NoticeBarComponent, ViewerComponent],
+  imports: [CompareColumnComponent, HomeComponent, ViewerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
-    <app-notice-bar />
-
     @if (stage.activeDocument(); as tab) {
       <!--
         ONE COLUMN, OR TWO WHILE A COMPARISON IS UP.
@@ -183,8 +185,11 @@ import { StageService } from '../../core/stage.service';
     }
   `,
   styles: [`
-    /* A column, so the notice line can take the height it needs off the top and
-       the document takes the rest. */
+    /* A column with one child in it, which is the notice bar's one surviving
+       trace: it took the height it needed off the top and the document took the
+       rest. Kept rather than flattened to \`display: block\`, because the row
+       below it manages its own height through \`flex: 1; min-height: 0\` and a
+       block parent would hand that job back to the content. */
     :host { display: flex; flex-direction: column; height: 100%; }
 
     /*

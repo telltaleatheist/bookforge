@@ -712,7 +712,22 @@ import { StageService } from '../../core/stage.service';
     }
     .entry.shelved .pencil { margin-top: 6px; }
 
-    .acts { display: flex; gap: 6px; padding: 8px 12px 4px; }
+    /*
+     * PINNED TO THE FOOT OF THE SCROLLING LIST — Owen (2026-08-22): \`"i
+     * expected the 'add chapter marker here' button to be stickied to the
+     * inspector so i dont have to scroll to the bottom or top of the chapters
+     * inspector to click it, i can stay where i am in the list."\` The gesture
+     * is pick-a-block-then-press, and the picking happens anywhere in a long
+     * book; a button that lives below three hundred rows makes the press cost
+     * a scroll each way. Sticky inside \`.body\`'s own scroll, with an opaque
+     * ground and a hairline so rows slide UNDER it rather than through it.
+     */
+    .acts {
+      display: flex; gap: 6px; padding: 8px 12px;
+      position: sticky; bottom: 0;
+      background: var(--bg-elevated);
+      border-top: 1px solid var(--border-subtle);
+    }
     /*
       The sentence under Apply changes. NOT a hint and deliberately not given
       that class's four-line reserve: a hint is a section's standing description
@@ -1151,6 +1166,18 @@ export class InspectorComponent {
   protected readonly projectDir = computed<string | null>(() => {
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
+    /*
+     * THE LIGHT TABLE CARRIES NO INSPECTOR — Owen (2026-08-22): \`"the
+     * righthand nav bar that says 'Standing on The pages you minted' doesnt
+     * need to be there unless the inspectors are there in the first place.
+     * they arent necessary when we're sorting pages and organizing/cropping.
+     * thats only for the working files."\` The inspector's whole subject is
+     * the LEDGER — where you stand, what was made from where — and on the
+     * capture surface the recipe is the truth and the rail is its inspector.
+     * Answering null here removes the panel whole (the outer @if), which is
+     * this component's own idiom for "nothing to inspect".
+     */
+    if (tab.kind === 'capture') return null;
     const project = this.projects.projectFor(tab.path);
     // A catalogue that will not parse has no history to draw and its refusal is
     // already on its row on Home. `ProjectsService` treats it as no project at

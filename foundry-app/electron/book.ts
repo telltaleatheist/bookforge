@@ -96,7 +96,18 @@ import {
   translationRecordsOf,
 } from '../shared/ledger';
 import { materialize, translated } from '../shared/materialize';
-import { BookOpsError, formatOpsFile, parseOpsFile, type BookOp } from '../shared/ops';
+import {
+  BookOpsError,
+  formatOpsFile,
+  formatPendingStack,
+  parseOpsFile,
+  parsePendingStack,
+  type BookOp,
+  type PendingOutcome,
+  type PendingStack,
+  type PendingStackFile,
+  type PendingStackHeader,
+} from '../shared/ops';
 import {
   parseRecordsFile,
   RecordsFileError,
@@ -438,13 +449,165 @@ async function openBookAtPosition(
 }
 
 /**
+ * THE BOOKS THIS PROCESS HAS ALREADY TRIED TO GIVE ITS FIGURES BACK TO.
+ *
+ * ── The loop this closes ────────────────────────────────────────────────────
+ *
+ * `figuresMissing` is answered from the file on the disk, so a remake that
+ * SUCCEEDS answers it "no" forever after: the new header records the source it
+ * was given, and `from === null` can never be true again for that book. That is
+ * the real guard and it is a property of the marker rather than of this set
+ * (`BookFigures`, shared/book.ts).
+ *
+ * What this set covers is the other ending — a remake that FAILS. The engine
+ * writes atomically, so a refusal leaves the old figure-less book exactly where
+ * it was, `figuresMissing` still says yes, and every open of that pane would
+ * spawn another engine that fails the same way. Once per book per process is
+ * enough to learn that; the person's next launch tries again, which is right,
+ * because what was wrong with it may have been fixed in between.
+ *
+ * FOLDED WHOLE PATHS, never basenames — `oneWriterOf`'s rule (electron/engine.ts)
+ * for its reason: two projects both have a `readings/…book.jsonl`.
+ */
+const figuresHealed = new Set<string>();
+
+/**
+ * WAS THIS BOOK MADE WITH NOTHING TO CUT ITS PICTURES FROM?
+ *
+ * ── Why the question is asked of the file rather than remembered ────────────
+ *
+ * Owen exported a captured book on 2026-08-22 and the engine refused: *"is a
+ * picture and this book never had its figures cut"*. It was right, and nothing
+ * in the app was ever going to fix it — the reflow had run months earlier with
+ * no source (its archive is a folder of photographs, and `vlm-book` took only
+ * `--pdf` until Wave 37), the book file it wrote is perfectly valid, and the
+ * ensure step below sees a valid book file and stops. The one thing that had
+ * changed was the ENGINE's ability to cut from those photographs, and a person
+ * has no way to ask for a reflow.
+ *
+ * So the ensure step asks one more question than it used to. This is not a
+ * fallback and not a repair pass: it is the same "is the file on the disk the
+ * one this project should have" the function has always asked, with a fact in
+ * it that only became knowable when the engine learned to record it.
+ *
+ * ── Two answers, and the second one is a migration ──────────────────────────
+ *
+ * THE HEADER SAYS SO, for anything a current engine wrote: `from === null` means
+ * the run was offered no pages at all, and `blocks > cut` means there were
+ * pictures it therefore did not cut. Both, or this book is as good as it can be.
+ * Note `from` records the OFFER: a book remade WITH pages says `pages` even if
+ * something went wrong afterwards, which is exactly why this terminates.
+ *
+ * THE ROWS SAY SO, for anything older, and every book file in anybody's library
+ * today is older. There is no marker, so the honest reading is "unknown" and the
+ * evidence is the rows themselves: a Picture row with no `image` is a picture
+ * with no file. That costs one read of a file the caller is about to read again,
+ * and it costs it ONCE IN THE LIFE OF THE PROJECT — the remake writes a marker,
+ * and every open after that takes the branch above.
+ *
+ * A FILE THAT WILL NOT PARSE IS NOT THIS FUNCTION'S PROBLEM. It answers false and
+ * the load a few lines later refuses it by name, in the parser's own sentence,
+ * which is a far better sentence than anything this could say about it.
+ */
+async function figuresMissing(bookPath: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await fsp.readFile(bookPath, 'utf8');
+  } catch {
+    return false;
+  }
+  const head = text.slice(0, text.indexOf('\n') === -1 ? text.length : text.indexOf('\n'));
+  let header: unknown;
+  try {
+    header = JSON.parse(head);
+  } catch {
+    return false;
+  }
+  const figures = (header as { figures?: { blocks?: unknown; cut?: unknown; from?: unknown } })
+    .figures;
+  if (figures !== undefined && figures !== null) {
+    return figures.from === null
+      && typeof figures.blocks === 'number' && typeof figures.cut === 'number'
+      && figures.blocks > figures.cut;
+  }
+  /*
+   * The rows, for a book made before the marker. Read as JSON per line rather
+   * than pattern-matched over the text: `"category":"Picture"` also occurs inside
+   * a paragraph that happens to quote it, and a book that says its own format's
+   * words in its prose must not be remade every time it is opened.
+   */
+  for (const line of text.split('\n')) {
+    if (line.trim().length === 0) continue;
+    let row: unknown;
+    try {
+      row = JSON.parse(line);
+    } catch {
+      return false;
+    }
+    const one = row as { category?: unknown; image?: unknown; shelf?: unknown };
+    if (one.category === 'Picture' && one.shelf === undefined && one.image === undefined) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * The reading's own reflow, made if nothing has made it — the module header's
  * "ENSURING THE FILE IS ALSO THE MIGRATION", unchanged and now named.
  */
 async function ensureReadingBook(
   at: Awaited<ReturnType<typeof bookAtPosition>>,
 ): Promise<{ ok: true; path: string } | { ok: false; reason: string }> {
-  if (await exists(at.book)) return { ok: true, path: at.book };
+  if (await exists(at.book)) {
+    /*
+     * ── THE BOOK IS THERE AND ITS FIGURES ARE NOT ──────────────────────────────
+     *
+     * ONE CONDITION, and it is the ensure step doing its job with information it
+     * did not have before: this project HAS a scan now, and the book beside it
+     * was made by a run that was given none. Every other book takes the same
+     * `return` it always took, on the same line, having done nothing.
+     *
+     * THE SOURCE IS `at.pdf` AND NOTHING ELSE SINCE WAVE 41. It used to be
+     * `at.pdf ?? at.pages`, because a captured project's archive was a folder;
+     * `bookAtPosition` heals one into a PDF before it composes this, and the two
+     * fields are one field again. The engine keeps its `--pages` face — this side
+     * simply has no caller for it.
+     *
+     * IT COSTS SECONDS AND IT CHANGES NO ID. A book file is a pure function of
+     * the bank and re-running the reflow over the same bank mints the same names
+     * for the same blocks (docs/BOOK-FILE.md §2), so the ops keyed to them still
+     * name what they named. What changes is that the Picture rows come back with
+     * their crops on the disk, which is the whole difference between a book that
+     * exports and one that refuses.
+     *
+     * A REFUSAL IS LOGGED AND THE OLD BOOK IS OPENED, which is the posture the
+     * branch below argues for at length: the engine writes atomically, so a
+     * failed remake leaves the book that was already there intact, and refusing
+     * to draw it would take a working position down over a picture.
+     */
+    const source = at.pdf;
+    const key = path.resolve(at.book).toLowerCase();
+    if (source !== null && !figuresHealed.has(key) && await figuresMissing(at.book)) {
+      figuresHealed.add(key);
+      console.warn(
+        `[book] ${at.book} was made without the pages its figures are cut from, and ${source} is `
+        + 'there now, so the book is being made again. Same bank, same block ids; the pictures come '
+        + 'back with it.',
+      );
+      const healed = await writeBookFile(at.bank, at.book, {
+        pdfPath: at.pdf,
+        language: at.language,
+      });
+      if (!healed.ok) {
+        console.error(
+          `[book] ${at.book} could not be made again with its figures: ${healed.reason ?? ''}\n`
+          + 'The book already on the disk is what is being shown; its pictures are still uncut.',
+        );
+      }
+    }
+    return { ok: true, path: at.book };
+  }
   /*
    * ── A PROJECT THAT ARRIVED AS A BOOK IS EXPLODED, NOT READ ─────────────────
    *
@@ -490,7 +653,18 @@ async function ensureReadingBook(
         + 'first and the book is made from them.',
     };
   }
-  const made = await writeBookFile(at.bank, at.book, { pdfPath: at.pdf, language: at.language });
+  /*
+   * THE PAGES, AND THERE IS ONE SHAPE OF THEM AGAIN. This passed `pdfPath` and
+   * `pagesPath` between `ecbf238` and Wave 41, because a manifest could name a
+   * FOLDER of photographs as its archive and `bookAtPosition` split that into two
+   * fields. It names a PDF either way now — a mint writes one and an older
+   * project is healed into one — so a scanned book and a photographed book reach
+   * the reflow through the same argument.
+   */
+  const made = await writeBookFile(at.bank, at.book, {
+    pdfPath: at.pdf,
+    language: at.language,
+  });
   if (!made.ok) {
     // The engine's own words to the terminal, with the paths that make them
     // actionable; the sentence the person reads says what happened to the book.
@@ -584,7 +758,42 @@ async function ensureTranslationBook(
   }
   const recordsFile = path.join(at.dir, ...records.split('/'));
   const book = translationBookFileFor(recordsFile);
-  if (await exists(book)) return { ok: true, path: book };
+  if (await exists(book)) {
+    /*
+     * ── THE SAME ONE CONDITION, ONE TRANSFORM ALONG ────────────────────────────
+     *
+     * A derived book's Picture rows name the READING's crops (nothing about a
+     * translation moves a pixel), so a translation materialised over a book whose
+     * figures were never cut carries the same hole — and exporting from a
+     * translated position meets the same refusal. Remaking it costs no engine and
+     * no model at all: it is the parent book plus the ops plus the records,
+     * replayed, and `writeTranslationBook` opens that parent through
+     * `openBookAtPosition`, which runs `ensureReadingBook` — so the reading's own
+     * figures are cut on the way past and this file is written over pictures that
+     * now exist.
+     *
+     * ONE ATTEMPT PER FILE PER PROCESS, from the same set and for the same reason:
+     * the marker the remake carries down from the parent is what makes a
+     * SUCCESSFUL heal permanent, and the set is what stops a failing one repeating
+     * on every open.
+     */
+    const source = at.pdf;
+    const key = path.resolve(book).toLowerCase();
+    if (source !== null && !figuresHealed.has(key) && await figuresMissing(book)) {
+      figuresHealed.add(key);
+      console.warn(
+        `[book] ${book} was derived from a book whose figures were never cut, and ${source} is there `
+        + 'now, so the translated book is being made again over the pictures.',
+      );
+      const remade = await writeTranslationBook(at.dir, ledger, transform);
+      if (remade.ok) return remade;
+      console.error(
+        `[book] ${book} could not be made again with its figures: ${remade.reason}\n`
+        + 'The translated book already on the disk is what is being shown.',
+      );
+    }
+    return { ok: true, path: book };
+  }
   console.warn(
     `[book] ${book} is not there and ${recordsFile} is, so the translated book is being made now — `
     + 'this translation landed before Foundry materialised one beside its answers.',
@@ -922,14 +1131,11 @@ async function bookFrom(projectDir: string, from: LedgerStep | null): Promise<Bo
    */
   if (at.pdf !== null) admit(at.pdf);
   /*
-   * AND THE PAGES, ADMITTED FOR THE SAME REASON. A captured project's archive is
-   * a directory of photographs rather than a PDF, so `at.pdf` is null and
-   * `at.pages` is where the paper is. Nothing opens one yet; it is admitted here
-   * anyway, beside the resolution that produced it, because the alternative is a
-   * second place that has to remember why — which is how the PDF's own admit
-   * came to be missing in the first place.
+   * A SECOND ADMIT STOOD HERE FOR THE PAGES FOLDER (Wave 41's gravestone). A
+   * captured project's archive was a directory of photographs, so `at.pdf` was
+   * null and a second field held the paper. There is one field now and one
+   * admit: a photographed book's original is a PDF like any other's.
    */
-  if (at.pages !== null) admit(at.pages);
   return {
     ok: true,
     // THE TITLE IS THE PROJECT'S. A book file is a list of blocks and has no idea
@@ -944,7 +1150,6 @@ async function bookFrom(projectDir: string, from: LedgerStep | null): Promise<Bo
     loose: parsed.header.loose,
     figures,
     originalPath: at.pdf,
-    originalPages: at.pages,
     ops,
     tip,
     /*
@@ -1408,9 +1613,6 @@ export async function viewExportedBook(target: string): Promise<BookOutcome> {
      * as one of its two ordinary meanings.
      */
     originalPath: null,
-    // Null for the same reason and by the same construction: an EPUB has no
-    // paper of either kind behind it.
-    originalPages: null,
     ops: [],
     tip: null,
     translation: null,
@@ -1428,4 +1630,203 @@ export async function amendBookOps(projectDir: string, ops: readonly BookOp[]): 
   const bytes = formatOpsFile(ops);
   parseOpsFile(bytes);
   return await recordBookEditAmend(at.dir, bytes, ops.length);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The pending stack on disk — the sidecar Apply is not
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `<project>/ops/pending.jsonl` — the working stack, continuously written.
+ *
+ * ── Why it lives in `ops/` beside the step payloads ─────────────────────────
+ *
+ * Because it is the same substance at an earlier moment. `opsDir`'s own comment
+ * is the argument: what is in that folder is a RETAINED PAYLOAD, read again every
+ * time a book is opened, and nothing in this app may treat what it finds there as
+ * disposable — which is exactly the promise this file needs and exactly the
+ * promise `working/` and `overlays/` do not make. A sweep cannot touch it either,
+ * and not by luck: `planStepSweep` walks the payloads its doomed STEPS name, and
+ * no step will ever name this one.
+ *
+ * A FIXED NAME AND NOT A UUID, which is the one way it differs from its
+ * neighbours. Every other file in there is `<id8>.jsonl`, named after the step
+ * that owns it, because there is one per step; there is exactly one working stack
+ * per project — the app opens one book tab per project directory and one viewer
+ * at a time — so a minted name would be a second thing to look up before the file
+ * could be found, and an orphan the day the lookup went missing. Eight hex is
+ * eight hex and `pending` is not, so it collides with nothing by construction.
+ */
+function pendingStackFile(dir: string): string {
+  return path.join(opsDir(dir), 'pending.jsonl');
+}
+
+/**
+ * WHERE THE STACK WAS MADE, AS MAIN SEES IT — the two facts the header carries.
+ *
+ * Hashed and resolved HERE, on this side of the wall, for `loadBook`'s reason
+ * word for word: the claim is the renderer's and the evidence is the project's,
+ * and only the process holding both can put them side by side. A sidecar that
+ * carried a renderer's own idea of which reading it was made from would prove
+ * nothing at all — it would agree with itself.
+ */
+async function pendingIdentity(projectDir: string): Promise<PendingStackHeader & { dir: string }> {
+  const at = await bookAtPosition(projectDir);
+  const ledger = ledgerOf(at.manifest);
+  return { dir: at.dir, step: positionOf(ledger)?.id ?? null, receipt: await receiptSha(at.receipt) };
+}
+
+/**
+ * The receipt's sha, REMEMBERED while the file has not moved — and only for the
+ * sidecar.
+ *
+ * ── Why a memo exists here and must not exist in `loadBook` ─────────────────
+ *
+ * A bank is the whole of a book's reading: a few megabytes for a pamphlet and
+ * tens of them for anything with pages. `loadBook` hashes it ONCE, when a book is
+ * opened, and that cost is invisible beside the read it is part of. The sidecar
+ * is written every four hundred milliseconds of somebody striking paragraphs, and
+ * re-hashing tens of megabytes on that cadence would put a measurable stall in
+ * main between every gesture and the next — for a value that cannot have changed,
+ * because the bank a person is editing over is not being rewritten while they
+ * edit over it.
+ *
+ * KEYED BY MTIME AND SIZE, which is the standard trade and it is worth naming
+ * what it costs: a rewrite that produced a file of exactly the same length with
+ * exactly the same modification time would be missed, and the sidecar would carry
+ * the old sha. That is not the app's integrity check and never was —
+ * `loadBook`'s is, it is uncached, and it refuses the whole book before a pane
+ * ever gets far enough to ask for a recovery. This one is the second gate behind
+ * it, and a second gate is allowed to be cheap.
+ */
+const receiptShas = new Map<string, { mtimeMs: number; size: number; sha: string }>();
+
+async function receiptSha(receipt: string): Promise<string> {
+  const stat = await fsp.stat(receipt);
+  const held = receiptShas.get(receipt);
+  if (held !== undefined && held.mtimeMs === stat.mtimeMs && held.size === stat.size) return held.sha;
+  const sha = createHash('sha256')
+    .update(await fsp.readFile(receipt))
+    .digest('hex')
+    .slice(0, 16);
+  receiptShas.set(receipt, { mtimeMs: stat.mtimeMs, size: stat.size, sha });
+  return sha;
+}
+
+/**
+ * WRITE THE WORKING STACK DOWN — the door the pane's debounce ends at.
+ *
+ * ── What this is not ────────────────────────────────────────────────────────
+ *
+ * It is not an Apply and it does not touch the ledger. Nothing about this file is
+ * history: no step names it, no replay reads it, and standing anywhere in the
+ * tree draws the same book whether it exists or not. What it is is the answer to
+ * "where is the only copy of the work somebody has not applied yet", which used
+ * to be "the renderer's heap, until the window closes".
+ *
+ * ATOMICALLY, by `applyBookOps`' argument at its own scale: this is written every
+ * four hundred milliseconds of somebody's afternoon, so an interrupted write must
+ * leave the last whole stack rather than half of the current one. Half a file of
+ * ops is a recovery that puts back the first two thirds of an edit.
+ *
+ * AN EMPTY STACK CLEARS RATHER THAN WRITES. The pane calls this whenever its
+ * stack changes and "changed back to nothing waiting" is one of those changes; a
+ * file saying "no changes" left lying in `ops/` is a recovery prompt for work
+ * that does not exist.
+ */
+export async function savePendingStack(projectDir: string, stack: PendingStack): Promise<void> {
+  const identity = await pendingIdentity(projectDir);
+  if (stack.kept === 0 && stack.tail.length === 0 && stack.undone.length === 0) {
+    await fsp.rm(pendingStackFile(identity.dir), { force: true });
+    return;
+  }
+  const bytes = formatPendingStack({ ...identity, ...stack });
+  // The round trip is the proof, exactly as it is for a step's payload: a shape
+  // this build cannot replay is refused before it is on anybody's disk rather
+  // than by every recovery from now on.
+  parsePendingStack(bytes);
+  await fsp.mkdir(opsDir(identity.dir), { recursive: true });
+  await writeAtomically(pendingStackFile(identity.dir), Buffer.from(bytes, 'utf8'));
+}
+
+/**
+ * READ THE WORKING STACK BACK, and refuse it out loud when it is not this book's.
+ *
+ * ── Never a silent adoption, and never a silent scrap ───────────────────────
+ *
+ * Both halves are rulings. Adopting a stack made at another position would
+ * replay somebody's strikes onto a document they made no decision about — the
+ * same failure the parked stack's revision test exists to prevent, one process
+ * over. Dropping it without a word is the failure this whole file was written
+ * for. So a stack that does not apply comes back as a REFUSAL WITH A COUNT, and
+ * the pane says how much was let go.
+ *
+ * THE PATH IS IN THE SENTENCE, and only in this one. This app keeps filenames out
+ * of user-facing copy; a failure notice is the standing exception, because the
+ * one useful thing about a file that will not read is where it is.
+ */
+export async function readPendingStack(projectDir: string): Promise<PendingOutcome> {
+  const identity = await pendingIdentity(projectDir);
+  const file = pendingStackFile(identity.dir);
+  let text: string;
+  try {
+    text = await fsp.readFile(file, 'utf8');
+  } catch {
+    // Nothing held is not a failure and is the ordinary answer: most books have
+    // never had an unapplied change on them.
+    return { ok: true, stack: null };
+  }
+  let held: PendingStackFile;
+  try {
+    held = parsePendingStack(text);
+  } catch (err) {
+    if (!(err instanceof BookOpsError)) throw err;
+    return {
+      ok: false,
+      reason: `${err.message} The file is ${file}.`,
+      /*
+       * ZERO, AND THE SENTENCE CARRIES THE WEIGHT INSTEAD. A file that would not
+       * parse has no trustworthy count in it, and inventing one so the notice
+       * could say "4 changes" would be this app naming a loss it cannot measure.
+       */
+      held: 0,
+    };
+  }
+  const lost = held.kept + held.tail.length;
+  if (held.receipt !== identity.receipt) {
+    return {
+      ok: false,
+      reason: 'Changes were being held for this book, and what the book is made from has changed '
+        + 'since they were made — so the blocks they name may no longer be there and they are not '
+        + `put back. They are still in ${file}.`,
+      held: lost,
+    };
+  }
+  if (held.step !== identity.step) {
+    return {
+      ok: false,
+      reason: 'Changes were being held for this book at another step. Changes are a difference '
+        + 'against the step they were made on, so they are not put back here — stand on the step '
+        + `you made them at to pick them up. They are held in ${file}.`,
+      held: lost,
+    };
+  }
+  return { ok: true, stack: { kept: held.kept, tail: held.tail, undone: held.undone } };
+}
+
+/**
+ * THROW THE HELD STACK AWAY — the one sanctioned scrap.
+ *
+ * TWO CALLERS AND BOTH ARE A PERSON SPEAKING: an Apply, which has just written
+ * every one of these decisions down as a step, and the closing card's Discard,
+ * which is somebody reading a sentence about what they are about to lose and
+ * pressing the red button anyway. Nothing else in this app may reach it — the
+ * whole point of the file is that no window closing, no crash and no glance at
+ * another tab can.
+ *
+ * `force`, because "there was nothing to throw away" is a successful throw away.
+ */
+export async function clearPendingStack(projectDir: string): Promise<void> {
+  const at = await bookAtPosition(projectDir);
+  await fsp.rm(pendingStackFile(at.dir), { force: true });
 }

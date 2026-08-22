@@ -1,7 +1,32 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import {
+  ChangeDetectionStrategy,
+  Component,
+  computed,
+  effect,
+  ElementRef,
+  input,
+  output,
+  signal,
+  viewChild,
+} from '@angular/core';
 
-import { turnsOf } from '@shared/capture';
+import { outputSizeFor, turnsOf } from '@shared/capture';
 import type { CaptureQuad } from '@shared/types';
+
+import type { FractionQuad } from '../capture-editor/geometry';
+import { toPixels } from '../capture-editor/geometry';
+import type { Rectifier } from '../capture-editor/rectify';
+
+/**
+ * HOW BIG THE CARD'S OWN COPY OF THE REGISTERED PAGE IS, in device pixels.
+ *
+ * A card is about two hundred CSS pixels wide on this table, so this is a
+ * comfortable two-times for a retina window and stops there. It is also the
+ * ceiling that keeps the projection affordable at fifty cards: the source is a
+ * 640 px thumbnail, so drawing bigger than this would be enlarging a picture
+ * that has no more detail in it — cost with nothing on the other side of it.
+ */
+const CARD_PIXELS = 420;
 
 /**
  * ONE PAGE ON THE LIGHT TABLE.
@@ -37,6 +62,45 @@ import type { CaptureQuad } from '@shared/types';
  * see the retake they rejected sitting next to the one they kept. A card that
  * vanished would leave a hole in the spread order that nothing explains, and
  * unstriking would be a thing you could only do by remembering it was there.
+ *
+ * ── AND FROM APPLY ONWARD IT DRAWS THE PAGE, NOT THE PHOTOGRAPH ────────────
+ *
+ * Wave 25's Apply is a COMMITMENT POINT: no pixels are cut — that happens once,
+ * at Finish — but every surface starts drawing the rectified projection, which
+ * is what makes *Reopen* free and what makes the split pass legible. A gutter
+ * placed once fits the whole book only because the pages are square and
+ * registered by then, and a table still showing twenty-five hand-held
+ * photographs would be arguing with the pass it is in.
+ *
+ * SO THE OUTLINE STOPS BEING THE INDICATOR AND BECOMES THE PICTURE. In the crop
+ * pass the card is the whole frame with the page drawn over it, because the
+ * thing being decided is WHERE the page is. In the split pass the frame is
+ * settled and irrelevant, so the card is the page itself — the shot's edges are
+ * gone, and both halves of a cut spread are two real pages side by side rather
+ * than two copies of one photograph with different outlines on them.
+ *
+ * ── ONE CONTEXT FOR THE WHOLE TABLE, HANDED IN ─────────────────────────────
+ *
+ * `rectify.ts` argues it at length and it is the reason the `Rectifier` arrives
+ * as an INPUT rather than being built here: browsers cap live WebGL contexts in
+ * the low tens and drop the oldest silently, so a rectifier per card would mean
+ * fifty contexts for this shoot and blank cards from about the twentieth. The
+ * grid owns exactly one and every card borrows it.
+ *
+ * ── DRAWN ONCE PER RECIPE CHANGE, NOT ONCE PER FRAME ───────────────────────
+ *
+ * The effect below depends on `quad()`, and a signal input compares by
+ * identity: the service rebuilds card objects on every recipe change but hands
+ * an untouched photograph's page the SAME quad array, so a corner moved on
+ * photograph 7 redraws card 7 and nothing else. The canvas keeps its pixels
+ * between runs, which is the whole of the cache — there is no bitmap to
+ * invalidate because the bitmap IS the canvas, and the only thing that can make
+ * it stale is the value the effect is watching.
+ *
+ * The texture source is the card's own 640 px thumbnail, already in the page and
+ * already decoded — the same trick the editor plays with its <img>. Rectifying
+ * the working copy would mean decoding a 12 MP PNG per card to fill a box two
+ * hundred pixels wide.
  */
 @Component({
   selector: 'app-capture-card',
@@ -72,46 +136,74 @@ import type { CaptureQuad } from '@shared/types';
         correctly turned photograph -- worse than no indicator, because it reads
         as a bug in the crop rather than as an absence.
       -->
-      <span class="shot" [style.aspect-ratio]="turned().box">
-        <span
-          class="spun"
-          [style.width]="turned().width"
-          [style.height]="turned().height"
-          [style.transform]="turned().spin"
-        >
-          <img [src]="thumb()" [alt]="label()" loading="lazy" draggable="false" />
-          <svg class="crop" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
-            <polygon [attr.points]="outline()" />
-            <!--
-              The corner that becomes the minted page's top-left. KEPT even now
-              that the card turns, because it is what makes the turn checkable:
-              after the draw this dot sits at the card's top-left on every card,
-              which is what it MEANS. Anywhere else and the two halves have
-              disagreed.
-            -->
-            <circle [attr.cx]="corner()[0]" [attr.cy]="corner()[1]" r="0.04" />
-          </svg>
-        </span>
-      </span>
-      <!--
-        THE MARK, AND WHY IT IS A WORD RATHER THAN A DOT.
+      <span class="shot" [class.registered]="projecting()" [style.aspect-ratio]="box()">
+        @if (projecting()) {
+          <!--
+            THE REGISTERED PAGE. The <img> is still here and still lazy — it is
+            the TEXTURE, so it has to load, and \`loading="lazy"\` is what keeps a
+            table of fifty from fetching fifty thumbnails at once. It is
+            invisible rather than absent, because \`display: none\` would be a
+            picture the browser never decodes and a canvas that never gets
+            anything to draw.
+          -->
+          <img
+            #source
+            class="source"
+            [src]="thumb()"
+            [alt]="label()"
+            loading="lazy"
+            draggable="false"
+            (load)="arrived.set(arrived() + 1)"
+          />
+          <canvas #face class="face" [class.drawn]="drawn()"></canvas>
+        } @else {
+          <span
+            class="spun"
+            [style.width]="turned().width"
+            [style.height]="turned().height"
+            [style.transform]="turned().spin"
+          >
+            <img [src]="thumb()" [alt]="label()" loading="lazy" draggable="false" />
+            <svg class="crop" viewBox="0 0 1 1" preserveAspectRatio="none" aria-hidden="true">
+              <polygon [attr.points]="outline()" />
+              <!--
+                The corner that becomes the minted page's top-left. KEPT even now
+                that the card turns, because it is what makes the turn checkable:
+                after the draw this dot sits at the card's top-left on every card,
+                which is what it MEANS. Anywhere else and the two halves have
+                disagreed.
+              -->
+              <circle [attr.cx]="corner()[0]" [attr.cy]="corner()[1]" r="0.04" />
+            </svg>
+          </span>
+        }
+        <!--
+          THE COMPLETE MARK, AND WHY IT IS NOW A DOT WHERE WAVE 24 ARGUED FOR A
+          WORD.
 
-        "By hand" is the rail's exact phrase for the same photographs -- "25 of
-        27 cropped · 2 by hand" -- so the table and the rail count the same thing
-        in the same words, and a person who reads the rail's number has somewhere
-        to go and look for it. A pip would have needed a legend, and a legend for
-        one mark is a legend nobody reads.
+          The word was right while the rail said "2 by hand" and the card had to
+          echo the rail's exact phrase to be findable at all — the objection to a
+          pip was that a pip needs a legend. Wave 25 supplies the legend and
+          makes it a control: the rail's population counts are PRESSABLE, and
+          pressing "3 complete" lights exactly these cards on the table. A mark
+          you can ask the surface to find for you does not need a caption on
+          every card.
 
-        Inside the label line rather than over the picture: the photographs are
-        the only bright thing on this table, and a badge sitting on one would be
-        annotating the work by covering it.
-      -->
-      <span class="label">
-        {{ label() }}
-        @if (own()) {
-          <span class="own" title="You placed this crop, so Crop all leaves it alone">· by hand</span>
+          ONE DOT, ONE MEANING, which is the whole reason the mark changed hands
+          from \`byHand\` to \`isComplete\`: the book stops moving this photograph.
+          Not "you dragged this one" and not "this one is frozen" — every global
+          act skips it, Finish never does, and release puts it back in the flow.
+
+          Top-LEFT, because the strike control owns the top-right corner. Over
+          the picture rather than in the label line, and that is a reversal too:
+          at fifty registered pages the label line is where you read a number,
+          and the corner is where the eye sweeps.
+        -->
+        @if (complete()) {
+          <span class="mark" title="Complete — the book leaves this one alone. Right-click to release it.">✓</span>
         }
       </span>
+      <span class="label">{{ label() }}</span>
     </button>
 
     <button
@@ -200,6 +292,49 @@ import type { CaptureQuad } from '@shared/types';
      */
     .shot { position: relative; display: block; width: 100%; overflow: hidden; }
     /*
+     * A registered page has a ground of its own, because it is a PAGE now: the
+     * shot's edges are gone, so there is nothing left to explain the dark
+     * surround a raw photograph brings with it. It is also what the card shows
+     * for the moment between the thumbnail arriving and the rectify landing.
+     */
+    .shot.registered { background: var(--bg-sunken); }
+    /* The texture, not the picture -- see the template. */
+    .source { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; }
+    /*
+     * The face fades in rather than appearing, for one honest reason: it is
+     * drawn a frame or two after the thumbnail loads, and a hard swap at that
+     * distance reads as a flicker in the card rather than as a picture arriving.
+     */
+    .face {
+      position: absolute; inset: 0;
+      width: 100%; height: 100%;
+      display: block;
+      opacity: 0;
+      transition: opacity 120ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .face.drawn { opacity: 1; }
+
+    /*
+     * The complete dot: a tick in a filled disc, in the OK colour the rail's
+     * own ticks use, so the mark on the card and the tick in the rail read as
+     * one vocabulary. Small and cornered -- it annotates the page without
+     * covering any of it, which is the objection the label-line word was
+     * answering and which a nine-pixel disc answers too.
+     */
+    .mark {
+      position: absolute;
+      top: 5px; left: 5px;
+      z-index: 2;
+      width: 13px; height: 13px;
+      border-radius: 99px;
+      background: var(--ok, #4ade80);
+      border: 1.5px solid var(--bg-raised);
+      display: grid; place-items: center;
+      font-size: 8px; line-height: 1;
+      color: var(--bg-base);
+    }
+    .page.struck .mark { opacity: 0.5; }
+    /*
      * Sized so that AFTER the rotation it fills the slot: a quarter turn swaps
      * the visual box, so the element is laid out at the photograph's own aspect
      * and the slot is laid out at the printed one. Centred on the slot, because
@@ -262,11 +397,6 @@ import type { CaptureQuad } from '@shared/types';
       text-overflow: ellipsis;
       white-space: nowrap;
     }
-    /* Coloured, because it is the one thing on the label line that is a STATUS
-       rather than a name -- and quiet, because it is true of a handful of cards
-       on a table of fifty and must not read as an alarm on each of them. */
-    .own { color: var(--accent, #4c9aff); }
-
     .strike {
       position: absolute;
       top: 10px;
@@ -306,19 +436,152 @@ export class CaptureCardComponent {
   readonly chosen = input<boolean>(false);
 
   /**
-   * Whether somebody placed this photograph's crop themselves.
+   * THE BOOK HAS STOPPED MOVING THIS PHOTOGRAPH — one state, one dot.
    *
-   * See `CaptureCard.own` for why the table has to show it at all: the promise
-   * is that a global never overwrites it, which means the card can sit out every
-   * *Crop all* for the life of the project with nothing to say so.
+   * `isComplete` in the service is the one test behind it, and the same test
+   * every global act makes before skipping a photograph, so the dot cannot
+   * promise a skip that does not happen. It is true of a page somebody placed a
+   * corner on AND of a page somebody pressed *This page is right* on: a
+   * placement and a say-so are one population, which is Wave 25's whole point.
+   *
+   * It is not a freeze. Finish cuts every photograph's pixels, complete or not;
+   * release (right-click, on the grid) puts one back in the flow.
    */
-  readonly own = input<boolean>(false);
+  readonly complete = input<boolean>(false);
 
   /** The page this card will mint, in the thumbnail's own fraction space. */
   readonly quad = input.required<CaptureQuad>();
   /** The photograph's own pixels — see CaptureCard, which explains why. */
   readonly width = input.required<number>();
   readonly height = input.required<number>();
+
+  /**
+   * DRAW THE REGISTERED PAGE RATHER THAN THE PHOTOGRAPH — true from Apply on.
+   *
+   * The grid's, not this card's, because it is a fact about the BOOK's pass and
+   * every card on the table flips together. See the class docblock.
+   */
+  readonly projected = input<boolean>(false);
+
+  /**
+   * The table's one WebGL context, borrowed for the length of a draw.
+   *
+   * Null when the grid has no pass to project or the window has no WebGL at
+   * all, and a null here is simply the raw thumbnail — a card that cannot draw
+   * the page draws the photograph, which is the state the crop pass is in
+   * anyway and is never a blank rectangle.
+   */
+  readonly rectifier = input<Rectifier | null>(null);
+
+  private readonly source = viewChild<ElementRef<HTMLImageElement>>('source');
+  private readonly face = viewChild<ElementRef<HTMLCanvasElement>>('face');
+
+  /**
+   * A LOAD IS AN EVENT AND AN EFFECT CANNOT DEPEND ON ONE, so it is counted.
+   *
+   * The editor paid for this lesson in full (`capture-page-editor`, `draw`): an
+   * <img> reports `complete === false` the instant its src is assigned and
+   * `naturalWidth === 0` for a task after that, and the only signal that the
+   * picture has actually arrived is the load event itself. A counter rather
+   * than a boolean because a card whose src is replaced would otherwise have
+   * nothing left to change.
+   */
+  protected readonly arrived = signal(0);
+  /** Whether the face has pixels in it yet — the fade, and nothing else. */
+  protected readonly drawn = signal(false);
+
+  /** Whether this card is drawing the page. Both halves have to be true. */
+  protected readonly projecting = computed<boolean>(
+    () => this.projected() && this.rectifier() !== null,
+  );
+
+  /**
+   * THE PAGE'S OWN PROPORTIONS, from the function the mint measures with.
+   *
+   * `outputSizeFor` is what decides how many pixels a rectified page gets, so
+   * asking it here means the card's box and the minted page are the same
+   * rectangle at two sizes. Measuring the quad's own spans instead would be a
+   * second body of the same arithmetic, which is the shape this feature has
+   * already paid for three times.
+   */
+  protected readonly page = computed(() =>
+    outputSizeFor(toPixels(this.quad() as FractionQuad, {
+      width: this.width(),
+      height: this.height(),
+    })));
+
+  /**
+   * The slot's aspect: the PHOTOGRAPH's while the frame is what is being
+   * decided, and the PAGE's once it is settled.
+   */
+  protected readonly box = computed<string>(() =>
+    (this.projecting() ? `${this.page().width / this.page().height}` : this.turned().box));
+
+  constructor() {
+    effect(() => {
+      // Read first, unconditionally: an effect that returns early past a signal
+      // never depends on it, and this one has to re-run when the picture lands.
+      const projecting = this.projecting();
+      const rectifier = this.rectifier();
+      const quad = this.quad();
+      const image = this.source()?.nativeElement;
+      const target = this.face()?.nativeElement;
+      this.arrived();
+
+      if (!projecting) {
+        // Back in the crop pass: the canvas is gone with the @if, so the fade
+        // has to be rearmed or the next projection would appear without one.
+        this.drawn.set(false);
+        return;
+      }
+      if (rectifier === null || image === undefined || target === undefined) return;
+      // BOTH checks, and the editor's docblock says why: `complete` is the one
+      // that refuses a STALE picture, `naturalWidth` the one that refuses a
+      // broken one.
+      if (!image.complete || image.naturalWidth === 0) return;
+
+      /*
+       * THE OUTPUT IS A CARD, NOT A PAGE. The mint asks for every pixel the
+       * quad can justify; this asks for as many as a card two hundred wide can
+       * show, off a source that is a 640 px thumbnail to begin with. Same
+       * shader, same corners, same picture — a smaller rectangle.
+       */
+      const { width, height } = this.page();
+      const scale = Math.min(1, CARD_PIXELS / Math.max(width, height));
+      const outWidth = Math.max(1, Math.round(width * scale));
+      const outHeight = Math.max(1, Math.round(height * scale));
+
+      try {
+        const drawn = rectifier.rectify(
+          image,
+          // In the THUMBNAIL's pixels: the quad is fractions of the frame, and
+          // the frame in hand here is the 640 px copy rather than the working
+          // one. Handing it the working copy's dimensions would sample twenty
+          // times off the edge of the picture and clamp to a smear.
+          toPixels(quad as FractionQuad, {
+            width: image.naturalWidth,
+            height: image.naturalHeight,
+          }),
+          outWidth,
+          outHeight,
+        );
+        target.width = outWidth;
+        target.height = outHeight;
+        // Copied out at once: the rectifier owns ONE canvas and the next card
+        // on the table overwrites it before this frame is over.
+        target.getContext('2d')?.drawImage(drawn.canvas, 0, 0);
+        this.drawn.set(true);
+      } catch {
+        /*
+         * Four corners that do not enclose a page — `homography` throws rather
+         * than drawing a degenerate smear, and it is right to. The card keeps
+         * whatever it last had and stays quiet: a light table is not the
+         * surface to report a geometry fault on, and the editor draws the same
+         * corners large enough to see what is wrong with them.
+         */
+      }
+    });
+  }
 
   /**
    * HOW TO DRAW THIS CARD SO IT SITS THE WAY THE PAGE WILL PRINT.

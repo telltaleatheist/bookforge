@@ -60,6 +60,8 @@ import * as zlib from 'node:zlib';
 import { promisify } from 'node:util';
 import { nativeImage } from 'electron';
 
+import { PDFDocument } from 'pdf-lib';
+
 import type {
   CaptureIntakeProgress,
   CaptureMintBegun,
@@ -83,13 +85,14 @@ import {
   emptyRecipe,
   joinedQuad,
   mintPlan,
+  PHOTOGRAPH_TYPES,
   recipeBytes,
   sameShape,
   splitFromFraction,
   WHOLE_FRAME,
 } from '../shared/capture';
 import { beginMint, cancelHere, mintCancelled, noteMintPage, settleMint } from './job-queue';
-import { currentArrangement, readManifest, recordMint } from './projects';
+import { currentArrangement, ledgerOf, readManifest, recordMint } from './projects';
 import { writeAtomically } from './atomic';
 
 // Re-exported so a caller that already imports this module does not need to
@@ -134,18 +137,38 @@ function recipeFile(projectDir: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /*
- * `foundry-file://capture/<token>/<name>` — the working copies and thumbnails of
- * ONE project's `derived/`, and nothing else on this disk.
+ * `foundry-file://capture/<token>/<name>` — ONE FLAT DIRECTORY of this stage's
+ * pictures, and nothing else on this disk.
  *
  * Minted per directory and reused, exactly like the book host's: the map stays
  * the size of the library rather than growing with every project open. The token
  * is the whole authorisation — a URL the renderer composes for a directory
  * nothing registered meets a 403 rather than a read.
+ *
+ * ── ONE DIRECTORY AGAIN, AND THE SECOND ONE IS A GRAVESTONE (Wave 41) ──────
+ *
+ * For two days this served `derived/` AND a mint's `archive/<stem> pages/`,
+ * because the mint wrote page images and no container, so the page view had to
+ * be handed the pictures themselves. The mint writes a PDF again (`mintCommit`,
+ * `recordMint`), the page view is deleted, and this host is back to the one
+ * layer it began with: the decoded working copies and thumbnails the light table
+ * draws.
+ *
+ * The MECHANISM is untouched and stays general on purpose — a caller inside this
+ * module asks for a token for a directory it named, and nothing outside can ask
+ * for a token at all. What retired is the second CALLER, not the second
+ * directory's right to exist.
+ *
+ * THE ORIGINALS STILL HAVE NO HOST AND CANNOT BE GIVEN ONE FROM OUTSIDE. The
+ * served directory holds files this app MADE — decoded working copies,
+ * thumbnails — every one of them remakeable from the photographs plus the
+ * recipe. The photographs themselves, which for an archive shoot may be the only
+ * copies that exist, are addressable through no host here.
  */
 const captureTokens = new Map<string, string>();
 const captureDirs = new Map<string, string>();
 
-function tokenForDerived(dir: string): string {
+function tokenForServing(dir: string): string {
   const known = captureTokens.get(dir);
   if (known !== undefined) return known;
   const token = randomUUID();
@@ -159,11 +182,12 @@ function tokenForDerived(dir: string): string {
  * this process never agreed to serve.
  *
  * THE NAME MUST BE A PLAIN BASENAME, on `bookFigureFile`'s argument and with its
- * refusals: intake writes `derived/` flat, so a separator in the name is not a
- * file this app made — it is a traversal, and it meets the same null an unknown
- * token does rather than a `resolve()` that might climb.
+ * refusals: the served directory is FLAT — intake writes `derived/` flat — so a
+ * separator in the name is not a file this app made. It is a traversal, and it
+ * meets the same null an unknown token does rather than a `resolve()` that might
+ * climb.
  */
-export function captureDerivedFile(token: string, name: string): string | null {
+export function captureServedFile(token: string, name: string): string | null {
   const dir = captureDirs.get(token);
   if (dir === undefined) return null;
   if (name.length === 0 || name.includes('/') || name.includes('\\') || name.includes('..')) {
@@ -590,6 +614,27 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
       fail(file, `photograph ${index} has a name that is not a name`);
     }
 
+    /*
+     * THE BOOK STOPS MOVING THIS ONE — carried, never consulted, and carrying
+     * is again the whole job.
+     *
+     * `byHand`'s contract for the fourth time, and it earns the fourth telling
+     * because the two fields fail differently. A dropped `byHand` loses a mark
+     * that could be re-derived from the quads (`handsRead`, above). A dropped
+     * `complete` loses an answer NOTHING can re-derive: the say-so is a person
+     * speaking about a page they decided not to move, so it leaves no trace in
+     * the geometry, and a release leaves a page whose lines still look
+     * hand-placed. Both would silently revert to the derive on the next save.
+     *
+     * ABSENT IS LEGAL AND IS NOT A FALSE. It means "ask the pages" — see
+     * `CapturePhoto.complete`. Present and not a boolean is a writer that
+     * thinks it recorded a decision and did not.
+     */
+    const said = photo['complete'];
+    if (said !== undefined && typeof said !== 'boolean') {
+      fail(file, `photograph ${index} says it is complete in something that is not a yes or a no`);
+    }
+
     return {
       id,
       file: text('file'),
@@ -602,6 +647,7 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
       takenAtSource: source as CaptureTimeSource,
       split,
       pages: checkedPages,
+      ...(typeof said === 'boolean' ? { complete: said } : {}),
     };
   });
 
@@ -671,12 +717,28 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
 
   const standing = validStanding(row['book'], file);
 
+  /*
+   * WHICH PASS THE PROJECT IS IN — carried for the reason everything optional
+   * here is carried, and refused for a reason of its own.
+   *
+   * `'split'` OR ABSENT, AND NOTHING ELSE. Absent is the crop pass and is every
+   * recipe ever written; there is deliberately no `'crop'` to write, so a file
+   * saying one is a file written against a model this app does not have. A pass
+   * this side accepted and did not understand would be read as "not the split
+   * pass" and would silently reopen somebody's crops.
+   */
+  const pass = row['pass'];
+  if (pass !== undefined && pass !== 'split') {
+    fail(file, `it says the project is in the ${String(pass)} pass, and a project is in the split pass or in neither`);
+  }
+
   return {
     version: 1,
     photos: handsRead(checked),
     order: order as string[],
     ...(ticks === undefined ? {} : { prepared: ticks }),
     ...(standing === undefined ? {} : { book: standing }),
+    ...(pass === 'split' ? { pass } : {}),
   };
 }
 
@@ -773,12 +835,30 @@ export async function openCapture(projectDir: string): Promise<CaptureOpened> {
   await fsp.mkdir(dir, { recursive: true });
   return {
     recipe: await readRecipe(projectDir),
-    token: tokenForDerived(dir),
+    token: tokenForServing(dir),
     // Resolved in projects.ts against the catalogue's chain, so this and the
     // step list's `current` marker are one answer to one question.
     mintedFrom: await currentArrangement(projectDir),
   };
 }
+
+/*
+ * ── GRAVESTONE: `loadMintedPages` AND `SERVED_PAGE_TYPES` (Wave 41) ────────
+ *
+ * A door stood here that listed a mint's page images in reading order and minted
+ * a token to serve them, because the mint wrote pictures and no container and
+ * the minted row had to open SOMETHING. Owen ended the class at the source:
+ * *"maybe we should mint a pdf from the pages after theyre fully arranged and
+ * complete… the pdf is just the images on each page"*, and *"the system isnt
+ * trying to sift through images, it's using the original pdf just like it
+ * normally would"*.
+ *
+ * So the minted row opens a PDF through the ordinary document path, pdf.js draws
+ * it, and there is nothing left for this to answer. The IPC door
+ * (`capture:pages-load`), its preload arm, its `FoundryApi` member, the
+ * `CaptureMintedPages` payload and `app-pages-view` retired with it.
+ */
+
 
 /**
  * The same thing, for a project that does not have a recipe yet.
@@ -996,7 +1076,7 @@ const THUMB_EDGE = 640;
  * encoder above explains: a decoded file format has no channel order to get
  * wrong, and this is the one place Electron's imaging is in the path at all.
  */
-function encodeThumbnail(png: Buffer, image: DecodedImage): Buffer {
+function encodeThumbnail(png: Buffer, image: { width: number; height: number }): Buffer {
   const wide = image.width >= image.height;
   const thumb = nativeImage.createFromBuffer(png).resize({
     ...(wide ? { width: THUMB_EDGE } : { height: THUMB_EDGE }),
@@ -1173,7 +1253,7 @@ function takenAtFrom(times: ExifTimes, modifiedAt: Date): TakenAt {
  * keep in agreement.
  */
 
-function pagesFor(photoId: string, from: CapturePhoto | null, decoded: DecodedImage): {
+function pagesFor(photoId: string, from: CapturePhoto | null, decoded: { width: number; height: number }): {
   pages: CapturePage[];
   split: CaptureSplit | null;
   inherited: boolean;
@@ -1214,17 +1294,22 @@ export interface IntakeReport extends CaptureOpened {
   refused: { file: string; why: string }[];
 }
 
-/**
- * What this stage accepts.
+/*
+ * `READABLE` STOOD HERE AND IS NOW `PHOTOGRAPH_TYPES` IN shared/capture.ts,
+ * with the whole of its argument — the HEIC/PNG/JPEG measurement, and the EXIF
+ * double-rotation fear this stage answers by rotating NOTHING — moved intact
+ * beside the definition rather than left behind as a summary.
  *
- * HEIC ONLY IN v1, AND THE REFUSAL IS DELIBERATE. The acceptance shoot is 27
- * HEIC files and libheif's behaviour on them is measured. A JPEG would decode
- * through Electron instead, on a path where EXIF Orientation is applied by
- * somebody else's rules — which is the exact hazard that nearly turned this
- * shoot 90° wrong, and it would arrive untested. A named refusal is a sentence
- * a person can act on; a sideways working copy is a bug they have to notice.
+ * It moved because Wave 38 gave the RENDERER an opinion about what a photograph
+ * is: Home's drop zone sorts a dropped file into the document door or into the
+ * intake workspace before any of it crosses the bridge, and a second list of
+ * five extensions over there would be two answers to the one question this
+ * stage exists to answer. The refusal written below is now a refusal of exactly
+ * the files the other side declined to keep.
  */
-const READABLE = new Set(['.heic', '.heif']);
+
+/** Which of the readable kinds goes through libheif rather than Electron. */
+const HEIC_LIKE = new Set(['.heic', '.heif']);
 
 /**
  * Copy photographs into the project, decode them once, and add them to the
@@ -1299,10 +1384,10 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
       // so this is the only place the window gets a chance to breathe.
       await breathe();
       const extension = path.extname(resolved).toLowerCase();
-      if (!READABLE.has(extension)) {
+      if (!PHOTOGRAPH_TYPES.has(extension)) {
         refused.push({
           file: name,
-          why: `${extension || 'a file with no extension'} is not a photograph this stage reads yet — HEIC only for now`,
+          why: `${extension || 'a file with no extension'} is not a photograph this stage reads — HEIC, PNG or JPEG`,
         });
         continue;
       }
@@ -1326,24 +1411,48 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
         continue;
       }
 
-      let decoded: DecodedImage;
-      try {
-        decoded = await decodeHeic(bytes, name);
-      } catch (err) {
-        refused.push({ file: name, why: (err as Error).message });
-        continue;
+      /*
+       * TWO DECODERS, ONE INVARIANT: whatever comes out is the working grid,
+       * with no rotation of this intake's own (`PHOTOGRAPH_TYPES`' docblock carries
+       * the whole argument). HEIC goes through libheif exactly as before. PNG
+       * and JPEG go through Electron's imaging — and a PNG's working copy is
+       * THE BYTES THEMSELVES, byte for byte: it is already the lossless format
+       * the working copy exists to be, and a decode-reencode of a lossless
+       * file buys a chance to be wrong about channel order and nothing else.
+       * A JPEG is transcoded once to PNG by the same imaging that decoded it,
+       * so no hand-written encoder ever touches a channel order Electron chose.
+       */
+      let frame: { width: number; height: number };
+      let png: Buffer;
+      if (HEIC_LIKE.has(extension)) {
+        let decoded: DecodedImage;
+        try {
+          decoded = await decodeHeic(bytes, name);
+        } catch (err) {
+          refused.push({ file: name, why: (err as Error).message });
+          continue;
+        }
+        frame = { width: decoded.width, height: decoded.height };
+        png = await encodePng(decoded);
+      } else {
+        const image = nativeImage.createFromBuffer(bytes);
+        if (image.isEmpty()) {
+          refused.push({ file: name, why: 'it could not be decoded as an image — the file may be damaged' });
+          continue;
+        }
+        frame = image.getSize();
+        png = extension === '.png' ? bytes : image.toPNG();
       }
 
       const original = `${id}${extension}`;
       const workingCopy = `${id}.png`;
       const thumb = `${id}.${THUMB_EDGE}.jpg`;
-      const png = await encodePng(decoded);
       await writeAtomically(path.join(originals, original), bytes);
       await writeAtomically(path.join(derived, workingCopy), png);
-      await writeAtomically(path.join(derived, thumb), encodeThumbnail(png, decoded));
+      await writeAtomically(path.join(derived, thumb), encodeThumbnail(png, frame));
 
       const stat = await fsp.stat(resolved);
-      const { pages, split } = pagesFor(id, photos[photos.length - 1] ?? null, decoded);
+      const { pages, split } = pagesFor(id, photos[photos.length - 1] ?? null, frame);
       photos.push({
         id,
         file: `${ORIGINALS}/${original}`,
@@ -1356,8 +1465,8 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
         // THE DECODER'S DIMENSIONS. EXIF's are about the other grid, and storing
         // them here would make the aspect rule above answer about a photograph
         // nobody is looking at.
-        width: decoded.width,
-        height: decoded.height,
+        width: frame.width,
+        height: frame.height,
         ...takenAtFrom(readExifTimes(bytes), stat.mtime),
         split,
         pages,
@@ -1388,7 +1497,7 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
     await writeAtomically(recipeFile(projectDir), Buffer.from(recipeBytes(next)));
     return {
       recipe: next,
-      token: tokenForDerived(derived),
+      token: tokenForServing(derived),
       // An intake answers with an opening, so it answers the same question an
       // opening does. Null on a project that has never minted, which is every
       // project an intake is normally run on -- and NOT undefined, which is a
@@ -1423,7 +1532,12 @@ export async function intakePhotos(projectDir: string, paths: readonly string[])
  * directory. A mint interrupted by a crash leaves a numbered directory under
  * `capture/mints/` that nothing reads and the next mint does not touch. That is
  * a visible mess in one folder, which is better than an invisible one in
- * %TEMP% — and it cannot become a cross-volume rename at commit.
+ * %TEMP% — and a project's own folder is where a person looking for a book that
+ * did not finish would think to look. (For two days the commit was a RENAME out
+ * of this directory rather than a read of it, and staging inside the project was
+ * what kept that on one volume. The commit assembles again, so the staging is a
+ * scratch area once more; it stays here because the first reason never depended
+ * on the second.)
  */
 interface MintSession {
   projectDir: string;
@@ -1555,35 +1669,92 @@ export async function mintPage(mintId: string, index: number, jpeg: ArrayBuffer)
   noteMintPage(session.jobId, session.received.size);
 }
 
+/** Nominal dots per inch for the page box. 72 points to the inch. */
+const MINT_DPI = 300;
+
 /**
- * Move the pages into the project, file them as its origin, answer with the step.
+ * Assemble the PDF, file it as the project's imported original, answer with the
+ * step.
  *
- * ── THE PAGES ARE THE BOOK, AND THE PDF WAS A ROUND TRIP ────────────────────
+ * ── THE MINT PRODUCES A PDF, AND FROM THAT MOMENT THIS IS AN ORDINARY BOOK ──
  *
- * This used to assemble an image-only PDF — one JPEG per page, drawn to fill a
- * page box at a nominal 300 dpi — and the very next thing that happened to that
- * PDF was a rasteriser turning it back into one image per page. Owen ruled the
- * container out: *"i agree that this doesnt need to be a pdf. if the user
- * explicitly wants to export it as one, they can. but the ultimate goal here is
- * to generate a bank with the vlm"*. So the staged pages ARE the output, and
- * `vlm-read --pages <dir>` reads them as they are.
+ * Owen, 2026-08-22, in two messages, and they are the whole of this wave:
  *
- * NOTHING IS RE-ENCODED AND NOTHING IS COPIED. The renderer already wrote each
- * rectified page as a JPEG into `capture/mints/<id>/`, inside the project, for
- * the reason stated above `MintSession` — and that decision pays here: the
- * commit is a RENAME on one volume, so a shoot of several hundred megabytes
- * lands in the time it takes to update a directory entry. A staging directory
- * in %TEMP% would have made this a cross-volume copy of the whole book.
+ *   *"maybe we should mint a pdf from the pages after theyre fully arranged and
+ *   complete, and then we build the bank after that (not necessarily from the
+ *   pdf, but the pdf can exist so it doesnt confuse bookforge or anything else).
+ *   the pdf is just the images on each page."*
  *
- * THE NAMES ARE THE READING ORDER, zero-padded to four digits. The engine sorts
- * numerically on the first run of digits in a name (`pagesInDirectory`,
- * src/vlm/bridge.ts) so the padding is a courtesy to anybody looking in the
- * folder rather than a contract — but `page-2` sorting before `page-10` is the
- * trap that rule exists to avoid, and agreeing with it costs nothing.
+ * and, when told this would also retire a night's worth of special paths:
+ *
+ *   *"this might fix our current problem as well. the system isnt trying to sift
+ *   through images, it's using the original pdf just like it normally would."*
+ *
+ * A third message settled the read, and it is recorded again where the reading
+ * is planned (`planReading`, electron/workspace.ts): *"if we're building the
+ * bank from the images anyway maybe we should just build it from the pdf. why
+ * not? it would help maintain provenance, and nothing will be lost."*
+ *
+ * ── WHAT THIS REVERSES, AND WHY THE REVERSAL IS NOT A REGRESSION ────────────
+ *
+ * At `ecbf238` the assembly was taken OUT on the argument that a PDF was a round
+ * trip: the mint drew one JPEG per page into a container and the read rasterised
+ * the container straight back into one image per page. That argument was true
+ * about the READ and silent about everything else, and everything else is what
+ * broke. A folder is not a file, so `manifest.archive.file` named a DIRECTORY,
+ * and every consumer that asks a project "what were you made from" hit it in
+ * turn: the three make-dialogs, the page viewer, the figure cutter, and finally
+ * BookForge's adoption, which refuses a project whose *"catalogue's archive names
+ * no file"*. Each was patched alone. The container is the answer to all of them
+ * at once, and the round trip it costs is seconds against a read measured in
+ * hours.
+ *
+ * ── AN IMAGE-ONLY PDF, WHICH IS THE ENTIRE OUTPUT OF THIS STAGE ─────────────
+ *
+ * One JPEG per page, drawn to fill its own page box, no text layer and no fonts —
+ * *"the pdf is just the images on each page"*, verbatim. `embedJpg` takes the
+ * encoded bytes as they are, so no page is decoded, resampled or re-encoded on
+ * the way in: the pixels in the container are the pixels the renderer rectified.
+ *
+ * THE PAGE BOX IS THE PIXELS AT A NOMINAL 300 DPI. Nothing is resampled: the
+ * JPEG goes in at its own resolution and the box is sized to suit it, so the
+ * declared page is roughly the physical page it was photographed from. The read
+ * stage rasterizes at its own budget later; this number never constrains it.
+ *
+ * ── THE STAGED PAGES ARE CONSUMED, AND NO FOLDER IS LEFT BEHIND ─────────────
+ *
+ * THE CALL, STATED: a new mint leaves NO `archive/<stem> pages/` directory. The
+ * JPEGs go into the container byte for byte, so a folder beside it would be a
+ * second complete copy of a shoot that runs to hundreds of megabytes, kept for
+ * readers that no longer exist — the page view, the `--pages` read and the
+ * `--pages` figure cut are all off the app's paths as of this wave. The record
+ * of every rectified page is the PDF, which is the one thing Owen asked for.
+ *
+ * (The HEAL is the other way round and deliberately so: a project that already
+ * holds a pages folder KEEPS it, because deleting somebody's data to tidy a
+ * migration is not a thing this app does. See `healMintedArchive`.)
+ *
+ * ── THE READING ORDER IS THE MINT'S OWN PAGE NUMBERING ──────────────────────
+ *
+ * `session.pages` is the list `mintBegin` built from `recipe.order` with the
+ * struck pages already dropped, in the order the book is read; the renderer
+ * rasterised exactly that list and returned each page by its INDEX in it. So
+ * walking the indices in ascending order is the book, and there is no second
+ * ordering rule anywhere to disagree with it.
  *
  * REFUSES A BOOK WITH A HOLE IN IT. Every page main asked for must have come
- * back. A missing one would file a book quietly short a leaf, which is exactly
+ * back. A missing one would print a book quietly short a leaf, which is exactly
  * the failure the order cross-check exists to prevent one layer up.
+ *
+ * ── ONE HEAP'S WORTH, AND THAT IS THE COST OF A CONTAINER ───────────────────
+ *
+ * `MintSession` above explains why pages cross the bridge one at a time and land
+ * on disk as they arrive: a shoot held whole in the main process is the book in
+ * memory twice, in a process that also has an app in it. The assembly gives some
+ * of that back — pdf-lib holds every embedded JPEG and then serialises the lot
+ * into one array — and it is named here rather than discovered, because it is the
+ * price of the container and the container is what the ruling asks for. Nothing
+ * is DECODED, so the peak is the encoded book and not its pixels.
  */
 export async function mintCommit(mintId: string): Promise<LedgerStep> {
   const session = sessionOf(mintId);
@@ -1602,22 +1773,11 @@ export async function mintCommit(mintId: string): Promise<LedgerStep> {
   }
 
   try {
-    /*
-     * THE MOVE IS THE COMMIT, AND IT HAPPENS INSIDE `recordMint`'s MANIFEST
-     * LOCK. The name of the directory has to be one this project has not spent
-     * before — readings hang off the step whose payload is that name — and only
-     * the manifest knows which names are spent, so the destination is chosen
-     * there and handed back here to be filled.
-     */
-    const step = await recordMint(session.projectDir, async (into) => {
-      let written = 0;
-      for (let index = 0; index < session.pages.length; index++) {
-        const page = `page-${String(index + 1).padStart(4, '0')}.jpg`;
-        await fsp.rename(path.join(session.staging, `${index}.jpg`), path.join(into, page));
-        written += 1;
-      }
-      return written;
-    }, session.arrangement);
+    const step = await recordMint(
+      session.projectDir,
+      await assemblePdf(session),
+      session.arrangement,
+    );
     settleMint(session.jobId, { file: path.join(session.projectDir, ...step.payload.split('/')) });
     await forget(session, mintId);
     return step;
@@ -1630,6 +1790,32 @@ export async function mintCommit(mintId: string): Promise<LedgerStep> {
   }
 }
 
+/**
+ * The staged pages, in order, as one image-only PDF.
+ *
+ * Split out of `mintCommit` so that the commit reads as what it is — refuse a
+ * hole, assemble, record — and because the assembly is the one part of it that
+ * touches a foreign library. `mintCommit`'s docblock carries the argument; this
+ * carries the mechanics.
+ *
+ * THE SIZES ARE THE ONES MAIN ASKED FOR, not the ones the JPEG declares. Main
+ * computed `outWidth`/`outHeight` at `mintBegin` and the renderer asserted its
+ * bitmap against them, so they are the agreed dimensions of the page; asking
+ * pdf-lib for the embedded image's own size instead would be a second
+ * measurement of the same thing, taken from the far side of the bridge.
+ */
+async function assemblePdf(session: MintSession): Promise<Buffer> {
+  const pdf = await PDFDocument.create();
+  for (let index = 0; index < session.pages.length; index++) {
+    const asked = session.pages[index]!;
+    const jpeg = await fsp.readFile(path.join(session.staging, `${index}.jpg`));
+    const image = await pdf.embedJpg(jpeg);
+    const width = (asked.outWidth * 72) / MINT_DPI;
+    const height = (asked.outHeight * 72) / MINT_DPI;
+    pdf.addPage([width, height]).drawImage(image, { x: 0, y: 0, width, height });
+  }
+  return Buffer.from(await pdf.save());
+}
 
 /**
  * Take photographs out of the project — the recipe, the pixels and the bank.

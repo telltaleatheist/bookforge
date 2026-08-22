@@ -251,8 +251,9 @@ export interface EnvInstallHandle {
 }
 
 /**
- * The one install in flight. A backstop, not the mechanism: the serial queue
- * already prevents a second one, and cancelling is the QUEUE's job (it owns
+ * The one install in flight. A backstop, not the mechanism: the queue already
+ * prevents a second one — an install holds every slot on the board and dedupes
+ * on its target at the door — and cancelling is the QUEUE's job (it owns
  * whether a stopped row reads `cancelled` or `failed`) — so this guard exists
  * only so a direct caller cannot start two downloads into one directory.
  */

@@ -23,6 +23,7 @@ import { ProjectsService } from '../../core/projects.service';
 import { OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
+import { UnappliedService } from '../../core/unapplied.service';
 
 /**
  * THE ACTION MENU — an ordered list of everything this app can be asked to do,
@@ -122,6 +123,48 @@ import { UiService } from '../../core/ui.service';
  * match the tree's own act would be a second opinion nobody asked for, and the
  * word on this row has been the word for months.
  *
+ * ── AND THE FOURTH ARRANGEMENT IS A TILE GRID (2026-08-22) ─────────────────
+ *
+ * Four directions were drawn and put in front of Owen, who chose one and said
+ * why in the same breath: *"i think the tile grid is best - b - but narrate
+ * wont be present in foundry, of course. only in bookforge."*
+ *
+ * WHAT IT DISPLACED IS THE FULL-WIDTH ROW, and the row's own argument is worth
+ * keeping because it was right about what it was answering. A list of rows was
+ * what *"[icon] [action], one after another"* asks for literally, and it made
+ * the order unmissable — but nine of them stacked in a 384-pixel panel ate the
+ * bottom third of the sidebar, and the sidebar's other job is the tree. A grid
+ * of three spends the panel's WIDTH, which the rows were leaving empty: the
+ * same six acts come down from nine rows to two lines of tiles, and the tree
+ * gets the height back. This is the same trade the very first layout made in
+ * the other direction, and it is being made the other way because the panel is
+ * now wide and short of height rather than narrow and full of it.
+ *
+ * THE ORDERED-LIST RULING SURVIVES AS READING ORDER. *"an ordered list of
+ * actions"* was never about the geometry of a column; it was about the SEQUENCE
+ * being legible, and a grid read left to right and top to bottom is an ordered
+ * list with the line breaks in different places. Every ordering decision below —
+ * Read first, Export after the acts that change the words, Metadata last, the
+ * host's acts sitting with Translate and Simplify — is untouched, and the tiles
+ * are laid out in exactly that sequence.
+ *
+ * THE THREE GROUPS BECAME TWO SHAPES. Navigation is a SLIM STRIP along the top
+ * of the block — Home and Documents as small labelled buttons, the light table
+ * and Settings as icon squares — and the acts are the grid below it. The rules
+ * that used to divide three groups are gone because the shapes now do that
+ * work: a 30-pixel strip of buttons and a field of 58-pixel tiles cannot be
+ * misread as one run of equals, which is the only thing the rules were for.
+ *
+ * AND THE UNICODE GLYPHS WENT WITH THE ROWS (⌂ ☰ ▣ ⌦ ⇄ ≈ ⎘ ⓘ ♪). They were
+ * chosen when the icon was a 20-pixel box beside a word doing the real work; a
+ * tile makes the mark the largest thing on it, and a font glyph is whatever the
+ * platform happens to have — a different weight and a different SIZE on every
+ * machine. The library's own symbol sheet had already learned this and drawn
+ * stroke icons for the same acts; this menu now draws from that sheet rather
+ * than keeping a second, typographic opinion about what Translate looks like.
+ * Three marks it needed and the tree never did — Home, the document list and
+ * Settings — were added there, in the sheet's own line weight.
+ *
  * HOME IS THE FIRST ITEM and it is not a route: it is "no tab is active", so
  * pressing it puts the documents down without closing them and pressing a tab
  * picks one back up. A Home that closed your tabs would be a Home nobody presses.
@@ -136,10 +179,13 @@ import { UiService } from '../../core/ui.service';
   template: `
     <nav class="menu" aria-label="Actions">
       <!--
-        NAVIGATION, ABOVE THE RULE. Neither of these makes anything: Home is
-        where you go and Documents is what you look at. The rule under them is
-        what turns the rest of this into a LIST OF ACTS rather than a pile of
-        buttons — see the class docblock for the order and why it is that order.
+        NAVIGATION, AS ONE SLIM STRIP. Nothing here makes anything: Home is
+        where you go, Documents is what you look at, the light table is a place
+        and Settings is where you go when the tools are not the answer. What
+        used to separate them from the acts was a rule across the block; what
+        separates them now is that they are a 30-pixel strip above a field of
+        58-pixel tiles, which is a louder division than a one-pixel line and
+        costs no height at all. See the class docblock for the order.
 
         THE BRAND WENT WITH THE WRAP. A ⬙ at the top of this block was the
         window's own mark at the left end of a full-width dock; in a panel whose
@@ -149,7 +195,9 @@ import { UiService } from '../../core/ui.service';
       <div class="menu-nav">
         <!-- Hosted, the host's book list is the library and Home is the one
              surface that would list the same books from the other side — so the
-             door to it goes, not just the page behind it. -->
+             door to it goes, not just the page behind it. The strip closes up
+             around the gap, because the two that follow are flexible and the
+             two after them are fixed squares. -->
         @if (!hosted()) {
           <button
             class="menu-item"
@@ -157,7 +205,7 @@ import { UiService } from '../../core/ui.service';
             title="Home"
             (click)="home()"
           >
-            <span class="menu-icon">⌂</span>
+            <svg class="menu-icon" aria-hidden="true"><use href="#ft-home" /></svg>
             <span class="menu-label">Home</span>
           </button>
         }
@@ -173,12 +221,13 @@ import { UiService } from '../../core/ui.service';
           title="Show or hide the open documents (Ctrl+B)"
           (click)="ui.toggleDocuments()"
         >
-          <span class="menu-icon">☰</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-list" /></svg>
           <span class="menu-label">Documents</span>
         </button>
 
         <!--
-          THE WAY BACK TO THE PHOTOGRAPHS, and it is ABOVE THE RULE on purpose.
+          THE WAY BACK TO THE PHOTOGRAPHS, and it is ON THE NAVIGATION STRIP on
+          purpose.
 
           A mint is a SNAPSHOT of the recipe rather than its funeral: the bank
           and the recipe survive it, and until Wave 21b there was simply no
@@ -186,52 +235,92 @@ import { UiService } from '../../core/ui.service';
           the pages, and there was no door -- Home opens the PDF once an
           original exists, which is correct and was the whole trap.
 
-          IT LIVES HERE RATHER THAN ON THE HOME ROW because the door belongs
+          IT LIVES HERE RATHER THAN ON HOME ITSELF because the door belongs
           where the person is standing when they want it, which is looking at
           the book; Home stays a single door onto a project. And it sits with
           Home and Documents rather than among the acts because THE LIGHT TABLE
           IS A PLACE. Mint is an act and is deferred from this menu for exactly
-          that reason -- a row naming somewhere you can go is a different kind
-          of entry from one that performs something.
+          that reason -- a control naming somewhere you can go is a different
+          kind of entry from one that performs something.
 
           HIDDEN, NOT DISABLED, WHICH BREAKS THIS MENU'S USUAL RULE. Translate
           and Simplify stay visible and gray on a book they cannot run on,
           because they are tools that might apply to it later. A project that
           did not arrive as photographs has none and never will, so a permanent
-          gray row would be furniture rather than an education. Asked of the
+          gray tile would be furniture rather than an education. Asked of the
           summary's own capture field, never inferred from an empty document
           list -- that field exists because emptiness is ALSO what a broken
           project looks like (types.ts says so at length).
+
+          A SQUARE WITH NO WORDS, unlike Home and Documents beside it, and that
+          is a length decision rather than a rank one. "Edit the photographs" is
+          three words and the strip has room for two labels; a quarter of the
+          strip holding an ellipsis would say less than the mark does. The
+          sentence it always had is on the hover, where it always was.
         -->
         @if (photographs(); as dir) {
           <button
-            class="menu-item"
+            class="menu-item square"
             [class.active]="atTheTable()"
+            aria-label="Edit the photographs"
             title="The photographs this book was made from, and the crops and turns still to set"
             (click)="editPhotographs(dir)"
           >
-            <span class="menu-icon">▣</span>
-            <span class="menu-label">Edit the photographs</span>
+            <svg class="menu-icon" aria-hidden="true"><use href="#ft-capture" /></svg>
           </button>
         }
+
+        <!--
+          SETTINGS, AT THE END OF THE STRIP, AND THE RULE UNDER IT IS GONE.
+
+          It had a divider of its own for as long as this was a column, for a
+          reason that has not changed at all: IT IS NOT A TOOL. It is where you
+          go when the tools are not the answer, and a menu that let it sit among
+          the acts would be inviting somebody looking for Export to read past it.
+
+          WHAT CARRIES THAT NOW IS POSITION RATHER THAN A LINE. Settings is on
+          the navigation strip — with Home and the light table, the things that
+          take you somewhere rather than make something — and it is the LAST
+          thing on it, at the far end from Home, which is where a settings
+          control has sat in every window anybody has ever used. It is not in
+          the field of tiles at all: a different shape, in a different group, on
+          the other side of the block from the acts is a louder statement of
+          "this is a different kind of thing" than one pixel of --border-subtle
+          ever was.
+        -->
+        <a
+          class="menu-item square"
+          routerLink="/settings"
+          routerLinkActive="active"
+          aria-label="Settings"
+          title="Settings"
+        >
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-gear" /></svg>
+        </a>
       </div>
 
       <!-- THE ACTS. Read the pages, then everything that makes another version
            of the book — Translate, Simplify, and whatever the host contributes,
            which is where Owen put it — then the finished file, then the record
            about it. See the class docblock for the order and what displaced the
-           run-order argument that used to settle all of it. -->
+           run-order argument that used to settle all of it.
+
+           THREE ACROSS, AND THE ORDER IS THE READING ORDER. The sequence below
+           is the one it has always been; what changed on 2026-08-22 is that the
+           line breaks fall every third item instead of every first. Nothing is
+           positioned by hand — the grid takes them in document order, so the
+           only place the order is written down is here, once. -->
       <div class="menu-acts">
         <!--
           THE TWO HALVES OF WHAT USED TO BE ONE BUTTON, side by side and in the
           order they happen. OCR reads the pages and costs hours; Export turns
           what was read into a document you can take away, and costs nothing.
           They were one item called "OCR / Convert" while they were one job, and
-          separating them into two rows is most of what teaches the difference.
+          separating them into two tiles is most of what teaches the difference.
 
           OCR LIGHTS UP when the book in front of you has never been read — the
           same accent this menu uses for "this is active", used here for "this is
-          the step you are waiting on". It is the one row in this menu that
+          the step you are waiting on". It is the one tile in this menu that
           points at what to do next rather than at what is currently on.
         -->
         <button
@@ -243,7 +332,7 @@ import { UiService } from '../../core/ui.service';
             : 'Read this book\\'s pages with the vision model'"
           (click)="convert()"
         >
-          <span class="menu-icon">⌦</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-scan" /></svg>
           <span class="menu-label">OCR</span>
         </button>
 
@@ -258,7 +347,7 @@ import { UiService } from '../../core/ui.service';
           title="Translate this book into another language"
           (click)="translate()"
         >
-          <span class="menu-icon">⇄</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-globe" /></svg>
           <span class="menu-label">Translate</span>
         </button>
 
@@ -274,7 +363,7 @@ import { UiService } from '../../core/ui.service';
           title="Say this book again in its own language: plainer, more natural, or for a learner"
           (click)="simplify()"
         >
-          <span class="menu-icon">≈</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-spark" /></svg>
           <span class="menu-label">Simplify</span>
         </button>
 
@@ -304,11 +393,19 @@ import { UiService } from '../../core/ui.service';
           the record about it last. What moved is one group, from the end of the
           list to the middle of it, because that is where somebody looks for it.
 
-          NOT ONE STRING HERE NAMES AN ACT. The label, the hover and the icon
-          all come off the offer the host registered — this app has never
-          contained the word "narrate" and does not start now, Owen's own
-          sentence notwithstanding. The amber is the menu's existing tint for
-          the host's work, the same one the tree draws audio cards in.
+          NOT ONE STRING HERE NAMES AN ACT. The label and the hover both come off
+          the offer the host registered — this app has never contained the word
+          "narrate" and does not start now, Owen's own sentence notwithstanding.
+          The amber is the menu's existing tint for the host's work, the same one
+          the tree draws audio cards in.
+
+          ONE MARK FOR ALL OF THEM, WHICH IS WHAT THE GLYPH DID TOO. Every host
+          act wore a single ♪ here while the icons were type, and it wears a
+          single stroke mark now: the tree can afford to tell a narrate from an
+          enhance from an assemble because it is drawing the RESULTS, one card
+          per run, and a menu is drawing the DOOR. What a person needs off this
+          tile is "this belongs to the other application", which the amber and
+          the mark say together, and the label underneath says the rest.
 
           STANDALONE THIS LOOP RUNS ZERO TIMES: no host, no operations,
           \`hostActs()\` is empty, and the menu is exactly this app's own acts. There is no
@@ -357,7 +454,7 @@ import { UiService } from '../../core/ui.service';
                 + 'made from the words in them'"
             (click)="runHostAct(act.id)"
           >
-            <span class="menu-icon">♪</span>
+            <svg class="menu-icon" aria-hidden="true"><use href="#ft-wave" /></svg>
             <span class="menu-label">{{ act.label }}</span>
           </button>
         }
@@ -379,7 +476,7 @@ import { UiService } from '../../core/ui.service';
           title="Make the finished book: an EPUB, plain text, or the pages reprinted as real type"
           (click)="openExport()"
         >
-          <span class="menu-icon">⎘</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-out" /></svg>
           <span class="menu-label">Export</span>
         </button>
 
@@ -397,7 +494,7 @@ import { UiService } from '../../core/ui.service';
           title="The title, author and language this document claims for itself"
           (click)="metadata()"
         >
-          <span class="menu-icon">ⓘ</span>
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-tag" /></svg>
           <span class="menu-label">Metadata</span>
         </button>
 
@@ -415,44 +512,38 @@ import { UiService } from '../../core/ui.service';
           WHAT REPLACED ALL THREE IS THE BOOK. Editing happens on the proof sheet,
           against block ids, recorded as ops in the ledger; the PDF produces the
           facsimile and stops (§0 A1). There is no mode to switch on, which is why
-          there is no row here to switch it.
+          there is no tile here to switch it.
         -->
-        <!-- The PDF is an output FORMAT inside a dialog rather than a row
+        <!-- The PDF is an output FORMAT inside a dialog rather than a tile
              of its own: this menu names ACTS, and picking between an
              EPUB, plain text and a reprint of the pages is one decision about
              one act, made where the rest of that act is described. -->
-      </div>
-
-      <div class="menu-foot">
-        <a
-          class="menu-item"
-          routerLink="/settings"
-          routerLinkActive="active"
-          title="Settings"
-        >
-          <span class="menu-icon">⚙</span>
-          <span class="menu-label">Settings</span>
-        </a>
       </div>
     </nav>
   `,
   styles: [`
     /*
-      ── A LIST AT THE FOOT OF THE SIDEBAR ───────────────────────────────────
+      ── A STRIP AND A GRID AT THE FOOT OF THE SIDEBAR ───────────────────────
 
-      *"[icon] [action], one after another."* (Owen, 2026-08-18 01:05.) Every
-      number below follows from that one sentence, and what it replaced is worth
-      recording because it was two layouts in two days: a three-column grid that
-      centred the tools on the WINDOW while the dock ran along the bottom, and
-      then a wrap that packed them into rows once the dock moved into a
-      384-pixel panel.
+      *"i think the tile grid is best - b"* (Owen, 2026-08-22), chosen off four
+      drawings, and every number below is measured from the one he picked.
 
-      FULL-WIDTH ROWS ANSWER THE WRAP'S OWN WORRY BETTER THAN THE WRAP DID. That
-      layout existed because the panel's width had already changed twice and a
-      fixed column count would break on the third; a row that is
-      \`width: 100%\` has no column count to break, and a label that
-      outgrows its row ellipses instead of reflowing the block. So the thing the
-      wrap was defending is defended by a simpler rule.
+      WHAT IT REPLACED WAS A COLUMN OF FULL-WIDTH ROWS, and that column deserves
+      its epitaph because it was right about the thing it was defending. It came
+      from *"[icon] [action], one after another"* (2026-08-18 01:05), and it
+      made the ORDER unmissable and the labels unambiguous; a row that is
+      \`width: 100%\` also has no column count to break when the panel is
+      resized, which is what the wrapped cluster before it kept getting wrong.
+      What it was wrong about was HEIGHT. Nine rows at thirty pixels each took
+      the bottom third of a 384-pixel panel whose other job is a tree that grows
+      all day — and the width it was spending on ellipsised labels was width the
+      tree could not use anyway.
+
+      SO THE TRADE IS MADE THE OTHER WAY ROUND, in a panel that is now wide and
+      short of height rather than narrow and full of it: three tiles across, two
+      lines, and the same six acts in a little over a hundred pixels. The order
+      is untouched — left to right, top to bottom, which is what an ordered list
+      is when the line breaks move.
 
       NO HEIGHT TOKEN. \`--rail-h\` existed so the queue shelf's floating pill
       could lift itself over a dock along the bottom edge; there is no dock along
@@ -464,93 +555,138 @@ import { UiService } from '../../core/ui.service';
       width: 100%;
       display: flex;
       flex-direction: column;
-      gap: 6px;
+      gap: 10px;
       background: var(--bg-elevated);
       border-top: 1px solid var(--border-default);
-      padding: 8px 6px;
+      padding: 10px;
     }
 
     /*
-      THREE GROUPS, TWO RULES. Navigation, then the acts, then Settings —
-      the class docblock carries the order and its reasons. The rules are what
-      make this an ORDERED list rather than eight buttons in a column: without
-      them the eye reads one run of equals and the sequence says nothing.
+      TWO SHAPES, AND NO RULES BETWEEN THEM ANY MORE. There used to be a hairline
+      under navigation and another above Settings, because a column of eight
+      identical rows reads as one run of equals and the grouping had to be drawn
+      on. It does not have to be drawn on now: a strip of thirty-pixel buttons
+      above a field of fifty-eight-pixel tiles IS the division, said in the one
+      language a layout has. Two hairlines that repeated it would be the same
+      sentence twice.
+
+      \`minmax(0, 1fr)\` and not \`1fr\`, which is the difference between a
+      long host label ellipsising inside its tile and the same label shoving the
+      third column off the edge of the panel: a grid track's automatic minimum is
+      its content, and a host we do not control writes these labels.
     */
-    .menu-nav, .menu-acts, .menu-foot {
+    .menu-nav {
       display: flex;
-      flex-direction: column;
-      gap: 2px;
+      gap: 6px;
       min-width: 0;
     }
     .menu-acts {
-      border-top: 1px solid var(--border-subtle);
-      padding-top: 6px;
-    }
-    /* Settings keeps the divider it has always had, for the reason it has always
-       had it: it is not a tool, it is where you go when the tools are not the
-       answer. */
-    .menu-foot {
-      border-top: 1px solid var(--border-subtle);
-      padding-top: 6px;
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 6px;
+      min-width: 0;
     }
 
     /*
-      THE ROW. Icon then words, left to right, the whole width of the panel —
-      which is the ruling drawn. It was a 76-pixel COLUMN (glyph above label,
-      centred) for as long as this lived in a horizontal dock, where width was
-      the scarce thing and height was free; a vertical list has that the other
-      way round, so the label moved to the side of the icon where a list reads
-      it and the row took the width it was being given anyway.
+      THE TILE. Mark over word, centred, in a bordered box of its own — which is
+      the third shape this control has had and a return to the first. It was
+      exactly this (a 76-pixel column, glyph above label) while the menu ran
+      along the bottom of the window, then a full-width row for the four days it
+      was a list, and it is a tile again because the panel's scarce dimension
+      changed back.
+
+      A BOX RATHER THAN A BARE ROW, which is the real change and not the
+      proportions. A row in a list is delimited by the rows above and below it;
+      a tile has nothing beside it but a gap, so it has to carry its own edge or
+      it is a floating icon. The chrome is the app's own button chrome —
+      --bg-input on --border-default — because that is what every other pressable
+      thing in this window wears, and the one thing this menu must not do is
+      invent a fourth kind of button.
+
+      FIFTY-EIGHT PIXELS is the mockup's height and it is not arbitrary: a
+      16-pixel mark, an 11-pixel label, five of gap between them and enough air
+      above and below that the pair reads as one object rather than as two
+      things that happened to land in the same box.
     */
     .menu-item {
       display: flex;
-      flex-direction: row;
+      flex-direction: column;
       align-items: center;
-      gap: 10px;
-      width: 100%;
-      padding: 7px 10px;
-      background: transparent;
-      border: none;
+      justify-content: center;
+      gap: 5px;
+      min-width: 0;
+      height: 58px;
+      padding: 0 4px;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
       border-radius: var(--radius);
       color: var(--text-secondary);
       cursor: pointer;
-      text-align: left;
+      text-align: center;
       text-decoration: none;
-      transition: background-color 150ms ease, color 150ms ease;
+      transition: background-color 150ms ease, border-color 150ms ease, color 150ms ease;
     }
+
+    /*
+      THE STRIP'S BUTTONS ARE THE SAME TILE LYING DOWN — same chrome, same
+      states, a third of the height, mark beside word instead of above it. That
+      is deliberate rather than economical: Home and Documents are pressable in
+      exactly the way Export is, and a navigation strip drawn in some other
+      idiom would be teaching a distinction that is not there. What separates
+      them from the acts is the SIZE and the position, which is the whole
+      argument for the shape.
+
+      THE TWO WITH WORDS SHARE THE ROW AND THE TWO WITHOUT TAKE A SQUARE. Home
+      and Documents flex, so hosted — where Home is not drawn at all — Documents
+      simply takes the width Home is not using and nothing is left hanging.
+    */
+    .menu-nav .menu-item {
+      flex: 1 1 0;
+      flex-direction: row;
+      gap: 6px;
+      height: 30px;
+      padding: 0 8px;
+    }
+    .menu-nav .menu-item.square { flex: 0 0 34px; padding: 0; }
+    .menu-nav .menu-icon { width: 14px; height: 14px; }
 
     /*
       THE HOST'S OWN COLOUR, the same amber the tree tints audio cards with, so
       that an act belonging to another application reads as one at a glance
-      wherever it appears. Only the icon takes it: a whole row in the host's
+      wherever it appears. Only the mark takes it: a whole tile in the host's
       colour would compete with the accent this menu uses for "active".
     */
     .menu-item.audio .menu-icon { color: var(--audio); }
 
     /*
-      ── COMPACT: THE MENU AT THIRTY PIXELS ───────────────────────────────────
-
-      The panel collapses to a stub and the acts go with it rather than
-      disappearing — putting the library away must not put Settings away. What
-      fits in 30 pixels is the icon and nothing else, so the labels go and the
-      rows narrow to the glyph. THE STUB WAS ALREADY AN ACTION MENU: one icon
-      per row, one after another, which is the ruling at a width that cannot
-      hold the words. The title attribute is on every row (it always was), so
-      they are one hover away — the same trade the panel's own collapse makes.
+      THE STATES, AND THEY ARE WRITTEN AGAINST THE APP'S GLOBAL BUTTON RULES
+      RATHER THAN AROUND THEM. \`button:hover\` in styles.scss swaps the
+      background for --bg-hover, which is a translucent white meant to lift a
+      TRANSPARENT control and which would push an opaque --bg-input tile darker
+      instead. So the hover here names its own background, and the lift is
+      carried by the border and the text as much as by the fill.
     */
-    :host(.compact) .menu { padding: 6px 2px; gap: 4px; }
-    :host(.compact) .menu-nav,
-    :host(.compact) .menu-acts,
-    :host(.compact) .menu-foot { align-items: center; }
-    :host(.compact) .menu-acts,
-    :host(.compact) .menu-foot { padding-top: 4px; }
-    :host(.compact) .menu-item { width: 26px; padding: 5px 0; justify-content: center; gap: 0; }
-    :host(.compact) .menu-label { display: none; }
-    .menu-item:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .menu-item:hover {
+      background: var(--bg-active);
+      border-color: var(--border-strong);
+      color: var(--text-primary);
+    }
     .menu-item:disabled { opacity: 0.35; cursor: default; }
-    .menu-item:disabled:hover { background: transparent; color: var(--text-secondary); }
+    .menu-item:disabled:hover {
+      background: var(--bg-input);
+      border-color: var(--border-default);
+      color: var(--text-secondary);
+    }
+    /*
+      ACTIVE IS A FILL — the dialog is open, the documents are up, the light
+      table is what you are looking at. The border goes transparent so the whole
+      tile reads as one washed shape rather than as a bordered box that happens
+      to be tinted; the background paints under it either way, which is what
+      makes that legal.
+    */
     .menu-item.active {
       background: var(--accent-soft);
+      border-color: transparent;
       color: var(--accent);
     }
 
@@ -559,46 +695,116 @@ import { UiService } from '../../core/ui.service';
       Active means "this panel is open right now"; waiting means "this is the
       step your book needs next". The SAME accent — this app has one word for
       attention, and inventing a second colour for a second kind of it is how a
-      palette stops meaning anything — but drawn as an outline rather than a
-      fill, so a menu showing both still says which is which. It pulses once as
-      it arrives and then holds: a permanently animating menu is a menu people
-      learn to look away from.
+      palette stops meaning anything — but drawn as a RING on a fainter wash
+      rather than as a fill, so a menu showing both still says which is which.
+      The ring used to be an inset shadow because the row had no border to
+      colour; the tile has one, so the ring is simply the tile's own edge in the
+      accent, which is a cleaner statement of the same thing.
+
+      IT PULSES ONCE AS IT ARRIVES AND THEN HOLDS: a permanently animating menu
+      is a menu people learn to look away from. The animation is a spreading
+      outer shadow now rather than a shadow list carrying the ring along with it,
+      because the ring is the border and no longer needs restating in every
+      keyframe.
     */
     .menu-item.waiting:not(.active) {
+      background: var(--accent-faint);
+      border-color: var(--accent);
       color: var(--accent);
-      box-shadow: inset 0 0 0 1px var(--accent);
       animation: notice 900ms cubic-bezier(0, 0, 0.2, 1) 1;
     }
+    /* And it still answers a hover, which it would not otherwise: the waiting
+       rule outranks the plain hover, so without this the one tile the menu is
+       pointing at would be the one tile that went dead under the cursor. */
+    .menu-item.waiting:not(.active):hover { background: var(--accent-soft); }
     @keyframes notice {
-      0% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 0 var(--accent-soft); }
-      60% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 7px transparent; }
-      100% { box-shadow: inset 0 0 0 1px var(--accent), 0 0 0 0 transparent; }
+      0% { box-shadow: 0 0 0 0 var(--accent-soft); }
+      60% { box-shadow: 0 0 0 7px transparent; }
+      100% { box-shadow: 0 0 0 0 transparent; }
     }
     .menu-item.active .menu-icon { transform: scale(1.1); }
 
-    /* A fixed box so every label in the list starts at the same x — a column of
-       words that stepped left and right with the glyph widths would read as a
-       ragged list rather than an ordered one. */
+    /*
+      THE MARK, AND IT IS A STROKE ICON NOW RATHER THAN A CHARACTER. Sixteen
+      pixels square on the tiles and fourteen on the strip, drawn from the
+      library's symbol sheet — see the class docblock for why the typographic
+      glyphs (⌂ ☰ ▣ ⌦ ⇄ ≈ ⎘ ⓘ ♪) could not survive being made the largest thing
+      in the control. \`currentColor\` throughout, so every state above tints
+      the mark by tinting the tile, and the amber above is the one exception.
+    */
     .menu-icon {
-      flex: 0 0 20px;
-      text-align: center;
-      font-size: 18px; line-height: 1;
+      flex: 0 0 auto;
+      width: 16px; height: 16px;
       transition: transform 150ms ease;
     }
     /*
-      THE ACTION'S NAME, IN WORDS AND IN SENTENCE CASE. It was 10px uppercase and
-      centred under a glyph, which is what a label does when it is a caption; in a
-      row it is the thing being read, so it takes the size and the alignment of
-      something being read. It ellipses rather than wrapping: a two-line row in a
-      list of one-line rows breaks the rhythm that makes the order legible.
+      THE ACTION'S NAME, UNDER THE MARK AND IN SENTENCE CASE. Eleven pixels
+      because it is a caption again rather than the thing being read — the mark
+      carries the recognition on a tile, which is exactly the trade a full-width
+      row could not make. It ellipses rather than wrapping: a two-line label
+      would push the pair off the tile's vertical centre and break the rhythm of
+      a grid, which is the same argument the row made about its own rhythm.
     */
     .menu-label {
-      flex: 1; min-width: 0;
-      font-size: 12px; font-weight: 500; line-height: 1.3;
+      min-width: 0; max-width: 100%;
+      font-size: 11px; font-weight: 500; line-height: 1.2;
       letter-spacing: 0.01em;
-      text-align: left;
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
+
+    /*
+      ── COMPACT: THE MENU AT THIRTY PIXELS ───────────────────────────────────
+
+      The panel collapses to a stub and the acts go with it rather than
+      disappearing — putting the library away must not put Settings away. A
+      three-column grid of 58-pixel tiles cannot be drawn in 30 pixels of width
+      at all, so THE STUB KEEPS THE COLUMN OF ICONS IT HAS ALWAYS HAD: one mark
+      per row, one after another, which is the ordered list at a width that
+      cannot hold the words. The title attribute is on every one of them (it
+      always was), so they are one hover away — the same trade the panel's own
+      collapse makes.
+
+      AND THE CHROME COMES OFF WITH THE WORDS. A bordered box round a 26-pixel
+      mark in a 30-pixel stub is a border touching both edges of the column; the
+      tile's edge exists to separate it from the tiles beside it, and in a single
+      file with nothing beside it there is nothing to separate. The states keep
+      their fills, because those are saying something the shape is not.
+
+      THIS BLOCK COMES LAST ON PURPOSE. \`:host(.compact) .menu-item\` and
+      \`.menu-nav .menu-item\` are the same specificity, so source order is what
+      decides them, and compact has to be the one that wins.
+    */
+    :host(.compact) .menu { padding: 6px 2px; gap: 4px; }
+    :host(.compact) .menu-nav,
+    :host(.compact) .menu-acts {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+    }
+    :host(.compact) .menu-item,
+    :host(.compact) .menu-nav .menu-item {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      gap: 0;
+      background: transparent;
+      border-color: transparent;
+      border-radius: var(--radius-md);
+    }
+    :host(.compact) .menu-item:hover {
+      background: var(--bg-hover);
+      border-color: transparent;
+    }
+    :host(.compact) .menu-item.active { background: var(--accent-soft); }
+    :host(.compact) .menu-item.waiting:not(.active) {
+      background: var(--accent-faint);
+      border-color: var(--accent);
+    }
+    :host(.compact) .menu-label { display: none; }
+    :host(.compact) .menu-icon,
+    :host(.compact) .menu-nav .menu-icon { width: 16px; height: 16px; }
   `],
 })
 export class ActionMenuComponent {
@@ -621,6 +827,8 @@ export class ActionMenuComponent {
   private readonly ledger = inject(LedgerService);
   private readonly hostOps = inject(HostOpsService);
   private readonly notices = inject(NoticeService);
+  /** The card before any of the four make-acts below runs past unapplied work. */
+  private readonly unapplied = inject(UnappliedService);
   private readonly router = inject(Router);
 
   /** Lit when the panel is actually on screen, which needs both halves of it. */
@@ -661,8 +869,8 @@ export class ActionMenuComponent {
      *
      * DEDUPED BY ID, because a host declaring BOTH currencies on one act — which
      * is what this wave makes possible and what a narrate should now say — is
-     * answered by both calls, and one operation must not draw two identical rows
-     * in a list of things you can do.
+     * answered by both calls, and one operation must not draw two identical tiles
+     * in a grid of things you can do.
      */
     const both = [...this.hostOps.offersFor('book'), ...this.hostOps.offersFor('export')];
     return both.filter((offer, at) =>
@@ -771,9 +979,29 @@ export class ActionMenuComponent {
    * EVERY REFUSAL IS A SENTENCE ON THE STRIP, which is this menu's own habit for
    * a button that cannot grey itself out against a fact this deep in the model.
    */
-  protected runHostAct(operationId: string): void {
+  protected async runHostAct(operationId: string): Promise<void> {
     const dir = this.target();
     if (dir === null) return;
+    /*
+     * AND THE SAME QUESTION THE THREE DIALOGS ABOVE ASK, for the same reason and
+     * one seam further out. A host act that consumes the book asks Foundry to
+     * EXPORT the step it names (`exportEpubFromStep`, electron/mount.ts) and then
+     * works on that file — so an act ordered over a pane holding unapplied changes
+     * spends somebody else's queue on a book without them, and the result lands
+     * in the tree looking exactly like the one they meant.
+     *
+     * AIMED BY `target()`, NOT BY THE ACTIVE DOCUMENT. This menu can be pressed
+     * over a project it is holding rather than the one on screen, and the gate has
+     * to look at the book the act will actually be made from.
+     *
+     * ASKED BEFORE ANY OF THE REFUSALS BELOW, deliberately: those are about
+     * whether the act can be aimed at all, and a person who has just answered
+     * "apply them and continue" should have their changes recorded even if the
+     * aim then turns out to be impossible. The alternative — refuse first, ask
+     * second — would make the answer depend on the order two unrelated facts
+     * happen to be checked in.
+     */
+    if (!await this.unapplied.cleared(dir, 'host')) return;
     if (this.hostOps.offersFor('book').some((offer) => offer.id === operationId)) {
       const standing = this.ledger.standingIn(dir);
       if (standing === null) {
@@ -975,8 +1203,26 @@ export class ActionMenuComponent {
     return canExportFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
-  protected openExport(): void {
+  /**
+   * ASKED ABOUT UNAPPLIED WORK FIRST, and this is the shape all three of these
+   * openers share.
+   *
+   * An export is arithmetic over the RECORDED STEPS, so a book pane holding
+   * changes nobody applied would have quietly produced the book without them
+   * (`UnappliedService` — Owen's own report, 2026-08-21). The card is raised
+   * BEFORE the dialog rather than at its Add press because none of these three
+   * dialogs has a source picker: each computes its `source()` from the active
+   * document's project, so the book this gate looks at is the book the card will
+   * act on for the whole life of it, and settling the question first beats
+   * settling it after somebody has picked a language and a model.
+   *
+   * THE NAVIGATION HAPPENS FIRST EITHER WAY. A press from Settings means "go and
+   * do this to the document", and a person who then answers Cancel is a person
+   * back among their documents rather than one stranded on a settings page.
+   */
+  protected async openExport(): Promise<void> {
     void this.router.navigateByUrl('/');
+    if (!await this.unapplied.clearedHere('export')) return;
     this.ui.openExport();
   }
 
@@ -1007,8 +1253,9 @@ export class ActionMenuComponent {
     return canTranslateFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
-  protected translate(): void {
+  protected async translate(): Promise<void> {
     void this.router.navigateByUrl('/');
+    if (!await this.unapplied.clearedHere('translate')) return;
     this.ui.openTranslate();
   }
 
@@ -1024,8 +1271,9 @@ export class ActionMenuComponent {
     return canSimplifyFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
   }
 
-  protected simplify(): void {
+  protected async simplify(): Promise<void> {
     void this.router.navigateByUrl('/');
+    if (!await this.unapplied.clearedHere('simplify')) return;
     this.ui.openSimplify();
   }
 

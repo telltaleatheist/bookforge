@@ -15,24 +15,29 @@ import {
 } from '@shared/stages';
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
+import { mintedFromPhotographs } from '@shared/ledger';
 import type {
   HostNode,
   HostNodeProgress,
   LedgerParams,
   LedgerStep,
+  MakeAct,
   NodeOutput,
   ProjectDocumentKind,
   ProjectSummary,
 } from '@shared/types';
 
 import { api } from '../../core/foundry';
+import { ConfirmService } from '../../core/confirm.service';
 import { HostOpsService } from '../../core/host-ops.service';
+import { IntakeWorkspaceService, type WorkspaceImage } from '../../core/intake-workspace.service';
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
 import { OpenDocumentsService, pathIsProject, type Tab } from '../../core/documents.service';
 import { NoticeService } from '../../core/notice.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
+import { UnappliedService } from '../../core/unapplied.service';
 import { ActionMenuComponent } from '../action-menu/action-menu.component';
 
 /**
@@ -283,6 +288,123 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
+      THE ICONS, DEFINED ONCE AND USED BY REFERENCE.
+
+      Stroke icons in a symbol sheet rather than the typographic glyphs this
+      panel used to draw (▤ ▦ ✎ ⇄). Those were chosen when a row was twelve
+      pixels of text and they were honest about it; in a card with a tinted
+      square to put a mark in, a font glyph is whatever the platform happens to
+      have — ⇄ is a different weight on every machine and ⓘ is a different SIZE
+      — and the one thing a set of marks has to be is a set.
+
+      INLINE AND NOT A FILE, because the renderer's CSP is "default-src 'self'"
+      with no fetching of anything, and because an svg use against a symbol in
+      the same document is the one form that costs no request at all. The ids
+      carry an "ft-" prefix: they are global to the document, and hosted, this
+      page is Foundry's own — but the habit is cheap and the collision is not.
+
+      ── AND IT SITS OUTSIDE THE COLLAPSE BRANCH, WHICH IS NEW ────────────────
+
+      The sheet lived INSIDE the panel while the panel was the only thing that
+      drew from it. The action menu at the foot draws from it now, and that menu
+      is outside the branch on purpose — collapsing the library must not take
+      Settings off the screen — so a sheet that went away with the panel would
+      blank every mark in the menu at exactly the width where the marks are the
+      whole of it. The ids are global to the DOCUMENT, so one definition in one
+      always-rendered place is both the cheapest form and the only correct one:
+      two components each defining "#ft-scan" would be two answers to one id.
+    -->
+    <svg class="sheet" aria-hidden="true" focusable="false">
+      <defs>
+        <symbol id="ft-check" viewBox="0 0 24 24">
+          <path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="3.4"
+                stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-cross" viewBox="0 0 24 24">
+          <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2"
+                stroke-linecap="round" />
+        </symbol>
+        <!-- A camera: photographs before they are pages. Beside ft-scan, which is
+             a scanned SHEET and the thing a light table is not yet. -->
+        <symbol id="ft-capture" viewBox="0 0 24 24">
+          <path d="M4 8h3l2-2h6l2 2h3v11H4z M12 16.5a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"
+                stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-scan" viewBox="0 0 24 24">
+          <path d="M7 3h8l4 4v14H7z M15 3v4h4 M10 12h6 M10 16h6" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-book" viewBox="0 0 24 24">
+          <path d="M4 4.5h6a2.5 2.5 0 012.5 2.5v13a2 2 0 00-2-2H4z M20 4.5h-6A2.5 2.5 0 0011.5 7v13a2 2 0 012-2H20z"
+                fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-pen" viewBox="0 0 24 24">
+          <path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 013 3L8 19l-4 1z M14 6l3 3" fill="none"
+                stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-globe" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M3.5 12h17 M12 3.5c3 2.6 3 14.4 0 17 M12 3.5c-3 2.6-3 14.4 0 17" fill="none"
+                stroke="currentColor" stroke-width="1.6" />
+        </symbol>
+        <symbol id="ft-spark" viewBox="0 0 24 24">
+          <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z M18.5 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"
+                fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-tag" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M12 11v6 M12 7.4v.2" fill="none" stroke="currentColor" stroke-width="2"
+                stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-out" viewBox="0 0 24 24">
+          <path d="M12 15V4 M8 8l4-4 4 4 M5 15v4h14v-4" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-page" viewBox="0 0 24 24">
+          <path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-mic" viewBox="0 0 24 24">
+          <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M5.5 11.5a6.5 6.5 0 0013 0 M12 18v3.5" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-wave" viewBox="0 0 24 24">
+          <path d="M3 12h2.5 M8 5.5v13 M12 8.5v7 M16 4.5v15 M20.5 10v4" fill="none"
+                stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-disc" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <circle cx="12" cy="12" r="2.6" fill="currentColor" />
+        </symbol>
+        <!--
+          ── THREE MARKS THE ACTION MENU NEEDED AND THE TREE NEVER DID ─────────
+
+          A tree of cards names steps and files; a menu names WHERE YOU GO, and
+          nothing in this sheet had a mark for that. Home, the document list and
+          Settings are drawn to the same recipe as everything above them — a
+          24-unit box, no fills, 1.8 of stroke, round joins — because the whole
+          argument for a sheet is that the marks are one set, and three icons
+          borrowed from somewhere else's line weight would undo it.
+        -->
+        <symbol id="ft-home" viewBox="0 0 24 24">
+          <path d="M3.5 11 12 3.5l8.5 7.5 M6 10v10h12V10" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+        </symbol>
+        <symbol id="ft-list" viewBox="0 0 24 24">
+          <path d="M4 6.5h16 M4 12h16 M4 17.5h16" fill="none" stroke="currentColor"
+                stroke-width="1.8" stroke-linecap="round" />
+        </symbol>
+        <symbol id="ft-gear" viewBox="0 0 24 24">
+          <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M12 2.5v3 M12 18.5v3 M2.5 12h3 M18.5 12h3 M5.2 5.2l2.1 2.1 M16.7 16.7l2.1 2.1 M18.8 5.2l-2.1 2.1 M7.3 16.7l-2.1 2.1"
+                fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
+        </symbol>
+      </defs>
+    </svg>
+
+    <!--
       PUT AWAY, THE PANEL IS A STUB AND NOT NOTHING. The button that collapses it
       has to be the button that brings it back, and it has to be in the same
       place — the top-left corner of the window — or collapsing the list is a
@@ -309,89 +431,6 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
       </div>
     } @else {
     <div class="panel">
-      <!--
-        THE ICONS, DEFINED ONCE AND USED BY REFERENCE.
-
-        Stroke icons in a symbol sheet rather than the typographic glyphs this
-        panel used to draw (▤ ▦ ✎ ⇄). Those were chosen when a row was twelve
-        pixels of text and they were honest about it; in a card with a tinted
-        square to put a mark in, a font glyph is whatever the platform happens to
-        have — ⇄ is a different weight on every machine and ⓘ is a different SIZE
-        — and the one thing a set of marks has to be is a set.
-
-        INLINE AND NOT A FILE, because the renderer's CSP is "default-src 'self'"
-        with no fetching of anything, and because an svg use against a symbol in
-        the same document is the one form that costs no request at all. The ids
-        carry an "ft-" prefix: they are global to the document, and hosted, this
-        page is Foundry's own — but the habit is cheap and the collision is not.
-      -->
-      <svg class="sheet" aria-hidden="true" focusable="false">
-        <defs>
-          <symbol id="ft-check" viewBox="0 0 24 24">
-            <path d="M4 12.5l5 5L20 6.5" fill="none" stroke="currentColor" stroke-width="3.4"
-                  stroke-linecap="round" stroke-linejoin="round" />
-          </symbol>
-          <symbol id="ft-cross" viewBox="0 0 24 24">
-            <path d="M6 6l12 12M18 6L6 18" fill="none" stroke="currentColor" stroke-width="3.2"
-                  stroke-linecap="round" />
-          </symbol>
-          <!-- A camera: photographs before they are pages. Beside ft-scan, which is
-               a scanned SHEET and the thing a light table is not yet. -->
-          <symbol id="ft-capture" viewBox="0 0 24 24">
-            <path d="M4 8h3l2-2h6l2 2h3v11H4z M12 16.5a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4z"
-                  fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"
-                  stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-scan" viewBox="0 0 24 24">
-            <path d="M7 3h8l4 4v14H7z M15 3v4h4 M10 12h6 M10 16h6" fill="none" stroke="currentColor"
-                  stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-book" viewBox="0 0 24 24">
-            <path d="M4 4.5h6a2.5 2.5 0 012.5 2.5v13a2 2 0 00-2-2H4z M20 4.5h-6A2.5 2.5 0 0011.5 7v13a2 2 0 012-2H20z"
-                  fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
-          </symbol>
-          <symbol id="ft-pen" viewBox="0 0 24 24">
-            <path d="M4 20l1-4L16.5 4.5a2.1 2.1 0 013 3L8 19l-4 1z M14 6l3 3" fill="none"
-                  stroke="currentColor" stroke-width="1.8" stroke-linejoin="round" stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-globe" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
-            <path d="M3.5 12h17 M12 3.5c3 2.6 3 14.4 0 17 M12 3.5c-3 2.6-3 14.4 0 17" fill="none"
-                  stroke="currentColor" stroke-width="1.6" />
-          </symbol>
-          <symbol id="ft-spark" viewBox="0 0 24 24">
-            <path d="M12 3l1.8 5.2L19 10l-5.2 1.8L12 17l-1.8-5.2L5 10l5.2-1.8z M18.5 15.5l.9 2.6 2.6.9-2.6.9-.9 2.6-.9-2.6-2.6-.9 2.6-.9z"
-                  fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round" />
-          </symbol>
-          <symbol id="ft-tag" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
-            <path d="M12 11v6 M12 7.4v.2" fill="none" stroke="currentColor" stroke-width="2"
-                  stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-out" viewBox="0 0 24 24">
-            <path d="M12 15V4 M8 8l4-4 4 4 M5 15v4h14v-4" fill="none" stroke="currentColor"
-                  stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
-          </symbol>
-          <symbol id="ft-page" viewBox="0 0 24 24">
-            <path d="M6 3h8l4 4v14H6z M14 3v4h4" fill="none" stroke="currentColor" stroke-width="1.8"
-                  stroke-linejoin="round" />
-          </symbol>
-          <symbol id="ft-mic" viewBox="0 0 24 24">
-            <rect x="9" y="3" width="6" height="11" rx="3" fill="none" stroke="currentColor" stroke-width="1.8" />
-            <path d="M5.5 11.5a6.5 6.5 0 0013 0 M12 18v3.5" fill="none" stroke="currentColor"
-                  stroke-width="1.8" stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-wave" viewBox="0 0 24 24">
-            <path d="M3 12h2.5 M8 5.5v13 M12 8.5v7 M16 4.5v15 M20.5 10v4" fill="none"
-                  stroke="currentColor" stroke-width="1.8" stroke-linecap="round" />
-          </symbol>
-          <symbol id="ft-disc" viewBox="0 0 24 24">
-            <circle cx="12" cy="12" r="8.5" fill="none" stroke="currentColor" stroke-width="1.8" />
-            <circle cx="12" cy="12" r="2.6" fill="currentColor" />
-          </symbol>
-        </defs>
-      </svg>
-
       <header class="head">
         <button class="collapse" title="Hide the library (Ctrl+B)" (click)="ui.toggleDocuments()">«</button>
         <!-- "Open documents" was the name of a list of files. This is the books
@@ -413,18 +452,202 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
         (dragleave)="onLeave()"
         (drop)="onDrop($event, null)"
       >
+        <!--
+          ══ THE WORKSPACE ═══════════════════════════════════════════════════
+
+          Owen, 2026-08-22, in full, because every decision below is one clause
+          of it:
+
+          \`"lets remove the 'OCR...' button from the homepage. and the drop zone
+          on the home page - lets have it accept images (HEIC, PNG, JPG, etc) as
+          input, not just PDF. if the user drag/drops images into the home
+          screen, it pulls them all up in the organizer and they can select one
+          or more, right-click them, and select 'create new book' from them.
+          itll pop up a modal to name the new book and open in the project just
+          as though they had started a new book from the home page. im thinking
+          we can put the tree workflows in accordions just like the inspector
+          chapter/notes/furniture accordions. each book opened will be an
+          accordion with an X next to it to close, or an arrow to minimize it.
+          the working area where theyre defining what's a book and what isn't
+          can be labeled 'workspace' or something until theyve finished defining
+          the pages as new books. then they close the workspace and whatever
+          wasnt assigned to a new library/book is cleared away. if they want to
+          pull it up again theyll have to re-upload the images. but theyll be
+          saved in the new books they added. the pages are moved out of the
+          workspace and into the new project they create when they click create
+          new project or whatever."\`
+
+          IT IS DRAWN ONLY WHILE IT HOLDS SOMETHING. An empty Workspace header
+          over an empty library would be furniture explaining a state nobody is
+          in — and the drop that fills it is the thing that makes it appear,
+          which is how anybody learns the two are connected.
+
+          FIRST, ABOVE THE BOOKS. It is the one accordion here that is about
+          work in progress rather than about work already filed, and five open
+          books would otherwise push it under the fold on the one screen where
+          somebody is mid-gesture.
+        -->
+        @if (workspace.holding()) {
+          <section class="accordion" [class.shut]="!workspaceOpen()">
+            <div class="ahead">
+              <button
+                class="atwist"
+                [attr.aria-expanded]="workspaceOpen()"
+                [title]="workspaceOpen() ? 'Fold the workspace away' : 'Show the workspace'"
+                (click)="workspaceOpen.set(!workspaceOpen())"
+              >
+                <span class="acaret">{{ workspaceOpen() ? '▾' : '▸' }}</span>
+                <span class="alabel">Workspace</span>
+                <span class="count">{{ workspace.count() }}</span>
+              </button>
+              <!--
+                THE ✕ IS A DESTRUCTION AND IS ASKED ABOUT — see \`shutWorkspace\`.
+                It wears the danger hover for the same reason Home's delete does:
+                this is the only control in the panel that ends something that
+                cannot be got back by pressing anything.
+              -->
+              <button
+                class="ax danger"
+                title="Close the workspace — anything not yet made into a book is cleared"
+                aria-label="Close the workspace"
+                (click)="void shutWorkspace()"
+              >✕</button>
+            </div>
+            @if (workspaceOpen()) {
+              <div class="shots">
+                <!--
+                  THE CARD IS A BUTTON so the keyboard reaches it and the a11y
+                  tree calls it what it is. \`draggable="false"\` on the picture
+                  because a native image drag out of here would hand the app's
+                  own blob URL to whatever it landed on.
+                -->
+                @for (shot of workspace.items(); track shot.id) {
+                  <button
+                    class="shot"
+                    type="button"
+                    [class.chosen]="chosen().has(shot.id)"
+                    [attr.aria-pressed]="chosen().has(shot.id)"
+                    [title]="shot.name"
+                    (click)="pickShot($event, shot)"
+                    (contextmenu)="onShotMenu($event, shot)"
+                  >
+                    <!--
+                      ── A HEIC MAY NOT DRAW, AND THAT IS ANSWERED RATHER THAN
+                         ASSUMED EITHER WAY ────────────────────────────────────
+
+                      Chromium decodes PNG and JPEG in an \`<img>\` and does not
+                      reliably decode HEIC — which is the format of the case this
+                      whole workspace was built for, a book photographed with a
+                      phone. Main can decode one (libheif, at intake), but asking
+                      it to would mean decoding every dropped photograph before
+                      anybody has said which of them are a book, in the process
+                      that must not be blocked, for a picture 96 pixels wide.
+
+                      So the card asks the platform and believes the answer.
+                      \`(error)\` is the browser saying it could not draw this
+                      one, and the mark takes its place — the same camera the
+                      tree uses for photographs-before-they-are-pages, so the
+                      substitute is still this app's own vocabulary. If a later
+                      Chromium learns HEIC, the picture simply appears and
+                      nothing here has to be revisited.
+
+                      THE NAME IS ON THE CARD EITHER WAY, which is what makes a
+                      grid of marks usable at all: it is the person's own file,
+                      named by them or their camera, and capture intake's rule
+                      about filenames in copy is the same rule — this is the one
+                      place the name IS the content.
+                    -->
+                    @if (undrawable().has(shot.id)) {
+                      <span class="noshot" aria-hidden="true">
+                        <svg><use href="#ft-capture" /></svg>
+                      </span>
+                    } @else {
+                      <img
+                        [src]="shot.url"
+                        [alt]="shot.name"
+                        draggable="false"
+                        (error)="cannotDraw(shot.id)"
+                      />
+                    }
+                    <span class="sname">{{ shot.name }}</span>
+                  </button>
+                }
+              </div>
+              <!--
+                THE GESTURE, SAID ONCE, UNDER THE CARDS. A right-click menu is
+                the one act in this app with nothing on screen to suggest it —
+                capture-grid gets away with silence because its menu repeats
+                acts the header already offers, and this menu is the only door
+                there is.
+              -->
+              <p class="ahint">
+                Select images, then right-click to make a book from them. Closing this clears
+                whatever is left.
+              </p>
+            }
+          </section>
+        }
+
         @for (group of groups(); track group.key) {
           <!--
-            role=group with the book's name on it, so the tree inside is
-            announced as belonging to something rather than as a run of
-            unrelated cards. There is no header element any more: the first card
-            IS the book — its import, the thing it all started from.
+            ── EACH BOOK IS AN ACCORDION (Owen, above) ────────────────────────
+
+            *"each book opened will be an accordion with an X next to it to
+            close, or an arrow to minimize it."* The idiom is the inspector's,
+            character for character — \`.accordion\`, a head with a caret,
+            a label in small caps, a count — because there is one accordion in
+            this app and a second one two pixels different reads as a rendering
+            bug rather than as a decision.
+
+            THIS IS CHROME AROUND THE GROUP, NOT A NEW GROUP. The rows inside
+            are the same \`#line\` template with the same drag, drop, selection,
+            menu and footer gestures they have always had; what is new is a head
+            over them and the ability to fold the whole book away. A tree that
+            was rebuilt to gain a header would have been the wrong trade.
+
+            role=group with the book's name on it stays where it was — on the
+            element holding the CARDS — so the tree is still announced as
+            belonging to something. The first card is still the book itself: its
+            import, the thing it all started from. The head names it a second
+            time, which is what a person needs when the book is folded shut and
+            the card that carries the name is not on screen.
           -->
-          <div class="group" role="group" [attr.aria-label]="'Book: ' + group.title">
-            @for (row of group.rows; track row.key) {
-              <ng-container [ngTemplateOutlet]="line" [ngTemplateOutletContext]="{ $implicit: row }" />
+          <section class="accordion" [class.shut]="shutBooks().has(group.key)">
+            <div class="ahead">
+              <button
+                class="atwist"
+                [attr.aria-expanded]="!shutBooks().has(group.key)"
+                [title]="shutBooks().has(group.key) ? 'Show this book' : 'Fold this book away'"
+                (click)="foldBook(group.key)"
+              >
+                <span class="acaret">{{ shutBooks().has(group.key) ? '▸' : '▾' }}</span>
+                <span class="alabel">{{ group.title }}</span>
+                <span class="count">{{ group.rows.length }}</span>
+              </button>
+              <!--
+                THE CLOSE-BOOK DOOR, MIRRORED ONTO THE HEAD. The root card still
+                carries its own ✕ and the right-click still offers Close book;
+                this is the third door onto the same call, and it exists because
+                a folded book has no root card on screen to press. All three go
+                through \`closeProject\` — nothing on disk, every tab closed the
+                ordinary way, so a document holding uncommitted work still gets
+                its one question.
+              -->
+              <button
+                class="ax"
+                title="Close this book — nothing is deleted"
+                [attr.aria-label]="'Close ' + group.title"
+                (click)="closeProject(group)"
+              >✕</button>
+            </div>
+            @if (!shutBooks().has(group.key)) {
+              <div class="group" role="group" [attr.aria-label]="'Book: ' + group.title">
+                @for (row of group.rows; track row.key) {
+                  <ng-container [ngTemplateOutlet]="line" [ngTemplateOutletContext]="{ $implicit: row }" />
+                }
+              </div>
             }
-          </div>
+          </section>
         }
 
         @for (row of loose(); track row.key) {
@@ -794,6 +1017,43 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
           }
         </div>
       }
+
+      <!--
+        ── THE WORKSPACE'S OWN MENU ────────────────────────────────────────────
+
+        *"they can select one or more, right-click them, and select 'create new
+        book' from them."* One item, because there is one thing to do with a
+        pile of loose images, and this app's rule for a menu is that an act which
+        would change nothing is absent rather than greyed (capture-grid, Wave
+        24). Removing an image on its own is deliberately NOT here: the workspace
+        is cleared by closing it, which is the door Owen named, and a second
+        subtractive act would be a second answer to "how do I get rid of this".
+
+        IT COUNTS THE IMAGES for the reason the light table's menu counts
+        photographs — somebody about to move nine of them out of this list should
+        read the nine before the naming card appears.
+
+        A SEPARATE SIGNAL FROM THE TREE'S MENU, not a second mode on it: that one
+        is about a Row and every branch in it asks \`open.row.kind\`. Two menus
+        that can never be open at once are still two questions, and one signal
+        holding either would be a union nobody could read.
+      -->
+      @if (shotMenu(); as at) {
+        <div class="menu-scrim" (click)="shotMenu.set(null)" (contextmenu)="shotMenu.set(null)"></div>
+        <div
+          class="menu"
+          role="menu"
+          aria-label="Actions for the selected images"
+          [style.left.px]="at.x"
+          [style.top.px]="at.y"
+          (keydown.escape)="shotMenu.set(null)"
+        >
+          <button role="menuitem" (click)="createFromChosen()">
+            Create new book from {{ chosen().size }}
+            {{ chosen().size === 1 ? 'image' : 'images' }}…
+          </button>
+        </div>
+      }
     </div>
     }
 
@@ -902,7 +1162,9 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
 
     /* Present so the symbols resolve; never drawn. Not display:none — a hidden
        subtree still defines its <defs>, but zero-sized is the form every icon
-       sheet uses and the one browsers agree about. */
+       sheet uses and the one browsers agree about. Absolute is what keeps it out
+       of the host's flex column now that it is a child of the host rather than
+       of the panel: a zero-height flex item would still take a gap. */
     .sheet { position: absolute; width: 0; height: 0; overflow: hidden; }
 
     .head {
@@ -924,8 +1186,135 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
     .list.landing { background: var(--accent-faint); }
 
     /* Each book is a run; the space between two of them is what says where one
-       ends. Heavier chrome would make the panel read as several lists. */
-    .group { margin-bottom: 14px; }
+       ends. The head above it now says the same thing louder, so the margin is
+       what separates the CARDS from their own head rather than one book from
+       the next — see \`.accordion\`, which carries the between-books space. */
+    .group { margin-bottom: 4px; }
+
+    /*
+      ── THE ACCORDIONS ────────────────────────────────────────────────────────
+
+      THE INSPECTOR'S IDIOM, ON PURPOSE AND MEASURED AGAINST IT: a head row with
+      a twist on the left, a small-caps label, a count on the right, and a body
+      that is simply not rendered when shut. The numbers are that panel's —
+      9px twist, 10px/600 label at 0.08em, an 11px tabular count — because two
+      accordions in one window that differ by a pixel read as a bug.
+
+      WHAT IS NOT COPIED IS THE FLEX. The inspector's sections SHARE a fixed
+      column height (\`flex: 1 1 0\` with each body scrolling itself), which is
+      right for three sections that are always the same three. Here the number of
+      sections is the number of open books, and giving each of them an equal
+      share of the panel would make every book's tree shorter as another book
+      opened. This list scrolls as one, which is what it has always done.
+
+      THE HEAD IS A ROW OF TWO CONTROLS AND NOT ONE, which is why \`.ahead\` is a
+      div holding buttons rather than being a button itself: a ✕ nested inside a
+      button is invalid markup, and the version of it that "works" is a click
+      handler racing its own parent.
+    */
+    .accordion { margin-bottom: 14px; }
+    .accordion.shut { margin-bottom: 6px; }
+
+    .ahead { display: flex; align-items: baseline; gap: 2px; }
+    .atwist {
+      flex: 1; min-width: 0;
+      display: flex; align-items: baseline; gap: 8px;
+      padding: 6px 4px 6px 6px;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      text-align: left; cursor: pointer;
+    }
+    .atwist:hover { background: var(--bg-hover); }
+    /*
+      NAMED \`acaret\` AND NOT \`twist\`, WHICH IS THE WHOLE OF THE REASON IT HAS
+      AN AWKWARD NAME. \`.twist\` is already taken in this stylesheet — it is the
+      CARD's expander arrow, ten pixels wide with a fixed line box so that the
+      marks to its right line up whether or not a node has children — and a
+      second rule of the same name at the same specificity is decided by
+      declaration order, which is a coin flip dressed as a cascade. The two
+      arrows look alike because they are the same idea at two scales; they are
+      not the same rule and must not share a selector.
+    */
+    .acaret { flex: 0 0 auto; color: var(--text-tertiary); font-size: 9px; line-height: 1; }
+    .alabel {
+      flex: 1; min-width: 0;
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      font-size: 10px; font-weight: 600;
+      text-transform: uppercase; letter-spacing: 0.08em;
+      color: var(--text-tertiary);
+    }
+    .atwist:hover .alabel { color: var(--text-secondary); }
+
+    /* The head's own ✕ — the card's \`.x\` at the head's smaller weight. Quiet
+       until the pointer is on it, like every other ✕ in this panel. */
+    .ax {
+      flex: 0 0 auto;
+      padding: 4px 6px;
+      background: transparent; border: none; border-radius: var(--radius-sm);
+      color: var(--text-muted); font-size: 10px; line-height: 1; cursor: pointer;
+    }
+    .ax:hover { background: var(--bg-hover); color: var(--text-primary); }
+    .ax.danger:hover { background: var(--error-soft); color: var(--error); }
+
+    /*
+      ── THE WORKSPACE'S GRID ──────────────────────────────────────────────────
+
+      \`auto-fill\` at a 96px minimum, so the panel decides how many columns it
+      has rather than this file guessing: three at the sidebar's 384px, and still
+      a grid rather than a broken row if that number ever moves again (it has
+      moved twice already — see the \`:host\` docblock).
+
+      A FIXED-HEIGHT PICTURE WITH \`object-fit: contain\`, because a shoot is
+      portrait pages and screenshots in whatever the screen was: cropping to fill
+      would cut the top off every page, and letting each card take its own aspect
+      would make a grid that steps up and down like a broken staircase.
+    */
+    .shots {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+      gap: 6px;
+      padding: 2px 2px 6px;
+    }
+    .shot {
+      display: flex; flex-direction: column; gap: 4px;
+      padding: 4px;
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-subtle);
+      border-radius: var(--radius-md);
+      cursor: pointer;
+      text-align: left;
+      transition: border-color 100ms cubic-bezier(0, 0, 0.2, 1),
+                  background-color 100ms cubic-bezier(0, 0, 0.2, 1);
+    }
+    .shot:hover { border-color: var(--border-strong); }
+    /* Chosen is the accent, which is this app's one word for "this one" — the
+       same statement the standing card makes with the same colour. */
+    .shot.chosen { border-color: var(--accent); background: var(--accent-faint); }
+    .shot img {
+      display: block; width: 100%; height: 72px;
+      object-fit: contain;
+      background: var(--bg-sunken);
+      border-radius: var(--radius-sm);
+    }
+    /* The stand-in, at the picture's exact size so a grid of mixed formats does
+       not step up and down where the HEICs are. */
+    .noshot {
+      display: flex; align-items: center; justify-content: center;
+      width: 100%; height: 72px;
+      background: var(--bg-sunken);
+      border-radius: var(--radius-sm);
+      color: var(--text-muted);
+    }
+    .noshot svg { width: 22px; height: 22px; }
+    .sname {
+      font-size: 10px; color: var(--text-tertiary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    }
+    .shot.chosen .sname { color: var(--text-secondary); }
+
+    .ahint {
+      margin: 0; padding: 0 4px 4px;
+      font-size: 11px; line-height: 1.45; color: var(--text-muted);
+    }
 
     /*
       ── THE DRAWN LINEAGE ─────────────────────────────────────────────────────
@@ -1335,7 +1724,21 @@ export class OpenDocumentsComponent {
   private readonly hostOps = inject(HostOpsService);
   /** Public to the template AND to the host binding above, which is a template too. */
   protected readonly ui = inject(UiService);
+  /** The card before a footer act runs past unapplied work — see `run`. */
+  private readonly unapplied = inject(UnappliedService);
   private readonly router = inject(Router);
+  /**
+   * The intake workspace — loose images waiting to be told which book they are.
+   *
+   * IT IS DRAWN HERE BECAUSE THIS IS WHERE THE BOOKS ARE. Owen's word for what
+   * this panel is doing is "accordions", and the workspace is one of them: the
+   * pile that has not become a book yet, sitting above the ones that have. A
+   * surface of its own would have been a second library on a screen whose whole
+   * redesign was about having one.
+   */
+  protected readonly workspace = inject(IntakeWorkspaceService);
+  /** The card asked before the workspace is cleared — see `shutWorkspace`. */
+  private readonly confirm = inject(ConfirmService);
 
   constructor() {
     /*
@@ -1414,6 +1817,72 @@ export class OpenDocumentsComponent {
    * the class docblock.
    */
   private readonly collapsed = signal<ReadonlySet<string>>(new Set());
+
+  // ── The accordions, and the workspace inside one of them ───────────────────
+
+  /**
+   * The BOOKS somebody has folded away, by group key.
+   *
+   * SHUT RATHER THAN OPEN, exactly as `collapsed` above is, and for the same
+   * reason said one level up: a book that opens while you are looking at the
+   * library must appear OPEN. A set of "which are expanded" would make every
+   * newly opened book arrive folded, so the act of opening a book would hide it.
+   *
+   * A SECOND SET RATHER THAN A MEMBER OF THE FIRST, because the two fold
+   * different things: `collapsed` is keyed by ROW key and hides a node's
+   * children inside a tree, and this is keyed by GROUP key and hides the whole
+   * tree. One set holding both would work until two keys collided, and the
+   * failure would be a book that folds when you fold a step.
+   *
+   * Session-only, like everything else in this panel's view state.
+   */
+  protected readonly shutBooks = signal<ReadonlySet<string>>(new Set());
+
+  /** Whether the workspace accordion is open. It arrives open: see `foldBook`. */
+  protected readonly workspaceOpen = signal(true);
+
+  /**
+   * The images somebody has selected in the workspace, by id.
+   *
+   * IN THE COMPONENT AND NOT IN THE SERVICE. What is selected is a fact about a
+   * surface — it dies with the panel and means nothing to anybody else — where
+   * the images themselves outlive every redraw and are what the create acts on.
+   * Putting the selection in the service would be the same merge of two
+   * different lifetimes that made this panel two selectors in the first place.
+   */
+  protected readonly chosen = signal<ReadonlySet<string>>(new Set());
+
+  /**
+   * Where a Shift-range starts from: the last image clicked WITHOUT Shift.
+   *
+   * A range needs two ends and the platform only gives one; every list of this
+   * shape keeps the other. Null until somebody has clicked once, which is why a
+   * Shift-click with no anchor behaves as a plain click rather than selecting
+   * from the top — the top is not somewhere the person put anything.
+   */
+  private shotAnchor: string | null = null;
+
+  /** Where the workspace's own context menu is, or null. */
+  protected readonly shotMenu = signal<{ x: number; y: number } | null>(null);
+
+  /**
+   * The images this browser could not draw — see the card's own comment.
+   *
+   * IT IS NEVER EMPTIED, and it does not need to be: an id here is a folded
+   * path, and a file that would not decode a moment ago is the same file with
+   * the same path. It empties itself when the workspace does, because the ids
+   * that could be in it are the ids of images that are no longer on the table.
+   */
+  protected readonly undrawable = signal<ReadonlySet<string>>(new Set());
+
+  protected cannotDraw(id: string): void {
+    this.undrawable.update((broken) => {
+      if (broken.has(id)) return broken;
+      const next = new Set(broken);
+      next.add(id);
+      return next;
+    });
+  }
 
   /**
    * The books this panel is about: a project is OPEN while one of its documents
@@ -2283,8 +2752,21 @@ export class OpenDocumentsComponent {
    *
    * A STEP MOVES THE POSITION and everything else follows: main resolves what
    * that step shows and the panes are told (`ledger:go` → `showPosition`). It
-   * costs nothing, asks nothing and throws nothing away — the promise every
+   * costs nothing to the project and throws nothing away — the promise every
    * history panel makes by looking like one, now made by the navigator itself.
+   *
+   * IT USED TO SAY "ASKS NOTHING" TOO, and Owen's 2026-08-22 ruling took that
+   * clause. The one thing a move can cost is the book pane's unapplied stack,
+   * which cannot travel to the step being moved to, and the app used to report
+   * that after the fact rather than ask about it. `stand` now raises the card —
+   * only where there is something to lose, and only when the row is not the one
+   * already being stood on, so the ordinary click is still the free, instant,
+   * silent thing this paragraph promises.
+   *
+   * THE SELECTION IS TAKEN FIRST AND KEPT EITHER WAY. It is a fact about which
+   * card's footer is unrolled rather than about where anybody is standing, so a
+   * dismissed question leaves the row picked and the position where it was, which
+   * is exactly what somebody who wanted to look at that row's acts asked for.
    *
    * A HOST NODE MOVES NOTHING. There is no position to go to — it is somebody
    * else's job, and the ledger has never heard of it — so the click does the one
@@ -2404,14 +2886,83 @@ export class OpenDocumentsComponent {
    * invokes on this click exactly as every operation did before, which is the
    * compatibility promise stated where it is kept.
    */
-  protected run(event: MouseEvent, row: Row, act: Act): void {
+  protected async run(event: MouseEvent, row: Row, act: Act): Promise<void> {
     // Without this the click also lands on the card, which for a step would
     // re-stand it and for a host node would do nothing — but both of them would
     // fire while a dialog was opening over the top.
     event.stopPropagation();
+    /*
+     * ── AND FIRST, THE CARD ABOUT WORK NOBODY APPLIED ─────────────────────────
+     *
+     * Every act this footer offers is a MAKE-ACT — an export, a translation, a
+     * rewrite, or one of the host's — and every one of them is arithmetic over the
+     * recorded steps. A book pane holding changes with no Apply behind them would
+     * therefore have produced the book WITHOUT them, silently (Owen's report,
+     * 2026-08-21; `UnappliedService` has the whole account). `read` is the one act
+     * here that is not: an OCR read makes the bank the ops are a delta against,
+     * so it has nothing to be missing, and asking about it would be a card raised
+     * over a gesture it does not describe.
+     *
+     * AIMED AT THE ROW'S OWN PROJECT, which is the book this footer belongs to
+     * rather than whatever tab happens to be up — the same directory every branch
+     * below sends.
+     *
+     * ── AND THE ANSWER IS READ, NOT JUST OBEYED (Wave 36) ─────────────────────
+     *
+     * `clearedFor` rather than `cleared` because this is the one press that moves
+     * the pointer AFTER the gate has run, and an Apply moves it too — onto the
+     * edit step it has just landed as a child of the position. Standing back on
+     * this row afterwards would put the act behind the very changes somebody just
+     * pressed Apply to include. `standing` is read BEFORE the card is raised for
+     * exactly that comparison: it is the position the stack was made at, and it
+     * is meaningless afterwards.
+     */
+    const made: MakeAct | null = act.host !== null
+      ? 'host'
+      : act.id === 'translate' || act.id === 'simplify' || act.id === 'export'
+        ? act.id
+        : null;
+    const standing = this.ledger.standingIn(row.dir)?.id ?? null;
+    const gate = made === null ? 'go' : await this.unapplied.clearedFor(row.dir, made);
+    if (gate === 'stop') return;
+    /*
+     * WHERE THE APPLY LEFT THE POINTER IS WHERE THIS ACT BELONGS — but only when
+     * the row pressed IS the row the changes were made at.
+     *
+     * That condition is the whole of the care here. Apply lands a child of the
+     * STANDING position, which is not necessarily this row: somebody can stand on
+     * one step, make changes, and press Export on a different row further up the
+     * tree. In that case the new edit step has nothing to do with the act, and
+     * skipping the move would silently export a step nobody clicked. So the move
+     * is skipped in exactly one shape — pressed on the row that was being stood
+     * on, and applied — where the pointer is already one step better than where
+     * this was about to send it.
+     */
+    const landedHere = gate === 'applied' && standing !== null && standing === row.step?.id;
     if (act.host !== null) {
       if (row.dir === null) return;
-      const nodeId = this.nodeIdFor(row);
+      /*
+       * ── AND A HOST ACT NAMES THE STEP THE APPLY JUST LANDED ─────────────────
+       *
+       * The same correction as the move below, expressed the only way a host act
+       * can express it: this branch does not stand on anything, it hands an id
+       * over the socket and the host takes that id back to an export of the step
+       * it names. `nodeIdFor(row)` names the row — which, after an Apply that
+       * landed a child of this very row, is the step WITHOUT the changes. Owen's
+       * ruling names this act in particular (*"whether it's switching to a
+       * different step or narrating or anything at all"*), and a narration made
+       * from the un-applied book is precisely the hours-of-GPU-on-the-wrong-book
+       * failure the card exists to prevent — reached, in this one shape, by
+       * answering the card correctly.
+       *
+       * THE POSITION IS RE-READ RATHER THAN COMPOSED. `applyUnapplied` adopts
+       * main's own history before it resolves, so the ledger this asks is already
+       * the post-Apply one; working the new id out from the answer would be this
+       * panel keeping a second opinion about where main put the pointer.
+       */
+      const nodeId = landedHere
+        ? this.ledger.standingIn(row.dir)?.id ?? this.nodeIdFor(row)
+        : this.nodeIdFor(row);
       if (nodeId === null) {
         /*
          * A ROW THAT CANNOT SAY WHAT IT WOULD ACT ON GETS A SENTENCE, not a
@@ -2437,7 +2988,25 @@ export class OpenDocumentsComponent {
       });
       return;
     }
-    void this.stand(row).then(() => {
+    /*
+     * ── AND THE MOVE ONTO THE ROW ASKS ONLY IF NOTHING ELSE HAS ──────────────
+     *
+     * Every act here stands on the row before it opens its dialog, and standing
+     * is itself something the unapplied card now guards (`stand`). Handing it
+     * `made !== null` is how the two questions stay one: a make-act has already
+     * been answered for against this very project a few lines above, so the move
+     * says nothing; a READ has not, because an OCR is not a make-act — it makes
+     * the bank the ops are a delta against, so it has nothing to be missing — and
+     * the move it performs is exactly the one somebody should be asked about.
+     * That is the honest split: the card is raised once per press, by whichever
+     * of the two halves of the press actually costs something.
+     */
+    const moved = landedHere ? Promise.resolve(true) : this.stand(row, made !== null);
+    void moved.then((go) => {
+      // A dismissed card stops the whole press, not merely the move: opening the
+      // dialog anyway would leave somebody configuring a read of a book they just
+      // said they did not want to leave the step of.
+      if (!go) return;
       void this.router.navigateByUrl('/');
       if (act.id === 'read') this.ui.openOcr();
       else if (act.id === 'translate') this.ui.openTranslate();
@@ -2550,15 +3119,48 @@ export class OpenDocumentsComponent {
    * Stand on the step this card names — the gesture that used to live on a Steps
    * row in the inspector (docs/WORKBENCH.md §6c: the section moved here whole).
    *
-   * FREE, INSTANT AND UNCONFIRMED — one line of the manifest, no job, no
-   * rendering, no question asked.
+   * FREE, INSTANT AND — UNTIL 2026-08-22 — UNCONFIRMED. One line of the
+   * manifest, no job, no rendering. It still costs nothing to the project. What
+   * it can cost is the PAGE: the book pane's stack is a delta against the step it
+   * was made on, so a move has always let it go, and the app said so on the
+   * notice strip AFTERWARDS. Owen's ruling turns that into a decision — *"any
+   * action they take, whether it's switching to a different step or narrating or
+   * anything at all, should ask if they want to apply changes in a modal"* — so
+   * the same card every make-act raises stands in front of the move as well:
+   * Apply changes and go, Discard and go, or dismiss and stay where you are.
    *
-   * The card already being current is not a no-op worth guarding: main answers
-   * with the same ledger and the panel repaints to the same thing, and a click
-   * that did nothing is cheaper than a branch that has to be kept true.
+   * ── THIS IS THE ONE SEAM, and it is one because the door is one ────────────
+   *
+   * `LedgerService.go` is the only person-initiated position move in the window
+   * and this is its only caller (checked, not assumed). What ELSE moves a
+   * position is main — a landed job, another window, the pointer following an
+   * Apply — and none of those is asked, because by the time the renderer hears
+   * about them the move has already happened in the catalogue and a card would be
+   * asking permission for something already true. `PositionSyncService` reacts to
+   * those; it does not initiate them, and it must not grow a question.
+   *
+   * ── AND THE ACT'S OWN PRESS DOES NOT ASK TWICE ─────────────────────────────
+   *
+   * `run` gates the make-acts itself, against the same book and with the same
+   * card, and then calls this to move onto the row first. `asked` is how it says
+   * so. A second card between the answer and the act would be the app asking
+   * whether to apply changes that the previous answer has just applied — or just
+   * discarded.
+   *
+   * ── STANDING WHERE YOU ALREADY STAND IS NOT A MOVE ─────────────────────────
+   *
+   * The old comment said the current card was "not a no-op worth guarding", and
+   * that was true of a click that cost nothing. It is not true of a click that
+   * raises a modal: re-clicking the row you are standing on would put a card
+   * about losing work in front of somebody whose work is not going anywhere. So
+   * the guard exists now, it is narrow, and it guards the QUESTION rather than
+   * the move — the move still goes through main and still repaints to the same
+   * thing, which is the cheap, always-correct behaviour the old comment defends.
    */
-  private async stand(row: Row): Promise<void> {
-    if (row.dir === null || row.step === null) return;
+  private async stand(row: Row, asked = false): Promise<boolean> {
+    if (row.dir === null || row.step === null) return true;
+    if (!asked && this.ledger.standingIn(row.dir)?.id !== row.step.id
+      && !await this.unapplied.cleared(row.dir, 'stand')) return false;
     // A position is a thing to LOOK at, so the workspace has to be on screen for
     // it to mean anything — the same reason a document row navigates.
     void this.router.navigateByUrl('/');
@@ -2570,6 +3172,15 @@ export class OpenDocumentsComponent {
       // over.
       this.notices.notice.set(err instanceof Error ? err.message : String(err));
     }
+    /*
+     * TRUE MEANS "NOBODY SAID STOP", which is a narrower claim than "the pointer
+     * moved" and is the one the caller needs. A row with nothing to stand on and
+     * a move main refused both answer true: the first was never a move, the
+     * second has already put its own sentence on the notice strip, and neither is
+     * a reason to swallow the act the person pressed. The single false is the
+     * card being dismissed, because that IS somebody saying stop.
+     */
+    return true;
   }
 
   /** Fold a node shut, or open it. The click must not also stand on the card. */
@@ -2596,6 +3207,159 @@ export class OpenDocumentsComponent {
    */
   protected closeProject(group: Group): void {
     for (const id of [...group.tabIds]) void this.documents.close(id);
+  }
+
+  // ── The accordions ─────────────────────────────────────────────────────────
+
+  /**
+   * Fold one book away, or open it.
+   *
+   * *"an arrow to minimize it"* (Owen). No `stopPropagation` here, unlike
+   * `toggle` above: that one sits INSIDE a card whose own click stands the
+   * position on the row, and this is a head with nothing behind it.
+   *
+   * FOLDING IS NOT CLOSING and the head draws both, side by side, because they
+   * are the two different things a person means by "get this out of my way": one
+   * is about the panel and is free, the other closes the tabs and moves the book
+   * off the screen.
+   */
+  protected foldBook(key: string): void {
+    this.shutBooks.update((shut) => {
+      const next = new Set(shut);
+      if (!next.delete(key)) next.add(key);
+      return next;
+    });
+  }
+
+  // ── The workspace ──────────────────────────────────────────────────────────
+
+  /**
+   * Click an image: this one, or add to what is already picked.
+   *
+   * THE THREE GESTURES EVERY LIST OF THIS SHAPE HAS. A plain click replaces the
+   * selection and sets the anchor; Ctrl/Cmd toggles one and moves the anchor to
+   * it (so a range can be started from the thing you just added); Shift takes
+   * everything between the anchor and here, in the list's own order, which is
+   * drop order — the order on screen, which is the only order a range can mean.
+   *
+   * THE MARQUEE IS DELIBERATELY NOT HERE. The light table has one because it is
+   * a full-window grid of a hundred and seventy-nine photographs where sweeping
+   * is genuinely faster; this is a panel three columns wide, where a marquee
+   * would mostly be a way to start a drag by accident on a surface whose rows
+   * above it are draggable for something else entirely.
+   */
+  protected pickShot(event: MouseEvent, shot: WorkspaceImage): void {
+    const items = this.workspace.items();
+    if (event.shiftKey && this.shotAnchor !== null) {
+      const from = items.findIndex((one) => one.id === this.shotAnchor);
+      const to = items.findIndex((one) => one.id === shot.id);
+      if (from >= 0 && to >= 0) {
+        const lo = Math.min(from, to);
+        const hi = Math.max(from, to);
+        this.chosen.set(new Set(items.slice(lo, hi + 1).map((one) => one.id)));
+        return;
+      }
+    }
+    if (event.ctrlKey || event.metaKey) {
+      this.chosen.update((picked) => {
+        const next = new Set(picked);
+        if (!next.delete(shot.id)) next.add(shot.id);
+        return next;
+      });
+      this.shotAnchor = shot.id;
+      return;
+    }
+    this.chosen.set(new Set([shot.id]));
+    this.shotAnchor = shot.id;
+  }
+
+  /**
+   * Right-click an image.
+   *
+   * ON A CARD OUTSIDE THE SELECTION, THE RIGHT-CLICK IS ALSO THE SELECTION —
+   * capture-grid's own correction, and the same bug it fixed: a menu opened on
+   * one card while a different set was highlighted offered an act about
+   * something the person was not pointing at. Inside the selection it changes
+   * nothing, because "right-click the ones you swept" is the whole gesture Owen
+   * described.
+   */
+  protected onShotMenu(event: MouseEvent, shot: WorkspaceImage): void {
+    event.preventDefault();
+    event.stopPropagation();
+    if (!this.chosen().has(shot.id)) {
+      this.chosen.set(new Set([shot.id]));
+      this.shotAnchor = shot.id;
+    }
+    this.shotMenu.set({ x: event.clientX, y: event.clientY });
+  }
+
+  /**
+   * "Create new book…" — hand the selection to the naming card.
+   *
+   * NOTHING IS MADE HERE. The card asks the name, the workspace service runs the
+   * two doors (`capture:create` then `capture:intake`) and opens the project the
+   * way "Photograph a book…" opens one. This method's whole job is to turn a
+   * selection into the question, which is what Owen described happening:
+   * right-click, then *"itll pop up a modal to name the new book"*.
+   */
+  protected createFromChosen(): void {
+    const picked = [...this.chosen()];
+    this.shotMenu.set(null);
+    if (picked.length === 0) return;
+    this.ui.openCaptureNew(picked);
+    // The selection goes with the question. Whatever comes back — a book, or a
+    // cancelled card — the images it was about have either left this list or are
+    // still in it to be picked again, and a highlight left over from a dialog
+    // nobody finished is a statement about a gesture that ended.
+    this.chosen.set(new Set());
+    this.shotAnchor = null;
+  }
+
+  /**
+   * Close the workspace — and clear whatever was never made into a book.
+   *
+   * *"then they close the workspace and whatever wasnt assigned to a new
+   * library/book is cleared away. if they want to pull it up again theyll have
+   * to re-upload the images."* (Owen.) So this ✕ is not the tidying-away its
+   * neighbour on a book's head is: closing a book leaves the book on disk and
+   * one click from coming back, and closing this DESTROYS the only handle this
+   * app has on images nobody has assigned.
+   *
+   * WHICH IS WHY IT ASKS, in the app's one confirmation card, naming the count —
+   * the same card and the same shape as every other destruction here. It names
+   * a NUMBER and no filenames: the cards on screen are the person's own
+   * photographs and their names are on them, and a question listing nine of them
+   * would be a dialog reading a list back to somebody who is looking at it.
+   *
+   * THE ANSWER IS THE ANSWER TO A REAL LOSS, so the destructive button is last
+   * and says what it does, and a dismissal keeps everything (`ConfirmService`).
+   */
+  protected async shutWorkspace(): Promise<void> {
+    const left = this.workspace.count();
+    if (left > 0) {
+      const yes = await this.confirm.ask({
+        message: left === 1
+          ? 'Close the workspace and clear the one image left in it?'
+          : `Close the workspace and clear the ${left} images left in it?`,
+        detail: [
+          left === 1
+            ? 'This image has not been made into a book, so nothing on disk holds it — '
+              + 'it is only here, in this window.'
+            : 'These images have not been made into a book, so nothing on disk holds them — '
+              + 'they are only here, in this window.',
+          'Anything you have already made into a book is safe in that book and is not affected. '
+            + 'To get these back, drag them in again.',
+        ],
+        confirm: left === 1 ? 'Clear it' : 'Clear them',
+      });
+      if (!yes) return;
+    }
+    this.workspace.clear();
+    this.chosen.set(new Set());
+    this.shotAnchor = null;
+    // Open, ready for the next drop. A workspace that reappeared folded shut
+    // would hide the very thing that just arrived.
+    this.workspaceOpen.set(true);
   }
 
   /**
@@ -3383,6 +4147,10 @@ function iconForTab(tab: Tab): string {
   // either exists, and drawing it as a page would announce it as a document the
   // reader went and opened by hand.
   if (tab.kind === 'capture') return 'ft-capture';
+  // A `pages` KIND had its own arm here (Wave 41's gravestone) wearing the
+  // SCAN's mark, because a minted book was a folder of rectified pages with
+  // nothing read out of them yet. A mint writes a PDF, so a minted book is a
+  // `pdf` tab and takes the page mark below with every other document.
   return tab.kind === 'book' ? 'ft-book' : 'ft-page';
 }
 
@@ -3440,7 +4208,17 @@ function iconForHostKind(kind: HostNode['kind']): string {
 function titleForStep(step: LedgerStep): string {
   switch (step.action) {
     case 'import':
-      return 'The original';
+      /*
+       * A MINT IS AN IMPORT AND IS NOT "The original", which is a card this tree
+       * drew for two waves and which sent Owen looking for his book somewhere
+       * else. A minted step's action is `import` on purpose — seven sites branch
+       * on it and every one is right that way (`mintedStep`, shared/ledger.ts) —
+       * but the WORDS on the card are not one of those seven: what this row names
+       * is the pages the mint made out of this project's own photographs, and
+       * nothing was imported from anywhere. The card now says what pressing it
+       * opens, which is the rule every other title on this tree keeps.
+       */
+      return mintedFromPhotographs(step) ? 'The pages' : 'The original';
     /*
      * A NOUN, on the same precedent as "The original" and "The book": what a
      * person wants off this card is the artifact, not the act. Standing here is

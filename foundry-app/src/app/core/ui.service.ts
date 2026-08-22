@@ -1,4 +1,7 @@
-import { Injectable, signal } from '@angular/core';
+import { Injectable, inject, signal } from '@angular/core';
+
+import { hosted } from './foundry';
+import { NoticeService } from './notice.service';
 
 /**
  * WHICH HOST ACT IS BEING CONFIGURED, AND WHAT IT WOULD RUN AGAINST.
@@ -32,6 +35,9 @@ export interface HostOpRequest {
  */
 @Injectable({ providedIn: 'root' })
 export class UiService {
+  /** The one reader `confirmQueued` routes to hosted — see there. */
+  private readonly notices = inject(NoticeService);
+
   /** The OCR dialog — read the pages, and nothing else. */
   readonly ocrOpen = signal(false);
   /**
@@ -67,6 +73,30 @@ export class UiService {
 
   /** Naming a book before photographing it. See CaptureNewDialogComponent. */
   readonly captureNewOpen = signal(false);
+  /**
+   * WHICH IMAGES THE NAMED BOOK IS BEING MADE FROM — empty for the plain door.
+   *
+   * The dialog above asks one question ("what book is this?") on behalf of two
+   * gestures: *Photograph a book…* on Home, which makes an empty project to
+   * shoot into, and *Create new book…* on the intake workspace, which makes one
+   * and moves photographs into it. Same question, same card, same one-shot name;
+   * what differs is what is standing behind it, and that is these ids.
+   *
+   * ── WHY IT IS NOT A `null`-IS-SHUT REQUEST LIKE `hostOpOpen` ────────────────
+   *
+   * Because it is not the thing that opens the dialog — the boolean above is,
+   * and the boolean is in `dialogs` where the one-question-at-a-time rule can
+   * reach it. Making the payload the opener would take the card out of that list
+   * and leave `only()` with one dialog it does not know how to close.
+   *
+   * THE STALE-PAYLOAD TRAP `hostOpOpen` WARNS ABOUT IS SHUT BY AN INVARIANT
+   * INSTEAD: `openCaptureNew` is the only way in and it ALWAYS writes this,
+   * defaulting to empty. So the card cannot be opened against a selection
+   * somebody made ten minutes ago, whatever route it was closed by — including
+   * `only()` closing it from under another dialog, which clears the boolean and
+   * leaves this set until the next opener overwrites it.
+   */
+  readonly captureNewFrom = signal<readonly string[]>([]);
   /**
    * THE HOST'S OWN OPERATION DIALOG — the only one of these that carries data.
    *
@@ -160,9 +190,53 @@ export class UiService {
     this.shelfSaid.set(said);
   }
 
-  focusShelf(): void {
+  /**
+   * A DIALOG JUST PUT WORK ON THE QUEUE — the one door through which every
+   * dialog summons the shelf, and the place the hosted rule lives.
+   *
+   * STANDALONE, this is the behaviour the dialogs always had, spelled once
+   * instead of four times: unroll the shelf, and for the OCR dialog move real
+   * DOM focus to Start, since a held read's next press is exactly that button
+   * (the counter's own docblock carries why it is a counter).
+   *
+   * HOSTED, IT DOES NOTHING, because hosted THERE IS NO SHELF — Owen's ruling,
+   * 2026-08-21, verbatim: *"when im in bookforge, the shelf shouldnt appear at
+   * all. thats the hangup. bookforge should be using its own queue."* The add
+   * was routed to the host's queue (Wave 16), the host's own chrome announces
+   * it, and the host's queue page releases a held read (traced end to end by
+   * the host side, same day). The gate is here AND on the shelf's own render
+   * (queue-shelf), because a summons with nobody home and a home nobody can
+   * summon are two halves of one rule, and a caller cannot be trusted to
+   * remember the half it does not draw.
+   */
+  summonShelf(focus: boolean): void {
+    if (hosted()) return;
     this.shelfExpanded.set(true);
-    this.focusShelfAt.update((count) => count + 1);
+    if (focus) this.focusShelfAt.update((count) => count + 1);
+  }
+
+  /**
+   * "DID THAT WORK?" HAS AN ANSWER IN BOTH WORLDS — the confirmation a dialog
+   * owes the person after Add, routed to whichever surface this window has.
+   *
+   * The gap this closes was made by two right decisions crossing (found by the
+   * host side, 2026-08-22, before anybody hit it): hosted there is no shelf —
+   * so no live region, its <p> went with the component — and the host's own
+   * queue chrome lives in its main window, not in this pane. So a hosted Add
+   * closed the dialog into silence, and the job started minutes later on a
+   * card the person cannot see from here. The old undismissable panel was
+   * wrong in the other direction, but it did answer the question.
+   *
+   * HOSTED, THE NOTICE BAR IS THE SURFACE — this app's own idiom for "a
+   * sentence about what just happened", already in every window and gated by
+   * nothing. STANDALONE, the sentence goes to the shelf's live region exactly
+   * as before; the shelf the caller also summons is the visible half there.
+   * One door rather than a hosted() branch in four dialogs, because four
+   * copies of one routing rule is the drift shape this repo keeps refusing.
+   */
+  confirmQueued(said: string): void {
+    if (hosted()) this.notices.notice.set(said);
+    else this.announce(said);
   }
 
   /**
@@ -200,12 +274,21 @@ export class UiService {
     this.hostOpOpen.set(null);
   }
 
-  openCaptureNew(): void {
+  /**
+   * `from` is the workspace images the new book is being made of, or nothing at
+   * all for the plain "photograph a book" door. Written on every open — see
+   * `captureNewFrom` for why that default is the whole of the safety.
+   */
+  openCaptureNew(from: readonly string[] = []): void {
+    this.captureNewFrom.set([...from]);
     this.only(this.captureNewOpen);
   }
 
   closeCaptureNew(): void {
     this.captureNewOpen.set(false);
+    // Cleared on the way out as well as written on the way in, so nothing else
+    // can read a selection off a card that is not on screen.
+    this.captureNewFrom.set([]);
   }
 
   openOcr(): void {

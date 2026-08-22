@@ -88,7 +88,6 @@ import {
   generatedFileFor,
   importDocument,
   ledgerOf,
-  projectDirOf,
   readManifest,
   readingBank,
   readingIsComplete,
@@ -161,61 +160,56 @@ export async function planReading(
   asked: ReadAsk = {},
 ): Promise<ReadingPlan> {
   /*
-   * ── WHAT WAS POINTED AT, WHICH IS NO LONGER ALWAYS A DOCUMENT ─────────────
+   * ── THE BANK IS READ FROM THE PDF, WHATEVER THE BOOK ARRIVED AS ───────────
    *
-   * A captured book has no document to point at — the mint writes a folder of
-   * page images and files no row in the catalogue (`recordMint`) — so the OCR
-   * dialog offers THE PROJECT, and what arrives here is a project directory.
+   * Owen, 2026-08-22, closing a question this function had been answering two
+   * ways for two days:
    *
-   * IT IS RECOGNISED BY BEING ONE rather than by a second argument saying so. A
-   * path IS a project directory exactly when the app's own "which project is
-   * this in" answers the path itself; a document one layer down answers the
-   * folder above it. So the two asks are told apart by a fact about the path,
-   * which is what `importDocument` already does when it recognises a document
-   * this app is holding — and a caller cannot get the flag wrong, because there
-   * is no flag.
+   *   *"if we're building the bank from the images anyway maybe we should just
+   *   build it from the pdf. why not? it would help maintain provenance, and
+   *   nothing will be lost."*
+   *
+   * This chose between `--pdf` and `--pages` off `manifest.archive.kind`,
+   * because a captured project's archive was a FOLDER of rectified page images
+   * and the engine had learned to read one at Wave 21. That was efficient and it
+   * gave one kind of book a different history from every other: a bank made from
+   * pictures, with no document anywhere between the photographs and the text.
+   *
+   * A mint writes an image-only PDF now (`recordMint`) and every project made
+   * before it is healed into one, so the chain is bank ← PDF ← pages for a
+   * photographed book exactly as it is bank ← PDF for a scanned one. ONE INPUT,
+   * ONE STORY. The rasterisation the folder route saved is seconds against a
+   * read measured in hours, and nothing is lost: the pixels in the container are
+   * the pixels the mint rectified, embedded without a re-encode.
+   *
+   * ── WHAT IS POINTED AT IS A DOCUMENT AGAIN ────────────────────────────────
+   *
+   * For those two days the OCR dialog offered THE PROJECT for a captured book,
+   * because there was no document to offer, and this recognised a project
+   * directory by its being one. It offers the project's ORIGINAL now, like every
+   * other book in the list, so what arrives here is a path to a file — and
+   * `importDocument`'s own inside-a-project rule resolves it to the project it
+   * is already in without copying anything.
+   *
+   * THE SOURCE IS `archive/`, ALWAYS, and the person asking never has to know
+   * there is more than one copy. Somebody points at "the PDF", meaning the one
+   * this app shows them — and after a real-text rendering that document is type
+   * on blank paper with no photograph in it at all. Reading THAT would be
+   * reading a reprint of a reading.
    */
-  const resolved = path.resolve(inputPath);
-  const asProject = projectDirOf(resolved) === resolved ? resolved : null;
-  const dir = asProject ?? (await importDocument(inputPath, 'pdf')).dir;
+  const dir = (await importDocument(inputPath, 'pdf')).dir;
   const manifest = await readManifest(dir);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
   const bank = await bankForReading(dir, asked);
-  /*
-   * PAGES OR A PDF, decided by the project's own catalogue and CARRIED rather
-   * than sniffed at the far end. `archiveOriginal` composes `archive/<file>`
-   * either way — for this kind that name is a directory, which is exactly what
-   * `vlm-read --pages` takes (see `ProjectArchive`).
-   */
-  const sourceKind = manifest.archive?.kind === 'pages' ? 'pages' : 'pdf';
   const sourcePath = await archiveOriginal(dir) ?? inputPath;
-  /*
-   * A DIRECTORY THAT IS NOT THERE IS REFUSED HERE rather than three hours later.
-   * A reading of a PDF fails at the engine with a sentence naming the file, and
-   * fails within a second because the first thing it does is open it. A pages
-   * read that was pointed at a folder somebody moved would be handed to the
-   * queue, held behind whatever else is waiting, and refused when its turn came.
-   */
-  if (sourceKind === 'pages' && !await isDirectory(sourcePath)) {
-    throw new ProjectError(
-      `${manifest.title} says its pages are in ${sourcePath} and that folder is not there, so there `
-      + 'is nothing to read.',
-    );
-  }
   return {
     key: manifest.key,
     sourcePath,
-    sourceKind,
     readingsPath: bank.readingsPath,
     // Minted with the path and spent at the landing, so the file and the row agree
     // about which reading the bank belongs to. See `ReadRequest.stepId`.
     stepId: bank.stepId,
   };
-}
-
-/** Is there a folder there? Missing and not-a-folder are one answer. */
-async function isDirectory(target: string): Promise<boolean> {
-  return fsp.stat(target).then((it) => it.isDirectory()).catch(() => false);
 }
 
 /**

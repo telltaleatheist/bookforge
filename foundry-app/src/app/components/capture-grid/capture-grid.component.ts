@@ -3,6 +3,7 @@ import {
   ChangeDetectionStrategy,
   Component,
   computed,
+  DestroyRef,
   ElementRef,
   HostListener,
   inject,
@@ -11,6 +12,7 @@ import {
   signal,
 } from '@angular/core';
 
+import { Rectifier } from '../capture-editor/rectify';
 import { CaptureCardComponent } from './capture-card.component';
 
 /** One page on the table, as the grid needs to draw it. */
@@ -48,17 +50,28 @@ export interface CaptureCard {
   readonly width: number;
   readonly height: number;
   /**
-   * SOMEBODY PLACED THIS ONE THEMSELVES, so a global leaves it alone.
+   * THE BOOK HAS STOPPED MOVING THIS PHOTOGRAPH — `isComplete`, and the dot.
    *
-   * The table has to say it because the promise is open-ended: a photograph with
-   * its own crop sits out every future *Crop all* for the life of the project.
-   * Without a mark, the way to find the ones that did not move is to press the
-   * button, count the cards, and squint -- and the rail's "2 by hand" says how
-   * many while saying nothing about which.
+   * The table has to say it because the promise is open-ended: a complete
+   * photograph sits out every global act for the life of the project. Without a
+   * mark, the way to find the ones that did not move is to press Apply, count
+   * the cards, and squint -- and a rail that says "3 complete" while saying
+   * nothing about WHICH three is a number with nowhere to go. It has somewhere
+   * to go now: the rail's counts are pressable and light exactly these cards.
    *
-   * A fact about the PHOTOGRAPH, so both cards of a cut spread carry it: the
-   * mark is set on every page of a photograph together, and a pair showing it on
-   * one card and not its twin would read as a defect rather than as a pair.
+   * A fact about the PHOTOGRAPH, so both cards of a cut spread carry it. A pair
+   * showing the mark on one card and not its twin would read as a defect rather
+   * than as a pair.
+   *
+   * ── THE NAME IS P1's AND STAYS P1's ─────────────────────────────────────
+   *
+   * `own` was the Wave 24 word ("its own crop"), and the service's `cards`
+   * computed invites this package to rename it now that the question behind it
+   * is `isComplete` rather than `byHand`. It is not renamed, because the writer
+   * of this field is `capture.service.ts` — one word there, in ground this
+   * package consumes and does not edit. The CARD's input is called `complete`,
+   * which is the name a person meets; this one is the wire between two files
+   * and is documented rather than moved.
    */
   readonly own: boolean;
 }
@@ -159,13 +172,29 @@ const SWEEP_STARTS_AT = 5;
     <header>
       <span class="count">{{ cards().length }} {{ cards().length === 1 ? 'page' : 'pages' }}</span>
       <!--
-        Disabled on an empty table as well as an arranged one. Reversing nothing
-        is a control that does nothing, which this component has already decided
-        once (the note below) reads as a broken app rather than as a no-op.
+        SORT IS A MENU OF FOUR ACTS, not a toggle — Owen (2026-08-22), after
+        179 screenshots arrived in drop order: \`"it should be able to sort
+        them by filename or by date saved. ascending or descending."\` The
+        reverse button this replaces could only flip a time-ordered table and
+        went dead the moment anybody dragged; a named sort works from any
+        standing order, because choosing a rule IS abandoning the arrangement,
+        deliberately. Disabled only on an empty table, where sorting nothing
+        reads as a broken app rather than a no-op (this header's own ruling).
       -->
-      <button type="button" (click)="reverse.emit()" [disabled]="arranged() || cards().length === 0">
-        {{ descending() ? 'Oldest first' : 'Newest first' }}
-      </button>
+      <span class="sortwrap">
+        <button type="button" [disabled]="cards().length === 0" (click)="sortOpen.set(!sortOpen())">
+          Sort ▾
+        </button>
+        @if (sortOpen()) {
+          <div class="menu-scrim" (click)="sortOpen.set(false)" (contextmenu)="sortOpen.set(false)"></div>
+          <div class="menu sortmenu" role="menu">
+            <button type="button" (click)="pickSort('name', false)">By name, A to Z</button>
+            <button type="button" (click)="pickSort('name', true)">By name, Z to A</button>
+            <button type="button" (click)="pickSort('taken', false)">Oldest first</button>
+            <button type="button" (click)="pickSort('taken', true)">Newest first</button>
+          </div>
+        }
+      </span>
 
       <!--
         TURNING IS A TABLE ACT, not only an editor one.
@@ -244,10 +273,12 @@ const SWEEP_STARTS_AT = 5;
             [thumb]="card.thumb"
             [label]="card.label"
             [struck]="card.struck"
-            [own]="card.own"
+            [complete]="card.own"
             [quad]="card.quad"
             [width]="card.width"
             [height]="card.height"
+            [projected]="projecting()"
+            [rectifier]="rectifier()"
             (choose)="chooseCard($event, card.id)"
             (open)="open.emit(card.id)"
             (strike)="strike.emit(card.id)"
@@ -276,37 +307,82 @@ const SWEEP_STARTS_AT = 5;
     -->
     @if (menu(); as at) {
       <!--
+        A FULL-WINDOW SCRIM UNDER IT, which is the app's own menu idiom
+        (open-documents, book-view, compare-picker all draw exactly this pair).
+        Until Wave 25 this menu had none and was dismissed only by the table's
+        own pointerdown -- so a click on the rail, the header or anything outside
+        the table left it hanging over a surface it no longer described. The
+        scrim also takes the click it dismisses on, so the next press cannot
+        both close the menu and land on whatever was underneath it.
+      -->
+      <div class="menu-scrim" (click)="menu.set(null)" (contextmenu)="menu.set(null)"></div>
+      <!--
         Owen's flow: sweep, then right-click the highlighted cards. The menu is
         the only place Delete is offered by mouse, so it names the count rather
         than the word "selection" -- somebody about to destroy nine photographs
         should read the nine.
       -->
-      <div class="menu" [style.left.px]="at.x" [style.top.px]="at.y">
-        <button type="button" (click)="turnChosen(-1)">
+      <div class="menu" role="menu" [style.left.px]="at.x" [style.top.px]="at.y">
+        <!--
+          RELEASE, AND ONLY WHERE IT WOULD DO SOMETHING.
+
+          The stage's own precedent, from the split button and then from Wave
+          24's whole control table: *a control that would change nothing is not
+          shown*. Release on a photograph the book is already free to move is a
+          menu item that exists to say no, so the item is ABSENT rather than
+          greyed on a selection with nothing complete in it.
+
+          It names the OUTCOME rather than the mechanism -- "let the book change
+          it again" -- because the other side of this door has never had a name
+          a person could hold, which is the diagnosis Wave 24 opened with. And
+          it counts photographs, like every other item here, because a spread is
+          two cards on one picture and releasing one releases both.
+        -->
+        @if (completeChosen().length > 0) {
+          <button type="button" role="menuitem" (click)="releaseChosen()">
+            Release {{ completeChosen().length }}
+            {{ completeChosen().length === 1 ? 'photograph' : 'photographs' }} — let the book change
+            {{ completeChosen().length === 1 ? 'it' : 'them' }} again
+          </button>
+        }
+        <button type="button" role="menuitem" (click)="turnChosen(-1)">
           Turn {{ chosenPhotos().length }}
           {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }} left
         </button>
-        <button type="button" (click)="turnChosen(1)">
+        <button type="button" role="menuitem" (click)="turnChosen(1)">
           Turn {{ chosenPhotos().length }}
           {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }} right
         </button>
-        <button type="button" (click)="removeChosen()">
+        <button type="button" role="menuitem" (click)="removeChosen()">
           Delete {{ chosenPhotos().length }}
           {{ chosenPhotos().length === 1 ? 'photograph' : 'photographs' }}…
         </button>
       </div>
     }
 
-    <aside
-      class="dropzone"
-      [class.hot]="hot()"
-      (dragenter)="warm($event)"
-      (dragover)="warm($event)"
-      (dragleave)="cool()"
-      (drop)="take($event)"
-    >
-      <span>Drop photographs here</span>
-    </aside>
+    <!--
+      THE STRIP EARNS ITS SPACE ONLY ON AN EMPTY TABLE — Owen (2026-08-22):
+      \`"remove the 'drop photos here' box thats taking up extra space...
+      after theyve already dragged pages in they should know they can drag
+      more pages in there. keep it a drop zone but give the space to the page
+      thumbnails."\` The whole table takes drops either way (both paths call
+      the same intake; the strip's stopPropagation only ever prevented a
+      double). What the strip was FOR — a gesture with nowhere visible to aim
+      is a gesture people do not discover — is only true of a table with
+      nothing on it, so that is the only table that draws it.
+    -->
+    @if (cards().length === 0) {
+      <aside
+        class="dropzone"
+        [class.hot]="hot()"
+        (dragenter)="warm($event)"
+        (dragover)="warm($event)"
+        (dragleave)="cool()"
+        (drop)="take($event)"
+      >
+        <span>Drop photographs here</span>
+      </aside>
+    }
   `,
   styles: [`
     .table { position: relative; }
@@ -319,17 +395,36 @@ const SWEEP_STARTS_AT = 5;
       background: var(--accent-faint);
       pointer-events: none;
     }
+    .menu-scrim { position: fixed; inset: 0; z-index: 1099; }
     .menu {
       position: fixed;
       z-index: 1100;
       padding: 4px;
+      display: flex; flex-direction: column;
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: var(--radius-md);
       box-shadow: 0 12px 24px -8px rgba(0, 0, 0, 0.5);
     }
-    .menu button { border: none; background: transparent; white-space: nowrap; }
-    .menu button:hover { background: var(--bg-hover); }
+    .menu button {
+      display: block; width: 100%;
+      padding: 6px 10px;
+      border: none; border-radius: var(--radius-sm);
+      background: transparent;
+      color: var(--text-secondary);
+      font-size: 12px; text-align: left; white-space: nowrap; cursor: pointer;
+    }
+    .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /*
+     * The sort dropdown wears the context menu's own clothes and hangs off its
+     * button instead of the pointer: same card, same rows, anchored under the
+     * control that opened it. Declared after \`.menu\` so the anchor overrides
+     * the pointer positioning at equal specificity — the cascade rule this
+     * repo checks by hand (cascade-check reports equal-specificity collisions;
+     * this one is deliberate and order-resolved).
+     */
+    .sortwrap { position: relative; }
+    .sortmenu { position: absolute; left: auto; top: calc(100% + 4px); right: 0; }
 
     /* The table and the strip side by side; the header above the table only. */
     :host { display: flex; flex-direction: row; height: 100%; min-height: 0; }
@@ -398,6 +493,17 @@ const SWEEP_STARTS_AT = 5;
 })
 export class CaptureGridComponent {
   private readonly host = inject(ElementRef<HTMLElement>);
+
+  constructor() {
+    // The context goes when the table does. Chromium would collect it with the
+    // canvas eventually; asking now is what keeps a person who opens four
+    // capture projects in a session from holding four contexts against a cap
+    // measured in the low tens.
+    inject(DestroyRef).onDestroy(() => {
+      this.gl?.dispose();
+      this.gl = null;
+    });
+  }
 
   /** The page ids the marquee has chosen, in grid order. */
   protected readonly chosen = signal<readonly string[]>([]);
@@ -513,11 +619,94 @@ export class CaptureGridComponent {
    * A right-click on NOTHING chosen is left to the platform rather than
    * answered with an empty menu -- a menu whose only item would be "Delete 0"
    * is a menu that exists to say no.
+   *
+   * ── A RIGHT-CLICK ON A CARD TAKES THAT CARD FIRST ──────────────────────────
+   *
+   * Which is what every file list does, and what Wave 25 needs it to do: the
+   * contract's door is *right-click a card and release it*, and until now that
+   * gesture only worked on a card somebody had already selected. On any other
+   * card it either opened a menu about a DIFFERENT selection -- a release that
+   * would free three photographs somewhere else on the table -- or, with
+   * nothing chosen, did nothing at all.
+   *
+   * A card already IN the selection leaves the selection alone, so the sweep
+   * flow is untouched: right-clicking one of nine highlighted cards still
+   * offers all nine.
    */
   protected openMenu(event: MouseEvent): void {
+    const target = event.target;
+    const slot = target instanceof Element ? target.closest('[data-id]') : null;
+    const id = slot?.getAttribute('data-id') ?? null;
+    if (id !== null && !this.chosen().includes(id)) {
+      this.anchor = id;
+      this.chosen.set([id]);
+      this.chose.emit(this.chosen());
+    }
     if (this.chosen().length === 0) return;
     event.preventDefault();
     this.menu.set({ x: event.clientX, y: event.clientY });
+  }
+
+  /**
+   * The chosen photographs the book has stopped moving -- what Release acts on.
+   *
+   * Read off the CARDS rather than asked of anything else, because the card's
+   * dot and this list have to be the same answer: a menu offering to release
+   * two photographs when one dot is showing would be the surface disagreeing
+   * with itself about a promise. The card's mark is `isComplete` all the way
+   * down (the service's `cards`), so this is that test folded to photographs.
+   */
+  protected readonly completeChosen = computed(() => {
+    const pages = new Set(this.chosen());
+    const photos: string[] = [];
+    for (const card of this.cards()) {
+      if (pages.has(card.id) && card.own && !photos.includes(card.photoId)) photos.push(card.photoId);
+    }
+    return photos;
+  });
+
+  /** Give these photographs back to the book. One press, the whole selection. */
+  protected releaseChosen(): void {
+    const photos = this.completeChosen();
+    this.menu.set(null);
+    if (photos.length > 0) this.release.emit(photos);
+  }
+
+  /**
+   * SHOW ME THOSE ONES — the door behind the rail's pressable counts.
+   *
+   * Wave 24 shipped the mark and deferred this half out loud: *"the rail's 'N
+   * by hand' count is not clickable … it needs a selection input on the grid,
+   * whose `chosen` is private today, plus scroll-into-view to be worth
+   * having."* This is that, and it is a METHOD rather than an input on purpose.
+   * An input carrying the ids would be compared by value, so pressing "3
+   * complete" a second time -- after sweeping something else in between --
+   * would be a press that visibly did nothing, and the fix for that is a nonce
+   * travelling beside the payload, which is a signal pretending to be an event.
+   *
+   * IT IS SELECTION AND NOT A NEW MODE. The cards it lights are lit the way a
+   * sweep lights them, they answer Delete and Turn the way a sweep's do, and
+   * the next click anywhere clears them. Nothing here is a second kind of
+   * chosen.
+   */
+  showOnly(ids: readonly string[]): void {
+    // In GRID order, like every other writer of `chosen` -- the run a shift
+    // extends and the count Delete names both read the way the table does.
+    const wanted = new Set(ids);
+    const inOrder = this.cards().map((card) => card.id).filter((id) => wanted.has(id));
+    this.anchor = inOrder[0] ?? null;
+    this.chosen.set(inOrder);
+    this.chose.emit(inOrder);
+    const first = inOrder[0];
+    if (first === undefined) return;
+    /*
+     * The cards are already drawn -- this only ever selects among what the
+     * table is holding -- so the scroll can happen now rather than after a
+     * render. `nearest` and not `center`: a selection that is already on screen
+     * should not move under the hand that just asked for it.
+     */
+    const slot = this.host.nativeElement.querySelector(`[data-id="${CSS.escape(first)}"]`);
+    slot?.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   }
 
   /**
@@ -645,8 +834,6 @@ export class CaptureGridComponent {
 
   /** The pages, in the order they should be drawn. */
   readonly cards = input.required<readonly CaptureCard[]>();
-  /** Which way the capture-time sort runs, while there still is one. */
-  readonly descending = input.required<boolean>();
   /** True once the person has dragged, after which the sort no longer applies. */
   readonly arranged = input.required<boolean>();
   /**
@@ -664,12 +851,66 @@ export class CaptureGridComponent {
    */
   readonly active = input<boolean>(true);
 
+  /**
+   * DRAW THE REGISTERED PAGES — true from the crop pass's Apply onward.
+   *
+   * The book's pass, handed down rather than asked for, because this component
+   * has never held a recipe and this is not the fact to start with. Every card
+   * flips together: it is one commitment, made once on the rail, and a table
+   * where some cards were photographs and some were pages would be showing two
+   * passes at once.
+   */
+  readonly projecting = input<boolean>(false);
+
+  /**
+   * ONE WEBGL CONTEXT FOR THE WHOLE TABLE, BUILT LATE AND KEPT.
+   *
+   * `rectify.ts` is emphatic and measured about this: Chromium caps live
+   * contexts in the low tens and drops the OLDEST when a new one exceeds the
+   * cap, silently, so the failure presents as blank cards rather than as an
+   * error. Fifty cards each building their own would lose the first thirty.
+   *
+   * BUILT INSIDE A COMPUTED, which is a side effect in a pure place and is
+   * deliberate. The alternative is building it in the constructor, which opens
+   * a GPU context for every capture project ever opened including the ones that
+   * never leave the crop pass. The computed depends on ONE boolean, so the
+   * construction happens at most once per component and only when the table is
+   * actually about to draw pages.
+   *
+   * A window with no WebGL at all gets null and every card falls back to its
+   * thumbnail. That is a rougher table, not a broken one, and it is silent
+   * because there is nothing a person could do about it here.
+   */
+  private gl: Rectifier | null = null;
+  private glRefused = false;
+  protected readonly rectifier = computed<Rectifier | null>(() => {
+    if (!this.projecting() || this.glRefused) return null;
+    if (this.gl === null) {
+      try {
+        this.gl = new Rectifier();
+      } catch {
+        this.glRefused = true;
+        return null;
+      }
+    }
+    return this.gl;
+  });
+
   /** The whole list of ids, rearranged — never a single move. */
   readonly reorder = output<readonly string[]>();
   readonly open = output<string>();
   readonly strike = output<string>();
-  /** Asked for, not done: only the service can reverse by spread. */
-  readonly reverse = output<void>();
+  /** Let the book change these PHOTOGRAPHS again — the right-click door. */
+  readonly release = output<readonly string[]>();
+  /** A sort was picked: the key and the direction. Only the service can sort by spread. */
+  readonly sortBy = output<{ key: 'name' | 'taken'; descending: boolean }>();
+  /** Whether the Sort dropdown is open. Session-only chrome, nobody else's fact. */
+  protected readonly sortOpen = signal(false);
+  /** Close the menu, then ask — the act belongs to the service, like every reorder. */
+  protected pickSort(key: 'name' | 'taken', descending: boolean): void {
+    this.sortOpen.set(false);
+    this.sortBy.emit({ key, descending });
+  }
   /**
    * Files dropped on the strip. `File` rather than a path, because turning one
    * into the other is `api.pathForFile` and this component holds no bridge —

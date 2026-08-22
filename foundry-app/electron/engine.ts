@@ -523,11 +523,29 @@ function oneWriterOf(outPath: string, write: () => Promise<BookOutcome>): Promis
  * caller who arrived second waits rather than racing the first one's figures out
  * from under it.
  *
- * `--pdf` AND `--language` ARE PASSED ONLY WHERE THE CALLER HAS THEM. The PDF
- * buys one thing — the figure crops, cut once into `readings/<key>.images/` —
- * and without it the engine cuts nothing and says so; the language goes in the
+ * THE PAGES AND `--language` ARE PASSED ONLY WHERE THE CALLER HAS THEM. The pages
+ * buy one thing — the figure crops, cut once into `readings/<key>.images/` — and
+ * without them the engine cuts nothing and says so; the language goes in the
  * book's header, and the engine's default (`en`) is the engine's own documented
  * rule rather than a spelling this side repeats.
+ *
+ * ── ONE FIELD FOR THE PAGES AGAIN (Wave 41), AND THE ENGINE KEEPS TWO ───────
+ *
+ * A `pagesPath` stood beside `pdfPath` from Wave 37 to Wave 41, naming a
+ * DIRECTORY of page photographs, because a capture project's archive WAS a
+ * folder — `--pdf` was the reflow's only face until Wave 37, so such a project
+ * reflowed with no source at all and every Picture block in it refused at export.
+ *
+ * The app no longer has such a project to describe: a mint writes a PDF and
+ * `healMintedArchive` gives one to every project made before it, so
+ * `bookAtPosition` answers `pdf` for a photographed book exactly as it does for
+ * an imported scan. Owen: *"the system isnt trying to sift through images, it's
+ * using the original pdf just like it normally would."*
+ *
+ * `vlm-book --pages` IS UNTOUCHED AND STAYS. It is engine surface area — a
+ * capability the command has, documented on the command, usable from a terminal
+ * — and Wave 37's work behind it is exactly as good as it was. What retired is
+ * the APP's selection of it, which is a different thing from the ability.
  */
 export function writeBookFile(
   readingsPath: string,
