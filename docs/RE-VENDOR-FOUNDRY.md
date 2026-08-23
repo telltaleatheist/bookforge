@@ -129,6 +129,27 @@ ls -l "$BF/foundry-app/dist/electron/mount.js"
 BookForge **refuses to start** without it. `dist/` and `node_modules/` are
 gitignored by the subtree's own `.gitignore`, so they never appear in the commit.
 
+### Restart the app — a running BookForge does not pick this up
+
+If BookForge was running while you refreshed, **quit and relaunch it before
+testing anything**. Electron reads main-process code once, at launch, but the
+Foundry window loads its renderer bundle from `dist/renderer` every time it
+opens. So a window opened after a refresh pairs a NEW renderer with the OLD main
+process, and the first thing the change added is the first thing that breaks:
+
+```
+Error invoking remote method 'queue:run': No handler registered for 'queue:run'
+```
+
+That is the shape of every version of this — a channel the renderer knows about
+and the running main does not. It is not a bad copy and not a failed build;
+check `dist/electron/ipc.js` for the channel and the process start time against
+the build time before chasing anything else.
+
+Quit it properly rather than killing it: `stopFoundry()` runs in `before-quit`
+ahead of the global WSL sweep, and that order is what keeps a GPU holder from
+being orphaned.
+
 ## 5. Run the keepers
 
 ```sh
