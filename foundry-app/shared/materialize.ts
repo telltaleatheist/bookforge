@@ -412,9 +412,29 @@ export interface Translated {
    */
   untranslated: string[];
   /**
-   * Chapter titles left in the source language, by the id of the division — a
-   * title that could not be PROVEN to be a copy of a heading this translation
-   * answers for. See `titledFrom`.
+   * Chapter titles left in the source language, by the id of the division.
+   *
+   * ── WHAT IS LEFT OF THIS LIST, WHICH USED TO BE MOST OF THE SPINE ──────────
+   *
+   * It used to hold every division whose title could not be PROVEN to be a copy
+   * of a heading this translation answers for — which is a person's own rename
+   * and every part divider's composed label, all of them carrying into the
+   * translated book VERBATIM. Owen ended that: *"when i translate, does it
+   * translate the chapters in the spine as well? the chapter names on the green
+   * dotted lines? if not, id like it to. everything should be translated."*
+   * (2026-08-22.) Those titles are asked of the model now and come back as
+   * records of their own (`bookTitlePlan`, src/translate/bookrows.ts).
+   *
+   * SO WHAT REACHES THIS LIST IS THE RESIDUE, and there are exactly two ways in.
+   * A translation made BEFORE the titles pass existed — its records file has no
+   * title rows, nothing derives, and the title carries exactly as it did the day
+   * that file was written, which is the whole of what "an old file still
+   * materialises to the book it always made" means. And a title that IS a
+   * provable copy of a heading the model then REFUSED: the proof held, so no
+   * title was asked, and the heading came back in the source language.
+   *
+   * REPORTED EITHER WAY, and by id, because a spine still in German is a fact
+   * about the finished book and the person holding it is owed the list.
    */
   untitled: string[];
 }
@@ -500,6 +520,14 @@ export function translated(
   book: BookFile,
   /** Block id → its translation. `shared/records.ts` resolves the file to this. */
   words: ReadonlyMap<string, string>,
+  /**
+   * Division id → its TITLE'S translation, from the same records file — the
+   * spine's own answers, for the divisions no heading of the book can supply
+   * (`TranslationWords.titles`). Empty for a records file written before the
+   * titles pass existed, which is what makes an old translation come out as the
+   * book it always came out as.
+   */
+  titles: ReadonlyMap<string, string>,
   /** The language the words are IN — the transform's target, stated by the app. */
   language: string,
 ): Translated {
@@ -552,6 +580,36 @@ export function translated(
    * heading and answer no every time. The rows are the same rows in the same
    * order, so the id found here is the id looked up in `words`.
    */
+  /*
+   * ── AND THE ORDER THE THREE ANSWERS ARE ASKED IN, WHICH IS THE CORRECTNESS ──
+   *
+   * THE COPY DERIVATION GOES FIRST AND IT IS NOT A PREFERENCE — it is the only
+   * order under which the contents page and the chapter head cannot disagree.
+   * Where a title is a copy of a heading, the translated heading IS the title,
+   * and taking it from there means the spine and the page say the same thing by
+   * construction. A record consulted first would put a SECOND answer to the same
+   * question in the spine — "The Coming Struggle" over a chapter headed "The
+   * Struggle to Come", which is `relabelNav`'s own measured failure (see
+   * `titledFrom`) and the reason the engine does not ask for a title it can see
+   * a heading will supply (`bookTitlePlan`, src/translate/bookrows.ts).
+   *
+   * THE RECORD IS SECOND, and it answers for everything the proof cannot reach:
+   * a division a person renamed by hand, a part divider whose label the page
+   * classifier composed out of two blocks. Owen's ruling, 2026-08-22, verbatim:
+   * *"when i translate, does it translate the chapters in the spine as well? the
+   * chapter names on the green dotted lines? if not, id like it to. everything
+   * should be translated."*
+   *
+   * THE SOURCE TEXT IS THIRD AND IT IS THE LAST RESORT, and because the two
+   * above are consulted in that order the third also picks up the one case
+   * neither can: a title that IS a provable copy of a heading THE MODEL REFUSED.
+   * The proof held so nothing was asked, and there is no translated heading to
+   * derive from. It carries, and it is named — `Translated.untitled` says which.
+   *
+   * A FILE WITH NO TITLE ROWS IN IT LANDS ON EXACTLY TODAY'S BEHAVIOUR, which is
+   * what makes every translation already on disk safe: the second question finds
+   * nothing, and the first and third are the rule this function has always had.
+   */
   const starts = new Map<string, number>();
   for (const [index, row] of book.rows.entries()) starts.set(row.id, index);
   const untitled: string[] = [];
@@ -560,8 +618,20 @@ export function translated(
     const at = next === undefined ? book.rows.length : starts.get(next.id) ?? book.rows.length;
     const heading = titledFrom(chapter, book.rows, starts, at);
     const said = heading === null ? undefined : words.get(heading.id);
-    if (said === undefined) { untitled.push(chapter.id); return chapter; }
-    return { ...chapter, title: headingLabel(said) };
+    if (said !== undefined) return { ...chapter, title: headingLabel(said) };
+    /*
+     * NOT THROUGH `headingLabel`. That fold joins the LINES OF A PRINTED HEADING
+     * into the one line a contents entry gets, and a title record's answer is
+     * already that one line — it is a translation of the folded title itself,
+     * asked as a single line and returned as one. Folding it again would be a
+     * second separator for a join that already happened.
+     */
+    const titled = titles.get(chapter.id);
+    if (titled !== undefined && titled.trim().length > 0) {
+      return { ...chapter, title: titled };
+    }
+    untitled.push(chapter.id);
+    return chapter;
   });
 
   return {

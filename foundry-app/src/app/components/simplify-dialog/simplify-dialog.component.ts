@@ -484,14 +484,14 @@ export class SimplifyDialogComponent {
       // nothing and this card stays put and says so.
       if (await this.queue.enqueueTranslate(request) === 'already') {
         this.problem.set(
-          'This rewrite is already queued for this book — nothing was added. It is in the queue shelf.',
+          'This rewrite is already queued for this book — nothing was added. It is in the queue.',
         );
         return;
       }
-      // The shelf, opened, because the job is HELD and the Start button is in
-      // there. Closing onto a collapsed shelf would leave a night of GPU
+      // The queue panel, opened, because the job is HELD and the Start button is
+      // in there. Closing onto a shut panel would leave a night of GPU
       // configured, idle and out of sight.
-      this.ui.summonShelf(false); // hosted: no shelf to summon, and the call is deliberately nothing
+      this.ui.summonQueue(false); // hosted: no queue surface to open, and the call is deliberately nothing
       this.ui.confirmQueued('Simplify queued — it lands in the tree when it finishes.');
       this.ui.closeSimplify();
     } catch (err) {

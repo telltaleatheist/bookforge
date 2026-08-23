@@ -162,31 +162,32 @@ import { api } from '../../core/foundry';
   `,
   styles: [`
     :host {
-      position: absolute;
       /*
-        THE RIGHT MARGIN OF THE PAPER IS WHERE THE CARD FALLS BACK TO, and this
-        line is the whole of that fallback. It is what the sheet gets when the
-        window is too narrow to stand the card in the bench BESIDE the paper —
-        an ordinary laptop, and either column of the aligned pair — and it is
-        exactly where this card sat for the whole of Wave 23.
+        FIXED TO THE VIEWPORT — Owen's ruling (2026-08-22), and it overrules
+        two earlier designs at once: *"the preview of the original document is
+        supposed to be outside of the white window and in the gray area.
+        instead, it sits on the top right of the document... if i scroll down
+        too far it disappears. lots of empty space to the right and it should
+        scroll with the document so the user can see it anywhere."*
 
-        WHERE THE CARD PREFERS TO BE is outside the paper altogether, in the
-        workbench's dead space to the right of the sheet, covering nothing:
-        *"it should show up to the right of the page, outside of the visible
-        paper area — unless it won't fit."* That placement is an inline \`left\`
-        book-view writes when it fits, and an over-constrained absolute box
-        ignores its \`right\` in a left-to-right document, so the two placements
-        are one property and this rule needs no \`@media\` and no class.
+        The card was INK — absolute in the sheet's coordinates, anchored at
+        the clicked block — on the argument that ink rides a scroll instead of
+        being chased down one. True, and it produced exactly what Owen met:
+        a card parked at the top of a long book, gone the moment the reading
+        moved past it. \`position: fixed\` is the design both arguments were
+        reaching for: the card stands in the workbench's gray, holds still on
+        screen through any scroll, and needs no scroll listener at all —
+        viewport coordinates do not move when the bench's inside does.
+        book-view writes \`left\`/\`top\` in those coordinates (its placeGlance
+        carries the arithmetic and the clamps).
 
-        THE WIDTH IS STILL DECLARED EXACTLY ONCE, HERE, and the fit test over
-        there READS it off the element rather than keeping a copy. A px constant
-        in one file mirroring a rem width in this one drifted the moment anybody
-        looked: the app's root font is 13px, so the constant said 256 about a box
-        that renders at 195, the fit test failed where it would have fitted, and
-        the card landed on the paragraph being read. Measured, not reasoned —
-        and now measured off the thing itself, which cannot drift at all.
+        THE WIDTH IS STILL DECLARED EXACTLY ONCE, HERE, and the placement over
+        there READS it off the element rather than keeping a copy. A px
+        constant in one file mirroring a rem width in this one drifted the
+        moment anybody looked (256 said about a box that renders at 195);
+        measured off the thing itself, it cannot drift at all.
       */
-      right: 0.75rem;
+      position: fixed;
       z-index: 4;
       display: block;
       width: 15rem;

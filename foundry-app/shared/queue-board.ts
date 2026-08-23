@@ -4,7 +4,7 @@
  *
  * Compiled by BOTH programs, like the wire shapes beside it: the scheduler
  * (electron/job-queue.ts) reads this to decide when a row may start, and the
- * shelf (components/queue-shelf) reads it to decide which lane a row is drawn
+ * chrome (core/queue-view.service.ts) reads it to decide which lane a row is drawn
  * in. ONE TABLE, because the lane a row waits in and the lane it eventually
  * runs in are the same question, and two answers to it would be a board that
  * draws a reading under CPU while the pump holds it against the card.

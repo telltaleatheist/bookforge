@@ -70,6 +70,21 @@ export class UiService {
   readonly simplifyOpen = signal(false);
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
+  /**
+   * The Sweep — a census of one pattern across the open book, verdicted (Wave 45).
+   *
+   * IT IS A DIALOG LIKE THE FIVE ABOVE AND IT IS ABOUT SOMETHING ELSE ENTIRELY,
+   * which is worth saying here because the difference decides what it may do.
+   * Those five configure an ACT against the position — a reading, a translation,
+   * an export, a record — and each of them consumes the ledger, which is why each
+   * is asked about unapplied work before it opens. This one stages MORE unapplied
+   * work onto the very pane the person is standing in front of: it reads
+   * `BookStack.view()`, it lands `BookStack.push()`, and the tray's Apply is
+   * untouched by it. So there is no `clearedHere` in front of it and there must
+   * not be one (docs/SWEEP.md §1) — a card asking somebody to apply their edits
+   * before making more of the same kind is a card that has misread its own act.
+   */
+  readonly sweepOpen = signal(false);
 
   /** Naming a book before photographing it. See CaptureNewDialogComponent. */
   readonly captureNewOpen = signal(false);
@@ -139,7 +154,23 @@ export class UiService {
    * "Somebody closed it" becomes "they said no".
    */
   readonly confirmOpen = signal(false);
-  readonly shelfExpanded = signal(false);
+  /**
+   * Whether the queue's dropdown panel is hanging under its chip.
+   *
+   * IT WAS `shelfExpanded`, AND THE RENAME IS THE POINT. There is no shelf: the
+   * docked bottom-right pill is deleted and the queue is a chip in the top-right
+   * corner with a panel under it (Owen's ruling, quoted in full at the head of
+   * `QueueBarComponent`). A signal still called `shelfExpanded` would be the
+   * exact trap this codebase keeps refusing — a name describing furniture nobody
+   * can find, which the next person reads as evidence that the furniture is
+   * still there.
+   *
+   * NOT IN THE ONE-QUESTION LIST BELOW, and never was. That list is for MODALS,
+   * because a modal is a question and only one can be asked at a time. This is a
+   * report about work already under way: opening a dialog must not shut it, and
+   * it must not shut a dialog.
+   */
+  readonly queueOpen = signal(false);
 
   /**
    * Whether the open-documents panel is up.
@@ -166,53 +197,59 @@ export class UiService {
   }
 
   /**
-   * What the queue shelf should say out loud, and a nudge to take focus.
+   * What the queue should say out loud, and a nudge to take focus.
    *
-   * TWO SIGNALS RATHER THAN A METHOD CALL ON THE COMPONENT, because the shelf is
-   * mounted by the shell and the OCR dialog has no handle on it — and should
-   * not: a dialog reaching into another component to move its focus is exactly
-   * the wiring that stops working the first time either of them moves.
+   * TWO SIGNALS RATHER THAN A METHOD CALL ON THE COMPONENT, because the queue
+   * bar is mounted by the shell and the OCR dialog has no handle on it — and
+   * should not: a dialog reaching into another component to move its focus is
+   * exactly the wiring that stops working the first time either of them moves.
    *
-   * `shelfSaid` is a live region's text: it is read by whatever is listening
+   * `queueSaid` is a live region's text: it is read by whatever is listening
    * when it changes, and it exists because the confirmation line the OCR dialog
    * used to leave on screen went away with the dialog. A change that is only
-   * visible is a change a screen reader user was simply not told about.
+   * visible is a change a screen reader user was simply not told about. The
+   * region moved from the shelf to the queue bar with the rest of the chrome;
+   * the signal is the same signal, renamed off the furniture that went.
    *
-   * `focusShelfAt` is a counter and not a boolean. Two conversions queued in a
+   * `focusStartAt` is a counter and not a boolean. Two conversions queued in a
    * row have to move focus twice, and a flag that was already true the second
    * time would move it once — the classic shape of "it works, except when you
-   * do it twice".
+   * do it twice". It aims at Start, which is now inside the dropdown panel; the
+   * bar's own effect is what waits for that panel to exist before focusing.
    */
-  readonly shelfSaid = signal('');
-  readonly focusShelfAt = signal(0);
+  readonly queueSaid = signal('');
+  readonly focusStartAt = signal(0);
 
   announce(said: string): void {
-    this.shelfSaid.set(said);
+    this.queueSaid.set(said);
   }
 
   /**
    * A DIALOG JUST PUT WORK ON THE QUEUE — the one door through which every
-   * dialog summons the shelf, and the place the hosted rule lives.
+   * dialog opens the queue panel, and the place the hosted rule lives.
    *
    * STANDALONE, this is the behaviour the dialogs always had, spelled once
-   * instead of four times: unroll the shelf, and for the OCR dialog move real
-   * DOM focus to Start, since a held read's next press is exactly that button
-   * (the counter's own docblock carries why it is a counter).
+   * instead of four times: open the panel, and for the OCR dialog move real DOM
+   * focus to Start, since a held read's next press is exactly that button (the
+   * counter's own docblock carries why it is a counter). What it opens changed
+   * in Wave 43 — it was a pill in the bottom-right corner unrolling upward, and
+   * it is a dropdown under the top-right chip — and not one caller had to learn
+   * that, which is what having one door is for.
    *
-   * HOSTED, IT DOES NOTHING, because hosted THERE IS NO SHELF — Owen's ruling,
-   * 2026-08-21, verbatim: *"when im in bookforge, the shelf shouldnt appear at
-   * all. thats the hangup. bookforge should be using its own queue."* The add
-   * was routed to the host's queue (Wave 16), the host's own chrome announces
-   * it, and the host's queue page releases a held read (traced end to end by
-   * the host side, same day). The gate is here AND on the shelf's own render
-   * (queue-shelf), because a summons with nobody home and a home nobody can
-   * summon are two halves of one rule, and a caller cannot be trusted to
-   * remember the half it does not draw.
+   * HOSTED, IT DOES NOTHING, because hosted THERE IS NO FOUNDRY QUEUE SURFACE
+   * AT ALL — Owen's ruling, 2026-08-21, verbatim: *"when im in bookforge, the
+   * shelf shouldnt appear at all. thats the hangup. bookforge should be using
+   * its own queue."* The add was routed to the host's queue (Wave 16), the
+   * host's own chrome announces it, and the host's queue page releases a held
+   * read (traced end to end by the host side, same day). The gate is here AND on
+   * the bar's own render AND on the queue route, because a summons with nobody
+   * home and a home nobody can summon are two halves of one rule, and a caller
+   * cannot be trusted to remember the half it does not draw.
    */
-  summonShelf(focus: boolean): void {
+  summonQueue(focus: boolean): void {
     if (hosted()) return;
-    this.shelfExpanded.set(true);
-    if (focus) this.focusShelfAt.update((count) => count + 1);
+    this.queueOpen.set(true);
+    if (focus) this.focusStartAt.update((count) => count + 1);
   }
 
   /**
@@ -220,17 +257,17 @@ export class UiService {
    * owes the person after Add, routed to whichever surface this window has.
    *
    * The gap this closes was made by two right decisions crossing (found by the
-   * host side, 2026-08-22, before anybody hit it): hosted there is no shelf —
-   * so no live region, its <p> went with the component — and the host's own
-   * queue chrome lives in its main window, not in this pane. So a hosted Add
-   * closed the dialog into silence, and the job started minutes later on a
-   * card the person cannot see from here. The old undismissable panel was
-   * wrong in the other direction, but it did answer the question.
+   * host side, 2026-08-22, before anybody hit it): hosted there is no queue
+   * surface — so no live region, its <p> went with the component — and the
+   * host's own queue chrome lives in its main window, not in this pane. So a
+   * hosted Add closed the dialog into silence, and the job started minutes
+   * later on a card the person cannot see from here. The old undismissable
+   * panel was wrong in the other direction, but it did answer the question.
    *
    * HOSTED, THE NOTICE BAR IS THE SURFACE — this app's own idiom for "a
    * sentence about what just happened", already in every window and gated by
-   * nothing. STANDALONE, the sentence goes to the shelf's live region exactly
-   * as before; the shelf the caller also summons is the visible half there.
+   * nothing. STANDALONE, the sentence goes to the queue bar's live region
+   * exactly as before; the panel the caller also opens is the visible half.
    * One door rather than a hosted() branch in four dialogs, because four
    * copies of one routing rule is the drift shape this repo keeps refusing.
    */
@@ -259,6 +296,7 @@ export class UiService {
     this.simplifyOpen,
     this.metadataOpen,
     this.captureNewOpen,
+    this.sweepOpen,
     this.confirmOpen,
   ] as const;
 
@@ -346,6 +384,14 @@ export class UiService {
 
   closeMetadata(): void {
     this.metadataOpen.set(false);
+  }
+
+  openSweep(): void {
+    this.only(this.sweepOpen);
+  }
+
+  closeSweep(): void {
+    this.sweepOpen.set(false);
   }
 
   /*

@@ -12,10 +12,11 @@ import { OcrDialogComponent } from './components/ocr-dialog/ocr-dialog.component
 import { OpenDocumentsComponent } from './components/open-documents/open-documents.component';
 import { MetadataDialogComponent } from './components/metadata-dialog/metadata-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
+import { SweepDialogComponent } from './components/sweep-dialog/sweep-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
 import { CaptureProgressComponent } from './components/capture-progress/capture-progress.component';
-import { QueueShelfComponent } from './components/queue-shelf/queue-shelf.component';
+import { QueueBarComponent } from './components/queue-bar/queue-bar.component';
 import { ToastTrayComponent } from './components/toast-tray/toast-tray.component';
 import { BookStacksService } from './core/book-stacks.service';
 import { CaptureService } from './core/capture.service';
@@ -32,8 +33,8 @@ import { api } from './core/foundry';
 /**
  * The shell: the LIBRARY SIDEBAR on the left — the tree above, the tool dock
  * pinned to its foot — whatever route is open in the middle, and the inspector
- * on the right, with the queue shelf floating over all of it and the dialogs
- * over everything.
+ * on the right, with the queue chip in the top row, its panel hanging under
+ * that over the page, and the dialogs over everything.
  *
  * AND, ABOVE ALL OF THAT, A ROW THAT IS USUALLY NOT THERE. The host status chip
  * is the one surface in this window's chrome that belongs to the application
@@ -56,10 +57,10 @@ import { api } from './core/foundry';
  * under a tree that was already there, in a panel that was already that wide.
  * What the bottom row bought — a dock as wide as the window — is also what it
  * cost, because the tree beside it kept growing and the two were spending the
- * same screen. The z-index ladder is untouched by the move (viewer < shelf 900 <
+ * same screen. The z-index ladder is untouched by either move (viewer < queue 900 <
  * dialogs 1200): the action menu is inside a flex column now and overlaps
- * nothing, and the shelf's pill no longer has a dock along the bottom to lift
- * itself over.
+ * nothing. The rung once belonged to a pill docked in the bottom-right corner;
+ * it belongs to the queue bar and its dropdown now (Wave 43), unchanged in height.
  * (There was a rung at 30 for the workspace's drag SHIELD, a sheet of glass over
  * every pane so a book could be dropped onto an <iframe>; it went with the panes
  * — docs/PLAN.md §4, unit 8b.)
@@ -99,9 +100,9 @@ import { api } from './core/foundry';
   selector: 'app-root',
   imports: [
     RouterOutlet, OpenDocumentsComponent, InspectorComponent,
-    QueueShelfComponent, ToastTrayComponent,
+    QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
-    SimplifyDialogComponent, MetadataDialogComponent,
+    SimplifyDialogComponent, MetadataDialogComponent, SweepDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
     CaptureNewDialogComponent, CaptureProgressComponent,
   ],
@@ -128,6 +129,24 @@ import { api } from './core/foundry';
         landed on, and this is chrome, not an overlay.
       -->
       <app-host-status />
+      <!--
+        AND THE OTHER OCCUPANT OF THAT CORNER, which is this app's OWN queue.
+
+        Owen, 2026-08-22, verbatim: *"can you make the queue shelf a bar along
+        the top right that i can click and look at"*. So the queue is a chip in
+        the top row now — a glance, a dropdown under it, and a page behind its
+        More info button (\`QueueBarComponent\` carries the ruling in full and
+        the gravestone for the shelf it replaces).
+
+        THE TWO CHIPS CANNOT COLLIDE, and it is by construction rather than by
+        arrangement: the host's chip is drawn only while a host is pushing a
+        status, and this one is not rendered hosted at all. Each is the corner's
+        whole content in exactly the world the other is absent from. Two rows in
+        the column rather than one shared row, because they are two components
+        with two visibility rules and a shared row would be a third rule to keep
+        in step with both.
+      -->
+      <app-queue-bar />
       <div class="body">
         <!--
           THE LEFT SIDEBAR IS PERMANENT CHROME NOW, and that is Owen's sixth
@@ -151,25 +170,23 @@ import { api } from './core/foundry';
           <app-inspector />
         }
       </div>
-      <app-queue-shelf />
-
       <!--
         THE NOTICES, AND THEY ARE IN THE SHELL NOW RATHER THAN ON A ROUTE.
 
         \`app-notice-bar\` is deleted (Owen's ruling, 2026-08-22: Foundry's notices
         should be toasts, hit on a multi-line capture refusal drawn as a band
         across the top of the window). What replaces it is a stack of cards in the
-        bottom-right corner, above the shelf — \`ToastTrayComponent\`, whose
+        bottom-right corner — \`ToastTrayComponent\`, whose
         docblock carries the ruling, the arithmetic of the offset and the cost of
         having no severity.
 
         THE BAR WAS MOUNTED IN THE WORKSPACE PAGE, which was a smaller mistake
         hiding inside the big one: a notice is about the WINDOW, not about a
         route, and half the writers of the signal — the action menu, the library
-        panel, the queue shelf's Save… — can be pressed with Settings on screen.
+        panel, the queue panel's Save… — can be pressed with Settings on screen.
         Every one of those sentences was raised into a component that was not
         rendered, and vanished without ever being drawn. Here it is a sibling of
-        the shelf and the dialogs, which is what it always was in kind: chrome
+        the queue bar and the dialogs, which is what it always was in kind: chrome
         over the whole window, alive on every route.
 
         Always mounted, never gated: the tray IS the reader of
@@ -199,6 +216,18 @@ import { api } from './core/foundry';
 
       @if (ui.captureNewOpen()) {
         <app-capture-new-dialog />
+      }
+
+      <!--
+        THE SWEEP, WHICH IS THE ONE DIALOG HERE THAT IS NOT ABOUT THE POSITION.
+        The five above configure an act against the step somebody is standing on;
+        this one is about the BOOK PANE that is open, reads that pane's own replay
+        and pushes onto that pane's own stack (docs/SWEEP.md). It is mounted with
+        them because it is a modal and obeys the one-question-at-a-time rule with
+        them, and for no other reason.
+      -->
+      @if (ui.sweepOpen()) {
+        <app-sweep-dialog />
       }
 
       <!--
@@ -237,7 +266,7 @@ import { api } from './core/foundry';
       THE COLUMN THE DOCK LEFT BEHIND, PUT BACK TO WORK. \`.shell\` was a column —
       the body above, the tool dock along the bottom — and the dock moved into the
       left sidebar (Owen, 2026-08-17 22:30), leaving a one-child flex that was kept
-      rather than flattened, because the shelf and the dialogs are its siblings and
+      rather than flattened, because the queue bar and the dialogs are its siblings
       a \`display: block\` here would take the body's own height management with
       it. It has a second child again: the host status chip's row, above the body,
       which is nothing at all in a window nobody mounted and a top row when there

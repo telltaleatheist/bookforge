@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **644831a** — *hosted, the toast tray sits in the corner* |
+| Source sha | **be937ea** — *Wave 45, the sweep: a census of one pattern, landed as pending edits* |
 | Copied on | 2026-08-22 |
-| Copied by | `git -C <foundry> archive 644831a app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive be937ea app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -363,6 +363,68 @@ fixed by `9317b3a` in the previous refresh. `shared/ledger.ts` has the account: 
 arrival weld made `hostActPositionFrom` answer null from a read step, *"refusing
 the host act on the very row that IS the reading it wanted"*. Two symptoms, one
 press, two different files, and only one of them was ever ours to look at.
+
+`be937ea` is four commits — three waves and one fix — and **not one of them
+touches the host contract.** `electron/mount.ts`, `shared/types.ts`,
+`shared/host-ops.ts`, `electron/preload.ts` and `docs/IPC-CHANNELS.md` are
+byte-identical to 644831a; re-counted HERE from the vendored source rather than
+taken from the header, `84` `ipcMain.handle` call sites, `84` distinct channel
+names, zero duplicates, zero `ipcMain.on` — unmoved, and the collision keeper is
+green against it. 118/118 blobs hash-verified against `be937ea:app/` (114 last
+time: five files added, one deleted). `package.json`, `package-lock.json`,
+`angular.json` and all three `tsconfig*.json` are unmoved again, so the existing
+`node_modules` stands and no install was run; `npm run build` clean, ng 801.07 kB
+(756.29 → 801.07, budget WARNING only, matching Foundry's own gate line); all 44
+keepers green.
+
+`d2ad1cf` is Wave 43, and it is the one that changes what the hosted window is
+made of — by SUBTRACTION. Owen's ruling ("make the queue shelf a bar along the
+top right... a button in it for more info thatll take me to a queue page that
+looks like bookforge's queue page") retires `components/queue-shelf` for a chip
+in the title corner, a tray under it, a `/queue` page read from BookForge's own,
+and one `core/queue-view.service.ts` both surfaces speak. **Hosted, all of it is
+inert on purpose**: the route is `standaloneOnly` in `app.routes.ts` and the chip
+renders under `@if (!hosted())`, because "the hosted window's queue IS the
+host's". So the hosted window gains no surface and loses the slot board the last
+entry listed as inherited-but-never-executed. Scheduler, slots, doors and drain
+untouched.
+
+**The hosted toast-tray override this side sent last refresh is GONE, and that is
+the fix landing rather than being reverted.** `:host(.hosted) { bottom: 16px }`
+existed to clear a 424-pixel shelf; Wave 43 deleted the shelf in both worlds, so
+the tray simply anchors `bottom: 16px` everywhere and there is no hosted branch
+left to keep in step. The argument this side contributed survives verbatim in the
+tray's docblock — a tray that READ queue state and moved would be motion under a
+reader's eye, whereas `hosted()` is fixed for the life of the window, so the
+hosted anchor was a second static layout — now generalised into one rule.
+
+`5c4bb68` is Wave 44 (a hand-renamed or composed chapter title becomes an
+ordinary records row at a chapter position — a prefix on an existing field, so
+every old records file parses unchanged and no KEY_FORMAT bump was needed; it
+rides masking, batching, retries, the cost cache, resume and user-row
+protection), `2f09c66` fixes the page-glance card into the workbench gray
+(`position: fixed`, clamped and vertically centred, no scroll listener) and
+centres the queue page, and `be937ea` itself is Wave 45, THE SWEEP: a census
+modal over one regex, each match verdicted keep/strike, landing as pending edits
+— span cuts as serial record corrections with the seam mended, a match that
+empties its block as an op — through two new `BookStack` members. Its contract is
+Foundry's `docs/SWEEP.md`, which is not part of `app/` and so is not carried here.
+Renderer-and-shared only: `core/sweep.ts`, `components/sweep-dialog/`,
+`components/queue-bar/`, `pages/queue/`, `core/queue-view.service.ts` are the new
+files; `shared/materialize.ts` and `shared/records.ts` carry the title rows.
+
+**THE INSTALLED ENGINE IS ONE `src` COMMIT BEHIND AND ITS VERSION NUMBER CANNOT
+SAY SO.** `%APPDATA%\BookForge\components\foundry-cli\foundry.exe` answers
+`foundry 0.9.3 (2dbd557)`, which is the published v0.9.3 the last entry recorded
+as closing the gap — but Wave 44 moved the engine (`src/translate/bookrows.ts`,
+`records.ts`, `run.ts`, `commands.ts`) WITHOUT moving the hand-edited version
+field, so source and installed both read `0.9.3` and only the parenthesised sha
+separates them. The consequence hosted is narrow and silent: the app can read and
+draw translated spine titles, and an engine that never writes those records rows
+simply leaves chapter titles in the source language. Nothing refuses, nothing
+crashes. Closing it is a release from `be937ea` (bump first, so the tag names one
+commit), not a subtree refresh — left undone here deliberately, as before,
+because it rewrites Owen's installed environment.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

@@ -118,6 +118,48 @@ export interface BookStack {
   chaptersOwned(): boolean;
   /** Ops onto the same stack the gestures on the paper push onto. */
   push(ops: readonly BookOp[]): void;
+  /**
+   * TRUE WHERE THE WORDS OF A BLOCK ARE NOT AN OP — a position standing under a
+   * translation or a simplification.
+   *
+   * Everything structural is an op on both passes and needs no such question:
+   * striking, joining, splitting and relabelling are decisions about the book's
+   * shape, and a translation has the shape of the book it came from. The words
+   * are the exception, and they are the exception in ONE direction — a `text` op
+   * on a translated block would put this sentence in the ops chain while the
+   * records file still held the machine's, and the next materialisation would
+   * answer with the machine's (`commit`, book-view.component.ts).
+   *
+   * SO A SURFACE OUTSIDE THE VIEWER HAS TO BE ABLE TO ASK, because the sweep does
+   * both kinds of edit in one press and has to know which door each half takes
+   * before it draws the button that lands them (docs/SWEEP.md §2.7).
+   */
+  translated(): boolean;
+  /**
+   * ONE BLOCK'S WORDS, CORRECTED — the translated pass's answer to `push`.
+   *
+   * ── Why this exists rather than a `text` op ─────────────────────────────────
+   *
+   * See `translated` above: on a translated position the words belong to the
+   * records file, which is the translate step's own payload. This is the same
+   * door the double-click editor takes and it is deliberately the SAME
+   * IMPLEMENTATION — the viewer's `correct`, wired straight through — so the
+   * one-correction-in-flight rule, the ticket that discards an answer about a
+   * book the pane has stopped showing, and the whole-book refresh that follows a
+   * success all stay in one place. A second implementation of any of the three
+   * would be a second truth about a records file that admits only one.
+   *
+   * FALSE MEANS IT DID NOT LAND, and the sentence saying why is already on the
+   * notices or on the paper by the time this resolves. It is never a throw: a
+   * caller correcting fifty blocks in a row needs to be able to keep going past
+   * one refusal and count it.
+   *
+   * SERIAL, AND THE CALLER OWES THAT. Two of these in flight are two whole-file
+   * rewrites of one records file racing, and the second is refused rather than
+   * queued — the refusal is the viewer's and it is a sentence, not a crash, but a
+   * caller that fires them in parallel will lose most of them.
+   */
+  correct(id: string, text: string): Promise<boolean>;
   /** Put a block in the middle of the sheet and pulse it — the panels' jump. */
   reveal(id: string): void;
 }

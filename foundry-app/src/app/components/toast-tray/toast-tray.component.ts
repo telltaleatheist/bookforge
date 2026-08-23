@@ -2,7 +2,6 @@ import {
   ChangeDetectionStrategy, Component, DestroyRef, HostListener, effect, inject, signal, untracked,
 } from '@angular/core';
 
-import { hosted } from '../../core/foundry';
 import { NoticeService } from '../../core/notice.service';
 
 /**
@@ -47,39 +46,39 @@ import { NoticeService } from '../../core/notice.service';
  * identical failures used to set an identical string and change nothing, so the
  * second one was invisible. Null in between means the second one is a change.
  *
- * ── Where it sits, and the arithmetic behind the number ──────────────────────
+ * ── Where it sits, and the gap that is no longer held for anything ───────────
  *
- * The queue shelf owns the bottom-right corner: `bottom: 16px`, 320px wide,
- * z-index 900, unrolling upward. Fully open it is about 393px tall — a 37px
- * head, a 12px aggregate bar, 300px of scrolling rows, a 42px foot and its two
- * borders — so its top edge lands about 409px off the bottom of the window. This
- * tray is anchored at `bottom: 424px`, which is that plus a 15px gap, and grows
- * upward from there. A shelf with every row showing and a toast are both
- * readable at once, which is the case that matters: the shelf is where the work
- * is, and the sentence about why some of it did not happen must not cover it.
+ * THE CORNER, IN BOTH WORLDS, AND THAT IS NEW. This tray used to sit 424 pixels
+ * off the bottom of a standalone window, and the number was arithmetic about
+ * another component: the queue shelf owned the bottom-right corner — 320px wide,
+ * `bottom: 16px`, unrolling upward to about 409 pixels — and the tray cleared it
+ * by fifteen. The reasoning was sound and its premise is gone. THE SHELF IS
+ * DELETED (Wave 43, Owen's ruling): the queue is a chip in the window's TOP-right
+ * corner with a dropdown under it, and the bottom-right corner is empty in every
+ * window this app opens.
  *
- * THE OFFSET IS FIXED AND THAT COSTS SOMETHING, named here rather than
- * discovered later. Most of the time the shelf is a collapsed pill 37px tall,
- * or — with no jobs — nothing, and then a toast floats with several hundred
- * pixels of empty window under it. The alternative is a tray that reads the
- * queue's state and moves, and that is worse in the way that matters: a
- * sentence that jumps up the screen while somebody is reading it, because a
- * job they had nothing to do with finished. A gap is quiet; motion under the
- * eye is not.
+ * So the elaborate held gap is retired rather than re-measured. It held space
+ * for a case that cannot occur any more, and a fixed 424-pixel offset over an
+ * empty corner is not caution, it is a card floating in the middle of the window
+ * for no reason anybody could find by looking.
  *
- * HOSTED IS NOT THAT CASE, and Owen met the difference before this clause did
- * (*"it was elevated to halfway up the screen"*, a hosted narrate refusal —
- * relayed with the argument by the host side, 2026-08-22). Hosted there is NO
- * shelf, ever (d9ed267, Owen's own ruling), and `hosted()` is fixed for the
- * life of the window — so a hosted tray anchored in the corner is not a tray
- * that moves, it is a second static layout. The anti-motion argument was about
- * queue state changing under a reader's eye; a fact that cannot change during
- * a session costs none of that. Standalone keeps the held gap exactly as
- * chosen, because there the shelf CAN appear.
+ * WHAT THE OLD CLAUSE WAS RIGHT ABOUT, kept because the argument outlives the
+ * geometry: a tray that READ the queue's state and moved would be worse than any
+ * fixed anchor, because a sentence that jumps up the screen while somebody is
+ * reading it — pushed by a job they had nothing to do with finishing — is motion
+ * under the eye. That is still forbidden. What is different is that "the corner"
+ * is now a fact about both worlds rather than a hosted special case, so there is
+ * no anchor to choose between and nothing to move.
  *
- * z-index 1100: above the shelf (900) and the drag veil (1000), below the
+ * (Hosted got here first: `hosted()` is fixed for the life of the window, so the
+ * hosted override was a second static layout rather than a moving anchor — the
+ * host side found it as *"it was elevated to halfway up the screen"* on a hosted
+ * narrate refusal, 2026-08-22. Standalone has simply caught up with it, and the
+ * two are one rule again.)
+ *
+ * z-index 1100: above the queue panel (900) and the drag veil (1000), below the
  * dialogs (1200). A dialog is a question being asked right now and must not have
- * a card over its corner; the shelf and the veil are surfaces a notice is
+ * a card over its corner; the queue and the veil are surfaces a notice is
  * routinely ABOUT, so it goes over them.
  *
  * ── THE NAMED COST: EVERY SENTENCE EXPIRES AT THE SAME EIGHT SECONDS ─────────
@@ -129,7 +128,7 @@ import { NoticeService } from '../../core/notice.service';
     Polite rather than assertive: a notice is news about something the person
     just did, not an alarm that should cut across what is being read to them.
   */
-  host: { 'role': 'status', 'aria-live': 'polite', '[class.hosted]': 'hosted()' },
+  host: { 'role': 'status', 'aria-live': 'polite' },
   template: `
     @for (toast of shown(); track toast.id) {
       <div class="toast">
@@ -161,8 +160,9 @@ import { NoticeService } from '../../core/notice.service';
     :host {
       position: fixed;
       right: 16px;
-      /* The standalone anchor; hosted overrides to the corner — see the header. */
-      bottom: 424px;
+      /* The corner, in every window. Nothing floats down here any more — see
+         the header for what the old 424-pixel offset was clearing. */
+      bottom: 16px;
       z-index: 1100;
       display: flex;
       flex-direction: column;
@@ -178,19 +178,19 @@ import { NoticeService } from '../../core/notice.service';
       max-width: 400px;
       /*
         The ceiling is the top of the window with the tray's own offset taken off
-        it. Four long reports at 40vh apiece cannot fit in any window, and the
-        overflow is clipped from the TOP — which takes the oldest cards, the ones
-        already closest to expiring, rather than the one that just arrived.
+        it, top and bottom — 16 and 16. Four long reports at 40vh apiece cannot
+        fit in any window, and the overflow is clipped from the TOP, which takes
+        the oldest cards, the ones already closest to expiring, rather than the
+        one that just arrived.
+
+        IT FOLLOWED THE ANCHOR DOWN. While the tray sat at 424 this was
+        100vh minus 440, the same arithmetic against the same offset; a ceiling
+        left at the old number over a tray in the corner would have clipped four
+        hundred pixels of perfectly good window.
       */
-      max-height: calc(100vh - 440px);
+      max-height: calc(100vh - 32px);
       overflow: hidden;
     }
-    /*
-      Hosted: no shelf exists to clear (d9ed267), and hosted() cannot change
-      while the window lives -- a second static layout, not a moving anchor.
-      The header carries the whole argument.
-    */
-    :host(.hosted) { bottom: 16px; max-height: calc(100vh - 32px); }
 
     .toast {
       display: flex;
@@ -201,8 +201,8 @@ import { NoticeService } from '../../core/notice.service';
       background: var(--bg-elevated);
       border: 1px solid var(--border-default);
       border-radius: var(--radius-lg);
-      /* The shelf's shadow, verbatim: the two surfaces float over the same
-         corner and a card that hovered at a different height would read as
+      /* The queue panel's shadow, verbatim: the two surfaces float over the same
+         window and a card that hovered at a different height would read as
          belonging to a different app. */
       box-shadow:
         0 10px 15px -3px rgba(0, 0, 0, 0.2),
@@ -250,8 +250,13 @@ import { NoticeService } from '../../core/notice.service';
   `],
 })
 export class ToastTrayComponent {
-  /** Anchors the tray in the corner where no shelf can exist — see the header. */
-  protected readonly hosted = hosted;
+  /*
+   * `hosted` WAS INJECTED HERE AND IS GONE WITH THE SPLIT IT DECIDED. It flagged
+   * the host element so hosted could anchor in the corner while standalone held
+   * a gap for the queue shelf. There is no shelf and there is no gap: both
+   * worlds anchor in the corner, so the flag chose between one layout and the
+   * same layout. See the header.
+   */
 
   private readonly notices = inject(NoticeService);
 

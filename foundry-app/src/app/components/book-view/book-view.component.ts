@@ -1227,19 +1227,16 @@ const GLANCE_MARGIN = 12;
             draws nothing when its row is null and hides itself, so this can
             simply stay.
 
-            AND THE MOUNT IS WHAT MAKES THE CARD MEASURABLE, which Wave 30 needs
-            and Wave 23 did not: \`glanceLeft\` is decided against this card's
-            REAL WIDTH, read off this element, rather than against a number this
-            file keeps about a width declared in another one. \`#glance\` is that
-            reading. See \`beside\`.
+            AND THE MOUNT IS WHAT MAKES THE CARD MEASURABLE: the placement is
+            decided against this card's REAL WIDTH and HEIGHT, read off this
+            element, rather than against numbers this file keeps about sizes
+            declared in another one. \`#glance\` is that reading.
 
-            ONE INLINE \`left\` DECIDES BOTH PLACEMENTS. Null is today's card —
-            the component's own stylesheet pins it to the paper's right margin
-            (\`right\`, ./page-glance) and nothing here overrides that. A number
-            is the card standing in the bench beside the paper: an absolutely
-            positioned box given a width, a left AND a right is over-constrained,
-            and CSS resolves that by ignoring the right in a left-to-right
-            document — so setting the one property is the whole of the move.
+            THE TWO INLINE COORDINATES ARE VIEWPORT COORDINATES — the host is
+            \`position: fixed\` (Owen's ruling, 2026-08-22; ./page-glance and
+            \`placeGlance\` carry the argument), so the card stands in the
+            workbench's gray beside the paper and holds still on screen through
+            any scroll of the bench, with no scroll listener anywhere.
           -->
           <app-page-glance
             #glance
@@ -2885,6 +2882,18 @@ export class BookViewComponent {
       selected: () => this.chosen(),
       chaptersOwned: () => this.chaptersOwned(),
       push: (ops) => this.push(...ops),
+      /*
+       * THE TRANSLATED PASS'S TWO MEMBERS, AND THEY ARE THE PANE'S OWN.
+       *
+       * `correct` is the private method the double-click editor commits through,
+       * handed out rather than reimplemented: the one-in-flight guard, the load
+       * ticket and the book refresh are all inside it, and the sweep landing
+       * fifty corrections in a row must obey exactly the rules one hand-typed
+       * paragraph obeys. `translated` is the question that decides which of the
+       * two doors an outside surface should be taking in the first place.
+       */
+      translated: () => this.translation() !== null,
+      correct: (id, text) => this.correct(id, text),
       reveal: (id) => this.scrollTo(id),
     };
     /*
@@ -3819,79 +3828,71 @@ export class BookViewComponent {
       return;
     }
     this.glanced.set(line.row);
-    this.placeGlance(id);
+    /*
+     * A CARD THAT CANNOT BE PLACED IS NOT SHOWN AT ALL. With a fixed-position
+     * host, "shown but unplaced" is a card at the viewport's whim — the exact
+     * shape of surprise this pane does not do. Placement fails only when the
+     * geometry is unreadable (a zero-width card mid-layout, a pane not found),
+     * and the honest answer then is no card, not a card somewhere.
+     */
+    if (!this.placeGlance(id)) this.dismissGlance();
   }
 
   /**
-   * Where the card stands, in the paper's own coordinates.
+   * Where the card stands: FIXED viewport coordinates, in the workbench's gray
+   * beside the paper.
    *
-   * THE FRAME IS THE SHEET AND NOT THE WINDOW, which is the same choice `peekAt`
-   * makes and for the same reason: the card is ink on the paper, so it rides a
-   * scroll instead of being chased down one. Nothing here runs on scroll, and
-   * nothing needs to — a card measured against the paper is still beside its
-   * block after the wheel has turned a hundred lines.
+   * OWEN'S RULING (2026-08-22) OVERRULES THE INK ARGUMENT, and it is worth
+   * keeping both halves on the record. The card was ink in the sheet's frame —
+   * "it rides a scroll instead of being chased down one" — and what that
+   * produced on a long book was a card parked at the very top, gone past the
+   * first wheel turns: *"it sits on the top right of the document. the VERY
+   * top right... if i scroll down too far it disappears. lots of empty space
+   * to the right and it should scroll with the document so the user can see
+   * it anywhere."* `position: fixed` (./page-glance's own host) is the design
+   * both arguments wanted: the gray gutter, held still on screen through any
+   * scroll, with NO scroll listener — viewport coordinates do not move when
+   * the bench's inside does. Nothing here runs on scroll, still.
    *
-   * WHICH IS ALSO WHY THERE IS NO BOTTOM CLAMP. A clamp against the viewport
-   * would be a promise this frame cannot keep past the next wheel click, and the
-   * bench scrolls to whatever the card needs. The top clamp is not a clamp
-   * against the window either — it keeps the card off the paper's own head
-   * margin when the block clicked is the first one on the sheet.
+   * THE ARITHMETIC: the preferred left is just past the paper's right edge
+   * (`paper.right + GLANCE_MARGIN`), clamped so the card stays inside the
+   * bench's CONTENT edge (`clientWidth`, not the border box — the 8px
+   * scrollbar sits on the very edge the card would run into). On a bench too
+   * narrow for the gutter — a laptop, or the aligned pair's half-width
+   * columns — the clamp walks the card leftward over the paper's margin:
+   * still fixed, still visible at any scroll, which is the half of the ruling
+   * that outranks covering nothing. Vertically it centres in the pane, which
+   * no longer depends on the clicked block at all: the card answers "what did
+   * this page look like", and a stable place to look beats a card that jumps
+   * to each click.
+   *
+   * `card.getBoundingClientRect()` and NOT constants — see ./page-glance for
+   * what a mirrored constant cost; the reading works because the idle card is
+   * hidden with `visibility`, not `display`. Re-placed on aim and by the
+   * pane's existing ResizeObserver (the sidebar and inspector opening move
+   * the bench without a window resize).
    */
-  private placeGlance(id: string): void {
+  private placeGlance(id: string): boolean {
     const card = this.glanceCard()?.nativeElement;
     const sheet = card?.closest('.sheet');
-    if (card === undefined || !(sheet instanceof HTMLElement)) return;
+    if (card === undefined || !(sheet instanceof HTMLElement)) return false;
     const block = sheet.querySelector(`[data-id="${CSS.escape(id)}"]`);
-    if (!(block instanceof HTMLElement)) return;
-    const paper = sheet.getBoundingClientRect();
-    this.glanceAt.set(Math.max(GLANCE_GAP, block.getBoundingClientRect().top - paper.top));
-    this.glanceLeft.set(this.beside(card, sheet, paper));
-  }
-
-  /**
-   * The card's left edge when it fits in the bench BESIDE the paper — or null
-   * when it does not, which is the fallback to where it has always sat.
-   *
-   * ── WHY OUTSIDE THE PAPER IS THE ANSWER ────────────────────────────────────
-   *
-   * *"it should show up to the right of the page, outside of the visible paper
-   * area — unless it won't fit, then it can show where it does now."* The card
-   * pinned to the paper's right margin covers prose, and it covers the prose of
-   * the very paragraph the reader just clicked, because the block it is aimed at
-   * is the one it lands on. The bench shows a wide margin of dead workbench
-   * either side of the sheet on any ordinary window, and a card standing in that
-   * dead space covers nothing at all.
-   *
-   * ── THE FIT, AND WHAT EACH NUMBER IS A MEASUREMENT OF ──────────────────────
-   *
-   * `pane.clientWidth` and NOT the pane's border box: the bench carries an 8px
-   * scrollbar on the very edge the card would run into, and a fit computed to
-   * the outside of it would put the card half under the thumb. The pane is the
-   * `.bench` column — in the aligned pair that is HALF the surface, which is
-   * exactly right: the second column is not dead space, it is the source text.
-   *
-   * `card.getBoundingClientRect().width` and NOT a constant. See `glanceCard`
-   * for what a constant cost the first time, and note that this reading is only
-   * possible because the card is hidden with `visibility` rather than `display`
-   * — ./page-glance's `:host(.idle)` carries that half of the bargain.
-   *
-   * MEASURED ON THE ORDINARY WINDOW: root font 13px, so the sheet is
-   * min(46rem, 92%) = 598px and the card is 15rem = 195px. A 1280px bench leaves
-   * (1280 - 598) / 2 = 341px of workbench each side; the card wants
-   * 195 + 12 + 12 = 219px of it, so it fits with 122px to spare and the card
-   * stands outside. Below about 1038px of bench the 92% rule takes over, dead
-   * space collapses to 4% a side, and every window narrower than that gets
-   * today's placement — as does the aligned pair, whose columns are half as
-   * wide as that. The fallback is not an edge case; it is what a laptop sees.
-   */
-  private beside(card: HTMLElement, sheet: HTMLElement, paper: DOMRect): number | null {
+    if (!(block instanceof HTMLElement)) return false;
     const pane = sheet.closest('.bench');
-    if (!(pane instanceof HTMLElement)) return null;
-    const width = card.getBoundingClientRect().width;
-    if (width <= 0) return null;
-    const edge = pane.getBoundingClientRect().left + pane.clientWidth;
-    if (paper.right + GLANCE_MARGIN + width + GLANCE_MARGIN > edge) return null;
-    return paper.width + GLANCE_MARGIN;
+    if (!(pane instanceof HTMLElement)) return false;
+    const paper = sheet.getBoundingClientRect();
+    const box = card.getBoundingClientRect();
+    if (box.width <= 0) return false;
+    const bench = pane.getBoundingClientRect();
+    const inner = bench.left + pane.clientWidth;
+    const left = Math.max(
+      bench.left + GLANCE_MARGIN,
+      Math.min(paper.right + GLANCE_MARGIN, inner - box.width - GLANCE_MARGIN),
+    );
+    const room = Math.max(GLANCE_GAP, (pane.clientHeight - box.height) / 2);
+    this.glanceAt.set(bench.top + room);
+    this.glanceLeft.set(left);
+    return true;
   }
 
   /** The card goes. Safe to call when there is none. */

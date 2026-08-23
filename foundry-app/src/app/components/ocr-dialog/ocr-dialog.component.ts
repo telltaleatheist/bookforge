@@ -135,7 +135,7 @@ import { api, hosted } from '../../core/foundry';
         </div>
 
         <!--
-          IT CLOSES ON ADD, and hands focus to the shelf.
+          IT CLOSES ON ADD, and hands focus to the queue.
 
           For a while it stayed open so a batch could be built without reopening
           it, with a confirmation line under the form. The card was the thing in
@@ -682,20 +682,20 @@ export class OcrDialogComponent {
        * and the queue is somewhere else on the screen — leaving a form in front
        * of it makes them dismiss a card to look at the result of using it.
        *
-       * So the shelf is unrolled, the dialog closes, and real DOM focus moves to
-       * the shelf's Start button, which is what they press next. Focus is the
+       * So the queue panel is opened, the dialog closes, and real DOM focus moves
+       * to its Start button, which is what they press next. Focus is the
        * part that matters for somebody not using a mouse: a dialog that closed
        * and dropped focus back to the document would leave them tabbing across
        * the whole window to reach the thing they just created.
        *
        * `announce` carries what the confirmation line used to say, into the
-       * shelf's live region — a sentence that is read out rather than one that
+       * queue bar's live region — a sentence that is read out rather than one
        * is silently replaced by a closing card.
        */
       /*
        * The sentence is this dialog's; WHERE it lands is `confirmQueued`'s
-       * (standalone: the shelf's live region; hosted: the notice bar, because
-       * there is no shelf and the host's queue chrome is in its own window).
+       * (standalone: the queue bar's live region; hosted: the notice bar, because
+       * there is no queue surface of ours and the host owns that chrome).
        * Hosted the clause about Start goes too — a routed read is queued on
        * arrival and runs when the device frees, nobody presses anything.
        */
@@ -703,11 +703,11 @@ export class OcrDialogComponent {
         ? `Added ${this.nameFor(input)} to be read. It is in the queue and runs on its own.`
         : `Added ${this.nameFor(input)} to be read. Press Start on the queue to run it.`);
       /*
-       * One door for the unroll-and-focus, because the hosted rule lives in it:
-       * hosted there is no shelf to summon (Owen's ruling — the host's queue
+       * One door for the open-and-focus, because the hosted rule lives in it:
+       * hosted there is no queue surface to open (Owen ruled it — the host's queue
        * page is the one queue surface) and this call is deliberately nothing.
        */
-      this.ui.summonShelf(true);
+      this.ui.summonQueue(true);
       this.ui.closeOcr();
     } catch (err) {
       // Never swallowed and never a console line: the two things that can fail

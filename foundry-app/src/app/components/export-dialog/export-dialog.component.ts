@@ -47,10 +47,10 @@ import { api } from '../../core/foundry';
  *
  * NO START GATE. The queue's hold exists so that hours of GPU are never spent by
  * the act of configuring them; there are no hours here to spend, and a person who
- * pressed Export and then had to find a shelf and press Start would be pressing
+ * pressed Export and then had to find the queue and press Start would be pressing
  * a second button to confirm a decision they made with the first. It still goes
  * through the queue — one engine at a time is a rule about the machine, not about
- * the person — so it waits behind a reading that is running, and the shelf shows
+ * the person — so it waits behind a reading that is running, and the queue shows
  * it moving.
  *
  * AND THE RESULT OPENS ITSELF, which is the point: somebody exports an EPUB
@@ -665,7 +665,7 @@ export class ExportDialogComponent {
    *
    * THE DIALOG CLOSES AND NOTHING ELSE HAPPENS ON SCREEN until the job lands —
    * at which point the document opens itself in a tab, which is the result the
-   * user asked for. The shelf is unrolled on the way out so that an export
+   * user asked for. The queue panel is opened on the way out so that an export
    * which takes a moment is visibly moving rather than apparently ignored.
    *
    * `planExport` AND NOT `plan`, and the difference is one directory and the
@@ -736,7 +736,7 @@ export class ExportDialogComponent {
         this.problem.set(`The ${this.labelFor(kind)} of ${this.nameFor(input)} is already being made.`);
         return;
       }
-      this.ui.summonShelf(false); // hosted: no shelf to summon, and the call is deliberately nothing
+      this.ui.summonQueue(false); // hosted: no queue surface to open, and the call is deliberately nothing
       this.ui.confirmQueued('Export queued — it lands under its step when it finishes.');
       /*
        * ONE SENTENCE NOW, AND IT SAYS THE JOB IS MOVING. A translated export used

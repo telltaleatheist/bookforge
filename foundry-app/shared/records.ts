@@ -51,6 +51,27 @@
  * A file can hold both: a project translated before this wave and re-run after it
  * has its old rows and its new ones in one file, and the newest of them is what
  * the book says, however each was spelled.
+ *
+ * ── AND A THIRD SPELLING, WHICH IS NOT A BLOCK AT ALL ───────────────────────
+ *
+ * Owen's ruling, 2026-08-22, verbatim: *"when i translate, does it translate the
+ * chapters in the spine as well? the chapter names on the green dotted lines? if
+ * not, id like it to. everything should be translated."*
+ *
+ * A row keyed `chapter:<division id>` is a translated CHAPTER TITLE — the name a
+ * person typed on the proof sheet, or a part divider's composed label, neither of
+ * which any row of the book says and so neither of which can be derived from a
+ * translated heading (`titledFrom`, shared/materialize.ts). The engine's own
+ * reader owns the spelling and the whole argument for it (`chapterPosition`,
+ * src/translate/records.ts); this is the mirror, on the same grow-together rule
+ * as the rest of this file.
+ *
+ * IT IS BACKWARD-SAFE IN BOTH DIRECTIONS AND THAT IS WHY IT IS A PREFIX ON A
+ * FIELD THAT ALREADY EXISTS. A records file written before this wave has no such
+ * row, so nothing changes for it and a book made from it is exactly the book it
+ * was; and a reader written before this wave — including one still running
+ * against a file a newer engine has appended to — sees a well-formed line at a
+ * position its book has no block at, which is a case it already handles by name.
  */
 import type { BookFile, BookRow } from './book';
 
@@ -124,13 +145,28 @@ export interface TranslationWords {
   /** Block id → the newest translation of it. */
   text: Map<string, string>;
   /**
-   * Positions no row of this book answers to, each once, in the order they were
+   * Division id → the newest translation of its TITLE — see this file's header.
+   *
+   * Empty for every records file written before the titles pass existed, which
+   * is what makes an old translation materialise exactly as it always did.
+   */
+  titles: Map<string, string>;
+  /**
+   * Positions nothing in this book answers to, each once, in the order they were
    * first met. A record about a block this book does not hold — struck since,
-   * merged away, or from another reading altogether — and the caller says so out
-   * loud rather than this dropping it in silence.
+   * merged away, or from another reading altogether — or a title record for a
+   * division somebody has since taken away, and the caller says so out loud
+   * rather than this dropping it in silence.
    */
   stale: string[];
 }
+
+/**
+ * The namespace a chapter title's position wears — the engine's `chapterPosition`
+ * mirrored, and see this file's header for why it cannot collide with either
+ * spelling of a block's position.
+ */
+const CHAPTER_POSITION = 'chapter:';
 
 /** A row's position in the CAST's spelling — `data-bf-src` plus `#note`. */
 function legacyKeyOf(row: BookRow): string {
@@ -153,11 +189,32 @@ export function translationWords(
   const ids = new Set(book.rows.map((row) => row.id));
   const byLegacy = new Map<string, string>();
   for (const row of book.rows) byLegacy.set(legacyKeyOf(row), row.id);
+  const divisions = new Set(book.header.chapters.map((chapter) => chapter.id));
 
   const text = new Map<string, string>();
+  const titles = new Map<string, string>();
   const stale: string[] = [];
   const said = new Set<string>();
   for (const row of rows) {
+    /*
+     * A TITLE ROW IS RESOLVED AGAINST THE DIVISIONS AND NEVER AGAINST THE ROWS,
+     * and the two lists genuinely differ: a division names the block it sits
+     * above, so its id is also a row id, and a record about the PARAGRAPH at
+     * that block is a different record about a different string. Routing on the
+     * prefix rather than on the id is what keeps them apart.
+     *
+     * A title for a division this book no longer has is stale in exactly the
+     * sense every other unclaimed position is — somebody took the chapter line
+     * away after the translation was made — and it is named with the rest.
+     */
+    const division = row.parts.startsWith(CHAPTER_POSITION)
+      ? row.parts.slice(CHAPTER_POSITION.length)
+      : null;
+    if (division !== null) {
+      if (divisions.has(division)) titles.set(division, row.text);
+      else if (!said.has(row.parts)) { said.add(row.parts); stale.push(row.parts); }
+      continue;
+    }
     const id = ids.has(row.parts)
       ? row.parts
       : byLegacy.get(row.parts)
@@ -171,5 +228,5 @@ export function translationWords(
     }
     text.set(id, row.text);
   }
-  return { text, stale };
+  return { text, titles, stale };
 }

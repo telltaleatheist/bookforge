@@ -15,6 +15,7 @@ import {
 } from '@shared/stages';
 import { fold } from '@shared/original';
 
+import { BookStacksService } from '../../core/book-stacks.service';
 import { hosted } from '../../core/foundry';
 import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
@@ -334,6 +335,41 @@ import { UnappliedService } from '../../core/unapplied.service';
         >
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-scan" /></svg>
           <span class="menu-label">OCR</span>
+        </button>
+
+        <!--
+          THE SWEEP, AND IT SITS HERE BECAUSE OF WHAT IT ACTS ON.
+
+          Everything below this tile derives a NEW thing from where you stand — a
+          translation, a simplification, the host's own act, an export, a record.
+          This one changes the book you are already looking at: it finds a pattern
+          across its blocks and stages cut-or-keep verdicts as ordinary pending
+          edits, which is the curation step between reading the pages and making
+          anything out of them. Run order, which is the menu's own rule wherever it
+          is still the truth.
+
+          IT DOES NOT NAVIGATE HOME, unlike the four acts under it, and that is a
+          ruling rather than an omission (docs/SWEEP.md §3). Those four are ABOUT
+          the position and can be ordered from anywhere; this one is about a BOOK
+          PANE that is open and drawing — it reads that pane's replay and pushes
+          onto that pane's stack. Sending somebody to the workspace first would be
+          this menu opening a document in order to have something to act on, which
+          is a gesture nobody asked for arriving through one they did. The cost is
+          named in the title instead: pressed from Settings there is no book pane,
+          so the tile is gray and says what would light it up.
+        -->
+        <button
+          class="menu-item"
+          [class.active]="ui.sweepOpen()"
+          [disabled]="!canSweep()"
+          [title]="canSweep()
+            ? 'Find a pattern across the book — parentheses, brackets, or your own — and cut or '
+              + 'keep each match'
+            : 'Open a book to sweep it — this works on the pages in front of you'"
+          (click)="sweep()"
+        >
+          <svg class="menu-icon" aria-hidden="true"><use href="#ft-sweep" /></svg>
+          <span class="menu-label">Sweep</span>
         </button>
 
         <!-- Translate. Disabled rather than hidden away from a book, on this
@@ -825,6 +861,12 @@ export class ActionMenuComponent {
   protected readonly stage = inject(StageService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  /**
+   * THE REGISTRY OF OPEN BOOK VIEWERS, for the one tile that acts on a PANE
+   * rather than on a step — see `canSweep`. It is the same door the inspector's
+   * three book panels take, and this menu, like them, holds no copy of the book.
+   */
+  private readonly stacks = inject(BookStacksService);
   private readonly hostOps = inject(HostOpsService);
   private readonly notices = inject(NoticeService);
   /** The card before any of the four make-acts below runs past unapplied work. */
@@ -1257,6 +1299,45 @@ export class ActionMenuComponent {
     void this.router.navigateByUrl('/');
     if (!await this.unapplied.clearedHere('translate')) return;
     this.ui.openTranslate();
+  }
+
+  /**
+   * LIT WHERE THERE IS A BOOK PANE TO SWEEP, which is a different question from
+   * every other predicate in this class.
+   *
+   * The four around it ask the LEDGER — is there a book at this position, is this
+   * the import row, has the reading landed — because each of them orders work
+   * against a step. This one asks whether a viewer is REGISTERED: the sweep reads
+   * `BookStack.view()` and pushes onto `BookStack.push()`, both of which are a
+   * live component's own signals, so "a book exists at this position" is not the
+   * fact it needs. A book whose pane is still opening has no stack yet and
+   * honestly answers no.
+   *
+   * A VIEW-ONLY TAB ANSWERS NO TOO, and the dialog says the same thing in a
+   * sentence for whoever gets there another way. An export view has no position
+   * and no stack to be a delta against; the viewer's own `push` refuses one, and a
+   * card that closed and announced a hundred and forty cuts on top of that refusal
+   * would be the app lying about what it had done.
+   */
+  protected canSweep(): boolean {
+    const tab = this.stage.activeDocument();
+    if (tab === null || tab.kind !== 'book' || tab.viewOnly === true) return false;
+    return this.stacks.bookStackFor(tab.id) !== null;
+  }
+
+  /**
+   * NO `clearedHere` IN FRONT OF THIS ONE, and it is the only make-shaped tile
+   * here without it.
+   *
+   * The guard protects acts that CONSUME the ledger or MOVE the position — acts
+   * that would otherwise run against a book missing the pending ops the person is
+   * looking at. The sweep stages more of those ops onto the same pane at the same
+   * position and consumes nothing; a card asking somebody to apply their edits
+   * before making more edits of the same kind would be a card that has misread its
+   * own act (docs/SWEEP.md §1).
+   */
+  protected sweep(): void {
+    this.ui.openSweep();
   }
 
   /**

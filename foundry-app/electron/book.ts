@@ -907,8 +907,8 @@ async function writeTranslationBook(
    */
   if (words.stale.length > 0) {
     console.warn(
-      `[book] ${words.stale.length} record(s) in ${recordsFile} answer for positions this book has `
-      + `no block at — ${words.stale.slice(0, 12).join(', ')}`
+      `[book] ${words.stale.length} record(s) in ${recordsFile} answer for positions this book does `
+      + `not hold — ${words.stale.slice(0, 12).join(', ')}`
       + (words.stale.length > 12 ? ', …' : ''),
     );
   }
@@ -930,7 +930,14 @@ async function writeTranslationBook(
     };
   }
 
-  const derived = translated(made.book, words.text, language);
+  /*
+   * THE SPINE'S OWN ANSWERS TRAVEL WITH THE BLOCKS' — `words.titles`, out of the
+   * same file and by the same "newest row wins" rule. Owen's ruling, 2026-08-22:
+   * *"everything should be translated."* Most divisions are not in that map and
+   * never will be: their titles are copies of headings this translation already
+   * answers for, and `translated` derives those for nothing.
+   */
+  const derived = translated(made.book, words.text, words.titles, language);
   /*
    * THE PARTIAL IS HONEST AND IT IS NAMED. A row with no record keeps its source
    * text — the established rule (`Translated.untranslated`) — and the ids are
@@ -947,9 +954,16 @@ async function writeTranslationBook(
   }
   if (derived.untitled.length > 0) {
     console.warn(
-      `[book] ${derived.untitled.length} chapter title(s) stay in the source language — their `
-      + 'headings are not blocks this translation answers for: '
+      `[book] ${derived.untitled.length} chapter title(s) stay in the source language — nothing in `
+      + 'these answers names them and no heading of theirs came back translated, which is a '
+      + 'translation made before Foundry asked about the spine: '
       + derived.untitled.join(', '),
+    );
+  }
+  if (words.titles.size > 0) {
+    console.log(
+      `[book] ${words.titles.size} chapter title(s) came out of ${recordsFile} — the divisions no `
+      + 'heading of this book answers for.',
     );
   }
 
