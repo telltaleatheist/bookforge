@@ -129,6 +129,72 @@ test('a run is HELD until Start, and Start releases what is there', async () => 
   assert.strictEqual(gpu.runs.length, 1);
 });
 
+test('a run added to a queue that is ALREADY RUNNING joins the run', async () => {
+  /*
+   * Owen, 2026-08-23: he queued Wool behind a narration, the narration finished
+   * and handed assembly the CPU slot, and Wool did not take the GPU. The slot
+   * rule was never the problem — Wool was `held`, because every enqueue was, and
+   * held steps are not claimed. Start had already been pressed for the book
+   * ahead of it; asking for it again per book is asking a question already
+   * answered.
+   */
+  const gpu = fakeModule('tts-conversion');
+  const cpu = fakeModule('reassembly', { resource: () => 'cpu' });
+  await fresh('join-running', [gpu, cpu]);
+
+  const first = engine.enqueue({
+    title: 'For the Soul of the People',
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/soul.epub' } },
+      { type: 'reassembly', label: 'Assemble', config: {}, parentIndex: 0 },
+    ],
+  });
+  await settle();
+  assert.strictEqual(stepsOf(first.id)[0].status, 'held', 'an idle queue still stages — Start is the gesture');
+
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1, 'the narration is on the card');
+
+  // Queued BEHIND it, while it runs. No Start press of its own.
+  const second = engine.enqueue({
+    title: 'Wool',
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/wool.epub' } }],
+  });
+  await settle();
+  assert.strictEqual(stepsOf(second.id)[0].status, 'queued',
+    'added to a running queue, it is runnable — waiting for the card, not for a press');
+  assert.strictEqual(gpu.runs.length, 1, 'one GPU slot, so it waits its turn');
+
+  // The narration lands. Assembly is CPU, so the card frees in the same pass.
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(cpu.runs.length, 1, 'assembly took a CPU slot');
+  assert.strictEqual(gpu.runs.length, 2, 'and Wool took the GPU slot, with nobody pressing anything');
+  assert.strictEqual(gpu.runs[1].ctx.job.title, 'Wool');
+});
+
+test('release:false stages a plan beside a queue that is already running', async () => {
+  const gpu = fakeModule('tts-conversion');
+  await fresh('explicit-hold', [gpu]);
+  engine.enqueue({
+    title: 'Running book',
+    release: true,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+
+  const plan = engine.enqueue({
+    title: 'Planned book',
+    release: false,
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } }],
+  });
+  await settle();
+  assert.strictEqual(stepsOf(plan.id)[0].status, 'held',
+    'an explicit false outranks the engine being busy — overnight staging survives');
+});
+
 test('runs start in the order they were queued, one GPU at a time', async () => {
   const gpu = fakeModule('tts-conversion');
   await fresh('fifo', [gpu]);

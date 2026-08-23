@@ -231,12 +231,20 @@ export interface JobSpec {
   foundry?: FoundryJobLineage;
   steps: StepSpec[];
   /**
-   * Release the steps immediately instead of holding them.
+   * Whether these steps are runnable the moment they exist. THREE-WAY.
    *
-   * The default is HELD, and that is the point of the queue: composing a run must
-   * not be the moment it commits the GPU, or "queue these four and run them
-   * overnight" is not a thing this app can do. Start releases what is held at
-   * that moment.
+   * `true` — runnable whatever the engine is doing. For work whose ordering was
+   * the scheduling decision (the Foundry host queue; main's foundry-narrate).
+   *
+   * `false` — held, explicitly. Composing a run must not be the moment it commits
+   * the GPU: this is how "queue these four and run them overnight" stays a thing
+   * this app can do, and how a plan is parked beside a queue that is already
+   * running.
+   *
+   * `undefined` — the ordinary door, and it follows the engine: held while it is
+   * idle (Start is still the gesture that begins the session's work), runnable
+   * while it runs (a run added behind a running one joins the run — Owen,
+   * 2026-08-23; see the rule in `enqueue`).
    */
   release?: boolean;
 }
@@ -564,7 +572,41 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
   if (!spec.steps || spec.steps.length === 0) {
     throw new Error('A queued run with no steps would do nothing, so it is not queued.');
   }
-  const held = spec.release !== true;
+  /*
+   * A RUN ADDED TO A QUEUE THAT IS ALREADY RUNNING JOINS THE RUN.
+   *
+   * Owen, 2026-08-23, having queued Wool behind For the Soul of the People:
+   * "it finished TTSing and cleared the GPU slot, and assembly entered the CPU
+   * slot. I expected wool to take the GPU slot." It did not, and the scheduler
+   * was not why — the slot rule had already done its half (assembly took a CPU
+   * slot 1 ms after the narration settled, `queue-steps/reassembly.ts`). Wool
+   * was simply never RUNNABLE: every enqueue landed `held`, and held steps are
+   * never claimed, so the trilogy sat on the shelf behind a press.
+   *
+   * `held` had one rule — "released only if the caller said so" — and it was
+   * answering a question nobody asked twice. Composing a run must not commit the
+   * GPU, which is true while the engine is idle: that is what Start is FOR, and
+   * a queue that ran the moment you added to it would take the card out from
+   * under a person still deciding. But once Start has been pressed the person
+   * HAS decided, and every later addition is that same decision restated. Making
+   * them press Start again per book is asking a question already answered.
+   *
+   * So the rule is three-way, and only the middle one is new:
+   *   release === true   → runnable, whatever the engine is doing (the host
+   *                        queue's door, and main's foundry-narrate door: work
+   *                        ordered through a seam was scheduled by the asking)
+   *   release === false  → held, explicitly. STAGING SURVIVES: this is how you
+   *                        park a plan beside a live queue, and the keeper's
+   *                        "Planned book" is exactly that case
+   *   release undefined  → held while the engine is idle, runnable while it runs
+   *
+   * Not touched, deliberately: `held` is ALSO the resting state of an interrupted
+   * step ("Press Start to pick it up from where it got to", the load path). That
+   * meaning belongs to a step that already ran and is nobody's business here —
+   * this decides the status of a step being born, and a brand-new step has no
+   * interrupted past to resume.
+   */
+  const held = spec.release === undefined ? !running : spec.release !== true;
   const job: QueueJob = {
     id: newId('job'),
     projectId: spec.projectId,
