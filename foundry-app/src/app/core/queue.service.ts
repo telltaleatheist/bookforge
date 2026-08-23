@@ -89,6 +89,21 @@ export class QueueService {
     return before.has(job.id) ? 'already' : 'added';
   }
 
+  /**
+   * Run an EXPORT now and wait for the outcome — no queue, no Start, no row
+   * left behind.
+   *
+   * The answer is the row as it settled, or the still-pending row of whatever
+   * is already writing the same file (main's dedupe, `runNow`). The caller
+   * reads `state` to tell the endings apart, which is the honest shape here:
+   * unlike `enqueue` above there is no "did the list grow" question to answer,
+   * because nothing was ever meant to appear in a list. Null only where there
+   * is no API at all (a browser tab), which no caller treats as an outcome.
+   */
+  async run(request: JobRequest): Promise<Job | null> {
+    return (await api?.queue.run(request)) ?? null;
+  }
+
   /** Release the held batch. Main answers with how many; nothing here guesses. */
   async start(): Promise<void> {
     await api?.queue.start();

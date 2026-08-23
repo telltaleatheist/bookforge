@@ -171,7 +171,9 @@ import { hosted } from '../../core/foundry';
 
         <div class="panel-body">
           @if (queue.jobs().length === 0) {
-            <p class="empty">Nothing is queued. Read the pages of a book, or export one, and
+            <!-- Not "or export one" any more: an export runs on the spot, under
+                 the dialog that asked for it, and never waits here (2026-08-23). -->
+            <p class="empty">Nothing is queued. Read the pages of a book, or translate one, and
               the work turns up here.</p>
           }
 

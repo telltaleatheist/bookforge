@@ -132,10 +132,21 @@
  * file is either a door a PERSON reached through the window (`enqueue`,
  * `enqueueTranslate`, `cancel`, `remove`, `start`, `clearFinished` — these route
  * when a host queue is registered) or a door FOUNDRY ITSELF reached for
- * (`enqueueHere`, `cancelHere`, `enqueueEnvInstall`, `runJob` — these never
- * route). Nothing below the doors consults anything: `pump`, `executeJob` and
- * every landing are the same code in both worlds, so there is no flag for a
+ * (`enqueueHere`, `cancelHere`, `enqueueEnvInstall`, `runJob`, `runNow` — these
+ * never route). Nothing below the doors consults anything: `pump`, `executeJob`
+ * and every landing are the same code in both worlds, so there is no flag for a
  * function to forget.
+ *
+ * ── AND ONE KIND OF JOB NEVER WAITS AT ALL ───────────────────────────────────
+ *
+ * An EXPORT ordered from the Export dialog runs the moment it is asked for and
+ * reports back to the dialog that asked (`runNow`). The queue is for work that
+ * costs something — hours of GPU, a model held for a book — and an export is
+ * seconds of offline arithmetic a person is actively waiting on; parking it in
+ * a list beside the readings made the list the place you went to learn whether
+ * a button worked. The row still exists for the length of the run (the guards
+ * and the landings are built on rows), and it leaves the list the moment it
+ * settles, because a shelf of finished exports is a history nobody asked for.
  */
 import { randomUUID } from 'node:crypto';
 import { copyFileSync, existsSync, promises as fsp } from 'node:fs';
@@ -314,9 +325,12 @@ const slots = new Map<string, Slot>();
  * `cancelHere` looks here when the slot is not this row, and `shutdown` stops
  * every one of them.
  *
- * EMPTY STANDALONE, ALWAYS. Nothing calls `runJob` without a host queue to have
- * scheduled it, so every reader of this map answers exactly as it did before the
- * map existed.
+ * NO LONGER EMPTY STANDALONE. It was — nothing called `runJob` without a host
+ * queue to have scheduled it — until exports started running under the dialog
+ * that asked for them (`runNow`), which goes through `runJob` in both worlds for
+ * the same reason a host's run does: the deciding already happened, at the
+ * button. Every reader of this map wants exactly that run counted — the drain
+ * holds while it lives, its ✕ reaches it, and `shutdown` stops it.
  */
 const detachedRuns = new Map<string, () => void>();
 let notify: (jobs: Job[]) => void = () => { /* set by main */ };
@@ -3018,6 +3032,103 @@ export async function runJob(
    * (`hostQueueDrained`).
    */
   return copyOf(job);
+}
+
+/**
+ * RUN THIS EXPORT NOW, UNDER THE DIALOG THAT ASKED — the person-facing door onto
+ * `runJob`, and the reason an export is not a queue row any more.
+ *
+ * ── Why an export does not wait ─────────────────────────────────────────────
+ *
+ * The queue exists for work that costs something: a reading is hours of GPU
+ * against pages nobody has seen, a translation holds a model for the length of
+ * a book. An export is neither — it is seconds of offline arithmetic over
+ * answers already on the disk, and the person who pressed Export is standing in
+ * front of the dialog waiting for exactly this file. Filing it in a list beside
+ * the readings meant the dialog closed on a promise and the queue page was
+ * where you went to find out whether the button worked. So the run happens
+ * HERE, while the dialog holds the question open, and the settled row is the
+ * answer it draws from.
+ *
+ * ── What is the same, which is everything that matters ──────────────────────
+ *
+ * It goes through `runJob`, so a row is minted for the length of the run — the
+ * delete guards and `foundryBusy` count it, the ✕ can reach it through
+ * `cancelHere`, and the landing is `executeJob`'s own: the `final/` rotation,
+ * `recordFinal`, the host's `onExport` announcement, the settle. Nothing about
+ * WHAT an export does moved; only the waiting is gone.
+ *
+ * ── The row leaves the list when it settles ─────────────────────────────────
+ *
+ * Whatever state it settled in. The dialog this answers is the surface that
+ * reports the outcome — the engine's own words for a failure, the filed name
+ * for a success — and a copy of that report parked in the shelf would be the
+ * old behaviour back under a different door: a queue accumulating rows for work
+ * that never waited. `settled` has already fired by then, so nothing that
+ * listens for endings misses one.
+ *
+ * ── It never routes, and hosted it is invisible by construction ─────────────
+ *
+ * A host queue takes over the DECIDING, and there is nothing here to decide:
+ * the export runs at the press, exactly as `exportEpubFromStep` (the host's own
+ * unattended door) has always stayed internal. Hosted, the shelf draws the
+ * host's rows plus our NEVER_ROUTED kinds — an export row is neither, so it is
+ * drawn nowhere and no gesture can reach it but the dialog's own await.
+ *
+ * ── The dedupe stays at this door ───────────────────────────────────────────
+ *
+ * `runJob` deliberately never dedupes — a host that scheduled a run is not to
+ * be overruled — but this door IS the scheduler for what comes through it, so
+ * it keeps `enqueueHere`'s rule: a row already waiting or running to write this
+ * file is handed back as it stands, pending, and the caller reads the state to
+ * tell "already being made" from a settle. Two runs writing one file is still
+ * the worst outcome available.
+ *
+ * A READING IS REFUSED BY NAME. Nothing in the app sends one here, and nothing
+ * ever should: hours of GPU under a dialog's spinner is the exact thing the
+ * hold was built to prevent.
+ */
+export async function runNow(
+  request: JobRequest,
+  /** The position at the press — `enqueueHere`'s argument, for its reasons. */
+  parentStep: string | null = null,
+): Promise<Job> {
+  if (request.kind === 'read') {
+    throw new Error(
+      'A reading is hours of GPU — it is queued and held for Start, never run under a dialog.',
+    );
+  }
+  const already = pendingFor(productOf(request));
+  if (already) return copyOf(already);
+
+  const job = await runJob(request, { parentStep });
+
+  /*
+   * OUT OF THE LIST, NOW THAT EVERYTHING READ FROM IT. The landings, the
+   * announcements and the settle all happened inside `runJob`; what remains is
+   * a settled row whose whole account is about to be handed to the dialog that
+   * is waiting on this return. `changed()` because the row WAS published while
+   * it ran — the shelf that drew it running must hear that it is gone.
+   */
+  const index = jobs.findIndex((row) => row.id === job.id);
+  if (index >= 0) {
+    jobs.splice(index, 1);
+    requests.delete(job.id);
+    changed();
+  }
+
+  /*
+   * RE-ASK THE DRAIN, STANDALONE ONLY. `runJob` ends without pumping so that a
+   * host's back-to-back rows cannot tear the reading server down between every
+   * pair (its own essay). Standalone there is no host to declare drain and this
+   * run's `noteQueueBusy` cancelled whatever idle countdown was armed — so
+   * without this, an export run over a warm server would leave it warm forever.
+   * `pump()`'s nothing-to-do branch is the one place drain is declared, and its
+   * three facts are all true again by here: the run is out of `detachedRuns`
+   * before `runJob` returns.
+   */
+  if (hostQueue() === null) void pump();
+  return job;
 }
 
 /**

@@ -383,6 +383,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `queue:enqueue-translate` | Queue a translation or a simplification. Routed like `queue:enqueue`. |
 | `queue:list` | The queue, for the renderer's mirror — the host's rows where a host queue is registered, Foundry's own otherwise. |
 | `queue:remove` | Remove a held or settled row. Forwarded to the host's queue where one is registered. |
+| `queue:run` | Run an export NOW and resolve with the settled row — the Export dialog's door. Never routed to a host queue; the row leaves the list at the settle, so nothing lingers in the shelf. Refuses a `read` by name. |
 | `queue:start` | Release everything held at this moment. Forwarded to the host's queue where one is registered. |
 | `reading:confirm-re-read` | Compose the "read this book again?" card, which spends GPU on a yes. |
 | `recents:clear` | Forget every recent. |

@@ -2184,6 +2184,21 @@ export function registerIpc(): void {
     // resolved from the project the output EPUB belonged to.
     return queue.enqueueTranslate(request, await parentStepFor(request.recordsPath));
   });
+  /*
+   * AN EXPORT RUNS AT THE PRESS AND THE ANSWER IS THE SETTLED ROW — the whole of
+   * the difference from `queue:enqueue` one door up. The dialog that asked is
+   * holding this invoke open for the seconds the run takes, and what it gets
+   * back is the row in whatever state it settled: `done` with the filed path,
+   * `failed` with the engine's own words, or a still-pending row when something
+   * is already writing the same file (`runNow` hands the existing one back, and
+   * the caller reads the state to tell the two apart). Never routed to a host
+   * queue — an export is seconds of CPU arithmetic somebody is watching for, and
+   * the argument lives at `runNow` (electron/job-queue.ts).
+   */
+  ipcMain.handle('queue:run', async (_event, request: JobRequest) => queue.runNow(
+    request,
+    await parentStepFor(request.kind === 'read' ? request.readingsPath : request.outputPath),
+  ));
   ipcMain.handle('queue:start', () => queue.start());
   ipcMain.handle('queue:remove', (_event, id: string) => { queue.remove(id); });
   ipcMain.handle('queue:cancel', (_event, id: string) => { queue.cancel(id); });

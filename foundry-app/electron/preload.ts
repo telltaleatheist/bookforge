@@ -204,6 +204,7 @@ const api: FoundryApi = {
     list: () => ipcRenderer.invoke('queue:list'),
     enqueue: (request) => ipcRenderer.invoke('queue:enqueue', request),
     enqueueTranslate: (request) => ipcRenderer.invoke('queue:enqueue-translate', request),
+    run: (request) => ipcRenderer.invoke('queue:run', request),
     start: () => ipcRenderer.invoke('queue:start'),
     remove: (id) => ipcRenderer.invoke('queue:remove', id),
     cancel: (id) => ipcRenderer.invoke('queue:cancel', id),

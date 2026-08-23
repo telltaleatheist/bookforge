@@ -311,9 +311,11 @@ import { hosted } from '../../core/foundry';
         <section class="band">
           <div class="empty">
             <h2>Nothing is queued</h2>
+            <!-- An export is deliberately not named here: it runs on the spot,
+                 under the Export dialog, and never waits in this list (2026-08-23). -->
             <p>
-              Read the pages of a book, translate one, or export one, and the work is
-              scheduled here — one run on the graphics card at a time, two on the processor.
+              Read the pages of a book, or translate one, and the work is scheduled
+              here — one run on the graphics card at a time, two on the processor.
             </p>
           </div>
         </section>

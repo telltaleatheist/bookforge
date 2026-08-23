@@ -5,6 +5,7 @@ import { translationInEffect } from '@shared/ledger';
 import type { ConversionKind, JobRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
+import { NoticeService } from '../../core/notice.service';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -43,19 +44,26 @@ import { api } from '../../core/foundry';
  * So the reading is paid for once and this is free, as many times as you like,
  * in as many formats as you like.
  *
- * ── It runs immediately, and it opens what it made ──────────────────────────
+ * ── It runs HERE, under this card, and it opens what it made ────────────────
  *
- * NO START GATE. The queue's hold exists so that hours of GPU are never spent by
- * the act of configuring them; there are no hours here to spend, and a person who
- * pressed Export and then had to find the queue and press Start would be pressing
- * a second button to confirm a decision they made with the first. It still goes
- * through the queue — one engine at a time is a rule about the machine, not about
- * the person — so it waits behind a reading that is running, and the queue shows
- * it moving.
+ * NOT A QUEUE JOB AT ALL ANY MORE. The queue is for work that takes a long time
+ * or holds real resources — a reading is hours of GPU, a translation holds a
+ * model for a book — and an export is seconds of offline arithmetic somebody is
+ * actively waiting on. It used to be enqueued anyway ("one engine at a time is
+ * a rule about the machine"), which meant this dialog closed on a promise and
+ * the queue page was where you went to learn whether the button worked. The
+ * user ended it (2026-08-23): only the expensive things go to the queue; an
+ * export is processed on the spot, in the modal that asked for it.
  *
- * AND THE RESULT OPENS ITSELF, which is the point: somebody exports an EPUB
- * precisely because they want to look at it. That is OPENS_ITSELF in
- * OpenDocumentsService.
+ * So Export runs the job through `queue.run` (main's `runNow`), the card stays
+ * up saying "Exporting…" for the seconds it takes, and the SETTLED row comes
+ * back as the answer: a failure is the engine's own words in this card, and a
+ * success closes it, files the result, and puts the book in front of the
+ * person — an exported EPUB opens as its proof sheet, a facsimile opens in the
+ * viewer, and plain text is named in the notice because there is no tab for it.
+ * Machine-rationing did not go anywhere a person can feel: main still mints a
+ * row for the length of the run, so the guards count it and its ✕ works; the
+ * row just never waits and never lingers.
  *
  * ── No reading yet ──────────────────────────────────────────────────────────
  *
@@ -154,7 +162,8 @@ import { api } from '../../core/foundry';
               <p class="note">
                 Plain text is the book with the markup taken off — headings, paragraphs, and
                 footnotes as [1] at the end of each chapter. Pictures do not survive it, and
-                Foundry cannot open a text file in a tab: the queue will say when it is filed.
+                Foundry cannot open a text file in a tab: it lands under this project, and its
+                row in the library reveals the file.
               </p>
             } @else if (kind() === 'pdf') {
               <p class="note">
@@ -263,7 +272,7 @@ import { api } from '../../core/foundry';
           <button class="ghost" (click)="ui.closeExport()">Cancel</button>
           @if (canMake()) {
             <button class="primary" [disabled]="busy()" (click)="run()">
-              {{ busy() ? 'Starting…' : 'Export' }}
+              {{ busy() ? 'Exporting…' : 'Export' }}
             </button>
           } @else if (!readingDone()) {
             <button class="primary" (click)="ui.openOcr()">Read the pages…</button>
@@ -419,6 +428,8 @@ export class ExportDialogComponent {
   private readonly queue = inject(QueueService);
   private readonly projects = inject(ProjectsService);
   private readonly ledger = inject(LedgerService);
+  /** The one sentence a finished export gets — the notice bar, in both worlds. */
+  private readonly notices = inject(NoticeService);
 
   /**
    * The BOOK this is an export of, named by the document the project was built
@@ -606,7 +617,12 @@ export class ExportDialogComponent {
   /** EPUB unless asked otherwise — it is the format this app can also read. */
   protected readonly kind = signal<ConversionKind>('epub');
   protected readonly problem = signal<string | null>(null);
-  /** The plan hashes the whole document to key its project; a 400 MB scan is not instant. */
+  /**
+   * True from the press to the settle — the plan AND the run, because the run
+   * happens under this card now. It used to cover only the planning hash (a
+   * 400 MB scan is not instant); the seconds of engine time it also covers are
+   * exactly what the button's "Exporting…" is describing.
+   */
   protected readonly busy = signal(false);
 
   constructor() {
@@ -661,12 +677,15 @@ export class ExportDialogComponent {
   }
 
   /**
-   * Ask for the export, and get out of the way.
+   * Ask for the export, WAIT FOR IT, and put the result in front of the person.
    *
-   * THE DIALOG CLOSES AND NOTHING ELSE HAPPENS ON SCREEN until the job lands —
-   * at which point the document opens itself in a tab, which is the result the
-   * user asked for. The queue panel is opened on the way out so that an export
-   * which takes a moment is visibly moving rather than apparently ignored.
+   * THE CARD HOLDS THE QUESTION OPEN. `queue.run` resolves when the job has
+   * settled — seconds, because an export is arithmetic over answers already on
+   * the disk — and the row that comes back is the whole account: `done` and the
+   * file is filed, `failed` and `error` carries the engine's own words, a
+   * pending state and something else is already writing this very file. Nothing
+   * goes to the queue and nothing is left in it afterwards; the header carries
+   * the ruling.
    *
    * `planExport` AND NOT `plan`, and the difference is one directory and the
    * whole ruling: the same planning pass, aimed at the project's filed folder
@@ -674,12 +693,24 @@ export class ExportDialogComponent {
    * half — it is what tells the landing to file the result rather than record it
    * as a rendering the ledger will later be asked to reason about.
    *
+   * WHAT OPENS IS DECIDED BY WHAT WAS MADE, the library's own click model
+   * (open-documents): an EPUB opens as its proof sheet over the exported file,
+   * a facsimile PDF opens in the viewer, and plain text has no tab — the notice
+   * names it and its library row reveals the file. Opened from HERE, off the
+   * settled row, rather than inferred from a queue mirror this job no longer
+   * appears in.
+   *
    * A refusal keeps the card, in the form this app's dialogs already use: the
    * same export already running is not a success and moving on would be
    * performing a result nothing produced. Main's own sentences arrive this way
    * too — the interrupted reading, the unread book, the translation of a
-   * translation — and they are shown verbatim, because they name the case better
-   * than anything this window could compose about a project it cannot read.
+   * translation, and now the engine's own failure — and they are shown verbatim,
+   * because they name the case better than anything this window could compose
+   * about a run it did not watch.
+   *
+   * A CARD CLOSED MID-RUN CHANGES NOTHING: the run is main's, this method's
+   * continuation still fires, and the book still arrives with its notice — the
+   * person dismissed a spinner, not the work.
    */
   protected async run(): Promise<void> {
     const input = this.source();
@@ -731,23 +762,37 @@ export class ExportDialogComponent {
         ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
       };
 
-      const outcome = await this.queue.enqueue(request);
-      if (outcome === 'already') {
+      const job = await this.queue.run(request);
+      if (job === null) return; // no API — a browser tab, where the button cannot exist anyway
+
+      if (job.state === 'held' || job.state === 'queued' || job.state === 'running') {
+        // Main's dedupe handed back the row that is already writing this file.
         this.problem.set(`The ${this.labelFor(kind)} of ${this.nameFor(input)} is already being made.`);
         return;
       }
-      this.ui.summonQueue(false); // hosted: no queue surface to open, and the call is deliberately nothing
-      this.ui.confirmQueued('Export queued — it lands under its step when it finishes.');
+      if (job.state === 'failed') {
+        this.problem.set(job.error ?? `The ${this.labelFor(kind)} could not be made.`);
+        return;
+      }
+      if (job.state === 'cancelled') {
+        this.problem.set(`The ${this.labelFor(kind)} was stopped before it finished. `
+          + 'Nothing was filed — export again whenever you like.');
+        return;
+      }
+
       /*
-       * ONE SENTENCE NOW, AND IT SAYS THE JOB IS MOVING. A translated export used
-       * to be HELD — it ran the translator as its second stage, which can spend
-       * model time — so the line had to hand the person to the Start button. It
-       * is one `vlm-convert` with the translation's words read out of a file: no
-       * model, no server, seconds. Nothing is waiting for a press, so nothing
-       * should tell somebody to go and find one.
+       * DONE, AND THE PROOF IS PUT IN FRONT OF THE PERSON. Off the settled row's
+       * own path — never a guess about where main filed it — and by the same
+       * doors the library's export rows open through, so a book exported and a
+       * book clicked cannot arrive differently.
        */
-      this.ui.announce(`Making the ${this.labelFor(kind)} of ${this.nameFor(input)}. It will be `
-        + 'filed under this project when it is done.');
+      const filed = job.outputPath.split(/[\\/]/).pop() ?? job.outputPath;
+      if (kind === 'epub') {
+        this.documents.openExportView(job.outputPath, filed);
+      } else if (kind === 'pdf') {
+        void this.documents.openFromList(job.outputPath, true);
+      }
+      this.notices.notice.set(`Wrote ${filed} — filed under this project.`);
       this.ui.closeExport();
     } catch (err) {
       this.problem.set(err instanceof Error ? err.message : String(err));

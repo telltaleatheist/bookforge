@@ -871,6 +871,22 @@ export interface FoundryApi {
     /** The same queue and the same GPU lane, a different command. See `TranslateRequest`. */
     enqueueTranslate(request: TranslateRequest): Promise<Job>;
     /**
+     * Run an EXPORT now, and answer when it is over — the Export dialog's door.
+     *
+     * The invoke stays open for the seconds the run takes and resolves with the
+     * row as it SETTLED: `done` and the file is filed, `failed` and `error`
+     * carries the engine's own words, `cancelled` and somebody stopped it. A
+     * still-pending state means something is already writing the same file and
+     * that existing row was handed back instead — the caller's "already being
+     * made". Nothing lingers in the queue afterwards: the row leaves the list
+     * at the settle, because this dialog is the surface that reports the
+     * outcome (`runNow`, electron/job-queue.ts).
+     *
+     * A `read` request is refused by name — hours of GPU never run under a
+     * dialog's spinner. Readings and translations keep the held queue.
+     */
+    run(request: JobRequest): Promise<Job>;
+    /**
      * Release everything currently HELD, in order. Answers with how many.
      *
      * Both engine enqueues above return a job that is held and idle, so this is

@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c0e30e1** — *0.9.4, the number moves so the engine can* |
+| Source sha | **eb24afa** — *the export runs at the press -- only the expensive work queues* |
 | Copied on | 2026-08-23 |
-| Copied by | `git -C <foundry> archive c0e30e1 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive eb24afa app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -461,6 +461,49 @@ engine can be rewritten under a number that cannot say so. The bump is a separat
 deliberate act before the build, and if it is skipped the component's staleness
 comparison is not wrong, it is answering a question about a number that stopped
 tracking the thing it names.
+
+`eb24afa` is Owen's ruling about what a queue is FOR, and it is the first
+refresh that REMOVES work from BookForge's side of the seam rather than adding
+it. *"Only things that take a long time or use lots of resources go to the
+queue. epubs can be processed right there on the spot, in the modal that spawned
+the job."* So the Export dialog stopped enqueueing: a new channel `queue:run`
+(the 100th row in the table, invoke → the settled `Job`) runs the export
+DETACHED at the press via `runNow` → `runJob`, the dialog reports the settled
+outcome itself, and the row leaves Foundry's list at the settle so nothing
+lingers as history.
+
+**What that means for the host, said plainly because it is a behaviour change we
+did not make and cannot see:** hosted, no export pressed in that dialog will
+reach our `enqueue` or ever appear as a row of ours. `queue:run` is never routed
+to a host queue — by construction, not by configuration. What did NOT move is the
+landing: `executeJob` still fires `onExport` when the file is in the project's
+`final/`, so the export-as-version machinery on this side is untouched, and the
+sweep still reconciles. Readings and translations route through `enqueue` exactly
+as before, and `FoundryHostQueue`'s shape is unchanged — nothing in
+`electron/foundry-host-queue.ts` had to move, and nothing did. Left standing and
+worth saying out loud: `FoundryJobKind`'s `'epub' | 'txt' | 'pdf'` members are
+now UNREACHABLE through the host queue, because `queue:enqueue` has exactly two
+callers left on their side (the OCR dialog and the translate path) and neither
+makes an export. They are kept, not deleted — the seam's vocabulary is theirs to
+narrow, and a host that refuses a kind it might be handed again is worse than one
+carrying three it currently never sees. Foundry carried
+the correction into `docs/BOOKFORGE-HANDOFF.md` beside the `exportEpubFromStep`
+paragraph it amends, so the contract doc and the code agree.
+
+9 app files (`electron/{ipc,job-queue,preload}.ts`, `shared/api.ts`, the export
+dialog, queue bar, queue service and queue page) plus the regenerated channels
+doc — exactly the files the commit names. 119/119 blobs hash-verified against
+`foundry@eb24afa` by index blob sha (LF on both sides, so `autocrlf` cannot
+lie); build config and deps unmoved, so no install; `npm run build` clean in the
+subtree, ng 801.59 kB (the pre-existing budget WARNING only); collision keeper
+6/6 with the new channel in its input, all 44 keepers green.
+
+Procedure note, because this refresh cost a round-trip to discover: the change
+arrived UNCOMMITTED in the Foundry checkout, and `git archive` cannot copy a
+dirty tree. The sha is the only thing that identifies a build, so the copy waits
+for the commit — asked for and landed over the live cross-session channel
+(`ListAgents` → `SendMessage`), which is now the fastest route to the Foundry
+side. The whole recipe is written out in `docs/RE-VENDOR-FOUNDRY.md`.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
