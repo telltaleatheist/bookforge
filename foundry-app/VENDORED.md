@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **ada67e2** — *the atomic rename retries through Windows's transient locks* |
+| Source sha | **19f219f** — *IPC-CHANNELS catches up to the metadata doors — and the rule tightens* |
 | Copied on | 2026-08-23 |
-| Copied by | `git -C <foundry> archive ada67e2 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ada67e2 app \| tar -x --strip-components=1` (app/ is byte-identical at 19f219f) |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -533,8 +533,16 @@ those two names in the source and not the doc. **No collision** — BookForge ow
 no `meta:` channel at all, so there is nothing to hit — and the keeper passes
 6/6. But it passes on an authority that is now incomplete, which is a different
 thing from passing: if this app ever adds a `meta:` name, the keeper would clear
-it against a doc that does not know Foundry has one. Said on the switchboard;
-their side regenerates the doc, and the next refresh should carry it.
+it against a doc that does not know Foundry has one. Said on the switchboard — and CLOSED THE SAME NIGHT, which
+is why this table names `19f219f` and the copy command still names `ada67e2`:
+`19f219f` is docs-only, `app/` is byte-identical at both, and the sha that names
+this copy is the one whose DOC it carries. The doc now has both rows (102), the
+parse that found the gap answers `none` against it, `ipcMain.on` is 0 so the
+handle census is the whole surface, and their header gained a standing rule —
+regenerate in the same commit that touches `ipcMain.handle` — so this keeper
+stops inheriting their lag. Worth keeping: staleness has now landed twice in the
+file whose entire job is to be counted, and both times the thing that caught it
+was a refresh reading the doc as an authority rather than a formality.
 
 The engine question, asked because `src/` moved too (translate `tablecells.ts`
 is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's

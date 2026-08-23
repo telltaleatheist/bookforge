@@ -1,13 +1,23 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-22 for **Wave 41, which REMOVES a door** —
+from memory, regenerated on 2026-08-23 for **Wave 46, which adds two doors** —
+`meta:read-epub` and `meta:write-epub`, the metadata dialog's EPUB arm
+reopened. Counted by script for this regeneration: **87 `ipcMain.handle` call
+sites, 87 distinct channel names, zero `ipcMain.on`** in `app/electron/ipc.ts`.
+The gap was caught not here but by BookForge's own vendoring audit reading this
+file as the authority it is ruled to be — the wave landed the doors and did not
+move the doc, which is the exact staleness the paragraph two below records this
+file already suffering once. Regenerate this file in the same commit that
+touches `ipcMain.handle`, not on the next wave.
+
+Before that, regenerated on 2026-08-22 for **Wave 41, which REMOVES a door** —
 `capture:pages-load`, the listing of a mint's page images, retired with the
 folder it listed when the mint went back to writing a PDF (docs/PLAN.md, Wave
-41). It is the first removal this file has recorded.
+41). It was the first removal this file recorded.
 
 **THE COUNT IN THIS FILE WAS 71 AND THE SOURCE MEASURED 85.** Re-counted for
-this regeneration, by script, over `app/electron/ipc.ts`: **84 `ipcMain.handle`
+the Wave-41 regeneration, by script, over `app/electron/ipc.ts`: **84 `ipcMain.handle`
 call sites, 84 distinct channel names, zero `ipcMain.on`** after the removal;
 85 before it. Nothing was renamed and no name collides. The stale 71 dates from
 2026-08-18 and every wave since has added doors under it without moving it —
@@ -372,7 +382,9 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
+| `meta:read-epub` | A finished EPUB export's OPF metadata, through the engine. Only a file in the project's `final/` tray answers. |
 | `meta:read-pdf` | A PDF's Info dictionary, through the engine. |
+| `meta:write-epub` | Write the six OPF fields back to that export (side file + one rename), and record the metadata step with `kind: 'epub'`. |
 | `meta:write-pdf` | Write it to the project's working copy, and record the metadata step. |
 | `projects:delete` | Delete a project directory, for real. |
 | `projects:describe` | What that project delete would destroy, in words and bytes. |
