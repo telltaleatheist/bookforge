@@ -484,9 +484,18 @@ as before, and `FoundryHostQueue`'s shape is unchanged — nothing in
 worth saying out loud: `FoundryJobKind`'s `'epub' | 'txt' | 'pdf'` members are
 now UNREACHABLE through the host queue, because `queue:enqueue` has exactly two
 callers left on their side (the OCR dialog and the translate path) and neither
-makes an export. They are kept, not deleted — the seam's vocabulary is theirs to
-narrow, and a host that refuses a kind it might be handed again is worse than one
-carrying three it currently never sees. Foundry carried
+makes an export. They are kept, not deleted, and Foundry's
+side gave the reason on the channel when we raised it — worth writing down
+because it corrects the weaker one this note first carried. **The seam's
+vocabulary names WHAT A JOB IS; routing is a door, not a fact about a kind**
+(`job-queue.ts`'s own header rule). Those three still cross the seam in the other
+direction: `exportEpubFromStep` mints such a row on Foundry's internal queue,
+`runJob` returns it settled, and `ExportLanding.kind` is exactly where this side
+reads the format off it. Narrowing the host-queue face would encode today's
+routing accident into the type, and the next door that legitimately wants a
+person-pressed rendering routed would have to widen it back. Unreachable-through-
+`enqueue` is true and fine; `IPC-CHANNELS.md` and the collision keeper are the
+record of it. Foundry carried
 the correction into `docs/BOOKFORGE-HANDOFF.md` beside the `exportEpubFromStep`
 paragraph it amends, so the contract doc and the code agree.
 
