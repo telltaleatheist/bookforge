@@ -129,7 +129,7 @@ test('a run is HELD until Start, and Start releases what is there', async () => 
   assert.strictEqual(gpu.runs.length, 1);
 });
 
-test('a run added to a queue that is ALREADY RUNNING joins the run', async () => {
+test('a run added to a queue that is ALREADY MOVING joins the run', async () => {
   /*
    * Owen, 2026-08-23: he queued Wool behind a narration, the narration finished
    * and handed assembly the CPU slot, and Wool did not take the GPU. The slot
@@ -172,6 +172,57 @@ test('a run added to a queue that is ALREADY RUNNING joins the run', async () =>
   assert.strictEqual(cpu.runs.length, 1, 'assembly took a CPU slot');
   assert.strictEqual(gpu.runs.length, 2, 'and Wool took the GPU slot, with nobody pressing anything');
   assert.strictEqual(gpu.runs[1].ctx.job.title, 'Wool');
+});
+
+test('a queue that has DRAINED is not moving — the next run waits for Start', async () => {
+  /*
+   * `running` is a latch: Start sets it, only Pause clears it. Keying the default
+   * off the latch would spin the card up for a book added the morning after the
+   * queue emptied. Owen's rule is about MOVEMENT — "if I add something to the
+   * queue but it isn't already moving, don't start it until I hit start."
+   */
+  const gpu = fakeModule('tts-conversion');
+  await fresh('drained', [gpu]);
+
+  const first = engine.enqueue({
+    title: 'Only book',
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(stepsOf(first.id)[0].status, 'done', 'the queue has drained');
+  assert.strictEqual(engine.isRunning(), true, 'and nobody paused it — the latch is still set');
+
+  const later = engine.enqueue({
+    title: 'Added the next morning',
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } }],
+  });
+  await settle();
+  assert.strictEqual(stepsOf(later.id)[0].status, 'held',
+    'an empty queue is not a moving one, whatever the latch says');
+  assert.strictEqual(gpu.runs.length, 1, 'and nothing took the card');
+});
+
+test('a PAUSED queue with work still in it is not moving either', async () => {
+  const gpu = fakeModule('tts-conversion');
+  await fresh('paused-not-moving', [gpu]);
+  engine.enqueue({
+    title: 'Running book',
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/a.epub' } }],
+  });
+  engine.start();
+  await settle();
+  engine.pause();
+
+  const added = engine.enqueue({
+    title: 'Added while paused',
+    steps: [{ type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/b.epub' } }],
+  });
+  await settle();
+  assert.strictEqual(stepsOf(added.id)[0].status, 'held',
+    'pausing is taking the card back on purpose — an addition does not undo it');
 });
 
 test('release:false stages a plan beside a queue that is already running', async () => {

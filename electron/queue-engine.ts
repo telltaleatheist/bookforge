@@ -568,12 +568,38 @@ export interface EnqueueOptions {
   deferPump?: boolean;
 }
 
+/**
+ * Is the queue MOVING — is there live work here right now?
+ *
+ * Not `running`, which is a latch: Start sets it and only Pause clears it, so it
+ * stays true over a queue that finished everything hours ago. Both halves are
+ * needed. Paused with work still queued is not moving (the person took the card
+ * back on purpose). Un-paused with nothing left to do is not moving either — it
+ * is a queue that has simply stopped, and the next thing added to it deserves
+ * the same Start press the first thing did.
+ *
+ * `waiting` counts: a step whose parent is still rendering is work in flight, and
+ * a chain's last step must not read as an idle queue while its first one runs.
+ * Nothing dead counts — done, failed, cancelled and held are all resting states.
+ */
+function queueIsMoving(): boolean {
+  if (!running) return false;
+  for (const job of jobs) {
+    for (const step of job.steps) {
+      if (step.status === 'running' || step.status === 'queued' || step.status === 'waiting') {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+
 export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
   if (!spec.steps || spec.steps.length === 0) {
     throw new Error('A queued run with no steps would do nothing, so it is not queued.');
   }
   /*
-   * A RUN ADDED TO A QUEUE THAT IS ALREADY RUNNING JOINS THE RUN.
+   * A RUN ADDED TO A QUEUE THAT IS ALREADY MOVING JOINS THE RUN.
    *
    * Owen, 2026-08-23, having queued Wool behind For the Soul of the People:
    * "it finished TTSing and cleared the GPU slot, and assembly entered the CPU
@@ -585,11 +611,19 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    *
    * `held` had one rule — "released only if the caller said so" — and it was
    * answering a question nobody asked twice. Composing a run must not commit the
-   * GPU, which is true while the engine is idle: that is what Start is FOR, and
-   * a queue that ran the moment you added to it would take the card out from
-   * under a person still deciding. But once Start has been pressed the person
-   * HAS decided, and every later addition is that same decision restated. Making
-   * them press Start again per book is asking a question already answered.
+   * GPU, which is true while the queue is idle: that is what Start is FOR, and a
+   * queue that ran the moment you added to it would take the card out from under
+   * a person still deciding. But a queue that is MOVING has already been told to
+   * go, and each addition restates that. Owen's words, and they are the rule:
+   * "I shouldn't have to hit start if the queue is moving. If I add something to
+   * the queue but it isn't already moving, don't start it until I hit start."
+   *
+   * MOVING, not merely un-paused. The distinction is the whole of this decision.
+   * `running` is a latch: Start sets it, only Pause clears it, so a queue that
+   * drained hours ago is still `running` with nothing in it. Keying off the latch
+   * would spin the card up for a book added the next morning, which is the exact
+   * surprise the held default exists to prevent. So the question asked is "is
+   * there live work here" — anything running, or claimed and about to be.
    *
    * So the rule is three-way, and only the middle one is new:
    *   release === true   → runnable, whatever the engine is doing (the host
@@ -598,7 +632,7 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    *   release === false  → held, explicitly. STAGING SURVIVES: this is how you
    *                        park a plan beside a live queue, and the keeper's
    *                        "Planned book" is exactly that case
-   *   release undefined  → held while the engine is idle, runnable while it runs
+   *   release undefined  → runnable if the queue is moving, held if it is not
    *
    * Not touched, deliberately: `held` is ALSO the resting state of an interrupted
    * step ("Press Start to pick it up from where it got to", the load path). That
@@ -606,7 +640,7 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
    * this decides the status of a step being born, and a brand-new step has no
    * interrupted past to resume.
    */
-  const held = spec.release === undefined ? !running : spec.release !== true;
+  const held = spec.release === undefined ? !queueIsMoving() : spec.release !== true;
   const job: QueueJob = {
     id: newId('job'),
     projectId: spec.projectId,
