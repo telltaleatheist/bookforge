@@ -1271,7 +1271,19 @@ export class ShelfComponent implements OnInit, OnDestroy {
       const recency = (b: Audiobook): number => {
         let ms = b.dateAdded ? Date.parse(b.dateAdded) || 0 : 0;
         ms = Math.max(ms, played.get(this.audioIdentity(b.downloadPath)) ?? 0);
-        for (const v of b.versions || []) ms = Math.max(ms, played.get(this.audioIdentity(v.downloadPath)) ?? 0);
+        for (const v of b.versions || []) {
+          ms = Math.max(ms, played.get(this.audioIdentity(v.downloadPath)) ?? 0);
+          // The card's own dateAdded is the REPRESENTATIVE version's, and the
+          // representative is the primary variant (or, when the primary is the
+          // project's EPUB, simply the first audiobook in manifest order — the
+          // OLDEST). So a project that already had a narration and has just been
+          // re-narrated kept a months-old date and stayed buried, which is
+          // exactly "I have to search for books I just TTS'd". A card is as
+          // recent as its most recent version; play times were already read this
+          // way and the added dates were not, which was an asymmetry and not a
+          // decision.
+          if (v.dateAdded) ms = Math.max(ms, Date.parse(v.dateAdded) || 0);
+        }
         return ms;
       };
       list.sort((a, b) => recency(b) - recency(a));
