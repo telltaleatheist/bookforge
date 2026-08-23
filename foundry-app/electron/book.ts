@@ -68,6 +68,7 @@ import { writeAtomically } from './atomic';
 import { CurateBridgeError, rekeyCuration } from '../shared/curate-bridge';
 import {
   bookAtPosition,
+  exportInTray,
   imagesDirFor,
   ledgerOf,
   opsDir,
@@ -1566,10 +1567,8 @@ export async function applyBookOps(projectDir: string, ops: readonly BookOp[]): 
  */
 export async function viewExportedBook(target: string): Promise<BookOutcome> {
   const resolved = path.resolve(target);
-  const dir = projectDirOf(resolved);
-  const inside = dir === null ? null : path.relative(dir, resolved).split(path.sep);
-  if (dir === null || inside === null || inside.length !== 2 || inside[0] !== 'final'
-    || !resolved.toLowerCase().endsWith('.epub')) {
+  const dir = exportInTray(resolved);
+  if (dir === null || !resolved.toLowerCase().endsWith('.epub')) {
     return { ok: false, reason: 'This tab can only show one of this library’s exported books.' };
   }
   let bytes: Buffer;

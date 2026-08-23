@@ -53,7 +53,7 @@
  * there. If that ever stops being true this sentence has to go with it.
  */
 
-import { askedOf, reRunTarget, subtree, type ReadAsk } from './ledger';
+import { askedOf, documentOriginOf, reRunTarget, subtree, type ReadAsk } from './ledger';
 import type { LedgerStep, ProjectLedger } from './types';
 
 /**
@@ -151,7 +151,10 @@ export type ReReadAhead = BranchAhead | ReplaceAhead | null;
  */
 export function reReadAhead(ledger: ProjectLedger | null, asked: ReadAsk): ReReadAhead {
   if (ledger === null) return null;
-  const origin = ledger.steps.find((step) => step.parent === null) ?? null;
+  // The DOCUMENT origin — on a captured project the mint, not the
+  // photographs — because this must ask the exact question the landing
+  // records, or the preview names a branch the run will not take.
+  const origin = documentOriginOf(ledger);
   // No import means no project history at all; nothing has been read and nothing
   // can have been. The ledger mirror is simply not there yet for a book on its
   // first pass through this dialog, which is the ordinary case.

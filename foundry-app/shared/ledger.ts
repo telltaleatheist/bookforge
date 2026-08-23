@@ -1114,6 +1114,73 @@ export function originOf(ledger: ProjectLedger): LedgerStep | null {
   return ledger.steps.find((step) => step.parent === null) ?? null;
 }
 
+/**
+ * THE STEP THAT OWNS THE DOCUMENT — the origin a READING is parented at.
+ *
+ * `originOf`'s own rule says a reading reads the PIXELS, which live in
+ * `archive/`. For a scan somebody dragged in, the parentless import IS the
+ * step that put them there and the two functions answer alike. For a CAPTURED
+ * project they do not: the root is the photographs, and the archive was
+ * MINTED out of them — the mint step's payload names the very PDF the read
+ * rasterises. Parenting the read at the root recorded a falsehood, and Owen
+ * caught it on his own tree (2026-08-23): *"if we're deriving the bank from
+ * the pdf rather than the original images then the work tree is deceptive.
+ * it shows it was derived from the images."*
+ *
+ * THE NEWEST MINT, because a re-mint replaces the book on the shelf and a
+ * reading pressed after it reads the new pages — the same "newest wins" the
+ * shelf itself keeps. By `createdAt` rather than array position, so a ledger
+ * whose steps were ever re-ordered on disk still answers the mint that was
+ * standing when OCR was pressed.
+ */
+export function documentOriginOf(ledger: ProjectLedger): LedgerStep | null {
+  let newest: LedgerStep | null = null;
+  for (const step of ledger.steps) {
+    if (!mintedFromPhotographs(step)) continue;
+    if (newest === null || step.createdAt > newest.createdAt) newest = step;
+  }
+  return newest ?? originOf(ledger);
+}
+
+/**
+ * A READ PARENTED AT THE PHOTOGRAPHS, REPARENTED TO THE SCAN IT ACTUALLY READ.
+ *
+ * The recorder wrote `parent: originOf(...)` for every reading, which was the
+ * rule's own words ("the pixels live in archive/") applied one step short on a
+ * captured project — the root there is the CAPTURE and the pixels are the
+ * MINT's. Every captured project read before 2026-08-23 carries that lie, so
+ * it is healed where ledgers are read, on `readLedger`'s own pattern: HEAL ON
+ * READ, PERSIST ON NEXT WRITE. Deterministic and idempotent — a read whose
+ * parent is the capture step moves to the newest mint at or before it, twice
+ * heals the same as once, and a clean ledger comes back as the same object so
+ * nothing downstream re-renders over an identity.
+ *
+ * The mint AT OR BEFORE the read, because a project can mint again: the read
+ * was of whatever book stood on the shelf when OCR was pressed, and hanging
+ * it off a mint that did not exist yet would trade one false lineage for
+ * another. A read that somehow predates every mint keeps the newest overall —
+ * clock skew should degrade to the ordinary case, not to a second orphaning.
+ */
+export function healReadParents(ledger: ProjectLedger): ProjectLedger {
+  const capture = ledger.steps.find(
+    (step) => step.parent === null && step.action === 'capture',
+  );
+  if (capture === undefined) return ledger;
+  const mints = ledger.steps
+    .filter((step) => mintedFromPhotographs(step))
+    .sort((one, other) => one.createdAt - other.createdAt);
+  if (mints.length === 0) return ledger;
+  let touched = false;
+  const steps = ledger.steps.map((step) => {
+    if (step.action !== 'read' || step.parent !== capture.id) return step;
+    const before = mints.filter((mint) => mint.createdAt <= step.createdAt);
+    const mint = before[before.length - 1] ?? mints[mints.length - 1]!;
+    touched = true;
+    return { ...step, parent: mint.id };
+  });
+  return touched ? { ...ledger, steps } : ledger;
+}
+
 /** The step of that id, or a refusal naming it. */
 export function stepOf(ledger: ProjectLedger, id: string): LedgerStep {
   const step = ledger.steps.find((candidate) => candidate.id === id);

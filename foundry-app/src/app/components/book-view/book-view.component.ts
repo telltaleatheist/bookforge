@@ -17,7 +17,7 @@ import {
 
 import { PDF_BLOCK_CATEGORIES, pdfCategoryColour, pdfCategoryLabel } from '@shared/categories';
 import type { BookLoad, BookRow } from '@shared/book';
-import { PageGlanceComponent } from './page-glance.component';
+import { OriginalPanelComponent } from './original-panel.component';
 // The reader's words for the three rewrites, and the only copy of them: the
 // dialog's cards, the queue's row and this pane's sentences all print the same
 // table, so a mode cannot be one thing in the history and another on a tooltip.
@@ -344,24 +344,33 @@ const SCROLL_SETTLE_MS = 400;
  * delay to protect against. So the timer is DELETED rather than set to zero —
  * a zero-length rest is a hover trigger wearing a constant's clothes, and the
  * next reader would have had to prove that before touching it.
+ *
+ * AND THEN THE CARD ITSELF WENT (2026-08-23): the glance retired into the
+ * docked original panel (./original-panel — the gravestone at its old mount
+ * carries the succession). `GLANCE_GAP` and `GLANCE_MARGIN`, the card's
+ * placement air, went with the placement they were the air of.
  */
 
-/** The least the card may sit from the top of the paper. */
-const GLANCE_GAP = 12;
 /**
- * The air either side of the card when it stands OUTSIDE the paper — between
- * the sheet's edge and the card, and between the card and the pane's own edge.
- *
- * Both, and the same number for both, because what it buys is the same thing in
- * both places: the card has to read as a separate object sitting in the bench's
- * dead space, and a card flush against the paper reads as part of it while a
- * card flush against the pane reads as clipped.
+ * One thing the person did on this pane, in the order they did it — the undo
+ * journal's alphabet. An `op` entry is a MARKER for the newest op then on
+ * `pending` (the op itself stays there, where Apply and the sidecar read it);
+ * a `words` entry is a corrected paragraph on a translated position, which is
+ * a records write and never an op. The journal exists because Ctrl+Z has to
+ * walk back through both in the order they happened — see `did`.
  */
-const GLANCE_MARGIN = 12;
+type Gesture =
+  | { kind: 'op' }
+  | { kind: 'words'; id: string; before: string; after: string };
+
+type WordsGesture = Extract<Gesture, { kind: 'words' }>;
+
+/** The one marker every op entry is — nothing reads an op entry's identity. */
+const OP_GESTURE: Gesture = { kind: 'op' };
 
 @Component({
   selector: 'app-book-view',
-  imports: [NgTemplateOutlet, ComparePickerComponent, PageGlanceComponent],
+  imports: [NgTemplateOutlet, ComparePickerComponent, OriginalPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
@@ -798,9 +807,26 @@ const GLANCE_MARGIN = 12;
             >Aligned</button>
           </div>
         }
+        <!--
+          THE ORIGINAL, AS A TOGGLE AND NOT A SEGMENT — it composes with either
+          register (a scan is worth checking against the bench AND the finished
+          page), so it is one pressed/unpressed control rather than a third
+          answer to "what kind of page is this". Owen's ask, and the correction
+          that names it: *"i want the original pdf comparison, so i know what
+          im looking at and how to correct it if dots makes a mistake."*
+          ./original-panel is the column it opens.
+        -->
+        <button
+          type="button"
+          class="act segment"
+          [class.on]="originalOpen()"
+          [attr.aria-pressed]="originalOpen()"
+          title="Show the original PDF beside the book"
+          (click)="toggleOriginal()"
+        >Original</button>
       </div>
     }
-    <div class="pair" [class.aligned]="aligned()">
+    <div class="pair" [class.aligned]="aligned()" [class.original]="originalOpen()">
       @if (aligned()) {
         <!--
           ITS OWN SCROLLER, which is the whole mechanism: two scrollable boxes are
@@ -931,6 +957,17 @@ const GLANCE_MARGIN = 12;
             </div>
           }
           @for (line of sheetLines(); track line.row.id) {
+            <!--
+              THE PHANTOM — an empty editable block, drawn at the exact place
+              the inserted one will stand (insertFromMenu carries the whole
+              design). Above the line's own marks, because "above this block"
+              means above everything that introduces it.
+            -->
+            @if (inserting(); as add) {
+              @if (add.anchor === line.row.id && add.where === 'above') {
+                <ng-container *ngTemplateOutlet="phantom"></ng-container>
+              }
+            }
             <!--
               The seam sits FIRST in a line's group of marks so that in the DOM
               it is the next sibling of the block ABOVE it — which is what lets
@@ -1077,13 +1114,21 @@ const GLANCE_MARGIN = 12;
                   document. A button because it is one, which is also what makes
                   it reachable from a keyboard.
                 -->
+                <!--
+                  Inside a multi-selection the chip carries the selection's
+                  count, because pressing it will recategorise ALL of them
+                  (openCategories) — the count is the promise, made where the
+                  press happens rather than discovered after it.
+                -->
                 <button
                   type="button"
                   class="gutter chip"
-                  [attr.aria-label]="'Category of this block: ' + line.label"
+                  [attr.aria-label]="chosen().size > 1
+                    ? 'Category of the ' + chosen().size + ' selected blocks'
+                    : 'Category of this block: ' + line.label"
                   (pointerdown)="$event.stopPropagation()"
                   (click)="openCategories($event, line.row.id)"
-                >{{ line.label }}</button>
+                >{{ line.label }}{{ chosen().size > 1 ? ' · ' + chosen().size : '' }}</button>
               }
               @if (line.ordinal !== null) {
                 <span class="gutter ordinal">{{ line.ordinal }}</span>
@@ -1129,7 +1174,34 @@ const GLANCE_MARGIN = 12;
                 }
               </div>
             </div>
+            @if (inserting(); as add) {
+              @if (add.anchor === line.row.id && add.where === 'below') {
+                <ng-container *ngTemplateOutlet="phantom"></ng-container>
+              }
+            }
           }
+          <!--
+            The phantom's one body, outlet twice above so the two anchorings
+            cannot drift. The editor is commitInsert's editor with three
+            different endings: blur and Enter commit (Enter is not a split here
+            — there is nothing to cut yet), Escape empties and lets the blur
+            cancel.
+          -->
+          <ng-template #phantom>
+            <div class="block adding">
+              <span class="gutter rail"></span>
+              <div class="body">
+                <p
+                  class="para editor"
+                  contenteditable="plaintext-only"
+                  (pointerdown)="$event.stopPropagation()"
+                  (blur)="commitInsert($event)"
+                  (keydown.enter)="commitInsert($event)"
+                  (keydown.escape)="cancelInsert($event)"
+                ></p>
+              </div>
+            </div>
+          </ng-template>
           @if (marquee(); as box) {
             <div
               class="marquee"
@@ -1202,49 +1274,19 @@ const GLANCE_MARGIN = 12;
             </aside>
           }
           <!--
-            THE ORIGINAL PAGE, BESIDE THE BLOCK THAT WAS CLICKED. *"i want to
-            hover over a block and see that page of the original beside it"*
-            asked for the card; *"it should only appear when a block is actually
-            clicked"* decided the gesture. Placed here, beside the note peek,
-            because the two are the same idiom on the same paper — and kept as
-            separate state because they are still different questions: a peek
-            answers "what does the other half of this apparatus say", a glance
-            answers "what did this paragraph look like on the printed page".
-            Both may be open at once and neither has an opinion about the other.
-            See ./page-glance.
+            ── GRAVESTONE: \`app-page-glance\` (2026-08-23) ─────────────────────
 
-            IT IS MOUNTED ONCE AND TOLD TO SHOW NOTHING, never put up and taken
-            down, and that is not a style preference — it is the difference
-            between the card the component's header describes and the one that
-            was running. This was \`@if (glanceAt())\`, so the component was
-            DESTROYED every time the card went away, and with it the pdf.js
-            worker it promises to build "once and keep", the open document, and
-            the twelve-page bitmap cache that is supposed to make the second
-            glance at a page free. MEASURED: a walk of ten glances down one book
-            built TEN workers and terminated none, and every glance re-read the
-            whole scan over IPC and re-parsed it — 0.7-1.0s each, a cost that
-            never fell because nothing survived to make it fall. The component
-            draws nothing when its row is null and hides itself, so this can
-            simply stay.
-
-            AND THE MOUNT IS WHAT MAKES THE CARD MEASURABLE: the placement is
-            decided against this card's REAL WIDTH and HEIGHT, read off this
-            element, rather than against numbers this file keeps about sizes
-            declared in another one. \`#glance\` is that reading.
-
-            THE TWO INLINE COORDINATES ARE VIEWPORT COORDINATES — the host is
-            \`position: fixed\` (Owen's ruling, 2026-08-22; ./page-glance and
-            \`placeGlance\` carry the argument), so the card stands in the
-            workbench's gray beside the paper and holds still on screen through
-            any scroll of the bench, with no scroll listener anywhere.
+            The card that showed a clicked block's printed page stood here —
+            15rem of fixed-position paper, placed by \`placeGlance\` against its
+            own measured width, aimed by the click that selected a block. Owen
+            retired it into the docked comparison column (./original-panel, at
+            the pair's right edge): *"instead of having a little preview pop
+            up, we should make it a full-page comparison that i can choose to
+            pop up to the right of the workspace."* The card's hard-won
+            machinery — the kept worker, the path-keyed open, the cancelled
+            renders — moved with it; what died here was only the placement
+            arithmetic, which a docked column does not have.
           -->
-          <app-page-glance
-            #glance
-            [style.top.px]="glanceAt() ?? 0"
-            [style.left.px]="glanceLeft()"
-            [original]="original()"
-            [row]="glanced()"
-          />
         </div>
         <!--
           APPLY — the stack, written down. ON THE BENCH AND NOT ON THE PAPER,
@@ -1272,7 +1314,11 @@ const GLANCE_MARGIN = 12;
           [style.display]="viewing() ? 'none' : null"
           [attr.inert]="edition() ? '' : null"
         >
-          @if (waiting() > 0) {
+          @if (waiting() > 0 || corrected() > 0) {
+            <!-- corrected() is the translated position's half: a records
+                 correction is not an op, so it moves no waiting count, and the
+                 button has to stand for it too or the one undoable thing on
+                 such a page would have no button. -->
             <button type="button" class="act ghost" (click)="undo()">Undo</button>
           }
           <button
@@ -1300,11 +1346,20 @@ const GLANCE_MARGIN = 12;
           [style.top.px]="open.y"
           (keydown.escape)="menu.set(null)"
         >
+          <!--
+            The plural, said before it happens. A chip pressed inside a
+            multi-selection recategorises every selected block, and a list that
+            looked identical either way would make that discoverable only by
+            doing it.
+          -->
+          @if (open.ids.length > 1) {
+            <span class="menu-note">{{ open.ids.length }} selected blocks become:</span>
+          }
           @for (candidate of categories; track candidate.id) {
             <button
               role="menuitem"
               [class.current]="candidate.id === open.category"
-              (click)="relabel(open.id, candidate.id)"
+              (click)="relabel(open.ids, candidate.id)"
             >
               <span class="swatch" [style.background]="candidate.colour"></span>{{ candidate.label }}
             </button>
@@ -1356,6 +1411,21 @@ const GLANCE_MARGIN = 12;
               Add a chapter marker above this block
             </button>
           }
+          <!--
+            THE BLOCK THE READING MISSED — Owen's case is a chapter title that
+            never came over (2026-08-23). Two verbs because the anchor is the
+            whole of the decision: the phantom editor opens exactly where the
+            words will stand. The swatch wears the edit ink — this is about
+            words being added, not about what kind of block the anchor is.
+          -->
+          <button role="menuitem" (click)="insertFromMenu('above')">
+            <span class="swatch" style="background: var(--ink-edit)"></span>
+            Add a block above this one
+          </button>
+          <button role="menuitem" (click)="insertFromMenu('below')">
+            <span class="swatch" style="background: var(--ink-edit)"></span>
+            Add a block below this one
+          </button>
           <button role="menuitem" (click)="selectSimilar()">
             <span class="swatch" [style.background]="open.colour"></span>
             Select {{ open.ids.length === 1 ? 'the 1' : 'all ' + open.ids.length }} {{ open.plural }}
@@ -1369,6 +1439,29 @@ const GLANCE_MARGIN = 12;
         </div>
       }
     </div>
+    <!--
+      ── THE ORIGINAL PDF, DOCKED — the pair's third column ───────────────────
+
+      *"i want the original pdf comparison, so i know what im looking at and
+      how to correct it if dots makes a mistake."* (Owen, 2026-08-23.) The
+      page-glance card retired into this: a full-height column in the
+      workbench's gray, right of the paper, toggled from the head row and
+      following the reading. ./original-panel carries the design. "ORIGINAL"
+      AND NOT "COMPARE" IN EVERY NAME HERE, deliberately: compare is this
+      app's word for standing two STEPS of the book side by side
+      (compare-picker, the compare column), and one word must not mean two
+      things one head-row apart.
+
+      MOUNTED FOR THE LIFE OF THE PANE and closed with a class — the glance's
+      own measured lesson about the @if that rebuilt its worker and emptied
+      its cache every time the card blinked. A closed panel is handed a null
+      row, so it draws nothing and costs nothing while staying warm.
+    -->
+    <app-original-panel
+      [class.closed]="!originalOpen()"
+      [original]="original()"
+      [row]="originalOpen() ? originalRow() : null"
+    />
     </div>
   `,
   styles: [`
@@ -1502,6 +1595,25 @@ const GLANCE_MARGIN = 12;
      * of both sheets, which is the gap between them.
      */
     .pair.aligned .sheet, .pair.aligned .tray { width: min(38rem, 92%); }
+    /*
+     * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
+     *
+     * Owen (2026-08-23): *"they should be side-by-side with a small margin
+     * between them and the two should be centered on screen."* With the bench
+     * at width:100% the sheet centred itself in the leftover and the panel
+     * hugged the pane's far edge — two objects with a field of gray between
+     * them. So while the panel is up, the bench stops stretching: its basis is
+     * just over the sheet's own 46rem, the sheet's auto margins shrink to the
+     * small gap that basis leaves, and the pair centres the two columns as ONE
+     * group. Pure flex — no measurement, no listener, and closing the panel
+     * puts every rule back exactly as it was.
+     *
+     * :not(.aligned) on the bench override because the aligned pair already
+     * divides its width between two columns of one book, and a 48rem basis
+     * jammed into that split would fight the lead's own measure above.
+     */
+    .pair.original { justify-content: center; }
+    .pair.original:not(.aligned) .bench { flex: 0 1 48rem; }
     /*
      * THE CONTEXT SHEET IS THE PAPER WITHOUT THE INSTRUMENT. Same ground, same
      * serif, same measured sizes — it has to be, or the two columns would set the
@@ -1766,6 +1878,17 @@ const GLANCE_MARGIN = 12;
       user-select: text;
       outline: none;
       caret-color: var(--ink-edit);
+    }
+
+    /* THE PHANTOM wears the editing state's own paint — same tint, same spruce
+       rail — because it IS an editor; what marks it as a block that does not
+       exist yet is the hint, which only an empty one shows. The hint is CSS
+       content, so it can never survive into the words. */
+    .block.adding .body { background: color-mix(in srgb, var(--ink-edit) 7%, transparent); }
+    .block.adding .rail { opacity: 1; background: var(--ink-edit); }
+    .block.adding .editor:empty::before {
+      content: 'Type the words the reading missed — Enter keeps them, Escape lets them go.';
+      color: var(--ink-faint);
     }
 
     .chip {
@@ -2281,6 +2404,14 @@ const GLANCE_MARGIN = 12;
     }
     .menu button:hover { background: var(--bg-hover); color: var(--text-primary); }
     .menu button.current { color: var(--text-primary); }
+    /* The plural warning at the head of a multi-selection's category list. */
+    .menu .menu-note {
+      padding: 6px 10px 4px;
+      border-bottom: 1px solid var(--border-default);
+      margin-bottom: 4px;
+      color: var(--text-secondary);
+      font-size: 11px;
+    }
     /* The swatch is what settles the two close pairs — see shared/categories.ts,
        which is the ONE table these colours come from. */
     .swatch { flex: 0 0 auto; width: 8px; height: 8px; border-radius: 2px; }
@@ -2456,48 +2587,22 @@ export class BookViewComponent {
   /** The note whose apparatus is under the pointer — it and its markers light together. */
   protected readonly lit = signal<string | null>(null);
   /**
-   * ── The glance: the original's page, beside the block that was clicked ─────
+   * ── The original panel: the scan's page, docked beside the book ────────────
    *
-   * `glanced` is the ROW and `glanceAt`/`glanceLeft` are where its card goes,
-   * kept apart deliberately: the card re-renders a PDF page when the row
-   * changes and only MOVES when the place changes, so a single signal holding
-   * both would make every reposition a re-render. ./page-glance's one effect
-   * reads the first and not the others, which is what that split is for — and
-   * it is what makes the resize recompute below free.
+   * `originalOpen` is the head-row toggle and `originalRow` is where the
+   * reading IS — the block the panel aims its page and outline at. Aimed by
+   * the click that selects a block and by the bench's own scroll
+   * (`followOriginal`), so the panel tracks the reading without being asked;
+   * NEVER cleared by a gesture, because a docked reference that blanked
+   * whenever the selection dropped would go dark exactly when a person leans
+   * back to look. It changes when the reading moves and only then.
    *
-   * ALL THREE GO NULL ON DISMISSAL AND THE CARD STAYS MOUNTED. A null row is
-   * how this pane says "show nothing" — see the mount above for what putting
-   * the card up and taking it down cost, and why saving a re-render meant
-   * nothing while the whole component was being rebuilt between glances.
-   *
-   * `glanceLeft` IS THE SIDE OF THE PAPER THE CARD STANDS ON: a number of
-   * sheet-pixels when it fits in the bench beside the paper, null when it does
-   * not and the card falls back to the right margin it has always used. See
-   * `beside` for the arithmetic and the mount for how one property does both.
+   * THE CARD'S PLACEMENT STATE DIED WITH THE CARD (the gravestone in the
+   * template): a docked column needs no viewport arithmetic, no measured
+   * width, and no viewChild to read either off.
    */
-  protected readonly glanced = signal<BookRow | null>(null);
-  protected readonly glanceAt = signal<number | null>(null);
-  protected readonly glanceLeft = signal<number | null>(null);
-  /**
-   * The card itself, for its WIDTH and for the paper it is a child of.
-   *
-   * MEASURED AND NEVER MIRRORED, which is the one lesson Wave 23 paid for twice.
-   * The card's width is declared once, in rem, in the file that draws it; the
-   * first attempt at placing it beside a block kept a `px` copy of that width
-   * over here, the app's root font is 13px, so the copy said 256 about a box
-   * that renders at 195 — and the card landed on the paragraph being read. A
-   * reading of the element cannot disagree with the element.
-   *
-   * `read: ElementRef` IS THE FIX FOR A CARD THAT NEVER APPEARED AT ALL.
-   * `#glance` stands on a COMPONENT, and a query on a component ref answers
-   * with the component instance unless told to read the element — the generic
-   * on this line is a type assertion the runtime never sees, so without the
-   * option `nativeElement` was undefined, every placement failed its first
-   * test, and `aimGlance`'s "a card that cannot be placed is not shown" rule
-   * dismissed the card on every click of every session. The gates cannot catch
-   * it: it typechecks perfectly, and only a hand on a block finds the silence.
-   */
-  private readonly glanceCard = viewChild('glance', { read: ElementRef<HTMLElement> });
+  protected readonly originalOpen = signal<boolean>(false);
+  protected readonly originalRow = signal<BookRow | null>(null);
   /**
    * THE SCAN THIS BOOK WAS READ OFF, or null for a book with no paper behind it.
    * Read straight off the load rather than resolved here — `BookLoad.originalPath`
@@ -2507,8 +2612,8 @@ export class BookViewComponent {
   /*
    * A SECOND SIGNAL STOOD HERE (Wave 41's gravestone) for `originalPages`, the
    * folder of photographed pages a captured book was read off. A captured book's
-   * original IS a PDF now, so `original` above answers for it and the glance
-   * card's pdf face draws the page — which is what the second field was holding
+   * original IS a PDF now, so `original` above answers for it and the original
+   * panel draws the page — which is what the second field was holding
    * a place for and never got.
    */
   /** The block a jump landed on, tinted for `PULSE_MS`. */
@@ -2550,6 +2655,44 @@ export class BookViewComponent {
   private readonly landedOps = signal<readonly BookOp[]>([]);
   /** What undo has taken off the stack, newest last. Cleared by any new gesture. */
   private readonly undone = signal<readonly BookOp[]>([]);
+
+  /**
+   * EVERYTHING THE PERSON DID, IN ORDER — ops and corrected paragraphs in one
+   * journal, because undo has to walk back through both.
+   *
+   * ── The defect this repairs (found live, 2026-08-23) ────────────────────────
+   *
+   * On a translated or simplified position a text edit is not an op: the words
+   * belong to the records file, commit routes them through `correct`, and the
+   * ops stack never hears about them (docs/RENDERER.md §5 — one truth per
+   * paragraph). Which meant Ctrl+Z did NOTHING for exactly the edit people make
+   * most — Owen: *"changing the text inside a block definitely wasnt undoing"* —
+   * while strikes, made of ops, took back fine beside it. Reproduced end to end
+   * in a sandboxed window before this was written: the committed words landed in
+   * the records, `pending` stayed empty, and the chord had nothing to pop.
+   *
+   * ── What a journal entry is, and what undoing one does ─────────────────────
+   *
+   * An `op` entry is a MARKER — the op itself stays on `pending`, which Apply
+   * and the sidecar read exactly as before; the marker only records where it
+   * falls among the corrections. A `words` entry carries the paragraph's before
+   * and after, and undoing it is ANOTHER CORRECTION, back to `before` — through
+   * the same `correct` door, so the records file stays the one truth and what
+   * lands on disk is the honest history of somebody changing their mind. Redo is
+   * the same door aimed at `after`.
+   *
+   * SESSION-SCOPED for the `words` half, deliberately: the ops half survives in
+   * the sidecar as it always has, and a correction is already durable in the
+   * records — what does not survive a reload is only the MEMORY of which
+   * direction you were walking, which is `history.ts`'s own retired rule
+   * (undo does not persist across sessions, docs/DERIVED-BOOK.md §3).
+   */
+  private readonly did = signal<readonly Gesture[]>([]);
+  /** The gestures undo walked back over, newest last. Cleared by any new gesture. */
+  private readonly rewound = signal<readonly Gesture[]>([]);
+  /** Corrections the journal can still take back — the Undo button's other reason to exist. */
+  protected readonly corrected = computed(
+    () => this.did().filter((gesture) => gesture.kind === 'words').length);
   /** True while `book:apply` is in flight, so the button cannot be pressed twice. */
   protected readonly applying = signal(false);
 
@@ -2567,8 +2710,24 @@ export class BookViewComponent {
    */
   protected readonly renaming = signal<string | null>(null);
 
-  /** The category list, open over a block's chip. */
-  protected readonly menu = signal<{ id: string; category: string; x: number; y: number } | null>(null);
+  /**
+   * The category list, open over a block's chip.
+   *
+   * `ids` is every block the choice will land on. It is more than one exactly
+   * when the chip pressed belongs to a MULTI-SELECTION — Owen's ask, verbatim:
+   * *"i want to be able to select multiple blocks and change all their
+   * categories at once."* The selection is captured AT OPEN, like the
+   * right-click menu's counts, so the list acts on what the person was looking
+   * at when they pressed and not on whatever the selection says by the time
+   * they choose. `category` stays the pressed block's own, because "current"
+   * is only honest as a mark about the chip that was pressed.
+   */
+  protected readonly menu = signal<{
+    ids: readonly string[];
+    category: string;
+    x: number;
+    y: number;
+  } | null>(null);
 
   /** The categories the chip's list offers — the ONE table, in the engine's order. */
   protected readonly categories = PDF_BLOCK_CATEGORIES;
@@ -2856,33 +3015,24 @@ export class BookViewComponent {
      * of it.
      */
     /*
-     * ── MORE THAN ONE BLOCK CHOSEN PUTS THE CARD DOWN ─────────────────────────
+     * ── GRAVESTONE: the many-blocks-dismiss effect (2026-08-23) ───────────────
      *
-     * *"if multiple blocks are selected, it should not show at all."* `release`
-     * already refuses to SUMMON the card from a selection-building click, and
-     * this is the backstop for every other door into a many-block selection: the
-     * marquee (which sets `chosen` on the way and never reaches `release`'s
-     * branches), a split that hands back both halves, a join, a panel reaching in
-     * through the stack. There are a dozen writers of `chosen` and there will be
-     * more; there is one reader of it here.
-     *
-     * IT CLEARS RATHER THAN MASKS, and that asymmetry is the ruling and not an
-     * oversight. A computed that hid the card while the count was high would
-     * bring it back the moment the count fell — so undoing a marquee would
-     * resurrect a card aimed at a paragraph the reader clicked ten gestures ago,
-     * out of nowhere, with nothing having been clicked. The card answers a click.
-     * Only a click puts it up.
+     * An effect stood here putting the glance card down whenever the selection
+     * grew past one block — *"if multiple blocks are selected, it should not
+     * show at all"* — the backstop behind `release`'s own refusals. The ruling
+     * was about a CARD answering a question asked of one block; the docked
+     * original panel answers "where am I in the scan", which a forty-block
+     * selection has a perfectly good answer to. So the panel ignores the
+     * selection's size, and the backstop went with the card it was backstopping.
      */
-    effect(() => {
-      const many = this.chosen().size > 1;
-      untracked(() => { if (many) this.dismissGlance(); });
-    });
 
     const stacks = this.stacks;
     const stack: BookStack = {
       pending: () => this.waiting(),
-      canUndo: () => this.pending().length > 0,
-      canRedo: () => this.undone().length > 0,
+      // The JOURNAL and not the ops stack: a corrected paragraph on a
+      // translated position is undoable now, and it was never an op.
+      canUndo: () => this.did().length > 0,
+      canRedo: () => this.rewound().length > 0,
       undo: () => this.undo(),
       redo: () => this.redo(),
       apply: () => this.apply(),
@@ -2989,24 +3139,11 @@ export class BookViewComponent {
       const root = getComputedStyle(document.documentElement).fontSize;
       const rem = Number.parseFloat(root);
       if (Number.isFinite(rem) && rem > 0) this.rem.set(rem);
+      // The glance card's re-placement lived here too, once — a docked panel
+      // has no placement to redo, so the observer is back to its one job.
       const watch = new ResizeObserver((entries) => {
         const box = entries[0]?.contentRect;
         if (box !== undefined) this.wide.set(box.width);
-        /*
-         * AND THE GLANCE IS RE-PLACED HERE RATHER THAN ON `window:resize`, for
-         * the same reason this observer exists at all: the dead space beside the
-         * paper is a fact about THIS PANE, and it changes when the left nav or
-         * the inspector opens without the window moving a pixel. A card that
-         * fitted outside the paper and no longer does has to come back in, and a
-         * window listener would have watched the wrong box.
-         *
-         * Nothing happens when no card is up, which is nearly always — and when
-         * one is, only the two placement signals are written. The ROW is
-         * untouched, so ./page-glance's one effect does not run and no page is
-         * re-rendered by dragging a window edge.
-         */
-        const at = untracked(() => this.glanced());
-        if (at !== null) this.placeGlance(at.id);
       });
       watch.observe(this.host.nativeElement);
       destroy.onDestroy(() => watch.disconnect());
@@ -3043,6 +3180,14 @@ export class BookViewComponent {
     const scrolled = (event: Event): void => {
       const column = which(event);
       if (column !== null) this.scrolled(column);
+      /*
+       * AND THE ORIGINAL PANEL FOLLOWS THE LIVE COLUMN. Same discipline as the
+       * lock around it: this runs per scroll frame, so it must cost nothing in
+       * the ordinary case — `followOriginal` returns at once while the panel
+       * is closed, and writes its signal only when the topmost block CHANGES,
+       * which is a paragraph boundary and not a pixel.
+       */
+      if (column === 'live') this.followOriginal();
       /*
        * A WHEEL TURNS MID-MARQUEE and the pointer never moves, so no pointermove
        * fires and the sweep would freeze while the paper slides past it. The
@@ -3119,6 +3264,10 @@ export class BookViewComponent {
     this.chosen.set(new Set());
     this.editingId.set(null);
     this.renaming.set(null);
+    // A half-typed insert is about a block of the book being replaced, and its
+    // anchor id may name a block of the NEXT book too (every reading mints
+    // b1-1), so carrying it would offer the phantom above a stranger.
+    this.inserting.set(null);
     this.menu.set(null);
     // Both cards, for one reason: they are about a paragraph in the book being
     // replaced, and there is no honest way to carry either into another one.
@@ -3298,10 +3447,14 @@ export class BookViewComponent {
             this.notices.notice.set(err instanceof Error ? err.message : String(err));
           }
         }
+        // Whatever branch above settled the stacks, the journal mirrors them —
+        // ops as markers, corrections gone with the session they belonged to.
+        this.resetJournal();
       } else {
         this.landedOps.set([]);
         this.pending.set([]);
         this.undone.set([]);
+        this.resetJournal();
         this.problem.set(loaded.reason);
       }
     } catch (err) {
@@ -3714,8 +3867,9 @@ export class BookViewComponent {
      * around them.
      */
     if (register === 'edition') this.alignment.set('alone');
-    // A card is a glance at the bench's book; neither register keeps one up.
-    // The edition has no instrument at all, and the flip back is a fresh page.
+    // The peek is a card about the bench's book; neither register keeps one
+    // up. The original panel STAYS through the flip — the scan is worth
+    // checking against the finished page exactly as much as against the bench.
     this.dismissCards();
     // An export view has one register: the file is finished, and a workbench
     // over it would draw instruments nothing here can honour.
@@ -3817,117 +3971,67 @@ export class BookViewComponent {
   }
 
   /**
-   * Aim the card at a block — the row to draw, and where its card stands.
+   * Aim the original panel at a block — the click's half of the following.
    *
-   * CALLED FROM THE CLICK THAT ALREADY SELECTED THE BLOCK (`release`), and from
-   * nowhere else. There is no second gesture here: the press-and-let-go that
-   * makes a block THE selected block is the same press-and-let-go that puts its
-   * printed page beside it, so a reader who wants the page does what they were
-   * already doing to act on the paragraph.
+   * CALLED FROM THE CLICK THAT ALREADY SELECTED THE BLOCK (`release`): the
+   * press-and-let-go that makes a block THE selection is the same one that
+   * turns the panel to its page, so a reader checking the scan does what they
+   * were already doing to act on the paragraph. The scroll's half is
+   * `followOriginal`, below.
    *
-   * A ROW THE BOOK NO LONGER HAS DISMISSES rather than draws. `lines()` is the
-   * book as replayed at this instant, and an id that is not in it is a block a
-   * join or a cut has taken out from under the click — the same answer `peeked`
-   * gives for the same reason.
+   * A ROW THE BOOK NO LONGER HAS AIMS NOTHING — `lines()` is the book as
+   * replayed at this instant, and an id a join or cut has taken out from
+   * under the click leaves the panel exactly where it was, which is the last
+   * true place the reading stood.
+   *
+   * THE CARD'S PLACEMENT DIED HERE (2026-08-23): `placeGlance` and its
+   * viewport arithmetic — the measured width, the clamps, the centring, the
+   * two-frame re-place — served a fixed-position card that a docked column
+   * does not need a line of. The gravestone at the old mount carries the
+   * succession; Owen's 2026-08-22 gray-gutter ruling that shaped the
+   * arithmetic is satisfied by the column standing in that gray for good.
    */
-  private aimGlance(id: string): void {
+  private aimOriginal(id: string): void {
     const line = this.lines().find((one) => one.row.id === id);
-    if (line === undefined) {
-      this.dismissGlance();
-      return;
-    }
-    this.glanced.set(line.row);
-    /*
-     * A CARD THAT CANNOT BE PLACED IS NOT SHOWN AT ALL. With a fixed-position
-     * host, "shown but unplaced" is a card at the viewport's whim — the exact
-     * shape of surprise this pane does not do. Placement fails only when the
-     * geometry is unreadable (a zero-width card mid-layout, a pane not found),
-     * and the honest answer then is no card, not a card somewhere.
-     */
-    if (!this.placeGlance(id)) {
-      this.dismissGlance();
-      return;
-    }
-    /*
-     * PLACED TWICE, AND THE SECOND READING IS THE TRUE HEIGHT. The line above
-     * runs inside the click's own handler, before this row's content has
-     * rendered — so the height it centres with is the idle sliver's, a box of
-     * padding a few pixels tall, and the card would stand well below centre
-     * (and off a short pane's bottom edge) once the page frame gave it its
-     * real ~20rem. One frame later the frame's aspect ratio has sized the box
-     * — the ratio is row data, not the render, so the layout does not wait on
-     * pdf.js — and the same arithmetic lands on the true middle. The width
-     * never changes between the two readings, so nothing visibly jumps
-     * sideways; the guard keeps a stale frame from re-placing a card a faster
-     * second click has already re-aimed or dismissed.
-     */
-    requestAnimationFrame(() => {
-      if (this.glanced()?.id === id) this.placeGlance(id);
-    });
+    if (line !== undefined) this.originalRow.set(line.row);
   }
 
   /**
-   * Where the card stands: FIXED viewport coordinates, in the workbench's gray
-   * beside the paper.
-   *
-   * OWEN'S RULING (2026-08-22) OVERRULES THE INK ARGUMENT, and it is worth
-   * keeping both halves on the record. The card was ink in the sheet's frame —
-   * "it rides a scroll instead of being chased down one" — and what that
-   * produced on a long book was a card parked at the very top, gone past the
-   * first wheel turns: *"it sits on the top right of the document. the VERY
-   * top right... if i scroll down too far it disappears. lots of empty space
-   * to the right and it should scroll with the document so the user can see
-   * it anywhere."* `position: fixed` (./page-glance's own host) is the design
-   * both arguments wanted: the gray gutter, held still on screen through any
-   * scroll, with NO scroll listener — viewport coordinates do not move when
-   * the bench's inside does. Nothing here runs on scroll, still.
-   *
-   * THE ARITHMETIC: the preferred left is just past the paper's right edge
-   * (`paper.right + GLANCE_MARGIN`), clamped so the card stays inside the
-   * bench's CONTENT edge (`clientWidth`, not the border box — the 8px
-   * scrollbar sits on the very edge the card would run into). On a bench too
-   * narrow for the gutter — a laptop, or the aligned pair's half-width
-   * columns — the clamp walks the card leftward over the paper's margin:
-   * still fixed, still visible at any scroll, which is the half of the ruling
-   * that outranks covering nothing. Vertically it centres in the pane, which
-   * no longer depends on the clicked block at all: the card answers "what did
-   * this page look like", and a stable place to look beats a card that jumps
-   * to each click.
-   *
-   * `card.getBoundingClientRect()` and NOT constants — see ./page-glance for
-   * what a mirrored constant cost; the reading works because the idle card is
-   * hidden with `visibility`, not `display`. Re-placed on aim and by the
-   * pane's existing ResizeObserver (the sidebar and inspector opening move
-   * the bench without a window resize).
+   * The head-row toggle — and an OPEN aims at once. A panel opened before any
+   * click or scroll has ever aimed it would stand there saying "The original"
+   * over no page at all, so opening asks the bench where the reading already
+   * is. The scroll's own following needs the flag set first, which is why this
+   * is a method and not a bare `set` in the template.
    */
-  private placeGlance(id: string): boolean {
-    const card = this.glanceCard()?.nativeElement;
-    const sheet = card?.closest('.sheet');
-    if (card === undefined || !(sheet instanceof HTMLElement)) return false;
-    const block = sheet.querySelector(`[data-id="${CSS.escape(id)}"]`);
-    if (!(block instanceof HTMLElement)) return false;
-    const pane = sheet.closest('.bench');
-    if (!(pane instanceof HTMLElement)) return false;
-    const paper = sheet.getBoundingClientRect();
-    const box = card.getBoundingClientRect();
-    if (box.width <= 0) return false;
-    const bench = pane.getBoundingClientRect();
-    const inner = bench.left + pane.clientWidth;
-    const left = Math.max(
-      bench.left + GLANCE_MARGIN,
-      Math.min(paper.right + GLANCE_MARGIN, inner - box.width - GLANCE_MARGIN),
-    );
-    const room = Math.max(GLANCE_GAP, (pane.clientHeight - box.height) / 2);
-    this.glanceAt.set(bench.top + room);
-    this.glanceLeft.set(left);
-    return true;
+  protected toggleOriginal(): void {
+    const open = !this.originalOpen();
+    this.originalOpen.set(open);
+    if (open) this.followOriginal();
   }
 
-  /** The card goes. Safe to call when there is none. */
-  private dismissGlance(): void {
-    this.glanced.set(null);
-    this.glanceAt.set(null);
-    this.glanceLeft.set(null);
+  /**
+   * THE SCROLL'S HALF OF THE FOLLOWING: aim the panel at the topmost block on
+   * the bench, so the scan turns its pages as the reading moves.
+   *
+   * The walk is the scroll lock's own (`lock`) — the first block not cut off
+   * at the fold is what a person would point at if asked where they are — and
+   * it is run only while the panel is open, so a closed panel costs a boolean.
+   * THE SIGNAL IS WRITTEN ONLY WHEN THE BLOCK CHANGES: this runs per scroll
+   * frame outside Angular's scheduling, and an unconditional set would put a
+   * change-detection pass behind every frame of every drag. A block boundary
+   * crosses the fold a handful of times per screenful, which is the rate the
+   * panel actually needs.
+   */
+  private followOriginal(): void {
+    if (!this.originalOpen()) return;
+    const bench = this.host.nativeElement.querySelector('.bench');
+    if (!(bench instanceof HTMLElement)) return;
+    const fold = bench.getBoundingClientRect().top;
+    const rows = [...bench.querySelectorAll('.block[data-id]')] as HTMLElement[];
+    const anchor = rows.find((row) => row.getBoundingClientRect().top >= fold - 0.5);
+    const id = anchor?.getAttribute('data-id');
+    if (id == null || untracked(() => this.originalRow())?.id === id) return;
+    this.aimOriginal(id);
   }
 
   /**
@@ -3950,12 +4054,8 @@ export class BookViewComponent {
 
   /**
    * The pointer left a block: the note goes out and its twin with it.
-   *
-   * AND THE GLANCE STAYS, which is the other half of making it a click. A card
-   * somebody asked for does not leave because the hand moved — that was the
-   * behaviour of a card the hand had put there without being asked. It goes when
-   * it is dismissed: Escape, a click on no block, or another block's click
-   * taking it.
+   * Nothing else moves — the original panel in particular, which follows the
+   * reading and not the hand.
    */
   protected dim(): void {
     this.lit.set(null);
@@ -4194,17 +4294,16 @@ export class BookViewComponent {
   }
 
   /**
-   * Escape puts down every card on the paper — the peek and the glance both.
+   * Escape puts down every card on the paper — which is the peek, alone, now.
    *
-   * ONE KEY FOR BOTH, because from the reader's side there is one thing on
-   * screen to be rid of and no way to tell which of two handlers they are
-   * addressing. The peek is dismissed by clicking its own marker again and the
-   * glance by clicking off every block, so the precise gestures still exist for
-   * anybody who wants to keep one card and drop the other.
+   * The glance card used to go down beside it; the original panel does not —
+   * it is a toggled column, not a card, and Escape putting a docked reference
+   * away would make one key mean two sizes of thing. The plural name stays
+   * because the CALLERS are about "whatever cards are up", and the next card
+   * this paper grows will belong here too.
    */
   protected dismissCards(): void {
     this.peek.set(null);
-    this.dismissGlance();
   }
 
   /**
@@ -4462,13 +4561,8 @@ export class BookViewComponent {
       // A press on the paper itself, off every block: the ordinary "let go of
       // what I had", which is how a selection is dropped everywhere in this app.
       if (!from.extend) this.chosen.set(new Set());
-      /*
-       * AND THE CARD GOES WITH IT, extend or not. The glance answers a question
-       * asked about ONE block, and a click that landed on no block is the plain
-       * form of "I am done with that" — it is the same dismissal the peek takes
-       * from `press`, one gesture up.
-       */
-      this.dismissGlance();
+      // The glance card went down here once. The panel stays: it says where
+      // the reading is, and letting go of a selection does not move the reading.
       return;
     }
     const id = from.id;
@@ -4481,22 +4575,16 @@ export class BookViewComponent {
      * sometimes selected three hundred rows would be two meanings on one motion.
      */
     /*
-     * ── WHICH CLICKS SUMMON THE GLANCE, AND WHICH ONLY PUT IT DOWN ────────────
+     * ── WHICH CLICKS AIM THE ORIGINAL PANEL ───────────────────────────────────
      *
-     * *"if multiple blocks are selected, it should not show at all."* A card
-     * showing one page over a selection of forty is answering a question nobody
-     * asked, and picking WHICH of the forty to show would be this surface
-     * guessing.
-     *
-     * So the two selection-BUILDING clicks below — Alt for the whole category,
-     * Ctrl/Shift for one more or one fewer — dismiss the card and never summon
-     * it, even in the arithmetic where Ctrl happens to land back on a single
-     * block. THE RULE IS ABOUT THE GESTURE, NOT THE COUNT: a click whose whole
-     * meaning is "and this one too" is not a click that asked about a page. The
-     * effect in the constructor is the backstop for every other way a selection
-     * grows, and it is deliberately one-way — a selection falling back to one
-     * block does NOT bring the card back, because the card answers a click and
-     * nothing has been clicked.
+     * Only the plain single-select click, below. The selection-BUILDING
+     * clicks — Alt for the whole category, Ctrl/Shift for one more or one
+     * fewer — leave the panel where it was: a click whose whole meaning is
+     * "and this one too" is not a statement about where the reading moved,
+     * and a panel that jumped to each addition while a selection is gathered
+     * across three pages would be flipping the scan under the very comparison
+     * being made. (The card these rules used to DISMISS is gone; the panel
+     * has no dismissal to route, only an aim to withhold.)
      */
     if (from.similar) {
       const line = this.lines().find((one) => one.row.id === id);
@@ -4508,24 +4596,23 @@ export class BookViewComponent {
             .map((one) => one.row.id),
         ));
       }
-      this.dismissGlance();
       return;
     }
     if (from.extend) {
       const taken = new Set(from.base);
       if (!taken.delete(id)) taken.add(id);
       this.chosen.set(taken);
-      this.dismissGlance();
     } else {
       this.chosen.set(new Set([id]));
       /*
-       * THE ONE CLICK THAT SUMMONS IT, and it is the click that was already
-       * here. Nothing above this line changed: the same press-and-let-go on a
-       * block still makes it THE selection. It now also aims the card, which is
-       * why clicking the next paragraph re-aims rather than opening a second
-       * one — there is one card because there is one selection.
+       * THE CLICK AIMS THE PANEL, and it is the click that was already here:
+       * the same press-and-let-go that makes a block THE selection turns the
+       * original to its page. Selection-BUILDING clicks (Alt, Ctrl/Shift,
+       * above) deliberately do not — "and this one too" is not a statement
+       * about where the reading moved — which keeps the panel still while a
+       * selection is being gathered across three pages.
        */
-      this.aimGlance(id);
+      this.aimOriginal(id);
     }
     // A note peeks the other way: the paragraph its number is printed in comes
     // to the card, with that number lit inside it.
@@ -4581,7 +4668,23 @@ export class BookViewComponent {
     this.mode.set('workbench');
     this.pending.update((held) => [...held, ...ops]);
     this.undone.set([]);
+    // One marker per op, so the journal's order matches the stack's — and the
+    // redo pile of BOTH kinds goes, for the rule at the top of this docblock.
+    this.did.update((held) => [...held, ...ops.map((): Gesture => OP_GESTURE)]);
+    this.rewound.set([]);
     this.remember();
+  }
+
+  /**
+   * The journal, re-derived from the stacks — for every moment the stacks are
+   * REPLACED rather than grown: a load's hydration (every branch of it), a
+   * discard, a parked stack coming back. Ops become markers; corrections have
+   * no entries to rebuild, which is the session-scoped half of the journal's
+   * own docblock.
+   */
+  private resetJournal(): void {
+    this.did.set(this.pending().map((): Gesture => OP_GESTURE));
+    this.rewound.set(this.undone().map((): Gesture => OP_GESTURE));
   }
 
   /**
@@ -4651,26 +4754,171 @@ export class BookViewComponent {
    * for doing it in the first place.
    */
   protected undo(): void {
-    const held = this.pending();
-    const last = held[held.length - 1];
+    const journal = this.did();
+    const last = journal[journal.length - 1];
     if (last === undefined) return;
     this.mode.set('workbench');
+    /*
+     * A CORRECTED PARAGRAPH IS TAKEN BACK BY CORRECTING IT BACK — the journal's
+     * whole argument, at the one place the two kinds of gesture part ways. It is
+     * async (a records round trip) and the journal entries move only after main
+     * says yes, so a refusal leaves everything standing exactly as it was, with
+     * main's sentence on the notice strip.
+     */
+    if (last.kind === 'words') {
+      void this.replayWords(last, 'undo');
+      return;
+    }
+    const held = this.pending();
+    const popped = held[held.length - 1];
+    if (popped === undefined) return;
+    this.did.set(journal.slice(0, -1));
+    this.rewound.update((taken) => [...taken, last]);
     this.pending.set(held.slice(0, -1));
-    this.undone.update((taken) => [...taken, last]);
+    this.undone.update((taken) => [...taken, popped]);
     // Taking a change back is a change to what is waiting. A sidecar that only
     // ever grew would hold decisions the person has taken off the page.
     this.remember();
+    this.replayedFeedback(popped, 'undo');
   }
 
-  /** Ctrl+Shift+Z / Ctrl+Y. Puts the last-undone op back where it was. */
+  /** Ctrl+Shift+Z / Ctrl+Y. Puts the last-undone gesture back where it was. */
   protected redo(): void {
-    const taken = this.undone();
-    const last = taken[taken.length - 1];
+    const pile = this.rewound();
+    const last = pile[pile.length - 1];
     if (last === undefined) return;
     this.mode.set('workbench');
+    if (last.kind === 'words') {
+      void this.replayWords(last, 'redo');
+      return;
+    }
+    const taken = this.undone();
+    const op = taken[taken.length - 1];
+    if (op === undefined) return;
+    this.rewound.set(pile.slice(0, -1));
+    this.did.update((held) => [...held, last]);
     this.undone.set(taken.slice(0, -1));
-    this.pending.update((held) => [...held, last]);
+    this.pending.update((held) => [...held, op]);
     this.remember();
+    this.replayedFeedback(op, 'redo');
+  }
+
+  /**
+   * One corrected paragraph, walked back or forward — through the same
+   * `correct` door the edit went through, so the records file stays the one
+   * truth and this walk is itself on the record.
+   *
+   * THE ENTRY MOVES BY IDENTITY, NOT BY POSITION: the round trip takes a
+   * moment, and a gesture made while it is in flight has already grown the
+   * journal past where this entry sat. `correct`'s own one-in-flight guard
+   * makes a second CHORD during the trip a refusal with a sentence, so the
+   * identity search is belt to that braces.
+   */
+  private async replayWords(entry: WordsGesture, direction: 'undo' | 'redo'): Promise<void> {
+    const target = direction === 'undo' ? entry.before : entry.after;
+    const ok = await this.correct(entry.id, target, false);
+    if (!ok) return;
+    const drop = (held: readonly Gesture[]): readonly Gesture[] => {
+      const at = held.lastIndexOf(entry);
+      return at < 0 ? held : [...held.slice(0, at), ...held.slice(at + 1)];
+    };
+    if (direction === 'undo') {
+      this.did.update(drop);
+      this.rewound.update((held) => [...held, entry]);
+      this.notices.notice.set(
+        'Took back the corrected paragraph — its earlier words are recorded again.');
+    } else {
+      this.rewound.update(drop);
+      this.did.update((held) => [...held, entry]);
+      this.notices.notice.set('Put back the corrected paragraph.');
+    }
+    afterNextRender(() => { this.land(entry.id); }, { injector: this.injector });
+  }
+
+  /**
+   * SAY WHAT THE CHORD JUST DID, AND SHOW WHERE IT DID IT.
+   *
+   * ── The defect this answers (Owen, 2026-08-23) ──────────────────────────────
+   *
+   * *"i notice ctrl+z and shift+ctrl+z dont really do much of anything."* They
+   * did exactly what they were built to do — pop one op, put one back — in
+   * perfect silence, usually about a block somewhere off screen. A sweep lands
+   * forty strikes in one sitting; one Ctrl+Z takes back ONE of them, four
+   * chapters below the viewport, and from the chair nothing whatsoever happened.
+   * An undo nobody can see is indistinguishable from an undo that is broken,
+   * which is `BookStacksService.replay`'s own standard for the refusals — this
+   * extends it to the successes.
+   *
+   * So every pop says a sentence naming the change and the count still waiting,
+   * and the sheet glides to the block it happened to and pulses it — `land`, the
+   * same landing every panel jump already makes. After the next render, because
+   * the replay has to put the block back (an undone merge, a redone insert)
+   * before there is anything to scroll to; `land` answers a block that is not
+   * there by doing nothing, which is right for the one op with no block at all
+   * (a chapter reset).
+   */
+  private replayedFeedback(op: BookOp, direction: 'undo' | 'redo'): void {
+    const left = this.waiting();
+    const tail = left === 0
+      ? ' — nothing is waiting now'
+      : left === 1 ? ' — 1 change is still waiting' : ` — ${left} changes are still waiting`;
+    this.notices.notice.set(
+      `${direction === 'undo' ? 'Took back' : 'Put back'} ${this.describeOp(op)}${tail}.`,
+    );
+    const target = this.opAnchor(op, direction);
+    if (target === null) return;
+    afterNextRender(() => { this.land(target); }, { injector: this.injector });
+  }
+
+  /** One op, named in words a sentence can carry. */
+  private describeOp(op: BookOp): string {
+    switch (op.op) {
+      case 'strike': return 'striking a block';
+      case 'restore': return 'restoring a block';
+      case 'text': return 'a text edit';
+      case 'category': return `calling a block ${op.category}`;
+      case 'merge': return 'joining two blocks';
+      case 'split': return 'cutting a block in two';
+      case 'move': return 'moving a block';
+      case 'insert': return 'adding a block';
+      case 'link': return 'binding a reference number';
+      case 'restore-furniture': return 'putting a shelved row back';
+      case 'chapter':
+        if ('set' in op) return 'placing a chapter marker';
+        if ('remove' in op) return 'removing a chapter marker';
+        if ('rename' in op) return 'renaming a chapter';
+        if ('move' in op) return 'moving a chapter marker';
+        return 'giving the chapters back to the reading';
+    }
+  }
+
+  /**
+   * The block the landing should centre — WHICH EXISTS AFTER the replay, which
+   * is why the direction matters: an undone insert leaves only its anchor, a
+   * redone split leaves only its halves, a redone merge leaves only the
+   * survivor. Null for the one decision that is about no block (chapter reset),
+   * and for anything whose target the replay then cannot find, `land` itself
+   * answers with stillness.
+   */
+  private opAnchor(op: BookOp, direction: 'undo' | 'redo'): string | null {
+    switch (op.op) {
+      case 'insert':
+        return direction === 'undo' ? (op.before ?? op.after ?? null) : op.id;
+      case 'merge':
+        return direction === 'undo' ? op.id : op.into;
+      case 'split':
+        return direction === 'undo' ? op.id : `${op.id}/1`;
+      case 'link':
+        return op.block;
+      case 'chapter':
+        if ('set' in op) return op.set;
+        if ('remove' in op) return op.remove;
+        if ('rename' in op) return op.rename;
+        if ('move' in op) return direction === 'undo' ? op.move : op.to;
+        return null;
+      default:
+        return op.id;
+    }
   }
 
   /** What the button says. The count is IN the label, on `labelFor`'s rule. */
@@ -4806,6 +5054,7 @@ export class BookViewComponent {
     this.mode.set('workbench');
     this.pending.set([...this.landedOps()]);
     this.undone.set([]);
+    this.resetJournal();
     // Both cards are about a paragraph whose marks may have just changed under
     // them — `load`'s own reason for putting them down.
     this.dismissCards();
@@ -5019,8 +5268,21 @@ export class BookViewComponent {
    * the only thing standing between the person and a correction that vanished, and
    * main's own words say so.
    */
-  private async correct(id: string, text: string): Promise<boolean> {
+  private async correct(
+    id: string,
+    text: string,
+    /**
+     * Whether this correction is a NEW decision the journal should hold. True
+     * for the editor's commit and the sweep's landings; false for the journal's
+     * own walks (`replayWords`), which move their existing entry instead —
+     * journalling those would record an undo as a fresh thing to undo.
+     */
+    journal = true,
+  ): Promise<boolean> {
     if (api === null) return false;
+    // The words being replaced, read before anything moves — they are what an
+    // undo of this correction has to put back.
+    const before = this.view()?.rows.find((row) => row.id === id)?.text ?? null;
     /*
      * ONE AT A TIME, AND THE SECOND ONE IS TOLD SO. Two corrections in flight
      * would be two whole-file rewrites of one records file racing each other, and
@@ -5046,6 +5308,17 @@ export class BookViewComponent {
       if (ticket !== this.asked) return false;
       if (answered.ok) {
         this.book.set(answered);
+        /*
+         * ONTO THE JOURNAL, so Ctrl+Z can walk back over it — the whole of the
+         * repair for "changing the text inside a block definitely wasnt
+         * undoing". Only a correction that CHANGED something: retyping a
+         * paragraph to its own words decided nothing, and main has recorded
+         * nothing new for an undo to reverse.
+         */
+        if (journal && before !== null && before !== text) {
+          this.did.update((held) => [...held, { kind: 'words', id, before, after: text }]);
+          this.rewound.set([]);
+        }
         return true;
       }
       // The correction landed and the book could not be read back — main's
@@ -5105,15 +5378,26 @@ export class BookViewComponent {
     const chip = event.currentTarget as HTMLElement;
     const box = chip.getBoundingClientRect();
     const row = this.view()?.rows.find((candidate) => candidate.id === id);
-    this.menu.set({ id, category: row?.category ?? '', x: box.left, y: box.bottom + 4 });
+    // A chip pressed inside a multi-selection speaks for the whole selection;
+    // pressed anywhere else it speaks for its own block, exactly as ever.
+    const chosen = this.chosen();
+    const ids = chosen.has(id) && chosen.size > 1 ? [...chosen] : [id];
+    this.menu.set({ ids, category: row?.category ?? '', x: box.left, y: box.bottom + 4 });
   }
 
-  /** One choice, one op — and nothing at all for choosing what it already is. */
-  protected relabel(id: string, category: string): void {
+  /**
+   * One choice, one op PER BLOCK it changes — and nothing at all for a block
+   * already wearing it. One `push`, so the whole gesture lands on the stack
+   * together; the ops replay per id, which is what lets seven blocks become
+   * Footnote in one press without a second grammar for "several".
+   */
+  protected relabel(ids: readonly string[], category: string): void {
     this.menu.set(null);
-    const row = this.view()?.rows.find((candidate) => candidate.id === id);
-    if (row === undefined || row.category === category) return;
-    this.push({ op: 'category', id, category });
+    const rows = this.view()?.rows ?? [];
+    const held = new Map(rows.map((row) => [row.id, row.category] as const));
+    this.push(...ids
+      .filter((id) => held.has(id) && held.get(id) !== category)
+      .map((id): BookOp => ({ op: 'category', id, category })));
   }
 
   /**
@@ -5201,6 +5485,105 @@ export class BookViewComponent {
    */
   protected dropChapter(id: string): void {
     this.push({ op: 'chapter', remove: id });
+  }
+
+  /**
+   * A BLOCK THE READING NEVER PRODUCED, ADDED WHERE IT BELONGS — the phantom
+   * editor, opened from the menu's two insert verbs.
+   *
+   * ── What was asked for ──────────────────────────────────────────────────────
+   *
+   * Owen (2026-08-23): *"there were some cases where the blocks just werent
+   * there. the chapter titles werent transferred over. if that happens i need
+   * some way to add a new block in a specific location."* Every other gesture on
+   * this sheet repairs a block the bank holds; this is the one for a block it
+   * missed outright.
+   *
+   * ── The shape of the gesture, and why it is two steps ──────────────────────
+   *
+   * The menu names WHERE (above or below the block under the pointer) and the
+   * phantom collects the WORDS — an empty editable block drawn at the exact
+   * place the real one will stand, focused, committing on blur or Enter exactly
+   * as the block editor does. Two steps because the op requires words
+   * (`InsertOp`: an insert of nothing is a decision nobody can act on), and a
+   * dialog asking for them would collect a paragraph somewhere other than where
+   * it is going. A phantom abandoned empty decides nothing and leaves nothing —
+   * no op, no row, no step.
+   *
+   * WHAT IT IS BORN AS: `Text`, always. The commonest miss is a chapter title,
+   * but a default of Section-header would be wrong for every other kind of miss,
+   * and the block arrives SELECTED — the category chip is already beside it, and
+   * the chapter marker is one right-click away, both ordinary ops on an ordinary
+   * row the moment it exists.
+   */
+  protected readonly inserting = signal<{ anchor: string; where: 'above' | 'below' } | null>(null);
+
+  protected insertFromMenu(where: 'above' | 'below'): void {
+    const open = this.context();
+    this.context.set(null);
+    if (open === null) return;
+    // A live editor's words are somebody's edit; the phantom must not eat them.
+    this.commitEditing();
+    // And a phantom already holding words commits them before the next one
+    // opens — blur is its ordinary ending, and unmounting it any other way
+    // would be the one path where typed words leave without a decision.
+    const standing = this.host.nativeElement.querySelector('.adding .editor') as HTMLElement | null;
+    standing?.blur();
+    this.inserting.set({ anchor: open.id, where });
+    // The editor element does not exist until the template has re-run —
+    // `beginEditing`'s own arrangement, for its reason (this app is zoneless).
+    afterNextRender(() => {
+      const editor = this.host.nativeElement.querySelector('.adding .editor') as HTMLElement | null;
+      editor?.focus({ preventScroll: true });
+    }, { injector: this.injector });
+  }
+
+  /**
+   * The phantom commits: words become an insert op, nothing becomes nothing.
+   *
+   * THE ID IS MINTED HERE, at the gesture, and rides in the op — `InsertOp`
+   * carries the argument (nothing exists to derive a name from). `u<n>`, the
+   * first free ordinal over the replayed rows, which include every insert
+   * already waiting on the stack because `view()` is the book as this pane
+   * draws it.
+   */
+  protected commitInsert(event: Event): void {
+    const add = this.inserting();
+    if (add === null) return;
+    if (event instanceof KeyboardEvent) event.preventDefault();
+    const editor = event.target as HTMLElement;
+    // `textContent`, not `innerText` — `commit`'s rule: a source string must
+    // survive the round trip unchanged.
+    const said = editor.textContent ?? '';
+    this.inserting.set(null);
+    if (said.trim().length === 0) return;
+    const rows = this.view()?.rows ?? [];
+    const used = new Set(rows.map((row) => row.id));
+    let ordinal = 1;
+    while (used.has(`u${ordinal}`)) ordinal += 1;
+    const id = `u${ordinal}`;
+    this.push({
+      op: 'insert',
+      id,
+      ...(add.where === 'above' ? { before: add.anchor } : { after: add.anchor }),
+      category: 'Text',
+      text: said,
+    });
+    // Selected, so the chip and the rails are already up on the block that just
+    // appeared — relabelling it Section-header is the next gesture in Owen's own
+    // scenario, and it is one click away rather than a hunt.
+    this.chosen.set(new Set([id]));
+  }
+
+  /**
+   * Escape empties and blurs, so the blur's commit finds nothing and cancels —
+   * `revert`'s single-ending arrangement, on the editor that has no words to
+   * put back.
+   */
+  protected cancelInsert(event: Event): void {
+    const editor = event.target as HTMLElement;
+    editor.textContent = '';
+    editor.blur();
   }
 
   /** The selection becomes the category — rails up, chips up, Delete waiting. */
@@ -5643,6 +6026,17 @@ function linesOf(
   const out: Line[] = [];
   let previous: BookRow | null = null;
   let onPage = -1;
+  /*
+   * The sienna ordinal counts a page's notes HERE, not off `row.note`. That
+   * field is which note of its banked BLOCK a row is, and it only ever agreed
+   * with "which note of its page" while the model answered a page's whole
+   * footnote area as one block. A book whose notes each arrived as their own
+   * block wore "1" beside every note on the page — Owen's evangelische-kirche,
+   * five notes, five 1s — so the page's count is taken where the page is in
+   * hand, keyed by page because the bench's order groups a chapter's notes
+   * together and a key outlives any assumption about adjacency.
+   */
+  const notesOnPage = new Map<number, number>();
   for (const row of rows) {
     /*
      * THE SHELF IS IN THE FILE AND NOT ON THE PAPER — §5 of the contract: a
@@ -5659,6 +6053,11 @@ function linesOf(
     const heading = previous !== null
       && (previous.category === 'Title' || previous.category === 'Section-header');
     const markers = marks.printed.get(row.id) ?? [];
+    let ordinal: number | null = null;
+    if (marks.chrome && row.category === 'Footnote') {
+      ordinal = (notesOnPage.get(page) ?? 0) + 1;
+      notesOnPage.set(page, ordinal);
+    }
     out.push({
       row,
       pieces: cut(row.text, markers),
@@ -5673,7 +6072,7 @@ function linesOf(
       colour: pdfCategoryColour(row.category),
       label: pdfCategoryLabel(row.category),
       size: marks.size(row.category),
-      ordinal: marks.chrome && row.note !== undefined ? row.note + 1 : null,
+      ordinal,
       jump: marks.chrome ? row.refs?.[0]?.block ?? null : null,
       ghost: marks.chrome ? ghost : null,
       chapter,

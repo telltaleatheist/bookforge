@@ -2469,7 +2469,7 @@ export class OpenDocumentsComponent {
         // gone; what the import IS goes on the line underneath, where every
         // other card keeps its second fact.
         title: project.title,
-        said: origin === null ? 'reading this book’s history…' : arrivalSentence(origin.payload),
+        said: origin === null ? 'reading this book’s history…' : arrivalSentence(origin),
         state: origin === null ? null : whenOn(origin.createdAt),
         icon: origin === null ? 'ft-scan' : iconForArrival(origin.payload),
         dot: 'source',
@@ -4138,8 +4138,16 @@ function inProject(filePath: string, dir: string): boolean {
  * because it is the one thing that must never leave the panel; what it arrived
  * as is the sentence underneath.
  */
-function arrivalSentence(payload: string): string {
-  const ext = extensionOf(payload);
+function arrivalSentence(origin: LedgerStep): string {
+  /*
+   * A CAPTURED PROJECT STARTED FROM PHOTOGRAPHS, and its root step says so —
+   * the payload is the recipe, and calling it "the scan" put the scan at the
+   * head of a lineage it actually sits in the MIDDLE of (the mint's card, one
+   * row down, is the scan). Part of Owen's 2026-08-23 deceptive-tree ruling,
+   * beside `healReadParents`.
+   */
+  if (origin.action === 'capture') return 'the photographs it all started from';
+  const ext = extensionOf(origin.payload);
   if (ext === 'epub') return 'the book it all started from';
   if (ext === 'txt') return 'the text it all started from';
   return 'the scan it all started from';
@@ -4228,12 +4236,19 @@ function titleForStep(step: LedgerStep): string {
        * drew for two waves and which sent Owen looking for his book somewhere
        * else. A minted step's action is `import` on purpose — seven sites branch
        * on it and every one is right that way (`mintedStep`, shared/ledger.ts) —
-       * but the WORDS on the card are not one of those seven: what this row names
-       * is the pages the mint made out of this project's own photographs, and
-       * nothing was imported from anywhere. The card now says what pressing it
-       * opens, which is the rule every other title on this tree keeps.
+       * but the WORDS on the card are not one of those seven.
+       *
+       * "The scan" AND NOT "The pages", which this card said for one day of
+       * Wave 41's afterlife. "The pages" was true when a mint wrote loose page
+       * images; the mint writes a PDF now, pressing this card opens that PDF —
+       * the rule every title on this tree keeps — and the reading hangs off
+       * this very card BECAUSE it read that PDF. Owen caught what the old word
+       * did to the lineage (2026-08-23): *"the work tree is deceptive. it
+       * shows it was derived from the images."* The photographs already have
+       * their own card, the root; this one is the scan this app minted out of
+       * them.
        */
-      return mintedFromPhotographs(step) ? 'The pages' : 'The original';
+      return mintedFromPhotographs(step) ? 'The scan' : 'The original';
     /*
      * A NOUN, on the same precedent as "The original" and "The book": what a
      * person wants off this card is the artifact, not the act. Standing here is

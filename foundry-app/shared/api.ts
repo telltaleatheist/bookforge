@@ -297,6 +297,19 @@ export interface FoundryApi {
     /** The working PDF, by the path this app already has open. Refused for any other. */
     readPdf(filePath: string): Promise<MetadataOutcome>;
     writePdf(filePath: string, patch: Partial<PdfMetadataFields>): Promise<MetadataWriteOutcome>;
+    /**
+     * A FINISHED EXPORT in a project's `final/` tray, by its own path. Refused
+     * for any other file, INCLUDING an EPUB the user imported.
+     *
+     * The asymmetry with the PDF pair is the asymmetry between the two documents.
+     * A scan is what this app was given and keeps working from; an exported book
+     * is what it made, out of a bank, and can make again. So the container is
+     * safe to rewrite — and the write's other half, the metadata step, is what
+     * puts the correction on the NEXT cast, which is the only reason the edit
+     * outlives the one file in front of the person making it.
+     */
+    readEpub(filePath: string): Promise<MetadataOutcome>;
+    writeEpub(filePath: string, patch: Partial<EpubMetadataFields>): Promise<MetadataWriteOutcome>;
   };
 
   /**

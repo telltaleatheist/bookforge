@@ -34,12 +34,14 @@
  * ── EVERY SHAPE §3 DECLARES IS NOW PERFORMED ────────────────────────────────
  *
  * `strike`, `restore`, `text` and `category` landed first; `merge`, `split`,
- * `move`, `chapter`, `link` and `restore-furniture` are here now, and with them
- * the table in docs/RENDERER.md §3 is closed. Nothing in this grammar is declared
- * and refused any more. What remains refused is an op word this program has never
- * heard of, which means the file was written by a build from the future, and the
- * honest thing to do with a book somebody edited with a later Foundry is to say
- * so rather than to draw two thirds of their work.
+ * `move`, `chapter`, `link` and `restore-furniture` closed the table in
+ * docs/RENDERER.md §3; `insert` joined it on 2026-08-23, for the block the
+ * reading never produced at all (its own declaration carries Owen's case).
+ * Nothing in this grammar is declared and refused any more. What remains refused
+ * is an op word this program has never heard of, which means the file was
+ * written by a build from the future, and the honest thing to do with a book
+ * somebody edited with a later Foundry is to say so rather than to draw two
+ * thirds of their work.
  *
  * ── LAST OP WINS, and it is the rule rather than a tolerance ────────────────
  *
@@ -169,6 +171,59 @@ export interface MoveOp {
 }
 
 /**
+ * Add a block the reading never produced, beside a block it did.
+ *
+ * ── Why this op exists at all ────────────────────────────────────────────────
+ *
+ * The model sometimes misses a block outright — Owen met it on chapter titles
+ * (2026-08-23): *"there were some cases where the blocks just werent there. the
+ * chapter titles werent transferred over. if that happens i need some way to add
+ * a new block in a specific location."* Every other op in this grammar repairs
+ * what the bank holds; this is the one that says the bank is missing something
+ * the page printed, and it records the person's own words for it.
+ *
+ * ── The id RIDES IN THE OP, unlike a split's ────────────────────────────────
+ *
+ * A split's halves are derived from the parent (`b2-3/1`) because the parent is
+ * there to derive from. An inserted block descends from nothing, so its name has
+ * to be MINTED at the gesture and written down — later ops key to it, and a name
+ * recomputed at replay would change under them the day the chain gains another
+ * insert. The sheet mints `u<n>` (the first free ordinal over the replayed
+ * rows), a fourth family beside `b<page>-<order>`, `e-<n>` and `/<n>`, and the
+ * replay refuses a name the book already holds exactly as a split does.
+ *
+ * ── One anchor, either side of it ───────────────────────────────────────────
+ *
+ * Exactly one of `before`/`after` names the neighbour — a person adding a
+ * missed chapter title stands on the chapter's first paragraph and asks for the
+ * title ABOVE it, and a person adding trailing matter has no block below to
+ * anchor on. Two fields present is two positions in one decision; none is no
+ * position at all. Both are the parser's refusals.
+ *
+ * ── The text is REQUIRED and may not be empty ───────────────────────────────
+ *
+ * An empty block is legal in this book (`text` says so and the edition keeps
+ * one), but an INSERT of one is a decision nobody can act on — the block is
+ * added because the reading missed its words, and an insert with none is a
+ * split that leaves a half empty, refused for that op's own reason. It also
+ * keeps the row writable: a derived row carries at least one part and a part
+ * covers characters, so the words are what the part is made of.
+ */
+export interface InsertOp {
+  op: 'insert';
+  /** The minted name — `u<n>`, recorded here because nothing derives it. */
+  id: string;
+  /** The new block goes immediately before this one… */
+  before?: string;
+  /** …or immediately after this one. Exactly one of the two. */
+  after?: string;
+  /** The engine's spelling, as `category` ops use — `Text`, `Section-header`. */
+  category: string;
+  /** The words the reading missed. Never empty. */
+  text: string;
+}
+
+/**
  * Draw a division above this block, and call it this.
  *
  * Retitles in place if a division is already there, so that "set" is one gesture
@@ -265,6 +320,7 @@ export type BookOp =
   | MergeOp
   | SplitOp
   | MoveOp
+  | InsertOp
   | ChapterOp
   | LinkOp
   | RestoreFurnitureOp;
@@ -296,6 +352,7 @@ const PERFORMED = [
   'merge',
   'split',
   'move',
+  'insert',
   'chapter',
   'link',
   'restore-furniture',
@@ -315,6 +372,7 @@ const STRUCTURAL: ReadonlySet<string> = new Set([
   'merge',
   'split',
   'move',
+  'insert',
   'chapter',
   'link',
   'restore-furniture',
@@ -570,6 +628,46 @@ function opOf(line: string, at: number): BookOp {
         throw new BookOpsError(`${where} moves "${id}" to before itself, which is where it already is.`);
       }
       return { op: 'move', id, before };
+    }
+    case 'insert': {
+      const id = idOf(row, where);
+      const before = nameOf(row['before']);
+      const after = nameOf(row['after']);
+      // EXACTLY ONE ANCHOR — chapterOpOf's rule, two fields over. Two is two
+      // positions in one decision; none is no position at all.
+      if (before === null && after === null) {
+        throw new BookOpsError(`${where} adds "${id}" beside nothing, so there is nowhere to put it.`);
+      }
+      if (before !== null && after !== null) {
+        throw new BookOpsError(
+          `${where} adds "${id}" both before "${before}" and after "${after}", and one block goes `
+          + 'one place.',
+        );
+      }
+      const anchor = before ?? after;
+      if (anchor === id) {
+        throw new BookOpsError(`${where} adds "${id}" beside itself, which is not a place.`);
+      }
+      const category = nameOf(row['category']);
+      if (category === null) {
+        throw new BookOpsError(`${where} adds "${id}" as nothing, and every block is some kind of block.`);
+      }
+      // NON-EMPTY, unlike a `text` op's words — the InsertOp declaration carries
+      // the argument: an insert of nothing is a decision nobody can act on.
+      const words = nameOf(row['text']);
+      if (words === null) {
+        throw new BookOpsError(
+          `${where} adds "${id}" with no words in it, and a block is added because the reading `
+          + 'missed its words.',
+        );
+      }
+      return {
+        op: 'insert',
+        id,
+        ...(before !== null ? { before } : { after: after! }),
+        category,
+        text: words,
+      };
     }
     case 'chapter':
       return chapterOpOf(row, where);
@@ -1173,6 +1271,80 @@ function interpret(
         flow.splice(at.get(op.id)!, 1);
         flow.splice(flow.findIndex((one) => one.id === op.before), 0, row);
         reindex();
+        break;
+      }
+
+      case 'insert': {
+        const beside = op.before ?? op.after!;
+        const gone = notInFlow(beside);
+        if (gone !== null) { absent(op, gone); break; }
+        /*
+         * THE MINT CHECK IS A SPLIT'S, for a split's reason word for word: two
+         * blocks of one name is the failure every later change would inherit.
+         * It is reachable here more easily than there — the id came off a
+         * gesture against ONE replay, and a chain edited from an older step can
+         * carry two inserts that each honestly minted `u1` against the book as
+         * they saw it.
+         */
+        if (held.has(op.id)) {
+          refused(op, op.id, `adding a block named "${op.id}" would mint a name this book already has `
+            + 'a block under, and two blocks of one name is the failure every later change would inherit.');
+          break;
+        }
+        /*
+         * NO INSERTED NOTES. A note is apparatus bound to a reference number the
+         * page printed (the merge and split refusals above carry the whole
+         * argument), and a hand-added one would be a note no marker can ever
+         * honestly claim — the printed number the matcher needs was never read.
+         * The prose repair for a missed footnote is inserting it as Text where
+         * it belongs; the apparatus repair is re-reading the page.
+         */
+        if (op.category === 'Footnote') {
+          refused(op, op.id, `"${op.id}" would be a note, and a note is apparatus bound to a reference `
+            + 'number the page printed. A block the reading missed is added as prose; a missed note is '
+            + 'a reason to read the page again.');
+          break;
+        }
+        const anchor = held.get(beside)!;
+        /*
+         * WHAT THE ROW CARRIES, and which halves of it are honest.
+         *
+         * `page`/`pages` are the ANCHOR's, because `page` is documented as an
+         * estimate and never an address, and the one thing known about this
+         * block is that the page printed it beside the anchor — it is what lets
+         * the glance show the sheet the missing words are actually on. The BOX
+         * IS EMPTY and the frame is the anchor's: nothing measured this block,
+         * so there is no rectangle to claim, and surfaces that draw boxes skip
+         * an empty one. The single part is an EPUB row's shape exactly
+         * (`u:` beside `e:`, src/vlm/epub-explode.ts): page 0 — no page anchor
+         * is claimed at compile — and characters that tile the op's own words.
+         * A later retype goes stale exactly as every edited row's parts do, and
+         * the derived-file writer says the one true thing left (`partsFor`,
+         * shared/materialize.ts).
+         */
+        const made: ReplayedRow = {
+          id: op.id,
+          category: op.category,
+          text: op.text,
+          page: anchor.page,
+          pages: [anchor.page],
+          box: { x1: 0, y1: 0, x2: 0, y2: 0 },
+          pageWidth: anchor.pageWidth,
+          pageHeight: anchor.pageHeight,
+          parts: [{ src: `u:${op.id}`, page: 0, chars: [0, op.text.length] }],
+        };
+        const place = at.get(beside)!;
+        flow.splice(op.before !== undefined ? place : place + 1, 0, made);
+        held.set(op.id, made);
+        mine.add(op.id);
+        reindex();
+        /*
+         * NOT IN `restructured` AND NOT IN `retyped`, deliberately: those sets
+         * drive the marker re-derivation, and no note in this book names an
+         * inserted block — its `sources` are itself, no ref ever pointed into
+         * it, so a re-scan would bind nothing and the engine's offsets
+         * everywhere else stay exactly as read.
+         */
         break;
       }
 

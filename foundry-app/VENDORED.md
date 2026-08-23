@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **eb24afa** — *the export runs at the press -- only the expensive work queues* |
+| Source sha | **ada67e2** — *the atomic rename retries through Windows's transient locks* |
 | Copied on | 2026-08-23 |
-| Copied by | `git -C <foundry> archive eb24afa app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive ada67e2 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -513,6 +513,48 @@ dirty tree. The sha is the only thing that identifies a build, so the copy waits
 for the commit — asked for and landed over the live cross-session channel
 (`ListAgents` → `SendMessage`), which is now the fastest route to the Foundry
 side. The whole recipe is written out in `docs/RE-VENDOR-FOUNDRY.md`.
+
+`ada67e2` is Wave 46 and its two follow-ups, and it is the largest app delta
+since the copy began: `page-glance.component.ts` (688 lines) is DELETED and
+`original-panel.component.ts` (607) stands in its place — the original no longer
+hovers as a card, it stands BESIDE the book — with `book-view` rewritten around
+it, the action menu, metadata dialog, open-documents and `documents.service`
+following. `3c6d4dd` centres the pair as one group and stops the work tree lying
+about captured books; `ada67e2` itself retries the atomic rename through the
+transient locks Windows takes on a file somebody just wrote, which is a fix this
+platform earns and other platforms never see.
+
+**THE CHANNELS DOC IS STALE AT THIS SHA, and this is the first time that has
+happened.** `app/electron/ipc.ts` gained two handles — `meta:read-epub` and
+`meta:write-epub`, the metadata dialog's doors — and `docs/IPC-CHANNELS.md` did
+not move in the whole range. Verified by parsing the vendored `ipc.ts` against
+the vendored doc: 87 handles in the source, 100 documented rows, and exactly
+those two names in the source and not the doc. **No collision** — BookForge owns
+no `meta:` channel at all, so there is nothing to hit — and the keeper passes
+6/6. But it passes on an authority that is now incomplete, which is a different
+thing from passing: if this app ever adds a `meta:` name, the keeper would clear
+it against a doc that does not know Foundry has one. Said on the switchboard;
+their side regenerates the doc, and the next refresh should carry it.
+
+The engine question, asked because `src/` moved too (translate `tablecells.ts`
+is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's
+new shape does NOT open a gap. It stopped editing the working tree in place —
+that tree, its reader and its tab kind are deleted (their docs/RENDERER.md §7) —
+and now writes through a side file with `epub-meta --epub <file> --out <path>`,
+over a finished export in `final/`. The RELEASED engine already answers that
+form: `src/epub/meta.ts` at `c0e30e1` refuses a file WITHOUT `--out` and names
+the flag in its own refusal, so v0.9.4 predates the app that needs it. What is
+gapped is narrower and silent in the same way as before: table-cell translation
+and this wave's vlm work live in an engine nobody has released, and
+**`package.json` still reads 0.9.4** — the fourth build to wear a number that
+stopped tracking it. Closing it is a bump-then-release from `ada67e2`, not a
+subtree refresh, and it is left undone here deliberately because it rewrites
+Owen's installed environment mid-narration.
+
+119/119 blobs hash-verified (one file deleted, one added — the count is a
+coincidence, not a no-op); build config and deps unmoved, no install; `npm run
+build` clean, ng 811.91 kB (the budget WARNING only, up 10 kB with the new
+panel); all 44 keepers green.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

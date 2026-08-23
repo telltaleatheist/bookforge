@@ -7,7 +7,7 @@ import type { DocumentMetadata, StepLedgerView } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
 import { ProjectsService } from '../../core/projects.service';
-import { OpenDocumentsService, type Tab } from '../../core/documents.service';
+import { isExportView, OpenDocumentsService, type Tab } from '../../core/documents.service';
 import { PositionSyncService } from '../../core/position-sync.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
@@ -33,11 +33,21 @@ import { api } from '../../core/foundry';
  * not a thing this app does behind somebody's back. "Rename the files to match"
  * can exist later as its own deliberate action, with its own button.
  *
- * WHAT IS EDITED IS THE WORKING COPY. For an EPUB that is the unpacked working
- * tree — the same tree every cut and every word edit writes to — so the change
- * is durable at once and Save packs it with everything else. For a PDF it is
- * the working PDF, which the engine rewrites whole; `archive/` still holds the
- * file that came in, byte for byte, which is what makes that acceptable.
+ * WHAT IS EDITED IS A COPY THIS APP MADE, never one it was given. For a PDF that
+ * is the working PDF, which the engine rewrites whole; `archive/` still holds the
+ * file that came in, byte for byte, which is what makes that acceptable. For a
+ * book it is a FINISHED EXPORT in `<project>/final/` — the container this app
+ * cast out of the bank and can cast again — reached through the tray rather than
+ * through the opened-documents allow-list, because an export was never opened.
+ * There is no third case: an EPUB somebody imported is read into a bank and this
+ * dialog never points at it.
+ *
+ * AND EVERY WRITE LANDS TWICE. The document changes, which is what the person
+ * sees, and a metadata step is recorded, which is what a book made three weeks
+ * later out of a bank that never knew the title was corrected will carry
+ * (`MetadataPatch`, shared/types.ts). The second half is the one that matters for
+ * an export, because the next export is a fresh cast rather than an edit of this
+ * one.
  *
  * ONLY WHAT CHANGED IS SENT. A field the user did not touch is not in the patch
  * and is not on the engine's command line, so it is not re-spliced, not
@@ -141,6 +151,17 @@ import { api } from '../../core/foundry';
                   fields are shown and not editable here.
                 </p>
               }
+              <!--
+                THE SECOND HALF, SAID OUT LOUD. Somebody correcting a title on an
+                export is entitled to know whether they have just fixed one file
+                or fixed the book — and the answer is the book, which is the
+                whole reason the write records a step as well as rewriting the
+                container.
+              -->
+              <p class="note">
+                Saving writes this book again in the shelf you exported it to, and remembers the
+                correction as a step — so every book Foundry makes from here carries it too.
+              </p>
             } @else {
               <label class="field">
                 <span class="label">Title</span>
@@ -367,10 +388,21 @@ export class MetadataDialogComponent {
    *
    * A LOOSE FILE IS UNCHANGED: no project, no ledger, no position — its actions go
    * on taking the file.
+   *
+   * ── AN EXPORT SHORT-CIRCUITS ALL OF THAT, BECAUSE IT IS NOT A POSITION ─────
+   *
+   * Everything below is the answer to "which of this project's documents is the
+   * position showing", and a finished export is not one of them: it is a file this
+   * app filed, out of a bank, at a step somebody may have walked away from since.
+   * Running it through the resolution would hand back the project's PDF — the
+   * dialog would open on an export and edit a scan, silently, which is precisely
+   * the class of mistake the position keying exists to prevent. The tab IS the
+   * document here, and the tab is the answer.
    */
   protected readonly source = computed(() => {
     const tab = this.stage.activeDocument();
     if (tab === null) return null;
+    if (isExportView(tab)) return tab;
     const mine = tab.kind === 'pdf' ? tab : null;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return mine;
@@ -391,9 +423,14 @@ export class MetadataDialogComponent {
    * focused, and the six fields it shows are a `dc:` package for one and an Info
    * dictionary for the other. Somebody who cannot tell which they are editing
    * cannot read the form.
+   *
+   * SO IT IS THE TAB'S OWN KIND AND NOT A CONSTANT. It was hard-coded to `pdf` for
+   * as long as a scan was the only thing that reached this dialog, and a card
+   * reading "Working Towards the Führer · PDF" over six `dc:` boxes would be the
+   * one field whose whole job is to disambiguate, saying the wrong thing.
    */
   protected named(tab: Tab): string {
-    return qualify(tab.title, 'pdf', '');
+    return qualify(tab.title, isExportView(tab) ? 'epub' : 'pdf', '');
   }
 
   /** What the document said when the dialog opened. The baseline every save diffs against. */
@@ -474,7 +511,16 @@ export class MetadataDialogComponent {
     this.loading.set(true);
     this.problem.set(null);
     try {
-      const outcome = await api.meta.readPdf(tab.path);
+      /*
+       * WHICH COMMAND IS DECIDED BY THE TAB, and the ANSWER decides which form is
+       * drawn. Those are two different questions and they are deliberately not
+       * collapsed into one: `record().kind` is what the engine said the document
+       * is, so a package read out of a file this app thought was one and is not
+       * paints as what it turned out to be rather than as what was expected.
+       */
+      const outcome = isExportView(tab)
+        ? await api.meta.readEpub(tab.path)
+        : await api.meta.readPdf(tab.path);
       if (outcome === null) {
         this.problem.set('This book is still opening — its package has not been read yet.');
         return;
@@ -565,19 +611,49 @@ export class MetadataDialogComponent {
     this.problem.set(null);
     try {
       /*
-       * ONE FORMAT REACHES THE WRITE NOW. The EPUB arm resolved an open book's
-       * WORKING TREE by its tab's book id, and the tree, the reader over it and
-       * the tab kind that held it are deleted (docs/RENDERER.md §7). The FORM
-       * still knows both shapes — `meta.kind === 'epub'` draws six `dc:` fields
-       * against a record read from a document — because a record read from an
-       * imported EPUB is still a record; what has no door any more is writing one
-       * back through a book this app no longer opens as a file.
+       * ── THE BOOK'S SIX `dc:` FIELDS, WRITTEN INTO THE EXPORT AND INTO THE
+       *    LEDGER ────────────────────────────────────────────────────────────
+       *
+       * This arm refused for a while, and what was missing was never the form: it
+       * drew these six boxes the whole time. The EPUB write used to resolve an
+       * open book's WORKING TREE by its tab's id, and the tree, the reader over it
+       * and the tab kind that held it are deleted (docs/RENDERER.md §7). What is
+       * on screen now when this runs is a FINISHED EXPORT — a real container in
+       * `<project>/final/` — so there is a document to write into again.
+       *
+       * TWO THINGS HAPPEN AND THE SECOND IS THE DURABLE ONE. Main rewrites the
+       * container, which is what the person sees; main also lands a metadata step,
+       * which is what the NEXT cast carries. Without the step the correction would
+       * live in one file and every book filed afterwards would quietly be wrong
+       * again, because a bank does not know a title was fixed.
+       *
+       * `identifier` GOES IN THE PATCH LIKE ANY OTHER FIELD. The box is disabled
+       * where the package names no unique identifier, so an unwritable one is
+       * never edited and `changedField` drops it for being unchanged; the engine
+       * refuses the case anyway, by name, and that sentence is better than a rule
+       * repeated here.
        */
       if (meta.kind === 'epub') {
-        this.problem.set(
-          'Foundry edits a book through its own steps now, not by writing into the container it '
-          + 'was imported from. This document’s details are read-only here.',
-        );
+        const fields = {
+          title: this.changedField(this.title(), meta.fields.title),
+          creator: this.changedField(this.creator(), meta.fields.creator),
+          language: this.changedField(this.language(), meta.fields.language),
+          publisher: this.changedField(this.publisher(), meta.fields.publisher),
+          date: this.changedField(this.date(), meta.fields.date),
+          identifier: this.changedField(this.identifier(), meta.fields.identifier),
+        };
+        const written = await api.meta.writeEpub(tab.path, fields);
+        if (!written.ok) { this.problem.set(written.reason); return; }
+        /*
+         * NOT `noteDocumentEdited`, WHICH THE PDF ARM CALLS AND THIS ONE MUST NOT.
+         * That flag means "this document has changes the copy on disk does not
+         * have", and it is what the closing question fires on. An export view has
+         * no copy anywhere else: the file it is showing IS the file that was just
+         * written, so raising the flag would make closing the tab ask a person to
+         * save changes that are already saved.
+         */
+        this.adopt(tab, written.landed);
+        this.ui.closeMetadata();
         return;
       }
       const patch = {

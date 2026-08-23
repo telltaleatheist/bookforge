@@ -50,8 +50,10 @@ import {
 import { admit, admitted, openDocument, promptForDocument } from './documents';
 import {
   engineInfo,
+  readEpubMetadata,
   readPdfMetadata,
   runDoctor,
+  writeEpubMetadata,
   writePdfMetadata,
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
@@ -72,6 +74,7 @@ import {
   documentAssets,
   documentAtPosition,
   documentAtStep,
+  exportInTray,
   goToStep,
   inspectProject,
   type ProjectInventory,
@@ -451,9 +454,7 @@ export function registerIpc(): void {
    */
   ipcMain.handle('export:save-copy', async (_event, target: string) => {
     const resolved = path.resolve(target);
-    const dir = projectDirOf(resolved);
-    const inside = dir === null ? null : path.relative(dir, resolved).split(path.sep);
-    if (dir === null || inside === null || inside.length !== 2 || inside[0] !== 'final') {
+    if (exportInTray(resolved) === null) {
       throw new Error('That file is not one of this library’s exports.');
     }
     const extension = path.extname(resolved).replace('.', '').toLowerCase();
@@ -1413,13 +1414,16 @@ export function registerIpc(): void {
    * because the dialog does both against the same document and a patch with no
    * fields in it IS a read.
    *
-   * WHICH FILE IS MAIN'S DECISION. For an EPUB the renderer names the open book
-   * by its id and main resolves the working tree — the unpacked copy this app
-   * edits, which is what makes the change visible immediately and what Save
-   * later packs. For a PDF the renderer names the path it already has open,
-   * which is the WORKING PDF; it is resolved through the same allow-list every
-   * other read goes through, so a renderer cannot ask main to rewrite a file
-   * nobody opened.
+   * WHICH FILE IS MAIN'S DECISION, and the two formats prove it two different
+   * ways because they arrive by two different doors. For a PDF the renderer names
+   * the path it already has open, which is the WORKING PDF; it is resolved through
+   * the same allow-list every other read goes through, so a renderer cannot ask
+   * main to rewrite a file nobody opened. For an EPUB the renderer names a
+   * FINISHED EXPORT, and an export was never opened at all — it is a file this
+   * process wrote into `<project>/final/` and the renderer learned about off a row
+   * in the history — so the allow-list has nothing to say about it and membership
+   * in the tray is the claim being exercised instead (`exportInTray`, which
+   * `export:save-copy` and `book:view` are gated on for the same reason).
    */
   /**
    * THE STEP FOR A METADATA EDIT — written after the document, and never instead
@@ -1561,6 +1565,73 @@ export function registerIpc(): void {
       const outcome = await writePdfMetadata(working, patch);
       if (!outcome.ok) return outcome;
       const landed = await landMetadata(working, 'pdf', patch);
+      return landed === undefined ? outcome : { ...outcome, landed };
+    },
+  );
+
+  /**
+   * THE EPUB A METADATA READ OR WRITE MAY TOUCH — a finished export, and nothing
+   * else in the library.
+   *
+   * ── Why this is not `admittedPdf` with a different extension ────────────────
+   *
+   * `admitted` answers for documents that came in through `openDocument` — the
+   * menu, a drop, argv, the dialog. An export never came in through any of them:
+   * `openExportView` (core/documents.service.ts) makes its tab out of a path read
+   * off a history row, and the pane behind it asks `book:view` rather than opening
+   * a file. So the allow-list says no to every export there is, and a door that
+   * admitted the path for being asked about it would not be a gate at all.
+   *
+   * The tray is the honest test and it is already this app's answer to exactly
+   * this question twice over — `export:save-copy` copies out of it, `book:view`
+   * explodes out of it — so this asks the same function and inherits whatever
+   * that rule becomes.
+   *
+   * ── NO `archive/` TEST HERE, WHICH IS NOT AN OVERSIGHT ─────────────────────
+   *
+   * The PDF write needs one because `documentAtPosition` can put the untouched
+   * original in front of the dialog, and `isManaged` is true of it. `final/` and
+   * `archive/` are different folders by construction: a path this answers for is
+   * two segments deep under `final`, so the archived scan cannot reach here and a
+   * refusal about it would be a sentence nobody can make the app say.
+   *
+   * ── AND THE EXTENSION, BECAUSE A TRAY HOLDS MORE THAN BOOKS ────────────────
+   *
+   * `final/` also holds plain-text exports, and `epub-meta` handed one would fail
+   * somewhere inside a zip reader with a sentence about a container. Refused here,
+   * in words about what the file is.
+   */
+  const exportedBook = (candidate: string): string => {
+    const resolved = path.resolve(candidate);
+    if (exportInTray(resolved) === null || !resolved.toLowerCase().endsWith('.epub')) {
+      throw new Error(
+        `"${candidate}" is not one of this library’s exported books, and this app edits the record `
+        + 'of a book it made rather than of a file it was shown.',
+      );
+    }
+    return resolved;
+  };
+  ipcMain.handle('meta:read-epub', (_event, filePath: string) =>
+    readEpubMetadata(exportedBook(filePath)));
+  ipcMain.handle(
+    'meta:write-epub',
+    async (_event, filePath: string, patch: Record<string, string | undefined>): Promise<MetadataWriteOutcome> => {
+      // Resolved once and used for both halves, on the PDF door's rule above: the
+      // container and the step are two facts about ONE document, and asking the
+      // gate twice would be two answers about it.
+      const book = exportedBook(filePath);
+      const outcome = await writeEpubMetadata(book, patch);
+      if (!outcome.ok) return outcome;
+      /*
+       * THE STEP IS THE HALF THAT MATTERS MORE HERE THAN IT DOES FOR A SCAN. A
+       * PDF's working copy is what every later rendering is read from, so an edit
+       * to it is at least durable in the file. An export is a CAST — the next one
+       * comes out of the bank, which never knew the title was corrected — so
+       * without this the correction would live only in the one container the
+       * person happened to have open, and every book filed after it would quietly
+       * go back to being wrong.
+       */
+      const landed = await landMetadata(book, 'epub', patch);
       return landed === undefined ? outcome : { ...outcome, landed };
     },
   );
@@ -2041,20 +2112,30 @@ export function registerIpc(): void {
             + 'book you are looking at.',
             `Discard changes throws ${them} away for good — nothing puts ${them} back — and then `
             + `${then} from the book as it was recorded.`,
-            'Press Escape, or click outside this card, to leave everything exactly as it is.',
+            'Leave it as it is walks away from the whole question: nothing is applied, nothing is '
+            + 'discarded, and nothing runs.',
           ],
+          /*
+           * THE WAY OUT IS A BUTTON AGAIN — Owen's ruling, 2026-08-23: *"lets add
+           * a cancel button to that, so the user doesnt have to do anything if
+           * they dont want."* The two-answer version kept cancel alive as Escape
+           * and the scrim, and the detail said so in words — which is a way out
+           * only for somebody who reads the small print of a card they were
+           * interrupted by. Between the two others, so the destructive button
+           * stays LAST and keeps having to be aimed at; Apply stays first and is
+           * still what Enter takes.
+           */
           choices: [
             { key: 'apply', label: APPLY_CHANGES },
+            { key: 'cancel', label: 'Leave it as it is' },
             { key: 'discard', label: DISCARD_CHANGES, danger: true },
           ],
           preferred: 'apply',
           /*
-           * A DISMISSAL IS A CANCEL, and it is now the ONLY cancel — the button
-           * went with Owen's two-answer ruling. Escape and the scrim are somebody
-           * stepping away from a question, and the only outcome that changes
-           * nothing at all is the one that neither destroys work nor starts hours
-           * of it. The detail says so in words, because a way out nobody is told
-           * about is not a way out.
+           * A DISMISSAL IS STILL A CANCEL — Escape and the scrim mean the same
+           * thing the middle button says, because somebody stepping away from a
+           * question and somebody pressing "leave it" have decided the same
+           * nothing.
            */
           dismissed: 'cancel',
           checkbox: null,

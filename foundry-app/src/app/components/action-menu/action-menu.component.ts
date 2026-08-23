@@ -21,7 +21,7 @@ import { HostOpsService } from '../../core/host-ops.service';
 import { LedgerService } from '../../core/ledger.service';
 import { NoticeService } from '../../core/notice.service';
 import { ProjectsService } from '../../core/projects.service';
-import { OpenDocumentsService } from '../../core/documents.service';
+import { isExportView, OpenDocumentsService } from '../../core/documents.service';
 import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import { UnappliedService } from '../../core/unapplied.service';
@@ -519,10 +519,11 @@ import { UnappliedService } from '../../core/unapplied.service';
         <!-- Metadata. Enabled standing on the scan as well as on the book,
              unlike everything else here that needs a book to have been cast: a
              scan has an Info dictionary and correcting it is exactly as useful
-             as correcting a package. Which of the two it edits is the
-             position's answer, not the pane's. It does NOT rename any file —
-             see the dialog for why that is a decision rather than an
-             omission. -->
+             as correcting a package. Which SCAN it edits is the position's
+             answer, not the pane's; a finished export is the exception and is
+             the tab's own, because an export is not a position — see
+             canEditMetadata below. It does NOT rename any file — see the
+             dialog for why that is a decision rather than an omission. -->
         <button
           class="menu-item"
           [class.active]="ui.metadataOpen()"
@@ -1418,18 +1419,35 @@ export class ActionMenuComponent {
    * answers null — which is not the import, so the button stays live and main's
    * own refusal is the backstop.
    *
-   * ── AND IT IS THE PDF ALONE NOW, WHICH IS A NARROWING WORTH NAMING ─────────
+   * ── AND THE EPUB HALF IS BACK, AIMED SOMEWHERE ELSE ────────────────────────
    *
-   * The EPUB half of this reached `meta:read-epub`, which resolved an open book's
-   * WORKING TREE — and the tree, the reader over it and the tab kind that held it
-   * are deleted (docs/RENDERER.md §7). A book's own metadata still belongs in the
-   * ledger as a metadata step; what it does not have any more is a door on this
-   * menu, because the surface that named the document it would write into is
-   * gone. Named here rather than left as a silently dead button.
+   * This was the PDF alone for a while, and the reason it was written down here:
+   * the EPUB half reached `meta:read-epub`, which resolved an open book's WORKING
+   * TREE, and the tree, the reader over it and the tab kind that held it are
+   * deleted (docs/RENDERER.md §7). The half that was missing was never the dialog
+   * — the form has drawn six `dc:` boxes the whole time — it was a DOCUMENT for it
+   * to be about.
+   *
+   * A FINISHED EXPORT IS ONE. `openExportView` puts a book tab over a file in
+   * `<project>/final/`, which is a real container with a real package in it, and
+   * `viewOnly` is the app's own word for "this book tab is a finished file rather
+   * than a position" (core/documents.service.ts). So the door is open exactly
+   * there and nowhere else: not over a project's book tab, which is blocks out of a
+   * bank and has no package to read, and not over anything the user imported.
+   *
+   * ── THE TWO TESTS BELOW ARE ABOUT THE PDF AND ARE NOT ASKED OF AN EXPORT ───
+   *
+   * The reading test asks whether there is anything to make yet; an export EXISTS,
+   * so the question is already answered by the file being there. The import test
+   * exists because a PDF tab's path can BE the untouched original in `archive/`,
+   * and an export's path is two segments deep under `final/` — a different folder
+   * by construction, whatever step the person happens to be standing on. Applying
+   * either to a book would shut a door for a reason that is not about it.
    */
   protected canEditMetadata(): boolean {
     const tab = this.stage.activeDocument();
     if (tab === null) return false;
+    if (tab.kind === 'book') return isExportView(tab);
     if (tab.kind !== 'pdf') return false;
     const project = this.projects.projectFor(tab.path);
     if (project === null) return true;

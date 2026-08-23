@@ -138,6 +138,36 @@ export function pathIsProject(tab: Tab): tab is Tab & { kind: 'book' | 'capture'
   return tab.kind === 'book' || tab.kind === 'capture';
 }
 
+/**
+ * WHETHER THIS TAB IS A FINISHED EXPORT — a book tab whose path is an EPUB FILE
+ * in a project's `final/` tray, rather than a project directory.
+ *
+ * ── Named because two surfaces started needing the same three-part test ─────
+ *
+ * `viewOnly` is set in exactly one place (`openExportView`) and already means
+ * this, and for one caller a flag read inline was enough. It stopped being enough
+ * the moment the metadata door reopened: the menu has to decide whether to draw
+ * the row and the dialog has to decide which of two engine commands to read
+ * through, and those two answers must be the same answer. Two inline copies of a
+ * predicate is how a menu comes to offer a dialog that then says it has nothing
+ * to show.
+ *
+ * THE EXTENSION IS PART OF THE QUESTION and not belt-and-braces. `final/` holds
+ * plain-text exports as well as books, main refuses one by name, and a caller
+ * asking "is this a book I can read a `dc:` package out of" wants that answered
+ * here rather than one IPC round trip later.
+ *
+ * IT IS THE RENDERER'S HALF OF A RULE MAIN OWNS. `exportInTray`
+ * (electron/projects.ts) is what actually authorises the read and the write; this
+ * only decides what to DRAW, which is why it can be a cheap string test. A tab
+ * this says yes to and main says no to gets main's refusal in the dialog, which
+ * is the right way round — a renderer that could authorise itself would not be
+ * gated at all.
+ */
+export function isExportView(tab: Tab): boolean {
+  return tab.kind === 'book' && tab.viewOnly === true && tab.path.toLowerCase().endsWith('.epub');
+}
+
 export interface Tab {
   id: string;
   kind: TabKind;

@@ -31,6 +31,15 @@ import { UnappliedService } from './core/unapplied.service';
 import { api } from './core/foundry';
 
 /**
+ * Whether this window stands on macOS — asked once, for the one branch whose
+ * behaviour genuinely differs by platform (`undo`'s editable arm; the argument
+ * lives there). `navigator.platform` is deprecated-but-shipped and is the only
+ * synchronous answer the renderer has; Electron gives every window the real
+ * value.
+ */
+const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
+
+/**
  * The shell: the LIBRARY SIDEBAR on the left — the tree above, the tool dock
  * pinned to its foot — whatever route is open in the middle, and the inspector
  * on the right, with the queue chip in the top row, its panel hanging under
@@ -537,7 +546,23 @@ export class App {
       || focused instanceof HTMLTextAreaElement
       || (focused instanceof HTMLElement && focused.isContentEditable);
     if (editable) {
-      document.execCommand(redo ? 'redo' : 'undo');
+      /*
+       * ── THE FIELD'S OWN UNDO RUNS ONCE, AND ON WINDOWS THAT MEANS NOT HERE ──
+       *
+       * Measured in a probe window (2026-08-23): a menu accelerator does NOT
+       * swallow the keypress on Windows — the page receives the raw keydown
+       * beside the menu click, so the browser's native undo already runs in the
+       * focused field, and the `execCommand('undo')` this branch used to make
+       * beside it was a SECOND undo per press. Two steps back for one chord, in
+       * whichever text box had the caret, is the shape of "undo behaves broken
+       * while I'm typing".
+       *
+       * ON MAC THE SYSTEM MENU CONSUMES THE KEY, so the native default never
+       * fires and `execCommand` remains the only road to the field's history —
+       * exactly the arrangement this branch was written for. So it is kept
+       * there and only there.
+       */
+      if (IS_MAC) document.execCommand(redo ? 'redo' : 'undo');
       return;
     }
     const tab = this.stage.activeDocument();

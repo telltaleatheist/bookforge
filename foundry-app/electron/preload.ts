@@ -138,6 +138,8 @@ const api: FoundryApi = {
   meta: {
     readPdf: (filePath) => ipcRenderer.invoke('meta:read-pdf', filePath),
     writePdf: (filePath, patch) => ipcRenderer.invoke('meta:write-pdf', filePath, patch),
+    readEpub: (filePath) => ipcRenderer.invoke('meta:read-epub', filePath),
+    writeEpub: (filePath, patch) => ipcRenderer.invoke('meta:write-epub', filePath, patch),
   },
 
   workspace: {

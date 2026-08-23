@@ -153,6 +153,8 @@ import {
   mintedFromPhotographs,
   mintedStep,
   orphanedBanks,
+  documentOriginOf,
+  healReadParents,
   originOf,
   originStep,
   parseLedger,
@@ -351,6 +353,39 @@ export function isArchived(filePath: string): boolean {
 }
 
 /**
+ * THE PROJECT WHOSE FINAL TRAY HOLDS THIS FILE — `<project>/final/<name>` — or
+ * null for everything else.
+ *
+ * ── One rule, because three doors were spelling it out for themselves ───────
+ *
+ * An export is the one document in this app that was never OPENED: it is a file
+ * this program wrote into a project's tray, and the renderer names it off a row
+ * in the history rather than off the allow-list, so `admitted` — which answers
+ * for things that came in through `openDocument` — says no to every one of them.
+ * Membership in a tray is the claim those doors are actually exercising, and it
+ * was written out longhand at each of them (`export:save-copy`, `viewExportedBook`,
+ * and now the EPUB metadata pair). Three copies of an authorization test is three
+ * chances for one of them to learn a rule the others do not.
+ *
+ * TWO SEGMENTS EXACTLY, and the depth is the gate rather than a tidiness. A
+ * `startsWith('final')` would claim `final-drafts/`, and an unbounded depth would
+ * claim anything a future tray subfolder came to hold — including, if one is ever
+ * nested there, a path composed from a name this app did not choose.
+ *
+ * IT ANSWERS THE PROJECT AND NOT A BOOLEAN, because every caller needs the
+ * directory next: to read the manifest, to file a step, to say which book this is.
+ * A predicate would make each of them ask `projectDirOf` a second time and get a
+ * second answer to a question already settled here.
+ */
+export function exportInTray(filePath: string): string | null {
+  const resolved = path.resolve(filePath);
+  const dir = projectDirOf(resolved);
+  if (dir === null) return null;
+  const inside = path.relative(dir, resolved).split(path.sep);
+  return inside.length === 2 && inside[0] === FINAL ? dir : null;
+}
+
+/**
  * A DIRECTORY name a filesystem, a URL and a person can all live with.
  *
  * The real test document is `Working Towards The Fuhrer. Kershaw, Ian. (1993).pdf`
@@ -537,7 +572,12 @@ export async function readManifest(dir: string): Promise<ProjectManifest> {
 function readLedger(stored: unknown, manifest: ProjectManifest, file: string): ProjectLedger {
   if (stored === undefined) return migrateLedger(manifest);
   try {
-    return parseLedger(stored);
+    // The reparenting heal rides the same read: a captured project whose
+    // reads were recorded against the photographs (the pre-2026-08-23
+    // recorder) comes back telling the truth — see `healReadParents` — and
+    // the correction reaches disk the next time anything edits the project,
+    // exactly as this function's own header promises for every other heal.
+    return healReadParents(parseLedger(stored));
   } catch (err) {
     throw new ProjectError(
       `${file} holds a step ledger this app cannot read: ${(err as Error).message}. The ledger is `
@@ -3653,7 +3693,10 @@ async function stepStandingFor(
   absolutePath: string,
 ): Promise<string | null> {
   const ledger = ledgerOf(manifest);
-  const origin = originOf(ledger);
+  // The DOCUMENT origin: the step whose payload is the archive. On a captured
+  // project that is the mint — the capture root's payload is the recipe, and
+  // a person focusing the book's PDF is standing on the step that minted it.
+  const origin = documentOriginOf(ledger);
   if (origin === null) return null;
 
   const root = fold(path.resolve(dir));
@@ -4057,7 +4100,9 @@ export async function bankForReading(dir: string, asked: ReadAsk): Promise<Plann
   const ledger = ledgerOf(manifest);
   const target = reRunTarget(ledger, {
     action: 'read',
-    parent: originOf(ledger)?.id ?? null,
+    // The DOCUMENT origin, which for a captured project is the mint and not
+    // the photographs — see `documentOriginOf` for the ruling this obeys.
+    parent: documentOriginOf(ledger)?.id ?? null,
     params: askedOf(asked),
   });
   if (target !== null) {
@@ -5006,7 +5051,10 @@ export async function recordReading(
        */
       const landing = await landStep(manifest, {
         action: 'read',
-        parent: originOf(ledgerOf(manifest))?.id ?? null,
+        // The DOCUMENT origin — the mint, on a captured project. A read
+        // parented at the photographs was the tree's recorded lie
+        // (`healReadParents` carries the ruling and repairs the old ones).
+        parent: documentOriginOf(ledgerOf(manifest))?.id ?? null,
         /*
          * WHERE THE ENGINE ACTUALLY WROTE, and not a path composed from the key.
          *

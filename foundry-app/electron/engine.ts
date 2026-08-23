@@ -808,26 +808,87 @@ function metaFlags(patch: Record<string, string | undefined>): string[] {
 }
 
 /**
- * Read a book's Dublin Core record: `foundry epub-meta --epub <tree> --json`.
+ * Read a book's Dublin Core record: `foundry epub-meta --epub <file> --json`.
  *
- * `treeRoot` is the WORKING TREE — the unpacked copy this app edits — so
- * reading and writing go down the same path and the answer is what the book
- * says right now, rather than what the file it was imported from said.
+ * `epubPath` IS AN EPUB FILE, and it used to be a directory. The argument was
+ * the WORKING TREE — the unpacked copy this app edited in place — and the tree,
+ * the reader over it and the tab kind that held it are deleted
+ * (docs/RENDERER.md §7). What is left that has a `dc:` package in it is a
+ * FINISHED EXPORT in a project's `final/` tray, so that is what these two are
+ * pointed at, and `exportInTray` (electron/projects.ts) is what decides whether
+ * a given path is one.
+ *
+ * The engine reads either form, so nothing here refuses a directory — it simply
+ * is not a thing this app has one of any more.
  */
-export async function readEpubMetadata(treeRoot: string): Promise<MetadataOutcome> {
-  const result = await runMetaCommand(['epub-meta', '--epub', treeRoot, '--json']);
+export async function readEpubMetadata(epubPath: string): Promise<MetadataOutcome> {
+  const result = await runMetaCommand(['epub-meta', '--epub', epubPath, '--json']);
   return result.ok ? { ok: true, metadata: asEpubMetadata(result.json) } : result;
 }
 
-/** Write the fields that changed, in place, and answer with what the package now says. */
+/**
+ * Write a book's Dublin Core fields — THROUGH A SIDE FILE, then over the export.
+ *
+ * ── WHY THIS GREW A TEMPORARY FILE IT DID NOT USED TO NEED ──────────────────
+ *
+ * This passed no `--out` and the engine edited the argument where it stood,
+ * which is the DIRECTORY form: `epub-meta` splices the OPF inside an unpacked
+ * tree and leaves everything else exactly as it was. Against a `.epub` FILE the
+ * same call is refused by name — a container is a zip, changing one member means
+ * emitting the whole archive again, and writing that archive into the file it is
+ * still reading members out of would destroy the book mid-read. So the engine
+ * demands `--out`, and it demands one that is not the input.
+ *
+ * `writePdfMetadata` below met this exact wall for the exact reason and answered
+ * it the same way, so this is deliberately its shape line for line: write beside,
+ * then ONE rename over the top, so an interrupted save leaves either the old
+ * container or the new one and never half of either.
+ *
+ * ── AND REWRITING AN EXPORT IS NOT THIS APP OVERWRITING AN INPUT ────────────
+ *
+ * The rule is that Foundry never writes to a document it did not make. A file in
+ * `final/` is one it did make: it was cast from the bank minutes ago and can be
+ * cast again, and the metadata step this write is recorded as is replayed onto
+ * every book made from that position afterwards (`metadataForProduct`). The
+ * container on disk is the copy the person is looking at; the step is the part
+ * that survives. Nothing the user brought in is touched by either.
+ *
+ * A RUN THAT CHANGED NOTHING WRITES NOTHING. Every field already saying what it
+ * was asked to say is a read wearing a Save button — the engine reports that as
+ * `written: false` and emits no archive, so there is no file to move and the
+ * export keeps its own bytes rather than being replaced by an identical copy at
+ * a new mtime.
+ */
 export async function writeEpubMetadata(
-  treeRoot: string,
+  epubPath: string,
   patch: Record<string, string | undefined>,
 ): Promise<MetadataOutcome> {
   const flags = metaFlags(patch);
-  if (flags.length === 0) return readEpubMetadata(treeRoot);
-  const result = await runMetaCommand(['epub-meta', '--epub', treeRoot, '--json', ...flags]);
-  return result.ok ? { ok: true, metadata: asEpubMetadata(result.json) } : result;
+  if (flags.length === 0) return readEpubMetadata(epubPath);
+
+  const beside = path.join(path.dirname(epubPath), `.${path.basename(epubPath)}.meta-tmp`);
+  const result = await runMetaCommand(['epub-meta', '--epub', epubPath, '--out', beside, '--json', ...flags]);
+  if (!result.ok) {
+    await fs.promises.rm(beside, { force: true });
+    return result;
+  }
+  const wrote = (result.json as Record<string, unknown>)['written'] === true;
+  if (!wrote) {
+    await fs.promises.rm(beside, { force: true });
+    return { ok: true, metadata: asEpubMetadata(result.json) };
+  }
+  try {
+    await fs.promises.rename(beside, epubPath);
+  } catch (err) {
+    await fs.promises.rm(beside, { force: true });
+    return {
+      ok: false,
+      reason:
+        `The metadata was written, but the new book could not be put in place of ${epubPath} `
+        + `(${(err as Error).message}). The export is unchanged.`,
+    };
+  }
+  return { ok: true, metadata: asEpubMetadata(result.json) };
 }
 
 function numberField(value: unknown): number | null {
