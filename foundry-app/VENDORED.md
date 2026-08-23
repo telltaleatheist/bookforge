@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **be937ea** — *Wave 45, the sweep: a census of one pattern, landed as pending edits* |
-| Copied on | 2026-08-22 |
-| Copied by | `git -C <foundry> archive be937ea app \| tar -x --strip-components=1` |
+| Source sha | **c0e30e1** — *0.9.4, the number moves so the engine can* |
+| Copied on | 2026-08-23 |
+| Copied by | `git -C <foundry> archive c0e30e1 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -425,6 +425,42 @@ simply leaves chapter titles in the source language. Nothing refuses, nothing
 crashes. Closing it is a release from `be937ea` (bump first, so the tag names one
 commit), not a subtree refresh — left undone here deliberately, as before,
 because it rewrites Owen's installed environment.
+
+`c0e30e1` is ONE app file and one root file, and it CLOSES the paragraph above it
+in the same night that paragraph was written. `d39f3a1` is Owen's fix to his own
+Wave-43 glance: `viewChild<ElementRef>('glance')` is a type assertion the runtime
+never sees, `#glance` stands on a component, so the query answered with the
+component instance, `nativeElement` was undefined, `placeGlance` failed its first
+test on every click, and `aimGlance`'s own *"a card that cannot be placed is not
+shown"* rule then dismissed the card silently, every session. `read: ElementRef`
+is the whole of it — noted here because it typechecks perfectly and no gate on
+either side of the copy could have caught it. `c0e30e1` itself is the version
+bump this side asked for, which touches the repo root and not `app/`, so the sha
+that names the release also names the copy. 118/118 blobs hash-verified;
+`IPC-CHANNELS.md` unchanged again (84/84/84, no channel moved); build config and
+deps unmoved, no install; `npm run build` clean, ng 801.17 kB (WARNING only);
+all 44 keepers green.
+
+**THE ENGINE GAP IS CLOSED, and this time by a release WITH the bump.** v0.9.4 is
+published from `c0e30e1` with the four-platform asset set plus `checksums.txt`,
+`api.github.com/.../releases/latest` answers it, and this machine took it through
+the ordinary path — the startup sweep (`checkForComponentUpgrades`) adopted the
+release, `componentManager.install('foundry-cli')` downloaded, verified against
+the release's own `checksums.txt`, extracted and verify-ran it, and
+`%APPDATA%\BookForge\components\foundry-cli\foundry.exe` now answers
+**`foundry 0.9.4 (c0e30e1)`**. No binary was copied anywhere by hand, and the
+same release is what every other machine will see. Wave 44's translate engine
+(`src/translate/{bookrows,records,run}.ts`, `src/commands.ts`) is in it, so a
+hosted translate can now write the spine-title records the vendored app was
+already able to read and draw.
+
+Worth keeping beside the previous entry's warning, because it is the same hazard
+twice: 0.9.3 named two different builds for a day for exactly the reason 0.9.2
+named four — the semver is a hand-edited field and NO build moves it, so an
+engine can be rewritten under a number that cannot say so. The bump is a separate
+deliberate act before the build, and if it is skipped the component's staleness
+comparison is not wrong, it is answering a question about a number that stopped
+tracking the thing it names.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

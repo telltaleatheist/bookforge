@@ -2487,8 +2487,17 @@ export class BookViewComponent {
    * over here, the app's root font is 13px, so the copy said 256 about a box
    * that renders at 195 — and the card landed on the paragraph being read. A
    * reading of the element cannot disagree with the element.
+   *
+   * `read: ElementRef` IS THE FIX FOR A CARD THAT NEVER APPEARED AT ALL.
+   * `#glance` stands on a COMPONENT, and a query on a component ref answers
+   * with the component instance unless told to read the element — the generic
+   * on this line is a type assertion the runtime never sees, so without the
+   * option `nativeElement` was undefined, every placement failed its first
+   * test, and `aimGlance`'s "a card that cannot be placed is not shown" rule
+   * dismissed the card on every click of every session. The gates cannot catch
+   * it: it typechecks perfectly, and only a hand on a block finds the silence.
    */
-  private readonly glanceCard = viewChild<ElementRef<HTMLElement>>('glance');
+  private readonly glanceCard = viewChild('glance', { read: ElementRef<HTMLElement> });
   /**
    * THE SCAN THIS BOOK WAS READ OFF, or null for a book with no paper behind it.
    * Read straight off the load rather than resolved here — `BookLoad.originalPath`
@@ -3835,7 +3844,26 @@ export class BookViewComponent {
      * geometry is unreadable (a zero-width card mid-layout, a pane not found),
      * and the honest answer then is no card, not a card somewhere.
      */
-    if (!this.placeGlance(id)) this.dismissGlance();
+    if (!this.placeGlance(id)) {
+      this.dismissGlance();
+      return;
+    }
+    /*
+     * PLACED TWICE, AND THE SECOND READING IS THE TRUE HEIGHT. The line above
+     * runs inside the click's own handler, before this row's content has
+     * rendered — so the height it centres with is the idle sliver's, a box of
+     * padding a few pixels tall, and the card would stand well below centre
+     * (and off a short pane's bottom edge) once the page frame gave it its
+     * real ~20rem. One frame later the frame's aspect ratio has sized the box
+     * — the ratio is row data, not the render, so the layout does not wait on
+     * pdf.js — and the same arithmetic lands on the true middle. The width
+     * never changes between the two readings, so nothing visibly jumps
+     * sideways; the guard keeps a stale frame from re-placing a card a faster
+     * second click has already re-aimed or dismissed.
+     */
+    requestAnimationFrame(() => {
+      if (this.glanced()?.id === id) this.placeGlance(id);
+    });
   }
 
   /**
