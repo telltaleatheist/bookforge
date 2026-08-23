@@ -317,6 +317,21 @@ interface BookMenu {
           </div>
         </ng-template>
 
+        <!-- Just-made and mid-listen books, above every section and across every
+             server — the sort can only order books WITHIN a section, so without
+             this a book narrated an hour ago sits partway down its library's
+             group. See recentBand(). -->
+        @if (recentBand().length > 0) {
+          <div class="shelf-section-head recent-head">
+            <span>New &amp; in progress</span>
+            <span class="count-chip">{{ recentBand().length }}</span>
+          </div>
+          <div class="books-grid">
+            @for (book of recentBand(); track akey(book)) {
+              <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
+            }
+          </div>
+        }
         @if (downloadedAudiobooks().length > 0) {
           <div class="shelf-section-head downloaded-head">
             <app-icon name="download" [size]="15" />
@@ -883,6 +898,11 @@ interface BookMenu {
     .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
       font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }
     .shelf-section-head.downloaded-head { color: var(--downloaded); }
+    /* The band's own accent: the chip's default fill is the DOWNLOADED colour,
+       which on this row would claim the books are on the device. They are not —
+       they are simply new. */
+    .shelf-section-head.recent-head { color: var(--accent); }
+    .shelf-section-head.recent-head .count-chip { background: var(--accent); }
     .shelf-section-head .count-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 20px;
       height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: var(--text-on-accent);
       font-size: 12px; font-weight: 700; letter-spacing: 0; }
@@ -1256,41 +1276,93 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly formatSize = formatSize;
 
   // ── Derived lists ──────────────────────────────────────────────────────────
+  /**
+   * How recent a book is: the newer of when it was TTS'd and when it was last
+   * played here. ONE definition, because the "Recent" sort and the band at the
+   * top of the shelf both ask it and must not drift apart.
+   *
+   * Recency is keyed by basename identity (audioIdentity), not the absolute
+   * downloadPath — so a book's last-played time survives a mirror swap where its
+   * representative server (and thus its absolute path) changed. That is the same
+   * key PlayerService writes with (PlayerService.recencyIdentity).
+   *
+   * Every VERSION counts, for dates as well as play times. The card's own
+   * dateAdded is the representative version's, and the representative is the
+   * primary variant or — when the primary is the project's archived EPUB, which
+   * it is for every book imported as an ebook — simply the first audiobook in
+   * manifest order, the OLDEST. So a book that already had a narration and has
+   * just been re-narrated used to keep a months-old date and stay buried.
+   */
+  private recencyOf(b: Audiobook, played: ReadonlyMap<string, number>): number {
+    let ms = b.dateAdded ? Date.parse(b.dateAdded) || 0 : 0;
+    ms = Math.max(ms, played.get(this.audioIdentity(b.downloadPath)) ?? 0);
+    for (const v of b.versions || []) {
+      ms = Math.max(ms, played.get(this.audioIdentity(v.downloadPath)) ?? 0);
+      if (v.dateAdded) ms = Math.max(ms, Date.parse(v.dateAdded) || 0);
+    }
+    return ms;
+  }
+
   private readonly sortedAudiobooks = computed(() => {
     const list = [...this.audiobooks()];
     if (this.sort() === 'date') {
-      // "Recent" = the newer of when it was TTS'd (dateAdded) and when it was
-      // last played. So a book you're actively listening to on this device rises
-      // to the top even if it was rendered long ago. Playback is keyed per
-      // variant, so consider every version's downloadPath, not just the card's.
       const played = this.player.playedAt();
-      // Recency is keyed by basename identity (audioIdentity), not the absolute
-      // downloadPath — so a book's last-played time survives a mirror swap where
-      // its representative server (and thus its absolute path) changed. This is
-      // the same key PlayerService writes with (PlayerService.recencyIdentity).
-      const recency = (b: Audiobook): number => {
-        let ms = b.dateAdded ? Date.parse(b.dateAdded) || 0 : 0;
-        ms = Math.max(ms, played.get(this.audioIdentity(b.downloadPath)) ?? 0);
-        for (const v of b.versions || []) {
-          ms = Math.max(ms, played.get(this.audioIdentity(v.downloadPath)) ?? 0);
-          // The card's own dateAdded is the REPRESENTATIVE version's, and the
-          // representative is the primary variant (or, when the primary is the
-          // project's EPUB, simply the first audiobook in manifest order — the
-          // OLDEST). So a project that already had a narration and has just been
-          // re-narrated kept a months-old date and stayed buried, which is
-          // exactly "I have to search for books I just TTS'd". A card is as
-          // recent as its most recent version; play times were already read this
-          // way and the added dates were not, which was an asymmetry and not a
-          // decision.
-          if (v.dateAdded) ms = Math.max(ms, Date.parse(v.dateAdded) || 0);
-        }
-        return ms;
-      };
-      list.sort((a, b) => recency(b) - recency(a));
+      list.sort((a, b) => this.recencyOf(b, played) - this.recencyOf(a, played));
     } else {
       list.sort((a, b) => a.title.localeCompare(b.title));
     }
     return list;
+  });
+
+  /**
+   * THE BAND: what you just made, and what you are in the middle of.
+   *
+   * Owen, 2026-08-23: "right now I have to search for books I just TTS'd." The
+   * Recent sort was ordering correctly — but the audiobooks tab is not one list.
+   * It is an "On this device" section followed by ONE SECTION PER SERVER, and
+   * the sort only orders books WITHIN a section. A book narrated on the PC an
+   * hour ago therefore sits partway down the PC's group, under every downloaded
+   * book and under any library that sorts ahead of it. No comparator fixes that,
+   * because the burial is structural.
+   *
+   * So this row sits above all of them and is cross-server by construction:
+   * anything added or played inside the window, newest first, collapsed to one
+   * card per book (a downloaded book renders twice — the on-device card and its
+   * streaming mirror — and the band must show it once).
+   *
+   * It obeys the tag / narration / downloaded filters, because it is drawn from
+   * the filtered list and a band that contradicts an active filter is a bug. It
+   * ignores the A-Z / Recent toggle deliberately: A-Z is how you FIND a known
+   * book, and this row is for the ones you have not gone looking for yet.
+   *
+   * Books stay in their own sections as well. The band is a shortcut, not a
+   * move — a card that vanishes from where it has always lived is a worse
+   * surprise than one that appears twice.
+   */
+  private static readonly BAND_DAYS = 14;
+  private static readonly BAND_MAX = 12;
+
+  readonly recentBand = computed<Audiobook[]>(() => {
+    // While searching, the shelf is answering a question. Anything above the
+    // answer is in the way.
+    if (this.search().trim()) return [];
+    const played = this.player.playedAt();
+    const cutoff = Date.now() - ShelfComponent.BAND_DAYS * 24 * 60 * 60 * 1000;
+    const byId = new Map<string, { book: Audiobook; at: number }>();
+    for (const book of this.filteredAudiobooks()) {
+      const id = this.audioIdentity(book.downloadPath);
+      const at = this.recencyOf(book, played);
+      if (at < cutoff) continue;
+      const held = byId.get(id);
+      // A downloaded book renders twice — the on-device card and its streaming
+      // mirror. Show it once, and show the ON-DEVICE one: tapping the mirror
+      // streams bytes that are already sitting on the phone.
+      if (held && !(this.isOnDevice(book) && !this.isOnDevice(held.book))) continue;
+      byId.set(id, { book, at });
+    }
+    const rows = [...byId.values()];
+    rows.sort((a, b) => b.at - a.at);
+    return rows.slice(0, ShelfComponent.BAND_MAX).map((r) => r.book);
   });
 
   // "Article" is a tag on the owning project (projectType). Every shelf entry is
