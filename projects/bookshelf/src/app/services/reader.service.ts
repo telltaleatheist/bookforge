@@ -81,6 +81,24 @@ export class ReaderService {
         // Transient — leave the gate up, don't wipe the token.
       }
     }
+    // No token here, but signed in elsewhere → carry the SAME profile over
+    // (Owen's ruling: a book position must never be lost across servers on one
+    // profile — and it lives under the reader id, so a second server must not
+    // mint a second identity). Mirrors of one library share the readers store,
+    // so the id logs straight in. A PIN-protected profile answers 401 (we never
+    // store pins) and a different library 404s — both fall through to the same
+    // sign-in gate as before, so this only ever REMOVES a wrong-profile trap.
+    if (supported && !this.tokens.get(serverId)) {
+      const elsewhere = [...this.readers().values()].find((r) => r != null);
+      if (elsewhere) {
+        try {
+          const { token, reader } = await this.api.loginReader(elsewhere.id, undefined, serverId);
+          this.setSession(serverId, token, reader);
+        } catch {
+          // PIN required, unknown reader, or unreachable — the gate handles it.
+        }
+      }
+    }
     this.addTo(this.readyServers, serverId);
   }
 

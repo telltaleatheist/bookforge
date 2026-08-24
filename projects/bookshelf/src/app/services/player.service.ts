@@ -45,6 +45,17 @@ export class PlayerService {
   readonly chapters = signal<Chapter[]>([]);
   readonly coverSrc = signal<string | null>(null);
   readonly loading = signal(false);
+  /** Stage of a user-initiated open, for the full-screen loading overlay:
+   *  'finding' (analysis/token + position), 'audio' (src set, metadata loading),
+   *  'transcript' (audio ready, transcript still parsing). Null when idle or when
+   *  the open is a silent restore (autoplay: false) — a background restore must
+   *  not throw an overlay over whatever the user is doing. */
+  readonly openingStage = signal<null | 'finding' | 'audio' | 'transcript'>(null);
+  /** Audio metadata arrived for the current open (duration known, seek done). */
+  private metadataReady = false;
+  /** The transcript fetch+parse settled (loaded, empty, or failed — settled, not
+   *  succeeded: a book with no transcript must never be gated on one). */
+  private vttSettled = true;
   readonly error = signal<string | null>(null);
 
   /**
@@ -314,6 +325,7 @@ export class PlayerService {
       // message, no playback). A later successful load clears it
       // (see onLoadedMetadata).
       this.error.set('Audio failed to load.');
+      this.openingStage.set(null);
     });
 
     const s = parseFloat(localStorage.getItem('bookshelf-speed') || '1');
@@ -352,6 +364,9 @@ export class PlayerService {
 
     this.loading.set(true);
     this.error.set(null);
+    this.metadataReady = false;
+    this.vttSettled = true; // flips false once a transcript fetch is in flight
+    if (autoplay) this.openingStage.set('finding');
     try {
       let b = book && book.downloadPath === downloadPath ? book : null;
       // A downloaded book must open with EVERY server offline. Resolve it from the
@@ -460,6 +475,7 @@ export class PlayerService {
         analysisStreamToken: analysis?.streamToken,
       });
       if (generation !== this.openGeneration) return;
+      if (this.openingStage()) this.openingStage.set('audio');
       this.audio.src = audioSrc;
       this.audio.playbackRate = this.speed();
       this.audio.load();
@@ -523,6 +539,7 @@ export class PlayerService {
       // runs deferred AND yields to the event loop first (setTimeout(0)) so it
       // can't jank the first paint or the resume seek. (Follow-up: a Web Worker
       // parse would take it fully off the main thread.)
+      this.vttSettled = false;
       const vttPromise = analysisPromise
         .then((a) => this.api.getVttText(b.projectId, b.langPair, b.downloadPath, b.originServerId, a?.streamToken))
         .then((vttText) => new Promise<void>((resolve) => {
@@ -533,6 +550,14 @@ export class PlayerService {
           }, 0);
         }))
         .catch((e) => console.error('[PlayerService] transcript load failed', e));
+      // Playback is gated on the transcript SETTLING (Owen's ruling: never start
+      // speaking before the text is on screen). Settled — loaded, empty, or
+      // failed — so a book without a transcript can never be bricked by the gate.
+      void vttPromise.finally(() => {
+        if (generation !== this.openGeneration) return;
+        this.vttSettled = true;
+        this.tryStartAfterOpen();
+      });
 
       // If a downloaded copy opened WITHOUT a cover or synced text — its sidecars
       // were never cached, or a transcript was generated server-side after download
@@ -553,6 +578,7 @@ export class PlayerService {
       if (generation !== this.openGeneration) return;
       console.error('[PlayerService] open failed', err);
       this.error.set('Failed to load audiobook');
+      this.openingStage.set(null);
     } finally {
       if (generation === this.openGeneration) this.loading.set(false);
     }
@@ -696,6 +722,7 @@ export class PlayerService {
   close(): void {
     ++this.openGeneration;
     this.loading.set(false);
+    this.openingStage.set(null);
     this.wantPlaying = false;
     this.savePosition(true);
     this.stopHeartbeat(); // flushes listening time (still needs book())
@@ -1073,6 +1100,22 @@ export class PlayerService {
     }
     this.lastChapterIdx = -1; // re-init chapter tracking for this book
     this.addBookmark('Opened the book', 'open');
+    this.metadataReady = true;
+    this.tryStartAfterOpen();
+  }
+
+  /** Start autoplay only once BOTH the audio metadata and the transcript have
+   *  settled, and drive the loading overlay's stage meanwhile. Called from
+   *  onLoadedMetadata and from the transcript's .finally — whichever lands last
+   *  releases playback. */
+  private tryStartAfterOpen(): void {
+    if (!this.metadataReady || !this.vttSettled) {
+      // Audio is ready but the transcript isn't — tell the overlay what it's
+      // actually waiting for.
+      if (this.metadataReady && this.openingStage()) this.openingStage.set('transcript');
+      return;
+    }
+    this.openingStage.set(null);
     if (this.pendingAutoplay) {
       this.pendingAutoplay = false;
       this.play();

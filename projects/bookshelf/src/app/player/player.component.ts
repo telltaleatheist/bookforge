@@ -133,6 +133,19 @@ type TranscriptRow =
 
       @if (p.error()) {
         <div class="state"><div class="icon">⚠️</div><p>{{ p.error() }}</p></div>
+      } @else if (p.openingStage(); as stage) {
+        <!-- Streaming a big m4b takes a while (analysis + token + metadata +
+             transcript, all gated before autoplay). Keep the wait honest with the
+             real stage, and keep the waiter entertained (Owen asked for cat
+             facts, so: cat facts). -->
+        <div class="state opening-state">
+          <div class="spinner big"></div>
+          <p class="opening-stage">{{ stageLabel(stage) }}</p>
+          <div class="cat-fact">
+            <span class="cat-fact-label">🐱 While you wait</span>
+            <p>{{ catFact() }}</p>
+          </div>
+        </div>
       } @else if (p.loading()) {
         <div class="state"><div class="spinner"></div><p>Loading…</p></div>
       } @else {
@@ -879,10 +892,64 @@ type TranscriptRow =
     .row-num { flex-shrink: 0; width: 24px; font-size: 12px; color: var(--text-tertiary); text-align: right; }
     .row-title { flex: 1; min-width: 0; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .row-time { flex-shrink: 0; font-size: 12px; color: var(--text-tertiary); font-variant-numeric: tabular-nums; }
+
+    /* Opening overlay: honest stage + a cat fact while the stream spins up. */
+    .opening-state { padding: 24px; text-align: center; }
+    .spinner.big { width: 44px; height: 44px; border-width: 4px; }
+    .opening-stage { font-size: 15px; color: var(--text-primary); }
+    .cat-fact { max-width: 320px; margin-top: 10px; padding: 14px 16px; border-radius: 14px;
+      background: var(--bg-surface); border: 0.5px solid var(--border-subtle); }
+    .cat-fact-label { display: block; font-size: 12px; letter-spacing: 0.04em; text-transform: uppercase;
+      color: var(--text-tertiary); margin-bottom: 6px; }
+    .cat-fact p { font-size: 14px; line-height: 1.5; margin: 0; color: var(--text-secondary); }
   `],
 })
 export class PlayerComponent implements OnInit, OnDestroy {
   readonly p = inject(PlayerService);
+
+  /** One label per opening stage — what the wait is ACTUALLY for. */
+  stageLabel(stage: 'finding' | 'audio' | 'transcript'): string {
+    return stage === 'finding' ? 'Checking the audiobook…'
+      : stage === 'audio' ? 'Buffering audio…'
+      : 'Syncing the text…';
+  }
+
+  private static readonly CAT_FACTS = [
+    'A group of cats is called a clowder.',
+    'Cats sleep for around 13 to 16 hours a day — about 70% of their lives.',
+    "A cat's purr vibrates at 25–150 Hz, a range shown to promote bone healing.",
+    "Cats can't taste sweetness — they lack the receptor for it.",
+    "A cat's nose print is unique, like a human fingerprint.",
+    'Cats can rotate their ears 180 degrees using 32 muscles per ear.',
+    'The oldest known pet cat was buried beside its human 9,500 years ago in Cyprus.',
+    'Cats walk like camels and giraffes: both right legs, then both left legs.',
+    'A house cat can sprint at about 30 mph — faster than Usain Bolt.',
+    'Cats meow almost exclusively at humans, not at other adult cats.',
+    'Isaac Newton is often credited with inventing the cat flap.',
+    "A cat's whiskers are roughly as wide as its body — a built-in gap gauge.",
+    'Cats have a third eyelid, the haw, that closes for extra protection.',
+    "The world's richest cat, Blackie, inherited £7 million in 1988.",
+    'Cats spend up to half their waking hours grooming.',
+    "A cat's brain is about 90% structurally similar to a human's.",
+  ];
+  readonly catFact = signal(PlayerComponent.CAT_FACTS[Math.floor(Math.random() * PlayerComponent.CAT_FACTS.length)]);
+  private catFactTimer: ReturnType<typeof setInterval> | null = null;
+  private readonly catFactRotation = effect(() => {
+    // Rotate a new fact every 7s while the overlay is up; idle otherwise.
+    if (this.p.openingStage()) {
+      if (this.catFactTimer == null) {
+        this.catFactTimer = setInterval(() => {
+          const facts = PlayerComponent.CAT_FACTS;
+          const cur = facts.indexOf(this.catFact());
+          this.catFact.set(facts[(cur + 1) % facts.length]);
+        }, 7000);
+      }
+    } else if (this.catFactTimer != null) {
+      clearInterval(this.catFactTimer);
+      this.catFactTimer = null;
+    }
+  });
+
   private readonly actions = inject(BookActionsService);
   private readonly route = inject(ActivatedRoute);
   private readonly router = inject(Router);
@@ -1396,6 +1463,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
 
   ngOnDestroy(): void {
     // Intentionally do NOT stop audio — it keeps playing under the mini-bar.
+    if (this.catFactTimer != null) { clearInterval(this.catFactTimer); this.catFactTimer = null; }
     document.removeEventListener('visibilitychange', this.onVisibility);
     window.removeEventListener('resize', this.onResize);
     this.releaseWakeLock();
