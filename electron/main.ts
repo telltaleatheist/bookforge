@@ -1381,6 +1381,9 @@ async function foundryNarrationTarget(
         id: v.id,
         fileName: src.fileName,
         ...(src.stepId === undefined ? {} : { stepId: src.stepId }),
+        // Which spelling this is: a kept snapshot stands aside when a live
+        // export carries the same tray name (dedupeNarrationExports).
+        ...(v.foundrySource === undefined ? { kept: true } : {}),
       };
     }),
     projectId,

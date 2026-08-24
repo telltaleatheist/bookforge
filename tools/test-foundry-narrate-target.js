@@ -323,6 +323,48 @@ test('a named press is still REFUSED rather than exported, however wrong the nam
     /has no exported EPUB from this project/);
 });
 
+// ── Kept snapshots beside live exports (Owen's Keep-then-Narrate, 2026-08-24) ─
+
+test('a KEPT export with no live twin answers a named press — Keep must not hide the file', () => {
+  const kept = [{ id: 'v-kept', fileName: 'evangelische kirche (en).epub', kept: true }];
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(pressed('evangelische kirche (en).epub'), kept, PROJECT),
+    { kind: 'variant', variantId: 'v-kept' });
+});
+
+test('a kept snapshot stands aside for the live export of the same file', () => {
+  // Keep, then re-export: the kept file is never overwritten, so the fresh
+  // landing is a second row under the same tray name. The press is on the
+  // tray's CURRENT bytes — the live export answers, silently-oldest does not.
+  const pair = [
+    { id: 'v-kept', fileName: 'Book (en).epub', kept: true, stepId: 'step-x' },
+    { id: 'v-live', fileName: 'Book (en).epub', stepId: 'step-x' },
+  ];
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget(pressed('Book (en).epub'), pair, PROJECT),
+    { kind: 'variant', variantId: 'v-live' });
+  // The step arm sees the same shadowing: both rows carry step-x, and the
+  // press means the current bytes there too.
+  assert.deepStrictEqual(
+    target.resolveNarrationTarget('step-x', pair, PROJECT),
+    { kind: 'variant', variantId: 'v-live' });
+  // Different names never shadow each other.
+  assert.strictEqual(target.dedupeNarrationExports([
+    { id: 'a', fileName: 'one.epub', kept: true },
+    { id: 'b', fileName: 'two.epub' },
+  ]).length, 2);
+});
+
+test('two KEPT versions under one name refuse by name — neither is the tray\'s current bytes', () => {
+  const twins = [
+    { id: 'v-kept-1', fileName: 'Book (en).epub', kept: true },
+    { id: 'v-kept-2', fileName: 'Book (en).epub', kept: true },
+  ];
+  assert.throws(
+    () => target.resolveNarrationTarget(pressed('Book (en).epub'), twins, PROJECT),
+    /2 kept versions filed under "Book \(en\)\.epub"/);
+});
+
 // ── The translation guard on the auto-export arm ───────────────────────────
 //
 // The 2026-08-24 incident's ledger, in miniature: a German scan read, edited,

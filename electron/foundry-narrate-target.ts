@@ -67,6 +67,18 @@ export interface NarrationExport {
    */
   readonly fileName: string;
   /**
+   * THE USER PRESSED KEEP on this one — its provenance is the `promotedFrom`
+   * spelling, and its file is the book's own archive copy of an export that
+   * once sat in the tray. Absent/false means the live spelling, an export on
+   * loan whose file is the tray's current bytes filed in `output/`.
+   *
+   * Carried because the two can COEXIST under one file name: a re-export after
+   * a Keep lands as a new version (a kept file is never overwritten), and a
+   * press that names that file must mean the tray's CURRENT bytes — see
+   * `dedupeNarrationExports`.
+   */
+  readonly kept?: boolean;
+  /**
    * THE LEDGER STEP THIS EXPORT WAS CAST FROM, when the landing that filed it
    * said so — `FoundryVariantSource.stepId`.
    *
@@ -128,6 +140,31 @@ export function exportFileOfNodeId(nodeId: string): string | null {
  * `projectId` appears only in the refusals — it is the folder name the user
  * would go looking at — and never in the choosing.
  */
+/**
+ * A KEPT SNAPSHOT STANDS ASIDE FOR THE LIVE EXPORT OF THE SAME FILE.
+ *
+ * Keep-then-re-export is the sequence that makes two versions carry one tray
+ * file name: the kept one is never overwritten (it is the user's own file now),
+ * so the fresh landing adds a second row. A press on Foundry's export row names
+ * that FILE — and the row the user is looking at is the tray's current bytes,
+ * which is the live export, not the snapshot they filed away earlier. So where
+ * both spellings share a name, the live one answers and the kept one is
+ * dropped from the choice; a kept export with NO live twin stays, which is the
+ * ordinary case the 2026-08-24 Keep-then-Narrate refusal was about.
+ *
+ * Two KEPT rows under one name (a Keep pressed twice across re-exports) are
+ * deliberately both left in: neither is the tray's current bytes, so this
+ * function has no ground to pick one, and the named-press path refuses that
+ * ambiguity by name instead.
+ */
+export function dedupeNarrationExports(
+  exported: readonly NarrationExport[],
+): NarrationExport[] {
+  const liveNames = new Set(
+    exported.filter((v) => v.kept !== true).map((v) => v.fileName.toLowerCase()));
+  return exported.filter((v) => v.kept !== true || !liveNames.has(v.fileName.toLowerCase()));
+}
+
 export function chooseNarrationExport(
   nodeId: string,
   exported: readonly NarrationExport[],
@@ -156,14 +193,27 @@ export function chooseNarrationExport(
   const named = exportFileOfNodeId(nodeId);
   if (named !== null) {
     const base = named.split('/').pop()!;
-    const variant = exported.find((v) => v.fileName === base);
-    if (variant === undefined) {
+    const matches = exported.filter((v) => v.fileName === base);
+    if (matches.length === 0) {
       throw new Error(
         `The press named "${named}", but ${projectId}'s version list has no exported EPUB filed `
         + `under that name — it has ${exported.map((v) => v.fileName).join(', ')}. `
         + 'Export the book from Foundry again, then press Narrate on the new row.');
     }
-    return variant.id;
+    if (matches.length > 1) {
+      /*
+       * Reachable only when every match is a KEPT snapshot (a live export
+       * shadows its kept twins in `dedupeNarrationExports` before this is
+       * asked). Two kept files under one name are two archives the user made at
+       * different times, and picking between them silently would narrate
+       * whichever sorted first.
+       */
+      throw new Error(
+        `${projectId} holds ${matches.length} kept versions filed under "${base}", and this press `
+        + 'does not say which. Start the narration from the version you want on the book\'s '
+        + 'versions page, or export the book from Foundry again and press Narrate on that row.');
+    }
+    return matches[0]!.id;
   }
 
   if (exported.length > 1) {
@@ -320,11 +370,15 @@ export function resolveNarrationTarget(
   exported: readonly NarrationExport[],
   projectId: string,
 ): NarrationTarget {
+  // Kept snapshots stand aside for their live twins BEFORE any arm looks — the
+  // step arm needs it as much as the named one (a re-export after a Keep gives
+  // both rows the same stepId, and the press means the tray's current bytes).
+  const candidates = dedupeNarrationExports(exported);
   if (exportFileOfNodeId(nodeId) !== null) {
-    return { kind: 'variant', variantId: chooseNarrationExport(nodeId, exported, projectId) };
+    return { kind: 'variant', variantId: chooseNarrationExport(nodeId, candidates, projectId) };
   }
 
-  const fromStep = exported.filter((v) => v.stepId === nodeId);
+  const fromStep = candidates.filter((v) => v.stepId === nodeId);
   if (fromStep.length === 0) {
     return { kind: 'export-from-step', stepId: nodeId };
   }
