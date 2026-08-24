@@ -51,15 +51,23 @@ import { QueueTrayService } from '../../services/queue-tray.service';
     <div class="tray">
       <div class="tray-head">
         <span class="eyebrow">Queue</span>
+        <!-- Three states, not two. Two made the lamp contradict the button
+             beside it: the engine's latch stays set over a queue that finished
+             everything an hour ago, so the shelf said "Running" next to a
+             button offering to Start. Idle is the honest third word — nothing
+             is moving, and nobody paused it. -->
         <span class="engine" [class.paused]="!tray.isRunning()">
           <span class="led" aria-hidden="true"></span>
-          {{ tray.isRunning() ? 'Running' : 'Paused' }}
+          {{ tray.anythingRunning() ? 'Running' : (tray.isRunning() ? 'Idle' : 'Paused') }}
         </span>
         <button type="button" class="btn accent push" (click)="toggleQueue()"
-                [title]="tray.isRunning()
+                [disabled]="!tray.anythingRunning() && !tray.anythingToDo()"
+                [title]="tray.anythingRunning()
                   ? 'Stop the queue and everything it is running. To stop just one step, use its own Stop button below.'
-                  : 'Claim work as slots free up, and resume anything that was stopped.'">
-          {{ tray.isRunning() ? '❚❚ Pause everything' : '▶ Start' }}
+                  : tray.anythingToDo()
+                    ? 'Claim work as slots free up, and resume anything that was stopped.'
+                    : 'Nothing is queued, so there is nothing to start.'">
+          {{ tray.anythingRunning() ? '❚❚ Pause queue' : '▶ Start' }}
         </button>
       </div>
 
@@ -135,7 +143,7 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                        glyph: the control that takes work off the card should
                        not be the one you have to guess at. -->
                   <button type="button" class="tiny stop" (click)="stopStep(busy.stepId)"
-                          title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause everything above to stop it all.">
+                          title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause queue above to stop it all.">
                     ■ Stop
                   </button>
                 </div>

@@ -136,6 +136,29 @@ export class QueueTrayService {
 
   readonly isRunning = computed(() => this.queue.isRunning());
 
+  /**
+   * IS ANYTHING ACTUALLY MOVING, and is there anything left to do — the two
+   * questions the Start/Pause control asks, in ONE place because the tray and
+   * the queue page both draw that control and must not disagree.
+   *
+   * Neither is `isRunning`. That is the engine's LATCH: Start sets it, only
+   * Pause clears it, so it stays true over a queue that finished everything an
+   * hour ago, and the button then offered to "pause" a queue doing nothing.
+   * Owen, 2026-08-23: something running → Pause; nothing running but something
+   * still to do → Start; nothing to do at all → Start, grayed.
+   *
+   * `held` counts as something to do, because Start is exactly the gesture that
+   * releases it. Finished states do not — a shelf of completed runs is not a
+   * queue waiting on a press.
+   */
+  private readonly stepStatuses = computed<string[]>(() =>
+    this.queue.snapshot().jobs.flatMap((job) => job.steps.map((step) => step.status)));
+
+  readonly anythingRunning = computed(() => this.stepStatuses().includes('running'));
+
+  readonly anythingToDo = computed(() =>
+    this.stepStatuses().some((s) => s === 'queued' || s === 'waiting' || s === 'held'));
+
   // ── The bands ────────────────────────────────────────────────────────────
 
   /** The three slots, always all three. */

@@ -129,7 +129,7 @@ import { QueueTrayService } from './services/queue-tray.service';
                     type="button"
                     class="btn stop"
                     (click)="stopStep(running.stepId)"
-                    title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause in the toolbar to stop everything."
+                    title="Stop this step and free the slot. It keeps everything it has already rendered, and Start picks it up from there. The rest of the queue keeps running — use Pause queue in the toolbar to stop everything."
                   >■ Stop this step</button>
                 }
               </div>
@@ -1066,7 +1066,11 @@ export class QueueComponent {
   readonly finished = computed(() => this.tray.finishedToday());
 
   readonly toolbarItems = computed<ToolbarItem[]>(() => {
-    const isRunning = this.tray.isRunning();
+    // MOVEMENT, not the engine's latch, and not defined here: the tray draws
+    // this same control and the two must not disagree. See
+    // QueueTrayService.anythingRunning for the rule and why.
+    const isRunning = this.tray.anythingRunning();
+    const idle = !this.tray.anythingToDo();
     return [
       // "everything" earns its place now that each slot and each step carries
       // its own Stop: without it the toolbar button and the card button read as
@@ -1077,7 +1081,7 @@ export class QueueComponent {
           id: 'pause',
           type: 'button',
           icon: '⏸',
-          label: 'Pause everything',
+          label: 'Pause queue',
           tooltip: 'Stop the queue AND everything it is running. Anything stopped '
             + 'resumes from what it has already rendered. To stop just one step, '
             + 'use the Stop button on its slot.',
@@ -1087,7 +1091,13 @@ export class QueueComponent {
           type: 'button',
           icon: '▶',
           label: 'Start',
-          tooltip: 'Claim work as slots free up, and resume anything that was stopped.',
+          // Grayed rather than hidden: the control should stay where the eye
+          // already looks for it, saying what it would do if there were
+          // anything to do.
+          disabled: idle,
+          tooltip: idle
+            ? 'Nothing is queued, so there is nothing to start.'
+            : 'Claim work as slots free up, and resume anything that was stopped.',
         },
       {
         id: 'refresh',
