@@ -143,6 +143,7 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
 import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
+import { ensureWslDrivesFor } from './wsl-mounts';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 
@@ -6150,6 +6151,36 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
  *
  * No-op for CPU jobs.
  */
+/**
+ * Make every drive this run names reachable INSIDE the guest, before a worker
+ * is asked to open one.
+ *
+ * Orpheus is the engine that runs in WSL, and WSL auto-mounts fixed drives
+ * only. A fresh render never noticed, because its session lives in the guest
+ * and is copied out afterwards — but a RESUME binds to the durable project
+ * cache, and when the library is on a mapped network drive (Owen's is: Z: is
+ * \TITAN\iO) the guest was handed `/mnt/z/...`, which does not exist. e2a
+ * then failed with `Session directory not found` naming a path nobody chose.
+ *
+ * Both halves of the run are covered because both are drives: `--session_dir`
+ * (read) and `--sentences_dir` (WRITE — which is why mounting is the fix and
+ * staging is not; see electron/wsl-mounts.ts).
+ *
+ * Refuses out loud rather than letting the spawn proceed into a path that is
+ * not there. A WSL-hosted session (`\wsl$\...`) names no drive letter, so it
+ * asks for nothing.
+ */
+async function ensureGuestCanReachSession(session: ConversionSession): Promise<void> {
+  if (!shouldUseWslForSpawn(session.config.settings.ttsEngine)) return;
+  const prep = session.prepInfo;
+  await ensureWslDrivesFor([
+    prep?.sessionDir,
+    prep?.processDir,
+    prep?.chaptersDirSentences,
+    session.config.outputDir,
+  ]);
+}
+
 async function acquireGpuForJob(session: ConversionSession): Promise<void> {
   const engine = session.config.settings.ttsEngine;
   const deviceArg = resolveTtsDeviceArg(session.config.settings.device, engine);
@@ -6782,6 +6813,7 @@ export async function startParallelConversion(
   // Take the GPU before any worker loads a TTS model, so the local AI-cleanup LLM
   // steps off and the two never co-reside in VRAM (the model-load CUDA-OOM cause).
   // Blocks until the GPU is free; no-op for CPU jobs. See gpu-arbiter.
+  await ensureGuestCanReachSession(session);
   await acquireGpuForJob(session);
 
   // Not enough free VRAM to load the engine without spilling into system RAM (which
@@ -6986,6 +7018,7 @@ export async function renderRangeHeadless(
   activeSessions.set(jobId, session);
 
   // Take the GPU (mutex + VRAM-tier sizing + WSL clear-guest / VRAM-floor gates).
+  await ensureGuestCanReachSession(session);
   await acquireGpuForJob(session);
   if (session.gpuPreflightError) {
     const msg = session.gpuPreflightError;
@@ -8582,6 +8615,7 @@ export async function resumeParallelConversion(
 
   // Take the GPU before the resumed workers load a TTS model, so the AI-cleanup
   // LLM steps off and they never co-reside in VRAM. No-op for CPU jobs.
+  await ensureGuestCanReachSession(session);
   await acquireGpuForJob(session);
   if (session.gpuPreflightError) {
     releaseSessionGpu(session);
