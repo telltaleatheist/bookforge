@@ -371,6 +371,54 @@ python cli/bookforge-tts.py --rvc --input book.m4a --out book.flac --model my_rv
   unbounded `convert-dir` there could balloon on a full book (the MPS `empty_cache` patch is
   necessary but not sufficient for large inputs).
 
+## Bookshelf server, standalone (`serve-bookshelf.js`)
+
+Serve the library over HTTP **without BookForge running** — the NAS copy, for when
+the app is down on both the PC and the Mac. It starts the SAME compiled
+`dist/electron/bookshelf-server.js` the app starts, in **standalone mode**: a
+library-only mirror.
+
+```
+node cli/serve-bookshelf.js --library /mnt/library/bookforge
+node cli/serve-bookshelf.js --library Z:\bookforge --port 8765 --state-dir /var/lib/bookforge
+```
+
+**What it serves:** the shelf and the ebook list, covers and thumbnails, downloads,
+range-streamed audio, chapters, transcripts, audiobook analysis, the in-app reader
+(EPUB bytes **and** rasterized PDF pages — mupdf is pure WASM, so a headless Linux
+box renders them exactly as the app does), reader profiles and sign-in, and durable
+position / bookmarks / heard / analytics.
+
+**What it refuses, with HTTP 501 and the capability named:** live TTS and the
+whole-book renderer (`/api/render/*`, `/api/tts/*`, the reader WebSocket), document
+ingest (`/api/reader/ingest`, `/api/edit/ingest-pdf`, `/api/edit/page`), project
+creation (`/api/edit/finalize`), the queue (`/api/queue*`), and library mutations
+(`DELETE /api/project`, `/api/ebooks/reclassify`). `/api/health` reports the reduced
+`capabilities` list, and the bookshelf web app disables the affected controls —
+disabled with the reason, never hidden.
+
+**Reader state converges by construction.** Positions, bookmarks, heard coverage and
+analytics live under `<library>/.bookshelf/` as per-device files merged on read, so
+this server and the app's write different files and neither has to be primary.
+
+**Flags**
+- `--library <path>` — **required**, no default. The library root (holds `projects/`
+  and, optionally, `bookshelf.json`). Manifests store library-relative paths, so a
+  Linux root resolves manifests written on Windows.
+- `--port <n>` — default **8765**, the same port `electron/main.ts` serves on.
+- `--state-dir <path>` — per-machine state (duration cache, cover thumbnails, reader
+  tokens, device id). Default `<userData>/bookshelf-server`, where `<userData>` is
+  `%APPDATA%\BookForge` / `~/Library/Application Support/BookForge` /
+  `$XDG_CONFIG_HOME` (else `~/.config`)`/BookForge`. Never on the library share.
+
+**Needs** `dist/electron/*.js` (`npx tsc -p tsconfig.electron.json`), the web app at
+`dist/electron/bookshelf-ui` (`npm run build:bookshelf`), `dist/electron/data`
+(component catalogs, loaded at import time), and a working **ffmpeg + ffprobe** —
+checked once at startup and named if they don't run (`FFMPEG_PATH` / `FFPROBE_PATH`
+override the resolution). Ctrl+C / SIGTERM stops it cleanly.
+
+Docker files for the NAS live in `deploy/bookshelf-server/`.
+
 ## Gotchas
 
 - **Git Bash mangles `/home/...` args.** MSYS rewrites a Unix-style path passed to a
