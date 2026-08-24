@@ -216,6 +216,35 @@ interface FoundryExportLanding {
 }
 
 /**
+ * WHO THE BOOK IS, ANSWERED BY ITS OWN MANIFEST — the mint modal's inheritance.
+ *
+ * Owen's ruling (2026-08-24): "when i generate an epub in bookforge foundry, it
+ * should inherit the parent document's metadata. ill fill out whatever is
+ * missing." Foundry's mint modal seeds from its own stored project block, which
+ * is empty on the first mint of a hosted book — while this library's manifest
+ * has known the title, authors and year since the book was imported. So the
+ * mount host object carries `mintMetaFor`, Foundry asks it when the modal
+ * opens, and the STORED block still wins per-field (it is what the user last
+ * confirmed on that project); this answer fills every gap. Language keeps
+ * following the step's own chain on their side regardless of what this says.
+ *
+ * Every field optional: absence means "the manifest does not say", and the
+ * field is left for the user — which is the ruling's second sentence. No
+ * subtitle (the manifest has none at project level) and no publisher (their
+ * MintMeta has no field for it yet) — a contract field nothing consumes is the
+ * lands-and-nobody-reads trap.
+ */
+interface HostMintMeta {
+  title?: string;
+  contributors?: { first: string; last: string }[];
+  year?: string;
+  /** Plain primary subtag (en, de, …), as everywhere in this seam. */
+  language?: string;
+  /** ABSOLUTE path, existence-checked — Foundry cannot resolve library-relative. */
+  coverPath?: string;
+}
+
+/**
  * FIRST CONTACT: a file from outside the library just became a Foundry project.
  *
  * The announcement that makes the bare Import-via-Foundry window work. Foundry
@@ -326,6 +355,16 @@ interface FoundryHostRecord {
   readonly libraryDir: string;
   onExport(landing: FoundryExportLanding): void;
   onImport?(landing: FoundryImportLanding): void;
+  /**
+   * WHO THE BOOK IS, asked when the mint modal opens — the inheritance half of
+   * Owen's 2026-08-24 ruling. Optional (signature frozen with the Foundry
+   * session that day): Foundry probes for it, its stored project block wins
+   * per-field, this fills the gaps, and null — or a throw, which their side
+   * swallows to null — means "no answer" and the modal seeds as it always did.
+   * Registering it before their side lands is safe: an unknown property on the
+   * host object is simply never called.
+   */
+  mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
   /**
    * A PERSON PRESSED RETRY OR DISMISS on one of our rows that failed.
    *
@@ -1451,6 +1490,83 @@ async function foundryNarrationTarget(
       + 'versions page to see what is there.');
   }
   return narrationTargetOf(bookDir, filed);
+}
+
+/**
+ * ANSWER `mintMetaFor` FROM THE BOOK'S MANIFEST — the host half of the mint
+ * modal's inheritance (contract shape: {@link HostMintMeta}, frozen with the
+ * Foundry session 2026-08-24).
+ *
+ * NULL IS A REAL ANSWER, never a failure: an unclaimed project (a stray import
+ * no book of ours owns), an unreadable manifest, a duplicate mapping — each is
+ * logged in one line and answers null, and the modal behaves exactly as it did
+ * before the callback existed. Foundry swallows a throw to null on its side
+ * too; not throwing here keeps the one line in OUR log, where the manifest is.
+ *
+ * The contributors rule mirrors the metadata editor and Owen's 2026-08-16
+ * comma law: recorded `contributors` are the structured truth and win; absent
+ * those, the `author` string is read as ONE name — a comma means it is already
+ * "Last, First" and is never re-inverted; without one, the final word is the
+ * surname. "Unknown" answers nothing, exactly as `computeDescriptiveFilename`
+ * treats it.
+ */
+async function foundryMintMetaFor(projectDir: string): Promise<HostMintMeta | null> {
+  const key = foundryLandingKey(projectDir);
+  try {
+    const claims = await foundryProjectClaims();
+    const matches = claims.filter((c) => c.key !== null && c.key === key);
+    if (matches.length !== 1) {
+      console.log(
+        `[foundry-host] mint metadata for "${key}": ${matches.length === 0
+          ? 'no book claims this project' : `${matches.length} books claim it`}; the modal starts `
+        + 'from Foundry\'s own record.');
+      return null;
+    }
+    const projectId = path.basename(matches[0]!.dir);
+    const got = await manifestService.getManifest(projectId);
+    if (!got.manifest) {
+      console.log(
+        `[foundry-host] mint metadata for "${key}": ${projectId} could not be read `
+        + `(${got.error || 'no reason given'}); the modal starts from Foundry's own record.`);
+      return null;
+    }
+    const m = got.manifest.metadata;
+
+    let contributors: { first: string; last: string }[] | undefined;
+    if (m.contributors && m.contributors.length > 0) {
+      contributors = m.contributors.map((c) => ({ ...c }));
+    } else if (m.author && m.author.trim() && m.author.trim() !== 'Unknown') {
+      const author = m.author.trim();
+      if (author.includes(',')) {
+        const parts = author.split(',').map((s) => s.trim()).filter(Boolean);
+        contributors = [{ first: parts.slice(1).join(' '), last: parts[0]! }];
+      } else {
+        const parts = author.split(/\s+/);
+        contributors = parts.length >= 2
+          ? [{ first: parts.slice(0, -1).join(' '), last: parts[parts.length - 1]! }]
+          : [{ first: author, last: '' }];
+      }
+    }
+
+    let coverPath: string | undefined;
+    if (m.coverPath) {
+      const abs = path.join(manifestService.getLibraryBasePath(), m.coverPath);
+      if (fsSync.existsSync(abs)) coverPath = abs;
+    }
+
+    return {
+      ...(m.title && m.title.trim() ? { title: m.title.trim() } : {}),
+      ...(contributors === undefined ? {} : { contributors }),
+      ...(m.year ? { year: String(m.year) } : {}),
+      ...(m.language ? { language: m.language } : {}),
+      ...(coverPath === undefined ? {} : { coverPath }),
+    };
+  } catch (err) {
+    console.warn(
+      `[foundry-host] mint metadata for "${key}" could not be answered `
+      + `(${(err as Error).message}); the modal starts from Foundry's own record.`);
+    return null;
+  }
 }
 
 /**
@@ -12758,6 +12874,10 @@ app.whenReady().then(async () => {
     // swallowing anything, because neither ever rejects.
     onExport: (landing) => { void recordFoundryExportLanding(landing); },
     onImport: (landing) => { void announceFoundryImportLanding(landing); },
+    // The mint modal's inheritance (Owen, 2026-08-24): the book's own manifest
+    // seeds the fields Foundry's stored block does not cover. Null means "no
+    // answer" and the modal behaves as it did before the callback existed.
+    mintMetaFor: (projectDir: string) => foundryMintMetaFor(projectDir),
     // Retry / Dismiss on a row of ours that failed. Registering it is what makes
     // Foundry DRAW the pair — it probes for the callback first — and it is NOT
     // wrapped for the same reason the operations are not: a rejection is a
