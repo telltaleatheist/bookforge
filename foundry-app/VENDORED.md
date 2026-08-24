@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **5b507fe** — *fix(app): the chip's gray is reserved in rems — a fraction always clips at some width* |
+| Source sha | **21bef24** — *chore(release): the lockfile's number catches up* (tip of the v0.9.8 chain; carries `c626e8e`, the u<n> id-grammar mirror) |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 5b507fe app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 21bef24 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -685,6 +685,21 @@ caps' fallback arms are now absolute, `calc(100% - 10rem)`, guaranteeing 5rem
 of gray each side in every mode. No engine or IPC change — v0.9.7 stands.
 Verification: 124/124 blobs against `5b507fe:app/`, lockfile untouched so
 `npm ci` skipped; build clean; keepers ALL GREEN.
+
+`21bef24` (same night, tip of the **v0.9.8** release chain) carries `c626e8e`:
+Owen's hosted export refused with *"block 1 is called \"u1\", which is not a
+name this format mints"* — the app's insert op (missing chapter titles, 08-23)
+mints `u<n>` ids, but the ENGINE's ROW_ID grammar was never grown to match, so
+any book with a hand-added block refused to compile on every engine through
+0.9.7. The fix grows the grammar to admit `u<n>` (with `#`/`/`/`?` riders) in
+BOTH statements same-commit per the mirror rule — engine `src/` AND
+`app/shared/book.ts`, which is why this vendor moves: a subtree at `5b507fe`
+paired with the 0.9.8 engine would leave the app-side grammar still refusing
+`u<n>`. Engine **v0.9.8 published** (binaries report "foundry 0.9.8
+(21bef24)"); the pending PC adoption becomes 0.9.4 → 0.9.8 in one hop.
+Verification: 124/124 blobs against `21bef24:app/`, one file moved
+(`shared/book.ts`), lockfile untouched so `npm ci` skipped; build clean;
+keepers ALL GREEN.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

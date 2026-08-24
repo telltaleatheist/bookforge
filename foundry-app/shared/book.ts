@@ -217,6 +217,15 @@ export interface BookRow {
    * every op, every chapter marker and every records entry works on one without
    * knowing which kind of book it is holding (docs/BOOK-FILE.md §4).
    *
+   * OR `u<n>`, WHEN A PERSON ADDED THE BLOCK — the `insert` op's mint (./ops),
+   * for the block the reading never produced: it descends from nothing, so no
+   * page, banked answer or spine ordinal exists to derive a name from, and the
+   * sheet mints the first free ordinal over the replayed rows instead. The
+   * engine's `ROW_ID` admits the family too (src/vlm/book-file.ts), and the two
+   * statements of this grammar grow in the same commit, always — that mirror
+   * rule was learned here: the first inserted block to reach `vlm-compile` was
+   * refused by name (2026-08-24).
+   *
    * IDENTITY IS THIS AND ONLY THIS. `page` below is an estimate and addresses
    * nothing; see the engine's own header for the whole of that argument. On an
    * EPUB-sourced row it is not even an estimate — it is 0, the no-page frame,
