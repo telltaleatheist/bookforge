@@ -1336,11 +1336,19 @@ async function foundryNarrationTarget(
    * landing became — and a captured list would be the state of the library
    * before the export that was made to change it.
    *
-   * `foundrySource` is present exactly on versions an export landed (and is
-   * cleared when one is promoted to the user's own file), so this is the set of
-   * files Foundry made — never the book's own archive copy, which Foundry never
-   * wrote and which narrating here would silently substitute for the edit the
-   * user just made.
+   * BOTH SPELLINGS of "Foundry made this file" are read: `foundrySource` is an
+   * export on loan, and `promotedFrom` is the SAME provenance after the user
+   * pressed Keep — promotion moves the record rather than killing it, precisely
+   * so the file's history survives (library-actions.ts, the 2026-08-19 sweep
+   * lesson). Reading only the first was the bug Owen hit on 2026-08-24: he
+   * minted the English epub, pressed Keep, pressed Narrate on that very file in
+   * Foundry — and was told the project had never exported anything. A KEPT
+   * export is the strongest possible "narrate this one"; it must not vanish
+   * from the list the moment the user says it is theirs.
+   *
+   * What this still never admits is the book's own archive copy — a file with
+   * NEITHER field is one Foundry never wrote, and narrating it would silently
+   * substitute it for the edit the user just made.
    */
   const exportedEpubs = async () => {
     const got = await manifestService.getManifest(projectId);
@@ -1350,7 +1358,8 @@ async function foundryNarrationTarget(
         + 'not be looked at.');
     }
     return manifestService.getVariants(got.manifest).variants.filter((v) =>
-      v.foundrySource?.projectKey === key && v.format.toLowerCase() === 'epub');
+      (v.foundrySource ?? v.promotedFrom)?.projectKey === key
+      && v.format.toLowerCase() === 'epub');
   };
 
   /*
@@ -1366,11 +1375,14 @@ async function foundryNarrationTarget(
   const exported = await exportedEpubs();
   const choice = resolveNarrationTarget(
     nodeId,
-    exported.map((v) => ({
-      id: v.id,
-      fileName: v.foundrySource!.fileName,
-      ...(v.foundrySource!.stepId === undefined ? {} : { stepId: v.foundrySource!.stepId }),
-    })),
+    exported.map((v) => {
+      const src = (v.foundrySource ?? v.promotedFrom)!;
+      return {
+        id: v.id,
+        fileName: src.fileName,
+        ...(src.stepId === undefined ? {} : { stepId: src.stepId }),
+      };
+    }),
     projectId,
   );
 
@@ -1487,15 +1499,17 @@ async function readFoundryLedgerSteps(foundryProjectDir: string): Promise<Ledger
  * mints for the same row (`exportNodeId`, shared/host-ops.ts, over
  * `ProjectFinal.file`). BookForge renames a landing on the way in — an export is
  * filed under the book's descriptive name — so the variant's own file name is
- * the wrong string here, and `foundrySource.fileName` is the tray spelling kept
- * for exactly this kind of join.
+ * the wrong string here, and the provenance's `fileName` is the tray spelling
+ * kept for exactly this kind of join — read from `foundrySource` for an export
+ * on loan and from `promotedFrom` for one the user KEPT, which are the same
+ * record before and after the Keep press.
  */
 function narrationTargetOf(bookDir: string, variant: ProjectVariant): FoundryNarrationTarget {
   return {
     bookDir,
     variantId: variant.id,
     variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
-    exportNodeId: `export:${variant.foundrySource!.fileName}`,
+    exportNodeId: `export:${(variant.foundrySource ?? variant.promotedFrom)!.fileName}`,
   };
 }
 
