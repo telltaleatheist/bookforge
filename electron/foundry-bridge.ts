@@ -65,6 +65,7 @@ import {
   effectiveFoundryVersion,
 } from './components/foundry-cli-components';
 import { planUpgrade } from './components/component-upgrades';
+import { ensureFoundryReleaseDiscovered } from './components/foundry-release-check';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Resolution
@@ -216,6 +217,13 @@ async function downloadFoundry(
       );
     }
   }
+
+  // THE FIRST-INSTALL PATH. The startup sweep adopts a release only onto a
+  // machine that already has a managed install, so a fresh machine reaching
+  // this point has an EMPTY catalog and install() would refuse "not available
+  // for download" — the chicken-and-egg bookforge-mac-2 reproduced on
+  // 2026-08-24. Acquisition asks GitHub itself; see the helper's header.
+  await ensureFoundryReleaseDiscovered();
 
   const wanted = effectiveFoundryVersion();
   console.log(

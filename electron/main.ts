@@ -133,6 +133,8 @@ import { mergeEpubParagraphs } from './epub-paragraph-merger';
 import { removeEpubContainer, writeEpubFromArchiveBytes } from './epub-container';
 import { componentManager, runInstaller as runExternalInstaller, listInstallableIds, installerNote } from './components/component-manager';
 import { systemProbe } from './components/system-probe';
+import { FOUNDRY_CLI_COMPONENT_ID } from './components/foundry-cli-components';
+import { ensureFoundryReleaseDiscovered } from './components/foundry-release-check';
 import { listManagedComponents, checkComponentUpdates, installComponent } from './update/component-updater';
 import { getStarterStatus, installStarterLibrary } from './update/starter-library';
 
@@ -7832,6 +7834,16 @@ function setupIpcHandlers(): void {
   });
 
   ipcMain.handle('components:install', async (event, id: string) => {
+    /*
+     * The Add-ons panel is the OTHER first-install door (the first is
+     * `downloadFoundry`, for a pass that needs the engine). Without this, a
+     * machine with no managed record — fresh, or one whose external pin was just
+     * removed — has an empty foundry catalog and the install refuses "not
+     * available for download": the chicken-and-egg bookforge-mac-2 reproduced on
+     * 2026-08-24. The throw carries the release check's own sentence to the
+     * panel, which is the answer a person pressing Install is owed.
+     */
+    if (id === FOUNDRY_CLI_COMPONENT_ID) await ensureFoundryReleaseDiscovered();
     const result = await componentManager.install(id, (p) => {
       event.sender.send('components:progress', p);
     });

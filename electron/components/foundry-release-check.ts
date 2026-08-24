@@ -331,3 +331,48 @@ export async function checkFoundryRelease(
   cached = { at: Date.now(), release: answer };
   return answer;
 }
+
+/**
+ * A DISCOVERED RELEASE, ON DEMAND — the first-install path the sweep is not.
+ *
+ * The chicken-and-egg bookforge-mac-2 reproduced on 2026-08-24 (a real machine,
+ * stranded for a minute): `setDiscoveredFoundryRelease` had exactly one caller,
+ * the startup sweep's `adoptNewerFoundryRelease`, and that caller returns early
+ * unless a MANAGED record with a live entry already exists — deliberately, so a
+ * machine that never opted into the component is not made to phone GitHub. But
+ * the catalog builds its artifact list from the discovered release, so a
+ * machine with NO record (a fresh install) or an EXTERNAL one (a pin being
+ * given up) could never acquire: the component whose own description says
+ * "downloaded automatically the first time a pass needs it" refused every
+ * install with an empty artifact list. Only a machine that already had the
+ * thing could get the thing.
+ *
+ * So ACQUISITION asks GitHub itself, at the moment somebody is actually asking
+ * to install — which is the opt-in the sweep's guard exists to protect. Called
+ * by `downloadFoundry` (a pass that needs the engine) and by the Add-ons
+ * panel's install door; idempotent and cheap when the sweep already answered
+ * (the discovered release is process state, the check itself is cached 90 s).
+ *
+ * THROWS the release check's own refusals (no checksums.txt, no artifact for
+ * this platform, network down) — the caller asked to install, and "why there is
+ * nothing to install" is the answer they are owed. A latest release that is a
+ * draft/prerelease or carries no version tag refuses by name here for the same
+ * reason: leaving the catalog empty would surface as the generic "not available
+ * for download", which says nothing about what to fix.
+ *
+ * `check` is injectable for the keeper; every real caller uses the default.
+ */
+export async function ensureFoundryReleaseDiscovered(
+  check: () => Promise<DiscoveredFoundryRelease | null> = checkFoundryRelease,
+): Promise<void> {
+  const { getDiscoveredFoundryRelease, setDiscoveredFoundryRelease } =
+    require('./foundry-cli-components') as typeof import('./foundry-cli-components');
+  if (getDiscoveredFoundryRelease() !== null) return;
+  const release = await check();
+  if (release === null) {
+    throw new Error(
+      'GitHub\'s latest foundry release is a draft or prerelease, or its tag is not a version, so '
+      + 'there is nothing BookForge can adopt to install from. Publish a normal versioned release.');
+  }
+  setDiscoveredFoundryRelease(release);
+}

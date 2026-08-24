@@ -434,19 +434,74 @@ test('no version or hash is committed beside the component any more', () => {
   assert.ok(!/[0-9a-f]{64}/.test(src), 'a pasted sha256 came back');
 });
 
+// ── Acquisition discovers on demand (the first-install path) ────────────────
+//
+// bookforge-mac-2's reproduction, 2026-08-24: setDiscoveredFoundryRelease had
+// exactly one caller — the startup sweep — and the sweep adopts only onto a
+// machine that ALREADY has a managed install, so a fresh machine (or one whose
+// external pin was just removed) had an empty catalog forever and every install
+// refused "not available for download". Acquisition now asks GitHub itself:
+// ensureFoundryReleaseDiscovered, called by downloadFoundry and the Add-ons
+// install door.
+
+const releaseOf = (cat, version) => ({
+  version,
+  artifacts: cat.FOUNDRY_ASSETS.map((a) => ({
+    platform: a.platform, arch: a.arch, file: a.file,
+    url: `https://github.com/telltaleatheist/foundry/releases/download/v${version}/${a.file}`,
+    sha256: 'a'.repeat(64), bytes: 7,
+  })),
+});
+
+test('an empty catalog is filled on demand, so a fresh machine can acquire', async () => {
+  delete require.cache[require.resolve(CATALOG)];
+  const cat = require(CATALOG);
+  assert.strictEqual(cat.effectiveFoundryVersion(), '', 'fresh machine: nothing discovered');
+  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
+  await ensureFoundryReleaseDiscovered(async () => releaseOf(cat, '9.9.8'));
+  assert.strictEqual(cat.effectiveFoundryVersion(), '9.9.8',
+    'the catalog the very next install() reads now names the release');
+  assert.ok(cat.foundryCliComponent().artifacts.length > 0, 'and it has artifacts to download');
+  delete require.cache[require.resolve(CATALOG)];
+});
+
+test('a release the sweep already adopted is not asked for again', async () => {
+  delete require.cache[require.resolve(CATALOG)];
+  const cat = require(CATALOG);
+  cat.setDiscoveredFoundryRelease(releaseOf(cat, '9.9.9'));
+  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
+  await ensureFoundryReleaseDiscovered(async () => {
+    throw new Error('asked GitHub although the answer was already in hand');
+  });
+  assert.strictEqual(cat.effectiveFoundryVersion(), '9.9.9');
+  delete require.cache[require.resolve(CATALOG)];
+});
+
+test('a draft-or-prerelease-only answer refuses by name, never an empty catalog', async () => {
+  delete require.cache[require.resolve(CATALOG)];
+  const { ensureFoundryReleaseDiscovered } = require(RELEASE);
+  await assert.rejects(
+    () => ensureFoundryReleaseDiscovered(async () => null),
+    /draft or prerelease/,
+    'silence here would surface as the generic "not available for download"');
+  delete require.cache[require.resolve(CATALOG)];
+});
+
 // ── Run ─────────────────────────────────────────────────────────────────────
 
-for (const { name, fn } of tests) {
-  try {
-    fn();
-    passed++;
-    console.log(`  ok  ${name}`);
-  } catch (err) {
-    failures.push({ name, err });
-    console.log(`FAIL  ${name}`);
-    console.log(`      ${err.message}`);
+(async () => {
+  for (const { name, fn } of tests) {
+    try {
+      await fn();
+      passed++;
+      console.log(`  ok  ${name}`);
+    } catch (err) {
+      failures.push({ name, err });
+      console.log(`FAIL  ${name}`);
+      console.log(`      ${err.message}`);
+    }
   }
-}
 
-console.log(`\n${passed}/${tests.length} passed`);
-if (failures.length > 0) process.exit(1);
+  console.log(`\n${passed}/${tests.length} passed`);
+  if (failures.length > 0) process.exit(1);
+})();
