@@ -105,7 +105,9 @@ import {
   type NarrateOffer,
   type NarrateVoiceOption,
 } from './foundry-narrate-form';
-import { resolveNarrationTarget } from './foundry-narrate-target';
+import {
+  resolveNarrationTarget, stepPressTranslationCheck, type LedgerStepLite,
+} from './foundry-narrate-target';
 // The ONE description of what a narration run consists of — the same one the
 // narration modal asks. See shared/queue/narration-run.ts for why it is shared.
 import { buildNarrationSteps } from '../shared/queue/narration-run';
@@ -1366,6 +1368,35 @@ async function foundryNarrationTarget(
   }
 
   /*
+   * ── THE TRANSLATION GUARD, before anything is cast ─────────────────────────
+   *
+   * The 2026-08-24 incident: a narrate press resolved to the German READ step
+   * of a book whose English translation sat right there, and this arm obeyed it
+   * silently — cast the German, narrated it, hours of wrong GPU. The press was
+   * the bug (fixed on Foundry's side), but obeying it without a word was this
+   * side's share. So the pressed step is checked against the ledger it lives
+   * in: a translate step the pressed chain does not reach means the cast would
+   * be in the untranslated language, and that is refused BY NAME rather than
+   * rendered. The deliberate untranslated narration keeps its door — export
+   * from the step in Foundry, press Narrate on the export row — which the
+   * identity law answers without ever reaching this arm.
+   *
+   * An unknown step is NOT judged here: Foundry's own `stepOf` refuses it by
+   * name a moment later, from the side that owns the ledger.
+   */
+  const crossed = stepPressTranslationCheck(
+    choice.stepId, await readFoundryLedgerSteps(projectDir));
+  if (crossed.kind === 'leaves-out-translations') {
+    const into = crossed.languages.length > 0 ? ` (into ${crossed.languages.join(', ')})` : '';
+    throw new Error(
+      `Narrate was pressed on "${crossed.pressedLabel}", a step from before this book was `
+      + `translated${into} — an audiobook cast from it would be in the untranslated language. `
+      + 'Press Narrate on the exported EPUB you mean to hear, or on a step after the '
+      + 'translation. To narrate the untranslated text on purpose, export it from Foundry '
+      + 'first and press Narrate on that export row.');
+  }
+
+  /*
    * NOTHING THIS LIBRARY HOLDS CAME FROM THAT STEP, so Foundry is asked to cast
    * it — its own export path with nobody in front of it. Whatever it rejects
    * with travels out of here UNTOUCHED: those are sentences main.ts on their side
@@ -1392,6 +1423,49 @@ async function foundryNarrationTarget(
       + 'versions page to see what is there.');
   }
   return narrationTargetOf(bookDir, filed);
+}
+
+/**
+ * THE LEDGER, out of Foundry's own catalogue, for the translation guard above.
+ *
+ * Read rather than asked for over the seam because the catalogue IS the ledger's
+ * file — `project.json`, `ledger.steps` — and `exportEpubFromStep` is about to
+ * read the same file to do the cast, so an unreadable one is refused here with
+ * the same honesty it would be refused there, before anything is spent.
+ *
+ * A catalogue without a ledger answers an empty list, which the check reads as
+ * "unknown step" and passes through to Foundry's own refusal — this side never
+ * invents a sentence about a ledger it could not see the shape of.
+ */
+async function readFoundryLedgerSteps(foundryProjectDir: string): Promise<LedgerStepLite[]> {
+  const cataloguePath = path.join(foundryProjectDir, 'project.json');
+  let parsed: { ledger?: { steps?: unknown } };
+  try {
+    parsed = JSON.parse(await fs.readFile(cataloguePath, 'utf-8')) as { ledger?: { steps?: unknown } };
+  } catch (err) {
+    throw new Error(
+      `Foundry's catalogue for this project (${cataloguePath}) could not be read `
+      + `(${(err as Error).message}), so the pressed step cannot be checked against the book's `
+      + 'history and nothing was exported.');
+  }
+  const steps = parsed.ledger?.steps;
+  if (!Array.isArray(steps)) return [];
+  return steps
+    .filter((s): s is Record<string, unknown> => typeof s === 'object' && s !== null)
+    .filter((s) => typeof s['id'] === 'string' && typeof s['action'] === 'string')
+    .map((s) => {
+      const params = s['params'];
+      const language = typeof params === 'object' && params !== null
+        && typeof (params as Record<string, unknown>)['language'] === 'string'
+        ? (params as Record<string, unknown>)['language'] as string : undefined;
+      return {
+        id: s['id'] as string,
+        parent: typeof s['parent'] === 'string' ? s['parent'] : null,
+        action: s['action'] as string,
+        ...(typeof s['label'] === 'string' ? { label: s['label'] as string } : {}),
+        ...(language === undefined ? {} : { language }),
+      };
+    });
 }
 
 /**

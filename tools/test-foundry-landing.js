@@ -301,6 +301,55 @@ test('a swept export is dated by the FILE, not by the morning it was swept', run
     'the row appeared when the file did, by the same reasoning');
 }));
 
+test("a swept export carries the step Foundry's catalogue records for it", run(async (p) => {
+  // The 2026-08-24 lesson: a swept export that cannot name its step can never
+  // match a step-shaped Narrate press, so the press falls to the auto-export
+  // arm — which, handed a step from the wrong side of a translation, cast and
+  // narrated the German of a book whose English was sitting in the tray. The
+  // catalogue (Foundry's project.json `final[]`) knows the step, so the sweep
+  // reads it. The spelling differs in case on purpose: the match must be the
+  // same case-insensitive one every other landing comparison uses.
+  fs.writeFileSync(path.join(p.library, 'foundry', 'projects', KEY, 'project.json'),
+    JSON.stringify({
+      final: [
+        { file: 'other.epub', kind: 'epub', madeAt: 1, stepId: 'step-of-other' },
+        { file: 'TEST BOOK.EPUB', kind: 'epub', madeAt: 2, stepId: 'step-abc' },
+      ],
+    }));
+  p.exportFile('Test Book.epub', 'CAST FROM step-abc');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 1);
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.stepId, 'step-abc',
+    'the step press that made this file must find it filed');
+}));
+
+test('a tray file the catalogue does not know lands, without a step', run(async (p) => {
+  // Absence means "I do not know", never "no step" — and it must not cost the
+  // version: the directory witnesses the file; only its provenance is unknown.
+  fs.writeFileSync(path.join(p.library, 'foundry', 'projects', KEY, 'project.json'),
+    JSON.stringify({ final: [{ file: 'other.epub', kind: 'epub', madeAt: 1, stepId: 's1' }] }));
+  p.exportFile('Test Book.epub', 'UNCATALOGUED');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 1, 'an uncatalogued file still becomes a version');
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.stepId, undefined);
+}));
+
+test('a broken catalogue costs the step, never the landing', run(async (p) => {
+  fs.writeFileSync(
+    path.join(p.library, 'foundry', 'projects', KEY, 'project.json'), 'NOT JSON {');
+  p.exportFile('Test Book.epub', 'BYTES');
+
+  const res = await sweep(p);
+  assert.strictEqual(res.landed, 1, 'the tray is the truth even when the catalogue is not');
+  assert.strictEqual(res.refused, 0);
+  const v = p.variants().find((x) => !!x.foundrySource);
+  assert.strictEqual(v.foundrySource.stepId, undefined);
+}));
+
 test('a file that is already a version is skipped — a sweep NEVER replaces', run(async (p) => {
   const src = p.exportFile('Test Book.epub', 'FIRST');
   const landed = await land(p, src);

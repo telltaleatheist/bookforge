@@ -222,6 +222,50 @@ async function fileOneFoundryExport(
   return landed.variantId;
 }
 
+/**
+ * WHAT FOUNDRY'S CATALOGUE SAYS ABOUT A PROJECT'S TRAY — file name to the step
+ * it was cast from, as one lookup the sweep asks per file.
+ *
+ * Foundry's `project.json` carries a `final[]` row for every export it filed
+ * (`ProjectFinal`: `file`, `kind`, `madeAt`, `stepId`), and `stepId` there is the
+ * very value the live announcement carries — one `madeFrom` variable feeds both
+ * on Foundry's side, so reading it here cannot disagree with the landing the
+ * sweep is standing in for.
+ *
+ * A catalogue that cannot be read, or a row without a step, answers undefined
+ * for that file — the defined "I do not know" of `FoundryVariantSource.stepId` —
+ * and the file still lands. Missing entirely is silent (a project whose foundry
+ * data has not synced has no tray either, and the tray's own ENOENT already
+ * covers it); unreadable or unparseable is said once, because a catalogue that
+ * is THERE and broken is worth a line.
+ *
+ * The match is `sameFoundryExportFile` — the same (case-insensitive) comparison
+ * every other "is this that file" in the landing path uses.
+ */
+async function foundryCatalogueSteps(
+  foundryProjectDir: string,
+): Promise<(fileName: string) => string | undefined> {
+  const cataloguePath = path.join(foundryProjectDir, 'project.json');
+  let rows: { file: string; stepId: string }[] = [];
+  try {
+    const parsed = JSON.parse(await fs.readFile(cataloguePath, 'utf-8')) as {
+      final?: { file?: unknown; stepId?: unknown }[];
+    };
+    rows = (Array.isArray(parsed.final) ? parsed.final : [])
+      .filter((f): f is { file: string; stepId: string } =>
+        typeof f === 'object' && f !== null
+        && typeof f.file === 'string' && typeof f.stepId === 'string');
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') {
+      console.warn(
+        `[foundry-host] Foundry's catalogue ${cataloguePath} could not be read `
+        + `(${(err as Error).message}); exports swept from this tray land without the step they `
+        + 'were cast from.');
+    }
+  }
+  return (fileName) => rows.find((r) => sameFoundryExportFile(r.file, fileName))?.stepId;
+}
+
 /** What a sweep did, for the caller that logs it and for the tests that pin it. */
 export interface FoundrySweepResult {
   /** Books whose tray was read at all — i.e. those with a `foundryProject` mapping. */
@@ -344,6 +388,26 @@ export async function sweepFoundryExportTrays(
     const tray = path.join(projectsRoot, key, 'final');
 
     let entries: Dirent[];
+    /*
+     * WHICH STEP EACH TRAY FILE WAS CAST FROM, read from Foundry's own catalogue.
+     *
+     * A directory does not say which point in a book's history each file came
+     * from, and for a long time this sweep passed no step because of it — at the
+     * documented cost of one re-export the first time somebody pressed Narrate
+     * on the step behind a swept file. But Foundry's catalogue DOES say
+     * (`ProjectFinal.stepId`, their project.json `final[]`), and the 2026-08-24
+     * incident showed the cost is not always one re-export: a swept export that
+     * cannot name its step can never match a step press, so the press goes to
+     * the auto-export arm instead — which, handed a step from the wrong side of
+     * a translation, cast and narrated the GERMAN of a book whose English was
+     * sitting right there. So the catalogue is read, once per tray.
+     *
+     * An unreadable catalogue, or a file it does not list, still lands the file
+     * WITHOUT a step — absence keeps meaning "I do not know", exactly as
+     * `FoundryVariantSource.stepId` defines it — because the file's existence is
+     * witnessed by the directory and its provenance merely unwitnessed.
+     */
+    const stepOfTrayFile = await foundryCatalogueSteps(path.join(projectsRoot, key));
     try {
       entries = await fs.readdir(tray, { withFileTypes: true });
     } catch (err) {
@@ -390,13 +454,11 @@ export async function sweepFoundryExportTrays(
         // A swept row and an announced row are therefore named the same thing,
         // and the user cannot tell which door a version came through.
         //
-        // NO STEP IS PASSED, and that is the truth rather than an omission: a
-        // sweep reads a directory, and a directory does not say which point in a
-        // book's history each file was cast from. Foundry's own catalogue does
-        // (`ProjectFinal.stepId`), and reading it here is a wave of its own; what
-        // the absence costs meanwhile is one re-export the first time somebody
-        // presses Narrate on the step behind a swept file.
-        if (await fileFoundryExportAsVersion(book.dir, key, abs, entry.name, landedAt) !== null) {
+        // The step comes from Foundry's catalogue, read above — undefined when
+        // the catalogue does not know this file, which files the version exactly
+        // as the pre-catalogue sweep always did.
+        const stepId = stepOfTrayFile(entry.name);
+        if (await fileFoundryExportAsVersion(book.dir, key, abs, entry.name, landedAt, stepId) !== null) {
           landedHere++;
         } else {
           result.refused++;

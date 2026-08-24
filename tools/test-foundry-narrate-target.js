@@ -323,6 +323,76 @@ test('a named press is still REFUSED rather than exported, however wrong the nam
     /has no exported EPUB from this project/);
 });
 
+// ── The translation guard on the auto-export arm ───────────────────────────
+//
+// The 2026-08-24 incident's ledger, in miniature: a German scan read, edited,
+// translated to English, edited again. A press upstream of the translation is
+// the parked-position accident and must be refused by name; a press on or after
+// it is the ordinary case and must pass.
+
+/** The incident's chain: capture → import → read(de) → edit → translate(en) → edit. */
+const LEDGER = [
+  { id: 'cap', parent: null, action: 'capture', label: 'Photographs' },
+  { id: 'imp', parent: 'cap', action: 'import', label: 'The pages you minted' },
+  { id: 'read', parent: 'imp', action: 'read', label: 'Read (168 pages)', language: 'de' },
+  { id: 'ed1', parent: 'read', action: 'edit', label: 'Applied changes (12)' },
+  { id: 'tr', parent: 'ed1', action: 'translate', label: 'Translated (en)', language: 'en' },
+  { id: 'ed2', parent: 'tr', action: 'edit', label: 'Applied changes (777)' },
+];
+
+test('a press upstream of the translation is the incident, and is named', () => {
+  const verdict = target.stepPressTranslationCheck('read', LEDGER);
+  assert.strictEqual(verdict.kind, 'leaves-out-translations');
+  assert.deepStrictEqual(verdict.languages, ['en']);
+  assert.strictEqual(verdict.pressedLabel, 'Read (168 pages)',
+    'the refusal says which step was pressed, in its own name');
+  // The edit BETWEEN read and translate is upstream too — same accident.
+  assert.strictEqual(target.stepPressTranslationCheck('ed1', LEDGER).kind,
+    'leaves-out-translations');
+});
+
+test('a press on or after the translation passes', () => {
+  assert.deepStrictEqual(target.stepPressTranslationCheck('tr', LEDGER), { kind: 'ok' });
+  assert.deepStrictEqual(target.stepPressTranslationCheck('ed2', LEDGER), { kind: 'ok' });
+});
+
+test('a book with no translations has nothing to protect', () => {
+  const untranslated = LEDGER.filter((s) => s.action !== 'translate')
+    .map((s) => s.id === 'ed2' ? { ...s, parent: 'ed1' } : s);
+  assert.deepStrictEqual(target.stepPressTranslationCheck('read', untranslated), { kind: 'ok' });
+});
+
+test('an unknown step is not judged here — Foundry refuses it by name', () => {
+  assert.deepStrictEqual(target.stepPressTranslationCheck('no-such-step', LEDGER),
+    { kind: 'unknown-step' });
+  assert.deepStrictEqual(target.stepPressTranslationCheck('read', []),
+    { kind: 'unknown-step' });
+});
+
+test('a sibling branch\'s translation is not something this press left out', () => {
+  // The ledger is a tree. A second language abandoned on another branch must not
+  // refuse a press standing on its own translated line.
+  const branched = [...LEDGER,
+    { id: 'tr-fr', parent: 'ed1', action: 'translate', label: 'Translated (fr)', language: 'fr' }];
+  assert.deepStrictEqual(target.stepPressTranslationCheck('ed2', branched), { kind: 'ok' });
+  // But a press upstream of BOTH still refuses, naming both languages.
+  const verdict = target.stepPressTranslationCheck('read', branched);
+  assert.strictEqual(verdict.kind, 'leaves-out-translations');
+  assert.deepStrictEqual(verdict.languages, ['en', 'fr']);
+});
+
+test('a translate step that recorded no language still refuses', () => {
+  // It is the STEP being left out that matters, not our ability to name it.
+  const unnamed = LEDGER.map((s) => {
+    if (s.id !== 'tr') return s;
+    const { language, ...rest } = s;
+    return rest;
+  });
+  const verdict = target.stepPressTranslationCheck('read', unnamed);
+  assert.strictEqual(verdict.kind, 'leaves-out-translations');
+  assert.deepStrictEqual(verdict.languages, []);
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

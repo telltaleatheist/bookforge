@@ -214,6 +214,107 @@ export function chooseNarrationExport(
  * this codebase refuses everywhere else. The cost is one re-export, after which
  * the record knows its own step and the next press resolves instantly.
  */
+/**
+ * ONE LEDGER STEP, reduced to what the translation check needs.
+ *
+ * Read out of Foundry's own catalogue (`project.json`, `ledger.steps`) by the
+ * caller — this module still imports nothing. `language` is the translate
+ * step's `params.language`: the language translated INTO, which is the word the
+ * refusal needs to say.
+ */
+export interface LedgerStepLite {
+  readonly id: string;
+  readonly parent: string | null;
+  readonly action: string;
+  readonly label?: string;
+  readonly language?: string;
+}
+
+/** What `stepPressTranslationCheck` decided, for the caller that says it. */
+export type StepPressTranslationCheck =
+  /** The pressed chain holds every translation the book has (or it has none). */
+  | { readonly kind: 'ok' }
+  /**
+   * The press names a step this ledger does not hold. NOT judged here: Foundry's
+   * own `stepOf` refuses an unknown id by name, and that sentence — from the side
+   * that owns the ledger — beats one this side would invent about it.
+   */
+  | { readonly kind: 'unknown-step' }
+  /**
+   * The book HAS translations and the pressed step's chain contains none of
+   * them, so an export cast from this press would be in the untranslated
+   * language. `languages` is what the book was translated into; `pressedLabel`
+   * is the pressed step's own name, for the sentence.
+   */
+  | {
+      readonly kind: 'leaves-out-translations';
+      readonly languages: readonly string[];
+      readonly pressedLabel: string;
+    };
+
+/**
+ * WOULD AN EXPORT FROM THIS STEP SKIP THE BOOK'S TRANSLATIONS — the guard on the
+ * auto-export arm, from the 2026-08-24 incident.
+ *
+ * A narrate press resolved to the German READ step of a book whose English
+ * translation — and the English EPUB cast from it — sat right there; the
+ * auto-export arm obeyed the press and cast the German, and the queue narrated
+ * it for hours of wrong GPU. The press was wrong (a position parked upstream,
+ * fixed on Foundry's side), but this side obeyed it SILENTLY, and a cast whose
+ * language differs from the book's translations is a thing to say out loud
+ * before spending a render on it.
+ *
+ * The rule: Foundry's `exportEpubFromStep` replays the ledger up to and
+ * including the pressed step, so a translation rides exactly when it is the
+ * pressed step or one of its ancestors. A translate step ELSEWHERE in the
+ * ledger means the book has a translated line this press does not reach — and
+ * pressing Narrate upstream of it is almost always the parked-position
+ * accident, not a request for the untranslated text. The deliberate case has a
+ * door the refusal names: export from that step in Foundry, then press Narrate
+ * on the export row, which the identity law answers without ever reaching this
+ * check.
+ *
+ * A book with NO translate steps answers ok however the press falls: there is
+ * only one language, and this check has nothing to protect.
+ */
+export function stepPressTranslationCheck(
+  pressedId: string,
+  steps: readonly LedgerStepLite[],
+): StepPressTranslationCheck {
+  const byId = new Map(steps.map((s) => [s.id, s]));
+  const pressed = byId.get(pressedId);
+  if (pressed === undefined) return { kind: 'unknown-step' };
+
+  const chain = new Set<string>();
+  for (let cur: LedgerStepLite | undefined = pressed; cur !== undefined && !chain.has(cur.id);
+    cur = cur.parent === null ? undefined : byId.get(cur.parent)) {
+    chain.add(cur.id);
+  }
+
+  /*
+   * A chain that holds ANY translation is ok as pressed — the ledger is a tree,
+   * and a sibling branch's translation (an abandoned second language, say) is
+   * not something this press left out; the press stands on a translated line.
+   * Only a chain with NONE, in a ledger with SOME, is the parked-upstream shape.
+   */
+  if (steps.some((s) => s.action === 'translate' && chain.has(s.id))) return { kind: 'ok' };
+  const leftOut = steps.filter((s) => s.action === 'translate');
+  if (leftOut.length === 0) return { kind: 'ok' };
+  /*
+   * The languages, deduplicated in ledger order, absent ones dropped: a
+   * translate step that did not record one has nothing sayable, and the check
+   * still refuses — it is the STEP being left out that matters, not our ability
+   * to name its language.
+   */
+  const languages = [...new Set(
+    leftOut.map((s) => s.language).filter((l): l is string => l !== undefined))];
+  return {
+    kind: 'leaves-out-translations',
+    languages,
+    pressedLabel: pressed.label ?? pressed.action,
+  };
+}
+
 export function resolveNarrationTarget(
   nodeId: string,
   exported: readonly NarrationExport[],
