@@ -44,7 +44,8 @@
  * electron/main.ts). So this dialog is once again about a press on a row of this
  * page, and every run it queues belongs on nobody's tree.
  */
-import { Component, ChangeDetectionStrategy, computed, inject, input, output, signal } from '@angular/core';
+import { Component, ChangeDetectionStrategy, computed, effect, inject, input, output, signal } from '@angular/core';
+import { DecimalPipe } from '@angular/common';
 import { FormsModule } from '@angular/forms';
 import { DesktopSelectComponent, type DesktopSelectItems } from '../../../../creamsicle-desktop';
 import { SettingsService } from '../../../../core/services/settings.service';
@@ -61,6 +62,14 @@ import {
 import { engineCaps, selectableEngines } from '../../../language-learning/models/tts-engine-registry';
 import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
 
+/** A part-finished render already on disk, as main reports it. */
+interface CachedRender {
+  sessionDir: string;
+  language: string;
+  completedSentences: number;
+  totalSentences: number;
+}
+
 /** The basename of a path, for showing WHICH file without the whole path. */
 function fileName(fullPath: string): string {
   const parts = fullPath.replace(/\\/g, '/').split('/');
@@ -71,7 +80,7 @@ function fileName(fullPath: string): string {
   selector: 'app-narration-modal',
   standalone: true,
   changeDetection: ChangeDetectionStrategy.OnPush,
-  imports: [FormsModule, DesktopSelectComponent],
+  imports: [DecimalPipe, FormsModule, DesktopSelectComponent],
   template: `
     <div class="nm-backdrop" (click)="onCancel()">
       <div class="nm-modal" (click)="$event.stopPropagation()">
@@ -106,6 +115,40 @@ function fileName(fullPath: string): string {
               <span>Assemble the audiobook</span>
             </label>
           </div>
+
+          <!-- A half-finished render of this book is already on disk. Until this
+               block existed the queue silently resumed it, which is right when
+               it is the same book and wrong when it is not — Owen re-exported an
+               EPUB after new strikes and got the old render's leftovers. The
+               choice is only drawn when there IS one, so the ordinary case gains
+               no question. -->
+          @if (narrate() && cachedRender(); as cached) {
+            <div class="nm-field nm-resume">
+              <label class="nm-label">There is a part-finished narration of this book</label>
+              <p class="nm-hint">
+                {{ cached.completedSentences | number }} of
+                {{ cached.totalSentences | number }} sentences were already rendered.
+              </p>
+              <div class="nm-choices">
+                <button type="button" class="nm-choice"
+                        [class.on]="resumeChoice() === 'resume'"
+                        (click)="resumeChoice.set('resume')">
+                  Carry on from there
+                </button>
+                <button type="button" class="nm-choice"
+                        [class.on]="resumeChoice() === 'fresh'"
+                        (click)="resumeChoice.set('fresh')">
+                  Start over
+                </button>
+              </div>
+              @if (resumeChoice() === 'fresh') {
+                <p class="nm-hint warn">
+                  The rendered sentences are deleted and the book is read again from
+                  the beginning. Choose this when the text has changed.
+                </p>
+              }
+            </div>
+          }
 
           @if (narrate()) {
             <div class="nm-field">
@@ -266,6 +309,11 @@ function fileName(fullPath: string): string {
     .nm-field { margin-top: 14px; display: flex; flex-direction: column; gap: 6px; }
     .nm-label { font-size: 0.78rem; font-weight: 600; }
     .nm-hint { font-size: 0.72rem; color: var(--text-secondary); line-height: 1.4; }
+    /* Start over deletes rendered audio, so it says so in a colour that
+       is not the same grey as every other hint in the dialog. */
+    .nm-hint.warn { color: #f59e0b; }
+    .nm-resume { padding: 10px 12px; border: 1px solid var(--border-subtle, rgba(128,128,128,0.28));
+      border-radius: 8px; background: rgba(128,128,128,0.06); }
     .nm-check { display: flex; align-items: center; gap: 7px; font-size: 0.8rem; cursor: pointer; }
     .nm-choices { display: flex; flex-wrap: wrap; gap: 6px; }
     .nm-choice {
@@ -392,9 +440,44 @@ export class NarrationModalComponent {
   /** The refusal from the last submission, main's or the builder's, verbatim. */
   readonly error = signal<string | null>(null);
 
+  /**
+   * The part-finished render this book already has, or null for the ordinary
+   * case. Looked up when the dialog opens, from main's own
+   * `findResumableProjectSession` — the SAME call the queue step's auto-resume
+   * makes, so what is offered here and what happens there cannot disagree.
+   *
+   * A failure to look it up leaves this null and the dialog silent: the run then
+   * behaves exactly as it did before this block existed, which is the safe way
+   * to be wrong about a question that is only ever an offer.
+   */
+  readonly cachedRender = signal<CachedRender | null>(null);
+
+  /**
+   * Carry on, or start over. Defaults to carrying on — the cached sentences are
+   * hours of GPU, and the case where they are stale is the one the user knows
+   * about and can say so.
+   */
+  readonly resumeChoice = signal<'resume' | 'fresh'>('resume');
+
   constructor() {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
+
+    effect(() => {
+      const dir = this.projectDir();
+      this.cachedRender.set(null);
+      this.resumeChoice.set('resume');
+      if (!dir) return;
+      const bridge = (window as unknown as { electron?: { parallelTts?: {
+        cachedRender?: (d: string, l?: string) => Promise<{ success: boolean; data?: CachedRender | null }>;
+      } } }).electron;
+      const ask = bridge?.parallelTts?.cachedRender;
+      if (!ask) return;
+      void ask(dir, 'en').then((res) => {
+        if (this.projectDir() !== dir) return;   // the dialog moved on
+        this.cachedRender.set(res.success ? (res.data ?? null) : null);
+      }).catch(() => { /* silent: an offer that cannot be made is simply not made */ });
+    });
   }
 
   readonly fileLabel = computed(() => fileName(this.epubPath()));
@@ -530,11 +613,11 @@ export class NarrationModalComponent {
               nSemitones: this.rvcNSemitones(),
             }
           : null,
-        // This dialog never offers Continue, so it never asks the queue to clear
-        // a cached session. Resuming a partial render is the Process page's, and
-        // sending `true` from here would throw away an hour of GPU nobody
-        // mentioned.
-        startFresh: false,
+        // It DOES offer the choice now, but only when there is one to make. With
+        // no cached render this stays false, which is the same thing it always
+        // sent: `true` authorises deleting scratch checkpoints, and sending it
+        // unasked would throw away an hour of GPU nobody mentioned.
+        startFresh: this.cachedRender() !== null && this.resumeChoice() === 'fresh',
       };
 
       const jobs = buildNarrationJobs(book, settings, {

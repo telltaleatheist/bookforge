@@ -8305,6 +8305,54 @@ export async function listResumableSessions(): Promise<Array<{
  * condition that made Orpheus resumes silently restart at 0 while native XTTS worked.
  * Returns null (caller keeps its existing resolution) when there's no usable cache.
  */
+/**
+ * IS THERE A PARTIAL RENDER CACHED UNDER THIS PROJECT, and how far did it get?
+ *
+ * The ONE answer to that question. The queue step's auto-resume (mode 2.5) asks
+ * it to decide, and the narration dialog asks it to OFFER — and those two must
+ * not be able to disagree, or the dialog says "resume 127 sentences" and the
+ * step starts fresh, or worse the reverse.
+ *
+ * The gate is the step's own: a session that failed to read, one that is already
+ * complete, and one with nothing rendered are all "nothing to resume". Language
+ * is matched exactly, and a lone session of any language is taken — the same
+ * fallback the step uses, because a book usually has one.
+ */
+export interface CachedRenderSummary {
+  sessionDir: string;
+  language: string;
+  completedSentences: number;
+  totalSentences: number;
+}
+
+export async function findResumableProjectSession(
+  bfpPath: string,
+  language?: string,
+): Promise<CachedRenderSummary | null> {
+  if (!bfpPath) return null;
+  try {
+    const sessions = await scanProjectSessions(bfpPath);
+    if (!sessions.length) return null;
+    const wanted = (language || '').toLowerCase();
+    const match = sessions.find((s) => s.language.toLowerCase() === wanted)
+      ?? (sessions.length === 1 ? sessions[0] : undefined);
+    if (!match) return null;
+    const check = await checkResumeStatusFromProcessDir(match.sessionDir);
+    if (!check.success || check.complete || (check.completedSentences ?? 0) <= 0) return null;
+    return {
+      sessionDir: match.sessionDir,
+      language: match.language,
+      completedSentences: check.completedSentences ?? 0,
+      totalSentences: check.totalSentences ?? 0,
+    };
+  } catch (err) {
+    getTTSLogger().warn('Cached-render lookup failed', {
+      bfpPath, error: (err as Error)?.message || String(err),
+    });
+    return null;
+  }
+}
+
 async function resolveResumeFromProjectCache(
   bfpPath: string,
   language?: string
@@ -8826,6 +8874,7 @@ export const parallelTtsBridge = {
   // Resume support
   checkResumeStatus,
   checkResumeStatusFast,
+  findResumableProjectSession,
   checkResumeStatusFromProcessDir,
   listResumableSessions,
   resumeParallelConversion,

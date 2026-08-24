@@ -33,8 +33,8 @@ import { onBridgeEvent, waitForBridgeEvent } from '../bridge-events';
 import {
   checkResumeStatusFast,
   checkResumeStatusFromProcessDir,
+  findResumableProjectSession,
   resumeParallelConversion,
-  scanProjectSessions,
   startParallelConversion,
   stopAndCacheParallelConversion,
   cacheSessionToProject,
@@ -291,12 +291,11 @@ export const ttsConversionStep: StepModule = {
     if (!resumeInfo && !explicitFresh && projectDir) {
       // Mode 2.5: a partial session cached under the project for this language.
       try {
-        const sessions = await scanProjectSessions(projectDir);
-        const wanted = (config.language || '').toLowerCase();
-        const match = sessions.find((s) => s.language.toLowerCase() === wanted)
-          ?? (sessions.length === 1 ? sessions[0] : undefined);
-        if (match) {
-          const check = await checkResumeStatusFromProcessDir(match.sessionDir);
+        // The SAME lookup the narration dialog shows the user, so the offer and
+        // the decision cannot disagree — see findResumableProjectSession.
+        const found = await findResumableProjectSession(projectDir, config.language);
+        if (found) {
+          const check = await checkResumeStatusFromProcessDir(found.sessionDir);
           if (check.success && !check.complete && (check.completedSentences ?? 0) > 0) {
             resumeInfo = check as unknown as Record<string, unknown>;
             ctx.report({ metrics: {
@@ -304,7 +303,7 @@ export const ttsConversionStep: StepModule = {
               resumeMissingSentences: check.missingSentences,
             } });
             ttsDecision('INFO', 'TTS resume mode 2.5: resuming the project-cached session', {
-              stepId: ctx.stepId, language: match.language, sessionDir: match.sessionDir,
+              stepId: ctx.stepId, language: found.language, sessionDir: found.sessionDir,
             });
           }
         }

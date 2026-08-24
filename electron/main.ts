@@ -7321,6 +7321,24 @@ function setupIpcHandlers(): void {
     }
   });
 
+  /**
+   * "Is there a half-finished render of this book already, and how far did it
+   * get?" — asked by the narration dialog so it can OFFER the choice the queue
+   * step would otherwise make silently.
+   *
+   * Deliberately the same function the step's auto-resume calls, so the sentence
+   * on screen and the decision behind it cannot come apart.
+   */
+  ipcMain.handle('parallel-tts:cached-render', async (_event, projectDir: string, language?: string) => {
+    try {
+      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
+      const found = await parallelTtsBridge.findResumableProjectSession(projectDir, language);
+      return { success: true, data: found };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Resume support for parallel TTS (detailed check with subprocess)
   ipcMain.handle('parallel-tts:check-resume', async (_event, sessionPath: string) => {
     try {

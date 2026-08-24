@@ -1709,6 +1709,14 @@ export interface ElectronAPI {
     onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string; duration?: number; analytics?: any; wasStopped?: boolean; stopInfo?: { sessionId?: string; sessionDir?: string; processDir?: string; completedSentences?: number; totalSentences?: number; stoppedAt?: string }; sessionId?: string; sessionDir?: string }) => void) => () => void;
     onSessionCreated: (callback: (data: { jobId: string; sessionId: string; sessionDir: string; processDir: string; totalSentences: number; totalChapters: number }) => void) => () => void;
     // Resume support
+    /** A half-finished render cached under this project, or null. The narration
+     *  dialog asks so it can offer Resume vs Start over; the queue step asks the
+     *  same function to decide. */
+    cachedRender: (projectDir: string, language?: string) => Promise<{
+      success: boolean;
+      data?: { sessionDir: string; language: string; completedSentences: number; totalSentences: number } | null;
+      error?: string;
+    }>;
     checkResumeFast: (epubPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     checkResumeFromDir: (processDir: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
     checkResume: (sessionPath: string) => Promise<{ success: boolean; data?: ResumeCheckResult; error?: string }>;
@@ -3425,6 +3433,8 @@ const electronAPI: ElectronAPI = {
       };
     },
     // Resume support
+    cachedRender: (projectDir: string, language?: string) =>
+      ipcRenderer.invoke('parallel-tts:cached-render', projectDir, language),
     checkResumeFast: (epubPath: string) =>
       ipcRenderer.invoke('parallel-tts:check-resume-fast', epubPath),
     checkResumeFromDir: (processDir: string) =>
