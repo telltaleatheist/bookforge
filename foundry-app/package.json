@@ -13,7 +13,7 @@
     "build": "npm run build:electron && npm run build:renderer",
     "typecheck": "tsc -p tsconfig.electron.json --noEmit",
     "start": "npm run electron:dev",
-    "electron:dev": "npm run build:electron && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
+    "electron:dev": "npm run build:electron && node tools/free-port.cjs 4260 && concurrently -k -n ng,electron \"ng serve --port 4260\" \"wait-on http-get://localhost:4260 && electron . --dev\"",
     "electron:prod": "npm run build && electron .",
     "build:engine:win-x64": "bash ../tools/release-build.sh windows-x64",
     "build:engine:mac": "bash ../tools/release-build.sh darwin-arm64",

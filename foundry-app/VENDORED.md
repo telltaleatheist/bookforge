@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **6646153** — *the mint asks who the book is — Wave 47's metadata modal, both doors* |
+| Source sha | **49bbe4a** — *chore(release): 0.9.5 — the number moves so the engine can* |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 6646153 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 49bbe4a app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -586,6 +586,23 @@ moved for electron-builder icons only (new `build/` icons, un-ignored by the
 subtree's own `.gitignore` change) with the lockfile untouched, so `npm ci` had
 nothing to do and was skipped; build clean with the standing budget warning
 (826.87 kB); keepers ALL GREEN.
+
+`49bbe4a` is the same-night catch-up Owen asked for by name ("revendor to the
+latest foundry engine and app versions"), and it is deliberately small: the
+whole `6646153..49bbe4a` delta is TWO commits with ZERO in the engine's `src/`
+(bookforge-mac-2 measured it in the checkout before this copy was taken), so
+nothing about what the app or the engine DOES moved — `5818783` teaches
+`electron:dev` to free its own port first (new `tools/free-port.cjs`, a
+dev-workflow file end users never run), and `49bbe4a` itself is the 0.9.5
+version bump, which lives in the engine's ROOT package.json and therefore
+barely grazes `app/` (one dev-script line). The v0.9.5 GitHub RELEASE is the
+thing this bump exists for and is tracked separately — the engine is a managed
+component off GH releases, and refreshing this subtree does nothing to it, per
+the standing rule at the bottom of this file. Verification: 124/124 blobs
+hash-verified against `49bbe4a:app/` plus `IPC-CHANNELS.md` identical (no
+channel moved); `package.json` moved for the one script line with the lockfile
+untouched, so `npm ci` was skipped; build clean, same standing budget warning;
+keepers ALL GREEN.
 
 The engine question, asked because `src/` moved too (translate `tablecells.ts`
 is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's
