@@ -54,12 +54,16 @@ type Mode = 'pick' | 'follow' | 'full';
           <h2>{{ title() }}</h2>
           <p class="sub">{{ blocks().length }} sections · How would you like to listen?</p>
 
-          <button class="choice" (click)="startFollow(0)">
+          <!-- A library-only mirror serves the text but has no TTS engine. Owen's
+               standing rule: the controls stay, disabled, with the reason said. -->
+          @if (!canRender()) { <p class="blocked">{{ renderBlockedReason() }}</p> }
+
+          <button class="choice" [disabled]="!canRender()" [title]="renderBlockedReason()" (click)="startFollow(0)">
             <span class="ci"><app-icon name="headphones" [size]="24" /></span>
             <span class="ct"><b>Stream &amp; follow along</b><small>Reads aloud as you go, live. Nothing is saved — great for a quick listen.</small></span>
           </button>
 
-          <button class="choice" (click)="startFull(0)">
+          <button class="choice" [disabled]="!canRender()" [title]="renderBlockedReason()" (click)="startFull(0)">
             <span class="ci"><app-icon name="book" [size]="24" /></span>
             <span class="ct"><b>TTS the entire book</b><small>Renders the whole book in the background and saves an audiobook to your Audio tab.</small></span>
           </button>
@@ -81,10 +85,12 @@ type Mode = 'pick' | 'follow' | 'full';
         <!-- ── Segmented mode switch (always visible during playback) ───────── -->
         <div class="seg-bar">
           <div class="seg">
-            <button [class.on]="mode() === 'follow'" (click)="switchMode('follow')">
+            <button [class.on]="mode() === 'follow'" [disabled]="!canRender()"
+                    [title]="renderBlockedReason()" (click)="switchMode('follow')">
               <app-icon name="headphones" [size]="16" /><span>Stream</span>
             </button>
-            <button [class.on]="mode() === 'full'" (click)="switchMode('full')">
+            <button [class.on]="mode() === 'full'" [disabled]="!canRender()"
+                    [title]="renderBlockedReason()" (click)="switchMode('full')">
               <app-icon name="book" [size]="16" /><span>TTS book</span>
             </button>
           </div>
@@ -202,6 +208,7 @@ type Mode = 'pick' | 'follow' | 'full';
       cursor: pointer; font-size: 14px; font-weight: 500; }
     .seg button.on { background: var(--seg-active); box-shadow: 0 1px 4px rgba(0,0,0,0.16); }
     .seg button:active { opacity: .6; }
+    .seg button:disabled { opacity: .45; cursor: not-allowed; }
 
     /* ── Loading / error ── */
     .center { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 60px 16px; color: var(--text-secondary); }
@@ -216,6 +223,8 @@ type Mode = 'pick' | 'follow' | 'full';
     .choice { display: flex; gap: 14px; align-items: center; width: 100%; text-align: left; padding: 16px; margin-bottom: 12px;
       border: 0.5px solid var(--border-subtle); border-radius: 14px; background: var(--bg-surface); color: inherit; cursor: pointer; }
     .choice:active { opacity: .6; }
+    .choice:disabled { opacity: .45; cursor: not-allowed; }
+    .blocked { font-size: 13px; line-height: 1.45; color: var(--text-secondary); margin: 0 0 14px; }
     .choice .ci { display: inline-flex; align-items: center; justify-content: center; width: 44px; height: 44px; flex-shrink: 0;
       border-radius: 12px; background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); }
     .choice .ct { display: flex; flex-direction: column; gap: 3px; }
@@ -326,6 +335,11 @@ export class BookListenComponent implements OnInit, OnDestroy {
 
   readonly speeds = [1, 1.25, 1.5, 1.75, 2, 2.25, 2.5, 2.75];
 
+  /** Both modes need the server's TTS engine. A library-only mirror has none, so
+   *  the choices and the segmented switch are shown DISABLED with the reason. */
+  readonly canRender = computed(() => this.cfg.supports('render'));
+  readonly renderBlockedReason = computed(() => this.cfg.unsupportedReason('render'));
+
   readonly activeId = computed(() =>
     this.mode() === 'full'
       ? (this.blocks()[this.rp.blockIndex()]?.id ?? null)
@@ -355,6 +369,10 @@ export class BookListenComponent implements OnInit, OnDestroy {
     this.projectId = this.route.snapshot.paramMap.get('id') || '';
     const token = this.reader.token();
     if (!token) { this.loadError.set('Sign in as a reader to listen.'); this.loading.set(false); return; }
+    // Every call below is part of the `render` capability. On a library-only
+    // mirror they answer 501, which would surface as "server error 501" — say
+    // what is actually true instead, and make no request.
+    if (!this.canRender()) { this.loadError.set(this.renderBlockedReason()); this.loading.set(false); return; }
     // Pre-warm the TTS engine the moment the view opens: the cold start (~1 min
     // worst case) runs while the user is still on the mode picker, so tapping
     // play usually hits a warm engine and audio starts in seconds.

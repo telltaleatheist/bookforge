@@ -99,8 +99,17 @@ export class ServerGateComponent {
       // Name = what the user typed, else the server's own reported name (/api/health),
       // else host-derived (addServer falls back to hostLabel when undefined).
       let serverName: string | undefined;
-      try { serverName = (await res.json())?.name; } catch { /* older server / no body */ }
+      let capabilities: string[] | undefined;
+      try {
+        const body = await res.json();
+        serverName = body?.name;
+        // Learn from the probe we already made: a library-only mirror says so
+        // here, and its controls are disabled before its books ever load.
+        if (Array.isArray(body?.capabilities)) capabilities = body.capabilities.map(String);
+      } catch { /* older server / no body */ }
       this.cfg.setBaseUrl(base, accessKey, this.name().trim() || serverName || undefined);
+      const added = this.cfg.activeServer();
+      if (added && capabilities) this.cfg.setCapabilities(added.id, capabilities);
     } catch (e) {
       const msg = e instanceof DOMException && e.name === 'AbortError' ? 'timed out' : (e as Error).message;
       this.error.set(`Couldn't reach that server (${msg}). Is BookForge running and the tailnet up?`);
