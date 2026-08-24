@@ -239,7 +239,10 @@ export type VariantKind = 'ebook' | 'audiobook';
 
 export interface VariantMetadata {
   title?: string;
+  subtitle?: string;
   author?: string;
+  /** Structured authors, when the source declared them — mirrors ProjectMetadata's. */
+  contributors?: Array<{ first: string; last: string }>;
   year?: string;
   language?: string;
   narrator?: string;
@@ -247,6 +250,30 @@ export interface VariantMetadata {
   seriesPosition?: number;
   description?: string;
   coverPath?: string; // library-relative, e.g. "media/cover_ab12.jpg"
+}
+
+/**
+ * WHO A MINTED FILE SAYS IT IS — `ExportLanding.metadata`, in the shape frozen
+ * in Foundry's shared/types.ts at 6646153 (agreed between the two sessions on
+ * 2026-08-24 and amended the same day: `language` is a plain primary subtag —
+ * en, de, … — never a full BCP-47 tag, because every select and engine on this
+ * side keys on the two-letter form).
+ *
+ * ABSENT AS A WHOLE means "minted before the field existed", never "no
+ * metadata" — the same compatibility posture as `FoundryVariantSource.stepId`.
+ * When present, it is the mint's own declaration: the modal's answers for a
+ * user mint, the stored project block for a host mint — EXCEPT `language`,
+ * which always follows the step's own chain, so an auto-export of a German
+ * step says `de` whatever anyone last typed in a form.
+ */
+export interface FoundryMintMetadata {
+  title: string;
+  subtitle?: string;
+  contributors: Array<{ first: string; last: string }>;
+  year?: string;
+  language?: string;
+  /** The basename actually minted on disk, already in the naming convention. */
+  filename: string;
 }
 
 export interface ProjectVariant {

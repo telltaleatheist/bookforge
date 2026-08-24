@@ -22,7 +22,9 @@ import * as manifestService from './manifest-service';
 import { applyMetadata, normalizeAudioToM4b } from './metadata-tools';
 import { normalizeFsPath, toAsciiSlug } from './path-utils';
 import { familyStem } from '../shared/document/book-families';
-import type { FoundryVariantSource, ProjectVariant } from './manifest-types';
+import type {
+  FoundryMintMetadata, FoundryVariantSource, ProjectVariant, VariantMetadata,
+} from './manifest-types';
 
 /** Progress sink for long transcodes. In the app this forwards to the renderer's
  *  `import:progress` channel; in the CLI it prints. Never affects the outcome. */
@@ -589,6 +591,45 @@ export function sameFoundryExportFile(a: string, b: string): boolean {
 }
 
 /**
+ * A VARIANT'S METADATA FROM THE MINT'S OWN DECLARATION — the six declared facts
+ * rebuilt, everything else kept.
+ *
+ * REBUILT, not merged: the mint block is a complete statement of who the book
+ * is, so a re-export whose mint dropped the subtitle CLEARS the subtitle — a
+ * kept one would describe a title the file no longer carries. What survives
+ * from `kept` is exactly what the mint does not speak about: narrator, series,
+ * description, and the cover (the mint has no cover until Foundry's cover wave;
+ * their `MintMeta.coverPath` is deliberately not in the landing block yet).
+ *
+ * The combined author string is the metadata editor's own rule
+ * (`syncAuthorToFormData`, metadata-editor.component.ts): display order,
+ * "First Last, First Last" — the FILE-AS inversion belongs to filenames alone.
+ */
+function variantMetadataFromMint(
+  mint: FoundryMintMetadata,
+  kept: VariantMetadata,
+): VariantMetadata {
+  const author = mint.contributors
+    .map((a) => [a.first, a.last].filter(Boolean).join(' '))
+    .filter(Boolean)
+    .join(', ');
+  return {
+    ...(kept.narrator !== undefined ? { narrator: kept.narrator } : {}),
+    ...(kept.series !== undefined ? { series: kept.series } : {}),
+    ...(kept.seriesPosition !== undefined ? { seriesPosition: kept.seriesPosition } : {}),
+    ...(kept.description !== undefined ? { description: kept.description } : {}),
+    ...(kept.coverPath !== undefined ? { coverPath: kept.coverPath } : {}),
+    title: mint.title,
+    ...(mint.subtitle !== undefined ? { subtitle: mint.subtitle } : {}),
+    ...(author !== '' ? { author } : {}),
+    ...(mint.contributors.length > 0
+      ? { contributors: mint.contributors.map((c) => ({ ...c })) } : {}),
+    ...(mint.year !== undefined ? { year: mint.year } : {}),
+    ...(mint.language !== undefined ? { language: mint.language } : {}),
+  };
+}
+
+/**
  * Land a file Foundry exported as a VERSION of this book, in `output/`.
  *
  * Owen, 2026-08-17: "I think exports should go to the project as a version" —
@@ -660,6 +701,16 @@ export async function addFoundryOutputVariant(
     stepId?: string;
   },
   landingTitle: string,
+  /**
+   * WHO THE MINTED FILE SAYS IT IS — `ExportLanding.metadata`, when the landing
+   * carried one (foundry@6646153, the mint-metadata modal). Present, the
+   * version records the MINT'S declaration — its own title, authors, year and
+   * language — instead of inheriting the project's; the incident this closes
+   * had a German file wearing an English project's name. Absent means "minted
+   * before the field existed" (or a swept file, which has no announcement), and
+   * the version inherits the project's metadata exactly as it always did.
+   */
+  mint?: FoundryMintMetadata,
 ): Promise<{ success: boolean; variantId?: string; replaced?: boolean; error?: string }> {
   try {
     const projectDir = manifestService.getProjectPath(projectId);
@@ -689,6 +740,12 @@ export async function addFoundryOutputVariant(
               // it — a stale hash is what makes a later duplicate guard answer
               // about bytes that are no longer there.
               sourceFileHash: hash,
+              // And so must the declaration, when the landing carries one: the
+              // mint's metadata describes the NEW bytes. A landing without the
+              // block keeps the row's metadata, exactly as every re-export did
+              // before the field existed.
+              ...(mint === undefined
+                ? {} : { metadata: variantMetadataFromMint(mint, v.metadata) }),
               foundrySource: {
                 projectKey: provenance.projectKey,
                 fileName: provenance.fileName,
@@ -724,10 +781,18 @@ export async function addFoundryOutputVariant(
     const ext = path.extname(provenance.fileName).toLowerCase();
     const outputDir = path.join(projectDir, 'output');
     await fs.mkdir(outputDir, { recursive: true });
+    // A landing that declares itself is FILED UNDER ITS OWN NAME: the mint
+    // already spelled it by the naming convention (shared/mint-meta.ts mirrors
+    // this side's computeDescriptiveFilename), so renaming it to the PROJECT's
+    // descriptive name would put the project's title on a file that just said
+    // whose it is — the exact substitution the mint modal exists to end. The
+    // undeclared landing keeps the project-named rename it always had.
     const descriptiveName = uniqueArchiveName(
       outputDir,
-      manifestService.computeDescriptiveFilename(
-        { title: m.title, author: m.author, year: m.year ? String(m.year) : undefined }, ext),
+      mint !== undefined
+        ? path.basename(mint.filename)
+        : manifestService.computeDescriptiveFilename(
+          { title: m.title, author: m.author, year: m.year ? String(m.year) : undefined }, ext),
     );
     const dest = path.join(outputDir, descriptiveName);
     await manifestService.atomicCopyFile(filePath, dest);
@@ -738,10 +803,16 @@ export async function addFoundryOutputVariant(
       format: ext.replace('.', ''),
       path: `output/${descriptiveName}`,
       descriptor: landingTitle,
-      metadata: {
-        title: m.title, author: m.author, year: m.year ? String(m.year) : undefined,
-        language: m.language, coverPath: m.coverPath,
-      },
+      // The mint's declaration when the landing carries one — its own title,
+      // authors, year, LANGUAGE — with the project's cover carried in (the
+      // mint has none until Foundry's cover wave). Without one, the project's
+      // metadata names the version, the rule addVariant's audio branch states.
+      metadata: mint !== undefined
+        ? variantMetadataFromMint(mint, { coverPath: m.coverPath })
+        : {
+            title: m.title, author: m.author, year: m.year ? String(m.year) : undefined,
+            language: m.language, coverPath: m.coverPath,
+          },
       sourceFileHash: hash,
       addedAt: landedAt,
       foundrySource: {

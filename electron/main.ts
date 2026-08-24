@@ -40,7 +40,9 @@ import { normalizeFsPath, toAsciiSlug } from './path-utils';
 // Type-only: the module itself is loaded lazily like every other epub-processor
 // use here, so importing its types costs nothing at runtime.
 import type { EpubPreservingEdits } from './epub-processor.js';
-import type { ExportProvenance, ProjectVariant, ResolvedProjectVariant } from './manifest-types';
+import type {
+  ExportProvenance, FoundryMintMetadata, ProjectVariant, ResolvedProjectVariant,
+} from './manifest-types';
 import type { WorkingCopyRemint } from '../shared/document/working-copy-remint';
 // The listing-shaped half of the family rules: one chain is an answer, anything
 // else is null, and it never throws. Everything that ACTS on a book goes through
@@ -201,6 +203,14 @@ interface FoundryExportLanding {
    * before the field existed has none.
    */
   readonly stepId?: string;
+  /**
+   * WHO THE MINTED FILE SAYS IT IS — added at foundry@6646153 (Wave 47), the
+   * mint-metadata modal's declaration, carried so the version this landing
+   * becomes can record the book's own facts instead of inheriting the
+   * project's. Shape and posture in {@link FoundryMintMetadata}; absent means
+   * "minted before the field existed", never "no metadata".
+   */
+  readonly metadata?: FoundryMintMetadata;
 }
 
 /**
@@ -1122,7 +1132,8 @@ async function registerFoundryExportLanding(
   // NOW, because Foundry has just this instant told us the file exists. The
   // sweep is the caller that knows better than now(); this one does not.
   const variantId = await fileFoundryExportAsVersion(
-    bookDir, key, landing.path, landing.title, new Date().toISOString(), landing.stepId);
+    bookDir, key, landing.path, landing.title, new Date().toISOString(), landing.stepId,
+    landing.metadata);
   if (variantId === null) {
     throw new Error(
       `"${landing.title}" could not be recorded as a version of ${path.basename(bookDir)}; the `

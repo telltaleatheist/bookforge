@@ -192,6 +192,84 @@ test('the landing records where it came from', run(async (p) => {
   assert.ok(!isNaN(+new Date(v.foundrySource.landedAt)), 'landedAt is a real timestamp');
 }));
 
+// ── The mint's declaration (ExportLanding.metadata, foundry@6646153) ────────
+
+/** A mint block the way Wave 47's modal announces one. */
+const MINT = {
+  title: 'Protestant Church Leadership and Hitler',
+  subtitle: 'The Chancellor Reception',
+  contributors: [{ first: 'Martin', last: 'Niemoller' }, { first: 'Jane', last: 'Doe' }],
+  year: '2022',
+  language: 'en',
+  filename: 'Protestant Church Leadership and Hitler - The Chancellor Reception. Niemoller, Martin and Doe, Jane. (2022).epub',
+};
+
+test("a landing that declares itself is the mint's book, under the mint's own name", run(async (p) => {
+  const src = p.exportFile('evangelische kirche (en).epub', 'ENGLISH BYTES');
+  const res = await actions.addFoundryOutputVariant(
+    PROJECT_ID, src,
+    { projectKey: KEY, fileName: path.basename(src), parentVariantId: null,
+      landedAt: new Date().toISOString(), stepId: 'step-en' },
+    'evangelische kirche (en).epub', MINT);
+  assert.ok(res.success, res.error);
+
+  const v = p.variants().find((x) => x.id === res.variantId);
+  assert.strictEqual(path.basename(v.path), MINT.filename,
+    "filed under the minted name, not renamed to the project's — the mint already said whose it is");
+  assert.strictEqual(v.metadata.title, MINT.title);
+  assert.strictEqual(v.metadata.subtitle, MINT.subtitle);
+  assert.strictEqual(v.metadata.author, 'Martin Niemoller, Jane Doe',
+    'the combined string is the metadata editor\'s display rule, never the file-as inversion');
+  assert.deepStrictEqual(v.metadata.contributors, MINT.contributors);
+  assert.strictEqual(v.metadata.year, '2022');
+  assert.strictEqual(v.metadata.language, 'en',
+    'the language is the MINT\'s declaration — the field the German-for-English incident was about');
+  assert.strictEqual(v.foundrySource.stepId, 'step-en');
+}));
+
+test('a re-export with a declaration refreshes the declared facts and keeps the rest', run(async (p) => {
+  const src = p.exportFile('evangelische kirche (en).epub', 'FIRST');
+  const first = await actions.addFoundryOutputVariant(
+    PROJECT_ID, src,
+    { projectKey: KEY, fileName: path.basename(src), parentVariantId: null,
+      landedAt: new Date().toISOString() },
+    'evangelische kirche (en).epub', MINT);
+  assert.ok(first.success, first.error);
+
+  // The user re-exports with a corrected mint: the subtitle dropped, the
+  // language corrected. The row survives; the declaration follows the bytes.
+  fs.writeFileSync(src, 'SECOND');
+  const second = await actions.addFoundryOutputVariant(
+    PROJECT_ID, src,
+    { projectKey: KEY, fileName: path.basename(src), parentVariantId: null,
+      landedAt: new Date().toISOString() },
+    'evangelische kirche (en).epub',
+    { ...MINT, subtitle: undefined, language: 'de' });
+  assert.ok(second.success, second.error);
+  assert.strictEqual(second.variantId, first.variantId, 'same row — re-export replaces in place');
+  assert.strictEqual(second.replaced, true);
+
+  const v = p.variants().find((x) => x.id === first.variantId);
+  assert.strictEqual(v.metadata.subtitle, undefined,
+    'a mint that dropped the subtitle CLEARS it — the block is a complete declaration');
+  assert.strictEqual(v.metadata.language, 'de');
+  assert.strictEqual(v.metadata.title, MINT.title);
+  assert.strictEqual(v.descriptor, 'evangelische kirche (en).epub',
+    'the descriptor stays the user\'s, exactly as any re-export leaves it');
+}));
+
+test('a landing without the block inherits the project, exactly as before', run(async (p) => {
+  const src = p.exportFile('Test Book.epub', 'UNDECLARED');
+  const res = await land(p, src);
+  const v = p.variants().find((x) => x.id === res.variantId);
+  assert.strictEqual(v.metadata.title, 'Test Book');
+  assert.strictEqual(v.metadata.author, 'A Author');
+  assert.strictEqual(v.metadata.subtitle, undefined);
+  assert.strictEqual(v.metadata.contributors, undefined);
+  assert.ok(path.basename(v.path).startsWith('Test Book.'),
+    'and it keeps the project-named rename it always had');
+}));
+
 test('an export never becomes the book identity, and never marks itself', run(async (p) => {
   const src = p.exportFile('Test Book.epub', 'X');
   await land(p, src);

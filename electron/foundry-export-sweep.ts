@@ -50,6 +50,7 @@ import type { Dirent } from 'fs';
 
 import * as manifestService from './manifest-service';
 import { addFoundryOutputVariant, sameFoundryExportFile } from './library-actions';
+import type { FoundryMintMetadata } from './manifest-types';
 
 /**
  * THE KINDS THE VERSIONS PAGE HOLDS — the single list, read twice.
@@ -140,6 +141,7 @@ export function fileFoundryExportAsVersion(
   title: string,
   landedAt: string,
   stepId?: string,
+  metadata?: FoundryMintMetadata,
 ): Promise<string | null> {
   /*
    * The lane is per (book, file), matched the way the re-export branch matches:
@@ -153,7 +155,7 @@ export function fileFoundryExportAsVersion(
   const lane = `${bookDir}|${projectKey}|${path.basename(filePath).toLowerCase()}`;
   const ahead = filingLanes.get(lane);
   const mine = (ahead === undefined ? Promise.resolve() : ahead.then(() => undefined, () => undefined))
-    .then(() => fileOneFoundryExport(bookDir, projectKey, filePath, title, landedAt, stepId));
+    .then(() => fileOneFoundryExport(bookDir, projectKey, filePath, title, landedAt, stepId, metadata));
   filingLanes.set(lane, mine);
   // Cleared only by the call that is still the last one in the lane, so a
   // landing queued behind this one is never orphaned by this one finishing.
@@ -170,6 +172,13 @@ async function fileOneFoundryExport(
   title: string,
   landedAt: string,
   stepId: string | undefined,
+  /**
+   * The mint's declaration of who the book is, when the landing carried one.
+   * The sweep never passes it — a directory does not say who a book is any more
+   * than it says which step cast it — so a swept file's version inherits the
+   * project's metadata exactly as every landing did before the field existed.
+   */
+  metadata: FoundryMintMetadata | undefined,
 ): Promise<string | null> {
   // WHICH VERSION this export derives from, from the mapping the import wrote.
   // Read here rather than remembered: the user can re-import a different version
@@ -202,6 +211,7 @@ async function fileOneFoundryExport(
       ...(stepId === undefined ? {} : { stepId }),
     },
     title,
+    metadata,
   );
   if (!landed.success) {
     console.error(

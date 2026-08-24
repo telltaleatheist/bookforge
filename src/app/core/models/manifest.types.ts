@@ -156,7 +156,10 @@ export type VariantKind = 'ebook' | 'audiobook';
 
 export interface VariantMetadata {
   title?: string;
+  subtitle?: string;
   author?: string;
+  /** Structured authors, when the source declared them — mirrors ProjectMetadata's. */
+  contributors?: Array<{ first: string; last: string }>;
   year?: string;
   language?: string;
   narrator?: string;
