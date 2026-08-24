@@ -58,7 +58,7 @@ import {
   writePdfMetadata,
 } from './engine';
 import { catalogForThisMachine, onEnvInstallProgress } from './env-install';
-import { hosted } from './host';
+import { hosted, hostMintMeta } from './host';
 import {
   actOnHostNode, hostNodesFor, hostOffers, hostOpensStatus, hostStatus,
   invokeHostOperation, openHostStatus,
@@ -1680,6 +1680,15 @@ export function registerIpc(): void {
    */
   ipcMain.handle('meta:mint-stamp', (_event, filePath: string, meta: MintMeta) =>
     stampMintMetadata(exportedBook(filePath), meta, undefined));
+  /*
+   * The HOST's answer for who this book is — the hosted modal's seed (Owen:
+   * "it should inherit the parent document's metadata. ill fill out whatever
+   * is missing"). Null standalone and null on any host failure; the DIALOG
+   * merges, because the precedence (stored block wins per-field, host fills
+   * the gaps, the position feeds the language) reads two other facts only the
+   * renderer holds.
+   */
+  ipcMain.handle('meta:mint-host', (_event, projectDir: string) => hostMintMeta(projectDir));
 
   // ── The step ledger ──────────────────────────────────────────────────────
   /*

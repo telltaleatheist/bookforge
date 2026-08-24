@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **99a7606** — *chore(release): 0.9.6 — the number moves so the narration can* |
+| Source sha | **c403ee5** — *feat(app): a hosted mint inherits the parent document's metadata* |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 99a7606 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive c403ee5 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -625,6 +625,26 @@ clean-for-TTS but linkless book. Verification: 124/124 blobs against
 `99a7606:app/`, `IPC-CHANNELS.md` identical (no channel moved), two files
 moved (`materialize.ts`, `book.ts`), lockfile untouched so `npm ci` skipped;
 build clean; keepers ALL GREEN.
+
+`c403ee5` is the mint modal's INHERITANCE, taken the same night it was ruled
+(Owen: "when i generate an epub in bookforge foundry, it should inherit the
+parent document's metadata. ill fill out whatever is missing"): the mount seam
+grows optional `FoundryHost.mintMetaFor(projectDir) → Promise<HostMintMeta |
+null>` — the shape frozen between the two sessions that day (`title?`,
+`contributors? [{first,last}]`, `year?`, `language?` plain subtag, `coverPath?`
+absolute; no subtitle, no publisher, argued in their docblock) — and the mint
+dialog merges with Foundry's STORED block winning per-field, the host's answer
+filling every gap, and the position still feeding the language select. A throw
+from the host resolver is swallowed to null with a console line. BookForge's
+half landed FIRST (8d76baf8, `foundryMintMetaFor` in main.ts answering from
+the manifest: recorded contributors win, else the author string read as one
+name under the comma law, "Unknown" answers nothing, cover as an absolute
+existence-checked path), so the pair goes live at the next app launch with no
+further wiring. One new channel — `meta:mint-host` — doc regenerated in their
+same commit (91 handles, 91 rows); no `meta:` name on our side, keeper 6/6.
+Verification: 124/124 blobs against `c403ee5:app/`, `IPC-CHANNELS.md`
+identical to `c403ee5:docs/`, lockfile untouched so `npm ci` skipped; build
+clean; keepers ALL GREEN.
 
 The engine question, asked because `src/` moved too (translate `tablecells.ts`
 is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's

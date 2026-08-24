@@ -24,7 +24,7 @@ import type {
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
 // of `app-settings.ts`. `import type` is erased, so the leaf stays a leaf.
-import type { HostNodeAction } from '../shared/host-ops';
+import type { HostMintMeta, HostNodeAction } from '../shared/host-ops';
 import type { HostOperation } from './host-ops';
 
 /**
@@ -252,6 +252,19 @@ export interface FoundryHost {
    * things Foundry offers back.
    */
   hostQueue?: FoundryHostQueue;
+  /**
+   * WHO THE HOST SAYS A BOOK IS — the mint modal's seed, for a hosted project
+   * whose parent document already has a record (Owen's inheritance ruling,
+   * 2026-08-24; `HostMintMeta`, shared/host-ops.ts, carries it and the
+   * precedence). OPTIONAL on `onImport`'s rule: a host may keep no metadata
+   * worth seeding, and its absence is simply today's blank-first-mint.
+   *
+   * Null means "no answer" — an unclaimed project, an unreadable manifest —
+   * and a THROW is read as null where it is called (`hostMintMeta`, below):
+   * this is a seed for a form somebody is about to type over, and a host's
+   * mistake must not keep the modal from opening.
+   */
+  mintMetaFor?(projectDir: string): Promise<HostMintMeta | null>;
 }
 
 let host: FoundryHost | null = null;
@@ -273,4 +286,23 @@ export function hosted(): boolean {
 /** The host's library root, or null when Foundry is answering for itself. */
 export function hostedLibraryDir(): string | null {
   return host === null ? null : host.libraryDir;
+}
+
+/**
+ * The host's answer for who this book is, or null — standalone, no callback
+ * registered, the host answered null, or the host threw. The swallow is the
+ * announcement posture (`onExport`'s), not the button posture: a seed the
+ * modal cannot get is a blank form, which is exactly what the modal was
+ * before this seam existed.
+ */
+export async function hostMintMeta(projectDir: string): Promise<HostMintMeta | null> {
+  if (host?.mintMetaFor === undefined) return null;
+  try {
+    return await host.mintMetaFor(projectDir);
+  } catch (err) {
+    console.error(
+      `[host] mintMetaFor threw for ${projectDir}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return null;
+  }
 }

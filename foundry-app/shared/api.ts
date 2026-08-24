@@ -8,7 +8,7 @@
  * renderer's `window.foundry` is typed as it.
  */
 import type { BookOutcome } from './book';
-import type { HostNodeAction, HostOffers, HostStatus } from './host-ops';
+import type { HostMintMeta, HostNodeAction, HostOffers, HostStatus } from './host-ops';
 import type { ReadAsk } from './ledger';
 import type { BookOp, PendingOutcome, PendingStack } from './ops';
 import type { ReReadPrompt } from './reread';
@@ -326,6 +326,12 @@ export interface FoundryApi {
      * a side file and one rename, never a recast.
      */
     stampMint(filePath: string, meta: MintMeta): Promise<MetadataOutcome>;
+    /**
+     * The HOST's record of who this book is, or null — the hosted modal's
+     * seed (`HostMintMeta`, shared/host-ops.ts). The stored block wins
+     * per-field over this; the position still feeds the language.
+     */
+    hostSeed(projectDir: string): Promise<HostMintMeta | null>;
   };
 
   /**

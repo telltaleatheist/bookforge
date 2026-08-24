@@ -129,6 +129,12 @@ export { hostedLibraryDir } from './host';
  */
 export { setHostNodes } from './host-ops';
 /*
+ * THE MINT SEED'S SHAPE, through the seam a host imports — what
+ * `FoundryHost.mintMetaFor` answers with (Owen's inheritance ruling,
+ * 2026-08-24; the shape and the precedence are argued where it is declared).
+ */
+export type { HostMintMeta } from '../shared/host-ops';
+/*
  * AND THE CHIP IN THE CHROME, which is the socket's second push door.
  * `setHostNodes` says what the host is making OF A PARTICULAR BOOK and lands on
  * that book's tree; this says what the host is doing AT ALL and lands in the

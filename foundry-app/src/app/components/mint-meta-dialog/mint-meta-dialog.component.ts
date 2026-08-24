@@ -403,19 +403,34 @@ export class MintMetaDialogComponent {
     if (!api) return;
     try {
       const stored = await api.meta.readMint(ask.projectDir);
+      /*
+       * THE HOST'S RECORD, MERGED UNDERNEATH — Owen's inheritance ruling
+       * (2026-08-24): *"when i generate an epub in bookforge foundry, it
+       * should inherit the parent document's metadata. ill fill out whatever
+       * is missing."* Hosted, the book this project was claimed from already
+       * has a manifest that knows who it is; the STORED block still wins
+       * PER-FIELD, because it is what the person last confirmed on this very
+       * project, and the host answers only the gaps — which on a first
+       * hosted mint is all of them. Standalone the call answers null and
+       * nothing changes.
+       */
+      const host = await api.meta.hostSeed(ask.projectDir).catch(() => null);
       let planLanguage: string | undefined;
       if (ask.mode === 'mint') {
         this.plan = await api.workspace.planExport(ask.inputPath, 'epub');
         planLanguage = this.plan.language ?? undefined;
       }
-      if (stored !== null) {
-        this.title.set(stored.title);
-        this.subtitle.set(stored.subtitle ?? '');
-        this.authors.set(stored.contributors.length > 0
-          ? stored.contributors.map((one) => ({ ...one }))
+      if (stored !== null || host !== null) {
+        const contributors = (stored?.contributors.length ?? 0) > 0
+          ? stored!.contributors
+          : host?.contributors ?? [];
+        this.title.set(stored?.title || host?.title || '');
+        this.subtitle.set(stored?.subtitle ?? '');
+        this.authors.set(contributors.length > 0
+          ? contributors.map((one) => ({ ...one }))
           : [{ first: '', last: '' }]);
-        this.year.set(stored.year ?? '');
-        this.language.set(planLanguage ?? stored.language ?? 'en');
+        this.year.set(stored?.year ?? host?.year ?? '');
+        this.language.set(planLanguage ?? stored?.language ?? host?.language ?? 'en');
         return;
       }
       /*

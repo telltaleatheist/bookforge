@@ -2,10 +2,11 @@
 
 Every channel name this app owns, enumerated from `app/electron` rather than
 from memory, regenerated on 2026-08-24 for **Wave 47's mint metadata** —
-`meta:mint-read`, `meta:mint-write` and `meta:mint-stamp`, the per-project
-block the mint modal edits and the in-place stamp its Save performs — in the
-same commit that adds the handlers, which is now the standing rule below.
-Counted by script: **90 `ipcMain.handle` call sites, 90 distinct channel
+`meta:mint-read`, `meta:mint-write`, `meta:mint-stamp` and (2026-08-24, the
+inheritance ruling) `meta:mint-host` — the per-project block the mint modal
+edits, the in-place stamp its Save performs, and the host's seed underneath —
+each in the same commit as its handler, which is the standing rule below.
+Counted by script: **91 `ipcMain.handle` call sites, 91 distinct channel
 names, zero `ipcMain.on`** in `app/electron/ipc.ts`.
 
 Before that, regenerated on 2026-08-23 for **Wave 46, which adds two doors** —
@@ -389,6 +390,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
+| `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone and on any host failure. |
 | `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |
 | `meta:mint-stamp` | The whole block onto ONE finished export, in place — the metadata tile's Save over an EPUB. Tray-gated like the flat writer. |
 | `meta:mint-write` | Replace that block — what the mint modal saves, and what the next mint pre-fills from. |

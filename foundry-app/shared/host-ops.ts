@@ -491,3 +491,39 @@ export function exportNodeId(file: string): string {
 export function exportOfNodeId(nodeId: string): string | null {
   return nodeId.startsWith('export:') ? nodeId.slice('export:'.length) : null;
 }
+
+/**
+ * WHAT THE HOST KNOWS ABOUT WHO A BOOK IS — the seed a hosted mint modal
+ * opens with, answered by `FoundryHost.mintMetaFor`.
+ *
+ * ── The ruling (Owen, 2026-08-24) ──────────────────────────────────────────
+ *
+ * *"when i generate an epub in bookforge foundry, it should inherit the
+ * parent document's metadata. ill fill out whatever is missing."* Hosted, the
+ * BOOK the project was claimed from already has a manifest that knows its
+ * title and author; a first mint that opened blank while that record sat one
+ * process over would be the modal asking a person to retype what the shelf
+ * already says.
+ *
+ * ── The precedence, which is not this shape's business but is stated here ──
+ *
+ * Foundry's STORED block wins PER-FIELD — it is what the person last
+ * confirmed on this very project; this answer fills every field the stored
+ * block does not cover, which on a first hosted mint is all of them; and the
+ * mint's LANGUAGE keeps the step-chain rule at the settle regardless of what
+ * anybody seeded. Every field optional, because a host answers what its
+ * record holds and invents nothing. No `subtitle` — Owen's "ill fill out
+ * whatever is missing" names exactly the fields a project record does not
+ * keep. No `publisher` — the modal has no field for it, and a contract field
+ * nothing consumes is the lands-and-nobody-reads trap; add both together or
+ * not at all. `language` is the plain primary subtag, as everywhere on this
+ * seam. `coverPath` is accepted and stored against the day the cover wave
+ * lands (docs/PLAN.md).
+ */
+export interface HostMintMeta {
+  title?: string;
+  contributors?: { first: string; last: string }[];
+  year?: string;
+  language?: string;
+  coverPath?: string;
+}
