@@ -376,7 +376,7 @@ export async function sweepFoundryExportTrays(
        * ahead of, not instead of, the on-loan case.
        */
       landed: manifestService.getVariants(manifest).variants
-        .map((v) => v.foundrySource ?? v.promotedFrom)
+        .map((v) => manifestService.foundryProvenanceOf(v))
         .filter((src): src is NonNullable<typeof src> => !!src)
         .map((src) => ({ projectKey: src.projectKey, fileName: src.fileName })),
     };

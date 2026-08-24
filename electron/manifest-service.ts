@@ -27,6 +27,7 @@ import type {
   ArchiveEntry,
   ProjectVariant,
   VariantMetadata,
+  FoundryVariantSource,
   NarrationFlags,
   TtsTarget,
   FoundryProjectRef,
@@ -779,6 +780,28 @@ export function effectiveAudiobookMetadata(m: ManifestMetadata): {
  * projects without a destructive migration. The derived/folded set is persisted
  * only when the caller next mutates (they reassign `mf.variants = cur.variants`).
  */
+/**
+ * THE ONE READER OF "DID FOUNDRY MAKE THIS FILE" — both spellings, one door.
+ *
+ * `foundrySource` is an export on loan; `promotedFrom` is the SAME record after
+ * the user pressed Keep (promotion MOVES the provenance rather than killing it
+ * — library-actions.ts, promoteVariantToArchive). Three readers each learned
+ * that one at a time, each as an incident: the export sweep re-landed a kept
+ * file into the slot the user had just cleared (2026-08-19), Narrate refused
+ * the very file the user had just kept (2026-08-24, e4f238d8), and the shelf's
+ * Process button either vanished or silently narrated the file the user had
+ * just replaced (same night, 4fea0f96). A fourth reader written against one
+ * field would inherit the same hole by default, so the pair is read HERE and
+ * nowhere else — a new reader that spells `v.foundrySource` by hand is the bug
+ * recurring.
+ *
+ * Undefined means Foundry never wrote this file (the book's own archive copy,
+ * an audiobook, the original) — never "unknown".
+ */
+export function foundryProvenanceOf(v: ProjectVariant): FoundryVariantSource | undefined {
+  return v.foundrySource ?? v.promotedFrom;
+}
+
 export function getVariants(manifest: ProjectManifest): { variants: ProjectVariant[]; primaryVariantId?: string } {
   const m = manifest.metadata;
   const baseMeta = (): VariantMetadata => ({
@@ -5868,19 +5891,19 @@ async function resolveTtsTarget(manifest: ProjectManifest): Promise<TtsTarget | 
     // on every re-export, so "newest" tracks what the user last produced rather
     // than which row was created first.
     //
-    // BOTH SPELLINGS OF THE PROVENANCE, for the third time in this codebase.
+    // BOTH SPELLINGS OF THE PROVENANCE — `foundryProvenanceOf`, the one door.
     // Promotion moves it from `foundrySource` to `promotedFrom` and reading only
     // the first made a KEPT export invisible here: the button vanished on a book
     // that also had its original (`sole-epub` cannot cover for it — a book that
     // has been through Foundry has at least two EPUBs, as the rung's own note
     // says), and with two exports it silently chose the OLDER one, narrating the
     // file the user had just replaced. Same defect as e4f238d8, one resolver
-    // further in; the sweep at foundry-export-sweep.ts:368 reads the same pair.
-    const provenance = (v: ProjectVariant) => v.foundrySource ?? v.promotedFrom;
+    // further in; the incident chain is on the helper.
     const exports = epubs
-      .filter((v) => !!provenance(v))
+      .filter((v) => !!foundryProvenanceOf(v))
       .sort((a, b) =>
-        (provenance(b)!.landedAt || '').localeCompare(provenance(a)!.landedAt || ''));
+        (foundryProvenanceOf(b)!.landedAt || '').localeCompare(
+          foundryProvenanceOf(a)!.landedAt || ''));
     if (exports.length > 0) {
       chosen = exports[0];
       rule = 'newest-export';

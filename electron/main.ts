@@ -1358,7 +1358,7 @@ async function foundryNarrationTarget(
         + 'not be looked at.');
     }
     return manifestService.getVariants(got.manifest).variants.filter((v) =>
-      (v.foundrySource ?? v.promotedFrom)?.projectKey === key
+      manifestService.foundryProvenanceOf(v)?.projectKey === key
       && v.format.toLowerCase() === 'epub');
   };
 
@@ -1376,7 +1376,7 @@ async function foundryNarrationTarget(
   const choice = resolveNarrationTarget(
     nodeId,
     exported.map((v) => {
-      const src = (v.foundrySource ?? v.promotedFrom)!;
+      const src = manifestService.foundryProvenanceOf(v)!;
       return {
         id: v.id,
         fileName: src.fileName,
@@ -1512,7 +1512,7 @@ function narrationTargetOf(bookDir: string, variant: ProjectVariant): FoundryNar
     bookDir,
     variantId: variant.id,
     variantPath: normalizeFsPath(path.join(bookDir, ...variant.path.split('/'))),
-    exportNodeId: `export:${(variant.foundrySource ?? variant.promotedFrom)!.fileName}`,
+    exportNodeId: `export:${manifestService.foundryProvenanceOf(variant)!.fileName}`,
   };
 }
 
