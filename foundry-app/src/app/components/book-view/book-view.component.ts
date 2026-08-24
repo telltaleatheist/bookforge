@@ -1563,7 +1563,18 @@ const OP_GESTURE: Gesture = { kind: 'op' };
 
     .sheet {
       position: relative;
-      width: min(46rem, 92%);
+      /*
+       * THE GRAY IS RESERVED IN REMS, NOT IN PERCENT. The category chip hangs
+       * LEFT of the sheet by its own width plus 0.5rem, and the widest of them
+       * ("Section header", with a selection count after it) needs ~5rem beyond
+       * the sheet's edge. A percentage cap promises a FRACTION of gray, which
+       * at some window width is always less than a chip — Owen has now met
+       * that clip twice, in two different layouts ("ON HEADER", then "ECTION
+       * HEADER" with the original panel up). So the fallback arm is absolute:
+       * whatever the bench's width, the sheet leaves 5rem of gray a side, and
+       * the chip has its room in every mode there is or will be.
+       */
+      width: min(46rem, calc(100% - 10rem));
       margin: 0 auto;
       padding: 4.5rem var(--gutter) 6rem;
       border-radius: 2px;
@@ -1610,8 +1621,12 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * in: each column is half the pair, so 92% of one is 46% of the bench, and the
      * two spellings are the same width. What is left over is bench, on both sides
      * of both sheets, which is the gap between them.
+     *
+     * THE FALLBACK ARM IS ABSOLUTE for the base rule's reason, stated up at
+     * \`.sheet\`: the fraction spelling promised gray that a narrow column does
+     * not have, and the category chip was the thing that paid for it.
      */
-    .pair.aligned .sheet, .pair.aligned .tray { width: min(38rem, 92%); }
+    .pair.aligned .sheet, .pair.aligned .tray { width: min(38rem, calc(100% - 10rem)); }
     /*
      * ── THE ORIGINAL OPEN: paper and scan stand together, centred ────────────
      *

@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **2dfea95** — *feat(app): the join steps over the struck — and sits on the menu where a hand can find it* |
+| Source sha | **5b507fe** — *fix(app): the chip's gray is reserved in rems — a fraction always clips at some width* |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 2dfea95 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 5b507fe app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -675,6 +675,15 @@ right-click menu gains "Join onto the block above" so the gesture is
 discoverable. Two files (`book-view.component.ts`, `flow.ts`), no engine or
 IPC change — engine v0.9.7 stands, `IPC-CHANNELS.md` byte-identical.
 Verification: 124/124 blobs against `2dfea95:app/`, lockfile untouched so
+`npm ci` skipped; build clean; keepers ALL GREEN.
+
+`5b507fe`, taken the same day, is one file: the metadata sheet's category chip
+clipped again in a second layout ("ECTION HEADER" with the original panel
+docked) because the sheet's width caps were fractions (92%) — at some window
+width a fraction always leaves less gray margin than the chip hangs into. The
+caps' fallback arms are now absolute, `calc(100% - 10rem)`, guaranteeing 5rem
+of gray each side in every mode. No engine or IPC change — v0.9.7 stands.
+Verification: 124/124 blobs against `5b507fe:app/`, lockfile untouched so
 `npm ci` skipped; build clean; keepers ALL GREEN.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
