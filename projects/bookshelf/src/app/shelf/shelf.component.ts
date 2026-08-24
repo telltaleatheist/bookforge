@@ -208,6 +208,17 @@ interface BookMenu {
         <span class="pull-spinner" [class.ready]="pullY() >= 70 || refreshing()" [class.spin]="refreshing()"
           [style.transform]="'rotate(' + (pullY() * 3) + 'deg)'">⟳</span>
       </div>
+      @if (refreshFailed().length > 0) {
+        <!-- A refresh that fails must NEVER blank a shelf that was showing books
+             (Owen's ruling, 2026-08-24 — a server OOM mid-play wiped the whole
+             list). The failed server's last-known books stay up, marked by this
+             banner; the ⟳ retries, the ✕ dismisses until the next failure. -->
+        <div class="refresh-warning" role="alert">
+          <span>⚠️ Couldn't reach {{ refreshFailed().join(', ') }} — showing the last known list.</span>
+          <button class="rw-retry" (click)="refresh()" title="Retry">⟳</button>
+          <button class="rw-dismiss" (click)="refreshFailed.set([])" title="Dismiss">✕</button>
+        </div>
+      }
       @if (!cfg.configured() && audiobooks().length === 0 && ebooks().length === 0) {
         <!-- Native app, not yet paired with a library server AND nothing imported
              on-device. The app no longer blocks on a server picker at launch —
@@ -857,6 +868,14 @@ interface BookMenu {
     /* Pull-to-refresh indicator: a top spacer whose height tracks the drag. */
     .pull-refresh { display: flex; align-items: center; justify-content: center; overflow: hidden; height: 0;
       margin: -16px -16px 0; transition: height 0.25s cubic-bezier(0.22,1,0.36,1); }
+
+    /* Stale-list warning: a refresh failed but the books stayed up. */
+    .refresh-warning { display: flex; align-items: center; gap: 10px; padding: 10px 14px; margin-bottom: 14px;
+      border-radius: 12px; font-size: 13px; line-height: 1.4;
+      background: color-mix(in srgb, #e08a00 14%, var(--bg-surface)); border: 0.5px solid color-mix(in srgb, #e08a00 45%, transparent); }
+    .refresh-warning span { flex: 1; }
+    .refresh-warning button { border: 0; background: none; color: inherit; font-size: 15px; cursor: pointer; padding: 2px 6px; }
+    .refresh-warning .rw-dismiss { opacity: 0.6; }
     .pull-refresh.pulling { transition: none; } /* follow the finger 1:1 while dragging */
     .pull-spinner { font-size: 20px; color: var(--text-tertiary); opacity: 0.6; transition: color 0.15s, opacity 0.15s; }
     .pull-spinner.ready { color: var(--accent); opacity: 1; }
@@ -1069,6 +1088,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   readonly loading = signal(false);
   readonly refreshing = signal(false);
   readonly loadError = signal<string | null>(null);
+  /** Labels of servers whose last refresh failed while their previous books were
+   *  kept on the shelf — drives the "showing the last known list" banner. */
+  readonly refreshFailed = signal<string[]>([]);
 
   // Books as fetched, one entry per (server, book) — the same title on two
   // servers appears twice here, and locally-imported books ride along tagged with
@@ -2020,6 +2042,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     if (this.audiobooks().length === 0) this.loading.set(true);
     this.loadError.set(null);
     let anyOk = false;
+    const failed: string[] = [];
     const perServer = await Promise.all(servers.map(async (s) => {
       this.setServerStatus(s.id, 'loading');
       try {
@@ -2033,13 +2056,19 @@ export class ShelfComponent implements OnInit, OnDestroy {
       } catch (err) {
         console.error(`[Shelf] audiobooks from ${s.label} failed`, err);
         this.setServerStatus(s.id, 'offline');
-        return [] as Audiobook[];
+        // Keep the server's last-known books on the shelf instead of vanishing
+        // them — the banner (refreshFailed) says why they might be stale. A tap
+        // on one routes into the player, whose own error state reports a dead
+        // server; a silent empty shelf reports nothing.
+        failed.push(s.label);
+        return this.rawAudiobooks().filter((b) => b.originServerId === s.id);
       }
     }));
     // Raw, per-server results; the shelf's `audiobooks` computed collapses dupes
     // across servers and folds in offline downloads.
     const fresh = perServer.flat();
     this.rawAudiobooks.set(fresh);
+    this.refreshFailed.set(failed);
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
     // Snapshot for the next cold start — but only when at least one server
@@ -2139,6 +2168,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     if (this.ebooks().length === 0) this.loading.set(true);
     this.loadError.set(null);
     let anyOk = false;
+    const failed: string[] = [];
     const perServer = await Promise.all(servers.map(async (s) => {
       this.setServerStatus(s.id, 'loading');
       try {
@@ -2150,10 +2180,13 @@ export class ShelfComponent implements OnInit, OnDestroy {
       } catch (err) {
         console.error(`[Shelf] ebooks from ${s.label} failed`, err);
         this.setServerStatus(s.id, 'offline');
-        return [] as Ebook[];
+        // Same never-blank rule as loadAudiobooks: keep the last-known list.
+        failed.push(s.label);
+        return this.ebooks().filter((b) => b.originServerId === s.id);
       }
     }));
     this.ebooks.set(this.dedupeEbooks(perServer.flat()));
+    this.refreshFailed.set(failed);
     if (servers.length > 0 && !anyOk) this.loadError.set('Could not reach the server. Tap ⟳ to retry.');
     this.loading.set(false);
   }
