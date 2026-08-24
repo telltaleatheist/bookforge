@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **21bef24** — *chore(release): the lockfile's number catches up* (tip of the v0.9.8 chain; carries `c626e8e`, the u<n> id-grammar mirror) |
+| Source sha | **cbc6f4c** — *docs(sweep): the hover context floats* (tip; carries `8d4d9b2`, sweep rows hold still under the pointer) |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 21bef24 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive cbc6f4c app | tar -x --strip-components=1` || tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -699,6 +699,17 @@ paired with the 0.9.8 engine would leave the app-side grammar still refusing
 (21bef24)"); the pending PC adoption becomes 0.9.4 → 0.9.8 in one hop.
 Verification: 124/124 blobs against `21bef24:app/`, one file moved
 (`shared/book.ts`), lockfile untouched so `npm ci` skipped; build clean;
+keepers ALL GREEN.
+
+**cbc6f4c (2026-08-24):** renderer-only — `8d4d9b2` stops the sweep dialog's keep/cut rows
+resizing on hover. The fuller-quotation swap used to grow the hovered row and shove every row
+below it, moving the verdict button out from under the pointer (Owen's ruling). The hover
+context now floats as a fixed-positioned glance at the row's edge (`pointer-events: none`,
+cleared on list scroll); rows never change size. One file:
+`src/app/components/sweep-dialog/sweep-dialog.component.ts`. `cbc6f4c` itself is docs-only
+(SWEEP.md §2.4, outside `app/`). No host-seam or channel change; no engine change (0.9.9
+stands, vendor and engine move independently here). Verified: 124/124 blobs + IPC-CHANNELS.md
+identical, lockfile unmoved, subtree build clean (pre-existing 500 kB budget WARNING only),
 keepers ALL GREEN.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —

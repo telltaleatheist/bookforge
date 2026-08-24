@@ -129,7 +129,12 @@ import {
             The row carries its own name in an attribute and the container reads it
             back off whatever the pointer entered.
           -->
-          <div class="list" (mouseover)="hover($event)" (mouseleave)="hovered.set(null)">
+          <div
+            class="list"
+            (mouseover)="hover($event)"
+            (mouseleave)="hovered.set(null)"
+            (scroll)="hovered.set(null)"
+          >
             @for (found of matches(); track found.key) {
               <div class="row" [class.ghost]="found.struck" [attr.data-key]="found.key">
                 <button
@@ -143,20 +148,14 @@ import {
                   }
                 </button>
 
+                <!-- The row's quotation NEVER changes -- the fuller text floats
+                     in the glance below, so no row grows under the pointer and
+                     no verdict button moves (user ruling, 2026-08-24). -->
                 <p class="quote">
-                  <!-- The widening is for the row the pointer is on and for no
-                       other: one hovered key, one fuller quotation. -->
-                  @if (hovered() === found.key && wide(); as fuller) {
-                    <span class="q-before">{{ fuller.before }}</span><span
-                      class="q-hit"
-                      [class.cut]="!found.struck && !kept().has(found.key)"
-                    >{{ fuller.hit }}</span><span class="q-after">{{ fuller.after }}</span>
-                  } @else {
-                    <span class="q-before">{{ found.quote.before }}</span><span
-                      class="q-hit"
-                      [class.cut]="!found.struck && !kept().has(found.key)"
-                    >{{ found.quote.hit }}</span><span class="q-after">{{ found.quote.after }}</span>
-                  }
+                  <span class="q-before">{{ found.quote.before }}</span><span
+                    class="q-hit"
+                    [class.cut]="!found.struck && !kept().has(found.key)"
+                  >{{ found.quote.hit }}</span><span class="q-after">{{ found.quote.after }}</span>
                 </p>
 
                 @if (found.struck) {
@@ -176,6 +175,27 @@ import {
               <p class="none">{{ empty() }}</p>
             }
           </div>
+
+          <!-- The surrounding context (SWEEP.md 0's own ask) as a GLANCE: fixed-positioned
+               over the page at the hovered row's edge, pointer-events none, so it
+               occupies no row and moves nothing while a hand aims at a verdict. -->
+          @if (wide(); as fuller) {
+            @if (glanceBox(); as box) {
+              <p
+                class="glance"
+                [class.above]="box.up"
+                [style.top.px]="box.top"
+                [style.left.px]="box.left"
+                [style.width.px]="box.width"
+              >
+                <span class="q-before">{{ fuller.before }}</span><span
+                  class="q-hit"
+                  [class.cut]="glanceTone() === 'cut'"
+                  [class.gone]="glanceTone() === 'gone'"
+                >{{ fuller.hit }}</span><span class="q-after">{{ fuller.after }}</span>
+              </p>
+            }
+          }
 
           <footer class="foot">
             <span class="counts">
@@ -408,6 +428,40 @@ import {
       text-decoration: none;
     }
 
+    /*
+      THE GLANCE TAKES NO ROOM IN THE LIST — Owen's ruling (2026-08-24): "lets
+      make it so the keep/cut lines dont change sizes when i hover. thats very
+      frustrating. the button keeps moving around." The widening used to swap
+      the fuller quotation INTO the row, and a taller row shoves every row
+      after it — so the verdict a hand was travelling toward moved with each
+      row the pointer crossed on the way. The fuller text still shows on hover
+      (SWEEP.md §0 asks for exactly that); it floats HERE instead, fixed to the
+      viewport at the hovered row's edge, pointer-events none so the pointer
+      reads the rows straight through it. 1250 sits over this card's chrome
+      and under the confirmation's 1300, the same ordering the host declares.
+      Positioned by \`hover\` off the row's own rect; the list's scroll clears
+      it rather than letting it drift from the row it quotes.
+    */
+    .glance {
+      position: fixed;
+      z-index: 1250;
+      pointer-events: none;
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px; line-height: 1.55;
+      color: var(--text-secondary);
+      background: var(--bg-elevated);
+      border: 1px solid var(--border-strong);
+      border-radius: var(--radius-sm);
+      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    }
+    .glance.above { transform: translateY(-100%); }
+    .glance .q-hit.gone {
+      background: var(--bg-active);
+      color: var(--text-secondary);
+      text-decoration: none;
+    }
+
     .verdict {
       justify-self: end;
       height: 22px; min-width: 52px; padding: 0 8px;
@@ -627,6 +681,29 @@ export class SweepDialogComponent {
     return found === undefined ? null : widen(this.rows(), found);
   });
 
+  /**
+   * WHERE THE GLANCE STANDS — the hovered row's own rect, measured by `hover`.
+   * Viewport coordinates, because the glance is `position: fixed` and the host
+   * carries no transform to re-anchor it. `up` flips it above the row when the
+   * row sits low enough that a card below it would run off the screen.
+   */
+  protected readonly glanceBox =
+    signal<{ top: number; left: number; width: number; up: boolean } | null>(null);
+
+  /**
+   * The ink the glance's span wears — the SAME verdict the row shows, asked
+   * once for the one hovered match: the cancel while it is cut, the amber flag
+   * while it is kept, neither for a match in a block already struck (`gone`,
+   * the ghost row's own refusal to wear a verdict nobody made).
+   */
+  protected readonly glanceTone = computed<'cut' | 'keep' | 'gone'>(() => {
+    const key = this.hovered();
+    if (key === null) return 'keep';
+    const found = this.matches().find((candidate) => candidate.key === key);
+    if (found === undefined || found.struck) return 'gone';
+    return this.kept().has(key) ? 'keep' : 'cut';
+  });
+
   protected landingTitle(): string {
     const blocks = new Set(this.cutting().map((found) => found.id)).size;
     return this.pane()?.translated() === true
@@ -684,7 +761,27 @@ export class SweepDialogComponent {
    */
   protected hover(event: Event): void {
     const under = event.target instanceof HTMLElement ? event.target.closest('[data-key]') : null;
-    this.hovered.set(under instanceof HTMLElement ? under.dataset['key'] ?? null : null);
+    if (!(under instanceof HTMLElement)) {
+      this.hovered.set(null);
+      return;
+    }
+    this.hovered.set(under.dataset['key'] ?? null);
+    /*
+     * The glance is measured HERE, off the row the pointer just proved, rather
+     * than watched reactively: a rect is a fact about the DOM at a moment, and
+     * this is the one moment it is known fresh. The column offsets are the
+     * row's own grid — 14px padding + 120px name column + 10px gap on the
+     * left, 62px verdict + 10px gap + 14px padding on the right — so the
+     * floating quotation stands exactly over the one it widens.
+     */
+    const rect = under.getBoundingClientRect();
+    const up = rect.bottom > window.innerHeight - 170;
+    this.glanceBox.set({
+      top: up ? rect.top - 4 : rect.bottom + 4,
+      left: rect.left + 144,
+      width: rect.width - 144 - 86,
+      up,
+    });
   }
 
   /**
