@@ -967,6 +967,20 @@ async function writeTranslationBook(
       + 'heading of this book answers for.',
     );
   }
+  /*
+   * THE APPARATUS ACROSS THE LANGUAGE LINE, said in one line — Owen's
+   * both-sides ruling (2026-08-24). Kept is what the digits proved into the
+   * translated prose; dropped is what they could not, and every dropped one's
+   * number leaves the compiled document entirely rather than standing bare.
+   */
+  if (derived.refsKept > 0 || derived.refsDropped > 0) {
+    console.log(
+      `[book] ${derived.refsKept} reference link(s) carried into the translation`
+      + (derived.refsDropped === 0
+        ? ''
+        : `; ${derived.refsDropped} could not be placed and their numbers leave the edition`),
+    );
+  }
 
   const file = translationBookFileFor(recordsFile);
   try {

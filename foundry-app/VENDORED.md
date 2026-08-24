@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **49bbe4a** — *chore(release): 0.9.5 — the number moves so the engine can* |
+| Source sha | **99a7606** — *chore(release): 0.9.6 — the number moves so the narration can* |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive 49bbe4a app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 99a7606 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -603,6 +603,28 @@ hash-verified against `49bbe4a:app/` plus `IPC-CHANNELS.md` identical (no
 channel moved); `package.json` moved for the one script line with the lockfile
 untouched, so `npm ci` was skipped; build clean, same standing budget warning;
 keepers ALL GREEN.
+
+`99a7606` is the apparatus-crosses-translation refresh, taken the same night:
+`8b30b2e` makes the reference apparatus survive translation — Owen's translated
+evangelische book carried hundreds of bare superscript numbers, because every
+ref is dropped at translation (no offset in a rewritten sentence is a known
+fact). The app half vendored here is `shared/materialize.ts` (plus its
+`electron/book.ts` caller): the marker runs survive translation and three
+no-guess rules prove where each landed — same-sequence identity, unique-digits
+order-checked, and Owen's bracket rule between proven markers, which also
+splits a fused run like ⁹¹⁰ back into ⁹ and ¹⁰. It runs in MAIN at
+translate-cast time, so hosted translated books get the recovery from this
+refresh on. The OTHER half is ENGINE-side (`src/vlm/compile.ts`: tiled runs as
+adjacent anchors, numbers no note answers for REMOVED and counted) and ships as
+the **v0.9.6 release** (tag at this same `99a7606`; cut and published by the
+Foundry session, verified against the built binary — 381/382 links on the
+evangelische book, zero bare numbers). ORDERING that matters to a user:
+re-minting a translated book needs BOTH this vendor and the 0.9.6 engine — the
+new engine over the old materialize would strip every number and produce a
+clean-for-TTS but linkless book. Verification: 124/124 blobs against
+`99a7606:app/`, `IPC-CHANNELS.md` identical (no channel moved), two files
+moved (`materialize.ts`, `book.ts`), lockfile untouched so `npm ci` skipped;
+build clean; keepers ALL GREEN.
 
 The engine question, asked because `src/` moved too (translate `tablecells.ts`
 is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's

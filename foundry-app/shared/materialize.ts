@@ -437,6 +437,16 @@ export interface Translated {
    * about the finished book and the person holding it is owed the list.
    */
   untitled: string[];
+  /**
+   * The apparatus, across the language line: how many reference links the
+   * digits PROVED into the translated text (`landedMarkers`), and how many
+   * they could not — each dropped ref's number leaves the finished document
+   * entirely at the compile (`worded`, src/vlm/compile.ts). Counted so the
+   * builder can say the shape of the translated apparatus out loud instead
+   * of the numbers quietly thinning.
+   */
+  refsKept: number;
+  refsDropped: number;
 }
 
 /**
@@ -507,15 +517,138 @@ function titledFrom(
  * still holds every ref, keyed by the ids this file keeps verbatim, so the
  * apparatus is one short hop away for anything that wants it — and the reference
  * NUMBERS are still in the prose, because they are Unicode superscript runs in
- * the text and the model is asked to place them (`textmask.ts`). `compile.ts`
- * draws a run no note claims as the plain `<sup>` the emitter gives an unmatched
- * marker: no link beats a wrong one. An aligned apparatus is a later wave's;
- * until it lands, this file says nothing rather than something false.
+ * the text and the model is asked to place them (`textmask.ts`).
+ *
+ * WHAT BECOMES OF THOSE NUMBERS CHANGED ON 2026-08-24, twice in one day —
+ * Owen, over three screenshots of his own translated book: *"every single
+ * footnote in this book had a reference number. so really, this is partially
+ * a failure of the footnote/reference number linking logic. we should work on
+ * both sides of this to guarantee a fix."* So both sides:
+ *
+ * THE LINKS ARE RECOVERED WHERE THE DIGITS PROVE THEMSELVES (`landedMarkers`,
+ * below). The old refusal was aimed at SEARCHING — "find the digits again,
+ * which lands on whichever occurrence came first" — and searching is still
+ * refused. What is not a search: the source row's marker RUNS are known, in
+ * order, with a ref naming each; the translation carries the same runs
+ * (masked through the model, `textmask.ts`); when the translated text holds
+ * the SAME SEQUENCE of runs, the nth is the nth by identity, and when it does
+ * not, a digit string printed exactly once on each side still names itself.
+ * Everything either rule cannot prove is DROPPED, never guessed.
+ *
+ * AND THE NUMBERS NOTHING CLAIMS ARE REMOVED AT THE COMPILE (`worded`,
+ * compile.ts): a dropped ref's number, a struck note's number riding a
+ * translation record that was written before the strike, a run the model
+ * duplicated — each would have rendered as a bare superscript, a syllable a
+ * narrator speaks, and now comes out of the finished document, counted and
+ * said in the run's log. The two halves mesh: recovery keeps every link the
+ * digits can prove, and the strip sweeps exactly what recovery would not
+ * swear to.
  *
  * `seams` IS ALREADY EMPTY on everything `materialize` writes, and the argument
  * there covers this one whole: a seam is an offer to join two paragraphs, made to
  * somebody holding the ops to act on it.
  */
+/**
+ * The engine's own marker alphabet — `SUPERSCRIPT_RUN`, src/vlm/dots.ts —
+ * mirrored because app/shared imports nothing of the engine. The copy risk is
+ * carried by this sentence pointing at the original: superscript DIGITS and
+ * only digits, the codepoints a reference number is set in.
+ */
+const MARKER_RUN = /[⁰¹²³⁴⁵⁶⁷⁸⁹]+/g;
+
+/**
+ * WHERE EACH SOURCE MARKER LANDED IN THE TRANSLATION — source offset → the
+ * run's place in the translated text — for every marker the digits can PROVE,
+ * and no marker they cannot.
+ *
+ * Three rules, in order of strength. SAME SEQUENCE: the translation carries
+ * exactly the source's runs, in order (the ordinary case — the numbers ride
+ * the model masked, `textmask.ts`), so the nth run is the nth marker by
+ * identity and no digit is even compared against another occurrence. UNIQUE
+ * DIGITS: where the sequences differ (the model dropped one, duplicated one,
+ * reordered a clause), a digit string printed exactly once on BOTH sides
+ * still names itself, and only itself — and those pairs are kept only where
+ * they stand in the same ORDER on both sides, because a "unique" pair that
+ * crosses another is two claims fighting over one stretch of prose.
+ *
+ * THE THIRD RULE IS OWEN'S OWN (2026-08-24): *"maybe we should have the
+ * system search the text from the last linked footnote to the next linked
+ * footnote."* The anchored pairs bracket the leftovers: between two proven
+ * markers, the unmatched source runs and the unmatched translated runs can
+ * only be each other, so a bracket whose two sides carry the SAME sequence
+ * matches through, and a bracket where the model FUSED adjacent numbers into
+ * one run — `⁹` and `¹⁰` arriving as `⁹¹⁰`, the case measured on his own
+ * book — is recognised by concatenation and split back into its markers,
+ * each claiming its own slice of the one run. What no bracket can prove is
+ * still dropped, never guessed: the bracket is what turns a search into a
+ * proof, because inside it an expected number can only be one thing.
+ */
+function landedMarkers(
+  source: string,
+  said: string,
+): Map<number, { at: number; len: number }> {
+  const map = new Map<number, { at: number; len: number }>();
+  const from = [...source.matchAll(MARKER_RUN)];
+  if (from.length === 0) return map;
+  const to = [...said.matchAll(MARKER_RUN)];
+  if (to.length === 0) return map;
+  if (from.length === to.length && from.every((run, at) => run[0] === to[at]![0])) {
+    from.forEach((run, at) => {
+      map.set(run.index!, { at: to[at]!.index!, len: to[at]![0].length });
+    });
+    return map;
+  }
+  const tally = (runs: readonly RegExpMatchArray[]): Map<string, number> => {
+    const counts = new Map<string, number>();
+    for (const run of runs) counts.set(run[0], (counts.get(run[0]) ?? 0) + 1);
+    return counts;
+  };
+  const once = tally(from);
+  const there = tally(to);
+  /** The unique-digit pairs, in source order, crossers dropped. */
+  const anchors: [number, number][] = [];
+  let lastTo = -1;
+  from.forEach((run, at) => {
+    if (once.get(run[0]) !== 1 || there.get(run[0]) !== 1) return;
+    const target = to.findIndex((one) => one[0] === run[0]);
+    if (target <= lastTo) return;
+    anchors.push([at, target]);
+    lastTo = target;
+  });
+  for (const [at, target] of anchors) {
+    map.set(from[at]!.index!, { at: to[target]!.index!, len: to[target]![0].length });
+  }
+  /*
+   * THE BRACKETS: the stretch before the first anchor, between each pair of
+   * anchors, and after the last — Owen's last-linked-to-next-linked, walked
+   * over runs rather than characters.
+   */
+  const edges: [number, number][] = [...anchors, [from.length, to.length]];
+  let fromAt = 0;
+  let toAt = 0;
+  for (const [fEdge, tEdge] of edges) {
+    const rest = from.slice(fromAt, fEdge);
+    const found = to.slice(toAt, tEdge);
+    fromAt = fEdge + 1;
+    toAt = tEdge + 1;
+    if (rest.length === 0 || found.length === 0) continue;
+    if (rest.length === found.length && rest.every((run, at) => run[0] === found[at]![0])) {
+      rest.forEach((run, at) => {
+        map.set(run.index!, { at: found[at]!.index!, len: found[at]![0].length });
+      });
+      continue;
+    }
+    if (found.length === 1 && rest.map((run) => run[0]).join('') === found[0]![0]) {
+      let offset = 0;
+      for (const run of rest) {
+        map.set(run.index!, { at: found[0]!.index! + offset, len: run[0].length });
+        offset += run[0].length;
+      }
+    }
+  }
+  return map;
+}
+
 export function translated(
   book: BookFile,
   /** Block id → its translation. `shared/records.ts` resolves the file to this. */
@@ -532,6 +665,47 @@ export function translated(
   language: string,
 ): Translated {
   const untranslated: string[] = [];
+  /*
+   * WHERE EVERY TARGETED BLOCK'S MARKERS LANDED, computed once per block a ref
+   * points into. A block with no translation record needs no map — its text is
+   * carried verbatim, so its offsets are still simply true.
+   */
+  const landed = new Map<string, Map<number, { at: number; len: number }>>();
+  for (const row of book.rows) {
+    for (const ref of row.refs ?? []) {
+      if (landed.has(ref.block)) continue;
+      const said = words.get(ref.block);
+      if (said === undefined) continue;
+      const source = book.rows.find((one) => one.id === ref.block);
+      if (source !== undefined) landed.set(ref.block, landedMarkers(source.text, said));
+    }
+  }
+  let refsKept = 0;
+  let refsDropped = 0;
+  /**
+   * A note's refs, moved to where their numbers landed — kept verbatim into an
+   * untranslated target, re-addressed where the digits proved themselves, and
+   * DROPPED where they did not, which the compile then sweeps clean.
+   */
+  const refsFor = (row: BookRow): BookRef[] | undefined => {
+    if (row.refs === undefined) return undefined;
+    const kept: BookRef[] = [];
+    for (const ref of row.refs) {
+      const moved = landed.get(ref.block);
+      if (moved === undefined) {
+        kept.push(ref);
+        continue;
+      }
+      const run = moved.get(ref.at);
+      if (run === undefined) {
+        refsDropped += 1;
+        continue;
+      }
+      refsKept += 1;
+      kept.push({ block: ref.block, at: run.at, len: run.len });
+    }
+    return kept;
+  };
   const rows = book.rows.map((row) => {
     const said = words.get(row.id);
     /*
@@ -550,7 +724,9 @@ export function translated(
        * read as "these came back in the source language".
        */
       if (row.shelf === undefined && row.text.trim().length > 0) untranslated.push(row.id);
-      return row.refs === undefined ? row : { ...row, refs: [] };
+      // The row's own words are untouched, but its REFS point at other rows,
+      // whose words may not be — so they go through the same recovery.
+      return row.refs === undefined ? row : { ...row, refs: refsFor(row) ?? [] };
     }
     /*
      * AND ITS PARTS COLLAPSE TO ONE, through `partsFor` — the same rule, and the
@@ -568,7 +744,7 @@ export function translated(
      */
     const next = row.refs === undefined
       ? { ...row, text: said }
-      : { ...row, text: said, refs: [] };
+      : { ...row, text: said, refs: refsFor(row) ?? [] };
     return { ...next, parts: partsFor(next, true) };
   });
 
@@ -672,5 +848,7 @@ export function translated(
     },
     untranslated,
     untitled,
+    refsKept,
+    refsDropped,
   };
 }
