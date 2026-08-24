@@ -1,0 +1,17 @@
+# Build context for deploy/bookshelf-server/Dockerfile.
+#
+# The context is the REPO ROOT, which holds node_modules, the foundry-app
+# subtree, packaging output and the whole source tree — gigabytes that would be
+# uploaded to the daemon on every build and then thrown away. So: exclude
+# everything, and name the five things the image actually copies.
+#
+# BuildKit reads a <dockerfile>.dockerignore next to the Dockerfile in
+# preference to the context root's .dockerignore, so this stays scoped to this
+# image and changes nothing else in the repo.
+*
+
+!package.json
+!package-lock.json
+!cli
+!dist/electron
+!dist/shared

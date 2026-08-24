@@ -410,7 +410,10 @@ interface BookMenu {
                     [title]="tab() === 'articles' ? 'Mark as Ebook' : 'Mark as Article'">
                     {{ tab() === 'articles' ? '📖' : '📰' }}
                   </button>
-                  <button class="corner-btn listen-btn" (click)="openListen(book, $event)" title="Read &amp; listen">🎧</button>
+                  <!-- Disabled, never hidden, on a server that cannot read aloud. -->
+                  <button class="corner-btn listen-btn" [disabled]="!canListen(book)"
+                    (click)="openListen(book, $event)"
+                    [title]="canListen(book) ? 'Read &amp; listen' : listenDisabledReason(book)">🎧</button>
                 }
               </div>
               <div class="book-info">
@@ -1695,6 +1698,16 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.router.navigate(['/listen']);
   }
 
+  /** Whether this book's origin server can read it aloud. A library-only mirror
+   *  (the NAS copy) serves the text but has no TTS engine. */
+  canListen(book: Ebook): boolean {
+    return this.cfg.supports('render', book.originServerId);
+  }
+
+  listenDisabledReason(book: Ebook): string {
+    return this.cfg.unsupportedReason('render', book.originServerId);
+  }
+
   /** 🎧 on a project-backed card → the Read&Listen view (stream or TTS the book). */
   openListen(book: Ebook, event?: Event): void {
     event?.stopPropagation();
@@ -2012,6 +2025,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
       try {
         const books = await this.api.getBooks(force, s.id);
         this.setServerStatus(s.id, 'ok');
+        // It answered — ask what it can do, so a library-only mirror's Listen
+        // controls are disabled by the time its books are on screen.
+        void this.cfg.refreshHealth(s.id);
         anyOk = true;
         return books.map((b) => ({ ...b, originServerId: s.id }));
       } catch (err) {
@@ -2128,6 +2144,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
       try {
         const books = await this.api.getEbooks(force, s.id);
         this.setServerStatus(s.id, 'ok');
+        void this.cfg.refreshHealth(s.id); // see loadAudiobooks
         anyOk = true;
         return books.map((b) => ({ ...b, originServerId: s.id }));
       } catch (err) {

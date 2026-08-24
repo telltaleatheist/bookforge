@@ -30,13 +30,12 @@ import { getFfprobePath, getFfmpegPath } from './tool-paths';
 import { extractVttFromM4b } from './metadata-tools';
 import { getPdfInfo, renderPdfPage, shutdownEbookRender } from './ebook-render';
 import { normalizeFsPath } from './path-utils';
-import { ReaderStreamBridge } from './reader-stream-bridge';
-import { readerAudioStore } from './reader-audio-store';
-import { ingestFromUrl, ingestFromFile, analyzePdfPages } from './reader-ingest';
-import { buildEpubBuffer, EpubChapter } from './epub-writer';
-import { importEpubProject } from './import-epub-project';
-import { bookRenderService, saveRenderPlan } from './book-render-service';
-import { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } from './streaming-engine';
+// The TTS/ingest/import graph is loaded ON DEMAND, inside the handlers that need
+// it (same precedent as the queue endpoints below). Those handlers are exactly
+// the ones a standalone mirror refuses, so a NAS-hosted server never pulls the
+// engine graph into memory at all. Types are `import type` — erased on emit.
+import type { ReaderStreamBridge } from './reader-stream-bridge';
+import type { EpubChapter } from './epub-writer';
 import { verifyAudiobookAnalysis } from './audiobook-analysis-protocol';
 import { readBinding, resolveSidecars, sidecarPathsFor } from './sidecar-binding';
 import { regenerateBoundSidecars } from './sidecar-migration';
@@ -61,7 +60,44 @@ const execFileAsync = promisify(execFile);
 export interface BookshelfServerConfig {
   port: number;
   userDataPath?: string;
+  /**
+   * Absent — the Electron app's server: every capability, unchanged.
+   * 'standalone' — a LIBRARY-ONLY MIRROR (the NAS copy, run headless by
+   * `cli/serve-bookshelf.js`): the library can be browsed, streamed and read,
+   * and reader state under `<library>/.bookshelf/` is written as usual, but
+   * nothing that needs the TTS engine, ingests a document, or mutates the
+   * library is available. Those routes answer 501 naming the capability.
+   */
+  mode?: 'standalone';
 }
+
+/**
+ * What a server can do, as reported by `/api/health` and enforced by one gate.
+ *
+ *   library  browse/stream/download books, ebooks, covers, chapters, transcripts
+ *   reader   profiles, sign-in, positions, bookmarks, heard coverage, analytics
+ *   pdf      rasterized PDF pages for the in-app reader (mupdf; pure WASM, so a
+ *            headless Linux mirror serves these exactly as the app does)
+ *   render   live TTS + the whole-book renderer + the voice catalog
+ *   ingest   turning a URL / uploaded file / PDF into readable blocks
+ *   edit     creating a project from edited blocks
+ *   queue    the processing queue (it lives in the app, not in a mirror)
+ *   mutate   changing the library itself (delete a project, reclassify an ebook)
+ */
+export const BOOKSHELF_CAPABILITIES = ['library', 'reader', 'pdf', 'render', 'ingest', 'edit', 'queue', 'mutate'] as const;
+export type BookshelfCapability = typeof BOOKSHELF_CAPABILITIES[number];
+
+/** The subset a library-only mirror serves. Everything else answers 501. */
+export const STANDALONE_CAPABILITIES: readonly BookshelfCapability[] = ['library', 'reader', 'pdf'];
+
+/** What the 501 body says this server cannot do, per gated capability. */
+const CAPABILITY_REFUSALS: Record<string, string> = {
+  render: 'render audio',
+  ingest: 'ingest documents',
+  edit: 'create or edit projects',
+  queue: 'run the processing queue',
+  mutate: 'modify the library',
+};
 
 export interface BookshelfServerStatus {
   running: boolean;
@@ -296,7 +332,14 @@ export class BookshelfServer {
 
   // "Listen to anything" Reader: streams TTS of arbitrary text to the web app over
   // a WebSocket riding this same HTTP server (authed by the reader's bearer token).
-  private readerStream = new ReaderStreamBridge();
+  // Built in start() from a dynamic import, so a standalone mirror never loads the
+  // streaming engine graph that constructing it would pull in.
+  private readerStream: ReaderStreamBridge | null = null;
+
+  // True when this process is a library-only mirror (config.mode === 'standalone').
+  // Set in start(); setupRoutes runs in the constructor, so the gate reads this
+  // per request rather than at registration.
+  private standalone = false;
 
   // ── Main-thread stall diagnostics (see the middleware in setupRoutes) ──────
   /** A request taking at least this long is worth a line. Streaming a whole m4b
@@ -345,6 +388,33 @@ export class BookshelfServer {
     if (!this.lagTimer) return;
     clearInterval(this.lagTimer);
     this.lagTimer = null;
+  }
+
+  /** The capabilities this server actually serves — reported by /api/health in
+   *  BOTH modes so a client can degrade its controls instead of guessing. */
+  capabilities(): BookshelfCapability[] {
+    return this.standalone ? [...STANDALONE_CAPABILITIES] : [...BOOKSHELF_CAPABILITIES];
+  }
+
+  /**
+   * The ONE standalone gate: wrap a handler so that a library-only mirror
+   * refuses it, naming the capability the client asked for.
+   *
+   * Applied at route registration (below) rather than inside handlers, so the
+   * gated set is readable in one place and a new route cannot quietly skip it.
+   * The check itself is per-request because setupRoutes runs in the constructor,
+   * before start() knows the mode. In app mode this costs one boolean.
+   */
+  private appOnly(capability: BookshelfCapability, handler: (req: Request, res: Response) => unknown) {
+    const cannot = CAPABILITY_REFUSALS[capability];
+    if (!cannot) throw new Error(`No refusal sentence for capability '${capability}' — add one to CAPABILITY_REFUSALS.`);
+    return (req: Request, res: Response): unknown => {
+      if (this.standalone) {
+        res.status(501).json({ error: `This server is a library-only mirror and cannot ${cannot}`, capability });
+        return undefined;
+      }
+      return handler(req, res);
+    };
   }
 
   private setupRoutes(): void {
@@ -459,13 +529,17 @@ export class BookshelfServer {
     this.app.get('/api/ebook-download', this.downloadEbook.bind(this));
     // Tag a project as an ebook ('book') or an article ('article'); the bookshelf
     // lists Ebooks vs Articles by this tag. Flips the manifest's projectType.
-    this.app.post('/api/ebooks/reclassify', this.postReclassifyEbook.bind(this));
+    this.app.post('/api/ebooks/reclassify', this.appOnly('mutate', this.postReclassifyEbook.bind(this)));
     // Delete a project outright (removes its whole folder). Auth by reader token.
-    this.app.delete('/api/project', this.deleteProjectRoute.bind(this));
+    this.app.delete('/api/project', this.appOnly('mutate', this.deleteProjectRoute.bind(this)));
 
     // In-app reader: reads the pristine archived source of an audiobook project.
     // EPUBs stream whole (epub.js renders them reflowably on the client); PDFs
     // are rasterized page-by-page via mupdf (electron/ebook-render.ts).
+    // Not gated in standalone: mupdf is a pure-WASM npm package (no native
+    // binding, no spawned binary, no os/cpu restriction) rasterizing in its own
+    // worker thread, so a headless Linux mirror serves pages exactly as the app
+    // does. This is the `pdf` capability.
     this.app.get('/api/read-info', this.getReadInfo.bind(this));
     this.app.get('/api/read-file', this.getReadFile.bind(this));
     this.app.get('/api/read-page', this.getReadPage.bind(this));
@@ -476,54 +550,60 @@ export class BookshelfServer {
     this.app.post(
       '/api/reader/ingest',
       express.raw({ type: 'application/octet-stream', limit: '100mb' }),
-      this.postReaderIngest.bind(this),
+      this.appOnly('ingest', this.postReaderIngest.bind(this)),
     );
 
     // Mobile import→edit finalize: turn edited blocks + chapter markers into a
     // real chaptered epub and create a persisted project (article/book tag). The
     // project's text lives in the library even if its audio is only streamed.
-    this.app.post('/api/edit/finalize', this.postEditFinalize.bind(this));
+    this.app.post('/api/edit/finalize', this.appOnly('edit', this.postEditFinalize.bind(this)));
 
     // "TTS entire book": the persistent whole-book renderer. start kicks/ resumes
     // the render; status is polled by the reader; sentence serves rendered audio;
     // playhead steers render priority (forward-from-playhead + wrap).
-    this.app.post('/api/render/start', this.postRenderStart.bind(this));
-    this.app.get('/api/render/status', this.getRenderStatus.bind(this));
-    this.app.get('/api/render/sentence', this.getRenderSentence.bind(this));
-    this.app.post('/api/render/playhead', this.postRenderPlayhead.bind(this));
+    this.app.post('/api/render/start', this.appOnly('render', this.postRenderStart.bind(this)));
+    this.app.get('/api/render/status', this.appOnly('render', this.getRenderStatus.bind(this)));
+    this.app.get('/api/render/sentence', this.appOnly('render', this.getRenderSentence.bind(this)));
+    this.app.post('/api/render/playhead', this.appOnly('render', this.postRenderPlayhead.bind(this)));
 
     // Reader "Stream / follow-along": serve a live-generated block's audio as a WAV
     // so the native AVPlayer can play it (it can't load the client's blob: URLs).
     // The block is driven by the reader WS (/api/reader/ws); this just serves the
     // PCM the bridge teed into reader-audio-store, keyed by the client's requestId.
-    this.app.get('/api/reader/audio', this.getReaderAudio.bind(this));
+    this.app.get('/api/reader/audio', this.appOnly('render', this.getReaderAudio.bind(this)));
 
     // TTS engine: voice catalog + fire-and-forget warmup (skip the cold start).
-    this.app.get('/api/tts/voices', this.getTtsVoices.bind(this));
-    this.app.post('/api/tts/warm', this.postTtsWarm.bind(this));
+    this.app.get('/api/tts/voices', this.appOnly('render', this.getTtsVoices.bind(this)));
+    this.app.post('/api/tts/warm', this.appOnly('render', this.postTtsWarm.bind(this)));
     // Project reader payload (title + blocks + chapter map) for the Read&Listen view.
-    this.app.get('/api/project/reader', this.getProjectReader.bind(this));
+    // Gated with `render`: it is the render plan, served only to feed that view,
+    // whose playback a mirror cannot do either. Plain reading is /api/read-file.
+    this.app.get('/api/project/reader', this.appOnly('render', this.getProjectReader.bind(this)));
 
     // PDF page-crop editor: ingest a PDF into pages+block-boxes (caching the file),
     // and rasterize those cached pages for the overlay preview.
     this.app.post(
       '/api/edit/ingest-pdf',
       express.raw({ type: 'application/octet-stream', limit: '200mb' }),
-      this.postEditIngestPdf.bind(this),
+      this.appOnly('ingest', this.postEditIngestPdf.bind(this)),
     );
-    this.app.get('/api/edit/page', this.getEditPage.bind(this));
+    // Serves pages of a PDF that only /api/edit/ingest-pdf can put in the cache,
+    // so it travels with that capability rather than with `pdf`.
+    this.app.get('/api/edit/page', this.appOnly('ingest', this.getEditPage.bind(this)));
 
     // Queue status & control
-    this.app.get('/api/queue', this.getQueue.bind(this));
-    this.app.post('/api/queue/start', this.startQueue.bind(this));
-    this.app.post('/api/queue/pause', this.pauseQueue.bind(this));
+    this.app.get('/api/queue', this.appOnly('queue', this.getQueue.bind(this)));
+    this.app.post('/api/queue/start', this.appOnly('queue', this.startQueue.bind(this)));
+    this.app.post('/api/queue/pause', this.appOnly('queue', this.pauseQueue.bind(this)));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
       // `name` is the serving machine's hostname so a client (esp. the web build,
       // whose location.hostname is just "localhost") can label the library by the
       // server it's actually on. The user can still rename it in the app.
-      res.json({ status: 'ok', name: os.hostname().split('.')[0] });
+      // `capabilities` is present in BOTH modes so a client can disable the
+      // controls a given server cannot serve instead of probing for 501s.
+      res.json({ status: 'ok', name: os.hostname().split('.')[0], capabilities: this.capabilities() });
     });
 
     // Unknown /api routes get a JSON 404 (not the SPA index.html) so the client
@@ -543,8 +623,12 @@ export class BookshelfServer {
 
   async start(config: BookshelfServerConfig): Promise<void> {
     this.port = config.port;
+    this.standalone = config.mode === 'standalone';
     if (config.userDataPath) {
       this.userDataPath = config.userDataPath;
+    }
+    if (this.standalone) {
+      console.log(`[BookshelfServer] STANDALONE (library-only mirror) — capabilities: ${this.capabilities().join(', ')}`);
     }
 
     // Load persistent caches + library config. The alias map is dropped rather
@@ -563,6 +647,14 @@ export class BookshelfServer {
     if (thumbs) sweepThumbnailCache(thumbs, 4000);
     else console.warn('[BookshelfServer] No userData path — cover thumbnails will be generated per request, not cached.');
 
+    // The Reader TTS socket is the WebSocket half of the `render` capability, so
+    // a mirror must not build it — constructing the bridge imports the streaming
+    // engine. Loaded here (not at module scope) for exactly that reason.
+    if (!this.standalone) {
+      const { ReaderStreamBridge } = await import('./reader-stream-bridge.js');
+      this.readerStream = new ReaderStreamBridge();
+    }
+
     return new Promise((resolve, reject) => {
       this.server = this.app.listen(this.port, '0.0.0.0', () => {
         console.log(`[BookshelfServer] Started on port ${this.port}`);
@@ -570,9 +662,24 @@ export class BookshelfServer {
         resolve();
       });
 
-      // Wire the Reader TTS stream socket onto this server (WebSocket upgrades on
-      // /api/reader/ws, authed by the reader token → readerId).
-      this.readerStream.attach(this.server, (t) => this.readerTokens.get(t) ?? null);
+      if (this.readerStream) {
+        // Wire the Reader TTS stream socket onto this server (WebSocket upgrades on
+        // /api/reader/ws, authed by the reader token → readerId).
+        this.readerStream.attach(this.server, (t) => this.readerTokens.get(t) ?? null);
+      } else {
+        // Standalone: answer the upgrade with the same 501 the HTTP routes give,
+        // rather than letting node destroy the socket without a word — a client
+        // that finds the socket closed cannot tell "unsupported" from "broken".
+        this.server.on('upgrade', (_req, socket) => {
+          const body = JSON.stringify({ error: `This server is a library-only mirror and cannot ${CAPABILITY_REFUSALS['render']}`, capability: 'render' });
+          socket.end(
+            'HTTP/1.1 501 Not Implemented\r\n'
+            + 'Content-Type: application/json\r\n'
+            + `Content-Length: ${Buffer.byteLength(body)}\r\n`
+            + 'Connection: close\r\n\r\n'
+            + body);
+        });
+      }
 
       this.server.on('error', (err: NodeJS.ErrnoException) => {
         if (err.code === 'EADDRINUSE') {
@@ -1558,6 +1665,7 @@ export class BookshelfServer {
     const readerId = this.readerIdFromRequest(req);
     if (!readerId) { res.status(401).json({ error: 'not signed in' }); return; }
 
+    const { ingestFromUrl, ingestFromFile } = await import('./reader-ingest.js');
     try {
       // File upload: raw bytes (express.raw gave us a Buffer), name in a header.
       if (Buffer.isBuffer(req.body) && req.body.length > 0) {
@@ -1638,6 +1746,9 @@ export class BookshelfServer {
 
     let tmp: string | null = null;
     try {
+      const { buildEpubBuffer } = await import('./epub-writer.js');
+      const { importEpubProject } = await import('./import-epub-project.js');
+      const { saveRenderPlan } = await import('./book-render-service.js');
       const epub = await buildEpubBuffer({
         title, author, language,
         modifiedAt: new Date().toISOString(),
@@ -1699,6 +1810,7 @@ export class BookshelfServer {
     const tmp = path.join(os.tmpdir(), `bookforge-edit-${docId}.pdf`);
     try {
       await fs.writeFile(tmp, req.body);
+      const { analyzePdfPages } = await import('./reader-ingest.js');
       const analysis = await analyzePdfPages(tmp);
       this.editPdfCache.set(docId, { path: tmp, at: Date.now() });
       const origName = (req.headers['x-file-name'] as string) || 'document.pdf';
@@ -1744,6 +1856,7 @@ export class BookshelfServer {
     const startIndex = Number(body?.startIndex) || 0;
     const voice = typeof body?.voice === 'string' && body.voice ? body.voice : undefined;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const { bookRenderService } = await import('./book-render-service.js');
     const r = await bookRenderService.start(projectId, startIndex, voice);
     if (!r.ok) { res.status(422).json({ error: r.error || 'render failed to start' }); return; }
     res.json({ ok: true, total: r.total });
@@ -1754,6 +1867,7 @@ export class BookshelfServer {
   private async getTtsVoices(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     try {
+      const { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } = await import('./streaming-engine.js');
       const engine = getActiveEngine();
       let voices: string[];
       if (getSelectedEngineName() === 'orpheus') {
@@ -1778,10 +1892,11 @@ export class BookshelfServer {
    *  listen surface OPENS so the ~1 min cold start is paid while the user is
    *  still reading the mode picker, not after they tap play. Responds instantly
    *  with the current engine state; progress is visible via engine state. */
-  private postTtsWarm(req: Request, res: Response): void {
+  private async postTtsWarm(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     const body = req.body as { voice?: unknown };
     const voice = typeof body?.voice === 'string' && body.voice ? body.voice : undefined;
+    const { getActiveEngine, getDefaultStreamVoice } = await import('./streaming-engine.js');
     const engine = getActiveEngine();
     const needsStart = engine.getEngineState() === 'stopped' || engine.getEngineState() === 'starting';
     const needsVoice = voice ? engine.getCurrentVoice() !== voice : !engine.getCurrentVoice();
@@ -1798,21 +1913,23 @@ export class BookshelfServer {
   }
 
   /** GET /api/render/status?projectId — coverage/progress the reader polls. */
-  private getRenderStatus(req: Request, res: Response): void {
+  private async getRenderStatus(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     const projectId = req.query.projectId;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const { bookRenderService } = await import('./book-render-service.js');
     res.json(bookRenderService.status(projectId));
   }
 
   /** GET /api/render/sentence?projectId&index — a rendered sentence's WAV bytes. */
-  private getRenderSentence(req: Request, res: Response): void {
+  private async getRenderSentence(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     const projectId = req.query.projectId;
     const index = Number(req.query.index);
     if (!this.validProjectId(projectId) || !Number.isInteger(index) || index < 0) {
       res.status(400).json({ error: 'projectId and index required' }); return;
     }
+    const { bookRenderService } = await import('./book-render-service.js');
     const p = bookRenderService.sentencePath(projectId, index);
     if (!p) { res.status(404).json({ error: 'not rendered yet' }); return; }
     res.type('wav');
@@ -1835,6 +1952,7 @@ export class BookshelfServer {
     }
     // Authorize by the AUTHENTICATED reader: the store is keyed per-reader, so a
     // block registered by another reader (or an unknown requestId) simply misses.
+    const { readerAudioStore } = await import('./reader-audio-store.js');
     const key = readerAudioStore.makeKey(readerId, requestId);
     const ready = await readerAudioStore.waitSettled(key, 30000);
     if (!ready) { res.status(404).json({ error: 'not generated' }); return; }
@@ -1879,11 +1997,12 @@ export class BookshelfServer {
   }
 
   /** POST /api/render/playhead — steer render priority (forward-from-playhead). */
-  private postRenderPlayhead(req: Request, res: Response): void {
+  private async postRenderPlayhead(req: Request, res: Response): Promise<void> {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     const projectId = (req.body as { projectId?: unknown })?.projectId;
     const index = Number((req.body as { index?: unknown })?.index) || 0;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const { bookRenderService } = await import('./book-render-service.js');
     bookRenderService.reportPlayhead(projectId, index);
     res.json({ ok: true });
   }
@@ -1894,6 +2013,7 @@ export class BookshelfServer {
     if (!this.readerIdFromRequest(req)) { res.status(401).json({ error: 'not signed in' }); return; }
     const projectId = req.query.projectId;
     if (!this.validProjectId(projectId)) { res.status(400).json({ error: 'projectId required' }); return; }
+    const { bookRenderService } = await import('./book-render-service.js');
     const plan = await bookRenderService.getPlan(projectId);
     if (!plan) { res.status(404).json({ error: 'no readable text for this project' }); return; }
     res.json({

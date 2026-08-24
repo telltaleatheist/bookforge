@@ -104,6 +104,7 @@ const SUITES = [
   'test-versions-page-data',
   'test-cover-thumbnails',
   'test-bookshelf-ids',
+  'test-bookshelf-standalone',
 ];
 
 let failed = 0;

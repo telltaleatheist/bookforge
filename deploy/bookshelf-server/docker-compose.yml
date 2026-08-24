@@ -1,0 +1,59 @@
+# BookForge Bookshelf — standalone (library-only) server, for titan (UGREEN NAS).
+#
+#   cd <repo root>
+#   npm run build:electron
+#   docker compose -f deploy/bookshelf-server/docker-compose.yml build
+#   docker compose -f deploy/bookshelf-server/docker-compose.yml up -d
+#
+# See README.md in this folder — especially the UGOS caveat.
+
+services:
+  bookshelf:
+    build:
+      # The build context is the REPO ROOT: the image copies dist/electron,
+      # dist/shared and cli/ out of a tree that has already been built.
+      context: ../..
+      dockerfile: deploy/bookshelf-server/Dockerfile
+    image: bookforge-bookshelf:latest
+    container_name: bookforge-bookshelf
+    restart: unless-stopped
+
+    ports:
+      # host:container. 8765 is the port the desktop app serves on, so a phone
+      # already paired with owens-pc finds the mirror at the same port on titan.
+      - "8765:8765"
+
+    volumes:
+      # ── The library. READ-WRITE, and that is deliberate ──────────────────
+      # Reader state (positions, bookmarks, heard coverage, analytics, profiles)
+      # lives under <library>/.bookshelf/ as per-device files merged on read.
+      # That is what lets this server and BookForge's converge with neither one
+      # primary — mounting the library read-only would silently lose every
+      # position the phone saves while the PC is off.
+      #
+      # PLACEHOLDER: titan's real path for \\TITAN\iO\bookforge (Z:\bookforge on
+      # the PC). On UGOS this is typically /volume1/<share>/bookforge — check
+      # with `ls /volume*` on the NAS before bringing this up.
+      - /volume1/iO/bookforge:/library
+
+      # ── Per-machine state. NOT on the library share ──────────────────────
+      # Duration cache, cover thumbnails, reader tokens, bookshelf-device-id.
+      # A named volume so it survives image rebuilds and never syncs anywhere.
+      - bookshelf-state:/state
+
+    environment:
+      # Consumed by the CMD in the Dockerfile. Change the port here and in
+      # `ports:` together.
+      BOOKFORGE_LIBRARY: /library
+      BOOKFORGE_STATE: /state
+      BOOKFORGE_PORT: "8765"
+      # Uncomment to override ffmpeg/ffprobe resolution; the image installs both
+      # from apt, so the defaults on PATH are what the startup check finds.
+      # FFMPEG_PATH: /usr/bin/ffmpeg
+      # FFPROBE_PATH: /usr/bin/ffprobe
+
+    # The server is one node process; the healthcheck in the Dockerfile is the
+    # readiness signal. Nothing here needs privileged access or a device.
+
+volumes:
+  bookshelf-state:

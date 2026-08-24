@@ -22,7 +22,17 @@ export interface ServerEntry {
    *  configured, it must ride on every request; sent as an `accessKey` query param
    *  so raw <img>/<audio> src work too. See MULTI_SERVER.md → Identity & analytics. */
   accessKey?: string;
+  /** What this server said it can do, from its /api/health `capabilities`. A
+   *  NAS-hosted mirror reports a reduced set (no `render` — it has no TTS
+   *  engine), and the UI disables those controls rather than hiding them.
+   *  `undefined` means we have not asked yet, or the server predates the field —
+   *  which is NOT the same as "cannot"; see supports(). */
+  capabilities?: string[];
 }
+
+/** A capability a server may or may not serve; mirrors BOOKSHELF_CAPABILITIES
+ *  in electron/bookshelf-server.ts. Only the ones the client reasons about. */
+export type ServerCapability = 'library' | 'reader' | 'pdf' | 'render' | 'ingest' | 'edit' | 'queue' | 'mutate';
 
 /**
  * Where the Bookshelf API lives. Historically a single paired server; now a
@@ -122,6 +132,65 @@ export class ServerConfigService {
     this.patch(id, { accessKey: key.trim() || undefined });
   }
 
+  // ---- capabilities ------------------------------------------------------
+
+  /** Record what a server reported it can do (its /api/health `capabilities`). */
+  setCapabilities(id: string, capabilities: string[] | undefined): void {
+    this.patch(id, { capabilities });
+  }
+
+  /**
+   * Whether a server serves `cap`.
+   *
+   * A server that has NOT been asked, or that predates the capabilities field,
+   * reports `undefined` — and that is not a "no". Every server before this
+   * existed could do everything, so the honest reading of silence is "full", and
+   * the request itself remains the authority (it answers 501 if not). Only an
+   * explicit list that omits the capability disables a control.
+   */
+  supports(cap: ServerCapability, serverId?: string): boolean {
+    const s = serverId ? this.servers().find(x => x.id === serverId) : this.activeServer();
+    if (!s) return false;
+    if (s.local) return cap === 'library'; // the on-device library is files, not a server
+    if (!s.capabilities) return true;
+    return s.capabilities.includes(cap);
+  }
+
+  /** Why a control is disabled, for a tooltip/label. Empty when it isn't. */
+  unsupportedReason(cap: ServerCapability, serverId?: string): string {
+    if (this.supports(cap, serverId)) return '';
+    const s = serverId ? this.servers().find(x => x.id === serverId) : this.activeServer();
+    if (s?.local) return 'On-device books are files on this device — there is no server to do that.';
+    return `${s?.label || 'This server'} is a library-only mirror: it serves the library but cannot ${
+      cap === 'render' ? 'read books aloud' : `do that (${cap})`}.`;
+  }
+
+  /**
+   * Ask a server what it is: its name and its capabilities, in one /api/health.
+   * Called after a server answers a shelf load, so a mirror's controls are
+   * disabled by the time its books are on screen. Failure is left alone — an
+   * unreachable server is already handled as offline by the caller, and
+   * overwriting known capabilities with nothing would re-enable dead controls.
+   */
+  async refreshHealth(serverId?: string): Promise<void> {
+    const s = serverId ? this.servers().find(x => x.id === serverId) : this.activeServer();
+    if (!s || s.local) return;
+    try {
+      const res = await fetch(this.url('/api/health', s.id));
+      if (!res.ok) return;
+      const body = await res.json() as { name?: unknown; capabilities?: unknown };
+      const delta: Partial<ServerEntry> = {};
+      if (Array.isArray(body.capabilities)) delta.capabilities = body.capabilities.map(String);
+      // The name only wins while the label is still auto-derived, so a manual
+      // rename is never clobbered (same rule refreshOriginName has always had).
+      if (s.autoLabel !== false && typeof body.name === 'string' && body.name.trim()) {
+        delta.label = body.name.trim();
+        delta.autoLabel = true;
+      }
+      if (Object.keys(delta).length) this.patch(s.id, delta);
+    } catch { /* offline — the caller already shows that */ }
+  }
+
   // ---- server list management -------------------------------------------
 
   /** Add a server (or re-enable/activate an existing one with the same URL) and
@@ -212,18 +281,12 @@ export class ServerConfigService {
   }
 
   /** Name the same-origin served library by the server that serves it (its
-   *  /api/health `name`), unless the user has renamed it. Web build only. */
+   *  /api/health `name`), unless the user has renamed it — and learn what that
+   *  server can do while we are asking. Web build only. */
   async refreshOriginName(): Promise<void> {
     const origin = this.servers().find(s => s.url === '' && !s.local);
-    if (!origin || origin.autoLabel === false) return;
-    try {
-      const res = await fetch('/api/health');
-      if (!res.ok) return;
-      const name = (await res.json())?.name;
-      if (typeof name === 'string' && name.trim()) {
-        this.patch(origin.id, { label: name.trim(), autoLabel: true });
-      }
-    } catch { /* offline / older server without a name */ }
+    if (!origin) return;
+    await this.refreshHealth(origin.id);
   }
 
   /** Forget the active server (native settings: "switch server"). Preserved from
