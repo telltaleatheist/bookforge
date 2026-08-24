@@ -17,6 +17,10 @@ services:
     image: bookforge-bookshelf:latest
     container_name: bookforge-bookshelf
     restart: unless-stopped
+    # First-boot sweep over a cold library (cover-cracking + durations for 170
+    # m4bs) blew node's 2 GB default heap (titan, 2026-08-24). 4 GB heap in a
+    # 5 GB cap: the host never suffocates, an OOM-kill restarts cleanly.
+    mem_limit: 5g
 
     ports:
       # host:container. 8765 is the port the desktop app serves on, so a phone
@@ -47,6 +51,7 @@ services:
       BOOKFORGE_LIBRARY: /library
       BOOKFORGE_STATE: /state
       BOOKFORGE_PORT: "8765"
+      NODE_OPTIONS: "--max-old-space-size=4096"
       # Uncomment to override ffmpeg/ffprobe resolution; the image installs both
       # from apt, so the defaults on PATH are what the startup check finds.
       # FFMPEG_PATH: /usr/bin/ffmpeg
@@ -54,6 +59,10 @@ services:
 
     # The server is one node process; the healthcheck in the Dockerfile is the
     # readiness signal. Nothing here needs privileged access or a device.
+
+# A core-dump janitor sidecar is worth adding on hosts whose kernel dumps to a
+# small tmpfs (see titan's /volume1/System/bookshelf-server/compose.yml): 196k
+# smbd cores once filled /tmp and took the whole NAS's daemons down with it.
 
 volumes:
   bookshelf-state:
