@@ -5867,9 +5867,20 @@ async function resolveTtsTarget(manifest: ProjectManifest): Promise<TtsTarget | 
     // The most recent thing Foundry made for this book. `landedAt` is refreshed
     // on every re-export, so "newest" tracks what the user last produced rather
     // than which row was created first.
+    //
+    // BOTH SPELLINGS OF THE PROVENANCE, for the third time in this codebase.
+    // Promotion moves it from `foundrySource` to `promotedFrom` and reading only
+    // the first made a KEPT export invisible here: the button vanished on a book
+    // that also had its original (`sole-epub` cannot cover for it — a book that
+    // has been through Foundry has at least two EPUBs, as the rung's own note
+    // says), and with two exports it silently chose the OLDER one, narrating the
+    // file the user had just replaced. Same defect as e4f238d8, one resolver
+    // further in; the sweep at foundry-export-sweep.ts:368 reads the same pair.
+    const provenance = (v: ProjectVariant) => v.foundrySource ?? v.promotedFrom;
     const exports = epubs
-      .filter((v) => !!v.foundrySource)
-      .sort((a, b) => (b.foundrySource!.landedAt || '').localeCompare(a.foundrySource!.landedAt || ''));
+      .filter((v) => !!provenance(v))
+      .sort((a, b) =>
+        (provenance(b)!.landedAt || '').localeCompare(provenance(a)!.landedAt || ''));
     if (exports.length > 0) {
       chosen = exports[0];
       rule = 'newest-export';

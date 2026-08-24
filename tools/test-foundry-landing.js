@@ -686,6 +686,39 @@ test('the NEWEST export wins among several', run(async (p) => {
   assert.notStrictEqual(t.variantId, older.variantId);
 }));
 
+test('KEEPING the export does not take the Process button away with it', run(async (p) => {
+  // Promotion moves the provenance from `foundrySource` to `promotedFrom`. The
+  // newest-export rung read only the first spelling, so pressing Keep deleted
+  // the only thing that rung could see — and `sole-epub` cannot cover for it,
+  // because a book that has been through Foundry has at least two EPUBs. The
+  // button simply vanished. Same class as e4f238d8, one resolver further in.
+  fs.writeFileSync(p.abs('archive/orig.epub'), 'X');
+  const landed = await land(p, p.exportFile('Test Book.epub', 'CLEANED'));
+  assert.strictEqual((await target(p)).rule, 'newest-export', 'precondition');
+
+  await actions.promoteVariantToArchive(PROJECT_ID, landed.variantId);
+
+  const t = await target(p);
+  assert.ok(t, 'keeping a file must not remove the button that narrates it');
+  assert.strictEqual(t.variantId, landed.variantId);
+  assert.strictEqual(t.rule, 'newest-export', 'a kept export is still an export');
+}, [ebookVariant('parent-1', 'orig.epub')]));
+
+test('a KEPT export still outranks an older one still on loan', run(async (p) => {
+  // The silent half, and the worse one: with the newer export invisible, the
+  // rung did not go quiet — it chose the OLDER file and narrated that instead.
+  const older = await land(p, p.exportFile('Older.epub', 'A'));
+  await new Promise((r) => setTimeout(r, 5));
+  const newer = await land(p, p.exportFile('Newer.epub', 'B'));
+
+  await actions.promoteVariantToArchive(PROJECT_ID, newer.variantId);
+
+  const t = await target(p);
+  assert.ok(t, 'the button is still there');
+  assert.strictEqual(t.variantId, newer.variantId,
+    `the kept newer export must win; got ${t.variantId === older.variantId ? 'the OLDER one' : t.variantId}`);
+}));
+
 test('a marked version outranks everything', run(async (p) => {
   fs.writeFileSync(p.abs('archive/orig.epub'), 'X');
   await land(p, p.exportFile('Test Book.epub', 'CLEANED'));
