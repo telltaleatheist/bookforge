@@ -1817,9 +1817,10 @@ async function invokeFoundryNarrate(
             protectRate: saved.rvcEnhancementProtectRate,
             nSemitones: saved.rvcEnhancementNSemitones,
           },
-      // This door never offers Continue, so it never asks the queue to throw away
-      // a cached session — the same rule the modal states for itself.
-      startFresh: false,
+      // It offers the choice now, as the desktop dialog does — see the field's
+      // note in foundry-narrate-form.ts for why this one has to ask on every
+      // book rather than only when there is something to discard.
+      startFresh: answers.startFresh,
     },
     // What the run does — the dialog's own two toggles, both drawn on, because a
     // narration nobody assembles leaves rendered sentences and no audiobook. Both

@@ -412,6 +412,37 @@ export function narrateFormOffer(
       default: true,
       help: 'Combine the rendered sentences into an M4B with its chapters and cover.',
     },
+    /*
+     * START OVER — the same choice the desktop narration dialog offers, and it
+     * has to be asked DIFFERENTLY here.
+     *
+     * A part-finished render cached under the project is picked up automatically
+     * (the queue step's mode 2.5), which is right when it is the same book and
+     * wrong when it is not — Owen re-exported an EPUB after new strikes and the
+     * run resumed the old text's sentences.
+     *
+     * The desktop dialog draws this ONLY when there is something to discard,
+     * because it can ask main about the book it was opened on. THIS form cannot:
+     * it is one list for the whole window (`setHostOperations`), computed before
+     * the window comes up, and Foundry never tells us which node is selected —
+     * only `invoke` learns the book, and by then the dialog is closed. So the
+     * question is always present and worded to be TRUE EITHER WAY: off changes
+     * nothing, and on is harmless when there is nothing cached (the step's
+     * `cleanSession` deletes checkpoints that are not there).
+     *
+     * Default off, deliberately. On is destructive and the cached sentences are
+     * hours of GPU; a person who knows the text changed can say so, and a person
+     * who does not should not lose a render by not reading a toggle.
+     */
+    {
+      key: 'startFresh',
+      label: 'Start over',
+      kind: 'toggle',
+      default: false,
+      help: 'If part of this book has already been narrated, discard it and read from the '
+        + 'beginning. Turn this on when the text has changed since that render. Leave it off to '
+        + 'carry on from what is already done.',
+    },
     {
       key: 'voice',
       label: 'Voice',
@@ -495,6 +526,8 @@ export function narrateFormOffer(
 export interface NarrateAnswers {
   readonly narrate: boolean;
   readonly assemble: boolean;
+  /** Discard any part-finished render of this book and read it from the start. */
+  readonly startFresh: boolean;
   readonly voice: string;
   readonly device: 'auto' | 'gpu' | 'cpu';
   readonly speed: number;
@@ -582,6 +615,7 @@ export function readNarrateAnswers(
 ): NarrateAnswers {
   const narrate = readToggle(settings, 'narrate', 'Read the book aloud');
   const assemble = readToggle(settings, 'assemble', 'Assemble the audiobook');
+  const startFresh = readToggle(settings, 'startFresh', 'Start over');
   if (!narrate && !assemble) {
     throw new Error(
       'There is nothing to queue: reading the book aloud is off and assembling the audiobook is '
@@ -626,6 +660,7 @@ export function readNarrateAnswers(
   return {
     narrate,
     assemble,
+    startFresh,
     voice: voice.trim(),
     device,
     // Always asked, so always proved — never taken from the saved settings.

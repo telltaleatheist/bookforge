@@ -107,6 +107,10 @@ function orpheusAnswers(over = {}) {
   return {
     narrate: true,
     assemble: true,
+    // Always drawn on this form — the window-level list cannot know whether
+    // the selected book has a part-finished render, so the question is asked
+    // on every book and defaults off.
+    startFresh: false,
     voice: 'leah',
     device: 'auto',
     speed: 1,
@@ -195,7 +199,7 @@ test('an engine with no sampling caps is asked no sampling numbers — but IS as
   // Advanced gate, for every engine, and this dialog matches it.
   const { fields, asked } = orpheusOffer();
   assert.deepStrictEqual(fields.map((f) => f.key), [
-    'narrate', 'assemble', 'voice', 'device', 'speed', 'finalDenoise', 'applyDeRing',
+    'narrate', 'assemble', 'startFresh', 'voice', 'device', 'speed', 'finalDenoise', 'applyDeRing',
   ]);
   assert.deepStrictEqual(asked, {
     temperature: false, topP: false, repetitionPenalty: false, enhancementModelIds: null,
@@ -205,13 +209,48 @@ test('an engine with no sampling caps is asked no sampling numbers — but IS as
 test('an engine WITH sampling caps is asked all three, after speed', () => {
   const { fields, asked } = xttsOffer();
   assert.deepStrictEqual(fields.map((f) => f.key), [
-    'narrate', 'assemble', 'voice', 'device',
+    'narrate', 'assemble', 'startFresh', 'voice', 'device',
     'speed', 'temperature', 'topP', 'repetitionPenalty',
     'finalDenoise', 'applyDeRing',
   ]);
   assert.deepStrictEqual(asked, {
     temperature: true, topP: true, repetitionPenalty: true, enhancementModelIds: null,
   });
+});
+
+test('Start over is asked on every book, defaults off, and travels verbatim', () => {
+  /*
+   * The desktop dialog draws this choice ONLY when the book has a
+   * part-finished render, because it can ask main about the book it was
+   * opened on. THIS form cannot: it is one list for the whole window and
+   * Foundry never says which node is selected. So the question is always
+   * present — and must default OFF, because on is destructive and the cached
+   * sentences are hours of GPU.
+   */
+  const field = fieldNamed(orpheusOffer().fields, 'startFresh');
+  assert.ok(field, 'every book is asked, since this form cannot know about one book');
+  assert.strictEqual(field.kind, 'toggle');
+  assert.strictEqual(field.default, false, 'nobody loses a render by not reading a toggle');
+
+  const offer = orpheusOffer();
+  const settings = form.readNarrateSavedSettings(saved());
+  assert.strictEqual(
+    form.readNarrateAnswers(orpheusAnswers({ startFresh: true }), offer.asked, settings).startFresh,
+    true, 'on means start over');
+  assert.strictEqual(
+    form.readNarrateAnswers(orpheusAnswers(), offer.asked, settings).startFresh,
+    false, 'off is the ordinary run, and is what every previous version sent');
+});
+
+test('a dialog that answers nothing for Start over is refused by name', () => {
+  // The toggle is always drawn, so a missing answer means the two sides
+  // disagree about this dialog — never a silent false, which would delete a
+  // render or keep a stale one without anybody choosing.
+  const offer = orpheusOffer();
+  const settings = form.readNarrateSavedSettings(saved());
+  const bag = orpheusAnswers();
+  delete bag.startFresh;
+  assert.throws(() => form.readNarrateAnswers(bag, offer.asked, settings), /Start over/);
 });
 
 test('the workers question is gone — a run always uses one', () => {
@@ -352,14 +391,14 @@ test('a full XTTS dialog comes back proved, every value the user\'s', () => {
   const { asked } = xttsOffer();
   const read = form.readNarrateAnswers(
     {
-      narrate: true, assemble: true, voice: ' leah ', device: 'gpu',
+      narrate: true, assemble: true, startFresh: false, voice: ' leah ', device: 'gpu',
       speed: 1.25, temperature: 0.8, topP: 0.5, repetitionPenalty: 3,
       finalDenoise: true, applyDeRing: true,
     },
     asked,
     form.readNarrateSavedSettings(saved({ ttsEngine: 'xtts' })));
   assert.deepStrictEqual(read, {
-    narrate: true, assemble: true, voice: 'leah', device: 'gpu',
+    narrate: true, assemble: true, startFresh: false, voice: 'leah', device: 'gpu',
     speed: 1.25, temperature: 0.8, topP: 0.5, repetitionPenalty: 3,
     finalDenoise: true, applyDeRing: true, rvcVoiceId: null,
   });
@@ -436,7 +475,7 @@ test('an EMPTIED number box arrives omitted, and is refused rather than read as 
   const { asked } = xttsOffer();
   const settings = form.readNarrateSavedSettings(saved({ ttsEngine: 'xtts' }));
   const full = {
-    narrate: true, assemble: true, voice: 'leah', device: 'auto',
+    narrate: true, assemble: true, startFresh: false, voice: 'leah', device: 'auto',
     speed: 1, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1,
     finalDenoise: false, applyDeRing: false,
   };
@@ -457,7 +496,7 @@ test('a number outside the range its box was drawn with is refused WITH the rang
   const { asked } = xttsOffer();
   const settings = form.readNarrateSavedSettings(saved({ ttsEngine: 'xtts' }));
   const full = {
-    narrate: true, assemble: true, voice: 'leah', device: 'auto',
+    narrate: true, assemble: true, startFresh: false, voice: 'leah', device: 'auto',
     speed: 1, temperature: 0.6, topP: 0.9, repetitionPenalty: 1.1,
     finalDenoise: false, applyDeRing: false,
   };
