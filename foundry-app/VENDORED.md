@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **19f219f** — *IPC-CHANNELS catches up to the metadata doors — and the rule tightens* |
-| Copied on | 2026-08-23 |
-| Copied by | `git -C <foundry> archive ada67e2 app \| tar -x --strip-components=1` (app/ is byte-identical at 19f219f) |
+| Source sha | **6646153** — *the mint asks who the book is — Wave 47's metadata modal, both doors* |
+| Copied on | 2026-08-24 |
+| Copied by | `git -C <foundry> archive 6646153 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -543,6 +543,49 @@ regenerate in the same commit that touches `ipcMain.handle` — so this keeper
 stops inheriting their lag. Worth keeping: staleness has now landed twice in the
 file whose entire job is to be counted, and both times the thing that caught it
 was a refresh reading the doc as an authority rather than a formality.
+
+`6646153` is Wave 47 and the range carries the whole answer to the
+German-for-English narrate incident (2026-08-24, the Niemöller book). `18445d9`
+first: THE DOCK'S HOST ACT NAMES A FILE, NEVER A RESOLUTION — the export being
+viewed when the focused tab is one of the project's finished EPUBs, else the
+single finished EPUB, else the pick-in-the-tree sentence, and an arrival-parked
+position gets a sentence instead of the `hostActPositionFrom` hop that resolved
+Owen's press to the German read step. Tree-row step presses are unchanged, which
+is why BookForge's own translation guard (`stepPressTranslationCheck`, landed
+the same day at 864c754c) still matters. Then the modal itself: every EPUB mint
+asks WHO THE BOOK IS before it exists — Owen's ruling — through two doors, the
+Export dialog's EPUB press and the dock's Metadata tile over a finished export
+(Save stamps the file in place via epub-meta and persists the project block so
+the next mint inherits). `shared/mint-meta.ts` carries BookForge's own filename
+convention, mirrored field for field from our metadata editor: title/subtitle,
+contributors with add/remove and the comma-never-reinverts rule, the two-author
+"and" / three-plus "et al." forms, collapseFilenameDots, ASCII fold on disk with
+Unicode kept in embedded metadata. THE SEAM GREW ITS AGREED FIELD:
+`ExportLanding.metadata` is FROZEN in `shared/types.ts` — `{ title, subtitle?,
+contributors[{first,last}], year?, language?, filename }`, `language` a plain
+primary subtag (our amendment, recorded at their 9266fa3), absent-means-
+minted-before-the-field, same posture as `stepId`. `language` follows the STEP'S
+OWN CHAIN on host mints — an auto-export of a German step says `de` whatever the
+stored preference — which is the seam-level twin of our guard. Landings minted
+through the modal now arrive under descriptive names, so our rename-on-the-way-in
+becomes a passthrough; the `(projectKey, fileName)` join is untouched. Engine
+behaviour worth an audit line: `epub-meta --creator` is now repeatable and
+REPLACES the set of `dc:creator` elements (paired positionally with
+`--creator-file-as`; a single `--creator` against a multi-creator book used to
+refuse and now replaces loudly), `--subtitle` writes the EPUB3 title-type
+refinement, `--date` takes a bare year, and read output gains `subtitle` and
+`creators[{name, fileAs}]` with `fields.title` now the MAIN title. Three new
+channels — `meta:mint-read`, `meta:mint-write`, `meta:mint-stamp` — with the doc
+regenerated in the same commit under their standing rule; no `meta:` name on our
+side, keeper 6/6. Deferred out loud on their side: the cover picker (rides their
+packageVlmEpub cover wave; `MintMeta.coverPath` exists in the source type but is
+NOT in the landing block until then) and the narrate-confirmation target card.
+Verification: 123/123 blobs hash-verified against `6646153:app/` plus
+`IPC-CHANNELS.md` identical to `6646153:docs/IPC-CHANNELS.md`; `package.json`
+moved for electron-builder icons only (new `build/` icons, un-ignored by the
+subtree's own `.gitignore` change) with the lockfile untouched, so `npm ci` had
+nothing to do and was skipped; build clean with the standing budget warning
+(826.87 kB); keepers ALL GREEN.
 
 The engine question, asked because `src/` moved too (translate `tablecells.ts`
 is new, `bookrows`/`run` grew, five `vlm/` files changed): the metadata dialog's

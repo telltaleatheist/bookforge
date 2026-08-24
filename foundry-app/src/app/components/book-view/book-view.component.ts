@@ -1613,7 +1613,24 @@ const OP_GESTURE: Gesture = { kind: 'op' };
      * jammed into that split would fight the lead's own measure above.
      */
     .pair.original { justify-content: center; }
-    .pair.original:not(.aligned) .bench { flex: 0 1 48rem; }
+    /*
+     * 54rem AND NOT 48: the first basis left ~1.9rem of gray beside the sheet
+     * and the category chip hangs LEFT of the block by its own width plus
+     * 0.5rem — "Section header" reached the bench's edge and the bench's
+     * horizontal clip cut it to "ON HEADER" on Owen's screen. The widest chip
+     * needs ~4rem beyond the sheet's edge; 54rem gives both sides that room
+     * and the gap to the panel stays small enough to read as one group.
+     */
+    .pair.original:not(.aligned) .bench { flex: 0 1 54rem; }
+    /*
+     * THE AMBER PILL OPENS INWARD while the panel is up. It normally unrolls
+     * rightward into the bench's gray, up to ~9.5rem past the sheet — room the
+     * centred bench no longer has, and clipping the one sentence that names an
+     * unlinked note is worst exactly here, where somebody is proofing against
+     * the scan. Right-aligned to its dot it unrolls over the paper's margin
+     * instead: over words only while hovered, readable always.
+     */
+    .pair.original .flag .pill { left: auto; right: 0; }
     /*
      * THE CONTEXT SHEET IS THE PAPER WITHOUT THE INSTRUMENT. Same ground, same
      * serif, same measured sizes — it has to be, or the two columns would set the

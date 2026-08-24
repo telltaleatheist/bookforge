@@ -11,6 +11,7 @@ import { HostStatusComponent } from './components/host-status/host-status.compon
 import { OcrDialogComponent } from './components/ocr-dialog/ocr-dialog.component';
 import { OpenDocumentsComponent } from './components/open-documents/open-documents.component';
 import { MetadataDialogComponent } from './components/metadata-dialog/metadata-dialog.component';
+import { MintMetaDialogComponent } from './components/mint-meta-dialog/mint-meta-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { SweepDialogComponent } from './components/sweep-dialog/sweep-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
@@ -111,7 +112,7 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     RouterOutlet, OpenDocumentsComponent, InspectorComponent,
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
-    SimplifyDialogComponent, MetadataDialogComponent, SweepDialogComponent,
+    SimplifyDialogComponent, MetadataDialogComponent, MintMetaDialogComponent, SweepDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
     CaptureNewDialogComponent, CaptureProgressComponent,
   ],
@@ -221,6 +222,10 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
 
       @if (ui.metadataOpen()) {
         <app-metadata-dialog />
+      }
+
+      @if (ui.mintMetaOpen()) {
+        <app-mint-meta-dialog />
       }
 
       @if (ui.captureNewOpen()) {

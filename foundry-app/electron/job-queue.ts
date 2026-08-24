@@ -155,7 +155,7 @@ import * as path from 'node:path';
 
 import { readAppSettings } from './app-settings';
 import { materializeTranslation } from './book';
-import { parseProgressLine, runEngine, writeBookFile } from './engine';
+import { parseProgressLine, runEngine, stampMintMetadata, writeBookFile } from './engine';
 import { ENV_SPECS } from './env-catalog';
 import { destFor, installEnv } from './env-install';
 import { foundryHost, type FoundryHostQueue } from './host';
@@ -163,9 +163,11 @@ import {
   bookAtPosition,
   generatedRoleFor,
   imagesDirFor,
+  ledgerOf,
   metadataForProduct,
   positionStepId,
   projectDirOf,
+  readManifest,
   readStepLedger,
   recordFinal,
   recordGenerated,
@@ -180,11 +182,11 @@ import {
 } from './projects';
 import { readSettings } from './settings';
 import { ensureServer, isLocalVllmEndpoint, noteQueueBusy, noteQueueIdle } from './vllm-server';
-import { REWRITE_LABELS } from '../shared/ledger';
+import { ancestry, REWRITE_LABELS } from '../shared/ledger';
 import { fold } from '../shared/original';
 import { JOB_RESOURCE, SLOTS, type JobResource } from '../shared/queue-board';
 import type {
-  ConversionKind, EnvInstallRequest, ExportLanding, FoundryJobRow, Job, JobKind, JobRequest,
+  ConversionKind, EnvInstallRequest, ExportLanding, ExportMintMetadata, FoundryJobRow, Job, JobKind, JobRequest,
   TranslateRequest,
 } from '../shared/types';
 
@@ -361,6 +363,35 @@ let exportLanded: (landing: ExportLanding) => void = () => { /* set by main */ }
 
 export function onExportLanded(listener: (landing: ExportLanding) => void): void {
   exportLanded = listener;
+}
+
+/**
+ * THE CHAIN'S OWN LANGUAGE — the newest `read` on the path that produced the
+ * export, or nothing. Asked only where the request itself carried no language
+ * (an untranslated position: the plan sets one for every translated export),
+ * and lenient end to end, because a language the settle cannot work out is a
+ * stamp that falls back to the form's answer rather than a mint that fails.
+ */
+async function chainLanguageOf(
+  outputPath: string,
+  parentStep: string | null,
+): Promise<string | undefined> {
+  if (parentStep === null) return undefined;
+  const dir = projectDirOf(outputPath);
+  if (dir === null) return undefined;
+  try {
+    const ledger = ledgerOf(await readManifest(dir));
+    const chain = ancestry(ledger, parentStep);
+    for (let at = chain.length - 1; at >= 0; at -= 1) {
+      const step = chain[at]!;
+      if (step.action !== 'read') continue;
+      const language = step.params?.['language'];
+      return typeof language === 'string' && language.length > 0 ? language : undefined;
+    }
+  } catch {
+    return undefined;
+  }
+  return undefined;
 }
 
 /**
@@ -2684,6 +2715,42 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       const madeFrom = next.parentStep ?? null;
       await recordFinal(next.outputPath, madeFrom);
       const filed = path.basename(next.outputPath);
+      /*
+       * ── THE MINT'S DECLARATION, STAMPED AND THEN ANNOUNCED ──────────────────
+       *
+       * `request.mintMeta` is what the modal confirmed at the press
+       * (JobRequest.mintMeta carries the why). The LANGUAGE follows the step's
+       * own chain over the form: the request's language where the plan set one
+       * (a translated position), the reading's language otherwise, and only
+       * where the chain is silent does the form's answer stand — an
+       * auto-export of a German step must say de whatever the person last
+       * typed. Stamped into the file first, announced second, both out of ONE
+       * composed block, which is `madeFrom`'s own one-variable rule two
+       * comments up. A stamp that fails is a console line and never a failed
+       * job: the book is made and filed, and a metadata splice can be pressed
+       * again from the tile in seconds.
+       */
+      let minted: ExportMintMetadata | undefined;
+      if (request.kind === 'epub' && request.mintMeta !== undefined) {
+        const meta = request.mintMeta;
+        const declared = request.language
+          ?? await chainLanguageOf(next.outputPath, madeFrom)
+          ?? meta.language;
+        minted = {
+          title: meta.title,
+          contributors: meta.contributors,
+          filename: filed,
+          ...(meta.subtitle !== undefined ? { subtitle: meta.subtitle } : {}),
+          ...(meta.year !== undefined ? { year: meta.year } : {}),
+          ...(declared !== undefined ? { language: declared } : {}),
+        };
+        const stamped = await stampMintMetadata(next.outputPath, meta, declared);
+        if (!stamped.ok) {
+          console.error(
+            `[queue] the mint metadata could not be stamped onto ${next.outputPath}: ${stamped.reason}`,
+          );
+        }
+      }
       next.message = `Wrote ${filed}`;
       changed();
       /*
@@ -2717,6 +2784,10 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
             // See `ExportLanding.stepId`: absent for a job with no position
             // behind it, which a host must read as "unknown" and not as "none".
             ...(madeFrom !== null ? { stepId: madeFrom } : {}),
+            // And the mint's declaration, the same block the stamp just wrote —
+            // absent means "minted before the modal existed", never "no
+            // metadata" (`ExportLanding.metadata`).
+            ...(minted !== undefined ? { metadata: minted } : {}),
           });
         } catch (err) {
           console.error(

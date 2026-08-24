@@ -108,6 +108,8 @@ import type {
   LedgerParams,
   LedgerStep,
   MetadataPatch,
+  MintContributor,
+  MintMeta,
   ProjectDocument,
   ProjectDocumentKind,
   ProjectFacsimile,
@@ -538,11 +540,63 @@ export async function readManifest(dir: string): Promise<ProjectManifest> {
     final: readFinal(row['final']),
     reading: readReading(row['reading']),
   };
+  /*
+   * CARRIED EXPLICITLY, because this function REBUILDS the manifest field by
+   * field and a field it does not name is erased on the next write — the
+   * validator-that-rebuilds trap `validRecipe` already fell into once
+   * (capture.ts). A mint metadata that silently vanished after one save would
+   * be the modal forgetting what the person confirmed, which is the exact
+   * opposite of the inheritance it exists for.
+   */
+  const meta = readMintMeta(row['meta']);
+  if (meta !== undefined) manifest.meta = meta;
   // LAST, because it is the only field built from the manifest rather than from
   // one of its rows: an un-migrated project's ledger is reconstructed out of the
   // archive, the reading and the chains that were read above it.
   manifest.ledger = readLedger(row['ledger'], manifest, file);
   return manifest;
+}
+
+/**
+ * The mint metadata block, read leniently — a half-written or hand-mangled
+ * block is treated as absent, which lands on the seed path rather than on a
+ * refusal: the field informs a form, and a project that cannot open because
+ * its metadata went strange would be the tail wagging the book.
+ */
+function readMintMeta(value: unknown): MintMeta | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return undefined;
+  const row = value as Record<string, unknown>;
+  if (typeof row['title'] !== 'string') return undefined;
+  const contributors = Array.isArray(row['contributors'])
+    ? row['contributors'].flatMap((one): MintContributor[] => {
+      if (typeof one !== 'object' || one === null) return [];
+      const author = one as Record<string, unknown>;
+      const first = typeof author['first'] === 'string' ? author['first'] : '';
+      const last = typeof author['last'] === 'string' ? author['last'] : '';
+      return first || last ? [{ first, last }] : [];
+    })
+    : [];
+  const text = (field: unknown): string | undefined =>
+    typeof field === 'string' && field.length > 0 ? field : undefined;
+  return {
+    title: row['title'],
+    contributors,
+    ...(text(row['subtitle']) !== undefined ? { subtitle: text(row['subtitle'])! } : {}),
+    ...(text(row['year']) !== undefined ? { year: text(row['year'])! } : {}),
+    ...(text(row['language']) !== undefined ? { language: text(row['language'])! } : {}),
+    ...(text(row['coverPath']) !== undefined ? { coverPath: text(row['coverPath'])! } : {}),
+  };
+}
+
+/**
+ * Record what the modal confirmed — the whole block, replaced. One writer, so
+ * "what does this project say about itself" has one spelling on disk; read
+ * back through `readManifest`'s own lenient reader on the next open.
+ */
+export async function recordMintMeta(dir: string, meta: MintMeta): Promise<void> {
+  await withManifest(dir, async (manifest) => {
+    manifest.meta = meta;
+  });
 }
 
 /**

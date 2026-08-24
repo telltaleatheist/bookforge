@@ -54,7 +54,8 @@
           "from": "../dist/foundry-windows-x64.exe",
           "to": "foundry.exe"
         }
-      ]
+      ],
+      "icon": "build/icon.ico"
     },
     "mac": {
       "target": "dmg",
@@ -63,7 +64,8 @@
           "from": "../dist/foundry-darwin-arm64",
           "to": "foundry"
         }
-      ]
+      ],
+      "icon": "build/icon.png"
     }
   },
   "dependencies": {

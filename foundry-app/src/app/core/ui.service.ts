@@ -26,6 +26,29 @@ export interface HostOpRequest {
 }
 
 /**
+ * What the mint metadata dialog was opened OVER — the two doors Owen named:
+ * minting a new EPUB from a project, or re-stamping a finished export the
+ * person is looking at. Discriminated on `mode` so the component cannot read
+ * a mint's input path off an edit or vice versa.
+ */
+export type MintMetaRequest =
+  | {
+    mode: 'mint';
+    /** The book, as a project directory. */
+    projectDir: string;
+    /** The document the Export dialog was aimed at — what the plan resolves. */
+    inputPath: string;
+  }
+  | {
+    mode: 'edit';
+    projectDir: string;
+    /** The finished export, absolute — what the stamp rewrites in place. */
+    path: string;
+    /** Its basename, for the card's Document row. */
+    file: string;
+  };
+
+/**
  * The chrome's own state: which dialog is up, and whether the shelf is unrolled.
  *
  * The OCR tool used to be a slide-out panel beside the viewer and a toggle in
@@ -303,13 +326,15 @@ export class UiService {
   private only(which: typeof this.dialogs[number] | null): void {
     for (const dialog of this.dialogs) dialog.set(dialog === which);
     /*
-     * AND THE HOST-OP DIALOG, WHICH IS NOT IN THE LIST BECAUSE IT IS NOT A
-     * BOOLEAN. It obeys the same rule — a modal is a question and there is only
-     * ever one being asked — so every opener clears it, and it is cleared here
-     * rather than in each of them for the reason the list exists at all: a
-     * sibling somebody forgot to clear is a bug that only appears in one order.
+     * AND THE TWO REQUEST-SHAPED DIALOGS, WHICH ARE NOT IN THE LIST BECAUSE
+     * THEY ARE NOT BOOLEANS. They obey the same rule — a modal is a question
+     * and there is only ever one being asked — so every opener clears them,
+     * and they are cleared here rather than in each opener for the reason the
+     * list exists at all: a sibling somebody forgot to clear is a bug that
+     * only appears in one order.
      */
     this.hostOpOpen.set(null);
+    this.mintMetaOpen.set(null);
   }
 
   /**
@@ -384,6 +409,24 @@ export class UiService {
 
   closeMetadata(): void {
     this.metadataOpen.set(false);
+  }
+
+  /**
+   * The mint metadata dialog — who the book says it is, confirmed at the mint
+   * or re-stamped onto a finished export (Owen's ruling, 2026-08-24; the
+   * component carries it). Like the host-op dialog it holds a REQUEST rather
+   * than a boolean, so it joins the one-modal rule through `only(null)`
+   * without joining the boolean list.
+   */
+  readonly mintMetaOpen = signal<MintMetaRequest | null>(null);
+
+  openMintMeta(request: MintMetaRequest): void {
+    this.only(null);
+    this.mintMetaOpen.set(request);
+  }
+
+  closeMintMeta(): void {
+    this.mintMetaOpen.set(null);
   }
 
   openSweep(): void {

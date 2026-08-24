@@ -721,10 +721,20 @@ export async function exportEpubFromStep(
    * that has held a step id since before somebody deleted the step — and it is
    * the same refusal every other door in this app gives for the same mistake.
    */
-  const step = stepOf(ledgerOf(await readManifest(project.dir)), stepId);
+  const manifest = await readManifest(project.dir);
+  const step = stepOf(ledgerOf(manifest), stepId);
   const plan = await planExport(original.path, 'epub', step);
   const request: JobRequest = {
     kind: 'epub',
+    /*
+     * THE PROJECT'S STORED DECLARATION rides a host-ordered mint too, so a
+     * book BookForge asks for arrives stamped and announced like one a person
+     * minted through the dialog. No modal here — nobody is standing at one —
+     * and the language rule holds without help: the settle takes the chain's
+     * language over this block's (`JobRequest.mintMeta`), which is exactly
+     * what makes an auto-export of a German step say de.
+     */
+    ...(manifest.meta !== undefined ? { mintMeta: manifest.meta } : {}),
     // The pixels, as always: the plan resolved the archived original rather than
     // trusting whatever document anybody was looking at.
     inputPath: plan.sourcePath,

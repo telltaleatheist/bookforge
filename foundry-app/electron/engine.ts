@@ -21,12 +21,14 @@ import { app } from 'electron';
 
 import { hosted } from './host';
 import { fold } from '../shared/original';
+import { contributorFileAs } from '../shared/mint-meta';
 import type {
   DocumentMetadata,
   DoctorResult,
   EngineInfo,
   JobProgress,
   MetadataOutcome,
+  MintMeta,
 } from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -865,7 +867,40 @@ export async function writeEpubMetadata(
 ): Promise<MetadataOutcome> {
   const flags = metaFlags(patch);
   if (flags.length === 0) return readEpubMetadata(epubPath);
+  return spliceEpub(epubPath, flags);
+}
 
+/**
+ * THE MINT'S OWN STAMP — the whole `MintMeta` block onto one finished EPUB,
+ * through the same side-file splice as the flat patch above.
+ *
+ * The creators go as a SET, replacing whatever the package held (repeatable
+ * `--creator`, paired in order with `--creator-file-as` in the "Last, First"
+ * spelling shared/mint-meta.ts owns); the subtitle goes even when empty,
+ * because empty MEANS removal and a stamp that skipped it would leave a
+ * cleared subtitle standing in the file. `language` is the caller's decision,
+ * already resolved through the chain rule (`JobRequest.mintMeta` argues it) —
+ * this function writes what it is told and decides nothing.
+ */
+export async function stampMintMetadata(
+  epubPath: string,
+  meta: MintMeta,
+  language: string | undefined,
+): Promise<MetadataOutcome> {
+  const flags: string[] = ['--title', meta.title || 'Untitled', '--subtitle', meta.subtitle ?? ''];
+  for (const one of meta.contributors) {
+    const display = [one.first, one.last].filter(Boolean).join(' ');
+    if (!display) continue;
+    flags.push('--creator', display, '--creator-file-as', contributorFileAs(one));
+  }
+  if (meta.year?.trim()) flags.push('--date', meta.year.trim());
+  const declared = language ?? meta.language;
+  if (declared) flags.push('--language', declared);
+  return spliceEpub(epubPath, flags);
+}
+
+/** One splice, both writers: the side file, the rename, the no-change skip. */
+async function spliceEpub(epubPath: string, flags: readonly string[]): Promise<MetadataOutcome> {
   const beside = path.join(path.dirname(epubPath), `.${path.basename(epubPath)}.meta-tmp`);
   const result = await runMetaCommand(['epub-meta', '--epub', epubPath, '--out', beside, '--json', ...flags]);
   if (!result.ok) {

@@ -3,3 +3,7 @@ dist/
 out-tsc/
 .angular/
 release/
+
+# The root .gitignore ignores every build/ for the engine's outputs; THIS one
+# is electron-builder's buildResources — the app icon lives here and ships.
+!build/

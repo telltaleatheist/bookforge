@@ -222,6 +222,19 @@ export function openWindow(): BrowserWindow {
     // --bg-base in app/src/styles.scss. A mismatch here is the colour the
     // window flashes for the frame before the renderer paints.
     backgroundColor: '#181715',
+    /*
+     * THE MARK, ON THE WINDOW — the home hero's ⬙ drawn as geometry at
+     * app/build/icon.* (Owen, 2026-08-23: "can you make it its official
+     * icon?"). This line is for the DEV window and Linux, where nothing else
+     * names one; a packaged Windows build gets it from the exe (electron-
+     * builder's win.icon) and macOS from the bundle, both fed by the same
+     * files. Resolved from the app root because `build/` is deliberately not
+     * in the package's `files` list — when the path is absent, Electron
+     * quietly keeps its default, which is the right degrade for a tree
+     * without the icon.
+     */
+    icon: path.join(__dirname, '..', '..', 'build',
+      process.platform === 'win32' ? 'icon.ico' : 'icon.png'),
     show: false,
     webPreferences: {
       nodeIntegration: false,

@@ -5,7 +5,14 @@
  * (relative import), the Angular renderer through tsconfig.app.json (the
  * `@shared/*` alias). Nothing in here has a runtime: types only, so neither
  * bundle carries a byte of it and the two sides cannot drift.
+ *
+ * The one import is `mint-meta`'s TYPES — type-only, so the no-runtime claim
+ * above stays true; the shapes live there beside the naming convention they
+ * describe, and this file re-uses rather than re-declares them.
  */
+import type { MintContributor, MintMeta } from './mint-meta';
+
+export type { MintContributor, MintMeta };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // The job queue
@@ -291,6 +298,23 @@ export interface GenerateRequest {
    * has edited — see `WorkspacePlan.bookPath`, which is where it comes from.
    */
   bookPath?: string;
+  /**
+   * WHO THE MINT SAYS THE BOOK IS — carried on the request so the settle can
+   * stamp the finished EPUB and say the same facts in the landing
+   * (`ExportLanding.metadata`) out of one variable, the provenance rule
+   * `recordFinal`'s docblock already argues for `stepId`.
+   *
+   * ON THE REQUEST AND NOT READ AT SETTLE, for `records`' reason exactly: the
+   * modal was confirmed when the person pressed Export, and a metadata edit
+   * made while the job waited must not silently stamp a different answer than
+   * the card showed. The one field the settle overrides is LANGUAGE, which
+   * follows the step's own chain (a German step's export says de whatever the
+   * form remembered) — the override is the point, and it is argued at the
+   * stamp. Present only on EPUB exports minted through the metadata dialog or
+   * a host's own export ask; absent everywhere else, and absent means no
+   * stamp, which is every export from before the modal existed.
+   */
+  mintMeta?: MintMeta;
   /**
    * THIS IS ONE STEP'S OWN DOCUMENT — what a `curate`, `translate` or `read`
    * landing makes of itself, named after the step it belongs to.
@@ -1376,6 +1400,33 @@ export interface ExportLanding {
    * as "no step" — the difference is the whole of the compatibility promise.
    */
   stepId?: string;
+  /**
+   * WHO THE MINTED FILE SAYS IT IS — the mint's own declaration, for a host
+   * filing this landing as a version (BookForge's variant records; the shape
+   * was agreed with their session on 2026-08-24 and frozen here).
+   *
+   * `language` is the mint's declaration and FOLLOWS THE STEP'S OWN CHAIN —
+   * a translated position's target, else the reading's language — never the
+   * project's stored preference, because an auto-export of a German step must
+   * say `de` whatever the person last typed in a form. Plain primary subtag
+   * (en, de…), their amendment: their selects key on the two-letter form and
+   * a full tag arriving there would be a quiet mismatch.
+   *
+   * `filename` is the basename actually minted on disk. Absent `metadata`
+   * means "minted before this field existed", never "no metadata" — the same
+   * posture as `stepId` above, and for the same compatibility reason.
+   */
+  metadata?: ExportMintMetadata;
+}
+
+/** The landing's metadata block — `MintMeta`'s facts plus the minted name. */
+export interface ExportMintMetadata {
+  title: string;
+  subtitle?: string;
+  contributors: MintContributor[];
+  year?: string;
+  language?: string;
+  filename: string;
 }
 
 /**
@@ -1666,6 +1717,17 @@ export interface ProjectManifest {
    * "what was actually done to this book" from disagreeing.
    */
   ledger?: ProjectLedger;
+  /**
+   * WHO THIS BOOK SAYS IT IS — the mint-time metadata the modal edits and
+   * every export inherits (shared/mint-meta.ts carries the shape and the
+   * ruling). Optional because every project on disk predates it; absent means
+   * "never confirmed", and the modal seeds its first opening from the
+   * manifest title, the scan's own Info author and the position's language
+   * rather than from an empty form. Written whenever the modal saves, so the
+   * next mint pre-fills with what the person last confirmed — the inheritance
+   * Owen asked for by that name.
+   */
+  meta?: MintMeta;
 }
 
 /**

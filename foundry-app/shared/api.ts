@@ -52,6 +52,7 @@ import type {
   SetupLogEvent,
   SetupRequest,
   SetupResult,
+  MintMeta,
   StepDeletion,
   StepLedgerView,
   StepRow,
@@ -310,6 +311,21 @@ export interface FoundryApi {
      */
     readEpub(filePath: string): Promise<MetadataOutcome>;
     writeEpub(filePath: string, patch: Partial<EpubMetadataFields>): Promise<MetadataWriteOutcome>;
+    /**
+     * The MINT metadata — the per-project block the mint modal edits
+     * (shared/mint-meta.ts). Read answers null for a project that has never
+     * confirmed one, which is the dialog's cue to seed; write replaces the
+     * block, which is what makes the next mint pre-fill with what the person
+     * last said.
+     */
+    readMint(projectDir: string): Promise<MintMeta | null>;
+    writeMint(projectDir: string, meta: MintMeta): Promise<void>;
+    /**
+     * The whole block stamped onto ONE finished export, in place — the
+     * metadata tile's Save over an EPUB. Near instant: an OPF splice through
+     * a side file and one rename, never a recast.
+     */
+    stampMint(filePath: string, meta: MintMeta): Promise<MetadataOutcome>;
   };
 
   /**

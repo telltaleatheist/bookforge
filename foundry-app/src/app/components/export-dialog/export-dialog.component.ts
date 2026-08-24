@@ -716,6 +716,27 @@ export class ExportDialogComponent {
     const input = this.source();
     if (input === null || !api) return;
 
+    /*
+     * ── AN EPUB MINT GOES THROUGH THE METADATA CARD FIRST — Owen's ruling ────
+     *
+     * (2026-08-24): *"The modal appears BEFORE the mint. Filling it is how the
+     * user knows what they're exporting and where it'll go."* So the EPUB
+     * press hands off to the mint metadata dialog, which runs the whole
+     * export itself — fields, filename, queue, landing — with this card's own
+     * machinery below serving the formats that carry no metadata card: the
+     * facsimile and the text. The handoff needs the project, and an export
+     * source is always inside one; a path somehow outside any project falls
+     * through to the old path, which will refuse it with the plan's own
+     * sentence rather than this dialog inventing one.
+     */
+    if (this.kind() === 'epub') {
+      const project = this.projects.projectFor(input);
+      if (project !== null) {
+        this.ui.openMintMeta({ mode: 'mint', projectDir: project.dir, inputPath: input });
+        return;
+      }
+    }
+
     this.busy.set(true);
     this.problem.set(null);
     try {

@@ -140,6 +140,9 @@ const api: FoundryApi = {
     writePdf: (filePath, patch) => ipcRenderer.invoke('meta:write-pdf', filePath, patch),
     readEpub: (filePath) => ipcRenderer.invoke('meta:read-epub', filePath),
     writeEpub: (filePath, patch) => ipcRenderer.invoke('meta:write-epub', filePath, patch),
+    readMint: (projectDir) => ipcRenderer.invoke('meta:mint-read', projectDir),
+    writeMint: (projectDir, meta) => ipcRenderer.invoke('meta:mint-write', projectDir, meta),
+    stampMint: (filePath, meta) => ipcRenderer.invoke('meta:mint-stamp', filePath, meta),
   },
 
   workspace: {

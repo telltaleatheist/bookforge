@@ -11,8 +11,8 @@ import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
  */
 import {
   canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom, canTranslateFrom,
-  hostActPositionFrom,
 } from '@shared/stages';
+import { standsOnAnArrival } from '@shared/ledger';
 import { fold } from '@shared/original';
 
 import { BookStacksService } from '../../core/book-stacks.service';
@@ -999,14 +999,13 @@ export class ActionMenuComponent {
    * (`exportEpubFromStep`, electron/mount.ts) and then runs the work, which is
    * Owen's ruling and the reason this branch exists.
    *
-   * WITH ONE POSITION RESOLVED RATHER THAN SENT AS IT STANDS: the import row.
-   * The gray lets a press through there now, and the import is the one id that
-   * must not travel — the host takes it straight back to `exportEpubFromStep`,
-   * whose `canExportFrom` still refuses the import, so the press would end as a
-   * refusal in somebody else's log. `hostActPositionFrom` (shared/stages.ts) is
-   * the whole of that rule: an import names the reading under it, everything
-   * else names itself, and a lineage line drawn under the reading is the honest
-   * one because the reading's book is what the work was made from.
+   * THE POSITION IS NO LONGER RESOLVED AT ALL FROM THIS MENU (Owen's ruling,
+   * 2026-08-24, inside the branch): a finished EPUB is named by file whenever
+   * one exists, and a position parked on an arrival gets a sentence instead of
+   * the old `hostActPositionFrom` hop onto the reading — the hop that cast and
+   * narrated the German text of a book whose English export was on screen. The
+   * mapping itself survives in shared/stages.ts for the TREE's row presses,
+   * where the row pressed says which lineage was meant.
    *
    * AN ACT THAT CONSUMES ONLY THE FINISHED FILE keeps every refusal it had. It
    * has said it reads an export and nothing else, so a press has to name one, and
@@ -1046,6 +1045,55 @@ export class ActionMenuComponent {
      */
     if (!await this.unapplied.cleared(dir, 'host')) return;
     if (this.hostOps.offersFor('book').some((offer) => offer.id === operationId)) {
+      /*
+       * ── THE PRESS NAMES A FILE, AND NEVER A RESOLUTION — Owen's ruling ──────
+       *
+       * (2026-08-24): *"yes, it should name the file im actually exporting.
+       * not generically."* The ruling has a body count. This branch used to
+       * speak THE POSITION for any act declaring the book currency — and the
+       * position is wherever the pointer happens to be parked, which on
+       * evangelische-kirche was the mint: `hostActPositionFrom` mapped that
+       * arrival to the newest READ, the read is the GERMAN scan, the host
+       * auto-cast a German EPUB and narrated it, twice, while Owen sat looking
+       * at the English export he had just forged. The dock is a coarse
+       * surface; it must hand the host a CONCRETE file whenever one exists.
+       *
+       * So, in order of how much the press can honestly know:
+       *  - THE EXPORT BEING VIEWED, when the focused tab is one of this
+       *    project's finished EPUBs — the strongest possible reading of
+       *    "the file im actually exporting".
+       *  - THE ONE FINISHED EPUB, when the tray holds exactly one.
+       *  - A SENTENCE for several unviewed — the same pick-in-the-tree answer
+       *    the file-consuming branch below has always given.
+       *  - With NO export at all, the make-one path survives — that is Owen's
+       *    own earlier ruling ("i dont think its intuitive to know you have to
+       *    create an epub before you can narrate") — but only from a position
+       *    that names ITSELF. A position parked on an ARRIVAL no longer maps
+       *    silently to the reading (the exact hop that chose German): it gets
+       *    a sentence, because a press from the scan's row is a press from
+       *    nowhere in particular about a book with more than one possible
+       *    text.
+       */
+      const held = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
+      const finished = (held?.exports ?? []).filter((made) => made.kind === 'epub');
+      if (finished.length > 0) {
+        const tab = this.stage.activeDocument();
+        const viewing = tab !== null && tab.kind === 'book' && isExportView(tab)
+          ? finished.find((made) => fold(tab.path) === fold(`${dir}/final/${made.file}`)) ?? null
+          : null;
+        const target = viewing ?? (finished.length === 1 ? finished[0]! : null);
+        if (target === null) {
+          this.notices.notice.set(
+            'This book has more than one finished export, so which one this should work from is '
+            + 'not obvious from here. Open the one you mean, or start it from its row in the '
+            + 'library tree.',
+          );
+          return;
+        }
+        void this.router.navigateByUrl('/');
+        this.ui.openHostOp({ operationId, projectDir: dir, nodeId: exportNodeId(target.file) });
+        return;
+      }
       const standing = this.ledger.standingIn(dir);
       if (standing === null) {
         /*
@@ -1062,24 +1110,16 @@ export class ActionMenuComponent {
         );
         return;
       }
-      const named = hostActPositionFrom(this.ledger.historyFor(dir)?.ledger ?? null, standing);
-      if (named === null) {
-        /*
-         * THE IMPORT ROW OVER A BOOK WHOSE READING IS NOT IN ITS HISTORY, which
-         * is the one state this can be: a bank filled outside this app leaves
-         * `reading.done` true with no `read` step to name (see
-         * `hostActPositionFrom`). Sending the import instead would hand the host
-         * a position its own export path declines, so the honest answer is to
-         * say where the press WILL work — which is any row below the top one.
-         */
+      if (standsOnAnArrival(standing)) {
         this.notices.notice.set(
-          'This book’s reading is not recorded in its history, so an act ordered from the top '
-          + 'row has no step to name. Click the step you want it made from and press again.',
+          'This book is standing on its scan, and there is no finished export to name — so '
+          + 'running this from here would be a guess about which text you mean. Export the book '
+          + 'first, or press the act on the step you mean in the library tree.',
         );
         return;
       }
       void this.router.navigateByUrl('/');
-      this.ui.openHostOp({ operationId, projectDir: dir, nodeId: named.id });
+      this.ui.openHostOp({ operationId, projectDir: dir, nodeId: standing.id });
       return;
     }
     const project = this.projects.items().find((one) => fold(one.dir) === fold(dir)) ?? null;
@@ -1456,6 +1496,27 @@ export class ActionMenuComponent {
   }
 
   protected metadata(): void {
+    /*
+     * AN EPUB EXPORT GETS THE MINT DIALOG — Owen's ruling (2026-08-24): the
+     * tile over a finished book opens the same card the mint asked with, and
+     * Save stamps the very file on screen. The PDF keeps the older dialog,
+     * whose Info-dictionary fields are a different document's different
+     * questions.
+     */
+    const tab = this.stage.activeDocument();
+    if (tab !== null && tab.kind === 'book' && isExportView(tab)) {
+      const project = this.projects.projectFor(tab.path);
+      if (project !== null) {
+        void this.router.navigateByUrl('/');
+        this.ui.openMintMeta({
+          mode: 'edit',
+          projectDir: project.dir,
+          path: tab.path,
+          file: tab.path.split(/[\\/]/).pop() ?? tab.path,
+        });
+        return;
+      }
+    }
     void this.router.navigateByUrl('/');
     this.ui.openMetadata();
   }

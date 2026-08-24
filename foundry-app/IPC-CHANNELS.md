@@ -1,9 +1,16 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-23 for **Wave 46, which adds two doors** —
+from memory, regenerated on 2026-08-24 for **Wave 47's mint metadata** —
+`meta:mint-read`, `meta:mint-write` and `meta:mint-stamp`, the per-project
+block the mint modal edits and the in-place stamp its Save performs — in the
+same commit that adds the handlers, which is now the standing rule below.
+Counted by script: **90 `ipcMain.handle` call sites, 90 distinct channel
+names, zero `ipcMain.on`** in `app/electron/ipc.ts`.
+
+Before that, regenerated on 2026-08-23 for **Wave 46, which adds two doors** —
 `meta:read-epub` and `meta:write-epub`, the metadata dialog's EPUB arm
-reopened. Counted by script for this regeneration: **87 `ipcMain.handle` call
+reopened. Counted by script for that regeneration: **87 `ipcMain.handle` call
 sites, 87 distinct channel names, zero `ipcMain.on`** in `app/electron/ipc.ts`.
 The gap was caught not here but by BookForge's own vendoring audit reading this
 file as the authority it is ruled to be — the wave landed the doors and did not
@@ -382,6 +389,9 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
+| `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |
+| `meta:mint-stamp` | The whole block onto ONE finished export, in place — the metadata tile's Save over an EPUB. Tray-gated like the flat writer. |
+| `meta:mint-write` | Replace that block — what the mint modal saves, and what the next mint pre-fills from. |
 | `meta:read-epub` | A finished EPUB export's OPF metadata, through the engine. Only a file in the project's `final/` tray answers. |
 | `meta:read-pdf` | A PDF's Info dictionary, through the engine. |
 | `meta:write-epub` | Write the six OPF fields back to that export (side file + one rename), and record the metadata step with `kind: 'epub'`. |
