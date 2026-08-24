@@ -1,0 +1,5 @@
+# These files are read by Linux tooling, and this repo is checked out on Windows
+# with core.autocrlf=true. A CRLF Dockerfile's shell-form CMD carries the \r into
+# the command it runs, and a CRLF shell script will not start at all — so pin the
+# whole deploy tree to LF in the working copy, on every platform.
+* text eol=lf
