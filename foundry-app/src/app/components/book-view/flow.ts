@@ -37,20 +37,36 @@ export interface FlowPair {
  *
  * ── A NOTE BETWEEN THEM MEANS THEY ARE NOT NEIGHBOURS ───────────────────────
  *
- * The shelf is skipped and everything else counts, footnote rows included, and
- * that is deliberate rather than an oversight about how books are printed. A note
- * row IS in the document — the sheet draws it, the edition sets it at the foot of
- * the page — so two paragraphs with the page's apparatus between them are two
- * paragraphs with something between them. The replay would perform that merge
+ * The shelf is skipped and everything UNSTRUCK counts, footnote rows included,
+ * and that is deliberate rather than an oversight about how books are printed. A
+ * note row IS in the document — the sheet draws it, the edition sets it at the
+ * foot of the page — so two paragraphs with the page's apparatus between them are
+ * two paragraphs with something between them. The replay would perform that merge
  * happily and the person would get a paragraph whose words come from either side
  * of a note they never looked at, which is why the honest place to refuse is
  * before the op is minted rather than after.
  *
- * The seam gesture is not held to this and does not go through here: a seam's two
- * halves are the two sides of a page turn, and the notes at the foot of the
- * earlier page sit between them by construction (`BookSeam`). The engine put that
- * pair in the header having read both pages; this function is for a pair a person
- * assembled by clicking, which is a claim nobody has checked.
+ * ── A STRUCK ROW BETWEEN THEM DOES NOT COUNT (user ruling, 2026-08-24) ──────
+ *
+ * *"there are some cases where they were split by an image or something but that
+ * image has been removed."* A struck row is cancelled — the edition leaves it out
+ * — so two paragraphs with only cancelled rows between them are two paragraphs
+ * the READER sees touching, and the join is exactly the repair the strike set up.
+ * Refusing it on the strength of a block the person already cancelled would make
+ * the strike a wall. The struck row itself is untouched by the join: the replay
+ * removes only the absorbed block, so the cancelled image caption goes on sitting
+ * in the flow, drawn struck, after the paragraph that now flows past it.
+ *
+ * The two NAMED blocks are exempt from the skip: a person may join a struck
+ * block itself (the survivor's own state wins at replay, which is `merge`'s
+ * documented rule), and a scan that skipped a named block would report the pair
+ * as strangers while standing on one of them.
+ *
+ * The seam gesture is not held to any of this and does not go through here: a
+ * seam's two halves are the two sides of a page turn, and the notes at the foot
+ * of the earlier page sit between them by construction (`BookSeam`). The engine
+ * put that pair in the header having read both pages; this function is for a pair
+ * a person assembled by clicking, which is a claim nobody has checked.
  */
 export function flowNeighbours(
   rows: readonly ReplayedRow[],
@@ -60,14 +76,13 @@ export function flowNeighbours(
   if (one === other) return null;
   let seen: string | null = null;
   for (const row of rows) {
-    if (row.shelf !== undefined) continue;
+    const named = row.id === one || row.id === other;
+    if (!named && (row.shelf !== undefined || row.struck === true)) continue;
     if (seen !== null) {
-      // The very next row in the flow, or somebody's paragraph is in the way.
-      return row.id === one || row.id === other
-        ? { earlier: seen, later: row.id }
-        : null;
+      // The very next row that counts, or somebody's paragraph is in the way.
+      return named ? { earlier: seen, later: row.id } : null;
     }
-    if (row.id === one || row.id === other) seen = row.id;
+    if (named) seen = row.id;
   }
   return null;
 }

@@ -1396,6 +1396,23 @@ const OP_GESTURE: Gesture = { kind: 'op' };
             Edit this block
           </button>
           <!--
+            THE JOIN, WHERE A HAND CAN FIND IT — *"give me the ability to merge
+            two body text blocks. there are some cases where they were split by
+            an image or something but that image has been removed."* (user
+            ruling, 2026-08-24.) Ctrl+J has said this since the structure
+            gestures landed, but a chord nobody is told about is a gesture that
+            does not exist; this is the same act on the menu, computed at open
+            (joinAbove) so it is only offered where the op would land. The
+            direction is fixed — this block onto the one above it — because the
+            asymmetry is the op's own: the earlier block keeps its name.
+          -->
+          @if (open.joinInto !== null) {
+            <button role="menuitem" (click)="joinFromMenu()">
+              <span class="swatch" [style.background]="open.colour"></span>
+              Join onto the block above
+            </button>
+          }
+          <!--
             *"right-click a block and hit 'add chapter marker', and itll add a
             chapter break above that block"* (user ruling, 2026-08-17). The
             second block-scoped verb, beside Edit — the panel's "chapter starts
@@ -5443,6 +5460,13 @@ export class BookViewComponent {
     plural: string;
     ids: string[];
     unstruck: string[];
+    /**
+     * The block this one may be joined onto — the nearest earlier row still in
+     * the book — or null where the offer would mint an op the replay refuses.
+     * Computed at open (`joinAbove`), which is the menu's own rule: the label
+     * is only shown where pressing it lands.
+     */
+    joinInto: string | null;
   } | null>(null);
 
   protected blockMenu(event: MouseEvent, line: Line): void {
@@ -5457,6 +5481,7 @@ export class BookViewComponent {
       x: event.clientX,
       y: event.clientY,
       id: line.row.id,
+      joinInto: this.joinAbove(line.row),
       chapter: line.chapter !== null,
       colour: line.colour,
       // "Text" pluralises into nonsense; every other category reads naturally.
@@ -5464,6 +5489,39 @@ export class BookViewComponent {
       ids: kin.map((one) => one.row.id),
       unstruck: kin.filter((one) => one.row.struck !== true).map((one) => one.row.id),
     });
+  }
+
+  /**
+   * The block this one could be joined onto, for the menu's offer — the nearest
+   * earlier row in the flow that is neither shelved nor struck, or null.
+   *
+   * THE SKIP IS `flowNeighbours`'s SKIP, stated once there (./flow): a struck
+   * row is out of the edition, so a paragraph whose upstairs neighbour is a
+   * cancelled image is a paragraph the reader sees touching the one above the
+   * image — which is Owen's case for this gesture existing at all. And the note
+   * rule is that function's too, refused here by not offering: a note joins
+   * onto nothing and nothing joins onto a note, so a Footnote on either end
+   * means no offer rather than an op the replay files in `missing`.
+   */
+  private joinAbove(row: ReplayedRow): string | null {
+    if (row.shelf !== undefined || row.category === 'Footnote') return null;
+    let before: ReplayedRow | null = null;
+    for (const one of this.view()?.rows ?? []) {
+      if (one.id === row.id) {
+        return before !== null && before.category !== 'Footnote' ? before.id : null;
+      }
+      if (one.shelf !== undefined || one.struck === true) continue;
+      before = one;
+    }
+    return null;
+  }
+
+  /** The menu's Join: the same merge the seam ghost and Ctrl+J push. */
+  protected joinFromMenu(): void {
+    const open = this.context();
+    this.context.set(null);
+    if (open === null || open.joinInto === null) return;
+    this.join(open.id, open.joinInto);
   }
 
   /** The menu's Edit: close the menu, open the same editor double-click does. */

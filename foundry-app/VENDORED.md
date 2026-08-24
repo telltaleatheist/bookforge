@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c403ee5** — *feat(app): a hosted mint inherits the parent document's metadata* |
+| Source sha | **2dfea95** — *feat(app): the join steps over the struck — and sits on the menu where a hand can find it* |
 | Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive c403ee5 app \| tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 2dfea95 app \| tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -665,6 +665,17 @@ Owen's installed environment mid-narration.
 coincidence, not a no-op); build config and deps unmoved, no install; `npm run
 build` clean, ng 811.91 kB (the budget WARNING only, up 10 kB with the new
 panel); all 44 keepers green.
+
+`2dfea95` is a small renderer-only follow-on, taken the same day: Owen asked to
+merge two body blocks that a since-struck image once separated, and Ctrl+J
+refused the exact pair the strike set up — `flowNeighbours` still counted the
+cancelled block as standing between them. Struck rows now skip like shelved
+ones when adjacency is judged (unstruck notes still refuse), and the block
+right-click menu gains "Join onto the block above" so the gesture is
+discoverable. Two files (`book-view.component.ts`, `flow.ts`), no engine or
+IPC change — engine v0.9.7 stands, `IPC-CHANNELS.md` byte-identical.
+Verification: 124/124 blobs against `2dfea95:app/`, lockfile untouched so
+`npm ci` skipped; build clean; keepers ALL GREEN.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the
