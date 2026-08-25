@@ -328,21 +328,10 @@ interface BookMenu {
           </div>
         </ng-template>
 
-        <!-- Just-made and mid-listen books, above every section and across every
-             server — the sort can only order books WITHIN a section, so without
-             this a book narrated an hour ago sits partway down its library's
-             group. See recentBand(). -->
-        @if (recentBand().length > 0) {
-          <div class="shelf-section-head recent-head">
-            <span>New &amp; in progress</span>
-            <span class="count-chip">{{ recentBand().length }}</span>
-          </div>
-          <div class="books-grid">
-            @for (book of recentBand(); track akey(book)) {
-              <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
-            }
-          </div>
-        }
+        <!-- ON-DEVICE FIRST, ALWAYS. Owen, 2026-08-25: downloaded books are the
+             ones that play with no network and no wait, so they lead the tab
+             whatever else is on the shelf. Everything below this is a library
+             you are borrowing from. -->
         @if (downloadedAudiobooks().length > 0) {
           <div class="shelf-section-head downloaded-head">
             <app-icon name="download" [size]="15" />
@@ -351,6 +340,22 @@ interface BookMenu {
           </div>
           <div class="books-grid">
             @for (book of downloadedAudiobooks(); track akey(book)) {
+              <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
+            }
+          </div>
+        }
+        <!-- Just-made and mid-listen books, across every server — the sort can
+             only order books WITHIN a section, so without this a book narrated an
+             hour ago sits partway down its library's group. Sits UNDER "On this
+             device" (which always leads) and above every server group, which is
+             where the burial it exists to fix actually happens. See recentBand(). -->
+        @if (recentBand().length > 0) {
+          <div class="shelf-section-head recent-head">
+            <span>New &amp; in progress</span>
+            <span class="count-chip">{{ recentBand().length }}</span>
+          </div>
+          <div class="books-grid">
+            @for (book of recentBand(); track akey(book)) {
               <ng-container *ngTemplateOutlet="audioCard; context: { $implicit: book }"></ng-container>
             }
           </div>
@@ -1077,7 +1082,9 @@ export class ShelfComponent implements OnInit, OnDestroy {
   private readonly router = inject(Router);
 
   readonly tab = signal<Tab>(this.readStoredTab());
-  readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'date');
+  /** A-Z by default (Owen, 2026-08-25). A stored choice still wins — this is the
+   *  fallback for a shelf that has never been told, not an override. */
+  readonly sort = signal<Sort>((localStorage.getItem('bookshelf-sort') as Sort) || 'title');
   readonly search = signal('');
   readonly activeTag = signal<string>('all');
   // "Downloaded" filter (audiobooks tab): show only books cached for offline.
@@ -1350,15 +1357,23 @@ export class ShelfComponent implements OnInit, OnDestroy {
    * book and under any library that sorts ahead of it. No comparator fixes that,
    * because the burial is structural.
    *
-   * So this row sits above all of them and is cross-server by construction:
-   * anything added or played inside the window, newest first, collapsed to one
-   * card per book (a downloaded book renders twice — the on-device card and its
-   * streaming mirror — and the band must show it once).
+   * So this row sits above every SERVER GROUP and is cross-server by
+   * construction: anything added or played inside the window, newest first,
+   * collapsed to one card per book (a downloaded book renders twice — the
+   * on-device card and its streaming mirror — and the band must show it once).
+   *
+   * It sits BELOW "On this device" (Owen, 2026-08-25: downloaded books lead the
+   * tab every time). That costs the band nothing: the burial it was written to
+   * fix is being stuck inside a SERVER GROUP, and a book already on the phone is
+   * not buried — it is in the section the user looks at first.
    *
    * It obeys the tag / narration / downloaded filters, because it is drawn from
    * the filtered list and a band that contradicts an active filter is a bug. It
-   * ignores the A-Z / Recent toggle deliberately: A-Z is how you FIND a known
-   * book, and this row is for the ones you have not gone looking for yet.
+   * ignores the A-Z / Recent toggle deliberately — and now that A-Z is the
+   * DEFAULT, that is the whole of its value: A-Z is how you find a book you can
+   * already name, and this row is for the ones you have not gone looking for
+   * yet. Sorting it alphabetically too would leave nothing on the shelf
+   * answering "what is new?".
    *
    * Books stay in their own sections as well. The band is a shortcut, not a
    * move — a card that vanishes from where it has always lived is a worse
