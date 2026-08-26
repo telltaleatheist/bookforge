@@ -1,0 +1,52 @@
+# BookForge Bookshelf mirror on titan — adapted from the repo's
+# deploy/bookshelf-server/docker-compose.yml (see that file for the reasoning).
+# Titan facts baked in: library share iO is on VOLUME3; build context is the
+# staged tree under /volume1/System (survives UGOS updates, like everything
+# else in System/); state is a bind mount there too, so it is inspectable and
+# survives even a docker prune.
+services:
+  bookshelf:
+    build:
+      context: /volume1/System/bookshelf-server/context
+      dockerfile: deploy/bookshelf-server/Dockerfile
+    image: bookforge-bookshelf:latest
+    container_name: bookforge-bookshelf
+    hostname: titan
+    restart: unless-stopped
+    mem_limit: 5g
+    ports:
+      - "8766:8765"
+    volumes:
+      # Read-write on purpose: reader positions/bookmarks live under
+      # <library>/.bookshelf/ as per-device files merged on read.
+      - /volume3/iO/bookforge:/library
+      - /volume1/System/bookshelf-server/state:/state
+    environment:
+      BOOKFORGE_LIBRARY: /library
+      BOOKFORGE_STATE: /state
+      BOOKFORGE_PORT: "8765"
+      # 2 GB default heap died on the first-boot cover/duration sweep (170 cold
+      # m4bs). 4 GB heap inside a 5 GB container cap: the NAS (7.5 GB) never
+      # suffocates, and an OOM-kill restarts the container instead of wedging it.
+      NODE_OPTIONS: "--max-old-space-size=4096"
+
+  # Core-dump janitor. The kernel's core_pattern is /tmp/core.%e.%p and /tmp is
+  # a 3.8G tmpfs — a crash-looping daemon fills it and then EVERYTHING starts
+  # failing (2026-08-24: 196k smbd cores took it to 100%, which broke docker
+  # healthchecks and set fio segfaulting). This sweeps cores older than an hour
+  # and hard-caps the survivors, leaving the newest few for diagnosis.
+  tmp-janitor:
+    image: busybox:stable
+    container_name: bookforge-tmp-janitor
+    restart: unless-stopped
+    volumes:
+      - /tmp:/host-tmp
+    command: >
+      sh -c 'while true; do
+        find /host-tmp -maxdepth 1 -name "core.*" -mmin +60 ! -newer /host-tmp -exec rm -f {} + 2>/dev/null;
+        N=$$(find /host-tmp -maxdepth 1 -name "core.*" | wc -l);
+        if [ "$$N" -gt 50 ]; then
+          find /host-tmp -maxdepth 1 -name "core.*" | head -n $$((N-5)) | while read f; do rm -f "$$f"; done;
+        fi;
+        sleep 600;
+      done'

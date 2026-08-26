@@ -20,6 +20,7 @@ survives UGOS firmware updates:
 | Path | What |
 |---|---|
 | `compose.yml` | The compose file actually in use (titan-adapted: port 8766, library on volume3, memory limits, janitor sidecar). **This file is edited in place on titan — it is NOT a copy of the repo's `docker-compose.yml`.** |
+| — | **Mirrored in git** at `deploy/bookshelf-server/titan/` since 2026-08-25, so a wiped NAS does not take them with it. The copies there are a BACKUP, not the source: titan's are still the ones that run, so edit titan's and re-capture, never the reverse (see the gotcha below). |
 | `context/` | The staged build context (dist + cli + Dockerfile), extracted from the tarball below |
 | `bookshelf-server-context.tgz` | The last context tarball scp'd from the PC |
 | `redeploy.sh` | Re-extract + `docker compose build` + `up -d` (full update) |
@@ -64,6 +65,21 @@ its own copy of the UI** and only changes when the app itself is rebuilt.
 over, you clobber titan's in-place edits — the port regresses 8766→8765 and the
 container fails to start with "address already in use". Titan's `compose.yml`
 is the authority; edit it there, or diff before overwriting.
+
+That is also why `deploy/bookshelf-server/titan/` is a mirror and not a source.
+To refresh it after changing something on titan:
+
+```sh
+for f in compose.yml redeploy.sh up.sh; do
+  scp titan:/volume1/System/bookshelf-server/$f deploy/bookshelf-server/titan/$f
+done
+git diff deploy/bookshelf-server/titan/    # read it before committing
+```
+
+**Deploy from a COMMIT, not from a working tree.** On 2026-08-25 the mirror was
+rebuilt several times from uncommitted changes, so for a few hours titan served
+code that existed in no commit anywhere and no sha described what was running.
+Stage the context from a clean tree, or note the sha you built.
 
 ## If it's down
 
