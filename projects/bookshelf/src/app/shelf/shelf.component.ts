@@ -270,7 +270,17 @@ interface BookMenu {
         }
       } @else if (loading()) {
         <div class="loading-indicator"><div class="spinner"></div><span>Loading…</span></div>
-      } @else if (loadError()) {
+      } @else if (loadError() && visibleCount() === 0) {
+        <!-- The full-tab error state is ONLY for a shelf with nothing at all to
+             draw. When anything is drawable — on-device downloads above all —
+             the refreshFailed banner above already says the servers failed, and
+             the shelf renders. This branch used to sit unconditionally above the
+             grids, so an unreachable server hid books sitting on the phone's own
+             disk (blip, 2026-08-26: Tailscale off → the tailnet-only hostname
+             failed DNS → the app drew a blank instead of two downloaded books).
+             That defeated the on-device section's entire reason to exist:
+             "a download stays here even with its origin server off, the one
+             thing a download must never lose." -->
         <div class="empty-state"><span class="empty-icon">⚠️</span><p>{{ loadError() }}</p></div>
       } @else if (visibleCount() === 0) {
         <div class="empty-state"><span class="empty-icon">📭</span><p>Nothing here yet</p></div>
