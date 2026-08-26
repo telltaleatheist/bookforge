@@ -50,9 +50,20 @@ export type ServerCapability = 'library' | 'reader' | 'pdf' | 'render' | 'ingest
  */
 @Injectable({ providedIn: 'root' })
 export class ServerConfigService {
-  /** True inside the Capacitor shell. Detected via the window global the native
-   *  runtime injects, so web builds take no dependency on @capacitor/core. */
-  readonly isNative = !!(window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.();
+  /** True inside the Capacitor shell.
+   *
+   *  TWO independent witnesses, because this is read ONCE, at construction of a
+   *  root service, and everything downstream of a wrong answer is wrong for the
+   *  session — and worse than the session: load() PERSISTS what it seeds, so a
+   *  single mis-timed read used to poison `bookshelf-servers` permanently (a
+   *  same-origin '' entry that resolves against capacitor://localhost, where no
+   *  server lives, with the connect gate held shut because the service believed
+   *  it was on web). The Capacitor global is injected by the native bridge and
+   *  is a fact about PLUGIN TIMING; the page protocol is a fact about WHERE THE
+   *  DOCUMENT LOADED FROM and cannot race anything. Either one is proof. Web
+   *  builds take no dependency on @capacitor/core either way. */
+  readonly isNative = location.protocol === 'capacitor:'
+    || !!(window as { Capacitor?: { isNativePlatform?: () => boolean } }).Capacitor?.isNativePlatform?.();
 
   readonly servers = signal<ServerEntry[]>(this.load());
   readonly activeId = signal<string>(localStorage.getItem(KEY_ACTIVE) ?? this.servers()[0]?.id ?? '');
@@ -323,7 +334,18 @@ export class ServerConfigService {
     if (raw) {
       try {
         const parsed = JSON.parse(raw) as ServerEntry[];
-        if (Array.isArray(parsed)) return this.withOrigin(parsed);
+        if (Array.isArray(parsed)) {
+          const healed = this.healPoisonedSeed(parsed);
+          // A healed list that names NO reachable server, while the legacy
+          // single-URL key still exists, is the poisoned seed's other half:
+          // the startup that wrote it also SKIPPED the legacy migration (it
+          // believed it was on web), so the user's real server URL is still
+          // sitting in the old key, unread. Fall through and migrate it now
+          // rather than leaving a shelf with nowhere to fetch from.
+          const hasRealServer = healed.some(s => !!s.url);
+          const legacyPending = this.isNative && !!localStorage.getItem(KEY_LEGACY_URL);
+          if (hasRealServer || !legacyPending) return this.withOrigin(healed);
+        }
       } catch { /* fall through to migration */ }
     }
 
@@ -337,6 +359,30 @@ export class ServerConfigService {
     const seeded = this.withOrigin(list);
     if (seeded.length) localStorage.setItem(KEY_SERVERS, JSON.stringify(seeded));
     return seeded;
+  }
+
+  /**
+   * Remove what cannot legitimately exist here.
+   *
+   * On NATIVE, a persisted non-local entry with url '' is impossible by
+   * construction — only the WEB seed writes the same-origin '' entry — so its
+   * presence means a past startup misread the platform, seeded web-shaped
+   * state, and persisted it (the sticky half of the isNative hazard above).
+   * Such an entry resolves every request against capacitor://localhost: a
+   * blank shelf with no error and the connect gate held shut, forever, until
+   * someone deletes the key by hand. Deleting THE ENTRY is not a fallback —
+   * it is refusing a record this platform cannot have written honestly, and
+   * it is said aloud.
+   */
+  private healPoisonedSeed(list: ServerEntry[]): ServerEntry[] {
+    if (!this.isNative) return list;
+    const poisoned = list.filter(s => !s.local && !s.url);
+    if (poisoned.length === 0) return list;
+    console.error('[ServerConfig] Removing ' + poisoned.length + ' server entr'
+      + (poisoned.length === 1 ? 'y' : 'ies') + ' with no URL from persisted state '
+      + '(web-shaped seed written by a startup that misread the platform): '
+      + JSON.stringify(poisoned));
+    return list.filter(s => s.local || !!s.url);
   }
 
   /** The web build is served by one server (base ''); guarantee an entry for it

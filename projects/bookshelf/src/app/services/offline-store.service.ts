@@ -758,7 +758,30 @@ export class OfflineStoreService {
     try {
       const raw = localStorage.getItem(INDEX_KEY);
       const parsed = raw ? JSON.parse(raw) : [];
-      return Array.isArray(parsed) ? parsed : [];
+      if (!Array.isArray(parsed)) return [];
+      // Refuse malformed rows AT THE BOUNDARY, and say so. This index survives
+      // app updates (same WebView origin), so it can hold rows written by an
+      // OLDER build under an older shape — and this used to hand them straight
+      // to the shelf, where audioIdentity(item.downloadPath) threw a TypeError
+      // inside a computed and blanked the ENTIRE audio shelf, on-device rows
+      // included, with no error on screen (blip, 2026-08-25, the first install
+      // after weeks of never-device-run schema changes). Owen's standing rule
+      // is exactly this case: it must not go blank, it must say what is wrong.
+      // Dropping the row does not touch the stored bytes — the audio blob (keyed
+      // by id in IndexedDB/native files) is still there for a future migration;
+      // one corrupt INDEX row simply may not take the whole shelf down with it.
+      const sound = (parsed as unknown[]).filter((row): row is OfflineItem => {
+        const it = row as Partial<OfflineItem> | null;
+        const ok = !!it && typeof it.id === 'string' && it.id !== ''
+          && typeof it.downloadPath === 'string' && it.downloadPath !== ''
+          && typeof it.serverId === 'string';
+        if (!ok) {
+          console.error('[OfflineStore] Dropping a malformed persisted download row '
+            + '(written by an older build?) — it would blank the shelf:', JSON.stringify(row));
+        }
+        return ok;
+      });
+      return sound;
     } catch { return []; }
   }
 
