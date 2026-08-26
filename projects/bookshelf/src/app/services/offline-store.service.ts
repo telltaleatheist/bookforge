@@ -767,9 +767,17 @@ export class OfflineStoreService {
       // included, with no error on screen (blip, 2026-08-25, the first install
       // after weeks of never-device-run schema changes). Owen's standing rule
       // is exactly this case: it must not go blank, it must say what is wrong.
-      // Dropping the row does not touch the stored bytes — the audio blob (keyed
-      // by id in IndexedDB/native files) is still there for a future migration;
-      // one corrupt INDEX row simply may not take the whole shelf down with it.
+      //
+      // A dropped row's BYTES ARE RECLAIMED, deliberately: this runs as a field
+      // initialiser, the constructor's reconcile sweeps immediately after, and
+      // a uuid absent from items() is an orphan the sweep deletes on the same
+      // launch. (An earlier version of this comment claimed the blob survived
+      // for a future migration — it cannot; bookforge-pc-3 caught the
+      // contradiction.) That is the ruling, not an accident: a row that cannot
+      // say what it is cannot anchor gigabytes forever, and Owen chose
+      // re-downloading over anonymous bytes silently eating the phone
+      // (2026-08-26). The cost of a corrupt row is that row's download,
+      // reported here by name — never the shelf, and never unbounded storage.
       const sound = (parsed as unknown[]).filter((row): row is OfflineItem => {
         const it = row as Partial<OfflineItem> | null;
         const ok = !!it && typeof it.id === 'string' && it.id !== ''
