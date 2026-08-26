@@ -88,11 +88,20 @@ export class ReaderService {
     // so the id logs straight in. A PIN-protected profile answers 401 (we never
     // store pins) and a different library 404s — both fall through to the same
     // sign-in gate as before, so this only ever REMOVES a wrong-profile trap.
+    //
+    // Only when the servers this device is signed into AGREE on one reader. This
+    // used to take whichever profile came first out of the map, which is server
+    // probe order, not a decision — and since none of Owen's profiles has a PIN,
+    // the wrong one logged in silently. That signed his phone into titan as "Ky"
+    // (2026-08-25) and his stats page went blank, because it only sums the
+    // profile it holds a token for. Ambiguity is not something to guess at: fall
+    // through to the sign-in gate, the one place that can actually ask.
     if (supported && !this.tokens.get(serverId)) {
-      const elsewhere = [...this.readers().values()].find((r) => r != null);
-      if (elsewhere) {
+      const ids = new Set([...this.readers().values()].filter((r) => r != null).map((r) => r.id));
+      if (ids.size === 1) {
+        const [id] = [...ids];
         try {
-          const { token, reader } = await this.api.loginReader(elsewhere.id, undefined, serverId);
+          const { token, reader } = await this.api.loginReader(id, undefined, serverId);
           this.setSession(serverId, token, reader);
         } catch {
           // PIN required, unknown reader, or unreachable — the gate handles it.

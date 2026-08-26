@@ -3,6 +3,7 @@ import { ServerConfigService } from './server-config.service';
 import { NativeFileService, NativeAsset } from './native-file.service';
 import { extractAudioCover, blobRangeReader } from './audio-cover';
 import { Audiobook } from '../models/types';
+import { audioIdentity } from '../shared/audio-identity';
 
 /** Fixed native-file extension per sidecar. Fixed (not sniffed from bytes) so the
  *  filename is deterministic — a refresh overwrites the same `<id>-<asset>.<ext>`
@@ -245,19 +246,18 @@ export class OfflineStoreService {
   }
 
   // ── lookup ────────────────────────────────────────────────────────────────
-  /** Cross-server identity of a download: the audio filename (basename), lowercased.
-   *  Matches ShelfComponent.audioIdentity so offline resolution agrees with the
-   *  shelf's "downloaded" badge even when a book's representative server/path
-   *  differs from the one it was downloaded from. */
+  /** Cross-server identity of a download (shared/audio-identity.ts), so offline
+   *  resolution agrees with the shelf's "downloaded" badge even when a book's
+   *  representative server/path differs from the one it was downloaded from. */
   private identity(downloadPath: string): string {
-    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+    return audioIdentity(downloadPath);
   }
 
   private find(serverId: string | undefined, downloadPath: string): OfflineItem | undefined {
     const key = this.identity(downloadPath);
     const matches = this.items().filter(i => this.identity(i.downloadPath) === key);
     if (matches.length <= 1) return matches[0];
-    // More than one download shares this basename: prefer an exact
+    // More than one download shares this identity: prefer an exact
     // (serverId, downloadPath) match, otherwise fall back to the first.
     return matches.find(i => i.serverId === (serverId ?? '') && i.downloadPath === downloadPath) ?? matches[0];
   }

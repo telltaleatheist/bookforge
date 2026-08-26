@@ -29,6 +29,13 @@ interface YTick {
   selector: 'app-analytics',
   standalone: true,
   template: `
+    @if (sources().length) {
+      <div class="sources">
+        @for (s of sources(); track s.server) {
+          <span class="src" [class.bad]="!s.ok">{{ s.reader || '—' }} on {{ s.server }}{{ s.ok ? '' : ' · unreachable' }}</span>
+        }
+      </div>
+    }
     @if (loading()) {
       <div class="state"><div class="spinner"></div></div>
     } @else if (error()) {
@@ -99,6 +106,10 @@ interface YTick {
   `,
   styles: [`
     :host { display: block; }
+    .sources { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 14px; }
+    .src { font-size: 11px; color: var(--text-secondary); background: var(--card-bg);
+      border: 1px solid var(--border-subtle); border-radius: 999px; padding: 3px 10px; }
+    .src.bad { color: var(--warning); border-color: var(--warning); }
     .state { display: flex; flex-direction: column; align-items: center; gap: 12px; padding: 48px 24px; color: var(--text-secondary); text-align: center; }
     .state .icon { font-size: 44px; }
 
@@ -198,15 +209,34 @@ export class AnalyticsComponent implements OnInit {
       .filter((s): s is { id: string; token: string } => !!s.token);
   }
 
+  /** Provenance for what is on screen: which PROFILE each signed-in server
+   *  answered as, and which server could not be reached. Rendered above the
+   *  numbers — including above "No listening yet" — because a stats page that
+   *  reports nothing without naming the profile is unreadable. Owen's phone was
+   *  signed into titan as a different reader while the shelf header showed his
+   *  own name (the header names the ACTIVE server's profile; this page sums
+   *  EVERY enabled server's), and an unreachable second server was quietly
+   *  dropped, so the page said "no listening at all" for a profile with 80
+   *  hours on it and gave no way to tell why. */
+  readonly sources = signal<{ server: string; reader: string | null; ok: boolean }[]>([]);
+
   private async reload(): Promise<void> {
     this.loading.set(true);
     this.error.set(null);
     const servers = this.signedInServers();
-    if (!servers.length) { this.error.set('Not signed in'); this.loading.set(false); return; }
+    if (!servers.length) { this.sources.set([]); this.error.set('Not signed in'); this.loading.set(false); return; }
     try {
-      const parts = (await Promise.all(
-        servers.map((s) => this.api.getAnalytics(s.token, s.id).catch(() => null)),
-      )).filter((p): p is AnalyticsData => !!p);
+      const results = await Promise.all(
+        servers.map((s) => this.api.getAnalytics(s.token, s.id)
+          .then((d) => ({ s, d: d as AnalyticsData | null }))
+          .catch(() => ({ s, d: null as AnalyticsData | null }))),
+      );
+      this.sources.set(results.map(({ s, d }) => ({
+        server: this.cfg.servers().find((x) => x.id === s.id)?.label ?? s.id,
+        reader: d?.reader?.name ?? null,
+        ok: !!d,
+      })));
+      const parts = results.map((r) => r.d).filter((p): p is AnalyticsData => !!p);
       if (!parts.length) throw new Error('unreachable');
       this.data.set(this.mergeAnalytics(parts));
     } catch {

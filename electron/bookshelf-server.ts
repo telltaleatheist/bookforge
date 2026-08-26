@@ -117,6 +117,11 @@ interface AudiobookVersion {
   duration?: number;         // seconds
   dateAdded?: string;        // ISO timestamp
   professionallyRead?: boolean;  // user-settable "professionally read" flag
+  // Who read it and when. Sent so the version picker can tell two PROFESSIONAL
+  // editions of one book apart — without these the shelf labels both of them
+  // "Audiobook" and they read as duplicates.
+  narrator?: string;
+  year?: string;
 }
 
 interface AudiobookEntry {
@@ -906,6 +911,8 @@ export class BookshelfServer {
             dateAdded: v.addedAt || new Date(stats.mtimeMs).toISOString(),
             // getVariants() already stamps professionallyRead on every audiobook variant.
             professionallyRead: v.professionallyRead,
+            narrator: v.metadata?.narrator,
+            year: v.metadata?.year,
           });
         } catch { /* skip unstatable variant */ }
       }

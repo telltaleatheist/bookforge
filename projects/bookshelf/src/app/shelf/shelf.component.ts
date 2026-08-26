@@ -8,6 +8,7 @@ import { IconComponent } from '../shared/icon.component';
 import { formatDuration, formatSize } from '../shared/format';
 import { looseMatch } from '../shared/search';
 import { encodePathId } from '../shared/path-id';
+import { audioIdentity } from '../shared/audio-identity';
 import { PlayerService } from '../services/player.service';
 import { ReaderService } from '../services/reader.service';
 import { ReaderStateService } from '../services/reader-state.service';
@@ -1146,14 +1147,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
   }
   ekey(b: Ebook): string { return `${b.originServerId ?? ''}::${b.relativePath}`; }
 
-  /** Cross-server identity of an audiobook: the output filename. downloadPath is
-   *  absolute (differs between synced mirrors and across drive letters), but its
-   *  basename is the m4b name — identical on every mirror, and identical to the
-   *  path the offline cache stored — so this one key collapses the same book from
-   *  two servers AND matches its offline copy. Two distinct books colliding here
-   *  would need the same "Title. Author (Year).m4b", i.e. be the same book. */
+  /** Cross-server identity of an audiobook — `<projectId>/<filename>`. Collapses
+   *  the same book served by two mirrors into one card and matches its offline
+   *  copy. See shared/audio-identity.ts for why the filename alone is not enough
+   *  (it collided two of Owen's books) and why the store segment is skipped. */
   private audioIdentity(downloadPath: string): string {
-    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+    return audioIdentity(downloadPath);
   }
 
   /** "On this device": every offline download (played from the on-device cache)
@@ -1161,7 +1160,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *  a download stays here even with its origin server off, the one thing a
    *  download must never lose. Each entry is flagged `onDevice` so the section
    *  split, the "downloaded" badge, and the "downloaded only" filter key off the
-   *  card's flavor rather than the shared basename identity. */
+   *  card's flavor rather than the shared cross-server identity. */
   private readonly onDeviceAudiobooks = computed<Audiobook[]>(() => {
     const out: Audiobook[] = [];
     const items = this.offline.items();
@@ -1186,6 +1185,17 @@ export class ShelfComponent implements OnInit, OnDestroy {
         const server = serverByIdentity.get(this.audioIdentity(item.downloadPath));
         if (server?.hasProfessional !== undefined) card.hasProfessional = server.hasProfessional;
       }
+      // Downloading BOTH editions of a book puts two on-device cards side by side,
+      // and `sizeAndDuration` tells them apart by the download's recorded
+      // `descriptor` — which is almost always absent, because most variants carry
+      // none (Shift's two editions had none, so both cards read "Shift: The Silo
+      // Saga, Book 2" and differed only by byte count). Fall back to the same
+      // label the version picker shows. Only for books that really have more than
+      // one edition: on a single-version book this is noise, not information.
+      if (!card.descriptor?.trim()) {
+        const hit = this.serverVersionByIdentity().get(this.audioIdentity(item.downloadPath));
+        if (hit && (hit.book.versions?.length ?? 0) > 1) card.descriptor = this.versionLabel(hit.version);
+      }
       out.push({ ...card, onDevice: true });
     }
     for (const b of this.rawAudiobooks()) {
@@ -1194,7 +1204,22 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return out;
   });
 
-  /** "All audiobooks": every SERVER book, collapsed to ONE card per basename
+  /** Every server VERSION by its identity — keyed per version, not per book,
+   *  because that is the granularity a download has: an on-device card is a copy
+   *  of ONE edition, and needs to find that edition to name itself. */
+  private readonly serverVersionByIdentity = computed(() => {
+    const m = new Map<string, { book: Audiobook; version: AudiobookVersion }>();
+    for (const b of this.rawAudiobooks()) {
+      for (const v of b.versions || []) {
+        if (!v.downloadPath) continue;
+        const id = this.audioIdentity(v.downloadPath);
+        if (!m.has(id)) m.set(id, { book: b, version: v });
+      }
+    }
+    return m;
+  });
+
+  /** "All audiobooks": every SERVER book, collapsed to ONE card per
    *  identity across mirrors (the first reachable server wins as representative,
    *  so playback/covers route to a live library). A book that is ALSO downloaded
    *  is flagged `stream` so tapping this card streams from the server instead of
@@ -1249,7 +1274,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return (book.versions || []).some(v => !!v.downloadPath && ids.has(this.audioIdentity(v.downloadPath)));
   }
   /** True when THIS card is the on-device downloaded copy — as opposed to the
-   *  streaming mirror of the same (downloaded) book, which shares its basename
+   *  streaming mirror of the same (downloaded) book, which shares its
    *  identity but must NOT wear the "downloaded" badge/border. Keys off the card's
    *  `stream` flavor so the badge follows the entry, not the identity. */
   isDownloadedCard(book: Audiobook): boolean {
@@ -1313,7 +1338,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
    * played here. ONE definition, because the "Recent" sort and the band at the
    * top of the shelf both ask it and must not drift apart.
    *
-   * Recency is keyed by basename identity (audioIdentity), not the absolute
+   * Recency is keyed by cross-server identity (audioIdentity), not the absolute
    * downloadPath — so a book's last-played time survives a mirror swap where its
    * representative server (and thus its absolute path) changed. That is the same
    * key PlayerService writes with (PlayerService.recencyIdentity).
@@ -1359,8 +1384,10 @@ export class ShelfComponent implements OnInit, OnDestroy {
    *
    * So this row sits above every SERVER GROUP and is cross-server by
    * construction: anything added or played inside the window, newest first,
-   * collapsed to one card per book (a downloaded book renders twice — the
-   * on-device card and its streaming mirror — and the band must show it once).
+   * collapsed to one card per BOOK — not per file. A book can render several
+   * cards elsewhere on the shelf (its streaming mirror, plus one per downloaded
+   * edition), and the band must still show it exactly once, offering the whole
+   * set through the version picker.
    *
    * It sits BELOW "On this device" (Owen, 2026-08-25: downloaded books lead the
    * tab every time). That costs the band nothing: the burial it was written to
@@ -1388,17 +1415,35 @@ export class ShelfComponent implements OnInit, OnDestroy {
     if (this.search().trim()) return [];
     const played = this.player.playedAt();
     const cutoff = Date.now() - ShelfComponent.BAND_DAYS * 24 * 60 * 60 * 1000;
+    const versions = this.serverVersionByIdentity();
     const byId = new Map<string, { book: Audiobook; at: number }>();
     for (const book of this.filteredAudiobooks()) {
-      const id = this.audioIdentity(book.downloadPath);
       const at = this.recencyOf(book, played);
       if (at < cutoff) continue;
+      // Group by the BOOK, not by the file. Every OTHER section is a list of
+      // things you can act on — each downloaded edition is its own card there,
+      // because each owns its own offline copy, its own progress ring and its own
+      // "Remove download". The band is not that: it answers "what should I open?",
+      // and a book has to appear in it ONCE. Owen had both editions of Shift and
+      // both of Deathstalker Coda downloaded, so the band showed each book twice,
+      // as two cards identical but for their byte count.
+      const identity = this.audioIdentity(book.downloadPath);
+      const id = versions.get(identity)?.book.projectId || identity;
       const held = byId.get(id);
-      // A downloaded book renders twice — the on-device card and its streaming
-      // mirror. Show it once, and show the ON-DEVICE one: tapping the mirror
-      // streams bytes that are already sitting on the phone.
-      if (held && !(this.isOnDevice(book) && !this.isOnDevice(held.book))) continue;
-      byId.set(id, { book, at });
+      if (!held) { byId.set(id, { book, at }); continue; }
+      // Keep the LATEST time this book was touched, whichever card carried it.
+      held.at = Math.max(held.at, at);
+      const heldCount = held.book.versions?.length ?? 0;
+      const bookCount = book.versions?.length ?? 0;
+      // Prefer the card that carries every edition: tapping it opens the version
+      // picker instead of silently committing to one. Playback still resolves to
+      // a cached copy when there is one, so this never re-streams bytes already
+      // on the phone. With nothing to choose between (one edition), keep the old
+      // rule and show the ON-DEVICE card.
+      const take = heldCount > 1 || bookCount > 1
+        ? bookCount > heldCount
+        : this.isOnDevice(book) && !this.isOnDevice(held.book);
+      if (take) held.book = book;
     }
     const rows = [...byId.values()];
     rows.sort((a, b) => b.at - a.at);
@@ -1432,7 +1477,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   /** Distinct-book count of an audiobook card list. A downloaded-and-server-
    *  enabled book renders TWO cards (on-device + stream) but is ONE book, so the
-   *  header/tag counts collapse by basename identity rather than counting cards. */
+   *  header/tag counts collapse by cross-server identity rather than counting cards. */
   private uniqueAudioCount(list: Audiobook[]): number {
     return new Set(list.map(b => this.audioIdentity(b.downloadPath))).size;
   }
@@ -1458,7 +1503,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
   });
 
   /** This CARD's audio lives on this device — an offline download or a local
-   *  import. Keys off the entry's `onDevice` flavor, NOT the shared basename
+   *  import. Keys off the entry's `onDevice` flavor, NOT the shared cross-server
    *  identity, so the streaming mirror of a downloaded book (same identity, but
    *  built from the server) is correctly treated as a server card. Drives the
    *  "On this device" section + "downloaded only" filter. */
@@ -2280,7 +2325,7 @@ export class ShelfComponent implements OnInit, OnDestroy {
 
   /** The fresh SERVER listing behind a downloaded card — carries the projectId +
    *  originServerId that refreshSidecars needs to re-fetch from origin. Matched by
-   *  the cross-server basename identity (incl. non-representative versions). null
+   *  the cross-server identity (incl. non-representative versions). null
    *  when no enabled server currently lists the book (origin off/unreachable), so a
    *  cover can't heal until a server answers. */
   private serverListingFor(book: Audiobook): Audiobook | null {
@@ -2454,6 +2499,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
       dateAdded: version.dateAdded ?? book.dateAdded,
       descriptor: version.descriptor,
       variantId: version.variantId,
+      // `stream` belongs to the CARD, not to the edition. The band's card is the
+      // mirror of a downloaded book, so it carries stream:true — but the edition
+      // picked off it may itself be on the phone. Clear the flag then, or picking
+      // a downloaded edition would re-fetch bytes that are already here. Editions
+      // that genuinely aren't downloaded keep streaming.
+      stream: this.downloadedIds().has(this.audioIdentity(version.downloadPath)) ? undefined : book.stream,
     };
   }
 
@@ -2467,10 +2518,20 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.router.navigate(['/play', encodePathId(b.downloadPath)], { state: { book: b } });
   }
 
+  /** What to call one version in the picker. Two PROFESSIONAL editions of one book
+   *  differ by who read it and when, so say that rather than calling both of them
+   *  "Audiobook" — Deathstalker Coda carries a 2005 Graphic Audio dramatization
+   *  beside a 2019 Gildart Jackson reading, and only the first had a descriptor,
+   *  which made the pair read as one real edition plus a duplicate. */
   versionLabel(v: AudiobookVersion): string {
     if (v.descriptor && v.descriptor.trim()) return v.descriptor.trim();
     if (v.type === 'bilingual') return `Bilingual${v.langPair ? ' · ' + v.langPair : ''}`;
-    return 'Audiobook';
+    // Say WHO read it; when the narrator is unknown, say HOW it was read — the
+    // same Professional / AI-narrated split the narration filter already uses.
+    // Never a bare year: that names the edition without saying what it is.
+    const who = v.narrator?.trim() || (v.professionallyRead ? 'Professional' : 'AI narrated');
+    const year = v.year?.trim();
+    return year ? `${who} · ${year}` : who;
   }
 
   versionSub(v: AudiobookVersion): string {

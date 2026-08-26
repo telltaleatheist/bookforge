@@ -8,6 +8,7 @@ import { AnalyticsQueueService } from './analytics-queue.service';
 import { VttCue, VttParserService } from './vtt-parser.service';
 import { Audiobook, AudiobookAnalysisEnvelope, Chapter } from '../models/types';
 import { AudioBackend, createAudioBackend } from './audio-backend';
+import { audioIdentity } from '../shared/audio-identity';
 
 export type BookmarkKind = 'manual' | 'open' | 'resume' | 'hour' | 'chapter' | 'sleep' | 'jump' | 'arrive';
 
@@ -1221,20 +1222,20 @@ export class PlayerService {
   private posKey(): string { return `${PlayerService.POS_PREFIX}${this.book()?.downloadPath ?? ''}`; }
   private lastServerPosAt = 0;
 
-  /** Cross-server identity of a book: the download's basename, lowercased. Position
-   *  is keyed per absolute path (posKey), but RECENCY must survive a mirror swap —
-   *  the same book shown via a different server has a different absolute path but
-   *  the same basename. MUST byte-for-byte match ShelfComponent.audioIdentity and
-   *  OfflineStore.identity, or the shelf's recency lookup misses what we wrote. */
+  /** Cross-server identity of a book (shared/audio-identity.ts). Position is keyed
+   *  per absolute path (posKey), but RECENCY must survive a mirror swap — the same
+   *  book shown via a different server has a different absolute path but the same
+   *  identity. Shares the shelf's definition, so the shelf's recency lookup can
+   *  never miss what we wrote here. */
   private static recencyIdentity(downloadPath: string): string {
-    return (downloadPath.split(/[/\\]/).pop() || downloadPath).toLowerCase();
+    return audioIdentity(downloadPath);
   }
 
   /** Scan the persisted position cache for every book's last-played time, so the
    *  shelf's "Recent" sort reflects prior sessions on first paint (before any
    *  save this session). Legacy raw-number records carry no timestamp → skipped.
-   *  Keyed by basename identity (not the full path) so mirror copies collapse to
-   *  one entry — the newest timestamp wins when two paths share a basename. */
+   *  Keyed by cross-server identity (not the full path) so mirror copies collapse
+   *  to one entry — the newest timestamp wins when two paths share an identity. */
   private static loadPlayedAt(): Map<string, number> {
     const map = new Map<string, number>();
     for (let i = 0; i < localStorage.length; i++) {
@@ -1260,7 +1261,7 @@ export class PlayerService {
     const now = Date.now();
     localStorage.setItem(this.posKey(), JSON.stringify({ v: t, at: now }));
     // Position is keyed per absolute path (posKey), but recency is keyed by
-    // basename identity so it survives a mirror swap. Same expression the shelf
+    // cross-server identity so it survives a mirror swap. Same function the shelf
     // reads with (ShelfComponent.audioIdentity).
     this.playedAt.update((m) => new Map(m).set(PlayerService.recencyIdentity(b.downloadPath), now));
     // Route to the book's ORIGIN server. Local books have no server token → skip

@@ -12,6 +12,9 @@ export interface AudiobookVersion {
   duration?: number;
   dateAdded?: string;
   professionallyRead?: boolean;
+  /** Who read it / when — what actually distinguishes two professional editions. */
+  narrator?: string;
+  year?: string;
 }
 
 /** One finding in a verified analysis of an audiobook's exact WebVTT transcript. */
