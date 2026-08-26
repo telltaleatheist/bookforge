@@ -25,7 +25,8 @@ function computeVersion() {
   const [major = '0', minor = '0'] = String(pkg.version).split('.');
   let count;
   try {
-    count = execSync('git rev-list --count HEAD', { encoding: 'utf8' }).trim();
+    count = process.env.BOOKFORGE_BUILD_COUNT?.trim()
+      || execSync('git rev-list --count HEAD', { encoding: 'utf8' }).trim();
   } catch {
     return String(pkg.version); // no git — use package.json as-is
   }

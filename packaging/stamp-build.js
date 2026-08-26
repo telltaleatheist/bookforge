@@ -19,14 +19,28 @@ const { execSync } = require('node:child_process');
 const OUT = path.resolve(__dirname, '..', 'dist', 'electron', 'build-info.json');
 
 function gitSha() {
+  // A stage cut with `git archive` has no .git — the deploy recipe passes the
+  // sha it extracted instead (TITAN.md). The override IS the provenance there.
+  if (process.env.BOOKFORGE_BUILD_SHA) return process.env.BOOKFORGE_BUILD_SHA.trim();
   try {
     return execSync('git rev-parse --short HEAD', { encoding: 'utf8' }).trim();
   } catch {
-    return 'nogit';
+    // REFUSE rather than stamp 'nogit'. This file exists so an installed build
+    // can always be traced to its commit; a build that writes 'nogit' destroys
+    // exactly that, silently, and the staged-deploy recipe shipped one before
+    // anyone noticed (bookforge-pc-3, 2026-08-26 — it held the deploy rather
+    // than ship the lie). No git and no override is a misconfigured build.
+    console.error('[stamp-build] No .git here and BOOKFORGE_BUILD_SHA is not set. '
+      + 'Refusing to stamp a build nobody can trace — pass the sha this tree was '
+      + 'extracted from (see TITAN.md, "Deploying an update").');
+    process.exit(1);
   }
 }
 
 function gitDirty() {
+  // An archive-extracted stage is clean BY CONSTRUCTION — it holds exactly one
+  // commit's bytes — so the override implies not-dirty.
+  if (process.env.BOOKFORGE_BUILD_SHA) return false;
   try {
     return execSync('git status --porcelain', { encoding: 'utf8' }).trim().length > 0;
   } catch {

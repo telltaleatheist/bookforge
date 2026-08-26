@@ -56,8 +56,12 @@ git archive origin/main | tar -x -C "$STAGE" && (cd "$STAGE" && npm ci)
 
 # 1. Refresh sources + build. Re-extract OVERWRITES tracked files and leaves
 #    node_modules alone — tar only writes the paths in the archive (verified).
+#    THE ENV VARS ARE NOT OPTIONAL: the stage has no .git, and stamp-build now
+#    REFUSES to build untraceable output rather than stamping buildId=nogit —
+#    the first staged deploy silently destroyed the exact provenance this
+#    recipe exists to protect, and was held rather than shipped (2026-08-26).
 git archive <sha> | tar -x -C "$STAGE"
-cd "$STAGE" && npm run build:electron
+cd "$STAGE" && BOOKFORGE_BUILD_SHA=$(git -C <repo> rev-parse --short <sha>)   BOOKFORGE_BUILD_COUNT=$(git -C <repo> rev-list --count <sha>)   npm run build:electron
 
 # 2. Stage the context tarball (~4 MB) and ship it
 S=$TMP  # any scratch dir
