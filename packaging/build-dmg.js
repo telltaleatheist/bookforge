@@ -17,6 +17,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { computeVersion } = require('./app-version');
 const { guardPackageJson } = require('./pkg-guard');
+const { guardVendoredFoundry } = require('./foundry-guard');
 
 const builderArgs = process.argv.slice(2);
 const isMac = process.platform === 'darwin';
@@ -163,6 +164,8 @@ if (RELEASE) {
 // corrupts the app/framework code seal (codesign "succeeds", the notary rejects
 // it). Callisto is APFS as of Aug 2026, so the relocation was removed and the
 // signed DMG is built in place.
+
+guardVendoredFoundry('build-dmg');
 
 // SAFETY: electron-builder can rewrite the SOURCE package.json in place (see
 // pkg-guard.js — shared with the Windows scripts, which run the same risk).

@@ -18,11 +18,13 @@ const { execSync } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const { guardPackageJson } = require('./pkg-guard');
+const { guardVendoredFoundry } = require('./foundry-guard');
 
 const repoRoot = path.resolve(__dirname, '..');
 
 // electron-builder (the last pipeline step) can rewrite the source package.json
 // in place (see pkg-guard.js).
+guardVendoredFoundry('package-win');
 guardPackageJson('package-win');
 
 function fail(msg) {
