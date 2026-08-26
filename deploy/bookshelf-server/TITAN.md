@@ -37,12 +37,27 @@ tmpfs — 196k smbd cores once filled it and took the NAS's daemons down).
 
 ## Deploying an update
 
-All from the PC, in the bookforge repo. The image is never built from source on
-titan — the PC builds, titan just packages and runs.
+All from the PC. The image is never built from source on titan — the PC
+builds, titan just packages and runs.
+
+**Build in a STAGING DIR cut from a sha, not in the working checkout.** Two
+reasons, both paid for on 2026-08-25/26: a deploy built from a working tree can
+carry uncommitted bytes (titan served code that existed in no commit for
+hours), and `dist/` is shared — `build:electron` opens with `rm -rf
+dist/electron`, so two agents building out of one checkout can ship or run a
+half-written tree, with no git evidence afterwards because dist/ has no branch
+and no reflog. Staging from a sha closes both: the sources are exactly one
+commit's, and the stage owns its dist/ outright.
 
 ```sh
-# 1. Build BookForge (compiles the server AND the bookshelf web UI into dist/)
-npm run build:electron
+# 0. (first time only) make the persistent stage and install deps
+STAGE=<somewhere outside the checkout>
+git archive origin/main | tar -x -C "$STAGE" && (cd "$STAGE" && npm ci)
+
+# 1. Refresh sources + build. Re-extract OVERWRITES tracked files and leaves
+#    node_modules alone — tar only writes the paths in the archive (verified).
+git archive <sha> | tar -x -C "$STAGE"
+cd "$STAGE" && npm run build:electron
 
 # 2. Stage the context tarball (~4 MB) and ship it
 S=$TMP  # any scratch dir
@@ -53,10 +68,19 @@ scp "$S/bookshelf-server-context.tgz" titan:/volume1/System/bookshelf-server/
 # 3. Rebuild + restart on titan
 ssh titan "sh /volume1/System/bookshelf-server/redeploy.sh"
 
-# 4. Verify
+# 4. Verify — and note WHICH sha you deployed
 curl http://192.168.68.125:8766/api/health
 # → {"status":"ok","name":"titan","capabilities":["library","reader","pdf"]}
 ```
+
+Known edges of the staged flow (measured, 2026-08-26): a re-extract never
+DELETES a file a later commit removed, so a long-lived stage slowly accumulates
+ghosts — tolerable for a deploy stage; when it matters, wipe the stage and
+re-run step 0 rather than getting clever. Never junction node_modules from the
+main checkout into the stage (see Worktree Hygiene in CLAUDE.md — a junction
+plus recursive cleanup once gutted the main checkout's real node_modules). The
+`npm ci` half of step 0 is the one part not yet run on this PC; everything
+through the archive/extract behaviour is verified.
 
 Web clients pick the new UI up on next page load. The **native iOS app bundles
 its own copy of the UI** and only changes when the app itself is rebuilt.
