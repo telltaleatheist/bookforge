@@ -912,7 +912,14 @@ export class BookshelfServer {
             // getVariants() already stamps professionallyRead on every audiobook variant.
             professionallyRead: v.professionallyRead,
             narrator: v.metadata?.narrator,
-            year: v.metadata?.year,
+            // The wire declares a STRING and the manifests do not agree with
+            // themselves — measured on the live library, 83 variants store year
+            // as a number and 108 as a string. Passed through raw, the number
+            // reached versionLabel's `.trim()` and the throw killed the Audio
+            // tab's whole render on any phone with a multi-edition download
+            // (blip, 2026-08-26: the tab would not even light up). Normalize at
+            // the boundary; the manifest keeps whatever it had.
+            year: v.metadata?.year != null ? String(v.metadata.year) : undefined,
           });
         } catch { /* skip unstatable variant */ }
       }

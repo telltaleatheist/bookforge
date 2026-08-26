@@ -2540,7 +2540,12 @@ export class ShelfComponent implements OnInit, OnDestroy {
     // same Professional / AI-narrated split the narration filter already uses.
     // Never a bare year: that names the edition without saying what it is.
     const who = v.narrator?.trim() || (v.professionallyRead ? 'Professional' : 'AI narrated');
-    const year = v.year?.trim();
+    // String() first: the wire declares year a string, but a server older than
+    // the boundary normalization (titan, until redeployed) emits the manifest's
+    // raw value, which is a NUMBER on 83 of the live library's variants — and
+    // `.trim()` on a number is the throw that froze blip's Audio tab solid.
+    // A display label must be able to SAY any year it is handed.
+    const year = v.year != null ? String(v.year).trim() : '';
     return year ? `${who} · ${year}` : who;
   }
 
