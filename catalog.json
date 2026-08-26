@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-08-25T04:55:52Z",
+  "generatedAt": "2026-08-26T04:57:20Z",
   "generator": "bookforge-catalog-indexer/1.0",
   "sources": {
     "voices": "huggingface:drewThomasson/fineTunedTTSModels/xtts-v2",
