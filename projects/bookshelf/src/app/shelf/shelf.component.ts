@@ -932,14 +932,17 @@ interface BookMenu {
        .downloaded.professional rule (specificity 0,3,0) beats .downloaded (0,2,0). */
     .book-card.professional { box-shadow: 0 0 0 2px var(--professional), 0 3px 14px color-mix(in srgb, var(--professional) 35%, transparent); }
     .book-card.downloaded.professional { box-shadow: 0 0 0 2px var(--professional), 0 3px 14px color-mix(in srgb, var(--professional) 35%, transparent); }
-    /* Shelf section header ("On this device" / "All audiobooks"). */
+    /* Shelf section header ("On this device" / a server's name). Accent-coloured
+       across the board — the server groups used to sit in gray beside blue band
+       headers, which read as one header that failed to style (Owen, 2026-08-26:
+       "make them all blue to match"). The downloaded head keeps its own colour:
+       it is the badge colour, and the header matching the card borders under it
+       is the point of it. */
     .shelf-section-head { display: flex; align-items: center; gap: 8px; margin: 14px 4px 8px;
-      font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--text-secondary); text-transform: uppercase; }
+      font-size: 13px; font-weight: 700; letter-spacing: .02em; color: var(--accent); text-transform: uppercase; }
     .shelf-section-head.downloaded-head { color: var(--downloaded); }
-    /* The band's own accent: the chip's default fill is the DOWNLOADED colour,
-       which on this row would claim the books are on the device. They are not —
-       they are simply new. */
-    .shelf-section-head.recent-head { color: var(--accent); }
+    /* The band chip's fill: the default is the DOWNLOADED colour, which on this
+       row would claim the books are on the device. They are not — simply new. */
     .shelf-section-head.recent-head .count-chip { background: var(--accent); }
     .shelf-section-head .count-chip { display: inline-flex; align-items: center; justify-content: center; min-width: 20px;
       height: 20px; padding: 0 6px; border-radius: 10px; background: var(--downloaded); color: var(--text-on-accent);
