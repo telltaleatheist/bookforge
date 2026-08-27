@@ -161,6 +161,17 @@ export interface NarrationRunSettings {
   readonly outputDir: string;
   readonly finalDenoise: boolean;
   readonly applyDeRing: boolean;
+  /**
+   * Seconds of silence to normalize BETWEEN sentences at assembly, or absent to
+   * let the session's own provenance decide.
+   *
+   * Absent is a real answer and the ordinary one: an Orpheus session normalizes
+   * to its voice's tuned value (or the visible 0.6 s default for an untested
+   * model), and a non-Orpheus session normalizes not at all, because the pad
+   * this strips is one only Orpheus bakes. A number here OVERRIDES that, which
+   * is why it is only ever set from a control the user actually moved.
+   */
+  readonly sentenceGap?: number;
   /** The enhancement pass, or null for none. */
   readonly rvc: NarrationRvcSettings | null;
   /**
@@ -241,6 +252,8 @@ export interface NarrationReassemblyConfig {
   readonly excludedChapters: number[];
   readonly finalDenoise: boolean;
   readonly applyDeRing: boolean;
+  /** Absent = the session's provenance decides. See `NarrationRunSettings`. */
+  readonly sentenceGap?: number;
   /**
    * FILE THIS AS A SECOND AUDIOBOOK RATHER THAN AS THE PROJECT'S ONE AUDIOBOOK.
    *
@@ -525,6 +538,8 @@ export function narrationReassemblyStep(
       // Two opt-in assembly passes, both default OFF.
       finalDenoise: settings.finalDenoise,
       applyDeRing: settings.applyDeRing,
+      // Absent stays absent: that is what leaves provenance in charge of the gap.
+      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
       registerAsNewVariant,
       // Carried only when it names something: the voice is what the second
       // audiobook is called, and an assembly filing into the base slot has no

@@ -431,6 +431,15 @@ export interface ReassemblyJobConfig {
    *  absent, the backend resolves the session voice's models.json default from
    *  provenance, and skips the step if that is unset too (no invented default). */
   sentenceGap?: number;
+  /** File the finished M4B as a SECOND audiobook version of this book rather than
+   *  replacing the project's one — set only for a run that converted sentences it
+   *  did not itself render. The backend then names the file after the voice, spares
+   *  the output folder's existing audiobooks, and writes a manifest variant instead
+   *  of overwriting `outputs.audiobook`. See shared/queue/narration-run.ts. */
+  registerAsNewVariant?: boolean;
+  /** The RVC voice that second version is named after — its variant id, its filename
+   *  and its narrator tag. Required whenever `registerAsNewVariant` is set. */
+  rvcVoiceId?: string;
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC
@@ -446,8 +455,16 @@ export interface RvcEnhancementJobConfig {
   /** RVC asset id; backend resolves it to the urvc model folder name. */
   voiceId: string;
   indexRate?: number;
+  /** Consonant/breath protection, on an INVERTED scale: lower protects more and
+   *  0.5 disables protection. It does nothing at all when `indexRate` is 0. */
   protectRate?: number;
   nSemitones?: number;
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny). Absent = urvc's own default,
+   *  which is a real answer here and never filled in on the way through. */
+  f0Method?: string;
+  /** f0 analysis hop in samples (1–512). Read ONLY by the crepe family — rmvpe
+   *  ignores it. Absent = urvc's own default. */
+  hopLength?: number;
   /** Final-audio denoise: denoise the cached sentences FIRST, then convert the
    *  denoised set (denoise → RVC ordering; input noise corrupts RVC's feature
    *  extraction). Set when the wizard has both options checked. */
