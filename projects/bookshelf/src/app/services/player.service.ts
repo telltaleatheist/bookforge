@@ -102,6 +102,7 @@ export class PlayerService {
   readonly provisional = signal<[number, number] | null>(null);
   private heardTick: number | null = null;
   private runStart: number | null = null; // start of the current contiguous run
+  private heardCommitAt: number | null = null; // position of the last committed extension of that run
   private static readonly HEARD_MIN_RUN = 10; // only record a run once it reaches this many seconds
   // Set when the user makes a big jump (see armArrivalBookmark). Once they settle
   // and listen continuously for HEARD_MIN_RUN seconds, a breadcrumb is dropped at
@@ -417,6 +418,7 @@ export class PlayerService {
       this.provisional.set(null);
       this.heardTick = null;
       this.runStart = null;
+      this.heardCommitAt = null;
       this.cancelSleep();
       this.loadBookmarks(b.downloadPath);
 
@@ -776,8 +778,8 @@ export class PlayerService {
     this.updateCue(clamped);
     // A seek/jump breaks continuity — measure the next heard range from here so
     // the skipped span stays unheard, and drop the uncommitted provisional purple.
+    this.endHeardRun();
     this.heardTick = clamped;
-    this.runStart = null;
     this.provisional.set(null);
     // Re-anchor listening time too, so the jumped-over span isn't credited as
     // "listened" on the next heartbeat flush.
@@ -801,8 +803,8 @@ export class PlayerService {
   private handleNativeSeeked(time: number): void {
     this.currentTime.set(time);
     this.updateCue(time);
+    this.endHeardRun();
     this.heardTick = time;
-    this.runStart = null;
     this.provisional.set(null);
     if (this.listenAudioAnchor != null) this.listenAudioAnchor = time;
     this.lastChapterIdx = -1;
@@ -1170,11 +1172,25 @@ export class PlayerService {
     this.heardTick = t;
     if (prev == null) { this.runStart = t; return; }
     const delta = t - prev;
-    if (delta <= 0 || delta >= 2.5) { this.runStart = t; this.provisional.set(null); return; } // seek/jump → new run, drop provisional
+    if (delta <= 0 || delta >= 2.5) { // seek/jump → close the old run, start a new one, drop provisional
+      this.endHeardRun(prev);
+      this.runStart = t;
+      this.provisional.set(null);
+      return;
+    }
     if (this.runStart == null) this.runStart = prev;
     if (t - this.runStart >= PlayerService.HEARD_MIN_RUN) {
-      this.addHeard(this.runStart, t); // committed to heard (persisted)
-      this.provisional.set(null);      // now part of heard
+      // Extend at most ~1x/s. runStart stays anchored at the run's true start, so
+      // every tick past the 10s mark re-committed the SAME growing interval —
+      // mergeHeard re-sorted the whole set and published a fresh `heard` array
+      // four times a second for the length of the book, re-rendering the scrub
+      // bar's coverage each time, to add 0.25s of span. The merge joins within
+      // 1s, so committing at 1s granularity produces the identical result.
+      if (this.heardCommitAt == null || t - this.heardCommitAt >= 1) {
+        this.heardCommitAt = t;
+        this.addHeard(this.runStart, t); // committed to heard (persisted)
+        this.provisional.set(null);      // now part of heard
+      }
       // The user jumped, then settled here and listened for 10s straight → drop a
       // breadcrumb at the spot they landed on (once per jump, at the settle point).
       if (this.arrivalArmed) {
@@ -1184,6 +1200,17 @@ export class PlayerService {
     } else {
       this.provisional.set([this.runStart, t]); // visible purple, not yet recorded
     }
+  }
+
+  /** Commit the uncommitted tail of the current run (up to the ~1s the commit
+   *  throttle in trackHeard may still be holding), then forget the run. Called
+   *  wherever runStart is cleared, so a seek/reset can't drop that tail. */
+  private endHeardRun(end: number | null = this.heardTick): void {
+    if (this.runStart != null && end != null && end - this.runStart >= PlayerService.HEARD_MIN_RUN) {
+      this.addHeard(this.runStart, end);
+    }
+    this.runStart = null;
+    this.heardCommitAt = null;
   }
 
   private addHeard(a: number, b: number): void {
@@ -1343,6 +1370,7 @@ export class PlayerService {
     this.provisional.set(null);
     this.heardTick = null;
     this.runStart = null;
+    this.heardCommitAt = null;
     this.seekTo(0);
     if (!b) return;
     localStorage.setItem(this.heardKey(b.downloadPath), JSON.stringify({ intervals: [], at: Date.now() }));
