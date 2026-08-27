@@ -1,6 +1,7 @@
 import Foundation
 import AVFoundation
 import MediaPlayer
+import UIKit
 import Capacitor
 
 /// Native AVPlayer bridge for gapless, lock-safe audiobook playback.
@@ -47,7 +48,22 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     private var duration: Double = 0
     private var commandsWired = false
     private var interruptionWired = false
+    private var lifecycleWired = false
     private var npInfo: [String: Any] = [:]
+
+    /// Cadence of the periodic time observer. Foregrounded we drive a 4 Hz UI
+    /// (smooth scrubber, live cue highlight); backgrounded there is nothing to
+    /// paint, so each extra tick buys nothing and costs a WebView wake.
+    private static let fgTickSeconds = 0.25
+    /// Kept at 1s — NOT lower. PlayerService.trackHeard treats a gap of 2.5s or
+    /// more as a seek and starts a new coverage run, so a slower beat would make
+    /// ordinary background listening read as a string of jumps and stop crediting
+    /// listened spans.
+    private static let bgTickSeconds = 1.0
+    private var tickSeconds = NativeAudioPlugin.fgTickSeconds
+    /// Wall-clock ms of the last Now Playing elapsed-time write (see
+    /// updateNowPlayingElapsed for why this is throttled rather than per-tick).
+    private var lastElapsedPushAt: Double = 0
 
     /// Chapter start times (seconds), pushed by JS after a book's chapters load
     /// (see setChapters). The lock-screen prev/next-track commands need these to
@@ -151,20 +167,8 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
                 }
             }
 
-            let interval = CMTime(seconds: 0.25, preferredTimescale: 600)
-            self.timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
-                guard let self = self else { return }
-                let cur = t.seconds
-                let safe = cur.isFinite ? cur : 0
-                self.notifyListeners("time", data: ["currentTime": safe])
-                self.updateNowPlayingElapsed(safe)
-                // Throttled native save (~5s) — the real progress saver while the
-                // WebView is frozen in the background.
-                if safe > 0 {
-                    let nowMs = Date().timeIntervalSince1970 * 1000
-                    if nowMs - self.lastPersistAt >= 5000 { self.persistPosition(safe) }
-                }
-            }
+            self.installTimeObserver()
+            self.wireLifecycle()
 
             NotificationCenter.default.addObserver(
                 self, selector: #selector(self.didEnd),
@@ -504,6 +508,67 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         }
     }
 
+    // MARK: - Periodic time observer (cadence follows the app lifecycle)
+
+    /// (Re)install the periodic time observer at the cadence for the current app
+    /// state. The rate is not cosmetic: every tick crosses two expensive process
+    /// boundaries — `notifyListeners` is an `evaluateJavaScript` into the
+    /// WKWebView content process, and a Now Playing write is an XPC round-trip to
+    /// the media server. At the old flat 4 Hz a 10-hour book paid ~144,000 of
+    /// each, most of them with the screen off and nothing to show for it.
+    private func installTimeObserver() {
+        guard let player = player else { return }
+        if let t = timeObserver { player.removeTimeObserver(t); timeObserver = nil }
+        let interval = CMTime(seconds: tickSeconds, preferredTimescale: 600)
+        timeObserver = player.addPeriodicTimeObserver(forInterval: interval, queue: .main) { [weak self] t in
+            guard let self = self else { return }
+            let cur = t.seconds
+            let safe = cur.isFinite ? cur : 0
+            self.notifyListeners("time", data: ["currentTime": safe])
+            let nowMs = Date().timeIntervalSince1970 * 1000
+            // Now Playing is deliberately NOT fed per tick — see
+            // updateNowPlayingElapsed. This slow beat only corrects drift.
+            if nowMs - self.lastElapsedPushAt >= 10_000 { self.updateNowPlayingElapsed(safe) }
+            // Throttled native save (~5s) — the real progress saver while the
+            // WebView is frozen in the background.
+            if safe > 0, nowMs - self.lastPersistAt >= 5000 { self.persistPosition(safe) }
+        }
+    }
+
+    /// Follow foreground/background so the tick rate can drop while there is no
+    /// UI to drive. Wired once, on the first load; the observers are name-scoped
+    /// so teardownPlayer's AVPlayerItemDidPlayToEndTime removal leaves them alone.
+    private func wireLifecycle() {
+        guard !lifecycleWired else { return }
+        lifecycleWired = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(self.appDidEnterBackground),
+            name: UIApplication.didEnterBackgroundNotification, object: nil)
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(self.appWillEnterForeground),
+            name: UIApplication.willEnterForegroundNotification, object: nil)
+    }
+
+    @objc private func appDidEnterBackground() { setTickSeconds(NativeAudioPlugin.bgTickSeconds) }
+    @objc private func appWillEnterForeground() { setTickSeconds(NativeAudioPlugin.fgTickSeconds) }
+
+    private func setTickSeconds(_ s: Double) {
+        DispatchQueue.main.async {
+            guard self.tickSeconds != s else { return }
+            self.tickSeconds = s
+            // No live player: nothing to reinstall — the next load() picks up the
+            // rate that is current then.
+            guard let p = self.player else { return }
+            self.installTimeObserver()
+            // Returning to a live UI: hand JS the position at once rather than
+            // leaving the scrubber stale for up to a full tick.
+            if s == NativeAudioPlugin.fgTickSeconds {
+                let cur = p.currentTime().seconds
+                if cur.isFinite { self.notifyListeners("time", data: ["currentTime": cur]) }
+            }
+        }
+    }
+
     private func teardownPlayer() {
         // Read the live position and persist it BEFORE releasing the player, so a
         // book unload / player swap doesn't drop the last few unsaved seconds.
@@ -547,6 +612,7 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
     }
 
     private func updateNowPlaying(playing: Bool) {
+        lastElapsedPushAt = Date().timeIntervalSince1970 * 1000
         npInfo[MPNowPlayingInfoPropertyPlaybackRate] = playing ? (player?.rate ?? rate) : 0
         npInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = player?.currentTime().seconds ?? 0
         npInfo[MPMediaItemPropertyPlaybackDuration] = duration
@@ -562,8 +628,21 @@ public class NativeAudioPlugin: CAPPlugin, CAPBridgedPlugin {
         MPNowPlayingInfoCenter.default().playbackState = playing ? .playing : .paused
     }
 
+    /// Push the elapsed time to the lock screen.
+    ///
+    /// Called on state changes (play/pause/seek/rate) and on a slow ~10s beat —
+    /// NEVER per time-observer tick. iOS extrapolates the lock-screen scrubber
+    /// itself from ElapsedPlaybackTime + PlaybackRate + the moment of the last
+    /// write, so a per-tick write is redundant; and because `npInfo` carries
+    /// MPMediaItemPropertyArtwork, each one shipped a cover-art payload across
+    /// XPC to the media server. Doing that four times a second for the length of
+    /// a book was the single largest continuous power draw in playback. The slow
+    /// beat remains only to correct drift accumulated across a buffering stall
+    /// (automaticallyWaitsToMinimizeStalling can halt the item while the system
+    /// keeps counting).
     private func updateNowPlayingElapsed(_ t: Double) {
         guard !npInfo.isEmpty else { return }
+        lastElapsedPushAt = Date().timeIntervalSince1970 * 1000
         npInfo[MPNowPlayingInfoPropertyElapsedPlaybackTime] = t
         MPNowPlayingInfoCenter.default().nowPlayingInfo = npInfo
     }
