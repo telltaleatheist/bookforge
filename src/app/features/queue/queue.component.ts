@@ -38,6 +38,8 @@
 
 import { Component, computed, inject, signal } from '@angular/core';
 import { DatePipe, DecimalPipe } from '@angular/common';
+import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
+import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
 import { batchLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
@@ -50,11 +52,15 @@ import { stagesFor } from './models/job-stages';
 import { JobEtaService } from './services/job-eta.service';
 import { QueueService } from './services/queue.service';
 import { QueueTrayService } from './services/queue-tray.service';
+import type { BookPlanView } from './services/queue-tray.service';
 
 @Component({
   selector: 'app-queue',
   standalone: true,
-  imports: [DatePipe, DecimalPipe, ToolbarComponent, JobStepComponent, JobDetailsComponent],
+  imports: [
+    DatePipe, DecimalPipe, ToolbarComponent, JobStepComponent, JobDetailsComponent,
+    CdkDropList, CdkDrag, CdkDragHandle,
+  ],
   template: `
     <desktop-toolbar [items]="toolbarItems()" (itemClicked)="onToolbarAction($event)" />
 
@@ -261,16 +267,36 @@ import { QueueTrayService } from './services/queue-tray.service';
       </section>
 
       <!-- ── Up next ───────────────────────────────────────────────────── -->
-      @if (tray.plans().length > 0) {
-        <section class="band">
+      <!-- The band IS the drop list, header included — a wide target, and no
+           wrapper between the section and its cards. Only THIS band: order is a
+           statement about work not yet claimed, so the bench, Needs-you and
+           Finished bands have nothing a drag could mean. -->
+      @if (visiblePlans().length > 0) {
+        <section
+          class="band"
+          cdkDropList
+          [cdkDropListDisabled]="reordering() || visiblePlans().length < 2"
+          (cdkDropListDropped)="onPlanDrop($event)"
+        >
           <header class="band-head">
             <h2>Up next</h2>
-            <span class="note">{{ plannedSteps() }} steps across {{ tray.plans().length }} books</span>
+            <span class="note">{{ plannedSteps() }} steps across {{ visiblePlans().length }} books</span>
           </header>
 
-          @for (plan of tray.plans(); track plan.key) {
-            <article class="card">
+          @for (plan of visiblePlans(); track plan.key) {
+            <article class="card" cdkDrag [cdkDragData]="plan">
               <div class="card-head">
+                <!-- HANDLE, not the whole card. The card body carries Cancel,
+                     Start this book and a step name per row that expands it;
+                     making the card itself draggable would arm a drag under
+                     every one of those presses. -->
+                <button
+                  type="button"
+                  class="grip"
+                  cdkDragHandle
+                  aria-label="Drag to change this book's place in the queue"
+                  title="Drag to change this book's place in the queue"
+                >⠿</button>
                 @if (plan.cover) {
                   <img class="cover" [src]="plan.cover" alt="" />
                 } @else {
@@ -398,7 +424,7 @@ import { QueueTrayService } from './services/queue-tray.service';
         </section>
       }
 
-      @if (tray.plans().length === 0 && busyLanes() === 0 && tray.failures().length === 0) {
+      @if (visiblePlans().length === 0 && busyLanes() === 0 && tray.failures().length === 0) {
         <section class="band">
           <div class="empty">
             <h2>Nothing is queued</h2>
@@ -544,6 +570,52 @@ import { QueueTrayService } from './services/queue-tray.service';
     .card-head .sub { font-size: 0.8125rem; }
 
     .acts { margin-left: auto; display: flex; gap: 6px; flex: none; }
+
+    /* ── Reordering "Up next" ──────────────────────────────────────────────
+       Styled after studio-list's list rows (the house precedent for CdkDrag):
+       a handle that fades in on hover, a dimmed placeholder, a lifted preview.
+       Sizes and colours are this page's tokens, not that component's. */
+
+    .grip {
+      flex: none;
+      width: 18px;
+      padding: 0;
+      border: 0;
+      background: none;
+      font-size: 0.875rem;
+      line-height: 1;
+      color: var(--text-muted);
+      cursor: grab;
+      opacity: 0;
+      transition: opacity 0.15s;
+    }
+
+    .card:hover .grip,
+    .grip:focus-visible { opacity: 0.65; }
+
+    .grip:active { cursor: grabbing; }
+
+    /* A disabled drop list still draws its handles, and a handle that cannot be
+       dragged must not say it can — one book, or a drop still settling. */
+    .band.cdk-drop-list-disabled .grip { cursor: default; }
+
+    .cdk-drag-preview .card-head { background: var(--bg-elevated); }
+
+    .cdk-drag-preview {
+      background: var(--bg-surface);
+      border: 1px solid var(--border-subtle);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+      overflow: hidden;
+    }
+
+    .cdk-drag-placeholder { opacity: 0.28; }
+
+    .cdk-drag-animating { transition: transform 200ms ease; }
+
+    .cdk-drop-list-dragging .card:not(.cdk-drag-placeholder) {
+      transition: transform 200ms ease;
+    }
 
     .error {
       margin: 0;
@@ -1116,7 +1188,80 @@ export class QueueComponent {
   }
 
   plannedSteps(): number {
-    return this.tray.plans().reduce((total, plan) => total + plan.steps.length, 0);
+    return this.visiblePlans().reduce((total, plan) => total + plan.steps.length, 0);
+  }
+
+  // ── Reordering "Up next" ─────────────────────────────────────────────────
+  //
+  // Owen, 2026-08-27: "give me the ability to drag/drop queue items to different
+  // spots in the queue." Order is a real lever here and not decoration — the
+  // engine claims work by walking `jobs[]` from the front (queue-engine.ts
+  // `pump`), so a book moved up genuinely runs sooner.
+  //
+  // The mapping from "card dropped at index N" to the engine's run-level
+  // `reorder` lives in QueueTrayService.reorderPlans, with the whole book's
+  // runs. This half is the affordance and the beat between the drop and main's
+  // answer.
+
+  /**
+   * The order the user just dropped, held only while its reorder calls are in
+   * flight. Null the rest of the time, which is nearly always.
+   */
+  private readonly droppedPlans = signal<BookPlanView[] | null>(null);
+
+  /** True while a drop is being applied. The band refuses a second drag then. */
+  readonly reordering = computed(() => this.droppedPlans() !== null);
+
+  /**
+   * What the band draws.
+   *
+   * Normally the tray's plans, which are the engine's answer and the only order
+   * worth believing. During a drop it is the array the user made, because one
+   * dropped book is SEVERAL `reorder` calls — one per run in its chain — and
+   * every one of them pushes a fresh snapshot. Drawing those would replay the
+   * card walking to its new place a run at a time under a hand that has already
+   * let go, and would animate from an array that is half-moved.
+   */
+  readonly visiblePlans = computed<BookPlanView[]>(() => {
+    const dropped = this.droppedPlans();
+    if (dropped !== null) return dropped;
+    return this.tray.plans();
+  });
+
+  onPlanDrop(event: CdkDragDrop<unknown>): void {
+    const { previousIndex, currentIndex } = event;
+    if (previousIndex === currentIndex) return;
+    const plans = this.tray.plans();
+    const optimistic = [...plans];
+    moveItemInArray(optimistic, previousIndex, currentIndex);
+    this.droppedPlans.set(optimistic);
+    this.report(this.applyPlanOrder(plans, previousIndex, currentIndex));
+  }
+
+  /**
+   * Apply a drop, then take main's word for the result.
+   *
+   * The refusal is HELD rather than swallowed: it is rethrown for `report` to
+   * put on screen, and it is caught here only so the re-read still happens. A
+   * book whose second run refused to move has left the queue in a state only
+   * main can describe, and that is precisely the moment the band must stop
+   * drawing the move that was asked for and start drawing the one that happened.
+   */
+  private async applyPlanOrder(
+    plans: BookPlan[], previousIndex: number, currentIndex: number,
+  ): Promise<void> {
+    let refusal: unknown = null;
+    try {
+      await this.tray.reorderPlans(plans, previousIndex, currentIndex);
+    } catch (err) {
+      refusal = err;
+    }
+    try {
+      await this.queueService.refreshFromBackend();
+    } finally {
+      this.droppedPlans.set(null);
+    }
+    if (refusal !== null) throw refusal;
   }
 
   /**

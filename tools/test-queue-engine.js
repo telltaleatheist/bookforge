@@ -1008,6 +1008,120 @@ test('a report merges, and the rate anchor is stamped once per run', async () =>
   assert.strictEqual(step.metrics.chunksAtFirstStamp, 128);
 });
 
+// ── Reordering ──────────────────────────────────────────────────────────────
+//
+// The queue page can drag a book to a different place in "Up next"
+// (queue.component.ts). What makes that a real lever and not decoration is that
+// `pump` claims by walking `jobs[]` from the front — so these tests defend the
+// array order AND the fact that claiming follows it. If claiming ever stops
+// following the array, the last test here is the one that says so.
+
+/** The run titles in engine order — the order `pump` will claim them in. */
+function titles() {
+  return engine.snapshot().jobs.map((j) => j.title);
+}
+
+/** One held single-step run per title, in the order given. */
+function enqueueBooks(...names) {
+  return names.map((title) => engine.enqueue({
+    title,
+    steps: [{
+      type: 'tts-conversion',
+      label: 'Narrate',
+      config: {},
+      sourceRef: { kind: 'epub', path: `/${title}.epub` },
+    }],
+  }));
+}
+
+test('reorder puts a run IN FRONT OF the named one', async () => {
+  await fresh('reorder-before', [fakeModule('tts-conversion')]);
+  const [a, b, c] = enqueueBooks('A', 'B', 'C');
+  await settle();
+  assert.deepStrictEqual(titles(), ['A', 'B', 'C']);
+
+  engine.reorder(c.id, a.id);
+  assert.deepStrictEqual(titles(), ['C', 'A', 'B'], 'dropped at the top');
+
+  engine.reorder(c.id, b.id);
+  assert.deepStrictEqual(titles(), ['A', 'C', 'B'], 'and back down in front of B');
+});
+
+test('reorder with a null target puts a run at the END', async () => {
+  await fresh('reorder-end', [fakeModule('tts-conversion')]);
+  const [a] = enqueueBooks('A', 'B', 'C');
+  await settle();
+
+  engine.reorder(a.id, null);
+  assert.deepStrictEqual(titles(), ['B', 'C', 'A'],
+    'null is a position — dropped last, there is nothing to go in front of');
+});
+
+test('reorder onto an unknown target refuses BY NAME and leaves the run where it was', async () => {
+  /*
+   * The refusal has to restore the position itself: the implementation splices
+   * the run OUT before it looks for the target, so a bad id that only threw
+   * would drop the run out of the queue entirely.
+   */
+  await fresh('reorder-unknown', [fakeModule('tts-conversion')]);
+  const [, b] = enqueueBooks('A', 'B', 'C');
+  await settle();
+
+  assert.throws(() => engine.reorder(b.id, 'no-such-run'),
+    /There is no run "no-such-run" to put this one in front of/);
+  assert.deepStrictEqual(titles(), ['A', 'B', 'C'], 'a refused move moves nothing');
+
+  assert.throws(() => engine.reorder('no-such-run', null), /There is no run "no-such-run" in the queue/);
+  assert.deepStrictEqual(titles(), ['A', 'B', 'C']);
+});
+
+test('repeating ONE target keeps a book’s own runs in the order they went in', async () => {
+  /*
+   * The property QueueTrayService.reorderPlans is built on. A book's plan can be
+   * several runs, and they are all moved before the SAME target — because each
+   * splice lands at the target's index, pushing the target along, so the second
+   * sibling comes to rest between the first and the target rather than in front
+   * of it. Written down here because it reads like it should reverse them.
+   */
+  await fresh('reorder-siblings', [fakeModule('tts-conversion')]);
+  const [narrate, other, assemble] = enqueueBooks('Wool narrate', 'Other book', 'Wool assemble');
+  await settle();
+  assert.deepStrictEqual(titles(), ['Wool narrate', 'Other book', 'Wool assemble'],
+    'a book’s runs need not start out adjacent');
+
+  // Move the whole book to the end, run by run, target null throughout.
+  for (const run of [narrate, assemble]) engine.reorder(run.id, null);
+  assert.deepStrictEqual(titles(), ['Other book', 'Wool narrate', 'Wool assemble'],
+    'contiguous, and the chain is still in chain order');
+
+  // And back to the front, both before the same run.
+  for (const run of [narrate, assemble]) engine.reorder(run.id, other.id);
+  assert.deepStrictEqual(titles(), ['Wool narrate', 'Wool assemble', 'Other book']);
+});
+
+test('the pump claims in jobs[] ORDER, so a reordered run really does go first', async () => {
+  /*
+   * The whole point. Without this, dragging a card would be a cosmetic sort of a
+   * list the scheduler does not read.
+   */
+  const gpu = fakeModule('tts-conversion');
+  await fresh('reorder-claims', [gpu]);
+  const [, , c] = enqueueBooks('A', 'B', 'C');
+  await settle();
+
+  engine.reorder(c.id, engine.snapshot().jobs[0].id);
+  assert.deepStrictEqual(titles(), ['C', 'A', 'B']);
+
+  engine.start();
+  await settle();
+  assert.strictEqual(gpu.runs.length, 1, 'one GPU slot');
+  assert.strictEqual(gpu.runs[0].ctx.job.title, 'C', 'the run moved to the front is the run claimed');
+
+  gpu.runs[0].resolve();
+  await settle();
+  assert.strictEqual(gpu.runs[1].ctx.job.title, 'A', 'and the rest follow in array order');
+});
+
 // ── Everything else the engine refuses ──────────────────────────────────────
 
 test('a run with no steps, and a step of an unknown type, are both refused by name', async () => {

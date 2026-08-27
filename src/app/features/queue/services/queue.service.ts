@@ -716,11 +716,24 @@ export class QueueService {
     }
   }
 
-  /** Drag-and-drop, at RUN level: a step's position inside its run is its lineage. */
-  async reorderJobsById(fromId: string, toId: string): Promise<boolean> {
+  /**
+   * Drag-and-drop, at RUN level: a step's position inside its run is its lineage.
+   *
+   * `toId` is the run this one goes IN FRONT OF, and `null` means the end of the
+   * queue — the engine's own `reorder(jobId, beforeJobId | null)` vocabulary,
+   * passed through unchanged. Null is a POSITION, not a missing argument: a book
+   * dragged to the bottom of "Up next" has nothing to be placed before, and the
+   * only honest way to say that is to say nothing follows it.
+   */
+  async reorderJobsById(fromId: string, toId: string | null): Promise<boolean> {
     const from = this.jobIdOf(fromId);
+    if (!from) return false;
+    if (toId === null) {
+      QueueService.settle(await this.requireBridge().reorder(from, null), 'Reordering the queue');
+      return true;
+    }
     const to = this.jobIdOf(toId);
-    if (!from || !to || from === to) return false;
+    if (!to || from === to) return false;
     QueueService.settle(await this.requireBridge().reorder(from, to), 'Reordering the queue');
     return true;
   }

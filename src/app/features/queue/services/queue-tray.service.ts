@@ -409,6 +409,52 @@ export class QueueTrayService {
     for (const jobId of plan.jobIds) await this.removeRun(jobId);
   }
 
+  /**
+   * Move a book's plan to a new place in "Up next" — the drop half of the page's
+   * drag and drop.
+   *
+   * ── Why plans move but the engine only knows runs ──────────────────────────
+   *
+   * A plan is a GROUP: one book's narrate/enhance/assemble can be spread across
+   * several runs, and `bookPlans` gathers them by project. The engine has no
+   * such concept — it holds one flat `jobs[]` and claims from it in array order
+   * (queue-engine.ts `pump`, `for (const job of jobs)`), so moving a book means
+   * moving each of its runs.
+   *
+   * The target is the FIRST run of whatever plan follows the drop position once
+   * the moved plan is lifted out, or `null` when it was dropped last. Every run
+   * of the moved plan is then placed before that same target.
+   *
+   * ── Why repeating one target keeps the book's own order ────────────────────
+   *
+   * This looks like it should pile the runs up backwards, and it does not.
+   * `reorder(job, before)` splices the job in AT the target's index, so the
+   * target is pushed one along each time and the second sibling lands between
+   * the first and the target — the book's chain comes out in the order it went
+   * in. Say it out loud here, because a reader would otherwise "fix" it into a
+   * moving target and get the reversal it was written to avoid.
+   *
+   * A plan can also be INTERLEAVED with another book's runs in `jobs[]` (nothing
+   * has ever required a book's runs to be adjacent). Placing every one of them
+   * before a single target makes them contiguous, which is what the card that
+   * was just dragged claims to be.
+   *
+   * Sequential, and NOT wrapped in a catch, for `cancelPlan`'s reason: if the
+   * second run refuses, the caller says so. The refusal is the engine's own
+   * sentence and the first run has genuinely moved.
+   */
+  async reorderPlans(plans: BookPlan[], previousIndex: number, currentIndex: number): Promise<void> {
+    if (previousIndex === currentIndex) return;
+    const moved = plans[previousIndex];
+    if (moved === undefined) throw new Error('That book is no longer in the queue.');
+    const remaining = plans.filter((_, index) => index !== previousIndex);
+    // Past the end is a real drop position, not a missing plan: dropped last,
+    // there is nothing to go in front of.
+    const following = currentIndex < remaining.length ? remaining[currentIndex] : null;
+    const beforeJobId = following === null ? null : following.jobIds[0];
+    for (const jobId of moved.jobIds) await this.queue.reorderJobsById(jobId, beforeJobId);
+  }
+
   async retryStep(stepId: string): Promise<void> {
     this.eta.forget(stepId);
     await this.queue.retryJob(stepId);
