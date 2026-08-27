@@ -91,6 +91,7 @@ import { ComponentService } from '../../../../core/services/component.service';
 import { WorkerConfigService } from '../../../../core/services/worker-config.service';
 import { ElectronService } from '../../../../core/services/electron.service';
 import { QueueService } from '../../../queue/services/queue.service';
+import type { CreateJobRequest } from '../../../queue/models/queue.types';
 import { NarrationVoicesService } from '../../../queue/jobs/narration-voices.service';
 import {
   buildNarrationJobs,
@@ -145,6 +146,32 @@ const F0_METHODS: ReadonlyArray<{ value: string; label: string }> = [
 
 /** The methods whose analysis actually reads a hop length. */
 const CREPE_FAMILY: ReadonlySet<string> = new Set(['crepe', 'crepe-tiny']);
+
+/**
+ * THE LANGUAGE THIS DIALOG STATES, in one place.
+ *
+ * Narration reads the book in the book's own language, which is what the TTS
+ * bridge detects from the file it is given; this is the dialog's one stated
+ * assumption and the same one the queue's config carries. The video job is
+ * given the SAME answer — its subtitles are the narration's — because two
+ * literals would be two chances for a run and its video to disagree about what
+ * language they are in.
+ */
+const RUN_LANGUAGE = 'en';
+
+/**
+ * The video sizes the renderer offers — the Process wizard's three, verbatim.
+ *
+ * They are the ones `VideoAssemblyJobConfig.resolution` accepts, so the list is
+ * the type's own set rather than a taste about sizes.
+ */
+const VIDEO_RESOLUTIONS: ReadonlyArray<{
+  value: '480p' | '720p' | '1080p'; label: string; pixels: string;
+}> = [
+  { value: '480p', label: '480p', pixels: '854 × 480' },
+  { value: '720p', label: '720p', pixels: '1280 × 720' },
+  { value: '1080p', label: '1080p', pixels: '1920 × 1080' },
+];
 
 /** The basename of a path, for showing WHICH file without the whole path. */
 function fileName(fullPath: string): string {
@@ -500,6 +527,40 @@ function fileName(fullPath: string): string {
                 </label>
               </div>
 
+              <!-- THE VIDEO, made FROM the m4b this tab produces.
+                   The one capability the Process wizard had that lives nowhere
+                   else, ported here when that page was erased. It is drawn on
+                   this tab because it is a second OUTPUT of the assembly, not a
+                   stage of its own: without an assembly there is no file to
+                   render a video from, which is why it is refused rather than
+                   silently dropped when Assembly is unchecked. -->
+              <div class="nm-field">
+                <label class="nm-check">
+                  <input type="checkbox" [checked]="video()" [disabled]="!assemble()"
+                         (change)="video.set($any($event.target).checked)" />
+                  <span>Also produce a video</span>
+                </label>
+                <span class="nm-hint">
+                  An MP4 of the finished audiobook with its subtitles burned in, made
+                  after the M4B and beside it.
+                </span>
+              </div>
+
+              @if (video()) {
+                <div class="nm-field">
+                  <label class="nm-label">Video resolution</label>
+                  <div class="nm-choices">
+                    @for (r of videoResolutions; track r.value) {
+                      <button type="button" class="nm-choice"
+                              [class.on]="videoResolution() === r.value"
+                              [disabled]="!assemble()"
+                              [title]="r.pixels"
+                              (click)="videoResolution.set(r.value)">{{ r.label }}</button>
+                    }
+                  </div>
+                </div>
+              }
+
               <!-- Only drawn when the session's provenance resolves one: the pad
                    this normalizes is one only Orpheus bakes, so a non-Orpheus
                    session gets no field and no normalization. -->
@@ -774,6 +835,18 @@ export class NarrationModalComponent {
 
   readonly finalDenoise = signal(false);
   readonly applyDeRing = signal(false);
+
+  /**
+   * A video beside the M4B — seeded from Pipeline Defaults, as the wizard's
+   * own check was (`generateVideo`).
+   *
+   * The RESOLUTION is per-run and starts where the wizard's did. Settings has
+   * no field for it, and inventing one here would be this dialog answering a
+   * question nobody has asked it yet.
+   */
+  readonly video = signal(this.defaults.generateVideo);
+  readonly videoResolution = signal<'480p' | '720p' | '1080p'>('720p');
+  readonly videoResolutions = VIDEO_RESOLUTIONS;
 
   readonly rvcVoiceId = signal(this.defaults.rvcEnhancementVoiceId);
   readonly rvcIndexRate = signal(this.defaults.rvcEnhancementIndexRate);
@@ -1108,6 +1181,13 @@ export class NarrationModalComponent {
         + 'on a scratch folder that is deleted straight afterwards, leaving nothing to listen '
         + 'to. Check Assembly as well.';
     }
+    if (this.video() && !this.assemble()) {
+      // A video is rendered FROM the assembled audiobook and its subtitles, so
+      // with no assembly there is no file to render one from. Said here rather
+      // than by clearing the check, which would look like the click missed.
+      return 'A video is made from the finished audiobook, and this run does not assemble one. '
+        + 'Check Assembly, or turn the video off on that tab.';
+    }
     if (!this.narrate() && this.cachedSentences() === null) {
       // WHICH INSTRUCTION IS USABLE depends on the door. From the cache row the
       // Reading tab is locked, so "check Reading" would name a control the user
@@ -1182,6 +1262,51 @@ export class NarrationModalComponent {
   }
 
   /**
+   * The video job, composed exactly as the Process wizard composed it.
+   *
+   * Every field is the wizard's, including the ones that look redundant:
+   * `projectId` and `bfpPath` are both the project directory (the bridge reads
+   * one and the queue files analytics under the other), and the filename is
+   * built title-then-author with the author left off when the title already
+   * carries it. `mode` is 'monolingual' — the bilingual arm was the wizard's
+   * unreachable half and is not being revived here.
+   *
+   * NO m4bPath/vttPath, deliberately: this job is queued beside the assembly
+   * that produces those files, so at queue time they do not exist and cannot be
+   * named. `video-assembly-bridge.resolveOutputPaths` finds both under the
+   * project's output/ when the job actually runs, and throws naming that
+   * directory when they are not there. The renderer used to invent the pair and
+   * was wrong every time — the monolingual assembler names the file after the
+   * book.
+   *
+   * `book.projectDir` is non-empty by `refusal()`, which `submitDisabled` gates
+   * on, so the wizard's own pre-flight check for it would refuse something that
+   * cannot reach here.
+   */
+  private videoRequest(book: NarrationRunBook): CreateJobRequest {
+    let outputFilename = book.title || 'audiobook';
+    const author = book.author;
+    if (author && author !== 'Unknown' && !outputFilename.includes(author)) {
+      outputFilename += `. ${author}`;
+    }
+    return {
+      type: 'video-assembly',
+      bfpPath: book.projectDir,
+      metadata: { title: 'Video' },
+      config: {
+        type: 'video-assembly',
+        projectId: book.projectDir,
+        bfpPath: book.projectDir,
+        mode: 'monolingual',
+        title: book.title,
+        sourceLang: RUN_LANGUAGE,
+        resolution: this.videoResolution(),
+        outputFilename,
+      },
+    };
+  }
+
+  /**
    * Build the run and queue it — nothing runs here.
    *
    * Everything that can fail is in `buildNarrationJobs`, which throws with
@@ -1205,10 +1330,7 @@ export class NarrationModalComponent {
         isArticle: this.isArticle(),
       };
       const settings: NarrationRunSettings = {
-        // Narration reads the book in the book's own language, which is what the
-        // TTS bridge detects from the file it is given. 'en' is this dialog's
-        // one stated assumption and the same one the queue's config carries.
-        language: 'en',
+        language: RUN_LANGUAGE,
         ttsEngine: this.engine(),
         voice: this.voice(),
         device: this.device(),
@@ -1258,6 +1380,23 @@ export class NarrationModalComponent {
         rvc: this.rvc(),
         assemble: this.assemble(),
       });
+
+      /*
+       * The video is appended AFTER the run, not built into it.
+       *
+       * `buildNarrationJobs` describes a narration run — the three steps main's
+       * own door composes for Foundry's press too — and a video is not one of
+       * them: it is a second rendering of the audiobook the run just made.
+       * Adding it to the shared description would widen a contract two other
+       * processes read, to carry a field only this dialog can ask about.
+       *
+       * Order is the lineage. The steps execute in the order they are queued
+       * under the master row, so appending it last is what puts it after the
+       * assembly that writes the files it reads — which is how the wizard
+       * composed it, and it reads them from <projectDir>/output at RUN time,
+       * when they exist.
+       */
+      if (this.video() && this.assemble()) jobs.push(this.videoRequest(book));
 
       const workflowId = `tts-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       const master = await this.queue.addJob({
