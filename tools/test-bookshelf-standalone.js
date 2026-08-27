@@ -93,8 +93,13 @@ const GATED = [
   ['GET', '/api/edit/page', 'ingest'],
   ['POST', '/api/edit/finalize', 'edit'],
   ['GET', '/api/queue', 'queue'],
+  ['GET', '/api/queue/snapshot', 'queue'],
   ['POST', '/api/queue/start', 'queue'],
   ['POST', '/api/queue/pause', 'queue'],
+  ['POST', '/api/queue/cancel', 'queue'],
+  ['POST', '/api/queue/remove', 'queue'],
+  ['POST', '/api/queue/retry', 'queue'],
+  ['POST', '/api/queue/clear-finished', 'queue'],
   ['DELETE', '/api/project', 'mutate'],
   ['POST', '/api/ebooks/reclassify', 'mutate'],
 ];
@@ -240,6 +245,39 @@ const GATED = [
       const body = await res.json().catch(() => ({}));
       assert.ok(!body.capability,
         `${route} answered the standalone gate's 501 in APP mode — the app just lost that feature`);
+    });
+  }
+
+  await check('the queue snapshot is the engine\'s own shape, with a server clock', async () => {
+    const res = await fetch(`${APP}/api/queue/snapshot`);
+    assert.strictEqual(res.status, 200);
+    const body = await res.json();
+    assert.ok(Array.isArray(body.snapshot.jobs), 'the page runs bench.ts over snapshot.jobs');
+    assert.strictEqual(typeof body.snapshot.running, 'boolean');
+    // The phone's clock is not the rendering machine's, and half the bench's
+    // vocabulary is elapsed time — so the server says when "now" was.
+    assert.strictEqual(typeof body.now, 'number');
+    for (const job of body.snapshot.jobs) {
+      for (const step of job.steps) {
+        assert.ok(!('config' in step),
+          `${step.label} shipped its config, which is where the AI job types keep their API keys`);
+      }
+    }
+  });
+
+  // NO FALLBACKS on the wire: a control whose body names nothing must say so,
+  // not widen to "everything". Cancelling every step of every run because a
+  // phone posted an empty body is the one gesture here that cannot be undone.
+  for (const route of ['/api/queue/cancel', '/api/queue/remove', '/api/queue/retry']) {
+    await check(`POST ${route} refuses a body naming no target`, async () => {
+      const res = await fetch(`${APP}${route}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: '{}',
+      });
+      assert.strictEqual(res.status, 400, `${route} accepted a body that named nothing`);
+      const body = await res.json();
+      assert.match(body.error, /\.$/, 'a refusal is a whole sentence the phone can show');
     });
   }
 

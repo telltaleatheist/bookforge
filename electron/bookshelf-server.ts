@@ -596,10 +596,21 @@ export class BookshelfServer {
     // so it travels with that capability rather than with `pdf`.
     this.app.get('/api/edit/page', this.appOnly('ingest', this.getEditPage.bind(this)));
 
-    // Queue status & control
+    // Queue status & control.
+    //
+    // Two shapes deliberately: /api/queue is the legacy flat row list the older
+    // web tab and any paired phone still read, and /api/queue/snapshot is the
+    // engine's own snapshot, which the web queue page runs the SAME
+    // shared/queue/bench.ts functions over as the desktop page. One queue must
+    // not be described in two vocabularies, so the new page derives nothing here.
     this.app.get('/api/queue', this.appOnly('queue', this.getQueue.bind(this)));
+    this.app.get('/api/queue/snapshot', this.appOnly('queue', this.getQueueSnapshot.bind(this)));
     this.app.post('/api/queue/start', this.appOnly('queue', this.startQueue.bind(this)));
     this.app.post('/api/queue/pause', this.appOnly('queue', this.pauseQueue.bind(this)));
+    this.app.post('/api/queue/cancel', this.appOnly('queue', this.postQueueCancel.bind(this)));
+    this.app.post('/api/queue/remove', this.appOnly('queue', this.postQueueRemove.bind(this)));
+    this.app.post('/api/queue/retry', this.appOnly('queue', this.postQueueRetry.bind(this)));
+    this.app.post('/api/queue/clear-finished', this.appOnly('queue', this.postQueueClearFinished.bind(this)));
 
     // Health check
     this.app.get('/api/health', (_req: Request, res: Response) => {
@@ -3651,6 +3662,131 @@ export class BookshelfServer {
       res.json({ success: true });
     } else {
       res.status(503).json({ error: 'Queue control not available' });
+    }
+  }
+
+  /**
+   * The engine's own snapshot, so the web queue page draws the bench with the
+   * same pure functions the desktop page draws it with (shared/queue/bench.ts).
+   *
+   * `now` travels with it because the page's clock is a phone's, and half the
+   * bench's vocabulary is elapsed time. A batch that started 13 minutes ago on
+   * THIS machine reads as 4 hours on a phone whose clock drifted, and the reader
+   * has no way to tell which number lied.
+   *
+   * Each step's `config` is the one thing dropped. It is the job type's verbatim
+   * configuration and carries credentials — `claudeApiKey` / `openaiApiKey` live
+   * there (see queue-steps/ai-provider.ts) — and nothing on the page reads it:
+   * no function in bench.ts touches `config`. Serving it would put an API key on
+   * the wire to satisfy nobody.
+   *
+   * In-memory only, on purpose: this server shares the desktop app's main
+   * thread, so a handler that walked disk or read covers here would freeze the
+   * UI of the machine doing the rendering. Covers come from the cover routes.
+   */
+  private async getQueueSnapshot(_req: Request, res: Response): Promise<void> {
+    try {
+      const engine = await import('./queue-engine.js');
+      const snapshot = engine.snapshot();
+      res.json({
+        snapshot: {
+          ...snapshot,
+          jobs: snapshot.jobs.map((job) => ({
+            ...job,
+            steps: job.steps.map((step) => {
+              const { config: _config, ...rest } = step;
+              return rest;
+            }),
+          })),
+        },
+        now: Date.now(),
+      });
+    } catch (err) {
+      console.error('[BookshelfServer] Error reading the queue snapshot:', err);
+      res.status(500).json({ error: err instanceof Error ? err.message : 'could not read the queue' });
+    }
+  }
+
+  /**
+   * The step or the run a control names, or null when the body names neither.
+   *
+   * Null is refused by the caller rather than widened into "everything": a body
+   * that arrived without its id is a bug on the wire, and the gesture a guess
+   * would perform here is the one nothing can undo.
+   */
+  private queueTargetOf(body: unknown): { jobId?: string; stepId?: string } | null {
+    const b = (body ?? {}) as { jobId?: unknown; stepId?: unknown };
+    const stepId = typeof b.stepId === 'string' && b.stepId.trim() !== '' ? b.stepId : undefined;
+    const jobId = typeof b.jobId === 'string' && b.jobId.trim() !== '' ? b.jobId : undefined;
+    if (stepId === undefined && jobId === undefined) return null;
+    return {
+      ...(jobId === undefined ? {} : { jobId }),
+      ...(stepId === undefined ? {} : { stepId }),
+    };
+  }
+
+  /**
+   * The engine's refusals are whole sentences aimed at the user ('There is no
+   * step "x" in the queue.'), so they are the response body verbatim. 400
+   * because every one of them is the client naming something that isn't there.
+   */
+  private queueActionFailed(res: Response, err: unknown): void {
+    console.error('[BookshelfServer] Queue control refused:', err);
+    res.status(400).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+
+  private async postQueueCancel(req: Request, res: Response): Promise<void> {
+    const target = this.queueTargetOf(req.body);
+    if (!target) {
+      res.status(400).json({ error: 'Say which step or which run to stop — this named neither.' });
+      return;
+    }
+    try {
+      const engine = await import('./queue-engine.js');
+      await engine.cancel(target);
+      res.json({ success: true });
+    } catch (err) {
+      this.queueActionFailed(res, err);
+    }
+  }
+
+  private async postQueueRemove(req: Request, res: Response): Promise<void> {
+    const target = this.queueTargetOf(req.body);
+    if (!target?.jobId) {
+      res.status(400).json({ error: 'Say which run to remove — removal takes a jobId.' });
+      return;
+    }
+    try {
+      const engine = await import('./queue-engine.js');
+      await engine.remove(target.jobId);
+      res.json({ success: true });
+    } catch (err) {
+      this.queueActionFailed(res, err);
+    }
+  }
+
+  private async postQueueRetry(req: Request, res: Response): Promise<void> {
+    const target = this.queueTargetOf(req.body);
+    if (!target) {
+      res.status(400).json({ error: 'Say which step or which run to retry — this named neither.' });
+      return;
+    }
+    try {
+      const engine = await import('./queue-engine.js');
+      engine.retry(target);
+      res.json({ success: true });
+    } catch (err) {
+      this.queueActionFailed(res, err);
+    }
+  }
+
+  private async postQueueClearFinished(_req: Request, res: Response): Promise<void> {
+    try {
+      const engine = await import('./queue-engine.js');
+      engine.clearFinished();
+      res.json({ success: true });
+    } catch (err) {
+      this.queueActionFailed(res, err);
     }
   }
 
