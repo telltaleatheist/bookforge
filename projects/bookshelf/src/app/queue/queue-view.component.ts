@@ -12,6 +12,7 @@ import {
 } from '@shared/queue/bench';
 import type { ActiveBatchProgress, GpuThermalReading, QueueSnapshot, QueueStep } from '@shared/queue/engine-types';
 import { ApiService } from '../services/api.service';
+import { ServerConfigService } from '../services/server-config.service';
 import { IconComponent } from '../shared/icon.component';
 
 /**
@@ -105,8 +106,8 @@ import { IconComponent } from '../shared/icon.component';
               </div>
               <p class="cerror">{{ run.error }}</p>
               <div class="acts">
-                <button class="btn danger" (click)="retry(run.stepId)" [disabled]="busy()">Retry this step</button>
-                <button class="btn" (click)="remove(run.jobId)" [disabled]="busy()">Remove</button>
+                <button class="btn primary" (click)="retry(run.stepId)" [disabled]="busy()">Retry this step</button>
+                <button class="btn danger" (click)="remove(run.jobId)" [disabled]="busy()">✕ Remove</button>
               </div>
             </div>
           }
@@ -118,8 +119,10 @@ import { IconComponent } from '../shared/icon.component';
            between a queue that is stuck and one that has nothing to do. -->
       <section class="band">
         <h3 class="bhead">On the bench<span class="bnote">{{ busyLanes() }} of {{ lanes().length }} slots in use</span></h3>
+        <div class="lanes">
         @for (lane of lanes(); track lane.resource + lane.index) {
           <div class="card lane" [class.idle]="!lane.occupant && !lane.hold"
+               [class.gpu]="lane.resource === 'gpu'"
                [class.warn]="!lane.occupant && !!lane.hold"
                [class.hot]="!!lane.thermal?.throttleActive">
             <div class="slot">
@@ -173,14 +176,19 @@ import { IconComponent } from '../shared/icon.component';
                 }
               </div>
             } @else if (lane.hold; as hold) {
-              <div class="freetext warn-text">Waiting for the card</div>
-              <p class="cdetail">{{ hold }}</p>
+              <div class="laneidle">
+                <div class="freetext warn-text">Waiting for the card</div>
+                <p class="cdetail">{{ hold }}</p>
+              </div>
             } @else {
-              <div class="freetext">Free</div>
-              <p class="cdetail">Nothing queued wants this slot.</p>
+              <div class="laneidle">
+                <div class="freetext">Free</div>
+                <p class="cdetail">Nothing queued wants this slot.</p>
+              </div>
             }
           </div>
         }
+        </div>
       </section>
 
       <!-- Up next: one card per BOOK, because that is how the work was ordered —
@@ -192,33 +200,50 @@ import { IconComponent } from '../shared/icon.component';
           <h3 class="bhead">Up next<span class="bnote">{{ plannedSteps() }} steps across {{ plans().length }} books</span></h3>
           @for (plan of plans(); track plan.key) {
             <div class="card">
-              <div class="crow">
+              <div class="chead">
+                <!-- The cover, when the plan's key is a project directory whose
+                     slug the cover route recognises. A key that is only a job id
+                     404s once, the img errors, and the placeholder stands — the
+                     page must not care which kind of key it was handed. -->
+                @if (coverUrlOf(plan.key); as url) {
+                  @if (!coverBroken().has(plan.key)) {
+                    <img class="cover" [src]="url" alt="" (error)="hideCover(plan.key)" />
+                  } @else {
+                    <span class="cover ph"></span>
+                  }
+                } @else {
+                  <span class="cover ph"></span>
+                }
                 <div class="cwho">
                   <div class="ctitle">{{ plan.title }}</div>
                   <div class="csub">{{ planSummary(plan) }}</div>
                 </div>
-              </div>
-              @for (step of plan.steps; track step.stepId) {
-                <div class="cstep">
-                  <div class="cline">
-                    <span class="dot" [class.run]="step.status === 'running'" [class.held]="step.status === 'held'"></span>
-                    <span class="sname">{{ step.label }}</span>
-                    @if (step.percent !== null) { <span class="spct">{{ round(step.percent) }}%</span> }
-                    @if (step.status === 'running') {
-                      <button class="btn xs" (click)="stop(step.stepId)" [disabled]="busy()">■ Stop</button>
-                    }
-                  </div>
-                  <!-- A running step's reason is null on purpose: its progress
-                       belongs to the bench, and repeating it here would be the
-                       same fact twice. -->
-                  <div class="reason" [class.warnpill]="step.reason?.kind === 'admission'">
-                    {{ step.reason ? step.reason.sentence : 'On the bench above.' }}
-                  </div>
-                </div>
-              }
-              <div class="acts">
                 <button class="btn danger" (click)="cancelPlan(plan)" [disabled]="busy()"
                         [title]="cancelPlanTitle(plan)">✕ Cancel this book</button>
+              </div>
+              <div class="chain">
+                @for (step of plan.steps; track step.stepId) {
+                  <div class="cstep">
+                    <span class="rail">
+                      <span class="dot" [class.run]="step.status === 'running'" [class.held]="step.status === 'held'"></span>
+                    </span>
+                    <span class="sname">{{ step.label }}</span>
+                    <!-- A running step's reason is null on purpose: its progress
+                         belongs to the bench, and repeating it here would be the
+                         same fact twice. -->
+                    <span class="chip" [class.warnpill]="step.reason?.kind === 'admission'">
+                      <span class="chipdot"></span>{{ step.reason ? step.reason.sentence : 'On the bench above.' }}
+                    </span>
+                    <span class="smeta">{{ step.percent !== null ? round(step.percent) + '%' : 'not timed on this book' }}</span>
+                    @if (step.status === 'running') {
+                      <button class="btn xs" (click)="stop(step.stepId)" [disabled]="busy()">■ Stop</button>
+                    } @else {
+                      <!-- The desktop's per-step Cancel: it takes the RUN out, as
+                           there — a chain missing its middle is not a chain. -->
+                      <button class="btn xs danger" (click)="remove(step.jobId)" [disabled]="busy()">✕ Cancel</button>
+                    }
+                  </div>
+                }
               </div>
             </div>
           }
@@ -288,9 +313,18 @@ import { IconComponent } from '../shared/icon.component';
     .card { display: flex; flex-direction: column; gap: 8px; padding: 12px 14px; margin-bottom: 8px;
       background: var(--card-bg); border: 1px solid var(--border-subtle); border-radius: 12px; }
     .card.fail { border-color: color-mix(in srgb, var(--error) 55%, transparent); }
-    .card.lane.idle { border-style: dashed; background: transparent; }
+
+    /* The bench is a row of slots, as on the desktop page — side by side where
+       the screen allows, stacked on a phone. */
+    .lanes { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 10px; }
+    .card.lane { margin-bottom: 0; min-height: 108px; }
+    .card.lane.gpu { border-top: 2px solid var(--accent);
+      box-shadow: 0 -6px 16px -10px color-mix(in srgb, var(--accent) 65%, transparent); }
+    .card.lane.idle { background: transparent; }
     .card.lane.warn { border-color: color-mix(in srgb, var(--warning) 55%, transparent); }
     .card.lane.hot { border-color: color-mix(in srgb, var(--error) 60%, transparent); }
+    .laneidle { flex: 1; display: flex; flex-direction: column; align-items: center;
+      justify-content: center; gap: 4px; text-align: center; padding: 8px 0; }
 
     .slot { display: flex; align-items: center; gap: 8px; font-size: 10px; font-weight: 700;
       letter-spacing: 0.1em; text-transform: uppercase; color: var(--text-tertiary); }
@@ -329,22 +363,54 @@ import { IconComponent } from '../shared/icon.component';
     .freetext { font-size: 14px; font-weight: 600; color: var(--text-tertiary); }
     .freetext.warn-text { color: var(--warning); }
 
-    .cstep { padding: 5px 0; }
-    .cline { display: flex; align-items: center; gap: 8px; }
-    .cstep .dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); }
+    /* The book card's head: cover, name, and the whole-book cancel where the
+       desktop keeps it — top right, not a red banner at the bottom. */
+    .chead { display: flex; align-items: center; gap: 12px; }
+    .chead .btn { flex-shrink: 0; align-self: flex-start; }
+    .cover { flex-shrink: 0; width: 34px; height: 50px; border-radius: 4px; object-fit: cover;
+      background: var(--bg-elevated); border: 1px solid var(--border-subtle); }
+    .cover.ph { display: block; }
+
+    /* The chain, as the desktop draws it: dot-and-spine, label, the stillness
+       reason as a chip, and the step's own numbers and control on the right. */
+    .chain { display: flex; flex-direction: column; }
+    .cstep { display: grid; grid-template-columns: 20px minmax(64px, 150px) minmax(0, 1fr) auto auto;
+      align-items: center; gap: 10px; padding: 5px 0; }
+    .rail { position: relative; display: flex; align-items: center; justify-content: center; align-self: stretch; }
+    .cstep:not(:last-child) .rail::after { content: ''; position: absolute; left: 50%; top: calc(50% + 7px);
+      height: calc(50% + 7px); width: 1.5px; transform: translateX(-50%); background: var(--border-subtle); }
+    .cstep .dot { flex-shrink: 0; width: 8px; height: 8px; border-radius: 50%; background: var(--text-tertiary); z-index: 1; }
     .cstep .dot.run { background: var(--accent); box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 28%, transparent); }
-    .cstep .dot.held { background: transparent; border: 1.5px solid var(--text-tertiary); }
-    .cstep .sname { flex: 1; min-width: 0; font-size: 13px; font-weight: 600; color: var(--text-primary);
+    .cstep .dot.held { background: var(--card-bg); border: 1.5px solid var(--text-tertiary); }
+    .cstep .sname { min-width: 0; font-size: 13px; font-weight: 600; color: var(--text-primary);
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .cstep .reason { padding-left: 16px; font-size: 11.5px; line-height: 1.35; color: var(--text-tertiary); }
-    .cstep .reason.warnpill { color: var(--warning); }
-    .cstep .spct { font-size: 12px; font-weight: 600; color: var(--text-secondary); font-variant-numeric: tabular-nums; }
+    .chip { justify-self: start; display: inline-flex; align-items: center; gap: 7px; max-width: 100%;
+      padding: 4px 10px; border: 1px solid var(--border-subtle); border-radius: 7px;
+      background: var(--bg-elevated); font-size: 12px; color: var(--text-secondary);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .chipdot { flex-shrink: 0; width: 5px; height: 5px; border-radius: 50%; background: var(--text-tertiary); }
+    .chip.warnpill { color: var(--warning); border-color: color-mix(in srgb, var(--warning) 45%, transparent); }
+    .chip.warnpill .chipdot { background: var(--warning); }
+    .smeta { font-size: 12px; color: var(--text-tertiary); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+    /* On a narrow screen the five columns cannot hold hands: the chip drops to
+       its own line under the label, still inside the spine's gutter. */
+    @media (max-width: 640px) {
+      .cstep { grid-template-columns: 20px minmax(0, 1fr) auto auto; }
+      .cstep .chip { grid-column: 2 / -1; grid-row: 2; justify-self: start; margin-top: 2px; }
+      .rail { grid-row: 1 / 3; }
+      .cstep:not(:last-child) .rail::after { top: 18px; height: calc(100% - 10px); }
+    }
 
     .acts { display: flex; flex-wrap: wrap; gap: 8px; }
     .btn { min-height: 36px; padding: 0 14px; border: 1px solid var(--border-subtle); border-radius: 18px;
       background: var(--bg-elevated); color: var(--text-primary); font-size: 13px; font-weight: 600; cursor: pointer; }
-    .btn.xs { min-height: 30px; padding: 0 10px; font-size: 12px; }
-    .btn.danger { background: var(--error); border-color: transparent; color: var(--text-on-accent); }
+    .btn.xs { min-height: 28px; padding: 0 10px; font-size: 12px; }
+    .btn.primary { background: var(--accent); border-color: transparent; color: var(--text-on-accent); }
+    /* Danger is OUTLINED, as on the desktop page: a red border you aim at, not
+       a filled banner that makes every card look like an emergency. */
+    .btn.danger { background: transparent; color: var(--error);
+      border-color: color-mix(in srgb, var(--error) 55%, transparent); }
     .btn:disabled { opacity: 0.4; }
 
     .frow { display: flex; align-items: center; gap: 10px; padding: 9px 0; border-bottom: 1px solid var(--border-subtle); }
@@ -361,6 +427,7 @@ import { IconComponent } from '../shared/icon.component';
 })
 export class QueueViewComponent implements OnInit, OnDestroy {
   private readonly api = inject(ApiService);
+  private readonly cfg = inject(ServerConfigService);
 
   /** The last snapshot read, and the SERVER clock that read it. */
   readonly snapshot = signal<QueueSnapshot | null>(null);
@@ -516,6 +583,33 @@ export class QueueViewComponent implements OnInit, OnDestroy {
     }
     // Whatever happened, the queue is the authority on what happened.
     await this.poll();
+  }
+
+  // ── Covers ──────────────────────────────────────────────────────────────────
+
+  /** Plan keys whose cover request came back broken — drawn as placeholders. */
+  readonly coverBroken = signal<ReadonlySet<string>>(new Set());
+
+  hideCover(key: string): void {
+    const next = new Set(this.coverBroken());
+    next.add(key);
+    this.coverBroken.set(next);
+  }
+
+  /**
+   * The cover route speaks project SLUGS; a plan's key is the engine's
+   * `projectId`, which for narration jobs is the project DIRECTORY path. The
+   * slug is its last segment. A key with no separators is a bare job id — sent
+   * anyway, because only the server knows whether it names a project, and the
+   * img's error handler owns the miss.
+   *
+   * `cfg.url` appends the server's access key as a query param, which is what
+   * lets a plain <img src> through the gate — it cannot set headers.
+   */
+  coverUrlOf(key: string): string | null {
+    const slug = key.split(/[\\/]/).filter((part) => part !== '').pop();
+    if (slug === undefined) return null;
+    return this.cfg.url(`/api/cover-image?projectId=${encodeURIComponent(slug)}&w=68`);
   }
 
   // ── Words and numbers ───────────────────────────────────────────────────────
