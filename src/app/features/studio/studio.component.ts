@@ -2021,7 +2021,7 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly isFullHeightTab = computed(() => {
     const main = this.mainTab();
     if (main === 'content') return true;       // article editor
-    if (main === 'audiobook') return true;     // Process wizard
+    if (main === 'audiobook') return true;     // correct-sentences surface
     if (main === 'skipped') return true;       // skipped-chunks panel (manages its own scroll)
     if (main === 'files') return this.versionsPanel() !== 'none' || this.versionsComparing(); // inline panel or compare
     return false;
