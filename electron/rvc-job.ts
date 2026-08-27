@@ -19,7 +19,7 @@ import * as fs from 'fs';
 
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
-import { getRvcVoiceById } from './rvc-models';
+import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { getDefaultE2aTmpPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 
@@ -30,8 +30,13 @@ export interface RvcEnhancementConfig {
   /** RVC asset id; resolved to the urvc model folder name. */
   voiceId: string;
   indexRate?: number;
+  /** Inverted scale — lower protects more, 0.5 is off. See PROTECT_RATE_NOTE. */
   protectRate?: number;
   nSemitones?: number;
+  /** Pitch-extraction method; absent leaves urvc on its own default. */
+  f0Method?: string;
+  /** f0 analysis hop; crepe-family only, absent leaves urvc on its own default. */
+  hopLength?: number;
   /** Final-audio denoise: run the block-based roformer pass (denoise-bridge) over
    *  the cached sentences FIRST, then convert the DENOISED set — RVC extracts
    *  f0/content features from its input, and input noise corrupts that extraction.
@@ -145,9 +150,12 @@ export async function runRvcEnhancement(
       sentencesDir: rvcInputDir,
       outputDir,
       modelName: voice.modelName,
-      indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.indexRate ?? 0.5),
+      indexRate: resolveRvcIndexRate(voice, config.indexRate),
       protectRate: config.protectRate ?? 0.5,
       nSemitones: config.nSemitones ?? 0,
+      // Absent stays absent — that is what leaves urvc on its own default.
+      f0Method: config.f0Method,
+      hopLength: config.hopLength,
       signal: abort.signal,
       onProgress: (done, total) => sendProgress(mainWindow, jobId, {
         phase: 'enhancing',

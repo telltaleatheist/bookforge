@@ -44,6 +44,7 @@ interface ReassemblyStepConfig {
   excludedChapters: number[];
   rvcEnhancement?: {
     voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number;
+    f0Method?: string; hopLength?: number;
   };
   sentencesDir?: string;
   finalDenoise?: boolean;

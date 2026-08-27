@@ -15,7 +15,7 @@ import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
-import { getRvcVoiceById } from './rvc-models';
+import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
@@ -291,7 +291,16 @@ export interface ReassemblyConfig {
    *  XTTS sentences through an RVC voice into a tmp dir, then assemble THAT set.
    *  The cached XTTS sentences are left untouched, so the same session can be
    *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
-  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
+  rvcEnhancement?: {
+    voiceId: string;
+    indexRate?: number;
+    /** INVERTED — lower protects more, 0.5 is off. See PROTECT_RATE_NOTE. */
+    protectRate?: number;
+    nSemitones?: number;
+    /** Both absent = urvc's own default. */
+    f0Method?: string;
+    hopLength?: number;
+  };
   /** A pre-rendered set of sentence files (produced by an upstream
    *  'rvc-enhancement' queue job, under [library]/tmp). When set, assemble THIS
    *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
@@ -1377,9 +1386,12 @@ export async function startReassembly(
         sentencesDir: srcSentences,
         outputDir: tmpDir,
         modelName: voice.modelName,
-        indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.rvcEnhancement.indexRate ?? 0.5),
+        indexRate: resolveRvcIndexRate(voice, config.rvcEnhancement.indexRate),
         protectRate: config.rvcEnhancement.protectRate ?? 0.5,
         nSemitones: config.rvcEnhancement.nSemitones ?? 0,
+        // Absent stays absent — that is what leaves urvc on its own default.
+        f0Method: config.rvcEnhancement.f0Method,
+        hopLength: config.rvcEnhancement.hopLength,
         onProgress: (done, total) => emitStage(
           'rvc',
           total ? (done / total) * 100 : null,

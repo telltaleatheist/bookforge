@@ -48,10 +48,19 @@ export interface RvcVoiceAsset extends RvcAsset {
   /** True when the model ships without a usable faiss .index — convert with
    *  --index-rate 0 (the .index is empty / absent). */
   forceIndexRate0?: boolean;
-  /** Per-voice tuned index-rate (0–1), recorded as a reference for the value
-   *  that A/B'd best for this voice. NOT currently applied — the UI uses the
-   *  global 0.5 default (by product decision); wire this into the wizard if
-   *  per-voice index defaults are ever turned on. */
+  /**
+   * Per-voice tuned index-rate (0–1) — the value that A/B'd best for this voice,
+   * used when the RUN DOES NOT NAME ONE.
+   *
+   * It used to be applied the other way round: every conversion read
+   * `voice.defaultIndexRate ?? run.indexRate ?? 0.5`, so a catalog note recorded
+   * for reference SILENTLY OVERRODE the rate the user had typed in Settings, at
+   * three separate call sites. Fixed 2026-08-26 — the user's explicit value wins
+   * and this is the answer when there is none.
+   *
+   * `forceIndexRate0` still beats both: a model with no usable .index cannot be
+   * converted with retrieval on whatever anybody chose.
+   */
   defaultIndexRate?: number;
   /** True for a user-added source: no sha256 (user-hosted) → extract to a temp
    *  dir, locate the .pth/.index anywhere inside, and relocate into
@@ -220,6 +229,43 @@ export function getAllRvcVoiceAssets(): RvcVoiceAsset[] {
 /** Look up an enhancement voice descriptor by its asset id (defaults + user). */
 export function getRvcVoiceById(id: string): RvcVoiceAsset | undefined {
   return getAllRvcVoiceAssets().find((v) => v.id === id);
+}
+
+/**
+ * The index rate this app converts at when a run names none. It is the value
+ * every RVC control in BookForge starts on, written down once so the three
+ * conversion call sites cannot come to disagree about what "unset" means.
+ */
+export const RVC_STOCK_INDEX_RATE = 0.5;
+
+/**
+ * WHAT INDEX RATE A CONVERSION ACTUALLY RUNS AT — one answer, three callers.
+ *
+ * ── The precedence, and the bug it replaces ─────────────────────────────────
+ *
+ * Until 2026-08-26 all three sites (parallel-tts-bridge, reassembly-bridge,
+ * rvc-job) read `voice.defaultIndexRate ?? asked ?? 0.5`, which put a note in
+ * the shipped catalog AHEAD of the number the user had typed. A person who set
+ * the index rate to 0.5 in Settings and converted through a voice carrying a
+ * recorded 0.75 got 0.75, with nothing anywhere saying so. The recorded value is
+ * a good answer to "what if nobody said"; it is not an answer to "what did they
+ * say".
+ *
+ * ── forceIndexRate0 is still absolute ───────────────────────────────────────
+ *
+ * It does not express a preference. The model ships without a usable faiss
+ * index, so retrieval has nothing to retrieve from, and any non-zero rate is a
+ * conversion that fails or produces noise. It wins over an explicit choice for
+ * the same reason a missing file wins over a request to read it.
+ */
+export function resolveRvcIndexRate(
+  voice: RvcVoiceAsset,
+  asked: number | undefined,
+): number {
+  if (voice.forceIndexRate0) return 0;
+  if (asked !== undefined) return asked;
+  if (voice.defaultIndexRate !== undefined) return voice.defaultIndexRate;
+  return RVC_STOCK_INDEX_RATE;
 }
 
 /**
