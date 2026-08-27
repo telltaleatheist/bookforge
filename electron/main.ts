@@ -9144,6 +9144,36 @@ function setupIpcHandlers(): void {
       // Atomic read-modify-write with per-project lock. Embed-only: never register a
       // sidecar vttPath (the transcript, if any, is inside the m4b).
       const saveResult = await manifestService.modifyManifest(projectId, (manifest) => {
+        /*
+         * A FILE THAT IS ALREADY A VERSION IN ITS OWN RIGHT IS NOT THE BOOK'S
+         * AUDIOBOOK, and this pointer must not be moved onto it.
+         *
+         * The renderer calls this after EVERY step that produced an .m4b
+         * (`onStepFinished`, queue.service.ts) and it cannot tell them apart. So
+         * when a run converts a project's cached sentences through another RVC
+         * voice — which files its result as the variant `rvc:<voiceId>` and
+         * deliberately leaves the original alone — this fired seconds later and
+         * repointed `outputs.audiobook` at the alternative, undoing the whole
+         * thing silently. The book would then open on the version the user had
+         * asked to have made BESIDE it.
+         *
+         * Guarded here rather than at the caller because there are several
+         * callers and only one manifest: a rule the renderer had to remember is
+         * a rule the next caller forgets.
+         *
+         * The transcript work above is deliberately still done — sealing a
+         * transcript into the m4b is right for any audiobook this app made,
+         * whichever version it is.
+         */
+        const asKey = (p: string) => p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+        const ownRow = (manifest.variants ?? []).find((v) =>
+          v.kind === 'audiobook' && v.id !== 'audiobook' && asKey(v.path) === asKey(relativePath));
+        if (ownRow !== undefined) {
+          console.log(
+            `[audiobook:link-audio] ${relativePath} is the recorded version "${ownRow.id}" of this `
+            + 'book, so the book\'s own audiobook pointer was left where it is.');
+          return;
+        }
         if (!manifest.outputs) manifest.outputs = {};
         manifest.outputs.audiobook = {
           ...manifest.outputs.audiobook,
