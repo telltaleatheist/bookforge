@@ -595,7 +595,16 @@ export class QueueService {
     // config now: main has no `job.metadata` to consult, and a step module that
     // re-derived either would be inventing a path.
     if (request.bfpPath) config['bfpPath'] = request.bfpPath;
-    if (request.metadata) config['metadata'] = request.metadata;
+    /*
+     * ONLY when the config does not already carry its own. Since the queue rows
+     * renamed themselves to the WORK ("TTS", "Assembly" — Owen's 2026-08-17
+     * ruling), `request.metadata.title` is the row's label, not the book — and
+     * copying it over a config that names the book tagged a finished audiobook
+     * "Assembly" and filed it under that name (The Church And The Negro,
+     * 2026-08-26). The TTS step still relies on the copy: its config carries no
+     * metadata of its own and its row metadata carries the file-naming fields.
+     */
+    if (request.metadata && config['metadata'] === undefined) config['metadata'] = request.metadata;
 
     if (request.resumeInfo && request.type === 'tts-conversion') {
       const tts = config as unknown as TtsConversionConfig;
