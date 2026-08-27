@@ -39,13 +39,35 @@
  * how it is READ, how it is ASSEMBLED, how it is CONVERTED — and a single column
  * of twenty controls was what Owen called ugly.
  *
- * ── The stages are chosen, not implied ─────────────────────────────────────
+ * ── THE TAB STRIP IS THE RUN PLAN ───────────────────────────────────────────
  *
- * Narrate / Convert / Assemble are three independent toggles above the tabs, and
- * the run description takes them as three (shared/queue/narration-run.ts). The
- * combinations that are not runs are refused ON SCREEN in a sentence rather than
- * prevented by moving a toggle the user did not touch, so nobody has to work out
- * why the thing they clicked bounced.
+ * Owen, 2026-08-27: *"put the tabs along the top of the modal"* with *"a
+ * checkbox/checkbutton on each tab item, so the user can check the checkbox if
+ * they want to run that step."* So the three stages are no longer a row of
+ * toggles ABOVE a row of tabs saying the same three words — each tab carries
+ * its own check, and the strip states the whole run at a glance.
+ *
+ * Checking is not selecting. The tab NAME opens that stage's settings; the
+ * CHECK decides whether the stage runs. A tab can be open and unchecked (you
+ * are reading its settings) or checked and closed (it runs, you are looking
+ * elsewhere), and both are drawn so neither is a surprise.
+ *
+ * The run description still takes the three as three
+ * (shared/queue/narration-run.ts). The combinations that are not runs are
+ * refused ON SCREEN in a sentence rather than prevented by moving a check the
+ * user did not touch, so nobody has to work out why the thing they clicked
+ * bounced.
+ *
+ * The one-sentence run summary that sat here is GONE on the same ruling
+ * (*"remove the run-sentence line entirely"*): with the plan legible on the
+ * strip it was a paraphrase of three checkboxes.
+ *
+ * ── AND THE DOOR DECIDES WHAT MAY BE CHECKED ────────────────────────────────
+ *
+ * `context` says which door was pressed (NarrationDialogService). From the
+ * sentence-cache row the Reading tab is locked off, because a fresh read is a
+ * thing you start from the book. It is required, with no default, at every
+ * step of the way here.
  *
  * ── Why the jobs are not built here ─────────────────────────────────────────
  *
@@ -78,6 +100,7 @@ import {
 import {
   engineCaps, selectableEngines,
 } from '../../../language-learning/models/tts-engine-registry';
+import type { NarrationEntryContext } from '../../services/narration-dialog.service';
 import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
 
 /**
@@ -152,48 +175,56 @@ function fileName(fullPath: string): string {
           <div class="nm-err">{{ why }}</div>
         } @else {
 
-          <!-- ── The three acts ──────────────────────────────────────────── -->
-          <div class="nm-stages">
-            <button type="button" class="nm-stage" [class.on]="narrate()"
-                    (click)="narrate.set(!narrate())">
-              <span class="nm-stage-name">Narrate</span>
-              <span class="nm-stage-note">Read the book aloud</span>
-            </button>
-            <button type="button" class="nm-stage" [class.on]="rvc()"
-                    [disabled]="!rvcInstalled()"
-                    [title]="rvcInstalled() ? '' : rvcUnavailableNote"
-                    (click)="rvc.set(!rvc())">
-              <span class="nm-stage-name">Convert</span>
-              <span class="nm-stage-note">Re-render through an RVC voice</span>
-            </button>
-            <button type="button" class="nm-stage" [class.on]="assemble()"
-                    (click)="assemble.set(!assemble())">
-              <span class="nm-stage-name">Assemble</span>
-              <span class="nm-stage-note">Combine into an M4B</span>
-            </button>
-          </div>
+          <!-- ── The tab strip IS the run plan ───────────────────────────
+               Each tab carries its own check, and the three checks together are
+               the whole of what this run will do. Checking is not selecting:
+               the NAME opens that stage's settings, the CHECK decides whether
+               the stage runs, and both are legible at once so the plan can be
+               read off the strip without opening anything. -->
+          <nav class="nm-tabs" role="tablist">
+            <div class="nm-tab" [class.on]="tab() === 'tts'" [class.run]="narrate()">
+              <input type="checkbox" class="nm-tab-check"
+                     aria-label="Read the book aloud in this run"
+                     [checked]="narrate()"
+                     [disabled]="narrateLocked()"
+                     [title]="narrateCheckNote()"
+                     (change)="narrate.set($any($event.target).checked)" />
+              <button type="button" role="tab" class="nm-tab-name"
+                      [attr.aria-selected]="tab() === 'tts'"
+                      [disabled]="narrateLocked()"
+                      [title]="narrateCheckNote()"
+                      (click)="tab.set('tts')">Reading</button>
+            </div>
+            <div class="nm-tab" [class.on]="tab() === 'rvc'" [class.run]="rvc()">
+              <input type="checkbox" class="nm-tab-check"
+                     aria-label="Re-render the sentences through an RVC voice"
+                     [checked]="rvc()"
+                     [disabled]="!rvcInstalled()"
+                     [title]="rvcInstalled() ? 'Re-render the sentences through an RVC voice' : rvcUnavailableNote"
+                     (change)="rvc.set($any($event.target).checked)" />
+              <button type="button" role="tab" class="nm-tab-name"
+                      [attr.aria-selected]="tab() === 'rvc'"
+                      (click)="tab.set('rvc')">Voice conversion</button>
+            </div>
+            <div class="nm-tab" [class.on]="tab() === 'assembly'" [class.run]="assemble()">
+              <input type="checkbox" class="nm-tab-check"
+                     aria-label="Combine the sentences into an M4B"
+                     [checked]="assemble()"
+                     title="Combine the sentences into an M4B"
+                     (change)="assemble.set($any($event.target).checked)" />
+              <button type="button" role="tab" class="nm-tab-name"
+                      [attr.aria-selected]="tab() === 'assembly'"
+                      (click)="tab.set('assembly')">Assembly</button>
+            </div>
+          </nav>
+
+          @if (narrateLocked()) {
+            <p class="nm-locked">{{ narrateLockedNote }}</p>
+          }
 
           @if (stageRefusal(); as why) {
             <p class="nm-plan bad">{{ why }}</p>
-          } @else {
-            <p class="nm-plan">{{ runSentence() }}</p>
           }
-
-          <!-- ── Tabs ────────────────────────────────────────────────────── -->
-          <nav class="nm-tabs" role="tablist">
-            <button type="button" role="tab" class="nm-tab"
-                    [class.on]="tab() === 'tts'"
-                    [attr.aria-selected]="tab() === 'tts'"
-                    (click)="tab.set('tts')">Reading</button>
-            <button type="button" role="tab" class="nm-tab"
-                    [class.on]="tab() === 'rvc'"
-                    [attr.aria-selected]="tab() === 'rvc'"
-                    (click)="tab.set('rvc')">Voice conversion</button>
-            <button type="button" role="tab" class="nm-tab"
-                    [class.on]="tab() === 'assembly'"
-                    [attr.aria-selected]="tab() === 'assembly'"
-                    (click)="tab.set('assembly')">Assembly</button>
-          </nav>
 
           <div class="nm-panel">
 
@@ -325,8 +356,8 @@ function fileName(fullPath: string): string {
               } @else {
                 @if (!rvc()) {
                   <p class="nm-hint">
-                    Voice conversion is off for this run. Turn on Convert above to use these
-                    settings — picking a preset turns it on for you.
+                    Voice conversion is off for this run. Tick this tab's checkbox to use these
+                    settings — picking a preset ticks it for you.
                   </p>
                 }
 
@@ -533,25 +564,7 @@ function fileName(fullPath: string): string {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     }
 
-    /* The three acts, given equal weight and equal width: they are one decision
-       made three times, not a primary choice with two modifiers. */
-    .nm-stages { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; margin-top: 16px; }
-    .nm-stage {
-      display: flex; flex-direction: column; gap: 3px; text-align: left;
-      padding: 9px 11px; border-radius: 9px; cursor: pointer; font-family: inherit;
-      border: 1px solid var(--border-default, rgba(255,255,255,0.12));
-      background: var(--bg-base); color: var(--text-secondary);
-    }
-    .nm-stage.on {
-      border-color: var(--accent-primary, #06b6d4);
-      background: var(--selected-bg-muted, rgba(6,182,212,0.1));
-      color: var(--text-primary);
-    }
-    .nm-stage:disabled { opacity: 0.4; cursor: not-allowed; }
-    .nm-stage-name { font-size: 0.82rem; font-weight: 700; }
-    .nm-stage-note { font-size: 0.68rem; line-height: 1.3; color: var(--text-tertiary); }
-
-    /* One plain sentence saying what this run does and what it leaves behind. */
+    /* One plain sentence, drawn only to refuse a plan that is not a run. */
     .nm-plan {
       margin: 12px 0 0; padding: 9px 11px; border-radius: 8px;
       font-size: 0.76rem; line-height: 1.5;
@@ -560,18 +573,40 @@ function fileName(fullPath: string): string {
     }
     .nm-plan.bad { border-left-color: var(--accent-danger, #ef4444); color: var(--text-primary); }
 
+    /* The strip sits at the top because it is the run plan, not navigation:
+       what is CHECKED here is what will happen, and the checks are drawn at
+       equal weight so all three read at a glance. */
     .nm-tabs {
       display: flex; gap: 2px; margin-top: 16px;
       border-bottom: 1px solid var(--border-default, rgba(255,255,255,0.12));
     }
     .nm-tab {
-      padding: 8px 14px; border: none; background: none; cursor: pointer;
-      font-family: inherit; font-size: 0.78rem; font-weight: 600;
-      color: var(--text-tertiary); border-bottom: 2px solid transparent;
-      margin-bottom: -1px;
+      display: flex; align-items: center; gap: 7px;
+      padding: 7px 12px 8px; border-bottom: 2px solid transparent;
+      margin-bottom: -1px; border-radius: 7px 7px 0 0;
     }
-    .nm-tab:hover { color: var(--text-secondary); }
-    .nm-tab.on { color: var(--text-primary); border-bottom-color: var(--accent-primary, #06b6d4); }
+    /* CHECKED, not selected: a tab whose stage runs is tinted whether or not it
+       is the tab on show, so the plan survives looking at another tab. */
+    .nm-tab.run { background: var(--selected-bg-muted, rgba(6,182,212,0.1)); }
+    .nm-tab.on { border-bottom-color: var(--accent-primary, #06b6d4); }
+    .nm-tab-check { margin: 0; cursor: pointer; accent-color: var(--accent-primary, #06b6d4); }
+    .nm-tab-check:disabled { cursor: not-allowed; opacity: 0.4; }
+    .nm-tab-name {
+      padding: 0; border: none; background: none; cursor: pointer;
+      font-family: inherit; font-size: 0.78rem; font-weight: 600;
+      color: var(--text-tertiary);
+    }
+    .nm-tab-name:hover:not(:disabled) { color: var(--text-secondary); }
+    .nm-tab.on .nm-tab-name { color: var(--text-primary); }
+    .nm-tab-name:disabled { cursor: not-allowed; opacity: 0.45; }
+    /* The locked Reading tab says WHY in a line of its own: a disabled control
+       whose reason lives in a tooltip is a reason nobody reads. */
+    .nm-locked {
+      margin: 10px 0 0; padding: 8px 11px; border-radius: 8px;
+      font-size: 0.74rem; line-height: 1.5;
+      background: var(--bg-base); color: var(--text-secondary);
+      border-left: 3px solid var(--border-subtle, rgba(128,128,128,0.4));
+    }
 
     /* The tabs' shared body scrolls; the stage row, the sentence and the buttons
        stay put, so the run's shape is readable whatever tab is open. */
@@ -660,6 +695,14 @@ export class NarrationModalComponent {
   readonly coverPath = input<string>('');
   readonly outputFilename = input<string>('');
   readonly isArticle = input<boolean>(false);
+  /**
+   * WHICH DOOR opened this — see `NarrationEntryContext`.
+   *
+   * `required` and never defaulted: it decides whether this run is allowed to
+   * read the book at all, and a door that forgot to say would silently get the
+   * one this input happened to be written with.
+   */
+  readonly context = input.required<NarrationEntryContext>();
   readonly cancelled = output<void>();
   /** Rows are in the queue. The host closes and tells the user where to watch. */
   readonly queued = output<{ jobs: number }>();
@@ -690,11 +733,35 @@ export class NarrationModalComponent {
   // must not silently move a control the user has already set.
   private readonly defaults = this.settings.getPipelineDefaults();
 
-  readonly tab = signal<NarrationTab>('tts');
+  /**
+   * The run plan each door opens with — the ONE statement of both.
+   *
+   * The cache door's plan is "assemble what is there": reading is locked off
+   * (it is what the door means), and conversion starts OFF because converting
+   * is a thing the user asks for by checking it, not something a press on a
+   * folder icon should have already decided.
+   */
+  private entryPlan(context: NarrationEntryContext): {
+    tab: NarrationTab; narrate: boolean; rvc: boolean; assemble: boolean;
+  } {
+    return context === 'cache'
+      ? { tab: 'assembly', narrate: false, rvc: false, assemble: true }
+      : { tab: 'tts', narrate: true, rvc: this.defaults.rvcEnhancementEnabled, assemble: true };
+  }
 
-  readonly narrate = signal(true);
-  readonly rvc = signal(this.defaults.rvcEnhancementEnabled);
-  readonly assemble = signal(true);
+  /*
+   * Constructed with the DOCUMENT door's plan because a required input cannot
+   * be read from a field initialiser — the effect in the constructor re-seeds
+   * these from the real door the moment it can, and again if a second press
+   * replaces the target (Foundry's Narrate, while this is already open).
+   */
+  private readonly openingPlan = this.entryPlan('document');
+
+  readonly tab = signal<NarrationTab>(this.openingPlan.tab);
+
+  readonly narrate = signal(this.openingPlan.narrate);
+  readonly rvc = signal(this.openingPlan.rvc);
+  readonly assemble = signal(this.openingPlan.assemble);
 
   readonly engine = signal<TTSEngine>(this.defaults.ttsEngine);
   readonly voice = signal<string>(this.defaults.ttsVoice);
@@ -766,6 +833,22 @@ export class NarrationModalComponent {
   constructor() {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
+
+    /*
+     * THE DOOR SETS THE PLAN.
+     *
+     * Re-run rather than read once, because this dialog outlives one press: the
+     * host keeps it mounted while `target()` is non-null, so a Narrate pressed
+     * in Foundry while a cache-only run is on screen would otherwise inherit
+     * the previous door's locked Reading tab.
+     */
+    effect(() => {
+      const plan = this.entryPlan(this.context());
+      this.tab.set(plan.tab);
+      this.narrate.set(plan.narrate);
+      this.rvc.set(plan.rvc);
+      this.assemble.set(plan.assemble);
+    });
 
     effect(() => {
       const dir = this.projectDir();
@@ -853,6 +936,24 @@ export class NarrationModalComponent {
   }
 
   readonly fileLabel = computed(() => fileName(this.epubPath()));
+
+  /**
+   * A cache run cannot read the book, so its Reading tab is not a choice.
+   *
+   * Locked rather than merely unchecked: the cache door means "do something
+   * with the sentences that are already there", and a check the user could turn
+   * on would turn that press into a fresh read of a book they did not open this
+   * from — which is an hour of GPU and a replaced audiobook.
+   */
+  readonly narrateLocked = computed(() => this.context() === 'cache');
+
+  readonly narrateLockedNote =
+    'Narration starts from the book — open this from the EPUB version to narrate a fresh '
+    + 'session.';
+
+  /** What the Reading check says about itself, locked or not. */
+  readonly narrateCheckNote = computed(() =>
+    this.narrateLocked() ? this.narrateLockedNote : 'Read the book aloud in this run');
 
   /** What each engine can do — worker ceiling, which sampling knobs are real. */
   private readonly caps = computed(() => engineCaps(this.engine()));
@@ -991,37 +1092,6 @@ export class NarrationModalComponent {
   // ── What this run will do, and what stops it ──────────────────────────────
 
   /**
-   * ONE PLAIN SENTENCE saying what happens and what is left behind.
-   *
-   * The most important thing it says is WHERE THE AUDIO LANDS, because the two
-   * answers are opposite and neither is guessable from the toggles: a run that
-   * narrates replaces this book's audiobook, and a run that only converts
-   * cached sentences adds a version beside it.
-   */
-  readonly runSentence = computed(() => {
-    const acts: string[] = [];
-    if (this.narrate()) acts.push(`reads the book with ${this.voice() || 'the chosen voice'}`);
-    if (this.rvc()) {
-      acts.push(`${this.narrate() ? 'converts the sentences' : 'converts the cached sentences'} `
-        + `through ${this.voices.rvcVoiceLabel(this.rvcVoiceId()) || 'an RVC voice'}`);
-    }
-    if (!this.narrate() && !this.rvc() && this.assemble()) {
-      acts.push('reassembles the sentences already rendered for this book');
-    }
-    const doing = acts.join(', then ');
-    if (!this.assemble()) {
-      return `This run ${doing} and stops there, leaving the rendered sentences cached and no `
-        + 'audiobook. Turn on Assemble to get one.';
-    }
-    const lands = this.rvc() && !this.narrate()
-      ? `adds a NEW version of the audiobook — ${
-        this.voices.rvcVoiceLabel(this.rvcVoiceId()) || 'the conversion voice'
-      } — beside the one this book already has`
-      : "replaces this book's audiobook";
-    return `This run ${doing}, assembles the result, and ${lands}.`;
-  });
-
-  /**
    * Why the chosen stages cannot be run, or null.
    *
    * The two impossible shapes are refused HERE, on screen, rather than by
@@ -1030,17 +1100,24 @@ export class NarrationModalComponent {
    */
   readonly stageRefusal = computed<string | null>(() => {
     if (!this.narrate() && !this.rvc() && !this.assemble()) {
-      return 'Nothing is selected, so there is nothing to queue. Choose at least one of the '
-        + 'three above.';
+      return 'No tab is checked, so there is nothing to queue. Check at least one of the three '
+        + 'above.';
     }
     if (this.rvc() && !this.assemble()) {
       return 'Converting the sentences without assembling them would spend the whole conversion '
         + 'on a scratch folder that is deleted straight afterwards, leaving nothing to listen '
-        + 'to. Turn on Assemble as well.';
+        + 'to. Check Assembly as well.';
     }
     if (!this.narrate() && this.cachedSentences() === null) {
-      return 'This book has no rendered sentences on disk, so there is nothing to convert or '
-        + 'assemble. Turn on Narrate to read it first.';
+      // WHICH INSTRUCTION IS USABLE depends on the door. From the cache row the
+      // Reading tab is locked, so "check Reading" would name a control the user
+      // cannot reach — the way out of this state is to open the dialog again
+      // from the book.
+      return this.narrateLocked()
+        ? 'This book has no rendered sentences on disk, so there is nothing to convert or '
+          + 'assemble. ' + this.narrateLockedNote
+        : 'This book has no rendered sentences on disk, so there is nothing to convert or '
+          + 'assemble. Check Reading to read it first.';
     }
     if (this.rvc() && !this.rvcInstalled()) {
       return this.rvcUnavailableNote;
@@ -1071,7 +1148,13 @@ export class NarrationModalComponent {
     // still say is whether it is a BOOK. An M4B or a PDF reaching here would be
     // queued and would fail an hour later inside the TTS job, naming a path the
     // user cannot place.
-    if (!/\.epub$/i.test(this.epubPath())) {
+    //
+    // ONLY when the run could read it. A cache run never opens the document —
+    // it converts and assembles sentences rendered weeks ago — and the file it
+    // names is there to say WHICH VERSION the audiobook is filed against. So a
+    // project whose sole version is not an EPUB can still be reassembled, and
+    // refusing it here would have been a rule about a file nothing reads.
+    if (!this.narrateLocked() && !/\.epub$/i.test(this.epubPath())) {
       return `${this.fileLabel()} is not an EPUB, so it cannot be narrated. Narration reads a `
         + 'book; start this from an EPUB version of it.';
     }

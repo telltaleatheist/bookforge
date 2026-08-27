@@ -22,7 +22,9 @@ import { samePath } from '@shared/document/same-path';
 import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
-import { NarrationDialogService } from '../../services/narration-dialog.service';
+import {
+  NarrationDialogService, type NarrationEntryContext,
+} from '../../services/narration-dialog.service';
 import type { VlmConvertDestination } from '@shared/vlm/conversion';
 
 /**
@@ -343,7 +345,7 @@ const AUDIO_EXTS = new Set([
                          the lead style, because Open is what an EPUB row is FOR
                          and one emphasized act per row is this rail's rule. -->
                     @if (canNarrate(v)) {
-                      <button class="quiet" (click)="narrate(v)"
+                      <button class="quiet" (click)="narrate(v, 'document')"
                               title="Read this version aloud, convert the voice, or assemble the audiobook">Narrate…</button>
                     }
                     @if (canOpenInFoundry(v) && !row.nested) {
@@ -474,18 +476,15 @@ const AUDIO_EXTS = new Set([
             <div class="rail">
               <button class="quiet" (click)="correctSentences.emit()"
                       title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">Correct sentences</button>
-              <button class="quiet" (click)="assemble.emit()"
-                      title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
-              <!-- The door for the runs that are about a book's AUDIO and have no
-                   document to be pressed on: re-render these sentences through
-                   another voice (which files a NEW version of the audiobook), or
-                   reassemble them. Both are cache-only, and this row is where the
-                   cache is listed. -->
-              <button class="quiet" (click)="narrateFromCache()"
-                      title="Re-render these sentences through another voice, or reassemble them">Narrate…</button>
+              <!-- ONE door for everything that can be done TO these sentences.
+                   The modal opened in its cache context is the whole menu —
+                   convert them through another voice, assemble them, or both —
+                   so this row states the act and the modal states the plan. -->
+              <button class="quiet" (click)="processFromCache()"
+                      title="Convert these sentences through another voice, assemble them into an audiobook, or both">Process…</button>
               @if (!c.complete) {
-                <button class="act lead" (click)="continueJob.emit()"
-                        title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
+                <button class="act lead" (click)="continueFromCache()"
+                        title="Carry on rendering the remaining sentences">Continue</button>
               }
               <!-- The cache is not a file you can save a copy of — it is thousands
                    of per-sentence clips. The gap is what keeps Delete in the last
@@ -1196,14 +1195,13 @@ export class StudioVersionsComponent {
   readonly exportAudio = output<string>();  // abs path of the audiobook variant -> export the M4B
   readonly listen = output<string>();       // abs path of the audiobook variant to play
   readonly skipped = output<void>();        // open the skipped-chunks report panel
-  readonly continueJob = output<void>();    // resume the partial render (routes to the Processing wizard)
-  readonly assemble = output<void>();       // assemble the cached sentences (routes to the Processing wizard)
   /*
-   * `process` (the Process wizard's document) was emitted by this page's Process
-   * button and by the narration dialog's "More options". Both were retired on
-   * 2026-08-18 — narration is Foundry's door now — so nothing emits it and the
-   * output is gone. The Process wizard is still reached from the shelf card,
-   * which carries its own resolved target (`ttsTarget`).
+   * `continueJob` and `assemble` went with the Process wizard on 2026-08-27.
+   * Both were requests to a PAGE — "open the Processing tab and do this there" —
+   * and there is no such page now: the sentence-cache row opens the narration
+   * modal itself, in the context that says which of the two the press meant.
+   * What is left going out of this component is the one act that still has a
+   * component of its own.
    */
   readonly correctSentences = output<void>(); // regenerate individual bad sentences, then rebuild
   readonly changed = output<void>();        // after delete/edit -> tell Studio to refresh
@@ -1468,15 +1466,20 @@ export class StudioVersionsComponent {
   }
 
   /**
-   * Open the narration dialog on THIS version.
+   * Open the narration dialog on THIS version, through the door named.
    *
    * Owen's identity law, and the reason nothing is looked up here: "the tts
    * pipeline knows exactly which file its working with because the user came to
    * the tts page FROM the button on that document." The row IS a version and
    * carries its id, and `variantFile` has already proved the file is on disk —
    * so the target is complete before the dialog exists.
+   *
+   * The CONTEXT is a parameter, not a property of this method, because two
+   * different rows call it: a version row means 'document' and the sentence
+   * cache's Process means 'cache'. Guessing from the argument would be this
+   * side inventing which press was made.
    */
-  async narrate(v: ResolvedProjectVariant): Promise<void> {
+  async narrate(v: ResolvedProjectVariant, context: NarrationEntryContext): Promise<void> {
     const abs = await this.variantFile(v, 'narrate this version');
     if (!abs) return;
     const dir = this.projectDir();
@@ -1503,36 +1506,76 @@ export class StudioVersionsComponent {
       coverPath: book?.coverPath || '',
       outputFilename: book?.outputFilename || '',
       isArticle: book?.type === 'article',
-    });
+    }, context);
   }
 
   /**
-   * Narrate from the SENTENCE CACHE row — the door for the cache-only runs.
+   * WHICH VERSION a press on the sentence-cache row is filed against.
    *
-   * It opens the same dialog on the same book. The distinction is where the user
-   * is standing: this row is what they are looking at when they want the
-   * sentences re-rendered through another voice or simply reassembled, and the
-   * dialog works out for itself that those stages are available (it asks main
-   * for the cached session exactly as the queue steps do).
-   *
-   * WHICH version it names is `ttsTarget` — the same resolution the shelf's own
-   * Process button makes — because a cache-only run still has to be filed
-   * against one of the book's versions, and the one the narration READ is the
-   * only honest answer.
+   * The cache is not a version — it is thousands of clips rendered FROM one —
+   * so a run started here still has to name the version it belongs to. The rule
+   * is `ttsTarget`'s, the same resolution the shelf's own Process button makes:
+   * the version marked as the TTS file, and otherwise any EPUB this book has.
+   * Null means there is nothing honest to name, and the caller says so in the
+   * words its own button earned.
    */
-  async narrateFromCache(): Promise<void> {
-    const target = this.variantList().find((v) => this.isTtsVariant(v) && this.canNarrate(v))
-      ?? this.variantList().find((v) => this.canNarrate(v));
+  private cacheRowVariant(): ResolvedProjectVariant | null {
+    return this.variantList().find((v) => this.isTtsVariant(v) && this.canNarrate(v))
+      ?? this.variantList().find((v) => this.canNarrate(v))
+      ?? null;
+  }
+
+  /**
+   * PROCESS, pressed on the SENTENCE CACHE row — the door for cache-only runs.
+   *
+   * It opens the same dialog on the same book, in the 'cache' context: the run
+   * is about audio that already exists, so the modal locks its Reading tab off
+   * and opens on Assembly.
+   *
+   * ONE BUTTON now, where there were two (Owen, 2026-08-27: *"erase the
+   * assemble/narrate buttons and replace it with a single button that opens the
+   * modal"*). Assemble left for a Processing tab that no longer exists, and
+   * Narrate… opened this same dialog without saying which door it came through
+   * — so the row asked one question twice and neither answer named the run.
+   */
+  async processFromCache(): Promise<void> {
+    const target = this.cacheRowVariant();
     if (!target) {
       await this.electron.showMessageDialog({
-        title: 'Could not narrate this book',
-        message: 'This book has no EPUB version, so a narration run has nothing to file itself '
-          + 'against. Export or add an EPUB version first.',
+        title: 'Could not process this book',
+        message: 'This book has no EPUB version, so a run over its cached sentences has nothing '
+          + 'to file itself against. Export or add an EPUB version first.',
         type: 'warning',
       });
       return;
     }
-    await this.narrate(target);
+    await this.narrate(target, 'cache');
+  }
+
+  /**
+   * CONTINUE, pressed on a part-finished sentence cache.
+   *
+   * The same dialog in the 'document' context — because carrying on IS reading
+   * the book, from wherever the last run stopped, and that is the one thing the
+   * cache context forbids. The modal's own resume block is the continue flow
+   * now: it finds the part-finished render, says how many sentences are already
+   * on disk, and opens with "Carry on from there" chosen. That offer used to be
+   * implemented a second time inside the Process wizard (its Continue mode,
+   * pre-filling the original run's settings from `checkResumeFromDir`); the
+   * wizard is gone and the dialog's version is the one that survived.
+   */
+  async continueFromCache(): Promise<void> {
+    const target = this.cacheRowVariant();
+    if (!target) {
+      await this.electron.showMessageDialog({
+        title: 'Could not continue this narration',
+        message: 'This book has no EPUB version, so the narration has nothing to carry on '
+          + 'reading. Export or add an EPUB version first.',
+        type: 'warning',
+      });
+      return;
+    }
+    await this.narrate(target, 'document');
   }
 
   // ── Watching the book being made ───────────────────────────────────────────

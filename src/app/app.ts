@@ -138,21 +138,25 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     <app-toast-host />
 
     <!-- THE NARRATION DIALOG, hosted once for the whole app.
-         Two doors open it — the versions page's Narrate button and Foundry's
-         Narrate, which arrives here as an IPC message with no book on screen
-         and no versions component mounted. Hosting it at each door would be two
-         copies of its inputs and its close handling. See NarrationDialogService. -->
-    @if (narrationDialog.target(); as t) {
+         Its doors are the versions page's Narrate button, the sentence-cache
+         row's Process button, the Browse grid's Process button, and Foundry's
+         Narrate — which arrives here as an IPC message with no book on screen
+         and no versions component mounted. Hosting it at each door would be
+         four copies of its inputs and its close handling.
+         The context says WHICH door, and travels with the target as one
+         request so it cannot go missing. See NarrationDialogService. -->
+    @if (narrationDialog.request(); as r) {
       <app-narration-modal
-        [epubPath]="t.epubPath"
-        [variantId]="t.variantId"
-        [projectDir]="t.projectDir"
-        [title]="t.title"
-        [author]="t.author"
-        [year]="t.year"
-        [coverPath]="t.coverPath"
-        [outputFilename]="t.outputFilename"
-        [isArticle]="t.isArticle"
+        [context]="r.context"
+        [epubPath]="r.target.epubPath"
+        [variantId]="r.target.variantId"
+        [projectDir]="r.target.projectDir"
+        [title]="r.target.title"
+        [author]="r.target.author"
+        [year]="r.target.year"
+        [coverPath]="r.target.coverPath"
+        [outputFilename]="r.target.outputFilename"
+        [isArticle]="r.target.isArticle"
         (cancelled)="narrationDialog.close()"
         (queued)="onNarrationQueued($event)"
       />
@@ -519,7 +523,10 @@ export class App implements OnInit {
      * dialog they just asked for.
      */
     const unsubscribeNarrate = this.electron.onFoundryNarrate((target: NarrationTarget) => {
-      this.narrationDialog.open(target);
+      // 'document': the press was made ON an exported EPUB (or on a step that
+      // just made one), so this run reads that file. Foundry has no view of
+      // the sentence cache and cannot ask for a cache-only run.
+      this.narrationDialog.open(target, 'document');
     });
     this.destroyRef.onDestroy(unsubscribeNarrate);
 

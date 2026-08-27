@@ -379,8 +379,6 @@ import { isBookPath } from '@shared/document/book-path';
                       (exportAudio)="exportM4b($event)"
                       (listen)="openListen($event)"
                       (skipped)="versionsPanel.set('skipped')"
-                      (continueJob)="onContinueJob()"
-                      (assemble)="goToProcessing()"
                       (correctSentences)="startCorrectSentences()"
                       (changed)="onFileChanged()"
                       (compareActive)="versionsComparing.set($event)"

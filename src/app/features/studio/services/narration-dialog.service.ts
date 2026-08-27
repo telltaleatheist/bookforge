@@ -35,26 +35,62 @@ import type { NarrateTarget } from '@shared/queue/narrate-target';
  */
 export type NarrationTarget = NarrateTarget;
 
+/**
+ * WHICH DOOR THE USER CAME THROUGH, and therefore what the run may do.
+ *
+ * Owen, 2026-08-27: *"if the user enters the modal from the sentence cache line
+ * item, the system should know they want to run the effect against the sentence
+ * cache … and the narration checkbox/tab should be disabled. if they want to
+ * narrate a new session, theyll have to open the modal from the epub."*
+ *
+ * 'document' — pressed on a version of the book. Every stage is on offer,
+ *   narration included, and the resume choice appears when a part-finished
+ *   render is on disk.
+ * 'cache'    — pressed on the sentence-cache row. The run is about audio that
+ *   already exists: reading is locked off, because a fresh read is a thing you
+ *   start FROM the book.
+ *
+ * It has NO DEFAULT anywhere, here or in the dialog. A default is how the next
+ * door added gets the wrong one silently, and the wrong one is either a locked
+ * tab on a run that meant to read the book or an unlocked one on a run that
+ * meant to leave the cache alone.
+ */
+export type NarrationEntryContext = 'document' | 'cache';
+
+/**
+ * ONE PRESS: what it is about, and where it was made.
+ *
+ * A single signal rather than two, so the pair cannot be half-set. Two would
+ * have made "the dialog is open but nobody said through which door" a state the
+ * host had to assert its way out of, and an assertion is where a wrong answer
+ * gets in quietly.
+ */
+export interface NarrationRequest {
+  readonly target: NarrationTarget;
+  readonly context: NarrationEntryContext;
+}
+
 @Injectable({ providedIn: 'root' })
 export class NarrationDialogService {
-  private readonly _target = signal<NarrationTarget | null>(null);
+  private readonly _request = signal<NarrationRequest | null>(null);
 
-  /** The book the dialog is open on, or null when it is closed. */
-  readonly target = this._target.asReadonly();
+  /** The press the dialog is open on, or null when it is closed. */
+  readonly request = this._request.asReadonly();
 
   /**
-   * Open the dialog on this book.
+   * Open the dialog on this book, through this door.
    *
-   * A second call while it is open REPLACES the target rather than being
+   * A second call while it is open REPLACES the request rather than being
    * refused: the case that produces one is a Narrate pressed in Foundry while
    * the dialog is already up on another book, and the press the user just made
-   * is the one they mean.
+   * is the one they mean. The context travels with the target because they are
+   * one press.
    */
-  open(target: NarrationTarget): void {
-    this._target.set(target);
+  open(target: NarrationTarget, context: NarrationEntryContext): void {
+    this._request.set({ target, context });
   }
 
   close(): void {
-    this._target.set(null);
+    this._request.set(null);
   }
 }
