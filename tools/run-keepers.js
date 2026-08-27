@@ -109,6 +109,7 @@ const SUITES = [
   'test-cover-thumbnails',
   'test-bookshelf-ids',
   'test-bookshelf-standalone',
+  'test-bookshelf-queue-routes',
 ];
 
 let failed = 0;
