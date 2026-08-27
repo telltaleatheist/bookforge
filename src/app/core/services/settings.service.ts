@@ -101,7 +101,7 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
    * protection value is a judgement about a particular pair of voices that
    * somebody made by listening. Those judgements live in the presets, where they
    * carry the name of the pair they were made for (Deathstalker → Sigma protects
-   * at 0.25). A global default that protected everything by an amount nobody
+   * at 0.1). A global default that protected everything by an amount nobody
    * auditioned would apply one pair's answer to every other pair.
    */
   rvcEnhancementProtectRate: 0.5,
@@ -180,23 +180,40 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
   },
   {
     /*
-     * THE 2026-08-26 AUDITION, written down. Chosen by ear against the
+     * THE 2026-08-27 AUDITION, written down. Chosen by ear against the
      * alternatives and not to be re-tuned from theory:
-     *   --f0-method crepe --hop-length 512 --n-semitones -2
-     *   --index-rate 0.5 --protect-rate 0.25
+     *   --f0-method rmvpe --n-semitones -2 --index-rate 0.3 --protect-rate 0.1
      *
-     * Each of the four numbers is load-bearing and two of them only work
-     * together: protect 0.25 is real protection (the scale is inverted — see
-     * PipelineDefaults) and it does NOTHING unless the index rate is above zero,
-     * which is why 0.5 is here rather than 0. hop 512 is read only because the
-     * method is crepe; beside rmvpe it would be inert.
+     * REPLACES the 2026-08-26 recipe (crepe / hop 512 / idx 0.5 / prot 0.25),
+     * which won a single-sentence A/B and then FAILED on a whole book — Owen's
+     * verdict was "flat and robotic, that was the problem i had with the
+     * pipeline". The cause was the hop: `hop_length` is samples at the 16 kHz
+     * analysis rate, so 512 sampled f0 only every 32 ms and interpolated
+     * between, smoothing the intonation flat before the vocoder saw it. Thirty
+     * seconds of one sentence could not expose that; a chapter could. If a
+     * future audition is run, judge it on a long passage.
+     *
+     * Each number is load-bearing, and two of them only work together: protect
+     * 0.1 is strong protection (the scale is inverted — see PipelineDefaults)
+     * and it does NOTHING unless the index rate is above zero, which is why 0.3
+     * is here rather than 0. Index came DOWN from 0.5 because retrieval pulls
+     * the timbre toward the training-set average, which is part of what read as
+     * robotic.
+     *
+     * rmvpe is named explicitly even though it is also urvc's own default: this
+     * one has an audition behind it (it beat crepe at every hop tried), and a
+     * preset that chose a method should say so. No hop length: rmvpe does not
+     * read one, and carrying an inert 512 would look like a tuning decision.
      *
      * -2 semitones, where the Leah preset above uses -15, because the source is
      * already a deep male voice — that preset drops a high-prosody female source
      * into a male model's range and this one is barely moving.
      *
      * rms-mix-rate stays at the engine's 1.0. 0.25 was auditioned and produced
-     * ghost sounds.
+     * ghost sounds; 0.75 was auditioned here and did not restore dynamics —
+     * `change_rms` measures the envelope on a half-second hop, too coarse to
+     * matter at phrase level. RVC flattens loudness dynamics whatever this is
+     * set to (source 5.8 dB sd → ~5.1 dB across every variant tried).
      */
     id: 'builtin:deathstalker-sigma',
     name: 'Deathstalker → Sigma (deep male narrator)',
@@ -220,11 +237,10 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
-    rvcEnhancementIndexRate: 0.5,
-    rvcEnhancementProtectRate: 0.25,
+    rvcEnhancementIndexRate: 0.3,
+    rvcEnhancementProtectRate: 0.1,
     rvcEnhancementNSemitones: -2,
-    rvcEnhancementF0Method: 'crepe',
-    rvcEnhancementHopLength: 512,
+    rvcEnhancementF0Method: 'rmvpe',
   },
 ];
 
