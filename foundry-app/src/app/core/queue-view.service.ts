@@ -3,11 +3,12 @@ import { Injectable, computed, inject } from '@angular/core';
 import { typeLabel } from '@shared/documents';
 import { fold } from '@shared/original';
 import { JOB_RESOURCE, LANES, SLOTS, laneOf, type JobResource, type Lane } from '@shared/queue-board';
-import type { Job } from '@shared/types';
+import type { Job, JobProgress } from '@shared/types';
 
 import { OpenDocumentsService } from './documents.service';
 import { NoticeService } from './notice.service';
 import { ProjectsService } from './projects.service';
+import { QueueEtaService } from './queue-eta.service';
 import { QueueService } from './queue.service';
 import { api } from './foundry';
 
@@ -56,6 +57,15 @@ export class QueueViewService {
   private readonly notices = inject(NoticeService);
   /** Only ever asked what a book is called, and what it filed. See `label`. */
   private readonly projects = inject(ProjectsService);
+  /**
+   * HOW MUCH LONGER, measured in this window from the counts as they arrive.
+   *
+   * It is injected here rather than into the two surfaces for this file's whole
+   * reason: the queue is drawn in two places, and an estimate they worked out
+   * separately would be two forecasts about one job that a person has to choose
+   * between. One measurement, one wording, read by both.
+   */
+  private readonly eta = inject(QueueEtaService);
 
   /**
    * WHAT THE CHIP MEASURES — the GPU lane's run, or the first one going.
@@ -89,12 +99,29 @@ export class QueueViewService {
     const held = this.queue.held().length;
     if (active) {
       const name = this.label(active);
+      /*
+       * THE ESTIMATE RIDES IN THE CHIP, next to the name, and it is the one
+       * number this line carries. Owen asked for the ETA in the queue and the
+       * chip is the only part of the queue that is on screen without being
+       * clicked — an estimate a person has to open a panel to see would answer
+       * "is it actually working" only for somebody who already went looking.
+       *
+       * It is not the count and never becomes one: the count and the bar are
+       * what the panel is for, and a fraction here would be the furniture the
+       * chip's own note (queue-bar.component.ts) argues against. Absent for most
+       * of a job's life, by design — see QueueEtaService's honesty rules — so
+       * this list is built the same way the one below it is, out of the parts
+       * that have something to say.
+       */
+      const left = this.eta.forJob(active);
       const behind = [
         alsoRunning > 0 ? `${alsoRunning} more running` : null,
         waiting > 0 ? `${waiting} queued` : null,
         held > 0 ? `${held} held` : null,
       ].filter((part) => part !== null);
-      return behind.length > 0 ? `${name} · ${behind.join(', ')}` : name;
+      const tail = behind.length > 0 ? behind.join(', ') : null;
+      const parts = [name, left, tail].filter((part) => part !== null);
+      return parts.join(' · ');
     }
     /*
      * A HELD BATCH IS THE HEADLINE WHEN NOTHING IS RUNNING, and it outranks the
@@ -322,8 +349,102 @@ export class QueueViewService {
     if (p.phase === 'translate') {
       return `Translating ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
     }
+    /*
+     * AN ANALYSIS COUNTS TWO DIFFERENT THINGS AND THIS LINE NAMES THE ONE IT IS
+     * COUNTING NOW. It said "Analysing 3 / 20" for both halves while the phase
+     * was one member, on the argument that no other wording was true of both —
+     * and the fix was not a better sentence but a truer field: the stage reaches
+     * `JobProgress.phase` now, so the line can say which pass this is and what it
+     * is counting. 141 sentences becoming 20 verify calls is an ordinary book
+     * (docs/ANALYSIS.md §2), and the nouns are what keep the two from reading as
+     * one measurement that jumped.
+     *
+     * THE NOUN THAT MUST NEVER APPEAR HERE IS `pages`: a sentence is not a page
+     * and a passage is not a page. Both nouns are declared once, in `STAGE_NOUN`
+     * below, so this line and the stage bars can never disagree about them.
+     */
+    if (p.phase === 'rank' || p.phase === 'verify') {
+      return `${STAGE_LABEL[p.phase]} ${stageCount(p.phase, p)}`;
+    }
     const verb = p.phase === 'render' ? 'Rendering' : 'Reading';
     return `${verb} ${p.page} / ${p.total} pages`;
+  }
+
+  /**
+   * THE TWO STAGES OF AN ANALYSIS, AS TWO BARS — or null for every other row in
+   * this queue, which is all of them.
+   *
+   * ── The complaint, and why a wording could not answer it ────────────────────
+   *
+   * Owen, 2026-08-25: *"right now it looks like it does the first pass, 1-100,
+   * and the same progress bar starts over for the 27b run at 0% and goes to
+   * 100%. could be good to have two different smaller progress bars, after the
+   * bookforge queue model."* A run ranks every sentence with the small
+   * entailment model and then verifies the survivors with the large one
+   * (docs/ANALYSIS.md §2), and one bar drawn over both is a measurement that
+   * completes and then un-completes — which is what a glitch looks like, no
+   * matter what the sentence under it says.
+   *
+   * ── What it is derived from, and what it deliberately is not ────────────────
+   *
+   * THE PHASE, AND NOTHING ELSE. `kind === 'analysis'` names the same set of rows
+   * — nothing else in this app emits either phase — but the phase says which of
+   * the two is counting as well as that there are two, so asking BOTH questions
+   * would be two facts that can disagree about one row, and the day they did the
+   * bars would draw for a job whose stage nobody could name. One question.
+   *
+   * NOTHING IS WRITTEN AND NOTHING IS REMEMBERED. The full bar 1 under a `verify`
+   * count is not a stored fact about the run — it is arithmetic, and it is sound
+   * because verification cannot begin until ranking has finished. That is the
+   * same move `job-queue.ts`'s watcher makes when a `read` count arrives over a
+   * `render` one (it snaps the render bar to its total), except that this one
+   * happens at the drawing rather than on the row, because the renderer never
+   * edits a job.
+   *
+   * NULL UNTIL THE FIRST COUNT, which is a few seconds of every run: the row
+   * falls through to the single indeterminate bar every other job gets before it
+   * has a fraction, because two empty bars labelled with stages that have not
+   * started is a display asserting a shape it cannot yet measure.
+   */
+  stageBars(job: Job): StageBar[] | null {
+    const p = job.progress;
+    if (p === null || p.total <= 0) return null;
+    if (p.phase !== 'rank' && p.phase !== 'verify') return null;
+    const here = Math.min(100, Math.round((p.page / p.total) * 100));
+    return STAGE_ORDER.map((key) => {
+      const active = key === p.phase;
+      // Ranking is finished the moment a verify count exists. See above.
+      const done = key === 'rank' && p.phase === 'verify';
+      return {
+        key,
+        label: STAGE_LABEL[key],
+        percent: done ? 100 : active ? here : 0,
+        active,
+        done,
+        count: active ? stageCount(key, p) : '',
+      };
+    });
+  }
+
+  /**
+   * HOW MUCH LONGER — "~3m left", or the empty string when nothing true can be
+   * said about it yet.
+   *
+   * THE MEASUREMENT IS `QueueEtaService`'s and the whole argument lives there:
+   * a rate over a sliding window of the counts as they arrived, restarted at
+   * every phase boundary, retired when the count stops moving. This is the one
+   * line the surfaces call, and the empty string is what lets them draw it with
+   * `@if` and nothing else — a row that has no estimate draws no estimate, and
+   * neither surface has to know why.
+   *
+   * IT IS BESIDE THE COUNT AND NEVER INSTEAD OF IT. The fraction is a
+   * measurement of what has happened; this is a forecast of what has not, and
+   * the tilde is the whole of the difference a person needs. An estimate that
+   * replaced the count would be this app trading the fact it knows for the guess
+   * it made.
+   */
+  timeLeft(job: Job): string {
+    return this.eta.forJob(job) ?? '';
   }
 
   /**
@@ -416,6 +537,14 @@ export class QueueViewService {
   made(job: Job): string {
     if (job.kind === 'epub' && !this.filed(job)) return 'the book';
     if (job.kind === 'epub' || job.kind === 'pdf' || job.kind === 'txt') return typeLabel(job.kind);
+    /*
+     * AN ANALYSIS MADE A REPORT AND SAYS SO, where a reading and a translation
+     * say "done" — and the difference is that those two are followed by something
+     * a person opens (the book follows from a bank; a book is cast from records),
+     * so their rows would be claiming the wrong product. A report is the whole of
+     * what an analysis makes, and it is on its step waiting to be read.
+     */
+    if (job.kind === 'analysis') return 'the report';
     return 'done';
   }
 
@@ -519,6 +648,31 @@ export interface SlotView {
   occupant: Job | null;
 }
 
+/**
+ * ONE STAGE OF A TWO-STAGE RUN, as the surfaces draw it. See `stageBars`, which
+ * is the only thing that makes one.
+ *
+ * `active` and `done` are both carried and are never both true: `active` is the
+ * stage the engine is counting now and `done` is a stage it has finished, and a
+ * stage that is neither is one that has not started — which is the state a
+ * surface draws dimmed. A single tri-state would say the same thing and would
+ * have to be read through a comparison at every use site.
+ */
+export interface StageBar {
+  /** `@for`'s identity, and the phase this stage IS. */
+  key: 'rank' | 'verify';
+  /** The stage in one word: "Ranking", "Verifying". Never a model name. */
+  label: string;
+  /** 0–100. Full on a finished stage, the live fraction on the counting one. */
+  percent: number;
+  /** True on the one stage the engine is counting. */
+  active: boolean;
+  /** True on a stage the run has moved past — drawn full. */
+  done: boolean;
+  /** "141 / 141 sentences", on the active stage only; empty on the others. */
+  count: string;
+}
+
 /** The waiting rows of one book, in queue order. See `waitingBooks`. */
 export interface BookGroup {
   key: string;
@@ -546,6 +700,60 @@ const LANE_HINT: Readonly<Record<string, string>> = {
   exclusive: 'An installation replaces the environment every other job runs in, so nothing runs beside it and nothing behind it starts first.',
   unscheduled: 'Assembled in this window rather than by the engine, so it takes no slot and holds nothing up.',
 };
+
+/**
+ * THE TWO STAGES OF AN ANALYSIS, IN THE ORDER THEY HAPPEN — which is also the
+ * order the bars are stacked in, and the reason this is an array rather than a
+ * pair of fields: the drawing walks it, so the stacking cannot get out of step
+ * with the running.
+ */
+const STAGE_ORDER: readonly ('rank' | 'verify')[] = ['rank', 'verify'];
+
+/**
+ * WHAT EACH STAGE IS CALLED, in words a reader owes nothing to.
+ *
+ * NOT MODEL NAMES, and that is the rule rather than a preference. The stages are
+ * a small entailment model and `qwen3.8:27b`, and a bar labelled "27b" tells a
+ * person reading their own book's progress precisely nothing — it is this app's
+ * bookkeeping wearing the costume of a status. What they are DOING is ranking
+ * the sentences and then verifying the passages that survived, so that is what
+ * the labels say (docs/ANALYSIS.md §2).
+ */
+const STAGE_LABEL: Readonly<Record<'rank' | 'verify', string>> = {
+  rank: 'Ranking',
+  verify: 'Verifying',
+};
+
+/**
+ * AND WHAT EACH OF THEM IS COUNTING — the half of the fraction that stops two
+ * unrelated totals reading as one number that jumped.
+ *
+ * Ranking counts SENTENCES: every sentence in the book, scored by the entailment
+ * model. Verifying counts PASSAGES: the windows that survived the floor, one
+ * Ollama call apiece. The engine's own lines carry the first noun already
+ * (`analyze: rank 141/141 sentences`); the second is this app's word for what
+ * `analyze: verify 3/20 (hate)` is counting, and it is the word the panel and
+ * the docs use for the same thing.
+ *
+ * NEITHER OF THEM IS EVER `pages`. That noun belongs to a reading, and a queue
+ * that spent it here would be measuring somebody's book in the wrong unit.
+ */
+const STAGE_NOUN: Readonly<Record<'rank' | 'verify', string>> = {
+  rank: 'sentences',
+  verify: 'passages',
+};
+
+/**
+ * The fraction and its noun — "3 / 20 passages".
+ *
+ * The counts are grouped for `stepLine`'s own reason: the right-hand side reaches
+ * four digits on a real book, and a number that long unpunctuated is read as a
+ * different number. The stage is passed rather than read off `p` so the caller's
+ * narrowing is what picks the noun — there is one table and one lookup.
+ */
+function stageCount(stage: 'rank' | 'verify', p: JobProgress): string {
+  return `${p.page.toLocaleString()} / ${p.total.toLocaleString()} ${STAGE_NOUN[stage]}`;
+}
 
 /**
  * How much of the engine's sentence fits under the count by default. Two lines

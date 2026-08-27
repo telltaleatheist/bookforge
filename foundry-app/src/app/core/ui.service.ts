@@ -108,6 +108,22 @@ export class UiService {
    * before making more of the same kind is a card that has misread its own act.
    */
   readonly sweepOpen = signal(false);
+  /**
+   * The Analysis dialog — read this book against the categories (docs/ANALYSIS.md).
+   *
+   * IT IS ONE OF THE FIVE THAT CONFIGURE AN ACT AGAINST THE POSITION, so it looks
+   * like Translate and behaves like it: a checklist, a model, an endpoint, and a
+   * held job at the end of it. WHAT IT DOES NOT HAVE is a sensitivity control, and
+   * that is a ruling rather than an omission (Owen, 2026-08-25): the run captures
+   * once at the widest calibrated net and strictness is three buttons on the PANEL,
+   * so changing your mind costs a click and never an hour.
+   *
+   * AND IT TAKES NO `clearedHere`, which puts it with the sweep rather than with
+   * the other four. The guard protects acts that CONSUME a rendering; this run
+   * reads the book file and writes a report beside it, consuming no rendering and
+   * moving no pointer (docs/ANALYSIS.md §7, decided explicitly).
+   */
+  readonly analysisOpen = signal(false);
 
   /** Naming a book before photographing it. See CaptureNewDialogComponent. */
   readonly captureNewOpen = signal(false);
@@ -194,6 +210,35 @@ export class UiService {
    * it must not shut a dialog.
    */
   readonly queueOpen = signal(false);
+
+  /**
+   * Whether first-run setup is on screen.
+   *
+   * NOT IN THE ONE-QUESTION LIST, for the same reason the queue panel is not:
+   * that list is for MODALS, and a modal is a question. Setup is a FLOW — five
+   * steps, each of which starts work that outlives the step it was started from
+   * — and `only()` would let any dialog opened on top of it silently clear the
+   * boolean, which for a wizard mid-download reads as the app throwing away
+   * what somebody was in the middle of.
+   *
+   * It does sit ABOVE every dialog (z-index 1250, the capture-progress rung),
+   * because on first run there is nothing behind it worth reaching, and below
+   * the confirm card at 1300 so a "this model is too big for your machine, are
+   * you sure" still lands on top of the screen that asked it.
+   *
+   * TWO THINGS OPEN IT. The shell, once, on a machine whose `setup:state` says
+   * it has never been through this — and the settings screen's button, which is
+   * what makes every skip recoverable rather than permanent.
+   */
+  readonly setupOpen = signal(false);
+
+  openSetup(): void {
+    this.setupOpen.set(true);
+  }
+
+  closeSetup(): void {
+    this.setupOpen.set(false);
+  }
 
   /**
    * Whether the open-documents panel is up.
@@ -320,6 +365,7 @@ export class UiService {
     this.metadataOpen,
     this.captureNewOpen,
     this.sweepOpen,
+    this.analysisOpen,
     this.confirmOpen,
   ] as const;
 
@@ -435,6 +481,14 @@ export class UiService {
 
   closeSweep(): void {
     this.sweepOpen.set(false);
+  }
+
+  openAnalysis(): void {
+    this.only(this.analysisOpen);
+  }
+
+  closeAnalysis(): void {
+    this.analysisOpen.set(false);
   }
 
   /*

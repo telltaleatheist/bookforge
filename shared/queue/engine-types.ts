@@ -257,7 +257,7 @@ export interface StepProgress {
    * different statement from a count of zero, and `progressOf` returns null on
    * it rather than sending a progress with no numbers in it.
    */
-  foundryPhase?: 'render' | 'read' | 'translate';
+  foundryPhase?: 'render' | 'read' | 'translate' | 'rank' | 'verify';
 }
 
 /**

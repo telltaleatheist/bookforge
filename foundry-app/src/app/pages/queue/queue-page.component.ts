@@ -167,24 +167,81 @@ import { hosted } from '../../core/foundry';
                     <div class="sub" [title]="view.paths(busy)">{{ kindLine(busy) }}</div>
                   </div>
                   @if (view.determinate(busy)) {
-                    <div class="right"><div class="pct">{{ view.percent(busy) }}%</div></div>
+                    <!--
+                      HOW FAR, AND HOW MUCH LONGER, stacked in the same corner
+                      because they are two readings of one thing and the page has
+                      the width to give them both. The percentage is the
+                      measurement and stays the big number; the estimate sits
+                      under it small and grey, which is the weighting the two
+                      deserve — one is what has happened, the other is a forecast
+                      of what has not.
+
+                      It is drawn only when there is one. \`QueueEtaService\`
+                      says nothing until it has watched the count move, starts a
+                      new clock at every phase boundary, and takes the estimate
+                      away when the count stops — so this corner is a percentage
+                      alone for the first stretch of every run, and again the
+                      moment a run goes quiet.
+
+                      ON A RUN WITH TWO STAGES BOTH NUMBERS ARE THE STAGE THAT
+                      IS COUNTING, which is the one thing they could honestly be:
+                      ranking sentences and verifying passages are unrelated
+                      quantities (the estimate drops its clock at the boundary
+                      for exactly that reason), so a combined percentage would be
+                      an average of two things that do not average. The corner
+                      therefore agrees with whichever of the two bars below is
+                      moving.
+                    -->
+                    <div class="right">
+                      <div class="pct">{{ view.percent(busy) }}%</div>
+                      @if (view.timeLeft(busy); as left) {
+                        <div class="eta">{{ left }}</div>
+                      }
+                    </div>
                   }
                 </div>
 
-                <div class="bar" [class.indeterminate]="!view.determinate(busy)">
-                  <i [style.width.%]="view.percent(busy)"></i>
-                </div>
+                @if (view.stageBars(busy); as stages) {
+                  <!--
+                    TWO STAGES, TWO BARS — Owen's ruling, and the argument is in
+                    \`stageBars\`: an analysis ranks every sentence and then
+                    verifies the survivors, and one bar over both filled to the
+                    end and started again, which reads as a fault rather than as
+                    a second pass. The stage that has not started is drawn dimmed
+                    rather than left out, because an empty bar with a name on it
+                    is how the run says there is another pass coming.
 
-                <!--
-                  THE FULL PROGRESS SENTENCE, both halves of it. The count says
-                  how far; the line under it is whatever the engine last said
-                  that was NOT a count — the retry, the fallback, the block it is
-                  chewing on. A count alone cannot tell working from wedged, and
-                  a person who believes a job is hung kills it: an hour of GPU
-                  thrown away by the progress display. The page has room, so it
-                  spends more of the sentence than the dropdown can.
-                -->
-                <p class="step">{{ view.stepLine(busy) }}</p>
+                    The count rides the stage it belongs to and the sentence
+                    below is dropped for these rows: it would say the same words
+                    the moving stage's own line already says.
+                  -->
+                  <div class="stages">
+                    @for (stage of stages; track stage.key) {
+                      <div class="stage" [class.idle]="!stage.active && !stage.done">
+                        <span class="stage-name">{{ stage.label }}</span>
+                        <div class="bar"><i [style.width.%]="stage.percent"></i></div>
+                        @if (stage.count) {
+                          <span class="stage-count">{{ stage.count }}</span>
+                        }
+                      </div>
+                    }
+                  </div>
+                } @else {
+                  <div class="bar" [class.indeterminate]="!view.determinate(busy)">
+                    <i [style.width.%]="view.percent(busy)"></i>
+                  </div>
+
+                  <!--
+                    THE FULL PROGRESS SENTENCE, both halves of it. The count says
+                    how far; the line under it is whatever the engine last said
+                    that was NOT a count — the retry, the fallback, the block it is
+                    chewing on. A count alone cannot tell working from wedged, and
+                    a person who believes a job is hung kills it: an hour of GPU
+                    thrown away by the progress display. The page has room, so it
+                    spends more of the sentence than the dropdown can.
+                  -->
+                  <p class="step">{{ view.stepLine(busy) }}</p>
+                }
                 @if (view.stepDetail(busy, 400); as detail) {
                   <p class="note-line" [title]="busy.note ?? busy.message ?? ''">{{ detail }}</p>
                 }
@@ -538,6 +595,10 @@ import { hosted } from '../../core/foundry';
     }
     .right { flex: none; text-align: right; font-variant-numeric: tabular-nums; }
     .pct { font-size: 17px; font-weight: 600; color: var(--accent); }
+    /* The forecast, under the measurement and a good deal quieter than it —
+       the argument is at the markup. It never wraps, because "~1h 10m left" is
+       the longest thing it says and a slot card must not reflow around it. */
+    .eta { margin-top: 2px; font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
 
     .bar {
       height: 5px;
@@ -560,6 +621,40 @@ import { hosted } from '../../core/foundry';
       0% { transform: translateX(-100%); }
       100% { transform: translateX(320%); }
     }
+
+    /*
+      ── THE TWO STAGES OF AN ANALYSIS ────────────────────────────────────────
+
+      The slot card has the width the dropdown's row does not, so the stack is
+      the same three columns with more room in them: the name is legible at the
+      card's own size and the count sits at the right edge where the eye already
+      goes for the percentage. Same shape in both surfaces on purpose — a person
+      who has learned to read the pair in the dropdown should not have to learn
+      it again here.
+    */
+    .stages { display: flex; flex-direction: column; gap: 7px; margin-top: 10px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 68px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 10px;
+    }
+    /* The stack's gap does the spacing, so the bars inside it carry none — and
+       they are a pixel thinner than the single bar, so two of them read as two
+       smaller measurements rather than as twice the one they replace. */
+    .stage .bar { height: 4px; margin-top: 0; }
+    .stage-name { font-size: 11px; color: var(--text-tertiary); white-space: nowrap; }
+    .stage-count {
+      font-size: 11.5px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    /* Not started: quieter in both parts, so the eye lands on the stage that is
+       moving. Never hidden — an empty bar with a name on it is the run saying
+       there is another pass coming. */
+    .stage.idle .stage-name { color: var(--text-muted); }
+    .stage.idle .bar { opacity: 0.55; }
 
     .step { margin: 9px 0 0; font-size: 12px; color: var(--text-secondary); }
     .note-line {
@@ -730,6 +825,14 @@ export class QueuePageComponent {
       case 'txt': return 'Plain text';
       case 'mint': return 'Assembling the photographs';
       case 'env-install': return 'Installing the environment';
+      /*
+       * "Reading against the categories" and not "Analysing", because the word
+       * alone says nothing about what is being done to somebody's book — and this
+       * column is the one place a person scanning a queue of expensive rows finds
+       * out what each of them is FOR. It is the book being read a second time,
+       * against a checklist (docs/ANALYSIS.md §1), which is exactly the sentence.
+       */
+      case 'analysis': return 'Reading against the categories';
     }
   }
 
@@ -769,10 +872,24 @@ export class QueuePageComponent {
     return parts.join(' · ');
   }
 
-  /** One waiting row's state, for the off-lane sections that have no chain. */
+  /**
+   * One waiting row's state, for the off-lane sections that have no chain.
+   *
+   * THE ESTIMATE IS ON THIS LINE TOO, and it is not a special case: these
+   * sections hold the install and the mint, and a mint counts photographs being
+   * rectified in this very window (`noteMintPage`) — which is a count like any
+   * other and the one job in the app whose progress is nobody's process to ask.
+   * An install has no fraction at all (it counts megabytes in a field of its
+   * own) so it simply never has one to draw, which is the same silence every
+   * other row gets before its count has moved.
+   */
   protected stateLine(job: Job): string {
     if (job.state === 'held') return 'Waiting for Start';
-    if (job.state === 'running') return this.view.stepLine(job);
+    if (job.state === 'running') {
+      const left = this.view.timeLeft(job);
+      const line = this.view.stepLine(job);
+      return left === '' ? line : `${line} · ${left}`;
+    }
     if (job.state === 'queued') return job.message ?? 'Queued';
     return this.outcome(job);
   }

@@ -163,6 +163,20 @@ const PAGE_MIME = 'application/x-foundry-capture-page';
  */
 const SWEEP_STARTS_AT = 5;
 
+/**
+ * How near the table's top or bottom edge a dragged card starts the scroll, and
+ * how far one frame moves it at the very edge.
+ *
+ * The band is about a card's own margin — wide enough to fall into without
+ * aiming, narrow enough that the middle of the table is dead ground where a
+ * person can hold a card still. The step is a pixel figure per frame rather than
+ * per second because the loop IS the clock here: sixteen pixels at sixty frames
+ * is most of a row a second, which crosses a shoot of a hundred and seventy-nine
+ * in a few seconds without overshooting the row somebody is aiming at.
+ */
+const SCROLL_BAND = 48;
+const SCROLL_STEP = 16;
+
 @Component({
   selector: 'app-capture-grid',
   imports: [CaptureCardComponent],
@@ -240,6 +254,20 @@ const SWEEP_STARTS_AT = 5;
       every pixel is a card -- so the press starts anywhere and a card decides on
       RELEASE whether it was a click or the beginning of a sweep.
     -->
+    <!--
+      THE DRAG IS HEARD BY THE TABLE AND NOT BY THE CARDS (Wave 51).
+
+      It used to be a dragover on each slot, which could only ever answer "in
+      front of card N" — so the trailing empty space below the last row was deaf,
+      and there was NO WAY TO EXPRESS "put this at the very end" on a table whose
+      last row is half full. Owen, moving a back cover from the top to the
+      bottom-right: it could not be dropped past the last page.
+
+      One handler on the scroller answers both. It hit-tests the card under the
+      pointer, so a drop on empty space is not a miss to be ignored but the
+      table's own answer — the end of the book — and it is also the one place a
+      drag can be watched continuously, which is what the auto-scroll needs.
+    -->
     <div
       class="table"
       (pointerdown)="startSweep($event)"
@@ -247,6 +275,9 @@ const SWEEP_STARTS_AT = 5;
       (pointerup)="endSweep($event)"
       (pointercancel)="endSweep($event)"
       (contextmenu)="openMenu($event)"
+      (dragover)="overTable($event)"
+      (dragleave)="leftTable($event)"
+      (drop)="landOnTable($event)"
     >
       @if (band(); as box) {
         <div
@@ -262,11 +293,10 @@ const SWEEP_STARTS_AT = 5;
           class="slot"
           [attr.data-id]="card.id"
           [class.landing]="landing() === index"
+          [class.trailing]="landing() === cards().length && index === cards().length - 1"
           draggable="true"
           (dragstart)="pickUp($event, card.id)"
-          (dragover)="over($event, index)"
           (dragend)="putDown()"
-          (drop)="land($event, index)"
         >
           <app-capture-card
             [chosen]="chosen().includes(card.id)"
@@ -324,25 +354,28 @@ const SWEEP_STARTS_AT = 5;
       -->
       <div class="menu" role="menu" [style.left.px]="at.x" [style.top.px]="at.y">
         <!--
-          RELEASE, AND ONLY WHERE IT WOULD DO SOMETHING.
+          FOLLOW THE BOOK AGAIN, AND ONLY WHERE IT WOULD DO SOMETHING.
 
           The stage's own precedent, from the split button and then from Wave
           24's whole control table: *a control that would change nothing is not
-          shown*. Release on a photograph the book is already free to move is a
-          menu item that exists to say no, so the item is ABSENT rather than
+          shown*. Offered on a photograph the book is already free to move it
+          would be a menu item that exists to say no, so it is ABSENT rather than
           greyed on a selection with nothing complete in it.
 
-          It names the OUTCOME rather than the mechanism -- "let the book change
-          it again" -- because the other side of this door has never had a name
-          a person could hold, which is the diagnosis Wave 24 opened with. And
-          it counts photographs, like every other item here, because a spread is
-          two cards on one picture and releasing one releases both.
+          It names the OUTCOME rather than the mechanism, because the other side
+          of this door has never had a name a person could hold — that is the
+          diagnosis Wave 24 opened with. What changed in Wave 51 is the outcome
+          itself: *Release* cleared the mark and left the picture alone, waiting
+          for an Apply that is now the gesture, so the press takes the book's
+          lines in the same breath. It counts photographs, like every other item
+          here, because a spread is two cards on one picture.
         -->
         @if (completeChosen().length > 0) {
-          <button type="button" role="menuitem" (click)="releaseChosen()">
-            Release {{ completeChosen().length }}
-            {{ completeChosen().length === 1 ? 'photograph' : 'photographs' }} — let the book change
-            {{ completeChosen().length === 1 ? 'it' : 'them' }} again
+          <button type="button" role="menuitem" (click)="followChosen()">
+            Follow the book again —
+            {{ completeChosen().length }}
+            {{ completeChosen().length === 1 ? 'photograph takes' : 'photographs take' }}
+            the book's lines
           </button>
         }
         <button type="button" role="menuitem" (click)="turnChosen(-1)">
@@ -464,14 +497,21 @@ const SWEEP_STARTS_AT = 5;
       The landing is a line down the leading edge rather than a gap that opens
       up: an insertion that reflows the whole grid moves every other card out
       from under the pointer while the person is still aiming at one.
+
+      AND THE LAST CARD CAN CARRY IT ON THE OTHER SIDE, which is the only way to
+      draw an insertion AFTER everything: there is no slot past the end to put a
+      leading line on, so the end of the book is the trailing edge of the last
+      card. Same hairline, same colour, mirrored inset — one landing indicator
+      with two seats, rather than a second mark a person has to learn.
     */
-    .slot.landing::before {
+    .slot.landing::before, .slot.trailing::after {
       content: '';
       position: absolute;
       inset: -5px auto -5px -6px;
       width: 2px;
       background: var(--accent, #4c9aff);
     }
+    .slot.trailing::after { inset: -5px -6px -5px auto; }
 
     .empty { color: var(--text-tertiary); font-size: 12px; padding: 20px; }
 
@@ -502,6 +542,9 @@ export class CaptureGridComponent {
     inject(DestroyRef).onDestroy(() => {
       this.gl?.dispose();
       this.gl = null;
+      // A drag that was still auto-scrolling when the tab changed would leave a
+      // frame loop measuring an element that is no longer in the document.
+      this.stopChasing();
     });
   }
 
@@ -608,8 +651,7 @@ export class CaptureGridComponent {
   }
 
   private tableBox(): DOMRect | null {
-    const table: HTMLElement | null = this.host.nativeElement.querySelector('.table');
-    return table === null ? null : table.getBoundingClientRect();
+    return this.tableEl()?.getBoundingClientRect() ?? null;
   }
 
   /**
@@ -648,7 +690,8 @@ export class CaptureGridComponent {
   }
 
   /**
-   * The chosen photographs the book has stopped moving -- what Release acts on.
+   * The chosen photographs the book has stopped moving -- what the hand-back
+   * acts on.
    *
    * Read off the CARDS rather than asked of anything else, because the card's
    * dot and this list have to be the same answer: a menu offering to release
@@ -666,10 +709,10 @@ export class CaptureGridComponent {
   });
 
   /** Give these photographs back to the book. One press, the whole selection. */
-  protected releaseChosen(): void {
+  protected followChosen(): void {
     const photos = this.completeChosen();
     this.menu.set(null);
-    if (photos.length > 0) this.release.emit(photos);
+    if (photos.length > 0) this.follow.emit(photos);
   }
 
   /**
@@ -900,8 +943,8 @@ export class CaptureGridComponent {
   readonly reorder = output<readonly string[]>();
   readonly open = output<string>();
   readonly strike = output<string>();
-  /** Let the book change these PHOTOGRAPHS again — the right-click door. */
-  readonly release = output<readonly string[]>();
+  /** These PHOTOGRAPHS take the book's lines again — the right-click door. */
+  readonly follow = output<readonly string[]>();
   /** A sort was picked: the key and the direction. Only the service can sort by spread. */
   readonly sortBy = output<{ key: 'name' | 'taken'; descending: boolean }>();
   /** Whether the Sort dropdown is open. Session-only chrome, nobody else's fact. */
@@ -924,7 +967,18 @@ export class CaptureGridComponent {
   /** Turn these photographs a quarter each, where they sit. */
   readonly turn = output<{ photos: readonly string[]; turns: number }>();
 
-  /** The slot a dragged card would land in front of, or null when nothing is up. */
+  /**
+   * WHERE THE CARRIED CARD WOULD GO — an INSERTION INDEX, not a slot.
+   *
+   * The difference is the whole of Wave 51's reorder fix. It used to be "the
+   * slot this would land in front of", which has n values for n cards and can
+   * therefore only ever name a position BEFORE something. There are n+1 places
+   * to insert into a list of n, and the missing one is the end of the book —
+   * which is where a back cover goes.
+   *
+   * So 0..n, drawn as a leading line on card i for i < n and as a trailing line
+   * on the last card for n. Null while nothing is up.
+   */
   protected readonly landing = signal<number | null>(null);
   protected readonly hot = signal(false);
   private carrying: string | null = null;
@@ -935,38 +989,150 @@ export class CaptureGridComponent {
     if (event.dataTransfer) event.dataTransfer.effectAllowed = 'move';
   }
 
-  protected over(event: DragEvent, index: number): void {
+  /**
+   * The pointer is over the table with a card in hand.
+   *
+   * Without `preventDefault` the browser refuses the drop and the whole gesture
+   * ends in the "return to origin" animation with nothing having happened. The
+   * guard comes first: a drag carrying FILES must fall through untouched, or
+   * this handler would claim it and the window's intake would never hear it.
+   */
+  protected overTable(event: DragEvent): void {
     if (this.carrying === null) return;
-    // Without preventDefault the browser refuses the drop and the whole gesture
-    // ends in the "return to origin" animation with nothing having happened.
     event.preventDefault();
     if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
-    this.landing.set(index);
+    this.landing.set(this.landingFor(event));
+    this.chase(event.clientY);
   }
 
-  protected land(event: DragEvent, index: number): void {
+  /**
+   * WHERE THE POINTER SAYS THIS CARD GOES — by MIDPOINT, which is the fix.
+   *
+   * ── The half of the card the pointer is in decides the side ──────────────
+   *
+   * Aiming at a card used to mean "in front of this one", so the only way to put
+   * something after card N was to aim at card N+1 — and past the last card there
+   * is no N+1 to aim at. Reading the halves gives every card two answers and the
+   * last one an answer nobody could express before, and it is also what people
+   * already expect: the line appears on the side of the card the hand is on.
+   *
+   * ── AND THE TABLE'S OWN SPACE IS AN ANSWER RATHER THAN A MISS ────────────
+   *
+   * A pointer over the padding below the last row, or over the gap at the end of
+   * a half-full row, is not aiming at nothing — it is aiming past everything. So
+   * it lands at the end of the book, which is the only place it could sensibly
+   * mean.
+   */
+  private landingFor(event: DragEvent): number {
+    const ids = this.cards().map((card) => card.id);
+    const target = event.target;
+    const slot = target instanceof Element ? target.closest('[data-id]') : null;
+    const id = slot?.getAttribute('data-id') ?? null;
+    const index = id === null ? -1 : ids.indexOf(id);
+    if (slot === null || index === -1) return ids.length;
+    const box = slot.getBoundingClientRect();
+    return event.clientX > box.left + box.width / 2 ? index + 1 : index;
+  }
+
+  protected landOnTable(event: DragEvent): void {
     const carried = this.carrying;
+    const to = this.landingFor(event);
     this.putDown();
     if (carried === null) return;
     event.preventDefault();
-    // Inside the grid only — a file dropped on a card is not a reorder, and
+    // Inside the grid only — a file dropped on the table is not a reorder, and
     // letting it fall through to the window would open it as a document.
     event.stopPropagation();
 
     const ids = this.cards().map((card) => card.id);
     const from = ids.indexOf(carried);
-    if (from === -1 || from === index) return;
+    if (from === -1) return;
+    // Landing on either side of where it already is moves nothing, and emitting
+    // an identical arrangement would mark the project changed for a gesture that
+    // did not change it.
+    if (to === from || to === from + 1) return;
 
     const rest = ids.filter((id) => id !== carried);
-    // The landing is a slot in the ORIGINAL list; once the carried card is
-    // removed, every slot after it shifts down by one.
-    const at = from < index ? index - 1 : index;
+    // The insertion is an index into the ORIGINAL list; once the carried card is
+    // removed, every position after it shifts down by one.
+    const at = from < to ? to - 1 : to;
     this.reorder.emit([...rest.slice(0, at), carried, ...rest.slice(at)]);
   }
 
   protected putDown(): void {
     this.carrying = null;
     this.landing.set(null);
+    this.stopChasing();
+  }
+
+  /**
+   * The pointer left the table with a card still in hand — stop scrolling.
+   *
+   * `dragleave` also fires on every crossing BETWEEN children, which is
+   * continuous while somebody drags across fifty cards, so the relatedTarget is
+   * asked whether the pointer is still inside. Without that guard the scroll
+   * would stall the moment the pointer crossed a card boundary — which is to
+   * say, always.
+   */
+  protected leftTable(event: DragEvent): void {
+    const table = this.tableEl();
+    const into = event.relatedTarget;
+    if (table !== null && into instanceof Node && table.contains(into)) return;
+    this.stopChasing();
+  }
+
+  /**
+   * SCROLL THE TABLE WHILE A CARD IS HELD NEAR ITS EDGE.
+   *
+   * ── Why a frame loop, when there is a perfectly good event ───────────────
+   *
+   * An HTML5 drag suppresses pointermove entirely, so `dragover` is the only
+   * thing that reports the pointer — and it fires on every small movement and
+   * NOT AT ALL while the hand is held still. Scrolling per event would therefore
+   * be both jittery (speed set by how fast somebody happens to be moving) and
+   * dead in the one case that matters: a card held motionless at the bottom edge
+   * of a shoot of a hundred and seventy-nine, waiting to travel. So the event
+   * only records WHERE the pointer is, and a frame loop does the moving.
+   *
+   * ── THE RAMP, AND WHY IT IS NOT A CONSTANT ──────────────────────────────
+   *
+   * Speed rises from nothing at the edge of the band to `SCROLL_STEP` at the
+   * table's border, which makes the gesture controllable: a person nudging into
+   * the band creeps a row, and one who wants the far end of the book pushes to
+   * the edge. A single speed is either too slow to cross a long table or too
+   * fast to stop on a row.
+   */
+  private chasing = 0;
+  private chasingAt: number | null = null;
+
+  private chase(y: number): void {
+    this.chasingAt = y;
+    if (this.chasing !== 0) return;
+    const step = (): void => {
+      const table = this.tableEl();
+      const at = this.chasingAt;
+      if (table === null || at === null) {
+        this.chasing = 0;
+        return;
+      }
+      const box = table.getBoundingClientRect();
+      const above = (box.top + SCROLL_BAND - at) / SCROLL_BAND;
+      const below = (at - (box.bottom - SCROLL_BAND)) / SCROLL_BAND;
+      if (above > 0) table.scrollTop -= Math.min(1, above) * SCROLL_STEP;
+      else if (below > 0) table.scrollTop += Math.min(1, below) * SCROLL_STEP;
+      this.chasing = requestAnimationFrame(step);
+    };
+    this.chasing = requestAnimationFrame(step);
+  }
+
+  private stopChasing(): void {
+    if (this.chasing !== 0) cancelAnimationFrame(this.chasing);
+    this.chasing = 0;
+    this.chasingAt = null;
+  }
+
+  private tableEl(): HTMLElement | null {
+    return this.host.nativeElement.querySelector('.table');
   }
 
   protected warm(event: DragEvent): void {

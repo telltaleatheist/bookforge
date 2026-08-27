@@ -411,6 +411,23 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
                 fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"
                 stroke-linejoin="round" />
         </symbol>
+        <!--
+          A MAGNIFIER, FOR THE ANALYSIS — and it is the mark the sweep turned
+          down, taken up here on the same argument read the other way. That one
+          named a GESTURE and every noun-shaped candidate for it read as "search",
+          which is what the sweep's tile would then have been taken for. This IS a
+          search: the book read against a checklist of claims, with a list of what
+          it found beside the page. The one mark in this sheet whose obvious
+          meaning is the right one.
+
+          Same 24-unit box, same 1.8 stroke, same round joins as every mark above
+          it, because the argument for a sheet is that the marks are one set.
+        -->
+        <symbol id="ft-glass" viewBox="0 0 24 24">
+          <circle cx="10.5" cy="10.5" r="6" fill="none" stroke="currentColor" stroke-width="1.8" />
+          <path d="M15 15l5 5" fill="none" stroke="currentColor" stroke-width="1.8"
+                stroke-linecap="round" />
+        </symbol>
         <symbol id="ft-gear" viewBox="0 0 24 24">
           <circle cx="12" cy="12" r="3.2" fill="none" stroke="currentColor" stroke-width="1.8" />
           <path d="M12 2.5v3 M12 18.5v3 M2.5 12h3 M18.5 12h3 M5.2 5.2l2.1 2.1 M16.7 16.7l2.1 2.1 M18.8 5.2l-2.1 2.1 M7.3 16.7l-2.1 2.1"
@@ -2814,6 +2831,25 @@ export class OpenDocumentsComponent {
       this.picked.set(row.key);
       return;
     }
+    /*
+     * AN ANALYSIS CARD OPENS ITS REPORT, AND MOVES NOTHING. A report is not a
+     * place to stand: nothing is ever made from one, it has no rendering for
+     * the bench to draw, and the landing deliberately left the pointer beside
+     * it — so standing here would move the position onto a row whose only
+     * answer to the screen is silence, which is exactly what the first person
+     * to press one got (Owen, 2026-08-25: *"clicking it does nothing"*). What
+     * the click means on this card is "show me what the analysis found", and
+     * that is the hits panel, aimed at this step by the row's own project and
+     * id (`startAnalysisAt` — the tree must not derive the project from the
+     * screen, for the race its docblock names). The panel draws beside the
+     * book the person is reading; if no document of this project is up, the
+     * wish waits for one, which is the validated column's ordinary contract.
+     */
+    if (row.kind === 'step' && row.step !== null && row.step.action === 'analysis') {
+      this.picked.set(row.key);
+      if (row.dir !== null) this.stage.startAnalysisAt(row.dir, row.step.id);
+      return;
+    }
     if (row.kind === 'root' || row.kind === 'step') {
       this.picked.set(row.key);
       void this.stand(row);
@@ -4193,6 +4229,14 @@ function iconForStep(step: LedgerStep): string {
   if (step.action === 'curate' || step.action === 'edit') return 'ft-pen';
   if (step.action === 'translate') return step.params?.rewrite === undefined ? 'ft-globe' : 'ft-spark';
   if (step.action === 'metadata') return 'ft-tag';
+  /*
+   * AN ANALYSIS WEARS THE MAGNIFIER, which is the one mark on this sheet that
+   * means what it looks like it means. It needs a line at all for the reason
+   * every branch in this function needs one: the fall-through below is the SCAN,
+   * and a report drawn as a photographed page would be the tree saying the wrong
+   * thing about the one row in it that is not a state of the book.
+   */
+  if (step.action === 'analysis') return 'ft-glass';
   return 'ft-scan';
 }
 
@@ -4274,6 +4318,18 @@ function titleForStep(step: LedgerStep): string {
       return 'Applied changes';
     case 'metadata':
       return metadataSentence(step.params);
+    /*
+     * A NOUN, "The scan"'s precedent again: what a person wants off this card
+     * is the report drawn beside their book, and pressing it does exactly that
+     * (`pickRow`). And WITHOUT this case the `default` below calls the card
+     * "Translated" — the third table to fall into the exact trap the `capture`
+     * comment above warns about, and the second action to actually fall in it
+     * (Owen, 2026-08-25: *"it came out as 'translated' rather than
+     * analysis"*). The default stays a default because translate params
+     * genuinely vary; every action that is not a translation must say so here.
+     */
+    case 'analysis':
+      return 'The analysis';
     default:
       return translateSentence(step.params);
   }

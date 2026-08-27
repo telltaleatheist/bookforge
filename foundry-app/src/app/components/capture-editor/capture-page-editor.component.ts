@@ -625,6 +625,32 @@ export class CapturePageEditorComponent {
   readonly splitChange = output<CaptureSplit>();
 
   /**
+   * THE HAND LET GO, AND SOMETHING MOVED — the end of one gesture.
+   *
+   * ── Why the parent cannot work this out for itself ────────────────────────
+   *
+   * `quadsChange` and `splitChange` fire on every pointermove, which is right:
+   * the recipe is the thing on screen and a drag that only landed at the end
+   * would draw against a stale one. What no caller can see from those emits is
+   * where the gesture STOPPED — and Wave 51 needs exactly that, because a crop
+   * moved with *Global* ticked hands itself to the whole book, and doing that
+   * per pointermove would be twenty-five photographs re-cut sixty times a
+   * second. Once, when the hand opens.
+   *
+   * ── IT ONLY FIRES IF SOMETHING ACTUALLY MOVED ────────────────────────────
+   *
+   * A press and a release on a handle with no travel between them is not a
+   * gesture, and the propagation it would trigger writes the recipe (and marks
+   * the project changed) for a hand that did nothing. So the emits are counted
+   * rather than the presses: `moved` is set where a change is emitted and read
+   * where the pointer is released.
+   */
+  readonly settled = output<void>();
+
+  /** Whether this drag has emitted anything yet. See `settled`. */
+  private moved = false;
+
+  /**
    * The listening surface. Capture is set here rather than on the picture
    * because a pointer is captured by the element that HEARD the press, and a
    * press on a handle overhanging the edge is heard by this one.
@@ -1294,12 +1320,14 @@ export class CapturePageEditorComponent {
          */
         const from = this.slidFrom;
         if (from === null) return;
+        this.moved = true;
         moved.emit(
           slideSplit(sheet, from.split, [at[0] - from.at[0], at[1] - from.at[1]]),
         );
         return;
       }
 
+      this.moved = true;
       moved.emit(seatSplit(sheet, split, gutter, [at[0], at[1]]));
       return;
     }
@@ -1312,6 +1340,7 @@ export class CapturePageEditorComponent {
     const moved = quads.map((quad, index) =>
       index === holding!.quad ? withCorner(quad, holding!.corner, inside) : quad,
     );
+    this.moved = true;
     this.quadsChange.emit(moved);
   }
 
@@ -1320,6 +1349,11 @@ export class CapturePageEditorComponent {
     this.held.set(null);
     this.holdingSplit.set(null);
     this.slidFrom = null;
+    // Read and cleared together, so a release can only ever announce the drag
+    // it ended -- see `settled`.
+    const travelled = this.moved;
+    this.moved = false;
+    if (travelled) this.settled.emit();
     // The hand is still where it let go, so what it is over is still true --
     // but nothing will say so until the pointer moves again, and a cursor that
     // reverted to the default on release would read as the handle vanishing

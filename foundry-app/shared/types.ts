@@ -67,8 +67,15 @@ export type { MintContributor, MintMeta };
  * the board — an interactive mint sitting in one would hold a reading behind it
  * for minutes — and `env-install` is the precedent for a row the pump hands to
  * something other than `executeJob`.
+ *
+ * `analysis` IS THE SECOND KIND THAT PRODUCES NO DOCUMENT, after `read`, and it
+ * is on the board for `translate`'s reason rather than for its own: the verify
+ * stage is one schema-constrained Ollama call per surviving (window, category),
+ * so it holds a model on the card for as long as a translation does
+ * (docs/ANALYSIS.md §5). What it writes is a REPORT — a file of findings about
+ * the book, which nothing is ever made from.
  */
-export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate' | 'mint';
+export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate' | 'mint' | 'analysis';
 
 /**
  * What the OCR panel can ask for. An env install is never enqueued this way.
@@ -126,8 +133,32 @@ export interface JobProgress {
    * the UI: "412/2,081" means paragraphs and the shelf must not call them
    * pages. The field is still `page` because it is the same quantity to every
    * bar that draws it — a count of finished things out of a known total.
+   *
+   * `rank` AND `verify` ARE ONE RUN'S TWO STAGES, and they are two members here
+   * rather than one because they count two unrelated things. An analysis ranks
+   * every sentence in the book with the small entailment model and then verifies
+   * every surviving passage against the large one (docs/ANALYSIS.md §2) — 141
+   * sentences becoming 20 verify calls is an ordinary book.
+   *
+   * ── Why the stage reaches this field, when it used not to ───────────────────
+   *
+   * It was one member, `analyze`, on the argument that the engine names the stage
+   * on the counting line and `Job.note` would carry it. That argument was about a
+   * SENTENCE and this field is read by a BAR. Owen, 2026-08-25: *"right now it
+   * looks like it does the first pass, 1-100, and the same progress bar starts
+   * over for the 27b run at 0% and goes to 100%."* One bar filling twice reads as
+   * a glitch, and no wording under it repairs that — the surface has to be able
+   * to draw the two stages as two things, which means knowing which one is
+   * counting. The note argument still holds for everything it was actually about:
+   * the CATEGORY on a verify line (`analyze: verify 3/20 (hate)`) is not lifted
+   * out, because a count clears the note by construction and that is what makes a
+   * note mean "since the count last moved".
+   *
+   * WHAT MUST NEVER APPEAR BESIDE EITHER OF THEM IS THE NOUN `pages`: a sentence
+   * is not a page and a passage is not a page. The two nouns are declared once,
+   * beside the two labels, in `QueueViewService`.
    */
-  phase: 'render' | 'read' | 'translate';
+  phase: 'render' | 'read' | 'translate' | 'rank' | 'verify';
 }
 
 /**
@@ -623,6 +654,232 @@ export interface TranslateRequest {
   stepId?: string;
 }
 
+/**
+ * Everything the Analysis dialog decides before a job is enqueued.
+ *
+ * A THIRD SHAPE BESIDE `JobRequest` AND `TranslateRequest`, on the argument
+ * `TranslateRequest`'s own header makes: nothing this carries is a field either
+ * of those has. There is no format, no language, no readings bank and no records
+ * file — what this run writes is a REPORT, and the only two things a person is
+ * asked for are which categories to look for and which model does the verifying.
+ *
+ * ── NO SENSITIVITY FIELD, AND THAT IS A RULING RATHER THAN AN OMISSION ──────
+ *
+ * Owen, 2026-08-25: *"it flags absolutely anything that could possibly match and
+ * then we have a button that displays things that match strictly (only turn up a
+ * few options), a moderate filter, or a very loose filter."* The run captures
+ * ONCE at the widest calibrated net; strictness is a filter over the stored
+ * scores, applied by the panel at display time (docs/ANALYSIS.md §2 and §8). So
+ * changing your mind about how strict to be costs a click and never an hour, and
+ * a field here would be a knob whose good value is known.
+ *
+ * ── AND NO `--nli-python`, WHICH IS A DIFFERENT KIND OF ABSENCE ─────────────
+ *
+ * The interpreter the entailment worker runs under is named by
+ * `FOUNDRY_NLI_PYTHON` or by a candidate the engine resolves for itself, and a
+ * miss ends the run with a message naming every path it tried — which the shelf
+ * already shows as the job's error, in the engine's own words. A text box here
+ * would be a second place to configure a machine, offered to the person least
+ * able to answer it (docs/ANALYSIS.md §9: no shipped NLI env yet, and that is
+ * indexed follow-up work rather than a hole in this dialog).
+ */
+export interface AnalyzeRequest {
+  kind: 'analysis';
+  /**
+   * The document the person had open when they asked — the job's identity and
+   * not its input, exactly as `TranslateRequest.inputPath` is. Main admitted it,
+   * the queue re-checks it against the same allow-list, and the shelf names the
+   * book by it.
+   */
+  inputPath: string;
+  /**
+   * `--book`: THE BOOK THIS RUN READS — the position's book file with every op on
+   * the way to it already replayed in by main (`materializeBook`).
+   *
+   * IT IS MATERIALISED RATHER THAN THE READING'S OWN FILE, and the choice is what
+   * decides how honest the panel can be. A report's rows are `[start, end)`
+   * offsets into a block's text (docs/ANALYSIS.md §6), so the file the run reads
+   * decides what those offsets are offsets INTO. Handed the reading's book file,
+   * every finding in a block somebody had edited would land in the wrong place
+   * the moment it was drawn. Handed the position's own materialised book, the
+   * offsets agree with what is on the paper at the instant the run was ordered,
+   * and the only drift left is an edit made AFTERWARDS — which the panel reports
+   * as an unplaced hit rather than lighting the wrong words.
+   *
+   * SCRATCH, AND THE QUEUE'S TO SWEEP: a uuid in the OS temp directory, made when
+   * the button was pressed and remade for nothing whenever it is wanted again
+   * (`sweepDerivedBook`, electron/job-queue.ts).
+   */
+  bookPath: string;
+  /**
+   * `--out`: WHERE THE REPORT GOES, and the whole product of this job —
+   * `analysis/<stepId>.jsonl` under the project.
+   *
+   * IT IS THE PRODUCT, WHICH IS WHY IT IS ALSO THE JOB'S IDENTITY.
+   * `ReadRequest.readingsPath` and `TranslateRequest.recordsPath` have exactly
+   * this shape and for exactly this reason: no output document, one file that IS
+   * the expensive thing, and the queue dedupes and reveals on it (`productOf`).
+   * Two analyses of one book against one checklist from one step are one job, and
+   * the file they would both write is what says so.
+   *
+   * AND IT IS ITS OWN CACHE. Every rank score and every verdict is filed in there
+   * under a hash of the question that produced it, appended and fsynced as it
+   * lands, so a run killed at 400 of 456 keeps 399 and a re-run pays only for what
+   * changed (`AnalysisReport`, src/analyze/report.ts).
+   */
+  outputPath: string;
+  /**
+   * `--categories`: the checklist, as a file main writes beside the report.
+   *
+   * THE WHOLE SET TRAVELS, with the unticked ones marked rather than omitted —
+   * which is the spelling `buildPlan` documents itself as accepting from this app
+   * (src/analyze/plan.ts: *"the app's checklist sends the whole set with the
+   * unchecked ones marked rather than composing a shorter array"*). A list this
+   * app composed by dropping names would be indistinguishable from a list of the
+   * only categories this build has heard of, and the day the engine grows an
+   * eleventh the two readings diverge in silence.
+   *
+   * Every name here is one main itself minted: either a built-in
+   * (`ANALYSIS_CATEGORIES`, shared/analysis-categories.ts) or the id of a
+   * category this user saved, slugged and collision-checked on the way into
+   * `app-settings.json` (`clampAnalysisCategories`) and re-checked against that
+   * file by `workspace:plan-analysis`. Nothing typed into a text box reaches a
+   * hypothesis, a prompt or a filename without passing through that saving act.
+   *
+   * `description` RIDES ONLY ON THE USER'S OWN CATEGORIES, and it is what makes
+   * one of them mean anything: the engine has no hypotheses for a name it has
+   * never heard of, so `buildPlan` wraps this sentence into the category's one
+   * hypothesis (`describedHypothesis`, src/analyze/plan.ts) and marks the whole
+   * category untuned. A built-in never carries one — its hypotheses are the
+   * measured ones, and a description beside them would be a second opinion about
+   * a calibrated question.
+   */
+  categories: readonly { name: string; enabled: boolean; description?: string; label?: string }[];
+  /** `--model`: the Ollama model the verifier is asked of. */
+  model: string;
+  /** `--ollama`: the server's URL. Used, never started. */
+  ollama: string;
+  /**
+   * THE STEP THIS REPORT BELONGS TO, minted with it and travelling with it.
+   *
+   * `TranslateRequest.stepId`'s arrangement, for its reason: the report is named
+   * after a step that will not exist for an hour, so minting a second id at the
+   * landing would leave the file named after a row nobody created. Spent only on
+   * an append — a landing that turns out to be a replace swaps into the step that
+   * already exists and throws this away, and that step's own path is what the
+   * plan aimed at in the first place.
+   */
+  stepId: string;
+}
+
+/**
+ * What main decided about an analysis before the job was queued — the answer to
+ * `workspace:plan-analysis`.
+ *
+ * MAIN OWNS THE NAMES, which is this family's whole rule (`TranslationPlan`, and
+ * `WorkspacePlan` before it). The renderer names a document it has open; every
+ * path that comes back is composed by main out of the project's own catalogue.
+ */
+export interface AnalysisPlan {
+  /** The project key, for the caller that wants to know which book answered. */
+  key: string;
+  /** The document the person had open — how main resolved the project. */
+  sourcePath: string;
+  /** The book the engine reads. See `AnalyzeRequest.bookPath`. */
+  bookPath: string;
+  /** Where the report goes. See `AnalyzeRequest.outputPath`. */
+  outputPath: string;
+  /** The step the report is named after. See `AnalyzeRequest.stepId`. */
+  stepId: string;
+}
+
+/**
+ * ONE REPORT, READ — the answer to `workspace:read-analysis`.
+ *
+ * ── Why main parses it and the renderer does not ────────────────────────────
+ *
+ * The renderer has no filesystem and is not getting one. A report is a JSONL file
+ * under a project directory, so reading it is main's job on the same terms every
+ * other payload read in this app is main's job — and main is the only side that
+ * can prove the directory is one of Home's projects before it opens anything.
+ *
+ * THE CACHE ROWS NEVER CROSS. A finished report is mostly `rank` and `verdict`
+ * rows — one per sentence and one per verified passage, none of which any surface
+ * draws — and shipping them would be megabytes of hashes into a window that
+ * throws them away. Main keeps the header and the findings and drops the rest.
+ */
+export interface AnalysisReading {
+  /** The engine that wrote it, for provenance. */
+  engine: string;
+  /** Which entailment model produced the scores, and which questions they answer. */
+  nli: string;
+  hypotheses: string;
+  /** Which Ollama model produced the verdicts. */
+  verify: string;
+  /** Every category in the plan, in plan order. */
+  categories: string[];
+  /**
+   * The categories nothing has calibrated — named rather than counted, because a
+   * reader deciding whether to trust a count needs to know WHICH ones are first
+   * drafts (docs/ANALYSIS.md §5). The panel says so at its foot.
+   */
+  untuned: string[];
+  /**
+   * WHY THIS REPORT MAY NOT BE ABOUT THIS BOOK — one sentence, or null.
+   *
+   * ── The comparison is made HERE, and that is a deviation worth naming ──────
+   *
+   * docs/ANALYSIS.md §8 asks the renderer to refuse a stale report by comparing
+   * the header's `bankSha` against the book's. The renderer cannot: `BookLoad`
+   * does not carry the book file's `source` block, and widening it for one panel
+   * would put a provenance field on every viewer in the app. Main holds both
+   * facts already — it has just opened the report and it can name the receipt the
+   * book was made from — so the comparison is made where both are in hand and
+   * what crosses is the SENTENCE.
+   *
+   * Null is the ordinary answer and means the two agree. Non-null does not stop
+   * the panel drawing: the findings are still every true thing that run measured,
+   * about a bank this project no longer stands on, and a person is owed the list
+   * with the caveat rather than an empty column (`BookLoad.unplaced`'s precedent).
+   */
+  stale: string | null;
+  /** The findings, in the order the report wrote them — verify order, not reading order. */
+  findings: AnalysisFindingRow[];
+}
+
+/**
+ * One row of a report — one block's share of one candidate passage.
+ *
+ * MIRRORED FROM `AnalysisFinding` (src/analyze/report.ts) rather than imported:
+ * `app/shared` is compiled by the electron program and by the renderer, and
+ * neither of them can reach into the engine's own source tree. The engine's
+ * declaration is the origin and this is the wire's copy of it; the fields are
+ * spelled identically so a drift is a typecheck rather than a mystery.
+ */
+export interface AnalysisFindingRow {
+  /**
+   * 1-based, in reading order, and SHARED BY EVERY ROW OF ONE PASSAGE. A passage
+   * that crosses a paragraph break touches two blocks and writes two rows; the
+   * ordinal is what lets the app light them as one thing and list them once.
+   */
+  hit: number;
+  /** The block, by the name every op and every reveal is keyed to. */
+  id: string;
+  /** `[start, end)` into that block's text, AS THE BOOK FILE THE RUN READ CARRIES IT. */
+  start: number;
+  end: number;
+  /** The primary category — the highest-scoring one the verifier flagged. */
+  category: string;
+  /** The other categories flagged on this passage, strongest first. */
+  also: string[];
+  /** The primary category's own best score. The display tiers slice on this. */
+  score: number;
+  /** The verifier's answer. Skips are stored and shown ghosted under Loose. */
+  verdict: 'flag' | 'skip';
+  /** How many sentences of the passage fall in THIS row. */
+  sentences: number;
+}
+
 export interface Job {
   id: string;
   inputPath: string;
@@ -863,8 +1120,22 @@ export interface ServerStatus {
 // Prebuilt Python environments — electron/env-catalog.ts owns the numbers
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** One environment on the release. Not a platform: `wsl-x64` is driven from win32. */
-export type EnvTarget = 'windows-x64' | 'wsl-x64' | 'mac-arm64';
+/**
+ * One environment on the release. Not a platform: `wsl-x64` is driven from win32.
+ *
+ * The `nli-` pair are the analysis worker's Pythons — torch, transformers and
+ * the DeBERTa weights baked in. They are separate entries rather than packages
+ * added to the reading environments because the two are wanted at different
+ * times by different people: somebody who only ever converts books should not
+ * download a gigabyte of NLI to rasterise a PDF, and the Windows reading
+ * environment (62 MB of PyMuPDF) would grow twenty-fold if it carried them.
+ */
+export type EnvTarget =
+  | 'windows-x64'
+  | 'wsl-x64'
+  | 'mac-arm64'
+  | 'nli-windows-x64'
+  | 'nli-mac-arm64';
 
 /**
  * The four things an install does, in order. Only `download` has a meaningful
@@ -923,6 +1194,127 @@ export interface EnvInstallResult {
   /** The interpreter that now exists, when there is one. */
   pythonPath: string | null;
   detail: string;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// First run — electron/system-probe.ts, electron/ollama.ts, electron/llm-catalog.ts
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The NVIDIA card, if there is one. Every unknown is null, never zero. */
+export interface CudaFacts {
+  /** True when nvidia-smi answered at all. */
+  present: boolean;
+  name: string | null;
+  /** Null when there is no card, or when its answer carried no readable figure. */
+  vramMB: number | null;
+  /** One sentence for the screen. Says which of those two nulls this is. */
+  detail: string;
+}
+
+/** Which pool `modelMemoryMB` came out of — the word the screen prints. */
+export type MemoryBasis = 'vram' | 'unified' | 'ram';
+
+export interface SystemProfile {
+  /**
+   * `process.platform`, as a plain string — the same shape `FoundryApi.platform`
+   * uses and for the same reason: this file is compiled by the RENDERER's
+   * tsconfig too, which has no node types in it, and `NodeJS.Platform` there is
+   * a namespace that does not exist.
+   */
+  platform: string;
+  arch: string;
+  appleSilicon: boolean;
+  cuda: CudaFacts;
+  ramMB: number;
+  /** Null when it could not be measured. A null SKIPS the space warning. */
+  freeDiskMB: number | null;
+  /**
+   * What a model can actually expect to have: the card's VRAM on a discrete
+   * GPU, a fraction of unified memory on Apple silicon, system RAM otherwise.
+   */
+  modelMemoryMB: number;
+  memoryBasis: MemoryBasis;
+  detail: string;
+}
+
+/** Is ollama here, and is it running? Two different questions, both answered. */
+export interface OllamaFacts {
+  /** The server answered `/api/version` on `url`. */
+  running: boolean;
+  /** What it said, when it said anything. */
+  version: string | null;
+  /** An `ollama` binary is on this machine even if nothing is listening. */
+  installed: boolean;
+  /** The models it already holds. Empty when nothing is running. */
+  models: string[];
+  url: string;
+  /** One sentence: running, installed-but-stopped, or absent. */
+  detail: string;
+}
+
+/** One row of the Qwen lineup, as the wizard draws it. */
+export interface LlmModelOption {
+  /** The ollama tag — what `ollama pull` is given and what a job's `--model` is. */
+  tag: string;
+  label: string;
+  /** The download, from ollama's own library listing. */
+  downloadGB: number;
+  /** Weights plus working room. The number `fits` is decided against. */
+  needsGB: number;
+  description: string;
+  /** `needsGB` clears this machine's `modelMemoryMB`. */
+  fits: boolean;
+  /** The largest one that fits. Exactly one row has this, and only if any fits. */
+  recommended: boolean;
+  /** True when ollama already holds it — no download to ask permission for. */
+  installed: boolean;
+}
+
+/** What the wizard's model step is looking at. */
+export interface LlmChoices {
+  profile: SystemProfile;
+  ollama: OllamaFacts;
+  options: LlmModelOption[];
+  /**
+   * The tag the wizard should preselect: the recommendation, or — when nothing
+   * fits — the smallest, which the screen marks with the CPU warning.
+   */
+  suggested: string;
+  /** The model jobs use today, whether or not setup has ever run. */
+  current: string;
+}
+
+/** `download` has a percentage; the other two are a sentence and a spinner. */
+export type OllamaPhase = 'download' | 'verify' | 'write' | 'done' | 'error';
+
+export interface OllamaPullProgress {
+  tag: string;
+  phase: OllamaPhase;
+  /** 0–100 while downloading. Meaningless otherwise; read `detail`. */
+  percent: number;
+  detail: string;
+}
+
+/** What `ollama:install` did. The binary is installed by ollama's own screen. */
+export interface OllamaInstallResult {
+  ok: boolean;
+  /** Where the installer landed, when one was fetched. */
+  path: string | null;
+  detail: string;
+}
+
+/**
+ * Has this person been through setup, and what did they decline?
+ *
+ * Skips are REMEMBERED so the wizard does not ask twice, and re-offered from
+ * the settings screen so declining is not permanent. A skip is a decision, not
+ * an error, and nothing in the app treats it as one.
+ */
+export interface SetupState {
+  /** False on a machine that has never finished or dismissed the wizard. */
+  completed: boolean;
+  /** Step ids the person moved past without doing the thing. */
+  skipped: string[];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2751,6 +3143,26 @@ export const STEP_ACTIONS = [
   'translate',
   'metadata',
   'edit',
+  /*
+   * `analysis` IS THE BOOK READ AGAINST THE CATEGORIES, and it is the first
+   * action in this list whose product is ABOUT the book rather than a state of
+   * it (docs/ANALYSIS.md §6-§7). Owen's ruling, verbatim: *"the analysis can
+   * probably live as another step under the step it was run against, just like
+   * the regular workflow."*
+   *
+   * What it retains is a report — `analysis/<stepId>.jsonl`, header plus one row
+   * per candidate passage, keyed by block id and character offsets. `expensive`
+   * on the retention rule's model-pass clause and nothing sharper: a machine can
+   * make it again, at a price of minutes of NLI plus an Ollama call per surviving
+   * (window, category), which on a hot book is an hour.
+   *
+   * IT CHANGES NOTHING ABOUT THE BOOK, which is what decides every one of the
+   * tables in shared/ledger.ts that this line makes the compiler ask about. The
+   * paper under an analysis row says exactly what the paper under its parent
+   * says; the report is an apparatus a reader summons over it (§8), and the
+   * pointer stays where it was rather than following the landing.
+   */
+  'analysis',
 ] as const;
 
 /**
@@ -2968,6 +3380,42 @@ export interface LedgerParams {
    * disk asks exactly the question it has always asked.
    */
   rewrite?: RewriteMode;
+  /**
+   * `analysis` — WHICH CATEGORIES THE BOOK WAS READ AGAINST, as the checklist
+   * left them, in plan order.
+   *
+   * A QUESTION AND NOT AN ANSWER, on `rewrite`'s clause of the split and for a
+   * sharper version of its reason. The report is the whole product of the run and
+   * it holds findings only for the categories that were enabled — so an analysis
+   * asked for hate and conspiracy and one asked for the whole set are two
+   * different documents about one book, and letting the second REPLACE the first
+   * would destroy an hour of verdicts in order to file a wider report under the
+   * narrower one's name. So `reRunTarget` compares it: the same checklist from
+   * the same step is the same question asked twice and refreshes the row it has;
+   * a different checklist branches beside it.
+   *
+   * THE WHOLE LIST TRAVELS, INCLUDING THE ONES NOBODY TICKED OFF — the dialog
+   * sends the set it was showing, and the engine's `--categories` file admits
+   * both spellings of "not this one" for exactly that reason
+   * (`buildPlan`, src/analyze/plan.ts). What is stored here is what was ENABLED,
+   * because that is what the run actually looked for.
+   */
+  categories?: string[];
+  /**
+   * `analysis` — the Ollama model the verifier was asked of.
+   *
+   * AN ANSWER, NOT A QUESTION, and it is the translate ruling applied one action
+   * over: re-analysing the same step against the same categories with a better
+   * model is the same person refining THIS report, not asking for a second one.
+   * They get the row they already have, with better verdicts in it — and the
+   * report's own question-keyed cache means the ranking is not re-paid, only the
+   * verdicts the new model has never answered.
+   *
+   * The NLI model is deliberately not recorded here: nothing in this app offers a
+   * choice of it, so a param would be a copy of a constant. The report's header
+   * carries it, which is where a reader who needs it looks.
+   */
+  model?: string;
 }
 
 /**
@@ -3459,11 +3907,20 @@ export interface CapturePhoto {
    * complete and NOTHING REWRITTEN. Same no-migration posture as the standing
    * crop itself, and for the same reason: a migration here would have to guess.
    *
-   * ── WHO WRITES IT, WHICH IS A SHORT LIST ON PURPOSE ─────────────────────
+   * ── WHO WRITES IT, WHICH IS A SHORTER LIST SINCE WAVE 26 ────────────────
    *
-   * The say-so (*This page is right*) writes true; release writes false. Those
-   * two are the only writers, because they are the only acts whose answer the
-   * pages cannot already give.
+   * ONE WRITER, AND IT ONLY EVER WRITES TRUE: the editor's *Global* tick,
+   * unticked. That is the only act whose answer the pages cannot already give —
+   * a person can claim a photograph without moving anything on it, and a
+   * derivation cannot know they looked.
+   *
+   * `false` is READ AND NEVER WRITTEN. Release wrote it — it cleared the mark
+   * and deliberately kept the lines, so the derive had to be out-argued — and
+   * the door that replaced it (*Follow the book again*, and re-ticking the box)
+   * clears the pages' `byHand` instead, which leaves the photograph saying
+   * nothing about itself. Recipes written before that wave hold stored
+   * `false`s, they mean exactly what they always meant, and the validator
+   * carries them.
    *
    * And every act that PLACES a line — a corner dragged, a gutter slid, a crop
    * cleared, a spread rejoined — DELETES this field rather than writing beside
@@ -3603,7 +4060,7 @@ export interface CaptureRecipe {
  * compare against, so the standing carries the frame it was drawn for rather
  * than pointing at a photograph that may since have been removed.
  */
-export interface CaptureStanding {
+export interface CaptureLines {
   /**
    * The whole SHEET, before any cut — the same quad `joinedQuad` reassembles,
    * with the dimensions of the photograph it was placed on.
@@ -3622,6 +4079,52 @@ export interface CaptureStanding {
    * turn without needing one of its own.
    */
   cut?: CaptureSplit;
+}
+
+/**
+ * THE BOOK'S LINES, AND THE TWO SIDES THAT MAY WANT THEIR OWN (Wave 51b).
+ *
+ * ── Owen: *"a 'just even pages' and 'just odd pages' global setting"* ───────
+ *
+ * The real case is recto/verso. A book photographed one page at a time is shot
+ * from a fixed stand, so the left-hand pages sit in one part of the frame and
+ * the right-hand pages in another — two crops, alternating, and a single
+ * standing can only ever be right about half of them. `crop`/`cut` above stay
+ * the book's ONE answer; these two are the exceptions it delegates to.
+ *
+ * ── ABSENT IS "NO SIDE HAS ASKED", AND THERE IS NO MIGRATION ───────────────
+ *
+ * Every recipe ever written is already valid: with no `odd` and no `even`, every
+ * photograph resolves to `crop`/`cut` exactly as it did before this field
+ * existed. Nothing derives a parity standing from the crops that are there —
+ * guessing which half of a book meant to differ is the invisible decision the
+ * standing was invented to abolish.
+ *
+ * ── A BLOCK IS WHOLE, NOT A PATCH ─────────────────────────────────────────
+ *
+ * A photograph wears its side's block if there is one and the book's own lines
+ * otherwise — the WHOLE block, crop and cut together, never a field-by-field
+ * merge. Two reasons. A merge cannot spell "the odd pages are single pages and
+ * the even ones are spreads", because an absent `cut` in a patch means *inherit*
+ * and in a block means *no cut*. And the lift that writes one (`standingOf`) is
+ * a whole configuration taken off one photograph, so storing it as anything less
+ * than a whole configuration would be this file describing something the writer
+ * cannot produce.
+ *
+ * ── PARITY IS BY PHOTOGRAPH ───────────────────────────────────────────────
+ *
+ * The 1st, 3rd, 5th … photograph in the table's order is odd. NOT the 1st, 3rd,
+ * 5th page: a spread photograph already holds a left page and a right page, so
+ * per-page parity on a shoot of spreads would put both sides of the same picture
+ * in different groups and ask one frame to wear two crops. The recto/verso case
+ * this exists for is a one-page-per-photograph shoot, where photograph parity
+ * and page parity are the same thing.
+ */
+export interface CaptureStanding extends CaptureLines {
+  /** What the 1st, 3rd, 5th … photograph wears, when that side asked for its own. */
+  odd?: CaptureLines;
+  /** What the 2nd, 4th, 6th … photograph wears, when that side asked for its own. */
+  even?: CaptureLines;
 }
 
 /**

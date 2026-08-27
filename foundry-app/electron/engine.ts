@@ -219,6 +219,10 @@ function killTree(child: ChildProcess | null): void {
  *                                 local pattern because it also contains
  *                                 "page N" and would be read as a count;
  *   `vlm-convert: … page 5/317`   the local route.
+ *
+ * Two more commands have their own prefixes and their own nouns since —
+ * `translate: block n/m` and `analyze: rank|verify n/m` — and both are
+ * matched above the prefix gate, with the reason written at each of them.
  */
 export function parseProgressLine(line: string): JobProgress | null {
   const trimmed = line.trim();
@@ -241,6 +245,49 @@ export function parseProgressLine(line: string): JobProgress | null {
   const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (block) {
     return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
+  }
+
+  /*
+   * `analyze: rank 141/141 sentences` and `analyze: verify 3/20 (hate)`.
+   *
+   * ── WHERE THIS SITS IN THE ORDER, WHICH IS THE LOAD-BEARING PART ───────────
+   *
+   * Above the `vlm-read:`/`vlm-convert:` gate below, because that gate would
+   * reject these lines outright — a different command, a different prefix — and
+   * BELOW the two patterns above it, because those are matched on prefixes this
+   * command does not wear and would never see one of these lines. So the
+   * placement is free of the hazard the older patterns are ordered around, and it
+   * is stated here anyway, because the one thing this function's history says is
+   * that somebody will add a pattern to it in a hurry.
+   *
+   * MATCHED ON THE TWO STAGE WORDS SPECIFICALLY, which is `block`'s own
+   * discipline: `analyze` says a great many things with numbers in them —
+   * how many answers were reused, how many candidates survived the floor — and a
+   * bar that read one of those as progress would report the wrong quantity
+   * entirely. Naming `rank` and `verify` means only the engine's own two counting
+   * lines are counts.
+   *
+   * A PHASE EACH, and the stage word is what says which. It was one phase for
+   * both — `analyze` — and the bar that drew it filled, reset and filled again,
+   * because 141 sentences becoming 20 verify calls is one run measuring two
+   * unrelated things. Owen read that as a glitch, which it looks exactly like, so
+   * the word the engine already prints is now CAPTURED rather than merely matched
+   * on, and the two stages are two members of the phase union
+   * (`JobProgress.phase`, where the whole argument lives). The surfaces draw a bar
+   * apiece; nothing else about this line changed.
+   *
+   * The parenthesised category is still deliberately NOT lifted out — it rides on
+   * a COUNTING line, and a count clears `Job.note` by construction, which is what
+   * makes a note mean "since the count last moved". The row's own log line carries
+   * it, in the engine's words.
+   */
+  const analyzing = /^analyze:\s+(rank|verify)\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  if (analyzing) {
+    return {
+      phase: analyzing[1] === 'rank' ? 'rank' : 'verify',
+      page: Number(analyzing[2]),
+      total: Number(analyzing[3]),
+    };
   }
 
   /*

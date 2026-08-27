@@ -120,7 +120,7 @@ export interface StepReport {
    * a run can change pass mid-flight (the endpoint route rasterises the whole
    * book before it reads it) and a stale phase would label pages as blocks.
    */
-  foundryPhase?: 'render' | 'read' | 'translate';
+  foundryPhase?: 'render' | 'read' | 'translate' | 'rank' | 'verify';
   /** Measurements. Merged key by key; a key that is absent is left alone. */
   metrics?: Partial<StepMetrics>;
 }

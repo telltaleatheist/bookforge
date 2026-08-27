@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-import type { Job, JobRequest, TranslateRequest } from '@shared/types';
+import type { AnalyzeRequest, Job, JobRequest, TranslateRequest } from '@shared/types';
 
 import { api } from './foundry';
 
@@ -85,6 +85,25 @@ export class QueueService {
   async enqueueTranslate(request: TranslateRequest): Promise<'added' | 'already'> {
     const before = new Set(this.all().map((job) => job.id));
     const job = await api?.queue.enqueueTranslate(request);
+    if (!job) return 'added';
+    return before.has(job.id) ? 'already' : 'added';
+  }
+
+  /**
+   * The same dedupe answer again, for an analysis — and the one of these three
+   * that can REJECT.
+   *
+   * Main refuses this door outright in a hosted window (`queue:enqueue-analysis`,
+   * electron/ipc.ts, which carries the argument): the host's queue takes the two
+   * request shapes its vendored copy of the API declares and this is a third, and
+   * starting an hour of GPU in Foundry's own queue instead would put it where
+   * nobody in either window can see it. The rejection is a sentence and the dialog
+   * shows it where the button is — which is also why nothing is caught here: a
+   * refusal swallowed by a mirror is a press that did nothing and said nothing.
+   */
+  async enqueueAnalysis(request: AnalyzeRequest): Promise<'added' | 'already'> {
+    const before = new Set(this.all().map((job) => job.id));
+    const job = await api?.queue.enqueueAnalysis(request);
     if (!job) return 'added';
     return before.has(job.id) ? 'already' : 'added';
   }

@@ -176,7 +176,7 @@ import { api, hosted } from '../../core/foundry';
             in what to do next, which is the only thing an empty state is for.
           -->
           @if (photographing()) {
-            <p>Finish the pages first — reading is a thing you do to a book that has been made.</p>
+            <p>Generate the book first — reading is a thing you do to a book that has been made.</p>
           } @else {
             <p>Open a PDF first — reading the pages is a thing you do to a document you have in front of you.</p>
           }

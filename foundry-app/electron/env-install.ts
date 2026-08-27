@@ -219,7 +219,12 @@ export async function catalogForThisMachine(): Promise<EnvCatalogItem[]> {
       detail = 'Not installed.';
     }
 
-    const configuredPath = spec.inWsl ? settings.backend.vllmPython : settings.backend.python;
+    // An `nli` environment is configured BY BEING THERE — nothing in
+    // settings.json names it, because the engine looks for it by name. See the
+    // role field in env-catalog.ts and the configure step below.
+    const configuredPath = spec.role === 'nli'
+      ? installedPath
+      : spec.inWsl ? settings.backend.vllmPython : settings.backend.python;
     items.push({
       target,
       label: spec.label,
@@ -466,6 +471,26 @@ async function run(
         ok: true,
         pythonPath,
         detail: `${spec.label} is ready in ${distro}: ${pythonPath}${manifest}`,
+      };
+    }
+
+    /*
+     * ── THE ANALYSIS WORKER WRITES NOTHING, AND THAT IS THE WHOLE POINT ──────
+     *
+     * `backend.python` is the RASTERISER. Pointing it at the NLI environment —
+     * an interpreter with torch and transformers in it and no PyMuPDF — would
+     * break every conversion on the machine, silently, at the next job, as the
+     * reward for installing the analysis worker. The engine finds this one by
+     * NAME instead (`defaultNliPythonCandidates()`, src/analyze/nli-bridge.ts),
+     * and the default destination above is one of the names it tries, so an
+     * install that lands where the catalog says is already configured.
+     */
+    if (spec.role === 'nli') {
+      emit('configure', 100, 'Nothing to configure — the engine looks for this one by name.');
+      return {
+        ok: true,
+        pythonPath,
+        detail: `${spec.label} is installed at ${dest}. The engine finds it there without being told${manifest}`,
       };
     }
 

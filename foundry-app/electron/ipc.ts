@@ -65,6 +65,9 @@ import {
 } from './host-ops';
 import type { HostNodeAction } from '../shared/host-ops';
 import * as queue from './job-queue';
+import { cancelOllamaInstall, cancelPull, installOllama, probeOllama, pullModel } from './ollama';
+import { finishSetup, llmChoices, setupState } from './setup';
+import { probeSystem } from './system-probe';
 import {
   createCaptureProject,
   deletableStep,
@@ -86,6 +89,7 @@ import {
   onProjectsChanged,
   positionStepId,
   projectDirOf,
+  readAnalysisReport,
   readManifest,
   readStepLedger,
   recordMetadata,
@@ -101,9 +105,13 @@ import {
 import { readSettings, writeSettings } from './settings';
 import * as vllm from './vllm-server';
 import { answerLetGo, broadcast, foundryWindow } from './window';
-import { planExport, planReading, planSimplification, planTranslation } from './workspace';
+import { planAnalysis, planExport, planReading, planSimplification, planTranslation } from './workspace';
 import { detectEnvTooling, listDistros } from './wsl';
 import { fold, isBook } from '../shared/original';
+import {
+  ANALYSIS_CATEGORY_IDS,
+  type CustomAnalysisCategory,
+} from '../shared/analysis-categories';
 import type { ReadAsk } from '../shared/ledger';
 import type { BookOp, PendingStack } from '../shared/ops';
 import { RE_READ_CANCEL, RE_READ_PROCEED } from '../shared/reread';
@@ -134,6 +142,7 @@ import type {
   RewriteMode,
   SetupRequest,
   TranslateRequest,
+  AnalyzeRequest,
   UnappliedAnswer,
   UnappliedWarning,
 } from '../shared/types';
@@ -856,6 +865,81 @@ export function registerIpc(): void {
     const plan = await planSimplification(source, mode);
     return { ...plan, inputPath: plan.sourcePath };
   });
+
+  /*
+   * AN ANALYSIS IS ADMITTED THE SAME WAY A TRANSLATION IS, and for the identical
+   * reason: it is asked ABOUT a file the renderer already has open, and the plan
+   * materialises that position's book to hand to the engine. Without the check
+   * this handler would resolve — and then plan against — any path a compromised
+   * renderer named.
+   *
+   * THE CATEGORIES ARE NOT PATHS AND ARE STILL NOT TAKEN ON TRUST. Every name is
+   * checked against the CLOSED SET this app can name — the engine's built-ins
+   * (`ANALYSIS_CATEGORY_IDS`) plus the ids of the categories this user has
+   * written down (`app-settings.json`) — before it reaches the ledger. A request
+   * naming something outside that set is refused by name rather than quietly
+   * dropped, because a silently narrowed checklist is a report that is missing a
+   * category nobody can see was missing.
+   *
+   * ── THE SET IS WIDER THAN IT WAS, AND IT IS STILL CLOSED ──────────────────
+   *
+   * Owen's *"maybe the user can add more categories"* means free text now DOES
+   * become a category name, so the sentence this comment used to carry — no free
+   * text ever reaches a hypothesis — needed a new true form rather than a quiet
+   * deletion. It is this: free text becomes a category ONLY by being written
+   * into the user's own settings file through the door below, where it is
+   * slugged into `customCategoryId`'s shape, length-capped and collision-checked
+   * (`clampAnalysisCategories`); and this handler admits a name only if that file
+   * already holds it. So the path from a text box to a prompt runs through a
+   * deliberate act of saving, and the string that arrives here is always one main
+   * itself minted.
+   */
+  ipcMain.handle('workspace:plan-analysis', async (_event, inputPath: string, categories: string[]) => {
+    const source = admitted(inputPath);
+    if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
+    const asked = Array.isArray(categories) ? categories : [];
+    const mine = readAppSettings().analysisCategories.map((one) => one.id);
+    const known = [...ANALYSIS_CATEGORY_IDS, ...mine];
+    const unknown = asked.filter((one) => !known.includes(one));
+    if (unknown.length > 0) {
+      throw new Error(
+        `This build does not know a category called “${unknown[0]}”, so it cannot analyse against it.`,
+      );
+    }
+    /*
+     * IN PLAN ORDER, ALWAYS, and normalised here rather than trusted from the
+     * window. The list is the step's own QUESTION (`PARAMS_OF.analysis`) and
+     * `identityOf` compares it as JSON — so two spellings of one checklist would
+     * be two questions, and a re-analysis would branch beside the row it meant to
+     * refresh. One order, decided in one place, on the engine's own ordering —
+     * with the user's own categories after the built-ins, in the order their
+     * settings file holds them, which is the order they added them.
+     */
+    const ordered = known.filter((one) => asked.includes(one));
+    if (ordered.length === 0) {
+      throw new Error('Pick at least one category — an analysis with nothing to look for finds nothing.');
+    }
+    const plan = await planAnalysis(source, ordered);
+    return { ...plan, inputPath: plan.sourcePath };
+  });
+
+  /**
+   * ONE ANALYSIS STEP'S REPORT, for the panel that draws it.
+   *
+   * THE RENDERER STAYS FILE-FREE, which is this whole family's rule: it names a
+   * project directory and a step id, main proves the directory is one of Home's
+   * before it opens anything, and what comes back is the header, the findings and
+   * one sentence about staleness. The cache rows — one per sentence in the book —
+   * never cross (`readAnalysisReport`, electron/projects.ts).
+   *
+   * A REFUSAL IS A SENTENCE INSIDE THE ANSWER RATHER THAN A REJECTION, on
+   * `BookOutcome`'s rule: "that step was deleted" and "the report is not on the
+   * disk" are ordinary states a person should meet as a line on a panel, not as a
+   * console error and an empty column. The one thing that still rejects is the
+   * directory gate, which refuses before a byte is read.
+   */
+  ipcMain.handle('workspace:read-analysis', (_event, projectDir: string, stepId: string) =>
+    readAnalysisReport(projectDir, stepId));
 
   /** Home's primary listing: one row per book, expanding to what is in it. */
   ipcMain.handle('projects:list', () => listProjects());
@@ -2236,6 +2320,36 @@ export function registerIpc(): void {
       + 'the rest of its own data. Move them from there, not from here.',
     );
   };
+  /*
+   * ── THE USER'S OWN ANALYSIS CATEGORIES ────────────────────────────────────
+   *
+   * Owen, 2026-08-25: *"maybe the user can add more categories - even
+   * one-sentence descriptive ones."* They are the USER'S and not one project's,
+   * so they live in `app-settings.json` beside the library folder and reach every
+   * book that machine ever opens (`AppSettings.analysisCategories`).
+   *
+   * TWO DOORS AND NOT ONE, and the write takes the WHOLE LIST rather than a
+   * single add or remove. A per-item door would need an id from the renderer to
+   * say which item, and ids here are DERIVED from names by main — so "remove the
+   * one called X" would be main re-deriving a name the renderer had already
+   * derived, and the two derivations would be the thing that had to agree. The
+   * whole list is one fact with one owner, and `clampAnalysisCategories` re-mints
+   * every id on the way in, so what the file holds is always main's own spelling
+   * whatever the window sent.
+   *
+   * IT IS NOT REFUSED WHEN HOSTED. A library move is refused there because the
+   * books belong to the host; a list of claims somebody wants hunted for belongs
+   * to the person, and BookForge has no opinion about it.
+   */
+  ipcMain.handle('analysis:read-categories', () => readAppSettings().analysisCategories);
+  ipcMain.handle(
+    'analysis:write-categories',
+    (_event, categories: CustomAnalysisCategory[]) =>
+      writeAppSettings({
+        analysisCategories: Array.isArray(categories) ? categories : [],
+      }).analysisCategories,
+  );
+
   ipcMain.handle('library:dir', () => readAppSettings().libraryDir);
   ipcMain.handle('library:set', (_event, dir: string) => {
     refuseHostedLibraryMove();
@@ -2320,6 +2434,43 @@ export function registerIpc(): void {
     return queue.enqueueTranslate(request, await parentStepFor(request.recordsPath));
   });
   /*
+   * AN ANALYSIS IS QUEUED THE SAME WAY AND REFUSED HOSTED, which is the one place
+   * this door differs from the one above it.
+   *
+   * `enqueueAnalysis` does not route (electron/job-queue.ts carries the argument
+   * in full): the host's queue takes the two request shapes its vendored copy of
+   * `shared/api.ts` declares, and this is a third.
+   *
+   * SO THE TEST IS `hosted()` AND NOT "is a host queue registered", which is the
+   * one thing about this refusal worth reading twice. Owen's ruling, 2026-08-21:
+   * *"when im in bookforge, the shelf shouldnt appear at all."* A hosted window
+   * has no Foundry queue surface whether or not the host registered a queue of
+   * its own — so falling back to Foundry's own scheduler would start an hour of
+   * GPU with no row anybody in either window can see, cancel or start. The tile
+   * is gated off there as well; a refusal met before a press is worth more than
+   * the same refusal after, and this is the half that makes the rule true
+   * whatever route reached it.
+   */
+  ipcMain.handle('queue:enqueue-analysis', async (_event, request: AnalyzeRequest) => {
+    if (hosted()) {
+      throw new Error(
+        'Analysis is not available in this window yet — the app Foundry is running inside keeps its '
+        + 'own queue, and it has not learned about analysis runs. Open the book in Foundry itself to '
+        + 'analyse it.',
+      );
+    }
+    // The input again, because a request can arrive with any `inputPath` at all
+    // — `workspace:plan-analysis` checked the one it was given, not the one that
+    // ends up here.
+    if (admitted(request.inputPath) === null) {
+      throw new Error(`${request.inputPath} was never opened in this app.`);
+    }
+    // The REPORT, which is what an analysis writes: the position is resolved from
+    // the project that file belongs to, exactly as a translation's is from its
+    // records.
+    return queue.enqueueAnalysis(request, await parentStepFor(request.outputPath));
+  });
+  /*
    * AN EXPORT RUNS AT THE PRESS AND THE ANSWER IS THE SETTLED ROW — the whole of
    * the difference from `queue:enqueue` one door up. The dialog that asked is
    * holding this invoke open for the seconds the run takes, and what it gets
@@ -2398,6 +2549,61 @@ export function registerIpc(): void {
   ipcMain.handle('vllm:keep-warm', () => readAppSettings().keepServerWarmMinutes);
   ipcMain.handle('vllm:set-keep-warm', (_event, minutes: number) =>
     writeAppSettings({ keepServerWarmMinutes: minutes }).keepServerWarmMinutes);
+
+  // ── First run ────────────────────────────────────────────────────────────
+  /*
+   * THE WIZARD'S DOORS. Every one of them is also reachable from the settings
+   * screen, which is the whole design: setup is the first-run ARRANGEMENT of
+   * questions the app can already answer, not a separate mechanism. Nothing
+   * below is exclusive to it.
+   *
+   * `system:probe` takes a force flag because the one case where the hardware
+   * answer goes stale inside a process is somebody installing a GPU driver and
+   * pressing Check again — see the cache argument in system-probe.ts.
+   */
+  ipcMain.handle('setup:state', () => setupState());
+  ipcMain.handle('setup:finish', (_event, skipped: string[]) =>
+    finishSetup(Array.isArray(skipped) ? skipped : []));
+
+  ipcMain.handle('system:probe', (_event, force?: boolean) => probeSystem(force === true));
+
+  ipcMain.handle('ollama:facts', () => probeOllama(readAppSettings().ollamaUrl));
+  ipcMain.handle('ollama:choices', () => llmChoices());
+  /*
+   * Two long-running doors, and NEITHER goes through the job queue — unlike an
+   * env install, which does.
+   *
+   * The queue exists to keep expensive GPU work from running two at a time and
+   * to give a run a row somebody can cancel from the shelf. An ollama pull is
+   * neither: ollama is doing the work in its own process, it will keep doing it
+   * whether or not this app is looking, and a row on the shelf saying "pulling"
+   * would be a row that cannot be cancelled in any meaningful sense and cannot
+   * be resumed by us either. Progress is broadcast instead, and the wizard
+   * draws it; if the window closes, ollama finishes anyway, which is exactly
+   * the behaviour a person expects from a download they started in a tool that
+   * is not this one.
+   */
+  ipcMain.handle('ollama:install', () =>
+    installOllama((progress) => broadcast('ollama:progress', progress)));
+  ipcMain.handle('ollama:install-cancel', () => { cancelOllamaInstall(); });
+  ipcMain.handle('ollama:pull', (_event, tag: string) =>
+    pullModel(tag, readAppSettings().ollamaUrl, (progress) => broadcast('ollama:progress', progress)));
+  ipcMain.handle('ollama:pull-cancel', () => { cancelPull(); });
+
+  /*
+   * The model every language job starts from. Read by the three dialogs when
+   * they open, written by setup and by the settings screen.
+   *
+   * ANSWERED WITH WHAT WAS STORED, never with what was sent: `clampModelTag`
+   * refuses a name with whitespace in it and falls back, and a renderer that
+   * kept its own optimistic copy would show a model the next job will not use.
+   */
+  ipcMain.handle('llm:defaults', () => {
+    const settings = readAppSettings();
+    return { model: settings.defaultLlmModel, ollama: settings.ollamaUrl };
+  });
+  ipcMain.handle('llm:set-model', (_event, model: string) =>
+    writeAppSettings({ defaultLlmModel: model }).defaultLlmModel);
 
   /*
    * The whole list on every mutation — and hosted, the whole list is the HOST's

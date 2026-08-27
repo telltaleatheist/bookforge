@@ -12,6 +12,7 @@ import {
 import type { TranslateRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
+import { seedLlmDefaults } from '../../core/llm-defaults';
 import { ProjectsService } from '../../core/projects.service';
 import { QueueService } from '../../core/queue.service';
 import { OpenDocumentsService } from '../../core/documents.service';
@@ -563,6 +564,10 @@ export class TranslateDialogComponent {
   protected readonly busy = signal(false);
 
   constructor() {
+    // The model and the URL come from the app's own settings, which first-run
+    // setup wrote after measuring the machine. The constants above are the
+    // floor for a renderer with no bridge under it — see core/llm-defaults.ts.
+    seedLlmDefaults(this.model, this.ollama);
     // Same rule as the OCR dialog: a complaint about the last book is cleared
     // when the book changes, and nothing else resets. The instructions in
     // particular are the user's careful answer and survive switching tabs.

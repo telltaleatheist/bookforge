@@ -441,11 +441,13 @@ export class CaptureCardComponent {
    * `isComplete` in the service is the one test behind it, and the same test
    * every global act makes before skipping a photograph, so the dot cannot
    * promise a skip that does not happen. It is true of a page somebody placed a
-   * corner on AND of a page somebody pressed *This page is right* on: a
-   * placement and a say-so are one population, which is Wave 25's whole point.
+   * corner on with *Global* unticked AND of a page somebody unticked the box on
+   * without moving anything: a placement and a claim are one population, which
+   * is Wave 25's whole point and Wave 51's one control.
    *
-   * It is not a freeze. Finish cuts every photograph's pixels, complete or not;
-   * release (right-click, on the grid) puts one back in the flow.
+   * It is not a freeze. Generating the book cuts every photograph's pixels,
+   * complete or not; *Follow the book again* (right-click, on the grid) puts one
+   * back in the flow and hands it the book's lines.
    */
   readonly complete = input<boolean>(false);
 

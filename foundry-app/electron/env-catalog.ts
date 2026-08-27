@@ -101,6 +101,31 @@ export const ENV_ASSETS: Record<EnvTarget, EnvAsset> = {
     parts: [],
   },
 
+  // torch (CPU), transformers, and the DeBERTa weights baked into
+  // `python/hf-cache`. Built and verified offline on 2026-08-26.
+  'nli-windows-x64': {
+    archive: 'foundry-env-nli-windows-x64-v1.tar.gz',
+    bytes: 528_417_092,
+    sha256: '3a4f32f39bd1fd4ad252c1327a9933b357b115752ca0606814a6b6b51f8b00d2',
+    parts: [],
+  },
+
+  /*
+   * NOT YET BUILT, AND THE NULL IS THE HONEST STATE.
+   *
+   * `tools/env/build-env.sh nli-mac-arm64` has to run ON an Apple-silicon Mac:
+   * it downloads a darwin-aarch64 interpreter and then EXECUTES it to install
+   * wheels and bake the weights, which no cross-build can do. The header's rule
+   * applies unchanged — `requirePublished` throws on this, the card greys it
+   * out, and nobody downloads an archive nobody can name the hash of.
+   */
+  'nli-mac-arm64': {
+    archive: 'foundry-env-nli-mac-arm64-v1.tar.gz',
+    bytes: null,
+    sha256: null,
+    parts: [],
+  },
+
   // ~4.7 GiB of CUDA wheels: three assets, concatenated back in this order.
   'wsl-x64': {
     archive: 'foundry-env-wsl-x64-v1.tar.gz',
@@ -156,6 +181,23 @@ export interface EnvSpec {
   inWsl: boolean;
   /** One sentence for the card, saying what the environment buys. */
   purpose: string;
+  /**
+   * WHAT THE INSTALLER DOES WITH THE INTERPRETER WHEN IT IS THERE.
+   *
+   * `read` environments are written into the engine's settings.json — that file
+   * is how the engine is told where to rasterise and where to serve from, and
+   * an install is the plainest statement somebody can make about which backend
+   * reads their pages (see the four-keys comment in env-install.ts).
+   *
+   * `nli` environments are NOT, and must not be: `backend.python` is the
+   * rasteriser, and pointing it at an interpreter with no PyMuPDF in it would
+   * break every conversion on the machine the moment somebody installed the
+   * analysis worker. The analysis worker is found by NAME instead — its default
+   * destination is one of `defaultNliPythonCandidates()` in
+   * src/analyze/nli-bridge.ts — so an installed environment is a configured one
+   * with nothing written anywhere.
+   */
+  role: 'read' | 'nli';
 }
 
 export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
@@ -169,6 +211,49 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonRelpath: 'python/python.exe',
     inWsl: false,
     purpose: 'PyMuPDF, which every tier needs — a run draws the book locally before anything reads it.',
+    role: 'read',
+  },
+
+  /*
+   * THE WEIGHTS ARE INSIDE THIS ONE, WHICH IS WHY IT IS HALF A GIGABYTE.
+   *
+   * `python/hf-cache` holds MoritzLaurer/deberta-v3-base-zeroshot-v2.0, and a
+   * `sitecustomize.py` in site-packages points HF_HOME at it from `sys.prefix`
+   * at interpreter startup. That is not a convenience: nli_worker.py runs with
+   * HF_HUB_OFFLINE set, deliberately, so that a missing model fails in a second
+   * rather than an hour into an analysis — and an environment that shipped only
+   * torch and transformers would install perfectly and then refuse the first
+   * book with a sentence about a cache the user has never heard of.
+   *
+   * Torch is the CPU build. The card on a machine running foundry is holding
+   * the reading model or the LLM; scoring is slower on the processor and the
+   * worker says `"device": "cpu"` on its ready line so a slow pass has a
+   * one-word explanation.
+   */
+  'nli-windows-x64': {
+    target: 'nli-windows-x64',
+    label: 'Analysis worker (Windows)',
+    platform: 'win32',
+    arch: 'x64',
+    pythonVersion: '3.12.13',
+    packages: ['torch 2.9.1+cpu', 'transformers 4.57.6', 'deberta-v3-base-zeroshot-v2.0'],
+    pythonRelpath: 'python/python.exe',
+    inWsl: false,
+    purpose: 'Reads a book against the analysis categories — the entailment model, weights included, offline from the first run.',
+    role: 'nli',
+  },
+
+  'nli-mac-arm64': {
+    target: 'nli-mac-arm64',
+    label: 'Analysis worker (Apple silicon)',
+    platform: 'darwin',
+    arch: 'arm64',
+    pythonVersion: '3.12.13',
+    packages: ['torch 2.9.1', 'transformers 4.57.6', 'deberta-v3-base-zeroshot-v2.0'],
+    pythonRelpath: 'python/bin/python3',
+    inWsl: false,
+    purpose: 'The same entailment model on the Mac\'s own GPU — the worker picks `mps` when Metal is there.',
+    role: 'nli',
   },
 
   'wsl-x64': {
@@ -181,6 +266,7 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonRelpath: 'python/bin/python3',
     inWsl: true,
     purpose: 'The reading server itself: vLLM on the local GPU, served to the engine over an endpoint.',
+    role: 'read',
   },
 
   'mac-arm64': {
@@ -193,8 +279,17 @@ export const ENV_SPECS: Record<EnvTarget, EnvSpec> = {
     pythonRelpath: 'python/bin/python3',
     inWsl: false,
     purpose: 'Reading on the Mac\'s own GPU, plus the PyMuPDF every run rasterises with.',
+    role: 'read',
   },
 };
+
+/** The analysis worker's environment for this machine, or null on a platform with none. */
+export function nliTargetFor(
+  platform: NodeJS.Platform = process.platform,
+  arch: string = process.arch,
+): EnvTarget | null {
+  return targetsForPlatform(platform, arch).find((target) => ENV_SPECS[target].role === 'nli') ?? null;
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Derived
@@ -273,12 +368,14 @@ export function isPublished(target: EnvTarget): boolean {
  */
 export function defaultDest(target: EnvTarget): string {
   switch (target) {
-    case 'windows-x64': {
+    case 'windows-x64':
+    case 'nli-windows-x64': {
       const local = process.env['LOCALAPPDATA'] ?? path.join(os.homedir(), 'AppData', 'Local');
-      return path.join(local, 'foundry', 'envs', 'windows-x64');
+      return path.join(local, 'foundry', 'envs', target);
     }
     case 'mac-arm64':
-      return path.join(os.homedir(), 'Library', 'Application Support', 'foundry', 'envs', 'mac-arm64');
+    case 'nli-mac-arm64':
+      return path.join(os.homedir(), 'Library', 'Application Support', 'foundry', 'envs', target);
     case 'wsl-x64':
       return '~/.foundry/envs/wsl-x64';
   }

@@ -14,9 +14,11 @@ import { MetadataDialogComponent } from './components/metadata-dialog/metadata-d
 import { MintMetaDialogComponent } from './components/mint-meta-dialog/mint-meta-dialog.component';
 import { SimplifyDialogComponent } from './components/simplify-dialog/simplify-dialog.component';
 import { SweepDialogComponent } from './components/sweep-dialog/sweep-dialog.component';
+import { AnalysisDialogComponent } from './components/analysis-dialog/analysis-dialog.component';
 import { TranslateDialogComponent } from './components/translate-dialog/translate-dialog.component';
 import { CaptureNewDialogComponent } from './components/capture-new-dialog/capture-new-dialog.component';
 import { CaptureProgressComponent } from './components/capture-progress/capture-progress.component';
+import { SetupWizardComponent } from './components/setup-wizard/setup-wizard.component';
 import { QueueBarComponent } from './components/queue-bar/queue-bar.component';
 import { ToastTrayComponent } from './components/toast-tray/toast-tray.component';
 import { BookStacksService } from './core/book-stacks.service';
@@ -113,8 +115,9 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
     QueueBarComponent, ToastTrayComponent,
     OcrDialogComponent, ExportDialogComponent, TranslateDialogComponent,
     SimplifyDialogComponent, MetadataDialogComponent, MintMetaDialogComponent, SweepDialogComponent,
+    AnalysisDialogComponent,
     ConfirmDialogComponent, HostOpDialogComponent, HostStatusComponent,
-    CaptureNewDialogComponent, CaptureProgressComponent,
+    CaptureNewDialogComponent, CaptureProgressComponent, SetupWizardComponent,
   ],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
@@ -245,6 +248,18 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
       }
 
       <!--
+        THE ANALYSIS DIALOG, mounted with the acts above it because it IS one of
+        them: it configures a run against the position, enqueues it held, and asks
+        nothing about the pane in front of anybody. What it produces is not a state
+        of the book but a report ABOUT it, which is why the thing that draws its
+        result is a COLUMN and not another modal — see the workspace's second
+        column, and docs/ANALYSIS.md §8.
+      -->
+      @if (ui.analysisOpen()) {
+        <app-analysis-dialog />
+      }
+
+      <!--
         NOT IN UiService's ONE-QUESTION LIST, and not gated on a flag at all.
         That list exists because a modal is a QUESTION and only one can be asked
         at a time; this is a REPORT about work already under way, so only()
@@ -252,6 +267,18 @@ const IS_MAC = navigator.platform.toUpperCase().includes('MAC');
         while the service says an intake is running and not otherwise.
       -->
       <app-capture-progress />
+
+      <!--
+        FIRST RUN, AND IT IS MOUNTED UNCONDITIONALLY FOR A HARDER REASON THAN
+        capture-progress's. An @if around this is a DESTROY, and this component
+        holds the subscriptions that draw an environment download and an ollama
+        pull — both of which take many minutes and both of which keep running in
+        another process regardless. A wrapper flag that flickered would take the
+        only progress a person can see off the screen while the download it was
+        reporting carried on. It decides its own visibility from
+        UiService.setupOpen, which the shell never touches.
+      -->
+      <app-setup-wizard />
 
       <!--
         THE HOST'S OWN ACT, CONFIGURED IN THIS WINDOW. Opened by a request

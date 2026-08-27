@@ -13,9 +13,13 @@ import {
 import { isWholeFrameTurned, joinedQuad } from '@shared/capture';
 import type { CaptureQuad, CaptureSplit } from '@shared/types';
 
+// The scope's three words, from the service that owns the state — the same
+// import the rail makes for `StampCost`, and for the same reason: a second
+// spelling of a three-arm union is a fourth arm waiting to be added to one of
+// them.
+import type { CaptureScope } from '../../core/capture.service';
 import { CapturePageEditorComponent } from './capture-page-editor.component';
 import { type Dimensions, type FractionQuad } from './geometry';
-import type { ApplyToAll } from '../../core/capture.service';
 
 /**
  * ONE PHOTOGRAPH IN THE FILMSTRIP along the modal's foot.
@@ -47,22 +51,44 @@ export interface EditorFrame {
  * coming back meant finding your card again. A modal keeps the table underneath,
  * which is the difference between going somewhere and opening something.
  *
- * ── THE SURFACE NAMES THE SCOPE, AND THAT IS WAVE 25'S WHOLE RULE ───────────
+ * ── THE SURFACE NAMES THE SCOPE, AND WAVE 26 NAMES IT ON THE PHOTOGRAPH ────
  *
  *     A control on a CARD speaks for that photograph.
  *     A control on the RAIL speaks for the book.
- *     The MODAL speaks for the photograph it has open.
+ *     The MODAL speaks for the photograph it has open —
+ *     AND THE HAND SAYS WHETHER THE GESTURE SPEAKS FOR THE BOOK.
  *
- * Wave 24 got as far as NAMING the two levels — "This photograph" and "The rest
- * of the book", each under a heading — and left the second one holding a press
- * that changed twenty-four other pictures. Wave 25 finishes it: what is left in
- * the book's group is a RECORD. *Make this the book's crop* sets the standing
- * and stamps nothing; the propagation is Apply, on the table, where the book's
- * surface is. The button's own line says where it went.
+ * Wave 24 named two levels and left the book's one holding a press that changed
+ * twenty-four other pictures. Wave 25 made that press a RECORD and moved the
+ * propagation to the rail, which was the right rule and the wrong sequence:
+ * place a crop, press Record, walk out to the table, press Apply, walk back to
+ * see whether it fitted. Owen (2026-08-26) collapsed it into one tick.
  *
- * That is a smaller act, and being smaller is what makes it usable: a person can
- * set the book's crop from page 3, disagree, set it again from page 11, and
- * nothing has happened to page 7 in between.
+ * *Global*, on by default and STICKY (Wave 51b — the last line of that sentence
+ * used to read "and the PHOTOGRAPH says whether it speaks for the book"). While
+ * it is ticked, a gesture made in here — corners, gutter, turn — is the book's
+ * gesture: every photograph that is not its own takes it as the hand opens,
+ * including the one under the hand if it had been taken for somebody's own. The
+ * modal still speaks only for the photograph it has open; the gesture on that
+ * photograph now has something to say about the book, which is not the same
+ * thing as the modal reaching past it.
+ *
+ * Untick it and a gesture moves the page it is made on and marks it as its own.
+ * Everything else keeps the lines it was last given, and no later global reaches
+ * it — which is Owen's standing ruling (a hand-placed change is assumed correct)
+ * with a control on the front of it. The box stays where it is put: it survives
+ * every step through the walk, because the second half of an evening is one pass
+ * through the book tweaking pages one at a time, and a box derived per
+ * photograph had to be unticked before every single one of them.
+ *
+ * ── AND IT CAN SPEAK FOR ONE SIDE OF THE BOOK ──────────────────────────────
+ *
+ * *All pages / Odd / Even*, under the tick and only while it is on. The case is
+ * recto/verso — a book shot one page at a time from a fixed stand puts the
+ * left-hand pages in one part of the frame and the right-hand pages in another,
+ * so one crop is wrong about half of them by construction. Parity is by
+ * PHOTOGRAPH (the 1st, 3rd, 5th … in the arrangement), which for a spread means
+ * both of its pages: see `CaptureStanding`.
  *
  * ── TWO PASSES, TWO CONTROL SETS, AND NO MODE TO BE IN ──────────────────────
  *
@@ -86,11 +112,19 @@ export interface EditorFrame {
  * instead of after the state it is in, and it is why a photograph that matches
  * the rest carries almost nothing — just the picture and its handles.
  *
+ * ── THERE ARE NO ACTS LEFT IN THE COLUMN, AND THAT IS THE SHAPE ────────────
+ *
+ * The record, the record-and-apply, the bulk turn, the say-so and the two ways
+ * back to the book all stood here and all of them are gone (Wave 51). What is
+ * left is the picture with its handles, two ticks that say what a gesture MEANS,
+ * and one destructive door with a confirm on it. A column of buttons is what a
+ * surface grows when the gesture cannot say what it is for; the gesture can now.
+ *
  * ── What it does NOT own ────────────────────────────────────────────────────
  *
  * The corners, the split line, the projection and the previews are all
  * `CapturePageEditorComponent`, still pointable at any image. What lives up here
- * are the ACTS and the walk.
+ * are the SCOPE and the walk.
  */
 @Component({
   selector: 'app-capture-editor-modal',
@@ -113,6 +147,7 @@ export interface EditorFrame {
             [ghost]="ghost()"
             (quadsChange)="quadsChange.emit($event)"
             (splitChange)="splitChange.emit($event)"
+            (settled)="settled.emit()"
           />
           <!--
             THE WALK, AT THE HAND — Owen (2026-08-22), stepping a 179-page
@@ -141,8 +176,9 @@ export interface EditorFrame {
           three edges of a window whose middle is a photograph.
 
           Now: who you are looking at and how to move, what this photograph is,
-          where it stands with the book, the say-so, and last what the book takes
-          from it. Nothing is left on any edge.
+          and last whose hand the handles are answering to. Nothing is left on
+          any edge, and nothing in the column is an ACT any more — the gestures
+          on the picture are the acts, and the column says what they reach.
         -->
         <aside class="cluster">
           <div class="who">
@@ -237,163 +273,146 @@ export interface EditorFrame {
           </div>
 
           <!--
-            WHERE IT STANDS — the identity block, and Wave 25's one state where
-            Wave 24 had two.
+            SCOPE — the one tick that says whose hand is on the handles.
 
-            COMPLETE means exactly one thing: THE BOOK STOPS MOVING THIS
-            PHOTOGRAPH. Every global act skips it; Finish never does. It is
-            reached by placing something by hand (a hand-placed change is assumed
-            correct, Owen's standing ruling) or by the say-so below.
+            ── Owen's ruling (2026-08-26), and the two presses it replaces ────
 
-            The old sentence here read *"You placed this crop, so Crop all leaves
-            it alone"* -- which named a press that no longer exists and a
-            provenance that is no longer the rule. A page can be complete with
-            nobody's fingerprints on its corners.
+            Wave 25 was right that the modal speaks for the photograph it has
+            open, and it paid for the rule with a sequence: record the book's
+            crop here, walk out to the rail, press Apply, walk back to see
+            whether it fitted. \`"it wasnt obvious to me that i had to apply all
+            crops from the main window"\` was the first complaint and a second
+            button in here was the first answer; the real answer is that the
+            SCOPE IS A STATE OF THE PHOTOGRAPH, not a property of a button.
+
+            So: ticked, every gesture made in here — a corner, the gutter, a
+            turn — is the book's gesture, and every follower takes it as the
+            hand opens. Untick it and a gesture moves the page it is made on
+            and marks it that page's own; the rest keep what they were last
+            given.
+
+            ── AND IT IS A MODE, NOT THE PAGE'S STATE (Wave 51b) ────────────
+
+            It was \`!isComplete\` of the open photograph until Owen walked it:
+            \`"if i uncheck global, make it so it doesnt switch back to checked
+            unless i specifically set it back … i dont want to have to uncheck
+            global for every one."\` A box derived per photograph is a box that
+            re-ticks itself at every step, and the second half of an evening is
+            one pass through fifty pages nudging each in turn.
+
+            So TICKING MOVES NOTHING. It arms the next gesture, and the gesture
+            is what defines or updates the standing — which is also what became
+            of *re-tick to adopt*: a gesture made with the tick on, on a page
+            somebody had taken for their own, hands it back AND leads the book,
+            inside one walk.
+
+            The current photograph is a FOLLOWER LIKE THE REST once it has led.
+            It is not the source and it is not exempt — it holds the standing
+            because it authored it, which is the same thing.
           -->
-          <div class="stands">
-            <div class="cap">Where it stands</div>
-            @if (complete()) {
-              <p class="state">
-                <span class="dot">✓</span>
-                <span>Its own — the book leaves this one alone.</span>
-              </p>
-              <!--
-                NO CONFIRM, deliberately, where removal has one: release destroys
-                nothing. The page keeps its crop, its cut and its turn, and the
-                only thing that changes is whether the next Apply may move it.
-                Same semantics and same words as the card's right-click, because
-                they are one door reached from two places.
-              -->
-              <button
-                class="btn quiet"
-                type="button"
-                title="The next Apply is allowed to move this one again"
-                (click)="release.emit()"
-              >Release — let the book change it again</button>
-              @if (canMatch()) {
-                <button
-                  class="btn quiet"
-                  type="button"
-                  title="Take the book's crop now, and move with the book from then on"
-                  (click)="followAgain.emit()"
-                >Follow the book again</button>
-                <p class="says">Takes the book's crop now, and moves with the book from then on.</p>
-              }
-            } @else {
-              <p class="state">
-                <span>{{ followSays() }}</span>
-              </p>
+          <div class="scope">
+            <div class="cap">Scope</div>
+            <label class="tick">
+              <input
+                type="checkbox"
+                [checked]="global()"
+                (change)="globalChange.emit($any($event.target).checked)"
+              />
+              <span>Global</span>
+            </label>
+            <p class="says">{{ scopeSays() }}</p>
+
+            <!--
+              WHICH PAGES A GLOBAL GESTURE REACHES — Owen (2026-08-26): \`"a
+              'just even pages' and 'just odd pages' global setting. this change
+              only applies to every other page, but its global."\`
+
+              The case is recto/verso: a book photographed one page at a time
+              from a fixed stand puts the left-hand pages in one part of the
+              frame and the right-hand ones in another, so a single crop is
+              wrong about half the book by construction.
+
+              ONLY WHILE GLOBAL IS TICKED, on this surface's own rule that a
+              control which would change nothing is ABSENT rather than
+              disabled: with the tick off a gesture reaches one page, and
+              asking which half of the book that page is on would be a control
+              with no act behind it.
+            -->
+            @if (global()) {
+              <div class="sides" role="group" aria-label="Which pages a change reaches">
+                @for (side of SIDES; track side.key) {
+                  <button
+                    type="button"
+                    class="side"
+                    [class.on]="scope() === side.key"
+                    [attr.aria-pressed]="scope() === side.key"
+                    [title]="side.title"
+                    (click)="scopeChange.emit(side.key)"
+                  >{{ side.word }}</button>
+                }
+              </div>
             }
-          </div>
 
-          <!--
-            THE SAY-SO — the person speaking, at page grain.
+            <!--
+              WHERE THIS PAGE STANDS — a sentence, not a control, and it is no
+              longer the checkbox's job to say it.
 
-            It is the rail's tick philosophy one level down: a derivation cannot
-            know that somebody has LOOKED at a page and agreed with it. A person
-            who opens a photograph the book's crop already fits, is happy, and
-            steps on has moved nothing -- so there is no geometry to derive a
-            completion from, and without this press the next Apply would move a
-            page they had just approved.
+              Until Wave 51b the tick WAS this fact, so its caption could say
+              both at once. The tick is a mode now and the fact is still worth
+              having in front of you: a page the book has stopped moving looks
+              exactly like a page it is about to move, and the dot on the card
+              is behind the modal you are standing in.
+            -->
+            <p class="says stands">{{ standsSays() }}</p>
 
-            IT IS IN BOTH PASSES, which is a call rather than a reading. The
-            contract's walking language is split-pass-centric, and the same
-            sentence is true in the crop pass: the say-so is the ONLY way to
-            complete a page without moving something on it, and the crop pass is
-            where most pages are looked at and left alone.
-          -->
-          <div class="sayso">
+            <!--
+              THE ONE ACT THAT OVERRULES A HAND, and the only one in this stage
+              that asks first. Everything else here spares a page somebody took
+              for their own — that is Owen's standing ruling and the whole point
+              of the tick above. This is the door for the evening where the
+              assumption is what went wrong, so it reaches the marked pages too,
+              and the confirm is what keeps that from being a surprise.
+            -->
             <button
-              class="btn right"
+              class="btn quiet"
               type="button"
-              [class.applied]="justApplied() === 'right'"
-              title="Complete this photograph and go to the next"
-              (click)="rightNext.emit()"
-            >✓ This page is right — next</button>
-            <p class="says">{{ saySoSays() }}</p>
-          </div>
-
-          <!--
-            THE BOOK — and what is left here is a RECORD.
-
-            Wave 24's *Crop all* stood in this group and did two things: it wrote
-            the book's standing AND copied it onto every other photograph of the
-            same shape. The two are separated because the modal speaks for the
-            photograph it has open, and a press here that changed twenty-four
-            other pictures was the modal speaking for the book.
-
-            So the line under it names WHAT IS RECORDED and WHERE THE
-            PROPAGATION LIVES. It is not a consequence line any more -- there is
-            no population to count, because this press reaches exactly one thing
-            and that thing is the book's own crop. The counting moved with the
-            act, to the Apply on the rail.
-          -->
-          <div class="acts">
-            <div class="cap">The book</div>
+              [title]="resetTitle()"
+              (click)="resetAll.emit()"
+            >{{ resetSays() }}</button>
+            <p class="says">{{ resetMeans() }}</p>
 
             <!--
-              ABSENT RATHER THAN GREYED, for the reason the split button already
-              establishes. It used to sit here disabled saying "The others already
-              match", which is a control explaining why it is not a control.
+              THE OVERRIDE — Owen (2026-08-26): \`"if the page was individually
+              edited, it's exempt from the global settings, unless the user
+              specifically overrides all individual settings to revert to
+              global."\`
 
-              It is the crop pass's, with the turn pair: a bulk turn is the one
-              global that overwrites nobody's corners, and it belongs beside the
-              gesture it repeats.
+              The exemption is everywhere in this stage already; this is the
+              second half of the sentence, and until now the only door to it was
+              a card's right-click, one photograph at a time, behind the modal a
+              person is standing in.
+
+              IT IS THE OTHER ACT, NOT A GENTLER RESET. Reset above goes back to
+              the ORIGINALS and empties the book's standing; this KEEPS the
+              standing and dresses everybody in it. Both overrule a hand, which
+              is why they sit together and why both ask first — and why the
+              caption has to name the one above, because the two questions are a
+              step apart and the outcomes are opposite.
+
+              ABSENT WHEN THERE IS NOBODY TO HAND BACK, on this surface's own
+              rule: a control that is always there and does nothing four times
+              out of five teaches people to stop reading it. It also makes the
+              button a fact about the book — if it is there, some page in this
+              shoot is its own.
             -->
-            @if (!splitting() && outOfTurn() > 0) {
+            @if (theirOwn() > 0) {
               <button
                 class="btn quiet"
                 type="button"
-                [class.applied]="justApplied() === 'turn'"
-                title="Turn the rest of the book to match the one you are looking at"
-                (click)="applyToAll.emit({ kind: 'turn' })"
-              >{{ turnAllSays() }}</button>
-            }
-
-            <!--
-              ABSENT WHEN THERE IS NO LINE TO RECORD, and that is a refusal
-              rather than a tidy: in the split pass this button writes the
-              book's cut, and on an uncut photograph it would write the ABSENCE
-              of one -- clearing a line the rest of the book is following, from
-              a press whose label says nothing about clearing. So what is drawn
-              instead is the way forward, which is P2's own rule on the rail
-              ("with nothing to apply the button could only refuse").
-            -->
-            @if (!splitting() || twoPages()) {
-              <button
-                class="btn primary"
-                type="button"
-                [class.applied]="justApplied() === 'record'"
-                [title]="recordTitle()"
-                (click)="recordStanding.emit(splitting() ? 'cut' : 'crop')"
-              >{{ recordSays() }}</button>
-              <p class="says">{{ recordMeans() }}</p>
-              <!--
-                RECORD-AND-APPLY IN ONE PRESS — Owen (2026-08-22), from his
-                first real walk of the passes: \`"it wasnt obvious to me that i
-                had to apply all crops from the main window instead of from
-                within the modal. maybe there should be a button to apply crops
-                to all pages... probably just an additional button."\` The two
-                acts stay two doors underneath (the record, then the same Apply
-                the rail presses — one predicate, one door); this button is the
-                pair reachable from where the person is standing. The rail's
-                Apply remains the place the consequence line lives in full; the
-                announce says what this press touched.
-              -->
-              <button
-                class="btn quiet"
-                type="button"
-                [class.applied]="justApplied() === 'stamp'"
-                [title]="splitting()
-                  ? 'Make this line the book\\'s cut and cut every following photograph now'
-                  : 'Make this the book\\'s crop and apply it to every following photograph now'"
-                (click)="applyStanding.emit(splitting() ? 'cut' : 'crop')"
-              >{{ justApplied() === 'stamp' ? 'Applied ✓' : (splitting() ? 'Make it the book\\'s cut and cut the rest' : 'Make it the book\\'s crop and apply to all') }}</button>
-            } @else {
-              <p class="says">
-                Tick <em>Two pages</em>, put the line down the gutter, and this is where you
-                make it the book's cut.
-              </p>
+                [title]="followAllTitle()"
+                (click)="followAll.emit()"
+              >Give every page back to the book</button>
+              <p class="says">{{ followAllMeans() }}</p>
             }
           </div>
         </aside>
@@ -402,11 +421,12 @@ export interface EditorFrame {
       <!--
         THE FILMSTRIP — the book, along the foot, while you are inside a page.
 
-        It is what makes a global act's reach VISIBLE from in here: press Apply on
-        the table, come back, and the ones the book left alone are the ones
-        carrying a tick. And it is what makes the walk navigable without closing
-        anything, which Back and Next alone never were on a shoot of fifty --
-        those are one step each, and a strip is a place.
+        It is what makes a global act's reach VISIBLE from in here: move a corner
+        with *Global* ticked and the strip is where you watch which photographs
+        the book did NOT take it to — the ones carrying a tick are their own. And
+        it is what makes the walk navigable without closing anything, which Back
+        and Next alone never were on a shoot of fifty -- those are one step each,
+        and a strip is a place.
 
         THE THUMBNAILS ARE RAW IN BOTH PASSES, said out loud. The cards on the
         table draw the rectified page from Apply onward; these do not, because
@@ -569,20 +589,58 @@ export interface EditorFrame {
     }
     .turnpair button:hover { background: var(--bg-hover); }
 
-    /* Where it stands, and the say-so: two small bands between the photograph's
-       own controls and the book's, in the order a person reads them. */
-    .stands, .sayso {
-      padding: 14px 16px 0;
+    /*
+     * SCOPE SITS DIRECTLY UNDER THE PHOTOGRAPH'S OWN CONTROLS, and not at the
+     * foot where the acts used to be.
+     *
+     * The acts belonged at the bottom because the thing you finish with is the
+     * thing at the bottom -- the rail puts Mint there for the same reason. This
+     * tick is not a thing you finish with: it changes what the NEXT gesture on
+     * the picture means, so it has to be read beside the handles it governs
+     * rather than found at the end of a column.
+     */
+    .scope {
+      padding: 14px 16px 16px;
       display: flex; flex-direction: column; gap: 8px;
     }
-    .stands .state {
-      display: flex; align-items: flex-start; gap: 7px;
-      font-size: 12px; color: var(--text-secondary);
+    /*
+     * THE THREE SIDES, AS ONE CONTROL. A segmented row rather than three ticks
+     * or a <select>: the choice is exclusive and all three answers are worth
+     * seeing at once, which is what a row of segments says and a dropdown hides
+     * behind a click. Indented under the tick it belongs to, because it is
+     * meaningless without it -- the same relationship the caption below has.
+     */
+    .sides { display: flex; gap: 0; margin-left: 22px; }
+    .side {
+      flex: 1;
+      padding: 5px 0;
+      background: var(--bg-input);
+      border: 1px solid var(--border-default);
+      border-right-width: 0;
+      color: var(--text-secondary);
+      font: inherit; font-size: 11px;
+      cursor: pointer;
     }
+    .side:first-child { border-radius: var(--radius-md, 6px) 0 0 var(--radius-md, 6px); }
+    .side:last-child {
+      border-right-width: 1px;
+      border-radius: 0 var(--radius-md, 6px) var(--radius-md, 6px) 0;
+    }
+    .side:hover { background: var(--bg-hover); color: var(--text-primary); }
+    /* The chosen one carries the accent the ticked box does, so the two read as
+       one setting rather than as a control and a decoration beside it. */
+    .side.on {
+      background: var(--accent-faint, var(--bg-hover));
+      border-color: var(--accent);
+      color: var(--text-primary);
+    }
+    /* Two rules of one border between neighbours would draw a two-pixel seam;
+       the accent has to win over the plain edge on its left. */
+    .side.on + .side { border-left-color: var(--accent); }
     /*
      * THE SAME DOT THE CARD DRAWS, at the same size and in the same colour, so
-     * the mark on the table, the mark in the strip and the state in here are one
-     * vocabulary rather than three things that resemble each other.
+     * the mark on the table and the mark in the strip are one vocabulary rather
+     * than two things that resemble each other.
      */
     .dot {
       flex: none;
@@ -593,15 +651,6 @@ export interface EditorFrame {
       font-size: 8px; line-height: 1;
       color: var(--bg-base);
       margin-top: 2px;
-    }
-
-    /* THE ACTS SIT AT THE FOOT OF THE COLUMN, which is where the rail puts Mint
-       for the same reason: the thing you finish with is the thing at the bottom. */
-    .acts {
-      margin-top: auto;
-      padding: 14px 16px 16px;
-      border-top: 1px solid var(--border-subtle);
-      display: flex; flex-direction: column; gap: 8px;
     }
 
     .btn {
@@ -617,27 +666,23 @@ export interface EditorFrame {
       border: 1px solid var(--border-default);
     }
     .btn.quiet:hover { background: var(--bg-hover); }
-    .btn.primary {
-      background: var(--accent); color: var(--text-inverse);
-      border: 1px solid var(--accent); font-weight: 600;
-    }
-    .btn.primary:disabled { opacity: 0.45; cursor: default; }
     /*
-     * THE SAY-SO IS GREEN, and it is the only green control in this column.
+     * THE .btn.primary AND .btn.right RULES STOOD HERE, AND .applied WITH THEM,
+     * AND THE COLUMN HAS NO ACTS LEFT TO WEAR THEM (Wave 51).
      *
-     * It is the same colour as the complete dot it produces, which is the whole
-     * reason for the exception: pressing it puts that mark on this photograph,
-     * on the card behind, and in the strip below, and a button the colour of its
-     * own outcome needs no sentence explaining the connection.
+     * The accent was the record's, the green was the say-so's -- the colour of
+     * the mark it produced, which is why it was the one exception in this
+     * column -- and .applied was the acknowledgement both borrowed for a second
+     * and a half after a press. Every one of those presses is gone: the
+     * propagation is the gesture now, and a gesture acknowledges itself by
+     * moving the picture. What is left is the quiet button, twice.
      */
-    .btn.right {
-      background: var(--ok-soft); color: var(--ok);
-      border: 1px solid var(--ok); font-weight: 600;
-    }
-    .btn.right:hover { background: var(--ok); color: var(--bg-base); }
     /* Said quietly and next to the button it describes: it is a caption on one
        control, not an announcement about the room. */
     .says { font-size: 11px; color: var(--text-tertiary); }
+    /* Where the page stands is a fact about the picture rather than a note on a
+       control, so it is set apart from the captions that are. */
+    .says.stands { padding-top: 8px; border-top: 1px solid var(--border-subtle); }
 
     .walk button, .shut {
       padding: 5px 9px;
@@ -709,19 +754,6 @@ export interface EditorFrame {
       font-size: 7px;
       border: 1px solid var(--bg-base);
     }
-
-    /*
-     * THE ACKNOWLEDGEMENT, carried over from the light table's gesture row
-     * (Wave 21 point 5) and deliberately not animated. The house has no
-     * precedent for a transient confirmed state, and an effect invented for one
-     * button is the kind of motion that reads as decoration rather than as
-     * information.
-     */
-    .applied {
-      background: var(--accent-strong);
-      border-color: var(--accent-strong);
-      color: var(--text-inverse);
-    }
   `],
 })
 export class CaptureEditorModalComponent {
@@ -766,15 +798,74 @@ export class CaptureEditorModalComponent {
    */
 
   /**
-   * HOW MANY OTHER PHOTOGRAPHS WOULD ACTUALLY TURN -- the service's count, not
-   * this component's.
+   * IS THE BOOK STILL MOVING THIS PHOTOGRAPH — the Global tick, drawn.
    *
-   * It is on the button because the number is what tells a bulk turn from the
-   * pair of arrows above it. "Turn all by the same amount" and "Apply to all"
-   * were two labels a person could not tell apart; "Turn the other 24 to match
-   * this one" differs from ⟲ by its verb AND by its count.
+   * `!isComplete`, asked of the recipe by the light table, so the tick in here,
+   * the dot on the card and the skip every global makes are ONE question. It is
+   * a derived state rather than a setting this component keeps: a person who
+   * unticks the box, walks to another photograph and walks back must find the
+   * box where they left it, and the only thing that can promise that is the
+   * recipe.
+   *
+   * ── THE COUNT ON THE OLD BULK-TURN BUTTON STOOD HERE ──────────────────────
+   *
+   * `outOfTurn` was how many other photographs *Turn the other 24 to match this
+   * one* would move, and the number was the whole of what told that press apart
+   * from the ⟲ ⟳ pair above it. The press is subsumed by this tick — a turn made
+   * with it on already reaches every follower — so there is nothing left for the
+   * count to label.
    */
-  readonly outOfTurn = input<number>(0);
+  readonly global = input<boolean>(true);
+
+  /**
+   * WHICH PAGES A GLOBAL GESTURE REACHES — all of them, or one side of the book.
+   *
+   * Session state, owned by the service beside the mode, drawn here. Read only
+   * while the tick is on: with it off, a gesture reaches the page in front of
+   * you and the sides have nothing to be about.
+   */
+  readonly scope = input<CaptureScope>('all');
+
+  /**
+   * THE BOOK HAS STOPPED MOVING THIS ONE — `isComplete`, drawn as a sentence.
+   *
+   * It used to be the tick, inverted (`global`, before Wave 51b). The tick is a
+   * mode now, so the fact needs a surface of its own: the dot that says it on the
+   * table is behind the modal a person is standing in, and a page the book has
+   * given up looks exactly like one it is about to move.
+   */
+  readonly own = input<boolean>(false);
+
+  /**
+   * HOW MANY PHOTOGRAPHS IN THE WHOLE BOOK ARE THEIR OWN — the override's
+   * subject, and the reason it is sometimes not drawn at all.
+   *
+   * `own` above is this photograph; this is the population, because the act
+   * under it speaks for the book rather than for the picture on screen. It is
+   * the rail's `complete` count — one derivation, `isComplete`, asked once in
+   * the service — rather than anything this component works out, so the button
+   * appears exactly when the dots on the table say it should.
+   *
+   * A NUMBER RATHER THAN A BOOLEAN. `> 0` draws the button and the count is
+   * spent in its title, which is the one place on this surface where *how many
+   * pages am I about to give away* can be read before the dialog says it. A
+   * boolean would be this component being handed an answer somebody upstream
+   * derived from the number anyway, and then wanting the number back.
+   */
+  readonly theirOwn = input<number>(0);
+
+  /**
+   * THE THREE SIDES, IN THE ORDER THEY ARE OFFERED.
+   *
+   * A constant on the class rather than three buttons written out, so the words,
+   * the titles and the arms of `CaptureScope` cannot come apart — a fourth arm
+   * would fail to compile here rather than quietly go undrawn.
+   */
+  protected readonly SIDES: readonly { key: CaptureScope; word: string; title: string }[] = [
+    { key: 'all', word: 'All pages', title: 'A change here moves every page the book still moves' },
+    { key: 'odd', word: 'Odd', title: 'A change here moves the 1st, 3rd, 5th … photograph — and no others' },
+    { key: 'even', word: 'Even', title: 'A change here moves the 2nd, 4th, 6th … photograph — and no others' },
+  ];
 
   /**
    * What the person called this photograph, or NULL when nothing does.
@@ -791,27 +882,17 @@ export class CaptureEditorModalComponent {
    */
   readonly name = input<string | null>(null);
 
-  /**
-   * THE BOOK HAS STOPPED MOVING THIS PHOTOGRAPH — `isComplete`, the one test.
+  /*
+   * `complete`, `canMatch`, `photographs` AND `marked` STOOD HERE (Wave 51).
    *
-   * The same question the dot on the card asks and the same one every global act
-   * asks before skipping, so what this column says and what an Apply does cannot
-   * promise different things.
+   * `complete` is `global` above, inverted and renamed for the control that now
+   * draws it. `canMatch` gated *Follow the book again*, which was release and
+   * re-dress in one press and is what re-ticking the box does. The other two
+   * carried "12 of 25 marked" under the say-so, and the say-so is gone: it
+   * completed AND stepped, so it could not say "this one is mine" without also
+   * leaving the page, which is the one thing a person unticking the box is
+   * about to NOT do.
    */
-  readonly complete = input<boolean>(false);
-
-  /**
-   * Whether there is a book's crop for THIS photograph to be returned to.
-   *
-   * False before anybody has recorded one, and false for a photograph of a shape
-   * the standing was not drawn for -- which is not the same question as "is
-   * there a standing at all", and is why the parent asks it per photograph.
-   */
-  readonly canMatch = input<boolean>(false);
-
-  /** How many photographs the book has, and how many of them are complete. */
-  readonly photographs = input<number>(0);
-  readonly marked = input<number>(0);
 
   /**
    * WHERE THE BOOK IS CUT, or null when it has no cut this photograph could take.
@@ -838,56 +919,114 @@ export class CaptureEditorModalComponent {
     ? 'Splitting — the crops are applied; only the cut moves here.'
     : 'Cropping — place the rectangle this page prints from.'));
 
-  /** What the record button says. One act per pass, named for its outcome. */
-  protected readonly recordSays = computed<string>(() => {
-    if (this.justApplied() === 'record') return 'Recorded ✓';
-    return this.splitting() ? 'Make this line the book\'s cut' : 'Make this the book\'s crop';
+  /**
+   * WHAT THE NEXT GESTURE WILL REACH — the caption on the tick, and on the sides.
+   *
+   * ── It stopped describing the PHOTOGRAPH at Wave 51b ──────────────────────
+   *
+   * It used to say *Following the book* / *Its own*, because the tick was that
+   * state. The tick is a MODE now — whose hand is on the handles until somebody
+   * says otherwise — so its caption has to be about the hand. Where the page
+   * stands moved to `standsSays` below, which is a fact rather than a
+   * consequence and reads perfectly well beside a control it does not govern.
+   *
+   * IT IS STILL NOT A PROMISE ABOUT A PRESS. Nothing happens when the tick is
+   * ticked; the sentence describes what the next gesture on the picture will
+   * mean, which is the one thing a person needs before they make one.
+   *
+   * "the book still moves" is the skip, said without a number. A count here
+   * would need to be scoped, live, and recomputed on every step, and the rail
+   * carries the counted version under the button that spends them.
+   */
+  protected readonly scopeSays = computed<string>(() => {
+    if (!this.global()) return 'Your changes move this page alone. The rest keep the lines they have.';
+    if (this.scope() === 'odd') {
+      return 'Your changes move the odd pages the book still moves — the 1st, 3rd, 5th photograph.';
+    }
+    if (this.scope() === 'even') {
+      return 'Your changes move the even pages the book still moves — the 2nd, 4th, 6th photograph.';
+    }
+    return 'Your changes move every page the book still moves.';
   });
-
-  protected readonly recordTitle = computed<string>(() => (this.splitting()
-    ? 'Store this gutter as the book\'s cut. Nothing else moves until you apply it from the table.'
-    : 'Store this rectangle as the book\'s crop. Nothing else moves until you apply it from the table.'));
 
   /**
-   * WHAT THE RECORD MEANS — what is written, and where the propagation lives.
+   * WHERE THIS PHOTOGRAPH STANDS — the fact the tick used to carry.
    *
-   * This is where Wave 24's consequence line stood, and it is a different KIND
-   * of sentence now rather than a shorter one. That line had to name three
-   * populations, because the press it sat under changed every photograph in two
-   * of them; this press changes one thing, and the thing is not a photograph.
-   *
-   * So the honest sentence is the two halves a person needs and no third: WHAT
-   * IS RECORDED, and WHERE IT IS APPLIED FROM. The numbers did not disappear --
-   * they moved to the Apply button on the rail, with the act they describe.
+   * Two states, both of them the person's own words from Wave 51. The third
+   * clause is what the mode adds: with *Global* on, a page that is its own is
+   * one gesture away from being handed back, because a gesture made with the
+   * book's hand IS the handing back (`leadTheBook`, whose lead is always
+   * dressed). Saying so is what keeps the untick honest — a person who took this
+   * page for their own and left the tick on should know the next nudge gives it
+   * away.
    */
-  protected readonly recordMeans = computed<string>(() => {
-    if (this.splitting()) return 'Becomes the book\'s cut. Applied from the table.';
-    return this.twoPages()
-      ? 'Becomes the book\'s crop and cut. Applied from the table.'
-      : 'Becomes the book\'s crop. Applied from the table.';
+  protected readonly standsSays = computed<string>(() => {
+    if (!this.own()) return 'This page is following the book.';
+    return this.global()
+      ? 'This page is its own — the book leaves it alone until you move something here, which hands it back.'
+      : 'This page is its own — the book leaves it alone.';
   });
 
-  /** What a photograph the book still moves is waiting for. */
-  protected readonly followSays = computed<string>(() => (this.splitting()
-    ? 'Following the book. The next Apply gives it the book\'s cut.'
-    : 'Following the book. The next Apply gives it the book\'s crop.'));
+  /** What the reset button says. One act per pass, named for what it undoes. */
+  protected readonly resetSays = computed<string>(() => (this.splitting()
+    ? 'Reset every split'
+    : 'Reset every crop'));
+
+  protected readonly resetTitle = computed<string>(() => (this.splitting()
+    ? 'Put every photograph in the book back together as one page, and clear the book\'s cut'
+    : 'Give every photograph in the book the whole frame back, and clear the book\'s crop'));
 
   /**
-   * WHAT THE SAY-SO WOULD DO, and how far through the book the marks are.
+   * WHAT THE RESET REACHES, and the one clause that matters is the last.
    *
-   * The count is here rather than on the button because it is about the BOOK and
-   * the button is about this page -- and because the reassurance is the half
-   * that matters. Owen: *"i need a way to finalize the action"*, said of a
-   * surface that had already been saving every drag for weeks. Nothing is at
-   * stake in the press; what it buys is that the book stops moving this one.
+   * Every other global in this stage spares a page somebody placed by hand. This
+   * one does not, which is exactly why a person reaches for it — and exactly why
+   * the sentence must say so before the dialog does, rather than letting the
+   * confirm be the first place anybody learns it.
+   *
+   * The turns are named too. "Back to original" is ambiguous about them, and the
+   * answer is the surprising one: a shoot of sideways spreads keeps the turns
+   * somebody spent an evening making. See `CaptureService.resetAll`.
    */
-  protected readonly saySoSays = computed<string>(() => {
-    const said = ['Marks it and steps on.'];
-    const total = this.photographs();
-    if (total > 0) said.push(`${this.marked()} of ${total} marked.`);
-    said.push('Nothing is lost either way — every change is kept the moment you make it.');
-    return said.join(' ');
+  protected readonly resetMeans = computed<string>(() => (this.splitting()
+    ? 'Every photograph in the book, rejoined — the ones you set yourself included. Crops stay.'
+    : 'Every photograph in the book, back to the whole frame — the ones you set yourself '
+      + 'included. Turns stay.'));
+
+  /**
+   * WHAT THE OVERRIDE REACHES, and it is the opposite of the Reset above it.
+   *
+   * The count is here rather than in the label because the label has to name an
+   * OUTCOME — *give every page back to the book* — and a number in it would make
+   * the button read as a report on a population instead of an act.
+   */
+  protected readonly followAllTitle = computed<string>(() => {
+    const pages = this.theirOwn() === 1 ? '1 page' : `${this.theirOwn()} pages`;
+    return this.splitting()
+      ? `Clear the own mark on ${pages} and give each of them the cut its side of the book is set to`
+      : `Clear the own mark on ${pages} and give each of them the crop and cut its side of the book `
+        + 'is set to';
   });
+
+  /**
+   * WHAT IT DOES, AND — the clause that earns the sentence — WHAT IT DOES NOT.
+   *
+   * Two acts sit one above the other and both overrule a hand, which is the
+   * whole reason a person is looking at either of them. They differ in the thing
+   * that costs the most to get wrong: Reset throws the LINES away and empties
+   * the book's standing with them; this keeps the standing and hands it out. So
+   * the caption names the neighbour rather than letting a person discover the
+   * difference by pressing one.
+   *
+   * The split pass's crops are named too, for `applyCuts`' reason: by then the
+   * crops are committed, and somebody giving a page back in the split pass is
+   * asking about the gutter, not about the corners.
+   */
+  protected readonly followAllMeans = computed<string>(() => (this.splitting()
+    ? 'Every page you set yourself takes the book\'s cut as it stands. Crops stay, and so do the '
+      + 'book\'s own lines — Reset above is the one that goes back to the originals.'
+    : 'Every page you set yourself takes the book\'s crop and cut as they stand. The book\'s own '
+      + 'lines stay exactly as they are — Reset above is the one that goes back to the originals.'));
 
   /**
    * WHAT TICKING WOULD DO, or what dragging does once it is ticked.
@@ -910,28 +1049,32 @@ export class CaptureEditorModalComponent {
      * is a number that changed somewhere else on the screen. The readout above
      * does say "pages 8-9 of 49", and it is the only thing that did.
      *
-     * In the split pass it says the other half as well, because that is the
-     * pass's whole gesture: sliding the line is a PLACEMENT, so it completes the
-     * page and the book stops moving it. A person who does not know that would
-     * nudge a gutter and then wonder why the next Apply skipped the picture.
+     * In the split pass it says WHERE THE LINE GOES, which is the tick above's
+     * answer and not this control's: with *Global* on, sliding it moves the
+     * whole book; with it off, this page alone. That sentence used to say the
+     * second half unconditionally ("moving it makes the page its own"), which
+     * was true then and is now true of exactly one of the two states.
      */
     if (this.twoPages()) {
-      return this.splitting()
-        ? 'Slide the line if this one sits differently. Moving it makes the page its own, and the book leaves it alone from then on.'
-        : 'This is two pages of the book. Drag either end, or grab the line anywhere to slide it.';
+      if (!this.splitting()) {
+        return 'This is two pages of the book. Drag either end, or grab the line anywhere to slide it.';
+      }
+      if (!this.global()) {
+        return 'Slide the line. This page is its own, so the book is left where it is.';
+      }
+      /*
+       * AND IT NAMES THE SIDE WHEN THERE IS ONE (Wave 51b). "the rest of the
+       * book follows it" is a claim about every other page, and under *Odd* or
+       * *Even* it is true of half of them — which is the sentence telling
+       * somebody their gutter reached twenty-five pages when it reached twelve.
+       */
+      if (this.scope() === 'odd') return 'Slide the line and the other odd pages follow it. Untick Global to move this one alone.';
+      if (this.scope() === 'even') return 'Slide the line and the other even pages follow it. Untick Global to move this one alone.';
+      return 'Slide the line and the rest of the book follows it. Untick Global to move this one alone.';
     }
     return this.bookCut() === null
       ? 'Cuts down the middle. Drag the line onto the gutter afterwards.'
       : 'Cuts where the rest of the book is cut.';
-  });
-
-  /** What the bulk-turn button says, which is always what it would do. */
-  protected readonly turnAllSays = computed<string>(() => {
-    if (this.justApplied() === 'turn') return 'Turned ✓';
-    const others = this.outOfTurn();
-    return others === 1
-      ? 'Turn the other one to match this'
-      : `Turn the other ${others} to match this one`;
   });
 
   readonly hasPrevious = input.required<boolean>();
@@ -948,16 +1091,44 @@ export class CaptureEditorModalComponent {
   readonly frames = input<readonly EditorFrame[]>([]);
   readonly here = input<string | null>(null);
 
-  /**
-   * Which act just landed, for the button that was pressed. Owned by the parent,
-   * because the acknowledgement outlives the click by a second and a half and
-   * this component holds no timers.
+  /*
+   * `justApplied` STOOD HERE — which of four presses had just landed, so the
+   * button could say "Applied ✓" for a second and a half.
+   *
+   * Owen asked for it of a press whose whole effect happened somewhere else:
+   * *"If it did run then there should be an indication."* All four presses are
+   * gone (Wave 51), and what replaced them acknowledges itself — a corner moved
+   * with *Global* ticked changes the picture under the hand and the filmstrip
+   * beside it, which is the indication the button was standing in for.
    */
-  readonly justApplied = input<'turn' | 'record' | 'stamp' | 'right' | null>(null);
 
   readonly quadsChange = output<readonly FractionQuad[]>();
   readonly splitChange = output<CaptureSplit>();
-  readonly applyToAll = output<ApplyToAll>();
+  /** One gesture on the picture ended, having moved something. See the editor. */
+  readonly settled = output<void>();
+  /**
+   * THE GLOBAL TICK, BOTH WAYS — and since Wave 51b it MOVES NOTHING.
+   *
+   * It arms the mode and no more. Ticked, the next gesture speaks for the book;
+   * unticked, the next gesture speaks for the page it is made on. Nothing is
+   * marked, nothing is dressed, and the box stays where it was put until
+   * somebody puts it somewhere else — which is the whole of what Owen asked for
+   * ("just keep it checked/unchecked unless i check/uncheck it again").
+   */
+  readonly globalChange = output<boolean>();
+  /** Which pages a global gesture speaks for. Session state, never the recipe. */
+  readonly scopeChange = output<CaptureScope>();
+  /** Put the whole book back — confirmed by the parent, never by this. */
+  readonly resetAll = output<void>();
+  /**
+   * HAND EVERY PAGE SOMEBODY SET THEMSELVES BACK TO THE BOOK — the override.
+   *
+   * Confirmed by the parent for the same reason `resetAll` is, and through the
+   * same door: this modal has never asked a question of its own, because the
+   * dialog stacks over it and the act belongs to the book rather than to the
+   * photograph on screen.
+   */
+  readonly followAll = output<void>();
   /** A quarter turn of this photograph, for the service to perform. */
   readonly turnBy = output<number>();
   /** Take the crop off this photograph — the whole frame, which is no crop. */
@@ -982,23 +1153,17 @@ export class CaptureEditorModalComponent {
   protected readonly wholeFrame = computed(() =>
     isWholeFrameTurned(joinedQuad(this.quads() as readonly CaptureQuad[], this.split())));
 
-  /**
-   * THIS PHOTOGRAPH'S CROP OR CUT BECOMES THE BOOK'S — and nothing is stamped.
+  /*
+   * `recordStanding`, `applyStanding`, `rightNext`, `release` AND `followAgain`
+   * STOOD HERE — five outputs for five presses, all of them gone (Wave 51).
    *
-   * The pass travels WITH the press rather than being read again on the other
-   * side. Two surfaces deciding independently which of two acts a single button
-   * meant is the shape that produced Wave 24's shape-shifting primary; the
-   * button knows which one it drew, so it says.
+   * The first two wrote the book's standing (and, in the second, applied it);
+   * the tick above does both as the gesture lands, so neither has a moment left
+   * to happen at. `rightNext` was the say-so. `release` and `followAgain` were
+   * the two halves of coming back to the book — one kept the lines and one took
+   * the book's — and the tick is the single door for both, because with
+   * propagation live there is no useful state in between.
    */
-  readonly recordStanding = output<'crop' | 'cut'>();
-  /** The record AND the table's Apply, one press — see the button's own comment. */
-  readonly applyStanding = output<'crop' | 'cut'>();
-  /** Complete this photograph and step to the next. */
-  readonly rightNext = output<void>();
-  /** Let the book change this one again. Same door as the card's right-click. */
-  readonly release = output<void>();
-  /** Take the book's crop now, and follow it from then on. See `canMatch`. */
-  readonly followAgain = output<void>();
   /** A photograph in the strip was clicked. */
   readonly jump = output<string>();
   readonly step = output<number>();
@@ -1056,10 +1221,11 @@ export class CaptureEditorModalComponent {
    * overwritten.
    *
    * WAVE 25 REMOVED THE SUBJECT INSTEAD OF THE SENTENCE. Complete photographs
-   * are simply left out of every global; RELEASE is the deliberate press that
-   * puts one back in the flow, on the ONE photograph somebody means, reached
-   * from the card it is about or from *Where it stands* above. There is nothing
-   * left to ask at record time, because a record overwrites nobody.
+   * are simply left out of every global, and Wave 51 gave the way back a control
+   * of its own — the *Global* tick, re-ticked, on the ONE photograph somebody
+   * means, or the same door from the card's right-click. There is nothing left
+   * to ask at gesture time, because a gesture overwrites nobody who has said
+   * they are their own.
    */
 
   /*

@@ -25,9 +25,17 @@ import { LedgerService } from './ledger.service';
  *
  * With one viewer the question has one answer, and this class is that answer plus
  * the three gestures that move it: Home, Ctrl+Tab, and putting a document in
- * front of somebody. Compare (docs/PLAN.md §4, unit 8d) lands here too when it
- * comes — a second, read-only stage beside the live one — which is the other
- * reason this is a service and not two computeds on the documents list.
+ * front of somebody. Compare (docs/PLAN.md §4, unit 8d) landed here too — a
+ * second, read-only stage beside the live one — which is the other reason this is
+ * a service and not two computeds on the documents list.
+ *
+ * THAT SECOND STAGE IS A UNION NOW, and it is worth saying at the top because it
+ * is the one piece of state on this class that two features share. The analysis
+ * hits panel takes the same slot (docs/ANALYSIS.md §8, Owen: *"a list of hits in
+ * blocks on the right side, where compare would normally be"*), so `secondColumn`
+ * holds one or the other and `compare`/`analysis` are narrowings of it. Two
+ * signals would have let both be open, in a row whose whole layout rule is "two
+ * equal halves or one whole".
  *
  * ── The dependency arrow, and why it never runs back ────────────────────────
  *
@@ -49,16 +57,40 @@ import { LedgerService } from './ledger.service';
  * write used to be), the raw write stays where the doors are and the MEANING
  * stays here. See `OpenDocumentsService.pointer`.
  */
+/**
+ * WHAT THE SECOND COLUMN IS, WHEN THERE IS ONE — one of exactly two things.
+ *
+ * ── Why a union and not two nullable signals ────────────────────────────────
+ *
+ * Because the workspace's layout rule is *"two equal halves or one whole"* (the
+ * standing ruling, argued in the `.row` styles) and two independent signals can
+ * be true at once. A union cannot: the panel and the comparison occupy one slot,
+ * and opening either puts the other away by construction rather than by every
+ * call site remembering to. docs/ANALYSIS.md §8 names this shape for exactly that
+ * reason.
+ *
+ * BOTH MEMBERS CARRY THE SAME TWO FIELDS, and that is not an argument for
+ * collapsing them into one record with a `kind`. They mean different things: a
+ * comparison's step is a row of the book to be drawn read-only beside the live
+ * one, and an analysis's step is the row whose PAYLOAD is a report about the book.
+ * Discriminating them is what stops a column resolving one as the other — and it
+ * is what makes `compare` and `analysis` below narrowings rather than guesses.
+ */
+export type SecondColumn =
+  | { kind: 'compare'; projectDir: string; stepId: string }
+  | { kind: 'analysis'; projectDir: string; stepId: string };
+
 @Injectable({ providedIn: 'root' })
 export class StageService {
   private readonly documents = inject(OpenDocumentsService);
   /**
-   * The ledger, read for ONE question: does the compared step still exist?
+   * The ledger, read for ONE question: does the second column's step still exist?
    *
-   * It is what makes `compare` below a computed rather than a signal somebody has
-   * to remember to clear — see its docblock. Nothing else on this class touches
-   * the ledger, and the position stays `PositionSyncService`'s subject entirely:
-   * this asks whether a row is in a list, not what the book is standing on.
+   * It is what makes `secondColumn` below a computed rather than a signal somebody
+   * has to remember to clear — see its docblock. Nothing else on this class
+   * touches the ledger, and the position stays `PositionSyncService`'s subject
+   * entirely: this asks whether a row is in a list, not what the book is standing
+   * on.
    */
   private readonly ledger = inject(LedgerService);
 
@@ -96,55 +128,74 @@ export class StageService {
   readonly heldProject = signal<string | null>(null);
 
   /**
-   * THE STEP BEING COMPARED AGAINST, as the person asked for it — the raw wish.
+   * WHAT IS IN THE SECOND COLUMN, as the person asked for it — the raw wish.
    *
-   * SESSION-ONLY AND DELIBERATELY NOT PERSISTED: a comparison is a thing you set
-   * up for the question you are asking right now, and a window that reopened
-   * yesterday's second column would be furniture arriving in a room nobody
-   * arranged. It is also never more than ONE — Compare is not the panes coming
-   * back (docs/PLAN.md §4, unit 8d) — which is why this is a nullable record and
-   * not a list.
+   * SESSION-ONLY AND DELIBERATELY NOT PERSISTED: a second column is a thing you
+   * set up for the question you are asking right now, and a window that reopened
+   * yesterday's would be furniture arriving in a room nobody arranged. It is also
+   * never more than ONE — this is not the panes coming back (docs/PLAN.md §4,
+   * unit 8d) — which is why it is a nullable record and not a list.
    *
    * THE PROJECT RIDES WITH THE STEP because a step id alone is not enough to know
    * whether the wish is still about the book on screen. Somebody comparing two
    * rows of one book and then clicking a DIFFERENT book in the library has left
    * the comparison behind; carrying only the id would leave a column open over a
    * step belonging to a project nobody is looking at.
+   *
+   * ── AND IT IS A UNION, WHICH IS WHAT MAKES THE TWO EXCLUSIVE BY CONSTRUCTION ─
+   *
+   * *"The hits panel takes compare's slot… behind a `StageService` discriminated
+   * union so the two are mutually exclusive by construction and the clearing rules
+   * stay a computed, not a thing call sites remember."* (docs/ANALYSIS.md §8.)
+   *
+   * The alternative — a second nullable signal beside this one — is the shape that
+   * fails silently: two columns opened in the wrong order, a workspace row with
+   * three children in it, and a layout rule ("two equal halves or one whole") that
+   * is true of every case anybody happened to test. One signal cannot hold two
+   * things, so opening either puts the other away without anybody remembering to.
    */
-  private readonly comparing = signal<{ projectDir: string; stepId: string } | null>(null);
+  private readonly second = signal<SecondColumn | null>(null);
 
   /**
-   * THE COMPARISON, VALIDATED — null unless it is still about a real step of the
-   * book in front of the person.
+   * THE SECOND COLUMN, VALIDATED — null unless it is still about a real step of
+   * the book in front of the person.
    *
    * ── Every clearing rule the brief asks for, made structural ─────────────────
    *
-   * A comparison has to end in three ways, and a signal somebody has to remember
-   * to clear would have three call sites to keep true. It is a computed instead,
-   * on exactly the precedent `active` above set: derive it and the rules cannot be
-   * forgotten.
+   * A second column has to end in three ways, and a signal somebody has to
+   * remember to clear would have three call sites to keep true. It is a computed
+   * instead, on exactly the precedent `active` above set: derive it and the rules
+   * cannot be forgotten.
    *
    *   THE LIVE DOCUMENT CLOSED, or the person pressed Home — `activeDocument()`
-   *   is null, so there is no project to be comparing within, so this is null.
+   *   is null, so there is no project to be looking at a second view within, so
+   *   this is null.
    *
    *   THE SHOWN DOCUMENT'S PROJECT CHANGED — they clicked another book. The
    *   recorded directory no longer matches the live one and the column goes with
    *   the book it belonged to.
    *
-   *   THE COMPARED STEP WAS DELETED — the ledger this window holds no longer has
-   *   a row with that id. A delete rewrites the held ledger (`LedgerService`
-   *   re-reads on `projects:changed`, which every delete fires), so the row
-   *   vanishing from the list IS the announcement, read where it lands rather than
-   *   subscribed to somewhere else and hoped for.
+   *   THE STEP WAS DELETED — the ledger this window holds no longer has a row
+   *   with that id. A delete rewrites the held ledger (`LedgerService` re-reads on
+   *   `projects:changed`, which every delete fires), so the row vanishing from the
+   *   list IS the announcement, read where it lands rather than subscribed to
+   *   somewhere else and hoped for.
+   *
+   * ALL THREE ARE ASKED OF BOTH ARMS, and that is the point of extending this
+   * computed rather than writing a second one beside it. An analysis panel is
+   * pointed at an analysis STEP — the row whose payload is the report — so
+   * "deleted while the panel was open" is the identical fact about the identical
+   * list, and a second implementation of it would be a second chance to leave a
+   * column open over a row that is gone.
    *
    * A LEDGER THIS WINDOW HAS NOT READ YET IS NOT A CLEAR. `historyFor` answers
    * null while a project's history is still in flight, and treating that silence
-   * as "the step is gone" would close the column somebody just opened. The
-   * comparison survives an unread ledger and is judged the moment there is a list
-   * to judge it against — the same shape `standForTab`'s first-focus guard uses.
+   * as "the step is gone" would close the column somebody just opened. The wish
+   * survives an unread ledger and is judged the moment there is a list to judge it
+   * against — the same shape `standForTab`'s first-focus guard uses.
    */
-  readonly compare = computed<{ projectDir: string; stepId: string } | null>(() => {
-    const wish = this.comparing();
+  readonly secondColumn = computed<SecondColumn | null>(() => {
+    const wish = this.second();
     if (wish === null) return null;
     const tab = this.activeDocument();
     if (tab === null) return null;
@@ -153,6 +204,26 @@ export class StageService {
     const history = this.ledger.historyFor(wish.projectDir);
     if (history === null) return wish;
     return history.ledger.steps.some((step) => step.id === wish.stepId) ? wish : null;
+  });
+
+  /**
+   * THE COMPARISON — the validated second column, when it is one.
+   *
+   * A NARROWING OF `secondColumn` AND NOT A SECOND STATE, which is what lets every
+   * caller Compare already had go on reading exactly what it read before: the
+   * shape is the same record, the three clearing rules are the same rules, and a
+   * window with the analysis panel up answers null here without anybody having
+   * written a rule saying it should.
+   */
+  readonly compare = computed<{ projectDir: string; stepId: string } | null>(() => {
+    const which = this.secondColumn();
+    return which?.kind === 'compare' ? { projectDir: which.projectDir, stepId: which.stepId } : null;
+  });
+
+  /** The hits panel, on the same terms — the analysis step whose report it draws. */
+  readonly analysis = computed<{ projectDir: string; stepId: string } | null>(() => {
+    const which = this.secondColumn();
+    return which?.kind === 'analysis' ? { projectDir: which.projectDir, stepId: which.stepId } : null;
   });
 
   /**
@@ -166,16 +237,66 @@ export class StageService {
    * second view OF.
    */
   startCompare(stepId: string): void {
+    this.open('compare', stepId);
+  }
+
+  /**
+   * The ✕ on the compare column. Nothing is closed; a second view is put away.
+   *
+   * IT CLEARS ONLY A COMPARISON, which is the one line the union added and the one
+   * that keeps this identical for every caller it already had. Pressing ✕ on a
+   * column that is not there cannot now take away the column that is.
+   */
+  stopCompare(): void {
+    this.close('compare');
+  }
+
+  /**
+   * Put the hits panel where compare would go — Owen's own words for the slot:
+   * *"a list of hits in blocks on the right side, where compare would normally
+   * be."*
+   *
+   * `startCompare`'s body, and deliberately so: the project comes from what is on
+   * screen, an empty stage does nothing, and opening this puts a comparison away
+   * because one signal cannot hold both.
+   */
+  startAnalysis(stepId: string): void {
+    this.open('analysis', stepId);
+  }
+
+  /** The ✕ on the analysis panel. See `stopCompare` for why it names its own kind. */
+  stopAnalysis(): void {
+    this.close('analysis');
+  }
+
+  /**
+   * The same wish, from a caller that KNOWS the project — the tree's analysis
+   * card.
+   *
+   * `open` reads the project off the document on screen because the head-row
+   * picker can honestly name nothing else. The tree can: its row carries the
+   * project directory the ledger row belongs to, and deriving from the screen
+   * instead would put the click in a race the tree already lost once — its acts
+   * go through `stand()`, which moves the pointer without awaiting a tab, so
+   * "what is on screen" at click time may be yesterday's document or nothing.
+   * The wish is set with the row's own facts and the validated computed does
+   * what it exists to do: the column appears the moment the person is looking
+   * at that project's document, and never over anybody else's.
+   */
+  startAnalysisAt(projectDir: string, stepId: string): void {
+    this.second.set({ kind: 'analysis', projectDir, stepId });
+  }
+
+  private open(kind: SecondColumn['kind'], stepId: string): void {
     const tab = this.activeDocument();
     if (tab === null) return;
     const dir = this.documents.projectDirOf(tab);
     if (dir === null) return;
-    this.comparing.set({ projectDir: dir, stepId });
+    this.second.set({ kind, projectDir: dir, stepId });
   }
 
-  /** The ✕ on the compare column. Nothing is closed; a second view is put away. */
-  stopCompare(): void {
-    this.comparing.set(null);
+  private close(kind: SecondColumn['kind']): void {
+    this.second.update((held) => (held?.kind === kind ? null : held));
   }
 
   constructor() {

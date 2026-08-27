@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **cbc6f4c** — *docs(sweep): the hover context floats* (tip; carries `8d4d9b2`, sweep rows hold still under the pointer) |
-| Copied on | 2026-08-24 |
-| Copied by | `git -C <foundry> archive cbc6f4c app | tar -x --strip-components=1` || tar -x --strip-components=1` |
+| Source sha | **009a0f1** — *feat(app): a formless host act is a launcher, and the menu learns to say so* |
+| Copied on | 2026-08-26 |
+| Copied by | `git -C <foundry> archive 009a0f1 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -711,6 +711,34 @@ cleared on list scroll); rows never change size. One file:
 stands, vendor and engine move independently here). Verified: 124/124 blobs + IPC-CHANNELS.md
 identical, lockfile unmoved, subtree build clean (pre-existing 500 kB budget WARNING only),
 keepers ALL GREEN.
+
+**009a0f1 (2026-08-26):** five things landed since cbc6f4c, per the Foundry
+session's own summary and the diff. (1) The capture-stage rework (Waves
+51/51b/51c — sticky Global checkbox with odd/even parity scopes, live
+propagation, finalize/generate renames, grid drag fixes). (2) The first-run
+setup wizard (Wave 53) — **~11 new IPC channels** (setup/ollama/llm families;
+`IPC-CHANNELS.md` refreshed from the same sha, collision keeper GREEN), new
+app-settings fields, two new env-catalog targets (`nli-mac-arm64` deliberately
+null-sha until built on a Mac). (3) `viewExportedBook` surfaces the engine's
+refusal sentence in the pane instead of console-only. (4) `analyze: rank|verify
+n/m` progress lines — this REQUIRED A MIRROR UPDATE on our side:
+`parseFoundryProgressLine` (`electron/foundry-host-queue.ts`) gained the
+pattern in the vendored order and the `foundryPhase` unions widened to carry
+`rank`/`verify` (`electron/queue-engine.ts`, `shared/queue/engine-types.ts`);
+the drift keeper caught it, as designed. (5) `009a0f1` itself: the action
+menu's `offer.form !== undefined` filter is gone — a FORMLESS host offer now
+gets a tile and is invoked immediately (one shared `press()` with the tree
+footer). That change was BookForge's own pre-vendor ask: `bookforge.narrate`
+becomes a formless launcher when the narration-modal branch merges (Owen's
+2026-08-26 ruling — the dialog is BookForge's again), and without it Narrate
+would have vanished from the action menu. Offers WITH forms are byte-for-byte
+the old behavior, so this copy and that branch can land in either order.
+Engine note, not part of `app/`: foundry v1.0.1 published the same day (join
+fix, triple-emphasis fix, and export now REFUSES a non-well-formed spine
+document by name — a refusal our pipeline may meet). Verified: 137/137 blobs
+against `009a0f1:app/`, lockfile unmoved so `npm ci` skipped; subtree build
+clean (pre-existing 500 kB budget WARNING only); keepers ALL GREEN after the
+mirror update.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

@@ -169,6 +169,7 @@ import {
   projectDirOf,
   readManifest,
   readStepLedger,
+  recordAnalysis,
   recordFinal,
   recordGenerated,
   recordReading,
@@ -186,18 +187,18 @@ import { ancestry, REWRITE_LABELS } from '../shared/ledger';
 import { fold } from '../shared/original';
 import { JOB_RESOURCE, SLOTS, type JobResource } from '../shared/queue-board';
 import type {
-  ConversionKind, EnvInstallRequest, ExportLanding, ExportMintMetadata, FoundryJobRow, Job, JobKind, JobRequest,
-  TranslateRequest,
+  AnalyzeRequest, ConversionKind, EnvInstallRequest, ExportLanding, ExportMintMetadata, FoundryJobRow, Job,
+  JobKind, JobRequest, TranslateRequest,
 } from '../shared/types';
 
 /**
- * The two things that become an engine child.
+ * The three things that become an engine child.
  *
  * They share `requests`, `pump()` and the whole run-and-report path because
  * from here they are the same job: spawn foundry, read its stderr, report what
  * it wrote. Only `argsFor` and the reading-server wait can tell them apart.
  */
-type EngineRequest = JobRequest | TranslateRequest;
+type EngineRequest = JobRequest | TranslateRequest | AnalyzeRequest;
 
 /**
  * WHAT THIS REQUEST PRODUCES — the one answer, in one place.
@@ -215,6 +216,10 @@ type EngineRequest = JobRequest | TranslateRequest;
  *   per-block answers rather than a book; the book is materialised from them by
  *   a cast that costs seconds. So the records file is what collides, what is
  *   worth showing, and what the row is.
+ * - **AN ANALYSIS PRODUCES ITS REPORT**, which is `outputPath` already and
+ *   therefore needs no line of its own below. It is named here anyway, because
+ *   this list is what somebody reads to find out whether their job's product is
+ *   the ordinary case, and "it happens to fall through" is not an answer.
  * - **EVERYTHING ELSE PRODUCES ITS OUTPUT**, which is the ordinary case and
  *   needs no argument.
  *
@@ -631,6 +636,9 @@ const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
   pdf: false,
   read: false,
   translate: false,
+  // Engine work on the GPU lane, ordered by a person. It routes for translate's
+  // reason: the host chose when it ran.
+  analysis: false,
   // A precondition of the engine running rather than GPU work (16e).
   'env-install': true,
   // Renderer-driven and interactive. It never entered the host’s queue and
@@ -980,6 +988,93 @@ export function enqueueTranslate(
   requests.set(job.id, request);
   changed();
   // Held, like every other engine job. See this file's header.
+  return job;
+}
+
+/**
+ * Put an analysis in the queue.
+ *
+ * `enqueueTranslate`'s shape, line for line, and the same three decisions:
+ *
+ *   IT ROUTES, and it has no `…Here` twin. Nothing inside this app orders an
+ *   analysis — every one of them arrives from a person filling in the Analysis
+ *   dialog — so this door has exactly one caller and the branch below IS the door
+ *   deciding. A second, unrouted door would be a name nobody could prove the need
+ *   for.
+ *
+ *   IT IS HELD, like everything expensive. An analysis is minutes of entailment
+ *   over every sentence in the book followed by one Ollama call per surviving
+ *   passage; a person who queued one and a translation wants to look them both
+ *   over and press Start once (docs/ANALYSIS.md §7).
+ *
+ *   IT DEDUPES ON THE REPORT, which is `productOf`'s answer and therefore the
+ *   same rule the reading's bank and the translation's records obey. Two analyses
+ *   of one book against one checklist from one step are one job, and the file they
+ *   would both write is what says so — and it matters more here than anywhere
+ *   else, because that file is also the CACHE: two runs appending verdicts into
+ *   one report would interleave two processes' answers into one line-delimited
+ *   file.
+ */
+export function enqueueAnalysis(
+  request: AnalyzeRequest,
+  /** The position at the press. See `enqueue` above and `Job.parentStep`. */
+  parentStep: string | null = null,
+): Job {
+  /*
+   * ── IT DOES NOT ROUTE, AND THAT IS SAID HERE RATHER THAN HALF-WIRED ───────
+   *
+   * `FoundryHostQueue.enqueue` takes the two request shapes the host's own
+   * vendored copy of `shared/api.ts` declares, and an analysis is a third one it
+   * has never heard of (docs/BOOKFORGE-HANDOFF.md §8 — `app/` is a sealed
+   * snapshot laid down at a named commit and never hand-edited on that side). A
+   * request pushed at a queue whose types predate it would be a row the host
+   * cannot label, cannot lane and cannot spell a command line for.
+   *
+   * SO THE TILE IS GATED OFF HOSTED (`canAnalyse`, action-menu.component.ts) and
+   * the door refuses by name (`queue:enqueue-analysis`, electron/ipc.ts) — two
+   * halves of one rule, because a summons with nobody home and a home nobody can
+   * summon are how a feature ends up half-built. Running it in Foundry's own
+   * queue instead would be worse than refusing: hosted there is no Foundry queue
+   * surface at all (Owen, 2026-08-21), so the job would start, hold the card for
+   * an hour and be invisible in both windows.
+   *
+   * This reaches BookForge by the normal re-vendor (docs/ANALYSIS.md §9), and the
+   * function that will route it is this one, with a `hostQueue()` branch at the
+   * top exactly like `enqueueTranslate`'s.
+   */
+  const outputPath = productOf(request);
+  const already = pendingFor(outputPath);
+  if (already) return already;
+
+  const job: Job = {
+    id: randomUUID(),
+    inputPath: request.inputPath,
+    outputPath,
+    kind: 'analysis',
+    state: 'held',
+    progress: null,
+    /*
+     * THE ROW NAMES THE ACT, on the rewrite's argument one door up. A book can be
+     * in this queue for several reasons at once — read it, translate it, analyse
+     * it — and a row falling back to the project's title would leave somebody
+     * looking at two identically named rows deciding which to Start. What is on
+     * screen is a short list of things about to spend a night of GPU, and which
+     * act each one is is the fact being checked; the book is one hover away in
+     * the row's paths, where every filename in this shelf already lives.
+     */
+    title: 'Analysis',
+    /*
+     * THE STEP THE REPORT WILL BE FILED UNDER. An analysis is ordered from a row
+     * and runs for an hour, which is exactly the window in which a pointer moves
+     * — and where somebody is standing when it lands is nobody's decision, so the
+     * press is what the landing appends against.
+     */
+    parentStep,
+    createdAt: Date.now(),
+  };
+  jobs.push(job);
+  requests.set(job.id, request);
+  changed();
   return job;
 }
 
@@ -1338,6 +1433,22 @@ export function cancelHere(id: string): void {
  */
 async function sweepDerivedBook(request: EngineRequest | undefined): Promise<void> {
   if (request === undefined || request.kind === 'read') return;
+  /*
+   * AN ANALYSIS LEAVES A SECOND SCRATCH FILE and it goes at the same moment, for
+   * the same reason: the checklist beside the report was written at the spawn so
+   * a path could be put on the command line, and once the run has settled nothing
+   * will ever mention it again. It is a pure function of the step's own params,
+   * remade for nothing whenever it is wanted, and leaving it would put an
+   * unnamed file in a retained-payload folder — the one thing the `analysis/`
+   * layer's own docblock says must not happen there.
+   */
+  if (request.kind === 'analysis') {
+    try {
+      await fsp.rm(categoriesFileFor(request), { force: true });
+    } catch (err) {
+      console.error(`[job] the analysis checklist could not be removed: ${(err as Error).message}`);
+    }
+  }
   // A TRANSLATION HAS ONE TOO, and it always has one: the book it read is the
   // position materialised (`TranslateRequest.bookPath`), scratch on exactly the
   // terms an export's is. It was excluded here while a translation read a cast.
@@ -1433,6 +1544,26 @@ export function shutdown(): void {
 }
 
 /**
+ * WHERE AN ANALYSIS RUN'S CHECKLIST IS WRITTEN — the report's own path plus a
+ * suffix, and never a rename of it.
+ *
+ * ── One derivation, three readers ───────────────────────────────────────────
+ *
+ * `argsFor` puts it on the command line, the spawn writes it, and the settle
+ * removes it. Three places that must agree about one path, which is exactly the
+ * shape `productOf` one screen up exists to stop being three correct copies — so
+ * it is a function, and the three ask.
+ *
+ * A SUFFIX ON THE WHOLE PATH, `pendingReportPath`'s own spelling (src/analyze/
+ * report.ts): a name composed by replacing an extension is a name that can
+ * collide with a real file the day somebody's report is called something else,
+ * and appending cannot.
+ */
+function categoriesFileFor(request: AnalyzeRequest): string {
+  return `${path.resolve(request.outputPath)}.categories.json`;
+}
+
+/**
  * The command line, assembled in ONE place.
  *
  * `--readings` is passed on EVERY job — electron/workspace.ts names the bank,
@@ -1455,6 +1586,60 @@ function argsFor(
    */
   metadata: Record<string, string> = {},
 ): string[] {
+  if (request.kind === 'analysis') {
+    /*
+     * ── READING THE BOOK AGAINST THE CATEGORIES ───────────────────────────────
+     *
+     * `foundry analyze --book X --out Y [--categories C] [--model M]
+     * [--ollama U]`. It writes a report and no document at all — a header, one
+     * row per candidate passage, and its own question-keyed cache of every rank
+     * score and every verdict it paid for (docs/ANALYSIS.md §6).
+     *
+     * `--ollama` IS PASSED, for the translate line's reason: the reading backend
+     * is owned by the settings screen and the engine reads it for itself, but
+     * Ollama is a server this app never starts, stops or configures, so there is
+     * nothing here to contradict.
+     *
+     * NO `--nli-python`, AND IT IS AN OMISSION THIS APP CHOSE. The interpreter
+     * the entailment worker runs under is resolved by the engine from its own
+     * named candidates and `FOUNDRY_NLI_PYTHON`, and a miss ends the run naming
+     * every path it tried — which the shelf already shows as the job's error, in
+     * the engine's own words. A flag here would be a second place to configure a
+     * machine (docs/ANALYSIS.md §9).
+     *
+     * NO `--fresh`. It exists to throw away answers somebody has already paid
+     * for, and there is no gesture in this app that means that: a re-analysis
+     * from the same step refreshes the report it already has, and every question
+     * whose answer is in there is worth exactly what it cost.
+     */
+    const args = [
+      'analyze',
+      /*
+       * THE POSITION'S OWN BOOK, materialised by main with every op on the way to
+       * it replayed in (`planAnalysis`, electron/workspace.ts). A struck row is
+       * not in it and a retyped paragraph is in it as the person left it — which
+       * is what makes the report's character offsets agree with the paper the
+       * panel draws them over.
+       */
+      '--book', request.bookPath,
+      '--out', request.outputPath,
+      '--model', request.model,
+      '--ollama', request.ollama,
+    ];
+    /*
+     * THE CHECKLIST, AS A FILE BESIDE THE REPORT — written by `spawnOf` at the
+     * moment the child starts rather than composed onto this line.
+     *
+     * It cannot be a flag value: the engine's `--categories` takes a PATH to a
+     * JSON list, and the list carries a name and an enabled flag per entry
+     * (`buildPlan`, src/analyze/plan.ts). And it must not be written at plan
+     * time, on `seedRecords`' rule: a held job that is removed must leave the
+     * project exactly as it found it, and a file written at the plan would sit
+     * there named by no step.
+     */
+    if (request.categories.length > 0) args.push('--categories', categoriesFileFor(request));
+    return args;
+  }
   if (request.kind === 'translate') {
     /*
      * A translation shares nothing with a conversion's command line but the
@@ -2063,6 +2248,12 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    */
   const exporting = request.kind !== 'read'
     && request.kind !== 'translate'
+    // AN ANALYSIS IS NEVER AN EXPORT, and the line is here rather than left to
+    // the `export` field's absence because the narrowing this const performs is
+    // what every reader below depends on. A report is not a rendering: nothing
+    // is filed in the tray, no metadata is stamped onto it and no document is
+    // rotated aside for it.
+    && request.kind !== 'analysis'
     && request.export === true;
 
   next.state = 'running';
@@ -2341,6 +2532,64 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       copyFileSync(request.seedRecords, request.recordsPath);
     } catch (err) {
       console.error(`[job] could not seed ${request.recordsPath} from ${request.seedRecords}:`, err);
+    }
+  }
+
+  /*
+   * ── THE ANALYSIS CHECKLIST, WRITTEN AT THE SPAWN ──────────────────────────
+   *
+   * `--categories` takes a PATH to a JSON list, so the checklist cannot ride the
+   * command line as a value; it has to be a file, and this is the moment to make
+   * one. The seed copy above is here for the same reason and it is the same rule:
+   * a plan is not a commitment, and a held job somebody removes must leave the
+   * project exactly as it found it. A checklist written at plan time would sit in
+   * the analysis folder named by no step, invisible to every sweep, forever.
+   *
+   * BESIDE THE REPORT AND NAMED FROM IT (`categoriesFileFor`), so a person
+   * looking at a run in a terminal can see what it was asked for — and so the
+   * settle can remove it without composing a second opinion about where it went.
+   *
+   * THE WHOLE SET IS WRITTEN, unticked entries and all, which is the spelling
+   * `buildPlan` documents itself as accepting from this app: a list composed by
+   * DROPPING names is indistinguishable from a list of the only categories this
+   * build has heard of, and the day the engine grows an eleventh the two readings
+   * diverge in silence.
+   *
+   * A FAILURE HERE IS NOT SWALLOWED AND IS NOT A THROW. Without the file the
+   * engine refuses the run by name, which is the honest outcome and lands in the
+   * row's error where somebody will read it; a console line says which write
+   * failed so the cause is not a mystery.
+   *
+   * THE ENTRY IS REBUILT FIELD BY FIELD rather than spread, and that is the one
+   * detail this write cannot get wrong. `parseCategoriesJson` (src/analyze/plan.ts)
+   * REFUSES an entry carrying a field it does not read — deliberately, because a
+   * typo accepted in silence is a hand-written hypothesis that never reached the
+   * model and an hour spent looking fine — so anything this app grows on its own
+   * request shape would end the run the day it was added. Three fields are
+   * spelled here because three are the ones over there: `name`, `enabled`, and
+   * `description` where the category has one (a user's own; a built-in never
+   * does, and an empty one is omitted rather than written as "").
+   */
+  if (request.kind === 'analysis' && request.categories.length > 0) {
+    const where = categoriesFileFor(request);
+    const asked = request.categories.map((one) => {
+      const description = (one.description ?? '').trim();
+      const label = (one.label ?? '').trim();
+      return {
+        name: one.name,
+        enabled: one.enabled,
+        ...(description.length > 0 ? { description } : {}),
+        // The words the person reads for this category, carried so the report's
+        // `names` header shows every device the label the desktop shows —
+        // including a custom category exactly as its author typed it.
+        ...(label.length > 0 ? { label } : {}),
+      };
+    });
+    try {
+      await fsp.mkdir(path.dirname(where), { recursive: true });
+      await fsp.writeFile(where, `${JSON.stringify(asked, null, 2)}\n`, 'utf8');
+    } catch (err) {
+      console.error(`[job] the analysis checklist could not be written to ${where}:`, err);
     }
   }
 
@@ -2642,6 +2891,41 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
      * offline, seconds, and fired and forgotten so that a translation that landed
      * is never reported as a failure because the book after it could not be planned.
      */
+    /*
+     * ── AN ANALYSIS LANDED, AND WHAT IT LEFT IS A REPORT ─────────────────────
+     *
+     * The same shape as the two above it and the shortest of the three, because
+     * an analysis owes the book nothing. There is no document to catalogue, no
+     * bank to displace, no derived book to materialise afterwards and no chain to
+     * resolve: the run measured a book and wrote down what it found, and the step
+     * that keeps the report names that file as its payload (`recordAnalysis`,
+     * electron/projects.ts).
+     *
+     * THE ONE FACT THE JOB HANDS OVER is the one nothing on disk can answer
+     * afterwards: which categories were actually asked for. The report's header
+     * lists them, and reading a step's params back out of its payload is what this
+     * codebase's oldest house rule forbids — so the run that asked says what it
+     * asked for, exactly as a translation says which language. The model rides
+     * with it, in the answer pile (`MINTED_BY_THE_RUN`).
+     *
+     * AND NOTHING FOLLOWS IT. A translation lands and materialises a book,
+     * because a records file is not a thing a person reads; a report is drawn by
+     * a panel straight out of the file, so there is nothing to make and nothing
+     * to open. The pointer stays where it was (`RETAINED_BESIDE_YOU`), which is
+     * the whole of what an analysis does to a project's position.
+     */
+    if (request.kind === 'analysis') {
+      await recordAnalysis(next.outputPath, {
+        parentStep: next.parentStep ?? null,
+        categories: request.categories.filter((one) => one.enabled).map((one) => one.name),
+        model: request.model,
+        ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
+      });
+      next.message = `Analysed ${path.basename(next.inputPath)} — the report is on its step.`;
+      changed();
+      settled(next);
+      return;
+    }
     if (request.kind === 'translate') {
       await recordTranslation(next.outputPath, {
         parentStep: next.parentStep ?? null,
@@ -3034,7 +3318,8 @@ export async function runJob(
     ...(request.kind === 'translate' && request.rewrite !== undefined
       ? { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` }
       : {}),
-    ...(request.kind !== 'read' && request.kind !== 'translate' && request.forStep !== undefined
+    ...(request.kind !== 'read' && request.kind !== 'translate' && request.kind !== 'analysis'
+      && request.forStep !== undefined
       ? { forStep: request.forStep }
       : {}),
     parentStep,

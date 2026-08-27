@@ -1,5 +1,6 @@
 import { ChangeDetectionStrategy, Component, computed, inject } from '@angular/core';
 
+import { AnalysisPanelComponent } from '../../components/analysis-panel/analysis-panel.component';
 import { CompareColumnComponent } from '../../components/compare/compare-column.component';
 import { HomeComponent } from '../../components/home/home.component';
 import { ViewerComponent } from '../../components/viewer/viewer.component';
@@ -126,7 +127,7 @@ import { StageService } from '../../core/stage.service';
  */
 @Component({
   selector: 'app-workspace',
-  imports: [CompareColumnComponent, HomeComponent, ViewerComponent],
+  imports: [AnalysisPanelComponent, CompareColumnComponent, HomeComponent, ViewerComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     @if (stage.activeDocument(); as tab) {
@@ -142,8 +143,17 @@ import { StageService } from '../../core/stage.service';
         <section class="stage" (pointerdown)="stand(tab.id)">
           <app-viewer [tab]="tab" />
         </section>
+        <!--
+          THE SECOND COLUMN IS ONE THING OR NOTHING, and the union on the stage is
+          what makes that true rather than these two @ifs (see \`SecondColumn\`).
+          Written as two blocks because they are two components; they cannot both
+          draw, because one signal cannot hold two values.
+        -->
         @if (stage.compare() !== null) {
           <app-compare-column />
+        }
+        @if (stage.analysis() !== null) {
+          <app-analysis-panel />
         }
       </div>
     } @else if (heldTitle(); as title) {
@@ -218,7 +228,7 @@ import { StageService } from '../../core/stage.service';
       dragging, cramped is the only failure available and it is recoverable by
       pressing ✕.
     */
-    .stage, app-compare-column {
+    .stage, app-compare-column, app-analysis-panel {
       flex: 1 1 0;
       min-width: 0;
       min-height: 0;
@@ -227,8 +237,12 @@ import { StageService } from '../../core/stage.service';
       overflow: hidden;
     }
     /* The seam between the two, drawn on the second column so a single column
-       never carries a border it has nothing to be separated from. */
-    app-compare-column { border-left: 1px solid var(--border-default); }
+       never carries a border it has nothing to be separated from. THE ANALYSIS
+       PANEL IS IN BOTH SELECTOR LISTS FOR ONE REASON: it occupies the same slot,
+       under the same "two equal halves or one whole" rule, and a third element
+       left out of the sizing list would collapse to its content width and take
+       the fifty-fifty ruling with it. */
+    app-compare-column, app-analysis-panel { border-left: 1px solid var(--border-default); }
     app-viewer, app-home { flex: 1; min-height: 0; }
 
     /* The empty workspace of a held project: the shell's own quiet, not the

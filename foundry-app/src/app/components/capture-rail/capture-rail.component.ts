@@ -95,14 +95,19 @@ interface Task {
  * that. So a person may apply the crops without ticking Crop, and Finish will
  * still be locked, and that is the gate doing its job rather than a defect.
  *
- * ── THE APPLY CARRIES THE CONSEQUENCE, WHERE THE ACT NOW LIVES ─────────────
+ * ── THE FINALIZE CARRIES THE CONSEQUENCE, AND IT IS NOW A REPORT ───────────
  *
  * Wave 24 put the sentence under *Crop all* in the modal, because that press
  * both recorded the book's crop and copied it onto twenty-four other pictures.
- * Wave 25 split those in two: the modal RECORDS and the table APPLIES, per the
- * rule that a control on the rail speaks for the book. So the sentence moves
- * with the act, and the counts stay the service's `applyCost` — one walk,
- * shared by the sentence and the stamp, so they cannot disagree.
+ * Wave 25 split those in two: the modal RECORDED and the table APPLIED, per the
+ * rule that a control on the rail speaks for the book. Wave 51 removed the
+ * record and made the propagation LIVE — a gesture made with *Global* ticked
+ * reaches every follower as the hand opens — so the button below is a
+ * commitment point plus a safety net, and the sentence above it describes a
+ * state the book is already in rather than one a press is about to produce.
+ *
+ * The counts stay the service's `applyCost` — one walk, shared by the sentence
+ * and the act, so they cannot disagree.
  *
  * ── AND THE COUNTS ARE PRESSABLE, WHICH CLOSES WAVE 24's DEFERRAL ──────────
  *
@@ -161,7 +166,15 @@ interface Task {
               @if (standing()) {
                 <p class="cost">{{ cropCost() }}</p>
                 <ng-container [ngTemplateOutlet]="populations" />
-                <button class="apply" type="button" (click)="applyCrops.emit()">Apply crops</button>
+                <!--
+                  FINALIZE, NOT APPLY, SINCE WAVE 26 — and the word had to move
+                  with the meaning. The crops already landed: every follower took
+                  the book's crop at the moment the gesture that set it was let
+                  go of. What this press does is close the pass, and run the same
+                  walk once more so that anything that arrived late lands too.
+                  "Apply" named a propagation that is no longer waiting to happen.
+                -->
+                <button class="apply" type="button" (click)="applyCrops.emit()">Finalize page crops</button>
               } @else {
                 <!--
                   NO BUTTON, because there is no book's crop for it to land and
@@ -171,7 +184,7 @@ interface Task {
                   IS shown is the way forward, which a greyed button would not
                   have been.
                 -->
-                <p class="cost">Open a page that sits well and make its crop the book's — then this applies it to the rest.</p>
+                <p class="cost">Open a page that sits well and place its crop with <em>Global</em> ticked — every other page takes it as you go.</p>
               }
             } @else {
               <p class="cost">Nothing was thrown away. Reopening shows every corner exactly as you left it.</p>
@@ -202,16 +215,17 @@ interface Task {
                 <p class="cost">{{ cutCost() }}</p>
                 <ng-container [ngTemplateOutlet]="populations" />
                 <!--
-                  REPEATABLE, and repeating it is the ordinary way to work:
-                  slide the line on one page, make it the book's, press this,
-                  look again. The cut is always made against the SHEET, so a
-                  second press moves the gutter rather than quartering the page.
+                  REPEATABLE, and repeating it costs nothing: the cut is always
+                  made against the SHEET, so a second press moves the gutter
+                  rather than quartering the page. Like its sibling above it is
+                  the safety net rather than the propagation — a line slid with
+                  <em>Global</em> ticked has already reached every follower.
                 -->
-                <button class="apply" type="button" (click)="applyCuts.emit()">Apply the cut</button>
+                <button class="apply" type="button" (click)="applyCuts.emit()">Finalize page splits</button>
               } @else {
                 <!-- Absent for the same reason as above: with no book's cut this
                      press could only say no. -->
-                <p class="cost">Open a spread, put the line down the gutter, and make it the book's cut — then this cuts the rest there.</p>
+                <p class="cost">Open a spread and put the line down the gutter with <em>Global</em> ticked — the rest follow it as you go.</p>
               }
             </div>
           }
@@ -228,7 +242,7 @@ interface Task {
         <div class="line">
           <span class="no">3</span>
           <span class="words">
-            <span class="verb">Finish</span>
+            <span class="verb">Generate</span>
             <span class="state">Cuts the pixels once and makes the pages</span>
           </span>
         </div>
@@ -272,7 +286,7 @@ interface Task {
             [disabled]="mintable() === 0"
             [title]="mintTitle()"
             (click)="mint.emit()"
-          >{{ minted() ? 'Finish again' : 'Finish the pages' }}</button>
+          >{{ minted() ? 'Generate book again' : 'Generate book' }}</button>
         }
 
         <!--
@@ -649,6 +663,19 @@ export class CaptureRailComponent {
   readonly bookCut = input(false);
 
   /**
+   * THE BOOK'S LINES ARE SPLIT BY SIDE — odd pages one way, even pages another.
+   *
+   * It changes the WORDS and never the numbers. "22 take the book's crop and
+   * cut" is a sentence about one crop and one cut; once the two sides have their
+   * own, those twenty-two are taking two different rectangles and perhaps only
+   * half of them a cut, so the sentence names the sides instead of promising a
+   * single answer it no longer has. The counts beside it stay exact either way —
+   * they are resolved per photograph in the service, against the standing that
+   * photograph would actually be given.
+   */
+  readonly sided = input(false);
+
+  /**
    * WHAT AN APPLY WOULD COST — the service's three populations, unaltered.
    *
    * Never recomputed here, and that is the rule the consequence line lives or
@@ -663,7 +690,14 @@ export class CaptureRailComponent {
   readonly tick = output<PrepareVerb>();
   readonly mint = output<void>();
   readonly stop = output<void>();
-  /** The book's crop lands on everything it is free to move. */
+  /**
+   * FINALIZE PAGE CROPS — close the pass, and land the standing on any straggler.
+   *
+   * The names on the wire are still `applyCrops`/`applyCuts` because the service
+   * doors are, and the doors are where the rename would have to start; the
+   * BUTTONS say Finalize, which is what a person is doing. Said here rather than
+   * quietly left, so the next reader knows the two words are one act.
+   */
   readonly applyCrops = output<void>();
   /** The same act, for the cut. */
   readonly applyCuts = output<void>();
@@ -750,8 +784,22 @@ export class CaptureRailComponent {
     const { takes, complete, shape } = this.cost();
     const cut = this.bookCut();
     const said: string[] = [];
+    /*
+     * WHEN THE SIDES DIFFER, THE SENTENCE NAMES THE SIDES (Wave 51b).
+     *
+     * "and cut, two pages each" is a promise about ONE cut, and a book whose odd
+     * pages are spreads and whose even ones are single sheets would have it told
+     * about the wrong half. The count is still exact — the service resolves each
+     * photograph against the standing it will actually be given — so what has to
+     * change is the claim about what they are all taking, not the number taking
+     * it.
+     */
     if (takes === 0) said.push('Nothing is free to take the book’s crop.');
-    else if (takes === 1) {
+    else if (this.sided()) {
+      said.push(takes === 1
+        ? 'One takes the lines its side of the book is set to.'
+        : `${takes} take the lines their side of the book is set to.`);
+    } else if (takes === 1) {
       said.push(cut
         ? 'One takes the book’s crop and cut, in two pages.'
         : 'One takes the book’s crop.');
@@ -768,9 +816,20 @@ export class CaptureRailComponent {
   protected readonly cutCost = computed<string>(() => {
     const { takes, complete, shape } = this.cost();
     const said: string[] = [];
+    // In the split pass the count is of photographs whose side of the book has a
+    // CUT to give them, so nobody in it is going to be left whole — which is
+    // what lets the sentence keep saying "two pages each" beside a book whose
+    // sides differ.
     if (takes === 0) said.push('Nothing is free to take the book’s cut.');
-    else if (takes === 1) said.push('One is cut where the book is cut, into two pages.');
-    else said.push(`${takes} are cut where the book is cut, two pages each.`);
+    else if (takes === 1) {
+      said.push(this.sided()
+        ? 'One is cut where its side of the book is cut, into two pages.'
+        : 'One is cut where the book is cut, into two pages.');
+    } else {
+      said.push(this.sided()
+        ? `${takes} are cut where their side of the book is cut, two pages each.`
+        : `${takes} are cut where the book is cut, two pages each.`);
+    }
     said.push(...spared(complete, shape));
     // Every crop stays put, and it has to be said: the word "apply" has just
     // meant "take the book's corners" one step above this one.
@@ -806,7 +865,7 @@ export class CaptureRailComponent {
   protected readonly mintTitle = computed<string>(() => {
     if (this.mintable() === 0) return 'There are no pages to make yet';
     return this.minted()
-      ? 'Make these pages again, as a new book beside the last one'
+      ? 'Make this book again, as a new one beside the last'
       : 'Cut, crop and turn every page as you have marked them';
   });
 }

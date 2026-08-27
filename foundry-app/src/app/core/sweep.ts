@@ -298,10 +298,19 @@ function isSpace(ch: string): boolean {
   return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
 }
 
-/** How far a census row's ordinary quotation reaches on either side of the span. */
-const SENTENCE_REACH = 140;
+/**
+ * How far a census row's ordinary quotation reaches on either side of the span.
+ *
+ * EXPORTED SINCE THE ANALYSIS PANEL WANTED THE SAME QUOTATION. It draws a row per
+ * finding with a three-span quotation and widens it on hover, which is this
+ * module's own gesture aimed at a different list — so it takes these two numbers
+ * and `quoteAround` itself rather than growing a second sentence rule. Two
+ * implementations of "how much of the paragraph is context" would be two lists in
+ * one app that quote the same book differently.
+ */
+export const SENTENCE_REACH = 140;
 /** And how far the hover's widening does, which is the block or as much as fits. */
-const BLOCK_REACH = 600;
+export const BLOCK_REACH = 600;
 
 /**
  * The words around a span, cut into three so the middle can be lit.
@@ -321,7 +330,7 @@ const BLOCK_REACH = 600;
  * what the op removes — and a quotation that silently hid a footnote marker
  * standing next to the span would be lying about the neighbourhood instead.
  */
-function quoteAround(text: string, start: number, end: number, reach: number): SweepQuote {
+export function quoteAround(text: string, start: number, end: number, reach: number): SweepQuote {
   const floor = Math.max(0, start - reach);
   let from = floor;
   for (let i = start - 1; i >= floor; i -= 1) {

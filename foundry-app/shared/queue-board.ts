@@ -97,6 +97,21 @@ export const JOB_RESOURCE: Readonly<Record<JobKind, JobResource>> = {
   mint: 'unscheduled',
   /** The precondition of the engine running at all. See `exclusive` above. */
   'env-install': 'exclusive',
+  /*
+   * TRANSLATE'S REASON, WORD FOR WORD: Ollama holds the card. An analysis is one
+   * schema-constrained Ollama call per surviving (window, category)
+   * (docs/ANALYSIS.md §5), which is a model resident on the GPU for as long as
+   * the verify stage runs — an hour on a hot book.
+   *
+   * THE NLI WORKER IS ON THE CARD TOO, and it is the half that makes this
+   * unambiguous rather than the half that complicates it. The entailment pass
+   * loads deberta into a resident Python subprocess and scores every sentence
+   * and every sliding window in the book against every enabled category. Two
+   * models on one card is what this lane exists to prevent, and an analysis is
+   * the one job in this app that would put two there by itself if the lane let
+   * anything run beside it.
+   */
+  analysis: 'gpu',
 };
 
 /** The two resources that are actually counted in slots. */

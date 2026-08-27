@@ -103,7 +103,7 @@ export interface FoundryJobProgress {
    */
   page: number;
   total: number;
-  phase: 'render' | 'read' | 'translate';
+  phase: 'render' | 'read' | 'translate' | 'rank' | 'verify';
 }
 
 /** Their `Job` (`FoundryJobRow = Job`), as their shelf draws it. */
@@ -318,10 +318,14 @@ function stateOf(step: QueueStep): FoundryJobState {
  *     because the line carries no command prefix.
  *  2. `translate: block 412/2081 (…)` — BLOCKS, not pages, matched on the word
  *     `block` so the retry notices (`attempt 2/3`) cannot be read as progress.
- *  3. The `vlm-read:` / `vlm-convert:` GATE, and only then a page count. Without
+ *  3. `analyze: rank 141/141 …` / `analyze: verify 3/20 (…)` — matched on the
+ *     two stage words specifically, because `analyze` prints many other numbers
+ *     (reuse counts, floor survivors) that are not progress. The stage word is
+ *     captured: rank and verify are two bars there, not one that resets.
+ *  4. The `vlm-read:` / `vlm-convert:` GATE, and only then a page count. Without
  *     the gate `attempt 2/3` renders as 67% and the bar leaps because an answer
  *     was RETRIED — which is the whole reason their function exists.
- *  4. The PARENTHESISED form before the bare one, because `page 143 (7/180)`
+ *  5. The PARENTHESISED form before the bare one, because `page 143 (7/180)`
  *     also contains `page 143` and would be read by the second pattern as a
  *     count of 143 out of nothing.
  */
@@ -336,6 +340,15 @@ export function parseFoundryProgressLine(line: string): FoundryJobProgress | nul
   const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (block) {
     return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
+  }
+
+  const analyzing = /^analyze:\s+(rank|verify)\s+(\d+)\/(\d+)\b/.exec(trimmed);
+  if (analyzing) {
+    return {
+      phase: analyzing[1] === 'rank' ? 'rank' : 'verify',
+      page: Number(analyzing[2]),
+      total: Number(analyzing[3]),
+    };
   }
 
   if (!trimmed.startsWith('vlm-read:') && !trimmed.startsWith('vlm-convert:')) return null;

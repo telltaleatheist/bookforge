@@ -150,6 +150,17 @@ import { hosted } from '../../core/foundry';
 
         It follows the GPU lane's run and says so in the computed that picks it
         — the argument is in QueueViewService.leading, where it has always been.
+
+        ONE HAIRLINE EVEN FOR THE RUN THAT HAS TWO STAGES, and that is a decision
+        rather than an oversight. The panel below draws an analysis as two bars
+        because a bar that fills twice reads as a fault; this is two pixels of
+        the chip's bottom edge, and splitting them in half would produce two
+        one-pixel rules that no glance can tell apart, let alone tell which is
+        which — the shape that answers the complaint at 420 pixels wide creates a
+        new one at 2. So the edge measures the stage that is RUNNING, which is
+        what a hairline can honestly say: how the thing happening now is getting
+        on. Somebody who wants to know which pass that is opens the panel, which
+        is the gesture this whole chip exists to invite.
       -->
       @if (view.leading(); as active) {
         <span class="edge"><i [style.width.%]="view.percent(active)"></i></span>
@@ -246,16 +257,59 @@ import { hosted } from '../../core/foundry';
 
               @switch (job.state) {
                 @case ('running') {
-                  <!--
-                    Indeterminate whenever there is no honest fraction: an env
-                    install only counts bytes during its download phase, and a
-                    bar that kept moving through a sha256 of five gigabytes would
-                    be an animation, not a measurement.
-                  -->
-                  <div class="bar" [class.indeterminate]="!view.determinate(job)">
-                    <i [style.width.%]="view.percent(job)"></i>
-                  </div>
-                  <span class="sub">{{ view.stepLine(job) }}</span>
+                  @if (view.stageBars(job); as stages) {
+                    <!--
+                      A RUN WITH TWO STAGES GETS TWO BARS, one under the other.
+                      Owen: *"could be good to have two different smaller
+                      progress bars, after the bookforge queue model."* An
+                      analysis ranks every sentence and then verifies the
+                      survivors, and one bar over both filled to the end and
+                      started again — a measurement that un-completes, which
+                      reads as a fault in the app rather than as a second pass.
+                      Which stage is running, how far each got and what the
+                      counting one is counting are all \`stageBars\`, where the
+                      whole argument lives; this is only the drawing of it.
+
+                      THE COUNT AND THE ESTIMATE RIDE THE STAGE THAT IS
+                      COUNTING, on the row that has the bar they are about, so
+                      neither of them has to be labelled twice. The stage that
+                      has not started says its name and nothing else.
+                    -->
+                    <div class="stages">
+                      @for (stage of stages; track stage.key) {
+                        <div class="stage" [class.idle]="!stage.active && !stage.done">
+                          <span class="stage-name">{{ stage.label }}</span>
+                          <div class="bar"><i [style.width.%]="stage.percent"></i></div>
+                          @if (stage.count) {
+                            <span class="stage-count">{{ stage.count }}@if (view.timeLeft(job); as left) {<span class="eta"> · {{ left }}</span>}</span>
+                          }
+                        </div>
+                      }
+                    </div>
+                  } @else {
+                    <!--
+                      Indeterminate whenever there is no honest fraction: an env
+                      install only counts bytes during its download phase, and a
+                      bar that kept moving through a sha256 of five gigabytes would
+                      be an animation, not a measurement.
+                    -->
+                    <div class="bar" [class.indeterminate]="!view.determinate(job)">
+                      <i [style.width.%]="view.percent(job)"></i>
+                    </div>
+                    <!--
+                      THE COUNT, AND HOW MUCH LONGER — one line, because they are
+                      one thought and a row here has three lines to spend in total.
+                      The estimate is the quieter of the two on purpose: the
+                      fraction is a measurement of what has happened and this is a
+                      forecast of what has not, and a row that drew them at the
+                      same weight would be inviting the guess to be read as the
+                      fact. Absent for most of a job's life — see
+                      \`QueueEtaService\`, which will not say a number until it has
+                      watched the count move, drops the clock at every phase
+                      boundary, and takes the estimate away when the count stops.
+                    -->
+                    <span class="sub">{{ view.stepLine(job) }}@if (view.timeLeft(job); as left) {<span class="eta"> · {{ left }}</span>}</span>
+                  }
                   <!--
                     THE STEP TAKING PLACE, which is the thing Owen could not see.
                     The count says how far; this says what the engine is actually
@@ -575,12 +629,56 @@ import { hosted } from '../../core/foundry';
       100% { transform: translateX(320%); }
     }
 
+    /*
+      ── THE TWO STAGES OF AN ANALYSIS ────────────────────────────────────────
+
+      Two SMALLER bars, which is what Owen asked for and is also the only shape
+      that works: a row in this panel has three lines to spend, and two bars at
+      the full weight of the one they replace would be a row that shouts twice
+      about one job. So the pair is set on a grid — name, bar, count — and the
+      whole stack occupies about the height the single bar and its line did.
+
+      THE STAGE THAT HAS NOT STARTED IS DIMMED AND STILL DRAWN, which is the
+      point of drawing two: an empty second bar with a name on it is the run
+      saying there is another pass coming, so the first one finishing does not
+      have to be read as the job finishing.
+    */
+    .stages { display: flex; flex-direction: column; gap: 5px; margin-top: 3px; }
+    .stage {
+      display: grid;
+      grid-template-columns: 58px minmax(0, 1fr) max-content;
+      align-items: center;
+      gap: 8px;
+    }
+    /* The bar inside a stage row carries no margin of its own — the stack's gap
+       is what spaces the pair — and is a pixel thinner than the single bar, so a
+       staged row reads as two smaller measurements rather than as two of it. */
+    .stage .bar { height: 4px; margin-top: 0; }
+    .stage-name {
+      font-size: 10.5px;
+      color: var(--text-tertiary);
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
+    .stage-count {
+      font-size: 11px;
+      color: var(--text-tertiary);
+      white-space: nowrap;
+      font-variant-numeric: tabular-nums;
+    }
+    /* Not started: quieter than the running stage in both of its parts, so the
+       eye lands on the one that is moving. Never hidden — see the note above. */
+    .stage.idle .stage-name { color: var(--text-muted); }
+    .stage.idle .bar { opacity: 0.55; }
+
     .sub {
       font-size: 11px; color: var(--text-tertiary);
       white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
     }
     .sub.ok { color: var(--ok); }
     .sub.bad { color: var(--error); white-space: normal; }
+    /* The forecast, dimmer than the count it follows and on the same line. See
+       the comment at the markup for why it is the quieter of the two. */
+    .eta { color: var(--text-muted); font-variant-numeric: tabular-nums; }
     /*
       THE STEP, WRAPPED TO TWO LINES AND NO MORE. The engine's sentences run
       long — a rejected answer names the block and the attempt — and the whole of

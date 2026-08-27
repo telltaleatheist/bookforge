@@ -15,6 +15,9 @@ import {
   viewChild,
 } from '@angular/core';
 
+// The ONE hue table the analysis's colours come from — the panel's rails and the
+// paper's tints are two treatments of it, never two lists. See `tintOf`.
+import { analysisCategoryHue } from '@shared/analysis-categories';
 import { PDF_BLOCK_CATEGORIES, pdfCategoryColour, pdfCategoryLabel } from '@shared/categories';
 import type { BookLoad, BookRow } from '@shared/book';
 import { OriginalPanelComponent } from './original-panel.component';
@@ -28,6 +31,9 @@ import { replayOps, struckNotes, unwritten, type BookOp, type ReplayedRow } from
 
 import { api } from '../../core/foundry';
 import { LedgerService } from '../../core/ledger.service';
+import { AnalysisViewService } from '../../core/analysis-view.service';
+import type { LitRange } from '../../core/analysis';
+import { AnalysisPickerComponent } from '../analysis-panel/analysis-picker.component';
 import { ComparePickerComponent } from '../compare/compare-picker.component';
 import { BookStacksService, type BookStack } from '../../core/book-stacks.service';
 import { type Tab } from '../../core/documents.service';
@@ -193,6 +199,77 @@ interface Piece {
    */
   strong: boolean;
   italic: boolean;
+  /**
+   * WHETHER AN ANALYSIS LIT THESE CHARACTERS, and how brightly.
+   *
+   * `null` on every run of every book with no report open over it, which is
+   * nearly all of them — and `'lit'` or `'ghost'` where a finding covers the run.
+   * Ghost is a passage the VERIFIER REJECTED, shown only under the loosest tier
+   * and drawn the shown-but-inert way a struck row is drawn (docs/ANALYSIS.md §8).
+   *
+   * IT SAYS HOW BRIGHTLY AND NOT WHICH COLOUR — `hitInk` below is the colour.
+   * The two are separate because they answer different questions: this one is
+   * about the VERDICT (a flag or a rejection, which is the same distinction on
+   * every category) and that one is about the CATEGORY.
+   */
+  hit: 'lit' | 'ghost' | null;
+  /**
+   * THE TINT THIS RUN IS WASHED IN — the category's own colour, or null where the
+   * run is not lit.
+   *
+   * ── THE ONE-INK RULING WAS OVERRULED, AND BY THE RIGHT PERSON ─────────────
+   *
+   * This field used not to exist, and the comment where it would have been argued
+   * at length that it must not: docs/ANALYSIS.md §8's *"the page must not turn
+   * into confetti"*, plus this sheet's own header about the block inks being
+   * rails, tints and chips only. Owen, 2026-08-25, reading the reworked panel
+   * against the paper: *"maybe make the text's highlighted color the same color
+   * as the analysis block."*
+   *
+   * THAT IS THE OVERRIDING WORD AND IT IS ALSO THE BETTER ANSWER. The confetti
+   * argument was about a page speaking a code with no key — eleven category
+   * colours down a margin that a reader has to memorise. This is not that: the
+   * legend sits two inches away in the panel, every card wears the same hue on
+   * its rail, and a report names three or four categories rather than twelve. The
+   * tint and the card are ONE FACT DRAWN TWICE rather than two facts competing,
+   * which is the exact thing `shared/categories.ts`'s header says a colour has to
+   * be to be worth having ("the whole point of colouring them is that the two
+   * agree").
+   *
+   * WHAT SURVIVES INTACT IS THE ALPHA DISCIPLINE, which is where the real hazard
+   * always was: *"applied as an outline and a tint, never as text colour: this is
+   * a book, and recolouring its words makes it unreadable."* The words stay black
+   * on cream and only the wash behind them changes colour — see `tintOf`, which
+   * is where the paper's own lightness and alpha are decided, separately from the
+   * panel's, off the same hue.
+   */
+  hitInk: string | null;
+  /**
+   * THE DEEP END OF THE PULSE — `deepTintOf`'s tone for the same category, or
+   * null where the run is not lit. It rides the run as a custom property so the
+   * selection animation can breathe between the two tones of ONE hue; see the
+   * `.run.hit.on` styles for the ruling that put it here.
+   */
+  hitDeep: string | null;
+  /**
+   * WHICH FINDING LIT THIS RUN, by the panel's own hit key — null everywhere the
+   * run is not lit.
+   *
+   * Owen, 2026-08-25: *"as i scroll/click highlighted text, it should jump to
+   * that spot in the analysis."* This is what makes the first half of that
+   * possible: the key rides the run into the DOM as an attribute, and the press
+   * that already reads `data-id` and `data-note` off whatever it landed on reads
+   * this the same way (`press`). No listener per run, no map from pixels back to
+   * offsets, and nothing on this component that could go stale — the attribute is
+   * drawn from the same computed the highlight is.
+   *
+   * IT IS A SECOND FIELD AND NOT A WIDENING OF `hit` ABOVE, because `hit` is what
+   * the paper DRAWS and this is what the paper POINTS AT. The confetti ruling is
+   * about the first and is untouched by the second: a page with four categories
+   * on it is still one ink, and the category is named in the panel where there is
+   * room for words. What changed is that the words can now be got to.
+   */
+  hitKey: string | null;
 }
 
 /** One block, with everything the sheet has to know to draw it. */
@@ -213,6 +290,22 @@ interface Line {
    * its number was printed. Null for everything else, which is most of the book.
    */
   jump: string | null;
+  /**
+   * The FIRST finding lighting this block, by hit key — null for every block no
+   * open analysis touches, which is nearly all of them, nearly always.
+   *
+   * It is on the block as well as on the runs, and the two answer two different
+   * questions. The run's key answers *"which finding did that click mean"*. This
+   * one answers *"which finding is the reader looking at"* — the scroll half of
+   * Owen's sentence — and it has to be on the BLOCK because of the one measured
+   * fact `followAnalysis` is written around: the runs live inside the
+   * `content-visibility: auto` wrapper, so a run that is off screen has no box at
+   * all and its rect reads as a zero rectangle at the viewport's origin. A block
+   * always has a box (the containment is on the wrapper inside it, never on the
+   * host — see the class docblock), so the block is the thing whose position can
+   * be asked for and believed.
+   */
+  hitKey: string | null;
   /** The page ghost for the right gutter, where a new source page begins here. */
   ghost: number | null;
   /** The chapter this block starts, drawn as a rule above it. Null in the edition. */
@@ -370,7 +463,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
 
 @Component({
   selector: 'app-book-view',
-  imports: [NgTemplateOutlet, ComparePickerComponent, OriginalPanelComponent],
+  imports: [NgTemplateOutlet, AnalysisPickerComponent, ComparePickerComponent, OriginalPanelComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <!--
@@ -442,10 +535,48 @@ const OP_GESTURE: Gesture = { kind: 'op' };
             >{{ piece.text }}</span>
           }
         } @else {
+          <!--
+            THE ANALYSIS'S LIGHT IS A CLASS ON THE RUN and nothing else — no extra
+            element, no \`innerHTML\`, no layer over the page. \`cut()\` already
+            closed the run wherever the light changes, so a lit stretch IS a run
+            and wearing the class is the whole of drawing it.
+
+            \`ghost\` IS A PASSAGE THE VERIFIER THREW BACK, drawn only under the
+            loosest tier and drawn faint: docs/ANALYSIS.md §8 asks for the net's
+            whole contents, told honestly which of it was rejected, in the same
+            shown-but-inert register a struck row wears.
+
+            \`data-hit\` IS THE FINDING'S NAME AND NOT A LISTENER. Owen's
+            2026-08-25 sentence — *"as i scroll/click highlighted text, it should
+            jump to that spot in the analysis"* — needs a click on these words to
+            say WHICH passage, and the way this sheet has always answered that
+            kind of question is an attribute the press reads back off whatever it
+            landed on (\`data-id\`, \`data-note\`, \`data-jump\`). A binding per run
+            would be one listener per lit stretch on a page; one attribute is a
+            string the walk already computed.
+
+            THE BACKGROUND IS BOUND AND NOT DECLARED, because it is the
+            CATEGORY'S colour now (Owen, 2026-08-25: *"maybe make the text's
+            highlighted color the same color as the analysis block"*) and a
+            stylesheet cannot know twelve of them. The rule in the styles keeps
+            the geometry and the transition; \`tintOf\` decides the wash.
+
+            \`on\` IS THE SELECTED FINDING, PULSING. *"Have it pulse as long as
+            it's selected."* The emphasis is the tint itself breathing deeper in
+            its own hue — \`--hit-deep\` rides beside the resting wash so the
+            animation has both ends of the breath (Owen's second ruling; the
+            styles carry it in full).
+          -->
           <span
             class="run"
             [class.bold]="piece.strong"
             [class.italic]="piece.italic"
+            [class.hit]="piece.hit !== null"
+            [class.hit-ghost]="piece.hit === 'ghost'"
+            [class.on]="piece.hitKey !== null && chosenHit() === piece.hitKey"
+            [style.background]="piece.hitInk"
+            [style.--hit-deep]="piece.hitDeep"
+            [attr.data-hit]="piece.hitKey"
           >{{ piece.text }}</span>
         }
       }
@@ -750,6 +881,16 @@ const OP_GESTURE: Gesture = { kind: 'op' };
           cannot appear inside the very column it opens.
         -->
         <app-compare-picker />
+        <!--
+          AND THE ANALYSIS, BESIDE IT, because the two open the same slot: one
+          puts another step there and the other puts a report there, and the stage
+          holds one or the other by construction. It draws only where this book
+          HAS an analysis (the picker refuses to be a button with an empty menu),
+          and only on the live column for compare's own reason — the head is
+          hidden entirely while \`viewing()\`, so neither control can appear inside
+          the column it opens.
+        -->
+        <app-analysis-picker />
         <div class="segments" role="group" aria-label="How this book is shown">
           <button
             type="button"
@@ -1088,6 +1229,7 @@ const OP_GESTURE: Gesture = { kind: 'op' };
               tabindex="0"
               [attr.data-id]="line.row.id"
               [attr.data-jump]="line.jump"
+              [attr.data-hit-key]="line.hitKey"
               [style.color]="line.colour"
               [class.opens]="line.opens"
               [class.selected]="chosen().has(line.row.id)"
@@ -1500,6 +1642,33 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       --ink-note:     #8a5a2b;
       --ink-flag:     #b98a1c;
       --ink-edit:     #2f7d4f;
+      /*
+        \`--ink-hit\` DIED HERE (2026-08-25), AND THE GRAVESTONE IS THE RULING.
+
+        There was one highlight ink on this paper — an amber, #d9a441, laid at
+        20% — and a long argument beside it saying there must never be more:
+        *"One highlight ink on the paper — the page must not turn into
+        confetti."* Owen overruled it, reading the reworked panel against the
+        page: *"maybe make the text's highlighted color the same color as the
+        analysis block."*
+
+        HE IS RIGHT, AND THE OLD ARGUMENT WAS ABOUT A DIFFERENT PAGE. Confetti is
+        what a page becomes when it speaks a code with no key — twelve colours a
+        reader has to memorise. The panel beside it now IS the key: a legend of
+        named, coloured chips, and every card carrying its category's hue on its
+        rail. The tint and the card are one fact drawn twice rather than two facts
+        competing, which is exactly what shared/categories.ts's header says a
+        colour has to be to be worth having.
+
+        WHAT SURVIVES IS THE ALPHA DISCIPLINE, which is where the real risk always
+        was: the words stay black on warm and only the wash behind them is
+        coloured — a pale stroke, never a pigment, and never the glyphs (*"the
+        text shouldn't be a different color, just a light highlight color
+        difference"*). The recipe is \`tintOf\` at the foot of this file, composed
+        from \`analysisCategoryHue\` — the ONE hue table, which the panel's rails
+        read too, so the two surfaces cannot disagree about which category is
+        which colour. It is not a token because it is not one value.
+      */
 
       --gutter:       3.25rem;
       --rail-w:       3px;
@@ -2332,6 +2501,98 @@ const OP_GESTURE: Gesture = { kind: 'op' };
       transition: opacity var(--t-med) var(--ease);
     }
 
+    /*
+      ── THE ANALYSIS'S HIGHLIGHT — a run wearing a class, and nothing else ────
+
+      docs/ANALYSIS.md §8. It is a background on the RUN because \`cut()\` already
+      closed the run wherever the light changes: no extra element, no
+      \`innerHTML\` and no absolutely-positioned layer — an overlay would eat the
+      gestures this surface is made of and turn a flagged paragraph into the one
+      paragraph nobody can select, edit or strike.
+
+      IT DRAWS ONLY WHILE THE PANEL IS OPEN, and that is not enforced here: the
+      class arrives on a piece only when \`AnalysisViewService.lit\` has a range
+      for the block, and that computed answers empty the moment the second column
+      stops being an analysis. The paper is a workbench; a report is an apparatus
+      somebody summons, not a permanent recolouring of the book.
+
+      THE COLOUR IS THE CATEGORY'S AND IS BOUND, NOT DECLARED — Owen, 2026-08-25:
+      *"maybe make the text's highlighted color the same color as the analysis
+      block"*, and then, when the first attempt came back too solid, *"the text
+      shouldn't be a different color, just a light highlight color difference."*
+      This rule therefore carries the GEOMETRY and the transition and no paint at
+      all: \`tintOf\` composes a pale stroke from the same hue table the panel's
+      rails use, the walk in \`cut()\` puts it on the piece, and the template binds
+      it. THERE IS NO GLYPH-COLOUR RULE HERE AND THERE IS NOT GOING TO BE — the
+      words stay black on warm, which is both Owen's sentence and
+      shared/categories.ts's standing alpha rule.
+    */
+    .run.hit {
+      border-radius: 2px;
+      padding: 0 0.05em;
+      transition: background var(--t-fast) var(--ease),
+                  box-shadow var(--t-fast) var(--ease);
+    }
+    /*
+      AND THE VERIFIER'S REJECTIONS, FAINTER. Loose shows the passages the
+      verifier threw back — reported speech, quotation, argument against — and
+      they are the net's contents rather than findings, so they wear the same
+      shown-but-inert treatment a struck row does: present, legible, and visibly
+      not a claim about the author. The faintness is in the tint's own alpha
+      (\`tintOf\`); what is declared here is the dotted underline that says WHY it
+      is faint — and it stays NEUTRAL, because the ghosting is about the verdict
+      and the tint is about the category, and colouring it would put two facts on
+      one mark.
+    */
+    .run.hit-ghost {
+      text-decoration: underline dotted color-mix(in srgb, var(--ink-muted) 55%, transparent);
+      text-underline-offset: 0.22em;
+    }
+    /* A struck block is never lit at the source (\`litRanges\` skips it), so the
+       tint on a struck paragraph is not a thing this rule has to undo — there is
+       none to undo. What is said here is the underline, and the reason is worth
+       one line: a strike is a decision to remove and a highlight is an
+       observation, and two marks arguing about one paragraph is the outcome
+       neither of them is worth. */
+    .block.struck .run.hit, .block.struck .run.hit-ghost { text-decoration: none; }
+
+    /*
+      ── THE SELECTED FINDING, PULSING ────────────────────────────────────────
+
+      Owen, 2026-08-25: *"when i click a highlighted block, the corresponding
+      analysis block only blinks for about 1/4 of a second. can we make it pulse?
+      on either side. have it pulse as long as it's selected."* A blink announces
+      and is gone; a pulse is a STATE, which is what a two-surface instrument
+      needs, because the whole point of clicking a passage is to then look at the
+      other side of the room.
+
+      THE WASH ITSELF BREATHES, IN ITS OWN HUE — the ring is gone, and by the
+      right person's word twice over. The first cut drew a soft-black ring so
+      the emphasis could never read as a thirteenth category; Owen looked at it
+      on the page and overruled the trade (2026-08-25, over a screenshot):
+      *"its just blinking an ugly outline. can we make it actually pulse darker
+      and lighter for that particular shade?"* So the emphasis is now the tint
+      deepening and easing in place — \`tintOf\` at rest, \`deepTintOf\` at the
+      peak, one hue, carried per run as \`--hit-deep\` because a stylesheet
+      cannot know twelve of them.
+
+      ONLY THE MIDPOINT IS DECLARED. A keyframe list with no 0%/100% frame
+      interpolates from the element's own underlying value — the inline resting
+      wash — so the breath starts and ends at exactly the tint the run already
+      wears, and this rule never has to restate a colour that
+      \`[style.background]\` owns.
+
+      SLOW AND SHALLOW: 1.9s is a breath, not a strobe. A mark that is going to
+      sit on the page for as long as somebody reads the panel has to be findable
+      at a glance and ignorable at a paragraph.
+    */
+    .run.hit.on {
+      animation: hit-breathe 1900ms var(--ease) infinite;
+    }
+    @keyframes hit-breathe {
+      50% { background-color: var(--hit-deep); }
+    }
+
     /* ── The one verb on this surface, on the bench beside the paper ──────── */
 
     .tray {
@@ -2581,8 +2842,23 @@ const OP_GESTURE: Gesture = { kind: 'op' };
          INHERITING THE INTENT. \`figure::after\` is the struck picture's mark and
          is the newest of them; it is listed once, on the rule that declares the
          transition, so both of its states are covered. */
-      .body, .rail, .marker, .flag .pill, .seam, .sheet,
+      .body, .rail, .marker, .flag .pill, .seam, .sheet, .run.hit,
       .block.struck .body, .marker.struck, figure::after { transition-duration: 0ms; }
+      /*
+        AND THE SELECTED PASSAGE HOLDS STILL RATHER THAN GOING DARK. The pulse is
+        an EMPHASIS and the emphasis is what has to survive; the breathing is only
+        how it draws attention. So the animation stops and the deep wash stays,
+        at the breath's own midpoint, which is the glide's precedent one screen
+        down (\`matchMedia('(prefers-reduced-motion: reduce)')\` there jumps to
+        the destination rather than refusing to travel). \`!important\` because
+        the resting wash is an INLINE style (\`[style.background]\`) and inline
+        beats a stylesheet everywhere an animation is not running — this is the
+        one place a static rule must out-rank it, and it says so.
+      */
+      .run.hit.on {
+        animation: none;
+        background: var(--hit-deep) !important;
+      }
     }
   `],
 })
@@ -2608,6 +2884,12 @@ export class BookViewComponent {
 
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly stacks = inject(BookStacksService);
+  /**
+   * The open analysis, read for ONE thing: which characters of which blocks the
+   * paper lights. See `lit` below — nothing else on this component touches it,
+   * and this viewer never writes to it.
+   */
+  private readonly analysis = inject(AnalysisViewService);
   private readonly notices = inject(NoticeService);
   private readonly ledger = inject(LedgerService);
   /** For `afterNextRender` from an event handler — see `edit`. */
@@ -2962,6 +3244,11 @@ export class BookViewComponent {
     onMarker: boolean;
     /** The note that number belongs to, or null when nothing carries it. */
     note: string | null;
+    /**
+     * The finding whose highlight the press landed on, or null — which is every
+     * press on every book with no analysis panel open. See `press`.
+     */
+    hitKey: string | null;
     /** Where this block jumps to when it is clicked — a note's first marker. */
     jump: string | null;
     extend: boolean;
@@ -3199,6 +3486,61 @@ export class BookViewComponent {
     });
 
     /*
+     * ── AND THE ANALYSIS PANEL IS AIMED THE MOMENT IT OPENS ───────────────────
+     *
+     * `toggleOriginal`'s rule, borrowed: *"a panel opened before any click or
+     * scroll has ever aimed it would stand there saying 'The original' over no
+     * page at all"*. The hits panel has the same problem in a worse form — it
+     * opens over a book somebody is already halfway through, and a list that
+     * starts at finding one while the reading is at page ninety is a list that has
+     * to be searched before it can be used.
+     *
+     * IT WATCHES THE LIGHT AND NOT THE STAGE, because the light is the thing that
+     * has to be DRAWN before a rect can be asked for: `hitLight()` going non-empty
+     * is the report placed onto these very rows, and the frame after it is the
+     * first one in which lit blocks exist in the DOM. `afterNextRender` is what
+     * waits for that frame; reading a rect inside the effect itself would measure
+     * the page as it was before the highlights landed.
+     */
+    effect(() => {
+      const lit = this.analysis.lit();
+      if (lit.size === 0) return;
+      afterNextRender(() => this.followAnalysis(), { injector: this.injector });
+    });
+
+    /*
+     * ── AND THE PULSE LETS GO WHEN ITS PASSAGE LEAVES THE PAGE ────────────────
+     *
+     * Owen's third deselect condition, verbatim: *"if i click the block, the text
+     * block pulses until i click somewhere else or scroll offscreen."* The first
+     * two are clicks (`release` here, and the panel's own); this is the third, and
+     * it is watched HERE because the paper is the thing being scrolled — the
+     * panel's card leaving the panel's own viewport means nothing, since the panel
+     * follows the reading and moves that card itself.
+     *
+     * AN OBSERVER, AND THIS IS THE ONE PLACE ONE IS RIGHT. `followAnalysis` says
+     * at length why an IntersectionObserver over the lit RUNS is the wrong
+     * instrument — the runs are inside the `content-visibility: auto` wrapper and
+     * a skipped subtree gives its descendants no boxes at all. A BLOCK always has
+     * a box (the containment is on its wrapper, never on the block itself), so an
+     * observer on the block is asking a question the browser can answer. And the
+     * question here is genuinely a threshold rather than a position — "is it still
+     * on screen" — which is what an observer is for and what a scroll walk would
+     * have to re-derive per frame.
+     *
+     * IT WAITS TO SEE THE BLOCK ARRIVE BEFORE IT WILL LET GO. An observer fires
+     * once on registration with the element's current state, and the selection is
+     * very often made a frame before the travel that brings the block into view
+     * (a click on a panel card calls `reveal` and this effect in the same turn).
+     * Without `seen`, that first not-intersecting callback would cancel the
+     * selection the click had just made.
+     */
+    effect(() => {
+      const hit = this.analysis.selectedHit();
+      this.watchSelection(hit?.spans[0]?.id ?? null);
+    });
+
+    /*
      * ── THE SCROLL LOCK'S LISTENERS, AND WHY THEY ARE NOT TEMPLATE BINDINGS ───
      *
      * An Angular event binding marks this view dirty every time it fires, and this
@@ -3237,6 +3579,14 @@ export class BookViewComponent {
        * which is a paragraph boundary and not a pixel.
        */
       if (column === 'live') this.followOriginal();
+      /*
+       * AND THE ANALYSIS PANEL FOLLOWS IT TOO, under the identical discipline —
+       * `followAnalysis` returns at once while nothing is lit, and writes its
+       * signal only when the finding nearest the fold CHANGES, which is a
+       * paragraph boundary and not a pixel.
+       */
+      if (column === 'live') this.followAnalysis();
+
       /*
        * A WHEEL TURNS MID-MARQUEE and the pointer never moves, so no pointermove
        * fires and the sweep would freeze while the paper slides past it. The
@@ -3649,6 +3999,46 @@ export class BookViewComponent {
    * page's group of them and so carries the hairline. A template asking those
    * questions per block would ask them again on every repaint.
    */
+  /**
+   * WHICH CHARACTERS THE OPEN ANALYSIS LIGHTS, by block — empty when none is.
+   *
+   * NAMED `hitLight` AND NOT `lit`, because `lit` on this class is already the
+   * note-marker coupling — which note number the pointer is resting on — and two
+   * different lights on one component is exactly the collision a shorter name
+   * would have hidden behind a compile error somebody fixed by renaming the
+   * wrong one.
+   *
+   * A COMPUTED READ AND NOT A COPY, which is what keeps the paper and the panel
+   * one thing: `AnalysisViewService.lit` is derived from one load of the report,
+   * one placement over these very rows, and the tier the panel's buttons set, so
+   * pressing Strict repaints the page and the list in one change-detection pass.
+   *
+   * IT IS NULL-SAFE BY CONSTRUCTION rather than by a guard here. The service
+   * validates the open analysis against `StageService`, whose second column is a
+   * union with the three clearing rules already in it — the document closed, the
+   * project changed, the step deleted — so there is no state in this component
+   * that could go stale and nothing here to clear.
+   */
+  private readonly hitLight = computed<ReadonlyMap<string, readonly LitRange[]>>(
+    () => this.analysis.lit(),
+  );
+
+  /**
+   * WHICH FINDING IS SELECTED — the key whose runs pulse, or null.
+   *
+   * Owen, 2026-08-25: *"have it pulse as long as it's selected."* NAMED
+   * `chosenHit` and not `selected`, because `chosen` on this class is already the
+   * BLOCK selection — the set of paragraphs a marquee caught — and the two are
+   * different selections that must never be confused: clicking a highlight
+   * selects its paragraph AND its finding, and letting go of one does not let go
+   * of the other.
+   *
+   * A COMPUTED OVER THE SERVICE'S SIGNAL rather than state here, on `hitLight`'s
+   * own argument: the panel draws the same selection on its card, and a copy on
+   * this component would be a second opinion about which finding is lit.
+   */
+  protected readonly chosenHit = computed<string | null>(() => this.analysis.selected());
+
   protected readonly lines = computed<Line[]>(() => {
     const book = this.book();
     const replayed = this.view();
@@ -3689,6 +4079,20 @@ export class BookViewComponent {
       seams,
       orphans,
       chrome: true,
+      /*
+       * THE ANALYSIS'S LIGHT, FROM THE SAME PLACE THE PANEL'S ROWS COME FROM.
+       * `AnalysisViewService` holds one load, one placement and one tier, and both
+       * surfaces read computeds off them (docs/ANALYSIS.md §8) — so a highlighted
+       * paragraph always has a row beside it and a row always has its paragraph
+       * lit. It answers an empty map whenever no analysis is open, which is what
+       * makes the highlights an apparatus rather than a recolouring.
+       *
+       * ONLY THE LIVE COLUMN, and that falls out rather than being asked for: this
+       * computed is the live sheet's, and a compare column cannot be up at the
+       * same time as the panel because the stage holds one second column
+       * (`SecondColumn`, core/stage.service.ts).
+       */
+      lit: this.hitLight(),
     });
   });
 
@@ -3765,6 +4169,15 @@ export class BookViewComponent {
       seams: new Map(),
       orphans: new Set(),
       chrome: false,
+      /*
+       * NOTHING IS LIT ON THE CONTEXT SHEET, on the same rule that switches every
+       * other instrument off here: *"chrome only on the live column"*. A report is
+       * measured against the position's own book and its offsets are that book's;
+       * the left column is the SOURCE those words were translated from, a
+       * different file with different sentences at different offsets, and lighting
+       * it from this report would put the marker pen on words nobody measured.
+       */
+      lit: new Map(),
     });
   });
 
@@ -4081,6 +4494,105 @@ export class BookViewComponent {
     const id = anchor?.getAttribute('data-id');
     if (id == null || untracked(() => this.originalRow())?.id === id) return;
     this.aimOriginal(id);
+  }
+
+  /**
+   * THE SCROLL'S HALF OF THE ANALYSIS FOLLOWING: say which finding the reader has
+   * arrived at, so the panel can keep that card in view.
+   *
+   * Owen, 2026-08-25: *"as i scroll/click highlighted text, it should jump to that
+   * spot in the analysis."* The click's half is in `release`; this is the scroll's.
+   *
+   * ── AN INTERSECTION OBSERVER WAS THE OBVIOUS SHAPE AND IS NOT THE RIGHT ONE ─
+   *
+   * The thing worth watching is a lit RUN — that is where a finding's words
+   * actually are — and a run cannot be watched from here. The runs live inside
+   * `.body`, which is under `content-visibility: auto` (the class docblock: it is
+   * on a wrapper INSIDE each block, never on the block, because paint containment
+   * would clip every gutter mark away). A subtree that is skipped generates no
+   * boxes for its descendants, so an off-screen run has no geometry at all: an
+   * observer reports it as not intersecting — which is true and useless — and a
+   * rect asked for directly comes back as zeros, which reads as a rectangle
+   * sitting at the top-left of the viewport and would make the FURTHEST finding
+   * look like the nearest. That is the measured reason this is a rect walk over
+   * BLOCKS and not an observer over runs, and it is written down here because it
+   * is exactly the sort of thing that gets "cleaned up" into an observer later.
+   *
+   * A block always has a box. The containment is on its wrapper, its height is
+   * `contain-intrinsic-size`'s estimate while it is off screen and its real one
+   * when it is not, and either way its position is a fact. So the walk is
+   * `followOriginal`'s, verbatim in shape — the first block not cut off at the
+   * fold, which is what a person would point at if asked where they are —
+   * narrowed by the selector to the handful of blocks an open report lit.
+   *
+   * TWO THINGS KEEP IT CHEAP, both of them the neighbour's own rules. It returns
+   * at once while nothing is lit, so a book with no analysis over it pays one
+   * empty `querySelectorAll` per scroll frame and no arithmetic. And THE SIGNAL IS
+   * WRITTEN ONLY WHEN THE ANSWER CHANGES: this runs outside Angular's scheduling
+   * and an unconditional set would put a change-detection pass behind every frame
+   * of every drag.
+   */
+  private followAnalysis(): void {
+    const bench = this.host.nativeElement.querySelector('.bench');
+    if (!(bench instanceof HTMLElement)) return;
+    const lit = [...bench.querySelectorAll('.block[data-hit-key]')] as HTMLElement[];
+    if (lit.length === 0) return;
+    const fold = bench.getBoundingClientRect().top;
+    /*
+     * THE FIRST ONE AT OR BELOW THE FOLD, and the LAST one when the reader has
+     * scrolled past every finding in the book. Falling back to the last is not a
+     * guess: past the final flagged paragraph the nearest finding really is the
+     * final one, and leaving the panel pointed at whatever it happened to hold
+     * would strand it in the middle of a list the reader has walked off the end of.
+     */
+    const anchor = lit.find((block) => block.getBoundingClientRect().top >= fold - 0.5)
+      ?? lit[lit.length - 1]!;
+    const key = anchor.getAttribute('data-hit-key');
+    if (key === null || untracked(() => this.analysis.nearest()) === key) return;
+    this.analysis.nearest.set(key);
+  }
+
+  /** The observer watching the selected passage's block, or null when none is. */
+  private selectionWatch: IntersectionObserver | null = null;
+
+  /**
+   * Watch one block, and drop the selection when it goes off the page.
+   *
+   * See the effect in the constructor for the argument. `null` tears down and
+   * watches nothing, which is the ordinary state of this app.
+   *
+   * THE ROOT IS THE BENCH AND NOT THE VIEWPORT, because the bench is what
+   * scrolls: a block below the fold of a scrolling column is inside the window and
+   * is not on the page, and the window is not the thing a reader is moving.
+   */
+  private watchSelection(id: string | null): void {
+    this.selectionWatch?.disconnect();
+    this.selectionWatch = null;
+    if (id === null) return;
+    afterNextRender(() => {
+      // The selection may have moved again while this waited for a frame; the
+      // service holds the newest wish, so identity against it is the whole test.
+      const still = untracked(() => this.analysis.selectedHit());
+      if (still?.spans[0]?.id !== id) return;
+      const bench = this.host.nativeElement.querySelector('.bench');
+      const block = this.host.nativeElement
+        .querySelector(`.block[data-id="${CSS.escape(id)}"]`);
+      if (!(bench instanceof HTMLElement) || !(block instanceof HTMLElement)) return;
+      let seen = false;
+      const watch = new IntersectionObserver((entries) => {
+        const on = entries[entries.length - 1]?.isIntersecting ?? false;
+        if (on) {
+          seen = true;
+          return;
+        }
+        if (!seen) return;
+        watch.disconnect();
+        if (this.selectionWatch === watch) this.selectionWatch = null;
+        if (untracked(() => this.analysis.selected()) === still.key) this.analysis.select(null);
+      }, { root: bench });
+      watch.observe(block);
+      this.selectionWatch = watch;
+    }, { injector: this.injector });
   }
 
   /**
@@ -4483,6 +4995,21 @@ export class BookViewComponent {
     const editing = this.editingId();
     if (editing !== null && block !== null && block.getAttribute('data-id') === editing) return;
     const marker = target === null ? null : target.closest('.marker');
+    /*
+     * AND WHETHER THE PRESS LANDED ON A FLAGGED PASSAGE. Read here, with the
+     * marker and the jump, because this is where the sheet has always asked the
+     * DOM what was under the pointer — by the time `release` runs the pointer may
+     * be somewhere else entirely.
+     *
+     * THE GUARD IS STRUCTURAL AND NOT A BOOLEAN. There is no `.run[data-hit]` in
+     * this DOM unless an analysis panel is open: the class and the attribute are
+     * drawn from `hitLight()`, which is `AnalysisViewService.lit()`, which is
+     * empty whenever the stage's second column is not an analysis. So "only when
+     * the panel is open" is a fact about the markup rather than a condition
+     * somebody has to remember to write, and nothing about block selection needs
+     * a branch for the ordinary case.
+     */
+    const litRun = target === null ? null : target.closest('.run.hit[data-hit]');
     const sheet = event.currentTarget as HTMLElement;
     // The Delete key has to reach a marquee's selection, and a marquee focuses
     // nothing — see the sheet's own `tabindex` in the template.
@@ -4501,6 +5028,7 @@ export class BookViewComponent {
       onMarker: marker !== null,
       note: marker === null ? null : marker.getAttribute('data-note'),
       jump: block === null ? null : block.getAttribute('data-jump'),
+      hitKey: litRun === null ? null : litRun.getAttribute('data-hit'),
       extend: event.ctrlKey || event.metaKey || event.shiftKey,
       similar: event.altKey,
       base: this.chosen(),
@@ -4606,6 +5134,40 @@ export class BookViewComponent {
       if (from.note !== null) this.peekAt(sheet, from.x, from.y, from.note, from.note);
       return;
     }
+    /*
+     * A PRESS ON A FLAGGED PASSAGE SELECTS THE FINDING — Owen, 2026-08-25: *"as i
+     * scroll/click highlighted text, it should jump to that spot in the
+     * analysis"*, and then *"have it pulse as long as it's selected. if i click
+     * the block, the text block pulses until i click somewhere else or scroll
+     * offscreen."*
+     *
+     * IT RIDES THE EXISTING GESTURE AND TAKES NOTHING FROM IT, which is the whole
+     * of why it is two lines here rather than a handler of its own. Everything
+     * below still happens: the paragraph becomes the block selection, Alt still
+     * takes the category, Ctrl still adds one, the original panel is still aimed.
+     * A flagged paragraph is not a paragraph you cannot edit — that was the very
+     * failure the no-overlay ruling was written against (`cut`) — so the click
+     * that says "this one" goes on saying it and merely says one more thing.
+     *
+     * AND A PRESS ANYWHERE ELSE LETS GO OF IT. *"Until i click somewhere else."*
+     * This line is where "somewhere else" is decided on the paper, and what it
+     * deliberately does NOT catch is every other gesture: a right-click never
+     * reaches here (the context menu is its own handler), a marquee drag returned
+     * above, a press on a reference number returned above, and a press on a
+     * gutter chip never became a `pressed` at all because those stop the pointer
+     * event where it happens. What is left is exactly a plain click on the words,
+     * which is the gesture that means "I am looking at this instead".
+     *
+     * BEFORE THE BRANCHES rather than after, because the selection-BUILDING
+     * clicks return early and a person Ctrl-clicking a second flagged passage is
+     * still telling the panel which passage they are looking at.
+     *
+     * THE GUARD IS A READ AND NOT A FLAG: with no analysis open the service holds
+     * null already, so the else-branch writes null over null once per click and
+     * costs a comparison.
+     */
+    if (from.hitKey !== null) this.analysis.select(from.hitKey);
+    else if (untracked(() => this.analysis.selected()) !== null) this.analysis.select(null);
     if (from.id === null) {
       // A press on the paper itself, off every block: the ordinary "let go of
       // what I had", which is how a selection is dropped everywhere in this app.
@@ -6111,6 +6673,16 @@ function linesOf(
     seams: ReadonlyMap<string, string>;
     orphans: ReadonlySet<string>;
     chrome: boolean;
+    /*
+     * WHICH CHARACTERS THE ANALYSIS LIT, by block — empty for every book with no
+     * report open over it, which is nearly always.
+     *
+     * It rides in `marks` beside the note markers rather than being looked up
+     * inside `cut`, because this function is the ONE place a row's per-block facts
+     * are gathered and `cut` is a pure walk over a string and two lists. The
+     * source column passes an empty map and gets the walk it has always had.
+     */
+    lit: ReadonlyMap<string, readonly LitRange[]>;
   },
 ): Line[] {
   const out: Line[] = [];
@@ -6143,6 +6715,7 @@ function linesOf(
     const heading = previous !== null
       && (previous.category === 'Title' || previous.category === 'Section-header');
     const markers = marks.printed.get(row.id) ?? [];
+    const litHere = marks.lit.get(row.id) ?? NO_LIT;
     let ordinal: number | null = null;
     if (marks.chrome && row.category === 'Footnote') {
       ordinal = (notesOnPage.get(page) ?? 0) + 1;
@@ -6150,7 +6723,14 @@ function linesOf(
     }
     out.push({
       row,
-      pieces: cut(row.text, markers),
+      pieces: cut(row.text, markers, litHere),
+      /*
+       * THE FIRST FINDING IN THIS BLOCK, for the scroll's following. The ranges
+       * arrive in the book's own order (`litRanges`), so the first of them is the
+       * earliest passage of this paragraph and therefore the card a reader who has
+       * this paragraph at the top of the page is looking at.
+       */
+      hitKey: litHere[0]?.key ?? null,
       /*
        * READ ONCE, HERE, AND NEVER FROM THE TEMPLATE. Parsing a fragment is a
        * `DOMParser` document per call, and a template expression is re-evaluated
@@ -6249,11 +6829,34 @@ function sizeOf(book: BookLoad, category: string): number {
  * arithmetic a split is made from (`caretOffsetIn`) counts that string and not
  * this one. An edit therefore still commits exactly the characters the bank
  * holds, and the effect comes back the moment the editor closes.
+ *
+ * ── AND THE ANALYSIS'S HIGHLIGHTS ARE THE THIRD THING IN THE SAME WALK ──────
+ *
+ * *"Highlights are runs, not overlays"* (docs/ANALYSIS.md §8), and this is where
+ * that ruling is kept. A report's findings are `[start, end)` spans into a
+ * block's text — the same kind of offset as a marker's, into the same string — so
+ * they join the cursor below and a run closes when the LIGHT changes exactly as
+ * it closes when a marker or an emphasis does.
+ *
+ * THE TWO ALTERNATIVES WERE BOTH REFUSED BEFORE THIS WAS WRITTEN. `innerHTML` is
+ * banned on this surface outright (the class docblock: a book is somebody else's
+ * words arriving through a model's answer, and the one thing this app will not do
+ * is hand them to a parser that can execute). An absolutely-positioned overlay
+ * eats gestures, which is the pointer-events ruling the struck-figure X is
+ * written under a hundred lines down — and it would make a flagged paragraph the
+ * one paragraph nobody can select, edit or strike, which is the exact opposite of
+ * what a report is for.
+ *
+ * THE RANGES ARRIVE MERGED AND NON-OVERLAPPING (`litRanges`, core/analysis.ts),
+ * so this walk has nothing to decide at a character two findings both claimed.
+ * That decision belongs where the findings are, and it is made there.
  */
-function cut(text: string, markers: readonly Marker[]): Piece[] {
+function cut(text: string, markers: readonly Marker[], lit: readonly LitRange[]): Piece[] {
   const codes = inlineEmphasis(text);
-  if (markers.length === 0 && codes === null) {
-    return [{ text, marker: null, strong: false, italic: false }];
+  if (markers.length === 0 && codes === null && lit.length === 0) {
+    return [{
+      text, marker: null, strong: false, italic: false, hit: null, hitInk: null, hitDeep: null, hitKey: null,
+    }];
   }
 
   const pieces: Piece[] = [];
@@ -6273,10 +6876,21 @@ function cut(text: string, markers: readonly Marker[]): Piece[] {
   let runStrong = false;
   let runItalic = false;
   let runMarker: Marker | null = null;
+  let runHit: Piece['hit'] = null;
+  let runHitInk: string | null = null;
+  let runHitDeep: string | null = null;
+  let runHitKey: string | null = null;
   const close = (end: number): void => {
     if (end > start) {
       pieces.push({
-        text: text.slice(start, end), marker: runMarker, strong: runStrong, italic: runItalic,
+        text: text.slice(start, end),
+        marker: runMarker,
+        strong: runStrong,
+        italic: runItalic,
+        hit: runHit,
+        hitInk: runHitInk,
+        hitDeep: runHitDeep,
+        hitKey: runHitKey,
       });
     }
     start = end;
@@ -6284,10 +6898,39 @@ function cut(text: string, markers: readonly Marker[]): Piece[] {
 
   /** Which marker covers this character, or null — the markers arrive sorted. */
   let next = 0;
+  /*
+   * AND WHICH LIT RANGE DOES, on the identical cursor. `litRanges`
+   * (core/analysis.ts) merged the findings into non-overlapping runs in the book's
+   * own order before they got here, so this is the marker walk again over a second
+   * sorted list — one cursor, one comparison, and nothing to decide at a character
+   * two findings both claimed, because that decision was made where the findings
+   * were.
+   */
+  let nextLit = 0;
   for (let i = 0; i < text.length; i += 1) {
     while (next < markers.length && markers[next]!.at + markers[next]!.len <= i) next += 1;
     const over = markers[next];
     const marker = over !== undefined && over.at <= i ? over : null;
+    while (nextLit < lit.length && lit[nextLit]!.end <= i) nextLit += 1;
+    const range = lit[nextLit];
+    const covering = range !== undefined && range.start <= i ? range : null;
+    const hit: Piece['hit'] = covering === null ? null : (covering.solid ? 'lit' : 'ghost');
+    /*
+     * AND WHICH FINDING IT IS, off the same range. `litRanges` put the earliest
+     * covering finding's key on the merged run and made the key a thing two
+     * neighbours must agree about before they join, so this changes at exactly
+     * the characters the run already closes at — one more comparison below and
+     * no second walk.
+     */
+    const hitKey = covering?.key ?? null;
+    /*
+     * AND WHICH COLOUR — Owen's ruling that the paper's highlight is the card's
+     * colour. It is derived once per category (`tintOf` memoises), and it changes
+     * exactly where the key does, so the run closes at the same characters it
+     * already closed at and nothing new has to be compared.
+     */
+    const hitInk = covering === null ? null : tintOf(covering.category, covering.solid);
+    const hitDeep = covering === null ? null : deepTintOf(covering.category, covering.solid);
     const code = codes?.[i] ?? 0;
     /*
      * THE FOUR ASTERISKS OF A MATCHED PAIR ARE NOT ON THE PAGE. They are still
@@ -6304,13 +6947,99 @@ function cut(text: string, markers: readonly Marker[]): Piece[] {
     }
     const strong = (code & INLINE_STRONG) !== 0;
     const italic = (code & INLINE_ITALIC) !== 0;
-    if (marker !== runMarker || strong !== runStrong || italic !== runItalic) {
+    if (marker !== runMarker
+      || strong !== runStrong
+      || italic !== runItalic
+      || hit !== runHit
+      || hitKey !== runHitKey) {
       close(i);
       runMarker = marker;
       runStrong = strong;
       runItalic = italic;
+      runHit = hit;
+      runHitInk = hitInk;
+      runHitDeep = hitDeep;
+      runHitKey = hitKey;
     }
   }
   close(text.length);
   return pieces;
+}
+
+/** No report open over this book, which is nearly every book, nearly always. */
+const NO_LIT: readonly LitRange[] = [];
+
+/**
+ * THE PAPER'S TINT FOR A CATEGORY — the panel's hue, mixed for cream.
+ *
+ * Owen, 2026-08-25: *"maybe make the text's highlighted color the same color as
+ * the analysis block."* One HUE SOURCE and two treatments, which is the only
+ * arrangement that can keep the promise: `analysisCategoryHue`
+ * (shared/analysis-categories.ts) is the single table, the panel turns a hue into
+ * a colour for a charcoal ground and this turns the same hue into a wash for a
+ * cream one. A shared colour STRING would have had to be legible on both, which
+ * nothing is; a shared hue is legible on both by construction, because the
+ * lightness and the alpha are where the ground actually gets accommodated.
+ *
+ * ── IT IS A PALE STROKE, AND OWEN SAID SO TWICE ────────────────────────────
+ *
+ * *"The text shouldn't be a different color, just a light highlight color
+ * difference."* Two instructions in one sentence and both are obeyed here and
+ * only here:
+ *
+ *   * NOTHING TOUCHES `color`. There is no glyph-colour rule for a hit run
+ *     anywhere on this sheet and there is not going to be one — that is
+ *     `shared/categories.ts`'s own alpha rule (*"applied as an outline and a
+ *     tint, never as text colour: this is a book, and recolouring its words makes
+ *     it unreadable"*) and Owen's sentence is the same rule said again about this
+ *     mark. This function returns a BACKGROUND and the template binds it to
+ *     `background`.
+ *   * IT IS LIGHT. 75% saturation at 68% lightness is a pastel, not a pigment,
+ *     and 32% alpha over the sheet's cream lands it as a pale marker stroke —
+ *     hued enough to match its card across the room, faint enough that the words
+ *     stay black-on-warm and a paragraph carrying three findings is still a
+ *     paragraph somebody can read. The first cut of this used a mid-tone (62/52
+ *     at 22%, which was `--ink-hit`'s own recipe with the hue swapped in) and
+ *     Owen sent it back for exactly the reason the numbers moved: a mid-tone at
+ *     low alpha reads as a coloured patch, and a pastel at moderate alpha reads
+ *     as a highlighter.
+ *   * 14% for a verdict the verifier threw back — a shade under half the flag's
+ *     alpha, which is the ratio the one-ink cut used (20 → 8) carried across. The
+ *     dotted underline that says WHY it is faint is untouched and stays neutral:
+ *     the ghosting is about the VERDICT and the tint is about the CATEGORY, and
+ *     colouring the underline would be the one place two facts really did compete
+ *     for one mark.
+ *
+ * MEMOISED, because `cut()` asks per run per repaint and a report names three or
+ * four categories: the map is a handful of entries for the life of the window and
+ * saves composing the same string a thousand times down a four-hundred-page book.
+ */
+const TINTS = new Map<string, string>();
+function tintOf(category: string, solid: boolean): string {
+  const at = `${category}#${solid ? 1 : 0}`;
+  const held = TINTS.get(at);
+  if (held !== undefined) return held;
+  const made = `hsl(${analysisCategoryHue(category)} 75% 68% / ${solid ? 0.32 : 0.14})`;
+  TINTS.set(at, made);
+  return made;
+}
+
+/**
+ * The same hue, breathed IN — the deep end of the selected passage's pulse.
+ *
+ * Owen's second ruling on the emphasis (2026-08-25, over a screenshot): *"its
+ * just blinking an ugly outline. can we make it actually pulse darker and
+ * lighter for that particular shade?"* So the ring is gone and the emphasis is
+ * the wash itself, travelling between `tintOf`'s resting tone and this one —
+ * same hue, lower lightness, more of it. The glyphs stay black throughout;
+ * only the marker stroke behind them deepens, which keeps the one discipline
+ * every ruling here has preserved.
+ */
+function deepTintOf(category: string, solid: boolean): string {
+  const at = `${category}#deep${solid ? 1 : 0}`;
+  const held = TINTS.get(at);
+  if (held !== undefined) return held;
+  const made = `hsl(${analysisCategoryHue(category)} 70% 58% / ${solid ? 0.52 : 0.3})`;
+  TINTS.set(at, made);
+  return made;
 }

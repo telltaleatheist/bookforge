@@ -64,6 +64,7 @@ import { PDFDocument } from 'pdf-lib';
 
 import type {
   CaptureIntakeProgress,
+  CaptureLines,
   CaptureMintBegun,
   CaptureMintPage,
   CaptureOpened,
@@ -762,6 +763,16 @@ function validRecipe(value: unknown, file: string): CaptureRecipe {
  * of single pages. So none of the three is required and none of them implies
  * another.
  *
+ * ── AND THE TWO SIDES OF THE BOOK, SINCE WAVE 51b ─────────────────────────
+ *
+ * `odd` and `even` are the same pair of lines again, for the photographs on one
+ * side of a recto/verso shoot (`CaptureStanding`). They are carried through the
+ * same body as the book's own, which is the whole reason the body was split out:
+ * three standings validated by three transcriptions of one rule is the drift
+ * shape this feature has paid for by name. Absent is "that side never asked",
+ * which is every recipe written before this wave — so there is nothing to
+ * migrate and nothing to guess.
+ *
  * ── WHAT IT REFUSES, AND THE ONE THING IT DOES NOT CHECK ───────────────────
  *
  * A quad that is not four points, a frame with no positive size, a cut that is
@@ -780,21 +791,66 @@ function validStanding(value: unknown, file: string): CaptureStanding | undefine
     fail(file, 'it records the book\'s crop in something that is not a crop and a cut');
   }
   const row = value as Record<string, unknown>;
+  const book = validLines(row, file, 'the book\'s');
+  const odd = validSide(row['odd'], file, 'the book\'s odd-page');
+  const even = validSide(row['even'], file, 'the book\'s even-page');
 
-  let crop: CaptureStanding['crop'];
+  // A standing holding nothing at any level is a standing that says nothing, and
+  // writing the empty object back would be a key that means "somebody pressed
+  // the button and nothing came of it". Silence says that better.
+  if (book === undefined && odd === undefined && even === undefined) return undefined;
+  return {
+    ...(book ?? {}),
+    ...(odd === undefined ? {} : { odd }),
+    ...(even === undefined ? {} : { even }),
+  };
+}
+
+/**
+ * ONE SIDE OF THE BOOK'S OWN LINES, or nothing.
+ *
+ * Separate from `validLines` below only to name the container: `odd` has to BE
+ * an object before its crop can be looked for, and the sentence a person reads
+ * should say which side of the book their file is wrong about.
+ */
+function validSide(value: unknown, file: string, whose: string): CaptureLines | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== 'object' || Array.isArray(value)) {
+    fail(file, `${whose} lines are recorded in something that is not a crop and a cut`);
+  }
+  return validLines(value as Record<string, unknown>, file, whose);
+}
+
+/**
+ * A CROP AND A CUT, wherever they are written — the book's own, or one side's.
+ *
+ * The ONE body for all three, because "what a standing looks like" must not have
+ * three transcriptions free to drift the day a fourth caller exists. `whose`
+ * only decides the words in the refusal, so the file's complaint names the thing
+ * that is wrong rather than a field name three levels up.
+ *
+ * Undefined for a block holding neither, which is what lets the caller drop it
+ * rather than write a key meaning nothing.
+ */
+function validLines(
+  row: Record<string, unknown>,
+  file: string,
+  whose: string,
+): CaptureLines | undefined {
+  let crop: CaptureLines['crop'];
   const held = row['crop'];
   if (held !== undefined && held !== null) {
-    if (typeof held !== 'object' || Array.isArray(held)) fail(file, 'the book\'s crop is not a crop');
+    if (typeof held !== 'object' || Array.isArray(held)) fail(file, `${whose} crop is not a crop`);
     const asked = held as Record<string, unknown>;
     const side = (key: string): number => {
       const measure = asked[key];
       if (typeof measure !== 'number' || !Number.isFinite(measure) || measure <= 0) {
-        fail(file, `the book's crop was drawn for a frame with no ${key}`);
+        fail(file, `${whose} crop was drawn for a frame with no ${key}`);
       }
       return measure;
     };
     crop = {
-      quad: validQuad(asked['quad'], file, 'the book\'s crop'),
+      quad: validQuad(asked['quad'], file, `${whose} crop`),
       width: side('width'),
       height: side('height'),
     };
@@ -803,17 +859,14 @@ function validStanding(value: unknown, file: string): CaptureStanding | undefine
   let cut: CaptureSplit | undefined;
   const line = row['cut'];
   if (line !== undefined && line !== null) {
-    if (typeof line !== 'object' || Array.isArray(line)) fail(file, 'the book\'s cut is not a line');
+    if (typeof line !== 'object' || Array.isArray(line)) fail(file, `${whose} cut is not a line`);
     const ends = line as Record<string, unknown>;
     cut = {
-      a: validPoint(ends['a'], file, 'the book\'s cut starts where it'),
-      b: validPoint(ends['b'], file, 'the book\'s cut ends where it'),
+      a: validPoint(ends['a'], file, `${whose} cut starts where it`),
+      b: validPoint(ends['b'], file, `${whose} cut ends where it`),
     };
   }
 
-  // A standing holding neither is a standing that says nothing, and writing the
-  // empty object back would be a key that means "somebody pressed the button
-  // and nothing came of it". Silence says that better.
   if (crop === undefined && cut === undefined) return undefined;
   return { ...(crop === undefined ? {} : { crop }), ...(cut === undefined ? {} : { cut }) };
 }

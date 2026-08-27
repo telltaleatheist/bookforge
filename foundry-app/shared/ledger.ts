@@ -165,6 +165,16 @@ export const RETENTION_OF: Readonly<Record<StepAction, LedgerStep['retention']>>
   // seconds and remade by nothing. It is the sharpest case this table's rule was
   // written for.
   edit: 'irreplaceable',
+  /*
+   * A MODEL PASS, so `expensive` — the same clause `read` and `translate` sit on,
+   * and the whole of the reason it is not sharper. Nobody's judgement is in a
+   * report: every row of it was measured by an entailment model and answered by
+   * a verifier, and a machine will measure the same book the same way again. The
+   * price is real — minutes of NLI over every sentence, then one Ollama call per
+   * surviving (window, category), which is an hour on a hot book — and that is
+   * exactly what this state means.
+   */
+  analysis: 'expensive',
 };
 
 /**
@@ -244,6 +254,23 @@ export const PARAMS_OF: Readonly<Record<StepAction, readonly (keyof LedgerParams
    * the design asks for — each Apply is a deliberate act, and it appends.
    */
   edit: ['ops'],
+  /*
+   * AN ANALYSIS IS DESCRIBED BY WHAT IT LOOKED FOR AND BY WHAT ANSWERED, in that
+   * order of importance and split the way a read's params are.
+   *
+   * `categories` IS THE QUESTION. A report holds findings only for the categories
+   * that were enabled, so a run against two of them and a run against all twelve
+   * are two different documents about one book — and a replace would destroy an
+   * hour of verdicts in order to file the wider one under the narrower one's
+   * name. `MINTED_BY_THE_RUN` leaves it out, so `reRunTarget` compares it and a
+   * changed checklist branches beside the row it did not match.
+   *
+   * `model` IS THE ANSWER, and it is the translate ruling one action over: asking
+   * the same question of a better verifier is refining THIS report rather than
+   * ordering a second one, and the report's own question-keyed cache means the
+   * ranking is not re-paid. It is in `MINTED_BY_THE_RUN` below.
+   */
+  analysis: ['categories', 'model'],
 };
 
 /**
@@ -316,6 +343,20 @@ export const RETAINED_BESIDE_YOU: Readonly<Record<StepAction, boolean>> = {
    * the book and there is somewhere new to stand.
    */
   edit: false,
+  /*
+   * AN ANALYSIS IS RETAINED BESIDE YOU, and the reason is the plainest in this
+   * table: it makes no new state of the book at all. The paper under an analysis
+   * row says exactly what the paper under its parent says — the report is a
+   * document ABOUT the book, not a version of it (docs/ANALYSIS.md §6) — so there
+   * is nowhere new to stand, and moving the pointer would take somebody off the
+   * step they were editing as the reward for having ordered a report an hour ago.
+   *
+   * That is the same punishment the `curate` and `metadata` entries above were
+   * written to stop, arriving through the one action in this list whose landing a
+   * person is guaranteed not to be watching: an analysis runs for an hour, and
+   * where they are standing when it finishes is nobody's decision.
+   */
+  analysis: true,
 };
 
 /**
@@ -428,6 +469,20 @@ const MINTED_BY_THE_RUN: Readonly<Record<StepAction, readonly (keyof LedgerParam
   // The same sentence about the same kind of gesture: nobody asked for an Apply's
   // ops, they ARE the Apply, and the count is read off the list as it is written.
   edit: [],
+  /*
+   * `model` IS THE ANSWER PILE'S ONLY MEMBER HERE, and the argument is the one
+   * `translate` makes about its own model, which this table records by NOT having
+   * a model in `PARAMS_OF.translate` at all: re-asking the same question of a
+   * better verifier is the same person refining THIS report, not ordering a
+   * second one. They get the row they have, with better verdicts in it, and the
+   * report's question-keyed cache means only the verdicts the new model has never
+   * answered are paid for.
+   *
+   * `categories` IS DELIBERATELY NOT HERE. It is the question — see `PARAMS_OF` —
+   * and leaving it out of this table is what makes a changed checklist branch
+   * rather than overwrite an hour of verdicts about a different set of claims.
+   */
+  analysis: ['model'],
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -670,6 +725,29 @@ export function labelFor(action: StepAction, params?: LedgerParams): string {
       return params?.ops === undefined || params.ops <= 0
         ? 'Applied changes'
         : `Applied changes (${params.ops})`;
+    /*
+     * AN ANALYSIS ROW SAYS HOW WIDE THE NET WAS, and it needs a case of its own
+     * for the reason `capture` needs one: the `default` below is the TRANSLATE
+     * branch, so without this line every analysis row in every ledger would be
+     * stamped "Translated" and no typecheck would ever say so.
+     *
+     * THE COUNT AND NOT THE NAMES. A default run enables twelve categories and
+     * the names are three or four words each; a row is one line, and "Analysis
+     * (hate, conspiracy, dehumanization, violence, false-prophecy, …)" is a
+     * paragraph pretending to be a label. What a person scanning their history
+     * wants off this row is which of their analyses this one was, and the count
+     * distinguishes the narrow run from the wide one — the params hold every name
+     * for the surface that has room to say them, which is a record, and this is a
+     * label.
+     *
+     * A ROW THAT RECORDED NO COUNT SAYS THE PLAIN WORD, which is `read`'s rule
+     * and is the honest answer rather than a zero.
+     */
+    case 'analysis': {
+      const many = params?.categories?.length ?? 0;
+      if (many === 0) return 'Analysis';
+      return many === 1 ? 'Analysis (1 category)' : `Analysis (${many} categories)`;
+    }
     case 'metadata': {
       const said = params?.fields ?? [];
       const printed = said.join(', ');
@@ -963,15 +1041,15 @@ function readStep(entry: unknown, index: number): LedgerStep {
  * a forgotten clause here means a page range checked as if it were a page count
  * and refused for being a string. Everything not in here is a whole number.
  */
-const WORDS = ['arrangement', 'bank', 'from', 'generation', 'language', 'skipPages'] as const;
+const WORDS = ['arrangement', 'bank', 'from', 'generation', 'language', 'model', 'skipPages'] as const;
 
 function isWord(key: keyof LedgerParams): key is typeof WORDS[number] {
   return (WORDS as readonly string[]).includes(key);
 }
 
 /**
- * The params that are LISTS OF WORDS — which is one of them, and the reason it is
- * a table anyway is `WORDS`' own.
+ * The params that are LISTS OF WORDS — two of them now, and the reason it was a
+ * table while there was one is `WORDS`' own.
  *
  * `metadata.fields` is the field names one edit set, and it is stored as an array
  * because that is what it is. The considered alternative was a comma-joined string
@@ -980,8 +1058,14 @@ function isWord(key: keyof LedgerParams): key is typeof WORDS[number] {
  * spellings this app deliberately does not claim to know are one thing — where a
  * set of field names has no spelling of its own to preserve, and joining it would
  * be a list pretending to be a word, to be split again by every reader.
+ *
+ * `analysis.categories` IS THE SAME SHAPE OF FACT AND JOINS ON THE SAME ARGUMENT,
+ * with one clause of it sharper: this list is compared (`identityOf` walks
+ * `PARAMS_OF` and this is in the question pile), so a spelling of its own would
+ * be a second way for one checklist to be written down — and two spellings of one
+ * question is a re-run that branches beside the row it meant to refresh.
  */
-const LISTS = ['fields'] as const;
+const LISTS = ['categories', 'fields'] as const;
 
 function isList(key: keyof LedgerParams): key is typeof LISTS[number] {
   return (LISTS as readonly string[]).includes(key);
@@ -1814,6 +1898,108 @@ export function translationTarget(
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Which file an analysis writes
+//
+// One report per analysis step, named after the step: `analysis/<stepId>.jsonl`.
+// It is the ops layer's scheme with the whole uuid instead of its front, and the
+// difference is deliberate rather than an oversight — an ops file sits in a
+// folder beside its siblings where eight hex is already how this project tells a
+// branch's files apart, and a report is the one payload whose name is composed
+// by main, sent to a renderer as a plan and handed back to the landing hours
+// later. Over that distance the whole id is the thing that cannot be
+// coincidentally right.
+//
+// Nobody reads these strings. Filenames are out of the UI (`labelFor` is what a
+// row says) and they exist so that two reports about one book cannot be written
+// into one file.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The layer an analysis report lives in, spelled once and shared with main. */
+export const ANALYSIS_LAYER = 'analysis';
+
+/**
+ * The PROJECT-RELATIVE payload an analysis step names.
+ *
+ * Forward slashes, as every payload is (`LedgerStep.payload`): the ledger's
+ * spelling of a path is not this platform's, and a row carrying a backslash is a
+ * row no other machine could resolve. `opsPayloadFor`'s rule, one layer over.
+ */
+export function analysisPayloadFor(stepId: string): string {
+  return `${ANALYSIS_LAYER}/${stepId}.jsonl`;
+}
+
+/** What an analysis is about to be, before it has run: the whole of the ask. */
+export interface AnalysisAsk {
+  /** The position at the moment the button was pressed. See `LandedRun.parent`. */
+  parent: string | null;
+  /**
+   * The categories that were TICKED, in plan order — the whole of what makes this
+   * analysis this one.
+   *
+   * See `PARAMS_OF.analysis`: the checklist is the question, so a run against a
+   * different set of categories is a different report and branches beside the one
+   * it did not match rather than overwriting an hour of verdicts about other
+   * claims.
+   */
+  categories: readonly string[];
+}
+
+/** Where this analysis's report goes, and which step it belongs to. */
+export interface AnalysisTarget {
+  /** `LandedRun.id`: an existing step on a replace, the minted id on a branch. */
+  stepId: string;
+  /** The report file, project-relative. `LedgerStep.payload` when this lands. */
+  report: string;
+  /** The step this would swap into, or null when it appends beside one. */
+  replaces: LedgerStep | null;
+}
+
+/**
+ * WHICH ANALYSIS THIS IS, decided before the job is enqueued — the same question
+ * the landing will ask, asked once here so the file and the row agree.
+ *
+ * `translationTarget`'s shape and its whole argument, with one simplification the
+ * naming scheme buys: a report is named after its STEP rather than after the
+ * question it asks, so there is no plain-versus-branch spelling to decide. A
+ * replace aims at the step that already exists and therefore at that step's own
+ * file — which is what makes a re-analysis nearly free, since every rank score
+ * and every verdict in there is already answered under the question that
+ * produced it. A branch takes the minted id and a file of its own.
+ *
+ * THE PARENT IS THE POSITION, FULL STOP, exactly as `recordsForTranslation` has
+ * it: the dialog asks for an analysis OF what is on screen, and where the person
+ * is standing is what that means.
+ */
+export function analysisTarget(
+  ledger: ProjectLedger,
+  ask: AnalysisAsk,
+  /** Spent only on a branch. See `LandedRun.id` for the same arrangement. */
+  minted: string,
+): AnalysisTarget {
+  const target = reRunTarget(ledger, {
+    action: 'analysis',
+    parent: ask.parent,
+    params: { categories: [...ask.categories] },
+  });
+  if (target !== null) {
+    return {
+      stepId: target.id,
+      /*
+       * THE STEP'S OWN PAYLOAD, and not a path composed from its id. They are the
+       * same string for every report this app has ever written — the scheme is
+       * `analysis/<stepId>.jsonl` and nothing else composes one — and asking the
+       * ROW rather than re-deriving it is the rule `recordReading` states about a
+       * bank: the step is the record of what a run produced, so it names the file
+       * that run produced.
+       */
+      report: target.payload,
+      replaces: target,
+    };
+  }
+  return { stepId: minted, report: analysisPayloadFor(minted), replaces: null };
+}
+
 /**
  * THE FACSIMILE ONE READ STEP MADE OF ITS OWN PAGES —
  * `<stem> (facsimile).<id8>.pdf`, project-relative.
@@ -2359,6 +2545,21 @@ export function deleteCost(step: LedgerStep): string {
       }
       return `Discarding “${step.label}” destroys ${WHY_HANDMADE}. No run remakes it, at any price.`;
     case 'expensive':
+      /*
+       * AN ANALYSIS IS EXPENSIVE FOR A DIFFERENT REASON THAN A READING IS, and
+       * `WHY_MODEL_PASS` says the reading's. "A model read every page of it" is
+       * false about a report: nothing looked at a page, an entailment model scored
+       * every SENTENCE and a second model judged the passages that survived. The
+       * shared phrase is kept for the two steps it is true of, and this row gets
+       * the sentence that is true of it — including the part somebody deciding
+       * whether to discard actually wants, which is that the file is also the
+       * cache and losing it is what makes the re-run cost the full hour again.
+       */
+      if (step.action === 'analysis') {
+        return `Discarding “${step.label}” costs a paid run to undo: every sentence scored and every `
+          + 'passage judged again. The report is also what makes a second run cheap, so discarding it '
+          + 'is what makes analysing again cost the whole thing.';
+      }
       return `Discarding “${step.label}” costs a paid run to undo: ${WHY_MODEL_PASS}.`;
     default:
       return `Discarding “${step.label}” costs nothing — it is made again from what is still here, for free.`;
@@ -2473,6 +2674,9 @@ const AN_ARRIVAL: Readonly<Record<StepAction, boolean>> = {
   translate: false,
   metadata: false,
   edit: false,
+  /* A report is not the book arriving — it is a document about a book that was
+     already here. Every act may still derive from where you stand. */
+  analysis: false,
 };
 const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
   import: true,
@@ -2510,6 +2714,18 @@ const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
    * pages.
    */
   edit: false,
+  /*
+   * AN ANALYSIS ROW IS TRANSPARENT TO THIS WALK, on the metadata entry's own
+   * argument: the questions this walk answers are "which bank" and "which
+   * curation", and a row that recorded a report says nothing about either.
+   * Standing on one — or on anything under one — must still find the reading and
+   * the save beneath it, or the paper would have no book to draw at all.
+   *
+   * It is emphatically not a boundary. A boundary means "a different pass over
+   * the pages begins here", which is a claim about blocks, and an analysis makes
+   * no claim about blocks — it only measures them.
+   */
+  analysis: false,
 };
 
 /**
@@ -2718,6 +2934,13 @@ const DISPLAYS_ITSELF: Readonly<Record<StepAction, boolean>> = {
    * is where one of them stops existing.
    */
   edit: false,
+  /*
+   * AN ANALYSIS FROZE NOBODY'S CORRECTIONS. What it retained is a file of
+   * measurements about the book — scores, categories and verdicts — which is not
+   * a copy of anybody's decisions, so there is no snapshot for this row to show
+   * and nothing to lock. The `translate` answer, for the `translate` reason.
+   */
+  analysis: false,
 };
 
 /**
@@ -3152,6 +3375,15 @@ export const A_BOOK_OF_ITS_OWN: Readonly<Record<StepAction, boolean>> = {
    * this row is about — so it is a `read`'s answer and not the import's.
    */
   edit: false,
+  /*
+   * AN ANALYSIS ROW'S PAYLOAD IS A REPORT, which is no more a thing a person reads
+   * as a document than a curation snapshot is. What it SHOWS is what the row
+   * beneath it shows: the project's one flowing book, in the state that row is
+   * about, with the report drawn over it as an apparatus in the second column
+   * (docs/ANALYSIS.md §8). Nothing about the book changed identity because
+   * somebody measured it.
+   */
+  analysis: false,
 };
 
 /** Everything that decides the picture at the position, in one answer. */

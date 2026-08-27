@@ -1600,10 +1600,20 @@ export async function viewExportedBook(target: string): Promise<BookOutcome> {
     const made = await writeEpubBook(resolved, book);
     if (!made.ok) {
       console.error(`[book] ${resolved} would not explode for viewing: ${made.reason ?? ''}`);
+      /*
+       * THE ENGINE'S OWN SENTENCE REACHES THE PERSON. This used to say the
+       * words were "in the terminal" — true at a dev prompt and false in every
+       * packaged app, where console.error goes nowhere and the sentence that
+       * names the defect (file, page, offset) is exactly the thing a person
+       * has to relay to whoever can fix it. Measured cost of the omission: the
+       * triple-emphasis export defect (2026-08-26) took a cross-repo session
+       * to diagnose because the refusal that named c0016.xhtml and its offset
+       * was printed to a terminal nobody had.
+       */
       return {
         ok: false,
-        reason: 'This export could not be opened as a book. The engine refused, and its own words '
-          + 'are in the terminal.',
+        reason: 'This export could not be opened as a book. The engine refused: '
+          + (made.reason ?? 'no reason was given.'),
       };
     }
   }

@@ -6,6 +6,7 @@ import type { BackendMode, DoctorReport, EngineInfo, TierReport } from '@shared/
 import { api, hosted } from '../../core/foundry';
 import { EnvCardComponent } from './env-card.component';
 import { LibraryCardComponent } from './library-card.component';
+import { LlmCardComponent } from './llm-card.component';
 import { WslBackendComponent } from './wsl-backend.component';
 
 /**
@@ -23,7 +24,7 @@ import { WslBackendComponent } from './wsl-backend.component';
  */
 @Component({
   selector: 'app-settings-page',
-  imports: [EnvCardComponent, FormsModule, LibraryCardComponent, WslBackendComponent],
+  imports: [EnvCardComponent, FormsModule, LibraryCardComponent, LlmCardComponent, WslBackendComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="page">
@@ -136,6 +137,16 @@ import { WslBackendComponent } from './wsl-backend.component';
           @if (!hosted()) {
             <app-library-card />
           }
+
+          <!--
+            The model the three language dialogs open with, and the way back
+            into first-run setup. Beside the library card because both are about
+            what the user has chosen rather than about what the engine measured.
+            Hosted, the model is still foundry's own — BookForge has no opinion
+            about which ollama model translates a book — so unlike the library
+            card this one stays.
+          -->
+          <app-llm-card />
 
           <!--
             The prebuilt Pythons. Above the WSL card on purpose: downloading the

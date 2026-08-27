@@ -1,7 +1,29 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-24 for **Wave 47's mint metadata** —
+from memory, regenerated on 2026-08-25 for **Wave 50's hits-panel rework** —
+two doors: `analysis:read-categories` and `analysis:write-categories`, the
+categories a person writes themselves (name + the one sentence that becomes the
+category's only hypothesis), kept app-level in `app-settings.json` beside the
+library folder because they are the USER'S and not one project's. The write
+takes the whole list and answers with the list as main stored it — every id
+re-derived from its name, every field capped, every collision dropped — so the
+window never holds an id the file does not. Counted by script: **96 `ipcMain.handle`
+call sites, 96 distinct channel names, zero `ipcMain.on`** in
+`app/electron/ipc.ts`.
+
+Before that, regenerated on 2026-08-25 for **Wave 50's analysis** — three doors:
+`workspace:plan-analysis` (mint the step and the report path, materialise the
+book the run reads), `workspace:read-analysis` (one analysis step's report, for
+the hits panel — the header, the findings and one sentence about staleness; the
+cache rows never cross) and `queue:enqueue-analysis` (the held GPU job, which
+REJECTS hosted: the host's queue takes the two request shapes its vendored copy
+of `shared/api.ts` declares and this is a third). Counted by script:
+**94 `ipcMain.handle` call sites, 94 distinct channel names, zero `ipcMain.on`**
+in `app/electron/ipc.ts`. Each in the same commit as its handler, which is the
+standing rule below.
+
+Before that, regenerated on 2026-08-24 for **Wave 47's mint metadata** —
 `meta:mint-read`, `meta:mint-write`, `meta:mint-stamp` and (2026-08-24, the
 inheritance ruling) `meta:mint-host` — the per-project block the mint modal
 edits, the in-place stamp its Save performs, and the host's seed underneath —
@@ -329,15 +351,37 @@ keeper that parses names would not see it.
 the card above cannot gate, because it runs in main with no window to draw in.
 Its own docblock names the limit.
 
+### Eleven names added on 2026-08-26 — first-run setup (Wave 53)
+
+Ten doors and one push, all of them reachable from the settings screen as well
+as from the wizard, which is the point: setup is the first-run ARRANGEMENT of
+questions the app can already answer, not a separate mechanism.
+
+`setup:state`, `setup:finish`, `system:probe`, `ollama:facts`,
+`ollama:choices`, `ollama:install`, `ollama:install-cancel`, `ollama:pull`,
+`ollama:pull-cancel`, `llm:defaults`, `llm:set-model`; and the push
+`ollama:progress`, shaped on `env:install-progress`.
+
+Two things worth naming rather than leaving in the table. **`ollama:pull` and
+`ollama:install` do not go through the job queue**, unlike `env:install` — the
+queue keeps two expensive GPU runs from overlapping and gives a run a
+cancellable row, and an ollama pull is neither: it happens in ollama's process
+and finishes whether or not this app is looking. And **`ollama:install`
+resolving `ok` means the installer was OPENED**, never that ollama is
+installed — that happens minutes later in a window this app does not own, so
+`ollama:facts` is the only thing that ever says so.
+
 ## Doors the renderer knocks on
 
-All 84 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
+All 107 are `ipcMain.handle` — there is not one `ipcMain.on` in the app, on
 purpose: a renderer that cannot tell whether main heard it is a renderer that
 cannot report a failure. They are registered in one function, `registerIpc`
 (`app/electron/ipc.ts`), which `mountFoundry` calls.
 
 | Channel | What it does |
 | --- | --- |
+| `analysis:read-categories` | The analysis categories this user wrote themselves, from `app-settings.json`. App-level: they are the reader's, not one project's. |
+| `analysis:write-categories` | Replace that list, and answer with it as stored — ids re-derived from names, fields capped, collisions with a built-in or with each other dropped. |
 | `app:hosted` | Whether another app mounted Foundry, so the renderer can drop the controls the host already answers. |
 | `backend:setup-cancel` | Stop the WSL environment build that is running. |
 | `backend:setup-run` | Build the reading environment inside a WSL distro; streams over `backend:setup-log`. |
@@ -390,6 +434,8 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:choose` | Native directory picker for the library. Refuses while hosted. |
 | `library:dir` | The effective library directory — the host's, when hosted. |
 | `library:set` | Move the library. Refuses while hosted. |
+| `llm:defaults` | The model and the ollama URL the three language dialogs open with. |
+| `llm:set-model` | Set the default model. Answers with the tag AS STORED — a name main clamped comes back changed. |
 | `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone and on any host failure. |
 | `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |
 | `meta:mint-stamp` | The whole block onto ONE finished export, in place — the metadata tile's Save over an EPUB. Tray-gated like the flat writer. |
@@ -398,12 +444,19 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `meta:read-pdf` | A PDF's Info dictionary, through the engine. |
 | `meta:write-epub` | Write the six OPF fields back to that export (side file + one rename), and record the metadata step with `kind: 'epub'`. |
 | `meta:write-pdf` | Write it to the project's working copy, and record the metadata step. |
+| `ollama:choices` | This machine, ollama's state, the Qwen lineup with one row badged, and today's model — the setup wizard's model step in one answer. |
+| `ollama:facts` | Is ollama running, and is its binary here at all. Two different questions; never cached. |
+| `ollama:install` | Fetch ollama's own installer and hand it to the OS. `ok` means it was OPENED, never that ollama is installed. |
+| `ollama:install-cancel` | Abort that download. |
+| `ollama:pull` | `POST /api/pull`, streamed. A failure is a result, not a rejection. Never routed to a queue. |
+| `ollama:pull-cancel` | Abort that pull. |
 | `projects:delete` | Delete a project directory, for real. |
 | `projects:describe` | What that project delete would destroy, in words and bytes. |
 | `projects:list` | Home's listing: one row per book, with what is in it. |
 | `queue:cancel` | Cancel one job. Forwarded to the host's queue where one is registered. |
 | `queue:clear-finished` | Clear the settled rows out of the shelf. Forwarded to the host's queue as well, where one is registered. |
 | `queue:enqueue` | Queue a reading or a rendering; captures the project's position as the parent step. Filed in the host's queue instead, where one is registered — this door is a person pressing something. |
+| `queue:enqueue-analysis` | Queue an analysis: the book read against the categories, held on the GPU lane. Never routed, and REFUSED outright hosted — the host's queue does not know this request shape, and Foundry's own queue is invisible in a hosted window. |
 | `queue:enqueue-translate` | Queue a translation or a simplification. Routed like `queue:enqueue`. |
 | `queue:list` | The queue, for the renderer's mirror — the host's rows where a host queue is registered, Foundry's own otherwise. |
 | `queue:remove` | Remove a held or settled row. Forwarded to the host's queue where one is registered. |
@@ -415,7 +468,10 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `recents:list` | The recents list. |
 | `settings:read` | The engine's `settings.json`. |
 | `settings:write` | Patch it. |
+| `setup:finish` | First-run setup is over — FINISHED OR DISMISSED — with the list of steps that were skipped. |
+| `setup:state` | Has this machine been through setup, and what was declined. |
 | `shell:reveal` | Show a file in the OS file manager. |
+| `system:probe` | What this computer is: GPU and VRAM, RAM, free disk, and the memory a model can actually expect. Cached for the process; the flag re-reads it. |
 | `vllm:keep-warm` | Minutes an app-started reading server outlives a drained queue. |
 | `vllm:set-keep-warm` | Set that, clamped. |
 | `vllm:start` | Start the local reading server. |
@@ -423,10 +479,12 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `vllm:stop` | Stop it. |
 | `window:close` | Close the window — the ✕, pressed by the page. Hosted, running out of tabs. |
 | `window:let-go` | The renderer's one answer to `window:closing`. |
+| `workspace:plan-analysis` | Plan an analysis: which report file it writes, which step it will be filed as, and the position's book materialised for the engine to read. Checks every category name against the closed set this build knows. |
 | `workspace:plan-export` | Plan a rendering that lands in the project's `final/` tray. |
 | `workspace:plan-reading` | Plan an OCR read: which bank it fills. |
 | `workspace:plan-simplify` | Plan a rewrite in one of three modes. |
 | `workspace:plan-translation` | Plan a translation of an open document. |
+| `workspace:read-analysis` | One analysis step's report — the header, the findings, and one sentence about whether it is still about this book. The cache rows (one per sentence) are dropped at the parse. |
 | `wsl:facts` | The distros on this machine. |
 | `wsl:tooling` | What one of them actually has installed. |
 
@@ -439,8 +497,8 @@ push, payload `{projectDir, done, total, file}`.
 
 ## Pushes main makes at the renderer
 
-Fifteen, and every one of them is a state change the renderer holds a mirror of
-or a question it has to answer. Eight go to every window through `broadcast`
+Sixteen, and every one of them is a state change the renderer holds a mirror of
+or a question it has to answer. Nine go to every window through `broadcast`
 (`app/electron/window.ts`); the rest are sent to one window's `webContents`.
 
 | Channel | What it says |
@@ -455,6 +513,7 @@ or a question it has to answer. Eight go to every window through `broadcast`
 | `host-ops:offers-changed` | The host revised what it OFFERS — the whole `{operations, nodeActions}` answer again, replacing what `host-ops:offers` said. |
 | `host-ops:status-changed` | The host pushed what it is doing at all — the whole value, every time. Null clears the chrome's chip. |
 | `menu:action` | A menu item the renderer has to carry out, because it acts on a tab. |
+| `ollama:progress` | The ollama installer download AND a model pull, on one channel — the wizard is the only thing that draws either, and one shape means one bar. |
 | `project:open` | Stand in this project — the hosted deep link, sent once as the window loads. |
 | `projects:changed` | Something in the library moved. No payload: the renderer asks for the list. |
 | `queue:changed` | The whole job list, on every mutation — the host's rows hosted, Foundry's own otherwise. Same shape either way. |

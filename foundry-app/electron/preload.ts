@@ -18,6 +18,7 @@ import type {
   EnvInstallProgress,
   HostNodes,
   Job,
+  OllamaPullProgress,
   QuestionAnswer,
   ReReadAnswer,
   ServerStatus,
@@ -154,6 +155,10 @@ const api: FoundryApi = {
       ipcRenderer.invoke('workspace:plan-translation', inputPath, targetLanguage),
     planSimplification: (inputPath, mode) =>
       ipcRenderer.invoke('workspace:plan-simplify', inputPath, mode),
+    planAnalysis: (inputPath, categories) =>
+      ipcRenderer.invoke('workspace:plan-analysis', inputPath, categories),
+    readAnalysis: (projectDir, stepId) =>
+      ipcRenderer.invoke('workspace:read-analysis', projectDir, stepId),
   },
 
   ledger: {
@@ -188,6 +193,11 @@ const api: FoundryApi = {
     set: (dir) => ipcRenderer.invoke('library:set', dir),
   },
 
+  analysis: {
+    readCategories: () => ipcRenderer.invoke('analysis:read-categories'),
+    writeCategories: (categories) => ipcRenderer.invoke('analysis:write-categories', categories),
+  },
+
   projects: {
     list: () => ipcRenderer.invoke('projects:list'),
     onChanged: (listener) => subscribe<null>('projects:changed', listener),
@@ -210,6 +220,7 @@ const api: FoundryApi = {
     list: () => ipcRenderer.invoke('queue:list'),
     enqueue: (request) => ipcRenderer.invoke('queue:enqueue', request),
     enqueueTranslate: (request) => ipcRenderer.invoke('queue:enqueue-translate', request),
+    enqueueAnalysis: (request) => ipcRenderer.invoke('queue:enqueue-analysis', request),
     run: (request) => ipcRenderer.invoke('queue:run', request),
     start: () => ipcRenderer.invoke('queue:start'),
     remove: (id) => ipcRenderer.invoke('queue:remove', id),
@@ -269,6 +280,27 @@ const api: FoundryApi = {
     cancel: () => ipcRenderer.invoke('env:cancel'),
     chooseDest: (defaultPath) => ipcRenderer.invoke('env:choose-dest', defaultPath),
     onInstallProgress: (listener) => subscribe<EnvInstallProgress>('env:install-progress', listener),
+  },
+
+  setup: {
+    state: () => ipcRenderer.invoke('setup:state'),
+    finish: (skipped) => ipcRenderer.invoke('setup:finish', skipped),
+    probe: (force) => ipcRenderer.invoke('system:probe', force === true),
+  },
+
+  ollama: {
+    facts: () => ipcRenderer.invoke('ollama:facts'),
+    choices: () => ipcRenderer.invoke('ollama:choices'),
+    install: () => ipcRenderer.invoke('ollama:install'),
+    cancelInstall: () => ipcRenderer.invoke('ollama:install-cancel'),
+    pull: (tag) => ipcRenderer.invoke('ollama:pull', tag),
+    cancelPull: () => ipcRenderer.invoke('ollama:pull-cancel'),
+    onProgress: (listener) => subscribe<OllamaPullProgress>('ollama:progress', listener),
+  },
+
+  llm: {
+    defaults: () => ipcRenderer.invoke('llm:defaults'),
+    setModel: (model) => ipcRenderer.invoke('llm:set-model', model),
   },
 
   backendSetup: {

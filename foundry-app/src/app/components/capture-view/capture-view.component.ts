@@ -1,7 +1,6 @@
 import {
   ChangeDetectionStrategy,
   Component,
-  DestroyRef,
   computed,
   effect,
   inject,
@@ -11,15 +10,11 @@ import {
 } from '@angular/core';
 
 import { joinedQuad, mintedPageIds, sameShape, turnedLike } from '@shared/capture';
-import type { CaptureQuad, CaptureSplit } from '@shared/types';
+import type { CaptureQuad } from '@shared/types';
 
 import { CaptureMintService } from '../../core/capture-mint.service';
 import { ConfirmService } from '../../core/confirm.service';
-import {
-  type ApplyToAll,
-  CaptureService,
-  isComplete,
-} from '../../core/capture.service';
+import { CaptureService, isComplete } from '../../core/capture.service';
 import type { Tab } from '../../core/documents.service';
 import {
   CaptureEditorModalComponent,
@@ -68,8 +63,13 @@ import { ProjectsService } from '../../core/projects.service';
  * two tables showing one recipe — would look like a redraw bug rather than a
  * scoping one.
  */
-/** How long the button says so. Long enough to read, short enough not to nag. */
-const ACKNOWLEDGED_FOR_MS = 1600;
+/*
+ * `ACKNOWLEDGED_FOR_MS` STOOD HERE — how long a pressed button said "Applied ✓".
+ *
+ * It belonged to four presses in the modal and every one of them is gone
+ * (Wave 51). What replaced them is the gesture itself, which acknowledges by
+ * moving the picture, the cards behind it and the filmstrip below.
+ */
 
 @Component({
   selector: 'app-capture-view',
@@ -105,7 +105,7 @@ const ACKNOWLEDGED_FOR_MS = 1600;
           (dropped)="captures.intake(tab().path, $event)"
         (remove)="void confirmRemoval($event)"
           (turn)="captures.turnPhotos($event.photos, $event.turns)"
-          (release)="releaseThese($event)"
+          (follow)="followThese($event)"
       />
     </div>
 
@@ -129,6 +129,7 @@ const ACKNOWLEDGED_FOR_MS = 1600;
       [pass]="captures.pass()"
       [standing]="hasCrop()"
       [bookCut]="hasCut()"
+      [sided]="captures.sided()"
       [cost]="captures.applyCost()"
       (open)="openTool()"
       (tick)="captures.tick($event)"
@@ -153,26 +154,23 @@ const ACKNOWLEDGED_FOR_MS = 1600;
           [hasPrevious]="walkIndex() > 0"
           [hasNext]="walkIndex() < walk().length - 1"
           [name]="photo.name"
-          [complete]="photo.complete"
-          [canMatch]="canMatch()"
+          [global]="global()"
+          [scope]="captures.scope()"
+          [own]="photo.complete"
+          [theirOwn]="captures.prepare().complete"
           [bookCut]="bookCut()"
-          [outOfTurn]="outOfTurn()"
-          [photographs]="captures.prepare().photos"
-          [marked]="captures.prepare().complete"
           [frames]="frames()"
           [here]="open()"
-          [justApplied]="justApplied()"
-          (turnBy)="captures.turnPhotos([photo.id], $event)"
-          (clearCrop)="captures.clearCrop(photo.id)"
+          (turnBy)="turnThis(photo.id, $event)"
+          (clearCrop)="clearCropHere(photo.id)"
           (twoPagesChange)="setTwoPages(photo.id, $event)"
           (quadsChange)="setQuads(photo.id, $event)"
-          (splitChange)="captures.setSplit(photo.id, $event)"
-          (applyToAll)="turnTheRest(photo.id, $event)"
-          (recordStanding)="record(photo.id, $event)"
-          (applyStanding)="applyAll(photo.id, $event)"
-          (rightNext)="sayRight(photo.id)"
-          (release)="releaseThese([photo.id])"
-          (followAgain)="followAgain(photo.id)"
+          (splitChange)="captures.setSplit(photo.id, $event, !global())"
+          (settled)="settle(photo.id)"
+          (globalChange)="captures.setGlobal($event)"
+          (scopeChange)="captures.setScope($event)"
+          (resetAll)="void confirmReset()"
+          (followAll)="void confirmFollowAll()"
           (jump)="open.set($event)"
           (step)="step($event)"
           (close)="open.set(null)"
@@ -236,17 +234,14 @@ export class CaptureViewComponent {
   /** The photograph on the editor, by photo id, or null for the whole table. */
   protected readonly open = signal<string | null>(null);
 
-  /**
-   * WHICH PRESS IN THE MODAL JUST LANDED, for the button that was pressed.
+  /*
+   * A `justApplied` SIGNAL AND ITS TIMER STOOD HERE (Wave 51).
    *
-   * It is the parent's rather than the modal's because the state outlives the
-   * click by a second and a half, and a component that walks from photograph to
-   * photograph should not be holding a timer about the last one. Three acts can
-   * light: the bulk turn, the record, and the say-so at the very end of the walk
-   * where there is no next photograph to step to.
+   * They lit whichever modal button had just been pressed, for a second and a
+   * half, because those presses had their effect somewhere a person could not
+   * see. The presses are gone and so is the problem: propagation happens under
+   * the hand, on the picture, the cards and the strip at once.
    */
-  protected readonly justApplied = signal<'turn' | 'record' | 'stamp' | 'right' | null>(null);
-  private applauseTimer: ReturnType<typeof setTimeout> | null = null;
 
   /**
    * THE PHOTOGRAPHS IN THE ARRANGEMENT'S OWN SEQUENCE, for prev/next.
@@ -297,9 +292,6 @@ export class CaptureViewComponent {
   });
 
   constructor() {
-    inject(DestroyRef).onDestroy(() => {
-      if (this.applauseTimer !== null) clearTimeout(this.applauseTimer);
-    });
     /*
      * If the open photograph leaves the recipe, close. It is only reachable
      * through a hand-edited file today, and it is written as a rule rather than
@@ -425,7 +417,11 @@ export class CaptureViewComponent {
     if (this.captures.pass() === 'split') return null;
     const id = this.open();
     const recipe = this.captures.recipe();
-    const crop = recipe?.book?.crop;
+    // THIS PHOTOGRAPH'S SIDE OF THE BOOK, since Wave 51b: on a recto/verso shoot
+    // the book has two crops, and drawing the other side's under this outline
+    // would mark a deviation from a rectangle this page was never going to be
+    // given.
+    const crop = id === null ? undefined : this.captures.standingFor(id)?.crop;
     if (id === null || recipe === null || crop === undefined) return null;
     const photo = recipe.photos.find((one) => one.id === id);
     if (photo === undefined || !sameShape(crop, photo)) return null;
@@ -505,14 +501,21 @@ export class CaptureViewComponent {
   });
 
   /**
-   * How many photographs the bulk-turn button would move, for the photograph
-   * open right now. Asked of the service, which owns every rule about what a
-   * gesture reaches.
+   * WHOSE HAND IS ON THE HANDLES — the Global tick, and it is the SERVICE'S.
+   *
+   * ── It used to be derived from the open photograph, and Wave 51b stopped ──
+   *
+   * `!isComplete` of whatever was in front of you: an honest reading of a state,
+   * and a box that ticked itself back on at every step. Owen's second half of an
+   * evening is one pass through fifty pages nudging each one, so that box had to
+   * be unticked fifty times and any one he forgot moved the whole book.
+   *
+   * It is a MODE now, owned by the service, flipped only by a click — see
+   * `CaptureService.global`. This surface reads it and passes it down, and the
+   * one thing it still decides is what a gesture MEANS while the mode is off
+   * (`setQuads`, below): that hand is the page's own.
    */
-  protected readonly outOfTurn = computed<number>(() => {
-    const id = this.open();
-    return id === null ? 0 : this.captures.outOfTurnWith(id);
-  });
+  protected readonly global = this.captures.global;
 
   /*
    * A `cost` COMPUTED STOOD HERE and went with the press it costed.
@@ -523,12 +526,6 @@ export class CaptureViewComponent {
    * there is no population to name and nothing for a count to be about. The
    * counting moved with the act -- `applyCost`, on the rail, under the Apply.
    */
-
-  /** Whether this photograph has a book's crop it could be given back to. */
-  protected readonly canMatch = computed<boolean>(() => {
-    const id = this.open();
-    return id !== null && this.captures.hasStanding(id);
-  });
 
   /** The cut the tick would use, or null when only the middle is available. */
   protected readonly bookCut = computed(() => {
@@ -550,13 +547,13 @@ export class CaptureViewComponent {
    * to take the standing and NO STANDING AT ALL are different states with
    * different sentences: one says "everything is complete already", the other
    * says "go and set one".
+   *
+   * ANY OF THE STANDINGS, since Wave 51b — the book's own or either side's. A
+   * project whose odd pages have a crop and whose book has none has something to
+   * finalize, and a rail that drew no button would be hiding an act that works.
    */
-  protected readonly hasCrop = computed<boolean>(
-    () => this.captures.recipe()?.book?.crop !== undefined,
-  );
-  protected readonly hasCut = computed<boolean>(
-    () => this.captures.recipe()?.book?.cut !== undefined,
-  );
+  protected readonly hasCrop = this.captures.anyCrop;
+  protected readonly hasCut = this.captures.anyCut;
 
   /** The table, for the one thing a parent has to ask it to do. See below. */
   private readonly grid = viewChild(CaptureGridComponent);
@@ -603,19 +600,28 @@ export class CaptureViewComponent {
   }
 
   /**
-   * LET THE BOOK CHANGE THESE AGAIN — the right-click door's other end.
+   * FOLLOW THE BOOK AGAIN — the right-click door's other end.
    *
    * One call per photograph, which is what the service asks for and costs
    * nothing: every writer here goes through the same debounced save, so nine
-   * releases are nine edits and one write.
+   * hand-backs are nine edits and one write.
    *
-   * NO CONFIRM, deliberately, where removal has one. Release destroys nothing —
-   * the page keeps its crop, its cut and its turn, and the only thing that
-   * changes is whether the next Apply is allowed to move it. The undo is to
-   * place a corner or press *This page is right* again.
+   * ── IT TAKES THE BOOK'S LINES NOW, WHERE RELEASE USED TO WAIT ────────────
+   *
+   * The old door cleared the mark and left the picture exactly as it was; the
+   * next Apply was what moved it. That gap made sense while propagation was a
+   * button somebody pressed later. With it live there is nothing to wait for,
+   * and a page that gave up its mark and kept lines the book does not have would
+   * be a follower that does not follow until some unrelated act corrects it. So
+   * the press hands the lines over as well — `matchTheOthers`, which is the same
+   * door re-ticking *Global* in the modal opens.
+   *
+   * NO CONFIRM, deliberately, where removal has one. Nothing is destroyed that
+   * is not immediately visible: the cards under the menu redraw, and moving a
+   * corner takes the photograph straight back.
    */
-  protected releaseThese(photoIds: readonly string[]): void {
-    for (const id of photoIds) this.captures.release(id);
+  protected followThese(photoIds: readonly string[]): void {
+    for (const id of photoIds) this.captures.matchTheOthers(id);
   }
 
   /**
@@ -721,8 +727,190 @@ export class CaptureViewComponent {
     if (photo !== undefined) this.open.set(photo.id);
   }
 
+  /**
+   * The corners moved. WHOSE CORNERS is the tick's answer, not this file's.
+   *
+   * `mine` is false while *Global* is ticked, so a drag that is the book's does
+   * not mark the photograph as somebody's own — which would opt it out of the
+   * standing it is in the middle of authoring. The propagation itself waits for
+   * `settle` below: this runs per pointermove.
+   */
   protected setQuads(photoId: string, quads: readonly FractionQuad[]): void {
-    this.captures.setQuads(photoId, quads as readonly CaptureQuad[]);
+    this.captures.setQuads(photoId, quads as readonly CaptureQuad[], !this.global());
+  }
+
+  /**
+   * A GESTURE ENDED AND THE BOOK WAS FOLLOWING IT — hand the lines over.
+   *
+   * ── Why this is the moment, and not every pointermove ────────────────────
+   *
+   * The drag writes the recipe continuously, because the recipe is what the
+   * screen draws. Dressing every follower is a walk over the whole book that
+   * re-derives halves and rebuilds the arrangement, and doing it sixty times a
+   * second would be twenty-five photographs re-cut for each pixel of travel.
+   * Once, when the hand opens, is the same outcome for a fraction of the work —
+   * and it is also the honest reading of the gesture: what a person meant is
+   * where they let go.
+   *
+   * WHICH PASS DECIDES WHAT IS LIFTED. The crop pass hands over the sheet and
+   * the cut together (a standing carries both); the split pass hands over the
+   * cut alone, because by then the crops are committed and this photograph may
+   * not be speaking for them.
+   */
+  protected settle(photoId: string): void {
+    if (this.global()) this.lead(photoId);
+  }
+
+  /**
+   * THE BOOK ADOPTS THIS PHOTOGRAPH'S LINES — one call, one place to get the
+   * pass right.
+   *
+   * The callers used to read `global()` BEFORE their act and carry the answer,
+   * because the tick was derived from the photograph and the act itself could
+   * mark it — clearing a crop and rejoining a spread both do — so re-asking
+   * afterwards found the box already off and dropped the propagation the person
+   * was watching for. The mode cannot move under an act (Wave 51b), so the
+   * dance is gone; the reads are left where they are because reading a mode
+   * once at the top of a method is still the clearer sentence.
+   *
+   * WHICH SIDE OF THE BOOK it speaks for is the service's too, taken from the
+   * scope beside the tick. It is not passed down for the reason the mode is not:
+   * this file would only be carrying it from one signal to one door.
+   */
+  private lead(photoId: string): void {
+    this.captures.leadTheBook(photoId, this.captures.pass() === 'split' ? 'cut' : 'crop');
+  }
+
+  /** Turn this photograph, or the whole book with it. The tick decides. */
+  protected turnThis(photoId: string, turns: number): void {
+    if (this.global()) this.captures.turnWithTheBook(photoId, turns);
+    else this.captures.turnPhotos([photoId], turns);
+  }
+
+  /** Take the crop off this photograph, and off the followers if it leads. */
+  protected clearCropHere(photoId: string): void {
+    const leading = this.global();
+    this.captures.clearCrop(photoId);
+    if (leading) this.lead(photoId);
+  }
+
+  /*
+   * `setGlobal` STOOD HERE AND THE TICK NO LONGER TOUCHES A PHOTOGRAPH.
+   *
+   * It ran the two halves of Wave 51's checkbox: ticked, the book adopted this
+   * page's lines; unticked, `markComplete` took the page out of the book's
+   * hands. Both are gone with the derived box (`global` above).
+   *
+   * The tick arms the MODE and moves nothing — `captures.setGlobal`, straight
+   * from the template, because there is nothing left for this file to decide.
+   * What each half did survives in the gesture: with the mode on, a drag on a
+   * page that was its own hands it back AND leads the book (`leadTheBook`, whose
+   * lead is always dressed); with the mode off, a drag marks the page its own
+   * (`setQuads`, `mine`). Re-ticking now moves nothing until the next gesture,
+   * which is the whole point of a mode — a box that re-dressed the book on being
+   * ticked could not be ticked in preparation for anything.
+   */
+
+  /**
+   * PUT THE WHOLE BOOK BACK, having asked first.
+   *
+   * ── The one confirmed global in this stage, and the question says why ─────
+   *
+   * Every other act here spares a photograph somebody placed by hand. This one
+   * reaches them, which is the whole reason it exists — the evening where the
+   * assumption that a hand-placed crop is correct is the thing that went wrong —
+   * and a reach like that has to be asked for rather than discovered. The detail
+   * names what SURVIVES as well as what goes, on `confirmRemoval`'s rule: a
+   * person should be frightened of the right thing and no more.
+   */
+  protected async confirmReset(): Promise<void> {
+    const splitting = this.captures.pass() === 'split';
+    const agreed = await this.confirm.ask({
+      message: splitting
+        ? 'Put every page in this book back together?'
+        : 'Give every photograph in this book the whole frame back?',
+      detail: splitting
+        ? [
+            'Every spread is rejoined into one page and the book\'s cut is cleared — including '
+            + 'the ones you cut yourself.',
+            'Every crop stays exactly where it is, and nothing is deleted: the photographs are '
+            + 'all still here.',
+          ]
+        : [
+            'Every crop is cleared and so is the book\'s own — including the pages you placed '
+            + 'yourself.',
+            'The turns stay, and nothing is deleted: the photographs are all still here.',
+          ],
+      confirm: splitting ? 'Rejoin them all' : 'Reset them all',
+    });
+    if (agreed) this.captures.resetAll(splitting ? 'cut' : 'crop');
+  }
+
+  /**
+   * GIVE EVERY PAGE SOMEBODY SET THEMSELVES BACK TO THE BOOK, having asked.
+   *
+   * ── Owen's ruling, and why the confirm is not optional ────────────────────
+   *
+   * *"if the page was individually edited, it's exempt from the global
+   * settings, unless the user specifically overrides all individual settings to
+   * revert to global."* The exemption holds everywhere in this stage; this is
+   * the override, and it is the second act in the whole feature that overrules a
+   * hand. `followThese` above needs no question because it reaches the
+   * photographs somebody has just selected and one drag takes any of them back.
+   * This one reaches a population the person cannot see from inside the modal,
+   * and the lines it replaces were placed one at a time over an evening.
+   *
+   * ── THE COUNT IS THE QUESTION ─────────────────────────────────────────────
+   *
+   * "Some pages will change" is the shape of question people press through.
+   * *Seven photographs you set yourself* is a number somebody can weigh against
+   * what they remember doing — and it is `prepare().complete`, the same
+   * derivation as the dots on the cards and the button's own presence, so the
+   * dialog cannot promise a reach the act does not have.
+   *
+   * ── AND IT NAMES WHAT SURVIVES ────────────────────────────────────────────
+   *
+   * `confirmRemoval`'s rule: a person should be frightened of the right thing
+   * and no more. What survives here is everything the neighbouring Reset would
+   * destroy — the book's own lines, and every original — so the detail says so
+   * rather than leaving two adjacent destructive acts to be told apart by their
+   * labels.
+   */
+  protected async confirmFollowAll(): Promise<void> {
+    const splitting = this.captures.pass() === 'split';
+    const mine = this.captures.prepare().complete;
+    // Unreachable while the button is drawn only where there is somebody to
+    // hand back, and cheap insurance against a dialog that promises nothing.
+    if (mine === 0) return;
+    const many = mine !== 1;
+    const who = many ? `${mine} photographs` : 'One photograph';
+    const their = many ? 'their' : 'its';
+    const agreed = await this.confirm.ask({
+      message: 'Give every page you set yourself back to the book?',
+      detail: splitting
+        ? [
+            `${who} you set yourself will take the book's cut again — the line ${their} side of `
+            + 'the book is set to.',
+            'The cuts you placed go, and the marks go with them: every global from here reaches '
+            + 'those pages. Crops stay, because this pass does not move a corner.',
+            'The book\'s own lines do not change and nothing goes back to the original — Reset '
+            + 'every split is the act that does that.',
+            'A page whose side of the book has no cut to give it, or whose frame is a different '
+            + 'shape, keeps the lines it has and gives up its mark all the same.',
+          ]
+        : [
+            `${who} you set yourself will take the book's lines again — the crop and cut ${their} `
+            + 'side of the book is set to.',
+            'The lines you placed on them go, and the marks go with them: every global from here '
+            + 'reaches those pages.',
+            'The book\'s own lines do not change and nothing goes back to the original — Reset '
+            + 'every crop is the act that does that.',
+            'A page whose side of the book has nothing to give it, or whose frame is a different '
+            + 'shape, keeps the lines it has and gives up its mark all the same.',
+          ],
+      confirm: 'Give them all back',
+    });
+    if (agreed) this.captures.followAllAgain();
   }
 
   /**
@@ -734,129 +922,33 @@ export class CaptureViewComponent {
    * markup would look wrong.
    */
   protected setTwoPages(photoId: string, on: boolean): void {
+    /*
+     * READ BEFORE THE ACT, because both branches can mark the photograph: a cut
+     * placed down the middle (with no book's cut to take) is a placement, and a
+     * rejoin always is. Re-asking afterwards would find the tick off and drop
+     * the propagation — and worse, would leave the box unticking itself under a
+     * hand that had only said "this one is a spread too".
+     */
+    const leading = this.global();
     if (on) this.captures.cutHere(photoId);
     else this.captures.clearSplit(photoId);
+    if (leading) this.lead(photoId);
   }
 
-  /**
-   * TURN THE REST OF THE BOOK, and let the button say so for a moment.
+  /*
+   * FIVE MODAL PRESSES WERE ANSWERED HERE AND ALL FIVE ARE GONE (Wave 51).
    *
-   * ── Tied to the ACT, not to the click ───────────────────────────────────────
+   * `turnTheRest` (the bulk turn), `record` and `applyAll` (the book's standing,
+   * written and written-then-applied), `sayRight` (the say-so) and `followAgain`
+   * (take the book's crop and follow it again), plus the `applaud` that lit each
+   * of them for a second and a half.
    *
-   * Owen: "If it did run then there should be an indication. Maybe have the
-   * button change colors and say applied or something." His eyes are on the
-   * button he pressed, three hundred pixels from the notice bar.
-   *
-   * It acknowledges only when something was actually applied. A turn where every
-   * candidate was a different shape lights nothing, because a button flashing
-   * "Turned" over a bar explaining that nothing was is a surface arguing with
-   * itself. The sentence still carries the count and the reasons; the button
-   * carries only the fact.
-   *
-   * ── THE OVERRIDE DIALOG THAT STOOD HERE IS GONE, and so is the stamp ───────
-   *
-   * This method used to open a three-answer question before the press: override
-   * the pages you set yourself, leave them alone, or dismiss. It was the right
-   * question asked on the wrong surface -- in the modal, about twenty-four
-   * photographs a person cannot see, at the instant they were to be overwritten
-   * -- and Wave 25 removed its SUBJECT rather than its wording. Complete
-   * photographs are left out of every global; release is the deliberate press
-   * that puts one back in the flow, reached from the card it is about or from
-   * the modal's *Where it stands*. There is nothing left to ask.
-   *
-   * What survives is the turn, which never had a subject: it overwrites nobody's
-   * corners, so it never raised the question.
+   * Everything they did survives, reached from the state rather than from a row
+   * of buttons: `turnWithTheBook`, `leadTheBook` and `matchTheOthers`, all three
+   * driven by the Global tick or by the gesture it governs. The say-so is the
+   * tick unticked — it said "this one is mine" and then STEPPED, which is the
+   * one thing a person claiming a page is usually not about to do.
    */
-  protected turnTheRest(photoId: string, gesture: ApplyToAll): void {
-    const outcome = this.captures.applyToAll(photoId, gesture);
-    if (outcome.applied === 0) return;
-    this.applaud('turn');
-  }
-
-  /**
-   * THIS PHOTOGRAPH'S CROP OR CUT BECOMES THE BOOK'S — and nothing propagates.
-   *
-   * Which of the two is the BUTTON'S answer rather than a second reading of the
-   * pass here. The modal drew one control with one label and knows which one it
-   * drew; asking the service again would be two surfaces deciding independently
-   * what a single press meant, which is exactly the shape Wave 24's
-   * shape-shifting primary had.
-   */
-  protected record(photoId: string, which: 'crop' | 'cut'): void {
-    if (which === 'cut') this.captures.recordCut(photoId);
-    else this.captures.recordCrop(photoId);
-    this.applaud('record');
-  }
-
-  /**
-   * RECORD AND APPLY, ONE PRESS -- Owen's own friction (2026-08-22): the
-   * record lived in the modal and the Apply on the rail, and nothing in the
-   * modal said so. Two doors underneath, unchanged and in order: the record,
-   * then the SAME Apply the rail presses, whose announce says what it touched.
-   */
-  protected applyAll(photoId: string, which: 'crop' | 'cut'): void {
-    if (which === 'cut') {
-      this.captures.recordCut(photoId);
-      this.captures.applyCuts();
-    } else {
-      this.captures.recordCrop(photoId);
-      this.captures.applyCrops();
-    }
-    this.applaud('stamp');
-  }
-
-  /**
-   * *THIS PAGE IS RIGHT — NEXT*: complete this photograph, then step on.
-   *
-   * ── The acknowledgement is the STEP, except at the end of the walk ────────
-   *
-   * Ordinarily the picture changes, the strip's lit frame moves and a tick
-   * appears on the one just left, which is three signals and needs no fourth --
-   * and a button that lit up green would be lighting up on the page a person had
-   * moved TO, about a decision they made about the page before it.
-   *
-   * On the last photograph there is nowhere to step, so the press would have no
-   * visible outcome at all beyond a dot appearing in the strip. That is the one
-   * case the button says so itself.
-   */
-  protected sayRight(photoId: string): void {
-    this.captures.markComplete(photoId);
-    if (this.walkIndex() < this.walk().length - 1) this.step(1);
-    else this.applaud('right');
-  }
-
-  /**
-   * FOLLOW THE BOOK AGAIN — take the book's crop now, and move with it after.
-   *
-   * ── ONE DOOR, AND THE SECOND HALF IS ALREADY INSIDE IT ────────────────────
-   *
-   * This looks like it should be *Match the others* followed by a release, and
-   * it is not: `wearing` -- the one body that puts a standing on a photograph --
-   * deletes the stored `complete` and clears every page's `byHand` as part of
-   * the act, on the argument that a page which has just taken the book's crop is
-   * a FOLLOWER BY CONSTRUCTION and a stored answer beside that could only
-   * contradict it. So the press already leaves the photograph moving with the
-   * book, and adding a release here would write an explicit `false` where the
-   * derive gives the same answer for free -- "a release nobody pressed", in that
-   * function's own words.
-   *
-   * Which is why the wording could be changed at all. Wave 24 called this *Match
-   * the others* because there was no noun on the other side of it; there is one
-   * now, and the label can say what a person watches happen.
-   */
-  protected followAgain(photoId: string): void {
-    this.captures.matchTheOthers(photoId);
-  }
-
-  /** Light the button that was pressed, for long enough to read. */
-  private applaud(what: 'turn' | 'record' | 'stamp' | 'right'): void {
-    if (this.applauseTimer !== null) clearTimeout(this.applauseTimer);
-    this.justApplied.set(what);
-    this.applauseTimer = setTimeout(() => {
-      this.justApplied.set(null);
-      this.applauseTimer = null;
-    }, ACKNOWLEDGED_FOR_MS);
-  }
 
   /**
    * Mint, and then let both surfaces that name the current book catch up.
