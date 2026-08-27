@@ -31,6 +31,7 @@ import {
   narrationTtsStep,
   type NarrationRunBook,
   type NarrationRunSettings,
+  type NarrationRunStages,
   type NarrationStepPlan,
 } from '@shared/queue/narration-run';
 
@@ -42,6 +43,7 @@ import {
 export type {
   NarrationRunBook,
   NarrationRunSettings,
+  NarrationRunStages,
   NarrationRvcSettings,
 } from '@shared/queue/narration-run';
 
@@ -64,6 +66,11 @@ function asJobRequest(plan: NarrationStepPlan): CreateJobRequest {
     variantId: plan.variantId,
     ...(plan.bfpPath === undefined ? {} : { bfpPath: plan.bfpPath }),
     ...(plan.projectDir === undefined ? {} : { projectDir: plan.projectDir }),
+    // What this step reads when nothing precedes it. Carried only when the
+    // description said so — `QueueService.addJob` reads its absence as "this run
+    // starts by reading the document it names", which is what every other kind
+    // of job in this app queues.
+    ...(plan.sourceRef === undefined ? {} : { sourceRef: plan.sourceRef }),
     metadata: { ...plan.metadata },
     config: plan.config as CreateJobRequest['config'],
   };
@@ -87,12 +94,18 @@ export function narrationRvcRequest(
   return plan === null ? null : asJobRequest(plan);
 }
 
-/** Combine the rendered sentences into the M4B. */
+/**
+ * Combine the rendered sentences into the M4B.
+ *
+ * `registerAsNewVariant` is the caller's to answer because only the caller knows
+ * whether its run also RENDERED those sentences — see the shared builder.
+ */
 export function narrationReassemblyRequest(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
+  registerAsNewVariant: boolean,
 ): CreateJobRequest {
-  return asJobRequest(narrationReassemblyStep(book, settings));
+  return asJobRequest(narrationReassemblyStep(book, settings, registerAsNewVariant));
 }
 
 /**
@@ -104,7 +117,7 @@ export function narrationReassemblyRequest(
 export function buildNarrationJobs(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
-  what: { narrate: boolean; assemble: boolean },
+  stages: NarrationRunStages,
 ): CreateJobRequest[] {
-  return buildNarrationSteps(book, settings, what).map(asJobRequest);
+  return buildNarrationSteps(book, settings, stages).map(asJobRequest);
 }

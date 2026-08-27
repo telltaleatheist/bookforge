@@ -6175,7 +6175,11 @@ export class LLWizardComponent implements OnInit {
         const settings = this.narrationRunSettings(outputDir);
         const rvc = narrationRvcRequest(book, settings);
         if (rvc !== null) requests.push(rvc);
-        requests.push(narrationReassemblyRequest(book, settings));
+        // Into the project's audiobook slot, not beside it. This arm renders the
+        // sentences it assembles (`wantsTts`), so however many passes it runs it
+        // produced ONE audiobook — a second version is what a run that converts
+        // sentences already on disk makes, and this wizard never composes one.
+        requests.push(narrationReassemblyRequest(book, settings, false));
       } else if (this.cachedSession()) {
         // MODE B: no narration in this run — reassemble the cached session
         const session = this.cachedSession();

@@ -4,7 +4,9 @@
 
 import { AIProvider } from '../../../core/models/ai-config.types';
 import type { PassJobConfig } from '@shared/processing/pass-types';
-import type { FoundryJobLineage, JobType as EngineJobType } from '@shared/queue/engine-types';
+import type {
+  ArtifactRef, FoundryJobLineage, JobType as EngineJobType,
+} from '@shared/queue/engine-types';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -861,6 +863,22 @@ export interface CreateJobRequest {
    * retired.
    */
   variantId?: string;
+  /**
+   * WHAT THE FIRST STEP OF THIS RUN READS, when it is not the document above.
+   *
+   * The engine refuses a chain at COMPOSE time whose first step reads a kind its
+   * source does not provide (`checkLineage`, electron/queue-engine.ts), and this
+   * door handed it `{ kind: 'epub' }` for every job it ever queued — true of
+   * everything that starts by reading a book, and false of a run that starts by
+   * converting sentences a narration left cached weeks ago. Such a run is
+   * refused before it can explain itself unless the caller says otherwise.
+   *
+   * ABSENT MEANS "this run starts by reading the document it names", which is
+   * what it has always meant here — not "look one up". It is only ever consulted
+   * for the step that has no parent; a request appended onto an existing run
+   * reads that run's last step and this is ignored.
+   */
+  sourceRef?: ArtifactRef;
   // Job grouping for multi-step workflows
   parentJobId?: string;
   workflowId?: string;
