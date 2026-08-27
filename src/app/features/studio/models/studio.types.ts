@@ -198,21 +198,18 @@ export interface StudioItem {
  * Editor and Listen are buttons that open their own windows, not tabs.
  */
 // Book view tabs. Internal values kept for continuity:
-//   'files' = Versions tab, 'audiobook' = Process tab (unified pipeline wizard),
-//   Content analysis is configured in a source-locked modal; 'analytics' = job
-//   performance history (timing/throughput per stage).
+//   'files' = Versions tab, 'audiobook' = the Correct sentences surface (it was
+//   the Process pipeline wizard's slot until that page was erased on
+//   2026-08-27), Content analysis is configured in a source-locked modal;
+//   'analytics' = job performance history (timing/throughput per stage).
 //   'language-learning' is legacy/unused from the UI.
 export type MainTab = 'files' | 'content' | 'audiobook' | 'language-learning' | 'analytics' | 'skipped';
 
-/**
- * Sub-tabs under Audiobook main tab
+/*
+ * `AudiobookSubTab` and `LanguageLearningSubTab` went with the Process wizard
+ * on 2026-08-27. They named the steps INSIDE that page, and nothing else ever
+ * held one.
  */
-export type AudiobookSubTab = 'process' | 'stream' | 'play' | 'review' | 'skipped' | 'chapters';
-
-/**
- * Sub-tabs under Language Learning main tab
- */
-export type LanguageLearningSubTab = 'process' | 'play' | 'review';
 
 /**
  * Legacy workflow state - kept for backwards compatibility during refactor
@@ -230,9 +227,6 @@ export type StudioWorkflowState =
   | 'chapters'   // Chapter recovery
   | 'analytics'  // Processing analytics
   | 'bilingual'; // Bilingual sentence cache management
-
-// Steps within the Process workflow
-export type ProcessStep = 'cleanup' | 'translate' | 'tts';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Language Configuration (for articles)

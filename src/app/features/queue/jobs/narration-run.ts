@@ -19,16 +19,14 @@
  * wraps the same plans differently — which is precisely why it stayed behind
  * while the description left.
  *
- * The two callers (the Process page and the TTS copy's Process modal) see no
- * change: the same three functions, the same types, the same refusals, thrown
- * from the same place before anything is queued.
+ * ONE CALLER NOW. The Process page went on 2026-08-27 and the narration modal
+ * is the only door in this window, so what is left here is the whole-run
+ * builder and the types — same description, same refusals, thrown from the same
+ * place before anything is queued.
  */
 import type { CreateJobRequest } from '../models/queue.types';
 import {
   buildNarrationSteps,
-  narrationReassemblyStep,
-  narrationRvcStep,
-  narrationTtsStep,
   type NarrationRunBook,
   type NarrationRunSettings,
   type NarrationRunStages,
@@ -76,37 +74,19 @@ function asJobRequest(plan: NarrationStepPlan): CreateJobRequest {
   };
 }
 
-/** Read the book aloud. Refuses by name before anything is built. */
-export function narrationTtsRequest(
-  book: NarrationRunBook,
-  settings: NarrationRunSettings,
-  assembleAfter: boolean,
-): CreateJobRequest {
-  return asJobRequest(narrationTtsStep(book, settings, assembleAfter));
-}
-
-/** Re-render the sentences through an RVC voice model, or null for no pass. */
-export function narrationRvcRequest(
-  book: NarrationRunBook,
-  settings: NarrationRunSettings,
-): CreateJobRequest | null {
-  const plan = narrationRvcStep(book, settings);
-  return plan === null ? null : asJobRequest(plan);
-}
-
-/**
- * Combine the rendered sentences into the M4B.
+/*
+ * THE THREE PER-STEP WRAPPERS ARE GONE (2026-08-27).
  *
- * `registerAsNewVariant` is the caller's to answer because only the caller knows
- * whether its run also RENDERED those sentences — see the shared builder.
+ * `narrationTtsRequest`, `narrationRvcRequest` and `narrationReassemblyRequest`
+ * existed for ONE caller: the Process wizard, which composed a run a step at a
+ * time because it could interleave those steps with a pass chain. That page was
+ * erased in favour of the narration modal, which asks for a whole run — so the
+ * only door left is `buildNarrationJobs`, and three exported ways to build half
+ * of a run is three chances to build a different half.
+ *
+ * The STEP builders they wrapped are untouched in shared/queue/narration-run.ts:
+ * main's own door still assembles the run from them for Foundry's press.
  */
-export function narrationReassemblyRequest(
-  book: NarrationRunBook,
-  settings: NarrationRunSettings,
-  registerAsNewVariant: boolean,
-): CreateJobRequest {
-  return asJobRequest(narrationReassemblyStep(book, settings, registerAsNewVariant));
-}
 
 /**
  * The whole run, in the order it must execute: narration, enhancement, assembly.

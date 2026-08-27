@@ -650,6 +650,19 @@ export class StudioService {
       }
       this._error.set(null);
 
+      // WHICH file a Process press on this article narrates — main's answer,
+      // the same one books get and computed for every project it returns. It is
+      // read here because an article's Finalize opens the narration modal on
+      // it: without it that door would have to pick a version itself, which is
+      // a second rule for "which file does a run read" and the wrong kind of
+      // second. A missing MAP is an out-of-date main process, said in the same
+      // voice loadBooks says it; a missing ENTRY is the real answer "this
+      // article has no EPUB to narrate yet".
+      if (!result.ttsTargets) {
+        throw new Error('manifestList returned no TTS targets — main process out of date');
+      }
+      const ttsTargets = result.ttsTargets;
+
       const projectsPath = this.libraryService.projectsPath();
       if (!projectsPath) return;
 
@@ -763,6 +776,9 @@ export class StudioService {
           redoStack: (editor?.redoStack as EditAction[] | undefined) || [],
           appliedPasses,
           hasCleaned,
+          // Absent for an article main cannot name one file for — left off the
+          // row entirely rather than carried as a null, as on books.
+          ttsTarget: ttsTargets[manifest.projectId],
           archived: manifest.archived,
           sortOrder: manifest.sortOrder,
         };

@@ -269,23 +269,13 @@ export interface SessionCacheInfo {
 // Wizard Step Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-/**
- * The wizard's pages are `tts → assembly → review`.
- *
- * 'passes' left on 2026-08-08 with the page it named (Owen: "it isn't a pipeline
- * anymore really — the user is just defining tts and assembly instructions").
- * By the time anybody presses Process the book has already been read, copied and
- * curated: there is one working copy, the passes that rewrite it are started from
- * the picker, and what they did is recorded on the book. So the flow opens on the
- * first question it still has, which is what voice reads it.
- *
- * 'cleanup' and 'translate' are NOT pages either, and never were `currentStep`
- * values. They survive here as the keys the sentence-aligned (language-learning)
- * pipeline tracks its two sub-stages under, because that pipeline still submits a
- * cleanup job and a per-language translation job and needs to say, separately,
- * whether each is part of the run.
+/*
+ * `LLWizardStep` named the wizard's pages (`tts → assembly → review`, plus two
+ * keys the bilingual half tracked its sub-stages under). The wizard was erased
+ * on 2026-08-27 in favour of the narration modal, which has no pages — three
+ * tabs, each carrying its own check — so the type went with it. Nothing else
+ * ever held one.
  */
-export type LLWizardStep = 'cleanup' | 'translate' | 'tts' | 'assembly' | 'review';
 
 export interface SourceDropdownOption {
   value: string;                // "latest" or actual path

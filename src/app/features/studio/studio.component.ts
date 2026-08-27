@@ -7,7 +7,7 @@ import {
   DesktopSelectItems
 } from '../../creamsicle-desktop';
 import { StudioService } from './services/studio.service';
-import { StudioItem, StudioItemType, MainTab, AudiobookSubTab, LanguageLearningSubTab, ProcessStep } from './models/studio.types';
+import { StudioItem, StudioItemType, MainTab } from './models/studio.types';
 import { sortStudioItems } from './models/studio-sort';
 import { StudioListComponent } from './components/studio-list/studio-list.component';
 import { StudioBrowseComponent } from './components/studio-browse/studio-browse.component';
@@ -18,14 +18,14 @@ import { AnalyticsPanelComponent } from '../audiobook/components/analytics-panel
 import { ProjectAnalytics } from '../../core/models/analytics.types';
 import { AddModalComponent } from './components/add-modal/add-modal.component';
 import { ContentEditorComponent } from './components/content-editor/content-editor.component';
-import { LLWizardComponent } from '../language-learning/components/ll-wizard/ll-wizard.component';
 import { CorrectSentencesComponent } from '../correct-sentences/correct-sentences.component';
+import { NarrationDialogService } from './services/narration-dialog.service';
+import type { TtsTarget } from '../../core/models/manifest.types';
 
 // Import existing audiobook components
 import { MetadataEditorComponent, EpubMetadata } from '../audiobook/components/metadata-editor/metadata-editor.component';
 import { TTSSettings } from './models/tts.types';
 import { SkippedChunksPanelComponent } from '../audiobook/components/skipped-chunks-panel/skipped-chunks-panel.component';
-import { DiffRequest } from './components/project-files/project-files.component';
 
 import { ElectronService } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
@@ -40,8 +40,13 @@ import { isBookPath } from '@shared/document/book-path';
  * StudioComponent - Unified workspace for books and articles
  *
  * Two views: Browse (cover grid) and Workspace (list + book tabs).
- * Book tabs: Versions | Content (articles) | Process (unified pipeline wizard) |
- * Listen (play/stream). Content analysis opens as a source-locked modal.
+ * Book tabs: Versions | Content (articles) | Analytics | Skipped, plus Listen
+ * (its own window). Content analysis opens as a source-locked modal, and so does
+ * processing: the narration modal is the one door onto a run, opened from the
+ * Versions page, the Browse card and an article's Finalize. The Process pipeline
+ * page that used to be a tab here was erased on 2026-08-27; what is left in its
+ * slot is the Correct sentences surface, which is entered from one button and
+ * leaves the way it came.
  */
 @Component({
   selector: 'app-studio',
@@ -55,7 +60,6 @@ import { isBookPath } from '@shared/document/book-path';
     StudioListComponent,
     AddModalComponent,
     ContentEditorComponent,
-    LLWizardComponent,
     CorrectSentencesComponent,
     MetadataEditorComponent,
     SkippedChunksPanelComponent,
@@ -255,15 +259,16 @@ import { isBookPath } from '@shared/document/book-path';
                     Content
                   </button>
                 }
-                <!-- The Process page has no tab of its own (Owen, 2026-08-10:
-                     "the user doesnt need access to the processing page through
-                     the tab along the top. that tab can go"). Its doors are the
-                     Process buttons on the versions page and the narration
-                     modal's "More options" line — goToProcessing() still lands
-                     here, the strip just doesn't offer it cold. -->
+                <!-- Correct sentences is not a place you go, it is a thing you
+                     are doing: entered only from the Versions page's own button
+                     (Owen, 2026-08-10: "the user doesnt need access to the
+                     processing page through the tab along the top"), so the
+                     strip shows where you are without offering to come here
+                     cold. The Process wizard that used to share this slot was
+                     erased on 2026-08-27. -->
                 @if (mainTab() === 'audiobook') {
                   <button class="main-tab active">
-                    Process
+                    Correct sentences
                   </button>
                 }
                 <button
@@ -337,12 +342,6 @@ import { isBookPath } from '@shared/document/book-path';
                 }
               </div>
 
-              <!-- Disabled tab message -->
-              @if (disabledTabMessage()) {
-                <div class="disabled-tab-message">
-                  {{ disabledTabMessage() }}
-                </div>
-              }
             </div>
 
             <!-- Tab Content -->
@@ -396,60 +395,27 @@ import { isBookPath } from '@shared/document/book-path';
                 />
               }
 
-              <!-- Process Tab (Standard wizard or Bilingual/Language-Learning wizard) -->
+              <!-- Correct sentences — the ONE thing this slot still hosts.
+                   The Process pipeline wizard that used to share it was erased
+                   on 2026-08-27 (Owen: the Process tab goes "completely in
+                   favour of the narration/assembly modal"), and everything it
+                   could do is now either a door onto that modal or a pass the
+                   picker owns. Correcting individual sentences is neither: it
+                   is an audition surface with its own component, entered only
+                   from the Versions page's "Correct sentences", and Close goes
+                   back to the page it was entered from. -->
               @if (mainTab() === 'audiobook') {
-                @if (correctSentencesActive()) {
-                  <app-correct-sentences
-                    [projectDir]="getProjectDir()"
-                    [title]="selectedMetadata()?.title || ''"
-                    [author]="selectedMetadata()?.author || ''"
-                    [year]="selectedMetadata()?.year || ''"
-                    [coverPath]="selectedItem()?.coverPath || ''"
-                    [outputFilename]="selectedMetadata()?.outputFilename || ''"
-                    [audiobookFolder]="getAudiobookFolder()"
-                    (close)="correctSentencesActive.set(false)"
-                    (queued)="onProcessQueued(); correctSentencesActive.set(false)"
-                  />
-                } @else if (processEpubPath()) {
-                  <app-ll-wizard
-                    [epubPath]="processEpubPath()"
-                    [originalEpubPath]="selectedItem()?.epubPath || ''"
-                    [title]="selectedMetadata()?.title || ''"
-                    [projectTitle]="selectedMetadata()?.title || ''"
-                    [author]="selectedMetadata()?.author || ''"
-                    [year]="selectedMetadata()?.year || ''"
-                    [coverPath]="selectedItem()?.coverPath || ''"
-                    [sourceType]="selectedItem()?.sourceType || ''"
-                    [contributors]="selectedItem()?.contributors"
-                    [itemType]="selectedItem()?.type || 'book'"
-                    [projectId]="selectedItem()?.id || ''"
-                    [projectDir]="getProjectDir()"
-                    [audiobookFolder]="getAudiobookFolder()"
-                    [initialSourceLang]="selectedItem()?.sourceLang || selectedItem()?.language || 'en'"
-                    [cachedSession]="cachedSession()"
-                    [outputFilename]="selectedMetadata()?.outputFilename || ''"
-                    [refreshTrigger]="filesRefreshTrigger()"
-                    [continueRequest]="continueRequest()"
-                    [narrationRequest]="narrationRequest()"
-                    (queued)="onProcessQueued()"
-                  />
-                } @else {
-                  <div class="empty-state-panel">
-                    <div class="icon">📄</div>
-                    <p>No EPUB available for processing.</p>
-                    @if (selectedItem()?.type === 'article') {
-                      <p class="hint">Click "Finalize" on the Content tab to generate an EPUB.</p>
-                    } @else {
-                      <!-- A book reaches here when NO source document was found on
-                           disk: no exported/cleaned EPUB, no archived original, no
-                           legacy source/original.*. Say so. This used to be hidden by
-                           a made-up source/original.epub path, which made the wizard
-                           available and then failed inside the job. -->
-                      <p class="hint">This book has no source document on disk — no exported EPUB, and no
-                        original in its archive. Add one on the Versions tab (Add version), then process it.</p>
-                    }
-                  </div>
-                }
+                <app-correct-sentences
+                  [projectDir]="getProjectDir()"
+                  [title]="selectedMetadata()?.title || ''"
+                  [author]="selectedMetadata()?.author || ''"
+                  [year]="selectedMetadata()?.year || ''"
+                  [coverPath]="selectedItem()?.coverPath || ''"
+                  [outputFilename]="selectedMetadata()?.outputFilename || ''"
+                  [audiobookFolder]="getAudiobookFolder()"
+                  (close)="closeCorrectSentences()"
+                  (queued)="onProcessQueued(); closeCorrectSentences()"
+                />
               }
 
               <!-- Analytics Tab (job performance history — timing/throughput per stage) -->
@@ -1153,17 +1119,6 @@ import { isBookPath } from '@shared/document/book-path';
       }
     }
 
-    .disabled-tab-message {
-      padding: 8px 16px;
-      background: rgba(234, 179, 8, 0.15);
-      border: 1px solid rgba(234, 179, 8, 0.3);
-      border-radius: 6px;
-      color: #eab308;
-      font-size: 12px;
-      margin: 8px 16px;
-      animation: fadeIn 0.2s ease;
-    }
-
     @keyframes fadeIn {
       from { opacity: 0; transform: translateY(-4px); }
       to { opacity: 1; transform: translateY(0); }
@@ -1556,6 +1511,14 @@ export class StudioComponent implements OnInit, OnDestroy {
   private readonly settingsService = inject(SettingsService);
   /** Where receipts and partial-condition reports go instead of a modal. */
   private readonly notices = inject(NoticeService);
+  /**
+   * The narration modal, hosted once in the shell.
+   *
+   * This tab's two Process doors — the Browse card and an article's Finalize —
+   * open it rather than navigating anywhere, since 2026-08-27 when the Process
+   * page they used to open was erased.
+   */
+  private readonly narrationDialog = inject(NarrationDialogService);
 
   @ViewChild(ContentEditorComponent) contentEditor?: ContentEditorComponent;
 
@@ -1684,8 +1647,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   // Tab navigation
   readonly mainTab = signal<MainTab>('files');
-  readonly audiobookSubTab = signal<AudiobookSubTab>('process');
-  readonly llSubTab = signal<LanguageLearningSubTab>('process');
 
   // Four-tab book view modes.
   readonly versionsPanel = signal<'none' | 'skipped'>('none'); // inline panel in Versions tab
@@ -1694,12 +1655,10 @@ export class StudioComponent implements OnInit, OnDestroy {
   readonly analysisTarget = signal<StudioAnalysisTarget | null>(null);
   readonly versionsComparing = signal(false); // a version Compare is open — go full-height, hide metadata editor
 
-  readonly processStep = signal<ProcessStep>('cleanup');
   // IDs of items whose metadata save is in flight. Per-item so saving book A
   // then switching to book B doesn't show B's editor as "Saving...".
   readonly savingMetadataIds = signal<Set<string>>(new Set());
   readonly finalizingContent = signal<'idle' | 'saving' | 'done'>('idle');
-  readonly disabledTabMessage = signal<string | null>(null);
   readonly filesRefreshTrigger = signal<number>(0);
 
   // Analytics tab (job performance history), loaded lazily on tab open.
@@ -1723,23 +1682,19 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Export status toast
   readonly exportStatus = signal<string | null>(null);
 
-  // Inline diff view (shown in Files tab)
-  readonly diffPaths = signal<DiffRequest | null>(null);
-
-  // Cached TTS session for reassembly
-  readonly cachedSession = signal<any>(null);
-
-  // Correct Sentences flow active (swaps the Audiobook tab content in-place)
-  readonly correctSentencesActive = signal(false);
-
-  // Bumped when the user hits "Continue" on the Versions panel — the Processing
-  // wizard watches this to jump to the TTS step with the original run's settings.
-  readonly continueRequest = signal(0);
-
-  // Bumped when narration is asked for by a document row's Process button. The wizard
-  // watches this to stand on the TTS step. Distinct from continueRequest, which
-  // resumes an interrupted render and refuses when there is nothing to resume.
-  readonly narrationRequest = signal(0);
+  /*
+   * WHAT WENT WITH THE PROCESS WIZARD (2026-08-27).
+   *
+   * `diffPaths`, `cachedSession` (+ its effect and `checkCachedSession`),
+   * `correctSentencesActive`, `continueRequest`, `narrationRequest`,
+   * `narrationDocument`/`processEpubPath`, the two sub-tab signals and
+   * `disabledTabMessage` were all wiring to ONE component that no longer
+   * exists — bumps it watched, a session it was handed, a document it was
+   * pointed at. None of them was read by anything else, and a signal nobody
+   * reads is a fact nobody maintains. The narration modal asks main for the
+   * cached session itself, which is how it and the queue steps cannot disagree
+   * about what is on disk.
+   */
 
   /**
    * The project list has been read at least once.
@@ -1771,16 +1726,6 @@ export class StudioComponent implements OnInit, OnDestroy {
       return;
     }
     this.openInWorkspace(item);
-  }, { allowSignalWrites: true });
-
-  // Watch selectedItem changes to check for cached sessions
-  private readonly cachedSessionEffect = effect(() => {
-    const item = this.selectedItem();
-    if (item?.projectDir) {
-      this.checkCachedSession(item.projectDir);
-    } else {
-      this.cachedSession.set(null);
-    }
   }, { allowSignalWrites: true });
 
   // Full-resolution cover for the metadata editor preview, loaded on demand when a
@@ -2010,30 +1955,12 @@ export class StudioComponent implements OnInit, OnDestroy {
     return item.cleanedEpubPath || item.epubPath || '';
   });
 
-  /**
-   * The file a Process button NAMED, when the user reached this tab through one.
-   *
-   * Null is the ordinary state — the Process tab clicked directly, or Continue
-   * and Assemble, none of which is a statement about a document. It is not a
-   * default for a failed lookup: it is the difference between "narrate this
-   * file" and "narrate this project's book", and those are two genuinely
-   * different requests now that the versions page shows both the book and the
-   * narration copy cut from it as their own lines.
-   *
-   * Cleared whenever the selected book changes, because a path from another
-   * project's page is not this one's document.
+  /*
+   * `narrationDocument` / `processEpubPath` went with the wizard. They existed
+   * to hold the file a Process button named until a PAGE could be handed it,
+   * and the modal takes it as an argument instead — the press carries the
+   * whole target now, so there is nothing to park.
    */
-  private readonly narrationDocument = signal<string | null>(null);
-
-  /**
-   * The document the Process wizard is given.
-   *
-   * The named file when a Process button named one, and the project's own book
-   * otherwise. Not a fallback for a missing value — the two are separate
-   * requests, and which one was made is recorded rather than guessed.
-   */
-  readonly processEpubPath = computed<string>(() =>
-    this.narrationDocument() ?? this.currentEpubPath());
 
   /**
    * True when the user hasn't finalized via the editor yet (no export recorded).
@@ -2212,8 +2139,6 @@ export class StudioComponent implements OnInit, OnDestroy {
 
   setMainTab(tab: MainTab): void {
     this.mainTab.set(tab);
-    this.disabledTabMessage.set(null);
-    this.diffPaths.set(null);
     if (tab === 'analytics') {
       void this.loadAnalytics();
     }
@@ -2256,70 +2181,25 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
-  setAudiobookSubTab(tab: AudiobookSubTab): void {
-    this.audiobookSubTab.set(tab);
-    this.disabledTabMessage.set(null);
-    if (tab !== 'review') {
-      this.diffPaths.set(null);
-    }
-  }
-
-  setLLSubTab(tab: LanguageLearningSubTab): void {
-    this.llSubTab.set(tab);
-    this.disabledTabMessage.set(null);
-  }
-
-  /** Jump to the Processing (audiobook) tab from the Versions cache row. The
-   *  ll-wizard there detects the cached/partial session and offers the same
-   *  resume ("Continue", original settings via checkResumeFromDir) and
-   *  assemble-from-cache flows — so Versions delegates rather than duplicating
-   *  job-launch logic. */
-  goToProcessing(): void {
+  /**
+   * Open the Correct Sentences surface, from the Versions "rendered sentences"
+   * row — its only door.
+   *
+   * The tab IS the state now. It used to be a tab switch plus a
+   * `correctSentencesActive` flag, because the slot was shared with the Process
+   * wizard and something had to say which of the two was showing; with the
+   * wizard erased there is only one answer and the flag was a second way to
+   * spell it.
+   */
+  startCorrectSentences(): void {
     this.mainTab.set('audiobook');
     this.versionsPanel.set('none');
     this.versionsComparing.set(false);
   }
 
-  /** Launch the Correct Sentences pipeline from the Versions "rendered sentences" row.
-   *  Mirrors goToProcessing's tab switch, then activates the in-place pipeline. */
-  startCorrectSentences(): void {
-    this.goToProcessing();
-    this.correctSentencesActive.set(true);
-  }
-
-  /**
-   * Narration: the Process tab, with the wizard standing on the TTS step.
-   *
-   * The one destination both doors go to — a document row's Process button and
-   * the picker's Next (docs/PIPELINE_V2_PLAN.md, Phase C). Written once here so
-   * "Process" cannot come to mean two slightly different places depending on
-   * which button was pressed. It reuses goToProcessing exactly as Continue and
-   * Assemble do; the bump is what the wizard listens for.
-   */
-  goToNarration(document?: string): void {
-    this.goToProcessing();
-    // WHICH file, when the caller named one. The versions page's Process button
-    // does (Owen, 2026-08-09: "the tts pipeline knows exactly which file its
-    // working with because the user came to the tts page FROM the button on that
-    // document"), and the wizard is handed that file rather than looking one up.
-    // Cleared when it did not, so the previous press cannot leak into a Process
-    // reached by another door.
-    this.narrationDocument.set(document ?? null);
-    // Re-read the selected project first. The versions page re-measures itself
-    // on `document:stage-finished` and the ITEM does not, so a book built in the
-    // picker a moment ago can be showing an EPUB row here while the record this
-    // tab reads (`currentEpubPath`) still predates it — and the Process tab
-    // answers an empty one with "No EPUB available for processing".
-    void this.onFileChanged();
-    this.narrationRequest.update(n => n + 1);
-  }
-
-  /** Versions "Continue": open the Processing tab AND tell the wizard to enter Continue
-   *  mode — land on the TTS step, disable Cleanup/Translate, and pre-fill the original
-   *  run's settings (all editable). Distinct from Assemble, which just opens the tab. */
-  onContinueJob(): void {
-    this.goToProcessing();
-    this.continueRequest.update(n => n + 1);
+  /** Leave it, back to the Versions page it was entered from. */
+  closeCorrectSentences(): void {
+    this.mainTab.set('files');
   }
 
   /** Open the dedicated player window for the selected book. When a specific
@@ -2329,28 +2209,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     const item = this.selectedItem();
     if (!item?.projectDir) return;
     void this.electronService.openListenWindow(item.projectDir, audioPath);
-  }
-
-  handleSubTabClick(
-    mainTab: 'audiobook' | 'language-learning',
-    subTab: AudiobookSubTab | LanguageLearningSubTab,
-    isEnabled: boolean | undefined,
-    disabledMessage: string
-  ): void {
-    if (isEnabled) {
-      if (mainTab === 'audiobook') {
-        this.setAudiobookSubTab(subTab as AudiobookSubTab);
-      } else {
-        this.setLLSubTab(subTab as LanguageLearningSubTab);
-      }
-    } else {
-      this.disabledTabMessage.set(disabledMessage);
-      setTimeout(() => {
-        if (this.disabledTabMessage() === disabledMessage) {
-          this.disabledTabMessage.set(null);
-        }
-      }, 3000);
-    }
   }
 
   // ─────────────────────────────────────────────────────────────────────────
@@ -2363,11 +2221,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     this.versionsPanel.set('none');
     this.versionsComparing.set(false);
     this.finalizingContent.set('idle');
-    this.diffPaths.set(null);
-    // A file named by a Process button belongs to the book it was pressed on.
-    // Another book is another document, and carrying the old path across would
-    // point the Process wizard at a file that is not in this project.
-    this.narrationDocument.set(null);
   }
 
   playItem(item: StudioItem): void {
@@ -2389,18 +2242,24 @@ export class StudioComponent implements OnInit, OnDestroy {
    * Owen, 2026-08-16: "im going to need a tts processing button on the homepage
    * once i export a tts-able epub."
    *
-   * It goes through the SAME door the versions page's "More options" uses —
-   * open the book's workspace, then `goToNarration` with the file — so there is
-   * one Process destination and not a second one that drifts. WHICH file was
-   * decided in main (`ttsTarget`) and travels with the press; nothing here picks
-   * a version, and nothing downstream picks a different one, because the path
-   * names exactly one of this book's version records.
+   * It goes through the SAME door the versions page's Narrate button uses — the
+   * narration modal, opened on a complete target — so there is one Process
+   * destination and not a second one that drifts. It used to open the Process
+   * tab, which was erased on 2026-08-27; the destination changed, the rule about
+   * WHICH file did not. That was decided in main (`ttsTarget`) and travels with
+   * the press; nothing here picks a version, and nothing downstream picks a
+   * different one, because the id names exactly one of this book's records.
    *
-   * The two refusals are separate facts and are said separately. A card with no
+   * The refusals are separate facts and are said separately. A card with no
    * target draws no button at all, so reaching here without one is a bug in the
    * grid rather than a user error — logged, not shown. A target whose FILE has
    * gone is an ordinary thing (output/ is the folder a book's output delete
-   * clears) and is told to the user in the notice bar, naming the file.
+   * clears) and is told to the user in the notice bar, naming the file. A book
+   * with no project directory has nowhere to put sentences OR an audiobook, and
+   * is refused before the dialog rather than inside it.
+   *
+   * 'document' because the press was made ON a file. The card has no view of the
+   * sentence cache; the cache-only door is the Versions page's own row.
    */
   processFromBrowse(item: StudioItem): void {
     const target = item.ttsTarget;
@@ -2410,6 +2269,21 @@ export class StudioComponent implements OnInit, OnDestroy {
         + 'only drawn for a book main named one file for — this is a bug in the browse grid.');
       return;
     }
+    this.openInWorkspace(item);
+    this.openNarrationOn(item, target);
+  }
+
+  /**
+   * Open the narration modal on the file MAIN named for this project.
+   *
+   * Shared by the two doors that have an ITEM rather than a version row — the
+   * Browse card's Process and an article's Finalize. Both refusals are about
+   * the same two facts, and writing them twice is how one of them comes to say
+   * something the other does not.
+   *
+   * Always 'document': a press that names a FILE is a press about reading it.
+   */
+  private openNarrationOn(item: StudioItem, target: TtsTarget): void {
     if (!target.exists) {
       this.notices.notify(
         `“${target.title}” is not on disk any more, so there is nothing to narrate. If it was a `
@@ -2417,8 +2291,26 @@ export class StudioComponent implements OnInit, OnDestroy {
         + 'and export it again, then narrate it from there.');
       return;
     }
-    this.openInWorkspace(item);
-    this.goToNarration(target.absPath);
+    if (!item.projectDir) {
+      this.notices.notify(
+        `“${item.title}” has no project directory, so there is nowhere to put the rendered `
+        + 'sentences or the finished audiobook.');
+      return;
+    }
+    this.narrationDialog.open({
+      epubPath: target.absPath,
+      variantId: target.variantId,
+      projectDir: item.projectDir,
+      // The BOOK's title, not `ttsTarget.title`: that one falls back to a
+      // FILENAME when the version states no title of its own, and a filename is
+      // not something to tag an audiobook with.
+      title: item.title,
+      author: item.author || '',
+      year: item.year || '',
+      coverPath: item.coverPath || '',
+      outputFilename: item.outputFilename || '',
+      isArticle: item.type === 'article',
+    }, 'document');
   }
 
   // Quick "Export audiobook" from the Browse context menu.
@@ -2450,12 +2342,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     }
   }
 
-  onDiffFiles(request: DiffRequest): void {
-    this.diffPaths.set(request);
-    this.mainTab.set('audiobook');
-    this.audiobookSubTab.set('review');
-  }
-
   // ─────────────────────────────────────────────────────────────────────────
   // Helper Methods
   // ─────────────────────────────────────────────────────────────────────────
@@ -2476,27 +2362,13 @@ export class StudioComponent implements OnInit, OnDestroy {
   // Cached Session
   // ─────────────────────────────────────────────────────────────────────────
 
-  /**
-   * Read the project's cached TTS session so the LL wizard can offer
-   * Continue / start-fresh.
-   *
-   * The answer describes ONE project. Selecting another book while the read is
-   * in flight used to land A's session under B — and the wizard's Continue then
-   * resumed A's half-rendered sentences into B's run. The `forId` re-check is
-   * `editorCoverEffect`'s, two blocks up (:1720).
+  /*
+   * `checkCachedSession` was this tab reading `reassembly.getBfpSession` on
+   * every selection change, to hand the wizard a session it might offer to
+   * resume. The narration modal asks the same call itself, for the book its
+   * press named — which is both later (so it cannot be stale) and narrower (so
+   * selecting a book no longer costs a read of its session).
    */
-  async checkCachedSession(projectDir: string): Promise<void> {
-    const electron = (window as any).electron;
-    if (!electron?.reassembly?.getBfpSession) return;
-    const forDir = projectDir;
-    const result = await electron.reassembly.getBfpSession(projectDir);
-    if (this.selectedItem()?.projectDir !== forDir) return;
-    if (result.success && result.data) {
-      this.cachedSession.set(result.data);
-    } else {
-      this.cachedSession.set(null);
-    }
-  }
 
   // ─────────────────────────────────────────────────────────────────────────
   // Context Menu
@@ -3187,9 +3059,27 @@ export class StudioComponent implements OnInit, OnDestroy {
 
       this.finalizingContent.set('done');
 
-      // Navigate to Audiobook → Process
-      this.mainTab.set('audiobook');
-      this.audiobookSubTab.set('process');
+      /*
+       * FINALIZE ENDS AT THE PROCESSING DOOR.
+       *
+       * It used to switch to the Process tab, which was erased on 2026-08-27;
+       * the point of the tail is unchanged — finalizing an article is what makes
+       * it narratable, so the next thing the user wants is the run — and the
+       * door is the modal now.
+       *
+       * The item is RE-READ from the reload above rather than reused: the EPUB
+       * this finalize just wrote is exactly what the stale copy does not know
+       * about, and its Process target is the thing we are about to open on.
+       */
+      const finalized = this.studioService.getItem(item.id);
+      const target = finalized?.ttsTarget;
+      if (!finalized || !target) {
+        this.notices.notify(
+          `“${item.title}” was finalized, but the library does not yet name an EPUB to narrate `
+          + 'for it. Open its Versions tab and narrate the version you want.');
+      } else {
+        this.openNarrationOn(finalized, target);
+      }
 
       setTimeout(() => {
         this.finalizingContent.set('idle');
