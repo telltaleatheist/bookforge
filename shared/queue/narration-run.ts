@@ -40,18 +40,67 @@
  *
  * ── What it deliberately does NOT cover ─────────────────────────────────────
  *
- * Resuming a partial session, reassembling a cached one, and the optional video.
- * Each of those is a run ABOUT something that already exists on disk — a session
- * the wizard found — rather than a run about a book, and the Process page owns
+ * Resuming a NAMED partial session, and the optional video. Both are runs about
+ * a session the wizard found and can point at by path, and the Process page owns
  * finding them.
+ *
+ * Reassembling a cached session, and converting one through an RVC voice, ARE
+ * covered — since the stage flags became three (2026-08-26). Those runs name no
+ * session either: they say "this project's cached one", the steps resolve it
+ * when they run, and that is a run about a BOOK like any other here.
  */
+
+import type { ArtifactRef } from './engine-types';
 
 /** The RVC pass, when the user asked for one. */
 export interface NarrationRvcSettings {
   readonly voiceId: string;
   readonly indexRate: number;
+  /**
+   * Consonant/breath protection, and it reads BACKWARDS from every doc.
+   *
+   * urvc's pipeline gates the whole protection block on `if protect < 0.5:`
+   * (ultimate_rvc/rvc/infer/pipeline.py), so LOWER protects MORE and 0.5 turns
+   * protection off entirely. It is also a NO-OP at index rate 0, because the
+   * un-retrieved features it blends back are only cloned when retrieval runs.
+   */
   readonly protectRate: number;
   readonly nSemitones: number;
+  /**
+   * Pitch-extraction method — 'rmvpe', 'crepe' or 'crepe-tiny'.
+   *
+   * OPTIONAL MEANS "urvc's own default", which is the one shape of absence this
+   * description allows: there is a real engine answer for the question, so
+   * declining to answer it is a choice rather than a missing value. When the UI
+   * has a concrete choice it sends it.
+   */
+  readonly f0Method?: string;
+  /**
+   * f0 analysis hop, in samples. Only the crepe family reads it — rmvpe ignores
+   * it entirely — so it travels beside `f0Method` and means nothing without one.
+   * Optional in the same sense: absent is urvc's own default.
+   */
+  readonly hopLength?: number;
+}
+
+/**
+ * WHICH ACTS THIS RUN PERFORMS.
+ *
+ * Three independent facts rather than a mode, because the combinations are not a
+ * ladder: a run can read the book and stop, and a run can convert sentences that
+ * were rendered weeks ago without reading anything. The pair this replaced
+ * (`{narrate, assemble}`) could not say the difference between "narrate, then
+ * enhance, then assemble" and "narrate, then assemble" — enhancement was implied
+ * by `settings.rvc` being non-null, so turning the pass off meant erasing its
+ * settings, and a cache-only enhancement could not be asked for at all.
+ */
+export interface NarrationRunStages {
+  /** Read the book aloud. False means the sentences already exist. */
+  readonly narrate: boolean;
+  /** Re-render the sentences through an RVC voice model. */
+  readonly rvc: boolean;
+  /** Combine the sentences into the M4B. */
+  readonly assemble: boolean;
 }
 
 /** WHICH file is narrated, and what the audiobook is called. */
@@ -112,6 +161,17 @@ export interface NarrationRunSettings {
   readonly outputDir: string;
   readonly finalDenoise: boolean;
   readonly applyDeRing: boolean;
+  /**
+   * Seconds of silence to normalize BETWEEN sentences at assembly, or absent to
+   * let the session's own provenance decide.
+   *
+   * Absent is a real answer and the ordinary one: an Orpheus session normalizes
+   * to its voice's tuned value (or the visible 0.6 s default for an untested
+   * model), and a non-Orpheus session normalizes not at all, because the pad
+   * this strips is one only Orpheus bakes. A number here OVERRIDES that, which
+   * is why it is only ever set from a control the user actually moved.
+   */
+  readonly sentenceGap?: number;
   /** The enhancement pass, or null for none. */
   readonly rvc: NarrationRvcSettings | null;
   /**
@@ -168,6 +228,10 @@ export interface NarrationRvcConfig {
   readonly indexRate: number;
   readonly protectRate: number;
   readonly nSemitones: number;
+  /** Absent = urvc's own default. See `NarrationRvcSettings.f0Method`. */
+  readonly f0Method?: string;
+  /** Absent = urvc's own default; read only by the crepe family. */
+  readonly hopLength?: number;
   readonly finalDenoise: boolean;
 }
 
@@ -188,6 +252,29 @@ export interface NarrationReassemblyConfig {
   readonly excludedChapters: number[];
   readonly finalDenoise: boolean;
   readonly applyDeRing: boolean;
+  /** Absent = the session's provenance decides. See `NarrationRunSettings`. */
+  readonly sentenceGap?: number;
+  /**
+   * FILE THIS AS A SECOND AUDIOBOOK RATHER THAN AS THE PROJECT'S ONE AUDIOBOOK.
+   *
+   * True exactly when this run enhanced sentences it did not render — the book
+   * already has an audiobook made from those same sentences, and overwriting it
+   * would destroy the original to produce its alternative. A run that rendered
+   * the sentences itself produced ONE audiobook however many passes it took, so
+   * it files into the base slot as every narration always has.
+   *
+   * Stated rather than inferred downstream: the assembler cannot tell a
+   * cache-only enhancement from a fresh chain by looking at what it was handed —
+   * both arrive as a directory of sentences.
+   */
+  readonly registerAsNewVariant: boolean;
+  /**
+   * The RVC voice the sentences were converted through, when one was. It NAMES
+   * the second audiobook — its variant id, its file and its narrator tag are all
+   * this voice — so re-running the same voice replaces that version and a
+   * different voice mints another beside it.
+   */
+  readonly rvcVoiceId?: string;
 }
 
 /** What the queue row calls itself and what the M4B is tagged with. */
@@ -218,6 +305,25 @@ export interface NarrationStepPlan {
   readonly variantId: string;
   readonly bfpPath?: string;
   readonly projectDir?: string;
+  /**
+   * WHAT THIS STEP READS WHEN NOTHING IN THE RUN PRECEDES IT — set on the first
+   * step of the plan and on no other.
+   *
+   * The queue engine refuses a chain whose first step reads a kind its source
+   * does not provide, at COMPOSE time (`checkLineage`, electron/queue-engine.ts),
+   * and both doors used to hand it the document unconditionally. That is right
+   * for a run that starts by reading the book and wrong for one that starts by
+   * converting sentences: an enhancement pointed at an EPUB is refused before it
+   * can explain itself. So the description says which, because it is the side
+   * that knows which act comes first.
+   *
+   * A cache-only run's ref carries a KIND AND NO PATH on purpose. The session it
+   * reads is whichever one this project has cached, and that is a question about
+   * the disk at the moment the step runs — the steps resolve it themselves
+   * (`getBfpCachedSession`), and a path guessed at compose time would name a
+   * directory a later narration had already replaced.
+   */
+  readonly sourceRef?: ArtifactRef;
 }
 
 /**
@@ -305,6 +411,9 @@ export function narrationTtsStep(
   return {
     type: 'tts-conversion',
     epubPath: book.epubPath,
+    // It reads the document, whether or not anything precedes it — and nothing
+    // ever does, since narration is the first act of any run that performs it.
+    sourceRef: { kind: 'epub', path: book.epubPath },
     // The version travels with the file, all the way to the row in the queue. It
     // is the only thing that says which of a project's versions this render is.
     variantId: book.variantId,
@@ -345,9 +454,15 @@ export function narrationTtsStep(
  * Re-render the sentences through an RVC voice model, before assembly.
  *
  * Its own row rather than a flag on the assembly, so it shows a distinct job with
- * a per-sentence ETA. The session fields are empty on purpose: this runs after
- * the narration, and the queue discovers the session the narration actually
- * wrote rather than a path guessed an hour earlier.
+ * a per-sentence ETA.
+ *
+ * THE SESSION FIELDS ARE EMPTY ON PURPOSE, and for two different reasons now.
+ * Behind a narration, the queue discovers the session that narration actually
+ * wrote rather than a path guessed an hour earlier. FIRST in a run — converting
+ * sentences this project already has — there is no earlier step to ask, and the
+ * step resolves the project's cached session itself when it runs
+ * (`getBfpCachedSession`). Both are "ask the disk at the time", which is why one
+ * empty field serves both.
  *
  * Denoise rides HERE rather than on the assembly so it runs first — denoise, then
  * conversion, then assembly — and the assembly sees a pre-enhanced set.
@@ -376,17 +491,38 @@ export function narrationRvcStep(
       indexRate: settings.rvc.indexRate,
       protectRate: settings.rvc.protectRate,
       nSemitones: settings.rvc.nSemitones,
+      // Spread rather than sent as undefined: absent MEANS urvc's own default,
+      // and a key present with no value is a different statement to a step
+      // config that a later reader has to guess the meaning of.
+      ...(settings.rvc.f0Method === undefined ? {} : { f0Method: settings.rvc.f0Method }),
+      ...(settings.rvc.hopLength === undefined ? {} : { hopLength: settings.rvc.hopLength }),
       finalDenoise: settings.finalDenoise,
     },
   };
 }
 
-/** Combine the rendered sentences into the M4B, with its chapters and its cover. */
+/**
+ * Combine the rendered sentences into the M4B, with its chapters and its cover.
+ *
+ * `registerAsNewVariant` is a PARAMETER rather than something read off the
+ * settings, because it is a fact about the RUN — did this run also render the
+ * sentences it is assembling — and the settings describe how, not what. Its one
+ * true case is computed once, in `buildNarrationSteps`; a caller that composes
+ * its own chain (the language-learning wizard) states its answer at the call.
+ */
 export function narrationReassemblyStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
+  registerAsNewVariant: boolean,
 ): NarrationStepPlan {
   requireNarrationRun(book, settings);
+  if (registerAsNewVariant && settings.rvc === null) {
+    throw new Error(
+      'This assembly is meant to be filed as a second audiobook, but the run names no '
+      + 'voice-conversion pass — so there is nothing to tell the two versions apart. This is a bug '
+      + 'in the page that composed the run.'
+    );
+  }
   return {
     type: 'reassembly',
     bfpPath: book.projectDir,
@@ -408,8 +544,55 @@ export function narrationReassemblyStep(
       // Two opt-in assembly passes, both default OFF.
       finalDenoise: settings.finalDenoise,
       applyDeRing: settings.applyDeRing,
+      // Absent stays absent: that is what leaves provenance in charge of the gap.
+      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
+      registerAsNewVariant,
+      // Carried only when it names something: the voice is what the second
+      // audiobook is called, and an assembly filing into the base slot has no
+      // use for it.
+      ...(registerAsNewVariant ? { rvcVoiceId: settings.rvc!.voiceId } : {}),
     },
   };
+}
+
+/**
+ * REFUSE A SET OF STAGES THAT CANNOT BE A RUN, by name, before anything is built.
+ *
+ * Five combinations are runs; the rest are not, and each is refused for its own
+ * reason rather than by a rule about counts:
+ *
+ *  - NOTHING AT ALL leaves the user watching a queue they added nothing to.
+ *  - ENHANCEMENT WITHOUT ASSEMBLY produces a directory of converted sentences
+ *    under the library's tmp folder that the next step deletes and nothing else
+ *    ever reads. The conversion is real GPU work with no deliverable at the end
+ *    of it, which is worse than a refusal.
+ *  - ENHANCEMENT WITH NO VOICE has nothing to convert through. That one is
+ *    checked here as well as in the step builder because the stage flag and the
+ *    settings can disagree, and the flag is the user's answer to "do this".
+ */
+export function requireNarrationStages(
+  stages: NarrationRunStages,
+  settings: NarrationRunSettings,
+): void {
+  if (!stages.narrate && !stages.rvc && !stages.assemble) {
+    throw new Error(
+      'There is nothing to queue: this run neither reads the book, nor re-renders its sentences, '
+      + 'nor assembles an audiobook. Turn one of them on.'
+    );
+  }
+  if (stages.rvc && !stages.assemble) {
+    throw new Error(
+      'Re-rendering the sentences without assembling them would spend the whole conversion on a '
+      + 'scratch folder that is deleted straight afterwards, leaving nothing to listen to. Turn '
+      + 'assembly on as well, or turn the voice conversion off.'
+    );
+  }
+  if (stages.rvc && settings.rvc === null) {
+    throw new Error(
+      'This run is set to re-render the sentences through an RVC voice, but no voice-conversion '
+      + 'settings came with it. Pick an RVC voice or turn the conversion off.'
+    );
+  }
 }
 
 /**
@@ -417,21 +600,78 @@ export function narrationReassemblyStep(
  *
  * The steps carry no workflow, no parent and no ids: where they land is the
  * submitting caller's decision, not this file's.
+ *
+ * ── WHERE THE AUDIOBOOK IS FILED IS DECIDED HERE, ONCE ──────────────────────
+ *
+ * `registerAsNewVariant = rvc && !narrate`. A run that RENDERED the sentences it
+ * converts produced one audiobook — the conversion is a pass inside it, not a
+ * second edition — so it files into the project's audiobook slot exactly as
+ * every narration always has. A run that converted sentences ALREADY ON DISK is
+ * making an alternative to an audiobook the book already has, and overwriting
+ * the original to produce its alternative is the destruction Owen's ruling
+ * exists to prevent.
+ *
+ * Computed here rather than in the assembly builder because it is a fact about
+ * the SHAPE OF THE RUN, and this is the only function that sees the whole shape.
  */
 export function buildNarrationSteps(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
-  what: { narrate: boolean; assemble: boolean },
+  stages: NarrationRunStages,
 ): NarrationStepPlan[] {
-  if (!what.narrate && !what.assemble) {
-    throw new Error('There is nothing to queue: no narration and no assembly.');
-  }
+  requireNarrationStages(stages, settings);
   const steps: NarrationStepPlan[] = [];
-  if (what.narrate) steps.push(narrationTtsStep(book, settings, what.assemble));
-  if (what.assemble) {
+  /*
+   * THE NARRATION NEVER ASSEMBLES ITSELF HERE — `true` unconditionally, not
+   * `stages.assemble`.
+   *
+   * e2a will combine the sentences on its own unless told to skip it, and that
+   * inline assembly is invisible to this description: it produces an audiobook
+   * no `reassembly` step planned, with none of BookForge's own metadata, chapter
+   * markers or optional passes, filed straight into the project's audiobook slot.
+   *
+   * Passing `stages.assemble` through made narrate-only do exactly that. The run
+   * the user asked for was "read the book and stop" — the dialog says so in as
+   * many words, and it is the point of separating the stages at all: render the
+   * sentences overnight, audition a conversion against them later, assemble once
+   * when the voice is right. Handing back a finished audiobook instead is not a
+   * smaller version of that, it is the opposite of it, and it overwrites whatever
+   * audiobook the book already had on the way.
+   *
+   * So assembly happens in EXACTLY ONE place — the reassembly step below, when
+   * `stages.assemble` — and the narration always stops at the cached sentences.
+   * The parameter stays on `narrationTtsStep` because the language-learning
+   * wizard is a caller that composes its own chain and still answers it for
+   * itself; this is the answer for a run described BY STAGES.
+   */
+  if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
+  if (stages.rvc) {
     const rvc = narrationRvcStep(book, settings);
-    if (rvc !== null) steps.push(rvc);
-    steps.push(narrationReassemblyStep(book, settings));
+    if (rvc === null) {
+      // Unreachable: `requireNarrationStages` refuses `rvc` with no settings, and
+      // null is exactly that case. Said out loud rather than asserted away, so a
+      // future change to either rule fails here instead of dropping the pass.
+      throw new Error(
+        'The voice-conversion pass was asked for and could not be described. This is a bug in '
+        + "BookForge's run description."
+      );
+    }
+    steps.push(rvc);
+  }
+  if (stages.assemble) {
+    steps.push(narrationReassemblyStep(book, settings, stages.rvc && !stages.narrate));
+  }
+  /*
+   * The first step reads something nothing in this run produced, and the queue
+   * checks that at compose time. A run that begins by narrating reads the
+   * document (the TTS step says so itself); a run that begins with a conversion
+   * or an assembly reads the session this project has cached — named by KIND
+   * with no path, because which session that is, is a question about the disk at
+   * the moment the step runs.
+   */
+  const first = steps[0]!;
+  if (first.sourceRef === undefined) {
+    steps[0] = { ...first, sourceRef: { kind: 'audio-session' } };
   }
   return steps;
 }

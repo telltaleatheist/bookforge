@@ -461,10 +461,17 @@ export class QueueService {
     const bridge = this.requireBridge();
     const config = this.buildJobConfig(request);
     const label = request.metadata?.title ?? request.type;
-    const sourceRef: ArtifactRef = {
-      kind: 'epub',
-      path: request.epubPath,
-    };
+    /*
+     * WHAT THE FIRST STEP READS. Almost every run in this app starts by reading
+     * the document it names, and that is what the absent case means — but a
+     * narration composed as "convert the sentences this project already has"
+     * starts on a session instead, and the engine refuses the chain at compose
+     * time if it is told otherwise. Only the caller knows which; the shared
+     * narration description is the caller that says so.
+     */
+    const sourceRef: ArtifactRef = request.sourceRef !== undefined
+      ? request.sourceRef
+      : { kind: 'epub', path: request.epubPath };
 
     const parentToken = request.parentJobId;
     const composition = parentToken ? this.compositions.get(parentToken) : undefined;

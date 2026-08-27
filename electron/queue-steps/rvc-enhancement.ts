@@ -36,6 +36,9 @@ interface RvcConfig {
   indexRate?: number;
   protectRate?: number;
   nSemitones?: number;
+  /** Both absent = urvc's own default. Named in shared/queue/narration-run.ts. */
+  f0Method?: string;
+  hopLength?: number;
   finalDenoise?: boolean;
 }
 
@@ -99,6 +102,8 @@ export const rvcEnhancementStep: StepModule = {
         indexRate: config.indexRate,
         protectRate: config.protectRate,
         nSemitones: config.nSemitones,
+        f0Method: config.f0Method,
+        hopLength: config.hopLength,
         finalDenoise: config.finalDenoise,
       }, queueMainWindow());
 

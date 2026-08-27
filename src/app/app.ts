@@ -18,6 +18,12 @@ import { LibraryService } from './core/services/library.service';
 import { RuntimeService } from './core/services/runtime.service';
 import { SetupDownloadService } from './core/services/setup-download.service';
 import { BookConversionService } from './features/studio/services/book-conversion.service';
+import {
+  NarrationDialogService, type NarrationTarget,
+} from './features/studio/services/narration-dialog.service';
+import {
+  NarrationModalComponent,
+} from './features/studio/components/narration-modal/narration-modal.component';
 import { DialogService } from './creamsicle-desktop/services/dialog.service';
 
 @Component({
@@ -32,7 +38,8 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
     SetupDownloadDockComponent,
     UpdateBannerComponent,
     ToastHostComponent,
-    QueueChipComponent
+    QueueChipComponent,
+    NarrationModalComponent
   ],
   template: `
     <!-- First-run setup overlay: blocks ONLY on a setup ERROR (needs attention).
@@ -129,6 +136,27 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
          non-blocking half of the dialog vocabulary). The bottom-left notice
          banner it replaced is gone (unified 2026-08-17). -->
     <app-toast-host />
+
+    <!-- THE NARRATION DIALOG, hosted once for the whole app.
+         Two doors open it — the versions page's Narrate button and Foundry's
+         Narrate, which arrives here as an IPC message with no book on screen
+         and no versions component mounted. Hosting it at each door would be two
+         copies of its inputs and its close handling. See NarrationDialogService. -->
+    @if (narrationDialog.target(); as t) {
+      <app-narration-modal
+        [epubPath]="t.epubPath"
+        [variantId]="t.variantId"
+        [projectDir]="t.projectDir"
+        [title]="t.title"
+        [author]="t.author"
+        [year]="t.year"
+        [coverPath]="t.coverPath"
+        [outputFilename]="t.outputFilename"
+        [isArticle]="t.isArticle"
+        (cancelled)="narrationDialog.close()"
+        (queued)="onNarrationQueued($event)"
+      />
+    }
 
     <!-- First-run engine setup: slim progress bar pinned to the bottom while the
          bundled runtime unpacks. The user is kept on the Setup page (redirect in
@@ -333,6 +361,8 @@ export class App implements OnInit {
   // than reached through Studio because the request arrives from another window
   // and Studio may not be mounted.
   private readonly bookConversion = inject(BookConversionService);
+  /** Public: the template hosts the one narration dialog off this. */
+  readonly narrationDialog = inject(NarrationDialogService);
   private readonly dialog = inject(DialogService);
   // Started in ngOnInit, in EVERY window: which one actually speaks is decided
   // per event by the focus rule, not by the window's kind.
@@ -473,6 +503,26 @@ export class App implements OnInit {
     });
     this.destroyRef.onDestroy(unsubscribeOpenQueue);
 
+    /*
+     * NARRATE WAS PRESSED IN FOUNDRY'S WINDOW.
+     *
+     * Owen, 2026-08-26: "Foundry is just for text changes, not for audio
+     * changes." The dialog that used to be described as a static form and drawn
+     * over there is this app's own again, so the press crosses as a raise of
+     * this window plus the book it named — main has already resolved which
+     * exported EPUB it meant (electron/foundry-narrate-target.ts) and, on a step
+     * press, made the file.
+     *
+     * It lands in the SHELL rather than on a page because Foundry's press
+     * carries no route: there may be no book on screen at all, and sending the
+     * user through a navigation first would put a list between them and the
+     * dialog they just asked for.
+     */
+    const unsubscribeNarrate = this.electron.onFoundryNarrate((target: NarrationTarget) => {
+      this.narrationDialog.open(target);
+    });
+    this.destroyRef.onDestroy(unsubscribeNarrate);
+
     // The main process checks at startup whether any INSTALLED component is
     // behind what the catalog names (and whether foundry has published a release
     // newer than the pin). Listening here — in the shell, beside the dock —
@@ -484,6 +534,19 @@ export class App implements OnInit {
     if (!this.isStandaloneWindow()) {
       this.destroyRef.onDestroy(this.setupDownloads.watchForUpgrades());
     }
+  }
+
+  /**
+   * The narration is in the queue: close the dialog and show the user where it
+   * went.
+   *
+   * The same gesture `queueBookConversion` ends on, for the same reason — rows
+   * were added to a list the user is not looking at, and a dialog that simply
+   * vanished would be indistinguishable from one that failed silently.
+   */
+  onNarrationQueued(_event: { jobs: number }): void {
+    this.narrationDialog.close();
+    void this.router.navigate(['/queue']);
   }
 
   /**

@@ -85,7 +85,7 @@ import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
-import { getRvcVoiceById } from './rvc-models';
+import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { defaultOrpheusBatchSize } from './orpheus-batch';
 import {
   ActiveBatchProgress,
@@ -1978,9 +1978,11 @@ export interface ParallelConversionConfig {
   rvcEnhancement?: {
     enabled: boolean;
     voiceId: string;     // enhancement-voice asset id (resolved to model name in the backend)
-    indexRate?: number;  // 0–1; default 0.5
-    protectRate?: number; // 0–0.5; default 0.5
+    indexRate?: number;  // 0–1; absent = the voice's own tuned value, else 0.5
+    protectRate?: number; // INVERTED — lower protects more, 0.5 is off (PROTECT_RATE_NOTE)
     nSemitones?: number; // pitch shift; 0 = none, negative = lower
+    f0Method?: string;   // rmvpe|crepe|crepe-tiny; absent = urvc's own default
+    hopLength?: number;  // crepe-family only; absent = urvc's own default
   };
   // Final-audio denoise: run the block-based roformer denoise pass (denoise-bridge)
   // over the rendered sentences after generation, BEFORE any RVC pass and before
@@ -4404,7 +4406,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         return;
       }
       const rvcOutDir = path.join(path.dirname(sentencesDir), 'sentences_rvc');
-      const rvcIndexRate = voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? rvc.indexRate ?? 0.5);
+      const rvcIndexRate = resolveRvcIndexRate(voice, rvc.indexRate);
       const rvcStart = Date.now();
       let rvcTotal = 0;  // captured from progress; total sentences enhanced
       try {
@@ -4416,6 +4418,9 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
           indexRate: rvcIndexRate,
           protectRate: rvc.protectRate ?? 0.5,
           nSemitones: rvc.nSemitones ?? 0,
+          // Absent stays absent — that is what leaves urvc on its own default.
+          f0Method: rvc.f0Method,
+          hopLength: rvc.hopLength,
           onProgress: (done, total) => {
             rvcTotal = total;
             if (!mainWindow) return;

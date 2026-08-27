@@ -43,11 +43,38 @@ export interface PipelineDefaults {
   rvcEnhancementVoiceId: string;
   /** RVC index influence (0–1); higher leans on the model's timbre index. */
   rvcEnhancementIndexRate: number;
-  /** RVC consonant/breath protection (0–0.5); higher preserves more of the source. */
+  /**
+   * RVC consonant/breath protection (0–0.5) — and the scale RUNS BACKWARDS.
+   *
+   * urvc's converter gates its whole protection block on `if protect < 0.5:`
+   * (`ultimate_rvc/rvc/infer/pipeline.py`), so a LOWER number protects MORE and
+   * 0.5 turns protection off entirely. Its own CLI help says the opposite, and so
+   * did this comment until 2026-08-26.
+   *
+   * It also does NOTHING at index rate 0: the unprotected features it blends back
+   * are only cloned when feature retrieval runs, and retrieval needs an index.
+   */
   rvcEnhancementProtectRate: number;
   /** RVC pitch shift in semitones (negative = lower). 0 = none. Use ~-12 to -15
    *  to drop a high-prosody female source into a male model's range. */
   rvcEnhancementNSemitones: number;
+  /**
+   * RVC pitch-extraction method — 'rmvpe', 'crepe' or 'crepe-tiny'.
+   *
+   * ABSENT MEANS "urvc's own default" and is a real answer rather than a missing
+   * one: the engine has a method it uses when nobody names one, so declining to
+   * name one is a choice. Which method suits a voice pair is decided by ear —
+   * the 2026-08-26 deathstalker→Sigma audition chose crepe for a narration
+   * source, so there is no rule to encode here.
+   *
+   * fcpe is deliberately not offered: it needs a model this app does not ship.
+   */
+  rvcEnhancementF0Method?: string;
+  /**
+   * RVC f0 analysis hop, in samples (1–512). ONLY the crepe family reads it —
+   * rmvpe ignores it entirely. Absent means urvc's own default, as above.
+   */
+  rvcEnhancementHopLength?: number;
 }
 
 export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
@@ -65,8 +92,27 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   rvcEnhancementEnabled: false,
   rvcEnhancementVoiceId: '',
   rvcEnhancementIndexRate: 0.5,
+  /*
+   * 0.5 IS PROTECTION OFF, and it stays the default deliberately.
+   *
+   * Now that the scale is documented as inverted it would be easy to read this
+   * as a bug and "fix" it downwards. It is not one. The shipped default is the
+   * neutral conversion — what a voice model does with nothing added — and any
+   * protection value is a judgement about a particular pair of voices that
+   * somebody made by listening. Those judgements live in the presets, where they
+   * carry the name of the pair they were made for (Deathstalker → Sigma protects
+   * at 0.25). A global default that protected everything by an amount nobody
+   * auditioned would apply one pair's answer to every other pair.
+   */
   rvcEnhancementProtectRate: 0.5,
   rvcEnhancementNSemitones: 0,
+  /*
+   * `rvcEnhancementF0Method` and `rvcEnhancementHopLength` are deliberately not
+   * listed. They are the two settings whose absence is a REAL answer — "let urvc
+   * choose" — so writing a value here would be this app quietly picking a pitch
+   * extractor for every conversion on every machine. A preset that has an
+   * audition behind it names them; nothing else does.
+   */
 };
 
 /**
@@ -95,6 +141,15 @@ export interface PipelinePreset {
   rvcEnhancementIndexRate: number;
   rvcEnhancementProtectRate: number;
   rvcEnhancementNSemitones: number;
+  /**
+   * Absent = urvc's own default, exactly as on {@link PipelineDefaults}.
+   *
+   * A preset saved before these existed simply lacks them, which is the honest
+   * record of a preset made when nobody could choose a pitch method — not a
+   * value to be filled in on read.
+   */
+  rvcEnhancementF0Method?: string;
+  rvcEnhancementHopLength?: number;
 }
 
 /** The {@link PipelinePreset} fields, minus id/name — the actual settings payload. */
@@ -122,6 +177,54 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     rvcEnhancementIndexRate: 0.7,
     rvcEnhancementProtectRate: 0.25,
     rvcEnhancementNSemitones: -15,
+  },
+  {
+    /*
+     * THE 2026-08-26 AUDITION, written down. Chosen by ear against the
+     * alternatives and not to be re-tuned from theory:
+     *   --f0-method crepe --hop-length 512 --n-semitones -2
+     *   --index-rate 0.5 --protect-rate 0.25
+     *
+     * Each of the four numbers is load-bearing and two of them only work
+     * together: protect 0.25 is real protection (the scale is inverted — see
+     * PipelineDefaults) and it does NOTHING unless the index rate is above zero,
+     * which is why 0.5 is here rather than 0. hop 512 is read only because the
+     * method is crepe; beside rmvpe it would be inert.
+     *
+     * -2 semitones, where the Leah preset above uses -15, because the source is
+     * already a deep male voice — that preset drops a high-prosody female source
+     * into a male model's range and this one is barely moving.
+     *
+     * rms-mix-rate stays at the engine's 1.0. 0.25 was auditioned and produced
+     * ghost sounds.
+     */
+    id: 'builtin:deathstalker-sigma',
+    name: 'Deathstalker → Sigma (deep male narrator)',
+    builtin: true,
+    ttsEngine: 'orpheus',
+    ttsDevice: 'auto',
+    ttsVoice: 'deathstalker',
+    ttsSpeed: 1.0,
+    /*
+     * INERT FOR THIS ENGINE, and copied rather than chosen. Orpheus declares
+     * `sampling: {}` (shared/tts/engine-caps.ts) — it fixes its sampling inside
+     * the engine class, so none of these three reaches the render. The
+     * repetition penalty is deathstalker's own recorded value
+     * (`backends.vllm.repPenalty`, electron/data/orpheus-models.json); the other
+     * two are what the Leah preset beside it already carries for the same
+     * engine. Nothing here was invented, because a number invented for a control
+     * that does not exist would look like a tuning decision to the next reader.
+     */
+    ttsTemperature: 0.6,
+    ttsTopP: 0.9,
+    ttsRepetitionPenalty: 1.1,
+    rvcEnhancementEnabled: true,
+    rvcEnhancementVoiceId: 'rvc-voice-sigma',
+    rvcEnhancementIndexRate: 0.5,
+    rvcEnhancementProtectRate: 0.25,
+    rvcEnhancementNSemitones: -2,
+    rvcEnhancementF0Method: 'crepe',
+    rvcEnhancementHopLength: 512,
   },
 ];
 

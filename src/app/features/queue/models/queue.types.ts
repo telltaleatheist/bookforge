@@ -4,7 +4,9 @@
 
 import { AIProvider } from '../../../core/models/ai-config.types';
 import type { PassJobConfig } from '@shared/processing/pass-types';
-import type { FoundryJobLineage, JobType as EngineJobType } from '@shared/queue/engine-types';
+import type {
+  ArtifactRef, FoundryJobLineage, JobType as EngineJobType,
+} from '@shared/queue/engine-types';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -429,6 +431,15 @@ export interface ReassemblyJobConfig {
    *  absent, the backend resolves the session voice's models.json default from
    *  provenance, and skips the step if that is unset too (no invented default). */
   sentenceGap?: number;
+  /** File the finished M4B as a SECOND audiobook version of this book rather than
+   *  replacing the project's one — set only for a run that converted sentences it
+   *  did not itself render. The backend then names the file after the voice, spares
+   *  the output folder's existing audiobooks, and writes a manifest variant instead
+   *  of overwriting `outputs.audiobook`. See shared/queue/narration-run.ts. */
+  registerAsNewVariant?: boolean;
+  /** The RVC voice that second version is named after — its variant id, its filename
+   *  and its narrator tag. Required whenever `registerAsNewVariant` is set. */
+  rvcVoiceId?: string;
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC
@@ -444,8 +455,16 @@ export interface RvcEnhancementJobConfig {
   /** RVC asset id; backend resolves it to the urvc model folder name. */
   voiceId: string;
   indexRate?: number;
+  /** Consonant/breath protection, on an INVERTED scale: lower protects more and
+   *  0.5 disables protection. It does nothing at all when `indexRate` is 0. */
   protectRate?: number;
   nSemitones?: number;
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny). Absent = urvc's own default,
+   *  which is a real answer here and never filled in on the way through. */
+  f0Method?: string;
+  /** f0 analysis hop in samples (1–512). Read ONLY by the crepe family — rmvpe
+   *  ignores it. Absent = urvc's own default. */
+  hopLength?: number;
   /** Final-audio denoise: denoise the cached sentences FIRST, then convert the
    *  denoised set (denoise → RVC ordering; input noise corrupts RVC's feature
    *  extraction). Set when the wizard has both options checked. */
@@ -861,6 +880,22 @@ export interface CreateJobRequest {
    * retired.
    */
   variantId?: string;
+  /**
+   * WHAT THE FIRST STEP OF THIS RUN READS, when it is not the document above.
+   *
+   * The engine refuses a chain at COMPOSE time whose first step reads a kind its
+   * source does not provide (`checkLineage`, electron/queue-engine.ts), and this
+   * door handed it `{ kind: 'epub' }` for every job it ever queued — true of
+   * everything that starts by reading a book, and false of a run that starts by
+   * converting sentences a narration left cached weeks ago. Such a run is
+   * refused before it can explain itself unless the caller says otherwise.
+   *
+   * ABSENT MEANS "this run starts by reading the document it names", which is
+   * what it has always meant here — not "look one up". It is only ever consulted
+   * for the step that has no parent; a request appended onto an existing run
+   * reads that run's last step and this is ignored.
+   */
+  sourceRef?: ArtifactRef;
   // Job grouping for multi-step workflows
   parentJobId?: string;
   workflowId?: string;

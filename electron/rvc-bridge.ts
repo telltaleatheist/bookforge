@@ -88,6 +88,24 @@ export function rvcEnhancementReady(): RvcReadiness {
   return { ok: true };
 }
 
+/**
+ * WHAT `--protect-rate` ACTUALLY DOES, read out of the installed engine.
+ *
+ * `ultimate_rvc/rvc/infer/pipeline.py` gates the entire protection block on
+ * `if protect < 0.5:`. So the scale is INVERTED against urvc's own CLI help and
+ * against every RVC doc on the internet: LOWER protects MORE, and 0.5 disables
+ * protection outright rather than maximising it.
+ *
+ * It is also a NO-OP AT INDEX RATE 0. The unprotected features it blends back in
+ * are cloned before feature retrieval, and retrieval only runs when the index
+ * rate is above zero — so a voice converted with no index gets no protection
+ * whatever this is set to. The tuned deathstalker→Sigma recipe pairs protect
+ * 0.25 with index 0.5 for exactly that reason.
+ */
+export const PROTECT_RATE_NOTE =
+  'protect-rate is inverted: lower protects more, and 0.5 disables protection. It does nothing '
+  + 'at all when the index rate is 0.';
+
 export interface EnhanceSentencesOptions {
   /** Directory of TTS sentence files to convert (e2a's chapters/sentences). */
   sentencesDir: string;
@@ -97,13 +115,19 @@ export interface EnhanceSentencesOptions {
   modelName: string;
   /** Index influence (0–1). Pass 0 for index-less models. Default 0.5. */
   indexRate?: number;
-  /** Consonant/breath protection (0–0.5). Default 0.5. */
+  /** Consonant/breath protection. READS BACKWARDS — see {@link PROTECT_RATE_NOTE}.
+   *  Default 0.5, which is protection OFF. */
   protectRate?: number;
   /** Pitch shift in semitones (default 0 — RVC carries the source pitch). */
   nSemitones?: number;
-  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny|fcpe). Default: the CLI's own
-   *  (rmvpe). rmvpe is best for narration; crepe is music-oriented. */
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny). Default: the CLI's own
+   *  (rmvpe). Which one suits a given voice pair is decided BY EAR, not by a rule:
+   *  the 2026-08-26 deathstalker→Sigma audition chose crepe over rmvpe for a
+   *  narration source, so no method is "the narration one". */
   f0Method?: string;
+  /** f0 analysis hop in samples. ONLY the crepe family reads it — rmvpe ignores it
+   *  entirely, so passing it beside rmvpe changes nothing. Default: the CLI's own. */
+  hopLength?: number;
   /** Input file glob (e2a sentence format). Default '*.flac'. */
   inputGlob?: string;
   /** Files per worker process before it's recycled (memory bound). Default 96. */
@@ -139,7 +163,11 @@ export function enhanceSentences(opts: EnhanceSentencesOptions): Promise<string>
     indexRate: opts.indexRate ?? 0.5,
     protectRate: opts.protectRate ?? 0.5,
     nSemitones: opts.nSemitones ?? 0,
+    // Absent stays absent: the argv builder omits the flag entirely, which is
+    // what leaves urvc on its own default. Substituting one here would put a
+    // method and a hop this side chose onto every conversion.
     f0Method: opts.f0Method,
+    hopLength: opts.hopLength,
     inputGlob: opts.inputGlob ?? '*.flac',
     outputExt: 'flac',
     // Thousands of SHORT sentences: 96 keeps model-reload overhead low while still
@@ -268,7 +296,8 @@ function runUrvcConvertDir(
 function buildConvertDirArgs(o: {
   inputDir: string; outputDir: string; modelName: string;
   indexRate: number; protectRate: number; nSemitones: number;
-  f0Method?: string; inputGlob: string; outputExt: string; overwrite?: boolean;
+  f0Method?: string; hopLength?: number;
+  inputGlob: string; outputExt: string; overwrite?: boolean;
 }): string[] {
   return [
     '-m', 'ultimate_rvc.cli.main',
@@ -279,6 +308,11 @@ function buildConvertDirArgs(o: {
     '--input-glob', o.inputGlob,
     '--output-ext', o.outputExt,
     ...(o.f0Method ? ['--f0-method', o.f0Method] : []),
+    // `!== undefined` and not truthiness: the flag's range is 1–512, so no
+    // meaningful value is falsy — but reading it the same way as the others
+    // would make a future 0 silently mean "unset" instead of being refused by
+    // the CLI, which is the louder failure.
+    ...(o.hopLength !== undefined ? ['--hop-length', String(o.hopLength)] : []),
     ...(o.nSemitones ? ['--n-semitones', String(o.nSemitones)] : []),
     ...(o.overwrite ? ['--overwrite'] : []),
   ];
@@ -309,6 +343,8 @@ interface BatchedConvertOptions {
   protectRate: number;
   nSemitones: number;
   f0Method?: string;
+  /** Crepe-family only; absent leaves urvc on its own default. */
+  hopLength?: number;
   inputGlob: string;
   outputExt: string;
   batchSize: number;
@@ -357,7 +393,8 @@ export async function runConvertDirBatched(
       const args = buildConvertDirArgs({
         inputDir: tmpIn, outputDir: o.outputDir, modelName: o.modelName,
         indexRate: o.indexRate, protectRate: o.protectRate, nSemitones: o.nSemitones,
-        f0Method: o.f0Method, inputGlob: o.inputGlob, outputExt: o.outputExt, overwrite: true,
+        f0Method: o.f0Method, hopLength: o.hopLength,
+        inputGlob: o.inputGlob, outputExt: o.outputExt, overwrite: true,
       });
       const base = done;
       // eslint-disable-next-line no-await-in-loop -- batches are intentionally serial (memory bound)
@@ -391,10 +428,14 @@ export interface ConvertFileOptions {
   modelName: string;
   /** Index influence (0–1). Pass 0 for index-less models. Default 0.5. */
   indexRate?: number;
-  /** Consonant/breath protection (0–0.5). Default 0.5. */
+  /** Consonant/breath protection. Inverted — see {@link PROTECT_RATE_NOTE}. Default 0.5 (off). */
   protectRate?: number;
   /** Pitch shift in semitones (default 0 — RVC carries the source pitch). */
   nSemitones?: number;
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny). Default: the CLI's own. */
+  f0Method?: string;
+  /** f0 analysis hop in samples; crepe-family only. Default: the CLI's own. */
+  hopLength?: number;
   /** Per-file progress callback ([RVC] done/total — total is 1 for a single file). */
   onProgress?: (done: number, total: number) => void;
   /** Hands the spawned child back (so the caller can reap it on stop). */
@@ -438,19 +479,23 @@ export async function convertFileRvc(opts: ConvertFileOptions): Promise<string> 
   const outDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-file-'));
   const producedPath = path.join(outDir, `${stem}.${outExt}`);
 
-  const args = [
-    '-m', 'ultimate_rvc.cli.main',
-    'generate', 'convert-dir',
+  // The SAME builder the batched path uses. It was a hand-written copy of that
+  // argv and had silently fallen a flag behind — `f0Method` was declared on the
+  // batch options and never reached this spawn at all — so the two spellings of
+  // one command line are now one spelling.
+  const args = buildConvertDirArgs({
     inputDir,
-    outDir,
-    opts.modelName,
-    '--index-rate', String(indexRate),
-    '--protect-rate', String(protectRate),
-    '--input-glob', inputName,
-    '--output-ext', outExt,
-    '--overwrite',
-    ...(nSemitones ? ['--n-semitones', String(nSemitones)] : []),
-  ];
+    outputDir: outDir,
+    modelName: opts.modelName,
+    indexRate,
+    protectRate,
+    nSemitones,
+    f0Method: opts.f0Method,
+    hopLength: opts.hopLength,
+    inputGlob: inputName,
+    outputExt: outExt,
+    overwrite: true,
+  });
 
   try {
     await runUrvcConvertDir(python, root, args, {
@@ -561,12 +606,14 @@ export interface ConvertFileChunkedOptions {
   modelName: string;
   /** Index influence (0–1). Default 0.5. */
   indexRate?: number;
-  /** Consonant/breath protection (0–0.5). Default 0.5. */
+  /** Consonant/breath protection. Inverted — see {@link PROTECT_RATE_NOTE}. Default 0.5 (off). */
   protectRate?: number;
   /** Pitch shift in semitones. Default 0. */
   nSemitones?: number;
-  /** Pitch-extraction method. Default 'rmvpe' (best for narration). */
+  /** Pitch-extraction method (rmvpe|crepe|crepe-tiny). Default 'rmvpe'. */
   f0Method?: string;
+  /** f0 analysis hop in samples; crepe-family only. Default: the CLI's own. */
+  hopLength?: number;
   /** Silence-chunk length in seconds. Default 600 (proven under the OOM ceiling). */
   chunkSeconds?: number;
   /** Chunks per recycled worker process (memory bound). Default 4. */
@@ -636,6 +683,7 @@ export async function convertFileRvcChunked(opts: ConvertFileChunkedOptions): Pr
       inputDir: chunksIn, outputDir: chunksOut, modelName: opts.modelName,
       indexRate: opts.indexRate ?? 0.5, protectRate: opts.protectRate ?? 0.5,
       nSemitones: opts.nSemitones ?? 0, f0Method: opts.f0Method ?? 'rmvpe',
+      hopLength: opts.hopLength,
       inputGlob: '*.wav', outputExt: 'wav', batchSize,
       onProgress: opts.onProgress, onSpawn: opts.onSpawn, signal: opts.signal,
     });

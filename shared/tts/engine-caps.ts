@@ -13,15 +13,22 @@
  * file has ever been able to import it. Pure data in the wrong program is still
  * in the wrong program.
  *
- * A MAIN-PROCESS CALLER FINALLY ARRIVED and made the gap matter. The Narrate
- * operation Foundry draws in ITS window is built out of a field description that
- * BookForge composes in main (`electron/foundry-narrate-form.ts`), and which
- * questions that dialog carries is exactly this table's business: XTTS has real
+ * A MAIN-PROCESS CALLER ARRIVED and made the gap matter. The Narrate operation
+ * Foundry drew in ITS window was built out of a field description BookForge
+ * composed in main (`electron/foundry-narrate-form.ts`), and which questions that
+ * dialog carried was exactly this table's business: XTTS has real
  * temperature/top-p/repetition controls and Orpheus and Voxtral do not, so asking
  * an Orpheus run for a temperature would be a control the engine ignores, drawn
  * next to three that it honours. Copying the flags into main would be a second
  * answer to "what can this engine do" — the drift `shared/tts/narration-voices.ts`
  * moved for, one directory over, for the same operation.
+ *
+ * THAT CALLER IS GONE AGAIN (2026-08-26): Owen ruled the narration dialog back
+ * into BookForge's own window ("Foundry is just for text changes, not for audio
+ * changes"), and the form module went with it. The move stands on its own merits
+ * — the header above is why `src/` was the wrong program regardless of who
+ * imports it — and this table is still the one answer both programs read, since
+ * the dialog gates its sampling controls on exactly these flags.
  *
  * So the DATA and the accessors live here and the renderer's registry is now a
  * re-export plus the one function that genuinely belongs to the renderer

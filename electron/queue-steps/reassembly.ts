@@ -44,11 +44,17 @@ interface ReassemblyStepConfig {
   excludedChapters: number[];
   rvcEnhancement?: {
     voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number;
+    f0Method?: string; hopLength?: number;
   };
   sentencesDir?: string;
   finalDenoise?: boolean;
   applyDeRing?: boolean;
   sentenceGap?: number;
+  /** File the result beside the project's audiobook instead of replacing it —
+   *  set by the run description for a conversion of sentences it did not render. */
+  registerAsNewVariant?: boolean;
+  /** The voice that second version is named after. Required with the flag above. */
+  rvcVoiceId?: string;
 }
 
 export const reassemblyStep: StepModule = {
@@ -139,6 +145,8 @@ export const reassemblyStep: StepModule = {
         finalDenoise: config.finalDenoise,
         applyDeRing: config.applyDeRing,
         sentenceGap: config.sentenceGap,
+        registerAsNewVariant: config.registerAsNewVariant,
+        rvcVoiceId: config.rvcVoiceId,
       }, queueMainWindow());
 
       if (!result.success || !result.outputPath) {

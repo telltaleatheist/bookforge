@@ -15,7 +15,8 @@ import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
-import { getRvcVoiceById } from './rvc-models';
+import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
+import { registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
@@ -291,7 +292,16 @@ export interface ReassemblyConfig {
    *  XTTS sentences through an RVC voice into a tmp dir, then assemble THAT set.
    *  The cached XTTS sentences are left untouched, so the same session can be
    *  re-enhanced later with a different voice. voiceId is the RVC asset id. */
-  rvcEnhancement?: { voiceId: string; indexRate?: number; protectRate?: number; nSemitones?: number };
+  rvcEnhancement?: {
+    voiceId: string;
+    indexRate?: number;
+    /** INVERTED — lower protects more, 0.5 is off. See PROTECT_RATE_NOTE. */
+    protectRate?: number;
+    nSemitones?: number;
+    /** Both absent = urvc's own default. */
+    f0Method?: string;
+    hopLength?: number;
+  };
   /** A pre-rendered set of sentence files (produced by an upstream
    *  'rvc-enhancement' queue job, under [library]/tmp). When set, assemble THIS
    *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
@@ -318,6 +328,24 @@ export interface ReassemblyConfig {
    *  A NON-Orpheus session yields no value → the gap step is skipped (raw sentences
    *  unchanged; gap normalization is Orpheus-specific and strips a pad only Orpheus bakes). */
   sentenceGap?: number;
+  /**
+   * FILE THE RESULT AS A SECOND AUDIOBOOK, beside the project's own, instead of
+   * replacing it.
+   *
+   * True only for a run that converted sentences it did NOT render (see
+   * `registerAsNewVariant` in shared/queue/narration-run.ts). Three things
+   * change: the M4B is written under a name carrying the voice, the promotion
+   * step does not sweep away the audiobooks already in the output folder, and
+   * the result is recorded as a manifest VARIANT rather than overwriting
+   * `outputs.audiobook`.
+   */
+  registerAsNewVariant?: boolean;
+  /**
+   * The RVC voice that run converted through — REQUIRED when
+   * `registerAsNewVariant` is set, because it is what the second audiobook is
+   * NAMED: its variant id, its filename and its narrator tag all come from here.
+   */
+  rvcVoiceId?: string;
 }
 
 export interface ReassemblyProgress {
@@ -929,6 +957,24 @@ export async function startReassembly(
 ): Promise<{ success: boolean; outputPath?: string; error?: string }> {
   const reassemblyLog = getReassemblyLogger();
 
+  /*
+   * IS THIS RUN MAKING A SECOND AUDIOBOOK, and if so what is it called —
+   * answered HERE, at the top, because both of its refusals ("which voice?",
+   * "no filename to derive one from") are things this run can never learn later,
+   * and the alternative is raising them after an encode has already happened.
+   *
+   * Null is the ordinary case and means every rule below is the one it always
+   * was: one audiobook per project, in the base slot, replacing what was there.
+   */
+  const variantFiling = config.registerAsNewVariant
+    ? resolveRvcVariantFiling(config.rvcVoiceId, config.metadata?.outputFilename)
+    : null;
+  if (variantFiling) {
+    reassemblyLog.info('Assembling a NEW audiobook version rather than replacing the project\'s', {
+      jobId, variantId: variantFiling.variantId, file: variantFiling.outputFilename,
+    });
+  }
+
   // Derive e2a app path from tmp path (parent directory)
   const tmpPath = config.e2aTmpPath || getDefaultE2aTmpPath();
   const e2aPath = getE2aAppPath(tmpPath);
@@ -1377,9 +1423,12 @@ export async function startReassembly(
         sentencesDir: srcSentences,
         outputDir: tmpDir,
         modelName: voice.modelName,
-        indexRate: voice.forceIndexRate0 ? 0 : (voice.defaultIndexRate ?? config.rvcEnhancement.indexRate ?? 0.5),
+        indexRate: resolveRvcIndexRate(voice, config.rvcEnhancement.indexRate),
         protectRate: config.rvcEnhancement.protectRate ?? 0.5,
         nSemitones: config.rvcEnhancement.nSemitones ?? 0,
+        // Absent stays absent — that is what leaves urvc on its own default.
+        f0Method: config.rvcEnhancement.f0Method,
+        hopLength: config.rvcEnhancement.hopLength,
         onProgress: (done, total) => emitStage(
           'rvc',
           total ? (done / total) * 100 : null,
@@ -2063,9 +2112,15 @@ export async function startReassembly(
           }
         }
 
-        // Rename output file if a custom filename was requested in project.json
-        if (outputPath && fs.existsSync(outputPath) && config.metadata?.outputFilename) {
-          const customFilename = config.metadata.outputFilename;
+        // Rename output file if a custom filename was requested in project.json.
+        // A run filing a SECOND version uses the name that carries its voice, so
+        // the two readings sit beside each other instead of one overwriting the
+        // other on the way in.
+        const wantedFilename = variantFiling
+          ? variantFiling.outputFilename
+          : config.metadata?.outputFilename;
+        if (outputPath && fs.existsSync(outputPath) && wantedFilename) {
+          const customFilename = wantedFilename;
           // Ensure it has .m4b extension
           const filenameWithExt = customFilename.endsWith('.m4b') ? customFilename : `${customFilename}.m4b`;
           // Sanitize filename (remove invalid characters)
@@ -2267,7 +2322,27 @@ export async function startReassembly(
                 }
                 continue;
               }
-              const dest = path.join(config.outputDir, file);
+              /*
+               * A SECOND VERSION'S FILES ALL CARRY ITS OWN STEM.
+               *
+               * The M4B was already renamed in staging, but everything else this
+               * run produced — the transcript, a video if one was made — still
+               * carries the name e2a derived from the BOOK, which is the base
+               * audiobook's stem. Promoted unchanged, this run's transcript
+               * would land on top of the other version's, and the folder would
+               * hold two readings with one set of sidecars between them.
+               *
+               * Staging contains only what THIS run built, so renaming
+               * everything in it is exactly right and needs no per-extension
+               * rule.
+               */
+              const promotedName = variantFiling
+                ? `${path.basename(
+                  variantFiling.outputFilename,
+                  path.extname(variantFiling.outputFilename),
+                )}${path.extname(file)}`
+                : file;
+              const dest = path.join(config.outputDir, promotedName);
               const tmp = `${dest}.promote-${jobId}.tmp`;
               await renameWithRetry(src, tmp);
               staged.push({ tmp, dest, isOutput: src === outputPath, isSealVtt: src === sealVttSource });
@@ -2278,8 +2353,15 @@ export async function startReassembly(
             //    doesn't abort promotion; genuinely stuck ones are collected for the
             //    hint. (Our just-moved temps end in .tmp, so the m4b/vtt/mp4 filter
             //    below never touches them.)
+            //
+            //    A run filing a SECOND version sweeps NOTHING. The audiobooks
+            //    already in this folder are other readings of the same book —
+            //    the very thing it was started to sit beside — and the sweep
+            //    would delete the original on the way to filing its
+            //    alternative. Its own previous file, if this voice has been run
+            //    before, is replaced by name in step 3 like any other output.
             const lockedOld: string[] = [];
-            if (fs.existsSync(config.outputDir)) {
+            if (!variantFiling && fs.existsSync(config.outputDir)) {
               for (const file of fs.readdirSync(config.outputDir)) {
                 if (file.startsWith('bilingual-') || file === 'session' || file.startsWith('.staging-')) continue;
                 if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
@@ -2340,14 +2422,28 @@ export async function startReassembly(
         // audiobook:link-audio) silently skips when this reassembly job carries no
         // project directory (or the renderer misses the completion event), which left the m4b on
         // disk but absent from the library (outputs.audiobook stayed empty).
+        //
+        // A run filing a SECOND version writes a manifest VARIANT instead —
+        // `registerAudiobookOutput` overwrites `outputs.audiobook`, which is the
+        // pointer at the book's own audiobook and belongs to the reading this
+        // run was started to sit beside. See electron/audiobook-variant-filing.ts.
         try {
-          const reg = await manifestService.registerAudiobookOutput(outputPath, { professionallyRead: false });
+          const reg = variantFiling
+            ? await registerRvcAudiobookVariant(outputPath, variantFiling, {
+              title: config.metadata?.title,
+              author: config.metadata?.author,
+              year: config.metadata?.year,
+              coverPath: config.metadata?.coverPath,
+            })
+            : await manifestService.registerAudiobookOutput(outputPath, { professionallyRead: false });
           if (reg.skipped) {
             reassemblyLog.warn('Audiobook not registered in manifest (outside library)', { jobId, outputPath });
           } else if (!reg.success) {
             reassemblyLog.error('Failed to register audiobook in manifest', { jobId, outputPath, error: reg.error });
           } else {
-            reassemblyLog.info('Registered audiobook in manifest', { jobId, outputPath });
+            reassemblyLog.info('Registered audiobook in manifest', {
+              jobId, outputPath, ...(variantFiling ? { variantId: variantFiling.variantId } : {}),
+            });
           }
         } catch (regErr) {
           reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });

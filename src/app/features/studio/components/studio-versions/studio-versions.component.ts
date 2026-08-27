@@ -22,6 +22,7 @@ import { samePath } from '@shared/document/same-path';
 import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
+import { NarrationDialogService } from '../../services/narration-dialog.service';
 import type { VlmConvertDestination } from '@shared/vlm/conversion';
 
 /**
@@ -337,6 +338,14 @@ const AUDIO_EXTS = new Set([
                     <!-- ONE door into Foundry, and it is the PARENT file's.
                          An export opened in Foundry would start a second
                          project from a file that came out of the first. -->
+                    <!-- The audio door. Owen, 2026-08-26: "Foundry is just for
+                         text changes, not for audio changes." Plain rather than
+                         the lead style, because Open is what an EPUB row is FOR
+                         and one emphasized act per row is this rail's rule. -->
+                    @if (canNarrate(v)) {
+                      <button class="quiet" (click)="narrate(v)"
+                              title="Read this version aloud, convert the voice, or assemble the audiobook">Narrate…</button>
+                    }
                     @if (canOpenInFoundry(v) && !row.nested) {
                       <button class="act lead" (click)="openVariant(v)"
                               title="Open in Foundry">Open</button>
@@ -467,6 +476,13 @@ const AUDIO_EXTS = new Set([
                       title="Listen to the rendered sentences and regenerate any that sound wrong, then rebuild">Correct sentences</button>
               <button class="quiet" (click)="assemble.emit()"
                       title="Assemble the cached sentences into a finished audiobook in the Processing tab">Assemble</button>
+              <!-- The door for the runs that are about a book's AUDIO and have no
+                   document to be pressed on: re-render these sentences through
+                   another voice (which files a NEW version of the audiobook), or
+                   reassemble them. Both are cache-only, and this row is where the
+                   cache is listed. -->
+              <button class="quiet" (click)="narrateFromCache()"
+                      title="Re-render these sentences through another voice, or reassemble them">Narrate…</button>
               @if (!c.complete) {
                 <button class="act lead" (click)="continueJob.emit()"
                         title="Resume rendering the remaining sentences in the Processing tab, with the same settings as before">Continue</button>
@@ -1416,19 +1432,108 @@ export class StudioVersionsComponent {
    *  whether uploaded via "+ Add version" or produced by TTS. */
   readonly audiobookVariants = computed(() => this.variantList().filter(v => v.kind === 'audiobook'));
 
-  // ── Narration and the book passes (DOORS RETIRED 2026-08-18) ──────────────
+  // ── Narration: the door came back on 2026-08-26 ───────────────────────────
   //
-  // The Process button, the narration dialog it opened, the "Mark as TTS file"
-  // pointer, and the whole passes modal used to live here. Owen ruled that
-  // Foundry is where a book is worked on: "Tts should be done from inside
-  // foundry as well. We can get rid of the mark as tts file button."
+  // The Process button and the narration dialog it opened were retired on
+  // 2026-08-18, when Owen ruled that a book is worked on in Foundry ("Tts should
+  // be done from inside foundry as well"). He reversed the audio half of that on
+  // 2026-08-26: *"Foundry is just for text changes, not for audio changes."*
   //
-  // None of the machinery moved. The narration modal component, the pass IPC,
-  // the queue steps and `QueueService.submitProcessingRun` /
-  // `runProcessingRunNow` are all still there for the Foundry-side buttons.
-  // `ttsVariantId` is still read (the shelf's Process button prefers a marked
-  // version, then the newest Foundry export, then a sole EPUB) — this page just
-  // no longer offers to set it.
+  // So Narrate is a door here again, and this page is the ONLY door that can
+  // reach the runs Foundry's press cannot describe. A press over there is about
+  // a document — it narrates the export it was made on. The two acts that are
+  // about a book's AUDIO rather than its text (re-render the sentences already
+  // cached through another voice, or just reassemble them) have no document to
+  // be pressed on, and this page is where the sentence cache is listed.
+  //
+  // The dialog itself is hosted once, in the shell, and opened through
+  // NarrationDialogService — Foundry's press has no route and no component
+  // mounted, so hosting it at each door would be two copies of its wiring.
+  //
+  // "Mark as TTS file" did NOT come back. `ttsVariantId` is still read (the
+  // shelf's Process button prefers a marked version, then the newest Foundry
+  // export, then a sole EPUB); this page just does not offer to set it.
+
+  private readonly narrationDialog = inject(NarrationDialogService);
+
+  /**
+   * Can this version be narrated — i.e. is it a book file?
+   *
+   * The dialog refuses a non-EPUB by name as well, because it is reachable from
+   * Foundry too; this is what stops the button being drawn where it could only
+   * refuse.
+   */
+  canNarrate(v: ResolvedProjectVariant): boolean {
+    return v.kind === 'ebook' && this.variantExtension(v) === 'epub';
+  }
+
+  /**
+   * Open the narration dialog on THIS version.
+   *
+   * Owen's identity law, and the reason nothing is looked up here: "the tts
+   * pipeline knows exactly which file its working with because the user came to
+   * the tts page FROM the button on that document." The row IS a version and
+   * carries its id, and `variantFile` has already proved the file is on disk —
+   * so the target is complete before the dialog exists.
+   */
+  async narrate(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'narrate this version');
+    if (!abs) return;
+    const dir = this.projectDir();
+    if (!dir) {
+      await this.electron.showMessageDialog({
+        title: 'Could not narrate this version',
+        message: 'This book has no project directory, so there is nowhere to put the rendered '
+          + 'sentences or the finished audiobook.',
+        type: 'error',
+      });
+      return;
+    }
+    const book = this.item();
+    this.narrationDialog.open({
+      epubPath: abs,
+      variantId: v.id,
+      projectDir: dir,
+      // The VERSION's own metadata where it has any, and the book's otherwise:
+      // a version row is what the user pressed, and its title is what the
+      // audiobook should be tagged with.
+      title: v.metadata?.title || book?.title || '',
+      author: v.metadata?.author || book?.author || '',
+      year: v.metadata?.year || book?.year || '',
+      coverPath: book?.coverPath || '',
+      outputFilename: book?.outputFilename || '',
+      isArticle: book?.type === 'article',
+    });
+  }
+
+  /**
+   * Narrate from the SENTENCE CACHE row — the door for the cache-only runs.
+   *
+   * It opens the same dialog on the same book. The distinction is where the user
+   * is standing: this row is what they are looking at when they want the
+   * sentences re-rendered through another voice or simply reassembled, and the
+   * dialog works out for itself that those stages are available (it asks main
+   * for the cached session exactly as the queue steps do).
+   *
+   * WHICH version it names is `ttsTarget` — the same resolution the shelf's own
+   * Process button makes — because a cache-only run still has to be filed
+   * against one of the book's versions, and the one the narration READ is the
+   * only honest answer.
+   */
+  async narrateFromCache(): Promise<void> {
+    const target = this.variantList().find((v) => this.isTtsVariant(v) && this.canNarrate(v))
+      ?? this.variantList().find((v) => this.canNarrate(v));
+    if (!target) {
+      await this.electron.showMessageDialog({
+        title: 'Could not narrate this book',
+        message: 'This book has no EPUB version, so a narration run has nothing to file itself '
+          + 'against. Export or add an EPUB version first.',
+        type: 'warning',
+      });
+      return;
+    }
+    await this.narrate(target);
+  }
 
   // ── Watching the book being made ───────────────────────────────────────────
   //
