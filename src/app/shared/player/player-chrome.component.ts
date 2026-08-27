@@ -5,7 +5,14 @@ import {
 import { IconComponent } from '../icon.component';
 
 /** One line of synced text (a VTT cue or a streamed sentence). */
-export interface ChromeCue { index: number; text: string; }
+export interface ChromeCue {
+  index: number;
+  text: string;
+  /** True when this line is a section heading, so it reads as one (2026-08-27).
+   *  A VTT cue gets this from e2a's bold wrapping; a streamed sentence has no
+   *  heading marker to read, so it is always false there. */
+  heading: boolean;
+}
 /** A chapter row for the chapters sheet + nav pill. */
 export interface ChromeChapter { id: string; title: string; label: string; }
 /** A saved bookmark row. */
@@ -97,6 +104,7 @@ const TOP_FADE_PX = 96;
               <div class="segment"
                    [class.active]="cue.index === activeIndex()"
                    [class.past]="cue.index < activeIndex()"
+                   [class.heading]="cue.heading"
                    [attr.data-index]="cue.index"
                    (click)="pickCue.emit(cue.index)">
                 <p>{{ cue.text }}</p>
@@ -378,6 +386,8 @@ const TOP_FADE_PX = 96;
     .segment.active { opacity: 1; border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--bg-surface)); }
     .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: var(--seg-size, 15px); line-height: 1.6; color: var(--text-primary); }
+    /* A heading was a header on the page; it reads as one here too. */
+    .segment.heading p { font-weight: 700; }
 
     /* Cover view: locked to the visible area, NEVER scrolls (overflow hidden), and
        carries no fade mask — the artwork stays crisp and fills the space. */

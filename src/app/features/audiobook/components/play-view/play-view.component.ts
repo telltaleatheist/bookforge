@@ -1271,7 +1271,9 @@ export class PlayViewComponent implements OnInit, OnDestroy {
 
   // ── Bindings for the shared PlayerChromeComponent ──────────────────────────
   readonly chromeCues = computed<ChromeCue[]>(() =>
-    this.filteredCues().map((c) => ({ index: c.globalIndex, text: c.text })),
+    // A StreamCue is a sentence being spoken live, not a VTT cue: there is no
+    // heading marker in that stream to read, so nothing here is a heading.
+    this.filteredCues().map((c) => ({ index: c.globalIndex, text: c.text, heading: false })),
   );
   readonly chromeChapters = computed<ChromeChapter[]>(() =>
     this.chapters().map((ch) => ({ id: ch.id, title: ch.title, label: `${ch.sentences.length} sentences` })),

@@ -1,4 +1,5 @@
 import * as crypto from 'crypto';
+import { readVttCueText } from './vtt-cue-text';
 
 export interface AudiobookAnalysisCue {
   index: number;
@@ -48,7 +49,12 @@ export function parseAudiobookVttStrict(content: string): AudiobookAnalysisCue[]
     const startMs = timestampToMs(timing[1]);
     const endMs = timestampToMs(timing[2]);
     if (endMs <= startMs) throw new Error(`WebVTT cue end must be after start: ${lines[timingIndex]}`);
-    const text = lines.slice(timingIndex + 1).join('\n').trim();
+    // Inline tags are markup, never transcript: a heading's `<b>…</b>` wrapping
+    // is removed here so everything downstream — the analysis prompt, quote
+    // anchoring, and the transcript identity digest — sees the words alone
+    // (2026-08-27). A transcript written before headings were bolded has no
+    // tags, so its text and therefore its digest are unchanged.
+    const { text } = readVttCueText(lines.slice(timingIndex + 1).join('\n'));
     if (!text) throw new Error(`WebVTT cue at ${timing[1]} has no text`);
     cues.push({
       index: cues.length,

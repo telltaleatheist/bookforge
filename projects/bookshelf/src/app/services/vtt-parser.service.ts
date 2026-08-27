@@ -5,7 +5,42 @@ export interface VttCue {
   index: number;
   startTime: number; // seconds
   endTime: number;   // seconds
+  /** Display text, every inline tag removed. Never contains markup. */
   text: string;
+  /** True when e2a bold-wrapped the whole payload, i.e. this cue is a heading. */
+  heading: boolean;
+}
+
+/**
+ * Any inline WebVTT tag: `<b>`, `</b>`, `<i>`, `<v Speaker>`, `<c.class>`.
+ * Timestamp tags (`<00:00:01.000>`) begin with a digit and are left alone.
+ */
+const VTT_INLINE_TAG = /<\/?[a-zA-Z][^>]*>/g;
+
+/** The whole payload wrapped in ONE bold span — what e2a writes for a heading. */
+const VTT_BOLD_WRAPPED = /^<b>([\s\S]*)<\/b>$/i;
+
+/**
+ * Split a raw cue payload into the text a human may see and the heading fact
+ * (2026-08-27).
+ *
+ * e2a marks a section heading by wrapping the WHOLE cue payload in WebVTT's own
+ * bold tag — `<b>Chapter Eight.</b>`. The tags are never text, and the wrapping
+ * is a fact the player carries so it can render the header as a header.
+ *
+ * A transcript written before this change has no tags, so `text` comes back
+ * exactly as it went in and `heading` is false. Nothing migrates.
+ *
+ * Ported verbatim from the desktop app's VttParserService, like parseVtt below,
+ * so the web player reads a transcript identically.
+ */
+export function readVttCueText(raw: string): { text: string; heading: boolean } {
+  const trimmed = raw.trim();
+  const wrapped = VTT_BOLD_WRAPPED.exec(trimmed);
+  // Only a payload that is ENTIRELY one bold span counts as a heading. A cue
+  // that merely contains a tag somewhere is prose with markup in it.
+  const heading = wrapped !== null && !/[<>]/.test(wrapped[1]);
+  return { text: trimmed.replace(VTT_INLINE_TAG, ''), heading };
 }
 
 /**
@@ -40,10 +75,10 @@ export class VttParserService {
 
       const startTime = this.timeToSeconds(startStr.trim());
       const endTime = this.timeToSeconds(endStr.trim().split(' ')[0]);
-      const text = lines.slice(timestampLineIndex + 1).join('\n').trim();
+      const { text, heading } = readVttCueText(lines.slice(timestampLineIndex + 1).join('\n'));
 
       if (text) {
-        cues.push({ index: cueIndex++, startTime, endTime, text });
+        cues.push({ index: cueIndex++, startTime, endTime, text, heading });
       }
     }
     return cues;

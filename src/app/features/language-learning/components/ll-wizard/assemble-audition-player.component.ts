@@ -29,7 +29,7 @@ import type { CorrectSentencesSession, SentenceCue } from '../../../correct-sent
             <button class="seg-play" (click)="jumpTo(cue.index)" [title]="cue.index === currentIndex() && isPlaying() ? 'Pause' : 'Play from here'">
               <app-icon [name]="cue.index === currentIndex() && isPlaying() ? 'pause' : 'play'" [size]="14" />
             </button>
-            <p class="seg-text" (click)="jumpTo(cue.index)">{{ cue.text }}</p>
+            <p class="seg-text" [class.heading]="cue.heading" (click)="jumpTo(cue.index)">{{ cue.text }}</p>
           </div>
         }
       </div>
@@ -55,6 +55,8 @@ import type { CorrectSentencesSession, SentenceCue } from '../../../correct-sent
     .seg.active { border-color: var(--accent-primary); background: color-mix(in srgb, var(--accent-primary) 10%, var(--bg-surface)); }
     .seg-play { flex-shrink: 0; width: 28px; height: 28px; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .seg-text { flex: 1; min-width: 0; margin: 0; font-size: 13px; line-height: 1.5; color: var(--text-primary); cursor: pointer; }
+    /* A heading sentence reads as the header it was. */
+    .seg-text.heading { font-weight: 700; }
     .aud-transport { position: relative; flex-shrink: 0; display: flex; align-items: center; justify-content: center; gap: 16px; padding: 10px; border-top: 1px solid var(--border-default); }
     .tb { width: 40px; height: 40px; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-primary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .tb.play { width: 50px; height: 50px; background: var(--accent-primary); color: #fff; }

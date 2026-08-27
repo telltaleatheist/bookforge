@@ -13,6 +13,7 @@ import * as os from 'os';
 import { spawn, ChildProcess } from 'child_process';
 import { getFfmpegPath } from './tool-paths.js';
 import { resolveReadableVtt } from './metadata-tools.js';
+import { stripVttCueTags } from './vtt-cue-text.js';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
@@ -213,7 +214,9 @@ function parseVtt(content: string): VttCue[] {
         i++;
       }
 
-      cues.push({ startTime, endTime, text: textLines.join('\n') });
+      // Inline tags are markup: a heading's `<b>…</b>` would otherwise be burned
+      // into the video frame as literal characters (2026-08-27).
+      cues.push({ startTime, endTime, text: stripVttCueTags(textLines.join('\n')) });
     } else {
       i++;
     }

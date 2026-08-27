@@ -6,8 +6,10 @@
 export interface SentenceCue {
   /** 0-based sentence index — same ordinal as {index}.flac. */
   index: number;
-  /** Spoken text (the e2a VTT cue payload). */
+  /** Spoken text (the e2a VTT cue payload), inline tags removed. */
   text: string;
+  /** True when e2a bold-wrapped the payload, i.e. this sentence is a heading. */
+  heading: boolean;
   /** Whole-book absolute cue bounds, milliseconds. */
   startMs: number;
   endMs: number;

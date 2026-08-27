@@ -418,7 +418,7 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
 
   // ── Bindings for the shared PlayerChromeComponent ──────────────────────────
   readonly chromeCues = computed<ChromeCue[]>(() =>
-    this.filteredCues().map((c) => ({ index: c.index, text: c.text })),
+    this.filteredCues().map((c) => ({ index: c.index, text: c.text, heading: c.heading })),
   );
   readonly chromeChapters = computed<ChromeChapter[]>(() =>
     this.chapters().map((ch) => ({ id: ch.id, title: ch.title, label: this.formatTime(ch.startTime) })),

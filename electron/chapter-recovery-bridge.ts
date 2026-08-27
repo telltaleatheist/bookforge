@@ -18,6 +18,7 @@ import { spawn } from 'child_process';
 import * as cheerio from 'cheerio';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { resolveReadableVtt } from './metadata-tools';
+import { stripVttCueTags } from './vtt-cue-text';
 
 const MAX_STDERR_BYTES = 10 * 1024;
 function appendCapped(buf: string, chunk: string): string {
@@ -145,10 +146,13 @@ export async function parseVttFile(vttPath: string): Promise<VttCue[]> {
       }
 
       if (textLines.length > 0) {
+        // Strip inline tags: a heading cue arrives as `<b>Chapter Eight.</b>`,
+        // and this index exists to MATCH chapter titles against cue text, so
+        // the tags would break the very cues that matter most (2026-08-27).
         cues.push({
           startTime,
           endTime,
-          text: textLines.join(' ')
+          text: stripVttCueTags(textLines.join(' '))
         });
       }
     } else {

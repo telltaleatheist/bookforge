@@ -32,7 +32,7 @@ import { CorrectSentencesSession, SentenceCue } from '../../models/correct-sente
             <button class="seg-play" (click)="jumpTo(cue.index)" [title]="cue.index === currentIndex() && isPlaying() ? 'Pause' : 'Play from here'">
               <app-icon [name]="cue.index === currentIndex() && isPlaying() ? 'pause' : 'play'" [size]="15" />
             </button>
-            <p class="seg-text" (click)="jumpTo(cue.index)">{{ cue.text }}</p>
+            <p class="seg-text" [class.heading]="cue.heading" (click)="jumpTo(cue.index)">{{ cue.text }}</p>
             <button class="seg-flag" [class.on]="isFlagged(cue.index)" (click)="toggleFlag(cue.index)" [title]="isFlagged(cue.index) ? 'Unflag' : 'Flag as wrong'">⚑</button>
           </div>
         }
@@ -77,6 +77,8 @@ import { CorrectSentencesSession, SentenceCue } from '../../models/correct-sente
     .seg.flagged { border-color: var(--error, #ff453a); }
     .seg-play { flex-shrink: 0; width: 30px; height: 30px; border: none; border-radius: 50%; background: var(--bg-elevated); color: var(--text-secondary); cursor: pointer; display: flex; align-items: center; justify-content: center; }
     .seg-text { flex: 1; min-width: 0; margin: 0; font-size: 14px; line-height: 1.5; color: var(--text-primary); cursor: pointer; }
+    /* A heading sentence reads as the header it was. */
+    .seg-text.heading { font-weight: 700; }
     .seg-flag { flex-shrink: 0; width: 30px; height: 30px; border: 1px solid var(--border-default); border-radius: 50%; background: transparent; color: var(--text-tertiary, var(--text-secondary)); cursor: pointer; font-size: 15px; line-height: 1; }
     .seg-flag.on { background: var(--error, #ff453a); border-color: var(--error, #ff453a); color: #fff; }
 

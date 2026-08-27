@@ -7,7 +7,44 @@ export interface VttCue {
   index: number;
   startTime: number;  // seconds
   endTime: number;    // seconds
+  /** Display text, every inline tag removed. Never contains markup. */
   text: string;
+  /** True when e2a bold-wrapped the whole payload, i.e. this cue is a heading. */
+  heading: boolean;
+}
+
+/**
+ * Any inline WebVTT tag: `<b>`, `</b>`, `<i>`, `<v Speaker>`, `<c.class>`.
+ * Timestamp tags (`<00:00:01.000>`) begin with a digit and are left alone.
+ */
+const VTT_INLINE_TAG = /<\/?[a-zA-Z][^>]*>/g;
+
+/** The whole payload wrapped in ONE bold span — what e2a writes for a heading. */
+const VTT_BOLD_WRAPPED = /^<b>([\s\S]*)<\/b>$/i;
+
+/**
+ * Split a raw cue payload into the text a human may see and the heading fact
+ * (2026-08-27).
+ *
+ * e2a marks a section heading by wrapping the WHOLE cue payload in WebVTT's own
+ * bold tag — `<b>Chapter Eight.</b>` — so the transcript can show a header the
+ * way the page did. Two rules follow, and every reader of a cue obeys them: the
+ * tags are never text, and the wrapping is a fact worth carrying.
+ *
+ * A transcript written before this change has no tags, so `text` comes back
+ * exactly as it went in and `heading` is false. Nothing migrates.
+ *
+ * The main process keeps this same contract in electron/vtt-cue-text.ts and the
+ * bookshelf web app in its own vtt-parser.service.ts; they are separate build
+ * units, which is the only reason there is more than one copy.
+ */
+export function readVttCueText(raw: string): { text: string; heading: boolean } {
+  const trimmed = raw.trim();
+  const wrapped = VTT_BOLD_WRAPPED.exec(trimmed);
+  // Only a payload that is ENTIRELY one bold span counts as a heading. A cue
+  // that merely contains a tag somewhere is prose with markup in it.
+  const heading = wrapped !== null && !/[<>]/.test(wrapped[1]);
+  return { text: trimmed.replace(VTT_INLINE_TAG, ''), heading };
 }
 
 /**
@@ -62,14 +99,15 @@ export class VttParserService {
 
       // Text is everything after the timestamp line
       const textLines = lines.slice(timestampLineIndex + 1);
-      const text = textLines.join('\n').trim();
+      const { text, heading } = readVttCueText(textLines.join('\n'));
 
       if (text) {
         cues.push({
           index: cueIndex++,
           startTime,
           endTime,
-          text
+          text,
+          heading
         });
       }
     }

@@ -26,6 +26,7 @@ import { promisify } from 'util';
 
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
 import { getBfpCachedSession } from './reassembly-bridge';
+import { readVttCueText } from './vtt-cue-text';
 import {
   regenerateSentenceIndices,
   ParallelTtsSettings,
@@ -40,8 +41,10 @@ const execFileAsync = promisify(execFile);
 export interface SentenceCue {
   /** 0-based sentence index — same ordinal as {index}.flac. */
   index: number;
-  /** Spoken text (the e2a VTT cue payload). */
+  /** Spoken text (the e2a VTT cue payload), inline tags removed. */
   text: string;
+  /** True when e2a bold-wrapped the payload, i.e. this sentence is a heading. */
+  heading: boolean;
   /** Whole-book absolute cue bounds, milliseconds. */
   startMs: number;
   endMs: number;
@@ -118,8 +121,10 @@ export function parseE2aVtt(content: string): SentenceCue[] {
     const [startRaw, endRaw] = lines[timingIdx].split('-->');
     const startMs = parseTimestamp(startRaw);
     const endMs = parseTimestamp(endRaw?.split(/\s+/)[0] ?? '');
-    const text = lines.slice(timingIdx + 1).join(' ').trim();
-    cues.push({ index, text, startMs: startMs || 0, endMs: endMs || 0 });
+    // A heading arrives as `<b>Chapter Eight.</b>`: the tags are markup, so the
+    // QA list shows the words and remembers that they were a header.
+    const { text, heading } = readVttCueText(lines.slice(timingIdx + 1).join(' '));
+    cues.push({ index, text, heading, startMs: startMs || 0, endMs: endMs || 0 });
     index += 1;
   }
   return cues;
@@ -250,8 +255,17 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
 }
 
 /** SML tokens the engines insert for pauses/effects — stripped from the DISPLAY text
- *  (the worker still feeds the raw text with tokens to TTS on regeneration). */
-const SML_RE = /\[(?:break|pause|music|sfx|silence)(?::[^\]]+)?\]/gi;
+ *  (the worker still feeds the raw text with tokens to TTS on regeneration).
+ *
+ *  [heading] joined the set on 2026-08-27 and has to be listed here too: this
+ *  path reads chapter_sentences straight out of session-state.json, where the
+ *  markers are still literal, so without it a chapter title would show up in the
+ *  QA list as "[heading]Chapter Eight.". Same drift e2a fixed on its own side by
+ *  collapsing five hand-rolled copies into one pattern. */
+const SML_RE = /\[\/?(?:break|pause|heading|music|sfx|silence)(?::[^\]]+)?\]/gi;
+
+/** The marker that says the row was a section header — read before SML_RE eats it. */
+const SML_HEADING_RE = /\[\/?heading\]/i;
 
 /**
  * Build index-keyed cues from the session's own sentence list (session-state.json →
@@ -269,8 +283,10 @@ async function buildCuesFromSessionState(processDir: string): Promise<SentenceCu
     for (const chapter of chapters) {
       if (!Array.isArray(chapter)) continue;
       for (const s of chapter) {
-        const text = String(s ?? '').replace(SML_RE, ' ').replace(/\s+/g, ' ').trim();
-        cues.push({ index, text, startMs: 0, endMs: 0 });
+        const stored = String(s ?? '');
+        const heading = SML_HEADING_RE.test(stored);
+        const text = stored.replace(SML_RE, ' ').replace(/\s+/g, ' ').trim();
+        cues.push({ index, text, heading, startMs: 0, endMs: 0 });
         index += 1;
       }
     }

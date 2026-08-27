@@ -47,7 +47,7 @@ function readTextSize(): number {
 /** One row of the virtualized transcript: a chapter header or a sentence cue. */
 type TranscriptRow =
   | { type: 'header'; title: string; key: string }
-  | { type: 'sentence'; cueIndex: number; text: string; key: string }
+  | { type: 'sentence'; cueIndex: number; text: string; heading: boolean; key: string }
   // Top/bottom scroll padding: an empty row of `size` px so the first / current /
   // last sentence can sit vertically centered instead of pinned under the fade.
   | { type: 'spacer'; size: number; key: string };
@@ -194,6 +194,7 @@ type TranscriptRow =
                 <div class="segment"
                   [class.active]="row.cueIndex === p.currentCueIndex()"
                   [class.past]="row.cueIndex < p.currentCueIndex()"
+                  [class.heading]="row.heading"
                   (click)="pickSentence(row.cueIndex)">
                   <p>{{ row.text }}</p>
                 </div>
@@ -633,6 +634,8 @@ type TranscriptRow =
        (the current sentence keeps its accent outline for reference). */
     .text-area.no-follow .segment { opacity: 1; }
     .segment p { margin: 0; font-size: var(--seg-size, 16px); line-height: 1.6; color: var(--text-primary); }
+    /* A heading was a header on the page; it reads as one here too. */
+    .segment.heading p { font-weight: 700; }
 
     /* Cover view is a plain div (NOT the cdk viewport), so it carries no fade mask —
        the artwork stays crisp edge-to-edge. It also NEVER scrolls: the cover is
@@ -1126,7 +1129,7 @@ export class PlayerComponent implements OnInit, OnDestroy {
     for (const cue of cues) {
       const title = headers.get(cue.index);
       if (title) out.push({ type: 'header', title, key: `h${cue.index}` });
-      out.push({ type: 'sentence', cueIndex: cue.index, text: cue.text, key: `s${cue.index}` });
+      out.push({ type: 'sentence', cueIndex: cue.index, text: cue.text, heading: cue.heading, key: `s${cue.index}` });
     }
     out.push({ type: 'spacer', size: pad, key: 'pad-bottom' });
     return out;
