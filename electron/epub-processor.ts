@@ -796,7 +796,11 @@ export class EpubProcessor {
     text = text.replace(/<br\s*\/?>/gi, '\n');
 
     // Also add newlines BEFORE opening block tags (in case closing tags are missing or malformed)
-    // Note: h1 tags are already removed above, so only h2-h6 here
+    // This list omits h1 — NOT because h1 was removed (the note here used to
+    // claim that, and nothing above removes it: h1 is punctuated at the
+    // "period after headings" step and its closing tag becomes \n\n like any
+    // other heading's). An h1 simply never needed the malformed-markup repair,
+    // since it opens a document rather than following a sibling block.
     text = text.replace(/<(p|h[2-6]|li|blockquote|figcaption)([\s>])/gi, '\n\n<$1$2');
 
     // Dropcap / styled initial: publishers wrap a chapter's first letter in its
@@ -1502,7 +1506,10 @@ function updateOpfMetadata(opf: string, metadata: Partial<EpubMetadata>): string
  * Replace the body content in an XHTML document while preserving heading structure.
  *
  * The original XHTML has a heading tag (h1-h6) for the chapter title.
- * extractTextFromXhtml strips H1 entirely and includes H2-H6 as text.
+ * extractTextFromXhtml includes H1-H6 alike as text: it punctuates every
+ * heading and turns its closing tag into a paragraph break. (This comment used
+ * to say H1 was stripped entirely; no code has done that for a long time, and
+ * the block below has always treated h1 like any other heading.)
  * This function detects the original heading and preserves the tag:
  * - H1-H6: sent to AI as first text block → first block goes back in heading tag
  * Heading text always ends with a period for TTS pause.
