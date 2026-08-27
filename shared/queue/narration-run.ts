@@ -454,9 +454,15 @@ export function narrationTtsStep(
  * Re-render the sentences through an RVC voice model, before assembly.
  *
  * Its own row rather than a flag on the assembly, so it shows a distinct job with
- * a per-sentence ETA. The session fields are empty on purpose: this runs after
- * the narration, and the queue discovers the session the narration actually
- * wrote rather than a path guessed an hour earlier.
+ * a per-sentence ETA.
+ *
+ * THE SESSION FIELDS ARE EMPTY ON PURPOSE, and for two different reasons now.
+ * Behind a narration, the queue discovers the session that narration actually
+ * wrote rather than a path guessed an hour earlier. FIRST in a run — converting
+ * sentences this project already has — there is no earlier step to ask, and the
+ * step resolves the project's cached session itself when it runs
+ * (`getBfpCachedSession`). Both are "ask the disk at the time", which is why one
+ * empty field serves both.
  *
  * Denoise rides HERE rather than on the assembly so it runs first — denoise, then
  * conversion, then assembly — and the assembly sees a pre-enhanced set.
