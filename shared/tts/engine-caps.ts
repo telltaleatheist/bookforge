@@ -145,7 +145,9 @@ const ORPHEUS_VOICES = [
   { id: 'leo', label: 'Leo (Male, American)' },
 ];
 // Folder-discovered custom Orpheus models (runtime/orpheus-models/<voice>/) are
-// appended to these built-ins at runtime — see ll-wizard's loadOrpheusModels().
+// appended to these built-ins at runtime, through the `orpheusModels` IPC —
+// NarrationVoicesService is what the narration modal reads them from. (This note
+// used to name ll-wizard's loadOrpheusModels; that page was erased 2026-08-27.)
 
 // Voxtral English presets (the model also ships de/es/fr/it/nl/pt/hi/ar presets and
 // supports reference-audio cloning — see canClone).

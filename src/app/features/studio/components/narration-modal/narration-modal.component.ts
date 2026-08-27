@@ -98,6 +98,7 @@ import {
   type NarrationRunBook,
   type NarrationRunSettings,
 } from '../../../queue/jobs/narration-run';
+import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import {
   engineCaps, selectableEngines,
 } from '../../../language-learning/models/tts-engine-registry';
@@ -166,7 +167,7 @@ const RUN_LANGUAGE = 'en';
  * the type's own set rather than a taste about sizes.
  */
 const VIDEO_RESOLUTIONS: ReadonlyArray<{
-  value: '480p' | '720p' | '1080p'; label: string; pixels: string;
+  value: VideoResolution; label: string; pixels: string;
 }> = [
   { value: '480p', label: '480p', pixels: '854 × 480' },
   { value: '720p', label: '720p', pixels: '1280 × 720' },
@@ -845,7 +846,7 @@ export class NarrationModalComponent {
    * question nobody has asked it yet.
    */
   readonly video = signal(this.defaults.generateVideo);
-  readonly videoResolution = signal<'480p' | '720p' | '1080p'>('720p');
+  readonly videoResolution = signal<VideoResolution>('720p');
   readonly videoResolutions = VIDEO_RESOLUTIONS;
 
   readonly rvcVoiceId = signal(this.defaults.rvcEnhancementVoiceId);
@@ -1262,47 +1263,23 @@ export class NarrationModalComponent {
   }
 
   /**
-   * The video job, composed exactly as the Process wizard composed it.
+   * The video step, as this window's queue takes it.
    *
-   * Every field is the wizard's, including the ones that look redundant:
-   * `projectId` and `bfpPath` are both the project directory (the bridge reads
-   * one and the queue files analytics under the other), and the filename is
-   * built title-then-author with the author left off when the title already
-   * carries it. `mode` is 'monolingual' — the bilingual arm was the wizard's
-   * unreachable half and is not being revived here.
-   *
-   * NO m4bPath/vttPath, deliberately: this job is queued beside the assembly
-   * that produces those files, so at queue time they do not exist and cannot be
-   * named. `video-assembly-bridge.resolveOutputPaths` finds both under the
-   * project's output/ when the job actually runs, and throws naming that
-   * directory when they are not there. The renderer used to invent the pair and
-   * was wrong every time — the monolingual assembler names the file after the
-   * book.
-   *
-   * `book.projectDir` is non-empty by `refusal()`, which `submitDisabled` gates
-   * on, so the wizard's own pre-flight check for it would refuse something that
-   * cannot reach here.
+   * A MAPPING and nothing else — the composition is `narrationVideoStep`
+   * (shared/queue/narration-video.ts), for the same reason the narration run's
+   * lives in shared/: what a step consists of is not a fact about which window
+   * asked for it, and a copy here would be a second answer to what a video job
+   * carries. The `config` cast is the one `asJobRequest` makes over in
+   * queue/jobs/narration-run.ts, checked on the other side by
+   * `VideoAssemblyJobConfig` naming the same fields with the same types.
    */
   private videoRequest(book: NarrationRunBook): CreateJobRequest {
-    let outputFilename = book.title || 'audiobook';
-    const author = book.author;
-    if (author && author !== 'Unknown' && !outputFilename.includes(author)) {
-      outputFilename += `. ${author}`;
-    }
+    const plan = narrationVideoStep(book, this.videoResolution(), RUN_LANGUAGE);
     return {
-      type: 'video-assembly',
-      bfpPath: book.projectDir,
-      metadata: { title: 'Video' },
-      config: {
-        type: 'video-assembly',
-        projectId: book.projectDir,
-        bfpPath: book.projectDir,
-        mode: 'monolingual',
-        title: book.title,
-        sourceLang: RUN_LANGUAGE,
-        resolution: this.videoResolution(),
-        outputFilename,
-      },
+      type: plan.type,
+      bfpPath: plan.bfpPath,
+      metadata: { ...plan.metadata },
+      config: plan.config as CreateJobRequest['config'],
     };
   }
 
