@@ -621,7 +621,30 @@ export function buildNarrationSteps(
 ): NarrationStepPlan[] {
   requireNarrationStages(stages, settings);
   const steps: NarrationStepPlan[] = [];
-  if (stages.narrate) steps.push(narrationTtsStep(book, settings, stages.assemble));
+  /*
+   * THE NARRATION NEVER ASSEMBLES ITSELF HERE — `true` unconditionally, not
+   * `stages.assemble`.
+   *
+   * e2a will combine the sentences on its own unless told to skip it, and that
+   * inline assembly is invisible to this description: it produces an audiobook
+   * no `reassembly` step planned, with none of BookForge's own metadata, chapter
+   * markers or optional passes, filed straight into the project's audiobook slot.
+   *
+   * Passing `stages.assemble` through made narrate-only do exactly that. The run
+   * the user asked for was "read the book and stop" — the dialog says so in as
+   * many words, and it is the point of separating the stages at all: render the
+   * sentences overnight, audition a conversion against them later, assemble once
+   * when the voice is right. Handing back a finished audiobook instead is not a
+   * smaller version of that, it is the opposite of it, and it overwrites whatever
+   * audiobook the book already had on the way.
+   *
+   * So assembly happens in EXACTLY ONE place — the reassembly step below, when
+   * `stages.assemble` — and the narration always stops at the cached sentences.
+   * The parameter stays on `narrationTtsStep` because the language-learning
+   * wizard is a caller that composes its own chain and still answers it for
+   * itself; this is the answer for a run described BY STAGES.
+   */
+  if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
   if (stages.rvc) {
     const rvc = narrationRvcStep(book, settings);
     if (rvc === null) {
