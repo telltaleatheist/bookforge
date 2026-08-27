@@ -97,23 +97,12 @@ import {
   foundryHostQueue, projectDirFromRequest, setFoundrySeam, watchFoundryQueue,
   type FoundryJobRequest, type FoundryJobRow, type FoundryRunJobOptions,
 } from './foundry-host-queue';
-// The narrate operation's dialog: the fields Foundry is asked to draw, and the
-// reading of the answers it hands back. Pure decisions, kept out of this file.
-import {
-  narrateFormOffer,
-  readNarrateAnswers,
-  readNarrateSavedSettings,
-  type FoundryHostOpField,
-  type NarrateOffer,
-  type NarrateVoiceOption,
-} from './foundry-narrate-form';
 import {
   resolveNarrationTarget, stepPressTranslationCheck, type LedgerStepLite,
 } from './foundry-narrate-target';
-// The ONE description of what a narration run consists of — the same one the
-// narration modal asks. See shared/queue/narration-run.ts for why it is shared.
-import { buildNarrationSteps } from '../shared/queue/narration-run';
-import { mergeOrpheusVoices, narrationVoicesFor } from '../shared/tts/narration-voices';
+// What a narrate press hands the dialog. Declared in shared/ because main sends
+// it, preload carries it and the renderer opens on it.
+import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
@@ -322,10 +311,12 @@ interface FoundryHostOperation {
    * default from its first option, OMITS a number the user emptied, and hands
    * back what was chosen keyed by each field's own `key`.
    *
-   * READ THROUGH `hostOperationOffers()` ON EVERY ASK rather than copied at
-   * mount, which is why the narrate operation declares this as a GETTER: the
-   * voice list is a fact about the machine, and a list captured at startup would
-   * be offering voices the user uninstalled an hour ago.
+   * NO OPERATION THIS HOST REGISTERS DECLARES ONE, since 2026-08-26. Narrate was
+   * the only one that ever did, and Owen's ruling moved its dialog back into
+   * BookForge's own window — which is what an absent form MEANS in this contract,
+   * not a gap in it. The field stays declared because this interface is a MIRROR
+   * of the published contract rather than a list of what we happen to use, and a
+   * mirror that quietly dropped a field would hide the day one of us wants it.
    */
   readonly form?: readonly FoundryHostOpField[];
   /**
@@ -339,12 +330,27 @@ interface FoundryHostOperation {
   ): void | Promise<void>;
 }
 
-/*
- * `FoundryHostOpField` — one question in a form — is declared in
- * electron/foundry-narrate-form.ts, beside the only operation that has any, and
- * imported here. Same rule as the shapes above (a mirror of the published
- * contract, never the subtree's own type); it simply lives where it is built.
+/**
+ * ONE QUESTION IN A FORM — `HostOpField` from foundry-app/shared/host-ops.ts.
+ *
+ * Declared here rather than imported, for the same reason as the shapes above:
+ * `foundry-app/` is built output of a separate program with its own tsconfig,
+ * and a static import would drag the sealed subtree into BookForge's type
+ * program. It lived in electron/foundry-narrate-form.ts until 2026-08-26, beside
+ * the only operation that had a form; that module went when the narration dialog
+ * came back to BookForge's own window, and the type came here to the rest of the
+ * mirrored contract.
  */
+interface FoundryHostOpField {
+  readonly key: string;
+  readonly label: string;
+  readonly kind: 'select' | 'number' | 'toggle' | 'text';
+  readonly options?: readonly { value: string; label: string }[];
+  readonly default?: string | number | boolean;
+  readonly min?: number;
+  readonly max?: number;
+  readonly help?: string;
+}
 
 interface FoundryHostRecord {
   /**
@@ -541,13 +547,15 @@ interface FoundryMountModule {
    * REVISE THE REGISTERED OPERATIONS IN A WINDOW THAT IS ALREADY OPEN.
    *
    * The other half of Owen's narrate report (2026-08-18: "the narrate button …
-   * is disappearing and disabling seemingly at random"). Our half was a race —
-   * `refreshFoundryNarrateForm` was not awaited, so the form was sometimes still
-   * null when the window asked (fixed in 577a70db). This is the half that await
-   * cannot reach: Foundry asked `host-ops:offers` ONCE, in its HostOpsService
-   * constructor, and nothing could revise the answer for the life of the window.
-   * So a voice installed — or a setting changed — after the window came up was
-   * invisible to it until the user closed and reopened.
+   * is disappearing and disabling seemingly at random"). Our half was a race
+   * between computing the narrate FORM and Foundry's renderer boot (fixed in
+   * 577a70db by awaiting it; retired altogether on 2026-08-26, when the dialog
+   * came back to BookForge and the operation stopped declaring a form at all).
+   * This is the half that await could not reach: Foundry asked
+   * `host-ops:offers` ONCE, in its HostOpsService constructor, and nothing could
+   * revise the answer for the life of the window. So an operation whose
+   * availability changed after the window came up was invisible to it until the
+   * user closed and reopened.
    *
    * Foundry 29c40a0 added the push (`host-ops:offers-changed`, mirroring
    * `status-changed` one surface along), and this is the call that fires it. The
@@ -1634,251 +1642,94 @@ function narrationTargetOf(bookDir: string, variant: ProjectVariant): FoundryNar
   };
 }
 
-// ── The saved narration settings, read from the one store that has them ─────
-//
-// `SettingsService` keeps the whole settings record in the MAIN WINDOW's
-// `localStorage`, under `bookforge-settings`, and there is no main-process
-// mirror of it — `invokeFoundryEnhance` below already says so, and it is why
-// that operation refuses rather than composing an enhancement.
-//
-// So this reads the store where the store IS, rather than keeping a second copy
-// of it in this process. A mirror pushed up from the renderer would be a value
-// that can be stale, can be missing because nobody happened to publish it, and
-// would need a channel and a keeper of its own; a read of the real thing is
-// current by construction and refuses honestly when there is nothing to read.
-// `executeJavaScript` on the main window is how this file already talks to the
-// page for the quit toast — one established mechanism, one new caller.
-
-/** The `pipelineDefaults` record as the renderer saved it, or null. */
-async function readSavedNarrationSettings(): Promise<unknown> {
-  if (!mainWindow || mainWindow.isDestroyed()) {
-    throw new Error(
-      'BookForge is not showing its own window, so its saved narration settings cannot be read. '
-      + 'Open BookForge and press Narrate again.');
-  }
-  const raw = await mainWindow.webContents.executeJavaScript(
-    'window.localStorage.getItem("bookforge-settings")',
-  ) as string | null;
-  if (raw === null) return null;
-  try {
-    return (JSON.parse(raw) as Record<string, unknown>)['pipelineDefaults'] ?? null;
-  } catch (err) {
-    throw new Error(
-      'BookForge\'s saved settings could not be read, so it does not know how this book should be '
-      + `narrated (${(err as Error).message}). Open BookForge, go to Settings → Pipeline `
-      + 'Defaults, set the narration defaults again, and press Narrate.');
-  }
-}
-
 /**
- * THE VOICES THIS ENGINE CAN BE ASKED FOR, from the same doors the modal asks.
+ * PUBLISH THE HOST OPERATIONS to the mount.
  *
- * `getAudiobookVoiceOptions` is what `voices:list-audiobook` answers with and
- * `listOrpheusModels` is what `orpheus:list-models` answers with — the two calls
- * `NarrationVoicesService.load()` makes. Nothing is enumerated a second time
- * here: this calls the same functions the renderer's handlers call and folds
- * them with the same rule (shared/tts/narration-voices.ts).
+ * Called before the Foundry window comes up, which is the moment the contract
+ * calls for ("values resolved live at mount time") and the only moment there is
+ * anyone to publish to — `setHostOperations` on a mount with no window is a
+ * write nobody reads.
+ *
+ * IT USED TO BE A REFRESH, and the difference is the whole of the 2026-08-26
+ * narrate change. Narrate declared a `form`: a description of a dozen questions,
+ * computed here from the renderer's saved settings and the installed voices,
+ * which Foundry drew in its own dialog. Owen ruled that dialog back to this side
+ * ("Foundry is just for text changes, not for audio changes"), so there is
+ * nothing left to compute — the list is static, and this is one call.
+ *
+ * The bug that made the old version awaited is therefore gone with it: the form
+ * was a round trip into the renderer racing Foundry's renderer boot, and
+ * whichever won decided whether Narrate existed in that window for its whole
+ * life ("the narrate button... is disappearing and disabling seemingly at
+ * random", 2026-08-18). A synchronous publish cannot lose that race.
  */
-async function narrateVoiceOptions(engine: string): Promise<readonly NarrateVoiceOption[]> {
-  const [{ getAudiobookVoiceOptions }, { listOrpheusModels }] = await Promise.all([
-    import('./components/installed-voices.js'),
-    import('./orpheus-models.js'),
-  ]);
-  const xtts = await getAudiobookVoiceOptions();
-  const orpheus = mergeOrpheusVoices(
-    listOrpheusModels().map((m) => ({ value: m.id, label: `${m.label} (Custom)` })),
-  );
-  return narrationVoicesFor(engine, { xtts, orpheus });
-}
-
-/**
- * THE NARRATE FORM AS FOUNDRY LAST SAW IT, and why it is a snapshot.
- *
- * Foundry reads `form` off the registered operation SYNCHRONOUSLY, every time a
- * window asks for the offers (`hostOperationOffers`). The list it has to carry is
- * two disk reads and a read of the renderer's store, none of which can happen
- * inside a property getter — so the fields are computed asynchronously and this
- * holds the answer.
- *
- * IT IS REFRESHED WHENEVER THE FOUNDRY WINDOW IS OPENED, which is the moment the
- * contract cares about ("values resolved live at mount time, so the voice list is
- * current") and a better one than mount: at mount BookForge has not finished
- * starting and its window has no settings loaded yet, while a press of Edit in
- * Foundry happens with the app up and the store readable.
- *
- * NULL IS A REAL STATE and is drawn as no form at all. The operation then invokes
- * on the press, with `{}`, and the invoke refuses in the sentence the refresh
- * failed with — which is the loud version of "we could not ask you". It is never
- * a form with an empty voice list, because a Start button whose one required
- * choice is empty can only fail.
- *
- * IT IS THE WHOLE OFFER THAT IS HELD, not just the fields, because the form is
- * not the same shape on every machine: an engine with no sampling controls is
- * asked no temperature, and a machine with no RVC models is offered no
- * enhancement. Reading the answers requires knowing which questions were on
- * screen — an absent `temperature` is either "the engine has none" or "the user
- * emptied the box", and those two have opposite correct handling. Proving the
- * answers against the offer that was actually DRAWN, rather than one recomputed
- * at invoke time, is what keeps that distinction true even if Settings changed
- * while the dialog was open.
- */
-let narrateOffer: NarrateOffer | null = null;
-/**
- * Why there is no form, when there is none — kept so the invoke can say it.
- *
- * The refusal belongs at the button, where somebody is looking, and this is the
- * only place that sentence exists: the refresh happens with the Foundry window
- * coming up and nobody reading a console.
- */
-let narrateOfferRefusal: string | null = null;
-
-/**
- * Recompute the narrate form. Called before the Foundry window comes up.
- *
- * Never throws at its caller: the reasons this fails (no saved settings, no
- * installed voice) are the same reasons the INVOKE refuses, and refusing at the
- * button — where somebody is looking — is where that sentence belongs. Opening
- * the window is not the act to fail.
- *
- * The component registry is asked the two questions the modal's own RVC section
- * asks: whether `rvc-env` is installed at all, and which `rvc-model` components
- * are — the same rule `NarrationVoicesService.rvcVoices` folds for the picker in
- * this window. A model list with no environment behind it is not an offer, so the
- * form module is handed both facts and decides.
- */
-async function refreshFoundryNarrateForm(): Promise<void> {
-  try {
-    const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
-    const components = await componentManager.listStatus();
-    narrateOffer = narrateFormOffer(
-      await narrateVoiceOptions(saved.ttsEngine),
-      saved,
-      {
-        envInstalled: components.some(
-          (s) => s.component.id === 'rvc-env' && s.state === 'installed'),
-        models: components
-          .filter((s) => s.component.kind === 'rvc-model' && s.state === 'installed')
-          .map((s) => ({ id: s.component.id, name: s.component.name })),
-      },
-    );
-    narrateOfferRefusal = null;
-  } catch (err) {
-    narrateOffer = null;
-    narrateOfferRefusal = (err as Error).message;
-    console.error(
-      `[foundry-host] Narrate will ask nothing in Foundry's window: ${(err as Error).message}`);
-  }
-  /*
-   * SAID TO A WINDOW THAT IS ALREADY OPEN — the half of Owen's report the await
-   * could not reach.
-   *
-   * Foundry reads `host-ops:offers` once, at renderer boot. Awaiting the refresh
-   * before the window opens (577a70db) makes the FIRST paint deterministic and
-   * nothing more: a second press of Open on a window already up recomputes this
-   * form and, before Foundry 29c40a0, had no way to tell anyone. The user who
-   * installed a voice and pressed Open again got the offers from boot.
-   *
-   * IN BOTH DIRECTIONS, which is why it is outside the try. A refresh that FAILED
-   * has revised the form too — to no form at all — and a window still drawing the
-   * old one would offer questions this process can no longer answer.
-   *
-   * Standalone Foundry never sees this: the push has no listener until a window
-   * is up, and `setHostOperations` on a mount with no window is a write nobody
-   * reads. So calling it unconditionally here is right; there is no "is anyone
-   * listening" this side should be guessing at.
-   *
-   * ── UNWRAPPED, AND THAT IS DELIBERATE — the history is worth keeping ───────
-   *
-   * bookforge-mac-2 read this diff on 2026-08-19 and noticed that putting the
-   * push outside the catch made it the ONE statement in this function that could
-   * reject — and this function is AWAITED before the Foundry window opens.
-   * Foundry's `broadcast` was an unguarded `win.webContents.send` over
-   * `BrowserWindow.getAllWindows()`, which HOSTED is BookForge's windows too, so
-   * a live window whose webContents had died (an ordinary crashed renderer) would
-   * throw, the rejection would travel out of here, and the Foundry window would
-   * never open. Owen's original bug was a button that vanished; that one would
-   * have been the whole window not appearing.
-   *
-   * It was briefly wrapped here. It is not any more, at Foundry's request and on
-   * their better argument: the guard landed in `broadcast` itself (foundry
-   * c999195), which is the one place that covers `setHostNodes`, `setHostStatus`
-   * and — the caller neither side had thought of — the queue's own
-   * `changed()`/`queue:changed` push, which is called throughout their pump and
-   * needed no await to be structural. With the loop guarded, anything thrown here
-   * is a REAL failure of this call, and a wrap would hide exactly the signal
-   * worth seeing. Nothing in this file defends against a regression in that loop;
-   * that is their file and their keeper.
-   */
+function publishFoundryHostOperations(): void {
   foundryMount.setHostOperations(FOUNDRY_HOST_OPERATIONS);
 }
 
+
+
 /**
- * NARRATE — pressed on a ledger step or on an export row, asked about in
- * Foundry's own window, and queued here.
+ * NARRATE — pressed on a ledger step or on an export row, and answered by
+ * OPENING BOOKFORGE'S OWN DIALOG over the book it names.
+ *
+ * ── What this stopped doing, and why ────────────────────────────────────────
+ *
+ * It used to compose and queue the whole run from here. The questions crossed
+ * the socket as a `form` — a static field description Foundry drew in its own
+ * dialog — and the answers came back on the invoke. Owen's ruling of 2026-08-26
+ * ends that: *"Foundry is just for text changes, not for audio changes."*
+ *
+ * The ruling also fixes something the form could not. Foundry's dialog language
+ * has no conditional logic and says so in as many words — "no 'show this field
+ * only when that one is set', no cross-field validation, no dependent option
+ * lists" — and a voice conversion is nothing but conditional questions. Hop
+ * length is read only by the crepe family. Consonant protection does nothing at
+ * index rate 0. The voice list depends on the engine. Every one of those had to
+ * be dropped from the form or read from Settings behind the user's back, which
+ * is why the engine, the RVC on/off choice and all three rates were never asked
+ * over there at all.
+ *
+ * ── Which is exactly the escape hatch the contract names ────────────────────
+ *
+ * `HostOperationOffer.form` is optional, and its own docblock says what absent
+ * means: *"an operation with no `form` opens the host's own window, where the
+ * host can ask anything it likes."* So this is the socket working as designed,
+ * not a host getting around it — no change on Foundry's side is required, and
+ * none was made (`foundry-app/` is a sealed vendored subtree).
  *
  * ── WHICH BOOK IT READS, AND WHERE THAT BOOK COMES FROM ─────────────────────
  *
- * `foundryNarrationTarget` answers both, and on a step press it may MAKE the
- * file before answering (Owen: "if they arent doing it from an epub then we
- * export the epub automatically and then run the task they assigned"). That is
- * the arm that makes this operation's `appliesTo: ['book', 'export']` an honest
- * declaration rather than a button drawn where it can only refuse — the two are
- * one change and neither is correct without the other.
+ * Unchanged, and it is the half worth keeping. `foundryNarrationTarget` answers
+ * both, and on a step press it may MAKE the file first (Owen: "if they arent
+ * doing it from an epub then we export the epub automatically and then run the
+ * task they assigned"). That is what makes this operation's
+ * `appliesTo: ['book', 'export']` an honest declaration rather than a button
+ * drawn where it can only refuse.
  *
- * Its refusals — this library's own, and Foundry's when an export will not
- * plan — are said in BOTH windows: thrown, so the tree says them at the button,
- * and pushed through `sayToUser`, so they are still on screen when the user comes
- * back over. Nothing is queued when one is raised.
+ * Its refusals — this library's own, and Foundry's when an export will not plan
+ * — are said in BOTH windows: thrown, so the tree says them at the button, and
+ * pushed through `sayToUser`, so they are still on screen when the user comes
+ * back over. Nothing is opened when one is raised.
  *
- * ── What this used to do, and why it stopped ────────────────────────────────
+ * ── The press still costs an export, so it is still resolved HERE ───────────
  *
- * It raised BookForge's main window and pushed `app:show-narration`, because a
- * narration is a dozen decisions and this app had exactly one surface that asked
- * them. Owen's ruling of 2026-08-18 replaced that: *"Owen wants the dialog in the
- * Foundry window, like translate/simplify."* The socket grew `form`, so the
- * questions now cross as a description, Foundry draws them, and the answers come
- * back here as `settings`. Nobody is sent to another window to say how a book
- * should be read.
+ * Raising the window first and resolving afterwards would put the auto-export
+ * and every refusal behind a dialog the user is already looking at, and a
+ * refusal shown at a button in the window somebody just left is a refusal
+ * nobody reads. So the target is proved before anything is raised, exactly as
+ * it was when this queued the run itself.
  *
- * ── What the dialog asks now, and the two things it still does not ──────────
+ * ── `settings` is ignored, and cannot be otherwise ──────────────────────────
  *
- * It used to ask three questions — voice, device, workers — and everything else
- * came from the saved settings. Owen's ruling of 2026-08-17 changed both halves:
- *
- *  - WORKER COUNT IS DEPRECATED. A run always uses one worker, so the question is
- *    gone and `workers: 1` below is not a default this function chose but the only
- *    value there is.
- *  - THE DIALOG CARRIES THE NARRATION MODAL'S OWN CONTROL SET, assembly section
- *    included: what to run, voice, device, speed, the engine's sampling numbers,
- *    the two assembly passes and the enhancement voice. Those answers are what the
- *    queued run is built from, and they REPLACE the saved values this function
- *    used to read for them.
- *
- * What is still not asked is what a static form cannot honestly draw — the engine
- * (the voice list depends on it and Foundry's dialog cannot re-filter a select)
- * and the three enhancement rates (not asked in the modal either, which prints
- * them as a hint and points at Settings). Those, plus the language, come from
- * Settings → Pipeline Defaults, which is the same store the modal seeds every one
- * of ITS controls from — so the two doors start from the same answers and neither
- * invents one. A missing saved setting is a refusal naming the door that sets it
- * (electron/foundry-narrate-form.ts), never a shipped default quietly standing in.
- *
- * ── The run itself is not composed here ─────────────────────────────────────
- *
- * `buildNarrationSteps` (shared/queue/narration-run.ts) is the ONE description of
- * what a narration run consists of, and it is the same one the modal asks. This
- * function turns its answer into the engine's shape — the first step becomes the
- * job, the rest are appended to it — which is exactly what `QueueService.addJob`
- * does on the renderer's side of the same description.
- *
- * The lineage is stamped on the JOB, because it is a fact about the run rather
- * than about one of its steps, and it is what makes the rows appear back on the
- * tree the press came from.
+ * A formless operation invokes with `{}` (the contract's own words: it "invokes
+ * THE INSTANT IT IS PRESSED"). There is nothing in the bag and nothing that
+ * could be, which is why the parameter is named for what it is.
  */
 async function invokeFoundryNarrate(
   projectDir: string,
   nodeId: string,
-  settings: Record<string, unknown>,
+  _noSettingsAreAsked: Record<string, unknown>,
 ): Promise<void> {
   if (decodeNodeId(nodeId) !== null) {
     /*
@@ -1897,21 +1748,6 @@ async function invokeFoundryNarrate(
       'Narrate was pressed on a row BookForge is making, and a narration reads a book rather '
       + 'than audio. Press it on one of the book\'s own steps.');
   }
-  const saved = readNarrateSavedSettings(await readSavedNarrationSettings());
-  /*
-   * The answers are proved against the offer that was DRAWN — held since the
-   * Foundry window came up — because which questions were on screen is what says
-   * whether a missing number is an engine without that control or a box somebody
-   * emptied. With no offer there was no dialog, and the sentence the refresh
-   * failed with is the honest thing to show at the button.
-   */
-  if (narrateOffer === null) {
-    throw new Error(narrateOfferRefusal === null
-      ? 'BookForge has not worked out what to ask about this narration yet. Close the Foundry '
-        + 'window, open it again, and press Narrate.'
-      : narrateOfferRefusal);
-  }
-  const answers = readNarrateAnswers(settings, narrateOffer.asked, saved);
 
   let target: FoundryNarrationTarget;
   try {
@@ -1933,10 +1769,13 @@ async function invokeFoundryNarrate(
 
   /*
    * The manifest stores the cover LIBRARY-RELATIVE ("media/cover_x.png"); the
-   * run carries it ABSOLUTE — that is the shape the assembler writes into the
-   * M4B and the shape the queue tray takes the library root back off to draw
-   * the job's thumbnail. The renderer's own door does the same join
-   * (studio.service.ts) before its modal ever sees the book.
+   * dialog and the run carry it ABSOLUTE — that is the shape the assembler
+   * writes into the M4B and the shape the queue tray takes the library root back
+   * off to draw the job's thumbnail. The renderer's own door does the same join
+   * (studio.service.ts) before its dialog ever sees the book.
+   *
+   * A COVER THE LIBRARY HAS LOST IS REFUSED HERE rather than carried as a path
+   * that fails inside the assembly, an hour after the user stopped watching.
    */
   let coverPath = '';
   if (meta.coverPath !== undefined && meta.coverPath !== '') {
@@ -1945,172 +1784,47 @@ async function invokeFoundryNarrate(
       throw new Error(
         `${projectId}'s manifest names a cover (${meta.coverPath}) that is not in the library's `
         + 'media folder, so the audiobook\'s art cannot be written. Fix or clear the cover on the '
-        + 'book\'s page and press Start again.');
+        + 'book\'s page and press Narrate again.');
     }
     coverPath = coverAbsolute;
   }
 
-  /*
-   * The enhancement pass runs only when its environment is installed, on the
-   * modal's own gate (`rvcInstalled`): a run that named an RVC model with no
-   * rvc-env behind it would fail an hour in, inside the step, at the point the
-   * user has stopped watching.
-   *
-   * CHECKED AGAIN HERE, and a chosen model with no environment is REFUSED rather
-   * than dropped. The dialog only offers the enhancement select when rvc-env was
-   * installed at the moment the Foundry window came up; if it has gone since, the
-   * user has explicitly named a voice this machine can no longer render through,
-   * and quietly queueing the book without it would hand back an audiobook in the
-   * wrong voice with nothing ever having said so.
-   */
-  const rvcInstalled = (await componentManager.listStatus())
-    .some((s) => s.component.id === 'rvc-env' && s.state === 'installed');
-  if (answers.rvcVoiceId !== null && !rvcInstalled) {
-    throw new Error(
-      'The voice-conversion environment is no longer installed, so this audiobook cannot be '
-      + `re-rendered through ${answers.rvcVoiceId}. Install it in BookForge under Settings → `
-      + 'Add-ons, or choose None, and press Start again.');
-  }
-
-  const steps = buildNarrationSteps(
-    {
-      epubPath: target.variantPath,
-      projectDir: target.bookDir,
-      variantId: target.variantId,
-      title: meta.title,
-      author: meta.author,
-      year: meta.year ?? '',
-      coverPath,
-      outputFilename: meta.outputFilename ?? '',
-      // A Foundry project is a book. Articles are never made in that window, and
-      // the manifest says which this is rather than this side assuming.
-      isArticle: got.manifest.projectType === 'article',
-    },
-    {
-      // The modal's one stated assumption, kept: narration reads the book in the
-      // book's own language, which the TTS bridge detects from the file itself.
-      language: 'en',
-      // The engine is not a question a static dialog can ask — the voice list
-      // depends on it — so it is Settings' answer, and the voices the dialog
-      // offered were this engine's.
-      ttsEngine: saved.ttsEngine,
-      voice: answers.voice,
-      device: answers.device,
-      /*
-       * The sampling numbers are the dialog's when the engine has those controls
-       * and the SAVED ones when it does not. That is not a fallback: an engine
-       * whose `sampling` caps are empty (Orpheus, Voxtral) fixes these internally
-       * and was never asked, so the saved settings are the only source that run
-       * has for a number the config still has to carry. A field that WAS asked and
-       * came back empty is refused by name in `readNarrateAnswers`, never filled
-       * from here — the form module makes that split, and this reads its answer.
-       */
-      temperature: answers.temperature,
-      topP: answers.topP,
-      repetitionPenalty: answers.repetitionPenalty,
-      speed: answers.speed,
-      /*
-       * ALWAYS ONE. Owen's ruling of 2026-08-17: worker count is deprecated and a
-       * run always uses a single worker, so the dialog no longer asks and this is
-       * not a default standing in for an answer — it is the only value there is.
-       */
-      workers: 1,
-      // `<library>/projects` — what `LibraryService.audiobooksPath()` computes on
-      // the renderer's side, from the same root.
-      outputDir: `${getLibraryRoot().replace(/\\/g, '/')}/projects`,
-      // Both opt-in assembly passes are the dialog's own checkboxes now, drawn
-      // off exactly as the modal's start. Neither is a saved setting: a de-ring
-      // filter is a thing somebody asks for on the run, not a standing default.
-      finalDenoise: answers.finalDenoise,
-      applyDeRing: answers.applyDeRing,
-      /*
-       * The enhancement voice is chosen in the dialog; its three RATES are not,
-       * because they are not asked in the modal either — it prints them as a hint
-       * and points at Settings. So the model is the user's answer and the rates
-       * are Settings', which is exactly how the modal composes the same block.
-       */
-      rvc: answers.rvcVoiceId === null
-        ? null
-        : {
-            voiceId: answers.rvcVoiceId,
-            indexRate: saved.rvcEnhancementIndexRate,
-            protectRate: saved.rvcEnhancementProtectRate,
-            nSemitones: saved.rvcEnhancementNSemitones,
-          },
-      // It offers the choice now, as the desktop dialog does — see the field's
-      // note in foundry-narrate-form.ts for why this one has to ask on every
-      // book rather than only when there is something to discard.
-      startFresh: answers.startFresh,
-    },
-    // What the run does — the dialog's own two toggles, both drawn on, because a
-    // narration nobody assembles leaves rendered sentences and no audiobook. Both
-    // off is refused before this point, in `readNarrateAnswers`.
-    { narrate: answers.narrate, assemble: answers.assemble },
-  );
-
-  /*
-   * One step per row, exactly as `QueueService.addJob` composes the same plans:
-   * the first becomes the JOB (with the source the user picked) and every later
-   * one is APPENDED to it, hanging off the step before — which is what lets an
-   * assembly be queued behind a narration that has not run yet.
-   *
-   * A row's LABEL is its metadata title and its config carries `bfpPath` and
-   * `metadata` beside the settings — the three lines `buildJobConfig` performs
-   * for every row the renderer queues (queue.service.ts). Said here rather than
-   * in the shared description because it is a fact about how a row reaches a
-   * door, and the two doors have to hand the engine the same thing.
-   */
-  const stepConfig = (step: (typeof steps)[number]): Record<string, unknown> => ({
-    ...step.config,
-    // Absent for an article, whose jobs carry `projectDir` instead — and which
-    // the renderer's own builder does not put on the config either.
-    ...(step.bfpPath === undefined ? {} : { bfpPath: step.bfpPath }),
-    metadata: { ...step.metadata },
-  });
-
-  const first = steps[0]!;
-  const job = queueEngine.enqueue({
-    /*
-     * THE JOB IS THE BOOK; THE STEPS ARE THE ACTS. This used to take the first
-     * step's own title, which made the whole card read "TTS" — Owen, off his
-     * first Foundry-pressed narration (2026-08-17): "it should specify which
-     * book we're narrating, not say 'tts'." The step rows already name their
-     * work (TTS / Enhance / Assembly, shared/queue/narration-run.ts).
-     */
+  const opened: NarrateTarget = {
+    epubPath: target.variantPath,
+    projectDir: target.bookDir,
+    variantId: target.variantId,
     title: meta.title,
-    projectId: target.bookDir,
-    /*
-     * THE LINEAGE NAMES THE EPUB, NOT WHAT WAS PRESSED. Foundry echoes this id
-     * back as every ghost row's `parentStepId`, and Owen's standing ruling is
-     * that those rows hang under the export the narration read — which stays
-     * true when the press was made on a STEP, because the file that step made is
-     * still the thing being narrated. `target.exportNodeId` is the tree's own id
-     * for that row, so a press on the step and a press on the file put their
-     * rows in exactly the same place.
-     */
-    foundry: { projectDir, parentStepId: target.exportNodeId },
-    documentPath: target.variantPath,
-    documentLabel: path.basename(target.variantPath),
-    steps: [{
-      type: first.type,
-      label: first.metadata.title,
-      config: stepConfig(first),
-      // The file the user picked, not a file a step will write — which is what
-      // makes this the run's source rather than its first link.
-      sourceRef: { kind: 'epub', path: target.variantPath },
-    }],
-  });
-  let parentStepId = job.steps[0]!.id;
-  for (const step of steps.slice(1)) {
-    const appended = queueEngine.appendStep(job.id, {
-      type: step.type,
-      label: step.metadata.title,
-      config: stepConfig(step),
-      parentStepId,
-    });
-    parentStepId = appended.id;
+    author: meta.author,
+    year: meta.year ?? '',
+    coverPath,
+    outputFilename: meta.outputFilename ?? '',
+    // A Foundry project is a book. Articles are never made in that window, and
+    // the manifest says which this is rather than this side assuming.
+    isArticle: got.manifest.projectType === 'article',
+  };
+
+  /*
+   * NO MAIN WINDOW IS A REFUSAL, SAID OUT LOUD — `showQueueInMainWindow`'s rule,
+   * for the same reason. There is no second place to put somebody and nothing
+   * quieter to do; the throw travels back over `host-ops:invoke` and Foundry
+   * says it at the button that was pressed.
+   *
+   * Sent to `mainWindow` ALONE and never broadcast: a standalone listen or
+   * editor popup carries the same shell, and a broadcast would have every one of
+   * them open a narration dialog for a press meant for one place.
+   */
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    throw new Error(
+      'BookForge has no main window open, so there is nowhere to ask you how this book should be '
+      + 'read. Its main window was closed while this one stayed up — open BookForge and press '
+      + 'Narrate again.');
   }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  mainWindow.show();
+  mainWindow.focus();
+  mainWindow.webContents.send('foundry-host:narrate', opened);
 }
+
 
 /**
  * The (job, step) a host node id names, proved against the live queue.
@@ -2402,21 +2116,34 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
      * read it rather than export it a second time.
      */
     appliesTo: ['book', 'export'],
-    // The engine enqueues held; releasing is the queue's decision. Same words
-    // as BookForge's own modal button, for the same run (Owen: "the button
-    // shouldnt say start if it isnt going to start").
-    submitLabel: 'Add to queue',
     /*
-     * A GETTER, not a captured array — the same reason `libraryDir` is one at the
-     * mount call. Foundry reads this on every `host-ops:offers`, so a getter is a
-     * form that reflects the last refresh rather than whatever was installed at
-     * startup. `undefined` when there is nothing honest to ask (no saved
-     * settings, no installed voice) means Foundry invokes on the press and the
-     * invoke says why, which is louder than a dialog with an empty picker.
+     * NO `form`, AND THAT IS THE 2026-08-26 CHANGE.
+     *
+     * It declared one until then — a dozen fields Foundry drew in its own dialog,
+     * recomputed from the renderer's settings every time that window opened.
+     * Owen: *"Foundry is just for text changes, not for audio changes."* The
+     * questions are asked in BookForge's own dialog now, so the press has nothing
+     * to ask over there, and `form` being absent is precisely how this socket
+     * spells that: *"an operation with no `form` opens the host's own window,
+     * where the host can ask anything it likes"* (shared/host-ops.ts).
+     *
+     * `form: []` IS NOT THE SAME THING and must never be used here. Foundry
+     * treats an empty array as a host bug by name — "the one shape that cannot
+     * have been meant" — and draws a card saying so.
+     *
+     * WHAT IT COSTS, stated because it is a real difference somebody will notice:
+     * Foundry's ACTION MENU draws only the acts that declare a form
+     * (`action-menu.component.ts`), on the reasoning that a menu row starting an
+     * hours-long job on one click could not be taken back. So Narrate leaves that
+     * menu and is pressed from the TREE FOOTER beside the row it names, where a
+     * formless act invokes immediately — which is where an export row's Narrate
+     * is pressed anyway. The reasoning no longer applies to this act (it starts
+     * nothing; it opens a dialog), but relaxing that filter is a change in
+     * Foundry's own repo and `foundry-app/` is sealed.
+     *
+     * `submitLabel` went with the form. It was the word on a dialog that no
+     * longer exists; BookForge's own dialog says "Add to queue" for itself.
      */
-    get form(): readonly FoundryHostOpField[] | undefined {
-      return narrateOffer === null ? undefined : narrateOffer.fields;
-    },
     invoke: (projectDir, nodeId, settings) =>
       invokeFoundryNarrate(projectDir, nodeId, settings),
   },
@@ -2476,35 +2203,22 @@ async function openFoundryWindowAndReconcileOnClose(
   opts?: { document?: string },
 ): Promise<void> {
   /*
-   * The narrate dialog's fields, recomputed now — the moment the contract calls
-   * for ("values resolved live at mount time, so the voice list is current") and
-   * the honest reading of it: this press is when BookForge is up, its window has
-   * its settings loaded, and the voices on disk are the ones the user will be
-   * offered.
+   * The host's operations, published before the window comes up — the moment the
+   * contract calls for ("values resolved live at mount time").
    *
-   * AWAITED, AND THAT IS THE WHOLE OF A BUG OWEN REPORTED ON 2026-08-18: "the
-   * narrate button in the bottom left of the foundry window is disappearing and
-   * disabling seemingly at random."
+   * IT USED TO BE AN AWAITED REFRESH OF THE NARRATE FORM, and that await was the
+   * whole of a bug Owen reported on 2026-08-18: "the narrate button in the bottom
+   * left of the foundry window is disappearing and disabling seemingly at
+   * random." Foundry's HostOpsService asks `host-ops:offers` ONCE, in its
+   * constructor, at renderer boot; the form was a round trip into BookForge's
+   * renderer plus two dynamic imports and a component scan, and whichever of the
+   * two finished first decided whether Narrate existed in that window for its
+   * whole life.
    *
-   * It was fire-and-forget, on the reasoning that "opening the window must not
-   * wait behind two disk reads, and the offers are asked for after the renderer
-   * has booted". The second half is not true. Foundry's HostOpsService asks
-   * `host-ops:offers` ONCE, in its constructor, at renderer boot — there is no
-   * re-ask and no push that revises it — and the action menu draws a host act
-   * only if `offer.form !== undefined` (a formless act would run an hours-long
-   * job on one click, so it lives in the tree footer instead). `form` is a getter
-   * over `narrateOffer`, which this function is what fills in.
-   *
-   * So the two were racing, and the race decided whether Narrate existed in that
-   * window for its whole life. The refresh is not two disk reads: it round-trips
-   * `executeJavaScript` into BookForge's renderer for the saved settings, dynamic-
-   * imports two modules, scans the installed voices and lists every component. The
-   * Foundry renderer boots from a warm bundle. Whichever finished first won.
-   *
-   * A window opens a few hundred milliseconds later now. That is the correct
-   * trade: the alternative is a button that is sometimes not there.
+   * Narrate declares no form any more (the dialog is BookForge's own again), so
+   * the list is static and this is a synchronous call that cannot lose that race.
    */
-  await refreshFoundryNarrateForm();
+  publishFoundryHostOperations();
   const created: BrowserWindow[] = [];
   const capture = (_event: unknown, win: BrowserWindow): void => { created.push(win); };
   app.once('browser-window-created', capture);

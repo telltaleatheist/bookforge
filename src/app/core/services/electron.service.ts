@@ -10,6 +10,7 @@ import type {
   ProcessingChainRequest,
 } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
+import type { NarrateTarget } from '@shared/queue/narrate-target';
 import type {
   VlmConvertRequest,
   VlmConvertResult,
@@ -1607,6 +1608,20 @@ export class ElectronService {
   onFoundryOpenQueue(callback: () => void): () => void {
     if (!this.isElectron) return () => { /* nothing subscribed */ };
     return (window as any).electron.foundryHost.onOpenQueue(callback);
+  }
+
+  /**
+   * Narrate was pressed in the hosted Foundry, and main has raised this window
+   * so the narration dialog can be asked here.
+   *
+   * Owen, 2026-08-26: "Foundry is just for text changes, not for audio changes."
+   * The target arrives fully resolved — main has already decided which exported
+   * EPUB the press meant, and made the file when the press was on a step that
+   * had not produced one.
+   */
+  onFoundryNarrate(callback: (target: NarrateTarget) => void): () => void {
+    if (!this.isElectron) return () => { /* nothing subscribed */ };
+    return (window as any).electron.foundryHost.onNarrate(callback);
   }
 
   // ─────────────────────────────────────────────────────────────────────────────

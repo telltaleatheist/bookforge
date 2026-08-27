@@ -34,6 +34,7 @@ import type {
   ProcessingChainRequest,
 } from '../shared/processing/pass-types';
 import type { BookResetSummary } from '../shared/processing/reset-book';
+import type { NarrateTarget as FoundryNarrateTarget } from '../shared/queue/narrate-target';
 import type {
   QueueNotice,
   QueueSnapshot,
@@ -1347,6 +1348,15 @@ export interface ElectronAPI {
      * route to /queue to land on.
      */
     onOpenQueue: (callback: () => void) => () => void;
+    /**
+     * Narrate was pressed in Foundry's window; main has raised this one. Open
+     * the narration dialog on the book it names.
+     *
+     * MAIN WINDOW ONLY, for the same reason as `onOpenQueue`: main sends it to
+     * `mainWindow` alone, and a broadcast would have every open popup race to
+     * answer one press.
+     */
+    onNarrate: (callback: (target: FoundryNarrateTarget) => void) => () => void;
   };
   /**
    * The document pipeline: a book's working PDF and the book itself.
@@ -3026,6 +3036,18 @@ const electronAPI: ElectronAPI = {
       const listener = () => callback();
       ipcRenderer.on('foundry-host:open-queue', listener);
       return () => { ipcRenderer.removeListener('foundry-host:open-queue', listener); };
+    },
+    /**
+     * Narrate was pressed in Foundry's window and this window has been raised to
+     * ask about it. The book is fully resolved on main's side before it is sent
+     * — which exported EPUB the press meant, and its version record — so the
+     * dialog opens on a target rather than on a lookup.
+     */
+    onNarrate: (callback: (target: FoundryNarrateTarget) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, target: FoundryNarrateTarget) =>
+        callback(target);
+      ipcRenderer.on('foundry-host:narrate', listener);
+      return () => { ipcRenderer.removeListener('foundry-host:narrate', listener); };
     },
   },
   document: {

@@ -94,7 +94,11 @@ const SUITES = [
   'test-foundry-host-status',
   'test-foundry-host-queue',
   'test-foundry-progress',
-  'test-foundry-narrate-form',
+  // 'test-foundry-narrate-form' was here until 2026-08-26. It kept
+  // electron/foundry-narrate-form.ts — the static field description Foundry drew
+  // Narrate's dialog from — and both went together when the dialog came back to
+  // BookForge's own window. The half of that press worth keeping, which of a
+  // project's exports it means, is test-foundry-narrate-target below.
   'test-foundry-narrate-target',
   'test-foundry-landing',
   'test-foundry-adopt',
