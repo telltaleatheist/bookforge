@@ -1,4 +1,5 @@
 import { inject, Injectable } from '@angular/core';
+import type { QueueSnapshot } from '@shared/queue/engine-types';
 import { AnalyticsData, Audiobook, AudiobookAnalysisEnvelope, Chapter, Ebook, QueueData, ReadInfo, ReaderSummary } from '../models/types';
 import { ServerConfigService } from './server-config.service';
 import { LocalLibraryService, LOCAL_SERVER_ID, isLocalPath, localIdOf } from './local-library.service';
@@ -15,6 +16,27 @@ export class ReaderListError extends Error {
     super(message);
     this.name = 'ReaderListError';
   }
+}
+
+/** The queue as the engine holds it, stamped with the clock that read it. */
+export interface QueueSnapshotEnvelope {
+  snapshot: QueueSnapshot;
+  /** Epoch ms on the SERVING machine at the instant the snapshot was taken. */
+  now: number;
+}
+
+/**
+ * What a queue route refused with, in its own words.
+ *
+ * The engine's errors are whole sentences written for the user, so they are
+ * shown verbatim. `whenSilent` covers the case where the response carries no
+ * sentence at all — a proxy's HTML error page, a dropped connection — where
+ * saying the status is the only honest thing left to say.
+ */
+async function queueRefusal(res: Response, whenSilent: string): Promise<string> {
+  const body = await res.json().catch(() => null) as { error?: unknown } | null;
+  if (body && typeof body.error === 'string' && body.error.trim() !== '') return body.error;
+  return `${whenSilent} (HTTP ${res.status}).`;
 }
 
 /**
@@ -83,6 +105,69 @@ export class ApiService {
 
   async sendQueueControl(action: 'start' | 'pause'): Promise<void> {
     await fetch(this.u(`/api/queue/${action}`), { method: 'POST' });
+  }
+
+  /**
+   * The engine's own snapshot, which the queue page runs `shared/queue/bench.ts`
+   * over — the same functions, on the same shape, as the desktop queue page.
+   *
+   * `now` is the SERVER's clock, and the page must use it rather than its own:
+   * elapsed times are differences against timestamps this machine stamped, and a
+   * phone that is thirty seconds off would draw them all thirty seconds wrong
+   * with nothing on screen to say which clock lied.
+   */
+  async getQueueSnapshot(): Promise<QueueSnapshotEnvelope> {
+    const res = await fetch(this.u('/api/queue/snapshot'));
+    if (!res.ok) throw new Error(await queueRefusal(res, 'The queue could not be read'));
+    const body = await res.json() as { snapshot?: unknown; now?: unknown };
+    // A malformed body is NOT an empty queue: drawn as one it would say the
+    // machine has nothing to do while it is three hours into a narration.
+    if (!body.snapshot || !Array.isArray((body.snapshot as QueueSnapshot).jobs)) {
+      throw new Error('/api/queue/snapshot returned a body with no jobs in it.');
+    }
+    if (typeof body.now !== 'number') {
+      throw new Error('/api/queue/snapshot answered without the server clock.');
+    }
+    return { snapshot: body.snapshot as QueueSnapshot, now: body.now };
+  }
+
+  /** Stop one step (or every live step of a run). What it rendered is kept. */
+  async queueCancel(target: { jobId?: string; stepId?: string }): Promise<void> {
+    await this.queueAction('cancel', target);
+  }
+
+  /** Take a run out of the queue. Anything of it still running is stopped first. */
+  async queueRemove(jobId: string): Promise<void> {
+    await this.queueAction('remove', { jobId });
+  }
+
+  /** Put a terminal step back — held, not queued: re-running is a decision. */
+  async queueRetry(target: { jobId?: string; stepId?: string }): Promise<void> {
+    await this.queueAction('retry', target);
+  }
+
+  /** Drop the runs that are over. */
+  async queueClearFinished(): Promise<void> {
+    await this.queueAction('clear-finished', {});
+  }
+
+  /**
+   * A queue control, and the server's own sentence when it refuses.
+   *
+   * The engine writes readable refusals ('There is no step "x" in the queue.')
+   * and the page shows them verbatim: a control that failed silently on a phone
+   * is a user pressing Stop again on a run that never stopped.
+   */
+  private async queueAction(
+    action: 'cancel' | 'remove' | 'retry' | 'clear-finished',
+    body: Record<string, string | undefined>,
+  ): Promise<void> {
+    const res = await fetch(this.u(`/api/queue/${action}`), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    if (!res.ok) throw new Error(await queueRefusal(res, `The queue refused to ${action}`));
   }
 
   /** A renderable cover URL for the player/legacy call sites. Same resolution

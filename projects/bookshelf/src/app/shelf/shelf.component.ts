@@ -1,4 +1,4 @@
-import { Component, computed, effect, ElementRef, inject, OnDestroy, OnInit, signal, untracked } from '@angular/core';
+import { Component, computed, effect, ElementRef, inject, OnInit, signal, untracked } from '@angular/core';
 import { UpperCasePipe, NgTemplateOutlet } from '@angular/common';
 import { Router } from '@angular/router';
 import { ApiService } from '../services/api.service';
@@ -17,7 +17,8 @@ import { LocalLibraryService, LOCAL_SERVER_ID } from '../services/local-library.
 import { OfflineStoreService, OfflineItem } from '../services/offline-store.service';
 import { BookActionsService } from '../services/book-actions.service';
 import { AnalyticsComponent } from '../analytics/analytics.component';
-import { Audiobook, AudiobookVersion, Ebook, EbookVersion, QueueData, QueueJob } from '../models/types';
+import { QueueViewComponent } from '../queue/queue-view.component';
+import { Audiobook, AudiobookVersion, Ebook, EbookVersion } from '../models/types';
 
 /**
  * The width a shelf tile actually needs. Tiles are square and at most ~180 CSS
@@ -45,7 +46,7 @@ interface BookMenu {
 @Component({
   selector: 'app-shelf',
   standalone: true,
-  imports: [VisibleDirective, UpperCasePipe, NgTemplateOutlet, IconComponent, AnalyticsComponent],
+  imports: [VisibleDirective, UpperCasePipe, NgTemplateOutlet, IconComponent, AnalyticsComponent, QueueViewComponent],
   template: `
     <!-- The navbar and the download progress strip stick together at the top so
          the strip stays visible while the shelf scrolls under them. -->
@@ -144,6 +145,15 @@ interface BookMenu {
             }
           </div>
         }
+        <!-- The queue. Shown only where there IS one: a library-only mirror
+             refuses the 'queue' capability, and a button that opened a page
+             every control on which answers 501 is worse than no button. -->
+        @if (cfg.supports('queue')) {
+          <button class="theme-toggle" [class.on]="tab() === 'queue'" (click)="setTab('queue')"
+                  title="Queue" aria-label="Queue">
+            <app-icon name="list" [size]="18" />
+          </button>
+        }
         <button class="theme-toggle" (click)="theme.cycle()" [title]="'Theme: ' + theme.label() + ' (tap to change)'">
           {{ theme.icon() }}
         </button>
@@ -235,39 +245,9 @@ interface BookMenu {
       } @else if (tab() === 'analytics') {
         <app-analytics />
       } @else if (tab() === 'queue') {
-        <!-- Minimal queue view: a flat status list. Rebuilt with richer features later. -->
-        <div class="queue-bar">
-          <div class="queue-controls">
-            @if (queue()?.isRunning) {
-              <button class="queue-ctrl-btn" (click)="queueControl('pause')" title="Pause queue">⏸</button>
-            } @else {
-              <button class="queue-ctrl-btn" (click)="queueControl('start')" title="Start queue">▶</button>
-            }
-          </div>
-          <div class="stat">
-            <span class="stat-value">{{ activeJobs().length }}</span>
-            <span class="stat-label">Active jobs</span>
-          </div>
-        </div>
-        @if (activeJobs().length === 0) {
-          <div class="empty-state"><span class="empty-icon">📋</span><p>No active jobs</p></div>
-        } @else {
-          <div class="queue-jobs">
-            @for (job of activeJobs(); track job.id) {
-              <div class="queue-job" [class]="'status-' + job.status">
-                <div class="queue-job-header">
-                  <span class="queue-job-title">{{ job.title || job.epubFilename || job.id }}</span>
-                  <span class="queue-job-status" [class]="'status-' + job.status">{{ job.status }}</span>
-                </div>
-                <div class="queue-job-progress">
-                  <div class="queue-progress-bar"><div class="queue-progress-fill" [style.width.%]="job.progress || 0"></div></div>
-                  <span class="queue-progress-pct">{{ round(job.progress || 0) }}%</span>
-                </div>
-                @if (jobMessage(job)) { <div class="queue-job-message">{{ jobMessage(job) }}</div> }
-              </div>
-            }
-          </div>
-        }
+        <!-- The queue page owns its own polling and its own controls; the shelf
+             only decides that the tab is showing. -->
+        <app-queue-view />
       } @else if (loading()) {
         <div class="loading-indicator"><div class="spinner"></div><span>Loading…</span></div>
       } @else if (loadError() && visibleCount() === 0) {
@@ -801,6 +781,10 @@ interface BookMenu {
     /* The button color drives the icon (currentColor); without it the glyph was
        near-invisible on the dark button in dark/midnight. */
     .theme-toggle app-icon { color: var(--text-primary); }
+    /* A nav button whose tab is showing wears the accent, the same way the
+       bottom rail marks its active item. */
+    .theme-toggle.on { background: var(--accent); }
+    .theme-toggle.on app-icon { color: var(--text-on-accent); }
     .account { position: relative; display: flex; }
     .reader-chip { width: 32px; height: 32px; flex-shrink: 0; border: none; border-radius: 50%; cursor: pointer;
       background: linear-gradient(135deg, var(--accent), var(--accent-hover)); color: var(--text-on-accent); font-size: 13px; font-weight: 700;
@@ -1009,26 +993,6 @@ interface BookMenu {
     .book-author { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .book-size { font-size: 10px; color: var(--text-tertiary); margin-top: 3px; }
 
-    .queue-bar { display: flex; align-items: center; gap: 16px; padding: 4px 0 16px; }
-    .queue-controls { display: flex; gap: 4px; }
-    .queue-ctrl-btn { width: 34px; height: 34px; border: 1px solid var(--border-subtle); border-radius: 8px; background: var(--bg-elevated);
-      color: var(--text-secondary); cursor: pointer; font-size: 14px; }
-    .queue-jobs { display: flex; flex-direction: column; gap: 8px; }
-    .queue-job { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px; background: var(--card-bg); border-radius: 8px; border: 1px solid var(--border-subtle); }
-    .queue-job-header { display: flex; align-items: center; gap: 10px; }
-    .queue-job-title { font-size: 14px; font-weight: 500; color: var(--text-primary); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-    .queue-job-status { flex-shrink: 0; padding: 2px 8px; font-size: 10px; font-weight: 600; text-transform: uppercase; border-radius: 10px; }
-    .queue-job-status.status-pending { background: var(--bg-elevated); color: var(--text-tertiary); }
-    .queue-job-status.status-processing { background: var(--accent); color: var(--text-on-accent); }
-    .queue-job-status.status-complete { background: var(--success); color: var(--text-on-accent); }
-    .queue-job-status.status-error { background: var(--error); color: var(--text-on-accent); }
-    .queue-job-progress { display: flex; align-items: center; gap: 10px; }
-    .queue-progress-bar { flex: 1; height: 6px; background: var(--bg-elevated); border-radius: 3px; overflow: hidden; }
-    .queue-progress-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width 0.3s ease; }
-    .queue-job.status-complete .queue-progress-fill { background: var(--success); }
-    .queue-job.status-error .queue-progress-fill { background: var(--error); }
-    .queue-progress-pct { font-size: 12px; font-weight: 600; color: var(--text-secondary); min-width: 36px; text-align: right; }
-    .queue-job-message { font-size: 12px; color: var(--text-tertiary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
     /* ── Constant bottom nav rail (iOS tab bar) ──────────────────────────────
        Fixed to the viewport bottom, always present while browsing. A centered,
@@ -1072,7 +1036,7 @@ interface BookMenu {
     @media (max-width: 480px) { .tab-btn { padding: 5px 7px; font-size: 11px; } }
   `],
 })
-export class ShelfComponent implements OnInit, OnDestroy {
+export class ShelfComponent implements OnInit {
   private readonly api = inject(ApiService);
   readonly theme = inject(ThemeService);
   readonly player = inject(PlayerService);
@@ -1339,9 +1303,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return [...byId.values()];
   }
 
-  readonly queue = signal<QueueData | null>(null);
-  private queueTimer: ReturnType<typeof setInterval> | null = null;
-
   readonly round = Math.round;
   readonly formatSize = formatSize;
 
@@ -1577,12 +1538,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return t === 'audiobooks' ? this.uniqueAudioCount(this.filteredAudiobooks()) : t === 'articles' ? this.filteredArticles().length : this.filteredEbooks().length;
   });
 
-  readonly activeJobs = computed(() => {
-    const jobs = this.queue()?.jobs ?? [];
-    // Minimal view: show standalone + child jobs that are pending/processing/error.
-    return jobs.filter((j) => j.status === 'pending' || j.status === 'processing' || j.status === 'error');
-  });
-
   // ── Lifecycle ────────────────────────────────────────────────────────────────
   private readStoredTab(): Tab {
     const t = localStorage.getItem('bookshelf-tab');
@@ -1683,11 +1638,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
     await this.loadAudiobooks();
     const t = this.tab();
     if (t === 'ebooks' || t === 'articles') await this.loadEbooks();
-    else if (t === 'queue') this.startQueuePolling();
-  }
-
-  ngOnDestroy(): void {
-    this.stopQueuePolling();
   }
 
   // ── Tab / sort / tag ─────────────────────────────────────────────────────────
@@ -1697,11 +1647,8 @@ export class ShelfComponent implements OnInit, OnDestroy {
     this.search.set('');
     this.activeTag.set('all');
     this.loadError.set(null);
-    if (tab === 'queue') {
-      this.startQueuePolling();
-      return;
-    }
-    this.stopQueuePolling();
+    // The queue tab is a component that polls for itself — nothing to load here.
+    if (tab === 'queue') return;
     if (tab === 'audiobooks' && this.audiobooks().length === 0) await this.loadAudiobooks();
     if ((tab === 'ebooks' || tab === 'articles') && this.ebooks().length === 0) await this.loadEbooks();
   }
@@ -2644,30 +2591,6 @@ export class ShelfComponent implements OnInit, OnDestroy {
     setTimeout(() => this.notice.set(null), 3500);
   }
 
-  // ── Queue (minimal) ───────────────────────────────────────────────────────────
-  private startQueuePolling(): void {
-    void this.pollQueue();
-    this.queueTimer = setInterval(() => void this.pollQueue(), 3000);
-  }
-
-  private stopQueuePolling(): void {
-    if (this.queueTimer) {
-      clearInterval(this.queueTimer);
-      this.queueTimer = null;
-    }
-  }
-
-  private async pollQueue(): Promise<void> {
-    try {
-      this.queue.set(await this.api.getQueue());
-    } catch { /* transient */ }
-  }
-
-  async queueControl(action: 'start' | 'pause'): Promise<void> {
-    await this.api.sendQueueControl(action);
-    await this.pollQueue();
-  }
-
   // ── Server (libraries) menu ────────────────────────────────────────────────────
   /** Checkbox: show/hide a library's books. Hiding is instant. Enabling is now
    *  optimistic — no up-front health probe (which stalled up to 8s on a sleepy
@@ -2757,10 +2680,4 @@ export class ShelfComponent implements OnInit, OnDestroy {
     return book.authorFull || (book.authorLast ? `${book.authorLast}, ${book.authorFirst || ''}`.trim() : '');
   }
 
-  jobMessage(job: QueueJob): string {
-    if (job.status === 'error' && job.error) return job.error;
-    if (job.ttsPhase === 'converting' && job.ttsConversionProgress != null) return `Converting: ${Math.round(job.ttsConversionProgress)}%`;
-    if (job.ttsPhase === 'assembling' && job.assemblyProgress != null) return `Assembling: ${Math.round(job.assemblyProgress)}%`;
-    return job.progressMessage || '';
-  }
 }
