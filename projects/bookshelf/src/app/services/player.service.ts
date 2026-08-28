@@ -772,6 +772,9 @@ export class PlayerService {
   }
 
   seekTo(time: number, scrollToText = false): void {
+    // Any plain seek is a position, not a sentence: whatever cue was being held
+    // for a tap (see seekToCue) stops applying here.
+    this.intendedCue = null;
     const clamped = Math.max(0, Math.min(time, this.duration() || time));
     this.audio.currentTime = clamped;
     this.currentTime.set(clamped);
@@ -825,9 +828,30 @@ export class PlayerService {
     this.arrivalArmed = true;
   }
 
+  /**
+   * Play from the start of a sentence the user tapped — and HIGHLIGHT THAT
+   * SENTENCE, from the moment of the tap.
+   *
+   * Seeking to a cue's exact start does not leave the element exactly there: a
+   * compressed stream can only start on a frame boundary, so asking for
+   * 00:15:00.000 lands at 00:14:59.99 — a few milliseconds INSIDE the previous
+   * sentence. The seek itself is right (that is where the sentence begins), but
+   * the element then reports its true position, `updateCue` reads it back, and
+   * the highlight jumps to the sentence before the one that was tapped. It
+   * corrected itself on play, once the position crossed the boundary, which is
+   * exactly the behaviour Owen described (2026-08-28).
+   *
+   * So the asked-for cue is REMEMBERED and held while the element settles — see
+   * `intendedCue` in updateCue. Latched AFTER the seek because `seekTo` clears
+   * it: a scrub to a position is not a request for a sentence, and only this
+   * door knows the difference.
+   */
   seekToCue(index: number): void {
     const cue = this.cues()[index];
-    if (cue) this.seekTo(cue.startTime);
+    if (!cue) return;
+    this.seekTo(cue.startTime);
+    this.intendedCue = index;
+    this.currentCueIndex.set(index);
   }
 
   seekToChapter(ch: Chapter): void {
@@ -1235,9 +1259,40 @@ export class PlayerService {
     return merged;
   }
 
+  /**
+   * The sentence the user asked for by tapping it, held until the element has
+   * settled onto it. Null whenever the position was reached any other way —
+   * playing into it, a scrub, a chapter jump, a lock-screen skip.
+   */
+  private intendedCue: number | null = null;
+
+  /**
+   * How far BEFORE a tapped sentence the element may report itself and still be
+   * understood as sitting at that sentence's start.
+   *
+   * It covers the frame-boundary snap a seek into compressed audio lands on —
+   * tens of milliseconds — with room to spare for a coarser native player. It
+   * cannot swallow a real position: every other way of arriving somewhere
+   * clears the latch, so nothing consults this window unless a tap put us here.
+   */
+  private static readonly SEEK_SETTLE_SECONDS = 0.5;
+
   private updateCue(time: number): void {
     const cues = this.cues();
     if (cues.length === 0) return;
+    // A tapped sentence outranks the element's own reading of where it is, while
+    // the element is still settling just short of it. Once the position reaches
+    // the sentence — or leaves the window entirely — the latch is spent and the
+    // time decides again, so playback and scrubbing behave exactly as before.
+    const want = this.intendedCue;
+    if (want !== null) {
+      const cue = cues[want];
+      if (cue && time < cue.startTime && cue.startTime - time <= PlayerService.SEEK_SETTLE_SECONDS) {
+        if (this.currentCueIndex() !== want) this.currentCueIndex.set(want);
+        return;
+      }
+      this.intendedCue = null;
+    }
     const idx = this.vtt.findCueAtTime(cues, time);
     if (idx >= 0 && idx !== this.currentCueIndex()) this.currentCueIndex.set(idx);
   }

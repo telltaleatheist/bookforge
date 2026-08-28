@@ -1004,15 +1004,30 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     }
   }
 
+  /**
+   * Play from the start of a cue the user picked — and highlight THAT cue right
+   * away.
+   *
+   * Seeking to a cue's exact start does not leave the element exactly there:
+   * compressed audio starts on a frame boundary, so asking for 00:15:00.000
+   * lands a few milliseconds before it, inside the previous cue. The element
+   * then reports its true position, updateCurrentCue reads it back, and the
+   * highlight falls to the cue before the one that was picked until playback
+   * crosses the boundary. So the picked cue is held while the element settles
+   * (see `intendedCue`). Latched AFTER the seek, because seekToTime clears it:
+   * a scrub is a position, not a cue.
+   */
   seekToCue(cueIndex: number): void {
     const cues = this.vttCues();
-    if (cueIndex < cues.length) {
-      const cue = cues[cueIndex];
-      this.seekToTime(cue.startTime);
-    }
+    if (cueIndex < 0 || cueIndex >= cues.length) return;
+    this.seekToTime(cues[cueIndex].startTime);
+    this.intendedCue = cueIndex;
+    this.currentCueIndex.set(cueIndex);
   }
 
   seekToTime(time: number): void {
+    // A seek to a POSITION retires any cue being held for a pick (seekToCue).
+    this.intendedCue = null;
     const audio = this.audioElementRef?.nativeElement;
     if (audio) {
       audio.currentTime = time;
@@ -1162,9 +1177,30 @@ export class AudiobookPlayerComponent implements OnInit, OnDestroy {
     });
   }
 
+  /** The cue the user PICKED, held until the element settles onto it; null when
+   *  the position was reached any other way. See seekToCue. */
+  private intendedCue: number | null = null;
+  /** How far before a picked cue the element may sit and still count as being
+   *  at its start — the frame-boundary snap a seek lands on, with room to
+   *  spare. Only ever consulted while a pick is latched. */
+  private static readonly SEEK_SETTLE_SECONDS = 0.5;
+
   private updateCurrentCue(time: number): void {
     const cues = this.vttCues();
     if (cues.length === 0) return;
+
+    // A picked cue outranks the element's own reading of where it is, while the
+    // element is still settling just short of it.
+    const want = this.intendedCue;
+    if (want !== null) {
+      const cue = cues[want];
+      if (cue && time < cue.startTime
+          && cue.startTime - time <= AudiobookPlayerComponent.SEEK_SETTLE_SECONDS) {
+        if (this.currentCueIndex() !== want) this.currentCueIndex.set(want);
+        return;
+      }
+      this.intendedCue = null;
+    }
 
     // The chrome component owns follow-scroll (it watches activeIndex), so this
     // just keeps the highlighted cue in sync with playback.
