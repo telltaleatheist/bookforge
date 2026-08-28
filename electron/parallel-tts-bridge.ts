@@ -42,6 +42,8 @@ function appendCapped(buf: string, chunk: string, maxBytes: number = MAX_STDERR_
 // Worker log file for debugging - captures ALL worker output
 let workerLogPath: string | null = null;
 let workerLogStream: fsSync.WriteStream | null = null;
+// Where the worker log lives, kept so per-job diagnostics can sit beside it.
+let workerLogsDir: string | null = null;
 
 function initWorkerLog(libraryPath: string): void {
   if (!workerLogStream) {
@@ -56,6 +58,7 @@ function initWorkerLog(libraryPath: string): void {
       logsDir = path.join(os.homedir(), '.local', 'share', 'BookForge', 'logs');
     }
     fsSync.mkdirSync(logsDir, { recursive: true });
+    workerLogsDir = logsDir;
     workerLogPath = path.join(logsDir, 'worker-output.log');
     // Truncate on start
     workerLogStream = fsSync.createWriteStream(workerLogPath, { flags: 'w' });
@@ -63,9 +66,53 @@ function initWorkerLog(libraryPath: string): void {
   }
 }
 
+/**
+ * Per-job directory where Orpheus keeps the renders its guards threw away
+ * (→ ORPHEUS_REJECT_DIR). One directory per job so the evidence carries the
+ * identity of the run that produced it.
+ *
+ * It sits beside the worker log rather than in the project for one measured
+ * reason: on Windows the worker runs inside WSL, and a library on a network
+ * drive (\\TITAN\iO → /mnt/z) is NOT writable from there. e2a swallows a failed
+ * write by design — diagnostics must never take down a book — so pointing it at
+ * an unwritable path would silently destroy the evidence instead of saving it.
+ * The log directory is local on every platform, and the worker can write it.
+ *
+ * Unlike worker-output.log, which is truncated on every start, these persist.
+ */
+function orpheusRejectDir(jobId: string): string | null {
+  if (!workerLogsDir) return null;
+  const dir = path.join(workerLogsDir, 'tts-rejects', jobId);
+  try {
+    fsSync.mkdirSync(dir, { recursive: true });
+  } catch {
+    return null;
+  }
+  return dir;
+}
+
 function writeWorkerLog(line: string): void {
   if (workerLogStream) {
     workerLogStream.write(`${new Date().toISOString()} ${line}\n`);
+  }
+}
+
+/**
+ * A guard fire from orpheus.py: a truncation, a cap runaway, an empty render, or
+ * a short chunk that spoke for too long. One tag, one JSON object, one line.
+ *
+ * Returned so it can reach the JOB log. worker-output.log is truncated on every
+ * start, so it is not where a defect count for a finished book can live.
+ */
+function parseOrpheusGuardEvent(line: string): Record<string, unknown> | null {
+  const at = line.indexOf('[ORPHEUS][ORPHEUS_GUARD_EVENT]');
+  if (at < 0) return null;
+  const json = line.slice(at + '[ORPHEUS][ORPHEUS_GUARD_EVENT]'.length).trim();
+  try {
+    const parsed = JSON.parse(json);
+    return parsed && typeof parsed === 'object' ? parsed : null;
+  } catch {
+    return null;   // a torn line across two stdout chunks; the file still has it
   }
 }
 
@@ -1492,7 +1539,9 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
                        'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
                        'ORPHEUS_EOS_BOOST', 'ORPHEUS_EOS_BOOST_START',
-                       'ORPHEUS_VLLM_DTYPE'];
+                       'ORPHEUS_VLLM_DTYPE',
+                       // Already a WSL-form path when we spawn through WSL — see startWorker.
+                       'ORPHEUS_REJECT_DIR'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -3783,6 +3832,12 @@ function startWorker(
 
   // Per-voice caps for the selected fine-tune (maxCharsPerSec is the guard the worker consumes).
   const voiceCaps = orpheusVoiceCaps(settings);
+  // Where the worker keeps a runaway or a truncation it threw away. Converted to a
+  // WSL path when the worker runs there, since env values cross verbatim.
+  const rejectDirHost = settings.ttsEngine === 'orpheus' ? orpheusRejectDir(session.jobId) : null;
+  const rejectDir = rejectDirHost && shouldUseWslForSpawn(settings.ttsEngine)
+    ? uncToWslPath(rejectDirHost)
+    : rejectDirHost;
   const workerProcess = spawnWithWslSupport(
     pythonInvocation(settings.ttsEngine).command,
     args,
@@ -3791,6 +3846,10 @@ function startWorker(
       env: buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
         VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
+        // Keep guard rejects for this job somewhere durable and identifiable. Without
+        // this e2a falls back to its own tmp, where the evidence is anonymous (keyed
+        // by session uuid) and shares the lifetime of a scratch directory.
+        ...(rejectDir ? { ORPHEUS_REJECT_DIR: rejectDir } : {}),
         // VRAM-sized gpu_memory_utilization for Orpheus (see acquireGpuForJob). Must be
         // set here so buildWslBashCommand can export it INTO the WSL worker — without
         // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.
@@ -3916,6 +3975,16 @@ function startWorker(
       // real diagnostic data; it just doesn't interrupt a person reading along.
       if (!isKvPreemptionNote(line)) console.log(logLine);
       writeWorkerLog(logLine);
+
+      // Guard fires are why this job log gets read after the fact. The audio and
+      // the full record live in ORPHEUS_REJECT_DIR; this is the index into them,
+      // and unlike worker-output.log it is not truncated on the next run.
+      const guardEvent = parseOrpheusGuardEvent(line);
+      if (guardEvent) {
+        logger.log('WARN', session.jobId,
+          `Orpheus guard: ${String(guardEvent.reason ?? 'unknown')} on sentence ${String(guardEvent.sentence_index ?? '?')}`,
+          guardEvent).catch(() => {});
+      }
 
       // Parse progress - support both output formats:
       // Format 1 (Windows e2a): "Converting sentence 49 - 0.53%: 49/9248"
