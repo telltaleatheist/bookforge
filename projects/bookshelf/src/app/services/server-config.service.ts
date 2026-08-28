@@ -315,8 +315,31 @@ export class ServerConfigService {
   }
 
   private patch(id: string, delta: Partial<ServerEntry>): void {
+    const cur = this.servers().find(s => s.id === id);
+    // A write that changes nothing is not a change. refreshHealth re-reports the
+    // same name and capabilities after every shelf load; writing them back minted
+    // a new servers array, and `enabledServers` — a computed over it — handed every
+    // consumer a fresh reference for a list that was identical. Nothing downstream
+    // can tell that apart from a real edit, and one consumer answered it by
+    // re-reading the whole library, which called back here (see the shelf's
+    // server-key effect). Stopping at the source keeps every other reader honest.
+    if (cur && !ServerConfigService.wouldChange(cur, delta)) return;
     this.servers.update(list => list.map(s => s.id === id ? { ...s, ...delta } : s));
     this.persist();
+  }
+
+  /** Whether applying `delta` to `entry` would actually alter it. Shallow, with
+   *  element-wise equality for arrays — a re-reported `capabilities` is a new
+   *  array holding the same strings, which `!==` calls a change and a reader
+   *  cannot. */
+  private static wouldChange(entry: ServerEntry, delta: Partial<ServerEntry>): boolean {
+    return Object.entries(delta).some(([k, v]) => {
+      const cur = (entry as unknown as Record<string, unknown>)[k];
+      if (Array.isArray(v) && Array.isArray(cur)) {
+        return v.length !== cur.length || v.some((x, i) => x !== cur[i]);
+      }
+      return v !== cur;
+    });
   }
 
   private persist(): void {
