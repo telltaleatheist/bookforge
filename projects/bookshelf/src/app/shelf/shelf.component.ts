@@ -1558,9 +1558,23 @@ export class ShelfComponent implements OnInit {
     for (const key of this.covers().keys()) this.requestedCovers.add(key);
 
     effect(() => {
-      const key = this.cfg.enabledServers().map((s) => `${s.id}@${s.url}`).join(','); // tracked
+      // Everything about the server set that changes what a load RETURNS: which
+      // servers, where they are, and the key we present. Not the label, and not
+      // the capabilities — those are things a server tells us ABOUT itself, and
+      // re-learning them is not a reason to re-read the library.
+      const key = this.cfg.enabledServers().map((s) => `${s.id}@${s.url}#${s.accessKey ?? ''}`).join(','); // tracked
       untracked(() => {
-        if (this.lastServerKey !== null && this.lastServerKey !== key) {
+        // Reload on the KEY, never on the emission. `enabledServers` is a computed
+        // over a signal holding an array, so it hands out a fresh reference after
+        // every write to the server list — including a write that changed nothing.
+        // Reloading on the reference closed a cycle that ran for the entire life of
+        // the app: this effect → initialLoad → loadAudiobooks → refreshHealth →
+        // patch → a new servers array → this effect. Nothing rate-limited it but
+        // the round-trip, so it re-fetched the whole listing ~7x a second with the
+        // screen off — measured at ~1.2 MB/s and 79% of a core in the WebView, the
+        // single largest power draw on the phone.
+        if (this.lastServerKey === key) return;
+        if (this.lastServerKey !== null) {
           // Server set changed — clear the ebook list so a disabled server's books
           // drop on the next load. Covers are deliberately NOT wiped: they're keyed
           // per card and stay valid, and wiping them left already-visible cards
