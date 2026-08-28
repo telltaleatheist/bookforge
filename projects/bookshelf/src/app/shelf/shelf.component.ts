@@ -151,7 +151,7 @@ interface BookMenu {
         @if (cfg.supports('queue')) {
           <button class="theme-toggle" [class.on]="tab() === 'queue'" (click)="setTab('queue')"
                   title="Queue" aria-label="Queue">
-            <app-icon name="list" [size]="18" />
+            <app-icon name="hourglass" [size]="18" />
           </button>
         }
         <button class="theme-toggle" (click)="theme.cycle()" [title]="'Theme: ' + theme.label() + ' (tap to change)'">
