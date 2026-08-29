@@ -629,7 +629,17 @@ function labelFor(request: FoundryJobRequest): string {
   const file = String(request.inputPath ?? '').split(/[\\/]/).pop() ?? 'a document';
   switch (request.kind) {
     case 'read': return `Read the pages — ${file}`;
-    case 'translate': return `Translate — ${file}`;
+    /*
+     * A SIMPLIFY IS A TRANSLATE STEP WEARING A REWRITE. Foundry models it that
+     * way on purpose (`TranslateRequest.rewrite`), and its own local queue
+     * names such a row "Simplify — …" — but the hosted path hands the request
+     * here before that title is composed, so keying the label off `kind` alone
+     * called every simplify a translation (Owen, 2026-08-29). The rewrite
+     * travels verbatim in the request, so the row can say what was pressed.
+     */
+    case 'translate': return typeof request.rewrite === 'string'
+      ? `Simplify — ${file}`
+      : `Translate — ${file}`;
     default: return `Make the ${request.kind.toUpperCase()} — ${file}`;
   }
 }
