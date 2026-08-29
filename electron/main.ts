@@ -1879,6 +1879,9 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * otherwise says which door does have the question. Queueing an hour of GPU
  * against whichever model sorted first is the fallback this codebase does not
  * write.
+ *
+ * IT MAY QUEUE TWO STEPS, not one — a denoise in front of the conversion when the
+ * narration asked for one. See the note at that branch.
  */
 async function invokeFoundryEnhance(
   _projectDir: string,
@@ -1916,10 +1919,32 @@ async function invokeFoundryEnhance(
     sayToUser('Nothing was queued', 'This narration cannot be enhanced from here', sentence);
     throw new Error(sentence);
   }
+  /*
+   * THE DENOISE IS ITS OWN ROW, IN FRONT — never a flag on the conversion.
+   *
+   * The narration's `finalDenoise` used to be copied onto this config and the
+   * conversion denoised its own input. Since Owen's ordering ruling (2026-08-29)
+   * the conversion REFUSES that flag by name, so the pass is chained ahead of it
+   * instead: denoise → convert, which is the recommended order and the only one
+   * this door can infer (the narration's config records that a denoise was
+   * wanted, not where in the chain the user would have put it).
+   */
+  const wantsDenoise = narrate.config['finalDenoise'] === true;
+  const conversionParent = wantsDenoise
+    ? queueEngine.appendStep(job.id, {
+        type: 'final-denoise',
+        label: 'Denoise',
+        parentStepId: step.id,
+        config: {
+          // Blank on purpose, exactly as below.
+          sessionId: '', sessionDir: '', processDir: '',
+        } as unknown as Record<string, unknown>,
+      }).id
+    : step.id;
   queueEngine.appendStep(job.id, {
     type: 'rvc-enhancement',
-    label: 'Enhance',
-    parentStepId: step.id,
+    label: 'Voice conversion',
+    parentStepId: conversionParent,
     config: {
       // Left blank on purpose: the engine resolves the session from the parent's
       // OUTPUT when it lands, which is the whole reason a step may be chained
@@ -1929,8 +1954,8 @@ async function invokeFoundryEnhance(
       ...(declared!.indexRate === undefined ? {} : { indexRate: declared!.indexRate }),
       ...(declared!.protectRate === undefined ? {} : { protectRate: declared!.protectRate }),
       ...(declared!.nSemitones === undefined ? {} : { nSemitones: declared!.nSemitones }),
-      ...(narrate.config['finalDenoise'] === undefined
-        ? {} : { finalDenoise: narrate.config['finalDenoise'] }),
+      // No `finalDenoise`: the conversion refuses it now, and the pass it named
+      // is the row queued above.
     } as unknown as Record<string, unknown>,
   });
 }
@@ -1990,9 +2015,9 @@ async function invokeFoundryAssemble(
   }
   /*
    * The denoise goes in FRONT of the assembly, on its own row, and only when the
-   * pressed step is the narration: an enhancement reads its own denoised set (it
-   * receives the same flag, see `invokeFoundryEnhance`), so a row here would
-   * denoise the same session a second time.
+   * pressed step is the narration: pressing Assemble on a CONVERSION means the
+   * Enhance door already chained a denoise ahead of it (`invokeFoundryEnhance`),
+   * so a row here would denoise the same session a second time.
    */
   const wantsDenoise = narrate.config['finalDenoise'] === true
     && step.type === 'tts-conversion';

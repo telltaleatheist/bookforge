@@ -443,10 +443,14 @@ export interface ReassemblyJobConfig {
 }
 
 // RVC voice-enhancement job — re-renders a session's sentences through an RVC
-// voice into a scratch dir under [library]/tmp, then (via the queue) hands that
-// dir to a downstream reassembly job. Runs as its own visible queue step with a
+// voice into a durable derived set inside the session, then (via the queue) hands
+// that dir to the step behind it. Runs as its own visible queue step with a
 // per-chunk ETA, like TTS. session* may be empty at creation and discovered at
 // runtime (chained after TTS), exactly like reassembly.
+//
+// It reads EITHER the session's raw sentences or the denoise pass's output,
+// whichever its parent step wrote: since 2026-08-29 the user chooses which of the
+// two enhancement passes runs first (shared/queue/narration-run.ts).
 export interface RvcEnhancementJobConfig {
   type: 'rvc-enhancement';
   sessionId: string;
@@ -465,12 +469,19 @@ export interface RvcEnhancementJobConfig {
   /** f0 analysis hop in samples (1–512). Read ONLY by the crepe family — rmvpe
    *  ignores it. Absent = urvc's own default. */
   hopLength?: number;
-  /** Final-audio denoise: denoise the cached sentences FIRST, then convert the
-   *  denoised set (denoise → RVC ordering; input noise corrupts RVC's feature
-   *  extraction). Set when the wizard has both options checked. */
+  /** The set this pass converts, when a denoise produced it and no parent step
+   *  hands it over. Absent = the session's raw cached sentences. */
+  sentencesDir?: string;
+  /**
+   * NOT A PASS THIS JOB RUNS ANY MORE — the conversion used to denoise its own
+   * input, which is how "denoise before RVC" was realised before the order became
+   * the user's choice. Declared only so a row queued before the change is REFUSED
+   * by name (electron/rvc-job.ts) rather than silently converting raw audio.
+   */
   finalDenoise?: boolean;
-  /** Inter-sentence gap baked into the denoised set this pass reads. Travels with
-   *  `finalDenoise` because the gap pass is what runs in front of the roformer. */
+  /** Inter-sentence gap, baked in HERE when this pass reads the RAW sentences,
+   *  i.e. when it is the first enhancement pass. Absent when a denoise runs in
+   *  front of it — that pass owns the gap. See electron/sentence-gap.ts. */
   sentenceGap?: number;
 }
 
@@ -490,8 +501,12 @@ export interface FinalDenoiseJobConfig {
   sessionId: string;
   sessionDir: string;
   processDir: string;
+  /** The set this pass denoises, when a voice conversion produced it and no
+   *  parent step hands it over. Absent = the session's raw cached sentences. */
+  sentencesDir?: string;
   /** Inter-sentence gap in seconds, baked in by the gap pass that runs in front
-   *  of the roformer. Absent = the session's provenance decides. */
+   *  of the roformer — and ONLY when this pass reads the raw sentences. Absent =
+   *  the session's provenance decides. */
   sentenceGap?: number;
 }
 

@@ -86,6 +86,7 @@ const SUITES = [
   'test-queue-engine',
   'test-queue-bench',
   'test-derived-sentences',
+  'test-narration-chain',
   'test-library-lock',
   'test-job-timing',
   'test-vlm-convert-plan',

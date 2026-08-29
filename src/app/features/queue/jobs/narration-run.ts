@@ -39,6 +39,8 @@ import {
  * second answer to what a narration run is described by.
  */
 export type {
+  NarrationEnhancementOrder,
+  NarrationEnhancementPass,
   NarrationRunBook,
   NarrationRunSettings,
   NarrationRunStages,
