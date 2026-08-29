@@ -18,6 +18,26 @@
  *   <processDir>/chapters/sentences-denoised/         ← this module's 'denoise' set
  *   <processDir>/chapters/sentences-rvc-<voiceId>/    ← this module's 'rvc' set
  *
+ * ── A SET IS NAMED BY THE WHOLE CHAIN THAT MADE IT ──────────────────────────
+ *
+ * Since the user picks the ORDER of the two enhancement passes (Owen's ruling,
+ * 2026-08-29), a set can be the product of two of them, and the two orders are
+ * different audio. So the directory spells the chain left to right, in the order
+ * it ran:
+ *
+ *   sentences-denoised-rvc-leah    raw → denoise → convert through leah
+ *   sentences-rvc-leah-denoised    raw → convert through leah → denoise
+ *
+ * The one-pass names above are that same rule with a chain of length one, which
+ * is why they did not change. What DID change is that a conversion of the
+ * DENOISED sentences is no longer written to `sentences-rvc-<voice>`: that name
+ * now means a conversion of the RAW ones, and the two are separate sets. They
+ * have to be, or flipping the order in the dialog would re-derive an hour of GPU
+ * every time — which is exactly the thrash the durable sets exist to end. (The
+ * price is paid once: a `sentences-rvc-<voice>` written before this change was a
+ * conversion of the denoised set, and the first run after it re-derives under
+ * the new name.)
+ *
  * Living INSIDE the session is the whole lifetime story: the caches that replace a
  * session (`cacheSessionToProject`'s per-language sweep, the CLI's
  * `pruneOldSessions`) delete the session directory whole, and the derived sets go
@@ -50,9 +70,13 @@
  * have no way to tell the difference, because "how many files should be here" is
  * exactly what the manifest exists to say.
  *
- * ONE SET PER KIND PER SESSION. A parameter change REPLACES the set rather than
- * accumulating a variant beside it: raw + one denoised + one converted is the
- * session's whole audio budget, and a book is gigabytes.
+ * ONE SET PER CHAIN PER SESSION. A parameter change REPLACES the set rather than
+ * accumulating a variant beside it: the session's audio budget is the raw set
+ * plus one set per chain the user has actually asked for, and a book is
+ * gigabytes. What a chain IS, is the (kind, upstream-identity) pair the name
+ * spells — so "convert the raw sentences" and "convert the denoised sentences"
+ * are two chains and two sets, while "convert the raw sentences at a different
+ * index rate" is the same chain and replaces it.
  */
 
 import * as fs from 'fs';
@@ -119,12 +143,93 @@ const DIR_LABEL: Readonly<Record<DerivedKind, string>> = {
   rvc: 'rvc',
 };
 
-/** Where a derived set of this kind lives for this session.
- *  `key` names the variant within the kind — the RVC voice — and is absent for
- *  a denoise, of which a session has exactly one. */
+/**
+ * ONE PASS of a chain: which kind it was, and which variant within that kind.
+ *
+ * `key` names the variant — the RVC voice — and is absent for a denoise, of
+ * which there is one per source rather than one per anything the user picked.
+ */
+export interface DerivedPass {
+  readonly kind: DerivedKind;
+  readonly key?: string;
+}
+
+/**
+ * HOW LONG A CHAIN MAY BE.
+ *
+ * Two, because the manifest records exactly one level of `upstream` and a third
+ * pass would therefore be built on a provenance record that cannot say what its
+ * own source was derived from — the staleness check would pass over a set whose
+ * grandparent had been re-derived. Two is also every chain the dialog can
+ * express (a denoise and a conversion, in either order), so this is a guard on a
+ * shape nothing produces rather than a limit anybody meets.
+ */
+export const MAX_DERIVED_CHAIN = 2;
+
+/** What one pass contributes to the directory name. */
+function passToken(pass: DerivedPass): string {
+  const suffix = pass.key === undefined ? '' : `-${pass.key.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
+  return `${DIR_LABEL[pass.kind]}${suffix}`;
+}
+
+/**
+ * Where the set produced by this whole chain lives — the chain spelled left to
+ * right, in the order the passes ran.
+ *
+ * The name IS the identity: two chains that differ anywhere are two directories,
+ * so neither can silently overwrite the other and neither has to be re-derived
+ * because the user changed their mind about the order.
+ */
+export function derivedChainDir(processDir: string, chain: readonly DerivedPass[]): string {
+  if (chain.length === 0) {
+    throw new Error(
+      'A derived sentence set was asked for with no passes in its chain, so there is nothing to '
+      + 'name it after. This is a bug in the job that composed it.',
+    );
+  }
+  if (chain.length > MAX_DERIVED_CHAIN) {
+    throw new Error(
+      `A chain of ${chain.length} enhancement passes was asked for, and a derived set records `
+      + `only ${MAX_DERIVED_CHAIN}. Its provenance could not be checked, so the set is refused `
+      + 'rather than written with a manifest that cannot say what it was made from.',
+    );
+  }
+  return path.join(processDir, 'chapters', `sentences-${chain.map(passToken).join('-')}`);
+}
+
+/** Where a derived set of this kind lives when it was derived from the RAW
+ *  sentences — the one-pass case of `derivedChainDir`. */
 export function derivedSentencesDir(processDir: string, kind: DerivedKind, key?: string): string {
-  const suffix = key === undefined ? '' : `-${key.replace(/[^A-Za-z0-9._-]+/g, '_')}`;
-  return path.join(processDir, 'chapters', `sentences-${DIR_LABEL[kind]}${suffix}`);
+  return derivedChainDir(processDir, [key === undefined ? { kind } : { kind, key }]);
+}
+
+/**
+ * THE PASS A SET OF THESE PARAMS REPRESENTS — read off the params rather than
+ * carried beside them, so there is one answer and it cannot drift from the set.
+ *
+ * A conversion with no voice in its params is refused rather than named
+ * something: the voice is what tells two conversions of one session apart, and a
+ * set that could not be told apart from another would be reused as it.
+ */
+export function derivedPassOf(kind: DerivedKind, params: Record<string, unknown>): DerivedPass {
+  if (kind !== 'rvc') return { kind };
+  const voiceId = params['voiceId'];
+  if (typeof voiceId !== 'string' || voiceId === '') {
+    throw new Error(
+      'A voice-conversion sentence set records no voice in its parameters, so it cannot be named '
+      + 'or told apart from a conversion through another voice. This is a bug in the job that '
+      + 'wrote it.',
+    );
+  }
+  return { kind, key: voiceId };
+}
+
+/** The whole chain a manifest describes, raw-first: its upstream pass, if it had
+ *  one, then its own. This is what a pass built ON this set extends. */
+export function derivedChainOf(manifest: DerivedManifest): DerivedPass[] {
+  const own = derivedPassOf(manifest.kind, manifest.params);
+  const upstream = manifest.upstream ?? null;
+  return upstream === null ? [own] : [derivedPassOf(upstream.kind, upstream.params), own];
 }
 
 /** The raw cached set — the one canonical sentence store, never written to. */
@@ -132,7 +237,16 @@ export function rawSentencesDir(processDir: string): string {
   return path.join(processDir, 'chapters', 'sentences');
 }
 
-function readManifest(dir: string): DerivedManifest | null {
+/**
+ * The manifest of a set on disk, or null when there is none this build can read.
+ *
+ * EXPORTED because a pass that derives from another pass's output has to ask the
+ * SET what it was made of. Threading that through the step configs instead would
+ * be a second copy of a fact the set already carries — and the copy is the one
+ * that goes stale when the upstream is re-derived, which is precisely the case
+ * the `upstream` record exists to catch.
+ */
+export function readDerivedManifest(dir: string): DerivedManifest | null {
   try {
     const text = fs.readFileSync(path.join(dir, DERIVED_MANIFEST_NAME), 'utf-8');
     const parsed = JSON.parse(text) as DerivedManifest;
@@ -177,7 +291,7 @@ export function checkDerivedSentences(req: DerivedRequest): DerivedVerdict {
   if (!fs.existsSync(req.dir)) {
     return { reusable: false, reason: 'no set has been derived for this session yet' };
   }
-  const manifest = readManifest(req.dir);
+  const manifest = readDerivedManifest(req.dir);
   if (!manifest) {
     return { reusable: false, reason: `${req.dir} carries no readable derivation manifest` };
   }

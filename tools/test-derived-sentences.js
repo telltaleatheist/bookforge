@@ -33,10 +33,15 @@ const {
   checkDerivedSentences,
   commitDerivedSentences,
   abandonDerivedSentences,
+  derivedChainDir,
+  derivedChainOf,
   derivedPartialDir,
+  derivedPassOf,
   derivedSentencesDir,
   rawSentencesDir,
+  readDerivedManifest,
   DERIVED_MANIFEST_NAME,
+  MAX_DERIVED_CHAIN,
 } = require(MODULE);
 
 const tests = [];
@@ -170,7 +175,9 @@ function rvcOverDenoise(processDir, denoiseParams) {
   const dn = denoiseReq(processDir, denoiseParams);
   derive(processDir, dn);
   return {
-    dir: derivedSentencesDir(processDir, 'rvc', 'deathstalker-sigma'),
+    // Named after the WHOLE chain: this is not the same set as a conversion of
+    // the raw sentences, and the two must not share a directory.
+    dir: derivedChainDir(processDir, [{ kind: 'denoise' }, { kind: 'rvc', key: 'deathstalker-sigma' }]),
     kind: 'rvc',
     params: { voiceId: 'deathstalker-sigma', indexRate: 0.3, protectRate: 0.1 },
     sourceDir: dn.dir,
@@ -206,6 +213,159 @@ test('a conversion of the RAW sentences is not a conversion of the denoised ones
   const verdict = checkDerivedSentences(rawSourced);
   assert.strictEqual(verdict.reusable, false);
   assert.match(verdict.reason, /enhanced source/);
+});
+
+// ── the chain is the NAME, and the name is the identity ─────────────────────
+//
+// Since the user picks which enhancement pass goes first (Owen, 2026-08-29), a
+// set can be the product of two passes and the two orders are DIFFERENT AUDIO.
+// If both orders wrote to one directory the staleness check would do its job —
+// and re-derive an hour of GPU every time somebody flipped the radio button,
+// which is the exact thrash the durable sets exist to end.
+
+test('a one-pass chain is the plain name — the old names did not move', () => {
+  const p = makeSession(1);
+  assert.strictEqual(
+    derivedChainDir(p, [{ kind: 'denoise' }]), derivedSentencesDir(p, 'denoise'));
+  assert.strictEqual(
+    derivedChainDir(p, [{ kind: 'rvc', key: 'leah' }]), derivedSentencesDir(p, 'rvc', 'leah'));
+  assert.strictEqual(path.basename(derivedSentencesDir(p, 'denoise')), 'sentences-denoised');
+  assert.strictEqual(path.basename(derivedSentencesDir(p, 'rvc', 'leah')), 'sentences-rvc-leah');
+});
+
+test('THE TWO ORDERS ARE TWO DIRECTORIES, spelled in the order they ran', () => {
+  const p = makeSession(1);
+  const denoiseFirst = derivedChainDir(p, [{ kind: 'denoise' }, { kind: 'rvc', key: 'leah' }]);
+  const rvcFirst = derivedChainDir(p, [{ kind: 'rvc', key: 'leah' }, { kind: 'denoise' }]);
+  assert.strictEqual(path.basename(denoiseFirst), 'sentences-denoised-rvc-leah');
+  assert.strictEqual(path.basename(rvcFirst), 'sentences-rvc-leah-denoised');
+  assert.notStrictEqual(denoiseFirst, rvcFirst);
+});
+
+test('a conversion of the RAW sentences does not share a directory with one of the denoised', () => {
+  const p = makeSession(1);
+  assert.notStrictEqual(
+    derivedChainDir(p, [{ kind: 'rvc', key: 'leah' }]),
+    derivedChainDir(p, [{ kind: 'denoise' }, { kind: 'rvc', key: 'leah' }]));
+});
+
+test('two voices are two chains', () => {
+  const p = makeSession(1);
+  assert.notStrictEqual(
+    derivedChainDir(p, [{ kind: 'denoise' }, { kind: 'rvc', key: 'leah' }]),
+    derivedChainDir(p, [{ kind: 'denoise' }, { kind: 'rvc', key: 'sigma' }]));
+});
+
+test('a chain longer than the manifest can vouch for is REFUSED, not written', () => {
+  const p = makeSession(1);
+  const tooLong = [
+    { kind: 'denoise' }, { kind: 'rvc', key: 'leah' }, { kind: 'denoise' },
+  ];
+  assert.strictEqual(tooLong.length > MAX_DERIVED_CHAIN, true);
+  assert.throws(() => derivedChainDir(p, tooLong), /provenance could not be checked/);
+  assert.throws(() => derivedChainDir(p, []), /nothing to name it after/);
+});
+
+// ── provenance is READ OFF THE SET, never carried beside it ─────────────────
+
+test('a set says which chain it belongs to, so the pass on top of it can extend it', () => {
+  const p = makeSession(3);
+  const dn = denoiseReq(p);
+  derive(p, dn);
+  assert.deepStrictEqual(derivedChainOf(readDerivedManifest(dn.dir)), [{ kind: 'denoise' }]);
+
+  // And a two-pass set names both of them, in order — which is what makes the
+  // chain reconstructible from the set alone, with nothing threaded through a
+  // config to go stale.
+  const q = makeSession(3);
+  const req = rvcOverDenoise(q);
+  derive(q, req);
+  assert.deepStrictEqual(
+    derivedChainOf(readDerivedManifest(req.dir)),
+    [{ kind: 'denoise' }, { kind: 'rvc', key: 'deathstalker-sigma' }]);
+});
+
+test('a conversion set with no voice in its params cannot be named — refused', () => {
+  assert.throws(() => derivedPassOf('rvc', { indexRate: 0.3 }), /records no voice/);
+  // A denoise has no variant to name, so an empty params object is fine.
+  assert.deepStrictEqual(derivedPassOf('denoise', {}), { kind: 'denoise' });
+});
+
+test('a DENOISE OVER A CONVERSION records the conversion as its upstream', () => {
+  const p = makeSession(3);
+  const rvc = {
+    dir: derivedChainDir(p, [{ kind: 'rvc', key: 'leah' }]),
+    kind: 'rvc',
+    params: { voiceId: 'leah', indexRate: 0.3, gapSeconds: 0.5, minGapSeconds: 0 },
+    sourceDir: rawSentencesDir(p),
+  };
+  derive(p, rvc);
+  const dn = {
+    dir: derivedChainDir(p, [{ kind: 'rvc', key: 'leah' }, { kind: 'denoise' }]),
+    kind: 'denoise',
+    // Second in the chain, so it ran no gap pass: null is the ANSWER.
+    params: { gapSeconds: null, minGapSeconds: 0, voice: null },
+    sourceDir: rvc.dir,
+    upstream: { kind: 'rvc', params: rvc.params },
+  };
+  const manifest = derive(p, dn);
+  assert.strictEqual(manifest.upstream.kind, 'rvc');
+  assert.strictEqual(checkDerivedSentences(dn).reusable, true);
+
+  // RE-CONVERTING AT A DIFFERENT INDEX RATE invalidates the denoise on top of it.
+  const asked = Object.assign({}, dn, {
+    upstream: { kind: 'rvc', params: Object.assign({}, rvc.params, { indexRate: 0.9 }) },
+  });
+  const verdict = checkDerivedSentences(asked);
+  assert.strictEqual(verdict.reusable, false);
+  assert.match(verdict.reason, /re-derived with different settings/);
+});
+
+test('a re-rendered sentence invalidates the SECOND pass of a chain too', () => {
+  const p = makeSession(3);
+  const req = rvcOverDenoise(p);
+  derive(p, req);
+  // The denoised set is this conversion's source; touching it is what a
+  // re-derivation of the denoise looks like from up here.
+  const one = path.join(req.sourceDir, '1.flac');
+  fs.writeFileSync(one, 'denoised-1-again');
+  fs.utimesSync(one, new Date(Date.now() + 60_000), new Date(Date.now() + 60_000));
+  const verdict = checkDerivedSentences(req);
+  assert.strictEqual(verdict.reusable, false);
+  assert.match(verdict.reason, /1\.flac/);
+});
+
+test('BOTH ORDERS CAN SIT IN ONE SESSION without either replacing the other', () => {
+  const p = makeSession(2);
+  // denoise → convert
+  const a = rvcOverDenoise(p);
+  derive(p, a);
+  // convert → denoise, from the raw sentences
+  const rvcRaw = {
+    dir: derivedChainDir(p, [{ kind: 'rvc', key: 'deathstalker-sigma' }]),
+    kind: 'rvc',
+    params: { voiceId: 'deathstalker-sigma', indexRate: 0.3, protectRate: 0.1 },
+    sourceDir: rawSentencesDir(p),
+  };
+  derive(p, rvcRaw);
+  const b = {
+    dir: derivedChainDir(p, [{ kind: 'rvc', key: 'deathstalker-sigma' }, { kind: 'denoise' }]),
+    kind: 'denoise',
+    params: { gapSeconds: null, minGapSeconds: 0, voice: null },
+    sourceDir: rvcRaw.dir,
+    upstream: { kind: 'rvc', params: rvcRaw.params },
+  };
+  derive(p, b);
+
+  assert.deepStrictEqual(fs.readdirSync(path.join(p, 'chapters')).sort(), [
+    'sentences',
+    'sentences-denoised',
+    'sentences-denoised-rvc-deathstalker-sigma',
+    'sentences-rvc-deathstalker-sigma',
+    'sentences-rvc-deathstalker-sigma-denoised',
+  ]);
+  assert.strictEqual(checkDerivedSentences(a).reusable, true, 'denoise-first survived');
+  assert.strictEqual(checkDerivedSentences(b).reusable, true, 'rvc-first survived');
 });
 
 // ── atomicity ───────────────────────────────────────────────────────────────

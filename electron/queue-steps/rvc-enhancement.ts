@@ -14,6 +14,13 @@
  * reassembly row ran next. Here it is simply this step's OUTPUT, which is what it
  * always was.
  *
+ * ── IT MAY CONVERT ANOTHER PASS'S OUTPUT ────────────────────────────────────
+ *
+ * Since Owen's ordering ruling (2026-08-29) the user chooses whether the denoise
+ * runs before or after this pass, so its input is either the session's raw
+ * sentences or the denoise's set — whichever its parent wrote. It no longer
+ * denoises its own input; a config that still says so is refused by name.
+ *
  * The session it reads comes from its parent's output. The old row carried an
  * empty `sessionId` at enqueue time and discovered it at run time with a
  * four-attempt retry ladder against the project cache, because the session did
@@ -44,16 +51,32 @@ interface RvcConfig {
   nSemitones?: number;
   /** Both absent = urvc's own default. Named in shared/queue/narration-run.ts. */
   f0Method?: string;
-  hopLength?: number;
+  /**
+   * NOT A PASS THIS STEP RUNS ANY MORE — passed through so a row queued before
+   * the ordering ruling is refused BY NAME by the job (electron/rvc-job.ts),
+   * rather than silently converting un-denoised audio.
+   */
   finalDenoise?: boolean;
-  /** Baked into the denoised set this pass reads. Travels with `finalDenoise`
-   *  because that is the pass that applies it — see denoise-job.ts. */
+  hopLength?: number;
+  /**
+   * The set to convert, when this pass is SECOND in the chain and no parent step
+   * hands it over. Ordinarily absent: the parent's output says it.
+   */
+  sentencesDir?: string;
+  /** Baked in HERE when this pass reads the RAW sentences — it is then the first
+   *  thing that touches them. See electron/sentence-gap.ts. */
   sentenceGap?: number;
 }
 
 export const rvcEnhancementStep: StepModule = {
   type: 'rvc-enhancement',
-  consumes: 'audio-session',
+  /*
+   * EITHER a narration's session (convert the raw sentences) OR another pass's
+   * sentence set (convert what the denoise produced) — the same pair the denoise
+   * step declares, and for the same reason: the user picks which of the two
+   * enhancement passes goes first.
+   */
+  consumes: ['audio-session', 'sentences'],
   produces: 'sentences',
   resource: () => 'gpu',
 
@@ -66,6 +89,13 @@ export const rvcEnhancementStep: StepModule = {
     let sessionId = config.sessionId || ctx.input.sessionId;
     let sessionDir = config.sessionDir || ctx.input.sessionDir;
     let processDir = config.processDir || ctx.input.processDir;
+
+    // What this pass converts — the parent's output when the parent produced a
+    // sentence set, and otherwise the session's raw cache. Same rule as the
+    // denoise step and the assembly.
+    const upstreamSentences = ctx.input.kind === 'sentences'
+      ? ctx.input.path
+      : config.sentencesDir;
 
     if (!sessionId || !sessionDir || !processDir) {
       // A row queued before its narration existed and pointed at a project
@@ -111,7 +141,9 @@ export const rvcEnhancementStep: StepModule = {
         nSemitones: config.nSemitones,
         f0Method: config.f0Method,
         hopLength: config.hopLength,
+        // Carried so the job can REFUSE it by name. See the field's note above.
         finalDenoise: config.finalDenoise,
+        ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
         ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
       }, queueMainWindow());
 

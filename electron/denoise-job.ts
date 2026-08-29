@@ -16,20 +16,29 @@
  * back a DIRECTORY of sentences that the assembly behind it consumes via e2a's
  * `--sentences_dir`.
  *
- * ── Gap normalization comes with it, and must ───────────────────────────────
+ * ── Gap normalization comes with it, WHEN THIS PASS READS THE RAW SENTENCES ─
  *
  * Gap normalization strips e2a's artificial trailing pad by detecting its
  * EXACTLY-zero samples, and the roformer turns those zeros into dithered
  * near-zeros. Gap therefore has to run on the RAW cached sentences and BEFORE the
  * denoise — it cannot be left behind in the assembly, which now sees only the
- * denoised set. It is CPU work and holds no GPU lease of its own; the step's slot
- * covers it.
+ * derived set. It is CPU work and holds no GPU lease of its own; the step's slot
+ * covers it. The rules live in `sentence-gap.ts`, because since Owen's ordering
+ * ruling the conversion can be the pass that reads the raw sentences instead.
+ *
+ * ── IT MAY DENOISE ANOTHER PASS'S OUTPUT ────────────────────────────────────
+ *
+ * `config.sentencesDir` is the set this pass reads when it is SECOND in the
+ * chain — the user chose "convert first, then denoise". Then it runs no gap pass
+ * (the conversion already baked it), and it names its output after the whole
+ * chain: `sentences-rvc-<voice>-denoised` rather than `sentences-denoised`. The
+ * source's own manifest is what says which chain that is; it is read off the set
+ * rather than threaded through the config, so it cannot disagree with the set.
  *
  * ── The output is DURABLE ───────────────────────────────────────────────────
  *
- * It is not a scratch dir the assembly deletes. It is
- * `<processDir>/chapters/sentences-denoised/`, a sibling of the raw cache, with a
- * manifest that says what it was derived from and with — see
+ * It is not a scratch dir the assembly deletes. It is a sibling of the raw cache
+ * with a manifest that says what it was derived from and with — see
  * `derived-sentences.ts` for the whole reasoning. A second assembly of the same
  * session REUSES it and costs minutes instead of an hour.
  */
@@ -39,9 +48,7 @@ import { BrowserWindow } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
-import { resolveSessionSentenceGap } from './reassembly-bridge';
-import { resolveOrpheusMinChunkGap } from './orpheus-models';
+import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
 import { getDefaultE2aTmpPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import {
@@ -49,12 +56,22 @@ import {
   beginDerivedSentences,
   checkDerivedSentences,
   commitDerivedSentences,
-  derivedSentencesDir,
+  derivedChainDir,
+  derivedChainOf,
   rawSentencesDir,
+  readDerivedManifest,
   type DerivedManifest,
+  type DerivedPass,
   type DerivedRequest,
   type DerivedVerdict,
 } from './derived-sentences';
+import {
+  applySentenceGap,
+  planSentenceGap,
+  sentenceGapParams,
+  NO_SENTENCE_GAP,
+  type SentenceGapPlan,
+} from './sentence-gap';
 
 export interface FinalDenoiseConfig {
   /**
@@ -65,14 +82,25 @@ export interface FinalDenoiseConfig {
    */
   processDir: string;
   /**
+   * THE SET THIS PASS READS, when another enhancement pass produced it — absent
+   * for the ordinary case of denoising the session's RAW cached sentences.
+   *
+   * Set exactly when this denoise is SECOND in the chain (the user chose
+   * "convert first, then denoise"). It changes three things at once, all of them
+   * from the source's own manifest: what is read, what the output set is called,
+   * and what is recorded as `upstream` so a re-derivation of the conversion
+   * invalidates this set too.
+   */
+  sentencesDir?: string;
+  /**
    * The inter-sentence gap to bake in, in seconds, or absent to let the
    * session's own provenance decide (an Orpheus voice's tuned value, else the
    * visible default; a non-Orpheus session normalizes not at all).
    *
-   * It lives on THIS step now rather than on the assembly, because this is where
-   * the gap pass runs. It is also part of the derived set's identity: changing it
-   * re-derives the denoised sentences, which is inherent to baking the gap in
-   * before the roformer sees the audio.
+   * ONLY MEANINGFUL WHEN THIS PASS READS THE RAW SENTENCES. Sent alongside
+   * `sentencesDir` it is refused rather than ignored: the gap can only be applied
+   * to raw audio, so a config that states both is a composition bug, and
+   * swallowing it would silently drop a value the user moved a slider to.
    */
   sentenceGap?: number;
 }
@@ -111,41 +139,81 @@ export interface DenoisePlan {
   dir: string;
   request: DerivedRequest;
   verdict: DerivedVerdict;
-  /** Undefined = no gap pass at all (a non-Orpheus session with no explicit knob). */
-  gapSeconds: number | undefined;
-  minGapSeconds: number;
+  /** How the gap is handled by THIS pass. `gapSeconds` undefined = no gap pass
+   *  at all — a non-Orpheus session, or a denoise that runs second. */
+  gap: SentenceGapPlan;
 }
 
 export async function planDenoisedSentences(
   processDir: string,
   sentenceGap?: number,
+  /** The set to denoise, when a conversion produced it. See `FinalDenoiseConfig`. */
+  sentencesDir?: string,
 ): Promise<DenoisePlan> {
-  const source = rawSentencesDir(processDir);
+  const source = sentencesDir ?? rawSentencesDir(processDir);
   if (!fs.existsSync(source)) {
-    throw new Error(`Final denoise: cached sentences not found for this session (${source}).`);
+    throw new Error(
+      sentencesDir === undefined
+        ? `Final denoise: cached sentences not found for this session (${source}).`
+        : `Final denoise: the set it was told to denoise is not there (${source}).`,
+    );
   }
-  // Assembly always runs `--tts_engine xtts`, so the Orpheus voice — and every
-  // per-voice value keyed off it — can only come from the session's provenance.
-  const provenance = await resolveSessionSentenceGap(processDir);
-  const gapSeconds = typeof sentenceGap === 'number'
-    ? sentenceGap
-    : (provenance.isOrpheus ? provenance.gap : undefined);
-  const minGapSeconds = resolveOrpheusMinChunkGap(provenance.voice) ?? 0;
 
-  const dir = derivedSentencesDir(processDir, 'denoise');
+  /*
+   * WHICH CHAIN THIS SET BELONGS TO — asked of the SOURCE, never of the config.
+   *
+   * A pass that derives from another pass's output learns its provenance by
+   * reading that set's manifest. Threading it through the step config instead
+   * would be a second copy of a fact the set already carries, and the copy is
+   * the one that goes stale when the upstream is re-derived.
+   */
+  let chain: DerivedPass[];
+  let upstream: DerivedRequest['upstream'];
+  let gap: SentenceGapPlan;
+  if (sentencesDir === undefined) {
+    gap = await planSentenceGap(processDir, sentenceGap);
+    chain = [{ kind: 'denoise' }];
+    upstream = null;
+  } else {
+    if (sentenceGap !== undefined) {
+      throw new Error(
+        'This denoise was given both a sentence gap and a set to denoise that another pass '
+        + 'produced. The gap can only be applied to the raw sentences, so it belongs to whichever '
+        + 'pass reads them first — never to this one. This is a bug in the run that composed it.',
+      );
+    }
+    const sourceManifest = readDerivedManifest(sentencesDir);
+    if (sourceManifest === null) {
+      throw new Error(
+        `Final denoise: ${sentencesDir} carries no derivation manifest, so this pass cannot say `
+        + 'what it is denoising or when the result would go stale. Re-run the pass that produced '
+        + 'it.',
+      );
+    }
+    const sourceChain = derivedChainOf(sourceManifest);
+    if (sourceChain.some((pass) => pass.kind === 'denoise')) {
+      throw new Error(
+        'This run would denoise a set that has already been denoised. One denoise per chain: a '
+        + 'second roformer pass over its own output is GPU spent making the audio worse.',
+      );
+    }
+    chain = [...sourceChain, { kind: 'denoise' }];
+    upstream = { kind: sourceManifest.kind, params: sourceManifest.params };
+    gap = NO_SENTENCE_GAP;
+  }
+
+  const dir = derivedChainDir(processDir, chain);
   const request: DerivedRequest = {
     dir,
     kind: 'denoise',
     params: {
-      // `null` rather than absent: "no gap pass ran" is an answer, and it must
-      // be distinguishable from a set derived before the field existed.
-      gapSeconds: gapSeconds ?? null,
-      minGapSeconds,
-      voice: provenance.voice ?? null,
+      ...sentenceGapParams(gap),
+      voice: gap.voice,
     },
     sourceDir: source,
+    upstream,
   };
-  return { dir, request, verdict: checkDerivedSentences(request), gapSeconds, minGapSeconds };
+  return { dir, request, verdict: checkDerivedSentences(request), gap };
 }
 
 export interface DeriveHooks {
@@ -174,10 +242,14 @@ export interface DerivedSet {
 /**
  * Produce (or reuse) the session's denoised sentence set.
  *
- * THE CALLER OWNS THE GPU LEASE. Both callers already hold one for their own
- * reasons — the queue step because it IS the GPU step, `rvc-job` because its
- * conversion needs the card straight afterwards — and taking a second one here
- * would be a deadlock against a non-reentrant arbiter.
+ * THE CALLER OWNS THE GPU LEASE. `runFinalDenoise` below holds one because it IS
+ * the GPU step; taking a second one here would be a deadlock against a
+ * non-reentrant arbiter.
+ *
+ * `rvc-job` used to call this too — the conversion denoised its own input, which
+ * is how "denoise before RVC" was realised before the order became the user's
+ * choice. It does not any more: the two passes are two rows, each a clean
+ * transform of its parent's output, and this is the denoise's own machinery.
  */
 export async function deriveDenoisedSentences(
   plan: DenoisePlan,
@@ -198,18 +270,10 @@ export async function deriveDenoisedSentences(
   const partial = beginDerivedSentences(plan.dir);
   try {
     let denoiseSource = plan.request.sourceDir;
-    if (plan.gapSeconds !== undefined) {
+    if (plan.gap.gapSeconds !== undefined) {
       hooks.onGapStart?.();
-      hooks.log(`Sentence-gap normalization starting (gap ${plan.gapSeconds}s, floor ${plan.minGapSeconds}s).`);
-      fs.rmSync(gapDir, { recursive: true, force: true });
-      // CPU-only (soundfile/numpy array work, no torch device).
-      await normalizeSentenceGaps({
-        sentencesDir: plan.request.sourceDir,
-        outputDir: gapDir,
-        gapSeconds: plan.gapSeconds,
-        minGapSeconds: plan.minGapSeconds,
-        signal: hooks.signal,
-      });
+      hooks.log(`Sentence-gap normalization starting (gap ${plan.gap.gapSeconds}s, floor ${plan.gap.minGapSeconds}s).`);
+      await applySentenceGap(plan.gap, plan.request.sourceDir, gapDir, { signal: hooks.signal });
       denoiseSource = gapDir;
       hooks.log('Sentence-gap normalization complete.');
     }
@@ -243,7 +307,7 @@ export async function runFinalDenoise(
 ): Promise<FinalDenoiseResult> {
   let plan: DenoisePlan;
   try {
-    plan = await planDenoisedSentences(config.processDir, config.sentenceGap);
+    plan = await planDenoisedSentences(config.processDir, config.sentenceGap, config.sentencesDir);
   } catch (err) {
     const error = (err as Error).message || String(err);
     sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error, message: error });

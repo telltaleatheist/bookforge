@@ -87,7 +87,7 @@ export interface NarrationRvcSettings {
  * WHICH ACTS THIS RUN PERFORMS.
  *
  * Three independent facts rather than a mode, because the combinations are not a
- * ladder: a run can read the book and stop, and a run can convert sentences that
+ * ladder: a run can read the book and stop, and a run can enhance sentences that
  * were rendered weeks ago without reading anything. The pair this replaced
  * (`{narrate, assemble}`) could not say the difference between "narrate, then
  * enhance, then assemble" and "narrate, then assemble" — enhancement was implied
@@ -97,11 +97,38 @@ export interface NarrationRvcSettings {
 export interface NarrationRunStages {
   /** Read the book aloud. False means the sentences already exist. */
   readonly narrate: boolean;
-  /** Re-render the sentences through an RVC voice model. */
-  readonly rvc: boolean;
+  /**
+   * RUN THE ENHANCEMENT PASSES — at least one of them.
+   *
+   * It was `rvc` until Owen's ruling of 2026-08-29 moved the denoise onto the
+   * same tab: "not a casual click — it takes real GPU work", same as the
+   * conversion. There are now TWO passes behind this one flag, and WHICH of them
+   * run is the settings' answer (`finalDenoise`, `rvc`) rather than the stage's —
+   * exactly as which VOICE is the settings' answer and not the stage's. The stage
+   * says whether the enhancement happens at all, which is what the tab's own
+   * checkbox has always meant.
+   */
+  readonly enhance: boolean;
   /** Combine the sentences into the M4B. */
   readonly assemble: boolean;
 }
+
+/**
+ * WHICH ENHANCEMENT PASS GOES FIRST, when the run performs both.
+ *
+ * Owen, 2026-08-29: the user usually wants one of the two, both together must
+ * remain allowed, and when both are chosen the USER PICKS THE ORDER.
+ *
+ * 'denoise-first' is the default and the recommendation: RVC extracts f0 and
+ * content features from whatever it is handed and noise corrupts that
+ * extraction, while the roformer is proven to leave clean audio unchanged — so
+ * denoising first is the composition that cannot make things worse. The reverse
+ * is the user's right rather than a second recommendation.
+ */
+export type NarrationEnhancementOrder = 'denoise-first' | 'rvc-first';
+
+/** One enhancement pass, named as the step it becomes. */
+export type NarrationEnhancementPass = 'denoise' | 'rvc';
 
 /** WHICH file is narrated, and what the audiobook is called. */
 export interface NarrationRunBook {
@@ -159,7 +186,22 @@ export interface NarrationRunSettings {
   readonly workers: number;
   /** The library's audiobooks folder — where the finished M4B is filed. */
   readonly outputDir: string;
+  /**
+   * RUN THE ROFORMER DENOISE — one of the two enhancement passes.
+   *
+   * It was an assembly option until 2026-08-29 and is now a pass of its own,
+   * chosen on the same tab as the conversion, because it is the same kind of
+   * thing: an hour of GPU over the whole book. Only read when
+   * `NarrationRunStages.enhance` is on.
+   */
   readonly finalDenoise: boolean;
+  /**
+   * Which of the two enhancement passes runs first. Only read when BOTH of them
+   * do; stated always, because a run that could not say it would be composed in
+   * whichever order this file happened to write, which is a choice with the
+   * user's name on it.
+   */
+  readonly enhancementOrder: NarrationEnhancementOrder;
   readonly applyDeRing: boolean;
   /**
    * Seconds of silence to normalize BETWEEN sentences at assembly, or absent to
@@ -232,14 +274,23 @@ export interface NarrationRvcConfig {
   readonly f0Method?: string;
   /** Absent = urvc's own default; read only by the crepe family. */
   readonly hopLength?: number;
-  readonly finalDenoise: boolean;
+  /*
+   * NO `finalDenoise` HERE ANY MORE. The conversion used to denoise its own
+   * input, which is how "denoise before RVC" was realised before the order
+   * became the user's choice. It is a separate row now, in whichever position
+   * was chosen, and a conversion config that still carries the flag is REFUSED
+   * by the job (electron/rvc-job.ts) rather than ignored — so it must not be
+   * set, not merely left false.
+   */
   /**
-   * The inter-sentence gap, when the user moved the control.
+   * The inter-sentence gap, when the user moved the control — SET ONLY WHEN THIS
+   * PASS READS THE RAW SENTENCES, i.e. when the conversion is the first
+   * enhancement pass of the run.
    *
-   * It travels with the DENOISE, not with the assembly, because the gap pass is
-   * what runs in front of the roformer and bakes it in — it must see the raw
-   * sentences and their exactly-zero trailing pad, which the roformer destroys.
-   * A conversion that denoises therefore owns the gap too.
+   * The gap pass must see the raw sentences and their exactly-zero trailing pad,
+   * which both a roformer and a conversion destroy, so it is baked in by
+   * whichever pass touches them first. When a denoise runs in front of this one,
+   * that denoise owns the gap and this config carries none.
    */
   readonly sentenceGap?: number;
 }
@@ -252,16 +303,26 @@ export interface NarrationRvcConfig {
  * combine and the AAC encode — the long tail, and pure CPU. Its own row is what
  * lets the assembly contend for the cpu pool while the GPU moves to the next run.
  *
- * It is NOT queued when the run also converts the voice: the conversion reads the
- * denoised set itself (`NarrationRvcConfig.finalDenoise`), so a separate row
- * would denoise the same session twice.
+ * IT IS QUEUED ALONGSIDE THE CONVERSION when the run performs both, in the order
+ * the user chose. It used to be suppressed then — the conversion denoised its own
+ * input — which is exactly the coupling the ordering ruling removed: two passes,
+ * two rows, each a clean transform of its parent's output.
+ *
+ * WHAT IT READS is not stated here. First in the run it reads the session; behind
+ * a conversion it reads that conversion's output, and the queue hands it over as
+ * the parent's artifact. A path written here at compose time would name a
+ * directory the pass in front of it has not produced yet.
  */
 export interface NarrationDenoiseConfig {
   readonly type: 'final-denoise';
   readonly sessionId: string;
   readonly sessionDir: string;
   readonly processDir: string;
-  /** Absent = the session's provenance decides. See `NarrationRvcConfig`. */
+  /**
+   * Absent = the session's provenance decides — and absent ALWAYS when a
+   * conversion runs in front of this pass, because by then the gap is baked in
+   * and the pad it is detected by is gone. See `NarrationRvcConfig`.
+   */
   readonly sentenceGap?: number;
 }
 
@@ -510,12 +571,20 @@ export function narrationTtsStep(
  * (`getBfpCachedSession`). Both are "ask the disk at the time", which is why one
  * empty field serves both.
  *
- * Denoise rides HERE rather than on the assembly so it runs first — denoise, then
- * conversion, then assembly — and the assembly sees a pre-enhanced set.
+ * IT NO LONGER DENOISES ITS OWN INPUT. The denoise is a row of its own, before
+ * or after this one as the user chose, and this step is a clean transform of
+ * whatever its parent wrote.
+ *
+ * `readsRawSentences` says whether this pass is the FIRST enhancement of the run,
+ * which is the only thing that decides whether it carries the gap: the gap is
+ * baked in by whichever pass touches the raw sentences, and touching them is what
+ * being first means. A parameter rather than something read off the settings,
+ * because only the whole-run builder knows the shape of the run.
  */
 export function narrationRvcStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
+  readsRawSentences: boolean,
 ): NarrationStepPlan | null {
   if (settings.rvc === null) return null;
   requireNarrationRun(book, settings);
@@ -528,7 +597,9 @@ export function narrationRvcStep(
     type: 'rvc-enhancement',
     bfpPath: book.projectDir,
     variantId: book.variantId,
-    metadata: actMetadata(book, 'Enhance'),
+    // NAMED, not "Enhance": two enhancement rows can now sit in one run, and a
+    // pair of rows the user cannot tell apart is a queue that says nothing.
+    metadata: actMetadata(book, 'Voice conversion'),
     config: {
       type: 'rvc-enhancement',
       // Filled at run time by session discovery — see the doc comment above.
@@ -542,34 +613,37 @@ export function narrationRvcStep(
       // config that a later reader has to guess the meaning of.
       ...(settings.rvc.f0Method === undefined ? {} : { f0Method: settings.rvc.f0Method }),
       ...(settings.rvc.hopLength === undefined ? {} : { hopLength: settings.rvc.hopLength }),
-      finalDenoise: settings.finalDenoise,
-      // The gap rides with the denoise, and the denoise rides here. Absent
-      // leaves the session's provenance in charge, as everywhere else.
-      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
+      // The gap rides with whichever pass reads the RAW sentences, which is this
+      // one exactly when it is first. Absent leaves the session's provenance in
+      // charge, as everywhere else — and absent is the ONLY legal answer when a
+      // denoise runs in front, which the job refuses rather than ignores.
+      ...(readsRawSentences && settings.sentenceGap !== undefined
+        ? { sentenceGap: settings.sentenceGap } : {}),
     },
   };
 }
 
 /**
- * Denoise the rendered sentences, before assembly.
+ * Denoise the rendered sentences.
  *
  * Its own row for the same reason the conversion has one — a distinct job with a
  * distinct ETA — and for one more: the assembly behind it is then CPU work, and
  * the GPU is free the moment the roformer finishes rather than at the end of the
  * AAC encode.
  *
- * Null when the run does not denoise, and null when the run CONVERTS: the
- * conversion denoises its own input (see `narrationRvcStep`), and two rows over
- * one session would denoise it twice.
+ * Null when the run does not denoise. It is NOT suppressed by the conversion any
+ * more: the two are separate passes in a user-chosen order, and the one that
+ * runs second reads the other's output.
  *
- * The session fields are empty on purpose — see `narrationRvcStep`, same reason.
+ * `readsRawSentences` carries the same meaning as it does on `narrationRvcStep`.
+ * The session fields are empty on purpose — same reason, same place.
  */
 export function narrationDenoiseStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
+  readsRawSentences: boolean,
 ): NarrationStepPlan | null {
   if (!settings.finalDenoise) return null;
-  if (settings.rvc !== null) return null;
   requireNarrationRun(book, settings);
   return {
     type: 'final-denoise',
@@ -580,9 +654,40 @@ export function narrationDenoiseStep(
       type: 'final-denoise',
       // Filled at run time by session discovery — see `narrationRvcStep`.
       sessionId: '', sessionDir: '', processDir: '',
-      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
+      ...(readsRawSentences && settings.sentenceGap !== undefined
+        ? { sentenceGap: settings.sentenceGap } : {}),
     },
   };
+}
+
+/**
+ * THE ENHANCEMENT PASSES THIS RUN PERFORMS, IN THE ORDER THEY EXECUTE.
+ *
+ * The whole of the ordering ruling, in one function. WHETHER there is any
+ * enhancement is the stage's answer; WHICH passes is the settings'; and the ORDER
+ * is the settings' too, but only consulted when both passes are on — with one
+ * pass there is no order to have, and reading the field then would let a stale
+ * value look like a decision.
+ */
+export function narrationEnhancementPasses(
+  settings: NarrationRunSettings,
+  stages: NarrationRunStages,
+): NarrationEnhancementPass[] {
+  if (!stages.enhance) return [];
+  const denoise = settings.finalDenoise;
+  const rvc = settings.rvc !== null;
+  if (denoise && rvc) {
+    if (settings.enhancementOrder === 'rvc-first') return ['rvc', 'denoise'];
+    if (settings.enhancementOrder === 'denoise-first') return ['denoise', 'rvc'];
+    throw new Error(
+      `This run performs both enhancement passes but says its order is `
+      + `"${String(settings.enhancementOrder)}", which is neither "denoise-first" nor `
+      + '"rvc-first". The two orders produce different audio, so neither is assumed.'
+    );
+  }
+  if (denoise) return ['denoise'];
+  if (rvc) return ['rvc'];
+  return [];
 }
 
 /**
@@ -656,10 +761,13 @@ export function narrationReassemblyStep(
  * reason rather than by a rule about counts:
  *
  *  - NOTHING AT ALL leaves the user watching a queue they added nothing to.
- *  - ENHANCEMENT WITHOUT ASSEMBLY produces a directory of converted sentences
- *    under the library's tmp folder that the next step deletes and nothing else
- *    ever reads. The conversion is real GPU work with no deliverable at the end
- *    of it, which is worse than a refusal.
+ *  - ENHANCEMENT WITHOUT ASSEMBLY spends an hour of GPU per pass and ends with
+ *    nothing to listen to. The sets it derives are durable and would be reused by
+ *    a later assembly, but "make an audiobook" is what this dialog is for, and a
+ *    run that produces none is not a smaller version of that.
+ *  - ENHANCEMENT WITH NEITHER PASS CHOSEN is a checked tab with nothing behind
+ *    it. Checked is the user's answer to "do this"; which passes is a separate
+ *    question and it has not been answered.
  *  - ENHANCEMENT WITH NO VOICE has nothing to convert through. That one is
  *    checked here as well as in the step builder because the stage flag and the
  *    settings can disagree, and the flag is the user's answer to "do this".
@@ -668,23 +776,22 @@ export function requireNarrationStages(
   stages: NarrationRunStages,
   settings: NarrationRunSettings,
 ): void {
-  if (!stages.narrate && !stages.rvc && !stages.assemble) {
+  if (!stages.narrate && !stages.enhance && !stages.assemble) {
     throw new Error(
-      'There is nothing to queue: this run neither reads the book, nor re-renders its sentences, '
+      'There is nothing to queue: this run neither reads the book, nor enhances its sentences, '
       + 'nor assembles an audiobook. Turn one of them on.'
     );
   }
-  if (stages.rvc && !stages.assemble) {
+  if (stages.enhance && !stages.assemble) {
     throw new Error(
-      'Re-rendering the sentences without assembling them would spend the whole conversion on a '
-      + 'scratch folder that is deleted straight afterwards, leaving nothing to listen to. Turn '
-      + 'assembly on as well, or turn the voice conversion off.'
+      'Enhancing the sentences without assembling them would spend the whole pass on the GPU and '
+      + 'leave nothing to listen to. Turn assembly on as well, or turn the enhancement off.'
     );
   }
-  if (stages.rvc && settings.rvc === null) {
+  if (stages.enhance && !settings.finalDenoise && settings.rvc === null) {
     throw new Error(
-      'This run is set to re-render the sentences through an RVC voice, but no voice-conversion '
-      + 'settings came with it. Pick an RVC voice or turn the conversion off.'
+      'This run is set to enhance its sentences, but neither enhancement pass is turned on. '
+      + 'Choose the denoise, the voice conversion, or both — or turn the enhancement off.'
     );
   }
 }
@@ -697,13 +804,19 @@ export function requireNarrationStages(
  *
  * ── WHERE THE AUDIOBOOK IS FILED IS DECIDED HERE, ONCE ──────────────────────
  *
- * `registerAsNewVariant = rvc && !narrate`. A run that RENDERED the sentences it
+ * `registerAsNewVariant = converts && !narrate`. A run that RENDERED the sentences it
  * converts produced one audiobook — the conversion is a pass inside it, not a
  * second edition — so it files into the project's audiobook slot exactly as
  * every narration always has. A run that converted sentences ALREADY ON DISK is
  * making an alternative to an audiobook the book already has, and overwriting
  * the original to produce its alternative is the destruction Owen's ruling
  * exists to prevent.
+ *
+ * A CACHE RUN THAT ONLY DENOISES still files into the base slot, and that is the
+ * answer it has always had: a denoise is the same narration with its hiss bed
+ * taken out, not a different edition, and there is nothing to name a second
+ * version after. Only the conversion mints one, because the voice is what tells
+ * the two versions apart.
  *
  * Computed here rather than in the assembly builder because it is a fact about
  * the SHAPE OF THE RUN, and this is the only function that sees the whole shape.
@@ -740,41 +853,46 @@ export function buildNarrationSteps(
    */
   if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
   /*
-   * THE DENOISE IS A STEP, AND ONLY WHEN NOTHING ELSE DOES IT.
+   * THE ENHANCEMENT IS ONE ROW PER PASS, IN THE USER'S ORDER.
    *
-   * A conversion denoises its own input — it has to, because RVC extracts
-   * f0/content features and input noise corrupts that extraction — so a run that
-   * converts gets no denoise row of its own. A run that does not convert gets
-   * one, in front of the assembly, and the assembly is then CPU work that frees
-   * the card the moment the roformer lands.
+   * Both passes cost about an hour of GPU over a book and both are chosen on the
+   * same tab, so both are rows: the queue shows two ETAs rather than one job that
+   * silently does twice the work. Each reads what the row in front of it wrote —
+   * the first reads the session, the second reads the first's sentence set — and
+   * the assembly behind them reads the last one's, which is what it has always
+   * done with an enhanced set.
    *
-   * With no assembly there is nothing to denoise FOR: the set would be derived
-   * and read by nobody. It stays in the session, so it is not thrown away, but a
-   * row that renders GPU hours for no deliverable is not what "read the book and
-   * stop" asked for.
+   * THE GAP GOES ON THE FIRST PASS AND NOWHERE ELSE. It has to be applied to the
+   * raw sentences (it detects e2a's pad by its exactly-zero samples), so it
+   * belongs to whichever pass touches them first. `readsRawSentences` is that
+   * fact, and it is the index being zero.
    */
-  const denoiseStep = stages.assemble ? narrationDenoiseStep(book, settings) : null;
-  if (denoiseStep) steps.push(denoiseStep);
-  if (stages.rvc) {
-    const rvc = narrationRvcStep(book, settings);
-    if (rvc === null) {
-      // Unreachable: `requireNarrationStages` refuses `rvc` with no settings, and
-      // null is exactly that case. Said out loud rather than asserted away, so a
-      // future change to either rule fails here instead of dropping the pass.
+  const passes = narrationEnhancementPasses(settings, stages);
+  for (const [index, pass] of passes.entries()) {
+    const readsRaw = index === 0;
+    const step = pass === 'denoise'
+      ? narrationDenoiseStep(book, settings, readsRaw)
+      : narrationRvcStep(book, settings, readsRaw);
+    if (step === null) {
+      // Unreachable: `narrationEnhancementPasses` names a pass only when its
+      // settings are there, and null is exactly the case where they are not.
+      // Said out loud rather than asserted away, so a future change to either
+      // rule fails here instead of dropping a pass the user asked for.
       throw new Error(
-        'The voice-conversion pass was asked for and could not be described. This is a bug in '
-        + "BookForge's run description."
+        `The ${pass === 'denoise' ? 'denoise' : 'voice-conversion'} pass was asked for and could `
+        + "not be described. This is a bug in BookForge's run description."
       );
     }
-    steps.push(rvc);
+    steps.push(step);
   }
   if (stages.assemble) {
     steps.push(narrationReassemblyStep(
       book,
       settings,
-      stages.rvc && !stages.narrate,
-      // Either upstream pass bakes the gap in before the assembly sees the audio.
-      stages.rvc || denoiseStep !== null,
+      stages.enhance && settings.rvc !== null && !stages.narrate,
+      // Any enhancement pass in front of the assembly has already baked the gap
+      // in — the first of them did, and the assembly is handed its output.
+      passes.length > 0,
     ));
   }
   /*

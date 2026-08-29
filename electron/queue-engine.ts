@@ -143,11 +143,17 @@ export interface StepRunContext {
 export interface StepModule {
   readonly type: JobType;
   /**
-   * The artifact kind this step reads, or null when it reads whatever it is
-   * pointed at and validating the kind would be a lie (a pass reads the project's
-   * book, which the project owns rather than the previous step).
+   * The artifact kind this step reads — or a LIST of the kinds it legitimately
+   * takes, or null when it reads whatever it is pointed at and validating the
+   * kind would be a lie (a pass reads the project's book, which the project owns
+   * rather than the previous step).
+   *
+   * A list is not the same statement as null. Null switches the check off; a
+   * list keeps it and widens it, which is what the two enhancement passes need —
+   * each reads a narration's session when it goes first and the other pass's
+   * sentences when it goes second, and nothing else.
    */
-  readonly consumes: ArtifactKind | null;
+  readonly consumes: ArtifactKind | readonly ArtifactKind[] | null;
   readonly produces: ArtifactKind;
   /**
    * Which pool this step contends for, given its config. A function because the
@@ -511,24 +517,54 @@ function buildStep(
   };
 }
 
+/**
+ * What a step will read, as a list — one entry for the ordinary case, several
+ * for a step that genuinely takes either of two artifacts.
+ *
+ * The two enhancement passes are the case that needed this: a denoise reads a
+ * narration's SESSION when it runs first and another pass's SENTENCES when it
+ * runs second, and so does a conversion, because the user picks which of the two
+ * goes first (Owen's ruling, 2026-08-29). Saying only one of the kinds would
+ * refuse half of the orders the dialog can express; saying `null` — the escape
+ * `reassembly` uses — would switch the check off for a step that really does
+ * have a rule about what it can read.
+ */
+function consumedKinds(mod: StepModule): readonly ArtifactKind[] | null {
+  if (mod.consumes === null) return null;
+  return typeof mod.consumes === 'string' ? [mod.consumes] : mod.consumes;
+}
+
+/** "a sentences", or "a sentences or an audio-session" — the wanted half of the
+ *  refusal, phrased the same whether one kind is legitimate or several. */
+function kindsPhrase(kinds: readonly ArtifactKind[]): string {
+  return kinds.map((k) => `a ${k}`).join(' or ');
+}
+
 /** Refuse a chain whose steps cannot read each other, at COMPOSE time. */
 function checkLineage(child: QueueStep, parent: QueueStep | null): void {
   const mod = moduleFor(child.type);
-  if (mod.consumes === null) return;
+  const kinds = consumedKinds(mod);
+  if (kinds === null) return;
+  if (kinds.length === 0) {
+    throw new Error(
+      `${child.label} declares that it reads nothing at all, which no step may do: a step that `
+      + 'takes no input cannot be scheduled behind anything. This is a bug in its step module.',
+    );
+  }
   if (!parent) {
     const kind = child.sourceRef?.kind;
-    if (kind !== mod.consumes) {
+    if (kind === undefined || !kinds.includes(kind)) {
       throw new Error(
-        `${child.label} reads a ${mod.consumes}, and it was pointed at `
+        `${child.label} reads ${kindsPhrase(kinds)}, and it was pointed at `
         + `${kind ? `a ${kind}` : 'nothing'}.`,
       );
     }
     return;
   }
   const parentMod = moduleFor(parent.type);
-  if (parentMod.produces !== mod.consumes) {
+  if (!kinds.includes(parentMod.produces)) {
     throw new Error(
-      `${child.label} reads a ${mod.consumes}, and ${parent.label} writes `
+      `${child.label} reads ${kindsPhrase(kinds)}, and ${parent.label} writes `
       + `${parentMod.produces === 'none' ? 'nothing another step can read' : `a ${parentMod.produces}`}.`,
     );
   }

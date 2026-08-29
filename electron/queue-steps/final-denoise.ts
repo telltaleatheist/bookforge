@@ -1,9 +1,10 @@
 /**
  * final-denoise — the roformer pass over a session's sentences, as its own row.
  *
- * It is the same shape as `rvc-enhancement`: it reads a narration's SESSION, does
- * GPU work, and produces a DIRECTORY of sentences that the assembly behind it
- * consumes through e2a's `--sentences_dir`.
+ * It is the same shape as `rvc-enhancement`: it reads a narration's SESSION — or
+ * the SENTENCE SET the other enhancement pass produced, when the user put the
+ * conversion first — does GPU work, and produces a DIRECTORY of sentences that
+ * the step behind it consumes (the assembly through e2a's `--sentences_dir`).
  *
  * ── Why it is a step at all ─────────────────────────────────────────────────
  *
@@ -16,8 +17,9 @@
  *
  * ── Its output is durable, and the assembly does not delete it ──────────────
  *
- * `<processDir>/chapters/sentences-denoised/`, beside the raw cache, with a
- * manifest that says what it was derived from and with (derived-sentences.ts).
+ * `<processDir>/chapters/sentences-denoised/` — or `sentences-rvc-<voice>-denoised`
+ * when it denoises a conversion — beside the raw cache, with a manifest that says
+ * what it was derived from and with (derived-sentences.ts).
  * A re-assembly of the same session REUSES it — which is the point: with the
  * current Orpheus models the pass costs about as much wall-clock as the
  * narration, and re-assembly is routine.
@@ -41,13 +43,26 @@ interface FinalDenoiseStepConfig {
   sessionId?: string;
   sessionDir?: string;
   processDir?: string;
-  /** The inter-sentence gap, which is baked in HERE — see denoise-job.ts. */
+  /**
+   * The set to denoise, when this pass is SECOND in the chain and no parent step
+   * hands it over. Ordinarily absent: the parent's output says it.
+   */
+  sentencesDir?: string;
+  /** The inter-sentence gap, baked in HERE when this pass reads the RAW
+   *  sentences — see sentence-gap.ts. */
   sentenceGap?: number;
 }
 
 export const finalDenoiseStep: StepModule = {
   type: 'final-denoise',
-  consumes: 'audio-session',
+  /*
+   * EITHER a narration's session (denoise the raw sentences) OR another pass's
+   * sentence set (denoise what the conversion produced). Both are real chains
+   * since the user picks the order of the two enhancement passes, and declaring
+   * only the session would refuse the "convert first, then denoise" one at
+   * compose time.
+   */
+  consumes: ['audio-session', 'sentences'],
   produces: 'sentences',
   // Always the card: the roformer runs on the env's torch device. The gap pass
   // in front of it is CPU, but it is minutes against the denoise's hour and
@@ -60,6 +75,17 @@ export const finalDenoiseStep: StepModule = {
     let sessionId = config.sessionId || ctx.input.sessionId;
     let sessionDir = config.sessionDir || ctx.input.sessionDir;
     let processDir = config.processDir || ctx.input.processDir;
+
+    /*
+     * WHAT THIS PASS DENOISES — the parent's output when the parent produced a
+     * sentence set, and otherwise the session's raw cache. The same rule the
+     * assembly reads its input by (`queue-steps/reassembly.ts`), for the same
+     * reason: what the step reads is what its parent WROTE, and the config is
+     * only consulted when nothing precedes it.
+     */
+    const upstreamSentences = ctx.input.kind === 'sentences'
+      ? ctx.input.path
+      : config.sentencesDir;
 
     if (!sessionId || !sessionDir || !processDir) {
       // A row queued before its narration existed and pointed at a project
@@ -99,6 +125,7 @@ export const finalDenoiseStep: StepModule = {
     try {
       const result = await runFinalDenoise(ctx.stepId, {
         processDir,
+        ...(upstreamSentences === undefined ? {} : { sentencesDir: upstreamSentences }),
         ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
       }, queueMainWindow());
 

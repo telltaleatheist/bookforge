@@ -36,7 +36,7 @@
  * everything a conversion actually needs — including the ones that only make
  * sense together (hop length means nothing beside rmvpe; protect does nothing at
  * index rate 0). Three tabs because there are three separable decisions —
- * how it is READ, how it is ASSEMBLED, how it is CONVERTED — and a single column
+ * how it is READ, how it is ENHANCED, how it is ASSEMBLED — and a single column
  * of twenty controls was what Owen called ugly.
  *
  * ── THE TAB STRIP IS THE RUN PLAN ───────────────────────────────────────────
@@ -57,6 +57,27 @@
  * refused ON SCREEN in a sentence rather than prevented by moving a check the
  * user did not touch, so nobody has to work out why the thing they clicked
  * bounced.
+ *
+ * ── ONE OF THE THREE CHECKS NOW COVERS TWO PASSES ───────────────────────────
+ *
+ * Owen, 2026-08-29: the final denoise left the Assembly tab, because it *"is not
+ * a casual click — it takes real GPU work"*, the same as the voice conversion.
+ * The tab that held the conversion holds both and is called **Enhance**; inside
+ * it are two labelled sections with an enable each — **Denoise** and **Voice
+ * conversion (RVC)** — and, when both are on, the ORDER, which is the user's to
+ * pick (default denoise-first, because noise corrupts RVC's f0/content
+ * extraction and the roformer is proven to leave clean audio unchanged).
+ *
+ * ITS CHECK THEREFORE MEANS "AT LEAST ONE ENHANCEMENT PASS RUNS", which is the
+ * same grammar the other two checks have: the stage happens, and what it consists
+ * of is answered by the settings on the tab. Checking it with neither pass turned
+ * on turns the DENOISE on, because that is the pass with nothing left to choose;
+ * unchecking it stops both without erasing either, so a conversion tuned by ear
+ * survives being turned off and on again — checking is still not selecting.
+ *
+ * The tab is not called "Voice conversion" any more because that named one of the
+ * two things behind it, and RVC is named INSIDE, on the section that is actually
+ * the tool: two GPU passes on one page have to be told apart.
  *
  * The one-sentence run summary that sat here is GONE on the same ruling
  * (*"remove the run-sentence line entirely"*): with the plan legible on the
@@ -95,6 +116,7 @@ import type { CreateJobRequest } from '../../../queue/models/queue.types';
 import { NarrationVoicesService } from '../../../queue/jobs/narration-voices.service';
 import {
   buildNarrationJobs,
+  type NarrationEnhancementOrder,
   type NarrationRunBook,
   type NarrationRunSettings,
 } from '../../../queue/jobs/narration-run';
@@ -130,8 +152,8 @@ interface CachedSentences {
   readonly voice?: string;
 }
 
-/** Which tab is showing. */
-type NarrationTab = 'tts' | 'assembly' | 'rvc';
+/** Which tab is showing. `'enhance'` holds BOTH GPU passes — see the header. */
+type NarrationTab = 'tts' | 'assembly' | 'enhance';
 
 /**
  * The pitch extractors this dialog offers.
@@ -223,16 +245,19 @@ function fileName(fullPath: string): string {
                       [title]="narrateCheckNote()"
                       (click)="tab.set('tts')">Reading</button>
             </div>
-            <div class="nm-tab" [class.on]="tab() === 'rvc'" [class.run]="rvc()">
+            <!-- ONE CHECK, TWO PASSES. It means "at least one enhancement pass
+                 runs"; which of them is answered inside. It is NOT disabled when
+                 the conversion engine is missing, because the denoise does not
+                 need it — only that section is. -->
+            <div class="nm-tab" [class.on]="tab() === 'enhance'" [class.run]="enhance()">
               <input type="checkbox" class="nm-tab-check"
-                     aria-label="Re-render the sentences through an RVC voice"
-                     [checked]="rvc()"
-                     [disabled]="!rvcInstalled()"
-                     [title]="rvcInstalled() ? 'Re-render the sentences through an RVC voice' : rvcUnavailableNote"
-                     (change)="rvc.set($any($event.target).checked)" />
+                     aria-label="Run at least one enhancement pass over the sentences"
+                     [checked]="enhance()"
+                     title="Denoise the sentences, convert them through an RVC voice, or both"
+                     (change)="onEnhanceToggled($any($event.target).checked)" />
               <button type="button" role="tab" class="nm-tab-name"
-                      [attr.aria-selected]="tab() === 'rvc'"
-                      (click)="tab.set('rvc')">Voice conversion</button>
+                      [attr.aria-selected]="tab() === 'enhance'"
+                      (click)="tab.set('enhance')">Enhance</button>
             </div>
             <div class="nm-tab" [class.on]="tab() === 'assembly'" [class.run]="assemble()">
               <input type="checkbox" class="nm-tab-check"
@@ -377,18 +402,83 @@ function fileName(fullPath: string): string {
               }
             }
 
-            <!-- ── Voice conversion ─────────────────────────────────────── -->
-            @if (tab() === 'rvc') {
+            <!-- ── Enhance: two GPU passes, and their order ─────────────── -->
+            @if (tab() === 'enhance') {
+              @if (!enhance()) {
+                <p class="nm-hint">
+                  This run enhances nothing — it assembles the sentences as they were
+                  rendered. Tick this tab's checkbox to run a pass; turning one on below
+                  ticks it for you.
+                </p>
+              }
+
+              <!-- ── Pass one: the denoise ──────────────────────────────
+                   First because it is the recommended first pass and the one
+                   that needs no choice beyond yes. -->
+              <div class="nm-field nm-pass">
+                <label class="nm-check">
+                  <input type="checkbox" [checked]="finalDenoise()"
+                         (change)="onDenoiseToggled($any($event.target).checked)" />
+                  <span class="nm-pass-name">Denoise</span>
+                </label>
+                <span class="nm-hint">
+                  Strips the faint hiss bed the voice model was trained on, once, over
+                  the whole book — a roformer pass on the GPU, about as long as the
+                  narration itself. Its result is kept in the session, so assembling the
+                  book again does not pay for it twice.
+                </span>
+              </div>
+
+              <!-- ── Pass two: the conversion ─────────────────────────── -->
+              <div class="nm-field nm-pass">
+                <label class="nm-check">
+                  <input type="checkbox" [checked]="rvcEnabled()"
+                         [disabled]="!rvcInstalled()"
+                         [title]="rvcInstalled() ? '' : rvcUnavailableNote"
+                         (change)="onRvcToggled($any($event.target).checked)" />
+                  <span class="nm-pass-name">Voice conversion (RVC)</span>
+                </label>
+                <span class="nm-hint">
+                  Re-renders every sentence through a second voice model, so the book is
+                  read in that voice. Also GPU, also about a narration's worth of it.
+                </span>
+              </div>
+
+              <!-- ── WHICH GOES FIRST, when both do ──────────────────────
+                   Only asked when there are two passes to order. Owen's ruling:
+                   both together stay allowed and the ORDER is the user's. The
+                   default says WHY it is the default; the reverse is offered
+                   without an argument for it, because it is a right rather than
+                   a recommendation. -->
+              @if (finalDenoise() && rvcEnabled()) {
+                <div class="nm-field nm-order">
+                  <label class="nm-label">Order</label>
+                  <label class="nm-check">
+                    <input type="radio" name="nm-enhance-order"
+                           [checked]="enhancementOrder() === 'denoise-first'"
+                           (change)="enhancementOrder.set('denoise-first')" />
+                    <span>Denoise first, then convert <em>(recommended — noise degrades
+                    conversion)</em></span>
+                  </label>
+                  <label class="nm-check">
+                    <input type="radio" name="nm-enhance-order"
+                           [checked]="enhancementOrder() === 'rvc-first'"
+                           (change)="enhancementOrder.set('rvc-first')" />
+                    <span>Convert first, then denoise</span>
+                  </label>
+                  <span class="nm-hint">
+                    The conversion reads pitch and content out of whatever it is handed,
+                    and noise corrupts that reading; the denoise is measured to leave
+                    already-clean audio unchanged. So denoising first cannot make the
+                    conversion worse, which is why it is the default — not because the
+                    other order is wrong.
+                  </span>
+                </div>
+              }
+
               @if (!rvcInstalled()) {
                 <p class="nm-hint">{{ rvcUnavailableNote }}</p>
               } @else {
-                @if (!rvc()) {
-                  <p class="nm-hint">
-                    Voice conversion is off for this run. Tick this tab's checkbox to use these
-                    settings — picking a preset ticks it for you.
-                  </p>
-                }
-
                 <!-- The preset picker leads, because a preset is a VOICE PAIR
                      and not a set of rates: it carries the reading voice and the
                      conversion voice that were auditioned together. -->
@@ -424,7 +514,7 @@ function fileName(fullPath: string): string {
                   <label class="nm-label">Conversion voice</label>
                   <desktop-select
                     [options]="rvcVoiceOptions()"
-                    [disabled]="!rvc()"
+                    [disabled]="!rvcEnabled()"
                     [ngModel]="rvcVoiceId()"
                     (ngModelChange)="rvcVoiceId.set($event)"
                   />
@@ -434,12 +524,12 @@ function fileName(fullPath: string): string {
                   <label class="nm-label">Pitch extraction</label>
                   <div class="nm-choices">
                     <button type="button" class="nm-choice" [class.on]="rvcF0Method() === ''"
-                            [disabled]="!rvc()"
+                            [disabled]="!rvcEnabled()"
                             (click)="rvcF0Method.set('')">Engine default</button>
                     @for (m of f0Methods; track m.value) {
                       <button type="button" class="nm-choice"
                               [class.on]="rvcF0Method() === m.value"
-                              [disabled]="!rvc()"
+                              [disabled]="!rvcEnabled()"
                               (click)="rvcF0Method.set(m.value)">{{ m.label }}</button>
                     }
                   </div>
@@ -454,7 +544,7 @@ function fileName(fullPath: string): string {
                     Hop length: {{ rvcHopLength() === 0 ? 'engine default' : rvcHopLength() }}
                   </label>
                   <input type="range" class="nm-slider" min="0" max="512" step="32"
-                         [disabled]="!rvc() || !hopApplies()"
+                         [disabled]="!rvcEnabled() || !hopApplies()"
                          [value]="rvcHopLength()"
                          (input)="rvcHopLength.set(+$any($event.target).value)" />
                   <span class="nm-hint">
@@ -470,7 +560,7 @@ function fileName(fullPath: string): string {
                 <div class="nm-field">
                   <label class="nm-label">Pitch shift: {{ rvcNSemitones() }} semitones</label>
                   <input type="range" class="nm-slider" min="-24" max="12" step="1"
-                         [disabled]="!rvc()"
+                         [disabled]="!rvcEnabled()"
                          [value]="rvcNSemitones()"
                          (input)="rvcNSemitones.set(+$any($event.target).value)" />
                 </div>
@@ -478,7 +568,7 @@ function fileName(fullPath: string): string {
                 <div class="nm-field">
                   <label class="nm-label">Index rate: {{ rvcIndexRate() }}</label>
                   <input type="range" class="nm-slider" min="0" max="1" step="0.05"
-                         [disabled]="!rvc()"
+                         [disabled]="!rvcEnabled()"
                          [value]="rvcIndexRate()"
                          (input)="rvcIndexRate.set(+$any($event.target).value)" />
                   <span class="nm-hint">How far the conversion leans on the model's timbre index.</span>
@@ -489,7 +579,7 @@ function fileName(fullPath: string): string {
                     Consonant protection: {{ protectLabel() }}
                   </label>
                   <input type="range" class="nm-slider" min="0" max="0.5" step="0.05"
-                         [disabled]="!rvc()"
+                         [disabled]="!rvcEnabled()"
                          [value]="rvcProtectRate()"
                          (input)="rvcProtectRate.set(+$any($event.target).value)" />
                   <!-- LABELLED THE WAY THE ENGINE BEHAVES, not the way its own help
@@ -515,12 +605,13 @@ function fileName(fullPath: string): string {
                   affects it.
                 </p>
               }
+              <!-- THE DENOISE IS NOT HERE ANY MORE (Owen, 2026-08-29): it is an
+                   hour of GPU over the book, which is not the kind of thing an
+                   assembly checkbox should look like. It lives on the Enhance
+                   tab beside the conversion, where both GPU passes are chosen and
+                   ordered together. What is left here is de-ring, which is an
+                   ffmpeg filter at the final encode and belongs to the encode. -->
               <div class="nm-field">
-                <label class="nm-check">
-                  <input type="checkbox" [checked]="finalDenoise()" [disabled]="!assemble()"
-                         (change)="finalDenoise.set($any($event.target).checked)" />
-                  <span>Denoise the finished audio</span>
-                </label>
                 <label class="nm-check">
                   <input type="checkbox" [checked]="applyDeRing()" [disabled]="!assemble()"
                          (change)="applyDeRing.set($any($event.target).checked)" />
@@ -686,6 +777,24 @@ function fileName(fullPath: string): string {
       border-radius: 8px; background: rgba(128,128,128,0.06);
     }
     .nm-check { display: flex; align-items: center; gap: 7px; font-size: 0.8rem; cursor: pointer; }
+    /* Two GPU passes on one page, each in a box of its own so neither reads as a
+       sub-option of the other — they are siblings, and the user usually wants
+       one of them. */
+    .nm-pass {
+      padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--border-subtle, rgba(128,128,128,0.28));
+      background: rgba(128,128,128,0.06);
+    }
+    .nm-pass-name { font-weight: 600; }
+    /* The order question only exists when both passes do, so it is drawn as part
+       of the pair rather than as a third setting. */
+    .nm-order {
+      padding: 10px 12px; border-radius: 8px;
+      border: 1px solid var(--accent-primary, #06b6d4);
+      background: var(--selected-bg-muted, rgba(6,182,212,0.08));
+    }
+    .nm-order .nm-check { align-items: flex-start; line-height: 1.45; }
+    .nm-order em { font-style: normal; color: var(--text-secondary); }
     .nm-choices { display: flex; flex-wrap: wrap; gap: 6px; }
     .nm-choice {
       padding: 6px 12px; border-radius: 7px; font-size: 0.78rem; cursor: pointer;
@@ -799,16 +908,36 @@ export class NarrationModalComponent {
    * The run plan each door opens with — the ONE statement of both.
    *
    * The cache door's plan is "assemble what is there": reading is locked off
-   * (it is what the door means), and conversion starts OFF because converting
-   * is a thing the user asks for by checking it, not something a press on a
+   * (it is what the door means), and enhancement starts OFF because an hour of
+   * GPU is a thing the user asks for by checking it, not something a press on a
    * folder icon should have already decided.
    */
   private entryPlan(context: NarrationEntryContext): {
-    tab: NarrationTab; narrate: boolean; rvc: boolean; assemble: boolean;
+    tab: NarrationTab; narrate: boolean; enhance: boolean;
+    denoise: boolean; convert: boolean; assemble: boolean;
   } {
+    /*
+     * THE STAGE AND ITS PASSES ARE STATED TOGETHER, because a plan that set one
+     * without the other could open with a pass ticked inside an unticked stage —
+     * a screen that says two things about whether the conversion runs.
+     *
+     * The saved default is about the CONVERSION, which is one of the two passes,
+     * so it answers both: whether that pass is on, and therefore whether the
+     * stage is. The denoise starts off in both doors — it is GPU hours, and a
+     * run nobody asked to denoise must not.
+     */
     return context === 'cache'
-      ? { tab: 'assembly', narrate: false, rvc: false, assemble: true }
-      : { tab: 'tts', narrate: true, rvc: this.defaults.rvcEnhancementEnabled, assemble: true };
+      ? {
+          tab: 'assembly', narrate: false,
+          enhance: false, denoise: false, convert: false, assemble: true,
+        }
+      : {
+          tab: 'tts', narrate: true,
+          enhance: this.defaults.rvcEnhancementEnabled,
+          denoise: false,
+          convert: this.defaults.rvcEnhancementEnabled,
+          assemble: true,
+        };
   }
 
   /*
@@ -822,7 +951,9 @@ export class NarrationModalComponent {
   readonly tab = signal<NarrationTab>(this.openingPlan.tab);
 
   readonly narrate = signal(this.openingPlan.narrate);
-  readonly rvc = signal(this.openingPlan.rvc);
+  /** THE STAGE: at least one enhancement pass runs. Which ones is `finalDenoise`
+   *  and `rvcEnabled` below — see the header. */
+  readonly enhance = signal(this.openingPlan.enhance);
   readonly assemble = signal(this.openingPlan.assemble);
 
   readonly engine = signal<TTSEngine>(this.defaults.ttsEngine);
@@ -834,7 +965,25 @@ export class NarrationModalComponent {
   readonly repetitionPenalty = signal(this.defaults.ttsRepetitionPenalty);
   readonly workers = signal(1);
 
-  readonly finalDenoise = signal(false);
+  /**
+   * PASS ONE of the enhancement stage — the roformer denoise.
+   *
+   * It was an Assembly-tab checkbox until 2026-08-29. Same signal, same default
+   * (off — it is GPU hours, and a run nobody asked to denoise must not), drawn
+   * on the Enhance tab beside the pass it is ordered against.
+   */
+  readonly finalDenoise = signal(this.openingPlan.denoise);
+  /**
+   * PASS TWO — the voice conversion. Seeded from Pipeline Defaults through the
+   * same entry plan the stage flag is, because they are the same saved answer
+   * read twice: one says whether the stage happens, the other which pass it is.
+   */
+  readonly rvcEnabled = signal(this.openingPlan.convert);
+  /**
+   * WHICH PASS GOES FIRST when both run. Only read then — with one pass there is
+   * no order — and it opens on the recommendation.
+   */
+  readonly enhancementOrder = signal<NarrationEnhancementOrder>('denoise-first');
   readonly applyDeRing = signal(false);
 
   /**
@@ -920,7 +1069,9 @@ export class NarrationModalComponent {
       const plan = this.entryPlan(this.context());
       this.tab.set(plan.tab);
       this.narrate.set(plan.narrate);
-      this.rvc.set(plan.rvc);
+      this.enhance.set(plan.enhance);
+      this.finalDenoise.set(plan.denoise);
+      this.rvcEnabled.set(plan.convert);
       this.assemble.set(plan.assemble);
     });
 
@@ -947,6 +1098,54 @@ export class NarrationModalComponent {
   onSentenceGapInput(value: number): void {
     this.sentenceGap.set(value);
     this.gapTouched.set(true);
+  }
+
+  // ── The Enhance stage and its two passes ──────────────────────────────────
+  //
+  // Three handlers rather than three `.set`s, because the stage check and the
+  // pass checks say different things about each other and neither direction is
+  // symmetrical. Written out here rather than as effects: an effect that moved a
+  // check the user did not touch would be the bouncing control this dialog
+  // refuses to have.
+
+  /**
+   * The TAB's own check — "at least one enhancement pass runs".
+   *
+   * Checking it with neither pass on turns the DENOISE on, because that is the
+   * pass with nothing left to answer: the conversion needs a voice, and a check
+   * that silently picked one would be this dialog choosing a tuning.
+   *
+   * Unchecking stops both and ERASES NEITHER. Checking is not selecting, so a
+   * conversion tuned by ear survives being turned off and on again — the stage
+   * flag is what the run reads, and the settings are still there under it.
+   */
+  onEnhanceToggled(on: boolean): void {
+    this.enhance.set(on);
+    if (on && !this.finalDenoise() && !this.rvcEnabled()) this.finalDenoise.set(true);
+  }
+
+  /**
+   * A PASS's own check. Turning either on ticks the stage — asking for the pass
+   * is asking for it to run, and leaving the tab unchecked afterwards would be a
+   * setting that quietly does nothing.
+   *
+   * Turning the LAST one off unchecks the stage, for the same reason in reverse:
+   * a checked tab with no pass behind it is a refusal waiting to happen, and the
+   * user has just said which of the two things they meant.
+   */
+  onDenoiseToggled(on: boolean): void {
+    this.finalDenoise.set(on);
+    this.syncEnhanceStage(on);
+  }
+
+  onRvcToggled(on: boolean): void {
+    this.rvcEnabled.set(on);
+    this.syncEnhanceStage(on);
+  }
+
+  private syncEnhanceStage(turnedOn: boolean): void {
+    if (turnedOn) { this.enhance.set(true); return; }
+    if (!this.finalDenoise() && !this.rvcEnabled()) this.enhance.set(false);
   }
 
   /**
@@ -1083,7 +1282,7 @@ export class NarrationModalComponent {
       && p.ttsTemperature === this.temperature()
       && p.ttsTopP === this.topP()
       && p.ttsRepetitionPenalty === this.repetitionPenalty()
-      && p.rvcEnhancementEnabled === this.rvc()
+      && p.rvcEnhancementEnabled === this.rvcEnabled()
       && p.rvcEnhancementVoiceId === this.rvcVoiceId()
       && p.rvcEnhancementIndexRate === this.rvcIndexRate()
       && p.rvcEnhancementProtectRate === this.rvcProtectRate()
@@ -1113,7 +1312,11 @@ export class NarrationModalComponent {
     this.temperature.set(preset.ttsTemperature);
     this.topP.set(preset.ttsTopP);
     this.repetitionPenalty.set(preset.ttsRepetitionPenalty);
-    this.rvc.set(preset.rvcEnhancementEnabled);
+    // A preset states the CONVERSION, which is one of the two enhancement
+    // passes, so it moves that pass's check and the stage follows the same rule
+    // a click on the check follows. It says nothing about the denoise, so the
+    // denoise is left exactly as the user set it.
+    this.onRvcToggled(preset.rvcEnhancementEnabled);
     this.rvcVoiceId.set(preset.rvcEnhancementVoiceId);
     this.rvcIndexRate.set(preset.rvcEnhancementIndexRate);
     this.rvcProtectRate.set(preset.rvcEnhancementProtectRate);
@@ -1136,7 +1339,7 @@ export class NarrationModalComponent {
       ttsTemperature: this.temperature(),
       ttsTopP: this.topP(),
       ttsRepetitionPenalty: this.repetitionPenalty(),
-      rvcEnhancementEnabled: this.rvc(),
+      rvcEnhancementEnabled: this.rvcEnabled(),
       rvcEnhancementVoiceId: this.rvcVoiceId(),
       rvcEnhancementIndexRate: this.rvcIndexRate(),
       rvcEnhancementProtectRate: this.rvcProtectRate(),
@@ -1173,14 +1376,17 @@ export class NarrationModalComponent {
    * nothing about why.
    */
   readonly stageRefusal = computed<string | null>(() => {
-    if (!this.narrate() && !this.rvc() && !this.assemble()) {
+    if (!this.narrate() && !this.enhance() && !this.assemble()) {
       return 'No tab is checked, so there is nothing to queue. Check at least one of the three '
         + 'above.';
     }
-    if (this.rvc() && !this.assemble()) {
-      return 'Converting the sentences without assembling them would spend the whole conversion '
-        + 'on a scratch folder that is deleted straight afterwards, leaving nothing to listen '
-        + 'to. Check Assembly as well.';
+    if (this.enhance() && !this.assemble()) {
+      return 'Enhancing the sentences without assembling them would spend the whole pass on the '
+        + 'GPU and leave nothing to listen to. Check Assembly as well.';
+    }
+    if (this.enhance() && !this.finalDenoise() && !this.rvcEnabled()) {
+      return 'Enhance is checked but neither pass is turned on, so it would do nothing. Turn on '
+        + 'Denoise or Voice conversion on that tab, or uncheck it.';
     }
     if (this.video() && !this.assemble()) {
       // A video is rendered FROM the assembled audiobook and its subtitles, so
@@ -1195,17 +1401,17 @@ export class NarrationModalComponent {
       // cannot reach — the way out of this state is to open the dialog again
       // from the book.
       return this.narrateLocked()
-        ? 'This book has no rendered sentences on disk, so there is nothing to convert or '
+        ? 'This book has no rendered sentences on disk, so there is nothing to enhance or '
           + 'assemble. ' + this.narrateLockedNote
-        : 'This book has no rendered sentences on disk, so there is nothing to convert or '
+        : 'This book has no rendered sentences on disk, so there is nothing to enhance or '
           + 'assemble. Check Reading to read it first.';
     }
-    if (this.rvc() && !this.rvcInstalled()) {
+    if (this.enhance() && this.rvcEnabled() && !this.rvcInstalled()) {
       return this.rvcUnavailableNote;
     }
-    if (this.rvc() && !this.rvcVoiceId()) {
+    if (this.enhance() && this.rvcEnabled() && !this.rvcVoiceId()) {
       return 'No conversion voice is chosen, so there is nothing to re-render the sentences '
-        + 'through. Pick one on the Voice conversion tab.';
+        + 'through. Pick one on the Enhance tab, or turn the conversion off there.';
     }
     if (this.narrate() && !this.voice()) {
       return 'No voice is selected, so this run would be rendered in whatever voice the queue '
@@ -1321,6 +1527,9 @@ export class NarrationModalComponent {
         // with an empty output folder.
         outputDir: this.library.audiobooksPath()!,
         finalDenoise: this.finalDenoise(),
+        // Only read when both passes run; stated always, because the run
+        // description refuses a two-pass run that cannot say which order it is.
+        enhancementOrder: this.enhancementOrder(),
         applyDeRing: this.applyDeRing(),
         /*
          * SENT ONLY WHEN THE USER MOVED IT. Absent means the session's own
@@ -1329,7 +1538,7 @@ export class NarrationModalComponent {
          * into a frozen copy of what it happened to be when the dialog opened.
          */
         ...(this.showGap() && this.gapTouched() ? { sentenceGap: this.sentenceGap() } : {}),
-        rvc: this.rvc()
+        rvc: this.rvcEnabled()
           ? {
               voiceId: this.rvcVoiceId(),
               indexRate: this.rvcIndexRate(),
@@ -1354,7 +1563,7 @@ export class NarrationModalComponent {
 
       const jobs = buildNarrationJobs(book, settings, {
         narrate: this.narrate(),
-        rvc: this.rvc(),
+        enhance: this.enhance(),
         assemble: this.assemble(),
       });
 
