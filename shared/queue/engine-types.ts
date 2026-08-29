@@ -455,6 +455,19 @@ export interface GpuThermalReading {
   clocksMaxMhz?: number;
   /** The driver reports a THERMAL slowdown in force right now. */
   throttleActive: boolean;
+  /**
+   * Thermal slowdown held across CONSECUTIVE samples — the one the UI warns on.
+   *
+   * The instantaneous bit blips: at 76-77° core the driver raises SW thermal
+   * slowdown for a moment (the GDDR6X memory junction grazing its limit — the
+   * core's own 83° target is nowhere near), and a single 20s sample painted the
+   * "Running hot" banner over a run that was not meaningfully throttled (Owen,
+   * 2026-08-29; a minute of hand-sampling showed only the power cap). One
+   * sample is a blip; two in a row is a card actually held down. Analytics
+   * keep counting `throttleActive` seconds — the blips are real time, just not
+   * worth a banner.
+   */
+  throttleSustained: boolean;
   /** ISO timestamp of the sample. */
   at: string;
 }

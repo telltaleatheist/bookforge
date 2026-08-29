@@ -47,6 +47,10 @@ let sampling = false;
 let disabled = false;
 /** Whether the engine currently holds a reading — so idle clears exactly once. */
 let engineHasReading = false;
+/** Last sample's instantaneous throttle bit — the other half of "sustained".
+ *  Reset when the card goes idle so a blip at the END of one run can never
+ *  count toward the START of the next. */
+let prevThrottleActive = false;
 
 function parseSample(line: string): GpuThermalReading | null {
   // "87, 96 %, 350.76 W, 1950 MHz, 2115 MHz, 0x0000000000000020"
@@ -71,6 +75,9 @@ function parseSample(line: string): GpuThermalReading | null {
     ...(Number.isFinite(clocksMhz) ? { clocksMhz } : {}),
     ...(Number.isFinite(clocksMaxMhz) ? { clocksMaxMhz } : {}),
     throttleActive: (mask & THERMAL_BITS) !== 0n,
+    // Stitched in by sampleOnce, which is the only place that knows the PREVIOUS
+    // sample. Parsing stays a pure line-to-reading function.
+    throttleSustained: false,
     at: new Date().toISOString(),
   };
 }
@@ -98,6 +105,10 @@ function sampleOnce(): void {
       }
       return;
     }
+    // Two throttled samples in a row is a card being held down; one is a blip
+    // (the memory junction grazing its limit for a moment) and gets no banner.
+    reading.throttleSustained = reading.throttleActive && prevThrottleActive;
+    prevThrottleActive = reading.throttleActive;
     engineHasReading = true;
     recordGpuThermal(reading);
   });
@@ -119,6 +130,7 @@ export function startGpuThermalSampler(): void {
       // temperature sit on the snapshot describing a run that ended.
       if (engineHasReading) {
         engineHasReading = false;
+        prevThrottleActive = false;
         recordGpuThermal(null);
       }
       return;

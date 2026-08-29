@@ -111,7 +111,7 @@ import type { BookPlanView } from './services/queue-tray.service';
               class="lcard"
               [class.gpu]="lane.resource === 'gpu'"
               [class.warn]="lane.hold"
-              [class.hot]="lane.thermal?.throttleActive"
+              [class.hot]="lane.thermal?.throttleSustained"
               [class.idle]="!lane.occupant && !lane.hold"
             >
               <!-- The per-slot Stop, restored 2026-08-21.
@@ -125,7 +125,7 @@ import type { BookPlanView } from './services/queue-tray.service';
               <div class="lcard-slot">
                 <span>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }} · slot {{ lane.index }} of {{ lane.of }}</span>
                 @if (lane.thermal; as thermal) {
-                  <span class="temp" [class.hot]="thermal.throttleActive">
+                  <span class="temp" [class.hot]="thermal.throttleSustained">
                     {{ thermal.tempC }}°C
                     @if (thermal.fanPct !== undefined) { · fan {{ thermal.fanPct }}% }
                   </span>
@@ -143,7 +143,7 @@ import type { BookPlanView } from './services/queue-tray.service';
               <!-- The driver's own verdict, not a threshold this app invented.
                    Said above the work because it explains the number below it:
                    a throttled card is why a healthy run misses its band. -->
-              @if (lane.thermal?.throttleActive) {
+              @if (lane.thermal?.throttleSustained) {
                 <div class="hot-note">
                   Running hot — the card is throttling itself, so this run is
                   slower than the machine can go. Check fans and airflow.

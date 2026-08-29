@@ -302,7 +302,7 @@ export interface BenchLane {
   hold: string | null;
   /**
    * The card's latest reading, on the GPU lane only, while something samples.
-   * `throttleActive` on it is the warning: the driver itself saying the card is
+   * `throttleSustained` on it is the warning: the driver itself saying the card is
    * slowing down — which is what "the run is mysteriously slow" looked like
    * from the outside before this existed.
    */

@@ -109,14 +109,14 @@ import { QueueTrayService } from '../../services/queue-tray.service';
           class="lane"
           [class.gpu]="lane.resource === 'gpu'"
           [class.warn]="lane.hold"
-          [class.hot]="lane.thermal?.throttleActive"
+          [class.hot]="lane.thermal?.throttleSustained"
           [class.free]="!lane.occupant"
         >
           <div class="slot">
             <b>{{ lane.resource === 'gpu' ? 'GPU' : 'CPU' }}</b>
             {{ lane.index }} of {{ lane.of }}
             @if (lane.thermal; as thermal) {
-              <span class="temp" [class.hot]="thermal.throttleActive">{{ thermal.tempC }}°</span>
+              <span class="temp" [class.hot]="thermal.throttleSustained">{{ thermal.tempC }}°</span>
             }
           </div>
 
@@ -166,7 +166,7 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                 }
               }
 
-              @if (lane.thermal?.throttleActive) {
+              @if (lane.thermal?.throttleSustained) {
                 <span class="why hot-why">
                   <span class="dot" aria-hidden="true"></span>
                   Running hot — the card is throttling itself
