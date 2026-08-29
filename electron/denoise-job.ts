@@ -41,25 +41,46 @@
  * with a manifest that says what it was derived from and with — see
  * `derived-sentences.ts` for the whole reasoning. A second assembly of the same
  * session REUSES it and costs minutes instead of an hour.
+ *
+ * ── …AND THE ONLY THING THAT TOUCHES THE LIBRARY SHARE ──────────────────────
+ *
+ * Sessions live on `Z:`, ~25 MB/s of SMB away. The pass used to cross that wire
+ * four times for one book: read the raw sentences, write the gap-normalized set
+ * back (the e2a scratch dir sits on the library volume), read that set again to
+ * build the blocks, and then write the denoised sentences one ffmpeg spawn at a
+ * time straight into the `.partial`. About 7 GB of traffic and two rounds of
+ * per-file write latency for a 1,500-sentence book — enough that a denoise and
+ * an assembly sharing the pipe looked to the user like a stall.
+ *
+ * Every transient byte is now local: the gap set and the sliced-back set are both
+ * `os.tmpdir()` staging (the same `bf-` mkdtemp idiom `denoise-bridge` already
+ * uses for its blocks), and the share sees exactly one bulk read of the source
+ * and one bulk copy of the finished set. The DURABLE home is unchanged — the set
+ * still lands inside the session on `Z:`, and the atomic `.partial` → rename
+ * commit is what makes the extra hop free (`commitDerivedSentences`).
  */
 
 import { publishBridgeEvent } from './bridge-events';
 import { BrowserWindow } from 'electron';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 import { denoiseSentences, finalDenoiseReady } from './denoise-bridge';
-import { getDefaultE2aTmpPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import {
   abandonDerivedSentences,
+  assertStagingSpace,
   beginDerivedSentences,
   checkDerivedSentences,
   commitDerivedSentences,
+  copySentenceSetInto,
   derivedChainDir,
   derivedChainOf,
+  fingerprintSentences,
   rawSentencesDir,
   readDerivedManifest,
+  sentenceSetBytes,
   type DerivedManifest,
   type DerivedPass,
   type DerivedRequest,
@@ -213,7 +234,7 @@ export async function planDenoisedSentences(
     sourceDir: source,
     upstream,
   };
-  return { dir, request, verdict: checkDerivedSentences(request), gap };
+  return { dir, request, verdict: await checkDerivedSentences(request), gap };
 }
 
 export interface DeriveHooks {
@@ -222,15 +243,6 @@ export interface DeriveHooks {
   onGapStart?: () => void;
   onDenoiseProgress?: (done: number, total: number) => void;
   signal?: AbortSignal;
-  /**
-   * Names the transient gap scratch dir, so two jobs never collide in it.
-   *
-   * PASS THE STEP ID. The startup tmp sweep spares scratch whose NAME contains
-   * the id of a step the queue has not finished with (`liveStepIds`, main.ts) —
-   * a rule written after that sweep deleted a live assembly's gap-normalised
-   * sentences — and a name keyed on anything else is outside that protection.
-   */
-  scratchKey: string;
 }
 
 export interface DerivedSet {
@@ -264,9 +276,34 @@ export async function deriveDenoisedSentences(
   const ready = finalDenoiseReady();
   if (!ready.ok) throw new Error(`Final denoise unavailable: ${ready.reason}`);
 
-  // The gap pass is transient: its output only ever feeds the roformer, and the
-  // denoised set is the deliverable. Scratch, not a derived artifact.
-  const gapDir = path.join(getDefaultE2aTmpPath(), `gap-${hooks.scratchKey}`);
+  /*
+   * THE STAGING BUDGET, CHECKED BEFORE THE GPU IS SPENT.
+   *
+   * Two full copies of the sentence set live on local disk at once — the
+   * gap-normalized input and the sliced-back output — because the roformer is
+   * still reading the first while the slicer writes the second. Sized from the
+   * source's own bytes, which the fingerprint has already measured.
+   *
+   * This is the floor, not the ceiling: `denoise-bridge` also stages the 44.1 kHz
+   * stereo PCM segments and blocks it feeds the separator, which is bigger again
+   * and predates this staging. Bounding THAT needs the audio's duration rather
+   * than its compressed size, so it is not claimed here.
+   */
+  const sourceFiles = await fingerprintSentences(plan.request.sourceDir);
+  const setBytes = sentenceSetBytes(sourceFiles);
+  await assertStagingSpace(os.tmpdir(), setBytes * 2, 'The final denoise');
+
+  /*
+   * BOTH WORKING SETS ARE LOCAL. The gap set only ever feeds the roformer, and
+   * the sliced-back set is copied to the session in one bulk pass below — so
+   * neither belongs on the library share, which is SMB and pays per file.
+   *
+   * The `.partial` on the share is claimed HERE rather than at copy time on
+   * purpose: it is one mkdir, and it proves the session is writable before an
+   * hour of GPU goes into a set that could not be published.
+   */
+  const gapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-gap-'));
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-dn-out-'));
   const partial = beginDerivedSentences(plan.dir);
   try {
     let denoiseSource = plan.request.sourceDir;
@@ -280,20 +317,35 @@ export async function deriveDenoisedSentences(
 
     await denoiseSentences({
       sentencesDir: denoiseSource,
-      outputDir: partial,
+      outputDir: stageDir,
       signal: hooks.signal,
       onProgress: hooks.onDenoiseProgress,
       onLog: hooks.log,
     });
 
-    const manifest = commitDerivedSentences(plan.dir, plan.request);
-    hooks.log(`Final denoise complete: ${plan.dir} (${manifest.outputCount} sentences).`);
+    // The denoise has read the gap set for the last time; drop it before the copy
+    // so the two full sets never coexist with a third on the way out.
+    try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+
+    // THE ONE BULK WRITE. Every invariant `denoiseSentences` enforces has already
+    // held on the staged set, and `commitDerivedSentences` re-counts what actually
+    // landed against the source before it writes a manifest, so a copy that fails
+    // part-way can only leave an unreadable `.partial`.
+    hooks.log(`Final denoise: copying ${sourceFiles.length} denoised sentences to ${plan.dir}…`);
+    const copied = await copySentenceSetInto(stageDir, partial, {
+      signal: hooks.signal,
+      cancelledMessage: 'Final denoise cancelled',
+    });
+
+    const manifest = await commitDerivedSentences(plan.dir, plan.request);
+    hooks.log(`Final denoise complete: ${plan.dir} (${manifest.outputCount} sentences, ${copied} copied).`);
     return { dir: plan.dir, manifest, reused: false };
   } catch (err) {
     abandonDerivedSentences(plan.dir);
     throw err;
   } finally {
     try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
   }
 }
 
@@ -337,7 +389,6 @@ export async function runFinalDenoise(
 
   try {
     const set = await deriveDenoisedSentences(plan, {
-      scratchKey: jobId,
       signal: abort.signal,
       log: (message) => console.log(`[DENOISE-JOB] ${jobId}: ${message}`),
       onGapStart: () => sendProgress(mainWindow, jobId, {

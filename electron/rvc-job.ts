@@ -274,7 +274,7 @@ export async function runRvcEnhancement(
   // The reuse question is answered BEFORE the GPU is asked for: a run that has
   // nothing to compute must not queue behind a nine-hour narration to say so.
   {
-    const verdict = checkDerivedSentences(request);
+    const verdict = await checkDerivedSentences(request);
     if (verdict.reusable) {
       log(`reusing the converted sentences already derived for this session (${outputDir}) — no GPU work needed.`);
       sendProgress(mainWindow, jobId, {
@@ -348,7 +348,7 @@ export async function runRvcEnhancement(
           message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
         }),
       });
-      commitDerivedSentences(outputDir, request);
+      await commitDerivedSentences(outputDir, request);
     } catch (err) {
       abandonDerivedSentences(outputDir);
       throw err;

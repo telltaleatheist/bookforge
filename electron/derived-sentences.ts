@@ -77,9 +77,26 @@
  * spells — so "convert the raw sentences" and "convert the denoised sentences"
  * are two chains and two sets, while "convert the raw sentences at a different
  * index rate" is the same chain and replaces it.
+ *
+ * ── THE LIBRARY VOLUME IS A NETWORK SHARE, AND IS TOUCHED IN BULK ───────────
+ *
+ * The session lives on `Z:` (SMB, ~25 MB/s from the desktop), so every read and
+ * every write here crosses the wire, and per-file latency dominates over
+ * per-byte throughput. Two rules follow, and they are why this module is async:
+ *
+ *   1. Nothing TRANSIENT is written to the share. A pass stages its output on
+ *      local disk and the finished set is copied over in one bulk pass
+ *      (`copySentenceSetInto`), so a derivation writes the share once instead of
+ *      thousands of times.
+ *   2. Nothing here runs a sync syscall. `fingerprintSentences` used to be
+ *      `statSync` per file on the electron MAIN thread — a 1,500-sentence book
+ *      froze the desktop UI for the length of 1,500 serialized SMB round trips.
+ *      It is now bounded-concurrency `fs.promises.stat`, which both unblocks the
+ *      thread and hides the latency.
  */
 
 import * as fs from 'fs';
+import * as fsp from 'fs/promises';
 import * as path from 'path';
 
 /** Which pass produced a set. The dir name and the manifest both carry it. */
@@ -122,18 +139,54 @@ export interface DerivedManifest {
   outputCount: number;
 }
 
+/**
+ * How many stats/copies are in flight at once against the library share.
+ *
+ * The bound is the point: unbounded, a 1,500-sentence set opens 1,500 handles on
+ * the server, which queues them anyway and answers no faster. A handful in
+ * flight hides the per-request round trip, which is what actually costs.
+ */
+const SMB_STAT_CONCURRENCY = 16;
+const SMB_COPY_CONCURRENCY = 8;
+
+/** Run `worker` over `items` with at most `limit` in flight, results in order. */
+async function mapBounded<T, R>(
+  items: readonly T[],
+  limit: number,
+  worker: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const out = new Array<R>(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await worker(items[i]);
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
 /** The sentence files of a directory, sorted, by the same rule every consumer
  *  uses: `{index}.flac` (or `.wav` on older sessions). */
-export function listSentenceFiles(dir: string): string[] {
-  return fs.readdirSync(dir).filter((n) => /\.(flac|wav)$/i.test(n)).sort();
+export async function listSentenceFiles(dir: string): Promise<string[]> {
+  const names = await fsp.readdir(dir);
+  return names.filter((n) => /\.(flac|wav)$/i.test(n)).sort();
 }
 
 /** Identity of every sentence file in `dir`, for the manifest and the check. */
-export function fingerprintSentences(dir: string): DerivedSourceFile[] {
-  return listSentenceFiles(dir).map((name) => {
-    const st = fs.statSync(path.join(dir, name));
+export async function fingerprintSentences(dir: string): Promise<DerivedSourceFile[]> {
+  const names = await listSentenceFiles(dir);
+  return mapBounded(names, SMB_STAT_CONCURRENCY, async (name) => {
+    const st = await fsp.stat(path.join(dir, name));
     return { name, size: st.size, mtimeMs: Math.round(st.mtimeMs) };
   });
+}
+
+/** Bytes a fingerprinted set occupies — what the staging guard is sized from. */
+export function sentenceSetBytes(files: readonly DerivedSourceFile[]): number {
+  return files.reduce((sum, f) => sum + f.size, 0);
 }
 
 /** How each kind names its directory. The dir sits beside `sentences/` and is
@@ -287,7 +340,7 @@ export type DerivedVerdict =
  * Every answer of "no" names its reason, because a re-derivation nobody can
  * explain looks exactly like the reuse feature not working.
  */
-export function checkDerivedSentences(req: DerivedRequest): DerivedVerdict {
+export async function checkDerivedSentences(req: DerivedRequest): Promise<DerivedVerdict> {
   if (!fs.existsSync(req.dir)) {
     return { reusable: false, reason: 'no set has been derived for this session yet' };
   }
@@ -323,7 +376,7 @@ export function checkDerivedSentences(req: DerivedRequest): DerivedVerdict {
 
   let sourceNow: DerivedSourceFile[];
   try {
-    sourceNow = fingerprintSentences(req.sourceDir);
+    sourceNow = await fingerprintSentences(req.sourceDir);
   } catch (err) {
     return { reusable: false, reason: `its source ${req.sourceDir} could not be read: ${(err as Error).message}` };
   }
@@ -344,7 +397,7 @@ export function checkDerivedSentences(req: DerivedRequest): DerivedVerdict {
 
   let outputs: string[];
   try {
-    outputs = listSentenceFiles(req.dir);
+    outputs = await listSentenceFiles(req.dir);
   } catch (err) {
     return { reusable: false, reason: `it could not be listed: ${(err as Error).message}` };
   }
@@ -381,14 +434,20 @@ export function beginDerivedSentences(dir: string): string {
  *
  * The manifest goes in FIRST: the rename is the only moment at which the set
  * becomes visible under its real name, so a set that exists always has one.
+ *
+ * This is also what makes the local-staging hop (see `copySentenceSetInto`)
+ * free: the sentences may arrive in the `.partial` a thousand at a time or all
+ * at once, and either way the set does not exist until the manifest is in it and
+ * the rename has happened. A crash anywhere in the copy leaves a `.partial`
+ * nobody reads, exactly as a crash mid-derive always did.
  */
-export function commitDerivedSentences(
+export async function commitDerivedSentences(
   dir: string,
   req: DerivedRequest,
-): DerivedManifest {
+): Promise<DerivedManifest> {
   const partial = derivedPartialDir(dir);
-  const sourceFiles = fingerprintSentences(req.sourceDir);
-  const outputs = listSentenceFiles(partial);
+  const sourceFiles = await fingerprintSentences(req.sourceDir);
+  const outputs = await listSentenceFiles(partial);
   if (outputs.length !== sourceFiles.length) {
     throw new Error(
       `Derived sentence set is incomplete: ${outputs.length} written for ${sourceFiles.length} `
@@ -416,4 +475,81 @@ export function abandonDerivedSentences(dir: string): void {
   try {
     fs.rmSync(derivedPartialDir(dir), { recursive: true, force: true });
   } catch { /* best-effort: the next derivation clears it anyway */ }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// LOCAL STAGING — the transient halves of a derivation never reach the share
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Refuse a derivation the local scratch volume cannot hold, BY NUMBER.
+ *
+ * Staging is what keeps the transient files off the share, so it has to be
+ * checked before an hour of GPU is spent: a pass that runs out of local disk at
+ * the slice-back fails with an ENOSPC from ffmpeg, three quarters of the way in.
+ *
+ * NO FALLBACK TO THE SHARE. Writing the staging onto the library volume when
+ * local disk is short would "work" and would silently restore the very traffic
+ * this staging exists to remove — permanently, and invisibly, because nothing
+ * about the finished audiobook would say which path produced it.
+ *
+ * `bytesNeeded` is the caller's own arithmetic over what IT stages; this only
+ * knows how to ask the filesystem and how to say no.
+ */
+export async function assertStagingSpace(
+  stagingRoot: string,
+  bytesNeeded: number,
+  what: string,
+): Promise<void> {
+  const st = await fsp.statfs(stagingRoot);
+  const free = st.bavail * st.bsize;
+  if (free >= bytesNeeded) return;
+  throw new Error(
+    `${what} stages its working sentence sets on local disk, and needs about ${gb(bytesNeeded)} `
+    + `free in ${stagingRoot} — that volume has ${gb(free)}. Free ${gb(bytesNeeded - free)} there, `
+    + 'or point TEMP at a volume that has it. (It will not fall back to writing the working sets '
+    + 'onto the library share: that is the slow path this staging exists to avoid.)',
+  );
+}
+
+function gb(bytes: number): string {
+  return `${(bytes / 1024 ** 3).toFixed(2)} GB`;
+}
+
+export interface CopySentenceSetOptions {
+  signal?: AbortSignal;
+  /** What to call this in the cancellation error, so it reads as the job's own. */
+  cancelledMessage?: string;
+}
+
+/**
+ * Copy a finished sentence set from local staging into `toDir` — the ONE bulk
+ * write a derivation makes to the library share.
+ *
+ * Bounded concurrency rather than one process per file: the pass it replaces
+ * spawned an ffmpeg per sentence whose output handle was on the share, so a
+ * 1,500-sentence book paid 1,500 serialized open/write/close round trips over
+ * SMB. Copies overlap instead, and the wire is the only limit left.
+ *
+ * ONLY SENTENCES ARE COPIED. The `*.flac|*.wav` filter is what keeps the
+ * manifest-last rule structurally true — no staged file can land a manifest in
+ * the `.partial` ahead of `commitDerivedSentences`, whatever else the pass left
+ * lying in its staging dir.
+ */
+export async function copySentenceSetInto(
+  fromDir: string,
+  toDir: string,
+  opts: CopySentenceSetOptions = {},
+): Promise<number> {
+  const cancelled = opts.cancelledMessage ?? 'Copy cancelled';
+  const names = await listSentenceFiles(fromDir);
+  if (names.length === 0) {
+    throw new Error(`Nothing to publish: ${fromDir} holds no sentence files (*.flac/*.wav).`);
+  }
+  await fsp.mkdir(toDir, { recursive: true });
+  await mapBounded(names, SMB_COPY_CONCURRENCY, async (name) => {
+    if (opts.signal?.aborted) throw new Error(cancelled);
+    await fsp.copyFile(path.join(fromDir, name), path.join(toDir, name));
+  });
+  return names.length;
 }
