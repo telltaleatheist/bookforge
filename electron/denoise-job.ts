@@ -219,6 +219,7 @@ export async function deriveDenoisedSentences(
       outputDir: partial,
       signal: hooks.signal,
       onProgress: hooks.onDenoiseProgress,
+      onLog: hooks.log,
     });
 
     const manifest = commitDerivedSentences(plan.dir, plan.request);
