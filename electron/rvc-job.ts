@@ -41,6 +41,17 @@
  * the conversion is the first pass, it is the one that reads them, so it runs the
  * gap pass itself and records it in its own params. When it is second, the
  * denoise in front of it already did, and it runs none.
+ *
+ * ── AND IT TOUCHES THE LIBRARY SHARE TWICE, LIKE THE DENOISE ────────────────
+ *
+ * Sessions live on `Z:` (SMB, ~25 MB/s). This pass used to write the gap set
+ * back to the library volume (the e2a scratch dir sits there) and then have urvc
+ * write every converted sentence straight into the `.partial` on the share, one
+ * file at a time from inside the python process. Both working sets are now local
+ * `bf-` mkdtemp staging and the finished set is copied over in one bulk pass —
+ * the same shape `denoise-job.ts` uses, for the same reason, with the same
+ * `.partial` + manifest-last commit making the extra hop free. The durable set
+ * still lives inside the session; only the transient path moved.
  */
 
 import { publishBridgeEvent } from './bridge-events';
@@ -48,17 +59,20 @@ import { BrowserWindow } from 'electron';
 
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
-import { getDefaultE2aTmpPath } from './e2a-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import {
   abandonDerivedSentences,
+  assertStagingSpace,
   beginDerivedSentences,
   checkDerivedSentences,
   commitDerivedSentences,
+  copySentenceSetInto,
   derivedChainDir,
   derivedChainOf,
+  fingerprintSentences,
   rawSentencesDir,
   readDerivedManifest,
+  sentenceSetBytes,
   type DerivedPass,
   type DerivedRequest,
 } from './derived-sentences';
@@ -70,6 +84,7 @@ import {
   type SentenceGapPlan,
 } from './sentence-gap';
 import * as fs from 'fs';
+import * as os from 'os';
 import * as path from 'path';
 
 export interface RvcEnhancementConfig {
@@ -301,13 +316,21 @@ export async function runRvcEnhancement(
   await acquireGpu(gpuOwner, { timeoutMs: 10 * 60_000 });
 
   /*
-   * The gap pass is transient: its output only ever feeds the conversion, and
-   * the converted set is the deliverable. Scratch, not a derived artifact — and
-   * named with the STEP ID, which is what the startup tmp sweep spares while the
-   * queue still has work in that step (`liveStepIds`, main.ts).
+   * BOTH WORKING SETS ARE LOCAL. The gap set only ever feeds the conversion and
+   * the converted set is copied to the session in one bulk pass below, so
+   * neither belongs on the library share, which is SMB and pays per file.
+   *
+   * The budget is two full copies of the set at once (urvc reads the gap set
+   * while it writes the converted one), checked before the GPU is spent and
+   * REFUSED by number if it is not there — never routed back onto the share,
+   * which would silently restore the slow path forever.
    */
-  const gapDir = path.join(getDefaultE2aTmpPath(), `gap-${jobId}`);
+  const gapDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-gap-'));
+  const stageDir = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-rvc-out-'));
   try {
+    const sourceFiles = await fingerprintSentences(source);
+    await assertStagingSpace(os.tmpdir(), sentenceSetBytes(sourceFiles) * 2, 'The voice conversion');
+
     let enhanceSource = source;
     if (gap.gapSeconds !== undefined) {
       // THIS pass reads the raw sentences, so THIS pass bakes the gap in — see
@@ -327,11 +350,14 @@ export async function runRvcEnhancement(
       message: `Enhancing voice with ${voice.label}…`,
     });
 
+    // The `.partial` is claimed BEFORE the conversion runs, not at copy time: it
+    // is one mkdir, and it proves the session is writable before an hour of GPU
+    // goes into a set that could not be published.
     const partial = beginDerivedSentences(outputDir);
     try {
       await enhanceSentences({
         sentencesDir: enhanceSource,
-        outputDir: partial,
+        outputDir: stageDir,
         modelName: voice.modelName,
         indexRate,
         protectRate,
@@ -348,6 +374,23 @@ export async function runRvcEnhancement(
           message: `Enhancing voice with ${voice.label}… (${done}/${total})`,
         }),
       });
+
+      // The conversion has read the gap set for the last time; drop it before the
+      // copy so the two full sets never coexist with a third on the way out.
+      try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+
+      // THE ONE BULK WRITE. urvc has already verified that every input produced
+      // an output, and `commitDerivedSentences` re-counts what actually landed
+      // against the source before it writes a manifest — so a copy that fails
+      // part-way can only leave an unreadable `.partial`.
+      sendProgress(mainWindow, jobId, {
+        phase: 'preparing', percentage: 100, message: 'Copying the converted sentences to the session…',
+      });
+      const copied = await copySentenceSetInto(stageDir, partial, {
+        signal: abort.signal,
+        cancelledMessage: 'RVC enhancement cancelled',
+      });
+      log(`copied ${copied} converted sentences into ${outputDir}.`);
       await commitDerivedSentences(outputDir, request);
     } catch (err) {
       abandonDerivedSentences(outputDir);
@@ -368,6 +411,7 @@ export async function runRvcEnhancement(
     return { success: false, error, wasStopped };
   } finally {
     try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
+    try { fs.rmSync(stageDir, { recursive: true, force: true }); } catch { /* best-effort */ }
     releaseGpu(gpuOwner);
   }
 }
