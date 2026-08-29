@@ -304,9 +304,10 @@ export class BookshelfServer {
   // embedded transcript (cached too, so a bookless m4b isn't re-probed every time).
   private vttCache: Map<string, { size: number; mtimeMs: number; vtt: string | null }> = new Map();
 
-  // A valid report issues a token that pins playback to one verified open file
-  // descriptor. Every HTTP Range request then reads the same inode even if the
-  // manifest path is atomically replaced while the player remains open.
+  // A valid report issues a token that pins playback to one verified snapshot of
+  // the audiobook. Every HTTP Range request then reads the same inode — each over
+  // its own descriptor — even if the manifest path is atomically replaced while
+  // the player remains open.
   private analysisStreamSessions = new Map<string, AnalysisStreamSession>();
   // Two clocks, because the descriptor and the token protect different things.
   //
