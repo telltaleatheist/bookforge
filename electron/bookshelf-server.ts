@@ -148,6 +148,7 @@ interface AudiobookEntry {
 }
 
 interface AnalysisStreamSession {
+  token: string;
   filePath: string;
   expectedSha256: string;
   expectedSize: number;
@@ -156,8 +157,13 @@ interface AnalysisStreamSession {
   snapshotPath?: string;
   verifiedStat?: { dev: number; ino: number; size: number; mtimeMs: number; ctimeMs: number };
   pinning?: Promise<void>;
+  // Requests currently piping bytes out of this session. Liveness is counted in
+  // requests, never in sockets: a closed tab and a paused player are the same
+  // thing from here, so the descriptor is held only while requests keep arriving.
   activeStreams: number;
   lastUsedAt: number;
+  // Armed whenever activeStreams falls to zero; disarmed when one comes back.
+  idleTimer?: ReturnType<typeof setTimeout>;
 }
 
 /** One ebook variant of a project (edition/language/format), for the ebooks picker. */
@@ -302,7 +308,22 @@ export class BookshelfServer {
   // descriptor. Every HTTP Range request then reads the same inode even if the
   // manifest path is atomically replaced while the player remains open.
   private analysisStreamSessions = new Map<string, AnalysisStreamSession>();
-  private readonly ANALYSIS_STREAM_IDLE_TTL = 1000 * 60 * 60 * 6;
+  // Two clocks, because the descriptor and the token protect different things.
+  //
+  //   FD_IDLE      How long a pinned descriptor and its private snapshot survive
+  //                with no request in flight. A playing media element re-issues
+  //                Range requests every few seconds — browsers hold only a small
+  //                forward buffer on a multi-hundred-MB m4b — so two minutes is
+  //                invisible to a live listener while bounding what a listener who
+  //                walked away still holds. It used to be six hours, which is how
+  //                one closed browser tab kept a read handle (and, over SMB, its
+  //                lease) on a library m4b until the whole app was quit.
+  //   SESSION_TTL  How long the TOKEN stays redeemable after its descriptor was
+  //                released. A player that comes back must re-pin transparently
+  //                rather than be told its analysis vanished, so the token outlives
+  //                the descriptor by a long way; re-pinning re-verifies the bytes.
+  private readonly ANALYSIS_STREAM_FD_IDLE_MS = 1000 * 60 * 2;
+  private readonly ANALYSIS_STREAM_SESSION_TTL = 1000 * 60 * 60 * 6;
   private readonly MAX_ANALYSIS_STREAM_SESSIONS = 32;
 
   // Reader profiles + listening analytics — stored as per-device append-only logs
@@ -799,7 +820,8 @@ export class BookshelfServer {
 
   async stop(): Promise<void> {
     this.stopLagWatch();
-    await Promise.all([...this.analysisStreamSessions.values()].map(session => this.disposeAnalysisStreamSession(session)));
+    await Promise.all([...this.analysisStreamSessions.values()]
+      .map(session => this.releaseAnalysisStreamFd(session, 'server stopping')));
     this.analysisStreamSessions.clear();
     // The reader's mupdf worker exists only to serve this server; with the
     // server down it has nothing to answer, and its WASM heap should not sit
@@ -818,13 +840,126 @@ export class BookshelfServer {
     });
   }
 
-  private async disposeAnalysisStreamSession(session: AnalysisStreamSession): Promise<void> {
-    await session.handle?.close().catch(() => {});
-    session.handle = undefined;
-    if (session.snapshotPath) {
-      await fs.rm(path.dirname(session.snapshotPath), { recursive: true, force: true }).catch(() => {});
-      session.snapshotPath = undefined;
+  /**
+   * Close a session's pinned descriptor and drop its private snapshot. The TOKEN
+   * survives: a player that comes back re-pins (re-copy, re-verify) instead of
+   * being told its analysis vanished. Safe to call on a session holding nothing,
+   * and safe to call twice.
+   *
+   * Only ever called with activeStreams === 0, which is what makes removing the
+   * snapshot directory safe — every per-request descriptor cut from it is gone.
+   */
+  private async releaseAnalysisStreamFd(session: AnalysisStreamSession, reason: string): Promise<void> {
+    if (session.idleTimer) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = undefined;
     }
+    if (!session.handle && !session.snapshotPath) return;
+    const handle = session.handle;
+    const snapshotPath = session.snapshotPath;
+    session.handle = undefined;
+    session.snapshotPath = undefined;
+    session.verifiedStat = undefined;
+    console.log(`[BookshelfServer] Analysis stream descriptor released (${reason}): ${session.filePath}`);
+    await handle?.close().catch(() => {});
+    if (snapshotPath) {
+      await fs.rm(path.dirname(snapshotPath), { recursive: true, force: true }).catch(() => {});
+    }
+  }
+
+  /** Drop the token as well as the descriptor. After this the player must fetch a
+   *  fresh report before it can stream pinned bytes again. */
+  private evictAnalysisStreamSession(session: AnalysisStreamSession, reason: string): void {
+    this.analysisStreamSessions.delete(session.token);
+    console.log(`[BookshelfServer] Analysis stream session evicted (${reason}): ${session.filePath}`);
+    void this.releaseAnalysisStreamFd(session, reason);
+  }
+
+  /** One request's own read descriptor on a pinned session's private snapshot,
+   *  fstat-verified against the identity recorded when the session was pinned —
+   *  the same inode the report was checked against, proven on the very descriptor
+   *  that is about to be read rather than on a sibling of it. */
+  private openPinnedSnapshotFd(session: AnalysisStreamSession): number {
+    if (!session.snapshotPath || !session.verifiedStat) {
+      throw new Error('Verified analysis stream session holds no pinned snapshot');
+    }
+    const fd = fsSync.openSync(session.snapshotPath, 'r');
+    try {
+      const stat = fsSync.fstatSync(fd);
+      const verified = session.verifiedStat;
+      if (stat.dev !== verified.dev || stat.ino !== verified.ino || stat.size !== verified.size
+        || stat.mtimeMs !== verified.mtimeMs || stat.ctimeMs !== verified.ctimeMs) {
+        throw new Error('Pinned audiobook snapshot changed during playback');
+      }
+    } catch (err) {
+      fsSync.closeSync(fd);
+      throw err;
+    }
+    return fd;
+  }
+
+  /** Mark a session used, and (re)start the idle countdown once nothing is in
+   *  flight. Called on every request that touches the session and again when each
+   *  response settles, so the descriptor's life is exactly the request traffic. */
+  private touchAnalysisStreamSession(session: AnalysisStreamSession): void {
+    session.lastUsedAt = Date.now();
+    if (session.idleTimer) {
+      clearTimeout(session.idleTimer);
+      session.idleTimer = undefined;
+    }
+    if (session.activeStreams > 0) return;
+    session.idleTimer = setTimeout(() => {
+      session.idleTimer = undefined;
+      // A stream started between arming and firing: its settle callback re-arms.
+      if (session.activeStreams > 0) return;
+      // A pin in flight is about to produce a descriptor — releasing now would hand
+      // its caller a session with no handle. Wait another window instead.
+      if (session.pinning) {
+        this.touchAnalysisStreamSession(session);
+        return;
+      }
+      void this.releaseAnalysisStreamFd(session, 'idle');
+    }, this.ANALYSIS_STREAM_FD_IDLE_MS);
+    // A pending release must never be the reason a standalone server cannot exit.
+    session.idleTimer.unref?.();
+  }
+
+  /**
+   * Pipe an open file to the response so an aborted transfer can never strand its
+   * descriptor. `pipe()` unhooks the source when the destination closes but does
+   * NOT destroy it, so a client that walks away mid-body leaves a paused ReadStream
+   * holding an open handle until GC gets round to it. On Windows that handle
+   * carries an SMB lease: on 2026-08-29 one closed player tab kept a library m4b
+   * open for hours, and the assembly that tried to promote a new one over it failed
+   * with EPERM until the app was quit. `onSettled` runs exactly once, after the
+   * transfer ends for any reason, for callers that own more than the descriptor.
+   */
+  private pipeFileToResponse(
+    res: Response,
+    stream: fsSync.ReadStream,
+    what: string,
+    onSettled?: () => void,
+  ): void {
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      // destroy() closes the descriptor even for a stream created over an existing
+      // fd — `autoClose: false` only suppresses the close on normal end, not this.
+      stream.destroy();
+      onSettled?.();
+    };
+    stream.on('error', (err) => {
+      console.error(`[BookshelfServer] Read failed while streaming ${what}:`, err);
+      // A truncated body must not be able to look like a complete one, so the
+      // connection goes with it rather than being returned to the keep-alive pool.
+      if (!res.headersSent) res.status(500);
+      res.destroy();
+      settle();
+    });
+    res.on('close', settle);
+    res.on('error', settle);
+    stream.pipe(res);
   }
 
   isRunning(): boolean {
@@ -1150,16 +1285,15 @@ export class BookshelfServer {
       if (analysisToken && variantPath) {
         const session = this.analysisStreamSessions.get(analysisToken);
         if (!session
-          || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL
+          || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_SESSION_TTL
           || path.resolve(variantPath) !== session.filePath) {
-          if (session && Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
-            void this.disposeAnalysisStreamSession(session);
-            this.analysisStreamSessions.delete(analysisToken);
+          if (session && Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_SESSION_TTL) {
+            this.evictAnalysisStreamSession(session, 'token expired');
           }
           res.status(409).json({ error: 'Verified analysis transcript token is missing or stale' });
           return;
         }
-        session.lastUsedAt = Date.now();
+        this.touchAnalysisStreamSession(session);
         res.setHeader('Cache-Control', 'no-store');
         res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
         res.send(session.transcriptVtt);
@@ -1181,7 +1315,7 @@ export class BookshelfServer {
         const bound = await this.boundSidecars(variantPath);
         if (bound.vtt) {
           res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-          fsSync.createReadStream(bound.vtt).pipe(res);
+          this.pipeFileToResponse(res, fsSync.createReadStream(bound.vtt), `transcript ${bound.vtt}`);
           return;
         }
         const embedded = await this.extractVttCached(variantPath);
@@ -1215,7 +1349,7 @@ export class BookshelfServer {
       }
 
       res.setHeader('Content-Type', 'text/vtt; charset=utf-8');
-      fsSync.createReadStream(absPath).pipe(res);
+      this.pipeFileToResponse(res, fsSync.createReadStream(absPath), `transcript ${absPath}`);
     } catch (err) {
       console.error('[BookshelfServer] Error getting VTT:', err);
       res.status(500).json({ error: 'Failed to get VTT' });
@@ -1277,22 +1411,22 @@ export class BookshelfServer {
     transcriptVtt: string,
   ): string {
     const now = Date.now();
-    for (const [token, session] of this.analysisStreamSessions) {
-      if (!session.pinning && session.activeStreams === 0 && now - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
-        void this.disposeAnalysisStreamSession(session);
-        this.analysisStreamSessions.delete(token);
+    for (const session of [...this.analysisStreamSessions.values()]) {
+      if (!session.pinning && session.activeStreams === 0
+        && now - session.lastUsedAt > this.ANALYSIS_STREAM_SESSION_TTL) {
+        this.evictAnalysisStreamSession(session, 'token expired');
       }
     }
     while (this.analysisStreamSessions.size >= this.MAX_ANALYSIS_STREAM_SESSIONS) {
-      const oldest = [...this.analysisStreamSessions.entries()]
-        .filter(([, session]) => !session.pinning && session.activeStreams === 0)
-        .sort((a, b) => a[1].lastUsedAt - b[1].lastUsedAt)[0];
+      const oldest = [...this.analysisStreamSessions.values()]
+        .filter((session) => !session.pinning && session.activeStreams === 0)
+        .sort((a, b) => a.lastUsedAt - b.lastUsedAt)[0];
       if (!oldest) break;
-      void this.disposeAnalysisStreamSession(oldest[1]);
-      this.analysisStreamSessions.delete(oldest[0]);
+      this.evictAnalysisStreamSession(oldest, 'session table full');
     }
     const token = crypto.randomUUID();
     this.analysisStreamSessions.set(token, {
+      token,
       filePath: path.resolve(filePath),
       expectedSha256,
       expectedSize,
@@ -1305,17 +1439,17 @@ export class BookshelfServer {
 
   private async pinAnalysisStreamSession(token: string, requestedPath: string): Promise<AnalysisStreamSession> {
     const session = this.analysisStreamSessions.get(token);
-    if (!session || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_IDLE_TTL) {
-      if (session) {
-        void this.disposeAnalysisStreamSession(session);
-        this.analysisStreamSessions.delete(token);
-      }
+    if (!session || Date.now() - session.lastUsedAt > this.ANALYSIS_STREAM_SESSION_TTL) {
+      if (session) this.evictAnalysisStreamSession(session, 'token expired');
       throw new Error('Verified analysis stream token is missing or expired');
     }
     if (path.resolve(requestedPath) !== session.filePath) {
       throw new Error('Verified analysis stream token targets another audiobook');
     }
-    session.lastUsedAt = Date.now();
+    this.touchAnalysisStreamSession(session);
+    // A returning player whose descriptor was released while it sat idle lands
+    // here with handle undefined and re-pins below — the snapshot is taken again
+    // and re-verified against the binding the report was issued for.
     if (session.handle) return session;
     if (!session.pinning) {
       session.pinning = (async () => {
@@ -1352,6 +1486,7 @@ export class BookshelfServer {
             dev: after.dev, ino: after.ino, size: after.size,
             mtimeMs: after.mtimeMs, ctimeMs: after.ctimeMs,
           };
+          console.log(`[BookshelfServer] Analysis stream pinned: ${session.filePath}`);
         } catch (err) {
           await handle?.close().catch(() => {});
           await fs.rm(snapshotDir, { recursive: true, force: true }).catch(() => {});
@@ -1361,9 +1496,12 @@ export class BookshelfServer {
     }
     try {
       await session.pinning;
+      // The countdown starts from the moment the descriptor exists, not from the
+      // request that asked for it — a pin that nobody then streams still expires.
+      this.touchAnalysisStreamSession(session);
       return session;
     } catch (err) {
-      this.analysisStreamSessions.delete(token);
+      this.evictAnalysisStreamSession(session, 'pin failed');
       throw err;
     } finally {
       session.pinning = undefined;
@@ -3051,8 +3189,7 @@ export class BookshelfServer {
       res.setHeader('Content-Disposition',
         `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
 
-      const fileStream = fsSync.createReadStream(filePath);
-      fileStream.pipe(res);
+      this.pipeFileToResponse(res, fsSync.createReadStream(filePath), `download ${filePath}`);
     } catch (err) {
       console.error('[BookshelfServer] Error downloading file:', err);
       res.status(500).json({ error: 'Failed to download file' });
@@ -3097,8 +3234,7 @@ export class BookshelfServer {
           const verified = pinned.verifiedStat!;
           if (stats.dev !== verified.dev || stats.ino !== verified.ino || stats.size !== verified.size
             || stats.mtimeMs !== verified.mtimeMs || stats.ctimeMs !== verified.ctimeMs) {
-            await this.disposeAnalysisStreamSession(pinned);
-            this.analysisStreamSessions.delete(analysisToken);
+            this.evictAnalysisStreamSession(pinned, 'pinned audiobook changed during playback');
             throw new Error('Pinned audiobook changed during playback');
           }
         } else {
@@ -3123,20 +3259,35 @@ export class BookshelfServer {
       };
       const contentType = contentTypes[ext] || 'audio/mp4';
 
+      /**
+       * The bytes for one request. A pinned request reads its OWN descriptor cut
+       * from the session's private snapshot rather than sharing the session's
+       * anchor handle: destroying a ReadStream closes its descriptor even when it
+       * was opened `autoClose: false`, so a single aborted transfer would shut the
+       * session out from under every other reader — and the freed number could be
+       * recycled onto an unrelated file. Each descriptor is fstat-verified against
+       * the identity recorded at pin time, so the inode guarantee is unchanged.
+       */
+      const openAudioStream = (start: number, end?: number): fsSync.ReadStream => {
+        const options: { start: number; end?: number; fd?: number } = { start };
+        if (end !== undefined) options.end = end;
+        if (!pinned) return fsSync.createReadStream(filePath, options);
+        options.fd = this.openPinnedSnapshotFd(pinned);
+        return fsSync.createReadStream(pinned.snapshotPath!, options);
+      };
+
       const pipeAudio = (stream: fsSync.ReadStream) => {
-        if (pinned) {
-          pinned.activeStreams++;
-          let released = false;
-          const release = () => {
-            if (released) return;
-            released = true;
-            pinned!.activeStreams = Math.max(0, pinned!.activeStreams - 1);
-            pinned!.lastUsedAt = Date.now();
-          };
-          res.once('finish', release);
-          res.once('close', release);
+        if (!pinned) {
+          this.pipeFileToResponse(res, stream, `audio ${filePath}`);
+          return;
         }
-        stream.pipe(res);
+        const session = pinned;
+        session.activeStreams++;
+        this.touchAnalysisStreamSession(session);  // disarms the idle countdown
+        this.pipeFileToResponse(res, stream, `audio ${filePath}`, () => {
+          session.activeStreams = Math.max(0, session.activeStreams - 1);
+          this.touchAnalysisStreamSession(session);  // re-arms it when the last one ends
+        });
       };
 
       const range = req.headers.range;
@@ -3167,24 +3318,36 @@ export class BookshelfServer {
         }
         const chunkSize = end - start + 1;
 
+        // Opened before a single header is set, so a descriptor that cannot be
+        // verified answers 409 instead of a 206 whose body never arrives.
+        let stream: fsSync.ReadStream;
+        try {
+          stream = openAudioStream(start, end);
+        } catch (err) {
+          console.error(`[BookshelfServer] Refusing pinned range read of ${filePath}:`, err);
+          res.status(409).json({ error: 'Audiobook no longer matches verified analysis' });
+          return;
+        }
+
         res.status(206);
         res.setHeader('Content-Range', `bytes ${start}-${end}/${fileSize}`);
         res.setHeader('Accept-Ranges', 'bytes');
         res.setHeader('Content-Length', chunkSize);
         res.setHeader('Content-Type', contentType);
-
-        const stream = pinned
-          ? fsSync.createReadStream(filePath, { fd: pinned.handle!.fd, autoClose: false, start, end })
-          : fsSync.createReadStream(filePath, { start, end });
         pipeAudio(stream);
       } else {
+        let stream: fsSync.ReadStream;
+        try {
+          stream = openAudioStream(0);
+        } catch (err) {
+          console.error(`[BookshelfServer] Refusing pinned read of ${filePath}:`, err);
+          res.status(409).json({ error: 'Audiobook no longer matches verified analysis' });
+          return;
+        }
+
         res.setHeader('Content-Length', fileSize);
         res.setHeader('Content-Type', contentType);
         res.setHeader('Accept-Ranges', 'bytes');
-
-        const stream = pinned
-          ? fsSync.createReadStream(filePath, { fd: pinned.handle!.fd, autoClose: false, start: 0 })
-          : fsSync.createReadStream(filePath);
         pipeAudio(stream);
       }
     } catch (err) {
@@ -3390,8 +3553,7 @@ export class BookshelfServer {
       res.setHeader('Content-Disposition',
         `attachment; filename="${safeFilename}"; filename*=UTF-8''${encodedFilename}`);
 
-      const fileStream = fsSync.createReadStream(absolutePath);
-      fileStream.pipe(res);
+      this.pipeFileToResponse(res, fsSync.createReadStream(absolutePath), `ebook ${absolutePath}`);
     } catch (err) {
       console.error('[BookshelfServer] Error downloading ebook:', err);
       res.status(500).json({ error: 'Failed to download ebook' });
@@ -3507,7 +3669,7 @@ export class BookshelfServer {
       res.setHeader('Content-Type', contentType);
       res.setHeader('Content-Length', stats.size);
       res.setHeader('Cache-Control', 'private, max-age=3600');
-      fsSync.createReadStream(file.absolutePath).pipe(res);
+      this.pipeFileToResponse(res, fsSync.createReadStream(file.absolutePath), `book ${file.absolutePath}`);
     } catch (err) {
       console.error('[BookshelfServer] Error serving read file:', err);
       res.status(500).json({ error: 'Failed to serve book' });

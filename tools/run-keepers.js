@@ -111,6 +111,7 @@ const SUITES = [
   'test-bookshelf-ids',
   'test-bookshelf-standalone',
   'test-bookshelf-queue-routes',
+  'test-bookshelf-stream-teardown',
 ];
 
 let failed = 0;
