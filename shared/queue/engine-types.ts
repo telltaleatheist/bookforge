@@ -42,6 +42,15 @@ export type JobType =
   | 'tts-conversion'
   | 'translation'
   | 'rvc-enhancement'
+  /**
+   * THE ROFORMER PASS OVER A SESSION'S SENTENCES, on its own row.
+   *
+   * It was a flag on `reassembly` until 2026-08-29, which made the whole assembly
+   * a GPU step — the card was held through the chapter combine and the AAC
+   * encode, neither of which touches it. Its own row is what lets the assembly
+   * contend for the cpu pool while the GPU moves on.
+   */
+  | 'final-denoise'
   | 'reassembly'
   | 'bilingual-cleanup'
   | 'bilingual-translation'

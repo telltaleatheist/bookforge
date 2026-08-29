@@ -267,8 +267,9 @@ def cmd_audiobook(args):
         cmd += ["--fresh"]
 
     # Final-audio denoise (BookForge's block-based roformer pass over the rendered
-    # sentences, run by reassembly-bridge before assembly, from the config this argv
-    # sets). Default follows the engine: Orpheus voices are trained on a deliberate
+    # sentences — its own step since 2026-08-29, run between generation and assembly;
+    # the adapter this argv drives makes the call). Default follows the engine:
+    # Orpheus voices are trained on a deliberate
     # faint hiss bed the render reproduces, so denoise is ON for orpheus and OFF for
     # everything else. An explicit flag wins either way. Always pass exactly one flag
     # so the spawn line is self-documenting.

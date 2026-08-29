@@ -1945,6 +1945,12 @@ async function invokeFoundryEnhance(
  * output. The two opt-in passes (`applyDeRing`, and `excludedChapters`) are
  * omitted rather than defaulted — an assembly that quietly ran a de-ring filter
  * nobody asked for would be a decision made in this function's name.
+ *
+ * IT MAY QUEUE TWO STEPS, not one. The narration's `finalDenoise` used to ride
+ * onto the assembly config; since the denoise became its own step (2026-08-29)
+ * the assembly refuses that flag, so the pass is chained IN FRONT of the assembly
+ * instead — unless the pressed step is an enhancement, which denoised its own
+ * input already and would otherwise be denoised twice.
  */
 async function invokeFoundryAssemble(
   _projectDir: string,
@@ -1982,10 +1988,30 @@ async function invokeFoundryAssemble(
       'That narration records no title for the book, and an audiobook is written with one. '
       + 'Assemble it from BookForge\'s versions page, where the book\'s details are known.');
   }
+  /*
+   * The denoise goes in FRONT of the assembly, on its own row, and only when the
+   * pressed step is the narration: an enhancement reads its own denoised set (it
+   * receives the same flag, see `invokeFoundryEnhance`), so a row here would
+   * denoise the same session a second time.
+   */
+  const wantsDenoise = narrate.config['finalDenoise'] === true
+    && step.type === 'tts-conversion';
+  const assemblyParent = wantsDenoise
+    ? queueEngine.appendStep(job.id, {
+        type: 'final-denoise',
+        label: 'Denoise',
+        parentStepId: step.id,
+        config: {
+          // Blank on purpose: the engine resolves the session from the parent's
+          // OUTPUT when it lands, exactly as the enhancement row does.
+          sessionId: '', sessionDir: '', processDir: '',
+        } as unknown as Record<string, unknown>,
+      }).id
+    : step.id;
   queueEngine.appendStep(job.id, {
     type: 'reassembly',
     label: 'Assemble',
-    parentStepId: step.id,
+    parentStepId: assemblyParent,
     config: {
       sessionId: '', sessionDir: '', processDir: '',
       outputDir: `${projectId.replace(/\\/g, '/')}/output`,
@@ -2000,8 +2026,8 @@ async function invokeFoundryAssemble(
           ? {} : { outputFilename: metadata.outputFilename }),
       },
       excludedChapters: [],
-      ...(narrate.config['finalDenoise'] === undefined
-        ? {} : { finalDenoise: narrate.config['finalDenoise'] }),
+      // No `finalDenoise`: assembly refuses it by name now, and the pass it named
+      // is either the row queued above or the enhancement's own.
     } as unknown as Record<string, unknown>,
   });
 }
@@ -9846,8 +9872,9 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // RVC voice-enhancement as its own queue job (produces an enhanced sentence set
-  // under [library]/tmp that a downstream reassembly job assembles + deletes).
+  // RVC voice-enhancement as its own queue job (produces the session's durable
+  // chapters/sentences-rvc-<voice> set that a downstream reassembly job assembles
+  // and LEAVES — see electron/derived-sentences.ts). No renderer calls this door.
   ipcMain.handle('rvc:start-enhancement', async (_event, jobId: string, config: any) => {
     try {
       const { runRvcEnhancement } = await import('./rvc-job.js');

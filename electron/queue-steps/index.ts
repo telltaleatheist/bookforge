@@ -10,6 +10,7 @@ import { registerStepModule } from '../queue-engine';
 
 import { bilingualAssemblyStep, bilingualCleanupStep, bilingualTranslationStep } from './bilingual';
 import { bookAnalysisStep } from './book-analysis';
+import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
 import { foundryJobStep } from './foundry-job';
 import { footnoteRefsStep, simplifyStep, translatePassStep } from './pass';
@@ -27,6 +28,7 @@ export function registerAllStepModules(): void {
   registered = true;
   for (const mod of [
     ttsConversionStep,
+    finalDenoiseStep,
     rvcEnhancementStep,
     reassemblyStep,
     translationStep,

@@ -233,6 +233,36 @@ export interface NarrationRvcConfig {
   /** Absent = urvc's own default; read only by the crepe family. */
   readonly hopLength?: number;
   readonly finalDenoise: boolean;
+  /**
+   * The inter-sentence gap, when the user moved the control.
+   *
+   * It travels with the DENOISE, not with the assembly, because the gap pass is
+   * what runs in front of the roformer and bakes it in — it must see the raw
+   * sentences and their exactly-zero trailing pad, which the roformer destroys.
+   * A conversion that denoises therefore owns the gap too.
+   */
+  readonly sentenceGap?: number;
+}
+
+/**
+ * DENOISE THE SENTENCES — the roformer pass, on its own row.
+ *
+ * It was a flag on the assembly until 2026-08-29. That made the assembly a GPU
+ * step for its whole duration, so the card stayed held through the chapter
+ * combine and the AAC encode — the long tail, and pure CPU. Its own row is what
+ * lets the assembly contend for the cpu pool while the GPU moves to the next run.
+ *
+ * It is NOT queued when the run also converts the voice: the conversion reads the
+ * denoised set itself (`NarrationRvcConfig.finalDenoise`), so a separate row
+ * would denoise the same session twice.
+ */
+export interface NarrationDenoiseConfig {
+  readonly type: 'final-denoise';
+  readonly sessionId: string;
+  readonly sessionDir: string;
+  readonly processDir: string;
+  /** Absent = the session's provenance decides. See `NarrationRvcConfig`. */
+  readonly sentenceGap?: number;
 }
 
 /** Combine the rendered sentences into the M4B. */
@@ -250,9 +280,21 @@ export interface NarrationReassemblyConfig {
     readonly outputFilename: string;
   };
   readonly excludedChapters: number[];
-  readonly finalDenoise: boolean;
+  /*
+   * NO `finalDenoise` HERE ANY MORE. The denoise is its own step, and an assembly
+   * config that still carries the flag is REFUSED by the bridge rather than
+   * ignored (electron/reassembly-bridge.ts) — so it must not be set, not merely
+   * left false.
+   */
   readonly applyDeRing: boolean;
-  /** Absent = the session's provenance decides. See `NarrationRunSettings`. */
+  /**
+   * Absent = the session's provenance decides. See `NarrationRunSettings`.
+   *
+   * Set only when NOTHING UPSTREAM bakes the gap in. A denoise or a conversion in
+   * front of this assembly hands it a set the gap is already applied to, and the
+   * assembly skips its own gap pass on a supplied set — so carrying the number
+   * here as well would state a knob twice and answer it in only one place.
+   */
   readonly sentenceGap?: number;
   /**
    * FILE THIS AS A SECOND AUDIOBOOK RATHER THAN AS THE PROJECT'S ONE AUDIOBOOK.
@@ -297,8 +339,12 @@ export interface NarrationRunMetadata {
  * choice is made here, once, rather than in each caller's mapping.
  */
 export interface NarrationStepPlan {
-  readonly type: 'tts-conversion' | 'rvc-enhancement' | 'reassembly';
-  readonly config: NarrationTtsConfig | NarrationRvcConfig | NarrationReassemblyConfig;
+  readonly type: 'tts-conversion' | 'final-denoise' | 'rvc-enhancement' | 'reassembly';
+  readonly config:
+    | NarrationTtsConfig
+    | NarrationDenoiseConfig
+    | NarrationRvcConfig
+    | NarrationReassemblyConfig;
   readonly metadata: NarrationRunMetadata;
   /** Set on the step that READS the book. The later two read a session. */
   readonly epubPath?: string;
@@ -497,6 +543,44 @@ export function narrationRvcStep(
       ...(settings.rvc.f0Method === undefined ? {} : { f0Method: settings.rvc.f0Method }),
       ...(settings.rvc.hopLength === undefined ? {} : { hopLength: settings.rvc.hopLength }),
       finalDenoise: settings.finalDenoise,
+      // The gap rides with the denoise, and the denoise rides here. Absent
+      // leaves the session's provenance in charge, as everywhere else.
+      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
+    },
+  };
+}
+
+/**
+ * Denoise the rendered sentences, before assembly.
+ *
+ * Its own row for the same reason the conversion has one — a distinct job with a
+ * distinct ETA — and for one more: the assembly behind it is then CPU work, and
+ * the GPU is free the moment the roformer finishes rather than at the end of the
+ * AAC encode.
+ *
+ * Null when the run does not denoise, and null when the run CONVERTS: the
+ * conversion denoises its own input (see `narrationRvcStep`), and two rows over
+ * one session would denoise it twice.
+ *
+ * The session fields are empty on purpose — see `narrationRvcStep`, same reason.
+ */
+export function narrationDenoiseStep(
+  book: NarrationRunBook,
+  settings: NarrationRunSettings,
+): NarrationStepPlan | null {
+  if (!settings.finalDenoise) return null;
+  if (settings.rvc !== null) return null;
+  requireNarrationRun(book, settings);
+  return {
+    type: 'final-denoise',
+    bfpPath: book.projectDir,
+    variantId: book.variantId,
+    metadata: actMetadata(book, 'Denoise'),
+    config: {
+      type: 'final-denoise',
+      // Filled at run time by session discovery — see `narrationRvcStep`.
+      sessionId: '', sessionDir: '', processDir: '',
+      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
     },
   };
 }
@@ -514,6 +598,15 @@ export function narrationReassemblyStep(
   book: NarrationRunBook,
   settings: NarrationRunSettings,
   registerAsNewVariant: boolean,
+  /**
+   * A step in front of this one already baked the inter-sentence gap in — a
+   * denoise or a conversion. A PARAMETER for the same reason as the flag above:
+   * it is a fact about the shape of the run, and only the whole-run builder sees
+   * the shape. When true the assembly is handed a finished sentence set and runs
+   * no gap pass of its own, so stating the number here would be a knob with no
+   * hand on it.
+   */
+  gapBakedUpstream: boolean,
 ): NarrationStepPlan {
   requireNarrationRun(book, settings);
   if (registerAsNewVariant && settings.rvc === null) {
@@ -541,11 +634,12 @@ export function narrationReassemblyStep(
         outputFilename: book.outputFilename,
       },
       excludedChapters: [],
-      // Two opt-in assembly passes, both default OFF.
-      finalDenoise: settings.finalDenoise,
+      // The one opt-in pass assembly still performs itself: de-ring is an ffmpeg
+      // filter at the final encode, not a model, so it belongs to the encode.
       applyDeRing: settings.applyDeRing,
       // Absent stays absent: that is what leaves provenance in charge of the gap.
-      ...(settings.sentenceGap === undefined ? {} : { sentenceGap: settings.sentenceGap }),
+      ...(gapBakedUpstream || settings.sentenceGap === undefined
+        ? {} : { sentenceGap: settings.sentenceGap }),
       registerAsNewVariant,
       // Carried only when it names something: the voice is what the second
       // audiobook is called, and an assembly filing into the base slot has no
@@ -645,6 +739,22 @@ export function buildNarrationSteps(
    * itself; this is the answer for a run described BY STAGES.
    */
   if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
+  /*
+   * THE DENOISE IS A STEP, AND ONLY WHEN NOTHING ELSE DOES IT.
+   *
+   * A conversion denoises its own input — it has to, because RVC extracts
+   * f0/content features and input noise corrupts that extraction — so a run that
+   * converts gets no denoise row of its own. A run that does not convert gets
+   * one, in front of the assembly, and the assembly is then CPU work that frees
+   * the card the moment the roformer lands.
+   *
+   * With no assembly there is nothing to denoise FOR: the set would be derived
+   * and read by nobody. It stays in the session, so it is not thrown away, but a
+   * row that renders GPU hours for no deliverable is not what "read the book and
+   * stop" asked for.
+   */
+  const denoiseStep = stages.assemble ? narrationDenoiseStep(book, settings) : null;
+  if (denoiseStep) steps.push(denoiseStep);
   if (stages.rvc) {
     const rvc = narrationRvcStep(book, settings);
     if (rvc === null) {
@@ -659,7 +769,13 @@ export function buildNarrationSteps(
     steps.push(rvc);
   }
   if (stages.assemble) {
-    steps.push(narrationReassemblyStep(book, settings, stages.rvc && !stages.narrate));
+    steps.push(narrationReassemblyStep(
+      book,
+      settings,
+      stages.rvc && !stages.narrate,
+      // Either upstream pass bakes the gap in before the assembly sees the audio.
+      stages.rvc || denoiseStep !== null,
+    ));
   }
   /*
    * The first step reads something nothing in this run produced, and the queue

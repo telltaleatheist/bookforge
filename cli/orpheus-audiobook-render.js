@@ -5,6 +5,10 @@
  *   1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core: real
  *      e2a prep + batch worker.py, producing a complete e2a session (sentence FLACs
  *      + session state with chapter mapping). Identical to a UI TTS job.
+ *   1b. runFinalDenoise()     (denoise-job)         — the final-denoise job, when the
+ *      denoise is on: gap-normalize then roformer, into the session's durable
+ *      chapters/sentences-denoised/. Its own step in the app since 2026-08-29, so it
+ *      is its own call here: assembly refuses the old `finalDenoise` flag by name.
  *   2. startReassembly()      (reassembly-bridge)   — the reassembly job: e2a
  *      --assemble_only over that session -> <project>/output/audiobook.m4b (+ .vtt)
  *      with chapters, cover, and metadata.
@@ -116,8 +120,10 @@ async function main() {
 
   const bridge = require('../dist/electron/parallel-tts-bridge.js');
   const reassembly = require('../dist/electron/reassembly-bridge.js');
+  const denoiseJob = require('../dist/electron/denoise-job.js');
   for (const [obj, fn] of [[bridge, 'renderRangeHeadless'], [bridge, 'scanProjectSessions'],
-                           [bridge, 'cacheSessionToProject'], [reassembly, 'startReassembly']]) {
+                           [bridge, 'cacheSessionToProject'], [reassembly, 'startReassembly'],
+                           [denoiseJob, 'runFinalDenoise']]) {
     if (typeof obj[fn] !== 'function') {
       throw new Error(`compiled bridge missing ${fn} — rebuild (npx tsc -p tsconfig.electron.json)`);
     }
@@ -125,8 +131,10 @@ async function main() {
 
   const language = args.language || 'en';
 
-  // Final-audio denoise (reassembly-bridge runs BookForge's block-based roformer
-  // pass over the rendered sentences before assembly, from config.finalDenoise).
+  // Final-audio denoise — its OWN step now (denoise-job), run between generation
+  // and assembly exactly as the app's chain runs it: gap-normalize the raw cached
+  // sentences, then the block-based roformer, into the session's durable
+  // chapters/sentences-denoised/, which assembly then reads via --sentences_dir.
   // Default ON: this adapter is Orpheus-only, and Orpheus voices are trained on a
   // deliberate faint hiss bed the render reproduces — the denoise pass strips it
   // once, over the sentence set. --no-final-denoise disables it entirely
@@ -143,11 +151,14 @@ async function main() {
   // the app uses, so behaviour is identical.
   const applyDeRing = !!args['de-ring'];
 
-  // Sentence-gap normalization (assembly-time): when --sentence-gap <seconds> is given,
-  // startReassembly strips e2a's artificial trailing exact-zero pad from each raw cached
-  // sentence and re-applies exactly this much silence BEFORE denoise. Absent → left
-  // undefined so the voice's models.json default (resolveOrpheusSentenceGap) applies; if
-  // the voice declares none either, the gap step is skipped (NO invented default).
+  // Sentence-gap normalization: when --sentence-gap <seconds> is given, the gap pass
+  // strips e2a's artificial trailing exact-zero pad from each raw cached sentence and
+  // re-applies exactly this much silence. It runs wherever the pass in front of assembly
+  // runs — inside the denoise step when denoising, inside startReassembly when not —
+  // and it must precede the roformer, which turns those exact zeros into near-zeros that
+  // no longer trim. Absent → left undefined so the voice's models.json default
+  // (resolveOrpheusSentenceGap) applies; if the voice declares none either, the gap step
+  // is skipped (NO invented default).
   let sentenceGap;
   if (args['sentence-gap'] !== undefined && args['sentence-gap'] !== true) {
     sentenceGap = parseFloat(args['sentence-gap']);
@@ -268,6 +279,35 @@ async function main() {
   const outputDir = path.join(projectDir, 'output');
   fs.mkdirSync(outputDir, { recursive: true });
 
+  // ── STEP 1b: the denoise, as its own call (mirrors the app's own step) ──
+  // The set it writes is DURABLE — it lives in the session as
+  // chapters/sentences-denoised/ with a manifest, so a second --assemble-only run
+  // over the same cache reuses it and costs minutes instead of an hour. Assembly
+  // reads it and LEAVES it (no disposeSentencesDir), which is what makes that true.
+  //
+  // It is derived against THE SESSION BEING ASSEMBLED, which on --assemble-only is
+  // the project cache (durable, reused by every later run) and on a fresh render is
+  // the scratch session this run then deletes. That is correct rather than
+  // convenient: deriving against a different copy of the sentences than the one
+  // being assembled is exactly the class of mismatch the manifest exists to catch.
+  // The app's chain lands in the cache for the same reason — its TTS step publishes
+  // no processDir, so the denoise step resolves the project's cached session itself.
+  let denoisedSentencesDir;
+  if (finalDenoise) {
+    console.log('[audiobook] STEP 1b/2 runFinalDenoise — gap-normalize + roformer over the cached sentences');
+    const dn = await denoiseJob.runFinalDenoise(`${jobId}-denoise`, {
+      processDir: session.processDir,
+      ...(sentenceGap !== undefined ? { sentenceGap } : {}),
+    }, null);
+    if (!dn || !dn.success || !dn.outputDir) {
+      throw new Error(`final denoise failed: ${dn && dn.error ? dn.error : 'unknown'}`);
+    }
+    denoisedSentencesDir = dn.outputDir;
+    console.log(dn.reused
+      ? `[audiobook] denoised sentences REUSED (already derived for this session): ${denoisedSentencesDir}`
+      : `[audiobook] denoised sentences written: ${denoisedSentencesDir}`);
+  }
+
   const config = {
     sessionId,
     sessionDir: session.sessionDir,
@@ -288,10 +328,15 @@ async function main() {
       outputFilename: md.outputFilename,
     },
     excludedChapters: [],
-    finalDenoise,
     applyDeRing,
+    // The denoised set, when one was derived above — assembled via --sentences_dir
+    // and KEPT (it is the session's, not this run's). Assembly runs no gap pass on a
+    // supplied set, because the gap is already baked into it; so the gap only travels
+    // to assembly on the no-denoise path, where assembly is the pass that applies it.
     // undefined → the voice's models.json sentenceGap default applies (or no gap step)
-    ...(sentenceGap !== undefined ? { sentenceGap } : {}),
+    ...(denoisedSentencesDir
+      ? { sentencesDir: denoisedSentencesDir }
+      : (sentenceGap !== undefined ? { sentenceGap } : {})),
   };
 
   console.log(`[audiobook] STEP 2/2 startReassembly — e2a --assemble_only -> ${path.join(outputDir, 'audiobook.m4b')}`);

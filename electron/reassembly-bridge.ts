@@ -14,7 +14,7 @@ import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
-import { denoiseSentences, finalDenoiseReady, normalizeSentenceGaps } from './denoise-bridge';
+import { normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
 import { registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
@@ -302,16 +302,37 @@ export interface ReassemblyConfig {
     f0Method?: string;
     hopLength?: number;
   };
-  /** A pre-rendered set of sentence files (produced by an upstream
-   *  'rvc-enhancement' queue job, under [library]/tmp). When set, assemble THIS
-   *  set via --sentences_dir and delete it afterward (merge-and-delete). Takes
-   *  precedence over the inline `rvcEnhancement` pass, which then doesn't run. */
+  /**
+   * A pre-rendered set of sentence files, produced by an upstream queue step —
+   * `final-denoise` or `rvc-enhancement`. When set, assemble THIS set via
+   * `--sentences_dir`. Takes precedence over the inline `rvcEnhancement` pass,
+   * which then doesn't run.
+   *
+   * IT IS KEPT, NOT DELETED. Those steps now write DURABLE sets inside the
+   * session (`chapters/sentences-denoised`, `chapters/sentences-rvc-<voice>`)
+   * whose lifetime is the session's — see derived-sentences.ts. Assembly used to
+   * delete what it was handed ("merge and delete"), which meant a re-assembly to
+   * fix a metadata field paid for the whole GPU pass again.
+   */
   sentencesDir?: string;
-  /** Final-audio denoise: run the block-based roformer pass (denoise-bridge) over
-   *  the session's sentences BEFORE assembly (and before any inline RVC pass —
-   *  denoise first, then RVC). When `sentencesDir` is set, the upstream
-   *  rvc-enhancement job already applied it (it receives the same flag), so it's
-   *  not re-run here. false/absent = zero behavioral change. */
+  /**
+   * DELETE `sentencesDir` once it has been assembled.
+   *
+   * ABSENCE MEANS KEEP, and that is the important half: the durable derived sets
+   * must survive their assembly, and a default of "delete" would quietly destroy
+   * an hour of GPU the first time a caller forgot the flag. Only a caller that
+   * built an ANONYMOUS scratch set for this one assembly may set it.
+   */
+  disposeSentencesDir?: boolean;
+  /**
+   * REMOVED AS AN ASSEMBLY PASS — the denoise is its own queue step now
+   * (`final-denoise`, electron/denoise-job.ts).
+   *
+   * The field is still declared so a config that carries it is REFUSED BY NAME
+   * rather than silently ignored: a stale queued row from before the split would
+   * otherwise assemble the raw sentences and hand back an audiobook nobody could
+   * tell was un-denoised. `startReassembly` fails immediately when it is true.
+   */
   finalDenoise?: boolean;
   /** De-ring: apply the session voice's per-voice post-render ffmpeg filter chain
    *  (the notch/comb that removes SNAC tonal ringing) at e2a's final encode. OPT-IN
@@ -373,7 +394,8 @@ export interface ReassemblyProgress {
  * assembly shows four bars and an RVC+denoise assembly shows seven.
  */
 const STAGE_GAP: StageSpec = { name: 'gap', label: 'Normalizing sentence gaps', weight: 7 };
-const STAGE_DENOISE: StageSpec = { name: 'denoise', label: 'Denoising audio', weight: 18 };
+/* There is no denoise stage here any more: the roformer pass is its own queue
+ * step (`final-denoise`) with its own row and its own progress. */
 const STAGE_RVC: StageSpec = { name: 'rvc', label: 'Enhancing voice', weight: 25 };
 /** H:MM for progress messages — "0:41 of 34:29" reads as movement even between ticks. */
 function formatClock(seconds: number): string {
@@ -419,7 +441,6 @@ const STAGE_ALWAYS: StageSpec[] = [
  */
 const STAGE_PHASE: Record<string, ReassemblyProgress['phase']> = {
   gap: 'preparing',
-  denoise: 'preparing',
   rvc: 'preparing',
   combine: 'combining',
   subtitles: 'combining',
@@ -439,8 +460,17 @@ const activeHeartbeats = new Map<string, NodeJS.Timeout>();
 // Active staging directories (so stopReassembly and error handlers can clean up)
 const activeStagingDirs = new Map<string, string>();
 
-// Active RVC scratch directories (the merge-and-delete enhanced-sentence sets,
-// under [library]/tmp). Cleaned alongside the staging dir at every terminal point.
+/**
+ * ANONYMOUS SCRATCH SENTENCE SETS this assembly owns, cleaned alongside the
+ * staging dir at every terminal point.
+ *
+ * A directory is entered here only when this assembly is the ONLY thing that
+ * will ever read it: the `.gap-<id>` set beside the output, the inline RVC pass's
+ * `rvc-<id>` under [library]/tmp, and a `sentencesDir` whose caller explicitly
+ * asked for disposal. The DURABLE sets the `final-denoise` and `rvc-enhancement`
+ * steps write (inside the session, with a manifest) are never entered here —
+ * they outlive their assembly on purpose.
+ */
 const activeRvcDirs = new Map<string, string>();
 /** jobId → the `closed-<sessionId>` dir this assembly is consuming, for cleanup. */
 const activeClosedDirs = new Map<string, string>();
@@ -468,10 +498,10 @@ function e2aSupportsEncodedChapters(): boolean {
 }
 
 /**
- * Remove a job's staging dir AND its RVC scratch dir (if any), and clear the map
- * entries. Logs but does not throw on failure. Called at every reassembly
- * terminal point (success / error / stop), so the RVC-enhanced sentences are
- * merged into the M4B and then deleted — never left behind in the project.
+ * Remove a job's staging dir AND whatever anonymous scratch sentence set it owns
+ * (see `activeRvcDirs` — a durable derived set is never one of them), clearing
+ * the map entries. Logs but does not throw on failure. Called at every reassembly
+ * terminal point (success / error / stop).
  */
 function cleanupStagingDir(jobId: string): void {
   const stagingDir = activeStagingDirs.get(jobId);
@@ -958,6 +988,27 @@ export async function startReassembly(
   const reassemblyLog = getReassemblyLogger();
 
   /*
+   * THE DENOISE IS NOT AN ASSEMBLY PASS ANY MORE — refused loudly, never ignored.
+   *
+   * It became its own queue step on 2026-08-29 (`final-denoise`), because running
+   * it here made the whole assembly a GPU step: the card was held through the
+   * chapter combine and the AAC encode, which are the long tail and never touch
+   * it. Every door was converted. A config that still carries the flag is
+   * therefore one of two things — a row queued before the split, or a call site
+   * the conversion missed — and both must SAY so. Ignoring it would assemble the
+   * raw sentences and hand back an audiobook nobody could tell was un-denoised.
+   */
+  if (config.finalDenoise === true) {
+    const error =
+      'This assembly asks for a final denoise, which assembly no longer performs: the denoise is '
+      + 'its own step now ("Denoise"), so the audiobook can encode on the CPU while the GPU moves '
+      + 'on. Queue the run again from the narration dialog — a row queued before this change '
+      + 'cannot be retried as-is, because assembling it would silently produce un-denoised audio.';
+    reassemblyLog.error('Refused: finalDenoise on an assembly config', { jobId });
+    return { success: false, error };
+  }
+
+  /*
    * IS THIS RUN MAKING A SECOND AUDIOBOOK, and if so what is it called —
    * answered HERE, at the top, because both of its refusals ("which voice?",
    * "no filename to derive one from") are things this run can never learn later,
@@ -1157,16 +1208,16 @@ export async function startReassembly(
     }
   }
 
-  // ── Optional RVC voice enhancement (post-TTS, pre-assembly) ──────────────────
-  // Convert the cached XTTS sentences through an RVC voice into a SCRATCH dir under
-  // [library]/tmp, then assemble THAT set (via e2a's --sentences_dir) and delete
-  // the scratch afterward (cleanupStagingDir). "Merge and delete": the enhanced
-  // sentences only ever exist to feed this one assembly. The cached source
-  // sentences are never mutated, so a session can be re-enhanced with a different
-  // voice later. Writing to [library]/tmp (not inside the cached session) keeps
-  // RVC output out of the project — and the startup tmp-wipe is a backstop if
-  // cleanup ever misses. Runs here so it works whether assembly is chained from
-  // TTS or run standalone on a cached session.
+  // ── WHICH SENTENCE SET THIS ASSEMBLY FEEDS TO e2a ───────────────────────────
+  // Null = the session's own cached sentences. Anything else is handed over as
+  // `--sentences_dir`, and comes from exactly one of three places, in this order:
+  //   1. `config.sentencesDir` — a set an upstream STEP produced ('final-denoise'
+  //      or 'rvc-enhancement'). Durable, inside the session, KEPT afterwards.
+  //   2. the inline RVC pass below — an anonymous scratch under [library]/tmp,
+  //      named for this step and deleted with it (cleanupStagingDir). The cached
+  //      source sentences are never mutated, so a session can be re-enhanced with
+  //      a different voice later.
+  //   3. the gap pass — likewise anonymous, likewise deleted.
   let rvcSentencesDir: string | null = null;
 
   // ── Optional assembly-time sentence-gap normalization (RAW cache, BEFORE denoise) ──
@@ -1204,11 +1255,11 @@ export async function startReassembly(
   // Declared before the first progress event so the bars never appear mid-flight.
   // The optional pre-passes each cost real minutes and used to report a flat 0%,
   // leaving the whole UI frozen at zero through the slowest part of the job.
-  const willDenoise = !!config.finalDenoise && !config.sentencesDir;
+  // No denoise bar: the denoise is its own step now, with its own row and its own
+  // bar, and declaring one here would be an assembly claiming work it never does.
   const willRvc = !!config.rvcEnhancement?.voiceId && !config.sentencesDir;
   const stages = new StageTracker([
     ...(resolvedGap !== undefined ? [STAGE_GAP] : []),
-    ...(willDenoise ? [STAGE_DENOISE] : []),
     ...(willRvc ? [STAGE_RVC] : []),
     ...STAGE_ALWAYS,
   ]);
@@ -1314,82 +1365,45 @@ export async function startReassembly(
     }
   }
 
-  // ── Optional final denoise (post-TTS, pre-assembly; runs BEFORE any RVC) ─────
-  // Block-based roformer pass over the session's cached sentences (denoise-bridge)
-  // into a SCRATCH dir under [library]/tmp — merge-and-delete like the RVC scratch.
-  // Ordering: denoise FIRST, then RVC — RVC extracts f0/content features from its
-  // input and input noise corrupts that extraction; the roformer is proven
-  // zero-change on clean audio, so the compose is always safe. When an upstream
-  // 'rvc-enhancement' job supplied `sentencesDir`, that job received the same
-  // finalDenoise flag and already denoised before converting — not re-run here.
-  let denoisedTmpDir: string | null = null;
-  if (config.finalDenoise) {
-    if (!willDenoise) {
-      reassemblyLog.info('Final denoise: pre-enhanced set supplied — denoise already ran upstream of RVC', { jobId });
-    } else {
-      const dnReady = finalDenoiseReady();
-      if (!dnReady.ok) {
-        return { success: false, error: `Final denoise unavailable: ${dnReady.reason}` };
-      }
-      // Denoise the GAP-normalized set when the gap step above ran (gap → denoise),
-      // else the session's raw cached sentences.
-      const srcSentences = gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
-      if (!fs.existsSync(srcSentences)) {
-        return { success: false, error: 'Final denoise: cached sentences not found for this session.' };
-      }
-      denoisedTmpDir = path.join(getDefaultE2aTmpPath(), `denoise-${jobId}`);
-      // Track it for merge-and-delete NOW; if an inline RVC pass follows, that pass
-      // re-points the tracker at ITS scratch and deletes this one itself.
-      activeRvcDirs.set(jobId, denoisedTmpDir);
-      // Same shared GPU lease as the RVC pass — the roformer runs on the env's
-      // torch device and must not co-reside with a running TTS/LLM job.
-      const dnGpuOwner = `denoise:reassembly:${jobId}`;
-      emitStage('denoise', null, 'Waiting for the GPU…');
-      await acquireGpu(dnGpuOwner, { timeoutMs: 10 * 60_000 });
-      try {
-        reassemblyLog.info('Final denoise starting', { jobId, src: srcSentences });
-        emitStage('denoise', null, 'Denoising audio…');
-        await denoiseSentences({
-          sentencesDir: srcSentences,
-          outputDir: denoisedTmpDir,
-          onProgress: (done, total) => emitStage(
-            'denoise',
-            total ? (done / total) * 100 : null,
-            `Denoising audio… (block ${done}/${total})`,
-          ),
-        });
-        rvcSentencesDir = denoisedTmpDir;
-        emitStage('denoise', 100, 'Denoise complete');
-        reassemblyLog.info('Final denoise complete', { jobId, dir: denoisedTmpDir });
-      } catch (err) {
-        // Delete the partial scratch set — this early return skips the assembly
-        // completion handler where cleanupStagingDir normally runs.
-        cleanupStagingDir(jobId);
-        return { success: false, error: `Final denoise failed: ${(err as Error).message || err}` };
-      } finally {
-        releaseGpu(dnGpuOwner);
-        // The gap scratch has served its purpose (denoise read from it) — drop it now;
-        // the tracker points at the denoise scratch (success and failure alike), so
-        // cleanupStagingDir would otherwise leave the gap dir behind.
-        if (gapDir) {
-          try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-        }
-      }
-    }
-  }
+  /*
+   * THE DENOISE USED TO BE HERE, and is not any more.
+   *
+   * It ran between the gap pass and the inline RVC pass, on the shared GPU lease,
+   * writing a merge-and-delete scratch under [library]/tmp. Two things were wrong
+   * with that and neither was the code: it made the whole assembly a GPU step —
+   * the card stayed held through the chapter combine and the AAC encode, which
+   * are the long tail — and it threw the result away, so re-assembling the same
+   * book to fix a metadata field paid for the entire pass again.
+   *
+   * It is now `final-denoise` (electron/denoise-job.ts), its own row in the
+   * queue, holding the card for exactly as long as the roformer runs, and writing
+   * a DURABLE set inside the session that this assembly is handed as
+   * `config.sentencesDir` and does NOT delete. The gap pass above went with it in
+   * that arrangement: `resolvedGap` stays undefined when `sentencesDir` is set,
+   * because the gap is baked into the set before the roformer ever saw it (see
+   * derived-sentences.ts on why it must be).
+   *
+   * `config.finalDenoise` is refused at the top of this function rather than
+   * ignored here — see the comment there.
+   */
 
-  // Preferred path: a separate 'rvc-enhancement' queue job already rendered the
-  // enhanced sentences into [library]/tmp and handed us the dir. Assemble that
-  // set and delete it after (track it in activeRvcDirs so cleanupStagingDir
-  // removes it at every terminal point). This takes precedence over the inline
-  // pass below, so RVC never runs twice.
+  // Preferred path: an upstream step ('final-denoise' or 'rvc-enhancement')
+  // already rendered the sentences and handed us the directory. This takes
+  // precedence over the inline pass below, so RVC never runs twice.
   if (config.sentencesDir) {
     if (!fs.existsSync(config.sentencesDir)) {
-      return { success: false, error: `RVC enhancement: enhanced sentences not found at ${config.sentencesDir}.` };
+      return { success: false, error: `Pre-rendered sentences not found at ${config.sentencesDir}.` };
     }
     rvcSentencesDir = config.sentencesDir;
-    activeRvcDirs.set(jobId, config.sentencesDir);
-    reassemblyLog.info('Assembling pre-enhanced sentence set', { jobId, dir: config.sentencesDir });
+    // KEPT unless the caller explicitly said otherwise — the derived sets are
+    // durable artifacts of the session now, and deleting one costs an hour of
+    // GPU to make again. Only an anonymous scratch set asks to be disposed of.
+    if (config.disposeSentencesDir === true) {
+      activeRvcDirs.set(jobId, config.sentencesDir);
+    }
+    reassemblyLog.info('Assembling pre-rendered sentence set', {
+      jobId, dir: config.sentencesDir, dispose: config.disposeSentencesDir === true,
+    });
   } else if (config.rvcEnhancement?.voiceId) {
     const voice = getRvcVoiceById(config.rvcEnhancement.voiceId);
     if (!voice) {
@@ -1399,15 +1413,17 @@ export async function startReassembly(
     if (!ready.ok) {
       return { success: false, error: `RVC enhancement unavailable: ${ready.reason}` };
     }
-    // Convert the DENOISED set when the denoise pass above ran (denoise → RVC), else
-    // the GAP-normalized set when only the gap step ran, else the raw cached sentences.
-    const srcSentences = denoisedTmpDir ?? gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
+    // Convert the GAP-normalized set when the gap step above ran, else the raw
+    // cached sentences. (A denoise in front of this is the `final-denoise` STEP,
+    // which arrives as `config.sentencesDir` and takes the branch above instead.)
+    const srcSentences = gapDir ?? path.join(config.processDir, 'chapters', 'sentences');
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
     }
     const tmpDir = path.join(getDefaultE2aTmpPath(), `rvc-${jobId}`);
-    // Re-points the merge-and-delete tracker at the RVC scratch; the denoise
-    // scratch (if any) is deleted below once RVC has consumed it.
+    // Re-points the merge-and-delete tracker at the RVC scratch. THIS set is
+    // genuinely anonymous — an inline pass named after a job id, not the durable
+    // per-voice set the `rvc-enhancement` step writes — so it is disposed of.
     activeRvcDirs.set(jobId, tmpDir);
     // Take the shared GPU lease for the RVC pass: without it this co-resides with a
     // running/loading Orpheus or XTTS job (or the cleanup LLM) and the pair OOMs the
@@ -1445,13 +1461,9 @@ export async function startReassembly(
       return { success: false, error: `RVC enhancement failed: ${(err as Error).message || err}` };
     } finally {
       releaseGpu(gpuOwner);
-      // The upstream scratch(es) have served their purpose (RVC read from whichever
-      // was its source) — drop them now; the tracker points at the RVC scratch
-      // (success and failure alike). When denoise ran it already deleted gapDir in its
-      // own finally, so this is the no-denoise case (gap → RVC directly).
-      if (denoisedTmpDir) {
-        try { fs.rmSync(denoisedTmpDir, { recursive: true, force: true }); } catch { /* best-effort */ }
-      }
+      // The gap scratch has served its purpose (RVC read from it) — drop it now;
+      // the tracker points at the RVC scratch (success and failure alike), so
+      // cleanupStagingDir would otherwise leave the gap dir behind.
       if (gapDir) {
         try { fs.rmSync(gapDir, { recursive: true, force: true }); } catch { /* best-effort */ }
       }

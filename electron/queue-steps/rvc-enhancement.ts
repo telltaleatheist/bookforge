@@ -1,8 +1,14 @@
 /**
  * rvc-enhancement — re-render a session's sentences through an RVC voice.
  *
- * It writes a scratch set under [library]/tmp and hands that DIRECTORY to the
- * assembly step behind it. Under the old queue the two were siblings in a
+ * It writes a DURABLE set inside the session — `chapters/sentences-rvc-<voice>`,
+ * with a manifest saying what it was derived from and with (derived-sentences.ts)
+ * — and hands that DIRECTORY to the assembly step behind it, which assembles it
+ * and leaves it. It used to be a scratch dir under [library]/tmp that the
+ * assembly deleted; with the current models the pass costs about as much GPU as
+ * the narration, so a re-assembly to fix a metadata field paid for it all again.
+ *
+ * Under the old queue the two were siblings in a
  * workflow and the directory travelled between them through a Map in the
  * renderer keyed by workflow id (`rvcScratchByWorkflow`), consumed by whichever
  * reassembly row ran next. Here it is simply this step's OUTPUT, which is what it
@@ -40,6 +46,9 @@ interface RvcConfig {
   f0Method?: string;
   hopLength?: number;
   finalDenoise?: boolean;
+  /** Baked into the denoised set this pass reads. Travels with `finalDenoise`
+   *  because that is the pass that applies it — see denoise-job.ts. */
+  sentenceGap?: number;
 }
 
 export const rvcEnhancementStep: StepModule = {
@@ -95,8 +104,6 @@ export const rvcEnhancementStep: StepModule = {
 
     try {
       const result = await runRvcEnhancement(ctx.stepId, {
-        sessionId,
-        sessionDir,
         processDir,
         voiceId: config.voiceId,
         indexRate: config.indexRate,
@@ -105,6 +112,7 @@ export const rvcEnhancementStep: StepModule = {
         f0Method: config.f0Method,
         hopLength: config.hopLength,
         finalDenoise: config.finalDenoise,
+        ...(config.sentenceGap === undefined ? {} : { sentenceGap: config.sentenceGap }),
       }, queueMainWindow());
 
       if (!result.success || !result.scratchDir) {

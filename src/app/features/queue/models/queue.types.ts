@@ -296,7 +296,7 @@ export type ProcessingPassJobConfig = PassJobConfig & {
 export type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 import type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 
-export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
+export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | FinalDenoiseJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -469,6 +469,30 @@ export interface RvcEnhancementJobConfig {
    *  denoised set (denoise → RVC ordering; input noise corrupts RVC's feature
    *  extraction). Set when the wizard has both options checked. */
   finalDenoise?: boolean;
+  /** Inter-sentence gap baked into the denoised set this pass reads. Travels with
+   *  `finalDenoise` because the gap pass is what runs in front of the roformer. */
+  sentenceGap?: number;
+}
+
+/**
+ * Final-audio denoise as its own job — the block-based roformer pass over a
+ * session's sentences, producing the durable set
+ * `<processDir>/chapters/sentences-denoised/` that a downstream reassembly job
+ * assembles (and does NOT delete).
+ *
+ * It was a flag on the reassembly job until 2026-08-29, which made the whole
+ * assembly a GPU step: the card stayed held through the chapter combine and the
+ * AAC encode, neither of which touches it. session* may be empty at creation and
+ * discovered at runtime (chained after TTS), exactly like reassembly.
+ */
+export interface FinalDenoiseJobConfig {
+  type: 'final-denoise';
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  /** Inter-sentence gap in seconds, baked in by the gap pass that runs in front
+   *  of the roformer. Absent = the session's provenance decides. */
+  sentenceGap?: number;
 }
 
 // Bilingual Cleanup job configuration - AI cleanup of extracted text

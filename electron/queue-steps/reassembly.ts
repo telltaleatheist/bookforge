@@ -6,8 +6,10 @@
  *
  *  - parent is a narration (`audio-session`) → assemble the session's own
  *    sentences, optionally running the inline RVC pass;
- *  - parent is an enhancement (`sentences`) → assemble THAT directory instead,
- *    via e2a's `--sentences_dir`, and the bridge deletes it afterwards.
+ *  - parent is a denoise or an enhancement (`sentences`) → assemble THAT
+ *    directory instead, via e2a's `--sentences_dir`, and LEAVE it: those are
+ *    durable sets inside the session (electron/derived-sentences.ts), reused by
+ *    the next assembly rather than re-derived at an hour of GPU apiece.
  *
  * The old row had to work this out from a sibling search plus a renderer-side Map
  * keyed by workflow id, with a "does this workflow have an rvc-enhancement job?"
@@ -47,6 +49,13 @@ interface ReassemblyStepConfig {
     f0Method?: string; hopLength?: number;
   };
   sentencesDir?: string;
+  /** Delete `sentencesDir` after assembling it. Absence means KEEP — see the
+   *  bridge's own note; the derived sets belong to the session, not to this row. */
+  disposeSentencesDir?: boolean;
+  /**
+   * NOT A PASS THIS STEP RUNS ANY MORE — read only so a row queued before the
+   * split is refused BY NAME. The bridge fails immediately on `true`.
+   */
   finalDenoise?: boolean;
   applyDeRing?: boolean;
   sentenceGap?: number;
@@ -73,14 +82,19 @@ export const reassemblyStep: StepModule = {
    * (the Orpheus-only-WSL refactor runs it natively on CPU by design). It was
    * declared 'gpu' wholesale, which had a nine-hour narration waiting behind
    * an encode that never touches the card. What genuinely needs the card is
-   * declared ON the config: RVC enhancement and the final denoise both run
-   * models. De-ring is an ffmpeg filter and does not count.
+   * declared ON the config. De-ring is an ffmpeg filter and does not count.
+   *
+   * THE DENOISE NO LONGER APPEARS HERE. It was the second GPU condition, and
+   * satisfying it made the WHOLE assembly a GPU step — the card held through the
+   * combine and the encode, which are the long tail. It is its own step now
+   * ('final-denoise'), so what is left on this config that needs the card is the
+   * inline RVC pass alone.
    *
    * Same shape as foundry-job's resourceFor: the type is one, the resource is
    * the config's.
    */
   resource: (config: Record<string, unknown>) =>
-    (config['rvcEnhancement'] || config['finalDenoise'] === true) ? 'gpu' : 'cpu',
+    config['rvcEnhancement'] ? 'gpu' : 'cpu',
 
   async run(ctx: StepRunContext): Promise<ArtifactRef> {
     const config = ctx.step.config as unknown as ReassemblyStepConfig;
@@ -141,7 +155,17 @@ export const reassemblyStep: StepModule = {
         metadata: config.metadata,
         excludedChapters: config.excludedChapters ?? [],
         // Only ONE of these is ever set. `sentencesDir` wins by construction.
-        ...(enhanced ? { sentencesDir: enhanced } : { rvcEnhancement: config.rvcEnhancement }),
+        ...(enhanced
+          ? {
+              sentencesDir: enhanced,
+              // Absence means KEEP, and that is the answer for every set an
+              // upstream STEP produced: those are durable artifacts of the
+              // session. Only a config that says so gets disposal.
+              ...(config.disposeSentencesDir === true ? { disposeSentencesDir: true } : {}),
+            }
+          : { rvcEnhancement: config.rvcEnhancement }),
+        // Passed through so a stale row still carrying it is REFUSED by the
+        // bridge, by name, rather than assembling un-denoised audio in silence.
         finalDenoise: config.finalDenoise,
         applyDeRing: config.applyDeRing,
         sentenceGap: config.sentenceGap,
