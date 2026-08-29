@@ -4425,6 +4425,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
         await denoiseSentences({
           sentencesDir,
           outputDir: dnOutDir,
+          onLog: (message) => { void logger.log('INFO', session.jobId, message); },
           onProgress: (done, total) => {
             if (!mainWindow) return;
             const progress: AggregatedProgress = {

@@ -17,10 +17,21 @@
  * seed-clip pipeline (bookforge_train/build_rvc_seeds.py). For efficiency it
  * does NOT denoise ~1,400 tiny files individually (a model load each): the
  * sentences are concatenated into ~22-minute blocks (with an offsets manifest of
- * every sentence's exact sample count), each block is denoised in ONE separator
- * process, and the "(dry)" stem is sliced back at the recorded offsets. The
- * roformer preserves timing exactly, so offset slicing is safe — and that
- * invariant is VERIFIED per block (dry frames must equal block frames).
+ * every sentence's exact sample count), the blocks are denoised by ONE RESIDENT
+ * separator process (`electron/scripts/separator_worker.py` — started once, model
+ * loaded once, fed one block at a time over stdin), and each "(dry)" stem is
+ * sliced back at the recorded offsets. The roformer preserves timing exactly, so
+ * offset slicing is safe — and that invariant is VERIFIED per block (dry frames
+ * must equal block frames).
+ *
+ * The resident worker replaced a per-block `python run_audio_separator.py` spawn.
+ * Blocking was never the batching — the ~22-minute blocks already were — but each
+ * spawn still paid a fresh interpreter start, `import torch`, CUDA context and
+ * checkpoint read (10-25 s) before ~85 s of real work. A 15-hour book is ~44
+ * blocks, so that was ~44 model loads, roughly a third of the pass. One load now
+ * serves the whole book. The maths is untouched: the worker constructs the same
+ * `Separator` with the same parameters the CLI's argparse defaults produced and
+ * reuses it across files exactly as audio-separator's own multi-file CLI loop does.
  *
  * Rates: the model is 44.1 kHz native — feeding other rates makes its librosa
  * front-end crash — so sentences are resampled to 44.1 kHz stereo while building
@@ -66,7 +77,8 @@ function separatorModelDir(): string {
 
 /** The shipped run_audio_separator.py launcher (asarUnpack'd real file in
  *  packaged builds). Same resolution as the Enhance tab's — the audio-separator
- *  console script is unusable directly (no __main__ guard, stale .exe shebang). */
+ *  console script is unusable directly (no __main__ guard, stale .exe shebang).
+ *  One-shot only: the block pass uses the resident worker below. */
 function resolveSeparatorLauncher(): string {
   const candidates = [
     path.join(app.getAppPath(), 'electron', 'scripts', 'run_audio_separator.py'),
@@ -76,6 +88,21 @@ function resolveSeparatorLauncher(): string {
   const found = candidates.find((p) => fs.existsSync(p));
   if (!found) {
     throw new Error('run_audio_separator.py is missing from the app bundle.');
+  }
+  return toUnpackedPath(found);
+}
+
+/** The shipped separator_worker.py resident worker (asarUnpack'd real file in
+ *  packaged builds). Same dev+packaged resolution as the launcher above. */
+function resolveSeparatorWorker(): string {
+  const candidates = [
+    path.join(app.getAppPath(), 'electron', 'scripts', 'separator_worker.py'),
+    path.join(__dirname, '..', '..', 'electron', 'scripts', 'separator_worker.py'),
+    path.join(__dirname, 'scripts', 'separator_worker.py'),
+  ];
+  const found = candidates.find((p) => fs.existsSync(p));
+  if (!found) {
+    throw new Error('separator_worker.py is missing from the app bundle.');
   }
   return toUnpackedPath(found);
 }
@@ -102,11 +129,20 @@ export interface DenoiseReadiness {
 
 /** Whether a final-denoise pass can run right now. The model weights themselves
  *  are NOT checked: audio-separator downloads them into the pinned model dir on
- *  first use, and a failed download exits non-zero → the job fails loudly. */
+ *  first use, and a failed download exits non-zero → the job fails loudly. The
+ *  audio_separator Python API the resident worker imports is likewise not probed
+ *  here (that would cost a python spawn on every readiness check) — the worker
+ *  emits a "fatal" event and exits non-zero if the import fails, which surfaces
+ *  as a hard job failure. What IS checked is that the worker script shipped. */
 export function finalDenoiseReady(): DenoiseReadiness {
   const root = getRvcEnvRoot();
   if (!root) return { ok: false, reason: 'The RVC engine env (which carries audio-separator) is not installed.' };
   if (!getRvcPython()) return { ok: false, reason: 'The RVC engine env is installed but its Python runtime was not found.' };
+  try {
+    resolveSeparatorWorker();
+  } catch (err) {
+    return { ok: false, reason: `${err instanceof Error ? err.message : String(err)}` };
+  }
   return { ok: true };
 }
 
@@ -117,6 +153,12 @@ export interface DenoiseSentencesOptions {
   outputDir: string;
   /** Block-level progress: `done` of `total` blocks fully denoised + sliced. */
   onProgress?: (done: number, total: number) => void;
+  /**
+   * Coarse status lines for the job log. The only one that matters operationally is
+   * the model load: the resident worker spends 10-25 s reading the checkpoint before
+   * block 0 moves, and without a line saying so that silence reads as a hang.
+   */
+  onLog?: (message: string) => void;
   /** Abort to cancel the run (kills the in-flight separator/ffmpeg child). */
   signal?: AbortSignal;
 }
@@ -240,53 +282,63 @@ export async function denoiseSentences(opts: DenoiseSentencesOptions): Promise<s
       blocks: blocks.map((b) => ({ block: path.basename(b.blockPath), frames: b.frames, segments: b.segments })),
     }, null, 2));
 
-    // 3. Denoise each block in ONE separator process, verify the (dry) stem,
-    //    slice it back at the recorded offsets into the output dir.
+    // 3. Denoise every block through ONE resident separator process (started here,
+    //    model loaded once), verify each (dry) stem, slice it back at the recorded
+    //    offsets into the output dir.
     opts.onProgress?.(0, blocks.length);
-    for (let bi = 0; bi < blocks.length; bi++) {
-      const block = blocks[bi];
-      const dnDir = path.join(work, `dn_${String(bi).padStart(2, '0')}`);
-      fs.mkdirSync(dnDir);
-      throwIfAborted(opts.signal);
-      // eslint-disable-next-line no-await-in-loop -- blocks are intentionally serial (one GPU process at a time)
-      await runSeparator(python, root, block.blockPath, dnDir, DENOISE_MODEL, opts.signal);
+    const separator = new ResidentSeparator(python, root, DENOISE_MODEL, opts.signal);
+    try {
+      opts.onLog?.(`Final denoise: loading ${DENOISE_MODEL} once for all ${blocks.length} block(s)…`);
+      const loadSeconds = await separator.start(work);
+      opts.onLog?.(`Final denoise: model resident after ${loadSeconds.toFixed(1)}s — denoising ${blocks.length} block(s).`);
 
-      // Exactly one (dry) stem, still at the model rate, still the block's exact
-      // length — anything else invalidates the offsets. (NO FALLBACKS.)
-      const dry = fs.readdirSync(dnDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
-      if (dry.length !== 1) {
-        throw new Error(`Final denoise: block ${bi} produced ${dry.length} "(dry)" stems in ${dnDir} — expected exactly 1.`);
-      }
-      const dryPath = path.join(dnDir, dry[0]);
-      const dryInfo = readWavInfo(dryPath);
-      if (dryInfo.sampleRate !== DENOISE_SR) {
-        throw new Error(`Final denoise: block ${bi} dry stem is ${dryInfo.sampleRate} Hz, expected ${DENOISE_SR} — the denoiser resampled it.`);
-      }
-      if (dryInfo.frames !== block.frames) {
-        throw new Error(`Final denoise: block ${bi} dry stem is ${dryInfo.frames} frames, expected ${block.frames} — the denoiser changed the block length.`);
-      }
-
-      // Slice back at the exact sample offsets, restoring the session's format.
-      let start = 0;
-      for (const seg of block.segments) {
+      for (let bi = 0; bi < blocks.length; bi++) {
+        const block = blocks[bi];
+        const dnDir = path.join(work, `dn_${String(bi).padStart(2, '0')}`);
+        fs.mkdirSync(dnDir);
         throwIfAborted(opts.signal);
-        const outPath = path.join(opts.outputDir, seg.name);
-        const codec = /\.wav$/i.test(seg.name) ? 'pcm_s16le' : 'flac';
-        // eslint-disable-next-line no-await-in-loop -- serial slicing keeps disk flat; each cut is ~ms
-        await runFfmpeg(ffmpeg, root, [
-          '-v', 'error', '-i', dryPath,
-          '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS,`
-               + fromModelChannels(sessionFmt.channels),
-          '-ar', String(sessionFmt.sampleRate),
-          '-c:a', codec, '-y', outPath,
-        ], opts.signal);
-        start += seg.frames;
-      }
+        // eslint-disable-next-line no-await-in-loop -- blocks are intentionally serial (one GPU pass at a time)
+        await separator.separate(block.blockPath, dnDir);
 
-      // Bounded disk: this block's inputs/stems are done — drop them now.
-      fs.rmSync(dnDir, { recursive: true, force: true });
-      fs.rmSync(block.blockPath, { force: true });
-      opts.onProgress?.(bi + 1, blocks.length);
+        // Exactly one (dry) stem, still at the model rate, still the block's exact
+        // length — anything else invalidates the offsets. (NO FALLBACKS.)
+        const dry = fs.readdirSync(dnDir).filter((n) => n.includes(`(${DENOISE_STEM})`));
+        if (dry.length !== 1) {
+          throw new Error(`Final denoise: block ${bi} produced ${dry.length} "(dry)" stems in ${dnDir} — expected exactly 1.`);
+        }
+        const dryPath = path.join(dnDir, dry[0]);
+        const dryInfo = readWavInfo(dryPath);
+        if (dryInfo.sampleRate !== DENOISE_SR) {
+          throw new Error(`Final denoise: block ${bi} dry stem is ${dryInfo.sampleRate} Hz, expected ${DENOISE_SR} — the denoiser resampled it.`);
+        }
+        if (dryInfo.frames !== block.frames) {
+          throw new Error(`Final denoise: block ${bi} dry stem is ${dryInfo.frames} frames, expected ${block.frames} — the denoiser changed the block length.`);
+        }
+
+        // Slice back at the exact sample offsets, restoring the session's format.
+        let start = 0;
+        for (const seg of block.segments) {
+          throwIfAborted(opts.signal);
+          const outPath = path.join(opts.outputDir, seg.name);
+          const codec = /\.wav$/i.test(seg.name) ? 'pcm_s16le' : 'flac';
+          // eslint-disable-next-line no-await-in-loop -- serial slicing keeps disk flat; each cut is ~ms
+          await runFfmpeg(ffmpeg, root, [
+            '-v', 'error', '-i', dryPath,
+            '-af', `atrim=start_sample=${start}:end_sample=${start + seg.frames},asetpts=PTS-STARTPTS,`
+                 + fromModelChannels(sessionFmt.channels),
+            '-ar', String(sessionFmt.sampleRate),
+            '-c:a', codec, '-y', outPath,
+          ], opts.signal);
+          start += seg.frames;
+        }
+
+        // Bounded disk: this block's inputs/stems are done — drop them now.
+        fs.rmSync(dnDir, { recursive: true, force: true });
+        fs.rmSync(block.blockPath, { force: true });
+        opts.onProgress?.(bi + 1, blocks.length);
+      }
+    } finally {
+      await separator.dispose();
     }
 
     // 4. Every input must have produced an output (never hand assembly a gap).
@@ -595,7 +647,213 @@ function runFfmpeg(ffmpeg: string, root: string, args: string[], signal?: AbortS
   return runChild(child, 'ffmpeg', signal);
 }
 
-/** One separator process over one block — the exact seed-pipeline invocation. */
+// ─────────────────────────────────────────────────────────────────────────────
+// The resident separator worker
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Protocol sentinel. Every line separator_worker.py means us to READ starts with
+ *  it, so nothing the library prints on stdout can be mistaken for a response. */
+const WORKER_SENTINEL = '@@BFSEP@@';
+
+interface SeparatorWorkerEvent {
+  event: 'loading' | 'ready' | 'result' | 'fatal';
+  ok?: boolean;
+  error?: string;
+  outputs?: string[];
+  seconds?: number;
+  loadSeconds?: number;
+  model?: string;
+}
+
+/**
+ * One long-lived `separator_worker.py` process: the checkpoint is read ONCE at
+ * `start()` and every subsequent `separate()` is pure inference.
+ *
+ * Strictly one request in flight — the worker is a blocking readline loop, and the
+ * block pass is deliberately serial anyway (one GPU pass at a time). Overlapping
+ * requests are an error, not a queue.
+ *
+ * Death is always loud. A worker exit that we did not ask for, a "fatal" event, an
+ * unparseable protocol line and an abort all latch a failure that rejects the
+ * in-flight request AND every later one — the pass never limps on with a dead
+ * worker, and it never silently re-spawns one (that would be the per-block spawn
+ * this class exists to delete).
+ */
+class ResidentSeparator {
+  private child: ChildProcess | null = null;
+  private exited = false;
+  private stopping = false;
+  private stdoutBuf = '';
+  private logTail = '';
+  private waiter: { resolve: (evt: SeparatorWorkerEvent) => void; reject: (err: Error) => void } | null = null;
+  private failure: Error | null = null;
+  private readonly onAbort = () => this.fail(new Error('Final denoise cancelled'));
+
+  constructor(
+    private readonly python: string,
+    private readonly root: string,
+    private readonly modelFilename: string,
+    private readonly signal?: AbortSignal,
+  ) {}
+
+  /**
+   * Spawn the worker and wait until the model is resident. Resolves with the load
+   * duration in seconds (the one number worth logging — it is the whole reason
+   * this class exists, and it is what the caller's "still loading" line reports).
+   */
+  async start(initialOutputDir: string): Promise<number> {
+    if (this.child) throw new Error('The resident separator worker is already started.');
+    throwIfAborted(this.signal);
+    const modelDir = separatorModelDir();
+    fs.mkdirSync(modelDir, { recursive: true });
+    fs.mkdirSync(initialOutputDir, { recursive: true });
+
+    const child = spawn(this.python, [
+      resolveSeparatorWorker(),
+      '--model_filename', this.modelFilename,
+      '--model_file_dir', modelDir,
+      '--output_dir', initialOutputDir,
+      '--output_format', 'WAV',
+    ], {
+      cwd: this.root, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'], env: spawnEnv(this.root),
+    });
+    this.child = child;
+    child.stdout!.setEncoding('utf8');
+    child.stdout!.on('data', (chunk: string) => this.onStdout(chunk));
+    child.stderr!.setEncoding('utf8');
+    child.stderr!.on('data', (chunk: string) => { this.logTail = (this.logTail + chunk).slice(-4000); });
+    child.on('error', (err) => this.fail(err instanceof Error ? err : new Error(String(err))));
+    // 'exit', not 'close' — the same Windows pipe-inheritance race documented on
+    // runChild applies here: a sibling child can hold this worker's stdout write
+    // handle open, so 'close' may never arrive even after the process is gone.
+    child.on('exit', (code) => {
+      this.exited = true;
+      if (this.stopping) return;
+      this.fail(new Error(`audio-separator worker exited with code ${code}: ${this.logTail.trim()}`));
+    });
+
+    if (this.signal) this.signal.addEventListener('abort', this.onAbort, { once: true });
+
+    const ready = await this.awaitEvent();
+    if (ready.event !== 'ready') {
+      throw new Error(`audio-separator worker reported "${ready.event}" instead of becoming ready: ${ready.error ?? this.logTail.trim()}`);
+    }
+    if (typeof ready.loadSeconds !== 'number') {
+      throw new Error('audio-separator worker became ready without reporting a model-load duration.');
+    }
+    return ready.loadSeconds;
+  }
+
+  /** Separate ONE file into `outputDir`. Rejects on any worker failure. */
+  async separate(inputPath: string, outputDir: string): Promise<void> {
+    if (this.failure) throw this.failure;
+    const child = this.child;
+    if (!child || this.exited) throw new Error('The resident separator worker is not running.');
+    throwIfAborted(this.signal);
+    const pending = this.awaitEvent();
+    try {
+      child.stdin!.write(`${JSON.stringify({ input: inputPath, outputDir })}\n`);
+    } catch (err) {
+      this.fail(err instanceof Error ? err : new Error(String(err)));
+    }
+    const evt = await pending;
+    if (evt.event !== 'result') {
+      throw new Error(`audio-separator worker sent "${evt.event}" instead of a result: ${evt.error ?? this.logTail.trim()}`);
+    }
+    if (!evt.ok) {
+      throw new Error(`audio-separator (denoise) failed on ${path.basename(inputPath)}: ${evt.error ?? this.logTail.trim()}`);
+    }
+    if (!Array.isArray(evt.outputs)) {
+      throw new Error(`audio-separator worker reported success for ${path.basename(inputPath)} without an output list.`);
+    }
+  }
+
+  /**
+   * Stop the worker. Closing its stdin is the natural end — its readline returns
+   * EOF and the loop breaks — which also means the worker dies on its own if this
+   * process ever disappears without calling dispose. A worker that ignores EOF is
+   * killed outright: this is native Windows python, not a WSL guest GPU process.
+   */
+  async dispose(): Promise<void> {
+    if (this.signal) this.signal.removeEventListener('abort', this.onAbort);
+    this.stopping = true;
+    const child = this.child;
+    if (!child || this.exited) return;
+    try { child.stdin?.end(); } catch { /* the pipe may already be gone */ }
+    await new Promise<void>((resolve) => {
+      if (this.exited) { resolve(); return; }
+      const timer = setTimeout(() => { this.kill(); resolve(); }, 5000);
+      child.once('exit', () => { clearTimeout(timer); resolve(); });
+    });
+  }
+
+  private awaitEvent(): Promise<SeparatorWorkerEvent> {
+    if (this.failure) return Promise.reject(this.failure);
+    if (this.waiter) return Promise.reject(new Error('Two separator requests overlapped — the resident worker serves exactly one at a time.'));
+    return new Promise<SeparatorWorkerEvent>((resolve, reject) => { this.waiter = { resolve, reject }; });
+  }
+
+  private onStdout(chunk: string): void {
+    this.stdoutBuf += chunk;
+    for (;;) {
+      const nl = this.stdoutBuf.indexOf('\n');
+      if (nl < 0) break;
+      const line = this.stdoutBuf.slice(0, nl);
+      this.stdoutBuf = this.stdoutBuf.slice(nl + 1);
+      this.onLine(line);
+    }
+  }
+
+  private onLine(raw: string): void {
+    const line = raw.replace(/\r$/, '');
+    const at = line.indexOf(WORKER_SENTINEL);
+    if (at < 0) {
+      if (line.trim()) this.logTail = (`${this.logTail + line}\n`).slice(-4000);
+      return;
+    }
+    let evt: SeparatorWorkerEvent;
+    try {
+      evt = JSON.parse(line.slice(at + WORKER_SENTINEL.length)) as SeparatorWorkerEvent;
+    } catch {
+      this.fail(new Error(`audio-separator worker sent an unparseable protocol line: ${line.slice(0, 300)}`));
+      return;
+    }
+    if (evt.event === 'loading') return; // informational — 'ready' or 'fatal' follows
+    const waiter = this.waiter;
+    if (!waiter) {
+      this.fail(new Error(`audio-separator worker sent an unexpected "${evt.event}" with no request in flight.`));
+      return;
+    }
+    this.waiter = null;
+    waiter.resolve(evt);
+  }
+
+  private fail(err: Error): void {
+    if (!this.failure) this.failure = err;
+    const waiter = this.waiter;
+    this.waiter = null;
+    if (waiter) waiter.reject(this.failure);
+    this.kill();
+  }
+
+  private kill(): void {
+    const child = this.child;
+    if (!child || this.exited) return;
+    try { child.kill(); } catch { /* already gone */ }
+    // Belt and braces for a process that ignores the first signal. On Windows
+    // kill() is TerminateProcess and this second attempt never fires; on POSIX it
+    // upgrades SIGTERM to SIGKILL. Unref'd so a lingering timer cannot hold the app.
+    const hard = setTimeout(() => {
+      if (this.exited) return;
+      try { child.kill('SIGKILL'); } catch { /* already gone */ }
+    }, 2000);
+    hard.unref();
+  }
+}
+
+/** One separator process over one file — the exact seed-pipeline invocation.
+ *  ONE-SHOT ONLY (denoiseFile): a single file has no model load to amortize. The
+ *  block pass uses {@link ResidentSeparator} instead. */
 function runSeparator(python: string, root: string, blockPath: string, outDir: string, model: string, signal?: AbortSignal): Promise<void> {
   const modelDir = separatorModelDir();
   fs.mkdirSync(modelDir, { recursive: true });
