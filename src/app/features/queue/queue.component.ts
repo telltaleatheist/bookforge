@@ -1142,25 +1142,58 @@ export class QueueComponent {
     // this same control and the two must not disagree. See
     // QueueTrayService.anythingRunning for the rule and why.
     const isRunning = this.tray.anythingRunning();
+    // The engine's own latch, separately: movement with the latch OFF is the
+    // DRAINING state — a step finishing while nothing new may claim a slot.
+    const engineOn = this.tray.isRunning();
     const idle = !this.tray.anythingToDo();
     return [
-      // "everything" earns its place now that each slot and each step carries
-      // its own Stop: without it the toolbar button and the card button read as
-      // two spellings of one act, which is the confusion the labels exist to
-      // prevent. This one takes the whole queue down; those take one step off.
-      isRunning
-        ? {
-          id: 'pause',
-          type: 'button',
+      // TWO stopping gestures, not one (Owen, 2026-08-29): "pause after current"
+      // drains — the running slots FINISH their step and nothing new claims one —
+      // and "halt" takes the GPU back now. One button wearing the word Pause
+      // while doing the halt is how an hour of denoise got cancelled to prevent
+      // the NEXT hour of denoise. While draining, Resume cancels the drain and
+      // Halt is still offered for the step that is finishing.
+      ...(isRunning && engineOn ? [
+        {
+          id: 'pause-after',
+          type: 'button' as const,
           icon: '⏸',
-          label: 'Pause queue',
-          tooltip: 'Stop the queue AND everything it is running. Anything stopped '
-            + 'resumes from what it has already rendered. To stop just one step, '
-            + 'use the Stop button on its slot.',
-        }
-        : {
+          label: 'Pause after current',
+          tooltip: 'Let the running steps finish what they are doing, then stop — '
+            + 'nothing new claims a slot. Start resumes the queue.',
+        },
+        {
+          id: 'halt',
+          type: 'button' as const,
+          icon: '■',
+          label: 'Halt processing',
+          tooltip: 'Stop the queue AND everything it is running, now. Anything '
+            + 'stopped resumes from what it has already rendered. To stop just '
+            + 'one step, use the Stop button on its slot.',
+        },
+      ] : []),
+      ...(isRunning && !engineOn ? [
+        {
           id: 'start',
-          type: 'button',
+          type: 'button' as const,
+          icon: '▶',
+          label: 'Resume queue',
+          tooltip: 'The queue is finishing its running step and will pause after '
+            + 'it. Resume claiming new work instead.',
+        },
+        {
+          id: 'halt',
+          type: 'button' as const,
+          icon: '■',
+          label: 'Halt processing',
+          tooltip: 'Stop the step that is finishing, now. It resumes from what '
+            + 'it has already rendered.',
+        },
+      ] : []),
+      ...(!isRunning ? [
+        {
+          id: 'start',
+          type: 'button' as const,
           icon: '▶',
           label: 'Start',
           // Grayed rather than hidden: the control should stay where the eye
@@ -1171,6 +1204,7 @@ export class QueueComponent {
             ? 'Nothing is queued, so there is nothing to start.'
             : 'Claim work as slots free up, and resume anything that was stopped.',
         },
+      ] : []),
       {
         id: 'refresh',
         type: 'button',
@@ -1353,9 +1387,11 @@ export class QueueComponent {
 
   onToolbarAction(item: ToolbarItem): void {
     switch (item.id) {
-      // Pause stops the RUN, not just the claiming — see QueueTrayService.toggleQueue.
       case 'start': this.report(this.queueService.startQueue()); break;
-      case 'pause': this.report(this.queueService.stopQueue()); break;
+      // The drain: engine latch off, running steps untouched (engine pause()).
+      case 'pause-after': this.report(this.queueService.pauseQueue()); break;
+      // The hard stop: latch off AND every running step cancelled.
+      case 'halt': this.report(this.queueService.stopQueue()); break;
       case 'refresh': this.report(this.queueService.refreshFromBackend()); break;
     }
   }

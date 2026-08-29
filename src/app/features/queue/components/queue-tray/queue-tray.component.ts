@@ -58,17 +58,41 @@ import { QueueTrayService } from '../../services/queue-tray.service';
              is moving, and nobody paused it. -->
         <span class="engine" [class.paused]="!tray.isRunning()">
           <span class="led" aria-hidden="true"></span>
-          {{ tray.anythingRunning() ? 'Running' : (tray.isRunning() ? 'Idle' : 'Paused') }}
+          {{ tray.anythingRunning()
+            ? (tray.isRunning() ? 'Running' : 'Finishing, then pausing')
+            : (tray.isRunning() ? 'Idle' : 'Paused') }}
         </span>
-        <button type="button" class="btn accent push" (click)="toggleQueue()"
-                [disabled]="!tray.anythingRunning() && !tray.anythingToDo()"
-                [title]="tray.anythingRunning()
-                  ? 'Stop the queue and everything it is running. To stop just one step, use its own Stop button below.'
-                  : tray.anythingToDo()
+        <!-- Two stopping gestures (Owen, 2026-08-29): the drain lets running
+             steps finish and admits nothing new; Halt takes the GPU back now.
+             While draining, the accent button flips to Resume (cancel the
+             drain) and Halt stays for the step still finishing. -->
+        @if (tray.anythingRunning() && tray.isRunning()) {
+          <button type="button" class="btn accent push" (click)="pauseAfterCurrent()"
+                  title="Let the running steps finish, then stop — nothing new claims a slot.">
+            ⏸ Pause after current
+          </button>
+          <button type="button" class="btn stop" (click)="haltProcessing()"
+                  title="Stop the queue and everything it is running, now. To stop just one step, use its own Stop button below.">
+            ■ Halt
+          </button>
+        } @else if (tray.anythingRunning()) {
+          <button type="button" class="btn accent push" (click)="startQueue()"
+                  title="The queue is finishing its running step and will pause after it. Resume claiming new work instead.">
+            ▶ Resume
+          </button>
+          <button type="button" class="btn stop" (click)="haltProcessing()"
+                  title="Stop the step that is finishing, now. It resumes from what it has already rendered.">
+            ■ Halt
+          </button>
+        } @else {
+          <button type="button" class="btn accent push" (click)="startQueue()"
+                  [disabled]="!tray.anythingToDo()"
+                  [title]="tray.anythingToDo()
                     ? 'Claim work as slots free up, and resume anything that was stopped.'
                     : 'Nothing is queued, so there is nothing to start.'">
-          {{ tray.anythingRunning() ? '❚❚ Pause queue' : '▶ Start' }}
-        </button>
+            ▶ Start
+          </button>
+        }
       </div>
 
       <!-- ── Needs you ─────────────────────────────────────────────────── -->
@@ -715,8 +739,16 @@ export class QueueTrayComponent {
     (this.host.nativeElement as HTMLElement).focus();
   }
 
-  async toggleQueue(): Promise<void> {
-    await this.tray.toggleQueue();
+  async pauseAfterCurrent(): Promise<void> {
+    await this.tray.pauseAfterCurrent();
+  }
+
+  async haltProcessing(): Promise<void> {
+    await this.tray.haltProcessing();
+  }
+
+  async startQueue(): Promise<void> {
+    await this.tray.startQueue();
   }
 
   async clearFinished(): Promise<void> {

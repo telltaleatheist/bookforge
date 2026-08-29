@@ -355,31 +355,42 @@ export class QueueTrayService {
   // link, which is what the old one was.
 
   /**
-   * Pause, and MEAN it — Owen's ruling, 2026-08-19.
+   * TWO stopping gestures, both honest (Owen, 2026-08-29, refining 2026-08-19).
    *
-   * Pause used to stop the queue CLAIMING work while leaving the running step
-   * going, which meant pressing it while a nine-hour narration held the card did
-   * nothing you could see for nine hours. It now stops the work as well, which
-   * is safe because a stop is resumable by construction: cancelling a running
-   * step settles it `held` + `wasInterrupted`, so Start picks it up from what is
-   * already rendered rather than from sentence zero.
+   * 2026-08-19's ruling ("Pause, and MEAN it") made Pause stop the running work
+   * too, because the old drain-only pause looked like it did nothing for nine
+   * hours while a narration held the card. That fixed the invisibility by
+   * deleting the drain — and tonight the drain turned out to be a real gesture
+   * with no button: "let this denoise finish, but do not start the next one."
    *
-   * Pause is the WHOLE-QUEUE gesture. `stopStep` below is the narrow one, and
-   * they are not the same act under two names: Pause stops the engine as well,
-   * so nothing starts after it; stopping one step leaves the engine running and
-   * the slot is claimed by whatever is next. Both are resumable for the same
-   * reason — a cancelled step settles `held` + `wasInterrupted`.
+   * So the two acts get two names instead of one button lying about either:
+   *  - `pauseAfterCurrent` DRAINS: the engine latch goes off (engine pause()),
+   *    running steps finish what they are doing, nothing new claims a slot. The
+   *    tray says "Finishing, then pausing" the whole time, which is what the
+   *    2026-08-19 complaint was actually about.
+   *  - `haltProcessing` takes the card back NOW: latch off AND every running
+   *    step cancelled — safe because a stop is resumable by construction
+   *    (`held` + `wasInterrupted`; Start resumes from what is already rendered).
+   *
+   * `stopStep` below stays the narrow act: one step off, engine still claiming.
    */
-  async toggleQueue(): Promise<void> {
-    if (this.queue.isRunning()) await this.queue.stopQueue();
-    else await this.queue.startQueue();
+  async pauseAfterCurrent(): Promise<void> {
+    await this.queue.pauseQueue();
+  }
+
+  async haltProcessing(): Promise<void> {
+    await this.queue.stopQueue();
+  }
+
+  async startQueue(): Promise<void> {
+    await this.queue.startQueue();
   }
 
   /**
    * Stop ONE running step, leaving the queue running.
    *
    * The bench used to offer nothing here on the reasoning that Pause covered it
-   * (see `toggleQueue`). It does not: "take this book off the card and get on
+   * (see the two-gesture note above). It does not: "take this book off the card and get on
    * with the next one" was only reachable by pausing everything, and Owen could
    * not find a way to do it at all (2026-08-21). The step keeps what it has
    * rendered and comes back `held`, so Start resumes it from there.
