@@ -395,10 +395,15 @@ async function main() {
     fs.copyFileSync(await buildEpub('book1.epub'), p.bookAbs);
 
     // One strike made the ordinary way, so the copy's indices are already
-    // shifted against the book's — which is the whole difficulty.
+    // shifted against the book's — which is the whole difficulty. The footnote
+    // default is pinned OFF: the fixture's note is this test's strike TARGET,
+    // and the default exclusion would take it out of the copy before the user
+    // could point at it. The record carries the pinned choice, so the pairing
+    // and the re-cut read the copy as it actually is.
     await narrationExport.editNarrationDeletions(
       p.projectDir, { strike: [`${CH}#1`], unstrike: [] });
-    await narrationExport.exportNarrationEpub(p.projectDir, { stripSupMarkers: true });
+    await narrationExport.exportNarrationEpub(
+      p.projectDir, { stripSupMarkers: true, excludeFootnotes: false });
 
     // The copy now holds: #0 title, #1 running head, #2 second para,
     // #3 running head, #4 footnote. The user points at the FOOTNOTE, which is

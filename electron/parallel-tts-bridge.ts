@@ -6662,24 +6662,28 @@ function emitComplete(
 
 /**
  * The file a narration should actually read: the book, or a cut of it with the
- * photo captions left out.
+ * photo captions, the note apparatus and the reference numbers left out.
  *
- * ── The ruling ──────────────────────────────────────────────────────────────
+ * ── The rulings ─────────────────────────────────────────────────────────────
  *
  * Owen, 2026-08-29, after God's People narrated all 37 of its photo captions:
  * *"ideally it wont read caption text at all. those are unintentionally
- * included. if we can find a fix for those then we should."* A caption is words
- * under a picture the listener cannot see, and it is the most defect-prone text
- * in a book besides (the skip census: dense digits, citations, foreign names).
+ * included. if we can find a fix for those then we should."* And 2026-08-30,
+ * on the 675 endnotes the same render read at every chapter's end: *"Ideally I
+ * will never include endnotes for my purposes… Reference numbers should never
+ * make it to TTS. They aren't read in a real audiobook, they shouldn't be read
+ * in TTS."* Both are words the listener was never meant to hear, and the skip
+ * census ranks the citation apparatus the most defect-prone text in a book
+ * besides (dense digits, foreign titles).
  *
  * ── Why the substitution happens HERE ───────────────────────────────────────
  *
  * This is the one door every queued narration walks through, and the evidence
  * is on the file itself: foundry's conversion stamps say `data-bf-cat="caption"`
- * on every caption, book by book. A book with no caption stamps — every
- * publisher EPUB never converted, every book with no pictures — passes through
- * UNTOUCHED, same path, same bytes, so nothing changes for a file that carries
- * no evidence. The cut itself is `writeNarrationEpub`, the one verified door
+ * and `"footnote"` on the elements they mean, book by book. A book with neither
+ * stamp — every publisher EPUB never converted, every book with no pictures and
+ * no notes — passes through UNTOUCHED, same path, same bytes, so nothing
+ * changes for a file that carries no evidence. The cut itself is `writeNarrationEpub`, the one verified door
  * that is allowed to write a narration copy: it proves every excluded element
  * left the file or destroys the output.
  *
@@ -6707,18 +6711,24 @@ async function narrationInputFor(epubPath: string, jobId: string): Promise<strin
 
   const units = await readEpubConversionUnits(epubPath);
   const captions = units.filter((u) => u.category === 'caption').length;
-  if (captions === 0) return epubPath;
+  const footnotes = units.filter((u) => u.category === 'footnote').length;
+  if (captions === 0 && footnotes === 0) return epubPath;
 
   const bytes = await fs.readFile(epubPath);
   const sha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
   const cutDir = path.join(getDefaultE2aTmpPath(), 'narration-cuts');
-  const cutPath = path.join(cutDir, `${sha16}.v1.nocap.epub`);
+  // `.v2`: the rule grew (footnote asides out, sup markers stripped — Owen's
+  // 2026-08-30 ruling), so a v1 cut on disk describes a rule this door no
+  // longer applies and must not be reused.
+  const cutPath = path.join(cutDir, `${sha16}.v2.tts.epub`);
 
   try {
     await fs.access(cutPath);
     // Same source sha ⇒ the same cut, made by this same rule. Reused so a
     // resubmission of a half-finished render preps against the identical file.
-    console.log(`[PARALLEL-TTS] ${captions} caption(s) excluded from narration (cut on disk reused): ${cutPath}`);
+    console.log(
+      `[PARALLEL-TTS] ${captions} caption(s) and ${footnotes} note(s) excluded from narration `
+      + `(cut on disk reused): ${cutPath}`);
     return cutPath;
   } catch { /* not cut yet */ }
 
@@ -6729,19 +6739,22 @@ async function narrationInputFor(epubPath: string, jobId: string): Promise<strin
   const staging = path.join(cutDir, `${sha16}.staging-${crypto.randomUUID()}.epub`);
   const written = await writeNarrationEpub(epubPath, staging, [], {
     excludeCaptions: true,
-    // Deliberately OFF, against the writer's own default: this door has never
-    // stripped sup markers, and this substitution changes exactly one thing.
-    // Turning the strip on here is its own decision with its own ruling.
-    stripSupMarkers: false,
+    excludeFootnotes: true,
+    // The writer's own default, taken deliberately since 2026-08-30: *"Reference
+    // numbers should never make it to TTS. They aren't read in a real
+    // audiobook."* A digits-only <sup> that survived the compile is exactly one.
+    stripSupMarkers: true,
   });
   await fs.rename(staging, cutPath);
   await logger.log('INFO', jobId,
-    `${written.excludedCaptions} photo caption(s) excluded from the narration`, {
+    `${written.excludedCaptions} caption(s), ${written.excludedFootnotes} note(s) and `
+    + `${written.removedSupMarkers} reference number(s) excluded from the narration`, {
       cutPath, source: epubPath,
     });
   console.log(
-    `[PARALLEL-TTS] ${written.excludedCaptions} caption(s) excluded from narration — the book keeps `
-    + `them; the cut is ${cutPath}`);
+    `[PARALLEL-TTS] excluded from narration: ${written.excludedCaptions} caption(s), `
+    + `${written.excludedFootnotes} note(s), ${written.removedSupMarkers} reference number(s) — `
+    + `the book keeps them; the cut is ${cutPath}`);
   return cutPath;
 }
 

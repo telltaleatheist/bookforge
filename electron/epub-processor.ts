@@ -5358,6 +5358,65 @@ function conversionStampOnOrAbove(el: any, whatFor: string): {
 }
 
 /**
+ * The conversion stamp of a NARRATION unit: on the element, above it — or, for
+ * one shape only, read off what it holds.
+ *
+ * ── The shape: the note apparatus arrives as a STAMPLESS wrapper ────────────
+ *
+ * Foundry writes each note as `<aside … data-bf-cat="footnote">`, and `aside`
+ * is not an export-unit tag — deliberately, since adding it would renumber
+ * every positional strike on record. So the unit walk's catch-all sweeps the
+ * notes as their enclosing wrapper: the `<section class="footnotes">` at a
+ * chapter's end, or (measured on God's People) one 83KB unit holding all 675
+ * endnotes of the book's own Notes division. That wrapper carries no stamp of
+ * its own, the walk UP finds nothing, and a caption-style category rule would
+ * call the entire apparatus `null` — invisible to the exclusion Owen ruled on.
+ *
+ * So when the walk up says nothing, this looks DOWN, under an exactness guard:
+ * the unit is the apparatus only when every stamped descendant is a footnote
+ * AND the descendants' text IS the unit's text (both sides normalized the
+ * alignment way, so whitespace between asides cannot break the equality). A
+ * mixed wrapper — bare prose beside one note — fails the guard and stays
+ * `null`, which is today's behavior: prose must never be swallowed by an
+ * inference about its neighbor.
+ */
+function narrationStampOf(el: any, whatFor: string): {
+  category: string;
+  statedCategory: string;
+  sourcePage: number;
+} | null {
+  const above = conversionStampOnOrAbove(el, whatFor);
+  if (above !== null) return above;
+  if (typeof el.getElementsByTagName !== 'function') return null;
+
+  const stamped: any[] = [];
+  const all = el.getElementsByTagName('*');
+  for (let i = 0; i < all.length; i++) {
+    const stated = all[i].getAttribute?.(CONVERSION_CATEGORY_ATTR);
+    if (stated === null || stated === undefined || stated === '') continue;
+    if (stated !== 'footnote') return null;
+    // A stamped element INSIDE a stamped element is that element's insides —
+    // count only the outermost, or nested markup would double its own text.
+    if (stamped.some((outer) => isDescendantOf(all[i], outer))) continue;
+    stamped.push(all[i]);
+  }
+  if (stamped.length === 0) return null;
+
+  const whole = normalizeForAlignment(getUnitTextContent(el));
+  const held = stamped
+    .map((node) => normalizeForAlignment(getUnitTextContent(node)))
+    .join('');
+  if (whole !== held) return null;
+
+  const page = Number(stamped[0].getAttribute(CONVERSION_PAGE_ATTR));
+  return {
+    category: blockCategoryForVlm('footnote', whatFor),
+    statedCategory: 'footnote',
+    sourcePage: Number.isInteger(page) ? page : 0,
+  };
+}
+
+/**
  * Every stamped element of a converted book, in the book's own order.
  *
  * This is what the narration writer plans against and what tells a caller
@@ -5369,7 +5428,7 @@ export async function readEpubConversionUnits(epubSourcePath: string): Promise<N
   const whatFor = `conversion stamps in ${path.basename(epubSourcePath)}`;
   const { units, imageUnits } = await alignBlocksToEpub(epubSourcePath, []);
   const read = (el: any, key: NarrationElementKey, text: string): NarrationUnit => {
-    const stamp = conversionStampOnOrAbove(el, whatFor);
+    const stamp = narrationStampOf(el, whatFor);
     return {
       key,
       category: stamp?.statedCategory ?? null,
@@ -6660,6 +6719,8 @@ export interface NarrationEpubWriteResult {
    * the user did not ask for by name is a removal the caller must say out loud.
    */
   excludedCaptions: number;
+  /** The same, for the footnote asides — `excludeFootnotes`, applied. */
+  excludedFootnotes: number;
 }
 
 export interface NarrationEpubWriteOptions {
@@ -6726,6 +6787,25 @@ export interface NarrationEpubWriteOptions {
    * book keeps every caption it ever had — this is the second file, cut.
    */
   excludeCaptions?: boolean;
+  /**
+   * Leave out every element the conversion stamped `data-bf-cat="footnote"` —
+   * the note apparatus the compile gathers at each chapter's end.
+   *
+   * DEFAULT ON, and it is Owen's ruling of 2026-08-30, verbatim intent:
+   * *"Ideally I will never include endnotes for my purposes… Reference numbers
+   * should never make it to TTS. They aren't read in a real audiobook, they
+   * shouldn't be read in TTS."* Measured on God's People the night before: all
+   * 675 endnotes were narrated — each aside opening with its bare number glued
+   * after the chapter's last words, then citations, which the skip census
+   * ranks as the most TTS-defect-dense text in the book. The backlink digits
+   * Vellum hides inside each note go with the note.
+   *
+   * Same rule as `excludeCaptions` in every particular: the stamp is the only
+   * evidence, a stamp-less book is untouched, the exclusions ride the strike
+   * machinery so the cut proves them, and the official book keeps its notes.
+   * A note Owen wants narrated is a reclassification in the Foundry editor.
+   */
+  excludeFootnotes?: boolean;
 }
 
 /**
@@ -7273,7 +7353,7 @@ export async function writeNarrationEpub(
       for (const c of collectExportUnits(doc, body, entryName)) {
         const key = narrationElementKey(entryName, indexInFile++);
         collected.push({ key, el: c.el });
-        const stamp = conversionStampOnOrAbove(c.el, whatFor);
+        const stamp = narrationStampOf(c.el, whatFor);
         units.push({
           key,
           category: stamp?.statedCategory ?? null,
@@ -7335,22 +7415,28 @@ export async function writeNarrationEpub(
     for (const unit of perFile.get(file)!.units) struck.add(unit.key);
   }
 
-  // ── The captions, out by default ──────────────────────────────────────────
+  // ── The captions and the note apparatus, out by default ───────────────────
   //
   // Into the SAME set, HERE — after the strikes, before the overrides and the
   // expectation signatures — so every pass downstream (removal, pruning,
-  // signing, verification, the arithmetic) treats an excluded caption exactly
+  // signing, verification, the arithmetic) treats an excluded element exactly
   // as it treats a strike, and the guarantee check proves each one left the
   // copy. The category is the stamp's own word, read off this very walk, so no
   // fingerprint is owed: the key was minted against these bytes moments ago.
-  // See `NarrationEpubWriteOptions.excludeCaptions` for the ruling and the
-  // evidence.
+  // See `NarrationEpubWriteOptions.excludeCaptions` and `.excludeFootnotes`
+  // for the rulings and the evidence.
   let excludedCaptions = 0;
-  if (options?.excludeCaptions !== false) {
-    for (const unit of units) {
-      if (unit.category !== 'caption' || struck.has(unit.key)) continue;
+  let excludedFootnotes = 0;
+  const excludeCaption = options?.excludeCaptions !== false;
+  const excludeFootnote = options?.excludeFootnotes !== false;
+  for (const unit of units) {
+    if (struck.has(unit.key)) continue;
+    if (excludeCaption && unit.category === 'caption') {
       struck.add(unit.key);
       excludedCaptions++;
+    } else if (excludeFootnote && unit.category === 'footnote') {
+      struck.add(unit.key);
+      excludedFootnotes++;
     }
   }
 
@@ -7688,6 +7774,7 @@ export async function writeNarrationEpub(
     removedDocuments: emptied.sort(),
     unverifiableStrikes: plan.unverifiable,
     excludedCaptions,
+    excludedFootnotes,
   };
 }
 

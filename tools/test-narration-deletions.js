@@ -1020,11 +1020,12 @@ function illustratedLayout() {
   await check('nothing struck writes the whole book', async () => {
     const converted = await buildEpub('converted4.epub', CHAPTER);
     const out = path.join(ROOT, 'converted4.tts.epub');
-    // The caption default is pinned OFF here and in the picture cases below:
-    // these tests are about what a STRIKE does, and the fixture's one caption
-    // joining the removals would fold the default-exclusion rule into every
-    // count they assert.
-    const written = await writeNarrationEpub(converted, out, [], { excludeCaptions: false });
+    // The caption and footnote defaults are pinned OFF here and in the picture
+    // cases below: these tests are about what a STRIKE does, and the fixture's
+    // caption and note joining the removals would fold the default-exclusion
+    // rule into every count they assert.
+    const written = await writeNarrationEpub(
+      converted, out, [], { excludeCaptions: false, excludeFootnotes: false });
     assert.strictEqual(written.removedElements, 0);
     assert.strictEqual(written.rewrittenFiles.length, 0);
     const after = await readEpubConversionUnits(out);
@@ -1117,6 +1118,7 @@ function illustratedLayout() {
     const written = await writeNarrationEpub(book, out, ['OEBPS/cover.xhtml#img0'], {
       stripSupMarkers: false,
       excludeCaptions: false,
+      excludeFootnotes: false,
     });
     assert.strictEqual(written.removedElements, 1);
     assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml'],
@@ -1149,6 +1151,7 @@ function illustratedLayout() {
     const written = await writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#img0'], {
       stripSupMarkers: false,
       excludeCaptions: false,
+      excludeFootnotes: false,
     });
     assert.strictEqual(written.removedElements, 1);
     assert.deepStrictEqual(written.removedDocuments, [],
@@ -1176,7 +1179,7 @@ function illustratedLayout() {
     const out = path.join(ROOT, 'illustrated6.tts.epub');
     const written = await writeNarrationEpub(
       book, out, [footnote, 'OEBPS/cover.xhtml#img0'],
-      { stripSupMarkers: false, excludeCaptions: false });
+      { stripSupMarkers: false, excludeCaptions: false, excludeFootnotes: false });
     assert.strictEqual(written.removedElements, 2);
     assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml']);
     const after = await readEpubConversionUnits(out);
@@ -1594,8 +1597,11 @@ function illustratedLayout() {
     // the whole risk of a verification is that it refuses correct work.
     const book = await buildIllustratedEpub('clean.epub', CHAPTER_WITH_PLATE);
     const out = path.join(ROOT, 'clean.tts.epub');
+    // Defaults pinned off — the strike-count pinning rule above; the subject
+    // here is the verification passing a correct cut.
     const written = await writeNarrationEpub(
-      book, out, ['OEBPS/chapter-01.xhtml#5', 'OEBPS/chapter-01.xhtml#img0']);
+      book, out, ['OEBPS/chapter-01.xhtml#5', 'OEBPS/chapter-01.xhtml#img0'],
+      { excludeCaptions: false, excludeFootnotes: false });
     assert.ok(fs.existsSync(out), 'the verified copy was not written');
     assert.strictEqual(written.removedElements, 2);
   });

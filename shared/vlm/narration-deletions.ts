@@ -325,6 +325,14 @@ export interface NarrationEpubOutput {
    * so the re-cut applies the ruling's default rather than refusing.
    */
   captionsExcluded?: boolean;
+  /**
+   * The same pair for the note apparatus — Owen's ruling, 2026-08-30:
+   * *"Ideally I will never include endnotes for my purposes… Reference numbers
+   * should never make it to TTS."* Count and choice, exactly as the caption
+   * fields above, and read the same way by the pairing and the re-cut.
+   */
+  excludedFootnotes?: number;
+  footnotesExcluded?: boolean;
 }
 
 export function narrationElementKey(file: string, index: number): NarrationElementKey {
