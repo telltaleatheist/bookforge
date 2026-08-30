@@ -6653,6 +6653,13 @@ export interface NarrationEpubWriteResult {
    * the one that should say so.
    */
   unverifiableStrikes: string[];
+  /**
+   * Elements the cut left out because the conversion stamped them captions —
+   * `excludeCaptions`, applied. Counted inside `removedElements` (they ride the
+   * strike machinery) and named apart here because nobody struck them: a removal
+   * the user did not ask for by name is a removal the caller must say out loud.
+   */
+  excludedCaptions: number;
 }
 
 export interface NarrationEpubWriteOptions {
@@ -6694,6 +6701,31 @@ export interface NarrationEpubWriteOptions {
    * holding both the record and the file. See `planNarrationRemoval`.
    */
   verifyStrikes?: Readonly<Record<string, string>>;
+  /**
+   * Leave out every element the conversion stamped `data-bf-cat="caption"`.
+   *
+   * DEFAULT ON, `stripSupMarkers`'s own rule: a photo caption is words under a
+   * picture the listener cannot see, and it is the most defect-prone text in a
+   * book besides — dense digits, citations, foreign names. Measured on God's
+   * People (2026-08-29): all 37 captions were narrated, and Owen ruled on it —
+   * *"ideally it wont read caption text at all. those are unintentionally
+   * included."* So the copy comes out without them unless a caller says
+   * otherwise.
+   *
+   * THE EVIDENCE IS THE STAMP AND ONLY THE STAMP. Foundry's own classifier
+   * wrote `caption` on the element after reading the publisher's markup
+   * (`figcaption`, a `class` naming the word, the model's own answer for a
+   * scan), and a book with no conversion stamps offers no evidence — nothing is
+   * excluded from one, rather than a guess dressed as a rule. A caption Owen
+   * WANTS narrated is a reclassification in the Foundry editor, which records
+   * the decision on the block where every reader of the book can see it.
+   *
+   * The exclusions ride the strike machinery whole: they join the removal set
+   * before the expectation signatures are computed, so the verification proves
+   * each caption left the copy exactly as it proves a strike did. The official
+   * book keeps every caption it ever had — this is the second file, cut.
+   */
+  excludeCaptions?: boolean;
 }
 
 /**
@@ -7303,6 +7335,25 @@ export async function writeNarrationEpub(
     for (const unit of perFile.get(file)!.units) struck.add(unit.key);
   }
 
+  // ── The captions, out by default ──────────────────────────────────────────
+  //
+  // Into the SAME set, HERE — after the strikes, before the overrides and the
+  // expectation signatures — so every pass downstream (removal, pruning,
+  // signing, verification, the arithmetic) treats an excluded caption exactly
+  // as it treats a strike, and the guarantee check proves each one left the
+  // copy. The category is the stamp's own word, read off this very walk, so no
+  // fingerprint is owed: the key was minted against these bytes moments ago.
+  // See `NarrationEpubWriteOptions.excludeCaptions` for the ruling and the
+  // evidence.
+  let excludedCaptions = 0;
+  if (options?.excludeCaptions !== false) {
+    for (const unit of units) {
+      if (unit.category !== 'caption' || struck.has(unit.key)) continue;
+      struck.add(unit.key);
+      excludedCaptions++;
+    }
+  }
+
   const stripSups = options?.stripSupMarkers !== false;
 
   // ── The elements that speak a stated text instead of their printed one ────
@@ -7636,6 +7687,7 @@ export async function writeNarrationEpub(
     rewrittenFiles,
     removedDocuments: emptied.sort(),
     unverifiableStrikes: plan.unverifiable,
+    excludedCaptions,
   };
 }
 

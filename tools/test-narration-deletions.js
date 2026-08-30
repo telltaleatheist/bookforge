@@ -1020,7 +1020,11 @@ function illustratedLayout() {
   await check('nothing struck writes the whole book', async () => {
     const converted = await buildEpub('converted4.epub', CHAPTER);
     const out = path.join(ROOT, 'converted4.tts.epub');
-    const written = await writeNarrationEpub(converted, out, []);
+    // The caption default is pinned OFF here and in the picture cases below:
+    // these tests are about what a STRIKE does, and the fixture's one caption
+    // joining the removals would fold the default-exclusion rule into every
+    // count they assert.
+    const written = await writeNarrationEpub(converted, out, [], { excludeCaptions: false });
     assert.strictEqual(written.removedElements, 0);
     assert.strictEqual(written.rewrittenFiles.length, 0);
     const after = await readEpubConversionUnits(out);
@@ -1112,6 +1116,7 @@ function illustratedLayout() {
     const out = path.join(ROOT, 'illustrated4.tts.epub');
     const written = await writeNarrationEpub(book, out, ['OEBPS/cover.xhtml#img0'], {
       stripSupMarkers: false,
+      excludeCaptions: false,
     });
     assert.strictEqual(written.removedElements, 1);
     assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml'],
@@ -1143,6 +1148,7 @@ function illustratedLayout() {
     const out = path.join(ROOT, 'illustrated5.tts.epub');
     const written = await writeNarrationEpub(book, out, ['OEBPS/chapter-01.xhtml#img0'], {
       stripSupMarkers: false,
+      excludeCaptions: false,
     });
     assert.strictEqual(written.removedElements, 1);
     assert.deepStrictEqual(written.removedDocuments, [],
@@ -1169,7 +1175,8 @@ function illustratedLayout() {
     const footnote = units.find((u) => u.category === 'footnote').key;
     const out = path.join(ROOT, 'illustrated6.tts.epub');
     const written = await writeNarrationEpub(
-      book, out, [footnote, 'OEBPS/cover.xhtml#img0'], { stripSupMarkers: false });
+      book, out, [footnote, 'OEBPS/cover.xhtml#img0'],
+      { stripSupMarkers: false, excludeCaptions: false });
     assert.strictEqual(written.removedElements, 2);
     assert.deepStrictEqual(written.removedDocuments, ['OEBPS/cover.xhtml']);
     const after = await readEpubConversionUnits(out);

@@ -6661,6 +6661,91 @@ function emitComplete(
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
+ * The file a narration should actually read: the book, or a cut of it with the
+ * photo captions left out.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-08-29, after God's People narrated all 37 of its photo captions:
+ * *"ideally it wont read caption text at all. those are unintentionally
+ * included. if we can find a fix for those then we should."* A caption is words
+ * under a picture the listener cannot see, and it is the most defect-prone text
+ * in a book besides (the skip census: dense digits, citations, foreign names).
+ *
+ * ── Why the substitution happens HERE ───────────────────────────────────────
+ *
+ * This is the one door every queued narration walks through, and the evidence
+ * is on the file itself: foundry's conversion stamps say `data-bf-cat="caption"`
+ * on every caption, book by book. A book with no caption stamps — every
+ * publisher EPUB never converted, every book with no pictures — passes through
+ * UNTOUCHED, same path, same bytes, so nothing changes for a file that carries
+ * no evidence. The cut itself is `writeNarrationEpub`, the one verified door
+ * that is allowed to write a narration copy: it proves every excluded element
+ * left the file or destroys the output.
+ *
+ * ── Why the cut is content-addressed ────────────────────────────────────────
+ *
+ * e2a's sessions remember the `--ebook` path they were prepped from, and the
+ * resume and clean-session flows match on it. A cut named by the SOURCE's
+ * sha256 gives the same book the same path on every submission — so a resumed
+ * render matches the session its first run made — and a book that changed gets
+ * a new path, which is exactly a session that must not be resumed. (`.v1`
+ * versions the cut rule itself: a future change to what the cut removes must
+ * not reuse a stale file.)
+ *
+ * NOT applied to `renderRangeHeadless`: its resume seeds FLACs by sentence
+ * INDEX from a prior run's directory, and changing the input text under a
+ * seeded campaign would land every cached sentence after the first caption on
+ * the wrong words. The campaign tool keeps reading exactly what it is handed.
+ *
+ * A cut that fails is a job that fails, in the cut's own sentence — falling
+ * back to the uncut book would quietly narrate the captions this exists to
+ * keep out, which is the silence the ruling ended.
+ */
+async function narrationInputFor(epubPath: string, jobId: string): Promise<string> {
+  const { readEpubConversionUnits, writeNarrationEpub } = await import('./epub-processor.js');
+
+  const units = await readEpubConversionUnits(epubPath);
+  const captions = units.filter((u) => u.category === 'caption').length;
+  if (captions === 0) return epubPath;
+
+  const bytes = await fs.readFile(epubPath);
+  const sha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  const cutDir = path.join(getDefaultE2aTmpPath(), 'narration-cuts');
+  const cutPath = path.join(cutDir, `${sha16}.v1.nocap.epub`);
+
+  try {
+    await fs.access(cutPath);
+    // Same source sha ⇒ the same cut, made by this same rule. Reused so a
+    // resubmission of a half-finished render preps against the identical file.
+    console.log(`[PARALLEL-TTS] ${captions} caption(s) excluded from narration (cut on disk reused): ${cutPath}`);
+    return cutPath;
+  } catch { /* not cut yet */ }
+
+  await fs.mkdir(cutDir, { recursive: true });
+  // Cut to a staging name and renamed into place, so a process that dies
+  // mid-write cannot leave a truncated file under the name the reuse branch
+  // above trusts.
+  const staging = path.join(cutDir, `${sha16}.staging-${crypto.randomUUID()}.epub`);
+  const written = await writeNarrationEpub(epubPath, staging, [], {
+    excludeCaptions: true,
+    // Deliberately OFF, against the writer's own default: this door has never
+    // stripped sup markers, and this substitution changes exactly one thing.
+    // Turning the strip on here is its own decision with its own ruling.
+    stripSupMarkers: false,
+  });
+  await fs.rename(staging, cutPath);
+  await logger.log('INFO', jobId,
+    `${written.excludedCaptions} photo caption(s) excluded from the narration`, {
+      cutPath, source: epubPath,
+    });
+  console.log(
+    `[PARALLEL-TTS] ${written.excludedCaptions} caption(s) excluded from narration — the book keeps `
+    + `them; the cut is ${cutPath}`);
+  return cutPath;
+}
+
+/**
  * Start a parallel conversion
  */
 export async function startParallelConversion(
@@ -6697,6 +6782,24 @@ export async function startParallelConversion(
     voice: config.settings.fineTuned,
     device: config.settings.device
   });
+
+  // The captions out, before anything downstream sees the path: the session,
+  // its resume matching and the clean-session sweep all key on `epubPath`, so
+  // one substitution here keeps every one of them speaking about one file.
+  // After the title above, which should read as the book and not as a sha.
+  try {
+    const narrationInput = await narrationInputFor(config.epubPath, jobId);
+    if (narrationInput !== config.epubPath) {
+      config = { ...config, epubPath: narrationInput };
+    }
+  } catch (err) {
+    const error = `The narration copy could not be cut: ${err instanceof Error ? err.message : err}`;
+    console.error('[PARALLEL-TTS]', error);
+    await logger.failJob(jobId, error);
+    stopPowerBlock();
+    emitJobFailure(jobId, error);
+    return { success: false, error };
+  }
 
   // Determine effective output directory:
   // - If bfpPath is set, output directly to the project audiobook folder

@@ -304,6 +304,27 @@ export interface NarrationEpubOutput {
    * than that the question was never asked.
    */
   removedDocuments?: string[];
+  /**
+   * How many caption-stamped elements the cut left out of this copy — Owen's
+   * ruling (2026-08-29): a photo caption is words under a picture the listener
+   * cannot see, and it is never narrated unless somebody asks. The count, so
+   * the UI can say what the copy differs from the book by, exactly as
+   * `removedSupMarkers` does for the markers.
+   *
+   * OPTIONAL because records written before the exclusion existed have no
+   * number — those copies still HAVE their captions, and the pairing in
+   * `strikeInNarrationCopy` reads absence exactly that way.
+   */
+  excludedCaptions?: number;
+  /**
+   * Whether the cut was ASKED to leave the captions out — `excludeCaptions`,
+   * `strippedSupMarkers`'s twin: the choice, apart from the count, because
+   * zero captions excluded is what a book with no captions looks like either
+   * way. The re-cut a copy-side deletion triggers reproduces this choice; a
+   * record without it predates the field, which is not a choice anybody made,
+   * so the re-cut applies the ruling's default rather than refusing.
+   */
+  captionsExcluded?: boolean;
 }
 
 export function narrationElementKey(file: string, index: number): NarrationElementKey {

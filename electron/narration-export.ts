@@ -317,6 +317,13 @@ export interface NarrationExportResult {
   totalElements: number;
   /** Digits-only `<sup>` footnote references removed on the way out. */
   removedSupMarkers: number;
+  /**
+   * Caption-stamped elements the cut left out by default — inside
+   * `removedElements`, counted apart because nobody struck them and the caller
+   * with a user in front of it should say where they went
+   * (`NarrationEpubWriteOptions.excludeCaptions`).
+   */
+  excludedCaptions: number;
   /** Chapter openings written as their stored chapter names, single line. */
   overriddenChapterOpenings: number;
   /**
@@ -415,6 +422,14 @@ export interface NarrationExportOptions {
    * book and the strip cannot tell one from a footnote reference.
    */
   stripSupMarkers?: boolean;
+  /**
+   * Leave the caption-stamped elements out of the copy. Defaults ON
+   * (`writeNarrationEpub`'s own default, and Owen's ruling — see
+   * `NarrationEpubWriteOptions.excludeCaptions` for the whole argument). The
+   * choice lands in the manifest record (`captionsExcluded`) so a re-cut
+   * reproduces it.
+   */
+  excludeCaptions?: boolean;
 }
 
 /** The file TTS reads, and how it came to be there. */
@@ -622,6 +637,7 @@ export async function exportNarrationEpub(
     book.absPath, staged, merged.elements,
     {
       ...(options?.stripSupMarkers === undefined ? {} : { stripSupMarkers: options.stripSupMarkers }),
+      ...(options?.excludeCaptions === undefined ? {} : { excludeCaptions: options.excludeCaptions }),
       ...(Object.keys(chapterSpeech).length > 0 ? { textOverrides: chapterSpeech } : {}),
       ...(verifyStrikes === undefined ? {} : { verifyStrikes }),
     });
@@ -644,10 +660,14 @@ export async function exportNarrationEpub(
     fromEpubSha256: sha256,
     removedElements: written.removedElements,
     removedSupMarkers: written.removedSupMarkers,
-    // The one choice about this file that no other record describes. Kept so a
-    // re-cut made by a deletion on the copy itself reproduces it rather than
-    // quietly reverting to the default — see `strikeInNarrationCopy`.
+    // The choices about this file that no other record describes. Kept so a
+    // re-cut made by a deletion on the copy itself reproduces them rather than
+    // quietly reverting to the defaults — see `strikeInNarrationCopy`. The
+    // caption choice also tells the pairing there whether the copy on disk is
+    // missing its captions, which no strike names.
     strippedSupMarkers: options?.stripSupMarkers !== false,
+    captionsExcluded: options?.excludeCaptions !== false,
+    excludedCaptions: written.excludedCaptions,
     removedDocuments: written.removedDocuments,
   }, familyId);
 
@@ -657,6 +677,7 @@ export async function exportNarrationEpub(
     removedElements: written.removedElements,
     totalElements: written.totalElements,
     removedSupMarkers: written.removedSupMarkers,
+    excludedCaptions: written.excludedCaptions,
     overriddenChapterOpenings: written.overriddenElements,
     removedDocuments: written.removedDocuments,
     fromStrikes: merged.fromStrikes,
@@ -873,6 +894,18 @@ export async function strikeInNarrationCopy(
   // book it removes the markers, on the copy it finds none to remove, and the
   // two meet either way (shared/vlm/narration-pairing.ts).
   const struck = new Set(split.elements);
+  // A copy cut without its captions is missing elements NO STRIKE NAMES, and a
+  // pairing that did not know would land every gesture after a caption one
+  // element off. The record says whether this copy was cut that way
+  // (`captionsExcluded`); the sha gate above has already proven the book in
+  // front of us is the one it was cut from, so the book's own caption stamps
+  // are exactly what the cut left out. A record from before the field exists
+  // describes a copy that still has its captions, and adds nothing here.
+  if (record.captionsExcluded === true) {
+    for (const unit of await readEpubConversionUnits(book.absPath)) {
+      if (unit.category === 'caption') struck.add(unit.key);
+    }
+  }
   const signedBook = await signBookElements(
     book.absPath, struck, true, await chapterSpeechOverrides(book.absPath));
   const signedCopy = await signBookElements(copyPath, new Set(), true, {});
@@ -890,6 +923,10 @@ export async function strikeInNarrationCopy(
   const startedAt = Date.now();
   const written = await exportNarrationEpub(projectDir, {
     stripSupMarkers: record.strippedSupMarkers,
+    // A record from before the caption exclusion is not a choice anybody made,
+    // so the ruling's default applies rather than a refusal — the type's own
+    // argument (`NarrationEpubOutput.captionsExcluded`).
+    excludeCaptions: record.captionsExcluded ?? true,
   }, familyId);
   const recutMs = Date.now() - startedAt;
 
