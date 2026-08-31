@@ -30,7 +30,7 @@ python scripts), or copy `electron/data` into `dist/electron/` by hand.
 | `--mode`      | Path | What it exercises |
 |---------------|------|-------------------|
 | `tts` (default) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
-| `streaming`   | Listen — `orpheus-worker-pool → orpheus_stream.py`, one sentence per vLLM sequence, no packing | the phone/Listen path |
+| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → orpheus_stream.py` | **the path shipped in the app** |
 
 In `tts` mode the per-sentence FLACs (with their inter-clip gaps already baked in by
 `orpheus.py _save_audio`) are concatenated in numeric order into a **bare WAV** — good
@@ -48,8 +48,12 @@ python cli/bookforge-tts.py --tts --voice rohan --input passage.txt --out sample
 python cli/bookforge-tts.py --tts --voice rohan --input passage.txt --out sample.wav \
     --tier fast --sentence-gap 0.75 --keep-sentences
 
-# Streaming path instead:
-python cli/bookforge-tts.py --tts --mode streaming --voice rohan --text "Hello." --out s.wav
+# Streaming path instead (BLOCKS: paragraphs separated by blank lines — block 1 is
+# the one "play" was pressed on, the rest are read ahead, exactly as on a web page):
+python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt
+
+# Only read two blocks ahead, to see the batch shapes that makes:
+python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt --read-ahead 2
 
 # See exactly what would run, touch no GPU:
 python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-run
@@ -102,6 +106,7 @@ project path, so the manifest cover/metadata resolve exactly as they do in the a
   `<project>/output/<Title>. <Author>.m4b` (required for `--audiobook`).
 - `--language <code>` — default `en`.
 - `--mode {tts,streaming}` — render path for `--tts`; default `tts`.
+- `--read-ahead <n>` — streaming only: how many following blocks to read ahead. Default is every remaining block, which is what the extension does on a page.
 
 **Customization**
 - `--tier {auto,extreme,fast,moderate,light}` — force the GPU memory tier
@@ -437,3 +442,38 @@ automatically. Engine adapters live beside it (`orpheus-batch-render.js`,
 `orpheus-render.js`) and load under `electron-stub.js`, which shims the tiny Electron
 surface the pipeline touches — if a module reaches an unstubbed API it throws loudly
 naming it, which is the signal to add exactly that (no blanket catch-all, no fallbacks).
+
+
+## Streaming: what `--mode streaming` actually drives
+
+`--mode streaming` is not a reimplementation of the Listen path — it **is** the Listen
+path. `cli/orpheus-stream.js` starts the app's real `ttsApiServer` (headlessly, via
+`cli/electron-stub.js`) and then speaks the protocol in `docs/TTS_API.md` to it, frame
+for frame, the way the BookForge Reader extension does: one preempting `speak` for the
+block you pressed play on, then a background `speak` per following block.
+
+If BookForge is already running it attaches to that server instead of starting a second
+one — driving the live app is more faithful, not less, and the port is busy either way.
+
+It prints the timing table that matters for streaming work — when each block finished
+generating, when it would actually play, and whether the reader would have been made to
+wait:
+
+```
+block rows  complete   audio     plays      stall
+   1    1       54s   10.9s      54s        -
+   2    3     55.4s   26.9s    64.9s        -
+   3    1     36.6s    6.7s    91.8s        -
+...
+first word at 54s
+no stalls — continuous flow
+```
+
+A block completing *out of order* costs nothing — the client assembles by index. A
+**stall** is the only real defect: the next block in reading order was not ready when
+the previous one finished playing.
+
+The older `cli/orpheus-render.js` still exists and still calls the worker pool's
+per-sentence API directly. That skips `stream-scheduler` and the pool's batching
+entirely, so it cannot reproduce anything that lives there — which was every streaming
+defect found on 2026-08-31. Prefer `--mode streaming`.

@@ -28,7 +28,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parent.parent          # cli/ -> bookforge root
 NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
-ORPHEUS_RENDER = REPO_ROOT / "cli" / "orpheus-render.js"        # streaming path (Listen)
+ORPHEUS_STREAM = REPO_ROOT / "cli" / "orpheus-stream.js"        # streaming path (Listen/extension)
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
@@ -127,7 +127,11 @@ def cmd_tts(args):
     --mode tts (default): the audiobook/batch path (parallel-tts-bridge ->
         renderRangeHeadless -> e2a prep packs ~300-char chunks -> worker.py). This is
         the path Owen ships with.
-    --mode streaming: the Listen path (orpheus-worker-pool, one sentence per vLLM
+    --mode streaming: the Listen/extension path — the app's tts-api-server driven
+    over its own WebSocket protocol, so the run goes through handleSpeak, splitForTts,
+    the stream scheduler and the pool's batch ladder exactly as pressing play does.
+    Input is BLOCKS (paragraphs separated by blank lines); block 1 is the one played
+    and the rest are read ahead. (was: orpheus-worker-pool, one sentence per vLLM
         sequence, no packing).
     """
     _require(args.engine == "orpheus",
@@ -148,11 +152,11 @@ def cmd_tts(args):
         adapter = ORPHEUS_BATCH
     else:
         # Streaming path.
-        _require(ORPHEUS_RENDER.is_file(), f"missing engine adapter {ORPHEUS_RENDER}")
-        _require((REPO_ROOT / "dist" / "electron" / "orpheus-worker-pool.js").is_file(),
+        _require(ORPHEUS_STREAM.is_file(), f"missing engine adapter {ORPHEUS_STREAM}")
+        _require((REPO_ROOT / "dist" / "electron" / "tts-api-server.js").is_file(),
                  "BookForge is not built — run `npm run build:electron` first "
-                 "(dist/electron/orpheus-worker-pool.js missing)")
-        adapter = ORPHEUS_RENDER
+                 "(dist/electron/tts-api-server.js missing)")
+        adapter = ORPHEUS_STREAM
 
     # Streaming mode has no packing/prep: --model-dir and --language are simply not
     # consumed there. Refuse rather than silently ignore (NO FALLBACKS).
@@ -161,6 +165,12 @@ def cmd_tts(args):
                  "--model-dir is not supported in --mode streaming (registered voices only)")
         _require((args.language or "en") == "en",
                  "--language is not supported in --mode streaming")
+        # The streaming adapter drives the app's REAL path (tts-api-server -> stream
+        # scheduler -> pool), and over that protocol a speak names a VOICE — there is no
+        # per-request prompt-token seam to hand this to. Refuse rather than ignore.
+        _require(not args.voice_token,
+                 "--voice-token is not supported in --mode streaming (the app path binds a "
+                 "voice by id; use --voice)")
 
     # Resolve relative paths against the USER'S cwd — the node adapter runs with
     # cwd=REPO_ROOT, so a bare 'sample.wav' would otherwise land inside the repo (and a
@@ -182,9 +192,11 @@ def cmd_tts(args):
         cmd += ["--keep-sentences"]
     if args.mode == "tts" and args.keep_session:
         cmd += ["--keep-session"]
-    # Streaming-only passthrough (the batch path resolves the token via --model-dir/voice).
-    if args.mode == "streaming" and args.voice_token:
-        cmd += ["--voice-token", args.voice_token]
+    # Streaming-only: how many following blocks are read ahead, which is what decides
+    # the batch shapes the scheduler forms. Default (omitted) = every remaining block,
+    # exactly what the extension does on a page.
+    if args.mode == "streaming" and args.read_ahead is not None:
+        cmd += ["--read-ahead", str(args.read_ahead)]
 
     # Customization delivered through the process env — the compiled pipeline reads these
     # seams (mirrors how the app's persisted settings feed the same code paths).
@@ -634,7 +646,10 @@ def build_parser():
                         "'streaming' = Listen (one sentence per vLLM sequence)")
     p.add_argument("--language", default="en", help="language code (default en)")
     p.add_argument("--voice", help="voice id (a BookForge models.json id / model folder)")
-    p.add_argument("--voice-token", dest="voice_token", help="prompt token override")
+    p.add_argument("--voice-token", dest="voice_token", help="prompt token override (tts mode only)")
+    p.add_argument("--read-ahead", dest="read_ahead", type=int, default=None,
+                   help="streaming: how many following blocks to read ahead "
+                        "(default: all of them, as the extension does)")
     p.add_argument("--model-dir", dest="model_dir",
                    help="custom model directory (overrides voice resolution)")
     p.add_argument("--models-dir", dest="models_dir",
