@@ -76,7 +76,22 @@ export class ServerConfigService {
    *  entry, else the first enabled, else the first known. */
   readonly activeServer = computed<ServerEntry | null>(() => {
     const list = this.servers();
-    return list.find(s => s.id === this.activeId())
+    // A DISABLED server may not be the active one. The active id is matched
+    // first, but only while that entry is still switched on: `enabled: false`
+    // means "don't show me this library", and a server the user has turned off
+    // cannot be the one the reader gate, tokens and analytics quietly speak to.
+    // Without the enabled check the first arm always won and the `find(enabled)`
+    // below was unreachable — which is how a phone ended up asking a
+    // switched-off Mac for its reader list and reporting "Load failed" on a
+    // shelf whose books were all coming from titan (2026-08-31).
+    const active = list.find(s => s.id === this.activeId());
+    if (active?.enabled) return active;
+    // Substituting for an unusable active entry, prefer a real server over the
+    // on-device pseudo-server: these accessors want somewhere to GET readers and
+    // tokens from, and `local` (url '') has neither. `local` may still be active
+    // deliberately — opening an on-device book does exactly that — which is why
+    // it only loses when it is standing in for something else.
+    return list.find(s => s.enabled && !s.local)
       ?? list.find(s => s.enabled)
       ?? list[0]
       ?? null;
@@ -260,11 +275,20 @@ export class ServerConfigService {
     }
   }
 
-  /** Show/hide a server's books. Toggles if `enabled` is omitted. */
+  /** Show/hide a server's books. Toggles if `enabled` is omitted. Switching the
+   *  ACTIVE server off re-points the active id, exactly as removeServer does for
+   *  a deleted one — the computed above would survive without this, but leaving a
+   *  disabled id persisted in localStorage means every launch re-reads a pointer
+   *  that is already known to be wrong. */
   toggleServer(id: string, enabled?: boolean): void {
     const cur = this.servers().find(s => s.id === id);
     if (!cur) return;
-    this.patch(id, { enabled: enabled ?? !cur.enabled });
+    const next = enabled ?? !cur.enabled;
+    this.patch(id, { enabled: next });
+    if (!next && this.activeId() === id) {
+      this.activeId.set(this.activeServer()?.id ?? '');
+      this.persistActive();
+    }
   }
 
   setActive(id: string): void {
