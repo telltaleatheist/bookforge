@@ -78,36 +78,39 @@ const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 // next pump refills to the full cap and the pool's flushBatch packs them into full
 // batches again.
 //
-// The ramp is a claim on ONE batch, so the scheduler has to keep read-ahead from
-// widening it (rampPendingOnPriority / the fill budget in pump). The pool batches from
-// a SINGLE queue shared by every session: flushBatch fills to STREAM_BATCH_WIDTH,
-// priority rows first. So 8 ramp rows plus any background rows sitting in that queue
-// when the flush fires go out as one width-16 batch — the same ~40s the ramp exists to
-// avoid, with the ramp's own rows no earlier than before. That is the COMMON case on a
-// cold start, not a corner: the extension fires read-ahead speaks milliseconds after
-// the playing one, all of them then wait out the same model load, and every session
-// starts within the same instant of each other.
+// THE FIRST BATCH IS WIDE ON PURPOSE, AND THE COST IS PAID BEFORE THE FIRST WORD.
 //
-// So while a playing session has a ramp wave out with nothing back from it yet, what
-// read-ahead faces is a BUDGET, not a total block: background sessions may dispatch up
-// to (STREAM_RAMP_WIDTH − the wave's size) rows, in sessions-map order, which is
-// reading order. The ramp batch still goes out at width ≤ 8; what changes is what
-// rides in it.
+// It is tempting to give the playing block a batch to ITSELF so the first word lands
+// fast, and it works exactly as advertised: measured 2026-08-31 (M1 Ultra, deathstalker,
+// MLX) the clicked paragraph came back in 15.3s alone versus ~50s riding with seven
+// read-ahead rows, because rows retire in mlx-lm's order and a whole paragraph is
+// normally the LONGEST row present, so it retires LAST. That was shipped for an
+// afternoon. It is wrong, and the reason is arithmetic, not scheduling:
 //
-// It has to be a budget because the wave is capped by the PLAYING BLOCK'S OWN LENGTH,
-// not by STREAM_RAMP_WIDTH. A 2-3 sentence blog paragraph — the common shape of a
-// page, not a corner — ramps to 2-3 rows: a first burst carrying ~25s of audio, all of
-// it the block already being heard, with the next block's opening sentences left to
-// wait out the FOLLOWING full-width batch. Measured 2026-08-10: an audible ~15s gap
-// between paragraph 1 and paragraph 2. Filling the rest of that batch with the next
-// block's openers banks their audio inside the ~28s the ramp was already spending. A
-// playing block with ≥8 sentences leaves budget 0 and behaves exactly as before.
+//     batch of 1 row  ->  12.7 chars/sec        deathstalker SPEAKS at ~17.6 chars/sec
+//     batch of 3 rows ->  14.3 chars/sec
+//     batch of 8 rows ->  30-33 chars/sec
+//     batch of 16     ->  32 chars/sec
 //
-// The budget lasts exactly until the ramp batch's first row retires, by which time the
-// worker is busy with that batch and any released rows would have queued for the NEXT
-// flush anyway. It is on new dispatches only — rows already in flight when a playing
-// session appears are untouched (the check lives in pump, which is only ever about what
-// to send next), so the warm case, where read-ahead is already mid-batch, never stalls.
+// A narrow batch generates SLOWER THAN SPEECH. So a fast first word is bought by
+// starting the read already behind: the listener hears 11s of paragraph 1 and then
+// waits ~33s for paragraph 2, because the first wide batch takes ~44s and paragraph 1
+// never bought enough time to cover it. Every batch from the second on runs ~1.8x
+// speech and pulls away, so there is exactly ONE stall — early, and unmissable.
+//
+// The listener's own ruling: pay it up front. A 50s wait before the first word, then an
+// article that reads straight through, beats 15s to the first word and a hole in the
+// middle of it. So the first batch goes out at STREAM_RAMP_WIDTH — the narrowest width
+// that beats speech rate — carrying the playing block AND the read-ahead behind it, and
+// playback starts when the whole batch lands with several blocks already buffered.
+//
+// Do not "fix" the clicked block retiring last without re-reading this block. It is a
+// real observation with a wrong cure, and the cure has been tried.
+//
+// The pool batches from a SINGLE queue shared by every session: flushBatch fills to the
+// ladder's current width, priority rows first, so the playing block's own sentences are
+// always in that first batch rather than queued behind read-ahead.
+//
 //
 // The "MLX needs one narrow fixed warmed shape" rationale that once justified small
 // batches everywhere is obsolete: mlx-lm 0.31.3 right-pads batch prefills, so widths
@@ -146,11 +149,6 @@ interface SchedulerSession {
    *  a boolean cleared by the first resolver would leak an uncancelled stream if the
    *  opener policy ever widens again. */
   streamingCount: number;
-  /** Has ANY dispatched sentence come back yet — done OR failed? Not derivable from
-   *  `durations`, which only records successes: a first wave that failed every row
-   *  would leave that map empty forever and hold read-ahead behind a batch that is
-   *  already over. Set in both branches of dispatch; only ever false→true. */
-  firstResultSeen: boolean;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
 }
@@ -158,12 +156,29 @@ interface SchedulerSession {
 /** Every generating session, keyed by requestId. */
 const sessions = new Map<string | number, SchedulerSession>();
 
-/** Rows background sessions have already contributed to the CURRENT ramp window — the
- *  fill riding in the ramp's own batch (see the first-batch ramp note above). Counted
- *  across all background sessions, because the budget is a property of the one batch
- *  they are all filling. Reset when the window closes: the playing session's first
- *  result, or the death of the session holding the ramp. */
-let rampFillDispatched = 0;
+// READ-AHEAD IS NEVER NARROWED BY BLOCK, and the temptation to do it is strong enough
+// to be worth writing down. It looks like the fix for "paragraph 2 arrived after
+// paragraphs 3 and 4": rows retire in mlx-lm's order, so a batch mixing the block that
+// plays next with the blocks behind it retires the SHORT ones first, and on a news page
+// paragraph 2 is usually the long quote-heavy one. Giving the next block a batch to
+// itself does put it back in order — and measured 2026-08-31 (deathstalker, MLX,
+// ~175-char sentences) it is a disaster, because MLX per-step cost is nearly FLAT in
+// width above ~3 rows:
+//
+//     width  3 -> 36.8s wall for  28.0s of audio = 0.76x realtime
+//     width  8 -> 42.1s wall for  75.5s of audio = 1.79x realtime
+//     width 16 -> 83.0s wall for 149.8s of audio = 1.80x realtime
+//
+// Widening 3 -> 8 costs FIVE SECONDS of wall clock and returns 2.7x the audio. A
+// per-block ramp holds read-ahead at the 3-row shape, i.e. below realtime, so playback
+// outruns generation and stalls again at every paragraph — trading one ordering
+// complaint for a permanent one. In-order delivery is worth nothing if the pipeline
+// cannot keep up; being a few blocks out of order costs nothing once the buffer is
+// deep, because the client assembles by index and plays in order regardless.
+//
+// The ordering the listener actually feels is handled where it belongs: the FIRST batch
+// carries the block being played and nothing else (the ramp hold below), so the first
+// word is fast. Everything after that goes as wide as the pool's ladder allows.
 
 function broadcastToWindows(data: Record<string, unknown>): void {
   for (const win of BrowserWindow.getAllWindows()) {
@@ -222,7 +237,6 @@ export function start(
     sink,
     priority,
     streamingCount: 0,
-    firstResultSeen: false,
     lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
   };
   sessions.set(requestId, s);
@@ -281,11 +295,6 @@ function stopAll(): void {
 function endSession(s: SchedulerSession | undefined): void {
   if (!s || s.stopped) return;
   console.log(`[StreamScheduler] Stop req=${s.requestId}`);
-  // Was this the session read-ahead is being held behind? If it dies with its ramp
-  // wave unanswered — cancelled, preempted by a new play action, stopped by the user
-  // — nothing else will ever report that first result, so the ramp window has to be
-  // closed here or background generation stays on its fill budget forever.
-  const heldTheRamp = s.priority && !s.firstResultSeen && s.nextToDispatch > s.startIndex;
   s.stopped = true;
   sessions.delete(s.requestId);
   // Only the playing session ever streams, so cancel streaming only when this
@@ -301,53 +310,6 @@ function endSession(s: SchedulerSession | undefined): void {
   // map removal above (the staleness predicates read exactly that state).
   getActiveEngine().cancelPendingBatchIfStale?.();
   if (!s.completeSent) s.sink({ kind: 'cancelled', requestId: s.requestId });
-  // After the session is out of the map, so rampPendingOnPriority() sees the truth.
-  // (Harmless inside stopAll: a session it has already stopped pumps to nothing, and
-  // one it is about to stop can only dispatch rows that isStale() then drops.)
-  if (heldTheRamp) {
-    if (!rampPendingOnPriority()) rampFillDispatched = 0;
-    pumpBackgroundSessions();
-  }
-}
-
-/** Is a playing session's first (ramped) wave out with nothing back from it yet?
- *
- *  That is the window in which a background row entering the pool's queue would be
- *  packed into the ramp's own batch and widen it — see the first-batch ramp note at
- *  the top of this file. `nextToDispatch > startIndex` is what makes it "out": a
- *  priority session that has not dispatched anything holds nobody up (and one with
- *  no sentences at all never would, so this cannot deadlock on it). */
-function rampPendingOnPriority(): boolean {
-  for (const s of sessions.values()) {
-    if (s.priority && !s.stopped && !s.firstResultSeen && s.nextToDispatch > s.startIndex) {
-      return true;
-    }
-  }
-  return false;
-}
-
-/** How many rows the pending ramp wave has in flight, summed over every session
- *  holding one (normally exactly one session, and normally its entire first wave).
- *  This is what the fill budget is measured against: the ramp's batch has room for
- *  STREAM_RAMP_WIDTH rows, the wave claims this many, and the remainder is read-ahead's
- *  to fill. Same predicate as rampPendingOnPriority — a session that is not holding a
- *  ramp contributes nothing to the width the ramp is claiming. */
-function rampWaveInFlight(): number {
-  let total = 0;
-  for (const s of sessions.values()) {
-    if (s.priority && !s.stopped && !s.firstResultSeen && s.nextToDispatch > s.startIndex) {
-      total += s.inFlight.size;
-    }
-  }
-  return total;
-}
-
-/** The ramp window closed (its first row landed, or the session holding it died):
- *  re-pump read-ahead. Safe to call at any time — pump re-checks the hold itself. */
-function pumpBackgroundSessions(): void {
-  for (const s of [...sessions.values()]) {
-    if (!s.priority) pump(s);
-  }
 }
 
 /** Seconds of generated-but-not-yet-played audio ahead of the playhead. */
@@ -380,37 +342,15 @@ function pump(s: SchedulerSession): void {
     ? Math.min(STREAM_RAMP_WIDTH, fullCap)
     : fullCap;
 
-  // …and while that ramp wave is unanswered, read-ahead dispatches against a BUDGET
-  // rather than freely: the pool would otherwise pack these rows into the ramp's own
-  // batch and widen it back to 16, but the wave is capped by the playing block's length
-  // and is often far short of STREAM_RAMP_WIDTH, so the room it leaves is filled with
-  // the next blocks' openers instead of wasted (see the first-batch ramp note above).
-  // Background sessions are pumped in sessions-map order, which is reading order, so
-  // the fill is the audio that plays next.
-  const fillingRamp = batching && !s.priority && rampPendingOnPriority();
-  // The wave cannot change while the window is open (its rows only leave in flight by
-  // reporting a result, which closes the window), so measure it once per pump.
-  const rampFillBudget = fillingRamp
-    ? Math.max(0, STREAM_RAMP_WIDTH - rampWaveInFlight())
-    : 0;
-
   while (
     s.inFlight.size < cap &&
     s.nextToDispatch < s.sentences.length &&
     bufferedSecondsAhead(s) < s.lookaheadSeconds
   ) {
-    // Breaks rather than returning, so a background session that has already delivered
-    // everything still reports 'complete' below — withholding a terminal event would
-    // leave the client's read-ahead slot occupied by a block that is actually finished.
-    // Rows already in flight are unaffected either way.
-    if (fillingRamp && rampFillDispatched >= rampFillBudget) break;
     dispatch(s, s.nextToDispatch++);
-    if (fillingRamp) rampFillDispatched++;
   }
 
-  // Everything generated and delivered? (No ramp release needed on this path: to get
-  // here a session either dispatched nothing — never a hold — or had every dispatched
-  // row come back, which set firstResultSeen; and it leaves the map either way.)
+  // Everything generated and delivered?
   if (
     !s.completeSent &&
     s.nextToDispatch >= s.sentences.length &&
@@ -439,21 +379,6 @@ function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boole
   if (!s.priority || typeof engine.generateSentenceStream !== 'function') return false;
   if (typeof engine.getMaxConcurrentSentences === 'function') return false; // batching engine
   return sentenceIndex < s.startIndex + 1;
-}
-
-/** A dispatched sentence came back — done or failed, the distinction doesn't matter
- *  here. The FIRST one on a playing session closes the ramp window: the pool is now
- *  demonstrably working on that batch, so read-ahead can queue for the next flush. */
-function noteResult(s: SchedulerSession): void {
-  if (s.firstResultSeen) return;
-  s.firstResultSeen = true;
-  if (s.priority) {
-    // Window closed — unless another playing session is holding a ramp of its own (rare,
-    // but the counter belongs to whichever window is open, so guard it). The next ramp
-    // gets a fresh fill budget.
-    if (!rampPendingOnPriority()) rampFillDispatched = 0;
-    pumpBackgroundSessions();
-  }
 }
 
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
@@ -489,7 +414,6 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
           console.error(`[StreamScheduler] Stream sentence ${sentenceIndex} failed:`, result.error);
           s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
         }
-        noteResult(s);
         pump(s);
       });
     return;
@@ -516,9 +440,6 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
         console.error(`[StreamScheduler] Sentence ${sentenceIndex} failed:`, result.error);
         s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
       }
-      // Before pump(s): a first result on a playing session releases read-ahead, and
-      // it must be released whether this row succeeded or failed.
-      noteResult(s);
       pump(s);
     });
 }

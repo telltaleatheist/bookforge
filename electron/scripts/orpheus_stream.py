@@ -613,8 +613,14 @@ class OrpheusStreamServer:
         """
         if os.environ.get('ORPHEUS_SKIP_WARMUP') == '1':
             return
+        # The GROUPING cap can be much wider than anything worth warming: the pool
+        # ramps batch width up to it (orpheus-worker-pool.ts takeBatchWidth), and the
+        # wide rungs are only ever reached behind a buffer many sentences deep, where a
+        # one-off ~10s lazy compile is inaudible. ORPHEUS_STREAM_WARM_MAX is the widest
+        # shape worth paying for at load; it falls back to the grouping cap.
         try:
-            n = int(os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
+            n = int(os.environ.get('ORPHEUS_STREAM_WARM_MAX')
+                    or os.environ.get('ORPHEUS_STREAM_BATCH', '16'))
         except ValueError:
             n = 16
         if n < 1:

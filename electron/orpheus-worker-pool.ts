@@ -115,12 +115,73 @@ function translateModelDirForSpawn(dir: string): string {
 // Passed to the worker as ORPHEUS_STREAM_BATCH (grouping cap + warmup shape); also
 // reported as deviceWorkers so the extension read-ahead dispatches this many blocks
 // concurrently, which is what keeps a 16-wide batch actually full.
-const STREAM_BATCH_WIDTH = 16;
+// The CEILING a streaming batch ramps up to — not the width every batch runs at.
+//
+// MLX throughput is bought almost entirely with width, and 16 is the SLOWEST point of
+// the measured curve: 12.4 sent/min at 16, 22.8 at 48, 27-29 at 96 (M1 Ultra, the same
+// curve MLX_TIERS is built on; the rep-window fix lifts the whole thing to ~35-42).
+// Pinning the resident stream server at 16 while the audiobook path ran the tier's 96
+// is why read-ahead could not stay ahead of playback. On darwin the ceiling is now the
+// machine's own MLX tier width; every other backend keeps 16, which is where it was
+// measured. The engine narrows further on its own when a batch is deep (orpheus.py
+// _mlx_batch_groups / _mlx_width_for_depth against ORPHEUS_MLX_MEM_BUDGET_GB), so this
+// is a ceiling to ask for, never a promise to allocate.
+const STREAM_BATCH_CEILING_DEFAULT = 16;
+let streamBatchCeilingCache: number | null = null;
+
+function streamBatchCeiling(): number {
+  if (streamBatchCeilingCache !== null) return streamBatchCeilingCache;
+  let ceiling = STREAM_BATCH_CEILING_DEFAULT;
+  if (process.platform === 'darwin') {
+    try {
+      ceiling = Math.max(
+        STREAM_BATCH_CEILING_DEFAULT,
+        orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).batchSize,
+      );
+    } catch {
+      // Tier resolution reads config/electron state; if it is not ready yet, the
+      // measured-safe 16 is the right answer and the next call re-resolves.
+      return STREAM_BATCH_CEILING_DEFAULT;
+    }
+  }
+  streamBatchCeilingCache = ceiling;
+  return ceiling;
+}
+
+// ─── Batch width ─────────────────────────────────────────────────────────────
+//
+// EVERY streaming batch goes out at STREAM_RAMP_WIDTH. Flat — not a ramp, and
+// deliberately not the ceiling.
+//
+// Width buys throughput (12.7 chars/sec at 1 row, 30-33 at 8, 41.8 at 32 — measured
+// 2026-08-31, M1 Ultra, deathstalker, MLX), so widening looks free. It is not, because
+// a batch is ATOMIC to the listener: nothing in it can be played until it retires, and
+// its WALL CLOCK grows with width just as fast as its output does.
+//
+//     width  8 -> ~48s wall, ~75s of audio     (1.57x speech)
+//     width 16 -> ~83s wall, ~150s of audio    (1.80x speech)
+//     width 32 -> ~150s wall
+//
+// The buffer must cover the wall clock of the batch being generated. At width 8 the
+// buffer grows by ~27s per batch and every batch is ~48s, so it can never be caught.
+// Doubling toward the ceiling breaks that: a ~150s batch against a ~75s buffer starves
+// it, and playback stops dead mid-article until the whole batch lands at once — which
+// is exactly what a doubling ladder (8 -> 16 -> 32 -> ...) did on its first real
+// article, about halfway through. More total throughput, delivered too late to hear.
+//
+// So the useful width is the SMALLEST one that clearly beats speech rate, and 8 is it:
+// 1.57x is enough for the buffer to run away from the playhead, and the batch is short
+// enough to always land before the listener reaches it. The ceiling below is NOT a
+// batch width — it is how deep the queue is allowed to get (see getMaxConcurrentSentences),
+// which is what keeps every one of these batches full.
+function batchWidth(): number {
+  return Math.min(STREAM_RAMP_WIDTH, streamBatchCeiling());
+}
 
 // The FIRST dispatch wave of a session that is being listened to right now goes out
 // this wide instead of the full width, and only that one (stream-scheduler.ts pump).
 // Everything after it — and every background read-ahead session, where full batches
-// are the entire point — uses STREAM_BATCH_WIDTH.
+// are the entire point — ramps up toward streamBatchCeiling().
 //
 // The trade is cushion against how long the listener stares at a spinner. A batch's
 // wall clock is roughly flat in width but not perfectly: 8 rows land ~60s of audio in
@@ -468,7 +529,8 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
     // this; without it a future vLLM bump (V1 default-on) breaks only streaming.
     const exportCmd =
       `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1 VLLM_USE_V1=0${utilExport} ` +
-      `ORPHEUS_STREAM_BATCH=${STREAM_BATCH_WIDTH} ORPHEUS_STREAM_RAMP=${STREAM_RAMP_WIDTH} ` +
+      `ORPHEUS_STREAM_BATCH=${streamBatchCeiling()} ORPHEUS_STREAM_RAMP=${STREAM_RAMP_WIDTH} ` +
+      `ORPHEUS_STREAM_WARM_MAX=${STREAM_BATCH_CEILING_DEFAULT} ` +
       `EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
     const cd = `cd ${shellQuote(wslE2a)}`;
     const run =
@@ -491,7 +553,13 @@ function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
       // Same V0 pin as the WSL arm — streaming's EOS boost is a V0-only feature.
       VLLM_USE_V1: '0',
       EBOOK2AUDIOBOOK_PATH: E2A_PATH,
-      ORPHEUS_STREAM_BATCH: String(STREAM_BATCH_WIDTH),
+      ORPHEUS_STREAM_BATCH: String(streamBatchCeiling()),
+      // Warm the narrow rungs only. Warming every width measured 176s of a 184s load,
+      // and load time is visible on EVERY server start; the ladder's wide rungs are
+      // reached behind a buffer many sentences deep, where a one-off ~10s lazy compile
+      // is invisible. The ramp width is warmed for the opposite reason — its compile
+      // would land in front of the first sentence.
+      ORPHEUS_STREAM_WARM_MAX: String(STREAM_BATCH_CEILING_DEFAULT),
       // The scheduler's first-wave width for a playing session — warmed alongside
       // the full width so the ramp doesn't pay a lazy compile it exists to avoid.
       ORPHEUS_STREAM_RAMP: String(STREAM_RAMP_WIDTH),
@@ -1064,7 +1132,7 @@ const FLUSH_GRACE_MS = 25;
  *  scheduler's .then(pump) continuation behind it. pump() is what dispatches the next
  *  sentences into batchQueue, so a microtask flush fired one microtask EARLY, on a
  *  queue that was still one item short: every streaming batch went out at
- *  STREAM_BATCH_WIDTH-1. A macrotask runs after ALL pending microtasks — including
+ *  one row short of the width it meant to send. A macrotask runs after ALL pending microtasks — including
  *  every .then(pump) refill — so the flush sees the fully refilled queue.
  *
  *  It waits FLUSH_GRACE_MS rather than 0 because on a WARM engine the sessions do not
@@ -1116,7 +1184,9 @@ function flushBatch(): void {
   // that mixes voices runs as one call with each row on its own adapter — regrouping
   // would only break the read-ahead's reading order and shrink the batches that pay
   // for themselves by being full.
-  const picked = batchQueue.splice(0, STREAM_BATCH_WIDTH);
+  // Ramping width (see the batch-width ramp note above): narrow now, wider each
+  // flush, so the first word is fast and the pipeline still reaches full throughput.
+  const picked = batchQueue.splice(0, batchWidth());
   const resolvers = new Map<number, (r: GenResult) => void>();
   const cancels = new Map<number, () => boolean>();
   const items = picked.map((it, i) => {
@@ -1473,11 +1543,12 @@ export function getWorkerCount(): number {
 /** How many sentences the scheduler may keep in flight per session. One Orpheus
  *  process serves them, but it batches a whole window into a single vLLM/MLX call,
  *  so the scheduler should dispatch a batch's worth at once (not one-at-a-time as
- *  getWorkerCount()=1 would imply). At STREAM_BATCH_WIDTH=16 this is deliberately a
- *  DEEP dispatch: a batch costs the same wall clock however full it is, so anything
- *  short of a full batch is throughput thrown away. */
+ *  getWorkerCount()=1 would imply). Reporting the CEILING rather than the ramp's
+ *  current rung is deliberate: the pool decides how wide each batch actually goes out
+ *  (takeBatchWidth), and it can only reach the widest rung if the scheduler has kept
+ *  the queue that deep. Anything short of a full batch is throughput thrown away. */
 export function getMaxConcurrentSentences(): number {
-  return worker && worker.isReady ? STREAM_BATCH_WIDTH : 1;
+  return worker && worker.isReady ? streamBatchCeiling() : 1;
 }
 
 /** Orpheus is single-worker by nature; report a fixed topology so the TTS Server
@@ -1496,7 +1567,7 @@ export function getStreamWorkerConfig(): StreamWorkerConfig {
     // as prefetchConcurrency). Report the batch size so the extension pipelines a
     // batch's worth of blocks ahead — keeping the vLLM/MLX batch fed — even though
     // there's physically one worker (activeWorkers stays 1).
-    deviceWorkers: worker && worker.isReady ? STREAM_BATCH_WIDTH : 1,
+    deviceWorkers: worker && worker.isReady ? streamBatchCeiling() : 1,
     activeWorkers: getWorkerCount(),
   };
 }
