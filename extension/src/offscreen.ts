@@ -122,11 +122,21 @@ const RESUME_MIN_SECONDS = 4;
 // many seconds of audio sit ready ahead of the current block. Crossing a block
 // boundary then plays from cache instead of stalling while the next block generates.
 //
-// Sized to buffer a whole short article ahead (~2000s ≈ 5000 spoken words). Cached
-// audio is PCM16 mono @ 24 kHz = 48 KB/s, so 2000s ≈ 96 MB — held in the LRU cache
-// below, which is itself capped at CACHE_LIMIT_BYTES (256 MB) and evicts oldest
-// blocks first, so a longer page just keeps a rolling ~5000-word window in memory.
-const PREFETCH_LOOKAHEAD_SECONDS = 2000;
+// TEN MINUTES, which is a policy and not a memory limit.
+//
+// The two shapes this has to serve are a news article and a whole book posted on one
+// page. Ten minutes covers any short article ENTIRELY — a 3-minute read is rendered
+// end to end while the listener is still on paragraph one, so nothing can interrupt it
+// — while on a 9-hour page it renders ten minutes ahead and then STOPS, waiting for the
+// listener to work their way down before generating more. Rendering further ahead than
+// that is speculative work on audio nobody may reach: the engine is busy, the machine
+// is warm, and abandoning a page throws all of it away.
+//
+// It was 2000s (33 minutes) — sized only as "a whole short article", which it achieved
+// by being far larger than one. Cached audio is PCM16 mono @ 24 kHz = 48 KB/s, so this
+// window is ~29 MB against the LRU's CACHE_LIMIT_BYTES (256 MB): the cap was never what
+// bounded read-ahead, so raising or lowering this is a decision about compute, not RAM.
+const PREFETCH_LOOKAHEAD_SECONDS = 600;
 const SEEK_STEP_GRACE = 0.05;
 // Blocks are paragraphs (p / li / heading / blockquote …). Append this much silence
 // to the end of each block's audio so paragraphs get a real pause between them
