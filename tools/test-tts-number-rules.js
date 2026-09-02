@@ -146,6 +146,18 @@ test('scripture: a BARE reference converts only when the two readings coincide',
   untouched('at 7:02 that morning');
 });
 
+test('scripture: a bare reference CONTINUING a book-anchored list is scripture', () => {
+  // The n2 acceptance run (2026-09-02) left "20:6" to the model, which read it
+  // "twenty". A reference joined to a named one by ; , or "and" is a verse of
+  // that book, never a clock time — whatever the verse number.
+  reads('(Leviticus 19:31; 20:6)', '(Leviticus nineteen thirty one; twenty six)');
+  reads('Genesis 6:11, 13 and 7:1 say so', 'Genesis six eleven, thirteen and seven one say so');
+  reads('see Isa. 5:20, 6:3', 'see Isaiah five twenty, six three');
+  // Any other word between them breaks the chain: this is a time again.
+  assert.deepStrictEqual(claims('Lev. 19:31 and then 7:02'), [['scripture', 'Lev. 19:31']]);
+  assert.deepStrictEqual(claims('Lev. 19:31. At 7:02 he left'), [['scripture', 'Lev. 19:31']]);
+});
+
 test('scripture: a clock RANGE is left whole, never half-read', () => {
   // "6:00" is a verse under ten and would be declined on its own, which would
   // leave "five thirty-6:00" — half a range, in two notations. The whole shape

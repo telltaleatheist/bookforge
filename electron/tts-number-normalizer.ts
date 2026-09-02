@@ -88,8 +88,11 @@ export { sitsInCitation, bareWord };
  *
  * n1 → n2 (2026-09-02): the deterministic pre-pass, and the prompt that tells
  * the model it already ran.
+ * n2 → n3 (2026-09-02, after the live n2 run): bare references continuing a
+ * book-anchored list are scripture; NUMBER_DROPPED; the prompt's rule for a
+ * number the passage prints twice.
  */
-export const NORMALIZER_VERSION = 'n2';
+export const NORMALIZER_VERSION = 'n3';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -157,6 +160,8 @@ export type NumberEditStatus =
   | 'LIST_MARKER_PERIOD'
   /** A letter-bearing word of `find` is missing from `replace`, or out of order. */
   | 'WORDS_DROPPED'
+  /** `find` has more groups of digits than `replace` has number words: a number was lost. */
+  | 'NUMBER_DROPPED'
   /** The span sits in citation apparatus and is unspeakable in any form. */
   | 'CITATION_CODE'
   /** The span crosses a text-node boundary — an `<em>`, a `<sup>`, a link. */
@@ -373,6 +378,50 @@ function spokenWords(find: string, replace: string): boolean {
 const LIST_MARKER = /^\d{1,3}\.$/;
 
 /**
+ * The words a number is made of when spoken. Hyphenated compounds are split
+ * before the count, so "eighty-five" is two of them.
+ */
+const NUMBER_WORDS = new Set([
+  'zero', 'oh', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+  'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen',
+  'nineteen', 'twenty', 'thirty', 'forty', 'fifty', 'sixty', 'seventy', 'eighty', 'ninety',
+  'hundred', 'thousand', 'million', 'billion', 'trillion',
+  'first', 'second', 'third', 'fourth', 'fifth', 'sixth', 'seventh', 'eighth', 'ninth', 'tenth',
+  'eleventh', 'twelfth', 'thirteenth', 'fourteenth', 'fifteenth', 'sixteenth', 'seventeenth',
+  'eighteenth', 'nineteenth', 'twentieth', 'thirtieth', 'fortieth', 'fiftieth', 'sixtieth',
+  'seventieth', 'eightieth', 'ninetieth', 'hundredth', 'thousandth',
+  'twenties', 'thirties', 'forties', 'fifties', 'sixties', 'seventies', 'eighties', 'nineties',
+  'hundreds',
+]);
+
+/** How many number words `text` speaks. */
+function numberWordCount(text: string): number {
+  return text.toLowerCase().split(/[\s-]+/).map((t) => bareWord(t))
+    .filter((t) => NUMBER_WORDS.has(t)).length;
+}
+
+/** How many separate runs of digits `text` prints. */
+function digitRunCount(text: string): number {
+  return (text.match(/\d+/g) ?? []).length;
+}
+
+/**
+ * The fewest number words a reading of `text` can honestly contain.
+ *
+ * A run of one or two digits is at least one word ("six", "fifteen", "twenty").
+ * A run of three or more is at least TWO — "one hundred", "nineteen eighty-five",
+ * "two thousand", "zero zero one" — there is no single English number word for
+ * any value from a hundred up. That second floor is what catches a year range
+ * read by half: "1914-1918" → "nineteen fourteen" has two number words for two
+ * runs, and only the per-run floor sees that it needed four.
+ */
+function fewestNumberWords(text: string): number {
+  let needed = 0;
+  for (const run of text.match(/\d+/g) ?? []) needed += run.length >= 3 ? 2 : 1;
+  return needed;
+}
+
+/**
  * Does `replace` still carry every prose word of `find`, in order?
  *
  * The words that must survive are the ones with a letter and no digit —
@@ -490,6 +539,18 @@ export function validateNumberEdits(
       continue;
     }
     if (!keepsEveryWord(find, replace)) { reject(find, replace, 'WORDS_DROPPED'); continue; }
+    // Every run of digits has to come out as at least one number word. Measured
+    // on the n2 acceptance run, 2026-09-02: "20:6" came back as "twenty" — the
+    // verse silently gone, and nothing above could see it because the answer was
+    // plain words with no digit in it. "1985" → "nineteen eighty-five" is three
+    // words for one run; "28:7-8" → "twenty-eight seven through eight" is three
+    // for three; "20:6" → "twenty" is one for two, and refused.
+    if (numberWordCount(replace) < fewestNumberWords(find)) {
+      reject(find, replace, 'NUMBER_DROPPED',
+        `${digitRunCount(find)} group(s) of digits need at least ${fewestNumberWords(find)} number `
+        + `word(s); the reading has ${numberWordCount(replace)}`);
+      continue;
+    }
     if (sitsInCitation(target, find, at)) { reject(find, replace, 'CITATION_CODE'); continue; }
 
     const end = at + find.length;

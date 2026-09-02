@@ -475,6 +475,23 @@ test('PUNCTUATION_SPOKEN — the model may not narrate the name of a mark', () =
     only('The 3 hyphen rule applied.', '3 hyphen', 'three hyphen'), 'APPLIED');
 });
 
+test('NUMBER_DROPPED — every run of digits must come out as a number word', () => {
+  // The n2 acceptance run (2026-09-02): "20:6" came back as "twenty", the verse
+  // silently gone, and no other check could see it.
+  assert.strictEqual(only('See 20:6 there.', '20:6', 'twenty'), 'NUMBER_DROPPED');
+  assert.strictEqual(only('See 20:6 there.', '20:6', 'twenty six'), 'APPLIED');
+  assert.strictEqual(only('In 1985 it began.', '1985', 'nineteen eighty-five'), 'APPLIED');
+  assert.strictEqual(only('Verses 28:7-8 say so.', '28:7-8', 'twenty-eight seven through eight'), 'APPLIED');
+  assert.strictEqual(only('Box 001 here.', '001', 'zero zero one'), 'APPLIED');
+  // A year range read by half has the right NUMBER of words for the wrong reason:
+  // a run of three or more digits is never one English word.
+  assert.strictEqual(only('From 1914-1918 it ran.', '1914-1918', 'nineteen fourteen'), 'NUMBER_DROPPED');
+  assert.strictEqual(only('From 1914-1918 it ran.', '1914-1918', 'nineteen fourteen to nineteen eighteen'), 'APPLIED');
+  assert.strictEqual(only('It left at 10:05.', '10:05', 'ten oh five'), 'APPLIED');
+  assert.strictEqual(only('Pi is 3.14 here.', '3.14', 'three point one four'), 'APPLIED');
+  assert.strictEqual(only('In 1900 it began.', '1900', 'nineteen hundred'), 'APPLIED');
+});
+
 test('LIST_MARKER_PERIOD — a list marker keeps its period', () => {
   assert.strictEqual(only('1. Amulet', '1.', 'one'), 'LIST_MARKER_PERIOD');
   assert.strictEqual(only('1. Amulet', '1.', 'one.'), 'APPLIED');

@@ -432,12 +432,27 @@ const SCRIPTURE_REF = new RegExp(
  */
 const CLOCK_RANGE = /\d{1,2}:\d{2}\s*[‐-―-]\s*\d{1,2}:\d{2}/g;
 
+/**
+ * What may stand between one reference and the next in a LIST of them —
+ * "Leviticus 19:31; 20:6", "Genesis 6:11, 13 and 7:1". A joiner (a semicolon, a
+ * comma, or the word "and"), then any number of bare verses or verse ranges
+ * each followed by a joiner of its own, and nothing else. The bare verses are
+ * the integer rule's, and they are still part of the same list.
+ */
+const REF_LIST_JOIN = new RegExp(
+  '^\\s*(?:[;,]\\s*(?:and\\s+)?|and\\s+)'
+  + '(?:\\d{1,3}(?:\\s*[\\u2010-\\u2015\\u002D]\\s*\\d{1,3})?\\s*(?:[;,]\\s*(?:and\\s+)?|and\\s+))*$');
+
 function scriptureCandidates(text: string): Candidate[] {
   const out: Candidate[] = [];
+  // Where the last reference that named its book ended — the anchor a bare
+  // reference right after it inherits.
+  let anchoredEnd = -1;
   for (const m of matches(SCRIPTURE_REF, text)) {
     const [whole, prefix, bookToken, , chapter, verse, verseLetter, verse2, verse2Letter, ff] = m;
     const spans = m.indices!;
     const book = bookToken === undefined ? null : bibleBook(bookToken);
+    const end = m.index + whole.length;
 
     // A BARE chapter:verse — no book named — is scripture OR a clock time. The
     // two readings coincide once the verse reaches ten ("6:59" is "six fifty
@@ -445,7 +460,16 @@ function scriptureCandidates(text: string): Candidate[] {
     // five" and is left for the model. A capitalized word that names no book —
     // "Room 3:15", "Chapter 4:2" — counts as no book, and the numbers still
     // read the same way whichever it turns out to be.
-    if (book === null && Number(verse) < 10) continue;
+    //
+    // THE ONE EXCEPTION is a bare reference that CONTINUES a list the book was
+    // named at the head of: "Leviticus 19:31; 20:6" is two verses of Leviticus,
+    // never a clock time. Measured 2026-09-02 (the n2 acceptance run): left to
+    // the model, that "20:6" came back as "twenty" — the verse dropped. The
+    // anchor carries down the list only through a list joiner; any other word
+    // between them breaks the chain.
+    const continuesList = anchoredEnd >= 0 && REF_LIST_JOIN.test(text.slice(anchoredEnd, m.index));
+    if (book === null && !continuesList && Number(verse) < 10) continue;
+    if (book !== null || continuesList) anchoredEnd = end;
 
     const chapterWords = cardinalWords(Number(chapter));
     const verseWords = cardinalWords(Number(verse));
@@ -470,7 +494,6 @@ function scriptureCandidates(text: string): Candidate[] {
       && bookToken.toLowerCase() !== book.toLowerCase();
     const expandsPrefix = prefix !== undefined && book !== null && NUMBERED_BOOKS.has(book);
 
-    const end = m.index + whole.length;
     if (expandsPrefix) {
       const at = spans[1]![0];
       out.push({

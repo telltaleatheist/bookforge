@@ -24,6 +24,8 @@ Output ONLY this, inside <answer> tags:
 
 Rules:
 - Every "find" must be copied from the TARGET character for character, must contain at least one digit, and must appear exactly once in the TARGET. Never quote the PREVIOUS or NEXT passages.
+- If the same number is printed more than once in the TARGET, extend each "find" with the word before or after it so that each one is unique ("in 1920 the" and "by 1920 it"). A "find" that matches twice is refused.
+- Every group of digits in "find" must come out as words in "replace". "20:6" is "twenty six", never "twenty".
 - Keep "find" as short as the number expression allows, but include every word that changes with it (a month name, a currency word, "per cent"). Every word in "find" that is not part of a number must appear again, unchanged and in the same order, in "replace".
 - "replace" is plain spoken words. It may contain letters, spaces, hyphens, commas, apostrophes and periods, and it may NEVER contain a digit.
 - NEVER write the NAME of a punctuation mark. Not "hyphen", not "colon", not "dash", not "slash". A range is read "to" or "through"; a colon in a reference is read as a pause, not as the word "colon".

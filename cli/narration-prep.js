@@ -25,6 +25,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
+const { applyE2aScratchDir } = require('./e2a-scratch.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
 
 function parseArgs(argv) {
@@ -65,6 +66,11 @@ async function main() {
         `no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
     }
     console.log(`[prep] project book: ${inputPath}`);
+    // The app keeps its narration cuts under the LIBRARY's scratch (or the
+    // Settings override); prep there, or a later app render pays for the
+    // model pass again because it looks for the copy somewhere else.
+    const libraryRoot = path.dirname(path.dirname(projectDir));
+    console.log(`[prep] scratch: ${applyE2aScratchDir(libraryRoot)}`);
   } else {
     inputPath = path.resolve(args.input);
   }

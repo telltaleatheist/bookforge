@@ -44,6 +44,7 @@ const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
+const { applyE2aScratchDir } = require('./e2a-scratch.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -88,6 +89,9 @@ async function main() {
   const libraryRoot = path.dirname(path.dirname(projectDir));
   const manifestSvc = require('../dist/electron/manifest-service.js');
   manifestSvc.setLibraryBasePath(libraryRoot);
+  // The same scratch the app would use for this library, so the narration copy
+  // a `--prep` wrote (or the app's own run wrote) is found and reused here.
+  console.log(`[audiobook] scratch: ${applyE2aScratchDir(libraryRoot)}`);
 
   // Input EPUB: explicit --input override, else best-available (app "Latest").
   // Only needed for TTS (STEP 1); --assemble-only runs the existing cache and needs none.
