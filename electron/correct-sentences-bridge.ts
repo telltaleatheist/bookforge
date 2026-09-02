@@ -261,8 +261,14 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
  *  path reads chapter_sentences straight out of session-state.json, where the
  *  markers are still literal, so without it a chapter title would show up in the
  *  QA list as "[heading]Chapter Eight.". Same drift e2a fixed on its own side by
- *  collapsing five hand-rolled copies into one pattern. */
-const SML_RE = /\[\/?(?:break|pause|heading|music|sfx|silence)(?::[^\]]+)?\]/gi;
+ *  collapsing five hand-rolled copies into one pattern.
+ *
+ *  [item] joined on 2026-09-01 for the same reason: e2a marks each <li> so it is
+ *  read as its own chunk (Orpheus re-speaks the last item of a packed list
+ *  instead of stopping), and the marker is literal in session-state.json. This
+ *  regex mirrors e2a's SML_UNSPOKEN_PATTERN in lib/conf_models.py — keep them
+ *  in step. */
+const SML_RE = /\[\/?(?:break|pause|heading|item|music|sfx|silence)(?::[^\]]+)?\]/gi;
 
 /** The marker that says the row was a section header — read before SML_RE eats it. */
 const SML_HEADING_RE = /\[\/?heading\]/i;
