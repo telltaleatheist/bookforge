@@ -48,7 +48,8 @@ async function runNarrationPrep(bridge, inputPath, jobId, opts) {
     console.log('[prep] no digits a narrator reads — input passes through untouched');
   } else {
     console.log(
-      `[prep] ${prep.appliedSpans} number(s) read as words by ${prep.model} `
+      `[prep] ${prep.appliedSpans} number(s) read as words — ${prep.appliedByRules} by rules, `
+      + `${prep.appliedByModel} by ${prep.model} `
       + `(copy reused: ${prep.reused ? 'yes' : 'no'}) → ${prep.inputPath}`);
   }
   return prep;

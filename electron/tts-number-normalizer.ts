@@ -19,6 +19,26 @@
  * against a wall of deterministic rules, and a rejected edit means the printed
  * digits stand and the rejection is recorded by name.
  *
+ * ── And the third of it that code DOES read, since 2026-09-02 ───────────────
+ *
+ * The first live run measured the cost of asking a 9b model about shapes that
+ * have exactly one reading: it narrated "Jeremiah 44:17-19" as "four fourteen
+ * seventeen", said the word "hyphen" out loud forty times, and threw away
+ * fifty-seven correct expansions of "2 Cor." because it had dropped the
+ * abbreviation. Owen's ruling on that record: *"lets try doing deterministic
+ * scripture fixing since we know that shape. have it do the deterministic part
+ * before sending it through to the ai, so the ai has less work to do… just basic
+ * deterministic stuff that we can guarantee will be correct on the other side,
+ * then send everything else through the ai."*
+ *
+ * So `electron/tts-number-rules.ts` runs FIRST, over every selected span. What
+ * it converts, the model never sees; a passage with no digit left after it is
+ * never sent at all (`RULES_ONLY`). What the model IS shown is the rule-applied
+ * text, its edits are validated against that, and the accepted ones are mapped
+ * back to offsets in the ORIGINAL — a model edit that reaches into a span the
+ * rules already read is refused (`OVERLAPS_APPLIED`), because two readings of
+ * one span is not an improvement on either.
+ *
  * ── The three things this pass will not do ──────────────────────────────────
  *
  *  1. It will not touch text with no digit in it. Selection is a digit test, and
@@ -49,18 +69,27 @@ import { promises as fs } from 'fs';
 import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
-import { expandNumbersEnDetailed } from './number-expansion.js';
+import { applyNumberRules, bareWord, sitsInCitation, stillHasDigits } from './tts-number-rules.js';
+import type { NumberRuleOutcome } from './tts-number-rules.js';
 import type { NarrationNumberTarget, NarrationTextRewrite } from './epub-processor.js';
+
+// The citation guard is DEFINED in tts-number-rules.ts, because the rules and
+// this validator owe the same answer about "p. 23". Re-exported here so the
+// tests and callers that knew it by this name still find it.
+export { sitsInCitation, bareWord };
 
 /**
  * The rule version, in the copy's own filename.
  *
- * BUMP IT when the selection rule, any disposition below, or
- * `electron/prompts/tts-number-normalize.txt` changes. A `.n1.` copy on disk is
- * a claim about what this pass does, and reusing one after the pass changed
- * would narrate yesterday's rules.
+ * BUMP IT when the selection rule, any disposition below,
+ * `electron/tts-number-rules.ts` or `electron/prompts/tts-number-normalize.txt`
+ * changes. A `.n1.` copy on disk is a claim about what this pass does, and
+ * reusing one after the pass changed would narrate yesterday's rules.
+ *
+ * n1 → n2 (2026-09-02): the deterministic pre-pass, and the prompt that tells
+ * the model it already ran.
  */
-export const NORMALIZER_VERSION = 'n1';
+export const NORMALIZER_VERSION = 'n2';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -72,10 +101,12 @@ export const NORMALIZER_VERSION = 'n1';
  * anything hides the bug. Declared once, here, so the tag in a cache path, the
  * tag in an error message and the tag the request carries are one string.
  *
- * qwen3.5:9b is what Owen pulled on 2026-09-02; qwen3.8:27b is the heavier
+ * qwen3.5:9b-q8_0 (10 GB) is the Q8 build of the model Owen pulled on 2026-09-02
+ * — the Q4_K_M used 9 GB of a 24 GB card, so Owen moved it up one step
+ * ("it can probably go up one step"); qwen3.8:27b is the heavier
  * option and is set by typing it into Settings, not by editing this line.
  */
-export const DEFAULT_NORMALIZER_MODEL = 'qwen3.5:9b';
+export const DEFAULT_NORMALIZER_MODEL = 'qwen3.5:9b-q8_0';
 
 /** How much of the model's answer to keep in the record when it will not parse. */
 const RAW_ANSWER_EXCERPT = 600;
@@ -120,18 +151,22 @@ export type NumberEditStatus =
   | 'DIGIT_IN_REPLACE'
   /** `replace` is not plain spoken words. */
   | 'REPLACE_NOT_WORDS'
+  /** `replace` narrates the NAME of a punctuation mark — "hyphen", "colon". */
+  | 'PUNCTUATION_SPOKEN'
+  /** A bare list marker "3." whose replacement dropped the period. */
+  | 'LIST_MARKER_PERIOD'
   /** A letter-bearing word of `find` is missing from `replace`, or out of order. */
   | 'WORDS_DROPPED'
   /** The span sits in citation apparatus and is unspeakable in any form. */
   | 'CITATION_CODE'
-  /** The deterministic expander reads this shape differently. */
-  | 'ORACLE_DISAGREE'
   /** The span crosses a text-node boundary — an `<em>`, a `<sup>`, a link. */
   | 'SPANS_MARKUP'
-  /** The span overlaps one already accepted for this target. */
+  /** The span overlaps one already accepted for this target, rule or model. */
   | 'OVERLAPS_APPLIED'
   /** The heading and its contents entry could not take the SAME edit. */
   | 'TOC_MISMATCH'
+  /** A deterministic rule read it, before the model was asked anything. */
+  | 'APPLIED_RULE'
   | 'APPLIED';
 
 /** One proposed edit and what became of it. */
@@ -147,6 +182,11 @@ export interface NumberEditRecord {
 export type NumberUnitStatus =
   /** The model answered and the answer parsed (it may still have been empty). */
   | 'ANSWERED'
+  /**
+   * The deterministic rules left no digit behind, so the model was never asked.
+   * The cheapest possible outcome, and the one the pre-pass exists to produce.
+   */
+  | 'RULES_ONLY'
   /** The answer would not parse, twice. The digits stand. */
   | 'UNIT_PARSE_FAIL'
   /** The edits came from a heading this entry repeats, not from a model call. */
@@ -164,7 +204,14 @@ export interface NumberUnitRecord {
   /** The zip entry, or the text file's own name. */
   file: string;
   status: NumberUnitStatus;
-  /** The text the model was shown — the target's own, before any edit. */
+  /**
+   * The target's own text, BEFORE any edit — rule or model.
+   *
+   * Not the string the model was shown, which is this with the rules already
+   * applied: a reviewer needs the printed original to judge every edit against,
+   * and every `find` below is a substring of it (a model edit that reached into
+   * a rule's span was refused, so what survives is verbatim in both).
+   */
   text: string;
   edits: NumberEditRecord[];
   /** The head of the raw answer, when it would not parse. Diagnosis only. */
@@ -180,8 +227,14 @@ export interface NumberNormalizationRecord {
   generatedAt: string;
   targetsTotal: number;
   targetsSelected: number;
+  /** How many of the selected spans still had a digit after the rules ran. */
+  targetsAsked: number;
   unitsParseFailed: number;
   appliedSpans: number;
+  /** Of `appliedSpans`, how many a deterministic rule read. */
+  appliedByRules: number;
+  /** And how many the model read. The two sum to `appliedSpans`. */
+  appliedByModel: number;
   dispositions: Record<string, number>;
   units: NumberUnitRecord[];
 }
@@ -264,53 +317,60 @@ export function collapseForTocMatch(text: string): string {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * What a spoken number may be made of: letters, spaces, and the punctuation a
- * narrator's own transcript carries. Anything else — a digit, a slash, a
- * currency sign, a bracket — means the model did not finish the conversion or
- * smuggled markup through the replacement.
+ * What a spoken number may be made of, WHATEVER the book prints around it:
+ * letters, spaces, and the punctuation a narrator's own transcript always
+ * carries.
+ *
+ * The book's own punctuation is added to this per-edit (see `spokenWords`): the
+ * guard is against a digit, a currency sign and markup, never against a dash the
+ * book itself printed. It was the latter that refused
+ * "one. Halloween—October thirty-first" on the 2026-09-02 run, five times, for
+ * carrying the em dash it was handed.
  */
-const SPOKEN_WORDS = /^[A-Za-zÀ-ÿ '’,.-]+$/;
-
-/** The abbreviations that make what follows them a page or volume reference. */
-const CITATION_LEAD = /(?:^|[\s(\[“"])(?:pp?|vols?|nos?|ibid|cf|fol)\.\s*$/i;
-
-/** A roman-numeral token of two or more characters — "II", "XIV", never "I". */
-const ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
+const SPOKEN_BASE = /[A-Za-zÀ-ÿ\s'’,.-]/;
 
 /**
- * The shapes `expandNumbersEnDetailed` reads UNAMBIGUOUSLY, and is therefore
- * allowed to overrule the model on.
+ * The characters no reading may contain no matter what the book printed.
  *
- * Bare integers, bare years and dates are deliberately NOT here: those are the
- * ambiguous shapes the model exists for ("1200 people" is twelve hundred, 1200
- * on its own is a year), and letting a rule set that always says "one thousand
- * two hundred" veto the model would undo the whole pass.
+ * A digit means the conversion did not happen; a currency or percent sign means
+ * it half happened; a slash, an angle bracket or a brace means markup or a
+ * citation code got into the replacement.
  */
-const ORACLE_SHAPES: ReadonlyArray<{ name: string; test: RegExp }> = [
-  { name: 'currency', test: /[$£€¢]/ },
-  { name: 'percent', test: /%/ },
-  { name: 'ordinal', test: /\d(?:st|nd|rd|th)\b/i },
-  { name: 'decade', test: /(?:\d{4}s\b|['‘’]\d0s\b)/ },
-  { name: 'thousands', test: /\d{1,3}(?:,\d{3})+/ },
-];
+const NEVER_SPOKEN = /[0-9$£€¢%#/\\<>{}|@*_~^+=]/;
 
 /**
- * A scale word after a currency amount takes the oracle's currency rule out of
- * the "unambiguous" class.
+ * The names of punctuation marks, which a narrator says out loud only when the
+ * model has confused describing the text for reading it.
  *
- * Measured against the rule itself (number-expansion.ts rule 3): the scale word
- * WINS over the decimal there, so "$1.5 million" expands to "one million
- * dollars" — the .5 is dropped. That is a real defect in the oracle for this one
- * shape, and it is exactly the shape the prompt teaches as "one point five
- * million dollars". Consulting the oracle here would reject the correct answer,
- * so this shape is left to the model, like the bare integers above it.
+ * Measured on the 2026-09-02 run: FORTY applied edits contained the literal word
+ * "hyphen" or "colon" — "Deuteronomy seven twenty-five hyphen twenty-six",
+ * "Exodus twenty-two colon eighteen". Counted rather than merely detected, so a
+ * book that legitimately discusses a hyphen keeps saying so; what is refused is
+ * a replacement that says it MORE often than the text it replaces.
  */
-const CURRENCY_WITH_SCALE = /[$£€]\s?[\d,.]+\s*(?:hundred|thousand|million|billion|trillion)/i;
+const PUNCTUATION_NAMES = /\b(?:hyphen|colon|dash|slash)e?s?\b/gi;
 
-/** Strip the punctuation a word wears at a sentence edge, for word comparison. */
-function bareWord(token: string): string {
-  return token.replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9]+$/g, '');
+/** How many times a replacement names a punctuation mark. */
+function punctuationNameCount(text: string): number {
+  return (text.match(PUNCTUATION_NAMES) ?? []).length;
 }
+
+/**
+ * Is `replace` plain spoken words for THIS find?
+ *
+ * Letters, whitespace and everyday narration punctuation always; plus any
+ * character the `find` itself carried — an em dash, a parenthesis, a quote, a
+ * semicolon — because refusing the book's own punctuation refuses correct
+ * readings. Never a digit, a currency sign or markup, whatever the find held.
+ */
+function spokenWords(find: string, replace: string): boolean {
+  if (NEVER_SPOKEN.test(replace)) return false;
+  const fromFind = new Set([...find]);
+  return [...replace].every((ch) => SPOKEN_BASE.test(ch) || fromFind.has(ch));
+}
+
+/** A bare list marker — "1.", "12." — where the period is part of the reading. */
+const LIST_MARKER = /^\d{1,3}\.$/;
 
 /**
  * Does `replace` still carry every prose word of `find`, in order?
@@ -338,58 +398,26 @@ export function keepsEveryWord(find: string, replace: string): boolean {
 }
 
 /**
- * Is this span citation apparatus — a thing no reading of which is right?
+ * Where `find` occurs in `target`, counting only occurrences a NUMBER could
+ * mean.
  *
- * Three shapes, kept deliberately narrow because a false positive costs only an
- * unconverted number while a false negative narrates "Document two nine over
- * thirty-four":
- *
- *  1. A SLASH BETWEEN DIGITS, inside the span ("9/34", "298/38") or immediately
- *     against either of its edges (the model sent "34" out of "9/34").
- *  2. A ROMAN-NUMERAL TOKEN of two or more characters directly before or after
- *     the span ("Document II 9/34"). One-character romans are excluded on
- *     purpose: "I" is a pronoun and "C"/"D"/"L"/"M"/"V"/"X" are initials, and
- *     any of them would refuse ordinary prose.
- *  3. A PAGE OR VOLUME ABBREVIATION immediately before the span — p. pp. vol.
- *     vols. no. nos. ibid. cf. fol.
+ * DIGIT-BOUNDED, and that is the whole point: a plain `indexOf` finds the "1."
+ * of a list inside "11." and calls the edit ambiguous — which it did fifty times
+ * on the 2026-09-02 run, throwing away every list marker in the book. A match
+ * whose leading digit has a digit before it, or whose trailing digit has a digit
+ * after it, is a match on the middle of some other number and is not an
+ * occurrence of this one at all.
  */
-export function sitsInCitation(target: string, find: string, at: number): boolean {
-  if (/\d\s*\/\s*\d/.test(find)) return true;
-  const before = target.slice(0, at);
-  const after = target.slice(at + find.length);
-  if (/\d\s*$/.test(before) && /^\s*\//.test(after)) return true;
-  if (/\/\s*$/.test(before) && /^\s*\d/.test(after)) return true;
-  if (/\d$/.test(find) && /^\s*\/\s*\d/.test(after)) return true;
-  if (/^\d/.test(find) && /\d\s*\/\s*$/.test(before)) return true;
-  if (CITATION_LEAD.test(before)) return true;
-  const priorTokens = before.trim().split(/\s+/);
-  const nextTokens = after.trim().split(/\s+/);
-  const prior = priorTokens.length > 0 ? bareWord(priorTokens[priorTokens.length - 1]) : '';
-  const next = nextTokens.length > 0 ? bareWord(nextTokens[0]) : '';
-  return ROMAN_TOKEN.test(prior) || ROMAN_TOKEN.test(next);
-}
-
-/** Two readings of the same span, compared the way a listener would hear them. */
-function sameReading(a: string, b: string): boolean {
-  const flat = (s: string): string =>
-    s.toLowerCase().replace(/[-’',.]/g, ' ').replace(/\s+/g, ' ').trim();
-  return flat(a) === flat(b);
-}
-
-/**
- * The deterministic expander's reading of this span, or null when it has no
- * unambiguous opinion about the shape.
- */
-export function oracleReadingOf(find: string): string | null {
-  const shape = ORACLE_SHAPES.find((s) => s.test.test(find));
-  if (shape === undefined) return null;
-  if (shape.name === 'currency' && CURRENCY_WITH_SCALE.test(find)) return null;
-  const expanded = expandNumbersEnDetailed(find);
-  // No expansion, or digits still standing, means the rule set did not consume
-  // this span — it has nothing to say about it, which is not a disagreement.
-  if (expanded.expansions.length === 0) return null;
-  if (DIGIT.test(expanded.text)) return null;
-  return expanded.text;
+export function digitBoundedOccurrences(target: string, find: string): number[] {
+  const out: number[] = [];
+  if (find === '') return out;
+  for (let at = target.indexOf(find); at >= 0; at = target.indexOf(find, at + 1)) {
+    if (DIGIT.test(find[0]) && at > 0 && DIGIT.test(target[at - 1])) continue;
+    const end = at + find.length;
+    if (DIGIT.test(find[find.length - 1]) && end < target.length && DIGIT.test(target[end])) continue;
+    out.push(at);
+  }
+  return out;
 }
 
 /** One span the writer will splice, plus the record that says why. */
@@ -418,6 +446,13 @@ export function validateNumberEdits(
   target: string,
   segments: readonly number[],
   edits: ReadonlyArray<{ find?: unknown; replace?: unknown }>,
+  /**
+   * Spans of `target` a deterministic rule already read. An edit reaching into
+   * one is refused `OVERLAPS_APPLIED`, the same way an edit reaching into a span
+   * accepted earlier in this very list is: two readings of one span is not an
+   * improvement on either.
+   */
+  reserved: ReadonlyArray<{ at: number; end: number }> = [],
 ): ValidatedEdits {
   const starts: number[] = [];
   let running = 0;
@@ -437,24 +472,30 @@ export function validateNumberEdits(
 
     if (find === '' || find === replace) { reject(find, replace, 'NOOP'); continue; }
 
-    const at = target.indexOf(find);
-    if (at < 0) { reject(find, replace, 'NOT_FOUND'); continue; }
-    if (target.indexOf(find, at + 1) >= 0) { reject(find, replace, 'AMBIGUOUS_FIND'); continue; }
+    const occurrences = digitBoundedOccurrences(target, find);
+    if (occurrences.length === 0) { reject(find, replace, 'NOT_FOUND'); continue; }
+    if (occurrences.length > 1) { reject(find, replace, 'AMBIGUOUS_FIND'); continue; }
+    const at = occurrences[0];
     if (!DIGIT.test(find)) { reject(find, replace, 'NO_DIGIT_IN_FIND'); continue; }
     if (DIGIT.test(replace)) { reject(find, replace, 'DIGIT_IN_REPLACE'); continue; }
-    if (!SPOKEN_WORDS.test(replace)) { reject(find, replace, 'REPLACE_NOT_WORDS'); continue; }
+    if (!spokenWords(find, replace)) { reject(find, replace, 'REPLACE_NOT_WORDS'); continue; }
+    if (punctuationNameCount(replace) > punctuationNameCount(find)) {
+      reject(find, replace, 'PUNCTUATION_SPOKEN',
+        'the replacement says the NAME of a punctuation mark the book only prints');
+      continue;
+    }
+    if (LIST_MARKER.test(find) && !replace.trimEnd().endsWith('.')) {
+      reject(find, replace, 'LIST_MARKER_PERIOD',
+        'a list marker keeps its period — "1." is read "one.", not "one"');
+      continue;
+    }
     if (!keepsEveryWord(find, replace)) { reject(find, replace, 'WORDS_DROPPED'); continue; }
     if (sitsInCitation(target, find, at)) { reject(find, replace, 'CITATION_CODE'); continue; }
 
-    const oracle = oracleReadingOf(find);
-    if (oracle !== null && !sameReading(oracle, replace)) {
-      reject(find, replace, 'ORACLE_DISAGREE', `the rules read it "${oracle}"`);
-      continue;
-    }
-
     const end = at + find.length;
     if (!withinOneNode(at, end)) { reject(find, replace, 'SPANS_MARKUP'); continue; }
-    if (accepted.some((a) => at < a.at + a.find.length && a.at < end)) {
+    if (reserved.some((r) => at < r.end && r.at < end)
+      || accepted.some((a) => at < a.at + a.find.length && a.at < end)) {
       reject(find, replace, 'OVERLAPS_APPLIED');
       continue;
     }
@@ -593,9 +634,74 @@ export interface NormalizerAsk {
 /** What the loop settled about one ask. */
 export interface AskOutcome {
   status: NumberUnitStatus;
+  /** Every span to splice, at its offset in the ORIGINAL text — rules and model. */
   accepted: NarrationTextRewrite[];
   records: NumberEditRecord[];
   rawAnswer?: string;
+  /**
+   * What the deterministic rules alone made of this span.
+   *
+   * Kept because the heading/contents reconciliation needs it: a rule edit is
+   * reconciled by asking whether the OTHER member's rules produced the same
+   * edit, not by re-validating it — the validator would refuse "2 Cor. 10:4" →
+   * "Second Corinthians ten four" for dropping the word "Cor.", which is exactly
+   * what the abbreviation rule is for.
+   */
+  ruled: NumberRuleOutcome;
+}
+
+/**
+ * The rules' spans as they sit in the RULE-APPLIED text, with the length each
+ * one added.
+ *
+ * The model is shown that text and answers about it, so both questions this pass
+ * then has — "does this model edit reach into a span code already read?" and
+ * "where is it in the ORIGINAL?" — are answered in those coordinates.
+ */
+function ruleSpansInApplied(
+  ruled: NumberRuleOutcome,
+): Array<{ at: number; end: number; delta: number }> {
+  const spans: Array<{ at: number; end: number; delta: number }> = [];
+  let shift = 0;
+  for (const edit of ruled.rewrites) {
+    const at = edit.at + shift;
+    const delta = edit.replace.length - edit.find.length;
+    spans.push({ at, end: at + edit.replace.length, delta });
+    shift += delta;
+  }
+  return spans;
+}
+
+/** The offset in the ORIGINAL text of a rule-applied offset no rule span covers. */
+function toOriginalOffset(
+  spans: ReadonlyArray<{ at: number; end: number; delta: number }>,
+  at: number,
+): number {
+  let shift = 0;
+  for (const span of spans) {
+    if (span.end <= at) shift += span.delta; else break;
+  }
+  return at - shift;
+}
+
+/** The record line for every edit the deterministic rules settled. */
+function ruleRecords(ruled: NumberRuleOutcome): NumberEditRecord[] {
+  const out: NumberEditRecord[] = [];
+  for (const edit of ruled.rewrites) {
+    out.push({ find: edit.find, replace: edit.replace, status: 'APPLIED_RULE', detail: edit.rule });
+  }
+  for (const refusal of ruled.refused) {
+    out.push({
+      find: refusal.find, replace: refusal.replace, status: 'SPANS_MARKUP',
+      detail: `the ${refusal.rule} rule: ${refusal.reason}`,
+    });
+  }
+  return out;
+}
+
+/** The rules' rewrites as plain spans, ready to splice into the original. */
+function ruleRewrites(ruled: NumberRuleOutcome): NarrationTextRewrite[] {
+  return ruled.rewrites.map(({ at, find, replace }) => ({ at, find, replace }));
 }
 
 /**
@@ -614,44 +720,102 @@ async function askAboutEach(
   runner: NumberNormalizerRunner,
   systemPrompt: string,
   onProgress: NumberNormalizationProgress | undefined,
-): Promise<{ decisions: Map<string, AskOutcome>; parseFailed: number }> {
-  const inputs = asks.map((ask) => buildNormalizerInput(ask.text, ask.previous, ask.next));
-  runner.pinContextTo?.(
-    systemPrompt, inputs.reduce((a, b) => (b.length > a.length ? b : a), ''));
+): Promise<{ decisions: Map<string, AskOutcome>; parseFailed: number; asked: number }> {
+  // ── The deterministic pass, first and for everything ──────────────────────
+  const ruledOf = new Map<string, NumberRuleOutcome>();
+  for (const ask of asks) ruledOf.set(ask.key, applyNumberRules(ask.text, ask.segments));
+
+  // Only a span the rules left a digit in is worth a model call. The neighbours
+  // are shown in their rule-applied form too, so the context reads in the same
+  // words the answer has to be written in.
+  const inputs = new Map<string, string>();
+  const asContext = (text: string | null): string | null =>
+    text === null ? null : applyNumberRules(text, [text.length]).text;
+  for (const ask of asks) {
+    const ruled = ruledOf.get(ask.key)!;
+    if (!stillHasDigits(ruled.text)) continue;
+    inputs.set(ask.key,
+      buildNormalizerInput(ruled.text, asContext(ask.previous), asContext(ask.next)));
+  }
+  const total = inputs.size;
 
   const decisions = new Map<string, AskOutcome>();
+  const settleByRules = (ask: NormalizerAsk): void => {
+    const ruled = ruledOf.get(ask.key)!;
+    decisions.set(ask.key, {
+      status: 'RULES_ONLY', accepted: ruleRewrites(ruled), records: ruleRecords(ruled), ruled,
+    });
+  };
+
+  // A book the rules read entirely never loads a model at all — no context to
+  // pin, no request, and nothing to release. That is not an optimization: an
+  // Ollama that is down must not fail a pass that had nothing to ask it.
+  if (total === 0) {
+    for (const ask of asks) settleByRules(ask);
+    onProgress?.(0, 0, 'Releasing model');
+    return { decisions, parseFailed: 0, asked: 0 };
+  }
+
+  runner.pinContextTo?.(
+    systemPrompt, [...inputs.values()].reduce((a, b) => (b.length > a.length ? b : a), ''));
+
   let parseFailed = 0;
   let done = 0;
   try {
-    for (const [index, ask] of asks.entries()) {
-      const answer = await askForEdits(runner, systemPrompt, inputs[index]);
+    for (const ask of asks) {
+      const input = inputs.get(ask.key);
+      if (input === undefined) { settleByRules(ask); continue; }
+
+      const ruled = ruledOf.get(ask.key)!;
+      const fromRules = ruleRewrites(ruled);
+      const answer = await askForEdits(runner, systemPrompt, input);
       if ('parseFail' in answer) {
         parseFailed++;
         decisions.set(ask.key, {
-          status: 'UNIT_PARSE_FAIL', accepted: [], records: [], rawAnswer: answer.parseFail,
+          status: 'UNIT_PARSE_FAIL', accepted: fromRules, records: ruleRecords(ruled),
+          rawAnswer: answer.parseFail, ruled,
         });
       } else {
-        const { accepted, records } = validateNumberEdits(ask.text, ask.segments, answer.edits);
-        decisions.set(ask.key, { status: 'ANSWERED', accepted, records });
+        // Validated against the text the model was SHOWN, then moved back onto
+        // the original: the two differ by exactly the rules' own length deltas.
+        const spans = ruleSpansInApplied(ruled);
+        const { accepted, records } =
+          validateNumberEdits(ruled.text, ruled.segments, answer.edits, spans);
+        const mapped = accepted.map((edit) => {
+          const at = toOriginalOffset(spans, edit.at);
+          if (ask.text.slice(at, at + edit.find.length) !== edit.find) {
+            throw new Error(
+              `The number-normalization pass could not place "${edit.find}" back into ${ask.key}: `
+              + `the original text at ${at} reads "${ask.text.slice(at, at + edit.find.length)}". `
+              + 'Nothing was written.');
+          }
+          return { find: edit.find, replace: edit.replace, at };
+        });
+        decisions.set(ask.key, {
+          status: 'ANSWERED',
+          accepted: [...fromRules, ...mapped].sort((a, b) => a.at - b.at),
+          records: [...ruleRecords(ruled), ...records],
+          ruled,
+        });
       }
       done++;
-      onProgress?.(done, asks.length, 'Normalizing numbers');
+      onProgress?.(done, total, 'Normalizing numbers');
     }
 
-    if (parseFailed > asks.length * MAX_PARSE_FAIL_SHARE) {
+    if (parseFailed > total * MAX_PARSE_FAIL_SHARE) {
       throw new Error(
         `The number-normalization model '${runner.model}' failed to produce a usable edit list for `
-        + `${parseFailed} of ${asks.length} passages. That is a model this pass cannot use, not a `
+        + `${parseFailed} of ${total} passages. That is a model this pass cannot use, not a `
         + 'hard book: check that the model is pulled and that it answers with JSON.'
       );
     }
   } finally {
     // Before the return, and before e2a is spawned — a completed pass that left
     // 6-17 GB of weights resident is a TTS job waiting on VRAM nothing is using.
-    onProgress?.(asks.length, asks.length, 'Releasing model');
+    onProgress?.(total, total, 'Releasing model');
     await runner.release();
   }
-  return { decisions, parseFailed };
+  return { decisions, parseFailed, asked: total };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -790,7 +954,7 @@ export async function normalizeNarrationNumbers(
     };
   });
 
-  const { decisions: pending, parseFailed } =
+  const { decisions: pending, parseFailed, asked: targetsAsked } =
     await askAboutEach(asks, runner, options.systemPrompt, options.onProgress);
 
   // ── The heading and its contents entries, made to say ONE thing ───────────
@@ -799,10 +963,21 @@ export async function normalizeNarrationNumbers(
   // a chapter opening that lost its heading tag, and the m4b's chapter names come
   // from that same list — so the two MUST be the same string. Guaranteed here by
   // construction rather than hoped for: the heading's own edits are offered to
-  // every entry that repeats it, and only the edits that validate against EVERY
-  // one of them are applied to ANY of them. An edit that will not land on the
-  // contents line is taken back off the heading too (`TOC_MISMATCH`), so the two
-  // cannot diverge in either direction.
+  // every entry that repeats it, and only the edits that land on EVERY one of
+  // them are applied to ANY of them. An edit that will not land on the contents
+  // line is taken back off the heading too (`TOC_MISMATCH`), so the two cannot
+  // diverge in either direction.
+  //
+  // THE RULE EDITS GO THROUGH THIS TOO, and they are checked differently on
+  // purpose. A rule edit is not re-validated — the validator would refuse
+  // "2 Cor. 10:4" → "Second Corinthians ten four" for losing the word "Cor.",
+  // which is precisely what the abbreviation rule exists to do. It is asked of
+  // the member's OWN rules instead: a rule edit lands on a member iff running
+  // the rules over that member produced the same edit. They genuinely can
+  // differ — `applyNumberRules` is a pure function of the text AND its text
+  // nodes, so a heading carrying an `<em>` can refuse a span that its one-node
+  // contents entry takes — and that is exactly the divergence this exists to
+  // stop.
   const groups = new Map<string, NarrationNumberTarget[]>();
   for (const target of selected) {
     if (!isHeadingTarget(target) && !isTocEntry(target)) continue;
@@ -812,53 +987,97 @@ export async function normalizeNarrationNumbers(
   }
   const editId = (e: { find: string; replace: string }): string => `${e.find}\u0000${e.replace}`;
 
+  const TOC_MISMATCH_DETAIL = 'the heading and its contents entry could not both take it';
+
   for (const [, members] of groups) {
     const headings = members.filter(isHeadingTarget);
     const entries = members.filter(isTocEntry);
     if (headings.length === 0 || entries.length === 0) continue;  // nothing to reconcile
+
+    // A contents entry that was never asked has no settled decision yet, so it
+    // gets its own deterministic reading here — the same function, same text.
+    const ruledOf = new Map<string, NumberRuleOutcome>();
+    for (const member of members) {
+      ruledOf.set(member.key,
+        pending.get(member.key)?.ruled ?? applyNumberRules(member.text, member.segments));
+    }
+    const ruleIdsOf = (key: string): Set<string> =>
+      new Set(ruledOf.get(key)!.rewrites.map(editId));
+
     // The first heading in book order is the proposal. A second heading printing
     // the same words gets the same reading, which is the point.
-    const proposal = (pending.get(headings[0].key)?.accepted ?? [])
-      .map((e) => ({ find: e.find, replace: e.replace }));
+    const head = pending.get(headings[0].key);
+    if (head === undefined) {
+      throw new Error(
+        `The number-normalization pass reached no decision about the heading ${headings[0].key} `
+        + 'that its contents entries repeat. Nothing was written.');
+    }
+    const headRuleIds = ruleIdsOf(headings[0].key);
+    const proposal = head.accepted.map((e) => ({ find: e.find, replace: e.replace }));
+    const byRule = (e: { find: string; replace: string }): boolean => headRuleIds.has(editId(e));
+
     const survives = new Set(proposal.map(editId));
     for (const member of members) {
-      const landed = new Set(
-        validateNumberEdits(member.text, member.segments, proposal).accepted.map(editId));
+      const ruled = ruledOf.get(member.key)!;
+      const landed = new Set<string>(ruleIdsOf(member.key));
+      for (const edit of validateNumberEdits(
+        ruled.text, ruled.segments, proposal.filter((e) => !byRule(e)),
+        ruleSpansInApplied(ruled)).accepted) {
+        landed.add(editId(edit));
+      }
       for (const id of [...survives]) if (!landed.has(id)) survives.delete(id);
     }
-    const agreed = proposal.filter((e) => survives.has(editId(e)));
 
     for (const member of members) {
-      const { accepted } = validateNumberEdits(member.text, member.segments, agreed);
+      const ruled = ruledOf.get(member.key)!;
+      const spans = ruleSpansInApplied(ruled);
+      const memberRuleIds = ruleIdsOf(member.key);
+
+      const fromRules = ruled.rewrites
+        .filter((e) => survives.has(editId(e)))
+        .map(({ at, find, replace }) => ({ at, find, replace }));
+      const fromModel = validateNumberEdits(
+        ruled.text, ruled.segments,
+        proposal.filter((e) => survives.has(editId(e)) && !byRule(e)), spans,
+      ).accepted.map((edit) => ({
+        find: edit.find, replace: edit.replace, at: toOriginalOffset(spans, edit.at),
+      }));
+      const accepted = [...fromRules, ...fromModel].sort((a, b) => a.at - b.at);
+
       const was = pending.get(member.key);
       const records: NumberEditRecord[] = [];
       if (was !== undefined) {
-        // Everything the model said about this member, with the applied edits
+        // Everything already settled about this member, with the applied edits
         // the group could not agree on demoted by name.
         for (const record of was.records) {
-          if (record.status === 'APPLIED' && !survives.has(editId(record))) {
-            records.push({
-              ...record, status: 'TOC_MISMATCH',
-              detail: 'the heading and its contents entry could not both take it',
-            });
-          } else {
-            records.push(record);
-          }
+          const applied = record.status === 'APPLIED' || record.status === 'APPLIED_RULE';
+          records.push(applied && !survives.has(editId(record))
+            ? { ...record, status: 'TOC_MISMATCH', detail: TOC_MISMATCH_DETAIL }
+            : record);
         }
       } else {
+        // A contents entry that cost no request: its trail is its own rules'
+        // reading, plus whatever the heading proposed on top of it.
+        for (const edit of ruled.rewrites) {
+          records.push(survives.has(editId(edit))
+            ? { find: edit.find, replace: edit.replace, status: 'APPLIED_RULE', detail: edit.rule }
+            : {
+              find: edit.find, replace: edit.replace,
+              status: 'TOC_MISMATCH', detail: TOC_MISMATCH_DETAIL,
+            });
+        }
         for (const edit of proposal) {
+          if (memberRuleIds.has(editId(edit))) continue;  // recorded just above
           records.push(survives.has(editId(edit))
             ? { ...edit, status: 'APPLIED' }
-            : {
-              ...edit, status: 'TOC_MISMATCH',
-              detail: 'the heading and its contents entry could not both take it',
-            });
+            : { ...edit, status: 'TOC_MISMATCH', detail: TOC_MISMATCH_DETAIL });
         }
       }
       pending.set(member.key, {
         status: was === undefined ? 'SHARED_WITH_HEADING' : was.status,
         accepted,
         records,
+        ruled,
         ...(was === undefined || was.rawAnswer === undefined ? {} : { rawAnswer: was.rawAnswer }),
       });
     }
@@ -912,8 +1131,15 @@ export async function normalizeNarrationNumbers(
     generatedAt: new Date().toISOString(),
     targetsTotal: targets.length,
     targetsSelected: selected.length,
+    targetsAsked,
     unitsParseFailed: parseFailed,
     appliedSpans: written.rewrittenSpans,
+    // The two halves of that count, from the tally the same decisions produced:
+    // an APPLIED_RULE record IS an accepted rule edit and an APPLIED record IS an
+    // accepted model edit — anything the reconciliation took back is TOC_MISMATCH
+    // by then and in neither.
+    appliedByRules: dispositions.APPLIED_RULE ?? 0,
+    appliedByModel: dispositions.APPLIED ?? 0,
     dispositions,
     units,
   };
@@ -922,8 +1148,9 @@ export async function normalizeNarrationNumbers(
   await fs.rename(stagingEpub, epubPath);
 
   console.log(
-    `[TTS-NUMBERS] ${written.rewrittenSpans} number(s) read as words by ${runner.model} over `
-    + `${selected.length} of ${targets.length} passage(s); dispositions `
+    `[TTS-NUMBERS] ${written.rewrittenSpans} number(s) read as words over `
+    + `${selected.length} of ${targets.length} passage(s) — ${record.appliedByRules} by rules, `
+    + `${record.appliedByModel} by ${runner.model} (asked about ${targetsAsked}); dispositions `
     + `${JSON.stringify(dispositions)}; the copy is ${epubPath}`);
 
   return { epubPath, recordPath, reused: false, record };
@@ -1033,7 +1260,7 @@ export async function normalizeTextBlocks(
     next: block.index + 1 < blocks.length ? blocks[block.index + 1] : null,
   }));
 
-  const { decisions, parseFailed } =
+  const { decisions, parseFailed, asked: targetsAsked } =
     await askAboutEach(asks, runner, options.systemPrompt, options.onProgress);
 
   // The record and the rewritten text, built from the SAME settled decisions.
@@ -1094,8 +1321,11 @@ export async function normalizeTextBlocks(
     generatedAt: new Date().toISOString(),
     targetsTotal: blocks.length,
     targetsSelected: selected.length,
+    targetsAsked,
     unitsParseFailed: parseFailed,
     appliedSpans,
+    appliedByRules: dispositions.APPLIED_RULE ?? 0,
+    appliedByModel: dispositions.APPLIED ?? 0,
     dispositions,
     units,
   };
@@ -1104,8 +1334,9 @@ export async function normalizeTextBlocks(
   await fs.rename(stagingText, textPath);
 
   console.log(
-    `[TTS-NUMBERS] ${appliedSpans} number(s) read as words by ${runner.model} over `
-    + `${selected.length} of ${blocks.length} block(s); dispositions `
+    `[TTS-NUMBERS] ${appliedSpans} number(s) read as words over `
+    + `${selected.length} of ${blocks.length} block(s) — ${record.appliedByRules} by rules, `
+    + `${record.appliedByModel} by ${runner.model} (asked about ${targetsAsked}); dispositions `
     + `${JSON.stringify(dispositions)}; the copy is ${textPath}`);
 
   return { textPath, recordPath, reused: false, record };

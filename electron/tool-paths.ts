@@ -172,7 +172,7 @@ export interface ToolPathsConfig {
 
   /**
    * The Ollama model that reads printed numbers as spoken words for narration
-   * (electron/tts-number-normalizer.ts). A tag, e.g. `qwen3.5:9b`.
+   * (electron/tts-number-normalizer.ts). A tag, e.g. `qwen3.5:9b-q8_0`.
    *
    * ABSENT means the normalizer's own `DEFAULT_NORMALIZER_MODEL` — a DECLARED
    * default for a preference nobody has expressed, which is a different thing

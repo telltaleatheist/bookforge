@@ -148,13 +148,18 @@ const NCX = `<?xml version="1.0" encoding="utf-8"?>
  * a number split by an `<em>` (the SPANS_MARKUP case); a `data-bf-cat` stamp
  * that has to still be on the element afterwards; and a caption, which the cut
  * owns and this pass must never touch.
+ *
+ * The dated paragraph carries THREE shapes on purpose since the deterministic
+ * pre-pass landed (2026-09-02): a date and a money amount the RULES read, and a
+ * bare four-digit quantity ("1200 members") that only the model can judge — so
+ * the paragraph still reaches the model, and one unit exercises both halves.
  */
 const CHAPTER = `<?xml version="1.0" encoding="utf-8"?>
 <html xmlns="http://www.w3.org/1999/xhtml">
 <head><title>Three</title></head>
 <body>
 <h2 data-bf-page="1" data-bf-cat="chapter">Chapter 3: The Long Year</h2>
-<p data-bf-page="1" data-bf-cat="text">On 23 March 1933 the Reichstag passed the Enabling Act, and the pamphlet cost $5.50.</p>
+<p data-bf-page="1" data-bf-cat="text">On 23 March 1933 the Reichstag passed the Enabling Act, and 1200 members watched the pamphlet sell for $5.50.</p>
 <p data-bf-page="1" data-bf-cat="text">A paragraph with no numbers in it at all, long enough to be an ordinary unit.</p>
 <ul data-bf-page="2" data-bf-cat="list-item">
 <li>A printer is represented by an attorney in 1934.</li>
@@ -372,6 +377,17 @@ test('CITATION_CODE — a page abbreviation immediately before the number', () =
   }
 });
 
+test('CITATION_CODE — an area code beside a phone number', () => {
+  // The record's own case: 9b proposed "(405)" → "(four zero five)", and until
+  // 2026-09-02 only the punctuation guard stopped it. Now that a replacement may
+  // carry the parentheses its find had, the phone shape is what refuses it.
+  assert.strictEqual(
+    only('Reach them at (405) 235-5396 today.', '(405)', '(four zero five)'), 'CITATION_CODE');
+  assert.strictEqual(
+    only('Reach them at (405) 235-5396 today.', '235-5396', 'two three five five three nine six'),
+    'CITATION_CODE');
+});
+
 test('CITATION_CODE — a roman-numeral token beside it, but never a bare "I"', () => {
   assert.strictEqual(only('Document II 9 was filed.', '9', 'nine'), 'CITATION_CODE');
   assert.strictEqual(only('Volume XIV 9 was filed.', '9', 'nine'), 'CITATION_CODE');
@@ -380,38 +396,88 @@ test('CITATION_CODE — a roman-numeral token beside it, but never a bare "I"', 
   assert.strictEqual(only('I 9 times asked.', '9', 'nine'), 'APPLIED');
 });
 
-test('ORACLE_DISAGREE — the expander overrules the model on the shapes it knows', () => {
-  // Currency, percent, ordinal, decade, comma-grouped thousands: number-expansion.ts
-  // is unambiguous about all five, so a different reading is the model drifting.
-  assert.strictEqual(only('It cost $5.50.', '$5.50', 'five fifty'), 'ORACLE_DISAGREE');
-  assert.strictEqual(only('It was 50% done.', '50%', 'fifty per cent'), 'ORACLE_DISAGREE');
-  assert.strictEqual(only('The 7th of them.', '7th', 'seven'), 'ORACLE_DISAGREE');
-  assert.strictEqual(only('In the 1930s it grew.', '1930s', 'nineteen thirty-somethings'),
-    'ORACLE_DISAGREE');
-  assert.strictEqual(only('Some 3,450 came.', '3,450', 'thirty-four fifty'), 'ORACLE_DISAGREE');
+/**
+ * THE ORACLE CROSS-CHECK IS GONE, and this is what replaced it.
+ *
+ * Until 2026-09-02 a `ORACLE_DISAGREE` disposition let number-expansion.ts
+ * overrule the model on five shapes it read unambiguously: currency, percent,
+ * ordinals, decades and comma-grouped thousands. All five are now RULES — the
+ * model is never shown them at all, so there is nothing left for the cross-check
+ * to disagree with, and a dead branch would only be a rule set nobody runs. What
+ * the check was defending is defended better here: the reading is not compared
+ * to the model's, it IS the reading.
+ */
+test('the five shapes the oracle used to guard are read by RULES now', () => {
+  const { applyNumberRules } = require(path.join(DIST, 'electron', 'tts-number-rules.js'));
+  const reads = (text) => applyNumberRules(text, [text.length]).text;
+  assert.strictEqual(reads('It cost $5.50.'), 'It cost five dollars and fifty cents.');
+  assert.strictEqual(reads('It was 50% done.'), 'It was fifty percent done.');
+  assert.strictEqual(reads('The 7th of them.'), 'The seventh of them.');
+  assert.strictEqual(reads('In the 1930s it grew.'), 'In the nineteen thirties it grew.');
+  assert.strictEqual(reads('Some 3,450 came.'), 'Some three thousand four hundred fifty came.');
+  // And the shape the oracle got WRONG — its rule let the scale word win over
+  // the decimal and dropped the .5 — is read correctly by the money rule.
+  assert.strictEqual(reads('It was $1.5 million.'), 'It was one point five million dollars.');
 });
 
-test('ORACLE_DISAGREE — and the same five shapes AGREE when the model is right', () => {
-  assert.strictEqual(only('It cost $5.50.', '$5.50', 'five dollars and fifty cents'), 'APPLIED');
-  assert.strictEqual(only('It was 50% done.', '50%', 'fifty percent'), 'APPLIED');
-  assert.strictEqual(only('The 7th of them.', '7th', 'seventh'), 'APPLIED');
-  assert.strictEqual(only('In the 1930s it grew.', '1930s', 'nineteen thirties'), 'APPLIED');
-  assert.strictEqual(
-    only('Some 3,450 came.', '3,450', 'three thousand four hundred fifty'), 'APPLIED');
-});
-
-test('the oracle is NOT consulted about the shapes it cannot read', () => {
-  // A bare four-digit quantity is exactly the ambiguity the model exists for:
-  // the expander always says "one thousand two hundred", and letting it veto
-  // "twelve hundred" would undo the pass.
-  assert.strictEqual(norm.oracleReadingOf('1200'), null);
+test('the shapes the rules DECLINE are exactly what still reaches the model', () => {
+  // A bare four-digit quantity is the ambiguity the model exists for.
   assert.strictEqual(only('By spring 1200 workers were on the line.',
     '1200 workers', 'twelve hundred workers'), 'APPLIED');
-  assert.strictEqual(norm.oracleReadingOf('23 March 1933'), null, 'a date');
-  // MEASURED oracle defect: number-expansion.ts rule 3 lets the scale word win
-  // over the decimal, so it reads "$1.5 million" as "one million dollars". The
-  // shape is therefore excluded from the cross-check by name.
-  assert.strictEqual(norm.oracleReadingOf('$1.5 million'), null);
+  assert.strictEqual(only('It ran 1914-1918 without a break.',
+    '1914-1918', 'nineteen fourteen to nineteen eighteen'), 'APPLIED');
+});
+
+test('AMBIGUOUS_FIND is DIGIT-BOUNDED — "1." is not found inside "11."', () => {
+  // The measured failure: fifty list markers thrown away on 2026-09-02 because
+  // `indexOf` matched the "1." inside "11." and called the edit ambiguous.
+  assert.strictEqual(only('11. Amulet', '1.', 'one.'), 'NOT_FOUND',
+    'the only occurrence sits inside another number, so there is none');
+  assert.strictEqual(only('1. Amulet and 11. Charm', '1.', 'one.'), 'APPLIED',
+    'the real marker is found, and the one inside "11." is not a second one');
+  assert.strictEqual(only('1. Amulet and 1. Charm', '1.', 'one.'), 'AMBIGUOUS_FIND',
+    'two real occurrences are still ambiguous');
+  // And the same boundary the other way: the "19" inside "1944" is not a second
+  // occurrence, so the real one is found instead of being called ambiguous.
+  const { accepted } = check('In 1944 he was 19.', [{ find: '19', replace: 'nineteen' }]);
+  assert.strictEqual(accepted.length, 1);
+  assert.strictEqual(accepted[0].at, 'In 1944 he was '.length, 'the standalone 19, not 1944\'s');
+});
+
+test('REPLACE_NOT_WORDS allows the punctuation the FIND itself carried', () => {
+  // Five applied edits were refused on 2026-09-02 for carrying the em dash and
+  // the parentheses the book printed.
+  assert.strictEqual(
+    only('1. Halloween—October 31 is the first.', '1. Halloween—October 31',
+      'one. Halloween—October thirty-first'), 'APPLIED');
+  assert.strictEqual(
+    only('The number was (405) that year.', '(405)', '(four zero five)'), 'APPLIED');
+  assert.strictEqual(
+    only('Chapter 3: The Long Year', 'Chapter 3', 'Chapter Three'), 'APPLIED');
+  // What is still refused is a digit, a currency sign, a slash, markup.
+  assert.strictEqual(only('It cost $5.', '$5', 'five dollars ($)'), 'REPLACE_NOT_WORDS');
+  assert.strictEqual(only('It cost $5.', '$5', 'five/five dollars'), 'REPLACE_NOT_WORDS');
+  assert.strictEqual(only('It cost 5 marks.', '5 marks', '<em>five</em> marks'),
+    'REPLACE_NOT_WORDS');
+});
+
+test('PUNCTUATION_SPOKEN — the model may not narrate the name of a mark', () => {
+  // Forty applied edits on 2026-09-02 said "hyphen" or "colon" out loud.
+  assert.strictEqual(
+    only('Deuteronomy 7:25–26 says so.', '7:25–26', 'seven twenty-five hyphen twenty-six'),
+    'PUNCTUATION_SPOKEN');
+  assert.strictEqual(
+    only('Exodus 22:18 says so.', '22:18', 'twenty-two colon eighteen'), 'PUNCTUATION_SPOKEN');
+  assert.strictEqual(
+    only('Cited as 9-34 there.', '9-34', 'nine dash thirty-four'), 'PUNCTUATION_SPOKEN');
+  // Counted, not merely detected: a book that discusses a hyphen keeps saying so.
+  assert.strictEqual(
+    only('The 3 hyphen rule applied.', '3 hyphen', 'three hyphen'), 'APPLIED');
+});
+
+test('LIST_MARKER_PERIOD — a list marker keeps its period', () => {
+  assert.strictEqual(only('1. Amulet', '1.', 'one'), 'LIST_MARKER_PERIOD');
+  assert.strictEqual(only('1. Amulet', '1.', 'one.'), 'APPLIED');
 });
 
 test('SPANS_MARKUP — an edit that would have to cross an <em>', () => {
@@ -477,10 +543,10 @@ test('fixture date04 — the two real numbers in it read correctly', () => {
     { find: '3,450', replace: 'thirty-four fifty' },
   ]);
   // The first is the narrator's own measured reading (README, 2026-09-01); the
-  // second is a plausible-sounding drift, and the EXPANDER catches it before the
-  // overlap check ever runs — the dispositions are reasons, in order, and the
-  // first one that fires is the one recorded.
-  assert.deepStrictEqual(records.map((r) => r.status), ['APPLIED', 'ORACLE_DISAGREE']);
+  // second is a plausible-sounding drift, refused for reaching into the span the
+  // first one already took. (In the live pass neither reaches the model at all —
+  // the grouped-integer rule reads "3,450" before it is ever asked.)
+  assert.deepStrictEqual(records.map((r) => r.status), ['APPLIED', 'OVERLAPS_APPLIED']);
 });
 
 test('fixture date11 — an archive file number is not converted', () => {
@@ -531,9 +597,9 @@ const sharedCache = (name) => path.join(ROOT, `shared-${name}`);
 test('the pass rewrites TEXT NODES and leaves every tag where it was', async () => {
   const book = await buildBook('apply.epub');
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(
-      ['23 March 1933', 'March twenty-third, nineteen thirty-three'],
-      ['$5.50', 'five dollars and fifty cents']),
+    // The date and the money are the RULES' now, and the model is shown the text
+    // with them already read — so the one thing left to answer is the quantity.
+    'members watched': editsJson(['1200 members', 'twelve hundred members']),
     // Both <li> items are ONE export unit (the <ul>), so they arrive in one
     // request and come back in one edit list — which is exactly what has to
     // survive being applied to two different text nodes.
@@ -546,6 +612,11 @@ test('the pass rewrites TEXT NODES and leaves every tag where it was', async () 
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes('March twenty-third, nineteen thirty-three'), 'the date landed');
   assert.ok(chapter.includes('five dollars and fifty cents'), 'the money landed');
+  assert.ok(chapter.includes('twelve hundred members'), 'and so did the model\'s own edit');
+  // The model was never shown the digits the rules had already read.
+  const asked = runner.calls.map(targetOf).find((t) => t.includes('members watched'));
+  assert.ok(!asked.includes('23 March 1933') && !asked.includes('$5.50'),
+    `the rule-applied text is what went out: ${asked}`);
   // The structure e2a depends on, still there.
   assert.ok(chapter.includes('<li>'), 'the list items are still list items');
   assert.ok(chapter.includes('nineteen thirty-four'), 'inside the first <li>');
@@ -565,15 +636,19 @@ test('the pass rewrites TEXT NODES and leaves every tag where it was', async () 
 test('the pass VERIFIES the rewrite landed, against the written file', async () => {
   const book = await buildBook('verify.epub');
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(['23 March 1933', 'March twenty-third, nineteen thirty-three']),
+    'members watched': editsJson(['1200 members', 'twelve hundred members']),
   });
   const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
   // `writeNarrationEpub` re-reads the copy and walks it before this returns; a
   // rewrite that did not land destroys the file rather than shipping it. The
   // proof it ran is the count it reports, measured on disk.
-  assert.strictEqual(out.record.appliedSpans, 1);
+  assert.strictEqual(out.record.appliedSpans, 3, 'the date, the money and the quantity');
   const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
-  assert.strictEqual(record.appliedSpans, 1);
+  assert.strictEqual(record.appliedSpans, 3);
+  // And the record says which half of the pass did which.
+  assert.strictEqual(record.appliedByRules, 2);
+  assert.strictEqual(record.appliedByModel, 1);
+  assert.strictEqual(record.appliedByRules + record.appliedByModel, record.appliedSpans);
 });
 
 test('a span across an <em> is refused and RECORDED, never flattened', async () => {
@@ -720,7 +795,10 @@ test('one bad answer among many is recorded UNIT_PARSE_FAIL, and the book stands
   assert.strictEqual(failed.length, 1);
   assert.ok(failed[0].rawAnswer.includes('not json'), 'the raw answer is kept for diagnosis');
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
-  assert.ok(chapter.includes('Paragraph 4: on 2 March 1913'), 'and that passage keeps its digits');
+  // The rules had already read the date — that is not the model's to lose — and
+  // what the model would have been asked about keeps its digits.
+  assert.ok(chapter.includes('Paragraph 4: on March second, nineteen thirteen'),
+    'the deterministic reading stands even when the answer would not parse');
 });
 
 test('an unreachable model THROWS, naming the model tag', async () => {
@@ -771,9 +849,10 @@ test('progress is counted over the passages that are actually ASKED', async () =
 test('the record names every proposed edit and its disposition', async () => {
   const book = await buildBook('record.epub');
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(
-      ['23 March 1933', 'March twenty-third, nineteen thirty-three'],
-      ['$5.50', 'five fifty'],
+    'members watched': editsJson(
+      ['1200 members', 'twelve hundred members'],
+      // A span the RULES already read: the model does not get a second opinion.
+      ['five dollars and fifty cents', 'five fifty'],
       ['Reichstag', 'parliament']),
   });
   const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
@@ -782,11 +861,75 @@ test('the record names every proposed edit and its disposition', async () => {
   assert.strictEqual(record.model, 'fake:1b');
   assert.strictEqual(record.inputSha16.length, 16);
   const unit = record.units.find((u) => u.text.includes('On 23 March 1933'));
+  // The rules' own edits lead the trail, each naming the rule that read it.
   assert.deepStrictEqual(unit.edits.map((e) => e.status),
-    ['APPLIED', 'ORACLE_DISAGREE', 'NO_DIGIT_IN_FIND']);
-  assert.ok(unit.edits[1].detail.includes('five dollars and fifty cents'),
-    'the oracle states its own reading, so a reviewer can judge the disagreement');
-  assert.strictEqual(record.dispositions.APPLIED, out.record.appliedSpans);
+    ['APPLIED_RULE', 'APPLIED_RULE', 'APPLIED', 'NO_DIGIT_IN_FIND', 'NO_DIGIT_IN_FIND']);
+  assert.deepStrictEqual(unit.edits.slice(0, 2).map((e) => [e.detail, e.find]),
+    [['date', '23 March 1933'], ['money', '$5.50']]);
+  assert.strictEqual(unit.status, 'ANSWERED');
+  assert.strictEqual(
+    (record.dispositions.APPLIED ?? 0) + (record.dispositions.APPLIED_RULE ?? 0),
+    out.record.appliedSpans);
+});
+
+test('a passage the RULES finished is never sent to the model', async () => {
+  // The <li> list is the only unit of this book whose digits the rules decline
+  // (bare four-digit years), so pointing the rules at a rules-only chapter is
+  // the cleanest way to watch a unit skip the model entirely.
+  const chapter = CHAPTER.replace(
+    'and 1200 members watched the pamphlet sell for $5.50',
+    'and the pamphlet sold for $5.50');
+  const book = await buildBook('rules-only.epub', chapter);
+  const runner = scriptedRunner({});
+  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+
+  const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
+  assert.strictEqual(unit.status, 'RULES_ONLY');
+  assert.deepStrictEqual(unit.edits.map((e) => e.status), ['APPLIED_RULE', 'APPLIED_RULE']);
+  assert.ok(!runner.calls.some((c) => targetOf(c).includes('the Reichstag')),
+    'the paragraph cost no request at all');
+  assert.strictEqual(out.record.targetsAsked, runner.calls.length,
+    'and the asked count is the number of requests that were made');
+
+  const written = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
+  assert.ok(written.includes('On March twenty-third, nineteen thirty-three the Reichstag'));
+  assert.ok(written.includes('sold for five dollars and fifty cents'));
+});
+
+test('a model edit is mapped back past the rules\' own length changes', async () => {
+  const book = await buildBook('mapback.epub');
+  const runner = scriptedRunner({
+    'members watched': editsJson(['1200 members', 'twelve hundred members']),
+  });
+  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
+  // "23 March 1933" grew by twenty-odd characters before the model's own span,
+  // so an unmapped offset would splice "twelve hundred members" into the middle
+  // of a word — and `writeNarrationEpub` would have destroyed the output.
+  assert.deepStrictEqual(unit.edits.map((e) => e.status),
+    ['APPLIED_RULE', 'APPLIED_RULE', 'APPLIED']);
+  const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
+  assert.ok(chapter.includes(
+    'On March twenty-third, nineteen thirty-three the Reichstag passed the Enabling Act, '
+    + 'and twelve hundred members watched the pamphlet sell for five dollars and fifty cents.'),
+    chapter);
+});
+
+test('a rule refusal is RECORDED, and the span is left for nobody', async () => {
+  // The money amount split by an <em>: the rules cannot have it, and no later
+  // rule may take the "50" out of the wreckage either.
+  const chapter = CHAPTER.replace(
+    'sell for $5.50.', 'sell for $5.<em>5</em>0.');
+  const book = await buildBook('rule-refused.epub', chapter);
+  const runner = scriptedRunner({});
+  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
+  const refusal = unit.edits.find((e) => e.status === 'SPANS_MARKUP');
+  assert.ok(refusal !== undefined, JSON.stringify(unit.edits));
+  assert.strictEqual(refusal.find, '$5.50');
+  assert.ok(refusal.detail.includes('money rule'), refusal.detail);
+  const written = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
+  assert.ok(written.includes('$5.<em>5</em>0'), 'the digits and the markup both stand');
 });
 
 test('the context window is pinned ONCE, to the longest request', async () => {

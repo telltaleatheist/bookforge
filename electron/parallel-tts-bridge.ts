@@ -6712,6 +6712,10 @@ export interface NarrationPrepResult {
   model: string;
   /** How many spans the voice now reads as words. */
   appliedSpans: number;
+  /** Of those, how many a deterministic rule read before the model was asked. */
+  appliedByRules: number;
+  /** And how many the model read. The two sum to `appliedSpans`. */
+  appliedByModel: number;
   /** True when a copy already on disk was reused: no model call was made. */
   reused: boolean;
   /** The disposition tally, for the record and the CLI's one line. */
@@ -6900,12 +6904,13 @@ async function normalizeNumbersFor(
       + 'no number normalization was needed.');
     return {
       inputPath, recordPath: null, model: runner.model,
-      appliedSpans: 0, reused: false, dispositions: {},
+      appliedSpans: 0, appliedByRules: 0, appliedByModel: 0, reused: false, dispositions: {},
     };
   }
 
   await logger.log('INFO', jobId,
-    `${outcome.record.appliedSpans} number(s) read as words by ${runner.model} across `
+    `${outcome.record.appliedByRules} number(s) read as words by rule and `
+    + `${outcome.record.appliedByModel} by ${runner.model}, across `
     + `${outcome.record.targetsSelected} passage(s)`, {
       copy: outcome.epubPath, record: outcome.recordPath, reused: outcome.reused,
       dispositions: outcome.record.dispositions,
@@ -6915,6 +6920,8 @@ async function normalizeNumbersFor(
     recordPath: outcome.recordPath,
     model: runner.model,
     appliedSpans: outcome.record.appliedSpans,
+    appliedByRules: outcome.record.appliedByRules,
+    appliedByModel: outcome.record.appliedByModel,
     reused: outcome.reused,
     dispositions: outcome.record.dispositions,
   };
@@ -6951,12 +6958,13 @@ async function normalizeTextNumbersFor(
       + 'no number normalization was needed.');
     return {
       inputPath, recordPath: null, model: runner.model,
-      appliedSpans: 0, reused: false, dispositions: {},
+      appliedSpans: 0, appliedByRules: 0, appliedByModel: 0, reused: false, dispositions: {},
     };
   }
 
   await logger.log('INFO', jobId,
-    `${outcome.record.appliedSpans} number(s) read as words by ${runner.model} across `
+    `${outcome.record.appliedByRules} number(s) read as words by rule and `
+    + `${outcome.record.appliedByModel} by ${runner.model}, across `
     + `${outcome.record.targetsSelected} block(s)`, {
       copy: outcome.textPath, record: outcome.recordPath, reused: outcome.reused,
       dispositions: outcome.record.dispositions,
@@ -6966,6 +6974,8 @@ async function normalizeTextNumbersFor(
     recordPath: outcome.recordPath,
     model: runner.model,
     appliedSpans: outcome.record.appliedSpans,
+    appliedByRules: outcome.record.appliedByRules,
+    appliedByModel: outcome.record.appliedByModel,
     reused: outcome.reused,
     dispositions: outcome.record.dispositions,
   };

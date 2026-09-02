@@ -87,6 +87,7 @@ const SUITES = [
   'test-queue-bench',
   'test-derived-sentences',
   'test-narration-chain',
+  'test-tts-number-rules',
   'test-tts-number-normalizer',
   'test-cli-narration-prep',
   'test-library-lock',

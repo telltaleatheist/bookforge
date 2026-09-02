@@ -156,25 +156,32 @@ test('blocks are the paragraphs, split on blank lines and nothing else', () => {
 // The text-block pass, end to end
 // ─────────────────────────────────────────────────────────────────────────────
 
+// Each digit-bearing block carries a shape the RULES read (a date, a money
+// amount) AND a bare four-digit quantity only the model can judge — so both
+// halves of the pass run over the same three blocks.
 const BLOCKS = [
-  'On 23 March 1933 the Reichstag passed the Enabling Act.',
+  'On 23 March 1933 the Reichstag passed the Enabling Act, and 1200 members watched.',
   'A block with no numbers in it at all, long enough to be an ordinary paragraph.',
-  'The pamphlet cost $5.50 and sold out by noon.',
+  'The pamphlet cost $5.50 and sold out by noon, all 1500 copies of it.',
 ];
 
 test('the numbers in a text block are read as words, and the file is written', async () => {
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(['23 March 1933', 'March twenty-third, nineteen thirty-three']),
-    'The pamphlet cost': editsJson(['$5.50', 'five dollars and fifty cents']),
+    'the Reichstag': editsJson(['1200 members', 'twelve hundred members']),
+    'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']),
   });
   const out = await norm.normalizeTextBlocks(BLOCKS, runner, textOptions('passage.txt'));
   assert.ok(out !== null);
   assert.strictEqual(out.reused, false);
-  assert.strictEqual(out.record.appliedSpans, 2);
+  assert.strictEqual(out.record.appliedSpans, 4, 'two by rules, two by the model');
+  assert.strictEqual(out.record.appliedByRules, 2);
+  assert.strictEqual(out.record.appliedByModel, 2);
 
   const text = fs.readFileSync(out.textPath, 'utf8');
   assert.ok(text.includes('On March twenty-third, nineteen thirty-three the Reichstag'), 'the date');
   assert.ok(text.includes('cost five dollars and fifty cents and sold out'), 'the money');
+  assert.ok(text.includes('twelve hundred members') && text.includes('fifteen hundred copies'),
+    'and the two the model was left to judge');
   assert.ok(text.includes('A block with no numbers in it at all'),
     'the digit-free block is carried through verbatim');
   assert.strictEqual(norm.splitTextBlocks(text).length, BLOCKS.length,
@@ -186,26 +193,28 @@ test('the numbers in a text block are read as words, and the file is written', a
 
 test('a refused edit leaves the printed digits, and the record names the refusal', async () => {
   const runner = scriptedRunner({
-    // "five fifty" is not what the deterministic expander reads $5.50 as, and
-    // "Reichstag -> parliament" is prose tidying wearing a number edit's clothes.
-    'On 23 March 1933': editsJson(['Reichstag', 'parliament']),
-    'The pamphlet cost': editsJson(['$5.50', 'five fifty']),
+    // "Reichstag -> parliament" is prose tidying wearing a number edit's clothes,
+    // and dropping "copies" renames the thing being counted.
+    'the Reichstag': editsJson(['Reichstag', 'parliament']),
+    'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred']),
   });
   const out = await norm.normalizeTextBlocks(BLOCKS, runner, textOptions('refusals.txt'));
-  assert.strictEqual(out.record.appliedSpans, 0);
-  assert.deepStrictEqual(out.record.dispositions, { NO_DIGIT_IN_FIND: 1, ORACLE_DISAGREE: 1 });
+  assert.strictEqual(out.record.appliedSpans, 2, 'the two by rule, and nothing the model said');
+  assert.strictEqual(out.record.appliedByModel, 0);
+  assert.deepStrictEqual(out.record.dispositions,
+    { APPLIED_RULE: 2, NO_DIGIT_IN_FIND: 1, WORDS_DROPPED: 1 });
 
   const text = fs.readFileSync(out.textPath, 'utf8');
   assert.ok(text.includes('the Reichstag passed'), 'the prose was not renamed');
-  assert.ok(text.includes('cost $5.50 and'), 'and the digits stand');
+  assert.ok(text.includes('all 1500 copies'), 'and the refused digits stand');
 
   const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
   const money = record.units.find((u) => u.text.includes('The pamphlet cost'));
   assert.strictEqual(money.kind, 'text-block');
   assert.strictEqual(money.file, 'refusals.txt');
-  assert.strictEqual(money.edits[0].status, 'ORACLE_DISAGREE');
-  assert.ok(money.edits[0].detail.includes('five dollars and fifty cents'),
-    'the expander states its own reading, so a reviewer can judge the disagreement');
+  assert.deepStrictEqual(money.edits.map((e) => [e.status, e.detail]),
+    [['APPLIED_RULE', 'money'], ['WORDS_DROPPED', undefined]],
+    'the rule that read it is named, and so is the refusal');
 });
 
 test('a text with no digits comes back untouched, with no model call', async () => {
@@ -217,7 +226,7 @@ test('a text with no digits comes back untouched, with no model call', async () 
 });
 
 test('a copy already on disk is REUSED, without calling the model', async () => {
-  const answers = { 'The pamphlet cost': editsJson(['$5.50', 'five dollars and fifty cents']) };
+  const answers = { 'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']) };
   const outDir = path.join(ROOT, 'blocks-shared');
   const first = scriptedRunner(answers);
   const one = await norm.normalizeTextBlocks(BLOCKS, first, textOptions('reuse.txt', { outDir }));
@@ -232,14 +241,14 @@ test('a copy already on disk is REUSED, without calling the model', async () => 
   // Content-addressed on the BLOCKS: change a word and it is a different copy.
   const third = scriptedRunner(answers);
   const other = await norm.normalizeTextBlocks(
-    [...BLOCKS.slice(0, 2), 'The pamphlet cost $5.50 and sold out by dusk.'],
+    [...BLOCKS.slice(0, 2), 'The pamphlet cost $5.50 and sold out by dusk, all 1500 copies of it.'],
     third, textOptions('reuse.txt', { outDir }));
   assert.notStrictEqual(other.textPath, one.textPath);
   assert.strictEqual(other.reused, false);
 });
 
 test('a record whose copy is missing its record is re-made — both halves or neither', async () => {
-  const answers = { 'The pamphlet cost': editsJson(['$5.50', 'five dollars and fifty cents']) };
+  const answers = { 'The pamphlet cost': editsJson(['1500 copies', 'fifteen hundred copies']) };
   const outDir = path.join(ROOT, 'blocks-halved');
   const first = scriptedRunner(answers);
   const one = await norm.normalizeTextBlocks(BLOCKS, first, textOptions('halved.txt', { outDir }));
@@ -348,11 +357,12 @@ async function entryText(bookPath, entry) {
 
 /** The one paragraph both paths are given, word for word. */
 const SHARED_PARAGRAPH =
-  'On 23 March 1933 the Reichstag met, and the pamphlet cost $5.50.';
+  'On 23 March 1933 the Reichstag met, 1200 members watched, and the pamphlet cost $5.50.';
 
 /**
  * A runner that fails the FIRST request with a transport error and then answers
- * — one applied edit, one the expander overrules, one with no digit in it.
+ * — one applied edit, one reaching into the span that edit took, one with no
+ * digit in it.
  *
  * All three of those behaviours live in `askAboutEach`: the transport retry, the
  * validation wall, the release. If the two entry points had loops of their own,
@@ -365,8 +375,8 @@ function loopProbeRunner() {
     runner.calls.push(input);
     if (!failed) { failed = true; throw new Error('fetch failed'); }
     return editsJson(
-      ['23 March 1933', 'March twenty-third, nineteen thirty-three'],
-      ['$5.50', 'five fifty'],
+      ['1200 members', 'twelve hundred members'],
+      ['1200', 'twelve hundred'],
       ['Reichstag', 'parliament']);
   };
   return runner;
@@ -393,7 +403,8 @@ test('a block and a paragraph go through the SAME loop, and answer the same', as
   const bookUnit = fromBook.record.units.find((u) => u.text.includes('the Reichstag met'));
   assert.deepStrictEqual(blockUnit.edits, bookUnit.edits);
   assert.deepStrictEqual(blockUnit.edits.map((e) => e.status),
-    ['APPLIED', 'ORACLE_DISAGREE', 'NO_DIGIT_IN_FIND']);
+    ['APPLIED_RULE', 'APPLIED_RULE', 'APPLIED', 'OVERLAPS_APPLIED', 'NO_DIGIT_IN_FIND'],
+    'the two rule edits lead the trail, then the model\'s three answers');
   assert.strictEqual(blockUnit.status, bookUnit.status);
 
   // The retry rule is the loop's too: one transport failure, one re-roll, two calls.
@@ -406,10 +417,10 @@ test('a block and a paragraph go through the SAME loop, and answer the same', as
   assert.ok(blockRunner.released && bookRunner.released);
 
   // Same words out of both, in their own formats.
-  assert.ok(fs.readFileSync(fromText.textPath, 'utf8')
-    .includes('On March twenty-third, nineteen thirty-three the Reichstag met'));
-  assert.ok((await entryText(fromBook.epubPath, 'OEBPS/chapter-01.xhtml'))
-    .includes('On March twenty-third, nineteen thirty-three the Reichstag met'));
+  const said = 'On March twenty-third, nineteen thirty-three the Reichstag met, twelve '
+    + 'hundred members watched, and the pamphlet cost five dollars and fifty cents.';
+  assert.ok(fs.readFileSync(fromText.textPath, 'utf8').includes(said));
+  assert.ok((await entryText(fromBook.epubPath, 'OEBPS/chapter-01.xhtml')).includes(said));
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -425,7 +436,7 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
   const input = path.join(ROOT, 'door.txt');
   fs.writeFileSync(input, `${SHARED_PARAGRAPH}\n\nA second block with no numbers.\n`, 'utf8');
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(['23 March 1933', 'March twenty-third, nineteen thirty-three']),
+    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
   });
   const prep = await bridge.prepareNarrationInput(input, 'test-txt', {
     skipAssembly: true, numberRunner: runner,
@@ -434,7 +445,9 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
   assert.ok(prep.inputPath.endsWith('.norm.tts.txt'), `a text copy: ${prep.inputPath}`);
   assert.strictEqual(path.dirname(prep.inputPath), CUTS,
     'written beside the book cuts, in the e2a scratch');
-  assert.strictEqual(prep.appliedSpans, 1);
+  assert.strictEqual(prep.appliedSpans, 3, 'the date and money by rule, the quantity by model');
+  assert.strictEqual(prep.appliedByRules, 2);
+  assert.strictEqual(prep.appliedByModel, 1);
   assert.strictEqual(prep.model, 'fake:1b');
   assert.strictEqual(prep.reused, false);
   assert.ok(prep.recordPath.endsWith('.edits.json'));
@@ -445,7 +458,7 @@ test('the door routes an .epub through the CUT and then the numbers', async () =
   const book = await buildBook('door.epub', CHAPTER(
     SHARED_PARAGRAPH, '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
   const runner = scriptedRunner({
-    'On 23 March 1933': editsJson(['23 March 1933', 'March twenty-third, nineteen thirty-three']),
+    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
   });
   const prep = await bridge.prepareNarrationInput(book, 'test-epub', {
     skipAssembly: true, numberRunner: runner,
@@ -464,7 +477,7 @@ test('the door reuses a copy on a second run, and says so', async () => {
   const input = path.join(ROOT, 'door-reuse.txt');
   fs.writeFileSync(input, `${SHARED_PARAGRAPH}\n`, 'utf8');
   const answers = {
-    'On 23 March 1933': editsJson(['23 March 1933', 'March twenty-third, nineteen thirty-three']),
+    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
   };
   const first = scriptedRunner(answers);
   const one = await bridge.prepareNarrationInput(input, 'test-reuse-1', {
@@ -512,7 +525,10 @@ test('an unreachable model fails the DOOR too — no falling back to raw digits'
   // Content no earlier test prepped: the door's cache is shared across this whole
   // suite (one scratch dir, as it is on a machine), so reusing a prepped passage
   // here would answer out of the cache and never reach the model at all.
-  fs.writeFileSync(input, 'The council met on 4 July 1776 and adjourned at dusk.\n', 'utf8');
+  // And a shape the RULES cannot finish (a bare four-digit quantity), or the pass
+  // would settle it deterministically and never reach the model at all.
+  fs.writeFileSync(input,
+    'The council met on 4 July 1776 and 1300 delegates adjourned at dusk.\n', 'utf8');
   const runner = scriptedRunner({}, { throws: 'connect ECONNREFUSED 127.0.0.1:11434' });
   await assert.rejects(
     bridge.prepareNarrationInput(input, 'test-door-down', {

@@ -114,8 +114,15 @@ function ordinalizeWord(word: string): string {
   return `${word}th`;
 }
 
-/** Cardinal-words → ordinal-words: only the LAST token becomes ordinal. */
-function ordinalToWords(n: number): string | null {
+/**
+ * Cardinal-words → ordinal-words: only the LAST token becomes ordinal.
+ *
+ * Exported for tts-number-rules.ts, which owes the SAME hyphenated ordinal
+ * ("twenty-third") for a printed "23rd" and for the day of a date. Its cardinals
+ * are its own — unhyphenated, the training corpora's form — but there was never
+ * a second reading of an ordinal to have.
+ */
+export function ordinalToWords(n: number): string | null {
   const cardinal = integerToWords(n);
   if (cardinal === null) return null;
   const tokens = cardinal.split(' ');
@@ -131,8 +138,11 @@ function ordinalToWords(n: number): string | null {
  * Read a plausible year the way a person says it: 1989 → "nineteen eighty-nine",
  * 1905 → "nineteen oh five", 2007 → "two thousand seven", 1900 → "nineteen
  * hundred". Only called for values already matched in the 1100–2099 year window.
+ *
+ * Exported for tts-number-rules.ts: a date's year and a decade are the same
+ * pair-form reading, and two copies of it would be two things to keep true.
  */
-function yearToWords(y: number): string {
+export function yearToWords(y: number): string {
   if (y >= 2000 && y <= 2009) {
     const lo = y % 100;
     return lo ? `two thousand ${integerToWords(lo)}` : 'two thousand';
@@ -145,8 +155,11 @@ function yearToWords(y: number): string {
   return `${hiWords} ${loWords}`;
 }
 
-/** Pluralize the final word of a spoken year for a decade: "thirty" → "thirties". */
-function pluralizeLastWord(words: string): string {
+/**
+ * Pluralize the final word of a spoken year for a decade: "thirty" → "thirties".
+ * Exported alongside `yearToWords` for the decade rule in tts-number-rules.ts.
+ */
+export function pluralizeLastWord(words: string): string {
   const tokens = words.split(' ');
   const last = tokens[tokens.length - 1];
   tokens[tokens.length - 1] = last.endsWith('y') ? `${last.slice(0, -1)}ies` : `${last}s`;

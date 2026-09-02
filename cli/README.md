@@ -38,7 +38,7 @@ the result, so a `--tts` audition reads its numbers as words exactly as the ship
 audiobook does. One line says what happened:
 
 ```
-[prep] 3 number(s) read as words by qwen3.5:9b (copy reused: no) → …/narration-cuts/….norm.tts.txt
+[prep] 3 number(s) read as words — 2 by rules, 1 by qwen3.5:9b (copy reused: no) → …/narration-cuts/….norm.tts.txt
 [prep] no digits a narrator reads — input passes through untouched
 ```
 
@@ -137,7 +137,7 @@ queue calls — which is two passes over the input:
    reference numbers out, through `writeNarrationEpub`. A book with none of those
    stamps passes through untouched, same bytes.
 2. **The numbers**: every passage with a digit in it goes to the model named by
-   Settings → `ttsNumberNormalizerModel` (default `qwen3.5:9b`), which answers with an
+   Settings → `ttsNumberNormalizerModel` (default `qwen3.5:9b-q8_0`), which answers with an
    edit list; every edit is checked against the validator's 13 dispositions and a
    rejected edit means the printed digits stand. **e2a has no number transform of its
    own any more**, so what leaves this door is exactly what the voice reads.
@@ -167,10 +167,10 @@ python cli/bookforge-tts.py --prep --input book.epub --dry-run
 It prints the prepared copy, the record beside it, and the disposition tally:
 
 ```
-[prep] 214 number(s) read as words by qwen3.5:9b (copy reused: no) → …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.epub
-[prep] copy:   …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.epub
-[prep] record: …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.edits.json
-[prep] dispositions: APPLIED=214 ORACLE_DISAGREE=6 CITATION_CODE=4 NOT_FOUND=1
+[prep] 220 number(s) read as words — 214 by rules, 6 by qwen3.5:9b (copy reused: no) → …/narration-cuts/3f2a….n2.qwen3.5-9b.norm.tts.epub
+[prep] copy:   …/narration-cuts/3f2a….n2.qwen3.5-9b.norm.tts.epub
+[prep] record: …/narration-cuts/3f2a….n2.qwen3.5-9b.norm.tts.edits.json
+[prep] dispositions: APPLIED_RULE=214 APPLIED=6 CITATION_CODE=4 NOT_FOUND=1
 ```
 
 The copy is **content-addressed** by (input sha, rule version, model), so a later
@@ -179,8 +179,8 @@ model call** — its own `[prep]` line then reads `copy reused: yes`. Change the
 the `NORMALIZER_VERSION`, or the model tag and it is a new copy.
 
 The `.edits.json` is the review trail: every passage the model was shown, every edit it
-proposed, and what became of it (`APPLIED`, `ORACLE_DISAGREE` with the expander's own
-reading, `CITATION_CODE`, `WORDS_DROPPED`, `SPANS_MARKUP`, `TOC_MISMATCH`, …).
+proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `APPLIED`,
+`CITATION_CODE`, `WORDS_DROPPED`, `PUNCTUATION_SPOKEN`, `SPANS_MARKUP`, `TOC_MISMATCH`, …).
 
 - `--project <dir>` **or** `--input <file.epub|file.txt>` — one of them, never both.
   `--project` resolves the book exactly as `--audiobook` does (translated > cleaned >
