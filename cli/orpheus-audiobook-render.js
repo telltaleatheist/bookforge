@@ -1,7 +1,10 @@
 /**
  * orpheus-audiobook-render.js — headless, APP-FAITHFUL audiobook build. Chains the
- * EXACT two high-level calls the app's queue makes for a standard audiobook:
+ * EXACT high-level calls the app's queue makes for a standard audiobook:
  *
+ *   0. prepareNarrationInput() (parallel-tts-bridge) — the narration door: the
+ *      caption/footnote cut and the number pass, content-addressed, exactly as
+ *      startParallelConversion runs them. What it returns is what generation reads.
  *   1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core: real
  *      e2a prep + batch worker.py, producing a complete e2a session (sentence FLACs
  *      + session state with chapter mapping). Identical to a UI TTS job.
@@ -39,6 +42,8 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
+const { resolveInputEpub } = require('./resolve-project-epub.js');
+const { runNarrationPrep } = require('./narration-prep-step.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -52,23 +57,6 @@ function parseArgs(argv) {
     else { a[body] = true; }
   }
   return a;
-}
-
-/** Best-available input EPUB — mirrors the app's TTS "Latest" resolution
- *  (translated > simplified/cleaned > exported > original). First existing wins. */
-function resolveInputEpub(projectDir) {
-  const candidates = [
-    'stages/02-translate/translated.epub',
-    'stages/01-cleanup/simplified.epub',
-    'stages/01-cleanup/cleaned.epub',
-    'source/exported.epub',
-    'source/original.epub',
-  ];
-  for (const rel of candidates) {
-    const p = path.join(projectDir, rel);
-    if (fs.existsSync(p)) return p;
-  }
-  return null;
 }
 
 /** Keep only `keepName` under stages/03-tts/sessions/<language>/ so cached sessions
@@ -249,11 +237,18 @@ async function main() {
     sessionDirPath = cand.sessionDir;
     console.log(`[audiobook] --assemble-only: ${cand.sentenceCount} cached sentences in ${path.basename(sessionDirPath)} — SKIPPING TTS, running denoise + reassembly on the cache`);
   } else {
+    // ── STEP 0/2: the narration door — captions and notes out, numbers as words ──
+    // The SAME `prepareNarrationInput` the app's queue calls, so this chain preps
+    // the book exactly as a queued job does and a defect in the door shows up
+    // here. Its output is what generation reads; the project's own EPUB is never
+    // rewritten.
+    const prepared = await runNarrationPrep(bridge, inputPath, jobId, { skipAssembly: false });
+
     // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
-    console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(inputPath)}`);
+    console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(prepared.inputPath)}`);
     let totalSentences;
     ({ totalSentences, scratchSessionDir, normalizedSessionDir } =
-      await bridge.renderRangeHeadless(inputPath, settings, {
+      await bridge.renderRangeHeadless(prepared.inputPath, settings, {
         jobId,
         resumeFromSentencesDir,
         onSessionReady: (info) => { liveSessionDir = info.sessionDir; },

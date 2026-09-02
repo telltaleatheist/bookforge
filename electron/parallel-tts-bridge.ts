@@ -24,6 +24,9 @@ import * as crypto from 'crypto';
 import * as logger from './audiobook-logger';
 import { getTTSLogger } from './rolling-logger';
 import type { JobStageProgress } from './job-stages';
+// The model behind the number pass is INJECTED into the door below, so this is a
+// type-only import: nothing here ever dials Ollama.
+import type { NumberNormalizerRunner } from './tts-number-normalizer';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -6683,6 +6686,38 @@ function emitComplete(
 // Public API
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** What the narration door is asked for. */
+export interface NarrationPrepOptions {
+  /** The job's own flag, so the prep progress bars match the job's shape. */
+  skipAssembly: boolean;
+  /**
+   * The model, INJECTED — `tts-number-normalizer.ts`'s own doctrine, one level
+   * up. Production omits it and the door builds the Ollama runner from the
+   * Settings tag; a test passes a scripted runner and reaches both branches of
+   * the format routing with no GPU and no model loaded.
+   */
+  numberRunner?: NumberNormalizerRunner;
+}
+
+/** What the door produced, and what to say about it in one line. */
+export interface NarrationPrepResult {
+  /**
+   * The file the render must read from here on — the input itself, same bytes,
+   * when it carried no captions, no notes and no digits.
+   */
+  inputPath: string;
+  /** The `.edits.json` beside the copy, or null when nothing was written. */
+  recordPath: string | null;
+  /** The model tag that did the reading — in the log, and in every error. */
+  model: string;
+  /** How many spans the voice now reads as words. */
+  appliedSpans: number;
+  /** True when a copy already on disk was reused: no model call was made. */
+  reused: boolean;
+  /** The disposition tally, for the record and the CLI's one line. */
+  dispositions: Record<string, number>;
+}
+
 /**
  * The file a narration should actually read: the book, or a cut of it with the
  * photo captions, the note apparatus and the reference numbers left out.
@@ -6728,12 +6763,48 @@ function emitComplete(
  * A cut that fails is a job that fails, in the cut's own sentence — falling
  * back to the uncut book would quietly narrate the captions this exists to
  * keep out, which is the silence the ruling ended.
+ *
+ * ── Why this is EXPORTED ────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-02: *"lets also add access to the cleanup step in the cli. high
+ * level so it runs the same code the app would, so we can catch bugs that way."*
+ * So this is one function, called by `startParallelConversion` (the app's queue)
+ * and by the CLI's render adapters and `--prep` alike. A second implementation
+ * in `cli/` would be a second thing to keep true, and a CLI that ran a different
+ * prep from the app could not catch the app's bugs, which is the whole point of
+ * having it.
+ *
+ * NOT called by `renderRangeHeadless`, still: its resume seeds FLACs by sentence
+ * INDEX from a prior run's directory, and changing the input text under a seeded
+ * campaign would land every cached sentence after the first caption on the wrong
+ * words. The CLI adapters call this door and hand the RESULT to
+ * `renderRangeHeadless`, which keeps reading exactly what it is given.
+ *
+ * ── The two formats it reads ────────────────────────────────────────────────
+ *
+ * An `.epub` is cut and then normalized. A `.txt` — what `--tts --text` and
+ * `--tts --input passage.txt` render — has no captions and no note apparatus to
+ * cut, so it goes straight to the number pass in its block form. Anything else
+ * is REFUSED by name: silently skipping the prep for a format this door has no
+ * reader for would narrate the digits it exists to convert while the log said
+ * nothing at all.
  */
-async function narrationInputFor(
-  epubPath: string, jobId: string, skipAssembly: boolean,
-): Promise<string> {
-  const cut = await cutCaptionsAndNotes(epubPath, jobId);
-  return normalizeNumbersFor(cut, epubPath, jobId, skipAssembly);
+export async function prepareNarrationInput(
+  inputPath: string,
+  jobId: string,
+  opts: NarrationPrepOptions,
+): Promise<NarrationPrepResult> {
+  const ext = path.extname(inputPath).toLowerCase();
+  if (ext === '.txt') {
+    return normalizeTextNumbersFor(inputPath, jobId, opts);
+  }
+  if (ext !== '.epub') {
+    throw new Error(
+      `The narration prep has no reader for '${ext || path.basename(inputPath)}' `
+      + `(${inputPath}). It reads .epub and .txt.`);
+  }
+  const cut = await cutCaptionsAndNotes(inputPath, jobId);
+  return normalizeNumbersFor(cut, inputPath, jobId, opts);
 }
 
 /** The caption/footnote cut — the first half of the door. */
@@ -6811,50 +6882,129 @@ async function normalizeNumbersFor(
   inputPath: string,
   bookPath: string,
   jobId: string,
-  skipAssembly: boolean,
-): Promise<string> {
+  opts: NarrationPrepOptions,
+): Promise<NarrationPrepResult> {
   const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
   const { normalizeNarrationNumbers } = await import('./tts-number-normalizer.js');
-  const { createOllamaNormalizerRunner, numberNormalizerModel } =
-    await import('./tts-number-normalizer-runner.js');
 
-  const model = numberNormalizerModel();
-  // At most ~4 updates a second: a paragraph can settle in well under 250 ms and
-  // the renderer redraws a lane on every one of these.
-  const MIN_INTERVAL_MS = 250;
-  let lastEmit = 0;
-  const outcome = await normalizeNarrationNumbers(
-    inputPath,
-    createOllamaNormalizerRunner(model),
-    {
-      systemPrompt: await loadNumberNormalizePrompt(),
-      outDir: path.join(getDefaultE2aTmpPath(), 'narration-cuts'),
-      onProgress: (done, total, label) => {
-        const now = Date.now();
-        // The last tick always goes out — it is the one that says the model is
-        // being released, and a throttle that swallowed it would leave the bar
-        // stopped short of the end for the rest of the job.
-        if (done < total && now - lastEmit < MIN_INTERVAL_MS) return;
-        lastEmit = now;
-        emitPrepStageProgress(jobId, `${label}…`, skipAssembly, { label, done, total });
-      },
-    },
-  );
+  const runner = await narrationNumberRunner(opts);
+  const outcome = await normalizeNarrationNumbers(inputPath, runner, {
+    systemPrompt: await loadNumberNormalizePrompt(),
+    outDir: narrationCutsDir(),
+    onProgress: prepProgressSink(jobId, opts.skipAssembly),
+  });
 
   if (outcome === null) {
     console.log(
       `[PARALLEL-TTS] ${path.basename(bookPath)} prints no digits a narrator would read — `
       + 'no number normalization was needed.');
-    return inputPath;
+    return {
+      inputPath, recordPath: null, model: runner.model,
+      appliedSpans: 0, reused: false, dispositions: {},
+    };
   }
 
   await logger.log('INFO', jobId,
-    `${outcome.record.appliedSpans} number(s) read as words by ${model} across `
+    `${outcome.record.appliedSpans} number(s) read as words by ${runner.model} across `
     + `${outcome.record.targetsSelected} passage(s)`, {
       copy: outcome.epubPath, record: outcome.recordPath, reused: outcome.reused,
       dispositions: outcome.record.dispositions,
     });
-  return outcome.epubPath;
+  return {
+    inputPath: outcome.epubPath,
+    recordPath: outcome.recordPath,
+    model: runner.model,
+    appliedSpans: outcome.record.appliedSpans,
+    reused: outcome.reused,
+    dispositions: outcome.record.dispositions,
+  };
+}
+
+/**
+ * The numbers of a PLAIN-TEXT input, read as words — the whole door for a `.txt`.
+ *
+ * There is no caption cut here and there is nothing missing: a text file has no
+ * `data-bf-cat` stamps, no `<sup>` markers and no note apparatus, so the cut
+ * would have nothing to name. What it has is paragraphs, which
+ * `normalizeTextBlocks` asks about through the SAME loop the book pass uses.
+ */
+async function normalizeTextNumbersFor(
+  inputPath: string,
+  jobId: string,
+  opts: NarrationPrepOptions,
+): Promise<NarrationPrepResult> {
+  const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
+  const { normalizeTextBlocks, splitTextBlocks } = await import('./tts-number-normalizer.js');
+
+  const runner = await narrationNumberRunner(opts);
+  const blocks = splitTextBlocks(await fs.readFile(inputPath, 'utf8'));
+  const outcome = await normalizeTextBlocks(blocks, runner, {
+    systemPrompt: await loadNumberNormalizePrompt(),
+    outDir: narrationCutsDir(),
+    source: inputPath,
+    onProgress: prepProgressSink(jobId, opts.skipAssembly),
+  });
+
+  if (outcome === null) {
+    console.log(
+      `[PARALLEL-TTS] ${path.basename(inputPath)} prints no digits a narrator would read — `
+      + 'no number normalization was needed.');
+    return {
+      inputPath, recordPath: null, model: runner.model,
+      appliedSpans: 0, reused: false, dispositions: {},
+    };
+  }
+
+  await logger.log('INFO', jobId,
+    `${outcome.record.appliedSpans} number(s) read as words by ${runner.model} across `
+    + `${outcome.record.targetsSelected} block(s)`, {
+      copy: outcome.textPath, record: outcome.recordPath, reused: outcome.reused,
+      dispositions: outcome.record.dispositions,
+    });
+  return {
+    inputPath: outcome.textPath,
+    recordPath: outcome.recordPath,
+    model: runner.model,
+    appliedSpans: outcome.record.appliedSpans,
+    reused: outcome.reused,
+    dispositions: outcome.record.dispositions,
+  };
+}
+
+/** Where every narration copy this door makes lives — cut and normalized alike. */
+function narrationCutsDir(): string {
+  return path.join(getDefaultE2aTmpPath(), 'narration-cuts');
+}
+
+/** The caller's runner, or the live Ollama one built from the Settings tag. */
+async function narrationNumberRunner(
+  opts: NarrationPrepOptions,
+): Promise<NumberNormalizerRunner> {
+  if (opts.numberRunner !== undefined) return opts.numberRunner;
+  const { createOllamaNormalizerRunner, numberNormalizerModel } =
+    await import('./tts-number-normalizer-runner.js');
+  // Read ONCE and carried, because the tag is part of the cache path — a run that
+  // read it twice could name the copy after one model and make it with another.
+  return createOllamaNormalizerRunner(numberNormalizerModel());
+}
+
+/** The prep bar, throttled — the same sink for a book and for a text file. */
+function prepProgressSink(
+  jobId: string, skipAssembly: boolean,
+): (done: number, total: number, label: string) => void {
+  // At most ~4 updates a second: a paragraph can settle in well under 250 ms and
+  // the renderer redraws a lane on every one of these.
+  const MIN_INTERVAL_MS = 250;
+  let lastEmit = 0;
+  return (done, total, label) => {
+    const now = Date.now();
+    // The last tick always goes out — it is the one that says the model is being
+    // released, and a throttle that swallowed it would leave the bar stopped
+    // short of the end for the rest of the job.
+    if (done < total && now - lastEmit < MIN_INTERVAL_MS) return;
+    lastEmit = now;
+    emitPrepStageProgress(jobId, `${label}…`, skipAssembly, { label, done, total });
+  };
 }
 
 /**
@@ -6900,10 +7050,10 @@ export async function startParallelConversion(
   // one substitution here keeps every one of them speaking about one file.
   // After the title above, which should read as the book and not as a sha.
   try {
-    const narrationInput = await narrationInputFor(
-      config.epubPath, jobId, config.skipAssembly === true);
-    if (narrationInput !== config.epubPath) {
-      config = { ...config, epubPath: narrationInput };
+    const prepared = await prepareNarrationInput(
+      config.epubPath, jobId, { skipAssembly: config.skipAssembly === true });
+    if (prepared.inputPath !== config.epubPath) {
+      config = { ...config, epubPath: prepared.inputPath };
     }
   } catch (err) {
     const error = `The narration copy could not be cut: ${err instanceof Error ? err.message : err}`;

@@ -155,7 +155,13 @@ export type NumberUnitStatus =
 /** The record for one target: the review trail, and what makes this reversible. */
 export interface NumberUnitRecord {
   key: string;
-  kind: NarrationNumberTarget['kind'];
+  /**
+   * Where in the input this unit came from. A book's kinds are the EPUB target
+   * kinds; `text-block` is a paragraph of a plain-text input, which has no
+   * element, no contents entry and no title to be.
+   */
+  kind: NarrationNumberTarget['kind'] | 'text-block';
+  /** The zip entry, or the text file's own name. */
   file: string;
   status: NumberUnitStatus;
   /** The text the model was shown — the target's own, before any edit. */
@@ -185,6 +191,17 @@ export interface NumberNormalizationOutcome {
   /** The narration copy the job must use from here on. */
   epubPath: string;
   /** The record beside it. */
+  recordPath: string;
+  /** True when this run reused a copy already on disk (no model call was made). */
+  reused: boolean;
+  record: NumberNormalizationRecord;
+}
+
+/** The same, for a plain-text input. */
+export interface TextNormalizationOutcome {
+  /** The normalized text file the render must read from here on. */
+  textPath: string;
+  /** The record beside it — the same shape a book's pass writes. */
   recordPath: string;
   /** True when this run reused a copy already on disk (no model call was made). */
   reused: boolean;
@@ -544,6 +561,100 @@ async function askForEdits(
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// The loop both kinds of input share
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * One span the model will be asked about, with the neighbours it is shown.
+ *
+ * A book's paragraph and a text file's block are the SAME question — here is a
+ * span of prose, here is what stands either side of it, which of its digits does
+ * a narrator read as words. What differs is upstream (an EPUB has elements, text
+ * nodes, headings and a contents page; a `.txt` has blank lines) and downstream
+ * (an EPUB is written through `writeNarrationEpub`, a `.txt` is spliced and
+ * joined). The part in the middle is `askAboutEach`, and it is ONE function so
+ * the two inputs cannot drift apart in how strictly the model is guarded — a
+ * second copy of the retry rules or the parse-failure gate would be a second set
+ * of rules to keep true.
+ */
+export interface NormalizerAsk {
+  /** How the answer is found again: a target's key, or a block's index. */
+  key: string;
+  /** The text the model may edit, and the text every edit is validated against. */
+  text: string;
+  /** The length of each of that text's nodes. A plain-text block is one node. */
+  segments: readonly number[];
+  /** The neighbour before it — shown as context, never editable. */
+  previous: string | null;
+  /** The neighbour after it, same. */
+  next: string | null;
+}
+
+/** What the loop settled about one ask. */
+export interface AskOutcome {
+  status: NumberUnitStatus;
+  accepted: NarrationTextRewrite[];
+  records: NumberEditRecord[];
+  rawAnswer?: string;
+}
+
+/**
+ * Ask the model about every selected span, validate every answer, and give the
+ * model's VRAM back before returning.
+ *
+ * The whole model-facing contract lives here: the context window pinned ONCE to
+ * the longest request, the two retry rules in `askForEdits`, the validation wall
+ * in `validateNumberEdits`, the parse-failure share that declares a model broken
+ * rather than narrating a book of digits, and the `release()` in `finally` —
+ * which runs on the failure path too, because a pass that threw still left 6-17
+ * GB of weights resident and e2a takes the GPU next either way.
+ */
+async function askAboutEach(
+  asks: readonly NormalizerAsk[],
+  runner: NumberNormalizerRunner,
+  systemPrompt: string,
+  onProgress: NumberNormalizationProgress | undefined,
+): Promise<{ decisions: Map<string, AskOutcome>; parseFailed: number }> {
+  const inputs = asks.map((ask) => buildNormalizerInput(ask.text, ask.previous, ask.next));
+  runner.pinContextTo?.(
+    systemPrompt, inputs.reduce((a, b) => (b.length > a.length ? b : a), ''));
+
+  const decisions = new Map<string, AskOutcome>();
+  let parseFailed = 0;
+  let done = 0;
+  try {
+    for (const [index, ask] of asks.entries()) {
+      const answer = await askForEdits(runner, systemPrompt, inputs[index]);
+      if ('parseFail' in answer) {
+        parseFailed++;
+        decisions.set(ask.key, {
+          status: 'UNIT_PARSE_FAIL', accepted: [], records: [], rawAnswer: answer.parseFail,
+        });
+      } else {
+        const { accepted, records } = validateNumberEdits(ask.text, ask.segments, answer.edits);
+        decisions.set(ask.key, { status: 'ANSWERED', accepted, records });
+      }
+      done++;
+      onProgress?.(done, asks.length, 'Normalizing numbers');
+    }
+
+    if (parseFailed > asks.length * MAX_PARSE_FAIL_SHARE) {
+      throw new Error(
+        `The number-normalization model '${runner.model}' failed to produce a usable edit list for `
+        + `${parseFailed} of ${asks.length} passages. That is a model this pass cannot use, not a `
+        + 'hard book: check that the model is pulled and that it answers with JSON.'
+      );
+    }
+  } finally {
+    // Before the return, and before e2a is spawned — a completed pass that left
+    // 6-17 GB of weights resident is a TTS job waiting on VRAM nothing is using.
+    onProgress?.(asks.length, asks.length, 'Releasing model');
+    await runner.release();
+  }
+  return { decisions, parseFailed };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The pass
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -565,13 +676,35 @@ export function sanitizeModelTag(model: string): string {
   return model.replace(/[^A-Za-z0-9.]+/g, '-').replace(/^-+|-+$/g, '');
 }
 
+/** The name a given input, rule version and model share, whatever the format. */
+function normalizedStem(inputSha16: string, model: string): string {
+  return `${inputSha16}.${NORMALIZER_VERSION}.${sanitizeModelTag(model)}.norm.tts`;
+}
+
 /** Where a given input, rule version and model land on disk. */
 export function normalizedCopyPaths(
   outDir: string, inputSha16: string, model: string,
 ): { epubPath: string; recordPath: string } {
-  const stem = `${inputSha16}.${NORMALIZER_VERSION}.${sanitizeModelTag(model)}.norm.tts`;
+  const stem = normalizedStem(inputSha16, model);
   return {
     epubPath: path.join(outDir, `${stem}.epub`),
+    recordPath: path.join(outDir, `${stem}.edits.json`),
+  };
+}
+
+/**
+ * The same three facts, for a plain-text input.
+ *
+ * Same stem, different extension: the sha is over the CONTENT, so a `.txt` and
+ * an `.epub` can never collide on one, and the record beside either says which
+ * it describes.
+ */
+export function normalizedTextPaths(
+  outDir: string, inputSha16: string, model: string,
+): { textPath: string; recordPath: string } {
+  const stem = normalizedStem(inputSha16, model);
+  return {
+    textPath: path.join(outDir, `${stem}.txt`),
     recordPath: path.join(outDir, `${stem}.edits.json`),
   };
 }
@@ -630,18 +763,6 @@ export async function normalizeNarrationNumbers(
   const positionOf = new Map<string, number>();
   targets.forEach((t, i) => positionOf.set(t.key, i));
 
-  /** One target, decided: what it says, what was proposed for it, what survived. */
-  interface PendingTarget {
-    target: NarrationNumberTarget;
-    status: NumberUnitStatus;
-    accepted: NarrationTextRewrite[];
-    records: NumberEditRecord[];
-    rawAnswer?: string;
-  }
-  const pending = new Map<string, PendingTarget>();
-  let parseFailed = 0;
-  let done = 0;
-
   const isTocEntry = (t: NarrationNumberTarget): boolean => t.kind === 'nav' || t.kind === 'ncx';
   // A contents entry that repeats a heading of this book is NOT asked about
   // separately — it takes the heading's own edits below. Decided before the first
@@ -653,9 +774,7 @@ export async function normalizeNarrationNumbers(
   const asked = selected.filter(
     (t) => !(isTocEntry(t) && headingTexts.has(collapseForTocMatch(t.text))));
 
-  // The window is sized to the longest request this book will make, once, before
-  // the model is loaded — see `pinContextTo`.
-  const inputs = asked.map((t) => {
+  const asks: NormalizerAsk[] = asked.map((t) => {
     const at = positionOf.get(t.key)!;
     // Only a neighbour of the SAME kind in the SAME file is context: the entry
     // after a contents line is another chapter's name, which says nothing about
@@ -665,40 +784,14 @@ export async function normalizeNarrationNumbers(
       if (other === undefined || other.kind !== t.kind || other.file !== t.file) return null;
       return other.text;
     };
-    return buildNormalizerInput(t.text, sameRun(-1), sameRun(1));
+    return {
+      key: t.key, text: t.text, segments: t.segments,
+      previous: sameRun(-1), next: sameRun(1),
+    };
   });
-  runner.pinContextTo?.(
-    options.systemPrompt, inputs.reduce((a, b) => (b.length > a.length ? b : a), ''));
 
-  try {
-    for (const [index, target] of asked.entries()) {
-      const answer = await askForEdits(runner, options.systemPrompt, inputs[index]);
-      if ('parseFail' in answer) {
-        parseFailed++;
-        pending.set(target.key, {
-          target, status: 'UNIT_PARSE_FAIL', accepted: [], records: [], rawAnswer: answer.parseFail,
-        });
-      } else {
-        const { accepted, records } = validateNumberEdits(target.text, target.segments, answer.edits);
-        pending.set(target.key, { target, status: 'ANSWERED', accepted, records });
-      }
-      done++;
-      options.onProgress?.(done, asked.length, 'Normalizing numbers');
-    }
-
-    if (parseFailed > asked.length * MAX_PARSE_FAIL_SHARE) {
-      throw new Error(
-        `The number-normalization model '${runner.model}' failed to produce a usable edit list for `
-        + `${parseFailed} of ${asked.length} passages. That is a model this pass cannot use, not a `
-        + 'hard book: check that the model is pulled and that it answers with JSON.'
-      );
-    }
-  } finally {
-    // Before the return, and before e2a is spawned — a completed pass that left
-    // 6-17 GB of weights resident is a TTS job waiting on VRAM nothing is using.
-    options.onProgress?.(asked.length, asked.length, 'Releasing model');
-    await runner.release();
-  }
+  const { decisions: pending, parseFailed } =
+    await askAboutEach(asks, runner, options.systemPrompt, options.onProgress);
 
   // ── The heading and its contents entries, made to say ONE thing ───────────
   //
@@ -763,7 +856,6 @@ export async function normalizeNarrationNumbers(
         }
       }
       pending.set(member.key, {
-        target: member,
         status: was === undefined ? 'SHARED_WITH_HEADING' : was.status,
         accepted,
         records,
@@ -835,4 +927,186 @@ export async function normalizeNarrationNumbers(
     + `${JSON.stringify(dispositions)}; the copy is ${epubPath}`);
 
   return { epubPath, recordPath, reused: false, record };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The same pass, over a plain-text input
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A text file's paragraphs — the unit the CLI's `--tts --input passage.txt`
+ * renders and the unit this pass asks about.
+ *
+ * Blank lines separate them, which is the same rule `--mode streaming` already
+ * reads a page's blocks by, so one text file means the same thing to both CLI
+ * paths. A block is joined back with exactly one blank line between it and the
+ * next, so a round trip through this pass with nothing to change is the same
+ * paragraphs in the same order — e2a splits sentences itself and never depended
+ * on the original run of blank lines.
+ */
+export function splitTextBlocks(text: string): string[] {
+  return text.replace(/\r\n/g, '\n').split(/\n\s*\n+/)
+    .map((block) => block.trim())
+    .filter((block) => block !== '');
+}
+
+export interface TextBlockNormalizationOptions extends NumberNormalizationOptions {
+  /**
+   * What the blocks came from. Recorded as the record's `source` and used in the
+   * log line, so a `.edits.json` in the cache directory says which input it is
+   * about. Required: a record that cannot name its source is a record nobody can
+   * match back to a render.
+   */
+  source: string;
+}
+
+/**
+ * Read every number in a block of plain text as words, and write the text that
+ * says them.
+ *
+ * ── Why this exists beside the book pass ────────────────────────────────────
+ *
+ * `--tts --text` and `--tts --input passage.txt` are how a voice is auditioned,
+ * and until now they were the one narration path that still spoke raw digits:
+ * e2a has no number transform of its own any more (permanently disabled,
+ * 2026-09-02), and the book door reads an EPUB. A voice test that says "twenty
+ * three slash three slash nineteen thirty three" where the shipped audiobook
+ * says "March twenty-third" is measuring a different pipeline than the one it
+ * claims to.
+ *
+ * ── What is the same, and what could not be ─────────────────────────────────
+ *
+ * The model contract is IDENTICAL — `askAboutEach` is the same function the book
+ * pass calls, so the selection rule, the validation wall, the retry rules, the
+ * parse-failure gate and the release all behave the same on a text file as on a
+ * book. What has no counterpart here is markup: a block is one text node, so
+ * `SPANS_MARKUP` can never fire; and there is no contents page, so nothing is
+ * reconciled against a heading.
+ *
+ * Returns null — no file written, no model loaded — when no block carries a
+ * digit, the same "a file with no evidence passes through untouched" the cut and
+ * the book pass both take.
+ */
+export async function normalizeTextBlocks(
+  blocks: readonly string[],
+  runner: NumberNormalizerRunner,
+  options: TextBlockNormalizationOptions,
+): Promise<TextNormalizationOutcome | null> {
+  // Content-addressed on the BLOCKS, not on the file: `--text "…"` writes a temp
+  // file with a fresh name on every run, and naming the copy after the bytes it
+  // was made from is what lets a second audition of the same passage reuse the
+  // first one's answers instead of paying for the model again.
+  const joined = blocks.join('\n\n');
+  const inputSha16 = crypto.createHash('sha256').update(joined, 'utf8').digest('hex').slice(0, 16);
+  const { textPath, recordPath } = normalizedTextPaths(options.outDir, inputSha16, runner.model);
+
+  // Both halves or neither — the record IS part of the artifact, exactly as it is
+  // for a book.
+  try {
+    await fs.access(textPath);
+    const record = JSON.parse(await fs.readFile(recordPath, 'utf8')) as NumberNormalizationRecord;
+    console.log(
+      `[TTS-NUMBERS] ${record.appliedSpans} number(s) already read as words by `
+      + `${record.model} (copy on disk reused): ${textPath}`);
+    return { textPath, recordPath, reused: true, record };
+  } catch { /* not normalized yet, or the record is not beside it */ }
+
+  const selected = blocks
+    .map((text, index) => ({ key: `block-${index}`, text, index }))
+    .filter((block) => DIGIT.test(block.text));
+  if (selected.length === 0) {
+    console.log(
+      `[TTS-NUMBERS] ${path.basename(options.source)} prints no digits a narrator would read — `
+      + 'the text passes through untouched.');
+    return null;
+  }
+
+  // Context is the neighbouring BLOCKS, in the file's own order, and taken from
+  // ALL of them rather than the selected ones — the paragraph before a date is
+  // usually digit-free, and that is exactly the paragraph that says whether 1200
+  // is a year.
+  const asks: NormalizerAsk[] = selected.map((block) => ({
+    key: block.key,
+    text: block.text,
+    segments: [block.text.length],
+    previous: block.index > 0 ? blocks[block.index - 1] : null,
+    next: block.index + 1 < blocks.length ? blocks[block.index + 1] : null,
+  }));
+
+  const { decisions, parseFailed } =
+    await askAboutEach(asks, runner, options.systemPrompt, options.onProgress);
+
+  // The record and the rewritten text, built from the SAME settled decisions.
+  const rewritten = [...blocks];
+  const units: NumberUnitRecord[] = [];
+  const dispositions: Record<string, number> = {};
+  let appliedSpans = 0;
+  for (const block of selected) {
+    const settled = decisions.get(block.key);
+    if (settled === undefined) {
+      // Every selected block was asked about. One that was not means the loop and
+      // the selection disagree about what this file holds, which is not a file to
+      // narrate.
+      throw new Error(
+        `The number-normalization pass reached no decision about ${block.key} of `
+        + `${options.source}. Nothing was written.`);
+    }
+    // Applied back to front, so an earlier splice cannot move a later offset. The
+    // find is re-checked against the text at its recorded position first: the
+    // writer for a book proves every rewrite landed or destroys the output, and a
+    // splice that went in at the wrong offset must fail here the same way.
+    let text = block.text;
+    for (const edit of [...settled.accepted].sort((a, b) => b.at - a.at)) {
+      if (text.slice(edit.at, edit.at + edit.find.length) !== edit.find) {
+        throw new Error(
+          `The number-normalization pass could not splice "${edit.find}" into ${block.key} of `
+          + `${options.source} at ${edit.at} — the text there is not what was validated. `
+          + 'Nothing was written.');
+      }
+      text = text.slice(0, edit.at) + edit.replace + text.slice(edit.at + edit.find.length);
+      appliedSpans++;
+    }
+    rewritten[block.index] = text;
+
+    for (const record of settled.records) {
+      dispositions[record.status] = (dispositions[record.status] ?? 0) + 1;
+    }
+    units.push({
+      key: block.key, kind: 'text-block', file: path.basename(options.source),
+      status: settled.status, text: block.text, edits: settled.records,
+      ...(settled.rawAnswer === undefined ? {} : { rawAnswer: settled.rawAnswer }),
+    });
+  }
+
+  await fs.mkdir(options.outDir, { recursive: true });
+  // Staged and renamed into place, the record first, for the reason the book pass
+  // does it: the copy is what the reuse branch tests for, so it must be the last
+  // of the two to appear.
+  const stagingText = path.join(options.outDir, `${inputSha16}.staging-${crypto.randomUUID()}.txt`);
+  const stagingRecord = `${stagingText}.edits.json`;
+  await fs.writeFile(stagingText, `${rewritten.join('\n\n')}\n`, 'utf8');
+
+  const record: NumberNormalizationRecord = {
+    normalizerVersion: NORMALIZER_VERSION,
+    model: runner.model,
+    source: options.source,
+    inputSha16,
+    generatedAt: new Date().toISOString(),
+    targetsTotal: blocks.length,
+    targetsSelected: selected.length,
+    unitsParseFailed: parseFailed,
+    appliedSpans,
+    dispositions,
+    units,
+  };
+  await fs.writeFile(stagingRecord, JSON.stringify(record, null, 2), 'utf8');
+  await fs.rename(stagingRecord, recordPath);
+  await fs.rename(stagingText, textPath);
+
+  console.log(
+    `[TTS-NUMBERS] ${appliedSpans} number(s) read as words by ${runner.model} over `
+    + `${selected.length} of ${blocks.length} block(s); dispositions `
+    + `${JSON.stringify(dispositions)}; the copy is ${textPath}`);
+
+  return { textPath, recordPath, reused: false, record };
 }

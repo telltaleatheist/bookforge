@@ -88,6 +88,7 @@ const SUITES = [
   'test-derived-sentences',
   'test-narration-chain',
   'test-tts-number-normalizer',
+  'test-cli-narration-prep',
   'test-library-lock',
   'test-job-timing',
   'test-vlm-convert-plan',

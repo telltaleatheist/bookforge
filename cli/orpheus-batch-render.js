@@ -9,6 +9,12 @@
  * guard unchanged (kill-ladder, memory tiers, safe GPU sizing, custom-model
  * resolution); this file adds only argument plumbing and the final FLAC concatenation.
  *
+ * Before generation it calls the app's own narration door
+ * (`prepareNarrationInput`) so the numbers in the input are read as words, exactly
+ * as they are for a queued audiobook. A `.txt` is prepped block by block; an
+ * `.epub` gets the caption/footnote cut too. The record beside the copy names every
+ * proposed edit and its disposition.
+ *
  * The inter-clip gap (default 0.6s) is already baked into each {i}.flac by orpheus.py
  * _save_audio, so concatenating them in numeric order is byte-faithful to what e2a's
  * assembly would join — no gap logic here.
@@ -27,6 +33,7 @@ const path = require('path');
 const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { USER_DATA } = require('./electron-stub.js');
+const { runNarrationPrep } = require('./narration-prep-step.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -147,9 +154,18 @@ async function main() {
   if (args['model-dir']) settings.orpheusModelDir = args['model-dir'];
 
   const t0 = Date.now();
+
+  // The narration door FIRST — the app's own `prepareNarrationInput`. A voice
+  // audition that says "twenty three slash three slash nineteen thirty three"
+  // where the shipped audiobook says "March twenty-third" is measuring a
+  // different pipeline than it claims to: e2a reads text exactly as printed
+  // (its own number transform was permanently disabled, 2026-09-02), so the
+  // words the voice gets are decided here or nowhere.
+  const prepared = await runNarrationPrep(bridge, inputPath, jobId, { skipAssembly: true });
+
   console.log(`[batch] renderRangeHeadless — prep packs chunks, VRAM-tier sizing, WSL-safe worker...`);
   const { sentencesDir, totalSentences, scratchSessionDir, normalizedSessionDir } =
-    await bridge.renderRangeHeadless(inputPath, settings, { jobId });
+    await bridge.renderRangeHeadless(prepared.inputPath, settings, { jobId });
   console.log(`[batch] generation complete: ${totalSentences} chunks in ${sentencesDir}`);
 
   const n = concatFlacsToWav(sentencesDir, args.out);

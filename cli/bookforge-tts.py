@@ -31,6 +31,7 @@ NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
 ORPHEUS_STREAM = REPO_ROOT / "cli" / "orpheus-stream.js"        # streaming path (Listen/extension)
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
+NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door: cut + numbers
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
@@ -338,6 +339,55 @@ def cmd_audiobook(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
+def cmd_prep(args):
+    """Run the NARRATION DOOR on its own — captions and notes out, numbers as words.
+
+    This is the step every queued audiobook already walks through
+    (`prepareNarrationInput` in parallel-tts-bridge), exported so it can be run
+    by itself: the caption/footnote cut, then the model pass that reads the
+    printed digits as the words a narrator says. It writes a prepared copy and a
+    `.edits.json` naming every proposed edit and its disposition, then stops.
+
+    The copy is content-addressed by (input sha, rule version, model), so a later
+    --tts or --audiobook on the SAME input finds it and reuses it with no second
+    model call. Run one, read the record, then run the other.
+
+    NOT --ai-cleanup, which is the OCR/model book-repair pass over an epub's prose
+    (a different job, a different output). This one only decides what the narrator
+    is handed.
+    """
+    _require(bool(args.project or args.input),
+             "--prep needs --project <projectDir> or --input <file.epub|file.txt>")
+    _require(not (args.project and args.input),
+             "--prep: --project and --input both name what to prep; pass one")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(NARRATION_PREP.is_file(), f"missing adapter {NARRATION_PREP}")
+    _require((REPO_ROOT / "dist" / "electron" / "parallel-tts-bridge.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/parallel-tts-bridge.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(NARRATION_PREP)]
+    if args.project:
+        project_dir = str(Path(args.project).resolve())
+        _require((Path(project_dir) / "manifest.json").is_file(),
+                 f"not a BookForge project (no manifest.json): {project_dir}")
+        cmd += ["--project", project_dir]
+    else:
+        # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
+        cmd += ["--input", str(Path(args.input).resolve())]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — narration prep (cut + numbers), no model loaded")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    if args.input:
+        _require(Path(args.input).is_file(), f"input file not found: {args.input}")
+
+    print("[bookforge-tts] narration prep ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 def _run_ai(args, simplify):
     """Drive BookForge's REAL AI pipeline (aiBridge.cleanupEpub) headlessly — same
     chunking, prompts, num_ctx/think/keep_alive, safeguards, diff-cache + checkpoint as
@@ -624,6 +674,9 @@ def cmd_rvc(args):
 COMMANDS = {
     "tts": cmd_tts,
     "audiobook": cmd_audiobook,
+    # The narration door on its own. Distinct from --ai-cleanup below: that is the
+    # OCR/model book-repair pass, this is what the narrator is handed.
+    "prep": cmd_prep,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
@@ -654,12 +707,14 @@ def build_parser():
                    help="custom model directory (overrides voice resolution)")
     p.add_argument("--models-dir", dest="models_dir",
                    help="override the Orpheus models directory to discover voices in")
-    p.add_argument("--input", help="text file to render (--tts); EPUB override (--audiobook)")
+    p.add_argument("--input", help="text file to render (--tts); EPUB override (--audiobook); "
+                   "the .epub or .txt to prep (--prep)")
     p.add_argument("--text", help="literal text to render")
     p.add_argument("--out", help="output .wav path")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "
-                   "--generate-epub: the project whose PDF is read into its book")
+                   "--generate-epub: the project whose PDF is read into its book. "
+                   "--prep: the project whose book is prepped (same 'Latest' resolution)")
     p.add_argument("--tier", choices=["auto", "extreme", "fast", "moderate", "light"],
                    help="GPU memory tier (default: auto — safe-sized to free VRAM)")
     p.add_argument("--sentence-gap", dest="sentence_gap", type=float,

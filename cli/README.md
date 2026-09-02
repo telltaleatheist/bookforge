@@ -32,6 +32,22 @@ python scripts), or copy `electron/data` into `dist/electron/` by hand.
 | `tts` (default) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
 | `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → orpheus_stream.py` | **the path shipped in the app** |
 
+**The narration prep runs first, automatically.** Both render paths call
+`prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hand it
+the result, so a `--tts` audition reads its numbers as words exactly as the shipped
+audiobook does. One line says what happened:
+
+```
+[prep] 3 number(s) read as words by qwen3.5:9b (copy reused: no) → …/narration-cuts/….norm.tts.txt
+[prep] no digits a narrator reads — input passes through untouched
+```
+
+The `.edits.json` beside that copy is the record of every proposed edit and its
+disposition — run `--prep` on the same input to print its path and the tally, or just
+read the file next to the copy the line names. A second run on the same input reuses
+the copy (`copy reused: yes`) and makes no model call. `--mode streaming` is the Listen
+path and does not prep — it speaks the blocks as given, like a web page.
+
 In `tts` mode the per-sentence FLACs (with their inter-clip gaps already baked in by
 `orpheus.py _save_audio`) are concatenated in numeric order into a **bare WAV** — good
 for a quick voice test, but it has no chapters, cover, or metadata. For the **full
@@ -61,13 +77,20 @@ python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-r
 
 ## Full audiobook (M4B) — `--audiobook`
 
-The app-faithful end-to-end path. It chains the **exact two high-level calls the app's
+The app-faithful end-to-end path. It chains the **exact high-level calls the app's
 queue makes** for a standard audiobook — no pipeline logic is reimplemented:
 
+0. `prepareNarrationInput()` (`parallel-tts-bridge`) — the **narration door**: the
+   caption/footnote cut, then the number pass that reads the printed digits as words.
+   The same export `startParallelConversion` calls. Its output is what generation
+   reads; the project's own EPUB is never rewritten. See `--prep` below.
 1. `renderRangeHeadless()` (`parallel-tts-bridge`) — the tts-conversion core.
 2. `startReassembly()` (`reassembly-bridge`) — the reassembly job: e2a `--assemble_only`
    → `<project>/output/<Title>. <Author>.m4b` (+ `.vtt`) with chapters, cover, and
    metadata, and registers the audiobook in the project manifest.
+
+(Plus `runFinalDenoise()` between 1 and 2 when the denoise is on — its own step in the
+app since 2026-08-29, so its own call here.)
 
 So this is the real headless test of the shipped audiobook pipeline. The input EPUB is
 resolved from the project like the app's "Latest" (translated → cleaned → exported →
@@ -91,9 +114,82 @@ progress first), so a re-run seeds the already-rendered sentences and generates 
 what's missing — the same skip-existing-FLACs mechanism the app uses. Pass `--fresh`
 to ignore the cache and re-render from scratch.
 
+Resume seeds by sentence **index**, so a cache rendered before the narration door
+existed (or before the normalizer's rule version / model changed) describes different
+words at the same indexes. Pass `--fresh` the first time you render a project whose
+cache predates the prep, or the already-rendered sentences will be kept as they were.
+
 Requires `dist/electron/{parallel-tts-bridge,reassembly-bridge,manifest-service}.js`
 (build with `npx tsc -p tsconfig.electron.json`). The library root is derived from the
 project path, so the manifest cover/metadata resolve exactly as they do in the app.
+
+## Narration prep — `--prep`
+
+The **narration door**, on its own: the step every queued audiobook already walks
+through, run by itself so you can prep now and render later. Owen, 2026-09-02:
+*"make sure the bookforge cli has a cleanup step independent of the tts step, so the
+user can run one and then the other."*
+
+It drives `prepareNarrationInput` (`parallel-tts-bridge`) — the SAME export the app's
+queue calls — which is two passes over the input:
+
+1. **The cut** (`.epub` only): photo captions, the endnote apparatus and `<sup>`
+   reference numbers out, through `writeNarrationEpub`. A book with none of those
+   stamps passes through untouched, same bytes.
+2. **The numbers**: every passage with a digit in it goes to the model named by
+   Settings → `ttsNumberNormalizerModel` (default `qwen3.5:9b`), which answers with an
+   edit list; every edit is checked against the validator's 13 dispositions and a
+   rejected edit means the printed digits stand. **e2a has no number transform of its
+   own any more**, so what leaves this door is exactly what the voice reads.
+
+Both formats the render paths take are accepted: an `.epub` gets the cut and then the
+numbers; a `.txt` (what `--tts --text` / `--tts --input passage.txt` render) has no
+captions or notes to cut, so its paragraphs go straight to the number pass. Any other
+format is refused by name — a prep silently skipped is a book narrated as digits with
+nothing in the log to say so.
+
+> **This is not `--ai-cleanup`.** That is the OCR/model book-repair pass over an epub's
+> prose (`aiBridge.cleanupEpub` → `repaired.epub` / `cleaned.epub`). `--prep` repairs
+> nothing; it only decides what the **narrator** is handed.
+
+```bash
+# Prep a project's book — resolved by the same "Latest" ladder --audiobook uses:
+python cli/bookforge-tts.py --prep --project "/path/to/library/projects/<slug>"
+
+# Prep one file, book or passage:
+python cli/bookforge-tts.py --prep --input book.epub
+python cli/bookforge-tts.py --prep --input passage.txt
+
+# See the spawn and touch nothing (no model loaded):
+python cli/bookforge-tts.py --prep --input book.epub --dry-run
+```
+
+It prints the prepared copy, the record beside it, and the disposition tally:
+
+```
+[prep] 214 number(s) read as words by qwen3.5:9b (copy reused: no) → …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.epub
+[prep] copy:   …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.epub
+[prep] record: …/narration-cuts/3f2a….n1.qwen3.5-9b.norm.tts.edits.json
+[prep] dispositions: APPLIED=214 ORACLE_DISAGREE=6 CITATION_CODE=4 NOT_FOUND=1
+```
+
+The copy is **content-addressed** by (input sha, rule version, model), so a later
+`--tts` or `--audiobook` on the same input finds it and reuses it with **no second
+model call** — its own `[prep]` line then reads `copy reused: yes`. Change the book,
+the `NORMALIZER_VERSION`, or the model tag and it is a new copy.
+
+The `.edits.json` is the review trail: every passage the model was shown, every edit it
+proposed, and what became of it (`APPLIED`, `ORACLE_DISAGREE` with the expander's own
+reading, `CITATION_CODE`, `WORDS_DROPPED`, `SPANS_MARKUP`, `TOC_MISMATCH`, …).
+
+- `--project <dir>` **or** `--input <file.epub|file.txt>` — one of them, never both.
+  `--project` resolves the book exactly as `--audiobook` does (translated > cleaned >
+  exported > original), which is what makes the later render reuse this copy.
+- `--dry-run` — print the spawn and exit; no model is loaded.
+- An unreachable Ollama or a model that is not pulled is a **non-zero exit** naming the
+  model tag. There is no fallback to raw digits, ever.
+- The prep is off-GPU-ish but not free: it loads a 6-17 GB model and releases it before
+  returning (e2a takes the card next). Don't run it against a busy GPU.
 
 ## Flags
 
@@ -436,7 +532,8 @@ Docker files for the NAS live in `deploy/bookshelf-server/`.
 
 ## Extending
 
-`COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`, `ai-cleanup`).
+`COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`, `prep`,
+`ai-cleanup`).
 Add a `cmd_*` handler and a registry line; a `--<name>` selector flag is generated
 automatically. Engine adapters live beside it (`orpheus-batch-render.js`,
 `orpheus-render.js`) and load under `electron-stub.js`, which shims the tiny Electron
