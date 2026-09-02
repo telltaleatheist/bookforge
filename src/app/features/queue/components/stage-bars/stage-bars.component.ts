@@ -10,8 +10,8 @@
 
 import { Component, input } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ActiveBatchProgress, JobStageProgress } from '../../models/queue.types';
-import { batchLabel } from '@shared/queue/bench';
+import { ActiveBatchProgress, JobStageProgress, PrepSubProgress } from '../../models/queue.types';
+import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
 
 @Component({
   selector: 'app-stage-bars',
@@ -36,6 +36,18 @@ import { batchLabel } from '@shared/queue/bench';
         </div>
         @if (detail() && stage.status === 'running') {
           <div class="stage-detail">{{ detail() }}</div>
+        }
+        @if (prep(); as p) {
+          @if (stage.status === 'running') {
+            <div class="batch-row">
+              @if (prepFraction(p) !== undefined) {
+                <div class="batch-track">
+                  <div class="batch-fill" [style.width.%]="prepFraction(p)! * 100"></div>
+                </div>
+              }
+              <span class="batch-text">{{ prepLabel(p) }}</span>
+            </div>
+          }
         }
         @if (batch(); as b) {
           @if (stage.status === 'running') {
@@ -219,4 +231,17 @@ export class StageBarsComponent {
    * because the bench card draws the same batch and must word it identically.
    */
   readonly batchLabel = batchLabel;
+
+  /**
+   * Counted work inside the PREPARING stage, when there is some.
+   *
+   * The same shape as `batch` one stage earlier and for the same reason: the
+   * number-normalization pass walks a whole book through a local model before
+   * e2a is spawned, and "Preparing book" cannot move while it does.
+   */
+  readonly prep = input<PrepSubProgress | undefined>(undefined);
+
+  /** Both from shared/queue/bench.ts, so every card words this pass alike. */
+  readonly prepLabel = prepLabel;
+  readonly prepFraction = prepFraction;
 }

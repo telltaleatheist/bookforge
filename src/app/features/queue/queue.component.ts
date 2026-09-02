@@ -41,7 +41,7 @@ import { DatePipe, DecimalPipe } from '@angular/common';
 import { CdkDrag, CdkDragHandle, CdkDropList, moveItemInArray } from '@angular/cdk/drag-drop';
 import type { CdkDragDrop } from '@angular/cdk/drag-drop';
 
-import { batchLabel } from '@shared/queue/bench';
+import { batchLabel, prepFraction, prepLabel } from '@shared/queue/bench';
 import type { BookPlan, FinishedRun } from '@shared/queue/bench';
 import { ToolbarComponent, ToolbarItem } from '../../creamsicle-desktop';
 import { ElectronService } from '../../core/services/electron.service';
@@ -199,6 +199,21 @@ import type { BookPlanView } from './services/queue-tray.service';
 
                 @if (tray.detailFor(lane); as detail) {
                   <div class="detail">{{ detail }}</div>
+                }
+
+                <!-- Inside the PREPARING stage, before e2a exists. "Preparing
+                     book" is honestly at 0% while the number-normalization pass
+                     walks the whole book through a local model, which on a long
+                     book is minutes of a card that otherwise says nothing. -->
+                @if (busy.prep; as prep) {
+                  <div class="batch-row">
+                    @if (prepFraction(prep) !== undefined) {
+                      <span class="bar thin batch">
+                        <i [style.width.%]="prepFraction(prep)! * 100"></i>
+                      </span>
+                    }
+                    <span class="batch-text">{{ prepLabel(prep) }}</span>
+                  </div>
                 }
 
                 <!-- Inside the MLX batch. The stage bar above it is HONESTLY at
@@ -1303,6 +1318,9 @@ export class QueueComponent {
    * rows (shared/queue/bench.ts) — one batch, one wording.
    */
   readonly batchLabel = batchLabel;
+  /** Both shared, so the shelf and this card word the prep pass identically. */
+  readonly prepLabel = prepLabel;
+  readonly prepFraction = prepFraction;
 
   /** "3 steps · 1 on the bench", or "2 steps · held". */
   planSummary(plan: BookPlan): string {

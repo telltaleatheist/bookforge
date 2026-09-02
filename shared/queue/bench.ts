@@ -35,6 +35,7 @@ import {
   TERMINAL_STEP_STATUSES,
   jobStatus,
   type ActiveBatchProgress,
+  type PrepSubProgress,
   type GpuThermalReading,
   type JobStageProgress,
   type QueueJob,
@@ -242,6 +243,31 @@ export interface LaneOccupant {
    * and the bench dropped it on the floor until now (Owen, 2026-08-20).
    */
   activeBatch?: ActiveBatchProgress;
+  /**
+   * Counted work inside the PREPARING stage, when there is some.
+   *
+   * The stage breakdown is not enough here for `activeBatch`'s reason, one
+   * stage earlier: "Preparing book" sits at 0% while the number-normalization
+   * pass walks a 400-paragraph book through a local model, and this is the only
+   * number that moves in that window.
+   */
+  prep?: PrepSubProgress;
+}
+
+/**
+ * "Normalizing numbers · 84 / 312" — what the prep pass is doing, then how far.
+ *
+ * Here rather than in a component for `batchLabel`'s reason: the bench card, the
+ * shelf and the queue page's step rows all draw this line, and one pass must not
+ * be described in three vocabularies.
+ */
+export function prepLabel(p: PrepSubProgress): string {
+  return `${p.label} · ${p.done.toLocaleString()} / ${p.total.toLocaleString()}`;
+}
+
+/** 0-1 of the prep pass, or undefined when it has counted nothing to divide by. */
+export function prepFraction(p: PrepSubProgress): number | undefined {
+  return p.total > 0 ? Math.min(1, p.done / p.total) : undefined;
 }
 
 /**
@@ -338,6 +364,7 @@ export function benchLanes(snapshot: QueueSnapshot): BenchLane[] {
           ...(step.progress.activeBatch === undefined
             ? {}
             : { activeBatch: step.progress.activeBatch }),
+          ...(step.progress.prep === undefined ? {} : { prep: step.progress.prep }),
           stages: step.progress.stages ?? [],
         });
       }

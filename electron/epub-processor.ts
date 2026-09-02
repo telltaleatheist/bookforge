@@ -6691,6 +6691,13 @@ export interface NarrationEpubWriteResult {
   removedSupMarkers: number;
   /** How many elements speak an overridden text (chapter openings, mostly). */
   overriddenElements: number;
+  /**
+   * How many spans of text were rewritten in place — the number pass's edits,
+   * across the spine, the contents and the title. Reported rather than counted
+   * quietly for `excludedCaptions`' reason: nobody struck these, so the caller
+   * with a job log in front of it is the one that has to say what changed.
+   */
+  rewrittenSpans: number;
   /** The spine documents that were rewritten. */
   rewrittenFiles: string[];
   /**
@@ -6806,6 +6813,48 @@ export interface NarrationEpubWriteOptions {
    * A note Owen wants narrated is a reclassification in the Foundry editor.
    */
   excludeFootnotes?: boolean;
+  /**
+   * Spans of TEXT to rewrite in place, keyed by `NarrationNumberTarget.key`.
+   *
+   * The number-normalization pass (electron/tts-number-normalizer.ts) rides on
+   * this: a digit the narrator would mispronounce is replaced by the words a
+   * person says, and NOTHING ELSE about the book moves. That is why it is not
+   * `textOverrides`, which replaces an element's children with ONE text node:
+   * the narration copy now carries structure e2a depends on — `<li>` list items,
+   * headings, `data-bf-cat` stamps, an `<em>` inside a sentence — and flattening
+   * a unit to a single string would take all of it out. These edits are applied
+   * to the individual TEXT NODES instead, by offset, so every tag in the unit
+   * survives untouched.
+   *
+   * Applied at the SAME point as `textOverrides` — after the strikes are known,
+   * before the expectation signatures are computed — so the verification below
+   * proves the book AS REWRITTEN, and a rewrite that failed to land is a copy
+   * that is destroyed rather than shipped.
+   *
+   * The keys span four namespaces, because a chapter's spoken name has to be
+   * the same word in all of them (see `readNarrationNumberTargets`): the text
+   * units, the nav document's TOC anchors, the NCX's nav labels, and the OPF's
+   * `<dc:title>`. A key naming nothing this book has is refused by name.
+   */
+  rewrites?: ReadonlyMap<string, readonly NarrationTextRewrite[]>;
+}
+
+/**
+ * One span of a target's text, replaced by the words it is read as.
+ *
+ * `at` is an offset into the target's OWN text — the concatenation of its
+ * descendant text nodes, exactly what `getUnitTextContent` reports — and it is
+ * carried rather than re-derived because the pass that produced the edit is the
+ * one that proved the span occurs exactly once. Re-searching here would be a
+ * second opinion about where the edit goes, and the two could differ.
+ */
+export interface NarrationTextRewrite {
+  /** The printed text, copied verbatim from the target. */
+  find: string;
+  /** What the narrator says instead. */
+  replace: string;
+  /** Where `find` starts in the target's text. */
+  at: number;
 }
 
 /**
@@ -7194,6 +7243,24 @@ interface NarrationCutExpectation {
 }
 
 /**
+ * One target the number pass rewrote, and the words it must now say.
+ *
+ * Checked against the WRITTEN file rather than against the tree the edit was
+ * applied to, because "the splice returned" and "the book on disk says it" are
+ * two different claims and only the second one is the one e2a reads. Matched by
+ * TEXT rather than by index: a cut that pruned a document renumbers the nav's
+ * anchors, and an index-matched check would then report a correct rewrite as a
+ * failure.
+ */
+interface NarrationRewriteExpectation {
+  key: string;
+  file: string;
+  kind: NarrationNumberTargetKind;
+  /** The target's whole text after the rewrite — what the walk must read back. */
+  text: string;
+}
+
+/**
  * Read the staged copy back and prove it is the copy that was planned.
  *
  * Throws naming what went wrong; returns the number of elements it accounted
@@ -7298,6 +7365,431 @@ async function verifyNarrationCut(
 }
 
 /**
+ * Read the staged copy back and prove every rewritten target SAYS what it was
+ * rewritten to say.
+ *
+ * The cut's own verification above already re-walks the file, and a rewritten
+ * unit's signature travels through it — but a signature mismatch is reported as
+ * "a text element nobody struck went missing", which is the wrong sentence for a
+ * number that did not land and names the wrong thing to go and look at. This
+ * says the edit, by key, in its own words.
+ *
+ * Matched on whitespace-collapsed text: re-serializing a document normalizes
+ * indentation, and a check that failed on that would fail on correct rewrites.
+ */
+async function verifyNarrationRewrites(
+  outputPath: string,
+  expectations: readonly NarrationRewriteExpectation[],
+  whatFor: string,
+): Promise<void> {
+  if (expectations.length === 0) return;
+  const collapse = (s: string): string => s.replace(/\s+/g, ' ').trim();
+  const byFile = new Map<string, NarrationRewriteExpectation[]>();
+  for (const expected of expectations) {
+    const list = byFile.get(expected.file);
+    if (list === undefined) byFile.set(expected.file, [expected]);
+    else list.push(expected);
+  }
+
+  const problems: string[] = [];
+  const zipReader = await openEpubSource(outputPath);
+  try {
+    for (const [file, wanted] of byFile) {
+      if (!zipReader.hasEntry(file)) {
+        problems.push(
+          `${file} carries ${wanted.length} rewritten text(s) and is not in the copy at all.`);
+        continue;
+      }
+      const raw = (await zipReader.readEntry(file)).toString('utf8');
+      const kinds = new Set(wanted.map((w) => w.kind));
+      /** Every text the copy's own walk reads out of this file, in its order. */
+      const said: string[] = [];
+      if (kinds.has('unit') || kinds.has('nav')) {
+        const { doc, body } = parseXhtmlBody(raw, file);
+        if (kinds.has('unit')) {
+          for (const c of collectExportUnits(doc, body, whatFor)) said.push(getUnitTextContent(c.el));
+        }
+        if (kinds.has('nav')) {
+          for (const a of tocNavAnchorElements(body)) said.push(getUnitTextContent(a));
+        }
+      }
+      if (kinds.has('ncx') || kinds.has('opf-title')) {
+        const { DOMParser } = require('@xmldom/xmldom');
+        const doc = new DOMParser().parseFromString(xmlSafeEntities(raw), 'application/xml');
+        if (!doc || !doc.documentElement) {
+          problems.push(`${file} was rewritten and no longer parses.`);
+          continue;
+        }
+        if (kinds.has('ncx')) {
+          for (const l of ncxNavLabelElements(doc)) said.push(getUnitTextContent(l));
+        }
+        if (kinds.has('opf-title')) {
+          for (const t of opfTitleElements(doc)) said.push(getUnitTextContent(t));
+        }
+      }
+      // A multiset, so two entries that legitimately read the same words each
+      // account for one of the copy's — a set would let one satisfy both.
+      const available = new Map<string, number>();
+      for (const text of said) {
+        const k = collapse(text);
+        available.set(k, (available.get(k) ?? 0) + 1);
+      }
+      for (const expected of wanted) {
+        const k = collapse(expected.text);
+        const left = available.get(k) ?? 0;
+        if (left === 0) {
+          problems.push(
+            `${expected.key} was rewritten to say "${k.slice(0, 80)}" and the copy does not say it.`);
+          continue;
+        }
+        available.set(k, left - 1);
+      }
+    }
+  } finally {
+    zipReader.close();
+  }
+
+  if (problems.length > 0) {
+    const SHOWN = 8;
+    throw new Error(
+      'The narration copy was written and the numbers it was asked to speak are not in it, so it '
+      + `has been discarded rather than put in place. ${problems.length} problem(s):\n`
+      + problems.slice(0, SHOWN).map((p) => `  • ${p}`).join('\n')
+      + (problems.length > SHOWN ? `\n  • …and ${problems.length - SHOWN} more.` : '')
+    );
+  }
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The number-normalization targets — everything in a book that a voice READS
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The narration copy is handed to e2a, which speaks the spine documents AND
+// takes the m4b's chapter names out of the book's navigation. So "the text a
+// listener hears" is four things, not one, and a pass that converted digits to
+// words in only the first would leave "Chapter 3" printed in the nav while the
+// body heading said "Chapter Three".
+//
+// That is not cosmetic. e2a's `filter_chapter` matches a body heading against
+// the TOC titles it was given to recognize a chapter opening that lost its
+// heading tag, and the m4b chapter names come from the same list — so the two
+// readings MUST be the same string. The enumeration below is therefore shared
+// by the reader (which decides what to send the model) and the writer (which
+// applies what came back), because an index that meant a different anchor to
+// the two of them would put a chapter's spoken name on its neighbour.
+//
+// Owen's ruling, 2026-09-02: *"it should pass every block through that might
+// need it — not every block, just the problematic ones — including chapter
+// names/spines/etc."* Headings are IN, with their TOC entries beside them, and
+// the m4b chapter titles and the transcript carry the spoken form.
+
+/** What kind of thing in the book a normalization target is. */
+export type NarrationNumberTargetKind = 'unit' | 'nav' | 'ncx' | 'opf-title';
+
+/**
+ * One piece of a book that a voice reads aloud, as the normalizer sees it.
+ *
+ * `segments` is what makes an edit provably safe to apply without touching
+ * markup: the length of each descendant text node, in order, summing to
+ * `text.length`. A span that fits inside ONE segment is a span the writer can
+ * splice into that text node and leave every tag in the unit alone; a span that
+ * crosses a boundary sits across an `<em>` or a `<sup>` and is refused
+ * (`SPANS_MARKUP`) by the caller, which is the only place that disposition can
+ * be decided without re-parsing the book.
+ */
+export interface NarrationNumberTarget {
+  /** How the writer finds this again. Unit keys are `NarrationElementKey`s. */
+  key: string;
+  kind: NarrationNumberTargetKind;
+  /** The zip entry this lives in — for the record and the log. */
+  file: string;
+  /** The element's tag, lowercased. `''` for the nav/NCX/OPF namespaces. */
+  tag: string;
+  /** The conversion stamp's own word for this element, or null. */
+  statedCategory: string | null;
+  /** Every descendant text node, concatenated — `getUnitTextContent`'s answer. */
+  text: string;
+  /** The length of each of those text nodes, in order. Sums to `text.length`. */
+  segments: number[];
+}
+
+/**
+ * Every descendant TEXT NODE of an element, in document order.
+ *
+ * The same walk as `getUnitTextContent` down to the skip set, because the offsets
+ * an edit carries are offsets into THAT function's answer. Two walks that agreed
+ * about the text but not about which node each character came from would splice
+ * the right words into the wrong element.
+ */
+function unitTextNodes(node: any, into: any[]): void {
+  if (node.nodeType === 3 || node.nodeType === 4) { into.push(node); return; }
+  if (node.nodeType !== 1) return;
+  const tag = node.tagName?.toLowerCase() || '';
+  if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
+  if (!node.childNodes) return;
+  for (let i = 0; i < node.childNodes.length; i++) unitTextNodes(node.childNodes[i], into);
+}
+
+/** The length of each of an element's text nodes, in order. */
+function textNodeSegments(el: any): number[] {
+  const nodes: any[] = [];
+  unitTextNodes(el, nodes);
+  return nodes.map((n) => (n.nodeValue ?? '').length);
+}
+
+/**
+ * The `<a>` elements of the EPUB 3 nav document's `toc` nav, in document order.
+ *
+ * The `toc` type is REQUIRED, for `parseNavTocTargets`'s reason: a nav document
+ * also carries `landmarks` and `page-list`, and reading the first `<nav>` would
+ * normalize a list of printed page numbers as if it were the contents.
+ *
+ * An anchor with no href or no text is skipped — it names no chapter, and both
+ * the reader and the writer skip it identically, which is all the index needs.
+ */
+function tocNavAnchorElements(body: any): any[] {
+  const navs = body.getElementsByTagName('nav');
+  for (let i = 0; i < navs.length; i++) {
+    if (!structureTokens(navs[i]).includes('toc')) continue;
+    const anchors = navs[i].getElementsByTagName('a');
+    const out: any[] = [];
+    for (let k = 0; k < anchors.length; k++) {
+      const href = anchors[k].getAttribute('href');
+      if (href === null || href === '') continue;
+      if (getUnitTextContent(anchors[k]).replace(/\s+/g, ' ').trim() === '') continue;
+      out.push(anchors[k]);
+    }
+    return out;
+  }
+  return [];
+}
+
+/**
+ * The `<navLabel>` elements of an NCX's navPoints, in document order.
+ *
+ * Mirrors `parseNcxTocTargets`'s admission rule exactly — a navPoint with a
+ * label and a content src — so the Nth label here is the Nth TOC entry e2a is
+ * handed.
+ */
+function ncxNavLabelElements(doc: any): any[] {
+  const out: any[] = [];
+  const points = doc.getElementsByTagName('navPoint');
+  for (let i = 0; i < points.length; i++) {
+    const navLabel = childElementByTag(points[i], 'navlabel');
+    const content = childElementByTag(points[i], 'content');
+    if (navLabel === null || content === null) continue;
+    const src = content.getAttribute('src');
+    if (src === null || src === '') continue;
+    if (getUnitTextContent(navLabel).replace(/\s+/g, ' ').trim() === '') continue;
+    out.push(navLabel);
+  }
+  return out;
+}
+
+/**
+ * The `<dc:title>` elements of an OPF's metadata, in document order.
+ *
+ * Matched on the LOCAL name so a book that binds the Dublin Core namespace to
+ * some other prefix is still read. The book's title is spoken — e2a stamps it on
+ * the m4b and the players read it out — so a title with a number in it is a
+ * target like any other.
+ */
+function opfTitleElements(doc: any): any[] {
+  const out: any[] = [];
+  const metadata = doc.getElementsByTagName('metadata');
+  if (metadata.length === 0) return out;
+  const all = metadata[0].getElementsByTagName('*');
+  for (let i = 0; i < all.length; i++) {
+    const local = (all[i].tagName ?? '').toLowerCase().split(':').pop();
+    if (local === 'title') out.push(all[i]);
+  }
+  return out;
+}
+
+/** The key namespaces the writer parses back out of a rewrite key. */
+const NAV_TARGET_KEY = (file: string, i: number): string => `${file}#nav${i}`;
+const NCX_TARGET_KEY = (file: string, i: number): string => `${file}#ncx${i}`;
+const OPF_TITLE_KEY = (file: string, i: number): string => `${file}#title${i}`;
+
+/**
+ * Everything in a book a narrator reads, as normalization targets.
+ *
+ * Walks the SPINE the way `writeNarrationEpub` walks it — the same
+ * `collectExportUnits` per document, the same `narrationElementKey` minting — so
+ * a key produced here names the same element when the writer applies the edit.
+ * Reading the units through `readEpubConversionUnits` instead would be a second
+ * traversal of the book, and the two would only agree by luck.
+ *
+ * THE NAV DOCUMENT'S UNITS ARE NOT INCLUDED. When the nav is in the spine its
+ * whole `<ol>` is a single export unit, so normalizing it as a unit AND as
+ * anchors would apply the same edit twice to the same text node. The nav is
+ * covered entirely by the `nav` namespace, which is also the granularity that
+ * lets one entry share a heading's edits.
+ */
+export async function readNarrationNumberTargets(
+  epubSourcePath: string,
+): Promise<NarrationNumberTarget[]> {
+  const whatFor = `the narration numbers of ${path.basename(epubSourcePath)}`;
+  const out: NarrationNumberTarget[] = [];
+  const processor = new EpubProcessor();
+  try {
+    const structure = await processor.open(epubSourcePath);
+    const opfEntry = normalizeZipEntryName(structure.opfPath);
+    const navEntry = structure.navPath ? normalizeZipEntryName(structure.navPath) : null;
+    const ncxEntry = structure.ncxPath ? normalizeZipEntryName(structure.ncxPath) : null;
+
+    const seen = new Set<string>();
+    for (const chapter of structure.chapters) {
+      const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
+      if (seen.has(entryName)) continue;  // a spine document listed twice is one file
+      seen.add(entryName);
+      if (entryName === navEntry) continue;  // covered by the nav namespace below
+      const { doc, body } = parseXhtmlBody(await processor.readFile(entryName), entryName);
+      let indexInFile = 0;
+      for (const c of collectExportUnits(doc, body, entryName)) {
+        const key = narrationElementKey(entryName, indexInFile++);
+        const stamp = narrationStampOf(c.el, whatFor);
+        out.push({
+          key,
+          kind: 'unit',
+          file: entryName,
+          tag: c.tag,
+          statedCategory: stamp?.statedCategory ?? null,
+          text: getUnitTextContent(c.el),
+          segments: textNodeSegments(c.el),
+        });
+      }
+    }
+
+    if (navEntry !== null) {
+      const { body } = parseXhtmlBody(await processor.readFile(navEntry), navEntry);
+      tocNavAnchorElements(body).forEach((el, i) => {
+        out.push({
+          key: NAV_TARGET_KEY(navEntry, i),
+          kind: 'nav',
+          file: navEntry,
+          tag: '',
+          statedCategory: null,
+          text: getUnitTextContent(el),
+          segments: textNodeSegments(el),
+        });
+      });
+    }
+    if (ncxEntry !== null) {
+      const { DOMParser } = require('@xmldom/xmldom');
+      const doc = new DOMParser().parseFromString(
+        xmlSafeEntities(await processor.readFile(ncxEntry)), 'application/xml');
+      if (!doc || !doc.documentElement) {
+        throw new Error(`Could not parse ${ncxEntry} — the navigation is malformed.`);
+      }
+      ncxNavLabelElements(doc).forEach((el, i) => {
+        out.push({
+          key: NCX_TARGET_KEY(ncxEntry, i),
+          kind: 'ncx',
+          file: ncxEntry,
+          tag: '',
+          statedCategory: null,
+          text: getUnitTextContent(el),
+          segments: textNodeSegments(el),
+        });
+      });
+    }
+    {
+      const { DOMParser } = require('@xmldom/xmldom');
+      const doc = new DOMParser().parseFromString(
+        xmlSafeEntities(await processor.readFile(opfEntry)), 'application/xml');
+      if (!doc || !doc.documentElement) {
+        throw new Error(`Could not parse ${opfEntry} — the book states no metadata.`);
+      }
+      opfTitleElements(doc).forEach((el, i) => {
+        out.push({
+          key: OPF_TITLE_KEY(opfEntry, i),
+          kind: 'opf-title',
+          file: opfEntry,
+          tag: '',
+          statedCategory: null,
+          text: getUnitTextContent(el),
+          segments: textNodeSegments(el),
+        });
+      });
+    }
+  } finally {
+    processor.close();
+  }
+  return out;
+}
+
+/**
+ * Apply one target's rewrites to its TEXT NODES, right to left.
+ *
+ * Right to left because every offset is into the text as it was READ: applying
+ * the last edit first leaves every earlier offset still valid, and the
+ * alternative — re-deriving offsets after each splice — is the bug this ordering
+ * exists to make impossible.
+ *
+ * Every failure here THROWS rather than skipping. The pass that produced these
+ * edits already proved each span occurs exactly once and sits inside a single
+ * text node; an edit that does not land is those two proofs disagreeing with the
+ * book, which is a bug in the pass and not something to write a half-normalized
+ * copy over.
+ */
+function applyTextNodeRewrites(
+  el: any,
+  rewrites: readonly NarrationTextRewrite[],
+  key: string,
+): void {
+  const nodes: any[] = [];
+  unitTextNodes(el, nodes);
+  const starts: number[] = [];
+  let running = 0;
+  for (const node of nodes) {
+    starts.push(running);
+    running += (node.nodeValue ?? '').length;
+  }
+  const ordered = [...rewrites].sort((a, b) => b.at - a.at);
+  for (const edit of ordered) {
+    const end = edit.at + edit.find.length;
+    let landed = false;
+    for (let i = 0; i < nodes.length; i++) {
+      const start = starts[i];
+      const value: string = nodes[i].nodeValue ?? '';
+      if (edit.at < start || end > start + value.length) continue;
+      const local = edit.at - start;
+      if (value.slice(local, local + edit.find.length) !== edit.find) {
+        throw new Error(
+          `The narration copy was asked to speak "${edit.replace}" for "${edit.find}" at `
+          + `${edit.at} in ${key}, and the book says "${value.slice(local, local + edit.find.length)}" `
+          + 'there. Nothing was written.'
+        );
+      }
+      // `replaceData`, not `nodeValue =`. xmldom keeps a text node's characters
+      // in `data` and mirrors them onto `nodeValue`, and its SERIALIZER reads
+      // `data` — so assigning `nodeValue` changes what every reader of the tree
+      // sees (including this file's own `getUnitTextContent`, and therefore the
+      // verification's expectation) while the bytes written out stay the book's
+      // original. Measured 2026-09-02: every rewrite "landed", every expectation
+      // said so, and the copy on disk still printed the digits.
+      if (typeof nodes[i].replaceData !== 'function') {
+        throw new Error(
+          `The narration copy could not rewrite ${key}: this XML implementation's text nodes have `
+          + 'no replaceData. Nothing was written.'
+        );
+      }
+      nodes[i].replaceData(local, edit.find.length, edit.replace);
+      landed = true;
+      break;
+    }
+    if (!landed) {
+      throw new Error(
+        `The narration copy was asked to speak "${edit.replace}" for "${edit.find}" at ${edit.at} `
+        + `in ${key}, and no single run of text there holds it — the span crosses markup. `
+        + 'Nothing was written.'
+      );
+    }
+  }
+}
+
+/**
  * Write the narration copy: the book, with the struck elements gone and (by
  * default) its footnote reference markers with them.
  *
@@ -7338,11 +7830,23 @@ export async function writeNarrationEpub(
   let opfEntry = '';
   let navEntry: string | null = null;
   let ncxEntry: string | null = null;
+  // The three structural files' BYTES, read only when a rewrite may land in one
+  // of them. They are not spine documents (the NCX and the OPF never are, and
+  // the nav is handled below whether it is or not), so the one traversal that
+  // parses the chapters is also the only place their bytes are reachable.
+  let opfXmlRaw: string | null = null;
+  let navXhtmlRaw: string | null = null;
+  let ncxXmlRaw: string | null = null;
   try {
     const structure = await processor.open(inputPath);
     opfEntry = normalizeZipEntryName(structure.opfPath);
     navEntry = structure.navPath ? normalizeZipEntryName(structure.navPath) : null;
     ncxEntry = structure.ncxPath ? normalizeZipEntryName(structure.ncxPath) : null;
+    if (options?.rewrites !== undefined) {
+      opfXmlRaw = await processor.readFile(opfEntry);
+      if (navEntry !== null) navXhtmlRaw = await processor.readFile(navEntry);
+      if (ncxEntry !== null) ncxXmlRaw = await processor.readFile(ncxEntry);
+    }
     for (const chapter of structure.chapters) {
       const entryName = normalizeZipEntryName(processor.resolvePath(chapter.href));
       if (perFile.has(entryName)) continue;  // a spine document listed twice is one file
@@ -7449,17 +7953,22 @@ export async function writeNarrationEpub(
   // signatures, the admission test, the serialization, the verification)
   // describes the overridden book. The element's children are replaced with
   // one text node: the override IS the whole utterance, single line.
+  // The element behind every key of this book, built once: the overrides below
+  // and the number rewrites after them both resolve keys against it, and two
+  // spellings of "which element is this" is exactly the disagreement that puts
+  // an edit on the wrong paragraph.
+  const elByKey = new Map<string, any>();
+  const fileByKey = new Map<string, string>();
+  for (const [file, { units: fileUnits }] of perFile) {
+    for (const unit of fileUnits) {
+      elByKey.set(unit.key, unit.el);
+      fileByKey.set(unit.key, file);
+    }
+  }
+
   const overrideTouched = new Set<string>();
   let overriddenElements = 0;
   if (options?.textOverrides !== undefined) {
-    const elByKey = new Map<string, any>();
-    const fileByKey = new Map<string, string>();
-    for (const [file, { units: fileUnits }] of perFile) {
-      for (const unit of fileUnits) {
-        elByKey.set(unit.key, unit.el);
-        fileByKey.set(unit.key, file);
-      }
-    }
     for (const [key, spoken] of Object.entries(options.textOverrides)) {
       const el = elByKey.get(key);
       if (el === undefined) {
@@ -7485,6 +7994,146 @@ export async function writeNarrationEpub(
       el.appendChild(el.ownerDocument.createTextNode(text));
       overrideTouched.add(fileByKey.get(key)!);
       overriddenElements++;
+    }
+  }
+
+  // ── The numbers, read as words, without moving a single tag ───────────────
+  //
+  // Applied HERE for the overrides' reason: after the strikes are known, before
+  // the expectation signatures are computed, so the guarantee check below
+  // describes the book AS IT WILL BE WRITTEN and a rewrite that failed to land
+  // destroys the copy instead of shipping it.
+  //
+  // Unlike an override this edits the element's TEXT NODES by offset. e2a now
+  // depends on the copy's structure — `<li>` list items are their own chunks,
+  // headings are chapter titles, `data-bf-cat` says what a block is — so
+  // rebuilding a unit's markup to change four characters of it would be paying
+  // for the edit with the structure. `applyTextNodeRewrites` splices the string
+  // inside the one text node that holds the span and leaves everything else
+  // byte-identical.
+  const rewritePlan = options?.rewrites;
+  let rewrittenSpans = 0;
+  /** What each rewritten target must SAY in the written file. */
+  const rewriteExpectations: NarrationRewriteExpectation[] = [];
+  /** The nav document, when a nav-anchor rewrite touched it and the spine did not. */
+  let navRewrittenDoc: any = null;
+  let ncxRewrittenDoc: any = null;
+  let opfRewrittenDoc: any = null;
+  if (rewritePlan !== undefined && rewritePlan.size > 0) {
+    // Bucketed by namespace first, so each structural document is parsed at most
+    // once however many of its entries are rewritten.
+    const navEdits = new Map<number, readonly NarrationTextRewrite[]>();
+    const ncxEdits = new Map<number, readonly NarrationTextRewrite[]>();
+    const opfEdits = new Map<number, readonly NarrationTextRewrite[]>();
+    const unitEdits: Array<[string, readonly NarrationTextRewrite[]]> = [];
+    for (const [key, edits] of rewritePlan) {
+      if (edits.length === 0) continue;
+      const namespaced = /#(nav|ncx|title)(\d+)$/.exec(key);
+      if (namespaced === null) { unitEdits.push([key, edits]); continue; }
+      const file = key.slice(0, key.lastIndexOf('#'));
+      const index = Number(namespaced[2]);
+      const expect = (kind: NarrationNumberTargetKind, entry: string | null): void => {
+        if (entry !== file) {
+          throw new Error(
+            `The narration copy was asked to rewrite ${key}, and this book's ${kind} is `
+            + `${entry === null ? 'absent' : entry}. Nothing was written.`
+          );
+        }
+      };
+      if (namespaced[1] === 'nav') { expect('nav', navEntry); navEdits.set(index, edits); }
+      else if (namespaced[1] === 'ncx') { expect('ncx', ncxEntry); ncxEdits.set(index, edits); }
+      else { expect('opf-title', opfEntry); opfEdits.set(index, edits); }
+    }
+
+    for (const [key, edits] of unitEdits) {
+      const el = elByKey.get(key);
+      if (el === undefined) {
+        throw new Error(
+          `The narration copy was asked to rewrite ${key}, and this book has no element by that `
+          + 'key. Nothing was written.'
+        );
+      }
+      if (struck.has(key)) continue;  // leaving the copy anyway
+      applyTextNodeRewrites(el, edits, key);
+      rewrittenSpans += edits.length;
+      overrideTouched.add(fileByKey.get(key)!);
+      rewriteExpectations.push({
+        key, file: fileByKey.get(key)!, kind: 'unit', text: getUnitTextContent(el),
+      });
+    }
+
+    if (navEdits.size > 0) {
+      // The nav may also be a SPINE document. When it is, its parsed tree is the
+      // one `perFile` already holds and the existing serialization loop writes
+      // it — parsing a second copy here would silently discard whichever of the
+      // two sets of changes was written first.
+      const shared = navEntry !== null ? perFile.get(navEntry) : undefined;
+      const ownParse = shared === undefined ? parseXhtmlBody(navXhtmlRaw!, navEntry!) : null;
+      const anchors = tocNavAnchorElements(shared !== undefined ? shared.body : ownParse!.body);
+      for (const [index, edits] of navEdits) {
+        if (index >= anchors.length) {
+          throw new Error(
+            `The narration copy was asked to rewrite the contents entry ${index} of ${navEntry}, `
+            + `which lists ${anchors.length}. Nothing was written.`
+          );
+        }
+        applyTextNodeRewrites(anchors[index], edits, NAV_TARGET_KEY(navEntry!, index));
+        rewrittenSpans += edits.length;
+        rewriteExpectations.push({
+          key: NAV_TARGET_KEY(navEntry!, index), file: navEntry!, kind: 'nav',
+          text: getUnitTextContent(anchors[index]),
+        });
+      }
+      if (shared !== undefined) overrideTouched.add(navEntry!);
+      else navRewrittenDoc = ownParse!.doc;
+    }
+
+    if (ncxEdits.size > 0) {
+      const { DOMParser } = require('@xmldom/xmldom');
+      const doc = new DOMParser().parseFromString(xmlSafeEntities(ncxXmlRaw!), 'application/xml');
+      if (!doc || !doc.documentElement) {
+        throw new Error(`Could not parse ${ncxEntry} — the navigation is malformed.`);
+      }
+      const labels = ncxNavLabelElements(doc);
+      for (const [index, edits] of ncxEdits) {
+        if (index >= labels.length) {
+          throw new Error(
+            `The narration copy was asked to rewrite the navPoint ${index} of ${ncxEntry}, which `
+            + `holds ${labels.length}. Nothing was written.`
+          );
+        }
+        applyTextNodeRewrites(labels[index], edits, NCX_TARGET_KEY(ncxEntry!, index));
+        rewrittenSpans += edits.length;
+        rewriteExpectations.push({
+          key: NCX_TARGET_KEY(ncxEntry!, index), file: ncxEntry!, kind: 'ncx',
+          text: getUnitTextContent(labels[index]),
+        });
+      }
+      ncxRewrittenDoc = doc;
+    }
+
+    if (opfEdits.size > 0) {
+      const { DOMParser } = require('@xmldom/xmldom');
+      const doc = new DOMParser().parseFromString(xmlSafeEntities(opfXmlRaw!), 'application/xml');
+      if (!doc || !doc.documentElement) {
+        throw new Error(`Could not parse ${opfEntry} — the book states no metadata.`);
+      }
+      const titles = opfTitleElements(doc);
+      for (const [index, edits] of opfEdits) {
+        if (index >= titles.length) {
+          throw new Error(
+            `The narration copy was asked to rewrite the title ${index} of ${opfEntry}, which `
+            + `states ${titles.length}. Nothing was written.`
+          );
+        }
+        applyTextNodeRewrites(titles[index], edits, OPF_TITLE_KEY(opfEntry, index));
+        rewrittenSpans += edits.length;
+        rewriteExpectations.push({
+          key: OPF_TITLE_KEY(opfEntry, index), file: opfEntry, kind: 'opf-title',
+          text: getUnitTextContent(titles[index]),
+        });
+      }
+      opfRewrittenDoc = doc;
     }
   }
 
@@ -7658,6 +8307,25 @@ export async function writeNarrationEpub(
     }
   }
 
+  // The structural documents a number rewrite touched, serialized into the
+  // replacement set HERE — before the prune step in `build` below, which starts
+  // from `replacements` when it finds an entry there. Composed rather than
+  // sequenced: a book that both drops a document and speaks its chapter numbers
+  // as words needs both edits, and whichever ran second would otherwise write
+  // over the first.
+  if (navRewrittenDoc !== null) {
+    replacements.set(navEntry!, serializeEditedDocument(navRewrittenDoc));
+    if (!rewrittenFiles.includes(navEntry!)) rewrittenFiles.push(navEntry!);
+  }
+  if (ncxRewrittenDoc !== null) {
+    replacements.set(ncxEntry!, serializeEditedDocument(ncxRewrittenDoc));
+    if (!rewrittenFiles.includes(ncxEntry!)) rewrittenFiles.push(ncxEntry!);
+  }
+  if (opfRewrittenDoc !== null) {
+    replacements.set(opfEntry, serializeEditedDocument(opfRewrittenDoc));
+    if (!rewrittenFiles.includes(opfEntry)) rewrittenFiles.push(opfEntry);
+  }
+
   let removedSupMarkers = 0;
 
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
@@ -7681,20 +8349,24 @@ export async function writeNarrationEpub(
     // the zip produces a book that a strict reader refuses and that e2a reads a
     // chapter title out of for a chapter that does not exist.
     if (pruned.size > 0) {
-      const opfXml = (await zipReader.readEntry(opfEntry)).toString('utf8');
+      // Each prune starts from the REPLACEMENT when a number rewrite already made
+      // one, so the two edits to the same file compose. Falling through to the
+      // zip's own bytes is not a substitution for a missing value: it is the
+      // ordinary case, a file nothing else has touched.
+      const opfXml = (replacements.get(opfEntry) ?? await zipReader.readEntry(opfEntry)).toString('utf8');
       replacements.set(opfEntry, Buffer.from(pruneOpf(opfXml, pruned, opfEntry), 'utf8'));
-      rewrittenFiles.push(opfEntry);
+      if (!rewrittenFiles.includes(opfEntry)) rewrittenFiles.push(opfEntry);
 
       if (navEntry !== null && zipReader.hasEntry(navEntry)) {
-        const navXhtml = (await zipReader.readEntry(navEntry)).toString('utf8');
+        const navXhtml = (replacements.get(navEntry) ?? await zipReader.readEntry(navEntry)).toString('utf8');
         replacements.set(
           navEntry, Buffer.from(pruneNavDocument(navXhtml, pruned, navEntry), 'utf8'));
-        rewrittenFiles.push(navEntry);
+        if (!rewrittenFiles.includes(navEntry)) rewrittenFiles.push(navEntry);
       }
       if (ncxEntry !== null && zipReader.hasEntry(ncxEntry)) {
-        const ncxXml = (await zipReader.readEntry(ncxEntry)).toString('utf8');
+        const ncxXml = (replacements.get(ncxEntry) ?? await zipReader.readEntry(ncxEntry)).toString('utf8');
         replacements.set(ncxEntry, Buffer.from(pruneNcx(ncxXml, pruned, ncxEntry), 'utf8'));
-        rewrittenFiles.push(ncxEntry);
+        if (!rewrittenFiles.includes(ncxEntry)) rewrittenFiles.push(ncxEntry);
       }
     }
 
@@ -7746,6 +8418,10 @@ export async function writeNarrationEpub(
   try {
     const kept = await verifyNarrationCut(outputPath, expectations, stripSups, whatFor);
     verified = kept;
+    // Named separately from the cut's arithmetic: a number that did not land is
+    // its own failure, and the copy is destroyed for it exactly as for a strike
+    // that did not take.
+    await verifyNarrationRewrites(outputPath, rewriteExpectations, whatFor);
     // The arithmetic of the plan, checked against the file: every element the
     // book had is still in the copy, or was struck out of it, or dissolved with
     // the thing that held it. `struck` is the UNION — an element named
@@ -7770,6 +8446,7 @@ export async function writeNarrationEpub(
     dissolvedElements: dissolved,
     removedSupMarkers,
     overriddenElements,
+    rewrittenSpans,
     rewrittenFiles,
     removedDocuments: emptied.sort(),
     unverifiableStrikes: plan.unverifiable,

@@ -830,6 +830,28 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
+                <!-- The model that reads printed numbers as spoken words before a
+                     narration starts. Blank = the normalizer's own declared
+                     default (qwen3.5:9b), which is why there is no value shown
+                     here until someone states one. -->
+                <div class="tool-row">
+                  <div class="tool-info">
+                    <h4>Number-reading model</h4>
+                    <p class="tool-description">The Ollama model that turns printed numbers into spoken words ("June 12, 1933" → "June twelfth, nineteen thirty-three") before narration. Blank uses <code>qwen3.5:9b</code>.</p>
+                  </div>
+                  <div class="tool-control">
+                    <div class="path-input-group">
+                      <input
+                        type="text"
+                        class="text-input path-input"
+                        [value]="getToolPathValue('ttsNumberNormalizerModel')"
+                        placeholder="qwen3.5:9b"
+                        (change)="updateToolPath('ttsNumberNormalizerModel', $any($event.target).value)"
+                      />
+                    </div>
+                  </div>
+                </div>
+
                 <!-- Custom Orpheus voices — engine + downloadable voices + the
                      user-managed source list (same panel as the setup Orpheus step). -->
                 <div class="wsl-section">

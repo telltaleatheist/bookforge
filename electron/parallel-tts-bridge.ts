@@ -2130,6 +2130,20 @@ export interface AggregatedProgress {
   // batch is generating (vLLM, XTTS, between batches): absent means absent, never a
   // fabricated zero. See mlx-batch-progress.ts.
   activeBatch?: ActiveBatchProgress;
+  // Progress WITHIN the preparing stage, when prep is doing counted work before
+  // e2a is even spawned — today the number-normalization pass, which walks the
+  // book paragraph by paragraph through a local model and can run for minutes.
+  // The 'preparing' stage bar cannot move during it (nothing has been prepped
+  // yet), so this is the only thing that moves. ABSENT means absent: a job with
+  // no counted prep work reports no bar rather than a fabricated zero.
+  prep?: PrepSubProgress;
+}
+
+/** Counted work inside the preparing stage: what it is, and how far along. */
+export interface PrepSubProgress {
+  label: string;
+  done: number;
+  total: number;
 }
 
 export interface ParallelConversionResult {
@@ -5606,7 +5620,15 @@ function buildTtsStages(
  * with no session to hang state off, so it used to emit nothing at all and the job
  * sat at a blank 0%. This is the same four-bar shape with only the first one live.
  */
-function emitPrepStageProgress(jobId: string, message: string, skipAssembly: boolean): void {
+function emitPrepStageProgress(
+  jobId: string,
+  message: string,
+  skipAssembly: boolean,
+  // Counted work inside prep, when there is any. Passed through rather than
+  // derived: the only thing that knows how many paragraphs a normalization pass
+  // has left is the pass.
+  prep?: PrepSubProgress,
+): void {
   if (!mainWindow) return;
   // Weights are each stage's NORMALIZED share of the run (they sum to 1), so the
   // renderer can price stages it hasn't reached yet instead of assuming every
@@ -5638,6 +5660,7 @@ function emitPrepStageProgress(jobId: string, message: string, skipAssembly: boo
     message,
     stages,
     stageDetail: message,
+    ...(prep === undefined ? {} : { prep }),
   };
   rendererSend('parallel-tts:progress', { jobId, progress });
 }
@@ -6706,7 +6729,15 @@ function emitComplete(
  * back to the uncut book would quietly narrate the captions this exists to
  * keep out, which is the silence the ruling ended.
  */
-async function narrationInputFor(epubPath: string, jobId: string): Promise<string> {
+async function narrationInputFor(
+  epubPath: string, jobId: string, skipAssembly: boolean,
+): Promise<string> {
+  const cut = await cutCaptionsAndNotes(epubPath, jobId);
+  return normalizeNumbersFor(cut, epubPath, jobId, skipAssembly);
+}
+
+/** The caption/footnote cut — the first half of the door. */
+async function cutCaptionsAndNotes(epubPath: string, jobId: string): Promise<string> {
   const { readEpubConversionUnits, writeNarrationEpub } = await import('./epub-processor.js');
 
   const units = await readEpubConversionUnits(epubPath);
@@ -6759,6 +6790,74 @@ async function narrationInputFor(epubPath: string, jobId: string): Promise<strin
 }
 
 /**
+ * The numbers, read as words — the second half of the door.
+ *
+ * Runs on whatever the cut produced (or on the source, when there was nothing to
+ * cut), so the model sees the text the narrator will actually be given: no
+ * captions, no note apparatus, no reference markers. See
+ * electron/tts-number-normalizer.ts for the rules and the record.
+ *
+ * A book that prints no digits anywhere a narrator reads comes back untouched,
+ * with no model loaded and no file written — the cut's own precedent for a file
+ * that carries no evidence.
+ *
+ * A FAILURE HERE FAILS THE JOB, in the caller's own sentence, exactly as a
+ * failed cut does. Falling back to the un-normalized copy would narrate the
+ * digits this pass exists to convert while the log said a normalization ran.
+ * e2a has no number transform of its own any more (permanently disabled,
+ * 2026-09-02), so what leaves this door is exactly what the voice reads.
+ */
+async function normalizeNumbersFor(
+  inputPath: string,
+  bookPath: string,
+  jobId: string,
+  skipAssembly: boolean,
+): Promise<string> {
+  const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
+  const { normalizeNarrationNumbers } = await import('./tts-number-normalizer.js');
+  const { createOllamaNormalizerRunner, numberNormalizerModel } =
+    await import('./tts-number-normalizer-runner.js');
+
+  const model = numberNormalizerModel();
+  // At most ~4 updates a second: a paragraph can settle in well under 250 ms and
+  // the renderer redraws a lane on every one of these.
+  const MIN_INTERVAL_MS = 250;
+  let lastEmit = 0;
+  const outcome = await normalizeNarrationNumbers(
+    inputPath,
+    createOllamaNormalizerRunner(model),
+    {
+      systemPrompt: await loadNumberNormalizePrompt(),
+      outDir: path.join(getDefaultE2aTmpPath(), 'narration-cuts'),
+      onProgress: (done, total, label) => {
+        const now = Date.now();
+        // The last tick always goes out — it is the one that says the model is
+        // being released, and a throttle that swallowed it would leave the bar
+        // stopped short of the end for the rest of the job.
+        if (done < total && now - lastEmit < MIN_INTERVAL_MS) return;
+        lastEmit = now;
+        emitPrepStageProgress(jobId, `${label}…`, skipAssembly, { label, done, total });
+      },
+    },
+  );
+
+  if (outcome === null) {
+    console.log(
+      `[PARALLEL-TTS] ${path.basename(bookPath)} prints no digits a narrator would read — `
+      + 'no number normalization was needed.');
+    return inputPath;
+  }
+
+  await logger.log('INFO', jobId,
+    `${outcome.record.appliedSpans} number(s) read as words by ${model} across `
+    + `${outcome.record.targetsSelected} passage(s)`, {
+      copy: outcome.epubPath, record: outcome.recordPath, reused: outcome.reused,
+      dispositions: outcome.record.dispositions,
+    });
+  return outcome.epubPath;
+}
+
+/**
  * Start a parallel conversion
  */
 export async function startParallelConversion(
@@ -6801,7 +6900,8 @@ export async function startParallelConversion(
   // one substitution here keeps every one of them speaking about one file.
   // After the title above, which should read as the book and not as a sha.
   try {
-    const narrationInput = await narrationInputFor(config.epubPath, jobId);
+    const narrationInput = await narrationInputFor(
+      config.epubPath, jobId, config.skipAssembly === true);
     if (narrationInput !== config.epubPath) {
       config = { ...config, epubPath: narrationInput };
     }

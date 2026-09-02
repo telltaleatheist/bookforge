@@ -210,6 +210,7 @@ function projectStep(job: EngineJob, step: EngineStep, multi: boolean): QueueJob
     stages: step.progress.stages,
     stageDetail: step.progress.detail,
     activeBatch: step.progress.activeBatch,
+    prep: step.progress.prep,
     error: step.error,
     outputPath: step.outputPath ?? step.output?.path,
     addedAt: new Date(step.addedAt),

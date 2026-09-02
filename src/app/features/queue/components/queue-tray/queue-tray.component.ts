@@ -34,6 +34,7 @@ import { DecimalPipe } from '@angular/common';
 import { ChangeDetectionStrategy, Component, ElementRef, inject, output } from '@angular/core';
 import { Router } from '@angular/router';
 
+import { prepFraction } from '@shared/queue/bench';
 import { QueueTrayService } from '../../services/queue-tray.service';
 
 @Component({
@@ -188,6 +189,19 @@ import { QueueTrayService } from '../../services/queue-tray.service';
                     <span class="s-val">{{ stage.pct | number:'1.0-0' }}%</span>
                   </div>
                 }
+              }
+
+              <!-- Counted work inside the PREPARING stage. The stage line above
+                   reads "Preparing book 0%" for as long as the number pass takes,
+                   and in 452px this line is the only thing that says it is alive. -->
+              @if (busy.prep; as prep) {
+                <div class="stage-line">
+                  <span class="s-name">{{ prep.label }}</span>
+                  <span class="bar thin">
+                    <i [style.width.%]="(prepFraction(prep) ?? 0) * 100"></i>
+                  </span>
+                  <span class="s-val">{{ prep.done }}/{{ prep.total }}</span>
+                </div>
               }
 
               @if (lane.thermal?.throttleSustained) {
@@ -728,6 +742,15 @@ export class QueueTrayComponent {
 
   /** The panel wants to go away — Escape, or a control that navigates. */
   readonly dismiss = output<void>();
+
+  /**
+   * Shared with the bench card (shared/queue/bench.ts), so the two never disagree
+   * about how far a prep pass has got. The WORDING is the shelf's own — a
+   * stage-line here is a label, a bar and a value in 452px, which is why this
+   * draws `done/total` in the value column instead of the card's one-line
+   * `prepLabel`.
+   */
+  readonly prepFraction = prepFraction;
 
   /** How many slots are in use, for the band's own heading. */
   busyLanes(): number {

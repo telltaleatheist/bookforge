@@ -135,6 +135,21 @@ export interface ActiveBatchProgress {
   startedAt?: number;
 }
 
+/**
+ * Counted work inside the PREPARING stage. Mirrors PrepSubProgress in
+ * shared/queue/engine-types.ts (the renderer can't import from electron/, same
+ * pattern as JobStageProgress).
+ *
+ * The number-normalization pass walks a book through a local model before e2a is
+ * spawned at all, and the preparing bar cannot move while it does — this is what
+ * moves. Absent when no counted prep work is running.
+ */
+export interface PrepSubProgress {
+  label: string;
+  done: number;
+  total: number;
+}
+
 // Base job interface
 export interface QueueJob {
   id: string;
@@ -156,6 +171,9 @@ export interface QueueJob {
   // BLANKED when the bridge reports none — a finished batch must not leave a full
   // secondary bar sitting under the chunk bar.
   activeBatch?: ActiveBatchProgress;
+  // Counted work inside the preparing stage (the number-normalization pass).
+  // Blanked when the bridge reports none, exactly like activeBatch.
+  prep?: PrepSubProgress;
   error?: string;             // Error message if status is 'error'
   outputPath?: string;        // Path to the file this job produced
   addedAt: Date;

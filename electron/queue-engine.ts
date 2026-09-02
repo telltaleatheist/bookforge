@@ -82,6 +82,7 @@ import {
   type StepResource,
   type StepStatus,
   type ActiveBatchProgress,
+  type PrepSubProgress,
 } from '../shared/queue/engine-types';
 
 // ────────────────────────────────────────────────────────────────────────────
@@ -115,6 +116,8 @@ export interface StepReport {
    * moving again.
    */
   activeBatch?: ActiveBatchProgress | null;
+  /** Counted work inside the preparing stage. REPLACED, not kept — see above. */
+  prep?: PrepSubProgress | null;
   /**
    * Which pass a Foundry row's counts are counting. Set on every count, because
    * a run can change pass mid-flight (the endpoint route rasterises the whole
@@ -1514,6 +1517,8 @@ function applyReport(step: QueueStep, update: StepReport): void {
   if (update.stages !== undefined) progress.stages = update.stages;
   // Replaced, including to nothing: a landed batch must not leave a full bar.
   if ('activeBatch' in update) progress.activeBatch = update.activeBatch ?? undefined;
+  // Replaced, including to nothing: a finished prep pass must not leave a bar.
+  if ('prep' in update) progress.prep = update.prep ?? undefined;
   if (update.foundryPhase !== undefined) progress.foundryPhase = update.foundryPhase;
   step.progress = progress;
 

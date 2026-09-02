@@ -1239,12 +1239,33 @@ const EDITLIST_PROMPT_FILE_PATH = path.join(__dirname, 'prompts', 'tts-cleanup-e
 /** The literal phrase that switches cogito into in-band <think> reasoning. */
 const THINKING_TRIGGER = 'Enable deep thinking subroutine.';
 
+// TTS number normalization: the model reads printed numbers as spoken words and
+// answers with the same JSON edit list. Same build copy step as the others.
+const NUMBER_NORMALIZE_PROMPT_FILE_PATH =
+  path.join(__dirname, 'prompts', 'tts-number-normalize.txt');
+
 let cachedEditListPrompt: string | null = null;
 /** Load (and cache) the edit-list cleanup prompt. Throws if missing — required. */
 async function loadEditListPrompt(): Promise<string> {
   if (cachedEditListPrompt) return cachedEditListPrompt;
   cachedEditListPrompt = (await fsPromises.readFile(EDITLIST_PROMPT_FILE_PATH, 'utf-8')).trim();
   return cachedEditListPrompt;
+}
+
+let cachedNumberNormalizePrompt: string | null = null;
+/**
+ * Load (and cache) the TTS number-normalization prompt. Throws if missing.
+ *
+ * Loaded HERE rather than inside the normalizer so the one module that knows
+ * where this build keeps its prompts is the one that keeps saying so. The
+ * normalizer takes the loaded string as an argument, which is also what lets a
+ * test drive it with a prompt of its own.
+ */
+export async function loadNumberNormalizePrompt(): Promise<string> {
+  if (cachedNumberNormalizePrompt) return cachedNumberNormalizePrompt;
+  cachedNumberNormalizePrompt =
+    (await fsPromises.readFile(NUMBER_NORMALIZE_PROMPT_FILE_PATH, 'utf-8')).trim();
+  return cachedNumberNormalizePrompt;
 }
 
 /**
@@ -2991,6 +3012,47 @@ ${pairs.map(p => `- ${p}`).join('\n')}`;
  * pass. num_predict/temperature are honored only by Ollama; cloud/local use their
  * own budgets — immaterial for these small-answer calls.
  */
+/**
+ * One Ollama edit-list request, for a caller that is not part of the cleanup job.
+ *
+ * The TTS number normalizer (electron/tts-number-normalizer.ts) asks the model
+ * one question per passage and gets a JSON edit list back — the same shape, the
+ * same answer extraction and the same failure modes as the cleanup pass, on a
+ * pass that has no `CleanupJobState`, no chunk numbering and no provider choice.
+ * So it gets a door of its own rather than a synthesized job: this is a thin,
+ * NAMED wrapper over `callProviderExtracted`, so the request still goes through
+ * `cleanChunk` — the `think:false` capability probe (qwen3.5 is a thinking model
+ * and would otherwise spend its budget on reasoning we throw away), the
+ * streaming inactivity timeout, and `extractAnswer`'s REASONING_OVERRUN.
+ *
+ * Ollama ONLY. The pass is a local-GPU pass by design (it runs between the
+ * narration cut and the TTS spawn, on the machine's own model), so there is no
+ * provider to choose and none is offered.
+ *
+ * `numCtx` is the caller's, sized with `estimateNumCtxForBudget`, because Ollama
+ * reloads the runner on ANY num_ctx change and a per-passage estimate would
+ * churn a 6-17 GB model in and out between paragraphs.
+ */
+export async function generateEditListWithOllama(
+  model: string,
+  systemPrompt: string,
+  input: string,
+  options: { numCtx: number; numPredict: number; temperature: number; abortSignal?: AbortSignal },
+): Promise<string> {
+  return callProviderExtracted(
+    input,
+    systemPrompt,
+    // `baseUrl` is carried by the config shape and ignored by `cleanChunk`,
+    // which talks to the module-level OLLAMA_BASE_URL — stated here rather than
+    // invented so the two cannot come to mean different servers.
+    { provider: 'ollama', ollama: { baseUrl: OLLAMA_BASE_URL, model } },
+    options.numCtx,
+    options.temperature,
+    options.numPredict,
+    options.abortSignal,
+  );
+}
+
 async function callProviderExtracted(
   inputText: string,
   systemPrompt: string,

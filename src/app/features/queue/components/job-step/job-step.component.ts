@@ -61,7 +61,8 @@ import { StageBarsComponent } from '../stage-bars/stage-bars.component';
       @if (expanded()) {
         <div class="step-body">
           @if (stages().length > 0) {
-            <app-stage-bars [stages]="stages()" [detail]="liveDetail()" [batch]="liveBatch()" />
+            <app-stage-bars [stages]="stages()" [detail]="liveDetail()" [batch]="liveBatch()"
+                            [prep]="livePrep()" />
           }
 
           @if (counters().length > 0) {
@@ -366,6 +367,14 @@ export class JobStepComponent {
    */
   readonly liveBatch = computed(() =>
     this.job().status === 'processing' ? this.job().activeBatch : undefined
+  );
+
+  /**
+   * Counted work inside the preparing stage — the same "only while running"
+   * rule again, for the same reason.
+   */
+  readonly livePrep = computed(() =>
+    this.job().status === 'processing' ? this.job().prep : undefined
   );
 
   /**

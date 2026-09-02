@@ -169,6 +169,18 @@ export interface ToolPathsConfig {
   // Enhance tab (local Adobe-Podcast-style speech cleanup). Only the Resemble
   // Enhance step needs wiring; see EnhanceConfig.
   enhance?: EnhanceConfig;
+
+  /**
+   * The Ollama model that reads printed numbers as spoken words for narration
+   * (electron/tts-number-normalizer.ts). A tag, e.g. `qwen3.5:9b`.
+   *
+   * ABSENT means the normalizer's own `DEFAULT_NORMALIZER_MODEL` — a DECLARED
+   * default for a preference nobody has expressed, which is a different thing
+   * from a required value that went missing. The default is declared once, in
+   * the normalizer, so the tag in a cache path and the tag in an error message
+   * are the same string; this key is the override.
+   */
+  ttsNumberNormalizerModel?: string;
 }
 
 interface ToolPathsState {

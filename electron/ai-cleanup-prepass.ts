@@ -1051,11 +1051,17 @@ function wordCount(s: string): number {
   return t ? t.split(/\s+/).length : 0;
 }
 
-function hasLetter(s: string): boolean {
+// EXPORTED (2026-09-02) for the TTS number normalizer's own applier, which is a
+// different profile of the same idea — its guards are the inverse of the ones
+// below, because it exists to CHANGE digits into words rather than to stop a
+// model doing that. What must not differ between the two is what counts as a
+// letter: a second spelling of that would make the two appliers disagree about
+// whether "café" carries prose.
+export function hasLetter(s: string): boolean {
   return /[A-Za-zÀ-ÿ]/.test(s);
 }
 
-function letterCount(s: string): number {
+export function letterCount(s: string): number {
   const m = s.match(/[A-Za-zÀ-ÿ]/g);
   return m ? m.length : 0;
 }
@@ -1129,7 +1135,7 @@ function buildFuzzyRegex(find: string): RegExp {
 }
 
 /** Plain Levenshtein distance (iterative two-row DP). */
-function levenshtein(a: string, b: string): number {
+export function levenshtein(a: string, b: string): number {
   if (a === b) return 0;
   if (!a.length) return b.length;
   if (!b.length) return a.length;

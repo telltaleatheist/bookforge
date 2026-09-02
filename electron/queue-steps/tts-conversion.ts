@@ -83,6 +83,10 @@ function mapProgress(p: Record<string, unknown>): StepReport {
     // Replaced, never kept: a landed batch must not leave a full secondary bar
     // sitting under a chunk bar that is moving again.
     activeBatch: (p['activeBatch'] as never) ?? null,
+    // The same discipline, one stage earlier: the normalization bar is blanked
+    // the moment prep stops reporting one, or it would sit full under a
+    // "Preparing book" bar that has moved on.
+    prep: (p['prep'] as never) ?? null,
     metrics: {
       chunksCompletedInJob: completed,
       totalChunksInJob: total,

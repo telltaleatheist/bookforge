@@ -210,6 +210,25 @@ export interface ActiveBatchProgress {
   startedAt?: number;
 }
 
+/**
+ * Counted work inside the PREPARING stage, before e2a has been spawned at all.
+ *
+ * Today that is the number-normalization pass: it walks the narration copy
+ * paragraph by paragraph through a local model, which can run for minutes on a
+ * long book. The preparing stage's own bar cannot move during it — nothing has
+ * been prepped yet — so this is the only thing that moves, exactly the situation
+ * `activeBatch` exists for one stage further along.
+ *
+ * Absent means absent. A job with no counted prep work reports no bar rather
+ * than a fabricated zero.
+ */
+export interface PrepSubProgress {
+  /** What the pass is doing, in the pass's own words ("Normalizing numbers"). */
+  label: string;
+  done: number;
+  total: number;
+}
+
 /** Per-worker progress for a parallel TTS render. */
 export type ParallelWorkerStatus = 'pending' | 'running' | 'complete' | 'error';
 export interface ParallelWorkerProgress {
@@ -242,6 +261,12 @@ export interface StepProgress {
    * full secondary bar sitting under the chunk bar.
    */
   activeBatch?: ActiveBatchProgress;
+  /**
+   * Counted work inside the preparing stage. Blanked when the bridge reports
+   * none, for `activeBatch`'s reason: a finished pass must not leave a full
+   * secondary bar under a bar that has started moving.
+   */
+  prep?: PrepSubProgress;
   /**
    * Why ADMISSION refused to start this step, in the sentence the scheduler
    * composed — external training holds the lock, or another process holds the
