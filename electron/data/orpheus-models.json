@@ -35,9 +35,9 @@
         "ref": "owenmorgan/thirdreich-orpheus-3b-lora"
       },
       "license": "apache-2.0",
-      "addedAt": "2026-07-28",
-      "maxCharsPerSec": 22.0,
-      "maxChars": 500,
+      "addedAt": "2026-09-01",
+      "maxCharsPerSec": 26.5,
+      "maxChars": 470,
       "backends": {
         "vllm": {
           "repPenalty": 1.1,
@@ -62,7 +62,8 @@
       "_rateNote": "RE-MEASURED 2026-07-28 for tr_v2 ep366 on its own 20-chunk epoch_battery render (raw, no assembly pad), same measure_voice_rate.py metric: rate p05 14.27 / median 15.46 / p99 17.22 ch/s -> p99 x1.15 = 19.8. maxCharsPerSec is nevertheless HELD AT 21.6. Reason: 19.8 comes from 20 probe chunks, while the NARRATOR's own p99 over all 797 corpus clips is 21.65 ch/s - so a 19.8 cap sits BELOW the delivery rate this voice was trained to reproduce and would fire on correct audio the moment the model imitates one of his fast passages. The cap exists to catch a render that is too fast for its text; it must clear the narrator's p99, not the model's probe median. 21.6 also has real-book evidence behind it (1 truncation in 1151 chunks of The Mysterious Stranger). Revisit off a full book render, not off 20 chunks. Prior value derivation (tr_ownbed70 ep366): p05 14.04 / median 16.53 / p99 18.77 -> 21.6. maxChars measured ceiling 550 but HELD AT 500 - 500 has real-book evidence, 550 has only arithmetic.",
       "minChunkGap": 0.55,
       "_minChunkGapNote": "FLOOR on chunk trailing silence, added 2026-07-27 after Owen heard chunk joins colliding in The Mysterious Stranger. With sentenceGap 0.0 the join IS the model own trained tail, and that tail varies: measured over 1151 chunks, median 0.81 s but p10 0.39 s and MIN 0.00 s. An additive gap would have fixed the collisions and stretched the 78%% that were already right; this tops up only the clips below the floor. 0.55 s matches the within-chunk sentence rhythm (0.58 s measured), so a chunk boundary never sounds tighter than a sentence boundary inside one. Cost: ~22%% of chunks lifted by a mean 0.18 s, +45 s over a 4-hour book. Applied at assembly by normalize_gaps.py; RE-MEASURE after a retrain, since tail geometry moves with the corpus.",
-      "_promotionNote": "2026-08-28: model replaced by tr_pc1_ep732 (tr_v2_ownbed with internal pauses soft-knee capped; bible 08-28). Book-validated: zero inside-chunk pauses >=2 s, zero guard fires. maxCharsPerSec 21.6->22.0 (corpus p99 19.10 +15%); modelSelfTailS 1.17->1.05 (measured on the WTF render, 0.6 pad subtracted). Local-only promotion; HF/Mac swap pending Owen's book runs."
+      "_promotionNote": "2026-08-28: model replaced by tr_pc1_ep732 (tr_v2_ownbed with internal pauses soft-knee capped; bible 08-28). Book-validated: zero inside-chunk pauses >=2 s, zero guard fires. maxCharsPerSec 21.6->22.0 (corpus p99 19.10 +15%); modelSelfTailS 1.17->1.05 (measured on the WTF render, 0.6 pad subtracted). Local-only promotion; HF/Mac swap pending Owen's book runs.",
+      "_promotion": "2026-09-01 tr_dn2_ep2214 (20 h roformer rebuild, eval-min 3.3762, Owen ear) replaces tr_dn1_ep1260. Caps render-measured (guard = max(corpus,render p99.5) x1.14 = 26.5; maxChars = min p1 x 45.05 s = 470). HF untouched (backup). Local WSL + Mac dirs named thirdreich hold the fused weights."
     },
     {
       "id": "mistborn",
@@ -144,8 +145,8 @@
         "ref": "owenmorgan/deathstalker-orpheus-3b-lora"
       },
       "license": "apache-2.0",
-      "addedAt": "2026-07-28",
-      "maxCharsPerSec": 23.5,
+      "addedAt": "2026-09-01",
+      "maxCharsPerSec": 23.6,
       "backends": {
         "vllm": {
           "repPenalty": 1.1,
@@ -159,11 +160,11 @@
       "modelInternalGapS": 0.5,
       "gapMeasuredAt": "2026-08-28",
       "_gapNote": "REBUILT 2026-07-28 as ds_mm3_ep500 (Marked Man, Adobe 50p/bg10 NO FCPX EQ, roformer bed-strip, Owen's room tone at -70 dBFS, verbatim tails). Self-tail is 0.81s where the previous deathstalker was 0.31s - that corpus TRIMMED tails, this one keeps them. minChunkGap 0.55 therefore adds nothing now (0.81 > 0.55) and a chunk join lands at 0.81s instead of the 0.7s this voice was calibrated at. Owen asked for bigger chunk gaps (\"they sound crammed together\"), so this is expected to be an improvement - but deathstalker is the CALIBRATION REFERENCE the other voices' gaps are tuned against, so confirm on a real book before re-tuning anything else to it. maxCharsPerSec unchanged: corpus p99 measured 20.52 ch/s, so 23.5 keeps the house ~15% margin. Previous model preserved at orpheus-models/deathstalker_pre_mm3.",
-      "maxChars": 540,
+      "maxChars": 480,
       "_rateNote": "MEASURED 2026-07-27 by pipeline/measure_voice_rate.py from Ghostworld (1014 cached sentences >150 chars), replicating orpheus.py::_speech_rate exactly (chars / trim_audio(0.01, 0.20) seconds). Rate p05 13.83 / median 16.47 / p99 20.43 ch/s. maxCharsPerSec = p99 x1.15 (above every healthy render, below a truncation which roughly doubles the rate). maxChars = the real token budget (3700 tok / 84 tok-per-s = 44.0 s) x the p05 (SLOWEST) rate x0.90 safety - a slow reader fits fewer characters in the same 44 s, which is why these differ per voice.",
       "minChunkGap": 0.55,
       "_minChunkGapNote": "FLOOR on chunk trailing silence, added 2026-07-27 after Owen heard chunk joins colliding in The Mysterious Stranger. With sentenceGap 0.0 the join IS the model own trained tail, and that tail varies: measured over 1151 chunks, median 0.81 s but p10 0.39 s and MIN 0.00 s. An additive gap would have fixed the collisions and stretched the 78%% that were already right; this tops up only the clips below the floor. 0.55 s matches the within-chunk sentence rhythm (0.58 s measured), so a chunk boundary never sounds tighter than a sentence boundary inside one. Cost: ~22%% of chunks lifted by a mean 0.18 s, +45 s over a 4-hour book. Applied at assembly by normalize_gaps.py; RE-MEASURE after a retrain, since tail geometry moves with the corpus.",
-      "_promotionNote": "2026-08-28 night: model replaced by ds_lm1_ep357 (two-pool duration-mix, narration-only, raw source, pause-capped; bible 08-28 night). Probe: loops 40%->12.5%, raw takes ear-validated as clean deathstalker. maxCharsPerSec 23.5 HELD (probe max 21.6 clears it). modelSelfTailS/book gaps: RE-MEASURE OWED on the first real book (raw-corpus tails differ from the Adobe predecessor). Old model on HF + Mac for A/B; local copy deleted."
+      "_promotionNote": "2026-09-01: model replaced by ds_ad3_ep1401 (FULL CoD 7.03h + MM 2.04h, ds_ad2 recipe verbatim; ladder 2/314, gates 20/20 x4, Owen ear pick). Caps re-measured on the ds_ad3 corpus: maxCharsPerSec 23.5->23.6, maxChars 540->480 (p1 10.82 ch/s x 45.05s budget - the overlay 540 predates the measured-caps method). Local + Mac promotion; HF untouched (ds_lm1). Outgoing ds_ad2_ep1188 recovery: xtts_ft/ds_ad2_out + E: corpus."
     }
   ]
 }
