@@ -271,7 +271,7 @@ export function prepFraction(p: PrepSubProgress): number | undefined {
 }
 
 /**
- * "batch 12/95 sentences · 1.3k tokens" — rows first (the thing being waited
+ * "batch 12/95 chunks · 1.3k tokens" — rows first (the thing being waited
  * on), tokens second (how deep the decode is). Each clause is dropped when the
  * engine didn't report it rather than filled in with a guess.
  *
@@ -282,8 +282,8 @@ export function prepFraction(p: PrepSubProgress): number | undefined {
 export function batchLabel(b: ActiveBatchProgress, now: number = Date.now()): string {
   const parts: string[] = [];
   parts.push(b.rowsDone !== undefined
-    ? `batch ${b.rowsDone}/${b.rowsTotal} sentences`
-    : `batch of ${b.rowsTotal} sentences`);
+    ? `batch ${b.rowsDone}/${b.rowsTotal} chunks`
+    : `batch of ${b.rowsTotal} chunks`);
   parts.push(`${compactTokens(b.tokenStep)} tokens`);
   // Which sub-batch of the current engine call this is — only worth saying when
   // the call was split into several (a batch too deep to run at full width).
