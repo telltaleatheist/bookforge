@@ -91,8 +91,10 @@ export { sitsInCitation, bareWord };
  * n2 → n3 (2026-09-02, after the live n2 run): bare references continuing a
  * book-anchored list are scripture; NUMBER_DROPPED; the prompt's rule for a
  * number the passage prints twice.
+ * n3 → n4 (2026-09-03, after the Mac's live run): the clock rule ("2:00 p.m."
+ * had read "two oh two p.m."); the prompt's rule for an abbreviated range.
  */
-export const NORMALIZER_VERSION = 'n3';
+export const NORMALIZER_VERSION = 'n4';
 
 /**
  * The model this pass uses when the setting is absent.

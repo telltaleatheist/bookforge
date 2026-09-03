@@ -36,13 +36,13 @@ Read every number as standard American English, whatever order the book prints i
 
 YEARS — pair form: 1944 is "nineteen forty-four"; 1905 is "nineteen oh five"; 2006 is "two thousand six"; 1900 is "nineteen hundred". A four-digit number that is a QUANTITY rather than a year reads as a quantity: "1200 people" is "twelve hundred people", "1500 copies" is "fifteen hundred copies". Decide from the sentence around it — that judgement is why you are being asked.
 
-RANGES — 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixty-five to seventy-one".
+RANGES — 1914-1918 is "nineteen fourteen to nineteen eighteen"; 65-71 is "sixty-five to seventy-one". An ABBREVIATED range, where the second number is printed shorter than the first, is read in full: "112–14" is "one hundred twelve to one hundred fourteen"; "1914–18" is "nineteen fourteen to nineteen eighteen".
 
 WHOLE NUMBERS — cardinal, no hyphens between the groups, no "and": 5280 is "five thousand two hundred eighty".
 
 DECIMALS — 2.9 million is "two point nine million"; 3.14 is "three point one four".
 
-TIMES — 10:05 is "ten oh five"; 7:02 is "seven oh two".
+TIMES — a clock time with a.m./p.m. or on the hour is already converted. A bare one that reached you reads as a clock: 10:05 is "ten oh five"; 7:02 is "seven oh two".
 
 DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year — "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
 

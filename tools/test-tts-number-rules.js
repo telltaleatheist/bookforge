@@ -146,6 +146,22 @@ test('scripture: a BARE reference converts only when the two readings coincide',
   untouched('at 7:02 that morning');
 });
 
+test('clock: a meridiem or an on-the-hour time is a clock, never chapter and verse', () => {
+  // The Mac's first live run (2026-09-03): "2:00 p.m." fell to the model and
+  // came back "two oh two p.m.".
+  reads('It began at 2:00 p.m. sharp', 'It began at two p.m. sharp');
+  reads('at 10:05 am the bell rang', 'at ten oh five am the bell rang');
+  reads('by 7:30 P.M.', 'by seven thirty P.M.');
+  reads('The service was at 6:00', "The service was at six o'clock");
+  assert.deepStrictEqual(claims('at 2:00 p.m. and again at 3:15 p.m.').map((c) => c[0]), ['clock', 'clock']);
+  // Scripture still wins its own shapes: a verse of zero does not exist, and a
+  // meridiem never follows a reference.
+  reads('John 3:16 says so', 'John three sixteen says so');
+  reads('(Leviticus 19:31; 20:6)', '(Leviticus nineteen thirty one; twenty six)');
+  // A clock range stays whole for the model.
+  untouched('open 9:00-5:00 daily');
+});
+
 test('scripture: a bare reference CONTINUING a book-anchored list is scripture', () => {
   // The n2 acceptance run (2026-09-02) left "20:6" to the model, which read it
   // "twenty". A reference joined to a named one by ; , or "and" is a verse of

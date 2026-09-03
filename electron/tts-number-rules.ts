@@ -402,6 +402,55 @@ function* matches(re: RegExp, text: string): Generator<RegExpExecArray> {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rule: clock time — decided BEFORE scripture, because the two share a shape
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * `H:MM` followed by a meridiem — "2:00 p.m.", "10:05 am", "7:30 P.M." — or a
+ * bare `H:00`.
+ *
+ * Measured on the Mac's first live run (orpheus-mlx-mac, 2026-09-03): "2:00
+ * p.m." had no rule, fell to the model, and came back "two oh two p.m." — a
+ * clock read as chapter and verse, well-formed enough that no disposition could
+ * refuse it. A meridiem settles the shape outright; and a bare `:00` settles it
+ * too, because no chapter has a verse zero, so "6:00" is a clock whatever
+ * stands around it.
+ *
+ * Reading: "two p.m." for the hour, "two thirty p.m." past it, "ten oh five
+ * a.m." under ten minutes; the meridiem is KEPT AS PRINTED (it is already
+ * spoken as letters). A bare `H:00` reads "six o'clock".
+ */
+const CLOCK_MERIDIEM = new RegExp(
+  '(?<![\\w:.\\-])(1[0-2]|0?[1-9]):([0-5]\\d)\\s*([AaPp])\\.?\\s?([Mm])\\.?(?![A-Za-z\\d])', 'g');
+const CLOCK_ON_THE_HOUR = /(?<![\w:.\-])(1[0-2]|0?[1-9]):00(?![\d:])/g;
+
+function clockMinutes(mm: string): string | null {
+  const minutes = Number(mm);
+  if (minutes === 0) return '';
+  if (minutes < 10) return ` oh ${cardinalWords(minutes)}`;
+  const words = cardinalWords(minutes);
+  return words === null ? null : ` ${words}`;
+}
+
+function clockCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(CLOCK_MERIDIEM, text)) {
+    const hour = cardinalWords(Number(m[1]));
+    const minutes = clockMinutes(m[2]);
+    if (hour === null || minutes === null) continue;
+    // The meridiem exactly as the book printed it — "p.m.", "PM", "am".
+    const meridiem = m[0].slice(m[0].indexOf(m[3]));
+    out.push({ at: m.index, find: m[0], replace: `${hour}${minutes} ${meridiem}`, rule: 'clock' });
+  }
+  for (const m of matches(CLOCK_ON_THE_HOUR, text)) {
+    const hour = cardinalWords(Number(m[1]));
+    if (hour === null) continue;
+    out.push({ at: m.index, find: m[0], replace: `${hour} o'clock`, rule: 'clock' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Rule: scripture
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -768,6 +817,9 @@ function bareIntCandidates(text: string): Candidate[] {
  * numbers, and "$5,000" is money, not a comma-grouped integer.
  */
 const RULES: readonly Rule[] = [
+  // A clock with a meridiem, or on the hour, is settled before scripture can
+  // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
+  { name: 'clock', scan: clockCandidates },
   { name: 'scripture', scan: (t) => [...scriptureCandidates(t), ...numberedBookCandidates(t)] },
   { name: 'date', scan: dateCandidates },
   { name: 'money', scan: moneyCandidates },
