@@ -88,7 +88,9 @@
         "vllm": {
           "repPenalty": 1.1,
           "eosBoost": 8,
-          "eosBoostStart": 2.0
+          "eosBoostStart": 2.0,
+          "eosFloor": 0.65,
+          "_eosFloorNote": "2026-09-03, Owen's go. EOS forbidden below 0.65 x (chars / 15 ch/s x 84 tok/s), i.e. on any read faster than 23.1 ch/s (clears the 22.0 guard). MEASURED on the mb 240-draw battery, same seeds: floor 0 / 0.55 / 0.65 -> truncations 8 / 6 / 4 with loops 0 / 0 / 0; at 0.65 every survivor is an over-length text (>430 ch), so in-range early stops are ZERO. Growth on non-defect draws (2/240) re-rendered alone was token-identical with and without the floor = batch reshuffle, not the floor; audio complete, 0 extra tail words. Per-model on purpose: thirdreich leans to loops, not truncations, and carries no floor. eosFloorRate left at the 15.0 default (measured median 14.99)."
         }
       },
       "note": "mb_ae2 ep327 (Hero of Ages 2h, Adobe Enhance v2 75p voice-only with background and music at 100p, then Owen's own EQ, level-matched to the source with headroom). Promoted 2026-07-25 and deployed to HF + Mac, REPLACING mb_hoa1 ep344 everywhere. Chosen where three independent criteria agreed: Owen's ear on a 96s mixed narration+dialogue render, eval-min of the run (3.8214 vs 4.0640 for the untreated hoa3p0h corpus), and a clean greedy EOS gate 20/20. NOT ep545 - it scored closest on measurable fidelity but is the single epoch that FAILED the greedy gate, a chunk hitting the 3700-token cap. The corpus is 4.8 dB brighter than source (tilt -26.6 vs -31.7), which is the win, and 5.3 dB more silence-suppressed (SNR 54.6 vs 49.3), which is the residual risk: token overrun still runs 1.36x median / 1.46x p90. sentenceGap 0.0 because the 1.18s self-tail already exceeds the 0.75x-internal target of 0.50s.",
