@@ -82,8 +82,8 @@
         "ref": "owenmorgan/mistborn-orpheus-3b-lora"
       },
       "license": "apache-2.0",
-      "addedAt": "2026-07-21",
-      "maxCharsPerSec": 21.9,
+      "addedAt": "2026-09-02",
+      "maxCharsPerSec": 22.0,
       "backends": {
         "vllm": {
           "repPenalty": 1.1,
@@ -98,11 +98,12 @@
       "modelInternalGapS": 0.67,
       "gapMeasuredAt": "2026-08-28",
       "_gapNote": "Measured 2026-07-23 from The Final Empire (Michael Kramer): prose inter-sentence gap median 0.80s / mean 0.75s over 9397 narration boundaries (dialogue excluded; chapter gaps >2s excluded). Cross-checked against Alloy of Law (same narrator): identical prose median 0.80s — confirms book-exact. sentenceGap (inject) left unset pending a generation probe. NOTE the 0.80s above is The Final Empire, the WRONG BOOK for this slot: on 2026-07-25 mistborn was promoted to mb_hoa1 ep344, trained on HERO OF AGES. PROBE DONE 2026-07-25 from the 20-clip loop-gate render of ep344 itself (measure_sentence_gaps.py, raw renders so no baked trail_gap): modelSelfTailS 0.975s, modelInternalGapS 0.540s. Left at the 0.6s default a chunk join would be 1.575s = 2.9x this model's own sentence rhythm, so sentenceGap is set to 0.0, giving 0.975s joins. The 0.75x target (0.41s) is UNREACHABLE by inject here because the bare tail alone is 0.975s - ep344 was trained WITHOUT the Step 5b tail scaling that thirdreich got, and its tail spread is wide (p10 0.46 / p90 1.58). A future mb retrain should scale tails; until then 0.0 is the best available. CONFIRM on the first full Hellworld cache - 20 clips is a small sample, though every percentile of it already rules out any positive inject.",
-      "maxChars": 460,
+      "maxChars": 430,
       "_rateNote": "MEASURED 2026-07-27 by pipeline/measure_voice_rate.py from Hellworld (1069 cached sentences >150 chars), replicating orpheus.py::_speech_rate exactly (chars / trim_audio(0.01, 0.20) seconds). Rate p05 11.81 / median 14.99 / p99 19.03 ch/s. maxCharsPerSec = p99 x1.15 (above every healthy render, below a truncation which roughly doubles the rate). maxChars = the real token budget (3700 tok / 84 tok-per-s = 44.0 s) x the p05 (SLOWEST) rate x0.90 safety - a slow reader fits fewer characters in the same 44 s, which is why these differ per voice.",
       "minChunkGap": 0.55,
       "_minChunkGapNote": "FLOOR on chunk trailing silence, added 2026-07-27 after Owen heard chunk joins colliding in The Mysterious Stranger. With sentenceGap 0.0 the join IS the model own trained tail, and that tail varies: measured over 1151 chunks, median 0.81 s but p10 0.39 s and MIN 0.00 s. An additive gap would have fixed the collisions and stretched the 78%% that were already right; this tops up only the clips below the floor. 0.55 s matches the within-chunk sentence rhythm (0.58 s measured), so a chunk boundary never sounds tighter than a sentence boundary inside one. Cost: ~22%% of chunks lifted by a mean 0.18 s, +45 s over a 4-hour book. Applied at assembly by normalize_gaps.py; RE-MEASURE after a retrain, since tail geometry moves with the corpus.",
-      "_promotionNote": "2026-08-28: model replaced by mb_pc1_ep327 (mb_ae2h pause-capped; bible 08-28). Rendered pauses zero >=1.5 s vs previous 61-78 >=2 s/hr on real books. modelSelfTailS 1.18->1.00 (census). maxCharsPerSec 21.9 held (corpus p99 17.66 clears it). Local-only promotion; HF/Mac swap pending Owen's book runs."
+      "_promotionNote": "2026-08-28: model replaced by mb_pc1_ep327 (mb_ae2h pause-capped; bible 08-28). Rendered pauses zero >=1.5 s vs previous 61-78 >=2 s/hr on real books. modelSelfTailS 1.18->1.00 (census). maxCharsPerSec 21.9 held (corpus p99 17.66 clears it). Local-only promotion; HF/Mac swap pending Owen's book runs.",
+      "_promotion": "2026-09-02 fe_dn2_ep776 (Final Empire only, single mastering, alignment-hygiene corpus, epoch 2; ladder 0 loops / 1 in-range truncation per 240) replaces the mb_dn1 three-book model. Caps corpus-derived: guard 22.0, maxChars 430. HF untouched (backup). Local WSL + Mac dirs named mistborn hold the fused weights."
     },
     {
       "id": "ender",
