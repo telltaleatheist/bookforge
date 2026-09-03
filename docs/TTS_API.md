@@ -209,6 +209,96 @@ Multiple WebSocket connections are fine; audio events are routed only to the con
 - The engine idles out after a configurable window without generation — **15 minutes** by default, `0` for never, unless the user pinned it as a service inside BookForge. Read it from `config.idleMinutes` and set it with `config.set`. A `speak` after idle-out just cold-starts again — handle it with the same spinner.
 - Voice switching is valid per-`speak` via `settings.voice` but reloads models on all workers (takes a while); the extension should default to *omitting* `voice` so it uses whatever is already loaded, and offer voice choice in options. Voice names come from the `hello`/`status` reply (e.g. `ScarlettJohansson`, `DavidAttenborough`, `MorganFreeman`, `NeilGaiman`, `RayPorter`, `RosamundPike` — but always use the list from the server, it's discovered at runtime).
 
+## Tab recording (`record.*`)
+
+The same socket carries a lossless capture of one browser tab's audio into a FLAC
+on the BookForge machine. Full contract, including why it exists and what it
+cannot do: [`TAB_RECORDER.md`](TAB_RECORDER.md). Recording and TTS playback share
+the socket and must not interfere: a `speak` while recording is fine, and
+`record.*` never touches the stream scheduler.
+
+Client → server (JSON):
+
+```
+{action:'record.start', recordId, title, sampleRate, channels, speed?, outputDir?, sourceUrl?}
+   → server replies {type:'record.started', recordId, path}   (path = resolved final destination)
+   → or {type:'error', recordId, message}                      (ffmpeg missing, dir unwritable, another recording live)
+{action:'record.stop',   recordId}   → flush, finalize, {type:'record.done', recordId, path, seconds, bytes}
+{action:'record.cancel', recordId}   → kill ffmpeg, delete the partial, {type:'record.cancelled', recordId}
+{action:'record.mark',   recordId, label, seconds}   → append to the sidecar (see Output); no reply
+```
+
+- `sampleRate` / `channels` describe what the TAB delivers — the capture format.
+- `speed` (default 1) is the rate the page's own player is being driven at. The
+  file is written at `sampleRate / speed`; see **Speed capture** below. A speed
+  that does not divide the capture rate into a whole sample rate is refused by
+  name.
+- `outputDir` (default `~/Downloads`) is the folder on the SERVER's machine. A
+  leading `~` is expanded server-side (correct on Windows too); anything that is
+  not absolute after expansion is refused by name, as is a folder that cannot be
+  created or written.
+- `sourceUrl` is the page being captured. It is written to the sidecar and
+  nothing else; omitting it records `null`.
+
+Client → server (BINARY frames): raw `f32le` interleaved PCM at the declared
+`sampleRate`/`channels`, any frame size (~100 ms chunks recommended). Binary
+frames are ONLY legal between `record.started` and `record.stop`/`cancel`; a
+binary frame outside a recording is answered with `{type:'error'}` and dropped.
+**One recording per client connection**, and one per server — a second
+`record.start` while one is live is refused by name.
+
+Server → client:
+
+```
+{type:'record.progress', recordId, seconds, bytes}     every ~1 s
+{type:'record.done'|'record.cancelled'|'record.started'} as above
+```
+
+`seconds` is derived from the bytes the server has actually written, so it
+describes the file rather than the wall clock — and at `speed` > 1 it is BOOK
+seconds (the finished file's duration), not the time spent capturing.
+
+Output lands in `outputDir` as `<safe title>-<YYYYMMDD-HHMMSS>.flac`, **24-bit**
+FLAC (`-c:a flac -sample_fmt s32 -bits_per_raw_sample 24` — 32-bit FLAC is legal
+but some libsndfile/librosa builds refuse it), plus a `<same stem>.json` sidecar
+carrying `{title, sourceUrl, sampleRate, captureSampleRate, speed, channels,
+startedAt, seconds, marks}`. `sampleRate` there is the FILE's rate;
+`captureSampleRate` is what the tab delivered. Nothing is ever resampled —
+`-ar`/`-ac` describe the INPUT only.
+
+While it is being written the recording is `<outputDir>/.<stem>.partial.flac`: a
+dotfile with a suffix nothing can mistake for a finished recording, in the SAME
+directory as the final file so the finishing rename is same-volume (a staging
+folder elsewhere throws EXDEV the first time someone picks an external disk).
+
+A client that disappears mid-recording does not lose it: the server finalizes on
+socket close exactly as on `record.stop`. At startup it deletes leftover
+`.partial.flac` files in every folder it has recorded into (remembered in
+`{userData}/tab-recordings.json`), so a `.flac` in the user's folder is always a
+finished recording.
+
+### Speed capture
+
+The client may drive the page's own player at `speed`× with pitch preservation
+OFF, so the tab emits the whole book in 1/speed of the time, pitch-shifted up.
+**Nothing resamples**: the samples that arrive are written verbatim and the FILE
+is simply labelled with a sample rate of `captureRate / speed`. Played back at
+1×, that file is the book at its original pitch and duration.
+
+The cost is bandwidth, exactly: the file's Nyquist becomes `(captureRate/speed)/2`.
+
+| capture | 1x | 1.5x | 2x | 3x | 4x |
+|---|---|---|---|---|---|
+| 44.1 kHz | 44.1 kHz | 29.4 kHz | 22.05 ✗ | 14.7 ✗ | 11.0 ✗ |
+| 48 kHz | 48 kHz | 32 kHz | 24 kHz | 16 ✗ | 12 ✗ |
+| 96 kHz | 96 kHz | 64 kHz | 48 kHz | 32 kHz | 24 kHz |
+
+✗ = below the 24 kHz training floor. The client refuses those by name before
+sending anything (it is the only side that knows the capture rate in time); the
+server refuses a speed that does not divide the capture rate into a whole sample
+rate. On a Mac the capture rate is the output device's rate — Audio MIDI Setup is
+where 96 kHz is turned on. Chrome mutes media above 4×, so 4 is the ceiling.
+
 ## Chrome MV3 architecture (recommended)
 
 MV3 service workers can't own an `AudioContext` and get killed after ~30 s idle, so:

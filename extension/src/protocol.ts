@@ -88,7 +88,30 @@ export type ClientAction =
       startSentence?: number;
     }
   | { action: 'playhead'; requestId: string; sentenceIndex: number }
-  | { action: 'cancel'; requestId: string };
+  | { action: 'cancel'; requestId: string }
+  // ── Tab recording (docs/TAB_RECORDER.md). These ride the same socket as
+  // speech and never touch the stream scheduler: recording while listening is
+  // legal in both directions. The PCM itself goes as BINARY frames, which are
+  // legal only between record.started and record.stop/cancel.
+  | {
+      action: 'record.start';
+      recordId: string;
+      title: string;
+      /** the CAPTURE rate — what the tab delivers, before any relabelling */
+      sampleRate: number;
+      channels: number;
+      /** the rate the page's player is being driven at (1 = normal). The server
+       *  writes the file at sampleRate / speed; nothing is resampled. */
+      speed?: number;
+      /** where the SERVER should save it. May start with `~`; must be absolute
+       *  after expansion. Absent = the server's default (`~/Downloads`). */
+      outputDir?: string;
+      /** the page being captured, for the sidecar */
+      sourceUrl?: string;
+    }
+  | { action: 'record.stop'; recordId: string }
+  | { action: 'record.cancel'; recordId: string }
+  | { action: 'record.mark'; recordId: string; label: string; seconds: number };
 
 // ─── Server → client ──────────────────────────────────────────────────────────
 
@@ -172,7 +195,41 @@ export interface CancelledEvent {
 export interface ErrorEvent {
   type: 'error';
   requestId?: string;
+  /** present when the failure belongs to a recording rather than a speak */
+  recordId?: string;
   message: string;
+}
+
+// ─── Tab recording events ─────────────────────────────────────────────────────
+
+/** The recording exists and the server is ready for PCM. `path` is the FINAL
+ *  destination, not the .partial.flac — it is what the popup shows. */
+export interface RecordStartedEvent {
+  type: 'record.started';
+  recordId: string;
+  path: string;
+}
+
+/** ~1 Hz while recording. `seconds` is derived from the bytes the server has
+ *  actually written, so it is the truth about the file, not about the clock. */
+export interface RecordProgressEvent {
+  type: 'record.progress';
+  recordId: string;
+  seconds: number;
+  bytes: number;
+}
+
+export interface RecordDoneEvent {
+  type: 'record.done';
+  recordId: string;
+  path: string;
+  seconds: number;
+  bytes: number;
+}
+
+export interface RecordCancelledEvent {
+  type: 'record.cancelled';
+  recordId: string;
 }
 
 export type ServerEvent =
@@ -186,7 +243,11 @@ export type ServerEvent =
   | FailedEvent
   | CompleteEvent
   | CancelledEvent
-  | ErrorEvent;
+  | ErrorEvent
+  | RecordStartedEvent
+  | RecordProgressEvent
+  | RecordDoneEvent
+  | RecordCancelledEvent;
 
 /** WebSocket close code the server uses for any auth failure. */
 export const CLOSE_AUTH = 4401;

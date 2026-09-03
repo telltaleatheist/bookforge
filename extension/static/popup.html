@@ -52,6 +52,45 @@
       .note { font-size: 11px; opacity: 0.6; margin-top: 5px; }
       .note.good { color: #3ec46d; opacity: 0.9; }
       .note.bad { color: #ef6b6b; opacity: 0.9; }
+
+      /* Recorder */
+      .rec { margin-top: 10px; border-top: 1px solid #8882; padding-top: 10px; }
+      .rec h2 {
+        font-size: 12px; text-transform: uppercase; letter-spacing: 0.04em;
+        opacity: 0.6; margin: 0 0 6px; font-weight: 600;
+      }
+      .rec .live { display: flex; align-items: center; gap: 7px; margin-bottom: 7px; }
+      .rec .reddot {
+        width: 9px; height: 9px; border-radius: 50%; background: #d23b3b; flex: none;
+        animation: pulse 1.4s ease-in-out infinite;
+      }
+      @keyframes pulse { 50% { opacity: 0.25; } }
+      .rec .clock { font-variant-numeric: tabular-nums; font-weight: 600; }
+      .rec .size { opacity: 0.7; }
+      .meter {
+        height: 6px; border-radius: 3px; background: #8883; overflow: hidden;
+        margin-bottom: 8px;
+      }
+      .meter > span {
+        display: block; height: 100%; width: 0%; background: #3ec46d;
+        transition: width 0.1s linear;
+      }
+      .rec .path {
+        font-size: 11px; opacity: 0.65; word-break: break-all; margin-top: 5px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+      }
+      .rec .msg { font-size: 11px; margin-top: 5px; }
+      .rec .msg.bad { color: #ef6b6b; }
+      .rec .msg.warn { color: #f0a020; }
+      .rec .msg.good { color: #3ec46d; }
+      .rec .waiting { color: #f0a020; }
+      .rec .reddot.waiting { background: #f0a020; }
+      .rec select.speed {
+        flex: none; width: 74px; padding: 6px 6px; border-radius: 6px;
+        border: 1px solid #8884; background: #2a3140; color: #f2f3f5; font: inherit;
+      }
+      .rec .times { opacity: 0.7; font-variant-numeric: tabular-nums; }
+      .hidden { display: none; }
     </style>
   </head>
   <body>
@@ -84,6 +123,38 @@
       <button id="stopBtn">Stop ■</button>
     </div>
     <div class="note" id="nowNote"></div>
+
+    <!-- Recorder: capture THIS tab's decoded audio, losslessly, into BookForge.
+         The button lives in the popup because chrome.tabCapture.getMediaStreamId
+         needs a user gesture; everything after it happens offscreen. -->
+    <div class="rec" id="rec">
+      <h2>Recorder</h2>
+      <div class="row" id="recIdleRow">
+        <button id="recStart">● Record this tab</button>
+        <!-- Speed capture: the player is driven this fast with pitch preservation
+             OFF, and the file is written at capture ÷ speed. Nothing resamples. -->
+        <select id="recSpeed" class="speed" title="Capture speed"></select>
+      </div>
+      <div class="note" id="recTabTitle"></div>
+      <div class="note" id="recSpeedNote"></div>
+
+      <div id="recLiveBox" class="hidden">
+        <div class="live">
+          <span class="reddot" id="recDot"></span>
+          <span class="clock" id="recClock">0:00:00</span>
+          <span class="times" id="recTimes"></span>
+          <span class="size" id="recSize"></span>
+        </div>
+        <div class="meter"><span id="recMeter"></span></div>
+        <div class="row">
+          <button id="recStop" class="primary">■ Stop</button>
+          <button id="recDiscard" class="danger">✕ Discard</button>
+        </div>
+      </div>
+
+      <div class="path hidden" id="recPath"></div>
+      <div class="msg hidden" id="recMsg"></div>
+    </div>
 
     <details class="engine" id="engine">
       <summary>Engine settings</summary>

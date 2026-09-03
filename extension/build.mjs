@@ -50,7 +50,11 @@ const options = {
     'src/content.ts',
     'src/offscreen.ts',
     'src/options.ts',
-    'src/popup.ts'
+    'src/popup.ts',
+    // The tab recorder's AudioWorklet processor. Its own entry because
+    // audioWorklet.addModule() loads a SCRIPT, and MV3's script-src 'self'
+    // rejects a blob: URL — it has to be a real file in the package.
+    'src/recorder-worklet.ts'
   ],
   bundle: true,
   format: 'iife',

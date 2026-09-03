@@ -27,6 +27,16 @@ import {
   decodeBase64
 } from './protocol';
 import {
+  RECORDER,
+  SilenceWatch,
+  bytesPerSecond,
+  chunkFrameSize,
+  relabelledSampleRate,
+  secondsFromBytes,
+  silenceStopReason,
+  speedGuardRefusal
+} from '../../shared/audio/tab-recording';
+import {
   PlaybackStatus,
   QueueItem,
   QueueSnapshot,
@@ -34,6 +44,9 @@ import {
   PlayItemCmd,
   PlaySequenceCmd,
   TransportCmd,
+  RecordCmd,
+  RecordingStatus,
+  IDLE_RECORDING,
   EngineOffscreenCmd,
   QueueOffscreenCmd,
   SyncOffscreenCmd,
@@ -61,6 +74,7 @@ type OffscreenMessage =
   | PlayItemCmd
   | PlaySequenceCmd
   | TransportCmd
+  | RecordCmd
   | EngineOffscreenCmd
   | QueueOffscreenCmd
   | SyncOffscreenCmd
@@ -742,8 +756,19 @@ function send(action: ClientAction): void {
   if (ws && ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify(action));
 }
 
+/** Raw PCM for the tab recorder. Binary frames are legal ONLY between
+ *  record.started and record.stop/cancel — see the recorder section below, which
+ *  is the only caller. */
+function sendBinary(pcm: ArrayBuffer): void {
+  if (ws && ws.readyState === WebSocket.OPEN) ws.send(pcm);
+}
+
 function onSocketClosed(): void {
   engineState = 'stopped';
+  // The server finalizes a recording when our socket goes away (the file is
+  // complete up to the last frame it received), so this is done-with-warning, not
+  // an error — but no record.done can reach us, so we conclude it ourselves.
+  if (recordId) noteRecordingLostSocket();
   // The socket is gone, so every in-flight read-ahead session is now unreachable and
   // will never receive a terminal event. Forget them (no cancel — there's no socket
   // to send it on) so isPrefetchingItem() stops reporting them forever and
@@ -761,6 +786,11 @@ function onSocketClosed(): void {
 // ─── Server events ────────────────────────────────────────────────────────────
 
 function handleServerEvent(msg: ServerEvent): void {
+  // Recording events are keyed by recordId, not requestId, and must be answered
+  // BEFORE the read-ahead routing below (which keys on requestId) or the player's
+  // error handler (which would treat a recording failure as a speak failure).
+  if (msg.type.startsWith('record.')) { handleRecordEvent(msg); return; }
+  if (msg.type === 'error' && msg.recordId !== undefined) { failRecording(msg.message); return; }
   // Events for a read-ahead session accumulate quietly and never touch the player
   // or the broadcast — the UI still reflects the currently-playing item.
   if ('requestId' in msg && msg.requestId !== undefined) {
@@ -1938,6 +1968,417 @@ async function doSync(): Promise<void> {
   broadcast();
 }
 
+// ─── Tab recording (docs/TAB_RECORDER.md) ─────────────────────────────────────
+//
+// The offscreen document owns capture for the same reason it owns playback: MV3
+// service workers cannot hold an AudioContext, and a popup dies the moment it
+// closes. The popup only mints the stream id (that needs a user gesture) and
+// hands it here.
+//
+// The audio path, and why each edge exists:
+//
+//   MediaStream ─► MediaStreamAudioSource ─┬─► ctx.destination     keeps the tab
+//                                          │                       AUDIBLE — tab
+//                                          │                       capture mutes
+//                                          │                       the tab unless
+//                                          │                       it is wired back
+//                                          └─► AudioWorkletNode ─► gain(0) ─► destination
+//                                                    │             a node nothing
+//                                                    │             pulls is never
+//                                                    │             processed, so the
+//                                                    │             tap needs a path
+//                                                    │             to the destination
+//                                                    ▼             — muted, so it
+//                                              f32 frames          adds no sound
+//
+// Nothing is encoded here: float32 PCM goes out as binary frames and BookForge's
+// ffmpeg writes the FLAC.
+
+/** Live recorder state — broadcast to the popup inside the QueueSnapshot. */
+let recording: RecordingStatus = { ...IDLE_RECORDING };
+
+let recordId: string | null = null;
+/** record.started has arrived: binary frames are legal from here until stop. */
+let recordAcked = false;
+let recStream: MediaStream | null = null;
+let recCtx: AudioContext | null = null;
+let recSource: MediaStreamAudioSourceNode | null = null;
+let recTap: AudioWorkletNode | null = null;
+let recSink: GainNode | null = null;
+let recChannels = 2;
+/** what the tab delivers */
+let recSampleRate = 48000;
+/** the rate the page's player is being driven at */
+let recSpeed = 1;
+let recWatch: SilenceWatch | null = null;
+let recTicker: number | null = null;
+/** Frames captured between getUserMedia and record.started. Held, not dropped —
+ *  the opening of a recording is exactly where a book's first words are. */
+let recPending: ArrayBuffer[] = [];
+let recPendingBytes = 0;
+
+/** How long we will hold un-acked frames before concluding the server is not
+ *  answering. Ten seconds of audio is far past any plausible round trip. */
+const RECORD_ACK_GRACE_SECONDS = 10;
+
+function recordingTicker(on: boolean): void {
+  if (on) {
+    if (recTicker === null) recTicker = setInterval(broadcast, 250) as unknown as number;
+  } else if (recTicker !== null) {
+    clearInterval(recTicker);
+    recTicker = null;
+  }
+}
+
+async function handleRecord(cmd: RecordCmd): Promise<void> {
+  if (cmd.op === 'start') await startRecording(cmd);
+  else if (cmd.op === 'stop') await stopRecording();
+  else await discardRecording();
+}
+
+/** True while capture is live in any form — the popup's Record button is off. */
+function recordingBusy(): boolean {
+  return recording.state === 'starting' || recording.state === 'recording' || recording.state === 'stopping';
+}
+
+async function startRecording(cmd: RecordCmd): Promise<void> {
+  if (recordingBusy()) {
+    console.warn('[BFR] record start ignored — already', recording.state);
+    return;
+  }
+  const streamId = cmd.streamId;
+  const title = (cmd.title || '').trim() || 'Untitled tab';
+  const speed = cmd.speed && cmd.speed >= 1 ? cmd.speed : 1;
+  if (!streamId) {
+    // The popup could not mint a stream id: no user gesture, or a tab Chrome
+    // refuses to capture (chrome:// pages, the Web Store).
+    recording = { ...IDLE_RECORDING, state: 'error', title, error: 'Chrome would not give access to this tab' };
+    broadcast();
+    return;
+  }
+  recording = { ...IDLE_RECORDING, state: 'starting', title, speed };
+  broadcast();
+
+  // The socket first: capturing a tab and then discovering BookForge is down
+  // would mute nothing but waste the gesture.
+  try {
+    await ensureConnected();
+  } catch (err) {
+    failRecording(connectErrorMessage((err as Error).message));
+    return;
+  }
+
+  let stream: MediaStream;
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({
+      // The legacy `mandatory` form is the ONLY way to consume a tabCapture
+      // stream id; lib.dom has no type for it, hence the cast.
+      audio: { mandatory: { chromeMediaSource: 'tab', chromeMediaSourceId: streamId } },
+      video: false
+    } as unknown as MediaStreamConstraints);
+  } catch (err) {
+    failRecording(`Chrome refused to capture this tab: ${(err as Error).message}`);
+    return;
+  }
+
+  const track = stream.getAudioTracks()[0];
+  if (!track) {
+    for (const t of stream.getTracks()) t.stop();
+    failRecording('The captured tab has no audio track');
+    return;
+  }
+
+  try {
+    const settings = track.getSettings() as MediaTrackSettings & { sampleRate?: number; channelCount?: number };
+    recChannels = Math.min(2, Math.max(1, Math.round(settings.channelCount ?? 2)));
+    // The context runs AT THE STREAM'S OWN RATE so the graph never resamples —
+    // the whole point of this feature is the player's decoded PCM, untouched.
+    // Where Chrome doesn't report a rate we take the default and declare THAT to
+    // the server: ctx.sampleRate is always the truth about what we produce.
+    recCtx = settings.sampleRate ? new AudioContext({ sampleRate: settings.sampleRate }) : new AudioContext();
+    await recCtx.resume();
+    recSampleRate = recCtx.sampleRate;
+    recSpeed = speed;
+
+    // THE SPEED GUARD, and this is the first moment it can run: the capture rate
+    // is not knowable until the context exists. Refuse here, before a single
+    // frame is sent, rather than let someone discover after six hours that their
+    // 3x capture is a 16 kHz file. Background restores the page to 1x when it
+    // sees the recording end.
+    const refusal = speedGuardRefusal(recSampleRate, speed);
+    if (refusal) {
+      teardownCapture();
+      failRecording(refusal);
+      return;
+    }
+
+    await recCtx.audioWorklet.addModule('recorder-worklet.js');
+
+    recStream = stream;
+    recSource = recCtx.createMediaStreamSource(stream);
+    // Keep the tab audible. Tab capture silences the tab's own output; this edge
+    // is what gives it back, and it is not optional.
+    recSource.connect(recCtx.destination);
+
+    recTap = new AudioWorkletNode(recCtx, 'bf-tab-recorder', {
+      numberOfInputs: 1,
+      numberOfOutputs: 1,
+      outputChannelCount: [1],
+      // Explicit, so the tap always sees exactly the channel count we declared to
+      // the server — a source that changes its mind cannot shift the interleave.
+      channelCount: recChannels,
+      channelCountMode: 'explicit',
+      channelInterpretation: 'speakers',
+      processorOptions: { channels: recChannels, frameSize: chunkFrameSize(recSampleRate) }
+    });
+    recSink = recCtx.createGain();
+    recSink.gain.value = 0;
+    recSource.connect(recTap);
+    recTap.connect(recSink);
+    recSink.connect(recCtx.destination);
+    recTap.port.onmessage = (e: MessageEvent) => onRecorderFrame(e.data);
+
+    // The tab closed or navigated: the track ends, and that is a stop, not a loss.
+    track.addEventListener('ended', () => {
+      void stopRecording('The tab went away — saved what had been captured');
+    });
+  } catch (err) {
+    teardownCapture();
+    failRecording(`Could not start capturing this tab: ${(err as Error).message}`);
+    return;
+  }
+
+  // Where the user wants the file. The extension can't write it, so this rides
+  // record.start and the SERVER resolves it (~ expansion, mkdir, writability) —
+  // and refuses by name if it can't.
+  const outputDir = (await getSettings()).recordingsDir;
+
+  recWatch = new SilenceWatch();
+  recPending = [];
+  recPendingBytes = 0;
+  recordAcked = false;
+  recordId = `rec-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+  send({
+    action: 'record.start',
+    recordId,
+    title,
+    // The CAPTURE rate. The server divides it by the speed to label the file;
+    // nothing anywhere resamples.
+    sampleRate: recSampleRate,
+    channels: recChannels,
+    speed,
+    outputDir,
+    ...(cmd.url ? { sourceUrl: cmd.url } : {})
+  });
+  recordingTicker(true);
+  broadcast();
+}
+
+/** One ~100 ms frame off the audio thread. */
+function onRecorderFrame(data: { pcm?: ArrayBuffer; peak?: number; rms?: number; warning?: string }): void {
+  if (data.warning) { console.warn('[BFR] recorder:', data.warning); return; }
+  const pcm = data.pcm;
+  if (!pcm) return;
+  // Late frames from a torn-down graph are simply not audio any more.
+  if (recording.state !== 'starting' && recording.state !== 'recording') return;
+
+  // Wall-clock seconds this frame represents. The gates are judged in real time
+  // (a minute of waiting is a minute); the popup's clock is BOOK time, which at
+  // speed S runs S times faster because the file is labelled S times slower.
+  const wallSeconds = secondsFromBytes(pcm.byteLength, recSampleRate, recChannels);
+  const bookSeconds = wallSeconds * recSpeed;
+
+  const verdict = recWatch?.feed(data.peak ?? 0, wallSeconds) ?? null;
+  recording = {
+    ...recording,
+    level: data.rms ?? 0,
+    captureSampleRate: recSampleRate,
+    // Silence before any audio is a STATE, not a failure: the user pressed Record
+    // before Play, which is a reasonable order to do things in. The recording is
+    // running; the popup says what it is waiting for — and shows the countdown,
+    // because the same 30 s rule that ends a finished book also ends this.
+    waiting: recWatch ? recWatch.waiting : false,
+    silenceRemaining: recWatch ? recWatch.secondsUntilStop : RECORDER.SILENCE_STOP_SECONDS,
+    // Provisional: record.progress replaces these with the server's byte count,
+    // which is the truth about the file. Until the first one arrives, the popup
+    // still needs a clock that moves.
+    seconds: recording.seconds + bookSeconds,
+    bytes: recording.bytes + pcm.byteLength
+  };
+
+  if (recordAcked) {
+    sendBinary(pcm);
+  } else {
+    recPending.push(pcm);
+    recPendingBytes += pcm.byteLength;
+    if (recPendingBytes > RECORD_ACK_GRACE_SECONDS * bytesPerSecond(recSampleRate, recChannels)) {
+      failRecording('BookForge never acknowledged the recording');
+      return;
+    }
+  }
+
+  if (verdict === 'silence-stop') {
+    // The one rule, applied wherever the silence fell: the file is FINALIZED, not
+    // discarded. A recording that was never fed anything saves an empty FLAC and
+    // says why; a finished book saves the book and says why.
+    void stopRecording(silenceStopReason());
+  }
+}
+
+function flushPendingFrames(): void {
+  for (const pcm of recPending) sendBinary(pcm);
+  recPending = [];
+  recPendingBytes = 0;
+}
+
+/**
+ * Stop and keep the file. `warning` is set when the stop was not the user's own
+ * button — the tab vanished, or the trailing-silence gate fired — so the popup
+ * can say the recording is saved AND why it ended.
+ */
+async function stopRecording(warning?: string): Promise<void> {
+  if (recording.state !== 'recording' && recording.state !== 'starting') return;
+  const id = recordId;
+  recording = { ...recording, state: 'stopping', ...(warning ? { warning } : {}) };
+  broadcast();
+
+  // Ask the worklet for the partial frame it is holding (< 100 ms) before the
+  // graph goes away, so the tail of the recording is the tail of the audio.
+  try { recTap?.port.postMessage({ flush: true }); } catch { /* graph already gone */ }
+  await new Promise((r) => setTimeout(r, 80));
+
+  teardownCapture();
+  if (id && isConnected()) {
+    send({ action: 'record.stop', recordId: id });
+  } else {
+    // No socket: the server already finalized on our disconnect.
+    noteRecordingLostSocket();
+  }
+  broadcast();
+}
+
+/** Throw the recording away. `error` turns Discard into a reported failure (the
+ *  silence gate uses it); the user's own Discard passes nothing. */
+async function discardRecording(error?: string): Promise<void> {
+  const id = recordId;
+  teardownCapture();
+  recordId = null;
+  recordAcked = false;
+  recPending = [];
+  recPendingBytes = 0;
+  recWatch = null;
+  recordingTicker(false);
+  if (id && isConnected()) send({ action: 'record.cancel', recordId: id });
+  recording = error
+    ? { ...IDLE_RECORDING, state: 'error', title: recording.title, error }
+    : { ...IDLE_RECORDING };
+  broadcast();
+}
+
+/** A named failure that ends the recording. Never a silent reset — the whole
+ *  point of the recorder is that you find out at the time, not six hours later. */
+function failRecording(message: string): void {
+  const id = recordId;
+  teardownCapture();
+  recordId = null;
+  recordAcked = false;
+  recPending = [];
+  recPendingBytes = 0;
+  recWatch = null;
+  recordingTicker(false);
+  if (id && isConnected()) send({ action: 'record.cancel', recordId: id });
+  recording = {
+    ...IDLE_RECORDING,
+    state: 'error',
+    title: recording.title,
+    speed: recording.speed,
+    error: message
+  };
+  broadcast();
+}
+
+/** The socket died with a recording live. The server finalizes it on its side, so
+ *  this is a completed recording we simply cannot hear the confirmation of. */
+function noteRecordingLostSocket(): void {
+  if (!recordId) return;
+  teardownCapture();
+  recordId = null;
+  recordAcked = false;
+  recPending = [];
+  recPendingBytes = 0;
+  recWatch = null;
+  recordingTicker(false);
+  recording = {
+    ...recording,
+    state: 'done',
+    level: 0,
+    waiting: false,
+    warning: 'Connection to BookForge was lost — the recording was saved up to that point'
+  };
+  broadcast();
+}
+
+/** Release the capture graph. Idempotent: every ending path calls it. */
+function teardownCapture(): void {
+  if (recTap) { try { recTap.port.onmessage = null; recTap.disconnect(); } catch { /* gone */ } recTap = null; }
+  if (recSink) { try { recSink.disconnect(); } catch { /* gone */ } recSink = null; }
+  if (recSource) { try { recSource.disconnect(); } catch { /* gone */ } recSource = null; }
+  if (recStream) { for (const t of recStream.getTracks()) { try { t.stop(); } catch { /* gone */ } } recStream = null; }
+  if (recCtx) { const ctx = recCtx; recCtx = null; void ctx.close().catch(() => { /* already closed */ }); }
+}
+
+function handleRecordEvent(msg: ServerEvent): void {
+  switch (msg.type) {
+    case 'record.started':
+      if (msg.recordId !== recordId) return;
+      recordAcked = true;
+      recording = { ...recording, state: 'recording', path: msg.path };
+      console.log(
+        `[BFR] recording at ${recSpeed}x: ${recSampleRate} Hz capture → ` +
+        `${relabelledSampleRate(recSampleRate, recSpeed)} Hz file`
+      );
+      flushPendingFrames();
+      broadcast();
+      return;
+    case 'record.progress':
+      if (msg.recordId !== recordId) return;
+      // The server's byte count is the file's truth; our local running total was
+      // only ever a placeholder until this arrived.
+      recording = { ...recording, seconds: msg.seconds, bytes: msg.bytes };
+      return; // the 250 ms ticker paints it
+    case 'record.done': {
+      if (msg.recordId !== recordId) return;
+      recordId = null;
+      recordAcked = false;
+      recWatch = null;
+      recordingTicker(false);
+      teardownCapture();
+      recording = {
+        ...recording,
+        state: 'done',
+        path: msg.path,
+        seconds: msg.seconds,
+        bytes: msg.bytes,
+        level: 0,
+        waiting: false
+      };
+      broadcast();
+      return;
+    }
+    case 'record.cancelled':
+      if (msg.recordId !== recordId) return;
+      recordId = null;
+      recordAcked = false;
+      recWatch = null;
+      recordingTicker(false);
+      // A cancel we made for a NAMED reason (the silence gate) has already put
+      // that reason on screen; don't overwrite it with a blank idle state.
+      if (recording.state !== 'error') recording = { ...IDLE_RECORDING };
+      broadcast();
+      return;
+  }
+}
+
 // ─── Status + broadcast ───────────────────────────────────────────────────────
 
 let statusTimer: number | null = null;
@@ -2064,7 +2505,8 @@ function broadcast(): void {
     currentVoice: voiceForSpeak(),
     switchingVoice,
     config: serverConfig,
-    renderedItemIds: rendered
+    renderedItemIds: rendered,
+    recording
   };
   // Up to background, which projects per-tab UiState to content and pushes the
   // full snapshot to the popup. (No chrome.storage here — unavailable offscreen.)
@@ -2089,6 +2531,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'play-sequence': playSequence(msg.items); break;
     case 'enqueue': enqueue(msg.item); break;
     case 'transport': handleTransport(msg); break;
+    case 'record': void handleRecord(msg); break;
     case 'engine': void handleEngine(msg.op); break;
     case 'set-voice': void handleSetVoice(msg.voice); break;
     case 'set-idle': void handleSetIdle(msg.minutes); break;

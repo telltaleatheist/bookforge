@@ -8,5 +8,5 @@
   "action": { "default_title": "BookForge Reader", "default_popup": "popup.html" },
   "background": { "service_worker": "background.js" },
   "options_page": "options.html",
-  "permissions": ["activeTab", "scripting", "offscreen", "storage"]
+  "permissions": ["activeTab", "scripting", "offscreen", "storage", "tabCapture"]
 }

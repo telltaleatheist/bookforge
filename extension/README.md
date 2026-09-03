@@ -74,6 +74,49 @@ not under a wrapper folder).
 - When the current item finishes, playback advances to the next queued item; an
   empty queue stops.
 
+## Record a tab
+
+The popup's **Recorder** section captures the decoded audio of the tab you are
+looking at — including a DRM'd web player, whose audio exists nowhere else — and
+writes it losslessly as 24-bit FLAC with a `.json` sidecar beside it. Float32 PCM
+leaves the browser and BookForge's ffmpeg makes the file; nothing is encoded
+lossily on the way.
+
+Open the tab, press play in its player, then open the popup and press **● Record
+this tab**. The tab stays audible while recording. You get elapsed time, file
+size, a level meter, the destination path, and **■ Stop** / **✕ Discard**. Stop
+finalizes the file; Discard deletes it. Pressing Record *before* Play is fine —
+the popup shows **"Waiting for audio — press play in the tab"** with a countdown,
+and keeps recording.
+
+**Where it saves**: Options → **Save recordings to**, default `~/Downloads`. That
+is a folder on the machine running **BookForge**, not on this one; `~` means that
+machine's home folder (Windows included). It is created if missing, and a
+relative path is refused by name. While a recording is in progress it is a hidden
+`.<name>.partial.flac` in the same folder, so a `.flac` there is always a
+finished recording.
+
+**Speed capture** — the selector beside the Record button (1x / 1.5x / 2x / 3x /
+4x). The extension drives the page's own player that fast with pitch preservation
+off, and the file is written at `capture rate ÷ speed`: nothing is resampled, and
+played back at 1x it is the book at normal pitch and full length. A 6-hour book at
+2x costs 3 hours. The catch is bandwidth — a 48 kHz capture at 2x is a 24 kHz
+file, and 3x would be 16 kHz, which is refused by name. For 3x or 4x, set the
+Mac's output device to 96 kHz in Audio MIDI Setup first. Chrome mutes media above
+4x.
+
+**Stopping itself**: 30 seconds of continuous silence ends the recording and
+saves it — the book finished, or it never started. Chapter gaps (2-4 s) are
+nowhere near it. Closing or navigating the tab, and losing the connection to
+BookForge, also stop the recording and KEEP what was captured.
+
+Chrome does **not** silence protected audio in tab capture (measured against the
+real Audible player on 2026-09-03). If a future Chrome ever does, the fallback is
+an OS loopback device ([BlackHole](https://existential.audio/blackhole/) on
+macOS): route the browser's output through it and record that device. The
+contract and the reasoning are in
+[`../docs/TAB_RECORDER.md`](../docs/TAB_RECORDER.md).
+
 ## LAN use (optional)
 
 The server defaults to `127.0.0.1`. To listen to a BookForge running on another

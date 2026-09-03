@@ -67,6 +67,16 @@
         Windows: <code>%APPDATA%/bookforge-app/tts-api.json</code></p>
     </div>
 
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Recorder</h2>
+    <div class="field">
+      <label for="recordingsDir">Save recordings to</label>
+      <input id="recordingsDir" type="text" placeholder="~/Downloads" />
+      <p class="hint">A folder on the machine running <strong>BookForge</strong>, not on this one.
+        <code>~</code> means that machine's home folder, on Windows too. It is created if it doesn't
+        exist; a relative path is refused. Recordings land here as
+        <code>&lt;page title&gt;-&lt;timestamp&gt;.flac</code> with a <code>.json</code> sidecar.</p>
+    </div>
+
     <div class="field">
       <button id="test">Test connection</button>
       <span id="testResult" class="result"></span>

@@ -13,6 +13,7 @@
  */
 
 import { EngineState, ServerConfig } from './protocol';
+import { DEFAULT_RECORDINGS_DIR, RECORDER } from '../../shared/audio/tab-recording';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
 
@@ -68,6 +69,57 @@ export interface RunProgress {
 
 export const EMPTY_RUN: RunProgress = { position: 0, total: 0, rendered: 0, estimated: false };
 
+// ─── Tab recording ────────────────────────────────────────────────────────────
+
+/**
+ * What the Recorder section of the popup draws. State lives in the offscreen
+ * document (it owns the capture and the socket) and rides the QueueSnapshot, so
+ * the popup renders a recording exactly the way it renders playback — one
+ * broadcast, no second channel.
+ */
+export interface RecordingStatus {
+  state: 'idle' | 'starting' | 'recording' | 'stopping' | 'done' | 'error';
+  /** the tab being captured, for the "recording X" line */
+  title: string;
+  /** BOOK seconds the SERVER has written (its byte count, not our clock). At
+   *  speed > 1 this is longer than the wall clock — see `speed`. */
+  seconds: number;
+  bytes: number;
+  /** RMS of the latest chunk, 0..1 — the meter */
+  level: number;
+  /** destination on the BookForge machine; known from record.started onward */
+  path: string | null;
+  /** the rate the page's player is being driven at (1 = normal) */
+  speed: number;
+  /** the capture rate the tab actually delivered; 0 until capture starts */
+  captureSampleRate: number;
+  /** no audible frame has arrived yet — the tab is not playing (or not audible
+   *  to us). Presentation only: the recording is running, and the same silence
+   *  rule applies to it as to any other part of the capture. */
+  waiting: boolean;
+  /** seconds of silence left before the recording stops itself and saves. Full
+   *  (SILENCE_STOP_SECONDS) whenever audio is flowing. */
+  silenceRemaining: number;
+  /** named failure, never a bare "something went wrong" */
+  error?: string;
+  /** the recording ended, but not the way it was asked to (socket dropped, the
+   *  tab went away, the trailing-silence auto-stop). The file is still good. */
+  warning?: string;
+}
+
+export const IDLE_RECORDING: RecordingStatus = {
+  state: 'idle',
+  title: '',
+  seconds: 0,
+  bytes: 0,
+  level: 0,
+  path: null,
+  speed: 1,
+  captureSampleRate: 0,
+  waiting: false,
+  silenceRemaining: RECORDER.SILENCE_STOP_SECONDS
+};
+
 // ─── Queue ────────────────────────────────────────────────────────────────────
 
 export type ItemSource = 'block' | 'selection';
@@ -111,6 +163,9 @@ export interface QueueSnapshot {
   config: ServerConfig | null;
   /** ids of every queue item whose audio is fully rendered and replayable */
   renderedItemIds: string[];
+  /** the tab recording, when there is (or was) one. Optional so every existing
+   *  consumer keeps compiling and simply doesn't draw a recorder. */
+  recording?: RecordingStatus;
 }
 
 /** Per-tab projection of the snapshot, sent down to a content script. */
@@ -214,6 +269,32 @@ export interface SetVoiceCmd {
   voice: string;
 }
 
+/**
+ * Start / stop / discard a tab recording.
+ *
+ * The POPUP owns the gesture: `chrome.tabCapture.getMediaStreamId` needs a user
+ * gesture and the tabCapture permission, so the popup's click is what mints the
+ * stream id. It relays that id here; the offscreen document turns it into a
+ * MediaStream and a socket. Background is a pure relay, as with every other
+ * command — it just retargets the message.
+ */
+export interface RecordCmd {
+  target: 'background' | 'offscreen';
+  cmd: 'record';
+  op: 'start' | 'stop' | 'discard';
+  /** op:'start' — from chrome.tabCapture.getMediaStreamId({targetTabId}) */
+  streamId?: string;
+  /** op:'start' — the captured tab, for the recording's name and sidecar */
+  title?: string;
+  url?: string;
+  /** op:'start' — the tab whose media elements background drives at `speed`.
+   *  Background needs it to restore 1x when the recording ends by ANY route,
+   *  including the ones the popup is not open for. */
+  tabId?: number;
+  /** op:'start' — playback speed to capture at (1 = normal) */
+  speed?: number;
+}
+
 /** Offscreen can't reach chrome.storage; it asks background to persist for it. */
 export interface PutSettingsCmd {
   target: 'background';
@@ -295,6 +376,7 @@ export type RuntimeMessage =
   | PlayFromCmd
   | ExcludeBlockCmd
   | TransportCmd
+  | RecordCmd
   | PutSettingsCmd
   | SetIdleCmd
   | EngineCmd
@@ -328,6 +410,11 @@ export interface Settings {
   rate: number;
   /** output gain: 1 = normal, >1 amplifies above system volume (Web Audio) */
   volume: number;
+  /** the tab recorder's chosen capture speed, remembered between popups */
+  recordSpeed: number;
+  /** where the SERVER saves recordings. May start with `~` — the extension has
+   *  no filesystem, so the server expands it (and refuses a relative path). */
+  recordingsDir: string;
 }
 
 // Injected by build.mjs (esbuild `define`) from the app's tts-api.json. Declared
@@ -342,7 +429,9 @@ export const DEFAULT_SETTINGS: Settings = {
   token: typeof __BFR_TOKEN__ === 'string' ? __BFR_TOKEN__ : '',
   voice: '',
   rate: 1,
-  volume: 1
+  volume: 1,
+  recordSpeed: 1,
+  recordingsDir: DEFAULT_RECORDINGS_DIR
 };
 
 export async function loadSettings(): Promise<Settings> {

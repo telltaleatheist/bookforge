@@ -43,7 +43,22 @@
  *     {type:'failed',   requestId, sentenceIndex, error}
  *     {type:'complete', requestId}
  *     {type:'cancelled',requestId}                     // stopped or preempted
- *     {type:'error',    requestId?, code?, message}
+ *     {type:'error',    requestId?, recordId?, code?, message}
+ *
+ *   Tab recording (docs/TAB_RECORDER.md) rides the same socket and never touches
+ *   the stream scheduler — a `speak` while recording is fine, and vice versa:
+ *
+ *     {action:'record.start',  recordId, title, sampleRate, channels, speed?, outputDir?, sourceUrl?}
+ *     {action:'record.stop',   recordId}
+ *     {action:'record.cancel', recordId}
+ *     {action:'record.mark',   recordId, label, seconds}   // no reply
+ *     ...plus BINARY frames of raw f32le interleaved PCM, legal only between
+ *     record.started and record.stop/cancel.
+ *
+ *     {type:'record.started',  recordId, path}
+ *     {type:'record.progress', recordId, seconds, bytes}   // ~1 Hz
+ *     {type:'record.done',     recordId, path, seconds, bytes}
+ *     {type:'record.cancelled',recordId}
  *
  *   `code` is present only where a client can usefully branch on it. Today that is
  *   409: the requested voice needs a different model than the one loaded, and another
@@ -80,6 +95,7 @@ import {
   onStreamConfigChanged,
 } from './streaming-engine';
 import { setIdleMinutes } from './stream-idle';
+import { setRecordingDirsStore, sweepPartialRecordings, tabRecorder } from './tab-recording';
 
 export interface TtsApiConfig {
   port: number;
@@ -117,6 +133,14 @@ function isTrustedOrigin(origin: string | undefined): boolean {
   return origin === `chrome-extension://${ALLOWED_EXTENSION_ID}`;
 }
 
+/** `ws` hands a binary frame over as a Buffer, an ArrayBuffer, or (for a
+ *  fragmented message) an array of Buffers. All three are the same PCM. */
+function toBuffer(raw: Buffer | ArrayBuffer | Buffer[]): Buffer {
+  if (Array.isArray(raw)) return Buffer.concat(raw);
+  if (Buffer.isBuffer(raw)) return raw;
+  return Buffer.from(raw);
+}
+
 interface ClientState {
   authed: boolean;
   /** True when the connection's Origin is our pinned extension — authorised
@@ -125,6 +149,13 @@ interface ClientState {
   /** requestIds of this client's in-flight speaks (the playing block plus any
    *  read-ahead blocks it prefetched concurrently). */
   activeRequestIds: Set<string | number>;
+  /** The tab recording this connection owns, if any — ONE per client (and one
+   *  per server). Binary frames belong to it, and its socket closing finalizes
+   *  it rather than losing it. */
+  recordId: string | null;
+  /** When we last told this client it sent a binary frame outside a recording.
+   *  A misbehaving client sends them at 10 Hz; it is told, not drowned. */
+  lastStrayFrameAt: number;
 }
 
 export class TtsApiServer {
@@ -227,11 +258,26 @@ export class TtsApiServer {
     // Populate the installed-voice list before the first client connects.
     await this.refreshInstalledVoices();
 
+    // No recording can be live at this instant, so any `.partial.flac` left in a
+    // folder we have recorded into is debris from a run that died (app quit,
+    // power cut). Clearing it here is what makes "a .flac in your Downloads is a
+    // finished recording" true. The folder list is machine-local, beside the
+    // API config — see tab-recording.ts.
+    setRecordingDirsStore(path.join(userDataPath, 'tab-recordings.json'));
+    const swept = await sweepPartialRecordings();
+    if (swept.length > 0) {
+      console.log(`[REC] swept ${swept.length} unfinished recording(s): ${swept.join(', ')}`);
+    }
+
     console.log(`[TTS API] Listening on ws://${config.host}:${config.port}`);
     return this.getStatus();
   }
 
   async stop(): Promise<void> {
+    // The app is going away with a capture live: finalize it here rather than
+    // racing the sockets' close handlers, which may never run before exit. The
+    // file is complete up to the last frame, which is the whole point.
+    await tabRecorder.finalizeOrphan('TTS API server stopping');
     this.unsubscribeEngineState?.();
     this.unsubscribeEngineState = null;
     this.unsubscribeConfigChanged?.();
@@ -283,7 +329,9 @@ export class TtsApiServer {
     const state: ClientState = {
       authed: false,
       originTrusted: isTrustedOrigin(req.headers.origin),
-      activeRequestIds: new Set()
+      activeRequestIds: new Set(),
+      recordId: null,
+      lastStrayFrameAt: 0
     };
     this.clients.set(ws, state);
 
@@ -291,7 +339,14 @@ export class TtsApiServer {
       if (!state.authed) ws.close(4401, 'authentication timeout');
     }, AUTH_TIMEOUT_MS);
 
-    ws.on('message', (raw) => {
+    ws.on('message', (raw, isBinary) => {
+      // The binary branch comes FIRST and never reaches JSON.parse: a recording
+      // frame is raw f32le PCM, and parsing it would burn CPU on every 100 ms of
+      // audio only to fail.
+      if (isBinary) {
+        this.handleBinaryFrame(ws, state, toBuffer(raw));
+        return;
+      }
       let msg: Record<string, unknown>;
       try {
         msg = JSON.parse(raw.toString());
@@ -313,7 +368,164 @@ export class TtsApiServer {
         if (streamScheduler.isActive(requestId)) streamScheduler.stop(requestId);
       }
       state.activeRequestIds.clear();
+      // A recording, on the other hand, is KEPT: the file is complete up to the
+      // last frame that arrived, so a dropped socket finalizes exactly as
+      // record.stop would. No .partial.flac is ever left behind.
+      if (state.recordId) {
+        const id = state.recordId;
+        state.recordId = null;
+        void tabRecorder.finalizeOrphan(`client disconnected during recording '${id}'`);
+      }
     });
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // Tab recording (docs/TAB_RECORDER.md)
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /** Raw PCM for the live recording. Everything else is a named error. */
+  private handleBinaryFrame(ws: WebSocket, state: ClientState, data: Buffer): void {
+    if (!state.authed) {
+      ws.close(4401, 'not authenticated');
+      return;
+    }
+    if (!state.recordId) {
+      // Told once a second, not once a frame: this is a client bug, and burying
+      // it is as wrong as flooding the socket with it.
+      const now = Date.now();
+      if (now - state.lastStrayFrameAt >= 1000) {
+        state.lastStrayFrameAt = now;
+        this.send(ws, {
+          type: 'error',
+          message: 'binary frame outside a recording — send record.start first'
+        });
+      }
+      return;
+    }
+    try {
+      tabRecorder.write(data);
+    } catch (err) {
+      // The encoder died under us (ffmpeg gone, disk full). The partial file is
+      // debris, so the recording is cancelled and named rather than left to look
+      // like it is still running.
+      const recordId = state.recordId;
+      state.recordId = null;
+      void tabRecorder.cancel(recordId).catch(() => { /* already gone */ });
+      this.send(ws, { type: 'error', recordId, message: (err as Error).message });
+    }
+  }
+
+  private async handleRecordStart(
+    ws: WebSocket,
+    state: ClientState,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const recordId = typeof msg.recordId === 'string' ? msg.recordId : '';
+    if (!recordId) {
+      this.send(ws, { type: 'error', message: 'record.start requires a recordId' });
+      return;
+    }
+    if (state.recordId) {
+      this.send(ws, {
+        type: 'error',
+        recordId,
+        message: `this connection is already recording '${state.recordId}' — one recording per client`
+      });
+      return;
+    }
+    if (tabRecorder.isRecording()) {
+      this.send(ws, { type: 'error', recordId, message: tabRecorder.busyMessage() });
+      return;
+    }
+    const title = typeof msg.title === 'string' && msg.title.trim() ? msg.title.trim() : 'tab-audio';
+    try {
+      const session = await tabRecorder.start(
+        {
+          recordId,
+          title,
+          sampleRate: typeof msg.sampleRate === 'number' ? msg.sampleRate : NaN,
+          channels: typeof msg.channels === 'number' ? msg.channels : NaN,
+          // Speed capture: the file is written at sampleRate / speed. Absent or
+          // 1 means an ordinary realtime capture.
+          speed: typeof msg.speed === 'number' ? msg.speed : 1,
+          // Where the user wants it. May start with `~`; the session expands it
+          // and refuses anything that is not absolute afterwards.
+          outputDir: typeof msg.outputDir === 'string' ? msg.outputDir : null,
+          sourceUrl: typeof msg.sourceUrl === 'string' ? msg.sourceUrl : null
+        },
+        {
+          onProgress: (progress) => this.send(ws, { type: 'record.progress', ...progress })
+        }
+      );
+      state.recordId = recordId;
+      // The FINAL path, not the .partial.flac: it is where the file will be, and
+      // it is what the popup shows while recording.
+      this.send(ws, { type: 'record.started', recordId, path: session.finalPath });
+      console.log(
+        `[REC] recording '${title}' → ${session.finalPath} ` +
+        `(${session.sampleRate} Hz, ${session.channels} ch, 24-bit` +
+        (session.speed !== 1
+          ? `, ${session.speed}x from a ${session.captureSampleRate} Hz capture`
+          : '') +
+        ')'
+      );
+    } catch (err) {
+      this.send(ws, { type: 'error', recordId, message: (err as Error).message });
+    }
+  }
+
+  private async handleRecordStop(
+    ws: WebSocket,
+    state: ClientState,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const recordId = typeof msg.recordId === 'string' ? msg.recordId : '';
+    if (!state.recordId || state.recordId !== recordId) {
+      this.send(ws, {
+        type: 'error',
+        recordId,
+        message: `record.stop: this connection has no recording '${recordId}'`
+      });
+      return;
+    }
+    state.recordId = null;
+    try {
+      const result = await tabRecorder.stop(recordId);
+      this.send(ws, {
+        type: 'record.done',
+        recordId,
+        path: result.path,
+        seconds: result.seconds,
+        bytes: result.bytes
+      });
+      console.log(`[REC] saved ${result.path} (${result.seconds.toFixed(1)}s, ${result.bytes} B)`);
+    } catch (err) {
+      this.send(ws, { type: 'error', recordId, message: (err as Error).message });
+    }
+  }
+
+  private async handleRecordCancel(
+    ws: WebSocket,
+    state: ClientState,
+    msg: Record<string, unknown>
+  ): Promise<void> {
+    const recordId = typeof msg.recordId === 'string' ? msg.recordId : '';
+    if (!state.recordId || state.recordId !== recordId) {
+      this.send(ws, {
+        type: 'error',
+        recordId,
+        message: `record.cancel: this connection has no recording '${recordId}'`
+      });
+      return;
+    }
+    state.recordId = null;
+    try {
+      await tabRecorder.cancel(recordId);
+      this.send(ws, { type: 'record.cancelled', recordId });
+      console.log(`[REC] discarded recording '${recordId}'`);
+    } catch (err) {
+      this.send(ws, { type: 'error', recordId, message: (err as Error).message });
+    }
   }
 
   private async handleMessage(
@@ -392,6 +604,41 @@ export class TtsApiServer {
         if (requestId !== undefined && state.activeRequestIds.has(requestId)) {
           streamScheduler.stop(requestId);
           state.activeRequestIds.delete(requestId);
+        }
+        return;
+      }
+
+      // ── Tab recording. Deliberately independent of the stream scheduler: a
+      // speak while recording is fine, and record.* never touches generation.
+      case 'record.start':
+        await this.handleRecordStart(ws, state, msg);
+        return;
+
+      case 'record.stop':
+        await this.handleRecordStop(ws, state, msg);
+        return;
+
+      case 'record.cancel':
+        await this.handleRecordCancel(ws, state, msg);
+        return;
+
+      case 'record.mark': {
+        // No reply, by contract — a mark is a note in the sidecar, not a
+        // transaction. A mark for a recording this client doesn't own is dropped
+        // with a log line rather than an error frame mid-capture.
+        const recordId = typeof msg.recordId === 'string' ? msg.recordId : '';
+        if (!state.recordId || state.recordId !== recordId) {
+          console.warn(`[REC] mark for '${recordId}' ignored — not this connection's recording`);
+          return;
+        }
+        try {
+          tabRecorder.mark(
+            recordId,
+            typeof msg.label === 'string' ? msg.label : '',
+            typeof msg.seconds === 'number' ? msg.seconds : NaN
+          );
+        } catch (err) {
+          console.warn('[REC] mark ignored:', (err as Error).message);
         }
         return;
       }

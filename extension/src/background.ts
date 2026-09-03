@@ -15,6 +15,7 @@ import {
   PlayFromCmd,
   ExcludeBlockCmd,
   TransportCmd,
+  RecordCmd,
   EngineCmd,
   QueueOpCmd,
   SetVoiceCmd,
@@ -47,9 +48,16 @@ async function ensureOffscreen(): Promise<void> {
       url: 'offscreen.html',
       // AUDIO_PLAYBACK alone lets Chrome close the doc after ~30 s of silence,
       // which would kill the socket during the ~60 s cold engine start. BLOBS
-      // (we hold WAV blob URLs) keeps it alive through buffering.
-      reasons: [chrome.offscreen.Reason.AUDIO_PLAYBACK, chrome.offscreen.Reason.BLOBS],
-      justification: 'Stream and play TTS audio from the BookForge engine.'
+      // (we hold WAV blob URLs) keeps it alive through buffering. USER_MEDIA is
+      // required for the tab recorder: getUserMedia is REFUSED in an offscreen
+      // document that did not declare it, and the reasons are fixed at creation
+      // — so it is declared up front rather than after the first Record click.
+      reasons: [
+        chrome.offscreen.Reason.AUDIO_PLAYBACK,
+        chrome.offscreen.Reason.BLOBS,
+        chrome.offscreen.Reason.USER_MEDIA
+      ],
+      justification: 'Stream and play TTS audio, and record the audio of a tab the user chooses.'
     })
     .finally(() => { creating = null; });
   return creating;
@@ -146,6 +154,21 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       if (sender.tab?.id !== undefined) activeTabId = sender.tab.id;
       void sendToOffscreen({ ...(raw as TransportCmd), target: 'offscreen' });
       return;
+    // Tab recording. The popup did the part that needs a user gesture (minting
+    // the stream id); the offscreen document does the part that needs a
+    // MediaStream. Background owns exactly one thing of its own: driving the
+    // PAGE's player at the capture speed, because it is the only context that
+    // still exists when a recording ends by a route the popup isn't open for.
+    case 'record': {
+      const c = raw as RecordCmd;
+      if (c.op === 'start' && c.tabId !== undefined) {
+        recordingTabId = c.tabId;
+        recordingSpeed = c.speed && c.speed > 1 ? c.speed : 1;
+        if (recordingSpeed > 1) void setPageSpeed(c.tabId, recordingSpeed);
+      }
+      void sendToOffscreen({ ...c, target: 'offscreen' });
+      return;
+    }
     case 'engine':
       void sendToOffscreen({ target: 'offscreen', cmd: 'engine', op: (raw as EngineCmd).op });
       return;
@@ -176,12 +199,119 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
     case 'snapshot': {
       const snapshot = (raw as { snapshot: QueueSnapshot }).snapshot;
       latestSnapshot = snapshot;
+      noteRecordingLiveness(snapshot);
       relaySnapshot(snapshot);
       pushToPopup(snapshot);
       return;
     }
   }
 });
+
+// ─── Speed capture: driving the page's player ─────────────────────────────────
+//
+// The recorder can capture faster than realtime by running the tab's own player
+// at S× with `preservesPitch = false` and relabelling the file's sample rate —
+// nothing resamples, and a six-hour book takes three hours at 2×.
+//
+// This lives in BACKGROUND, not the popup, for one reason: the recording can end
+// without the popup being open (the trailing-silence auto-stop, the tab closing,
+// the socket dropping), and whatever set the page to 2× MUST be able to put it
+// back. The popup's Record click is still what grants `activeTab` — that grant
+// belongs to the extension, not to the popup, and outlives it.
+//
+// The injected functions run in the ISOLATED world, which shares the page's DOM:
+// setting `playbackRate` there drives the real element, with no exposure to the
+// page's own scripts or CSP.
+
+let recordingTabId: number | null = null;
+let recordingSpeed = 1;
+/** Was a recording live at the previous snapshot? The 1× restore hangs off the
+ *  live→not-live edge, so EVERY way a recording can end restores the page. */
+let recordingWasLive = false;
+
+/** Runs in the page. Must be self-contained — executeScript serializes it. */
+function drivePlaybackSpeed(speed: number): void {
+  const KEY = '__bfrRecorderSpeed';
+  const w = window as unknown as Record<string, unknown>;
+  const apply = () => {
+    const media = document.querySelectorAll('audio, video');
+    for (let i = 0; i < media.length; i++) {
+      const el = media[i] as HTMLMediaElement & { preservesPitch?: boolean };
+      try {
+        // Pitch preservation is exactly what we must NOT have: the whole trick is
+        // that the audio comes out pitch-shifted and is un-shifted by writing the
+        // file at a proportionally lower sample rate.
+        el.preservesPitch = false;
+        if (el.playbackRate !== speed) el.playbackRate = speed;
+      } catch { /* a player that locks the property down */ }
+    }
+  };
+  const previous = w[KEY] as { stop?: () => void } | undefined;
+  if (previous && previous.stop) previous.stop();
+  apply();
+  // Players reset the rate on chapter changes, and swap in new <audio> elements
+  // as they go — so re-assert on both counts for as long as we are recording.
+  const observer = new MutationObserver(apply);
+  observer.observe(document.documentElement, { childList: true, subtree: true });
+  const timer = setInterval(apply, 2000);
+  w[KEY] = { stop: () => { observer.disconnect(); clearInterval(timer); } };
+}
+
+/** Runs in the page: stop re-asserting and hand the player back to the user. */
+function restorePlaybackSpeed(): void {
+  const KEY = '__bfrRecorderSpeed';
+  const w = window as unknown as Record<string, unknown>;
+  const previous = w[KEY] as { stop?: () => void } | undefined;
+  if (previous && previous.stop) previous.stop();
+  delete w[KEY];
+  const media = document.querySelectorAll('audio, video');
+  for (let i = 0; i < media.length; i++) {
+    const el = media[i] as HTMLMediaElement & { preservesPitch?: boolean };
+    try { el.preservesPitch = true; el.playbackRate = 1; } catch { /* gone */ }
+  }
+}
+
+async function setPageSpeed(tabId: number, speed: number): Promise<void> {
+  try {
+    // allFrames: a web player commonly lives in an iframe, and the element we
+    // need is in whichever frame owns it.
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: drivePlaybackSpeed,
+      args: [speed]
+    });
+    console.log('[BFR] driving tab', tabId, 'at', speed + 'x');
+  } catch (err) {
+    // Named, not swallowed: the capture will still run, but at 1x, and the file's
+    // relabelled rate would then be wrong — so the offscreen guard's refusal and
+    // this line are the two places that say what happened.
+    console.error('[BFR] could not set the page playback speed:', err);
+  }
+}
+
+async function restorePageSpeed(tabId: number): Promise<void> {
+  try {
+    await chrome.scripting.executeScript({
+      target: { tabId, allFrames: true },
+      func: restorePlaybackSpeed
+    });
+  } catch (err) {
+    console.warn('[BFR] could not restore the page playback speed:', err);
+  }
+}
+
+/** The page goes back to 1x the moment the recording stops being live, whatever
+ *  ended it — Stop, Discard, the auto-stop, a dropped socket, the speed guard. */
+function noteRecordingLiveness(snapshot: QueueSnapshot): void {
+  const state = snapshot.recording?.state;
+  const live = state === 'starting' || state === 'recording' || state === 'stopping';
+  if (recordingWasLive && !live) {
+    if (recordingTabId !== null && recordingSpeed > 1) void restorePageSpeed(recordingTabId);
+    recordingTabId = null;
+    recordingSpeed = 1;
+  }
+  recordingWasLive = live;
+}
 
 // ─── Snapshot → per-tab UiState ───────────────────────────────────────────────
 

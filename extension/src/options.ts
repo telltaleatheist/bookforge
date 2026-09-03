@@ -13,6 +13,7 @@ const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as 
 const hostEl = $('host') as HTMLInputElement;
 const portEl = $('port') as HTMLInputElement;
 const tokenEl = $('token') as HTMLInputElement;
+const recordingsDirEl = $('recordingsDir') as HTMLInputElement;
 const testBtn = $('test') as HTMLButtonElement;
 const testResult = $('testResult') as HTMLSpanElement;
 const savedNote = $('saved') as HTMLSpanElement;
@@ -22,13 +23,19 @@ async function restore(): Promise<void> {
   hostEl.value = s.host;
   portEl.value = String(s.port);
   tokenEl.value = s.token;
+  recordingsDirEl.value = s.recordingsDir;
 }
 
-function current(): Pick<Settings, 'host' | 'port' | 'token'> {
+function current(): Pick<Settings, 'host' | 'port' | 'token' | 'recordingsDir'> {
   return {
     host: hostEl.value.trim() || DEFAULT_SETTINGS.host,
     port: Number(portEl.value) || DEFAULT_SETTINGS.port,
-    token: tokenEl.value.trim()
+    token: tokenEl.value.trim(),
+    // Blank means the default. The path is NOT validated here — this machine's
+    // filesystem is not the one it names, so the server is the only thing that
+    // can honestly answer whether it exists, and it does so by name at record
+    // time rather than guessing now.
+    recordingsDir: recordingsDirEl.value.trim() || DEFAULT_SETTINGS.recordingsDir
   };
 }
 
@@ -38,7 +45,7 @@ async function save(): Promise<void> {
   setTimeout(() => { savedNote.textContent = ''; }, 1200);
 }
 
-for (const el of [hostEl, portEl, tokenEl]) {
+for (const el of [hostEl, portEl, tokenEl, recordingsDirEl]) {
   el.addEventListener('change', () => void save());
 }
 
