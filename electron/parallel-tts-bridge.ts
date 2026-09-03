@@ -193,6 +193,12 @@ import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 import { ensureWslDrivesFor } from './wsl-mounts';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
+import {
+  findForeignRenders,
+  gpuOwnershipRefusal,
+  gpuOwnershipOverrideNote,
+  ALLOW_SHARED_GPU_ENV,
+} from '../shared/tts/gpu-ownership';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -1541,7 +1547,11 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
                        'ORPHEUS_EOS_BOOST', 'ORPHEUS_EOS_BOOST_START',
                        'ORPHEUS_VLLM_DTYPE',
                        // Already a WSL-form path when we spawn through WSL — see startWorker.
-                       'ORPHEUS_REJECT_DIR'];
+                       'ORPHEUS_REJECT_DIR',
+                       // Forwarded so the guest worker can SAY that the owner pid is a
+                       // Windows pid it cannot see, instead of silently having no owner
+                       // rule at all. It never arms the rule across that boundary.
+                       'BOOKFORGE_OWNER_PID', 'BOOKFORGE_OWNER_PLATFORM'];
   const forwarded = forwardKeys
     .filter((k) => config.env?.[k])
     .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
@@ -2588,6 +2598,11 @@ interface ConversionSession {
   // no-ops headless (no mainWindow), so renderRangeHeadless reads THIS to throw the real
   // cause instead of the downstream "N sentence files missing" symptom.
   completionError?: string;
+  // True once assertGpuIsOurs has run for this session. The guard answers "is
+  // someone ELSE rendering", so it belongs to the session, not the worker: an
+  // OOM-retry respawn (retryWorker) and workers 1..n are the same render as
+  // worker 0 and must not re-ask.
+  gpuOwnershipChecked?: boolean;
 }
 
 // Persistent session state - saved to disk for resume capability
@@ -3579,6 +3594,9 @@ export async function regenerateSentenceIndices(
   const voiceCaps = orpheusVoiceCaps(settings);
   const env = buildCondaSpawnEnv({
     PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+    // Same worker.py, same wrapper, same orphan risk — see startWorker.
+    BOOKFORGE_OWNER_PID: String(process.pid),
+    BOOKFORGE_OWNER_PLATFORM: process.platform,
     VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
     // Orpheus batch width / MLX cache: memory-tier defaults (not GPU-arbiter sized —
     // see the fidelity note above). Explicit env still wins.
@@ -3707,6 +3725,73 @@ export async function regenerateSentenceIndices(
   }
 }
 
+/**
+ * REFUSE TO PUT A SECOND ORPHEUS RENDER ON THIS MAC'S GPU.
+ *
+ * One GPU, one pool of memory, and it is the same memory the desktop draws
+ * from. Two MLX renders do not each get half — they each take ~7 GB of weights
+ * plus a KV cache and a batch, and the machine starts swapping. Sep 1 2026:
+ * an ORPHANED worker.py (Electron was Ctrl-C'd, so `before-quit` never fired
+ * and `killAllWorkers` never ran) rendered on for 1h31m; the app then started a
+ * worker on top of it, and a CLI run over ssh started a third. 55-60 GB wired,
+ * the renderer OOM-killed, every number measured that night void.
+ *
+ * WHY A REFUSAL AND NOT A WARNING. The run that follows is wrong twice: it is
+ * slow, and it takes the desktop with it — and its timings are the reason
+ * someone started it. There is nothing to salvage by proceeding.
+ *
+ * WHERE IT SITS, AND WHY HERE. In `startWorker`, which is the ONE place a batch
+ * worker is spawned: `startParallelConversion` (queue/UI), `resumeParallelConversion`
+ * (resume), `renderRangeHeadless` (the CLI — `cli/orpheus-batch-render.js` calls
+ * it, and `cli/bookforge-tts.py` calls that) and `retryWorker` (OOM respawn) all
+ * come through here. A guard in any one caller is a guard the other three
+ * routes walk around.
+ *
+ * ONCE PER SESSION (`session.gpuOwnershipChecked`): workers 1..n and an OOM
+ * respawn are the SAME render as worker 0. Re-asking would refuse our own job.
+ *
+ * The selection rules — what counts, what is excluded, and why the CLI's own
+ * parent chain must not count — are in `shared/tts/gpu-ownership.ts`, tested by
+ * `npm run test:gpu-ownership`. This side is the `ps` call and the throw.
+ */
+function assertGpuIsOurs(session: ConversionSession): void {
+  if (process.platform !== 'darwin') return;                       // one MLX GPU is a Mac problem
+  if (session.config.settings.ttsEngine !== 'orpheus') return;      // XTTS on Mac runs on the CPU
+  if (session.gpuOwnershipChecked) return;
+  session.gpuOwnershipChecked = true;
+
+  let psOutput: string;
+  try {
+    // pid,ppid,etime,command: ppid is here so the ancestor chain comes from the
+    // SAME snapshot as the selection — a chain read a moment later can disagree
+    // with the list it is filtering.
+    psOutput = execSync('ps -Ao pid,ppid,etime,command', { encoding: 'utf-8', maxBuffer: 32 * 1024 * 1024 });
+  } catch (err: any) {
+    // No process list, no evidence. Refusing on a broken `ps` would ground the
+    // app over a diagnostic; say so and carry on.
+    console.warn(`[PARALLEL-TTS] GPU ownership check skipped — could not read the process list: ${err?.message || err}`);
+    return;
+  }
+
+  const found = findForeignRenders(psOutput, {
+    selfPid: process.pid,
+    sessionId: session.prepInfo?.sessionId ?? null,
+  });
+  if (found.length === 0) return;
+
+  if (process.env[ALLOW_SHARED_GPU_ENV]?.trim()) {
+    const note = gpuOwnershipOverrideNote(found);
+    console.warn(`[PARALLEL-TTS] ${note}`);
+    writeWorkerLog(note);
+    return;
+  }
+
+  const refusal = gpuOwnershipRefusal(found);
+  console.error(`[PARALLEL-TTS] ${refusal}`);
+  writeWorkerLog(refusal);
+  throw new Error(refusal);
+}
+
 function startWorker(
   session: ConversionSession,
   workerId: number,
@@ -3714,6 +3799,9 @@ function startWorker(
 ): ChildProcess {
   const { config, prepInfo } = session;
   if (!prepInfo) throw new Error('Session not prepared');
+
+  // Before the first worker of this session touches the GPU: is anyone else on it?
+  assertGpuIsOurs(session);
 
   const settings = config.settings;
   const isChapterMode = config.parallelMode === 'chapters';
@@ -3845,6 +3933,25 @@ function startWorker(
       cwd: getDefaultE2aPath(),
       env: buildCondaSpawnEnv({
         PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
+        // WHO THIS WORKER BELONGS TO — and why ppid is not enough.
+        //
+        // On darwin, Orpheus resolves to a `prefix` env unconditionally
+        // (e2a-paths.ts resolveCondaEnv returns early for orpheus/voxtral/f5), so
+        // pythonInvocation gives us `conda run --no-capture-output -p <env> python`.
+        // Measured chain from a real spawn: node -> Miniforge3/bin/python (`conda
+        // run`) -> /bin/bash (activation) -> python worker.py. The worker's PARENT
+        // IS THAT BASH, not us. When Electron dies, `conda run` and its bash are
+        // reparented to launchd and go on waiting for the worker, so the worker's
+        // ppid never changes and its parent-death watchdog never fires — which is
+        // exactly how the Sep 1 2026 zombie rendered on for 1h31m.
+        //
+        // So we name ourselves. The worker polls this pid directly (existence +
+        // start time, against pid reuse) and stops itself when we are gone,
+        // wrapper or no wrapper. The platform rides along because a Windows pid
+        // means nothing inside a WSL guest: the worker refuses to arm the rule
+        // across that boundary rather than watch a coincidentally-equal guest pid.
+        BOOKFORGE_OWNER_PID: String(process.pid),
+        BOOKFORGE_OWNER_PLATFORM: process.platform,
         VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
         // Keep guard rejects for this job somewhere durable and identifiable. Without
         // this e2a falls back to its own tmp, where the evidence is anonymous (keyed
@@ -4066,7 +4173,7 @@ function startWorker(
       const beat = parseMlxHeartbeat(line);
       if (beat) {
         worker.activeBatch = advanceBatch(worker.activeBatch, beat);
-        session.stageDetail = `Rendering ${beat.rowsTotal} sentences together · ${beat.maxTokens.toLocaleString()} tokens`;
+        session.stageDetail = `Rendering ${beat.rowsTotal} chunks together · ${beat.maxTokens.toLocaleString()} tokens`;
         // Unlike the old code this EMITS: the heartbeat is throttled to ~10 s by the
         // engine, so one progress event per beat is cheap, and without it the batch
         // bar would only reach the renderer when some unrelated event happened to
