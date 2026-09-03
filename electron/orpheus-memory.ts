@@ -197,14 +197,14 @@ const DESKTOP_HEADROOM_MB = 10240;
 //
 // batchSize stays the CEILING (throughput knee, still 96 — width 128 measured
 // slower), and a deep batch narrows itself. At the full 3700-token depth that
-// yields: extreme 96 rows (~55 GB worst case), fast 46 (~34), moderate 22 (~22),
+// yields: extreme 64 rows (~42 GB steady, budget 42), fast 46 (~34), moderate 22 (~22),
 // light 7 (~13). Shallow batches keep the full tier width.
 //
 // Budgets are set against the RAM band that selects the tier (≥60 / ≥44 / ≥28 /
 // below), leaving room for the desktop: a budget above the machine's RAM is not a
 // budget, and this is unified memory — overshoot means swap, not a clean failure.
 //
-// extreme = 55, not 45: 55 is exactly the budget where full width 96 survives even
+// extreme WAS 55, not 45 (Jul 2026): 55 was exactly the budget where full width 96 survived even
 // at worst-case depth, and the worst case is a bound the fleet never reaches — the
 // depth term assumes EVERY row generates to its cap, but rows EOS far earlier
 // (measured real-book peak at width 96: 26.9 GB vs the 55 GB bound, 42.1 vs 38.1
@@ -214,7 +214,16 @@ const MLX_TIERS: Record<
   ConcreteOrpheusTier,
   { batchSize: number; cacheLimitGB: number; memBudgetGB: number }
 > = {
-  extreme: { batchSize: 96, cacheLimitGB: 8, memBudgetGB: 55 },
+  // extreme width 96 → 64 (Sep 1 2026, owner's call): 64-vs-96 measured a tie on
+  // the group path (Aug 21), and continuous batching (ORPHEUS_MLX_CONTINUOUS) keeps
+  // the KV cache at full depth permanently — refilled rows are padded to the
+  // oldest live row — so the 55 GB "worst case" became the steady state and the
+  // extend/filter transients on top of it read 53 GB. At 64 the steady state is
+  // ~42 GB with the transients inside the budget. Budget 55 → 42 with it: 42 is the
+  // floor that still yields 64 rows at the 3700 cap (headroom 27.1 GB / 0.414 GB per
+  // row = 65); 41 would trim to 62. A
+  // budget the machine cannot actually reach without swapping is not a budget.
+  extreme: { batchSize: 64, cacheLimitGB: 8, memBudgetGB: 42 },
   fast: { batchSize: 72, cacheLimitGB: 8, memBudgetGB: 34 },
   moderate: { batchSize: 48, cacheLimitGB: 6, memBudgetGB: 22 },
   light: { batchSize: 24, cacheLimitGB: 3, memBudgetGB: 13 },
