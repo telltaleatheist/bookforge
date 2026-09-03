@@ -93,7 +93,7 @@ queue makes** for a standard audiobook — no pipeline logic is reimplemented:
 app since 2026-08-29, so its own call here.)
 
 So this is the real headless test of the shipped audiobook pipeline. The input EPUB is
-resolved from the project like the app's "Latest" (translated → cleaned → exported →
+resolved from the project's RECORD (manifest-service `bookForAct`, the door every app act uses — an unrecorded file under source/ is refused, never adopted;
 original); override with `--input`. Output lands in its canonical project location —
 there is no `--out`.
 
@@ -153,7 +153,7 @@ nothing in the log to say so.
 > nothing; it only decides what the **narrator** is handed.
 
 ```bash
-# Prep a project's book — resolved by the same "Latest" ladder --audiobook uses:
+# Prep a project's book — the RECORDED book, through the app's own manifest door (same as --audiobook):
 python cli/bookforge-tts.py --prep --project "/path/to/library/projects/<slug>"
 
 # Prep one file, book or passage:
@@ -183,7 +183,7 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
 `CITATION_CODE`, `WORDS_DROPPED`, `PUNCTUATION_SPOKEN`, `SPANS_MARKUP`, `TOC_MISMATCH`, …).
 
 - `--project <dir>` **or** `--input <file.epub|file.txt>` — one of them, never both.
-  `--project` resolves the book exactly as `--audiobook` does (translated > cleaned >
+  `--project` resolves the book exactly as `--audiobook` does (the manifest's recorded book via `bookForAct`;
   exported > original), which is what makes the later render reuse this copy.
 - `--dry-run` — print the spawn and exit; no model is loaded.
 - An unreachable Ollama or a model that is not pulled is a **non-zero exit** naming the

@@ -567,22 +567,45 @@ test('--prep is a registered command with a handler and an adapter', () => {
   assert.ok(py.includes('NOT --ai-cleanup'), 'and says which cleanup it is not');
 });
 
-test('both --prep and --audiobook resolve a project book through the SAME ladder', () => {
+test('both --prep and --audiobook resolve a project book through the app\'s RECORD, not a filename', async () => {
   for (const adapter of ['narration-prep.js', 'orpheus-audiobook-render.js']) {
     const source = fs.readFileSync(path.join(REPO, 'cli', adapter), 'utf8');
     assert.ok(source.includes("require('./resolve-project-epub.js')"),
-      `${adapter} shares the resolver rather than copying the ladder`);
+      `${adapter} shares the resolver rather than resolving on its own`);
+    assert.ok(!/translated\.epub|cleaned\.epub|exported\.epub|original\.epub/.test(source),
+      `${adapter} names no book file by pattern`);
   }
+  const resolverSource = fs.readFileSync(path.join(REPO, 'cli', 'resolve-project-epub.js'), 'utf8');
+  assert.ok(resolverSource.includes("require('../dist/electron/manifest-service.js')")
+    && resolverSource.includes('bookForAct('),
+    'production asks manifest-service.bookForAct — the door every app act resolves through');
+  // The ladder tested files by EXISTENCE down a candidate list; the record is
+  // asked, never the disk. (The file's own comment may still NAME the strays.)
+  assert.ok(!/existsSync|candidates/.test(resolverSource),
+    'and carries no filename ladder of its own');
+
   const { resolveInputEpub } = require(path.join(REPO, 'cli', 'resolve-project-epub.js'));
-  const projectDir = path.join(ROOT, 'project');
+  const projectDir = path.join(ROOT, 'library', 'projects', 'stray-book');
   fs.mkdirSync(path.join(projectDir, 'source'), { recursive: true });
-  fs.mkdirSync(path.join(projectDir, 'stages', '01-cleanup'), { recursive: true });
-  assert.strictEqual(resolveInputEpub(projectDir), null, 'a project with no book resolves to none');
-  fs.writeFileSync(path.join(projectDir, 'source', 'original.epub'), 'x');
-  assert.ok(resolveInputEpub(projectDir).endsWith(path.join('source', 'original.epub')));
-  fs.writeFileSync(path.join(projectDir, 'stages', '01-cleanup', 'cleaned.epub'), 'x');
-  assert.ok(resolveInputEpub(projectDir).endsWith(path.join('01-cleanup', 'cleaned.epub')),
-    'the newest derivation wins, which is what the app calls "Latest"');
+  // A stray, unrecorded source/exported.epub — the Mac's live finding (2026-09-03):
+  // the old ladder narrated it while the app's record said "no book".
+  fs.writeFileSync(path.join(projectDir, 'source', 'exported.epub'), 'x');
+  const rootsSeen = [];
+  const noRecord = {
+    setLibraryBasePath: (root) => rootsSeen.push(root),
+    bookForAct: async () => null,
+  };
+  await assert.rejects(() => resolveInputEpub(projectDir, noRecord), /records no book/,
+    'no record ⇒ refused by name, whatever sits under source/');
+  assert.deepStrictEqual(rootsSeen, [path.join(ROOT, 'library')],
+    'the library root is stated before the door is opened, two levels above the project');
+  const recorded = {
+    setLibraryBasePath: () => {},
+    bookForAct: async (dir) => ({ absPath: path.join(dir, 'source', 'Book. Author.working.epub') }),
+  };
+  assert.strictEqual(await resolveInputEpub(projectDir, recorded),
+    path.join(projectDir, 'source', 'Book. Author.working.epub'),
+    'a recorded book comes back exactly as the record names it');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

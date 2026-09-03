@@ -51,7 +51,7 @@ async function main() {
     throw new Error('--project and --input both name what to prep; pass one');
   }
 
-  // The project's book is resolved by the SAME ladder --audiobook uses, so
+  // The project's book is resolved by the SAME record --audiobook uses, so
   // prepping a project and then rendering it prep the identical file — which is
   // what makes the second run find the copy this one wrote.
   let inputPath;
@@ -60,11 +60,10 @@ async function main() {
     if (!fs.existsSync(path.join(projectDir, 'manifest.json'))) {
       throw new Error(`not a BookForge project (no manifest.json): ${projectDir}`);
     }
-    inputPath = resolveInputEpub(projectDir);
-    if (!inputPath) {
-      throw new Error(
-        `no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
-    }
+    // The RECORDED book, through manifest-service.bookForAct — the door every
+    // act in the app resolves through. An unrecorded stray under source/ is
+    // refused here exactly as the app would refuse it.
+    inputPath = await resolveInputEpub(projectDir);
     console.log(`[prep] project book: ${inputPath}`);
     // The app keeps its narration cuts under the LIBRARY's scratch (or the
     // Settings override); prep there, or a later app render pays for the

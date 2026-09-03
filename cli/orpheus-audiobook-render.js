@@ -93,13 +93,14 @@ async function main() {
   // a `--prep` wrote (or the app's own run wrote) is found and reused here.
   console.log(`[audiobook] scratch: ${applyE2aScratchDir(libraryRoot)}`);
 
-  // Input EPUB: explicit --input override, else best-available (app "Latest").
-  // Only needed for TTS (STEP 1); --assemble-only runs the existing cache and needs none.
-  const inputPath = args.input ? path.resolve(args.input) : resolveInputEpub(projectDir);
+  // Input EPUB: explicit --input override, else the project's RECORDED book
+  // through the app's own door (manifest-service.bookForAct — see
+  // resolve-project-epub.js). Only needed for TTS (STEP 1); --assemble-only
+  // runs the existing cache and needs none.
+  const inputPath = args.input
+    ? path.resolve(args.input)
+    : (args['assemble-only'] ? null : await resolveInputEpub(projectDir));
   if (!args['assemble-only']) {
-    if (!inputPath) {
-      throw new Error(`no input EPUB in ${projectDir} (looked for translated/cleaned/exported/original)`);
-    }
     if (!fs.existsSync(inputPath)) throw new Error(`input EPUB not found: ${inputPath}`);
   }
 
