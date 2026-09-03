@@ -1548,6 +1548,7 @@ function buildWslBashCommand(config: WslSpawnConfig): string {
                        'ORPHEUS_MAX_CHARS_PER_SEC',
                        'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
                        'ORPHEUS_EOS_BOOST', 'ORPHEUS_EOS_BOOST_START',
+                       'ORPHEUS_EOS_FLOOR', 'ORPHEUS_EOS_FLOOR_RATE',
                        'ORPHEUS_VLLM_DTYPE',
                        // Already a WSL-form path when we spawn through WSL — see startWorker.
                        'ORPHEUS_REJECT_DIR',
@@ -3653,6 +3654,12 @@ export async function regenerateSentenceIndices(
     ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
       ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
       : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR?.trim() || voiceCaps.eosFloor !== undefined)
+      ? { ORPHEUS_EOS_FLOOR: process.env.ORPHEUS_EOS_FLOOR?.trim() || String(voiceCaps.eosFloor) }
+      : {}),
+    ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || voiceCaps.eosFloorRate !== undefined)
+      ? { ORPHEUS_EOS_FLOOR_RATE: process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || String(voiceCaps.eosFloorRate) }
+      : {}),
     ...(settings.ttsEngine === 'orpheus'
       ? Object.fromEntries(
           (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
@@ -4052,6 +4059,14 @@ function startWorker(
           : {}),
         ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
           ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
+          : {}),
+        // EOS minimum-length floor (the boost's mirror, for early stops): same
+        // precedence — explicit env, else the voice's declared value, else nothing.
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR?.trim() || voiceCaps.eosFloor !== undefined)
+          ? { ORPHEUS_EOS_FLOOR: process.env.ORPHEUS_EOS_FLOOR?.trim() || String(voiceCaps.eosFloor) }
+          : {}),
+        ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || voiceCaps.eosFloorRate !== undefined)
+          ? { ORPHEUS_EOS_FLOOR_RATE: process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || String(voiceCaps.eosFloorRate) }
           : {}),
         // Orpheus sampling + engine overrides (CLI --temperature/--top-p;
         // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;

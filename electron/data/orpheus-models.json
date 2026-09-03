@@ -35,9 +35,9 @@
         "ref": "owenmorgan/thirdreich-orpheus-3b-lora"
       },
       "license": "apache-2.0",
-      "addedAt": "2026-09-01",
-      "maxCharsPerSec": 26.5,
-      "maxChars": 470,
+      "addedAt": "2026-09-03",
+      "maxCharsPerSec": 20.5,
+      "maxChars": 540,
       "backends": {
         "vllm": {
           "repPenalty": 1.1,
@@ -63,7 +63,7 @@
       "minChunkGap": 0.55,
       "_minChunkGapNote": "FLOOR on chunk trailing silence, added 2026-07-27 after Owen heard chunk joins colliding in The Mysterious Stranger. With sentenceGap 0.0 the join IS the model own trained tail, and that tail varies: measured over 1151 chunks, median 0.81 s but p10 0.39 s and MIN 0.00 s. An additive gap would have fixed the collisions and stretched the 78%% that were already right; this tops up only the clips below the floor. 0.55 s matches the within-chunk sentence rhythm (0.58 s measured), so a chunk boundary never sounds tighter than a sentence boundary inside one. Cost: ~22%% of chunks lifted by a mean 0.18 s, +45 s over a 4-hour book. Applied at assembly by normalize_gaps.py; RE-MEASURE after a retrain, since tail geometry moves with the corpus.",
       "_promotionNote": "2026-08-28: model replaced by tr_pc1_ep732 (tr_v2_ownbed with internal pauses soft-knee capped; bible 08-28). Book-validated: zero inside-chunk pauses >=2 s, zero guard fires. maxCharsPerSec 21.6->22.0 (corpus p99 19.10 +15%); modelSelfTailS 1.17->1.05 (measured on the WTF render, 0.6 pad subtracted). Local-only promotion; HF/Mac swap pending Owen's book runs.",
-      "_promotion": "2026-09-01 tr_dn2_ep2214 (20 h roformer rebuild, eval-min 3.3762, Owen ear) replaces tr_dn1_ep1260. Caps render-measured (guard = max(corpus,render p99.5) x1.14 = 26.5; maxChars = min p1 x 45.05 s = 470). HF untouched (backup). Local WSL + Mac dirs named thirdreich hold the fused weights."
+      "_promotion": "2026-09-03 tr_dn3_ep1460 (tr_dn2 corpus minus 32 alignment-flagged rows; epoch 2; ladder v2 hard 4/144 vs served ep2214 23/144) replaces tr_dn2_ep2214. Caps corpus-derived (p99.5 x1.14 = 20.5; p1 x 45.05 s = 540). HF untouched (backup)."
     },
     {
       "id": "mistborn",

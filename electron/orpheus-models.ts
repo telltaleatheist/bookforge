@@ -105,6 +105,25 @@ export interface OrpheusVoiceCaps {
   eosBoost?: number;
   /** Overrun threshold as a multiple of expected tokens (→ ORPHEUS_EOS_BOOST_START, e2a default 1.2). */
   eosBoostStart?: number;
+  /**
+   * EOS minimum-length FLOOR as a fraction of the chunk's expected token count
+   * (→ ORPHEUS_EOS_FLOOR). The mirror of eosBoost, for EARLY stops: while a chunk
+   * has generated fewer than eosFloor x (chars / eosFloorRate x 84) audio tokens,
+   * e2a sets the END_OF_SPEECH logit to -inf so a 30-60%-of-the-text truncation
+   * cannot be sampled at all (instead of being caught after the fact by the
+   * maxCharsPerSec guard and re-rendered). Honest fast reads sit at >= 0.75 of
+   * expected, truncations at 0.3-0.6; 0.55 is the measured line between them.
+   * e2a REFUSES a floor tighter than the voice's maxCharsPerSec guard
+   * (eosFloorRate / eosFloor must exceed it). 0/absent = off. vLLM-only: e2a
+   * raises if a floor reaches the MLX backend, so declare it under backends.vllm.
+   */
+  eosFloor?: number;
+  /**
+   * The MEDIAN speech rate the floor's expected length is sized from, in chars/sec
+   * (→ ORPHEUS_EOS_FLOOR_RATE, e2a default 15.0). Set it to the voice's measured
+   * p50 (the catalog's _rateNote) when that is known.
+   */
+  eosFloorRate?: number;
 }
 
 /**
@@ -1215,6 +1234,10 @@ export function orpheusVoiceCapsForModel(model: OrpheusModel): OrpheusVoiceCaps 
   // opts in per backend and an overlay without the keys stays boost-free.
   if (overlay.eosBoost !== undefined) caps.eosBoost = overlay.eosBoost;
   if (overlay.eosBoostStart !== undefined) caps.eosBoostStart = overlay.eosBoostStart;
+  // The EOS floor is per-backend for the same reason (and today vLLM-only: e2a
+  // refuses a floor on MLX rather than silently rendering without it).
+  if (overlay.eosFloor !== undefined) caps.eosFloor = overlay.eosFloor;
+  if (overlay.eosFloorRate !== undefined) caps.eosFloorRate = overlay.eosFloorRate;
   return caps;
 }
 
