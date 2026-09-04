@@ -516,6 +516,72 @@ test('the cardinal is the unhyphenated corpus form, and stops where e2a stops', 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── the citation lead, and the words that only look like one ────────────────
+//
+// The LIVE model run of 2026-09-04 read "iii. 1281-2" as a quantity — "one
+// thousand two hundred eighty-one to two" — a volume, a page and a range all
+// misread at once. Owen's ruling: a roman numeral and a period in front of a
+// number is a citation lead, and an abbreviated page range behind a page lead is
+// apparatus. Both stay as printed.
+
+const cited = (text, find) => rules.sitsInCitation(text, find, text.indexOf(find));
+
+test('a roman citation lead makes the number after it apparatus', () => {
+  assert.ok(cited('iii. 1281-2 is the passage.', 'iii. 1281-2'));
+  assert.ok(cited('He cites iii. 1281-2 there.', '1281-2'));
+  assert.ok(cited('The note reads II. 45 exactly.', 'II. 45'));
+  assert.ok(cited('See pp. 51-2 for this.', '51-2'));
+  assert.ok(cited('At fol. 128-9 in the file.', '128-9'));
+});
+
+test('an English word spelled from IVXLCDM is NOT a citation lead', () => {
+  // A loose [ivxlcdm]+ also spells ordinary English, and every one of these
+  // would have had its number refused as apparatus.
+  assert.ok(!cited('he did. 45 men remained', '45'));
+  assert.ok(!cited('it was mild. 12 degrees', '12'));
+  assert.ok(!cited('the civil. 90 percent agreed', '90'));
+  reads('he did. 45 men remained', 'he did. forty five men remained');
+});
+
+test('a bare prose range keeps the number prompt reading', () => {
+  // The shipped prompt teaches an abbreviated range read in full, so only an
+  // APPARATUS range is claimed here; `test-prompt-examples` holds the other end.
+  assert.ok(!cited('A 112-14 spread ran in prose.', '112-14'));
+  assert.ok(!cited('the 128-9 range of values', '128-9'));
+  assert.ok(!cited('over 1935-36 the party grew', '1935-36'), 'a year range belongs to the model');
+});
+
+test('an abbreviated page range is left whole, not read literally', () => {
+  // Until 2026-09-04 the page rule read "pp. 51-2" as "pages fifty one to two".
+  untouched('See pp. 51-2 for this.');
+  reads('See pp. 51-53 for this.', 'See pages fifty one to fifty three for this.');
+});
+
+test('a day-first date with no year reads the American spoken way', () => {
+  reads('He wrote his last report, which was on 4 September.',
+    'He wrote his last report, which was on September fourth.');
+  reads('The order of 23 March was clear.',
+    'The order of March twenty-third was clear.');
+  // The abbreviation's period is the abbreviation's, unless a sentence follows.
+  reads('it was on 4 Sept. and later', 'it was on September fourth and later');
+  reads('It was 4 Sept. The next day it rained.',
+    'It was September fourth. The next day it rained.');
+});
+
+test('the yearless rule does not touch a date that HAS a year', () => {
+  reads('On 4 September 1939 the war began.',
+    'On September fourth, nineteen thirty-nine the war began.');
+  assert.deepStrictEqual(claims('On 4 September 1939 the war began.'),
+    [['date', '4 September 1939']], 'one claim, by the with-year rule');
+});
+
+test('a lead word keeps the digit a numbered thing, not a day', () => {
+  reads('Chapter 4 September opens the file.',
+    'Chapter four September opens the file.');
+  reads('Part 4 September follows.', 'Part four September follows.');
+  reads('see p. 4 September there', 'see page four September there');
+});
+
 (async () => {
   for (const { name, fn } of tests) {
     try {

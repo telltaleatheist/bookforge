@@ -196,6 +196,62 @@ function isArchiveSigil(token: string): boolean {
  */
 const PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
 
+/**
+ * A roman numeral and a period, immediately in front of a number.
+ *
+ * Lower case as well as upper: a citation prints "iii. 1281-2" far more often
+ * than "III. 1281-2", and `ROMAN_TOKEN` is upper-case only because it exists to
+ * recognise "Document II" without refusing the pronoun "I".
+ *
+ * THE NUMERAL GRAMMAR IS STRICT — thousands, then hundreds, then tens, then
+ * units — because a loose [ivxlcdm]+ also spells ordinary English. "he did. 45
+ * men", "it was mild. 12 degrees" and "the civil. 90 percent" all matched the
+ * loose form and would have had their numbers refused as apparatus.
+ */
+const ROMAN_CITATION_LEAD =
+  /(?:^|[\s(\[])(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})\.\s*(?=\d)/i;
+
+/**
+ * The words that make the numbers after them PAGES.
+ *
+ * Roman numerals are deliberately absent: `ROMAN_CITATION_LEAD` already claims
+ * "iii. 1281-2", and putting [ivxlcdm] in a lead list would also claim the
+ * ordinary words made only of those letters — "mild", "civil", "did".
+ */
+const PAGE_RANGE_LEAD = /(?:\bpp?|\bpages?|\bnos?|\bfols?|\bff|\blines?|\bll)\.?\s*$/i;
+
+/**
+ * An abbreviated page range BEHIND A PAGE LEAD: "pp. 51-2", "fol. 128-9".
+ *
+ * The second number is shorter than the first because it drops the shared
+ * leading digits, so "51-2" is pages fifty-one to fifty-two, not fifty-one to
+ * two — and the LIVE model run of 2026-09-04 made exactly that misread on
+ * "iii. 1281-2".
+ *
+ * THE PAGE LEAD IS REQUIRED, and that is a narrowing of Owen's ruling made
+ * because the wider form contradicts the shipped number prompt, which teaches
+ * '"112–14" is "one hundred twelve to one hundred fourteen"' — the keeper
+ * `test-prompt-examples` refused the wider form on exactly that line. A bare
+ * prose range keeps the prompt's reading, which is the correct one; an
+ * apparatus range is left as printed. A YEAR range abbreviates identically
+ * ("1935-36") and reads differently again, so a first number that could be a
+ * year is never claimed here — that judgement is the model's, and the live run
+ * measured it making it correctly.
+ */
+function isAbbreviatedPageRange(target: string, find: string, at: number): boolean {
+  const before = target.slice(0, at);
+  for (const m of find.matchAll(/(\d{2,})\s*[\u2010-\u2015\u002D]\s*(\d+)/g)) {
+    const first = m[1]!;
+    const second = m[2]!;
+    const value = Number(first);
+    if (value >= 1100 && value <= 2099) continue;  // a year range is the model's
+    if (second.length >= first.length) continue;
+    if (!PAGE_RANGE_LEAD.test(before + find.slice(0, m.index))) continue;
+    return true;
+  }
+  return false;
+}
+
 /** Strip the punctuation a word wears at a sentence edge, for word comparison. */
 export function bareWord(token: string): string {
   return token.replace(/^[^A-Za-zÀ-ÿ0-9]+|[^A-Za-zÀ-ÿ0-9]+$/g, '');
@@ -221,6 +277,11 @@ export function bareWord(token: string): string {
  *     the other half of it.
  *  5. AN ARCHIVE SIGIL immediately before a bare integer — "HSG 11" — see
  *     `isArchiveSigil`.
+ *  6. A ROMAN NUMERAL AND A PERIOD in front of a number — "iii. 1281-2" — a
+ *     volume or a part, and the number after it a page.
+ *  7. AN ABBREVIATED PAGE RANGE BEHIND A PAGE LEAD — "pp. 51-2" — where the
+ *     second number is shorter than the first. A bare prose range keeps the
+ *     number prompt's reading, and a year range is left to the model.
  *
 
  * It lives in this file rather than beside the validator because BOTH halves of
@@ -230,6 +291,18 @@ export function bareWord(token: string): string {
  */
 export function sitsInCitation(target: string, find: string, at: number): boolean {
   if (/\d\s*\/\s*\d/.test(find)) return true;
+  // 6. A ROMAN NUMERAL AND A PERIOD immediately before a number — "iii. 1281-2",
+  //    "II. 45". That is a volume or a part and the number after it is a page,
+  //    and the LIVE model run of 2026-09-04 read one as a quantity: "iii. 1281-2"
+  //    shipped as "iii. one thousand two hundred eighty-one to two". Checked
+  //    INSIDE the span as well as before it, because the model sends the lead
+  //    and the number together.
+  if (ROMAN_CITATION_LEAD.test(find)) return true;
+  if (ROMAN_CITATION_LEAD.test(target.slice(0, at) + find.slice(0, 1))) return true;
+  // 7. AN ABBREVIATED PAGE RANGE BEHIND A PAGE LEAD — "pp. 51-2", "fol. 128-9":
+  //    the second number is shorter than the first because it drops the shared
+  //    leading digits, which is the page-range convention.
+  if (isAbbreviatedPageRange(target, find, at)) return true;
   const before = target.slice(0, at);
   const after = target.slice(at + find.length);
   if (/\d\s*$/.test(before) && /^\s*\//.test(after)) return true;
@@ -670,6 +743,51 @@ const DATE_DAY_FIRST = new RegExp(
   `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)`
   + ',?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])', 'g');
 
+/**
+ * "4 September" — a day-first date with NO YEAR.
+ *
+ * `DATE_DAY_FIRST` requires one, so a yearless day-first date fell through to
+ * the bare-integer rule and read "four September". The LIVE model run of
+ * 2026-09-04 measured it in Kershaw: "…his last detailed report, which was on 4
+ * September." shipped as "on four September", and the model's own correct repair
+ * ("September fourth") was refused because a mangled date is not one of the
+ * classes a reading may be about. Owen's ruling: read it the American spoken
+ * way, which is the with-year rule minus the year.
+ *
+ * THE PERIOD IS THE ABBREVIATION'S, OR THE SENTENCE'S, AND THEY ARE DIFFERENT.
+ * "on 4 September." is a full month and a sentence ending; "on 4 Sept. and
+ * later" is an abbreviation mid-sentence; "on 4 Sept. The next day" is both. So
+ * the period is only swallowed when the month is ABBREVIATED, and even then it
+ * is written back when what follows could be a new sentence — the same rule the
+ * reading law applies to "Oxford St. The rain".
+ *
+ * The year lookahead is what keeps this off "4 September 1939", which the
+ * with-year rule reads; the lead guard is what keeps it off "Chapter 4
+ * September" and "p. 4 September", where the digit is not a day.
+ */
+const DATE_DAY_FIRST_NO_YEAR = new RegExp(
+  `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])`
+  + '(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))', 'g');
+
+/**
+ * Could a period here be the end of a SENTENCE?
+ *
+ * Nothing after it, or a capital, a quote or a bracket. Written out rather than
+ * imported because this module is a leaf the training side vendors on its own.
+ */
+function periodCouldEndSentence(after: string): boolean {
+  const next = after.replace(/^[\s\u00a0]+/, '');
+  return next === '' || /^["'\u201c\u2018([]/.test(next) || /^[A-Z\u00c0-\u00de]/.test(next);
+}
+
+/**
+ * The words that make the number after them a NUMBERED THING and not a day.
+ *
+ * "Chapter 4 September" is a chapter and a month, not the fourth of September.
+ */
+const DATE_LEAD_BLOCK =
+  /(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
+
 /** "June 12, 1933", "June 12th", "Dec. 19, 1991" — and "December 19" alone. */
 const DATE_MONTH_FIRST = new RegExp(
   `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?`
@@ -698,6 +816,24 @@ function dateCandidates(text: string): Candidate[] {
     const spoken = dateWords(month, Number(m[3]), m[4]);
     if (spoken === null) continue;
     out.push({ at: m.index, find: m[0], replace: spoken, rule: 'date' });
+  }
+  // LAST, so a with-year match at the same offset is the one that wins: the
+  // engine takes candidates left to right and closes what it takes.
+  for (const m of matches(DATE_DAY_FIRST_NO_YEAR, text)) {
+    const month = monthName(m[2]);
+    if (month === null) continue;
+    if (DATE_LEAD_BLOCK.test(text.slice(0, m.index))) continue;
+    const spoken = dateWords(month, Number(m[1]), undefined);
+    if (spoken === null) continue;
+    // The period goes with the month only when the month is ABBREVIATED. After a
+    // full name it is the sentence's and stays exactly where the book put it.
+    const abbreviated = m[2].toLowerCase() !== month.toLowerCase();
+    const period = m[3] === '.' && abbreviated;
+    const find = period ? m[0] : m[0].slice(0, m[0].length - m[3].length);
+    if (sitsInCitation(text, find, m.index)) continue;
+    const after = text.slice(m.index + find.length);
+    const replace = period && periodCouldEndSentence(after) ? `${spoken}.` : spoken;
+    out.push({ at: m.index, find, replace, rule: 'date' });
   }
   return out;
 }
@@ -857,6 +993,12 @@ function pageCandidates(text: string): Candidate[] {
     const [whole, abbrev, first, second] = m;
     if (first.length > 1 && first.startsWith('0')) continue;
     if (second !== undefined && second.length > 1 && second.startsWith('0')) continue;
+    // AN ABBREVIATED RANGE IS LEFT. "pp. 51-2" drops the shared leading digit and
+    // means pages fifty-one to fifty-two; read literally it becomes "pages fifty
+    // one to two", which is what this rule shipped until 2026-09-04. Owen's ruling
+    // is that the shape is apparatus and stays as printed, so the span is left
+    // whole here and `sitsInCitation` clause 7 keeps the model off it as well.
+    if (second !== undefined && second.length < first.length) continue;
     const firstWords = cardinalWords(Number(first));
     if (firstWords === null) continue;
     let spoken = abbrev.toLowerCase() === 'pp' ? 'pages' : 'page';

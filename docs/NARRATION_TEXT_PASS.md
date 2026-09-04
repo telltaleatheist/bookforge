@@ -626,6 +626,71 @@ The range now admits its own chapter: *"three nineteen through four one"*. The
 keeper scans a generated matrix of every reference shape these rules claim and
 asserts no digit-adjacent colon survives.
 
+## What the 2026-09-04 live run settled
+
+The first run against a real model (`qwen3.8:27b-24g`, Kershaw, 68 blocks, 120 s,
+36 edits, 0 parse failures) is the evidence behind the three rulings below.
+
+### All-caps initialisms are LEFT AS PRINTED
+
+The model left every all-caps initialism in the book alone — `SA`, `SS` and the
+rest came back exactly as printed, not as "ess ay" or "Sturmabteilung". **That is
+not a defect and it is not to be "fixed".** The Orpheus training corpora carry
+initialisms as printed, so leaving them is the reading that matches the
+fine-tunes; a pass that expanded them would be feeding the voice a shape it was
+never trained on.
+
+The rule of record: **an all-caps initialism stays as printed unless the model
+judges a spoken expansion necessary.** The judgement is the model's, per block,
+and the validator's job is only to keep whatever it decides to a single token
+(`capsReadingRefusal`). Nothing deterministic touches these.
+
+### A day-first date with no year reads the American spoken way
+
+`DATE_DAY_FIRST` required a year, so `"…his last detailed report, which was on 4
+September."` fell through to the bare-integer rule and shipped as **"on four
+September"**. The model's own correct repair — "September fourth" — was then
+refused, because a mangled date is not one of the classes a reading may be about.
+
+`DATE_DAY_FIRST_NO_YEAR` closes it: the with-year rule minus the year, both
+orders (`4 September` and `September 4`). Two guards keep it honest — a lookahead
+for a following year, so `4 September 1939` stays the with-year rule's; and
+`DATE_LEAD_BLOCK`, so `Chapter 4 September` and `p. 4 September` keep the digit a
+numbered thing.
+
+The month abbreviation's period is the subtle half. `"4 Sept. and later"` is an
+abbreviation mid-sentence and reads *"September fourth and later"*; `"4 Sept. The
+next day"` is both an abbreviation and a sentence end and reads *"September
+fourth. The next day"*. So the period is swallowed only when the month is
+**abbreviated**, and written back when what follows could start a sentence. After
+a full month name the period is never touched.
+
+### A citation lead and an abbreviated page range are apparatus
+
+The run read `iii. 1281-2` as **"one thousand two hundred eighty-one to two"** —
+a volume, a page and a range misread at once. Two shapes now sit in
+`sitsInCitation`, which stops the deterministic rules and the model alike:
+
+- **A roman numeral and a period in front of a number** (`iii. 1281-2`, `II. 45`).
+  The numeral grammar is **strict** — thousands, hundreds, tens, units — because a
+  loose `[ivxlcdm]+` also spells ordinary English: `he did. 45 men`, `it was mild.
+  12 degrees` and `the civil. 90 percent` all matched the loose form and would
+  have had their numbers refused as apparatus.
+- **An abbreviated page range behind a page lead** (`pp. 51-2`, `fol. 128-9`),
+  where the second number is shorter than the first because it drops the shared
+  leading digits. The page rule itself used to read `pp. 51-2` as *"pages fifty
+  one to two"*; it now leaves the span whole.
+
+**The page lead is required, and that is a deliberate narrowing of the ruling.**
+The wider form — any abbreviated range — contradicts the shipped number prompt,
+which teaches `"112–14" is "one hundred twelve to one hundred fourteen"`, and
+`test-prompt-examples` refused it on exactly that line. So a **prose** range keeps
+the prompt's reading, which is the correct one, and only an **apparatus** range is
+left as printed. A year range (`1935-36`) abbreviates identically and reads
+differently again, so it is never claimed here — that judgement is the model's,
+and the live run measured it making it correctly.
+
+---
 ---
 
 ## Files

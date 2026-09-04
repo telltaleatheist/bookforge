@@ -781,5 +781,92 @@
     "in": "a V-2 rocket",
     "want": "a V-two rocket",
     "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "date-day-first-no-year-kershaw",
+    "stage": "rules",
+    "rule": "date",
+    "in": "He wrote his last detailed report, which was on 4 September.",
+    "want": "He wrote his last detailed report, which was on September fourth."
+  },
+  {
+    "id": "date-day-first-no-year",
+    "stage": "rules",
+    "rule": "date",
+    "in": "The order of 23 March was clear.",
+    "want": "The order of March twenty-third was clear."
+  },
+  {
+    "id": "date-day-first-no-year-abbrev",
+    "stage": "rules",
+    "rule": "date",
+    "in": "it was on 4 Sept. and later",
+    "want": "it was on September fourth and later"
+  },
+  {
+    "id": "date-day-first-no-year-abbrev-sentence-end",
+    "stage": "rules",
+    "rule": "date",
+    "in": "It was 4 Sept. The next day it rained.",
+    "want": "It was September fourth. The next day it rained."
+  },
+  {
+    "id": "date-month-first-no-year-day",
+    "stage": "rules",
+    "rule": "date",
+    "in": "The meeting was September 4 in Berlin.",
+    "want": "The meeting was September fourth in Berlin."
+  },
+  {
+    "id": "date-day-first-with-year-not-double-handled",
+    "stage": "rules",
+    "rule": "date",
+    "in": "On 4 September 1939 the war began.",
+    "want": "On September fourth, nineteen thirty-nine the war began."
+  },
+  {
+    "id": "date-lead-keeps-a-numbered-thing",
+    "stage": "rules",
+    "rule": "date",
+    "in": "Chapter 4 September opens the file.",
+    "want": "Chapter four September opens the file."
+  },
+  {
+    "id": "date-page-lead-keeps-a-page",
+    "stage": "rules",
+    "rule": "page",
+    "in": "see p. 4 September there",
+    "want": "see page four September there"
+  },
+  {
+    "id": "leave-roman-citation-lead-range",
+    "stage": "model",
+    "rule": "citation",
+    "in": "iii. 1281-2 is the passage cited."
+  },
+  {
+    "id": "leave-roman-citation-lead-mid-sentence",
+    "stage": "model",
+    "rule": "citation",
+    "in": "He cites iii. 1281-2 there."
+  },
+  {
+    "id": "leave-roman-citation-lead-upper",
+    "stage": "model",
+    "rule": "citation",
+    "in": "The note reads II. 45 exactly."
+  },
+  {
+    "id": "leave-abbreviated-page-range",
+    "stage": "model",
+    "rule": "citation",
+    "in": "See pp. 51-2 for this."
+  },
+  {
+    "id": "roman-lead-does-not-claim-an-english-word",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "he did. 45 men remained",
+    "want": "he did. forty five men remained"
   }
 ]
