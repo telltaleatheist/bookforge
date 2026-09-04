@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "narrator"
+version = "0.1.0"
+description = "BookForge's audiobook render pipeline: manifest, render sessions, assembly."
+requires-python = ">=3.11"
+
+# Pinned to what the two hand-built Orpheus envs ALREADY have, not to what pip
+# would prefer (WSL orpheus_tts: numpy 1.26.4; the e2a python_env used for tests:
+# numpy 1.26.4 / soundfile 0.13.1). Resolving numpy upward would drag torch and
+# vLLM with it and break CUDA-graph capture, which is the whole reason those envs
+# are pinned by hand. See docs/NARRATOR_PLAN.md "Risks".
+#
+# numpy, soundfile and mutagen are the ONLY runtime dependencies outside
+# engine/: the manifest, the FLAC header reader and the assembler are otherwise
+# stdlib + subprocess ffmpeg. soundfile is used by the tests to synthesise real
+# FLACs, and by nothing in manifest/render/assemble at import time.
+#
+# mutagen is REQUIRED, not a convenience: it is the only way to have both the
+# m4b's freeform tags and its cover art. ffmpeg's mov muxer will not write a
+# `covr` atom while `-movflags +use_metadata_tags` is set (measured, ffmpeg 7.x),
+# and that flag is what carries the `year` and `language` tags the golden
+# references all have. So the cover is attached in a second pass exactly as
+# ebook2audiobook does it (lib/core.py:4384-4391, MP4/MP4Cover). It is already
+# present in both Orpheus envs because e2a imports it for the same reason.
+dependencies = [
+    "numpy==1.26.4",
+    "soundfile>=0.12",
+    "mutagen>=1.45",
+]
+
+[project.optional-dependencies]
+# The GPU engine's pins live here so `pip install -e python/` stays torch-free on
+# a machine that only assembles. Populated when engine/ lands (migration step 2).
+engine = []
+
+[project.scripts]
+narrator = "narrator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["narrator*"]
+
+[tool.setuptools.package-data]
+narrator = ["**/*.md"]
