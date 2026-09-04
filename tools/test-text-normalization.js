@@ -104,6 +104,34 @@ test('every stage the shared file declares is actually exercised', () => {
 // Idempotence — the property that makes re-running the pass safe
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * THE ELEVEN PUNCTUATION CASES, BYTE FOR BYTE — the cross-check nothing else does.
+ *
+ * `run_fixtures.js --compare` on the training side compares the NUMBER cases
+ * only: it skips every case tagged `punct`, by design, because that harness
+ * exists to prove two number implementations byte-identical. So the branch's
+ * central claim — that `electron/tts-punctuation.ts` is the shared spec s1 —
+ * has no cross-check over there at all, and this is it over here: the shared
+ * fixture file's own `punct` cases, through the COMPILED module, required equal
+ * to `want` character for character.
+ *
+ * Asked for by the fourth adversarial review, 2026-09-04.
+ */
+test('the shared PUNCT cases are byte-identical through the compiled module', () => {
+  const punctCases = CASES.filter((c) => c.stage === 'punct');
+  assert.strictEqual(punctCases.length, 11,
+    `${punctCases.length} punct cases — the shared file states eleven`);
+  for (const c of punctCases) {
+    const got = punct.canonicalizePunctuation(c.in).text;
+    assert.strictEqual(got, c.want,
+      `${c.id}: ${JSON.stringify(c.in)} -> ${JSON.stringify(got)}, want ${JSON.stringify(c.want)}`);
+    // And byte for byte, not merely equal-looking: the ellipsis and the quote
+    // rules are about exact characters.
+    assert.deepStrictEqual(
+      [...Buffer.from(got, 'utf8')], [...Buffer.from(c.want, 'utf8')], c.id);
+  }
+});
+
 console.log('\n── idempotence ──');
 
 test('the punctuation stage is idempotent over every case', () => {

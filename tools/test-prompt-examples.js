@@ -133,5 +133,93 @@ for (const example of ALL) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The prompt's own PROSE, not only its worked examples
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Every `"X" is "Y"` / `"X" becomes "Y"` pair the prompt states in prose.
+ *
+ * The fourth adversarial review found two defects that slipped past the
+ * worked-example keeper because they were taught in a SENTENCE rather than
+ * demonstrated in an `<answer>`: the prompt's own
+ * `"Oxford St. The rain" becomes "Oxford Street. The rain"` was refused in that
+ * exact form, and `"&" is "and"` had no class at all. A prompt that teaches a
+ * reading the wall refuses is a class of the pass that cannot work, whether the
+ * teaching is a demonstration or a claim.
+ */
+function quotedPairsIn(file) {
+  const text = fs.readFileSync(path.join(REPO, file), 'utf8');
+  const out = [];
+  const re = /"([^"\n]+)"\s+(?:is|becomes)\s+"([^"\n]+)"/g;
+  let m;
+  while ((m = re.exec(text)) !== null) out.push({ file, find: m[1], replace: m[2] });
+  return out;
+}
+
+/**
+ * The block a quoted pair is judged in.
+ *
+ * A pair that shows a SPAN (it has a space in it) carries its own context and is
+ * judged exactly as written — that is the whole point of the sentence-period
+ * case. A bare token is a dictionary gloss with no context at all, so it is set
+ * in a neutral frame rather than being asked to stand alone: on its own, "Dr."
+ * looks like the end of a sentence.
+ */
+function frameFor(find) {
+  if (/\s/.test(find)) return find;
+  // A bare token whose table entry demands a CONTEXT gets one: the gloss states
+  // the reading, and asking whether the reading is reachable at all means giving
+  // it the sentence the table says it needs, not a frame the keeper happened to
+  // pick. ("St." alone is refused, correctly, for having no name beside it.)
+  const forms = require(path.join(DIST, 'electron', 'tts-spoken-forms.js'));
+  const entry = forms.ABBREVIATION_READINGS.get(forms.abbreviationKey(find));
+  switch (entry === undefined ? undefined : entry.context) {
+    case 'beside-a-proper-noun': return `in ${find} Petersburg it was there`;
+    case 'numbers-a-thing':
+    case 'followed-by-digit': return `the file ${find} 5 was there`;
+    case 'after-a-number': return `at two ${find} it was there`;
+    default: return `the ${find} was there`;
+  }
+}
+
+/**
+ * Pairs the prompt states but that are NOT single anchored edits.
+ *
+ * Named individually, with the reason, because "skip what does not pass" is how
+ * a keeper stops being one.
+ */
+const NOT_AN_EDIT = new Map([
+  // The deterministic clock rule converts this before the model ever sees it;
+  // the prompt states the reading so the model knows it if one slips through.
+  ['10:05', 'the clock rule converts it, so the model is never shown this shape'],
+  ['7:02', 'the same'],
+  ['6:00', 'the same'],
+  ['2:00 p.m.', 'the same'],
+]);
+
+console.log('\n── every reading the prompt states in prose ──');
+
+const PAIRS = PROMPTS.flatMap(quotedPairsIn);
+
+test('the prompt states readings, and states enough of them', () => {
+  assert.ok(PAIRS.length >= 8, `${PAIRS.length} quoted pairs across the prompts`);
+});
+
+for (const pair of PAIRS) {
+  const skip = NOT_AN_EDIT.get(pair.find);
+  test(`${path.basename(pair.file)} — "${pair.find}" is "${pair.replace}"`
+    + (skip === undefined ? '' : ' (stated, not an edit)'), () => {
+    if (skip !== undefined) return;
+    const target = frameFor(pair.find);
+    const { records } = norm.validateNumberEdits(
+      target, [target.length], [{ find: pair.find, replace: pair.replace }], [],
+      norm.EVERY_CLASS);
+    assert.strictEqual(records[0].status, 'APPLIED',
+      `the prompt teaches this reading and the validator answers ${records[0].status}`
+      + `${records[0].detail ? ` — ${records[0].detail}` : ''}`);
+  });
+}
+
 console.log(`\n${passed}/${passed + failures.length} passed`);
 process.exit(failures.length === 0 ? 0 : 1);

@@ -75,7 +75,8 @@ import {
 import { ordinalToWords } from './number-expansion.js';
 import {
   ABBREVIATION_READINGS, abbreviationContextRefusal, abbreviationKey, bracketRemovalRefusal,
-  capsReadingRefusal, isRomanContext, romanReadingRefusal, romanValue,
+  capsReadingRefusal, isEmphasisWord, isRomanContext, prefixesAName, romanReadingRefusal,
+  romanValue,
 } from './tts-spoken-forms.js';
 import type { ReadingRefusal } from './tts-spoken-forms.js';
 import type { NumberRuleOutcome } from './tts-number-rules.js';
@@ -238,6 +239,8 @@ export type NumberEditClass =
   | 'bracketed'
   /** A hyphen used as a dash, with spaces around it. */
   | 'spaced-hyphen'
+  /** An ampersand, which a narrator says as the word. */
+  | 'ampersand'
   /** A roman numeral naming a person or a part. */
   | 'roman'
   /** Anything else. The class the receipt watches hardest. */
@@ -275,6 +278,7 @@ export function classifyEdit(find: string): NumberEditClass {
   if (DIGIT.test(find)) return 'number';
   if (/[()[\]]/.test(find)) return 'bracketed';
   if (ROMAN_WORD.test(find)) return 'roman';
+  if (find.includes('&')) return 'ampersand';
   if (/\s-\s/.test(find)) return 'spaced-hyphen';
   // ANCHORED TO A WHOLE TOKEN. Unanchored, this matched any span containing a
   // word followed by a period — so "He did not believe it." classified as an
@@ -618,6 +622,19 @@ function couldEndSentence(after: string): boolean {
   return next === '' || /^["'“‘([]/.test(next) || /^[A-ZÀ-Þ]/.test(next);
 }
 
+/**
+ * An ampersand read as the word it stands for, and nothing else.
+ *
+ * The prompt has always taught `"&" is "and"` and `classifyEdit` had no class for
+ * it, so every such edit was refused NOT_A_CLASS — the same
+ * prompt-teaches-what-the-wall-refuses drift the second review found, missed
+ * because the keeper ran only the WORKED examples and not the prompt's own
+ * quoted pairs (the fourth adversarial review, 2026-09-04).
+ */
+function ampersandToAnd(text: string): string {
+  return text.replace(/&/g, 'and');
+}
+
 /** A spaced hyphen read as the em dash it stands in for, and nothing else. */
 function hyphenToDash(text: string): string {
   return text.includes(' - ') || /[ \t]-[ \t]/.test(text)
@@ -637,10 +654,15 @@ function droppedBrackets(text: string): string {
 
 /** Is this pair of tokens the same word, differing only in case? */
 function isEmphasisRecase(pair: { was: string; now: string }): boolean {
-  // Only a run of capitals is read in ordinary case, and the reading is EXACTLY
-  // lower case: "SAID" -> "said". "the" -> "The" is not a reading of anything.
+  // Only a run of capitals is read in ordinary case, the reading is EXACTLY
+  // lower case, and the run has to be a WORD rather than an initialism — the
+  // same test `capsReadingRefusal` applies, because this path reaches the book
+  // without going through it and "The US Army" -> "The us Army" did (the fourth
+  // adversarial review, 2026-09-04).
   const bare = pair.was.replace(/[^A-Za-zÀ-ÿ]/g, '');
-  return /^[A-ZÀ-Þ]{2,}$/.test(bare) && pair.now === pair.was.toLowerCase();
+  if (!/^[A-ZÀ-Þ]{2,}$/.test(bare)) return false;
+  if (pair.now !== pair.was.toLowerCase()) return false;
+  return isEmphasisWord(bare);
 }
 
 /**
@@ -1196,6 +1218,30 @@ export function validateNumberEdits(
     // (the third review, 2026-09-04). Here the replacement must be the find
     // with its spaced hyphens turned into em dashes and NOTHING else changed,
     // so any digit it carries is provably the find's own.
+    if (find.includes('&') && ampersandToAnd(find) === replace) {
+      if (sitsInCitation(target, find, at)) {
+        reject(find, replace, 'CITATION_CODE');
+        continue;
+      }
+      const ampEnd = at + find.length;
+      if (!withinOneNode(at, ampEnd)) { reject(find, replace, 'SPANS_MARKUP'); continue; }
+      if (reserved.some((r) => at < r.end && r.at < ampEnd)
+        || accepted.some((a) => at < a.at + a.find.length && a.at < ampEnd)) {
+        reject(find, replace, 'OVERLAPS_APPLIED');
+        continue;
+      }
+      const ampSpends = Math.max(find.length, replace.length);
+      if (textBudgetSpent + ampSpends > textBudget) {
+        reject(find, replace, 'BLOCK_BUDGET',
+          `the readings accepted so far already replace ${textBudgetSpent} of this block's `
+          + `${target.length} characters`);
+        continue;
+      }
+      textBudgetSpent += ampSpends;
+      accepted.push({ find, replace, at });
+      records.push({ find, replace, status: 'APPLIED', editClass: 'ampersand' });
+      continue;
+    }
     if (hyphenToDash(find) === replace) {
       if (sitsInCitation(target, find, at)) {
         reject(find, replace, 'CITATION_CODE');
@@ -1376,19 +1422,31 @@ export function validateNumberEdits(
           // WHERE the token sits in the BLOCK, so the context rules and the
           // sentence rule read the book rather than the span the model chose.
           const spanAt = tokenOffsetIn(find, aligned.droppedIndex);
+
           const tokenAt = at + spanAt;
           const before = target.slice(0, tokenAt);
           const after = target.slice(tokenAt + changed.length);
-          const spanFinal = spanAt + changed.length >= find.trimEnd().length;
 
-          // A SPAN-FINAL ABBREVIATION WHOSE PERIOD MAY END THE SENTENCE keeps
-          // it. "Oxford St. The rain" -> "Oxford Street The rain" fused two
-          // sentences in the user's own book (the third review, 2026-09-04).
-          sentencePeriod = spanFinal && changed.endsWith('.') && couldEndSentence(after);
-          if (sentencePeriod && !replace.trimEnd().endsWith('.')) {
+          // ── AN ABBREVIATION WHOSE PERIOD MAY END THE SENTENCE keeps it ────
+          //
+          // Asked of the BLOCK, at the token, wherever the token sits in the
+          // find. It used to be asked of the find — "is this token the last
+          // thing in the span?" — and the prompt tells the model to extend a
+          // find until it is unique, so the moment it did the guard switched
+          // off: "Oxford St. The" -> "Oxford Street The" was APPLIED and fused
+          // two sentences, while the CORRECT "Oxford Street. The" was refused
+          // for carrying a period the accounting had stripped (the fourth
+          // adversarial review, 2026-09-04).
+          //
+          // What follows the TOKEN in the block is the only evidence there is,
+          // and it does not change when the model widens its find.
+          sentencePeriod = changed.endsWith('.') && couldEndSentence(after)
+            && !prefixesAName(changed, before, after);
+          const readingLast = aligned.reading[aligned.reading.length - 1];
+          if (sentencePeriod && (readingLast === undefined || !readingLast.endsWith('.'))) {
             reject(find, replace, 'NOT_A_READING',
-              `"${changed}" ends this span and the block goes on with a capital, so its period `
-              + 'may be the end of the sentence — the reading has to keep it');
+              `the block goes on after "${changed}" with a capital, so its period may be the end `
+              + 'of the sentence — the reading has to keep it');
             continue;
           }
           const notAReading = readingRefusal(changed, aligned.reading, before, after);

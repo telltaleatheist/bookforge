@@ -347,6 +347,92 @@ test('a chained narration reads the copy the PASS named, through the real queue'
   await queueEngine.pause();
 });
 /**
+ * A FOLLOW-ON'S OWN `sourceRef` IS IGNORED, and that is the design.
+ *
+ * `buildNarrationSteps` sets `sourceRef: {kind:'epub', path}` on the tts step and
+ * `processing:submit-chain` spreads the spec before adding `parentIndex`, so a
+ * chained step carries BOTH. The engine resolves a step with a parent from that
+ * parent's artifact and consults `sourceRef` only when the parent is SOURCE
+ * (`StepRunContext.input`), so the parent wins — which is exactly why the pass
+ * has to NAME the file a narration reads and why patching the request was inert.
+ *
+ * Asserted rather than assumed, because the whole of Finding 4 turns on it.
+ */
+test('a follow-on carrying a STALE sourceRef still reads the pass\'s artifact', async () => {
+  const book = await manifestService.ensureBookEpub(dir, second.id);
+  const plan = await processingChain.planProcessingChain({
+    projectDir: dir,
+    sourcePath: book.absPath,
+    passes: [{ kind: 'narration-text' }],
+  });
+
+  const narrated = [];
+  queueEngine.clearStepModules();
+  queueEngine.registerStepModule(narrationTextStep);
+  queueEngine.registerStepModule({
+    type: 'tts-conversion',
+    consumes: 'epub',
+    produces: 'audio',
+    resource: () => 'gpu',
+    async run(ctx) {
+      narrated.push(ctx.input.path);
+      return { kind: 'audio', path: `${ctx.input.path}.wav` };
+    },
+    cancel() { /* nothing to stop */ },
+  });
+  queueEngine.setGpuLockProbe(() => null);
+  queueEngine.setGpuHolderProbe(() => null);
+  await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state-sourceref') });
+
+  const stale = 'C:/a/stale/export.tts.epub';
+  const job = queueEngine.enqueue({
+    title: plan.title,
+    projectId: dir,
+    documentPath: plan.bookEpubPath,
+    steps: [
+      {
+        type: plan.jobs[0].jobType,
+        label: plan.jobs[0].label,
+        config: plan.jobs[0].config,
+        sourceRef: { kind: 'epub', path: plan.bookEpubPath },
+      },
+      {
+        type: 'tts-conversion',
+        label: 'Narrate',
+        config: { epubPath: stale },
+        // BOTH, exactly as `processing:submit-chain` composes a follow-on.
+        sourceRef: { kind: 'epub', path: stale },
+        parentIndex: 0,
+      },
+    ],
+  });
+  queueEngine.start();
+
+  const deadline = Date.now() + 120000;
+  for (;;) {
+    const live = queueEngine.snapshot().jobs.find((j) => j.id === job.id);
+    const done = live && live.steps.every((st) => st.status === 'done' || st.status === 'failed');
+    if (done) {
+      const failed = live.steps.filter((st) => st.status === 'failed');
+      assert.strictEqual(failed.length, 0,
+        failed.map((st) => `${st.type}: ${st.error}`).join('; '));
+      break;
+    }
+    assert.ok(Date.now() < deadline, 'the run finished within two minutes');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  assert.strictEqual(narrated.length, 1);
+  assert.notStrictEqual(narrated[0], stale, 'the stale sourceRef was NOT what it read');
+  const ttsRecorded = familiesOf(dir).find((f) => f.id === second.id).ttsEpub.path;
+  assert.strictEqual(
+    path.resolve(narrated[0]),
+    path.resolve(path.join(dir, ttsRecorded.split('/').join(path.sep))),
+    'it read the artifact the pass named, through parentIndex');
+  await queueEngine.pause();
+});
+
+/**
  * THE READINESS DOOR'S OWN BRANCHES.
  *
  * `narrationTextReadinessFor` is the whole body of the `narration:text-readiness`

@@ -61,12 +61,39 @@
 export type AbbreviationContext =
   /** A digit must follow it: "no. 5", never "a flat no." */
   | 'followed-by-digit'
+  /**
+   * It must be NUMBERING something: a digit after it AND a thing before it.
+   *
+   * "The answer was no. 12 men voted" read "The answer was number 12 men voted"
+   * — the word "no" ending a sentence, with the next sentence's number taken as
+   * its own (the fourth adversarial review, 2026-09-04). A digit after it is not
+   * enough, because a sentence can end on "no." and the next one open on a
+   * number. What is enough is a thing being numbered in front of it.
+   */
+  | 'numbers-a-thing'
   /** A capitalized word must stand on one side: "St. Petersburg", "Baker St." */
   | 'beside-a-proper-noun'
   /** A number word or digit must precede it: "two a.m.", never "I am." */
   | 'after-a-number';
 
 export interface AbbreviationEntry {
+  /**
+   * This abbreviation PREFIXES a name: "Dr. Kempner", "Mt. Everest",
+   * "St. Petersburg".
+   *
+   * It changes what a following capital MEANS. For every other abbreviation a
+   * capital after the period is the next sentence — that is the whole of the
+   * "Oxford St. The rain" rule — but after a title the capital is the name the
+   * title belongs to, and treating it as a sentence end refused the prompt's own
+   * "Dr. Kempner" -> "Doctor Kempner" (the fourth adversarial review,
+   * 2026-09-04).
+   *
+   * "St." is both: SAINT prefixes a name and STREET follows one, so the
+   * exemption applies only when no capitalized word already stands in front of
+   * it. "Oxford St. The" is a street and a sentence end; "St. Petersburg" is a
+   * saint and is not.
+   */
+  readonly takesFollowingName?: boolean;
   /**
    * The readings allowed, spelled EXACTLY as they must be written.
    *
@@ -91,15 +118,15 @@ export interface AbbreviationEntry {
  * refused rather than quietly allowed.
  */
 export const ABBREVIATION_READINGS: ReadonlyMap<string, AbbreviationEntry> = new Map([
-  ['dr', { readings: ['Doctor'] }],
-  ['prof', { readings: ['Professor'] }],
-  ['mt', { readings: ['Mount', 'Mountain'] }],
+  ['dr', { readings: ['Doctor'], takesFollowingName: true }],
+  ['prof', { readings: ['Professor'], takesFollowingName: true }],
+  ['mt', { readings: ['Mount', 'Mountain'], takesFollowingName: true }],
   ['ave', { readings: ['Avenue'] }],
   ['blvd', { readings: ['Boulevard'] }],
   ['rd', { readings: ['Road'] }],
   ['jr', { readings: ['Junior'] }],
   ['sr', { readings: ['Senior'] }],
-  ['nos', { readings: ['numbers'], context: 'followed-by-digit' }],
+  ['nos', { readings: ['numbers'], context: 'numbers-a-thing' }],
   ['eg', { readings: ['for example'] }],
   ['ie', { readings: ['that is'] }],
   ['etc', { readings: ['et cetera'] }],
@@ -114,8 +141,12 @@ export const ABBREVIATION_READINGS: ReadonlyMap<string, AbbreviationEntry> = new
   ['inc', { readings: ['incorporated'] }],
   ['ltd', { readings: ['limited'] }],
   // ── The keys that are also English words ────────────────────────────────
-  ['st', { readings: ['Saint', 'Street'], context: 'beside-a-proper-noun' }],
-  ['no', { readings: ['number'], context: 'followed-by-digit' }],
+  ['st', {
+    readings: ['Saint', 'Street'],
+    context: 'beside-a-proper-noun',
+    takesFollowingName: true,
+  }],
+  ['no', { readings: ['number'], context: 'numbers-a-thing' }],
   ['co', { readings: ['company'], context: 'beside-a-proper-noun' }],
   // The meridiems. The clock rule keeps them as printed because they are already
   // said as letters; a model that spells them out is not wrong, and nothing else
@@ -124,10 +155,43 @@ export const ABBREVIATION_READINGS: ReadonlyMap<string, AbbreviationEntry> = new
   ['pm', { readings: ['p m'] }],
 ]);
 
+/**
+ * Is this abbreviation PREFIXING the capitalized word after it, rather than
+ * ending a sentence in front of one?
+ *
+ * Only for the titles that take a name, and only when nothing capitalized
+ * already stands in front of the token — which is what tells "St. Petersburg"
+ * (a saint, prefixing) from "Oxford St. The rain" (a street, followed by a new
+ * sentence).
+ */
+export function prefixesAName(token: string, before: string, after: string): boolean {
+  const entry = ABBREVIATION_READINGS.get(abbreviationKey(token));
+  if (entry === undefined || entry.takesFollowingName !== true) return false;
+  // A quote or a bracket after it is never a name.
+  if (!/^\s*[A-ZÀ-Þ]/.test(after)) return false;
+  return !/[A-ZÀ-Þ][A-Za-zÀ-ÿ]*[\s,]*$/.test(before);
+}
+
 /** The key a printed abbreviation token is looked up by. */
 export function abbreviationKey(token: string): string {
   return token.toLowerCase().replace(/[^a-zà-ÿ]/g, '');
 }
+
+/**
+ * The words that are followed by a NUMBER of something, so that "no." after one
+ * of them is numbering rather than refusing.
+ *
+ * A capitalized word counts too (a title or a proper noun: "Doc. no. 5"), and so
+ * does the start of the block ("No. 5 on the list"). Everything else — "was",
+ * "said", "answered" — is a sentence ending on the word "no".
+ */
+const NUMBERS_A_THING: ReadonlySet<string> = new Set([
+  'file', 'doc', 'document', 'ref', 'reference', 'item', 'serial', 'part', 'model', 'catalogue',
+  'catalog', 'lot', 'batch', 'order', 'invoice', 'patent', 'case', 'act', 'decree', 'law',
+  'volume', 'vol', 'chapter', 'chap', 'section', 'article', 'page', 'plate', 'figure', 'fig',
+  'table', 'entry', 'record', 'issue', 'edition', 'room', 'flat', 'apartment', 'unit', 'plot',
+  'registration', 'licence', 'license', 'passport', 'account',
+]);
 
 /** The number words a context rule counts as a number standing before a token. */
 const NUMBER_WORD =
@@ -150,6 +214,20 @@ export function abbreviationContextRefusal(
       if (/^\s*\d/.test(after)) return null;
       return `"${token}" is also an ordinary word, so it is only an abbreviation when a number `
         + 'follows it — and here nothing does';
+    case 'numbers-a-thing': {
+      if (!/^\s*\d/.test(after)) {
+        return `"${token}" is also an ordinary word, so it is only an abbreviation when a number `
+          + 'follows it — and here nothing does';
+      }
+      const lead = /([A-Za-zÀ-ÿ]+)\.?[\s,(\[]*$/.exec(before);
+      if (lead === null) return null;
+      const word = lead[1]!;
+      if (/^[A-ZÀ-Þ]/.test(word)) return null;
+      if (NUMBERS_A_THING.has(word.toLowerCase())) return null;
+      return `"${token}" here follows "${word}", so it reads as the word "no" ending a sentence `
+        + 'and the number after it belongs to the next one. It is only an abbreviation when it '
+        + 'is numbering something';
+    }
     case 'after-a-number':
       if (/\d\s*$/.test(before) || NUMBER_WORD.test(before)) return null;
       return `"${token}" is also an ordinary word, so it is only an abbreviation when a number `
@@ -182,6 +260,35 @@ export const SPOKEN_AS_WORD: ReadonlySet<string> = new Set([
 /** Why a proposed reading is not one, or null when it is. */
 export type ReadingRefusal = string | null;
 
+/**
+ * Initialisms a book prints in capitals that are NOT words, whatever their shape.
+ *
+ * The emphasis reading — the same word in ordinary case — is for a word the
+ * author SHOUTED, and offering it to every run of capitals turned "The US Army"
+ * into "The us Army" and "The WHO issued" into "The who issued" (the fourth
+ * adversarial review, 2026-09-04). Length and a vowel catch most of them; these
+ * are the ones that look like words and are not.
+ */
+const NOT_A_WORD: ReadonlySet<string> = new Set([
+  'usa', 'ussr', 'usaf', 'nsdap', 'nkvd', 'kgb', 'gestapo', 'raf', 'ira', 'eta', 'oss',
+  'sipo', 'sdap', 'kpd', 'spd', 'gdr', 'frg', 'nato', 'seato', 'cento', 'ecsc', 'eec',
+  'unrra', 'unhcr', 'ilo', 'imf', 'oecd', 'opec', 'aids', 'hiv', 'dna', 'rna', 'nasa',
+]);
+
+/**
+ * Is this run of capitals a WORD the author shouted, rather than an initialism?
+ *
+ * Four letters or more, carrying a vowel, and not one of the initialisms above.
+ * A two- or three-letter run gets only the spaced-letters reading: "US", "WHO",
+ * "FBI" and "SS" are said as letters, and lower-casing them says a different
+ * word.
+ */
+export function isEmphasisWord(bare: string): boolean {
+  if (bare.length < 4) return false;
+  if (!/[AEIOUYÀ-Þ]/.test(bare)) return false;
+  return !NOT_A_WORD.has(bare.toLowerCase());
+}
+
 /** The letters of a word, spaced and upper-cased — "FBI" -> "F B I". */
 export function spacedLetters(token: string): string {
   return [...token.replace(/[^A-Za-zÀ-ÿ]/g, '')].join(' ');
@@ -202,7 +309,12 @@ export function capsReadingRefusal(token: string, reading: readonly string[]): R
     return `"${token}" is an acronym said as a word, so it is read exactly as printed`;
   }
   if (said === spacedLetters(bare)) return null;
-  if (said === bare.toLowerCase()) return null;
+  if (said === bare.toLowerCase()) {
+    return isEmphasisWord(bare)
+      ? null
+      : `"${token}" is an initialism, not a word printed in capitals, so it is read as its own `
+        + `letters ("${spacedLetters(bare)}") rather than lower-cased`;
+  }
   const wrongCase = said.toLowerCase() === spacedLetters(bare).toLowerCase()
     || said.toLowerCase() === bare.toLowerCase();
   return wrongCase
@@ -259,14 +371,41 @@ export function romanValue(token: string): number | null {
  */
 const PART_WORD =
   /\b(?:part|chapter|book|volume|vol|act|section|article|canto|scene|appendix|table|figure|fig|plate|phase|stage|class|type|mark|war)\.?\s*$/i;
-/** A capitalized name immediately before it: "Henry VIII", "Pius XII". */
-const REGNAL_NAME = /\b[A-ZÀ-Þ][a-zà-ÿ]+\s*$/;
+/**
+ * The names a roman numeral follows as a REGNAL number.
+ *
+ * A curated list, because "any capitalized word" offered the numeral reading to
+ * every acronym standing after a name: "Doctor Smith MD" read "Smith one
+ * thousand five hundred", "the London CD" read "London four hundred" (the fourth
+ * adversarial review, 2026-09-04). Monarchs, popes and emperors are a closed set
+ * in practice, and a book that prints a numeral after some other name still has
+ * the part-word and century contexts.
+ */
+const REGNAL_NAMES: ReadonlySet<string> = new Set([
+  'henry', 'louis', 'charles', 'george', 'edward', 'william', 'richard', 'james', 'stephen',
+  'harold', 'anne', 'elizabeth', 'mary', 'victoria', 'catherine', 'christina', 'margaret',
+  'pius', 'leo', 'gregory', 'john', 'paul', 'benedict', 'innocent', 'clement', 'urban',
+  'alexander', 'sixtus', 'boniface', 'nicholas', 'celestine', 'honorius', 'martin', 'eugene',
+  'adrian', 'hadrian', 'sylvester', 'francis',
+  'frederick', 'friedrich', 'wilhelm', 'ludwig', 'otto', 'maximilian', 'joseph', 'franz',
+  'ivan', 'peter', 'alexis', 'napoleon', 'philip', 'philippe', 'ferdinand',
+  'alfonso', 'carlos', 'pedro', 'gustav', 'christian', 'frederik', 'olav', 'haakon',
+  'constantine', 'justinian', 'theodosius', 'leopold', 'albert', 'rudolf', 'sigismund',
+  'casimir', 'suleiman', 'mehmed', 'selim', 'ramesses',
+  'ptolemy', 'seti', 'thutmose', 'amenhotep', 'darius', 'xerxes', 'artaxerxes', 'antiochus',
+  'tiberius', 'claudius', 'vespasian', 'trajan',
+]);
+
+/** A regnal name immediately before it: "Henry VIII", "Pius XII". */
+const REGNAL_NAME = /\b([A-ZÀ-Þ][a-zà-ÿ]+)\s*$/;
 /** A century immediately after it: "XIX century". */
 const CENTURY_AFTER = /^\s*(?:century|centuries)\b/i;
 
 /** Is a roman numeral what this block is printing here? */
 export function isRomanContext(before: string, after: string): boolean {
-  return PART_WORD.test(before) || REGNAL_NAME.test(before) || CENTURY_AFTER.test(after);
+  if (PART_WORD.test(before) || CENTURY_AFTER.test(after)) return true;
+  const name = REGNAL_NAME.exec(before);
+  return name !== null && REGNAL_NAMES.has(name[1]!.toLowerCase());
 }
 
 /**

@@ -951,6 +951,133 @@ test('R3-10 a spaced hyphen may be read as a dash beside a digit', () => {
     verdictOf('he waited 12 - and left', '12 - and', '13\u2014and').status, 'APPLIED');
 });
 
+/**
+ * THE FOURTH ADVERSARIAL REVIEW, 2026-09-04 — the reading law's last five.
+ */
+test('F1 the sentence-period rule is driven off the BLOCK, not off the find', () => {
+  // The prompt tells the model to widen a find until it is unique, and the rule
+  // used to ask "is this token the LAST thing in the find?" — so the moment it
+  // widened, the guard switched off and "Oxford St. The" -> "Oxford Street The"
+  // was applied, fusing two sentences. The correct reading was refused at the
+  // same time, because the accounting had stripped the token's own period.
+  const rows = [
+    ['Oxford St. The rain fell', 'Oxford St.', 'Oxford Street.', 'Oxford Street'],
+    ['Oxford St. The rain fell', 'Oxford St. The', 'Oxford Street. The', 'Oxford Street The'],
+    ['Oxford St. The rain fell', 'Oxford St. The rain', 'Oxford Street. The rain',
+      'Oxford Street The rain'],
+    ['He left the Dept. The next day', 'the Dept. The', 'the Department. The',
+      'the Department The'],
+    ['He left the Dept. The next day', 'left the Dept. The next', 'left the Department. The next',
+      'left the Department The next'],
+    ['a Prof. "You there"', 'a Prof. "You', 'a Professor. "You', 'a Professor "You'],
+  ];
+  for (const [target, find, good, bad] of rows) {
+    assert.strictEqual(verdictOf(target, find, good).status, 'APPLIED', find + ' -> ' + good);
+    assert.notStrictEqual(verdictOf(target, find, bad).status, 'APPLIED', find + ' -> ' + bad);
+  }
+  // Mid-sentence there is no sentence to keep, however wide the find is.
+  assert.strictEqual(
+    verdictOf('on Baker St. now it rained', 'Baker St. now', 'Baker Street now').status,
+    'APPLIED');
+  assert.notStrictEqual(
+    verdictOf('on Baker St. now it rained', 'Baker St. now', 'Baker Street. now').status,
+    'APPLIED');
+});
+
+test('F1 a TITLE prefixing a name is not a sentence end', () => {
+  // The other direction of the same rule: a capital after "Dr." is the name, and
+  // treating it as a sentence refused the prompt's own worked example.
+  assert.strictEqual(
+    verdictOf('and Dr. Kempner spoke', 'Dr. Kempner', 'Doctor Kempner').status, 'APPLIED');
+  assert.strictEqual(
+    verdictOf('near Mt. Everest today', 'Mt. Everest', 'Mount Everest').status, 'APPLIED');
+  assert.strictEqual(
+    verdictOf('in St. Petersburg then', 'St. Petersburg', 'Saint Petersburg').status, 'APPLIED');
+  // But a title that FOLLOWS a capitalized word is a suffix, and then the
+  // capital after it is a new sentence: "Oxford St. The rain".
+  assert.notStrictEqual(
+    verdictOf('Oxford St. The rain', 'Oxford St. The', 'Oxford Street The').status, 'APPLIED');
+});
+
+test('F2 "no." is only an abbreviation when it is NUMBERING something', () => {
+  // "The answer was no. 12 men voted" -> "The answer was number 12 men voted":
+  // the word "no" ending a sentence, with the next sentence's number taken as
+  // its own. A digit after it is not enough.
+  for (const [target, find, replace] of [
+    ['The answer was no. 12 men voted', 'was no.', 'was number'],
+    ['He said no. 5 of them walked', 'said no.', 'said number'],
+    ['She answered no. 3 left', 'answered no.', 'answered number'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'NOT_A_READING', find);
+  }
+  for (const [target, find, replace] of [
+    ['Doc. no. 5 was filed', 'Doc. no.', 'Doc. number'],
+    ['the file no. 12 was lost', 'file no.', 'file number'],
+    ['No. 5 on the list', 'No.', 'Number'],
+    ['the Reichsgesetzblatt no. 7 said', 'Reichsgesetzblatt no.', 'Reichsgesetzblatt number'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'APPLIED', find);
+  }
+});
+
+test('F3 the roman reading follows a REGNAL name, not any capital', () => {
+  // "Doctor Smith MD" -> "Smith one thousand five hundred"; "the London CD" ->
+  // "London four hundred". Any capitalized word offered the numeral reading.
+  for (const [target, find, replace] of [
+    ['Doctor Smith MD wrote', 'Smith MD', 'Smith one thousand five hundred'],
+    ['the London CD sold', 'London CD', 'London four hundred'],
+    ['the Berlin MM group', 'Berlin MM', 'Berlin two thousand'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'NOT_A_READING', find);
+  }
+  // The letters reading is still there for every one of them.
+  assert.strictEqual(verdictOf('Doctor Smith MD wrote', 'Smith MD', 'Smith M D').status,
+    'APPLIED');
+  // And the real regnal, part-word and century contexts still read.
+  for (const [target, find, replace] of [
+    ['Henry VIII reigned', 'Henry VIII', 'Henry the Eighth'],
+    ['Pius XII spoke', 'Pius XII', 'Pius the Twelfth'],
+    ['Part IV begins', 'Part IV', 'Part Four'],
+    ['the XIX century', 'the XIX century', 'the nineteenth century'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'APPLIED', find);
+  }
+});
+
+test('F4 the emphasis reading is for a WORD in capitals, not an initialism', () => {
+  // "The US Army" -> "The us Army", "The WHO issued" -> "The who issued": the
+  // recase path reached the book without going through the caps table at all.
+  for (const [target, find, replace] of [
+    ['The US Army moved', 'The US Army', 'The us Army'],
+    ['The WHO issued it', 'The WHO issued', 'The who issued'],
+    ['The SS arrived', 'The SS arrived', 'The ss arrived'],
+    ['The NSDAP met', 'The NSDAP met', 'The nsdap met'],
+  ]) {
+    assert.notStrictEqual(verdictOf(target, find, replace).status, 'APPLIED', find);
+  }
+  // A two- or three-letter run gets the LETTERS reading, which is the right one.
+  assert.strictEqual(verdictOf('The US Army moved', 'The US Army', 'The U S Army').status,
+    'APPLIED');
+  assert.strictEqual(verdictOf('The WHO issued it', 'The WHO issued', 'The W H O issued').status,
+    'APPLIED');
+  // And a real shouted word still reads.
+  assert.strictEqual(verdictOf('he never SAID so', 'never SAID so', 'never said so').status,
+    'APPLIED');
+  assert.strictEqual(verdictOf('he NEVER went', 'he NEVER went', 'he never went').status,
+    'APPLIED');
+});
+
+test('F5 the ampersand is a class, because the prompt teaches it', () => {
+  assert.strictEqual(norm.classifyEdit('&'), 'ampersand');
+  assert.strictEqual(verdictOf('Smith & Co sold it', '&', 'and').status, 'APPLIED');
+  assert.strictEqual(verdictOf('Smith & Co sold it', 'Smith & Co', 'Smith and Co').status,
+    'APPLIED');
+  // And nothing else may ride in on it.
+  assert.notStrictEqual(verdictOf('Smith & Co sold it', '&', 'plus').status, 'APPLIED');
+  assert.notStrictEqual(
+    verdictOf('Smith & Co sold it', 'Smith & Co', 'Smith and Company').status, 'APPLIED');
+});
+
 test('the number invariants are untouched for a digit-bearing find', () => {
   assert.strictEqual(
     verdictOf('Leviticus 20:6 forbids', '20:6', 'twenty').status, 'NUMBER_DROPPED');

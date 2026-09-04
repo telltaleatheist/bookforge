@@ -126,22 +126,34 @@ How it is enforced:
 
 | class | allowed reading |
 |---|---|
-| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`), **in that case exactly** — "The f b i had" was applied and written verbatim before the case was checked. An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
+| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`), **in that case exactly** — "The f b i had" was applied and written verbatim before the case was checked. The lower-cased reading needs **four letters, a vowel, and not to be a known initialism**, so `US` → `us` and `WHO` → `who` are refused and only the letters reading is offered. An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
 | abbreviation | an entry from the curated table — Dr. Prof. St. Mt. Ave. Blvd. Rd. Jr. Sr. No. e.g. i.e. etc. vs. viz. cf. a.m. p.m. and the rest — in the case the table wrote it, all lower, or capitalized on the first letter. **An unknown abbreviation is REFUSED and named**, never guessed. Mr./Mrs./Ms. are deliberately absent — the prompt says to leave them |
-| roman | exactly the cardinal or ordinal words of its value, with or without a leading "the" — **and only where a book prints a numeral** (after a part word, after a capitalized name, or before a century). MD, CD, DC, MC, CV, MM, XL, DI, LI, IX, CIV and MIX are legal numerals *and* ordinary acronyms, and forcing them through the roman table made `M I X` impossible. **The letters reading is never forbidden** |
+| roman | exactly the cardinal or ordinal words of its value, with or without a leading "the" — **and only where a book prints a numeral**: after a part word, before a century, or after a name from the **curated regnal list** (monarchs, popes, emperors). "Any capitalized word" read "Doctor Smith MD" as "Smith one thousand five hundred". MD, CD, DC, MC, CV, MM, XL, DI, LI, IX, CIV and MIX are legal numerals *and* ordinary acronyms, and forcing them through the roman table made `M I X` impossible. **The letters reading is never forbidden** |
 | bracket | **square** brackets: an interpolation of WORDS is READ — the permitted edit is to drop the brackets and keep the words (`[he said]` → `he said`) — and only apparatus is deleted (`[sic]`, `[12]`, `[ed.]`, `[…]`, `[*]`). **round** brackets: the author's, deleted only when the contents match an apparatus PATTERN with a digit, a citation abbreviation or a fixed editorial term (`(sic)`, `(see page twelve)`, `(emphasis added)`, `(Kershaw 1993)`, `(12)`), so `(note she wept)` and `(source of evil)` stay |
 
 **A table key that is also an English word** (`no.`, `co.`, `am.`, `st.`) carries a
-context rule and is refused without it: `no.` needs a digit after it, `am.` a
-number before it, `st.`/`co.` a capitalized word on one side. Without them
+context rule and is refused without it: `am.` needs a number before it,
+`st.`/`co.` a capitalized word on one side, and **`no.` must be NUMBERING
+something** — a digit after it *and* a thing being numbered in front of it (a
+capitalized word, a word like "file"/"doc"/"item", or the start of the block).
+A digit alone was not enough: "The answer was no. 12 men voted" read "…was
+number 12 men voted", taking the next sentence's number as its own. Without them
 "a flat no. The committee" read "a flat number The committee" — the wrong word
 *and* a fused sentence.
 
 **A reading may not move the punctuation** around the word it changes: every
-mark of the find outside the changed token must reappear, in order. And a
-**span-final abbreviation whose period may end a sentence** (the block ends, or
-goes on with a capital, a quote or a bracket) must keep it — "Oxford St. The
-rain" reads "Oxford Street.", never "Oxford Street".
+mark of the find outside the changed token must reappear, in order.
+
+**An abbreviation whose period may end a sentence must keep it.** Asked of the
+BLOCK at the token — what follows the *token*, not what follows the *find* —
+because the prompt tells the model to widen a find until it is unique and the
+guard used to switch off the moment it did. "Oxford St. The rain" reads "Oxford
+Street. The rain" however wide the find is. The exception is a **title prefixing
+a name** (`Dr.`, `Prof.`, `Mt.`, and `St.` when nothing capitalized already
+stands in front of it): the capital after it is the name, not a new sentence, so
+"Dr. Kempner" reads "Doctor Kempner".
+
+**The ampersand** is its own class: `&` reads "and", checked by shape.
 
 `classifyEdit` is per-token and position-aware: a period at the **end** of a span
 is a sentence, not an abbreviation, so `He did not believe it.` is prose; a period
