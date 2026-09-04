@@ -220,11 +220,12 @@ test('integer: four digits are the model\'s judgement, not a rule\'s', () => {
 });
 
 test('integer: every adjacency on Owen\'s list refuses it', () => {
-  untouched('COVID-19 spread');           // a letter
+  // COVID-19 and "p. 23" were on this list until Owen's ruling of 2026-09-04
+  // moved them off it — a digit glued to letters and a page reference are both
+  // READ now, by rules of their own below. What is left here is the apparatus
+  // that has no spoken reading at all.
   untouched('file 298/38 there');          // a slash
   untouched('Document II 9/34 filed');     // a slash, and a roman numeral
-  untouched('see p. 23 now');              // a page citation
-  untouched('pp. 65-71');                  // a page citation, and a dash
   untouched('vol. 2');                     // a volume citation
   untouched('Chapter 3: The Long Year');   // a colon — a label, not a number
   untouched('235-5396');                   // dashes between digits
@@ -311,10 +312,58 @@ test('date: a month ABBREVIATION expands to the month', () => {
 
 test('the leave-alone list, in one place', () => {
   for (const printed of [
-    'p. 23', 'pp. 65-71', 'vol. 2', 'Document II 9/34', '298/38', '9/34',
-    '1985', '1200 people', 'COVID-19', 'B-17', 'R2D2', '10:05', '73101',
+    'vol. 2', 'no. 5', 'Document II 9/34', '298/38', '9/34',
+    '1985', '1200 people', '10:05', '73101',
     'AfW HH R 231191', 'a ratio of 3.14159 exactly', 'Henry VIII',
+    // A serial, a version and a leading zero are still codes, whatever letters
+    // stand beside them — the glued rule refuses all three by shape.
+    'X-007', 'v1.2 of the spec', 'part A1B2C3D4 here', 'model Z-12345',
   ]) untouched(printed);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The two shapes Owen's 2026-09-04 ruling moved OFF the leave-alone list
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('page: a page reference is READ — the abbreviation picks the word', () => {
+  reads('see p. 23 now', 'see page twenty three now');
+  reads('pp. 65-71', 'pages sixty five to seventy one');
+  reads('P. 23 has the figure.', 'Page twenty three has the figure.');
+  // An en dash is the same range.
+  reads('pp. 65\u201371', 'pages sixty five to seventy one');
+  // The cardinals are UNHYPHENATED, which is `cardinalWords`' form and the form
+  // the fine-tunes were trained on — see this file's own doctrine note.
+  reads('p. 95', 'page ninety five');
+  // A volume, a number and "ibid." are still apparatus.
+  untouched('vol. 2');
+  untouched('no. 5');
+  // A leading zero is a code, not a page.
+  untouched('pp. 007-010');
+});
+
+test('glued: digits glued to letters are READ — "that is how it is pronounced"', () => {
+  reads('COVID-19 spread', 'COVID-nineteen spread');
+  reads('a B-17 flying past', 'a B-seventeen flying past');
+  reads('I-95 north', 'I-ninety five north');
+  reads('the 7-Eleven', 'the seven-Eleven');
+  // No hyphen: the words need a space, or "Rtwo" is not a word.
+  reads('R2D2 beeping', 'R two D two beeping');
+  reads('an MP3 player', 'an MP three player');
+  reads('ISBN-13 code', 'ISBN-thirteen code');
+  // The DECADE rule owns this one, and it runs first: "1940s-era" is a decade
+  // with a word after it, not a token with a number in it.
+  reads('the 1940s-era rules', 'the nineteen forties-era rules');
+  // And the letters are the book's, never re-cased: "7-Eleven" keeps its E.
+  reads('7-Eleven', 'seven-Eleven');
+});
+
+test('glued: a code is still a code — the guards, one by one', () => {
+  untouched('X-007 file');            // a leading zero
+  untouched('model Z-12345');         // five digits
+  untouched('part A1B2C3D4');         // four runs: a part number
+  untouched('v1.2 of the spec');      // a version: a period then a digit
+  untouched('Document II 9/34');      // a slash, and a roman neighbour
+  untouched('298/38');                // a slash
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

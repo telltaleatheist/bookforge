@@ -46,10 +46,14 @@ TIMES — a clock time with a.m./p.m. or on the hour is already converted. A bar
 
 DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year — "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
 
+ALREADY CONVERTED by the deterministic pass, so you will not see them and must not undo them:
+- page references — "p. 23" arrives as "page twenty three", "pp. 65-71" as "pages sixty five to seventy one";
+- digits glued to letters — COVID-19 arrives as "COVID-nineteen", B-17 as "B-seventeen", I-95 as "I-ninety five", R2D2 as "R two D two", 1940s-era as "nineteen forties-era".
+
 LEAVE AS PRINTED, with no edit at all:
-- citation apparatus: "pp. 65-71", "p. 23", "Document II 9/34", "ibid.", "vol. 2", archive file numbers like "298/38" or "AfW HH R 231191";
-- roman numerals, and digits glued to letters: COVID-19, B-17, R2D2, 1940s-era;
-- phone numbers, ISBNs, catalogue, serial and code numbers, including anything with a leading zero like "001";
+- citation apparatus with no spoken reading: "Document II 9/34", "ibid.", "vol. 2", "no. 5", archive file numbers like "298/38" or "AfW HH R 231191";
+- roman numerals;
+- phone numbers, ISBNs, catalogue, serial, part, version and code numbers, including anything with a leading zero like "001", "X-007", "Z-12345", "A1B2C3D4", "v1.2";
 - anything you are not sure is prose.
 
 Examples.
@@ -69,7 +73,7 @@ TARGET: Four separate archive files are cited: SLG HH, HSG 11 Js. Sond. 298/38; 
 {"edits": []}
 </answer>
 
-TARGET: Wurm, Record, in: Kretschmar/Nicolaisen, Document II 9/34, p. 23; ibid., Memoirs, p. 94.
+TARGET: Wurm, Record, in: Kretschmar/Nicolaisen, Document II 9/34, page twenty three; ibid., Memoirs, page ninety four.
 <answer>
 {"edits": []}
 </answer>

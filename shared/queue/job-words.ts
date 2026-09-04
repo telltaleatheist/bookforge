@@ -47,6 +47,7 @@ export const JOB_GERUND: Record<JobType, string> = {
   'simplify': 'Simplifying',
   'translate-pass': 'Translating',
   'footnote-refs': 'Cleaning',
+  'narration-text': 'Cleaning',
   'vlm-convert': 'Reading',
   // Work ordered in the hosted Foundry window. One word for read, render and
   // translate, because the chip says it while the row is RUNNING and what the
@@ -71,6 +72,7 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   'simplify': 'Simplified text',
   'translate-pass': 'Translated text',
   'footnote-refs': 'Footnote clean-up',
+  'narration-text': 'Narration text',
   'vlm-convert': 'EPUB conversion',
   // What a Foundry job leaves behind, said in the one word true of all three: a
   // read leaves the bank, a rendering leaves the file, a translate leaves the

@@ -36,7 +36,8 @@
  * decided what a footnote was. This one applies the same digits-only rule the
  * narration copy has always been cut by — shared/text/sup-markers.ts.)
  */
-export type ProcessingPassKind = 'simplify' | 'translate' | 'footnote-refs';
+export type ProcessingPassKind =
+  | 'simplify' | 'translate' | 'footnote-refs' | 'narration-text';
 
 /**
  * The queue job type each pass is persisted as. These strings live in queue.json.
@@ -48,7 +49,8 @@ export type ProcessingPassKind = 'simplify' | 'translate' | 'footnote-refs';
  * on load with a message naming the change, never run, because nothing knows
  * what they would do now.
  */
-export type PassJobType = 'simplify' | 'translate-pass' | 'footnote-refs';
+export type PassJobType =
+  | 'simplify' | 'translate-pass' | 'footnote-refs' | 'narration-text';
 
 /**
  * Who runs a text pass. 'local' is the bundled llama.cpp server — the app's own

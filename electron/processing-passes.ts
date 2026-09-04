@@ -37,6 +37,7 @@ import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
+import { publishBridgeEvent } from './bridge-events';
 import { writePassDiff, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
 import { removeEpubContainer, stagedContainerKindFor } from './epub-container';
@@ -802,6 +803,160 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
 }
 
 /**
+ * The narration text cleanup, as a pass on the book's chain.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-04: *"We should make this its own intentional step that the user
+ * runs and persists, so we don't have to run it again… This should be a foundry
+ * step that's necessary before it goes to TTS."* And, on where it sits: *"a step
+ * that can be performed at any point, including on an epub, but it's a
+ * computationally expensive step that needs to take place somewhere along the
+ * line, and everything after it is finalized/fixed… a step that goes in just
+ * like translate/simplify."*
+ *
+ * So it is offered, planned, queued and recorded exactly as those are, and it
+ * may be run at any point in the chain. What makes it different is the STAMP:
+ * `electron/narration-text-pass.ts` writes it into the book's OPF, and
+ * `prepareNarrationInput` refuses a render whose book has none — which is what
+ * "everything after it is finalized" means in code. A later simplify or
+ * translate rewrites the cleaned text and is recorded after this one in the
+ * ledger, so the gate calls the stamp STALE rather than missing.
+ *
+ * ── Not a string replace, and it still belongs here ─────────────────────────
+ *
+ * Unlike `footnote-refs` this loads a model: the deterministic stages read what
+ * they can guarantee and the model reads the residue. That is why it takes the
+ * GPU pool like a simplify does, and why it reports progress. Everything else
+ * about the ROW is the same, and the shared `passModule` runs it.
+ *
+ * ── Nothing to do is a REFUSAL ──────────────────────────────────────────────
+ *
+ * `footnote-refs`' rule, with one difference that matters. A book that is
+ * ALREADY STAMPED at this version has genuinely nothing to gain, and a second
+ * row would be a ledger entry the user can delete to undo nothing. But a book
+ * that merely prints no curly quote and no digit still needs the stamp — it is
+ * what unlocks the render — so a text-unchanged run over an UNSTAMPED book is a
+ * real pass with a real row, and says so.
+ */
+async function runNarrationTextPass(
+  jobId: string,
+  config: PassJobConfig
+): Promise<PassJobResult> {
+  const bookPath = await requireBookEpub(config.projectDir);
+  const stageDir = absStage(config);
+  await fs.promises.mkdir(stageDir, { recursive: true });
+
+  const { narrationTextGate, runNarrationTextPass: runPass } =
+    await import('./narration-text-pass.js');
+
+  const already = await narrationTextGate(bookPath);
+  if (already.ok) {
+    return {
+      success: false,
+      error: 'This book has already been through the narration text cleanup at this version '
+        + `(${already.stamp.normalizerVersion}/${already.stamp.punctuationSpec}, read by `
+        + `${already.stamp.model}), so nothing was changed and nothing was recorded. It is ready `
+        + 'to narrate — check the book\'s ledger for the run that did it.',
+    };
+  }
+
+  // The before-text, read now: the pass is about to replace the file it came
+  // from, and the diff is computed against this.
+  const before = await loadEpubForComparison(bookPath, false);
+
+  const { createOllamaNormalizerRunner, numberNormalizerModel } =
+    await import('./tts-number-normalizer-runner.js');
+  const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
+  const { narrationCutsDir } = await import('./parallel-tts-bridge.js');
+  // Read ONCE and carried: the tag is part of the cache path AND of the stamp,
+  // so a run that read it twice could name the copy after one model and make it
+  // with another.
+  const model = numberNormalizerModel();
+
+  const produced = path.join(stageDir, 'narration-text.epub');
+  const outcome = await runPass({
+    epubPath: bookPath,
+    outPath: produced,
+    // The SAME scratch the render door looks in, so the copies this pass makes
+    // are the copies a later render finds instead of paying for them again.
+    cacheDir: narrationCutsDir(),
+    systemPrompt: await loadNumberNormalizePrompt(),
+    model,
+    runner: createOllamaNormalizerRunner(model),
+    onProgress: (done, total, label) => {
+      // The same `queue:progress` bridge event the row's step module is already
+      // listening on (electron/queue-steps/pass.ts), so the bar this draws is
+      // the bar every other pass draws.
+      publishBridgeEvent('queue:progress', {
+        jobId,
+        message: label,
+        progress: total > 0 ? Math.round((done / total) * 100) : 0,
+      });
+    },
+  });
+
+  const after = await loadEpubForComparison(produced, false);
+  const diff = diffPaths(config);
+  await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
+
+  // The full record beside the diff: per-rule punctuation counts, every model
+  // edit and the verdict the validator gave it, everything refused. The diff is
+  // what Review changes shows; this is what a disagreement is settled from.
+  const receiptRel = `${config.stageRelDir}/narration-text.receipt.json`;
+  await fs.promises.writeFile(
+    path.join(stageDir, 'narration-text.receipt.json'),
+    `${JSON.stringify(outcome.receipt, null, 2)}\n`, 'utf8');
+
+  // The strikes, carried. This pass CANNOT move an element — it rewrites text
+  // nodes by offset and never adds, removes or reorders one — but that is
+  // asserted rather than trusted: the walk is compared anyway, so a future change
+  // that broke the claim refuses the carry instead of shifting a user's strikes
+  // by one paragraph.
+  const { carry, bookAfter } = await carryNarrationAcrossPass(config, bookPath, produced);
+
+  const punctuation = outcome.receipt.punctuation;
+  const numbers = outcome.receipt.numbers;
+  const applied: AppliedPass = {
+    kind: 'narration-text',
+    at: outcome.receipt.at,
+    params: {
+      normalizerVersion: outcome.receipt.normalizerVersion,
+      punctuationSpec: outcome.receipt.punctuationSpec,
+      model,
+      punctuationSpans: punctuation.spansApplied,
+      punctuationRules: punctuation.counts,
+      punctuationRefused: punctuation.refused.length,
+      numbersApplied: numbers === null ? 0 : numbers.appliedSpans,
+      numbersByRules: numbers === null ? 0 : numbers.appliedByRules,
+      numbersByModel: numbers === null ? 0 : numbers.appliedByModel,
+      receipt: receiptRel,
+    },
+    diff: diff.rel,
+  };
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const ledger = await recordInLedger(config, 'Narration text cleanup', applied);
+
+  return {
+    success: true,
+    outputPath: bookAfter,
+    summary: `${punctuation.spansApplied} punctuation span(s) canonicalized and `
+      + `${numbers === null ? 0 : numbers.appliedSpans} number(s) read as words `
+      + `(${numbers === null ? 0 : numbers.appliedByRules} by rule, `
+      + `${numbers === null ? 0 : numbers.appliedByModel} by ${model}). The book is stamped `
+      + `${outcome.receipt.normalizerVersion}/${outcome.receipt.punctuationSpec} and is ready to `
+      + 'narrate.'
+      + (punctuation.refused.length > 0
+        ? ` ${punctuation.refused.length} span(s) were left as printed because canonicalizing them `
+          + 'would have meant flattening an <em> or a <sup>; the receipt names each one.'
+        : ''),
+    ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
+    ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+    ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
+  };
+}
+
+/**
  * Pair two chapter lists by id for diffing.
  *
  * A pass rewrites a chapter's text and leaves the spine alone, so ids match. One
@@ -892,6 +1047,10 @@ export async function runProcessingPass(
       // before a progress row could be drawn.
       case 'footnote-refs':
         return await runFootnoteRefsPass(config);
+      // The jobId IS the progress channel: the deterministic stages finish in
+      // seconds and the model pass is minutes, so the row reports.
+      case 'narration-text':
+        return await runNarrationTextPass(jobId, config);
       default: {
         const unknown: never = config.kind;
         throw new Error(`There is no ${unknown} pass.`);

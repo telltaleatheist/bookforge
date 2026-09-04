@@ -246,17 +246,19 @@
   },
   {
     "id": "leave-page-cite",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "page",
     "in": "Wurm, Record, pp. 65-71, and ibid., p. 23.",
-    "want": "Wurm, Record, pp. 65-71, and ibid., p. 23."
+    "want": "Wurm, Record, pages sixty five to seventy one, and ibid., page twenty three.",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: a page reference is READ. \"ibid.\" is still apparatus."
   },
   {
     "id": "leave-doc-code",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "page",
     "in": "Kretschmar/Nicolaisen, Document II 9/34, p. 23.",
-    "want": "Kretschmar/Nicolaisen, Document II 9/34, p. 23."
+    "want": "Kretschmar/Nicolaisen, Document II 9/34, page twenty three.",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: the document code stays as printed (a slash between digits, a roman neighbour); the page reference beside it is read."
   },
   {
     "id": "leave-archive",
@@ -268,10 +270,11 @@
   },
   {
     "id": "leave-glued",
-    "stage": "leave",
-    "rule": "leave",
+    "stage": "rules",
+    "rule": "glued",
     "in": "a B-17 flying past, COVID-19 era, R2D2 beeping",
-    "want": "a B-17 flying past, COVID-19 era, R2D2 beeping"
+    "want": "a B-seventeen flying past, COVID-nineteen era, R two D two beeping",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: digits glued to letters are READ. Owen: \"COVID-nineteen is actually correct, that is how it is pronounced in real life.\""
   },
   {
     "id": "leave-leading-zero",
@@ -410,5 +413,125 @@
     "in": "The 11 men waited.",
     "want": "The eleven men waited.",
     "added_in": "n5 — the other direction: a capitalized PROSE word is not a sigil"
+  },
+  {
+    "id": "page-single",
+    "stage": "rules",
+    "rule": "page",
+    "in": "see p. 23 now",
+    "want": "see page twenty three now",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-range",
+    "stage": "rules",
+    "rule": "page",
+    "in": "pp. 65-71 of the record",
+    "want": "pages sixty five to seventy one of the record",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-range-endash",
+    "stage": "rules",
+    "rule": "page",
+    "in": "pp. 65–71 of the record",
+    "want": "pages sixty five to seventy one of the record",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-capital",
+    "stage": "rules",
+    "rule": "page",
+    "in": "P. 23 has the figure.",
+    "want": "Page twenty three has the figure.",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-page-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "He read pp. 007-010 there",
+    "want": "He read pp. 007-010 there",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-volume-number",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "vol. 2 and no. 5 stay",
+    "want": "vol. 2 and no. 5 stay",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-interstate",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "I-95 north",
+    "want": "I-ninety five north",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-brand",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "the 7-Eleven",
+    "want": "the seven-Eleven",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-droid",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "R2D2 beeping",
+    "want": "R two D two beeping",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-format",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "an MP3 player",
+    "want": "an MP three player",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-decade-era",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "the 1940s-era rules",
+    "want": "the nineteen forties-era rules",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the X-007 file",
+    "want": "the X-007 file",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-serial",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "model Z-12345 here",
+    "want": "model Z-12345 here",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-partno",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "part A1B2C3D4 here",
+    "want": "part A1B2C3D4 here",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-version",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "v1.2 of the spec",
+    "want": "v1.2 of the spec",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
   }
 ]

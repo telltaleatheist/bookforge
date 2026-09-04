@@ -135,8 +135,16 @@ function decimalPhrase(token: string): string | null {
 // The citation guard — shared with the validator, defined once, here
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The abbreviations that make what follows them a page or volume reference. */
-const CITATION_LEAD = /(?:^|[\s(\[“"])(?:pp?|vols?|nos?|ibid|cf|fol)\.\s*$/i;
+/**
+ * The abbreviations that make what follows them an UNSPEAKABLE reference.
+ *
+ * `p.` AND `pp.` WERE HERE UNTIL 2026-09-04, and Owen's ruling took them out: a
+ * page reference is read out loud — "p. 23" is "page twenty three" — so it is a
+ * shape with exactly one reading and belongs to the `page` rule below, not to
+ * the guard. What is left is the apparatus that has no reading: a volume, a
+ * number, "ibid.", "cf.", "fol.".
+ */
+const CITATION_LEAD = /(?:^|[\s(\[“"])(?:vols?|nos?|ibid|cf|fol)\.\s*$/i;
 
 /** A roman-numeral token of two or more characters — "II", "XIV", never "I". */
 const ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
@@ -820,6 +828,115 @@ function markerCandidates(text: string): Candidate[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rule: a page reference — READ, since 2026-09-04
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * "p. 23", "pp. 65-71" — a page reference, which a narrator reads out loud.
+ *
+ * Owen's ruling of 2026-09-04 revised the leave-as-printed list: a page
+ * reference has exactly one spoken reading, so it is a RULE and not a refusal.
+ * The abbreviation the book printed decides the word — `p.` is "page", `pp.` is
+ * "pages" — and a range is joined with "to", not the verse range's "through",
+ * because "pages sixty five through seventy one" is not how anyone says it.
+ *
+ * Its capital is kept: a sentence that opens "P. 23 has the figure" reads "Page
+ * twenty three", and lower-casing it mid-book would be a change to the prose.
+ *
+ * WHAT IT DOES NOT TAKE: "vol. 2", "no. 5", "ibid.", "fol." — those are still
+ * `CITATION_LEAD`'s, because a volume number is apparatus rather than something
+ * a narrator says. And a leading zero ("p. 007") is a code, not a page.
+ */
+const PAGE_REF = new RegExp(
+  '(?<![\\w.\\-])(pp?)\\.\\s*(\\d{1,4})'
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,4}))?(?![\\w\\-])', 'gi');
+
+function pageCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(PAGE_REF, text)) {
+    const [whole, abbrev, first, second] = m;
+    if (first.length > 1 && first.startsWith('0')) continue;
+    if (second !== undefined && second.length > 1 && second.startsWith('0')) continue;
+    const firstWords = cardinalWords(Number(first));
+    if (firstWords === null) continue;
+    let spoken = abbrev.toLowerCase() === 'pp' ? 'pages' : 'page';
+    if (abbrev[0] === abbrev[0].toUpperCase()) spoken = spoken[0].toUpperCase() + spoken.slice(1);
+    spoken += ` ${firstWords}`;
+    if (second !== undefined) {
+      const secondWords = cardinalWords(Number(second));
+      if (secondWords === null) continue;
+      spoken += ` to ${secondWords}`;
+    }
+    out.push({ at: m.index, find: whole, replace: spoken, rule: 'page' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rule: digits glued to letters — READ, since 2026-09-04
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A token of letters, digits and hyphens — "COVID-19", "B-17", "I-95", "R2D2",
+ * "7-Eleven", "MP3".
+ *
+ * Owen's ruling of 2026-09-04 moved this out of the leave-as-printed list too:
+ * *"COVID-nineteen is actually correct, that's how it's pronounced in real
+ * life."* Every one of these is said with the number as a word, so the printed
+ * form has one reading and code can give it.
+ *
+ * The lookarounds exclude a `/` on either side, which is what keeps this off
+ * every archive and catalogue code the guard exists for — "9/34" and "298/38"
+ * are not tokens this rule can even see. A trailing `.` is allowed (a sentence
+ * ends), but a `.` followed by a DIGIT is not: "v1.2" is a version number, and
+ * reading half of it would print "v one.2".
+ */
+const GLUED_ALNUM = /(?<![\w/.\-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w/\-])/g;
+
+/** The longest digit run this rule will read. Beyond it a number is a serial. */
+const GLUED_MAX_DIGITS = 4;
+/** And the most runs. "A1B2C3D4" is a part number, not a word with a number in it. */
+const GLUED_MAX_RUNS = 3;
+
+function gluedCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(GLUED_ALNUM, text)) {
+    const token = m[0];
+    if (token.length > 24) continue;
+    if (!/[A-Za-z]/.test(token) || !/\d/.test(token)) continue;
+    const runs = token.match(/\d+/g)!;
+    if (runs.length > GLUED_MAX_RUNS) continue;
+    // A serial, a leading zero, or a number no cardinal covers: left as printed.
+    if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
+    if (runs.some((run) => run.length > 1 && run.startsWith('0'))) continue;
+    // "v1.2" — a version, not a word with a number in it.
+    if (/^\.\d/.test(text.slice(m.index + token.length))) continue;
+    if (sitsInCitation(text, token, m.index)) continue;
+
+    // Every digit run becomes its cardinal, IN PLACE. A hyphen the book printed
+    // stays a hyphen ("B-seventeen"); a digit run pressed straight against a
+    // letter gains a space, because "Rtwo" is not a word ("R2D2" reads "R two D
+    // two").
+    let replace = '';
+    let refused = false;
+    for (let i = 0; i < token.length;) {
+      if (!/\d/.test(token[i])) { replace += token[i]; i++; continue; }
+      let end = i;
+      while (end < token.length && /\d/.test(token[end])) end++;
+      const words = cardinalWords(Number(token.slice(i, end)));
+      if (words === null) { refused = true; break; }
+      if (i > 0 && /[A-Za-z]/.test(token[i - 1])) replace += ' ';
+      replace += words;
+      if (end < token.length && /[A-Za-z]/.test(token[end])) replace += ' ';
+      i = end;
+    }
+    if (refused || replace === token) continue;
+    out.push({ at: m.index, find: token, replace, rule: 'glued' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Rule: comma-grouped integer, and the standalone integer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -888,6 +1005,9 @@ const RULES: readonly Rule[] = [
   // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
   { name: 'clock', scan: clockCandidates },
   { name: 'scripture', scan: (t) => [...scriptureCandidates(t), ...numberedBookCandidates(t)] },
+  // Before the date and the integer, because "p. 12" is a page and not a day,
+  // and because the whole "pp. 65-71" is one reading its halves are not.
+  { name: 'page', scan: pageCandidates },
   { name: 'date', scan: dateCandidates },
   { name: 'money', scan: moneyCandidates },
   { name: 'percent', scan: percentCandidates },
@@ -896,6 +1016,10 @@ const RULES: readonly Rule[] = [
   { name: 'marker', scan: markerCandidates },
   { name: 'grouped', scan: groupedIntCandidates },
   { name: 'integer', scan: bareIntCandidates },
+  // LAST, because it is the widest net: every earlier rule that knows a shape
+  // ("1940s-era" is a decade before it is a glued token) has already taken it,
+  // and what reaches here is a token no other rule recognized.
+  { name: 'glued', scan: gluedCandidates },
 ];
 
 /**

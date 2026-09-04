@@ -370,9 +370,18 @@ test('CITATION_CODE — a slash between digits, in the find or against its edge'
     only('Cited as 298/38 in the file.', '38', 'thirty-eight'), 'CITATION_CODE');
 });
 
-test('CITATION_CODE — a page abbreviation immediately before the number', () => {
-  for (const lead of ['p.', 'pp.', 'vol.', 'no.', 'nos.', 'ibid.', 'cf.', 'fol.']) {
+test('CITATION_CODE — a volume abbreviation immediately before the number', () => {
+  // "p." and "pp." were on this list until Owen's ruling of 2026-09-04: a page
+  // reference is READ now ("p. 23" is "page twenty three"), by a rule of its
+  // own, so the guard must NOT refuse the model an edit there either — the two
+  // halves of the pass owe the same answer about a shape. What is left is the
+  // apparatus with no spoken reading at all.
+  for (const lead of ['vol.', 'no.', 'nos.', 'ibid.', 'cf.', 'fol.']) {
     assert.strictEqual(
+      only(`See ${lead} 23 for the rest.`, '23', 'twenty-three'), 'CITATION_CODE', lead);
+  }
+  for (const lead of ['p.', 'pp.']) {
+    assert.notStrictEqual(
       only(`See ${lead} 23 for the rest.`, '23', 'twenty-three'), 'CITATION_CODE', lead);
   }
 });

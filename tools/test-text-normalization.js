@@ -295,6 +295,84 @@ test('a CLOCK range is still not a verse range', () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Owen's 2026-09-04 revision of the leave-as-printed list
+// ─────────────────────────────────────────────────────────────────────────────
+
+console.log('\n── page references and letter-digit glue are READ ──');
+
+test('a page reference is read, and the printed abbreviation picks the word', () => {
+  assert.strictEqual(deterministic('see p. 23 now'), 'see page twenty three now');
+  assert.strictEqual(deterministic('pp. 65-71'), 'pages sixty five to seventy one');
+  assert.strictEqual(deterministic('P. 23 has it.'), 'Page twenty three has it.');
+});
+
+test('the CARDINALS stay unhyphenated — the corpus form, not the ordinal form', () => {
+  // `cardinalWords` is deliberately not `integerToWords`: the fine-tunes were
+  // trained on "ninety five", not "ninety-five" (see tts-number-rules.ts's own
+  // doctrine note), and these two rules use the same expander as every other.
+  assert.strictEqual(deterministic('p. 95'), 'page ninety five');
+  assert.strictEqual(deterministic('I-95 north'), 'I-ninety five north');
+  assert.strictEqual(deterministic('p. 23'), 'page twenty three');
+});
+
+test('a volume, a number and "ibid." are still apparatus', () => {
+  assert.strictEqual(deterministic('vol. 2 and no. 5 stay'), 'vol. 2 and no. 5 stay');
+  // The lead has to be the token immediately before the number — "ibid., 23"
+  // (with a comma between) was never guarded and still is not, which is a
+  // pre-existing gap in CITATION_LEAD and not something this ruling changed.
+  assert.strictEqual(deterministic('ibid. 23 there'), 'ibid. 23 there');
+});
+
+test('digits glued to letters are read, hyphen kept, letters untouched', () => {
+  assert.strictEqual(deterministic('COVID-19 era'), 'COVID-nineteen era');
+  assert.strictEqual(deterministic('a B-17 flying'), 'a B-seventeen flying');
+  assert.strictEqual(deterministic('the 7-Eleven'), 'the seven-Eleven');
+  assert.strictEqual(deterministic('R2D2 beeping'), 'R two D two beeping');
+  assert.strictEqual(deterministic('the 1940s-era rules'), 'the nineteen forties-era rules');
+});
+
+test('a code is not a word with a number in it', () => {
+  for (const printed of [
+    'the X-007 file', 'model Z-12345 here', 'part A1B2C3D4 here', 'v1.2 of the spec',
+    'Document II 9/34', 'HSG 11 Js. Sond. 298/38; GnH 3659/42; AfW HH R 231191.',
+    'call (405) 235-5396 after six', 'file 001 is missing',
+  ]) assert.strictEqual(deterministic(printed), printed, printed);
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Ask 2c — a comma is a separator INSIDE one number
+// ─────────────────────────────────────────────────────────────────────────────
+
+console.log('\n── Ask 2c: NUMBER_DROPPED counts numbers, not digit runs ──');
+
+const norm = require('../dist/electron/tts-number-normalizer.js');
+
+/** One proposed edit, and the disposition the validator gave it. */
+function verdict(target, find, replace) {
+  const { records } = norm.validateNumberEdits(target, [target.length], [{ find, replace }]);
+  return records[0].status;
+}
+
+test('a comma-grouped number is ONE number, so its reading is not "dropped"', () => {
+  // The refusals the training side measured on tr_dn3 (NORMALIZATION_SPEC.md §F4):
+  // both readings are correct and both rows still print their digits today.
+  assert.strictEqual(
+    verdict('5,000 copies went out', '5,000 copies', 'five thousand copies'), 'APPLIED');
+  assert.strictEqual(
+    verdict('an 18,000-strong crowd', '18,000-strong', 'eighteen thousand strong'), 'APPLIED');
+  assert.strictEqual(
+    verdict('some 20-30,000 of them', '20-30,000', 'twenty to thirty thousand'), 'APPLIED');
+});
+
+test('and the floor it was protecting still fires', () => {
+  // The case NUMBER_DROPPED exists for: a verse silently gone.
+  assert.strictEqual(verdict('Leviticus 20:6 forbids', '20:6', 'twenty'), 'NUMBER_DROPPED');
+  // And a year range read by half.
+  assert.strictEqual(
+    verdict('from 1914-1918 it ran', '1914-1918', 'nineteen fourteen'), 'NUMBER_DROPPED');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The ordering the whole handoff turns on
 // ─────────────────────────────────────────────────────────────────────────────
 

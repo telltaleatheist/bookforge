@@ -54,7 +54,7 @@ export type JobType = EngineJobType | 'audiobook';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'simplify', 'translate-pass', 'footnote-refs',
+  'simplify', 'translate-pass', 'footnote-refs', 'narration-text',
 ]);
 
 /**
@@ -302,7 +302,7 @@ export type ProcessingPassJobConfig = PassJobConfig & {
   // The three that exist. The retired document-pipeline spellings were listed
   // here long after shared/processing/pass-types.ts had narrowed them away, so
   // the union claimed four members no code could produce.
-  type: 'simplify' | 'translate-pass' | 'footnote-refs';
+  type: 'simplify' | 'translate-pass' | 'footnote-refs' | 'narration-text';
 };
 
 // Job configuration union type

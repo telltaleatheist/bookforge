@@ -105,6 +105,9 @@ const PASS_LABELS: Record<AppliedPassKind, string> = {
   // above. Named differently on purpose: a user reading this book's history has
   // to be able to tell which of the two ran.
   'footnote-refs': 'Remove footnote references',
+  // The text a voice reads: punctuation canonicalized, numbers read as words.
+  // A book carries the stamp this pass wrote, and a render refuses one without.
+  'narration-text': 'Narration text cleanup',
   // The other route to a book: a document vision model read the pages. A book's
   // ORIGIN like Build the book, not a transformation of one.
   'vlm-convert': 'Convert to EPUB',

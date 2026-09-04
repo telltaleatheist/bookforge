@@ -57,12 +57,18 @@ const JOB_TYPE_OF: Record<ProcessingPassKind, PassJobType> = {
   // pass entries, and every pass now builds its PassJobConfig here and ends in
   // `runProcessingPass`.
   'footnote-refs': 'footnote-refs',
+  // Chainable like the others, and the one that has to come LAST when it is in a
+  // chain at all: a later simplify or translate rewrites the text this pass
+  // cleaned, which makes its stamp stale and the render refuse. The planner does
+  // not reorder — the user's order is the user's order — but the gate says so.
+  'narration-text': 'narration-text',
 };
 
 const LABEL_OF: Record<AppliedPassKind, string> = {
   simplify: 'Simplify',
   translate: 'Translate',
   'footnote-refs': 'Remove footnote references',
+  'narration-text': 'Narration text cleanup',
   // The route to a book, and NOT a pass: it is a document stage
   // (electron/vlm-convert.ts) and a chain request naming it is refused by
   // `JOB_TYPE_OF` having no entry for it. Named here because provenance is a

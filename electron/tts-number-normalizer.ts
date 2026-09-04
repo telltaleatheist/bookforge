@@ -414,9 +414,29 @@ function numberWordCount(text: string): number {
     .filter((t) => NUMBER_WORDS.has(t)).length;
 }
 
-/** How many separate runs of digits `text` prints. */
+/**
+ * The separate NUMBERS `text` prints.
+ *
+ * A COMMA-GROUPED NUMBER IS ONE NUMBER, and that is the whole of Ask 2c
+ * (orpheus-finetune's NORMALIZATION_SPEC.md §F4, 2026-09-04). Counting bare runs
+ * of digits made "5,000" two of them, so `fewestNumberWords` demanded three
+ * number words and refused "five thousand copies" — a correct reading — with
+ * NUMBER_DROPPED. Measured on tr_dn3: it also refused "18,000-strong" →
+ * *eighteen thousand strong* and "20-30,000" → *twenty to thirty thousand*, and
+ * both rows still print their digits in the served corpus.
+ *
+ * The floor itself is sound (it is what catches "20:6" → "twenty"); what it
+ * could not see is that a comma is a separator INSIDE one number. Returned as
+ * the DIGITS of each number, comma removed, so the length test below counts
+ * digits and not characters.
+ */
+function digitRuns(text: string): string[] {
+  return (text.match(/\d{1,3}(?:,\d{3})+|\d+/g) ?? []).map((run) => run.replace(/,/g, ''));
+}
+
+/** How many separate numbers `text` prints. */
 function digitRunCount(text: string): number {
-  return (text.match(/\d+/g) ?? []).length;
+  return digitRuns(text).length;
 }
 
 /**
@@ -431,7 +451,7 @@ function digitRunCount(text: string): number {
  */
 function fewestNumberWords(text: string): number {
   let needed = 0;
-  for (const run of text.match(/\d+/g) ?? []) needed += run.length >= 3 ? 2 : 1;
+  for (const run of digitRuns(text)) needed += run.length >= 3 ? 2 : 1;
   return needed;
 }
 

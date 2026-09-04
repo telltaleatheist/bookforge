@@ -108,3 +108,13 @@ function passModule(type: JobType): StepModule {
 export const simplifyStep = passModule('simplify');
 export const translatePassStep = passModule('translate-pass');
 export const footnoteRefsStep = passModule('footnote-refs');
+/**
+ * The narration text cleanup, on the same module for the same reason.
+ *
+ * It is not a string replace like footnote-refs — it loads a model and reads the
+ * residue — but nothing about the ROW differs: it takes the planned
+ * `PassJobConfig`, ends in `runProcessingPass`, reports through the same bridge
+ * events, and `resourceForProvider` puts it on the same pool a simplify uses so
+ * it cannot run beside a render that wants the card.
+ */
+export const narrationTextStep = passModule('narration-text');
