@@ -4,13 +4,16 @@
  * ── The thing this exists to stop ───────────────────────────────────────────
  *
  * Every assembly in this app funnelled into ONE slot. `registerAudiobookOutput`
- * overwrites `manifest.outputs.audiobook`, and the promotion that precedes it
- * DELETES every .m4b, .vtt and .mp4 in the project's output folder before moving
- * the new files in. That is right for the run it was written for: a narration
+ * overwrites `manifest.outputs.audiobook`, and the promotion that preceded it
+ * used to DELETE every .m4b, .vtt and .mp4 in the project's output folder before
+ * moving the new files in. (The sweep is gone as of 2026-09-03 — no promotion
+ * deletes or replaces a file any more, and a taken name gets a ` (2)` suffix; see
+ * electron/output-naming.ts. The RECORD-level problem below is what this module
+ * still answers.) That was right for the run it was written for: a narration
  * assembles the sentences it just rendered, and the audiobook it replaces was
  * made from sentences that no longer exist.
  *
- * It is destruction when the run rendered nothing. Converting a project's cached
+ * It is wrong when the run rendered nothing. Converting a project's cached
  * sentences through a different RVC voice makes an ALTERNATIVE to the audiobook
  * the book already has — both are readings of the same rendered sentences — and
  * the old behaviour would spend forty minutes of GPU producing the alternative

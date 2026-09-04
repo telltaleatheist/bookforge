@@ -195,6 +195,7 @@ import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps, resolv
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 import { ensureWslDrivesFor } from './wsl-mounts';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
+import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import {
   findForeignRenders,
@@ -1313,39 +1314,81 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
  * Post-process output after e2a writes directly to the project audiobook folder.
  * Renames VTT to standard name.
  */
+/**
+ * THIS run's audiobook and its transcript, by path — never "the first .m4b in
+ * the folder", which was what this answered until 2026-09-03. With one
+ * audiobook per project that was the same thing; with the folder now keeping
+ * every render and any human recording filed there, it was a coin toss.
+ *
+ * The transcript is looked for under the audiobook's own stem: beside it, or
+ * in the `vtt/` subfolder `moveVttFile` files it under after a rename. It is
+ * moved beside the audiobook as `<stem>.vtt` so the embed that follows and the
+ * stem-matching sidecar cleanup both find it. It is no longer renamed to a
+ * shared `subtitles.vtt`, which two runs in one folder would have fought over.
+ */
 async function postProcessOutput(
   outputDir: string,
+  m4bPath: string,
 ): Promise<{ audioPath: string; vttPath?: string }> {
-  const files = await fs.readdir(outputDir);
-  const m4bFile = files.find(f => f.endsWith('.m4b') && !f.startsWith('._'));
-  let vttFile = files.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
-
-  // VTT may be in vtt/ subfolder
-  if (!vttFile) {
-    try {
-      const vttDir = path.join(outputDir, 'vtt');
-      const vttFiles = await fs.readdir(vttDir);
-      const found = vttFiles.find(f => f.endsWith('.vtt') && !f.startsWith('._'));
-      if (found) {
-        // Move from subfolder to output dir
-        await fs.rename(path.join(vttDir, found), path.join(outputDir, 'subtitles.vtt'));
-        vttFile = 'subtitles.vtt';
-      }
-    } catch {
-      // No vtt subfolder
-    }
+  const stem = path.basename(m4bPath, path.extname(m4bPath));
+  const beside = path.join(path.dirname(m4bPath), `${stem}.vtt`);
+  if (fsSync.existsSync(beside)) return { audioPath: m4bPath, vttPath: beside };
+  const inSubfolder = path.join(outputDir, 'vtt', `${stem}.vtt`);
+  if (fsSync.existsSync(inSubfolder)) {
+    await fs.rename(inSubfolder, beside);
+    return { audioPath: m4bPath, vttPath: beside };
   }
+  return { audioPath: m4bPath };
+}
 
-  // Rename VTT to standard name
-  if (vttFile && vttFile !== 'subtitles.vtt') {
-    await fs.rename(path.join(outputDir, vttFile), path.join(outputDir, 'subtitles.vtt'));
-    vttFile = 'subtitles.vtt';
+/**
+ * Move an assembled audiobook — and everything else e2a left in the per-run
+ * staging folder — into the output folder under FREE names, then drop the
+ * staging folder. `p` is the audiobook's current path: still inside `asmDir`
+ * when nothing renamed it, or already in `outputDir` when applyM4bMetadata
+ * filed it under the custom name (in which case only the leftovers move).
+ *
+ * The audiobook's stem is resolved ONCE across every staged file sharing it, so
+ * a numbered rename keeps the audio and its transcript together. Returns the
+ * audiobook's final path. Never deletes or replaces an existing file.
+ */
+async function promoteFromAssemblyDir(p: string, asmDir: string, outputDir: string): Promise<string> {
+  let finalM4b = p;
+  let entries: string[] = [];
+  try {
+    entries = (await fs.readdir(asmDir)).filter((f) => !f.startsWith('._'));
+  } catch {
+    return finalM4b; // staging already gone — nothing to promote
   }
-
-  return {
-    audioPath: m4bFile ? path.join(outputDir, m4bFile) : path.join(outputDir, 'audiobook.m4b'),
-    vttPath: vttFile ? path.join(outputDir, vttFile) : undefined
-  };
+  const files: string[] = [];
+  for (const name of entries) {
+    const full = path.join(asmDir, name);
+    if ((await fs.stat(full)).isFile()) files.push(name);
+  }
+  const m4bName = path.resolve(path.dirname(p)) === path.resolve(asmDir) ? path.basename(p) : undefined;
+  const stemOf = (name: string): string => path.basename(name, path.extname(name));
+  const m4bStem = m4bName ? stemOf(m4bName) : undefined;
+  const sharedExts = m4bStem === undefined
+    ? []
+    : files.filter((f) => stemOf(f) === m4bStem).map((f) => path.extname(f));
+  const finalStem = m4bStem === undefined ? undefined : uniqueOutputStem(outputDir, m4bStem, sharedExts);
+  if (m4bStem !== undefined && finalStem !== m4bStem) {
+    console.log(`[PARALLEL-TTS] "${m4bName}" already exists in the output folder; filing this render as "${finalStem}${path.extname(m4bName!)}" beside it`);
+  }
+  for (const name of files) {
+    const src = path.join(asmDir, name);
+    const dest = m4bStem !== undefined && stemOf(name) === m4bStem
+      ? path.join(outputDir, `${finalStem}${path.extname(name)}`)
+      : uniqueOutputPath(path.join(outputDir, name));
+    await fs.rename(src, dest);
+    if (name === m4bName) finalM4b = dest;
+  }
+  try {
+    await fs.rmdir(asmDir);
+  } catch (err) {
+    console.warn(`[PARALLEL-TTS] Assembly staging folder not removed (left as is): ${asmDir}`, err);
+  }
+  return finalM4b;
 }
 
 /**
@@ -4936,6 +4979,7 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
     try {
       const result = await postProcessOutput(
         config.outputDir,
+        processedPath,
       );
       console.log('[PARALLEL-TTS] Post-processing complete:', result);
       // Seal the transcript INTO the m4b as a subtitle track — the single source of
@@ -5067,6 +5111,19 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const { config, prepInfo } = session;
   if (!prepInfo) throw new Error('Session not prepared');
 
+  // e2a writes the assembled audiobook under a name it derives from the BOOK, and
+  // it writes it wherever --output_dir points. Pointed straight at the project's
+  // output folder, a second run under the same derived name replaced the first,
+  // and the post-processing below then picked "the first .m4b in the folder" as
+  // this run's result — which, with more than one audiobook there, was anyone's.
+  // So e2a assembles into a per-run staging folder INSIDE output/ (same
+  // filesystem, so the promotion is a rename), and the finished files are moved
+  // beside the folder's existing audiobooks under names that are free — see
+  // promoteFromAssemblyDir and electron/output-naming.ts. Nothing already in
+  // output/ is deleted or replaced (Owen, 2026-09-03).
+  const asmOutputDir = path.join(config.outputDir, `.staging-${session.jobId}`);
+  await fs.mkdir(asmOutputDir, { recursive: true });
+
   // Emit assembling phase
   if (mainWindow) {
     const progress: AggregatedProgress = {
@@ -5129,7 +5186,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--headless',
     // Only include --ebook if we have a path (assembly_only doesn't require it)
     ...(config.epubPath ? ['--ebook', config.epubPath] : []),
-    '--output_dir', config.outputDir,
+    '--output_dir', asmOutputDir,
     '--session', prepInfo.sessionId,
     // Pass --session_dir when session may not be in default e2a tmp location
     // (e.g., cached sessions in the project audiobook folder)
@@ -5340,12 +5397,12 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         // output.
         if (!outputPath) {
           try {
-            const files = await fs.readdir(config.outputDir);
+            const files = await fs.readdir(asmOutputDir);
             // Filter for .m4b files, excluding macOS resource forks (._* files)
             const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
             let mostRecent: { file: string; mtime: number } | null = null;
             for (const file of m4bFiles) {
-              const filePath = path.join(config.outputDir, file);
+              const filePath = path.join(asmOutputDir, file);
               const stat = await fs.stat(filePath);
               if (stat.mtimeMs < assemblyStartMs - FRESHNESS_SLACK_MS) continue; // stale — predates this run
               if (!mostRecent || stat.mtimeMs > mostRecent.mtime) {
@@ -5353,7 +5410,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
               }
             }
             if (mostRecent) {
-              outputPath = path.join(config.outputDir, mostRecent.file);
+              outputPath = path.join(asmOutputDir, mostRecent.file);
             }
           } catch (err) {
             console.error('[PARALLEL-TTS] Error finding output file:', err);
@@ -5365,7 +5422,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           // no audiobook in this run. Something is deeply wrong (wrong output
           // dir, silent e2a failure) — refuse to adopt any pre-existing m4b.
           reject(new Error(
-            `Assembly exited successfully but no audiobook created during this run was found in ${config.outputDir} ` +
+            `Assembly exited successfully but no audiobook created during this run was found in ${asmOutputDir} ` +
             `(started ${new Date(assemblyStartMs).toISOString()}). Any existing .m4b files there predate this run and were not adopted. ` +
             `This indicates a deeper problem with the assembly step — check the worker log.`
           ));
@@ -5389,22 +5446,27 @@ async function runAssembly(session: ConversionSession): Promise<string> {
           return;
         }
 
+        // Whatever metadata/rename does, the audiobook leaves the staging folder
+        // here, beside the folder's existing audiobooks, under a free name.
+        const settle = async (p: string): Promise<string> =>
+          finalizeOutputPath(await promoteFromAssemblyDir(p, asmOutputDir, config.outputDir), session);
+
         if (config.metadata && finalPath && config.outputDir) {
           try {
             console.log('[PARALLEL-TTS] Calling applyM4bMetadata...');
             const processedPath = await applyM4bMetadata(finalPath, config.metadata, config.outputDir, config.bfpPath);
             console.log('[PARALLEL-TTS] After metadata, path:', processedPath);
-            resolve(await finalizeOutputPath(processedPath, session));
+            resolve(await settle(processedPath));
           } catch (metaErr) {
             console.error('[PARALLEL-TTS] Metadata processing failed, using original file:', metaErr);
-            resolve(await finalizeOutputPath(finalPath, session));
+            resolve(await settle(finalPath));
           }
         } else {
           if (!config.outputDir) {
             console.error('[PARALLEL-TTS] Cannot apply metadata/rename - outputDir is empty');
           }
           console.log('[PARALLEL-TTS] Skipping metadata - config.metadata is:', config.metadata);
-          resolve(await finalizeOutputPath(finalPath, session));
+          resolve(await settle(finalPath));
         }
       } else {
         // Assembly FAILED. Do NOT scan the output dir for an m4b to adopt — the
@@ -5621,24 +5683,8 @@ async function moveVttFile(originalM4bPath: string, newM4bPath: string): Promise
  * e.g., "My Book.m4b" -> "My Book 2.m4b" -> "My Book 3.m4b"
  */
 async function getUniqueFilePath(filePath: string): Promise<string> {
-  const dir = path.dirname(filePath);
-  const ext = path.extname(filePath);
-  const baseName = path.basename(filePath, ext);
-
-  let counter = 1;
-  let uniquePath = filePath;
-
-  while (true) {
-    try {
-      await fs.access(uniquePath);
-      // File exists, try next number
-      counter++;
-      uniquePath = path.join(dir, `${baseName} ${counter}${ext}`);
-    } catch {
-      // File doesn't exist, we can use this path
-      return uniquePath;
-    }
-  }
+  // One naming rule for every door that files an output — see output-naming.ts.
+  return uniqueOutputPath(filePath);
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

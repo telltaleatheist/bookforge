@@ -11,6 +11,7 @@ import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDis
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
 import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry';
+import { uniqueOutputStem, uniqueOutputPath } from './output-naming';
 import { getReassemblyLogger } from './rolling-logger';
 import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
@@ -2308,13 +2309,10 @@ export async function startReassembly(
         if (outputPath && fs.existsSync(outputPath)) {
           try {
             // 1. Move the freshly built files into the output dir under UNIQUE TEMP
-            //    names FIRST — before touching the old output. This is the core fix:
-            //    the old output is never deleted until the new files are confirmed on
-            //    disk, so a failed move can't leave the project with no audiobook (the
-            //    previous delete-old-then-move order did exactly that when the move hit
-            //    EBUSY on the synced drive). staging lives under outputDir, so these are
-            //    same-filesystem renames (no EXDEV).
-            const staged: { tmp: string; dest: string; isOutput: boolean; isSealVtt: boolean }[] = [];
+            //    names first. staging lives under outputDir, so these are
+            //    same-filesystem renames (no EXDEV). Their final names are decided
+            //    in step 2, once everything this run built is safely in the folder.
+            const staged: { tmp: string; wanted: string; dest: string; isOutput: boolean; isSealVtt: boolean }[] = [];
             const stagingFiles = fs.readdirSync(stagingDir);
             for (const file of stagingFiles) {
               const src = path.join(stagingDir, file);
@@ -2354,48 +2352,63 @@ export async function startReassembly(
                   path.extname(variantFiling.outputFilename),
                 )}${path.extname(file)}`
                 : file;
-              const dest = path.join(config.outputDir, promotedName);
-              const tmp = `${dest}.promote-${jobId}.tmp`;
+              const tmp = `${path.join(config.outputDir, promotedName)}.promote-${jobId}.tmp`;
               await renameWithRetry(src, tmp);
-              staged.push({ tmp, dest, isOutput: src === outputPath, isSealVtt: src === sealVttSource });
+              staged.push({
+                tmp, wanted: promotedName, dest: '', isOutput: src === outputPath, isSealVtt: src === sealVttSource,
+              });
             }
 
-            // 2. New files are safe in the output dir now — remove the OLD audiobook
-            //    files. Each unlink is isolated + retried so a briefly-locked file
-            //    doesn't abort promotion; genuinely stuck ones are collected for the
-            //    hint. (Our just-moved temps end in .tmp, so the m4b/vtt/mp4 filter
-            //    below never touches them.)
-            //
-            //    A run filing a SECOND version sweeps NOTHING. The audiobooks
-            //    already in this folder are other readings of the same book —
-            //    the very thing it was started to sit beside — and the sweep
-            //    would delete the original on the way to filing its
-            //    alternative. Its own previous file, if this voice has been run
-            //    before, is replaced by name in step 3 like any other output.
-            const lockedOld: string[] = [];
-            if (!variantFiling && fs.existsSync(config.outputDir)) {
-              for (const file of fs.readdirSync(config.outputDir)) {
-                if (file.startsWith('bilingual-') || file === 'session' || file.startsWith('.staging-')) continue;
-                if (file.endsWith('.m4b') || file.endsWith('.vtt') || file.endsWith('.mp4')) {
-                  const filePath = path.join(config.outputDir, file);
-                  try {
-                    if (fs.statSync(filePath).isFile()) {
-                      await unlinkWithRetry(filePath);
-                      console.log(`[REASSEMBLY] Cleaned up old output file: ${file}`);
-                    }
-                  } catch (unlinkErr) {
-                    console.warn(`[REASSEMBLY] Could not remove old output file ${file} (in use?):`, unlinkErr);
-                    lockedOld.push(file);
-                  }
-                }
-              }
+            /*
+             * 2. NOTHING ALREADY IN THE OUTPUT FOLDER IS DELETED OR REPLACED.
+             *
+             * This step used to sweep every .m4b, .vtt and .mp4 out of the folder
+             * before filing the new render, on the theory that the audiobook it
+             * replaced was made from sentences that no longer existed. The theory
+             * did not know what else lived there: on 2026-08-23 the sweep deleted
+             * two professionally read recordings (Shift, Dust) that happened to
+             * sit in output/, and they came back only because titan keeps a
+             * recycle bin. Owen's ruling (2026-09-03): the system does not delete
+             * audiobooks. A new render is filed BESIDE whatever is there; if the
+             * user wants the old one gone, they delete the file themselves.
+             *
+             * So the final names are resolved against the folder as it is. The
+             * m4b's stem is decided ONCE, across every extension this run shares
+             * with it (the transcript and a video carry the same stem), so the
+             * audiobook and its sidecars move to `Book (2).*` together and never
+             * pair with another run's files. Anything else this run built keeps
+             * its own name unless that too is taken.
+             */
+            const m4bEntry = staged.find((s) => s.isOutput);
+            if (!m4bEntry) {
+              throw new Error('The assembled audiobook was not among the staged files; nothing was promoted.');
             }
-
-            // 3. Put the new files at their final names. If an old file with the same
-            //    name survived step 2 (still locked), replace it: remove then rename,
-            //    both retried.
+            const m4bExt = path.extname(m4bEntry.wanted);
+            const m4bStem = path.basename(m4bEntry.wanted, m4bExt);
+            const stemOf = (name: string): string => path.basename(name, path.extname(name));
+            const sharedExts = staged.filter((s) => stemOf(s.wanted) === m4bStem).map((s) => path.extname(s.wanted));
+            const finalStem = uniqueOutputStem(config.outputDir, m4bStem, sharedExts);
             for (const s of staged) {
-              if (fs.existsSync(s.dest)) await unlinkWithRetry(s.dest);
+              s.dest = stemOf(s.wanted) === m4bStem
+                ? path.join(config.outputDir, `${finalStem}${path.extname(s.wanted)}`)
+                : uniqueOutputPath(path.join(config.outputDir, s.wanted));
+            }
+            if (finalStem !== m4bStem) {
+              console.log(`[REASSEMBLY] "${m4bStem}${m4bExt}" already exists in the output folder; filing this render as "${finalStem}${m4bExt}" beside it`);
+              reassemblyLog.info('Output name taken; filed the render under a numbered name beside it', {
+                jobId, wanted: `${m4bStem}${m4bExt}`, filed: `${finalStem}${m4bExt}`,
+              });
+            }
+
+            // 3. Put the new files at their final names. A name that was free a
+            //    moment ago and is taken now belongs to something else writing this
+            //    folder; it is stepped around, never replaced.
+            for (const s of staged) {
+              if (fs.existsSync(s.dest)) {
+                const stepped = uniqueOutputPath(s.dest);
+                console.warn(`[REASSEMBLY] ${path.basename(s.dest)} appeared during promotion; filing as ${path.basename(stepped)} instead`);
+                s.dest = stepped;
+              }
               await renameWithRetry(s.tmp, s.dest);
               console.log(`[REASSEMBLY] Promoted ${path.basename(s.dest)} to output`);
               if (s.isOutput) outputPath = s.dest;
@@ -2410,15 +2423,12 @@ export async function startReassembly(
             // Verify the M4B is now at its final name in the output dir (not still in
             // staging, nor left as a temp).
             if (!outputPath || !fs.existsSync(outputPath) || outputPath.includes('.staging-') || outputPath.endsWith('.tmp')) {
-              const hint = lockedOld.length
-                ? ` A previous output file may be open in another app: ${lockedOld.join(', ')}. Close it and re-run Assemble.`
-                : '';
-              promotionFailed(`The finished audiobook was assembled but couldn't be moved into the output folder.${hint}`);
+              promotionFailed('The finished audiobook was assembled but couldn\'t be moved into the output folder.');
               return;
             }
           } catch (moveErr) {
             const busy = isTransientFsError(moveErr);
-            const hint = busy ? ' A previous output file is likely open in another app (e.g. a player); it stayed locked through several retries. Close it and re-run Assemble.' : '';
+            const hint = busy ? ' The output folder stayed busy through several retries (a sync client or another app holding it). Re-run Assemble once it settles.' : '';
             promotionFailed(`Failed to move the finished audiobook from staging to the output folder.${hint} Your audio is preserved in: ${stagingDir}`, moveErr);
             return;
           }

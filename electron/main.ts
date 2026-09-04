@@ -8481,9 +8481,18 @@ function setupIpcHandlers(): void {
         // Cleared, the shelf falls back to its own precedence, which is honest.
         if (mf.ttsVariantId === variantId) delete mf.ttsVariantId;
         if (removed && mf.outputs?.audiobook?.path === removed.path) {
-          const next = mf.variants.find((v) => v.kind === 'audiobook' && !v.id.startsWith('bilingual:'));
-          if (next) mf.outputs.audiobook = { ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath };
-          else delete mf.outputs.audiobook;
+          // The stamped row, not the raw record: outputs.audiobook carries its own
+          // professionallyRead, and keeping the DELETED file's flag on the pointer
+          // now aimed at a different recording is how a human narration came to
+          // read as TTS output (Mutineer's Moon, 2026-09-03).
+          const next = survivors.find((v) => v.kind === 'audiobook' && !v.id.startsWith('bilingual:') && recorded.has(v.id));
+          if (next) {
+            mf.outputs.audiobook = {
+              ...mf.outputs.audiobook, path: next.path, vttPath: next.vttPath, professionallyRead: next.professionallyRead,
+            };
+          } else {
+            delete mf.outputs.audiobook;
+          }
         }
         // If this was a bilingual output, clear its pointer too — otherwise
         // getVariants would re-fold a ghost row for the file we're deleting.

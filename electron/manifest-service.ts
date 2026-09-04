@@ -802,6 +802,14 @@ export function foundryProvenanceOf(v: ProjectVariant): FoundryVariantSource | u
   return v.foundrySource ?? v.promotedFrom;
 }
 
+/**
+ * The variant id `outputs.audiobook` is folded under when 'audiobook' is held by
+ * a human recording the render did not replace (see the fold in getVariants).
+ * Derived and stable, like `bilingual:<pair>` and `rvc:<voice>`: a re-render
+ * updates this row rather than minting another.
+ */
+export const OUTPUT_SLOT_VARIANT_ID = 'audiobook:output';
+
 export function getVariants(manifest: ProjectManifest): { variants: ProjectVariant[]; primaryVariantId?: string } {
   const m = manifest.metadata;
   const baseMeta = (): VariantMetadata => ({
@@ -840,32 +848,48 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
   }
 
   // Fold the mono audiobook output. `outputs.audiobook` is AUTHORITATIVE for the
-  // single 'audiobook' variant — registerAudiobookOutput rewrites it on every
+  // project's RENDER slot — registerAudiobookOutput rewrites it on every
   // (re)assembly. If a reassembly RENAMED the file (e.g. the output filename
-  // gained an author/year suffix), an existing 'audiobook' variant still points
-  // at the OLD path. Deduping only by path would then MISS the match and append a
-  // SECOND 'audiobook' variant — same id, different path — yielding duplicate
-  // cards, a colliding variant id, and a stale entry whose m4b/vtt no longer
-  // exist (breaking audio + synced-text in the player). So when an 'audiobook'
-  // variant already exists, reconcile its path + vttPath from outputs.audiobook
-  // (keeping its descriptor/metadata) instead of pushing a duplicate. This
-  // self-heals divergent manifests on read; the corrected set is persisted the
-  // next time the caller writes `mf.variants = cur.variants`.
+  // gained an author/year suffix, or a re-render took a ` (2)` name because the
+  // old file was kept), the slot's stored variant still points at the OLD path.
+  // Deduping only by path would then MISS the match and append a SECOND variant
+  // under the same id — duplicate cards, a colliding variant id, and a stale
+  // entry whose m4b/vtt may no longer exist. So when the slot's variant already
+  // exists, reconcile its path + vttPath from outputs.audiobook (keeping its
+  // descriptor/metadata) instead of pushing a duplicate. This self-heals
+  // divergent manifests on read; the corrected set is persisted the next time
+  // the caller writes `mf.variants = cur.variants`.
+  //
+  // WHICH id is the render slot depends on who holds 'audiobook'. A project
+  // imported FROM a human recording records it as outputs.audiobook, which this
+  // fold materialises as the 'audiobook' variant; when that project is later
+  // narrated, registerAudiobookOutput points outputs.audiobook at the render.
+  // Reconciling then would REWRITE the human recording's row into the render —
+  // the recording stays on disk and vanishes from every list, which is exactly
+  // what happened to Mutineer's Moon (2026-09-03). A human recording is a
+  // DIFFERENT audiobook from a render, never a renamed one, so it keeps its row
+  // and its id (listening positions and bookmarks are keyed on it), and the
+  // render is folded under OUTPUT_SLOT_VARIANT_ID beside it.
   const ab = manifest.outputs?.audiobook;
   if (ab?.path) {
     const abNorm = normPath(ab.path);
-    const existingIdx = variants.findIndex((v) => v.id === 'audiobook' && v.kind === 'audiobook');
-    if (existingIdx >= 0) {
-      const existing = variants[existingIdx];
+    const holder = variants.find((v) => v.id === 'audiobook' && v.kind === 'audiobook');
+    const holderIsHumanRecording = !!holder
+      && normPath(holder.path) !== abNorm
+      && (holder.professionallyRead === true || normPath(holder.path).startsWith('archive/'));
+    const slotId = holderIsHumanRecording ? OUTPUT_SLOT_VARIANT_ID : 'audiobook';
+    const slotIdx = variants.findIndex((v) => v.id === slotId && v.kind === 'audiobook');
+    if (slotIdx >= 0) {
+      const existing = variants[slotIdx];
       if (normPath(existing.path) !== abNorm) {
         seen.delete(normPath(existing.path));
-        variants[existingIdx] = { ...existing, path: ab.path, vttPath: ab.vttPath ?? existing.vttPath };
+        variants[slotIdx] = { ...existing, path: ab.path, vttPath: ab.vttPath ?? existing.vttPath };
         seen.add(abNorm);
       }
     } else if (!seen.has(abNorm)) {
       seen.add(abNorm);
       variants.push({
-        id: 'audiobook',
+        id: slotId,
         kind: 'audiobook',
         format: 'm4b',
         path: ab.path,
@@ -898,19 +922,26 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
 
   // Stamp the user-settable "professionally read" flag on every audiobook variant,
   // filling only a missing value so an explicit flag is never overwritten (via ??):
-  //   • the 'audiobook' output variant → outputs.audiobook.professionallyRead, else
-  //     default true for imports (source.type 'audiobook') and false otherwise.
+  //   • the variant that IS outputs.audiobook (same path) → outputs.audiobook's flag,
+  //     else the row's own, else default true for imports (source.type 'audiobook')
+  //     and false otherwise.
+  //   • an 'audiobook' row that is NOT outputs.audiobook (a human recording the
+  //     render displaced, see the fold above) → its own flag, else true: it is
+  //     either explicitly human or lives under archive/, which only the user fills.
   //   • bilingual variants → outputs.bilingualAudiobooks[pair].professionallyRead ?? false.
   //   • any other stored audiobook variant → v.professionallyRead ?? true (variant:add is
   //     user-supplied human audio). Ebook variants are left untouched.
   // Runs after both folds so it also covers synthesized variants that a prior mutation
   // persisted into manifest.variants before this field existed.
+  const abNormForStamp = ab?.path ? normPath(ab.path) : undefined;
   for (let i = 0; i < variants.length; i++) {
     const v = variants[i];
     if (v.kind !== 'audiobook') continue;
     let professionallyRead: boolean;
-    if (v.id === 'audiobook') {
-      professionallyRead = ab?.professionallyRead ?? (manifest.source?.type === 'audiobook');
+    if (v.id === 'audiobook' || v.id === OUTPUT_SLOT_VARIANT_ID) {
+      professionallyRead = normPath(v.path) === abNormForStamp
+        ? (ab?.professionallyRead ?? v.professionallyRead ?? (manifest.source?.type === 'audiobook'))
+        : (v.professionallyRead ?? true);
     } else if (v.id.startsWith('bilingual:')) {
       const pair = v.id.slice('bilingual:'.length);
       professionallyRead = manifest.outputs?.bilingualAudiobooks?.[pair]?.professionallyRead ?? false;
@@ -5783,6 +5814,47 @@ export async function clearProcessingRecords(projectDir: string, familyId?: stri
   return { hadEpubRecord, appliedPasses, clearedSourceKeys };
 }
 
+/**
+ * Before `outputs.audiobook` is pointed at a new file: if it currently names a
+ * HUMAN recording at a different path that no stored variant records, write
+ * that recording down as the 'audiobook' variant first.
+ *
+ * outputs.audiobook is the only record a project imported from a recording has
+ * of it until something persists the folded variant list. Overwriting that
+ * pointer with a render — which every narration does — would otherwise erase the
+ * recording from the project while its file sat untouched on disk. The row is
+ * written with the flag it will be read with, so the fold in getVariants
+ * recognises it as the human recording and files the render beside it.
+ */
+function keepDisplacedHumanRecording(manifest: ProjectManifest, newM4bRel: string): void {
+  const current = manifest.outputs?.audiobook;
+  if (!current?.path || current.professionallyRead !== true) return;
+  const norm = (p: string): string => p.replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+  if (norm(current.path) === norm(newM4bRel)) return;
+  const stored = manifest.variants ?? [];
+  if (stored.some((v) => v.kind === 'audiobook' && norm(v.path) === norm(current.path))) return;
+  const takenIds = new Set(stored.map((v) => v.id));
+  const m = manifest.metadata;
+  manifest.variants = [
+    ...stored,
+    {
+      id: takenIds.has('audiobook') ? crypto.randomUUID() : 'audiobook',
+      kind: 'audiobook',
+      format: 'm4b',
+      path: current.path,
+      metadata: {
+        title: m.title, author: m.author, year: m.year, language: m.language,
+        narrator: m.narrator, series: m.series, seriesPosition: m.seriesPosition,
+        description: m.description, coverPath: m.coverPath,
+        ...(m.audiobook || {}),
+      },
+      vttPath: current.vttPath,
+      addedAt: current.completedAt || manifest.createdAt,
+      professionallyRead: true,
+    },
+  ];
+}
+
 export async function registerAudiobookOutput(
   m4bAbsPath: string,
   opts?: { narrator?: string; professionallyRead?: boolean },
@@ -5801,6 +5873,7 @@ export async function registerAudiobookOutput(
 
   return modifyManifest(projectId, (manifest) => {
     if (!manifest.outputs) manifest.outputs = {};
+    keepDisplacedHumanRecording(manifest, m4bRel);
     manifest.outputs.audiobook = {
       ...manifest.outputs.audiobook,
       path: m4bRel,

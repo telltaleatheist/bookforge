@@ -274,36 +274,34 @@ export async function setVariantProfessional(
     const saved = await manifestService.modifyManifest(projectId, (mf) => {
       const cur = manifestService.getVariants(mf);
       mf.variants = cur.variants;
-      if (variantId === 'audiobook') {
-        if (mf.outputs?.audiobook) { mf.outputs.audiobook.professionallyRead = value; found = true; }
-      } else if (variantId.startsWith('bilingual:')) {
-        const pair = variantId.slice('bilingual:'.length);
-        const bo = mf.outputs?.bilingualAudiobooks?.[pair];
-        if (bo) { bo.professionallyRead = value; found = true; }
-      } else {
-        const v = mf.variants.find((x) => x.id === variantId);
-        if (v) { v.professionallyRead = value; found = true; }
-      }
-      // ONE FILE, ONE ANSWER. The flag lives in two places — outputs.audiobook and
-      // the stored variant — and the SAME m4b is reachable through both, because
-      // getVariants dedupes them by path (a stored variant keeps its own uuid while
-      // outputs.audiobook stays authoritative for the 'audiobook' id). Writing only
-      // the addressed one lets them disagree, and then which answer the UI shows
-      // depends on which id the click happened to carry. That is exactly how a
-      // professionally-read recording came to be labelled as TTS output
-      // (God's People, 2026-07-25) and how Animal Farm ended up storing false while
-      // its output record said true. So stamp every record pointing at the SAME file.
+      // The FILE the click is about is whatever getVariants answered for this id —
+      // never `outputs.audiobook` by assumption. The 'audiobook' id used to be
+      // read as "the output pointer", but that pointer names the project's latest
+      // RENDER, and 'audiobook' can be held by a human recording the render was
+      // filed beside (see getVariants); addressing the pointer would have flipped
+      // the render's flag while the user was looking at the recording.
       const norm = (p?: string) => (p || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
-      const target = variantId === 'audiobook'
-        ? mf.outputs?.audiobook?.path
-        : mf.variants.find((x) => x.id === variantId)?.path;
-      if (found && target) {
-        if (mf.outputs?.audiobook && norm(mf.outputs.audiobook.path) === norm(target)) {
-          mf.outputs.audiobook.professionallyRead = value;
-        }
-        for (const v of mf.variants) {
-          if (v.kind === 'audiobook' && norm(v.path) === norm(target)) v.professionallyRead = value;
-        }
+      const target = cur.variants.find((x) => x.id === variantId && x.kind === 'audiobook')?.path;
+      if (!target) return;
+      found = true;
+      // ONE FILE, ONE ANSWER. The flag lives in several places — outputs.audiobook,
+      // the bilingual outputs and the stored variants — and the SAME m4b can be
+      // reachable through more than one, because getVariants dedupes them by path.
+      // Writing only the addressed one lets them disagree, and then which answer
+      // the UI shows depends on which id the click happened to carry. That is
+      // exactly how a professionally-read recording came to be labelled as TTS
+      // output (God's People, 2026-07-25) and how Animal Farm ended up storing
+      // false while its output record said true. So stamp every record pointing
+      // at the SAME file.
+      if (mf.outputs?.audiobook && norm(mf.outputs.audiobook.path) === norm(target)) {
+        mf.outputs.audiobook.professionallyRead = value;
+      }
+      for (const bo of Object.values(mf.outputs?.bilingualAudiobooks || {})) {
+        const out = bo as { path?: string; professionallyRead?: boolean };
+        if (norm(out.path) === norm(target)) out.professionallyRead = value;
+      }
+      for (const v of mf.variants) {
+        if (v.kind === 'audiobook' && norm(v.path) === norm(target)) v.professionallyRead = value;
       }
     });
     if (!saved?.success) return { success: false, error: saved?.error || 'Failed to save manifest' };
