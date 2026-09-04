@@ -126,7 +126,7 @@ How it is enforced:
 
 | class | allowed reading |
 |---|---|
-| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`), **in that case exactly** — "The f b i had" was applied and written verbatim before the case was checked. The lower-cased reading needs **four letters, a vowel, and not to be a known initialism**, so `US` → `us` and `WHO` → `who` are refused and only the letters reading is offered. An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
+| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`), **in that case exactly** — "The f b i had" was applied and written verbatim before the case was checked. The lower-cased reading needs **four letters and the lower-cased form to be an English word** in `electron/data/english-words.json`; a denylist could not bound an open class (OSCE, RSHA, SHAEF, BOAC, ICAO, IATA, ASEAN, SWAPO, UNITA, FRELIMO, COMECON, UNPROFOR, ELAS, EOKA, ODESSA all passed it). `US` and `WHO` get the letters reading only, by length. An acronym that happens to be a word (ARMS) keeps both readings, which is accepted. An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
 | abbreviation | an entry from the curated table — Dr. Prof. St. Mt. Ave. Blvd. Rd. Jr. Sr. No. e.g. i.e. etc. vs. viz. cf. a.m. p.m. and the rest — in the case the table wrote it, all lower, or capitalized on the first letter. **An unknown abbreviation is REFUSED and named**, never guessed. Mr./Mrs./Ms. are deliberately absent — the prompt says to leave them |
 | roman | exactly the cardinal or ordinal words of its value, with or without a leading "the" — **and only where a book prints a numeral**: after a part word, before a century, or after a name from the **curated regnal list** (monarchs, popes, emperors). "Any capitalized word" read "Doctor Smith MD" as "Smith one thousand five hundred". MD, CD, DC, MC, CV, MM, XL, DI, LI, IX, CIV and MIX are legal numerals *and* ordinary acronyms, and forcing them through the roman table made `M I X` impossible. **The letters reading is never forbidden** |
 | bracket | **square** brackets: an interpolation of WORDS is READ — the permitted edit is to drop the brackets and keep the words (`[he said]` → `he said`) — and only apparatus is deleted (`[sic]`, `[12]`, `[ed.]`, `[…]`, `[*]`). **round** brackets: the author's, deleted only when the contents match an apparatus PATTERN with a digit, a citation abbreviation or a fixed editorial term (`(sic)`, `(see page twelve)`, `(emphasis added)`, `(Kershaw 1993)`, `(12)`), so `(note she wept)` and `(source of evil)` stay |
@@ -153,7 +153,11 @@ a name** (`Dr.`, `Prof.`, `Mt.`, and `St.` when nothing capitalized already
 stands in front of it): the capital after it is the name, not a new sentence, so
 "Dr. Kempner" reads "Doctor Kempner".
 
-**The ampersand** is its own class: `&` reads "and", checked by shape.
+**The ampersand** is its own class, and it has two shapes. A **spaced** `&`
+reads "and". A **glued** one is a single token whose sides are read as class-3
+tokens and joined by " and ": `AT&T` → `A T and T`, `R&D` → `R and D`,
+`Smith&Jones` → `Smith and Jones`. A bare replace served both once, and wrote
+`ATandT` into a book.
 
 `classifyEdit` is per-token and position-aware: a period at the **end** of a span
 is a sentence, not an abbreviation, so `He did not believe it.` is prose; a period
@@ -496,8 +500,18 @@ electron/tts-spoken-forms.js
 ```
 
 `tts-spoken-forms.js` is what `tts-number-normalizer.js` now requires, and it is
-a **leaf**: it imports nothing at all, not even from this repo, so it drags
-nothing behind it. The number words a roman numeral may be read as are passed
+a **leaf**: it imports nothing from this repo, so it drags nothing behind it. It
+does read one DATA file at first use, through `fs` and `path` alone —
+
+```
+electron/data/english-words.json
+```
+
+— which decides whether a run of capitals is a word the author shouted or an
+initialism. It is a positive list, compiled for this repository (no third-party
+licence applies), and a word it does not carry is refused the lower-cased reading
+and offered the spaced-letters one, which is the safe direction. Vendor it beside
+the module. The number words a roman numeral may be read as are passed
 *in* by the caller, which already has them — one definition, no second copy.
 
 It is a straight port of `pipeline/normalization/punctuation.js` — same exported
@@ -509,10 +523,27 @@ loads under plain node with no Electron stub. Once vendored, `punctuation.js` on
 that side can become a re-export of it, and the two halves of the shared
 definition are both BookForge's.
 
-### Shared fixtures
+### Shared fixtures — and what the training side owes
 
-`tools/fixtures/text-normalization-cases.json` is a copy of their
-`fixtures/cases.json`, case ids kept, plus five of ours marked `added_in`:
+`tools/fixtures/text-normalization-cases.json` began as a copy of their
+`fixtures/cases.json`, case ids kept. **The two files have diverged**: 104 cases
+here against 53 there, and **until their file is updated the corpora and the
+renders normalize differently** — by design, from rulings they have not mirrored,
+not by accident.
+
+| what | how many | which |
+|---|---|---|
+| expectations to **change** | 3 | `leave-page-cite`, `leave-doc-code`, `leave-glued` |
+| `known_defect` now **fixed** | 1 | `leave-archive` |
+| cases to **add** | 51 | every one marked `added_in` with its ruling or review row |
+
+Those four changed expectations are exactly the four differences
+`run_fixtures.js --compare` reports. The 51 additions cover the cross-chapter
+scripture range, the archive sigil's opposite direction, the page and glued
+readings, the unit suffixes, the `<br/>`-fused ordinals, and the
+year/decade/ordinal shapes the glued rule must leave to the model.
+
+A sample of the earliest of them:
 
 | id | why |
 |---|---|
@@ -614,7 +645,8 @@ asserts no digit-adjacent colon survives.
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
 | `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |
-| `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables (a LEAF: imports nothing) |
+| `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables (a LEAF: imports nothing from this repo) |
+| `electron/data/english-words.json` | the word test behind the emphasis reading |
 | `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
 | `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
 | `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables (that list itself has no consumer — see above) |

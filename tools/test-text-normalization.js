@@ -7,13 +7,36 @@
  *
  * ── Why these cases are not ours ────────────────────────────────────────────
  *
- * `tools/fixtures/text-normalization-cases.json` is a copy of
+ * `tools/fixtures/text-normalization-cases.json` began as a copy of
  * `pipeline/normalization/fixtures/cases.json` from the orpheus-finetune
  * checkout, case ids kept. The training corpora and this app are meant to run
  * ONE text-normalization definition, so both sides are judged on the same file:
  * a case that one side passes and the other fails is a disagreement about the
- * SPEC, not about which examples anyone chose. Five cases are ours, added with
- * the n5 rule fixes and marked `added_in`; the training side mirrors them.
+ * SPEC, not about which examples anyone chose.
+ *
+ * ── THE TWO FILES HAVE DIVERGED, AND THIS IS THE LEDGER OF IT ───────────────
+ *
+ * As of 2026-09-04 this file holds **104** cases against their **53**, and until
+ * their `cases.json` is updated the corpora and the renders normalize
+ * DIFFERENTLY — by design, from rulings they have not mirrored yet, not by
+ * accident. What the training side owes:
+ *
+ *   FOUR EXPECTATIONS TO CHANGE, all from Owen's ruling revising the
+ *   leave-as-printed list, and all four are exactly what
+ *   `run_fixtures.js --compare` reports as differences:
+ *     leave-page-cite   "pp. 65-71" and "p. 23" are READ now
+ *     leave-doc-code    the page reference beside the document code is read
+ *     leave-glued       B-17 / COVID-19 / R2D2 are read
+ *     leave-archive     their `known_defect`, FIXED here (isArchiveSigil)
+ *
+ *   FIFTY-ONE CASES TO ADD, every one marked `added_in` with the ruling or the
+ *   review row it came from: the cross-chapter scripture range, the archive
+ *   sigil's opposite direction, the page and glued readings, the unit suffixes,
+ *   the `<br/>`-fused ordinals, and the year/decade/ordinal shapes the glued
+ *   rule must leave to the model.
+ *
+ * Nothing here silently changed one of their cases: every divergence is one of
+ * those 55, and each carries `changed_in` / `added_in` / `fixed_in` saying why.
  *
  * ── What each stage tag means ───────────────────────────────────────────────
  *

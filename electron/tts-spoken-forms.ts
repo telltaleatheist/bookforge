@@ -257,36 +257,128 @@ export const SPOKEN_AS_WORD: ReadonlySet<string> = new Set([
   'ascii', 'gestapo', 'gulag', 'interpol',
 ]);
 
+/**
+ * A GLUED AMPERSAND — "AT&T", "R&D", "S&P", "Smith&Jones".
+ *
+ * One token, not three: `ampersandToAnd` was a bare replace with no word
+ * boundary, so "AT&T" read "ATandT" and was written into a book, while the
+ * readings a person would give it were refused (the fifth adversarial review,
+ * 2026-09-04).
+ *
+ * Its only permitted reading is the two sides read as class-3 tokens — a run of
+ * capitals gives its own spaced letters, or its own word when the word test
+ * allows; anything else stands as printed — joined by " and ". So "AT&T" is
+ * "A T and T", "R&D" is "R and D", "Smith&Jones" is "Smith and Jones".
+ */
+const GLUED_AMPERSAND =
+  /(?<![A-Za-zÀ-ÿ0-9&])([A-Za-zÀ-ÿ0-9]+)&([A-Za-zÀ-ÿ0-9]+)(?![A-Za-zÀ-ÿ0-9&])/g;
+
+/** How one side of a glued ampersand may be read. */
+function ampersandSideReadings(side: string): string[] {
+  if (/^[A-ZÀ-Þ]{2,}$/.test(side)) {
+    const out = [spacedLetters(side)];
+    if (isEmphasisWord(side)) out.push(side.toLowerCase());
+    return out;
+  }
+  return [side];
+}
+
+/**
+ * Every reading a span carrying ONE glued ampersand may have, or an empty list
+ * when it carries none or more than one.
+ *
+ * More than one is refused rather than combined: two glued ampersands in a span
+ * is a table row or a company list, not a reading, and a rule that guessed at
+ * the cross product would be guessing.
+ */
+export function gluedAmpersandReadings(find: string): string[] {
+  GLUED_AMPERSAND.lastIndex = 0;
+  const found = [...find.matchAll(GLUED_AMPERSAND)];
+  if (found.length !== 1) return [];
+  const m = found[0]!;
+  const whole = m[0];
+  const left = m[1]!;
+  const right = m[2]!;
+  const at = m.index!;
+  const out: string[] = [];
+  for (const l of ampersandSideReadings(left)) {
+    for (const r of ampersandSideReadings(right)) {
+      out.push(`${find.slice(0, at)}${l} and ${r}${find.slice(at + whole.length)}`);
+    }
+  }
+  return out;
+}
+
+/** Does this span carry an ampersand pressed between letters or digits? */
+export function hasGluedAmpersand(find: string): boolean {
+  GLUED_AMPERSAND.lastIndex = 0;
+  return GLUED_AMPERSAND.test(find);
+}
+
 /** Why a proposed reading is not one, or null when it is. */
 export type ReadingRefusal = string | null;
 
 /**
- * Initialisms a book prints in capitals that are NOT words, whatever their shape.
+ * The English words this build knows, loaded once from `electron/data/`.
  *
- * The emphasis reading — the same word in ordinary case — is for a word the
- * author SHOUTED, and offering it to every run of capitals turned "The US Army"
- * into "The us Army" and "The WHO issued" into "The who issued" (the fourth
- * adversarial review, 2026-09-04). Length and a vowel catch most of them; these
- * are the ones that look like words and are not.
+ * ── Why a list and not a shape ──────────────────────────────────────────────
+ *
+ * A DENYLIST of initialisms cannot bound an open class, and the fifth
+ * adversarial review of 2026-09-04 measured the hole by naming fifteen more:
+ * OSCE, RSHA, SHAEF, BOAC, ICAO, IATA, ASEAN, SWAPO, UNITA, FRELIMO, COMECON,
+ * UNPROFOR, ELAS, EOKA, ODESSA — every one of them four letters with a vowel,
+ * every one of them accepted the lower-cased reading. There is no shape that
+ * separates "SHAEF" from "SHOUT"; only a word list does.
+ *
+ * Read lazily and cached, through `fs` and `path` alone, so this module stays a
+ * LEAF the training side can vendor without dragging the repo behind it. A
+ * missing file is a NAMED failure rather than a silent "no words".
  */
-const NOT_A_WORD: ReadonlySet<string> = new Set([
-  'usa', 'ussr', 'usaf', 'nsdap', 'nkvd', 'kgb', 'gestapo', 'raf', 'ira', 'eta', 'oss',
-  'sipo', 'sdap', 'kpd', 'spd', 'gdr', 'frg', 'nato', 'seato', 'cento', 'ecsc', 'eec',
-  'unrra', 'unhcr', 'ilo', 'imf', 'oecd', 'opec', 'aids', 'hiv', 'dna', 'rna', 'nasa',
-]);
+let englishWords: ReadonlySet<string> | null = null;
+
+function loadEnglishWords(): ReadonlySet<string> {
+  if (englishWords !== null) return englishWords;
+  const fs = require('fs') as typeof import('fs');
+  const path = require('path') as typeof import('path');
+  const file = path.join(__dirname, 'data', 'english-words.json');
+  let parsed: { words?: unknown };
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8')) as { words?: unknown };
+  } catch (err) {
+    throw new Error(
+      `The narration text pass needs its English word list at ${file} to tell a word printed in `
+      + `capitals from an initialism, and could not read it: ${(err as Error).message}. `
+      + 'Build with `npm run build:electron`, which copies electron/data into dist.');
+  }
+  if (!Array.isArray(parsed.words) || parsed.words.length === 0) {
+    throw new Error(`${file} carries no words array, so nothing can say whether a run of `
+      + 'capitals is a word. Nothing was read.');
+  }
+  englishWords = new Set((parsed.words as string[]).map((w) => w.toLowerCase()));
+  return englishWords;
+}
+
+/** The word list, for a keeper that wants to measure it. */
+export function englishWordCount(): number {
+  return loadEnglishWords().size;
+}
 
 /**
  * Is this run of capitals a WORD the author shouted, rather than an initialism?
  *
- * Four letters or more, carrying a vowel, and not one of the initialisms above.
- * A two- or three-letter run gets only the spaced-letters reading: "US", "WHO",
- * "FBI" and "SS" are said as letters, and lower-casing them says a different
- * word.
+ * Four letters or more — a two- or three-letter run is an initialism whatever it
+ * spells, so "US", "WHO", "FBI" and "SS" get the spaced-letters reading only —
+ * AND the lower-cased form has to be an English word this build knows.
+ *
+ * A word the list does not carry is REFUSED the lower-cased reading and offered
+ * the letters reading instead, which is the safe direction: a miss costs an
+ * unconverted emphasis, a false accept writes a wrong word into the user's book.
+ * An acronym that happens to be an English word (ARMS, MASH) keeps both readings
+ * by this test, and that is accepted — both are real readings of those letters.
  */
 export function isEmphasisWord(bare: string): boolean {
   if (bare.length < 4) return false;
-  if (!/[AEIOUYÀ-Þ]/.test(bare)) return false;
-  return !NOT_A_WORD.has(bare.toLowerCase());
+  return loadEnglishWords().has(bare.toLowerCase());
 }
 
 /** The letters of a word, spaced and upper-cased — "FBI" -> "F B I". */

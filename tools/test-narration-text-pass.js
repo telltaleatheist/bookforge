@@ -1078,6 +1078,76 @@ test('F5 the ampersand is a class, because the prompt teaches it', () => {
     verdictOf('Smith & Co sold it', 'Smith & Co', 'Smith and Company').status, 'APPLIED');
 });
 
+/**
+ * THE FIFTH ADVERSARIAL REVIEW, 2026-09-04.
+ */
+test('NF1 a GLUED ampersand is one token, and both sides are read', () => {
+  // ampersandToAnd was a bare replace with no word boundary, so "AT&T" read
+  // "ATandT" and was written into a book, while every reading a person would
+  // give it was refused.
+  for (const [target, find, replace] of [
+    ['the AT&T deal', 'AT&T', 'ATandT'],
+    ['the R&D unit', 'R&D', 'RandD'],
+    ['the S&P index', 'S&P', 'SandP'],
+    ['Smith&Jones sold it', 'Smith&Jones', 'SmithandJones'],
+    // The left side unread is not a reading either.
+    ['the AT&T deal', 'AT&T', 'AT and T'],
+  ]) {
+    assert.notStrictEqual(verdictOf(target, find, replace).status, 'APPLIED',
+      find + ' -> ' + replace);
+  }
+  for (const [target, find, replace] of [
+    ['the AT&T deal', 'AT&T', 'A T and T'],
+    ['the R&D unit', 'R&D', 'R and D'],
+    ['the S&P index', 'S&P', 'S and P'],
+    ['the B&B stay', 'B&B', 'B and B'],
+    ['the M&S store', 'M&S', 'M and S'],
+    ['Smith&Jones sold it', 'Smith&Jones', 'Smith and Jones'],
+    // And a SPACED ampersand is still the word in place of the sign.
+    ['Smith & Co sold it', '&', 'and'],
+    ['Smith & Co sold it', 'Smith & Co', 'Smith and Co'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'APPLIED',
+      find + ' -> ' + replace);
+  }
+  // Two glued ampersands in one span is a list, not a reading.
+  assert.notStrictEqual(
+    verdictOf('the A&B and C&D deal', 'A&B and C&D', 'A and B and C and D').status, 'APPLIED');
+});
+
+test('NF2 the emphasis reading needs a real WORD, from the list', () => {
+  const forms = require(path.join(DIST, 'electron', 'tts-spoken-forms.js'));
+  assert.ok(forms.englishWordCount() > 1000,
+    forms.englishWordCount() + ' words — the list is shipped and loaded');
+
+  // A denylist cannot bound an open class, and every one of these accepted the
+  // lower-cased reading before the word test.
+  for (const acronym of ['OSCE', 'RSHA', 'SHAEF', 'BOAC', 'ICAO', 'IATA', 'ASEAN', 'SWAPO',
+    'UNITA', 'FRELIMO', 'COMECON', 'UNPROFOR', 'ELAS', 'EOKA', 'ODESSA']) {
+    assert.strictEqual(forms.isEmphasisWord(acronym), false, acronym);
+    assert.notStrictEqual(
+      verdictOf('the ' + acronym + ' met', 'the ' + acronym + ' met',
+        'the ' + acronym.toLowerCase() + ' met').status,
+      'APPLIED', acronym);
+    // And the letters reading is still there for every one of them.
+    assert.strictEqual(
+      verdictOf('the ' + acronym + ' met', acronym, [...acronym].join(' ')).status,
+      'APPLIED', acronym);
+  }
+  // A word the author shouted still reads.
+  for (const word of ['SAID', 'NEVER', 'STOP', 'HELP', 'IMPOSSIBLE', 'ABSOLUTELY', 'LISTEN']) {
+    assert.strictEqual(forms.isEmphasisWord(word), true, word);
+  }
+  // An acronym that HAPPENS to be an English word keeps both readings, which is
+  // accepted: both are real readings of those letters.
+  assert.strictEqual(forms.isEmphasisWord('ARMS'), true);
+  assert.strictEqual(verdictOf('the ARMS deal', 'ARMS', 'arms').status, 'APPLIED');
+  assert.strictEqual(verdictOf('the ARMS deal', 'ARMS', 'A R M S').status, 'APPLIED');
+  // Two and three letters get the letters reading only, whatever they spell.
+  assert.strictEqual(forms.isEmphasisWord('WHO'), false);
+  assert.strictEqual(forms.isEmphasisWord('US'), false);
+});
+
 test('the number invariants are untouched for a digit-bearing find', () => {
   assert.strictEqual(
     verdictOf('Leviticus 20:6 forbids', '20:6', 'twenty').status, 'NUMBER_DROPPED');

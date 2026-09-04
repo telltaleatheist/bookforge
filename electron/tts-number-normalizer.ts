@@ -75,8 +75,8 @@ import {
 import { ordinalToWords } from './number-expansion.js';
 import {
   ABBREVIATION_READINGS, abbreviationContextRefusal, abbreviationKey, bracketRemovalRefusal,
-  capsReadingRefusal, isEmphasisWord, isRomanContext, prefixesAName, romanReadingRefusal,
-  romanValue,
+  capsReadingRefusal, gluedAmpersandReadings, hasGluedAmpersand, isEmphasisWord, isRomanContext,
+  prefixesAName, romanReadingRefusal, romanValue,
 } from './tts-spoken-forms.js';
 import type { ReadingRefusal } from './tts-spoken-forms.js';
 import type { NumberRuleOutcome } from './tts-number-rules.js';
@@ -633,6 +633,19 @@ function couldEndSentence(after: string): boolean {
  */
 function ampersandToAnd(text: string): string {
   return text.replace(/&/g, 'and');
+}
+
+/**
+ * Every reading this span's ampersand may have.
+ *
+ * A GLUED one ("AT&T") is a single token whose sides are read as class-3 tokens
+ * and joined by " and "; a SPACED one ("Smith & Co") is the word in place of the
+ * sign. The two are different shapes and the glued one is checked first, because
+ * the bare replace that served both read "AT&T" as "ATandT" and wrote it into a
+ * book (the fifth adversarial review, 2026-09-04).
+ */
+function ampersandReadings(find: string): string[] {
+  return hasGluedAmpersand(find) ? gluedAmpersandReadings(find) : [ampersandToAnd(find)];
 }
 
 /** A spaced hyphen read as the em dash it stands in for, and nothing else. */
@@ -1218,7 +1231,7 @@ export function validateNumberEdits(
     // (the third review, 2026-09-04). Here the replacement must be the find
     // with its spaced hyphens turned into em dashes and NOTHING else changed,
     // so any digit it carries is provably the find's own.
-    if (find.includes('&') && ampersandToAnd(find) === replace) {
+    if (find.includes('&') && ampersandReadings(find).includes(replace)) {
       if (sitsInCitation(target, find, at)) {
         reject(find, replace, 'CITATION_CODE');
         continue;

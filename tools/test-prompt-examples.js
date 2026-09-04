@@ -168,6 +168,10 @@ function quotedPairsIn(file) {
  */
 function frameFor(find) {
   if (/\s/.test(find)) return find;
+  // A GLUED AMPERSAND is a bare token that still needs a block around it, and it
+  // is the one the fifth review found written into a book as "ATandT" — so the
+  // prompt's own "AT&T" is "A T and T" is judged here like any other pair.
+  if (/[A-Za-z0-9]&[A-Za-z0-9]/.test(find)) return `the ${find} deal was there`;
   // A bare token whose table entry demands a CONTEXT gets one: the gloss states
   // the reading, and asking whether the reading is reachable at all means giving
   // it the sentence the table says it needs, not a frame the keeper happened to
