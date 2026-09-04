@@ -886,8 +886,11 @@ def build_parser():
                         "onto the prose that follows it")
     p.add_argument("--report-min-hole", dest="report_min_hole", type=float, default=None,
                    help="generate-sentences (epub-align only): list unmatched-audio ranges this "
-                        "long in the coverage report (default 3s). Report-only — --min-hole still "
-                        "governs whisper-fallback cues in the VTT")
+                        "long in the coverage report. Defaults to --min-hole, i.e. changes nothing "
+                        "unless you ask. Report-only — --min-hole still governs whisper-fallback "
+                        "cues in the VTT. NOTE it measures 'cue longer than a slow reading of its "
+                        "text', not literal unmatched audio, so low values fire on brisk "
+                        "narration; for measured dead air read lowSpeechCues in the report")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

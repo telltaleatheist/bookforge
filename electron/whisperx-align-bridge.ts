@@ -21,7 +21,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as os from 'os';
 
-import { loadEpubForComparison } from './epub-processor.js';
+import { loadEpubForComparison, HEADING_MARKER } from './epub-processor.js';
 import { componentManager } from './components/component-manager.js';
 import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
@@ -119,6 +119,26 @@ function resolveAlignScript(): string {
   return toUnpackedPath(found);
 }
 
+/**
+ * THE DEFAULTS FOR EVERY CALLER THAT PASSES NO OPTIONS — the app's Generate
+ * Sentences button included. Named and gathered here because these three changed
+ * the GUI's output in 2026-09-03 with no switch in the UI, and a default that
+ * silently alters a shipped artifact deserves to be a decision someone can find.
+ *
+ *  * paragraph-aware segmentation: ON. It fixes a real defect (headings fused into
+ *    the first prose cue) and the read-along text is strictly better for it.
+ *  * silence snapping at 0.6 s: ON. Measured on McKinley, boundaries inside a
+ *    detected pause went 18.6% -> 95.4% with drift unchanged. Bounded, so the
+ *    worst case is a no-op.
+ *  * report hole threshold: UNSET, i.e. it follows --hole-min-s (30 s) exactly as
+ *    before. Lowering it changes what `audioNotInEpub` MEANS (see
+ *    align_audiobook.py find_holes — it measures "cue longer than a slow reading
+ *    of its text", not literal unmatched audio), so it is opt-in per run and the
+ *    default report is unchanged.
+ */
+export const DEFAULT_PARAGRAPH_AWARE = true;
+export const DEFAULT_SNAP_SILENCE_S = 0.6;
+
 /** A sentence handed to the aligner, plus what kind of block it came from. */
 export interface AlignSentence {
   text: string;
@@ -129,19 +149,76 @@ export interface AlignSentence {
   kind: 'prose' | 'heading';
 }
 
-/** A block is heading-like when it is short and carries no sentence terminator —
- *  the shape of "Part I", "Ohio Born and Molded", "1", "William McKinley,
- *  Ohioan", "The Ohio Guide (WPA)". Deliberately conservative: real prose
- *  paragraphs end in punctuation, so a false positive needs an unpunctuated
- *  paragraph under 12 words, which is a heading in all but name. Nothing is
- *  DROPPED by this classification — it only labels. */
 const HEADING_MAX_CHARS = 90;
 const HEADING_MAX_WORDS = 12;
-function looksLikeHeading(block: string): boolean {
+
+/** Lowercase function words a title legitimately leaves uncapitalized ("Ohio Born
+ *  **and** Molded"). Everything else in a title-case run must be capitalized. */
+const TITLE_STOPWORDS = new Set([
+  'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'from', 'in', 'into', 'nor',
+  'of', 'on', 'onto', 'or', 'over', 'the', 'to', 'up', 'upon', 'with', 'via',
+  'vs', 'versus', 'per', 'than',
+]);
+
+/** Words that open a heading whatever follows ("Part I", "Chapter 3", "Notes"). */
+const HEADING_LEAD = /^(part|chapter|book|section|appendix|prologue|epilogue|introduction|foreword|preface|afterword|conclusion|contents|notes|index|bibliography|acknowledgments|acknowledgements)\b/i;
+
+/** "1", "12", "IV", "xvii", "3." — a bare number or roman numeral standing alone is
+ *  the classic chapter-number block, a heading with no ambiguity. */
+const NUMBERING_ONLY = /^(?:\d{1,4}|[IVXLCDM]{1,7}|[ivxlcdm]{1,7})\s*[.)]?$/;
+
+function coreOf(word: string): string {
+  return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+}
+
+/** Title Case or ALL CAPS — the two shapes a set heading actually takes. */
+function isTitleOrAllCaps(words: string[]): boolean {
+  const cores = words.map(coreOf).filter(Boolean);
+  if (cores.length < 2) return false;
+  if (cores.every((c) => !/\p{Ll}/u.test(c))) return true;   // ALL CAPS (or caps+digits)
+  if (!/^[\p{Lu}\p{N}]/u.test(cores[0])) return false;       // a title starts capitalized
+  let capped = 0;
+  for (const c of cores) {
+    if (/^[\p{Lu}\p{N}]/u.test(c)) { capped++; continue; }
+    if (!TITLE_STOPWORDS.has(c.toLowerCase())) return false; // lowercase content word ⇒ prose
+  }
+  return capped >= 2;
+}
+
+/**
+ * Is this whole block a heading?
+ *
+ * `structural` short-circuits everything: the block came from an `<h1>`-`<h6>`,
+ * so it is a heading BY MARKUP and nothing needs inferring. That path exists
+ * because `extractTextFromXhtml` appends a period to headings for the TTS read,
+ * which made the no-terminal-punctuation rule below score every semantically
+ * marked-up EPUB at zero headings.
+ *
+ * Otherwise this is a HEURISTIC, and it is deliberately narrow, because the label
+ * has teeth: a corpus cutter that drops `NOTE heading` cues drops whatever this
+ * gets wrong, so a false positive silently deletes real narration from a training
+ * set. "Short and unpunctuated" alone was far too loose — it swallowed
+ * `<li>Bread</li>`, a one-word "Yes", a dialogue fragment ending in a dash. A
+ * block now has to LOOK like a set heading:
+ *
+ *   * bare numbering ("1", "IV") — the chapter-number block; or
+ *   * a recognized heading lead word ("Part I", "Chapter 3", "Notes"); or
+ *   * two or more words, all Title Case or all ALL CAPS.
+ *
+ * and in every case be short and carry no terminal punctuation — where terminal
+ * now includes ':' and ';', which end a lead-in ("The rules are:"), not a title.
+ */
+function looksLikeHeading(block: string, structural = false): boolean {
   const b = block.replace(/\s+/g, ' ').trim();
-  if (!b || b.length > HEADING_MAX_CHARS) return false;
-  if (b.split(' ').length > HEADING_MAX_WORDS) return false;
-  return !/[.!?…]["”’')\]]*$/.test(b);
+  if (!b) return false;
+  if (structural) return true;
+  if (b.length > HEADING_MAX_CHARS) return false;
+  const words = b.split(' ');
+  if (words.length > HEADING_MAX_WORDS) return false;
+  if (/[.!?…:;,]["”’')\]]*$/.test(b)) return false;
+  if (NUMBERING_ONLY.test(b)) return true;
+  if (HEADING_LEAD.test(b)) return true;
+  return isTitleOrAllCaps(words);
 }
 
 /**
@@ -173,10 +250,25 @@ function looksLikeHeading(block: string): boolean {
 export function splitSentences(text: string, paragraphAware = true): AlignSentence[] {
   const blocks = paragraphAware ? text.split(/\n[ \t]*\n+/) : [text];
   const out: AlignSentence[] = [];
-  for (const block of blocks) {
-    const heading = paragraphAware && looksLikeHeading(block);
+  for (const raw of blocks) {
+    // A block the extractor stamped as an <h1>-<h6> is a heading by markup.
+    const structural = raw.trimStart().startsWith(HEADING_MARKER);
+    const block = structural ? raw.replace(HEADING_MARKER, '') : raw;
+    const heading = paragraphAware && looksLikeHeading(block, structural);
+    if (heading) {
+      // A HEADING IS ONE CUE, EMITTED WHOLE — never routed through the sentence
+      // splitter, whose final filter (`length > 1 && /[A-Za-z]/`) exists to bin
+      // stray fragments and ate the very blocks this feature is named for:
+      // splitBlockIntoSentences('1') and ('I') both returned [], so the chapter
+      // number `<p class="cn">1</p>` got no cue at all and its spoken
+      // announcement fell into the tail of the previous prose cue — the exact
+      // defect this change set out to fix, reintroduced one line lower down.
+      const t = block.split(HEADING_MARKER).join(' ').replace(/\s+/g, ' ').trim();
+      if (t) out.push({ text: t, kind: 'heading' });
+      continue;
+    }
     for (const s of splitBlockIntoSentences(block)) {
-      out.push({ text: s, kind: heading ? 'heading' : 'prose' });
+      out.push({ text: s, kind: 'prose' });
     }
   }
   return out;
@@ -196,7 +288,10 @@ export function splitSentences(text: string, paragraphAware = true): AlignSenten
  * the new scene's first cue on words that are never spoken there.
  */
 function splitBlockIntoSentences(text: string): string[] {
-  const normalized = text.replace(/\s+/g, ' ').trim()
+  // Any structural-heading marker still embedded here is a mid-block one (or the
+  // whole text in --no-paragraph-split mode). It is a transport marker, never
+  // prose — strip it so it can't reach a cue.
+  const normalized = text.split(HEADING_MARKER).join(' ').replace(/\s+/g, ' ').trim()
     // ORPHANED ENDNOTE MARKERS (2026-07-24). epub-processor now strips digits-only
     // <sup> at the source, but text can reach us already flattened (a supplied VTT,
     // a cached extraction, a PDF-derived epub whose markup was lost). Such a marker
@@ -360,12 +455,15 @@ export async function runEpubAlignOnFiles(
 
   // 2. Extract sentences from the ebook in reading order.
   glog(`[epub-align] extracting sentences from ${epubPath}`);
-  const { chapters } = await loadEpubForComparison(epubPath);
+  // markHeadings: <h1>-<h6> come back stamped, so the classifier never has to
+  // infer for a real heading tag. keepFootnoteMarkers stays false (the default) —
+  // this path wants markers gone.
+  const { chapters } = await loadEpubForComparison(epubPath, false, true);
   // '\n\n', not '\n': a chapter seam is a block boundary like any other, and the
   // paragraph-aware splitter reads blank lines. Joining on a single newline let
   // the last sentence of one chapter fuse with the first heading of the next.
   const fullText = chapters.map((c) => c.text).join('\n\n');
-  const paragraphAware = opts?.paragraphAware !== false;
+  const paragraphAware = opts?.paragraphAware ?? DEFAULT_PARAGRAPH_AWARE;
   const sentences = splitSentences(fullText, paragraphAware);
   if (sentences.length === 0) throw new Error('No sentences extracted from the ebook');
   const headingCount = sentences.filter((s) => s.kind === 'heading').length;

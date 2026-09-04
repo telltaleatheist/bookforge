@@ -89,8 +89,14 @@ function printCoverageSummary(reportPath) {
   console.log(`[sentences]   epub: ${s.narratedSentences}/${s.epubSentences} sentences narrated; ` +
     `${s.excludedSentences} excluded in ${s.excludedRuns} run(s) (head ${s.trimmedHead}, interior ${s.interiorDropped}, tail ${s.trimmedTail})`);
   console.log(`[sentences]   audio: ${s.unmatchedAudioRanges} range(s) with no epub match ` +
-    `(≥${s.reportHoleThresholdSeconds ?? s.holeThresholdSeconds}s; ${s.asrFilledRanges ?? s.unmatchedAudioRanges} ASR-filled), ` +
-    `${Math.round(s.unmatchedAudioSeconds)}s of ${s.audioDurationTimestamp} total`);
+    `(≥${s.holeThresholdSeconds}s), ${Math.round(s.unmatchedAudioSeconds)}s of ${s.audioDurationTimestamp} total`);
+  if (s.reportedRanges != null && s.reportHoleThresholdSeconds !== s.holeThresholdSeconds) {
+    console.log(`[sentences]   report lists ${s.reportedRanges} range(s) at the lower ≥${s.reportHoleThresholdSeconds}s ` +
+      `threshold (a reading-speed estimate, not measured silence — see lowSpeechCues)`);
+  }
+  if (s.lowSpeechCues) {
+    console.log(`[sentences]   dead air: ${s.lowSpeechCues} cue(s) ≥3s are ≤30% speech (measured against the silence map)`);
+  }
   if (s.headingCues != null) console.log(`[sentences]   headings: ${s.headingCues} cue(s) tagged NOTE heading`);
   const bs = rep.boundarySnap;
   if (bs && bs.windowSeconds > 0) {
@@ -177,13 +183,28 @@ async function main() {
   // --snap-silence <s> / --no-snap-silence: bounded window for pulling each cue
   // seam onto the middle of a detected silence. Flag absent = the bridge default
   // (0.6 s). --no-snap-silence restores the pre-2026-09-03 raw aligner times.
+  // Every rejection here mirrors bookforge-tts.py's _require checks exactly. They
+  // used to disagree: a valueless `--snap-silence` was silently DROPPED (the run
+  // used 0.6 while the operator believed they had set something), and
+  // `--no-snap-silence --snap-silence 1.0` silently took 1.0 here while the python
+  // wrapper refused the pair. A flag that means different things depending on which
+  // entry point you call is worse than no flag.
   let snapSilenceS;
-  if (args['no-snap-silence']) snapSilenceS = 0;
-  if (args['snap-silence'] !== undefined && args['snap-silence'] !== true) {
+  const snapGiven = args['snap-silence'] !== undefined;
+  const noSnap = Boolean(args['no-snap-silence']);
+  if (snapGiven && noSnap) {
+    throw new Error('--snap-silence and --no-snap-silence are mutually exclusive');
+  }
+  if (snapGiven) {
+    if (args['snap-silence'] === true) {
+      throw new Error('--snap-silence needs a value in seconds (e.g. --snap-silence 0.6); use --no-snap-silence, or --snap-silence 0, to turn it off');
+    }
     snapSilenceS = Number(args['snap-silence']);
     if (!Number.isFinite(snapSilenceS) || snapSilenceS < 0) {
       throw new Error(`--snap-silence must be a number >= 0 seconds, got '${args['snap-silence']}' (0 = off)`);
     }
+  } else if (noSnap) {
+    snapSilenceS = 0;
   }
   if (snapSilenceS !== undefined && !args.epub) {
     throw new Error('--snap-silence/--no-snap-silence require --epub (whisper mode has no cue seams to snap)');
@@ -200,6 +221,9 @@ async function main() {
   let reportHoleMinS;
   if (args['report-hole-min'] !== undefined) {
     if (!args.epub) throw new Error('--report-hole-min requires --epub');
+    // `=== true` is the valueless form. Without this guard Number(true) is 1, which
+    // is finite and >= 0, so a bare --report-hole-min would quietly mean 1 second.
+    if (args['report-hole-min'] === true) throw new Error('--report-hole-min needs a value in seconds');
     reportHoleMinS = Number(args['report-hole-min']);
     if (!Number.isFinite(reportHoleMinS) || reportHoleMinS < 0) {
       throw new Error(`--report-hole-min must be a number >= 0, got '${args['report-hole-min']}'`);

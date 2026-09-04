@@ -6,6 +6,21 @@ A sentence cue boundary produced by forced alignment should land in a PAUSE: the
 narrator stops, then starts the next sentence. So the silence map of the audio is
 a free ground truth for boundary quality — no human labels needed.
 
+READ THIS BEFORE QUOTING THE SILENCE NUMBER
+-------------------------------------------
+When the VTT was produced with `--snap-silence` ON, the silence score is PARTLY
+CIRCULAR by construction: the aligner moved each seam onto the middle of a
+silencedetect interval, so scoring it against a silencedetect map largely measures
+whether the snapper did what it says it does. It remains a real measurement of the
+raw alignment (the BEFORE column, and the AFTER column's un-snapped seams), and a
+snapper aiming at the WRONG pause would still show up as a large move with no
+improvement elsewhere — but on its own it cannot prove the boundaries got better.
+
+`--asr-gaps <roughcache.json>` is the independent check. It scores every boundary
+against pauses found by faster-whisper's VAD segmentation — the gaps between
+consecutive transcript segments — which come from a different algorithm on a
+different signal path, and which the snapper never sees. Quote both numbers.
+
 Metric (per boundary time B, where a boundary is a cue end or the next cue's
 start; contiguous cues share one time and are counted once):
 
@@ -30,6 +45,7 @@ Silence sources (--silences):
 Usage:
   vtt-boundary-metric.py --vtt A.vtt --silences silences.log [--epub B.epub]
                          [--tol 0.15] [--json out.json] [--compare BEFORE.vtt]
+                         [--asr-gaps rough.roughcache.json]
 """
 import argparse, json, os, re, sys, zipfile
 from bisect import bisect_left
@@ -83,6 +99,21 @@ def parse_silences(path):
     iv = [(a, b) for a, b in iv if b > a]
     iv.sort()
     return iv
+
+
+def parse_asr_gaps(path, min_gap=0.20):
+    """Pauses according to faster-whisper's VAD segmentation — the INDEPENDENT
+    reference. `segs` in the aligner's rough cache is [(start, end, text)]; the gap
+    between one segment's end and the next one's start is a pause the ASR found,
+    with no silencedetect involved anywhere. Returns sorted [(start, end)]."""
+    d = json.load(open(path, encoding='utf-8'))
+    segs = sorted((float(a), float(b)) for a, b, *_ in d.get('segs', []))
+    gaps = []
+    for i in range(len(segs) - 1):
+        a, b = segs[i][1], segs[i + 1][0]
+        if b - a >= min_gap:
+            gaps.append((a, b))
+    return gaps
 
 
 def dist_to_silence(t, starts, iv):
@@ -202,27 +233,38 @@ def count_heading_merges(cues, heads):
     return merged, standalone, examples
 
 
-def evaluate(vtt, iv, tol, epub, heads_cache):
-    cues = parse_vtt(vtt)
+def score_against(B, iv, tol):
+    """hit/near/distance of boundaries B against any interval set iv."""
     starts = [a for a, _b in iv]
-    B = boundary_times(cues)
     d = sorted(dist_to_silence(t, starts, iv) for t in B)
     n = len(d) or 1
-    hits = sum(1 for x in d if x == 0.0)
-    near = sum(1 for x in d if x <= tol)
-    out = {
-        'vtt': os.path.abspath(vtt),
-        'cues': len(cues),
-        'boundaries': len(d),
-        'hitRate': round(hits / n, 4),
-        'nearRate': round(near / n, 4),
-        'tolSeconds': tol,
+    return {
+        'intervals': len(iv),
+        'hitRate': round(sum(1 for x in d if x == 0.0) / n, 4),
+        'nearRate': round(sum(1 for x in d if x <= tol) / n, 4),
         'distanceSeconds': {
             'median': round(pct(d, 50), 3), 'p75': round(pct(d, 75), 3),
             'p90': round(pct(d, 90), 3), 'p95': round(pct(d, 95), 3),
             'max': round(d[-1], 3) if d else None,
             'mean': round(sum(d) / n, 3),
         },
+    }
+
+
+def evaluate(vtt, iv, tol, epub, heads_cache, asr_gaps=None):
+    cues = parse_vtt(vtt)
+    B = boundary_times(cues)
+    sil = score_against(B, iv, tol)
+    out = {
+        'vtt': os.path.abspath(vtt),
+        'cues': len(cues),
+        'boundaries': len(B),
+        'hitRate': sil['hitRate'],
+        'nearRate': sil['nearRate'],
+        'tolSeconds': tol,
+        'distanceSeconds': sil['distanceSeconds'],
+        # INDEPENDENT of silencedetect — see the module docstring on circularity.
+        'asrGapCheck': score_against(B, asr_gaps, tol) if asr_gaps else None,
         'noteTaggedCues': {},
     }
     for _s, _e, _t, note in cues:
@@ -247,16 +289,23 @@ def main():
     ap.add_argument('--epub', default='')
     ap.add_argument('--tol', type=float, default=0.15)
     ap.add_argument('--json', default='')
+    ap.add_argument('--asr-gaps', dest='asr_gaps', default='',
+                    help='aligner rough-cache JSON; scores boundaries against whisper VAD '
+                         'segment gaps — the check the snapper cannot game (see docstring)')
     a = ap.parse_args()
 
     iv = parse_silences(a.silences)
     print(f'silence map: {len(iv)} interval(s), '
           f'{sum(b - x for x, b in iv):.0f}s total  <- {a.silences}')
+    gaps = None
+    if a.asr_gaps:
+        gaps = parse_asr_gaps(a.asr_gaps)
+        print(f'ASR VAD gaps: {len(gaps)} pause(s)  <- {a.asr_gaps}  (independent of silencedetect)')
     cache = {'h': None}
     results = []
     if a.compare:
-        results.append(('BEFORE', evaluate(a.compare, iv, a.tol, a.epub, cache)))
-    results.append(('AFTER' if a.compare else 'VTT', evaluate(a.vtt, iv, a.tol, a.epub, cache)))
+        results.append(('BEFORE', evaluate(a.compare, iv, a.tol, a.epub, cache, gaps)))
+    results.append(('AFTER' if a.compare else 'VTT', evaluate(a.vtt, iv, a.tol, a.epub, cache, gaps)))
 
     for label, r in results:
         d = r['distanceSeconds']
@@ -266,6 +315,11 @@ def main():
         print(f'   boundary within {a.tol:.2f}s of one: {r["nearRate"]*100:6.2f}%')
         print(f'   distance to nearest silence: median {d["median"]}s  p75 {d["p75"]}s  '
               f'p90 {d["p90"]}s  p95 {d["p95"]}s  max {d["max"]}s  mean {d["mean"]}s')
+        if r.get('asrGapCheck'):
+            g = r['asrGapCheck']; gd = g['distanceSeconds']
+            print(f'   [independent] IN an ASR pause: {g["hitRate"]*100:6.2f}%   '
+                  f'within {a.tol:.2f}s: {g["nearRate"]*100:6.2f}%   '
+                  f'median {gd["median"]}s p90 {gd["p90"]}s')
         if 'headingMergedCues' in r:
             print(f'   heading-merged cues        : {r["headingMergedCues"]}  '
                   f'(standalone heading cues: {r["headingStandaloneCues"]})')
@@ -280,6 +334,11 @@ def main():
               f'({(aft["nearRate"]-b["nearRate"])*100:+.2f} pts)')
         print(f'   median d   {b["distanceSeconds"]["median"]}s -> {aft["distanceSeconds"]["median"]}s')
         print(f'   p90 d      {b["distanceSeconds"]["p90"]}s -> {aft["distanceSeconds"]["p90"]}s')
+        if b.get('asrGapCheck') and aft.get('asrGapCheck'):
+            gb, ga = b['asrGapCheck'], aft['asrGapCheck']
+            print(f'   [independent] ASR-pause hit {gb["hitRate"]*100:6.2f}% -> {ga["hitRate"]*100:6.2f}%  '
+                  f'({(ga["hitRate"]-gb["hitRate"])*100:+.2f} pts); '
+                  f'median d {gb["distanceSeconds"]["median"]}s -> {ga["distanceSeconds"]["median"]}s')
         if 'headingMergedCues' in b:
             print(f'   heading-merged cues {b["headingMergedCues"]} -> {aft["headingMergedCues"]}')
 
