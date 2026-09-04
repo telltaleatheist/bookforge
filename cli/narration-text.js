@@ -18,6 +18,7 @@
  * Run via the electron shim preload:
  *   node --require ./cli/electron-stub.js cli/narration-text.js --input book.epub
  *   node --require ./cli/electron-stub.js cli/narration-text.js --project "<dir>"
+ *   node --require ./cli/electron-stub.js cli/narration-text.js --project "<dir>" --family <id>
  */
 'use strict';
 const fs = require('fs');
@@ -55,12 +56,42 @@ function parseArgs(argv) {
  * app's pass, headless. --input is the bare-EPUB door, for a file with no
  * project around it.
  */
-async function cleanProject(projectDir, model) {
+async function cleanProject(projectDir, model, familyArg) {
   const { planProcessingChain } = require('../dist/electron/processing-chain.js');
   const { runProcessingPass } = require('../dist/electron/processing-passes.js');
+  const manifestService = require('../dist/electron/manifest-service.js');
+
+  // ── WHICH CHAIN, when the project holds more than one ────────────────────
+  //
+  // A project with two archive EPUBs has two chains and every resolver refuses
+  // to guess between them, so `--project` alone could not clean one at all (the
+  // third adversarial review, 2026-09-04). `--family` names it, by id or by the
+  // stem of the file it was minted from, and a project that needs one and was
+  // not given one is told which are there.
+  const families = (await manifestService.readProjectManifest(projectDir)).families ?? [];
+  let sourcePath;
+  if (families.length > 1) {
+    const wanted = typeof familyArg === 'string' ? familyArg.toLowerCase() : null;
+    const stemOf = (f) => path.basename(f.source.path).replace(/\.[^.]+$/, '');
+    const chosen = wanted === null ? null : families.find((f) =>
+      f.id.toLowerCase() === wanted || stemOf(f).toLowerCase() === wanted);
+    if (chosen === null || chosen === undefined) {
+      const list = families.map((f) => `  ${f.id}    ${stemOf(f)}`).join('\n');
+      throw new Error(
+        `${path.basename(projectDir)} holds ${families.length} book chains, and nothing can `
+        + 'guess which one to clean. Name it with --family <id|stem>:\n' + list
+        + (wanted === null ? '' : `\n(no chain answers to "${familyArg}")`));
+    }
+    const book = await manifestService.ensureBookEpub(projectDir, chosen.id);
+    sourcePath = book.absPath;
+    console.log(`[narration-text] chain: ${chosen.id} (${stemOf(chosen)})`);
+  } else if (typeof familyArg === 'string') {
+    console.log('[narration-text] note: --family is ignored; this project has one chain.');
+  }
 
   const plan = await planProcessingChain({
     projectDir,
+    ...(sourcePath === undefined ? {} : { sourcePath }),
     passes: [{ kind: 'narration-text' }],
   });
   if (plan.jobs.length !== 1) {
@@ -111,7 +142,10 @@ async function main() {
     // later render reuses this run's model answers instead of paying again.
     const libraryRoot = path.dirname(path.dirname(projectDir));
     console.log(`[narration-text] scratch: ${applyE2aScratchDir(libraryRoot)}`);
-    await cleanProject(projectDir, typeof args.model === 'string' ? args.model : null);
+    await cleanProject(
+      projectDir,
+      typeof args.model === 'string' ? args.model : null,
+      typeof args.family === 'string' ? args.family : null);
     process.exit(0);
   }
 

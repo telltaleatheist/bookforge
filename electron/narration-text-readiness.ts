@@ -150,3 +150,95 @@ export function narrationTextReadiness(
     model: typeof model === 'string' ? model : 'an unrecorded model',
   };
 }
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The door the Narrate button asks through
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What the readiness door answers. */
+export interface NarrationTextReadinessAnswer {
+  success: boolean;
+  /** The CHAIN's answer, or null when this project's chains cannot name one. */
+  readiness?: NarrationTextReadiness | null;
+  /** The FILE's own answer — the stamp the render door will read. */
+  fileState?: unknown;
+  familyId?: string | null;
+  bookPath?: string | null;
+  familyNote?: string;
+  error?: string;
+}
+
+/**
+ * Is this book ready to narrate — asked of a PROJECT and of the FILE at once.
+ *
+ * THE HANDLER'S WHOLE BODY, exported, because the `narration:text-readiness` IPC
+ * is a one-line call to it. The third adversarial review asked for the handler's
+ * branches to be tested rather than the pure helper's, and a handler whose logic
+ * lives inside `ipcMain.handle` in a six-thousand-line file cannot be: this is
+ * the same function the IPC calls, and the keeper calls it too.
+ *
+ * Two answers, because they can disagree. The FILE's stamp is what the render
+ * door reads and needs no chain resolved, so it is computed first and stands
+ * even when the project's chains cannot name one. The CHAIN's answer knows the
+ * one thing the file cannot: whether a LATER pass rewrote the text.
+ */
+export async function narrationTextReadinessFor(
+  projectDir: string,
+  askedPath?: string,
+  familyId?: string,
+): Promise<NarrationTextReadinessAnswer> {
+  const fs = await import('fs');
+  const manifestService = await import('./manifest-service.js');
+  const { narrationTextGate } = await import('./narration-text-pass.js');
+
+  try {
+    const fileState = askedPath === undefined || !fs.existsSync(askedPath)
+      ? null
+      : await narrationTextGate(askedPath);
+
+    const resolved = await manifestService.familyForOpen(projectDir, askedPath, familyId);
+    if (resolved === null) {
+      // ZERO CHAINS AND MANY CHAINS ARE NOT THE SAME ANSWER. `familyForOpen`
+      // returns null for both, and calling them both "more than one book chain"
+      // sent a project that simply has no recorded chain yet down the path that
+      // offers nothing — where the round-1 code had correctly offered the
+      // cleanup (the second adversarial review, 2026-09-04). A project with no
+      // chain has not been cleaned, by definition, so it reads MISSING and the
+      // offer stands.
+      const families = (await manifestService.readProjectManifest(projectDir)).families ?? [];
+      if (families.length === 0) {
+        const book = await manifestService.bookForAct(projectDir);
+        return {
+          success: true,
+          readiness: narrationTextReadiness([]),
+          fileState,
+          familyId: null,
+          bookPath: book === null ? null : book.absPath,
+        };
+      }
+      return {
+        success: true,
+        readiness: null,
+        fileState,
+        familyId: null,
+        bookPath: null,
+        familyNote: 'This project holds more than one book chain, and the version you pressed '
+          + 'belongs to none of them by name, so its history could not be read. The file itself '
+          + 'still says whether it has been cleaned.',
+      };
+    }
+    const family = resolved.family.id;
+    const passes = await manifestService.readAppliedPasses(projectDir, family);
+    const book = await manifestService.bookForAct(projectDir, family);
+    return {
+      success: true,
+      readiness: narrationTextReadiness(passes),
+      fileState,
+      familyId: family,
+      bookPath: book === null ? null : book.absPath,
+    };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+}

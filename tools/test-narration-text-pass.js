@@ -681,11 +681,16 @@ test('a bracketed insertion is apparatus only while it is SHORT', () => {
   assert.ok(refused.detail.includes('round brackets'), refused.detail);
   assert.strictEqual(
     verdictOf('He agreed (he was lying) then.', ' (he was lying)', '').status, 'EMPTY_REPLACE');
-  // SQUARE brackets are editorial, and the word count is what bounds them.
+  // SQUARE brackets are editorial, but an interpolation of WORDS is READ, not
+  // deleted (Owen's ruling of 2026-09-04, the third review): the permitted edit
+  // is to drop the brackets and keep the words.
   const square = 'He said [the guarantee would hold] so.';
   const long = verdictOf(square, ' [the guarantee would hold]', '');
   assert.strictEqual(long.status, 'EMPTY_REPLACE');
-  assert.ok(long.detail.includes('clause of the book'), long.detail);
+  assert.ok(long.detail.includes('interpolation of words'), long.detail);
+  assert.strictEqual(
+    verdictOf(square, '[the guarantee would hold]', 'the guarantee would hold').status,
+    'APPLIED');
   assert.strictEqual(verdictOf('It was [ed.] there', '[ed.] ', '').status, 'APPLIED');
 });
 
@@ -827,6 +832,123 @@ test('the tables are the one place a reading is decided', () => {
   assert.strictEqual(forms.bracketRemovalRefusal('[sic]'), null);
   assert.strictEqual(forms.bracketRemovalRefusal('(see page twelve)'), null);
   assert.ok(forms.bracketRemovalRefusal('(he was lying)') !== null);
+});
+
+/**
+ * OWEN'S RULINGS OF 2026-09-04, third review — the reading law's own edges.
+ *
+ * Every row below was measured as APPLIED before the ruling it belongs to, and
+ * three of them were written into a working copy.
+ */
+test('R3-1 a reading may not move the punctuation around the word it changes', () => {
+  // Measured into a book: "Dr. Kempner; they" -> "Doctor Kempner they" fused two
+  // sentences, because the law compared words and counted them.
+  assert.strictEqual(
+    verdictOf('Dr. Kempner; they left', 'Dr. Kempner; they', 'Doctor Kempner they').status,
+    'NOT_A_READING');
+  assert.strictEqual(
+    verdictOf('Dr. Kempner; they left', 'Dr. Kempner; they', 'Doctor Kempner; they').status,
+    'APPLIED');
+});
+
+test('R3-1 a span-final abbreviation keeps a period that may end the sentence', () => {
+  // "Oxford St. The rain" -> "Oxford Street The rain", also measured into a book.
+  assert.strictEqual(
+    verdictOf('Oxford St. The rain fell', 'Oxford St.', 'Oxford Street').status,
+    'NOT_A_READING');
+  assert.strictEqual(
+    verdictOf('Oxford St. The rain fell', 'Oxford St.', 'Oxford Street.').status, 'APPLIED');
+  // Mid-sentence there is no sentence to keep, and the period goes with the word.
+  assert.strictEqual(verdictOf('on Baker St. now', 'Baker St.', 'Baker Street').status, 'APPLIED');
+});
+
+test('R3-1 a table key that is also an English word needs its context', () => {
+  // "a flat no. The committee" -> "a flat number The committee": the wrong word
+  // AND a fused sentence.
+  assert.strictEqual(
+    verdictOf('a flat no. The committee met', 'flat no.', 'flat number').status, 'NOT_A_READING');
+  assert.strictEqual(
+    verdictOf('a flat no. 5 was', 'flat no.', 'flat number').status, 'APPLIED');
+  assert.strictEqual(verdictOf('I am. The end', 'I am.', 'I a m').status, 'NOT_A_READING');
+  assert.strictEqual(verdictOf('at two a.m. sharp', 'two a.m.', 'two a m').status, 'APPLIED');
+  assert.strictEqual(verdictOf('the co. of it', 'the co.', 'the company').status, 'NOT_A_READING');
+  assert.strictEqual(verdictOf('the Ford Co. sold', 'Ford Co.', 'Ford company').status, 'APPLIED');
+});
+
+test('R3-2 the letters reading is NEVER forbidden by the roman table', () => {
+  // MD, CD, DC, MC, CV, MM, XL, DI, LI, IX, CIV and MIX are legal numerals AND
+  // ordinary acronyms; forcing them through the roman table made "M I X"
+  // impossible and "one thousand nine" the only reading.
+  for (const caps of ['MIX', 'MD', 'CD', 'DC', 'MC', 'CV', 'MM', 'XL', 'DI', 'LI', 'IX', 'CIV']) {
+    const letters = [...caps].join(' ');
+    assert.strictEqual(verdictOf('the ' + caps + ' was odd', caps, letters).status,
+      'APPLIED', caps);
+  }
+  assert.strictEqual(verdictOf('the MIX was odd', 'MIX', 'one thousand nine').status,
+    'NOT_A_READING');
+});
+
+test('R3-2 the roman reading is offered where a book prints a numeral', () => {
+  assert.strictEqual(verdictOf('Part IV begins', 'Part IV', 'Part Four').status, 'APPLIED');
+  assert.strictEqual(verdictOf('Henry VIII reigned', 'Henry VIII', 'Henry the Eighth').status,
+    'APPLIED');
+  assert.strictEqual(
+    verdictOf('the XIX century', 'the XIX century', 'the nineteenth century').status, 'APPLIED');
+  assert.strictEqual(verdictOf('Part IV begins', 'Part IV', 'Part Nine').status, 'NOT_A_READING');
+});
+
+test('R3-3 a round bracket is the book\'s own unless its SHAPE is apparatus', () => {
+  for (const aside of ['(note she wept)', '(see he lied)', '(source of evil)',
+    '(cited by him)']) {
+    assert.strictEqual(verdictOf('He left ' + aside + ' then', ' ' + aside, '').status,
+      'EMPTY_REPLACE', aside);
+  }
+  for (const apparatus of ['(sic)', '(see page twelve)', '(emphasis added)', '(Kershaw 1993)',
+    '(12)']) {
+    assert.strictEqual(verdictOf('He left ' + apparatus + ' then', ' ' + apparatus, '').status,
+      'APPLIED', apparatus);
+  }
+});
+
+test('R3-4 a square-bracketed interpolation of WORDS is read, not deleted', () => {
+  for (const words of ['[he said]', '[the Fuhrer]', '[God help us]']) {
+    assert.strictEqual(verdictOf('He left ' + words + ' then', ' ' + words, '').status,
+      'EMPTY_REPLACE', words);
+  }
+  // The permitted edit: drop the brackets, keep the words.
+  assert.strictEqual(
+    verdictOf('He left [he said] then', '[he said]', 'he said').status, 'APPLIED');
+  // And apparatus still goes.
+  for (const apparatus of ['[sic]', '[...]', '[12]', '[ed.]', '[*]']) {
+    assert.strictEqual(verdictOf('He left ' + apparatus + ' then', ' ' + apparatus, '').status,
+      'APPLIED', apparatus);
+  }
+  // A parenthesis is not offered the bracket-drop: it is the book's punctuation.
+  assert.strictEqual(
+    verdictOf('He left (he said) then', '(he said)', 'he said').status, 'NOT_A_CLASS');
+});
+
+test('R3-5 a reading is written in the case the table wrote it', () => {
+  assert.strictEqual(
+    verdictOf('in St. Petersburg', 'St. Petersburg', 'SAINT Petersburg').status, 'NOT_A_READING');
+  assert.strictEqual(
+    verdictOf('in St. Petersburg', 'St. Petersburg', 'Saint Petersburg').status, 'APPLIED');
+  assert.strictEqual(
+    verdictOf('the FBI had it', 'the FBI had', 'The f b i had').status, 'NOT_A_READING');
+  assert.strictEqual(
+    verdictOf('the FBI had it', 'the FBI had', 'the F B I had').status, 'APPLIED');
+});
+
+test('R3-10 a spaced hyphen may be read as a dash beside a digit', () => {
+  // The class was impossible next to a number: the find classified as a number
+  // edit and the replacement was refused DIGIT_IN_REPLACE.
+  assert.strictEqual(
+    verdictOf('he waited 12 - and left', '12 - and', '12\u2014and').status, 'APPLIED');
+  assert.strictEqual(verdictOf('the man - who waited', 'man - who', 'man\u2014who').status,
+    'APPLIED');
+  // And the shape has to be EXACT: nothing else may change with it.
+  assert.notStrictEqual(
+    verdictOf('he waited 12 - and left', '12 - and', '13\u2014and').status, 'APPLIED');
 });
 
 test('the number invariants are untouched for a digit-bearing find', () => {

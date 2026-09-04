@@ -126,18 +126,33 @@ How it is enforced:
 
 | class | allowed reading |
 |---|---|
-| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`). An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
-| abbreviation | an entry from the curated table — Dr. Prof. St. Mt. Ave. Blvd. Rd. Jr. Sr. No. e.g. i.e. etc. vs. viz. cf. a.m. p.m. and the rest. **An unknown abbreviation is REFUSED and named**, never guessed, so the tokens real books print arrive as a review list and the table grows on purpose. Mr./Mrs./Ms. are deliberately absent — the prompt says to leave them |
-| roman | exactly the cardinal or ordinal words of its value, with or without a leading "the". `IV` is four or fourth, never nine |
-| bracket | removal only. **Square brackets are editorial**; **round brackets are the author's** unless the contents open like apparatus (`see`, `cf.`, `ibid.`, `sic`, `emphasis`…), so `[sic]` and `(see page twelve)` go and `(he was lying)` stays. The word cap applies after that, to what is already apparatus |
+| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`), **in that case exactly** — "The f b i had" was applied and written verbatim before the case was checked. An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
+| abbreviation | an entry from the curated table — Dr. Prof. St. Mt. Ave. Blvd. Rd. Jr. Sr. No. e.g. i.e. etc. vs. viz. cf. a.m. p.m. and the rest — in the case the table wrote it, all lower, or capitalized on the first letter. **An unknown abbreviation is REFUSED and named**, never guessed. Mr./Mrs./Ms. are deliberately absent — the prompt says to leave them |
+| roman | exactly the cardinal or ordinal words of its value, with or without a leading "the" — **and only where a book prints a numeral** (after a part word, after a capitalized name, or before a century). MD, CD, DC, MC, CV, MM, XL, DI, LI, IX, CIV and MIX are legal numerals *and* ordinary acronyms, and forcing them through the roman table made `M I X` impossible. **The letters reading is never forbidden** |
+| bracket | **square** brackets: an interpolation of WORDS is READ — the permitted edit is to drop the brackets and keep the words (`[he said]` → `he said`) — and only apparatus is deleted (`[sic]`, `[12]`, `[ed.]`, `[…]`, `[*]`). **round** brackets: the author's, deleted only when the contents match an apparatus PATTERN with a digit, a citation abbreviation or a fixed editorial term (`(sic)`, `(see page twelve)`, `(emphasis added)`, `(Kershaw 1993)`, `(12)`), so `(note she wept)` and `(source of evil)` stay |
+
+**A table key that is also an English word** (`no.`, `co.`, `am.`, `st.`) carries a
+context rule and is refused without it: `no.` needs a digit after it, `am.` a
+number before it, `st.`/`co.` a capitalized word on one side. Without them
+"a flat no. The committee" read "a flat number The committee" — the wrong word
+*and* a fused sentence.
+
+**A reading may not move the punctuation** around the word it changes: every
+mark of the find outside the changed token must reappear, in order. And a
+**span-final abbreviation whose period may end a sentence** (the block ends, or
+goes on with a capital, a quote or a bracket) must keep it — "Oxford St. The
+rain" reads "Oxford Street.", never "Oxford Street".
 
 `classifyEdit` is per-token and position-aware: a period at the **end** of a span
 is a sentence, not an abbreviation, so `He did not believe it.` is prose; a period
 anywhere else is an abbreviation; a span-final one counts only when the table
 already knows it.
 
-The em dash is **the one character this pass may invent**, and only for a text
-edit whose find printed a hyphen. A number edit can never invent one.
+The em dash is **the one character this pass may invent**. A spaced hyphen read
+as a dash is checked by SHAPE — the replacement must be the find with its spaced
+hyphens turned into em dashes and nothing else changed — so it works beside a
+digit (`12 - and` → `12—and`), which it could not before: the find classified as a
+number edit and the replacement was refused for carrying a digit.
 
 
 ## Where it runs
@@ -461,11 +476,17 @@ shared/text/line-join.js
 shared/text/sup-markers.js
 ```
 
-**Add:**
+**Add TWO files:**
 
 ```
 electron/tts-punctuation.js
+electron/tts-spoken-forms.js
 ```
+
+`tts-spoken-forms.js` is what `tts-number-normalizer.js` now requires, and it is
+a **leaf**: it imports nothing at all, not even from this repo, so it drags
+nothing behind it. The number words a roman numeral may be read as are passed
+*in* by the caller, which already has them — one definition, no second copy.
 
 It is a straight port of `pipeline/normalization/punctuation.js` — same exported
 names (`PUNCTUATION_SPEC_VERSION`, `CANONICAL_ELLIPSIS`, `CANONICAL_DASH`,
@@ -581,7 +602,8 @@ asserts no digit-adjacent colon survives.
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
 | `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |
-| `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables |
+| `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables (a LEAF: imports nothing) |
+| `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
 | `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
 | `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables (that list itself has no consumer — see above) |
 | `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |

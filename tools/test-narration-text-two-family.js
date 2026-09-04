@@ -66,6 +66,8 @@ require.cache[RUNNER_MODULE].exports.createOllamaNormalizerRunner = () => ({
 const processingChain = require(path.join(DIST, 'electron', 'processing-chain.js'));
 const processingPasses = require(path.join(DIST, 'electron', 'processing-passes.js'));
 const narrationTextPass = require(path.join(DIST, 'electron', 'narration-text-pass.js'));
+const queueEngine = require(path.join(DIST, 'electron', 'queue-engine.js'));
+const { narrationTextStep } = require(path.join(DIST, 'electron', 'queue-steps', 'pass.js'));
 
 manifestService.setLibraryBasePath(ROOT);
 const projectsDir = path.join(ROOT, 'projects');
@@ -142,12 +144,6 @@ async function chapterText(bookPath) {
   assert.ok(unit !== undefined, `no unit in ${bookPath}`);
   return unit.text;
 }
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-let dir;
-let first;
-let second;
 
 test('a project with two archive EPUBs has two chains', async () => {
   dir = await makeProject('two-chains');
@@ -267,13 +263,162 @@ test('a second run on the same chain does nothing, and still names the copy to n
   assert.strictEqual((await manifestService.readBookLedger(dir, second.id)).length, 1);
 });
 
-test('the queue step produces what the pass named, not what it wrote', () => {
-  // The queue gives a chained step its PARENT'S artifact and nothing else, so
-  // this line is the whole of Finding 4's fix and is asserted at the source.
-  const source = fs.readFileSync(path.join(REPO, 'electron', 'queue-steps', 'pass.ts'), 'utf8');
-  assert.ok(source.includes('result.narrationInputPath ?? result.outputPath'),
-    'pass.ts prefers the narration input the pass named');
+/**
+ * THE REAL PATH: `processing:submit-chain`'s composition, the queue engine, and
+ * `queue-steps/pass.ts` — not `runProcessingPass` called by hand.
+ *
+ * The third adversarial review asked for this because the whole of Finding 4 is
+ * about what the QUEUE hands a chained step, and a test that calls the pass
+ * directly cannot see it: the artifact resolution, the `parentIndex` chaining
+ * and the step module's choice of `narrationInputPath` all live between them.
+ */
+test('a chained narration reads the copy the PASS named, through the real queue', async () => {
+  const book = await manifestService.ensureBookEpub(dir, second.id);
+  const plan = await processingChain.planProcessingChain({
+    projectDir: dir,
+    sourcePath: book.absPath,
+    passes: [{ kind: 'narration-text' }],
+  });
+
+  // The follow-on the narration modal builds, with the file it would have set.
+  const narrated = [];
+  queueEngine.clearStepModules();
+  queueEngine.registerStepModule(narrationTextStep);
+  queueEngine.registerStepModule({
+    type: 'tts-conversion',
+    consumes: 'epub',
+    produces: 'audio',
+    resource: () => 'gpu',
+    async run(ctx) {
+      narrated.push(ctx.input.path);
+      return { kind: 'audio', path: `${ctx.input.path}.wav` };
+    },
+    cancel() { /* nothing to stop */ },
+  });
+  queueEngine.setGpuLockProbe(() => null);
+  queueEngine.setGpuHolderProbe(() => null);
+  await queueEngine.configure({ stateDir: path.join(ROOT, 'queue-state') });
+
+  // Composed exactly as `processing:submit-chain` composes it: the pass first
+  // with the book as its sourceRef, the follow-on chained to it by parentIndex.
+  const steps = [
+    {
+      type: plan.jobs[0].jobType,
+      label: plan.jobs[0].label,
+      config: plan.jobs[0].config,
+      sourceRef: { kind: 'epub', path: plan.bookEpubPath },
+    },
+    {
+      type: 'tts-conversion',
+      label: 'Narrate',
+      config: { epubPath: '/a/stale/export.epub' },
+      parentIndex: 0,
+    },
+  ];
+  const job = queueEngine.enqueue({
+    title: plan.title, projectId: dir, documentPath: plan.bookEpubPath, steps,
+  });
+  queueEngine.start();
+
+  const deadline = Date.now() + 120000;
+  for (;;) {
+    const live = queueEngine.snapshot().jobs.find((j) => j.id === job.id);
+    const done = live && live.steps.every((st) => st.status === 'done' || st.status === 'failed');
+    if (done) {
+      const failed = live.steps.filter((st) => st.status === 'failed');
+      assert.strictEqual(failed.length, 0,
+        failed.map((st) => `${st.type}: ${st.error}`).join('; '));
+      break;
+    }
+    assert.ok(Date.now() < deadline, 'the run finished within two minutes');
+    await new Promise((r) => setTimeout(r, 50));
+  }
+
+  assert.strictEqual(narrated.length, 1, 'the narration step ran exactly once');
+  // NOT the stale path its own config carried, and NOT the book: the narration
+  // copy the pass re-cut from the book it had just written.
+  assert.notStrictEqual(narrated[0], '/a/stale/export.epub');
+  const ttsRecorded = familiesOf(dir).find((f) => f.id === second.id).ttsEpub.path;
+  assert.strictEqual(
+    path.resolve(narrated[0]),
+    path.resolve(path.join(dir, ttsRecorded.split('/').join(path.sep))),
+    'the chained step read the regenerated narration copy of the pressed chain');
+  assert.strictEqual((await narrationTextPass.narrationTextGate(narrated[0])).ok, true);
+  await queueEngine.pause();
 });
+/**
+ * THE READINESS DOOR'S OWN BRANCHES.
+ *
+ * `narrationTextReadinessFor` is the whole body of the `narration:text-readiness`
+ * IPC — the handler is a one-line call to it — so these exercise what the button
+ * actually asks, not the pure helper underneath it.
+ */
+test('the readiness door: MANY chains, and a version that names none of them', async () => {
+  const readiness = require(path.join(DIST, 'electron', 'narration-text-readiness.js'));
+  const stray = path.join(dir, 'archive', 'Some Other File.epub');
+  await writeBook(stray, 'a file no chain records');
+
+  const answer = await readiness.narrationTextReadinessFor(dir, stray);
+  assert.strictEqual(answer.success, true, 'it answers rather than throwing');
+  assert.strictEqual(answer.readiness, null, 'no chain can be named');
+  assert.strictEqual(answer.familyId, null);
+  assert.ok(answer.familyNote.includes('more than one book chain'), answer.familyNote);
+  // And the FILE's own answer stands, which is what keeps the button pressable.
+  assert.strictEqual(answer.fileState.ok, false);
+  assert.strictEqual(answer.fileState.state, 'missing');
+});
+
+test('the readiness door: a chain that CAN be named answers from the ledger', async () => {
+  const readiness = require(path.join(DIST, 'electron', 'narration-text-readiness.js'));
+  const book = await manifestService.ensureBookEpub(dir, second.id);
+  const answer = await readiness.narrationTextReadinessFor(dir, book.absPath);
+  assert.strictEqual(answer.familyId, second.id);
+  assert.strictEqual(answer.readiness.ok, true, JSON.stringify(answer.readiness));
+  assert.strictEqual(path.resolve(answer.bookPath), path.resolve(book.absPath));
+
+  // The OTHER chain has not been cleaned, and says so.
+  const other = await manifestService.ensureBookEpub(dir, first.id);
+  const otherAnswer = await readiness.narrationTextReadinessFor(dir, other.absPath);
+  assert.strictEqual(otherAnswer.familyId, first.id);
+  assert.strictEqual(otherAnswer.readiness.ok, false);
+  assert.strictEqual(otherAnswer.readiness.state, 'missing');
+});
+
+test('the readiness door: ZERO chains is MISSING, not the many-chain refusal', async () => {
+  // `familyForOpen` answers null for a project with no chain as well as for one
+  // with several, and calling both "more than one book chain" sent a project
+  // that has simply never been opened down the path that offers nothing (the
+  // second adversarial review, 2026-09-04).
+  const readiness = require(path.join(DIST, 'electron', 'narration-text-readiness.js'));
+  const bare = path.join(projectsDir, 'no-chains');
+  fs.mkdirSync(bare, { recursive: true });
+  fs.writeFileSync(path.join(bare, 'manifest.json'), JSON.stringify({
+    manifestVersion: 2,
+    projectId: 'no-chains',
+    createdAt: '2026-09-01T00:00:00.000Z',
+    modifiedAt: '2026-09-01T00:00:00.000Z',
+    metadata: { title: 'Nothing Yet' },
+    source: { type: 'pdf', originalFilename: 'Nothing Yet.pdf' },
+    archive: [{ path: 'archive/Nothing Yet.pdf', role: 'original', format: 'pdf' }],
+    families: [],
+  }, null, 2), 'utf8');
+
+  const answer = await readiness.narrationTextReadinessFor(bare, undefined);
+  assert.strictEqual(answer.success, true);
+  assert.ok(answer.readiness !== null, 'a project with no chain gets an ANSWER, not a refusal');
+  assert.strictEqual(answer.readiness.ok, false);
+  assert.strictEqual(answer.readiness.state, 'missing',
+    'so the Narrate gate offers the cleanup rather than showing nothing');
+  assert.strictEqual(answer.familyNote, undefined, 'and it is not called a many-chain project');
+});
+
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+let dir;
+let first;
+let second;
+
 
 // ─────────────────────────────────────────────────────────────────────────────
 

@@ -602,7 +602,8 @@ export async function narrationTextGate(bookPath: string): Promise<NarrationText
       reason: `${book} was cleaned by an older narration text pass `
         + `(${stamp.normalizerVersion}/${stamp.punctuationSpec}; this build runs `
         + `${NORMALIZER_VERSION}/${PUNCTUATION_SPEC_VERSION}), so parts of it would be narrated by `
-        + 'Press "Clean text…" on this book’s version row to clean it again.',
+        + 'rules this build no longer uses. Press "Clean text…" on this book’s version row to '
+        + 'clean it again.',
     };
   }
   return {

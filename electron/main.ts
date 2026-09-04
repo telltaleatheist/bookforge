@@ -9510,75 +9510,11 @@ function setupIpcHandlers(): void {
  */
 ipcMain.handle('narration:text-readiness', async (
   _event, projectDir: string, askedPath?: string, familyId?: string) => {
-  try {
-    const { narrationTextReadiness } = await import('./narration-text-readiness.js');
-    const { narrationTextGate } = await import('./narration-text-pass.js');
-
-    // ── THE FILE'S OWN ANSWER, which needs no chain to be resolved ──────────
-    //
-    // The render door reads the stamp on the file it is handed, so the button
-    // has to be able to read the same thing — and a project with two chains
-    // must not be able to make that unanswerable. Computed FIRST and
-    // independently for exactly that reason.
-    const fileState = askedPath === undefined || !fsSync.existsSync(askedPath)
-      ? null
-      : await narrationTextGate(askedPath);
-
-    // ── THE CHAIN'S ANSWER, when the chain can be named ─────────────────────
-    //
-    // `familyForOpen` matches the asked path against a family's source, book and
-    // narration copy. A version row that is none of those, in a project with two
-    // archive EPUBs, names no chain — and `readAppliedPasses(projectDir,
-    // undefined)` then REFUSES ("Press the button on the version you mean"),
-    // which used to make every Narrate button in such a project un-pressable
-    // (the adversarial review, 2026-09-04). Now it is a null answer with a
-    // sentence, and the file's own answer above still stands.
-    const resolved = await manifestService.familyForOpen(projectDir, askedPath, familyId);
-    if (resolved === null) {
-      // ZERO CHAINS AND MANY CHAINS ARE NOT THE SAME ANSWER. `familyForOpen`
-      // returns null for both, and calling them both "more than one book chain"
-      // sent a project that simply has no recorded chain yet down the path that
-      // offers nothing — where the round-1 code had correctly offered the
-      // cleanup (the second adversarial review, 2026-09-04). A project with no
-      // chain has not been cleaned, by definition, so it reads MISSING and the
-      // offer stands.
-      const families = (await manifestService.readProjectManifest(projectDir)).families ?? [];
-      if (families.length === 0) {
-        const { narrationTextReadiness: readiness } =
-          await import('./narration-text-readiness.js');
-        const book = await manifestService.bookForAct(projectDir);
-        return {
-          success: true,
-          readiness: readiness([]),
-          fileState,
-          familyId: null,
-          bookPath: book === null ? null : book.absPath,
-        };
-      }
-      return {
-        success: true,
-        readiness: null,
-        fileState,
-        familyId: null,
-        bookPath: null,
-        familyNote: 'This project holds more than one book chain, and the version you pressed '
-          + 'belongs to none of them by name, so its history could not be read. The file itself '
-          + 'still says whether it has been cleaned.',
-      };
-    }
-    const family = resolved.family.id;
-    const passes = await manifestService.readAppliedPasses(projectDir, family);
-    const book = await manifestService.bookForAct(projectDir, family);
-    return {
-      success: true,
-      readiness: narrationTextReadiness(passes),
-      fileState,
-      familyId: family,
-      bookPath: book === null ? null : book.absPath,
-    };
-  } catch (err) {
-    return { success: false, error: (err as Error).message };
-  }
+  // ONE LINE, on purpose: the whole answer lives in
+  // `electron/narration-text-readiness.ts` so a keeper can call the same
+  // function this door does (the third adversarial review, 2026-09-04).
+  const { narrationTextReadinessFor } = await import('./narration-text-readiness.js');
+  return narrationTextReadinessFor(projectDir, askedPath, familyId);
 });
 
   ipcMain.handle('processing:plan-chain', async (

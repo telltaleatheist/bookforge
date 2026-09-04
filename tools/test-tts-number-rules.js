@@ -385,6 +385,29 @@ test('glued: digits pressed against letters are a MEASUREMENT, left to the model
   reads('a 24-hour day', 'a twenty four-hour day');
 });
 
+test('glued: the n4 -> n5 RESIDUAL SET, and why each one stays', () => {
+  // The five spans the third adversarial review measured as still printing a
+  // digit after n5. Each is left deliberately, and this is the record of which:
+  //
+  //   RFZ 1     an archive sigil in front of a bare integer (isArchiveSigil)
+  //   ADL 122   the same
+  //   18B       digits pressed against a trailing letter (DIGITS_THEN_UNIT)
+  //   SS1488    a FOUR-digit run inside a letter-prefixed token
+  //   L-1011    the same, hyphenated
+  //
+  // The last two could only be read by admitting four-digit runs again, and that
+  // is the exact shape of "pre-1914", "Kennedy-1963" and "Louis XIV-1715" — a
+  // year. Nothing in a rule can tell an aircraft from a year, so they go to the
+  // model, which can read the sentence. Left, and listed.
+  for (const printed of ['RFZ 1', 'ADL 122', '18B', 'SS1488', 'L-1011']) untouched(printed);
+
+  // And the defect that bought them stays bought.
+  for (const printed of [
+    'pre-1914 Europe', 'post-1945 Germany', 'the Kennedy-1963 assassination', 'Louis XIV-1715',
+    'By the mid-1920s at the latest', 'a mid-19th century view',
+  ]) untouched(printed);
+});
+
 test('glued: a code is still a code — the guards, one by one', () => {
   untouched('X-007 file');            // a leading zero
   untouched('model Z-12345');         // five digits

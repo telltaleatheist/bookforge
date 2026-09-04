@@ -2684,7 +2684,7 @@ export class StudioVersionsComponent {
   readonly cleanupInFlight = computed(() => {
     const dir = this.projectDir();
     if (!dir) return false;
-    const same = (p?: string) => !!p && p.replace(/[\/]+$/, '') === dir.replace(/[\/]+$/, '');
+    const same = (p?: string) => !!p && p.replace(/[\\/]+$/, '') === dir.replace(/[\\/]+$/, '');
     return this.queue.jobs().some(j =>
       j.type === 'narration-text'
       && (j.status === 'pending' || j.status === 'processing')
