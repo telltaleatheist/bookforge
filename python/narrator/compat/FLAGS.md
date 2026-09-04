@@ -5,8 +5,27 @@ complete table, generated from the same dict the code routes on
 (`compat/flags.py:FLAGS`) so the two cannot drift; `tests/test_compat_flags.py`
 asserts every row.
 
-**Counts: 56 flags - 25 ACCEPT, 23 IGNORE, 8 REFUSE.** Plus 18 engine names
-refused by name on `--tts_engine`.
+**Counts: 57 flags - 35 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
+refused by name on `--tts_engine`, and 4 near-misses refused for naming no
+registry id.
+
+**57, not 56, and that is narrator's own flag.** `--higgs_voice` is the one
+flag in this table ebook2audiobook never declared: Higgs did not exist in it.
+Everything else here is still e2a's argv answered by narrator.
+
+**Changed for Higgs v3 (2026-09-04, the first cut-over slice):** `--tts_engine`
+now accepts `higgs-v3` as well as `orpheus`, on the prep, worker and retake
+routes, and the value selects the engine through `engine/registry.py`.
+`--higgs_voice` is new. `NARRATOR_ENGINE` may name the engine instead of the
+flag; when both are present and DISAGREE the run is refused rather than one
+silently winning.
+
+**Changed at migration step 4 (prep, 2026-09-04):** `--prep_only`,
+`--sentence_per_paragraph` and `--skip_headings` moved REFUSE -> ACCEPT, and
+six flags moved IGNORE -> ACCEPT because PREP records them in
+`session-state.json` even though no render reads them: `--ebook`, `--language`,
+`--device`, `--voice`, `--custom_model`, `--custom_model_dir`. `--ebooks_dir`
+stays REFUSE with a new reason (batch conversion, not "prep is not ported").
 
 ## The two doors, and why they are one parser
 
@@ -35,10 +54,11 @@ nothing downstream can tell; what changes is that a caller who used
 
 ---
 
-## ACCEPT (25)
+## ACCEPT (34)
 
 | flag | passed by | what narrator does |
 |---|---|---|
+| `--prep_only` | `parallel-tts-bridge.ts:3219` (the prep spawn is `:3210-3253`) | -> `text.prep.prep_session` (migration step 4). See "The prep route" below |
 | `--worker_mode` | `parallel-tts-bridge.ts:3936` | -> `render.worker.run_worker` |
 | `--assemble_only` | `parallel-tts-bridge.ts:5207`, `reassembly-bridge.ts:1530` | -> `assemble.assemble` over `render.session_v1.build_manifest` |
 | `--list_sessions` | `parallel-tts-bridge.ts:8888` | -> `session_store.list_resumable_sessions`, printed as `json.dumps(..., indent=2)` |
@@ -55,15 +75,75 @@ nothing downstream can tell; what changes is that a caller who used
 | `--sentence_overrides` | `:3652` | -> `render.retake`; a JSON file of `{index: text}` |
 | `--num_takes` | `:3649` (only when > 1) | -> `render.retake` |
 | `--take_temperatures` | `:3647` | -> `render.retake`; its COUNT sets `num_takes` |
-| `--tts_engine` | every spawn | checked **only on the worker route**, where it must be `orpheus`. NOT checked on `--assemble_only` / `--list_sessions` / `--resume_session` - see below |
+| `--tts_engine` | every spawn | SELECTS THE ENGINE: `orpheus` or `higgs-v3`, checked on the prep, worker and retake routes and resolved through `engine/registry.py`. NOT checked on `--assemble_only` / `--list_sessions` / `--resume_session` - see below |
+| `--higgs_voice` | the Higgs spawns | **narrator's own flag** - Higgs has no `--fine_tuned` voice TOKEN; its voice is a CATALOG ID naming a fine-tuned adapter or a set of reference clips. Recorded in `session-state.json` as `higgs_voice`, never as `fine_tuned` |
 | `--fine_tuned` | `pushVoiceArgs` (`:244`, `:263`, `:277`, `:293`) | the Orpheus voice token -> `EngineConfig.voice` |
 | `--orpheus_model_dir` | `pushVoiceArgs:243, 276` | a merged fine-tune |
 | `--orpheus_adapter_dir` / `--orpheus_base_dir` | `pushVoiceArgs:268-270` | LoRA adapter over a shared base |
 | `--post_render_filter` | `reassembly-bridge.ts:1532` only | the per-voice ffmpeg `-af` chain, applied at the FINAL assembly encode. See below |
-| `--output_format` | worker/assembly spawns | assembly's container; `m4b` is the only shape exercised |
+| `--output_format` | worker/assembly spawns | assembly's container; `m4b` is the only shape exercised. PREP also builds `final_name` from it |
+| `--ebook` | the prep spawn (`:3214`), and the assembly spawn (`:5188`) | **prep parses it** - it is the whole input. Every other route ignores it; e2a's assembly ignored it too |
+| `--language` | the prep and assembly spawns | **prep** resolves it through `iso639` into `language`/`language_iso1` and gates the book on it (Orpheus is English-only). The ENGINE has no language-dependent behaviour |
+| `--device` | every spawn | **prep** normalizes it through e2a's `devices` table and records it in `device`. The worker ignores it: `detect_backend()` reads no session device |
+| `--voice` | `pushVoiceArgs:290` (custom XTTS voices only) | **prep** records it in `voice`. No Orpheus render reads it |
+| `--custom_model` / `--custom_model_dir` | `pushVoiceArgs:288-289` | **prep** records them in `custom_model`/`custom_model_dir`. No Orpheus render reads them |
+| `--sentence_per_paragraph` | `parallel-tts-bridge.ts:3248` (language-learning mode) | prep splits on `[break]` before `escape_sml` runs, so each paragraph is one chunk and the packer never runs |
+| `--skip_headings` | `parallel-tts-bridge.ts:3253` | prep suppresses the TEXT of real `h1`-`h6` headings (still parsed for chapter detection). It does NOT suppress a TOC-matched title recovered from body text, and never did |
 
-(22 rows; the paired `start`/`end` and `adapter`/`base` rows carry two flags
-each, which is what makes 25 flags.)
+(30 rows; the paired `start`/`end`, `adapter`/`base` and
+`custom_model`/`custom_model_dir` rows carry two flags each, which is what makes
+34 flags.)
+
+### The prep route
+
+`--prep_only` is `bookforge_ext/parallel/session.prep_ebook_info` (NOT
+`lib/core.py`'s dead copy of the same name) plus `handlers.py:47-76`'s argument
+normalization: `--ebook` is made absolute (the process-dir md5 is taken over that
+string), `--output_dir` becomes `audiobooks_dir`, and `--device` is mapped through
+`conf.devices`.
+
+**Where the session goes.** e2a put it at `$E2A_TMP_DIR/ebook-<session id>`,
+and `parallel-tts-bridge.ts:3196-3202` COMPUTES THE SAME PATH ITSELF and then
+reads `session-state.json` out of it. narrator honours `--session_dir` when a
+caller passes one and otherwise derives the identical path from
+`session_store.sessions_root()`.
+
+**AT CUT-OVER THE PREP SPAWN MUST PASS `--session_dir`, AND THAT IS THE ONLY
+FIX.** `sessions_root()` reads `$E2A_TMP_DIR`; e2a survived without it because
+`lib/conf.py` fell back to `<e2a_root>/tmp`, which is exactly the path the bridge
+had computed. narrator has no e2a root and refuses to guess.
+
+Forwarding `E2A_TMP_DIR` into WSL is NOT an alternative, and an earlier draft of
+this file wrongly offered it as one. Two independent reasons:
+
+1. **The variable holds the wrong path.** For a WSL prep the bridge derives the
+   session dir from the WSL e2a ROOT - ``sessionDir = `${wslE2aPath}/tmp/ebook-
+   ${sessionId}` `` (`parallel-tts-bridge.ts:3180`) - while `E2A_TMP_DIR` is
+   resolved from `getDefaultE2aTmpPath()`, a WINDOWS path. Exporting it inside
+   the guest would point prep at a directory that does not exist there, and the
+   bridge would then read `session-state.json` from a place prep never wrote.
+2. `spawnWithWslSupport` does not hand the Windows environment to the guest at
+   all: it re-exports a fixed `forwardKeys` list (`:1590-1601`) - the `ORPHEUS_*`
+   tuning vars plus the two owner-pid vars.
+
+The render and retake spawns already pass `--session_dir` explicitly
+(`:3896-3938`, `:3609`). The PREP spawn (`:3210-3253`) does not, and must: one
+argument, `'--session_dir', sessionDir`, using the variable the bridge has
+already computed on both branches. Until then narrator refuses by name, so the
+failure is a sentence an operator can act on rather than a session written to the
+wrong disk.
+
+**Nothing parses prep's stdout.** `prepareSession` logs it, skips any line
+starting with `{` (`:3305-3310`), and reads `session-state.json`
+(`:3394-3435`). The result JSON is still printed in e2a's shape
+(`json.dumps(result, indent=2, default=str)` on success; a COMPACT
+`{"success": false, "error": "prep_ebook_info failed"}` on failure) because that
+is what the door printed.
+
+**A non-EPUB `--ebook` is refused by name.** e2a Calibre-converted txt/pdf/image
+inputs; Foundry produces an EPUB for every book, and e2a's own EPUB branch
+refuses to Calibre an EPUB because it was destructive. `text/PORT_NOTES.md`
+section 4 lists it under "Unexercised e2a paths".
 
 ### `--tts_engine` on assembly is scaffolding, and BOTH spawns pass `xtts`
 
@@ -83,6 +163,39 @@ So `check_engine` is called from the worker route ONLY (`compat/app.py:dispatch`
 An earlier draft ran it before routing and refused every real assembly - the
 review's blocking finding. `--list_sessions` and `--resume_session` are not gated
 either: they read the filesystem and never load a model.
+
+### `higgs-v3`, and the four names that are not it
+
+`check_engine` accepts exactly `orpheus` and `higgs-v3`. Four near-misses are
+refused by name rather than helpfully resolved, because guessing which Higgs a
+caller meant is how a whole book gets rendered by the wrong model:
+
+| name | why not |
+|---|---|
+| `higgs` | names no registry id |
+| `higgs-v2` | dropped (Owen, 2026-09-04: "basically just Orpheus and we know Orpheus better"); only the v3 served backend ships |
+| `higgs-v2-scaffold` | interface scaffolding in the registry, never a render engine |
+| `higgs_v3` | narrator spells it with a hyphen |
+
+**WHAT WORKS TODAY FOR HIGGS, AND WHAT DOES NOT.** `--prep_only --tts_engine
+higgs-v3 --higgs_voice <id>` prepares a session end to end: the engine is
+recorded exactly as given, the voice under `higgs_voice`, and the book is chunked
+by `text/paragraph_packer.py` against the Higgs `Budget` (prep forces
+`chunking=paragraph`, because the ported e2a packer is Orpheus-only and refuses
+by name otherwise). The RENDER route refuses `higgs-v3` for now: `WorkerRequest`
+carries no `higgs_voice` and `_build_engine_config` builds an Orpheus
+`EngineConfig` unconditionally, both in `render/worker.py`, which is a different
+column. The refusal names those two changes. It is a refusal and not a silent
+Orpheus render because `--fine_tuned` is a token and `--higgs_voice` is a catalog
+id - handing one where the other is expected resolves to the wrong voice.
+
+**PREP GATES THE ENGINE TOO, just not through `check_engine`.** Since migration
+step 4 the flag decides what gets PARSED as well as what gets rendered: the
+Orpheus branch of `normalize_text`/`get_sentences` is the only one ported, so
+`text.prep.prep_session` and `text.chapters.get_chapters` each refuse a
+non-Orpheus engine with `UnsupportedEngine` before reading a byte of the book.
+That refusal leaves `compat/app.py` as `Error: <message>` and exit 1, not as
+e2a's `prep_ebook_only failed` dict - see "The prep route".
 
 Nothing is lost by this. The refusal that decides what gets RENDERED lives in
 `render/worker.py`, which refuses a SESSION whose `tts_engine` is not `orpheus`
@@ -106,16 +219,13 @@ passed at all.
 
 ---
 
-## IGNORE (23) - parsed, honoured by nobody, and that is correct
+## IGNORE (17) - parsed, honoured by nobody, and that is correct
 
 | flag | passed by | why nothing happens |
 |---|---|---|
 | `--headless` | every `app.py` spawn | narrator has no GUI; headless is the only mode |
 | `--no_split` | `parallel-tts-bridge.ts:5208` (ALWAYS), `reassembly-bridge.ts` | a whole-book assembly is the only shape narrator produces, so the flag already describes the behaviour (`CONTRACTS.md`: e2a's `output_split` path is unexercised and must not be ported) |
 | `--skip_deps` | `:3934`, `:5210` | narrator installs nothing |
-| `--device` | every spawn | reported in the worker log; the Orpheus backend is picked by `detect_backend()`, which reads no session device (`engine/PORT_NOTES.md` s1: `device` is not one of the eight session keys the engine read) |
-| `--language` | prep and assembly spawns | the engine has no language-dependent behaviour: the prompt is `voice: text` and every guard measures characters |
-| `--voice` | `pushVoiceArgs:290` (custom XTTS voices only) | the XTTS reference-clip path; an Orpheus voice arrives in `--fine_tuned` |
 | `--speed` | `:3906`, `:3962` (only when != 1.0) | XTTS only |
 | `--temperature`, `--top_p`, `--top_k`, `--repetition_penalty`, `--length_penalty`, `--num_beams`, `--enable_text_splitting` | the prep spawn, XTTS branch | XTTS only. Orpheus's equivalents arrive as `ORPHEUS_TEMPERATURE` / `ORPHEUS_TOP_P` / `ORPHEUS_REP_PENALTY` env vars or as registered per-voice caps |
 | `--text_temp`, `--waveform_temp` | nothing | bark only |
@@ -123,26 +233,23 @@ passed at all.
 | `--script_mode` | nothing | the docker/native switch |
 | `--workflow` | nothing | an e2a test hook that pinned a fixed session id |
 | `--share` | nothing | a gradio flag |
-| `--custom_model`, `--custom_model_dir` | `pushVoiceArgs:288-289` | the XTTS pre-staged voice path |
-| `--ebook` | prep spawn, and the assembly spawn (`:5186`) | prep parses the EPUB; narrator renders from the state prep wrote. e2a's assembly ignores it too |
 
 ---
 
-## REFUSE (8) - narrator raises, by name
+## REFUSE (5) - narrator raises, by name
 
 | flag | message |
 |---|---|
-| `--prep_only` | "prep is migration step 4; use ebook2audiobook for prep until then" |
-| `--ebooks_dir` | batch conversion is a prep-era feature |
-| `--sentence_per_paragraph` | a prep/packer flag; the packer is step 4 |
-| `--skip_headings` | a prep/packer flag; the packer is step 4 |
+| `--ebooks_dir` | batch conversion (`convert_ebook_batch`) is a gradio-era feature no BookForge spawn has ever used: it loops one prep per file and `sys.exit(1)`s on the first failure. Pass `--ebook` once per book |
 | `--bilingual` | bilingual assembly is the one e2a path where assembly inserts silence of its own (`bilingual_pause` 0.3 s between a pair, `bilingual_gap` 1.0 s between pairs), which falsifies every timing rule narrator rests on. `bookforge_ext/parallel/bilingual.py` is out of scope by name. **PASSED BY A LIVE SPAWN** - see below |
 | `--bilingual_pause` | see `--bilingual`. Passed by the same spawn |
 | `--bilingual_gap` | see `--bilingual`. Passed by the same spawn |
 | `--skip_assembly` | a dual-voice bilingual hook |
 
-(8 flags, 6 distinct reasons: the two bilingual timing flags defer to
-`--bilingual`, and the two packer flags share one.)
+(5 flags, 2 distinct REASONS in 4 message strings: `--ebooks_dir` stands alone,
+and the other four are all the bilingual reason - `--bilingual` states it,
+`--skip_assembly` names itself a bilingual hook and points at it, and the two
+timing flags say only "see `--bilingual`".)
 
 ### The bilingual refusal is reachable from the app, and that is the point
 

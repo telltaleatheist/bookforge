@@ -92,6 +92,7 @@ def build_parser() -> argparse.ArgumentParser:
     # voice
     p.add_argument('--tts_engine', type=str, default=None)
     p.add_argument('--fine_tuned', type=str, default=None)
+    p.add_argument('--higgs_voice', type=str, default=None)
     p.add_argument('--orpheus_model_dir', type=str, default=None)
     p.add_argument('--orpheus_adapter_dir', type=str, default=None)
     p.add_argument('--orpheus_base_dir', type=str, default=None)
@@ -209,6 +210,176 @@ def route_resume_session(args) -> int:
         traceback.print_exc()
         result = {'success': False, 'error': str(e)}
     return _print_app_result(result)
+
+
+def route_prep(args) -> int:
+    """`--prep_only`. e2a handlers.py:47-76.
+
+    e2a's branch does four things before calling prep, and all four are here:
+
+      1. refuse without `--ebook`, printing `Error: --prep_only requires --ebook`
+         and returning `{'success': False, 'error': ...}`;
+      2. `args['ebook'] = os.path.abspath(args['ebook'])` - the ABSPATH is what
+         the process-dir md5 is taken over, so it is load-bearing, not tidiness;
+      3. `audiobooks_dir = abspath(--output_dir) or audiobooks_cli_dir`;
+      4. normalize `--device` through e2a's devices table.
+
+    WHERE THE SESSION GOES. e2a put it at `<tmp_dir>/ebook-<session_id>` with
+    `tmp_dir = $E2A_TMP_DIR`, and `parallel-tts-bridge.ts:3178-3183` COMPUTES THE
+    SAME PATH ITSELF and then reads `session-state.json` out of it - it never
+    parses this command's stdout (`:3394-3435`; it even skips logging any line
+    starting with `{`, `:3305`). So the placement is the contract, not the
+    output. narrator honours `--session_dir` when a caller passes one and
+    otherwise derives the identical path from `session_store.sessions_root()`.
+
+    AT CUT-OVER THE PREP SPAWN MUST PASS `--session_dir`, and there is no second
+    option: for a WSL prep the bridge derives the session dir from the WSL e2a
+    ROOT (`${wslE2aPath}/tmp/ebook-<id>`, `:3180`) while `E2A_TMP_DIR` holds a
+    WINDOWS path, so forwarding that variable into the guest would point prep at
+    a path that does not exist there. See `compat/FLAGS.md`, "The prep route".
+
+    OUTPUT SHAPE, and the ONE thing that is not e2a's. `handlers.py:70` prints
+    `json.dumps(result, indent=2, default=str)` on success and
+    `json.dumps(error_result)` - COMPACT, no indent - on failure, and both are
+    reproduced. But narrator's OWN named refusals - `UnsupportedInput` (a
+    non-EPUB `--ebook`) and `UnsupportedEngine` (anything but Orpheus) - do NOT
+    take that shape: they print `Error: <message>` and exit 1, like every other
+    narrator refusal, because their message IS the answer and burying it under
+    `prep_ebook_info failed` would tell an operator nothing. e2a had neither
+    refusal to express. Everything else - a broken EPUB, a missing sessions
+    root, a chapter that would not extract - keeps e2a's failure dict.
+    """
+    import os
+    import uuid
+
+    from ..render import session_store
+    from ..text.epub import UnsupportedInput
+    from ..text.normalize import UnsupportedEngine
+    from ..text.prep import PrepOptions, prep_session
+
+    if not args.ebook:
+        # e2a prints THIS LINE AND NOTHING ELSE here: `handlers.py:50-51` prints
+        # the error and returns the dict, and `app.py:277` only reads its
+        # `success` key to pick the exit code. No JSON is emitted on this path.
+        print('Error: --prep_only requires --ebook', flush=True)
+        return 1
+
+    # The engine is decided ONCE, at the door, and by name - the same call the
+    # worker route makes, so both refuse an unknown engine identically and a
+    # flag/env disagreement is caught before a book is read.
+    engine_id = flagdef.resolve_engine(args.tts_engine)
+    if engine_id != 'higgs-v3' and args.higgs_voice:
+        raise FlagRefused(
+            f'--higgs_voice names a Higgs voice but --tts_engine is '
+            f'{args.tts_engine or "(unset)"}. An Orpheus voice arrives in '
+            f'--fine_tuned; the two are not interchangeable.')
+
+    ebook = os.path.abspath(args.ebook)
+    session_id = args.session or str(uuid.uuid4())
+
+    # e2a's four defaults live in ONE place - `text/lang.py`, pinned to
+    # `conf.py`/`conf_models.py` - and `PrepOptions` already carries them, so a
+    # flag that was not passed is simply not passed on. Re-spelling 'eng' /
+    # 'orpheus' / 'internal' / 'm4b' here would be a second copy to drift.
+    optional = {}
+    if args.language:
+        optional['language'] = args.language
+    if args.tts_engine:
+        optional['tts_engine'] = args.tts_engine
+    # Higgs preps by paragraph, because the ported e2a packer is Orpheus-only.
+    # Set HERE rather than defaulted in PrepOptions so an Orpheus prep keeps the
+    # parity policy and a Higgs prep cannot silently get it.
+    if engine_id == 'higgs-v3':
+        optional['chunking'] = 'paragraph'
+    if args.fine_tuned:
+        optional['fine_tuned'] = args.fine_tuned
+    if args.output_format:
+        optional['output_format'] = args.output_format
+
+    options = PrepOptions(
+        session=session_id,
+        voice=args.voice,
+        device=args.device,
+        audiobooks_dir=os.path.abspath(args.output_dir) if args.output_dir else None,
+        custom_model=args.custom_model,
+        custom_model_dir=args.custom_model_dir,
+        higgs_voice=args.higgs_voice,
+        orpheus_model_dir=args.orpheus_model_dir,
+        orpheus_adapter_dir=args.orpheus_adapter_dir,
+        orpheus_base_dir=args.orpheus_base_dir,
+        sentence_per_paragraph=args.sentence_per_paragraph,
+        skip_headings=args.skip_headings,
+        **optional,
+    )
+
+    try:
+        # INSIDE the try. `sessions_root()` raises when `E2A_TMP_DIR` is unset
+        # and no `--session_dir` was passed - which is precisely the cut-over
+        # case above - and raising it outside sent a bare traceback to a caller
+        # that e2a would have answered with a result dict.
+        if args.session_dir:
+            session_dir = os.path.abspath(args.session_dir)
+        else:
+            session_dir = os.path.join(session_store.sessions_root(),
+                                       f'ebook-{session_id}')
+        outcome = prep_session(ebook, session_dir, options)
+    except (UnsupportedInput, UnsupportedEngine) as refused:
+        # narrator's own named refusals - see OUTPUT SHAPE above.
+        print(f'Error: {refused}', flush=True)
+        return 1
+    except Exception as e:
+        # e2a wrapped the whole of prep_ebook_info in
+        # `except Exception -> print + traceback -> return None`, and handlers
+        # turned that None into this exact dict. Reproduced, so a bridge sees a
+        # result rather than a bare traceback - and the traceback still reaches
+        # stderr for the log.
+        print(f'prep_ebook_info() Exception: {e}', flush=True)
+        import traceback
+        traceback.print_exc()
+        print(json.dumps({'success': False, 'error': 'prep_ebook_info failed'}),
+              flush=True)
+        return 1
+
+    print(json.dumps(outcome.result, indent=2, default=str), flush=True)
+    return 0
+
+
+def _refuse_higgs_render_until_the_worker_carries_a_voice(engine_id, args) -> None:
+    """A Higgs RENDER is refused by name; a Higgs PREP works today.
+
+    WHAT IS DONE, in this column: `--tts_engine higgs-v3` and `--higgs_voice`
+    are accepted, validated and recorded - `text/prep.py` writes `tts_engine`
+    exactly as given and the voice under its own `higgs_voice` key, and the
+    paragraph packer chunks the book against the Higgs `Budget`. So a Higgs
+    session can be PREPARED and read back correctly right now.
+
+    WHAT IS OWED, and by whom: `render/worker.py` is another builder's column
+    (CONTRACTS.md's ownership table) and its `WorkerRequest` has no
+    `higgs_voice` field, while `_build_engine_config` builds an Orpheus
+    `EngineConfig` unconditionally rather than going through
+    `engine/registry.py`. Two changes there - carry the field, and pick the
+    config factory by engine id - are what turn this refusal off. Rather than
+    reach into that column, or quietly render a Higgs job with an Orpheus voice
+    token, the door says so.
+
+    A refusal, not a silent Orpheus render: `--fine_tuned` is a TOKEN and
+    `--higgs_voice` is a CATALOG ID, so handing one where the other is expected
+    resolves to the wrong voice for a whole book.
+    """
+    if engine_id != 'higgs-v3':
+        if args.higgs_voice:
+            raise FlagRefused(
+                f'--higgs_voice names a Higgs voice but --tts_engine is '
+                f'{args.tts_engine or "(unset)"}. An Orpheus voice arrives in '
+                f'--fine_tuned; the two are not interchangeable.')
+        return
+    raise FlagRefused(
+        "--tts_engine higgs-v3 on the render route: narrator's worker cannot "
+        "carry a Higgs voice yet. WorkerRequest has no `higgs_voice` field and "
+        "the engine config is built for Orpheus unconditionally, both in "
+        "render/worker.py, which is not this column. PREP accepts higgs-v3 "
+        "today (--prep_only with --higgs_voice, chunking=paragraph); render "
+        "through ebook2audiobook or Orpheus until the worker is wired.")
 
 
 def route_worker(args, argv: list[str], engine_factory=None) -> int:
@@ -355,17 +526,19 @@ def dispatch(args, argv: list[str], engine_factory=None) -> int:
     if args.resume_session:
         return route_resume_session(args)
     if args.prep_only:
-        flagdef.refuse_flag('--prep_only')
+        return route_prep(args)
     if args.worker_mode or args.sentence_indices is not None:
-        flagdef.check_engine(args.tts_engine)
+        engine_id = flagdef.resolve_engine(args.tts_engine)
+        _refuse_higgs_render_until_the_worker_carries_a_voice(engine_id, args)
         return route_worker(args, argv, engine_factory=engine_factory)
     if args.assemble_only:
         return route_assemble(args)
 
     accepted = ', '.join(flagdef.accepted_flags())
     raise FlagRefused(
-        'no mode selected. narrator.compat.app needs one of --worker_mode, '
-        '--assemble_only, --list_sessions or --resume_session. Accepted flags: '
+        'no mode selected. narrator.compat.app needs one of --prep_only, '
+        '--worker_mode, --assemble_only, --list_sessions or --resume_session. '
+        'Accepted flags: '
         f'{accepted}')
 
 

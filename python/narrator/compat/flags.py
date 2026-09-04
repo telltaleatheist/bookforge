@@ -41,11 +41,7 @@ class FlagRefused(SystemExit):
 FLAGS: dict[str, tuple[str, str]] = {
     # ---- mode selection ----------------------------------------------------
     '--headless': (IGNORE, 'narrator has no GUI, so headless is the only mode'),
-    '--prep_only': (
-        REFUSE,
-        'prep is migration step 4; use ebook2audiobook for prep until then '
-        '(docs/NARRATOR_PLAN.md). narrator reads the session-state.json e2a prep '
-        'writes and renders from it'),
+    '--prep_only': (ACCEPT, 'routes to narrator.text.prep (migration step 4)'),
     '--worker_mode': (ACCEPT, 'routes to narrator.render.worker'),
     '--assemble_only': (ACCEPT, 'routes to narrator.assemble'),
     '--list_sessions': (ACCEPT, 'routes to narrator.render.session_store'),
@@ -77,10 +73,18 @@ FLAGS: dict[str, tuple[str, str]] = {
     # ---- the voice --------------------------------------------------------
     '--tts_engine': (
         ACCEPT,
-        "checked ONLY on the worker route, where it must be 'orpheus'. On "
+        "SELECTS THE ENGINE: 'orpheus' or 'higgs-v3', checked on the prep, "
+        "worker and retake routes and passed through to engine/registry. On "
         "--assemble_only it is engine-agnostic scaffolding that e2a never "
         "consults, and both live assembly spawns pass the literal 'xtts' on an "
-        "Orpheus book (reassembly-bridge.ts:1517, parallel-tts-bridge.ts:5164)"),
+        "Orpheus book (reassembly-bridge.ts:1517, "
+        "parallel-tts-bridge.ts:5164)"),
+    '--higgs_voice': (
+        ACCEPT,
+        "the Higgs voice, a CATALOG ID rather than a token: Higgs has no "
+        "--fine_tuned voice token, so the two flags are not interchangeable. "
+        "Recorded in session-state as `higgs_voice` and handed to the engine "
+        "config on the worker route"),
     '--fine_tuned': (ACCEPT, 'the Orpheus voice token'),
     '--orpheus_model_dir': (ACCEPT, 'a merged fine-tune'),
     '--orpheus_adapter_dir': (ACCEPT, 'a LoRA voice adapter'),
@@ -102,13 +106,21 @@ FLAGS: dict[str, tuple[str, str]] = {
         IGNORE,
         'narrator never installs anything; there is no dependency check to skip'),
     '--device': (
-        IGNORE,
-        'reported in the worker log; the Orpheus backend is chosen by '
-        'detect_backend(), which reads no session device (engine/PORT_NOTES.md s1)'),
-    '--language': (IGNORE, 'the engine has no language-dependent behaviour'),
+        ACCEPT,
+        "PREP normalizes it through e2a's devices table and RECORDS it in "
+        "session-state.json's `device`; the worker ignores it, because the "
+        'Orpheus backend is chosen by detect_backend(), which reads no session '
+        'device (engine/PORT_NOTES.md s1)'),
+    '--language': (
+        ACCEPT,
+        'PREP resolves it to (pt3, pt1) through iso639 and gates the book on it '
+        "(Orpheus is English-only); it lands in `language`/`language_iso1`. The "
+        'ENGINE has no language-dependent behaviour, so the worker ignores it'),
     '--voice': (
-        IGNORE,
-        'the XTTS reference-clip path; an Orpheus voice arrives in --fine_tuned'),
+        ACCEPT,
+        "PREP records it in session-state.json's `voice`. It is the XTTS "
+        'reference-clip path and no Orpheus render reads it - an Orpheus voice '
+        'arrives in --fine_tuned'),
     '--speed': (IGNORE, 'XTTS only'),
     '--temperature': (IGNORE, 'XTTS only; Orpheus takes ORPHEUS_TEMPERATURE / caps'),
     '--length_penalty': (IGNORE, 'XTTS only'),
@@ -123,27 +135,40 @@ FLAGS: dict[str, tuple[str, str]] = {
     '--script_mode': (IGNORE, 'the docker/native switch; narrator has one mode'),
     '--workflow': (IGNORE, 'an e2a test hook that pinned a fixed session id'),
     '--share': (IGNORE, 'a gradio flag'),
-    '--custom_model': (IGNORE, 'the XTTS pre-staged voice path'),
-    '--custom_model_dir': (IGNORE, 'the XTTS pre-staged voice root'),
+    '--custom_model': (
+        ACCEPT,
+        "PREP records it in session-state.json's `custom_model`. The XTTS "
+        'pre-staged voice path; no Orpheus render reads it'),
+    '--custom_model_dir': (
+        ACCEPT,
+        "PREP records it in session-state.json's `custom_model_dir`. The XTTS "
+        'pre-staged voice root; no Orpheus render reads it'),
     '--ebook': (
-        IGNORE,
-        'prep parses the EPUB; narrator renders from the session state prep '
-        'already wrote. Passed by the assembly spawn and unused there too'),
+        ACCEPT,
+        'PREP parses this EPUB - it is the whole input. Every other route '
+        "ignores it: the render reads the session state prep wrote, and e2a's "
+        'assembly ignored the flag too although the spawn passes it'),
 
     # ---- refused ----------------------------------------------------------
     '--ebooks_dir': (
         REFUSE,
-        'batch conversion is a prep-era feature and prep is not ported '
-        '(migration step 4)'),
+        'batch conversion (convert_ebook_batch) is a gradio-era feature no '
+        'BookForge spawn has ever used: it loops one prep per file and calls '
+        'sys.exit(1) on the first failure. narrator preps ONE book per '
+        'invocation; pass --ebook once per book'),
     '--skip_assembly': (
         REFUSE,
         'a dual-voice bilingual hook; bilingual is out of scope (see --bilingual)'),
     '--sentence_per_paragraph': (
-        REFUSE,
-        'a prep/packer flag; the packer is migration step 4'),
+        ACCEPT,
+        "prep's paragraph mode: filter_chapter splits on [break] before "
+        'escape_sml runs, so each paragraph becomes one chunk and the packer is '
+        'skipped entirely'),
     '--skip_headings': (
-        REFUSE,
-        'a prep/packer flag; the packer is migration step 4'),
+        ACCEPT,
+        'prep suppresses the text of real h1-h6 headings (they are still parsed '
+        'for chapter detection). NOTE it does NOT suppress a TOC-matched title '
+        'recovered from body text, and never did'),
     '--bilingual': (
         REFUSE,
         'bilingual assembly is the one e2a path where assembly inserts silence '
@@ -176,7 +201,30 @@ REFUSED_ENGINES = {
     'VOXTRAL': 'VOXTRAL',
 }
 
-ACCEPTED_ENGINE = 'orpheus'
+#: The engine ids narrator renders, EXACTLY. `higgs` and `higgs-v2` are not
+#: `higgs-v3`: `higgs-v2` is scaffolding that is never shipped (Owen's ruling,
+#: 2026-09-04, "basically just Orpheus and we know Orpheus better"), and a bare
+#: `higgs` names no registry id at all. Both are refused by name rather than
+#: helpfully resolved, because guessing which Higgs a caller meant is how a book
+#: gets rendered by the wrong model.
+ACCEPTED_ENGINES = ('orpheus', 'higgs-v3')
+
+#: Kept as the single-engine spelling the older call sites used.
+ACCEPTED_ENGINE = ACCEPTED_ENGINES[0]
+
+#: Names that LOOK like an accepted engine and are not.
+ENGINE_NEAR_MISSES = {
+    'higgs': "'higgs' is not a registry id - narrator renders 'higgs-v3'",
+    'higgs-v2': "Higgs v2 is dropped (Owen, 2026-09-04); only the v3 served "
+                "backend ships. 'higgs-v2-scaffold' exists in the registry as "
+                "interface scaffolding and is never rendered with",
+    'higgs-v2-scaffold': "interface scaffolding only, never a render engine",
+    'higgs_v3': "narrator spells it 'higgs-v3', with a hyphen",
+}
+
+#: The environment variable a spawn may use to name the engine instead of the
+#: flag. When BOTH are present they must AGREE - see `check_engine`.
+ENGINE_ENV = 'NARRATOR_ENGINE'
 
 
 def refuse_flag(flag: str) -> None:
@@ -186,26 +234,75 @@ def refuse_flag(flag: str) -> None:
     raise FlagRefused(f'{flag} is not supported by narrator: {reason}.')
 
 
-def check_engine(engine: str | None) -> None:
-    """Refuse a non-Orpheus engine BY NAME.
+def resolve_engine(engine: str | None) -> str | None:
+    """The engine id to render with: the flag, cross-checked against the env.
 
-    CALLED ONLY FROM THE WORKER ROUTE. `--tts_engine` decides which model
-    RENDERS; on assembly it decides nothing, and BookForge passes `'xtts'` there
-    on Orpheus books deliberately. See `compat/app.py:dispatch`.
+    `NARRATOR_ENGINE` exists so a spawn can name the engine without touching the
+    argv, and BOTH may be present. When they DISAGREE the run is refused by name
+    rather than one silently winning: a book rendered by the engine the caller
+    did not ask for is indistinguishable from a book rendered correctly until
+    somebody listens to it.
+    """
+    import os
+
+    env = (os.environ.get(ENGINE_ENV) or '').strip()
+    if engine and env and engine != env:
+        raise FlagRefused(
+            f"--tts_engine {engine} disagrees with {ENGINE_ENV}={env}. "
+            f"narrator will not pick one: pass the same engine both ways, or "
+            f"unset {ENGINE_ENV}.")
+    chosen = engine or env or None
+    if chosen:
+        check_engine(chosen)
+    return chosen
+
+
+def check_engine(engine: str | None) -> None:
+    """Refuse an engine narrator does not render, BY NAME.
+
+    CALLED FROM THE PREP, WORKER AND RETAKE ROUTES. `--tts_engine` decides which
+    model RENDERS and, since migration step 4, which text layer PARSES; on
+    assembly it decides nothing, and BookForge passes `'xtts'` there on Orpheus
+    books deliberately. See `compat/app.py:dispatch`.
+
+    A SECOND GATE STILL LIVES IN `text/`: `text.prep.prep_session` and
+    `text.chapters.get_chapters` raise `UnsupportedEngine` for an engine whose
+    text branch is not implemented. The two refusals answer different questions -
+    this one names the 18 deleted ENGINES, that one names the branch narrator
+    does not have - and a library caller of `text/` must be refused whether or
+    not it came through this door.
     """
     if engine is None:
         return
-    if engine == ACCEPTED_ENGINE:
+    if engine in ACCEPTED_ENGINES:
         return
+    if engine in ENGINE_NEAR_MISSES:
+        raise FlagRefused(
+            f"--tts_engine {engine}: {ENGINE_NEAR_MISSES[engine]}. narrator "
+            f"accepts {', '.join(repr(e) for e in ACCEPTED_ENGINES)}.")
     if engine in REFUSED_ENGINES:
         raise FlagRefused(
-            f"--tts_engine {engine}: narrator renders Orpheus only. "
+            f"--tts_engine {engine}: narrator renders "
+            f"{', '.join(repr(e) for e in ACCEPTED_ENGINES)}. "
             f"{REFUSED_ENGINES[engine]} was deleted with the rest of the e2a "
             f"engine set (docs/NARRATOR_PLAN.md 'What is deleted'); use "
             f"ebook2audiobook if you need it.")
     raise FlagRefused(
         f"--tts_engine {engine}: unknown engine. narrator accepts "
-        f"'{ACCEPTED_ENGINE}'.")
+        f"{', '.join(repr(e) for e in ACCEPTED_ENGINES)}.")
+
+
+def engine_factory_for(engine_id: str):
+    """`(engine_class, config_factory)` from `engine/registry.py`, LAZILY.
+
+    Imported inside the function on purpose: `narrator.engine` is another
+    builder's column and is being refactored, and `compat/flags.py` is imported
+    by every door including `--list_sessions`, which loads no model at all. A
+    test can pass its own factory instead and never touch the registry.
+    """
+    from ..engine import registry
+
+    return registry.engine_class(engine_id), registry.engine_config
 
 
 def known_flags() -> list[str]:

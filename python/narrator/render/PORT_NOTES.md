@@ -161,9 +161,30 @@ never SIGKILL inside the guest) and with `taskkill /F /T` natively, then retried
 up to twice.
 
 **A batched flush prints its lines only when it RETURNS**, so they arrive in
-blocks of `pool_size`. Inside a flush the engine's own `[ORPHEUS]` heartbeat is
-the activity source, which is why `GENERATION_ACTIVITY_RE` exists at all. This is
-e2a's behaviour and is preserved exactly.
+blocks of `pool_size`. This is e2a's behaviour and is preserved exactly.
+
+### On vLLM, `GENERATION_ACTIVITY_RE` cannot fire during a healthy batch
+
+MEASURED in the GPU smoke (2026-09-04): a clean 5-chunk vLLM flush emitted ZERO
+lines matching it. Of its five alternatives (`parallel-tts-bridge.ts:2513`):
+
+| alternative | can it appear on the vLLM audiobook worker? |
+|---|---|
+| `Processed prompts`, `Adding requests` | **No.** They are vLLM's own tqdm, and the engine passes `use_tqdm=False` to every `generate()` call - `vllm_backend.py:284, 324, 413`, and e2a `orpheus.py:3347, 3387, 4772`, identically. The comment there is "a per-call progress bar adds overhead and noise" |
+| `MLX batch generating` | No - MLX only |
+| `audio-token cap`, `re-rendering split` | Only when a GUARD trips, i.e. not on a healthy render |
+
+So during a vLLM flush the watchdog's only heartbeat is the block of
+`Converting sentence` lines the PREVIOUS flush printed. The bridge's own comment
+says this regex exists so "a batch of chunks ... can generate for minutes between
+'Converting sentence' lines" without a false kill - on vLLM that protection is
+inactive, and the 12-minute `WORKER_PROGRESS_TIMEOUT_MS` is doing the work alone.
+
+It is safe at today's numbers and by a wide margin: the smoke measured 72.5 s for
+5 chunks (~14.5 s/chunk), so a full 16-wide flush is ~4 minutes against a 12-minute
+budget. It would take a ~50-chunk flush, or chunks ~5x slower, to reach the
+timeout. **Pre-existing and identical in e2a** - not introduced by this port - but
+worth knowing before anyone raises `ORPHEUS_BATCH_SIZE` for a long book.
 
 ---
 
@@ -282,7 +303,7 @@ Twelve, all structural.
      `reassembly-bridge.ts:1108-1159` writes `metadata.*` and
      `bookforge_metadata.*` back through `JSON.stringify`, which never escapes
      non-ASCII. A real file on disk therefore already carries the literal
-     accented character, and re-emitting it as `ü` would churn bytes on
+     accented character, and re-emitting it as `\u00fc` would churn bytes on
      every book with an accent in its title, for no reader's benefit. Matching
      the file's actual last writer is the smaller deviation. Pinned by
      `test_non_ascii_is_written_literally_not_escaped`.
@@ -414,10 +435,20 @@ the VTT (`bookforge_ext/parallel/session.py:build_vtt_file`), the manifest
 and says so in a comment). After a person commits an edited take, the audio says
 one thing and the transcript says another, permanently, with no warning.
 
-Identical in e2a, and NOT fixable in this column: the fix is for the edit to land
-in whatever owns the chunk text, which is prep's manifest - migration step 4.
-Recorded in `render/retake.py`'s docstring so the next reader of that module
-meets it before they ship a feature on top of it.
+Identical in e2a, and NOT fixable in this column. Recorded in
+`render/retake.py`'s docstring so the next reader of that module meets it before
+they ship a feature on top of it.
+
+**UPDATED 2026-09-04, after migration step 4 shipped.** This section used to say
+the fix was "prep's manifest - migration step 4". Step 4 did NOT fix it, and
+deliberately: `text/prep.py` writes `chapter_sentences` exactly as e2a's prep
+wrote it, and nothing in the retake path writes back into it. Making the fix means
+the retake route REWRITING `session-state.json`, a file section 4 above documents
+as written exactly once, by prep - a change to the session contract, not a side
+effect of porting the packer. So the bug is DEFERRED to the manifest era, where
+the manifest (not the session state) owns chunk text and a retake can amend the
+document it came from. Owed to the orchestrator as a decision, not to a builder as
+a task. See `text/PORT_NOTES.md` section 5.8.
 
 ### 9.9 "The same FLAC parameters" is only true given the same interpreter
 
@@ -445,8 +476,7 @@ precondition: the same interpreter renders the whole set.
 
 ## 10. Could not verify
 
-- **No GPU render has been run from this code.** The smoke described in the brief
-  requires the GPU to be free; see the report.
+- ~~**No GPU render.**~~ **RESOLVED 2026-09-04** - see section 11.
 - **No real MODEL has been loaded through `render.worker`.** Every test
   substitutes a fake with the `TTSManager` surface. The real path WAS driven once
   by hand on Windows (`python -m narrator render --session-dir <synthetic>
@@ -473,3 +503,60 @@ precondition: the same interpreter renders the whole set.
 - **MPS.** `resolve_device`'s `mps` arm and `memory_cleanup`'s
   `torch.mps.empty_cache()` are ports, unexecuted here (no Mac in this session,
   no torch in the Windows test env).
+
+---
+
+## 11. The GPU smoke (2026-09-04)
+
+Resume of the kershaw golden session: 133 chunks, `0.flac`..`4.flac` deleted from
+a copy at `C:\tmp\narrator-R\kershaw-resume\`, re-rendered from WSL through
+`python -m narrator.compat.app --headless --worker_mode` with `PYTHONPATH` at the
+worktree's `python/`, the deathstalker model at
+`/home/telltale/orpheus-models/deathstalker`, and the caps from
+`electron/data/orpheus-models.json` (`maxCharsPerSec` 22.6, and `backends.vllm`:
+`repPenalty` 1.1, `eosBoost` 8, `eosBoostStart` 2.0, plus `sentenceGap` 0.0).
+Guarded by `%APPDATA%\BookForge\external-gpu-job.lock`; 7 min 15 s of GPU across
+two runs; no GPU process was ever killed.
+
+**25 of 25 checks passed.**
+
+| claim | result |
+|---|---|
+| the five files exist | yes, 55296 / 626688 / 425984 / 563200 / 243712 samples |
+| 24 kHz mono FLAC | all five: 24000 Hz, 1 ch, 16-bit |
+| STREAMINFO blocksize vs the untouched set | **new 2304/2304, untouched 2304/2304 - IDENTICAL** |
+| the other 128 files | 128/128 byte-identical (sha256) |
+| `session-state.json` | byte-identical AND mtime unchanged - the worker never opened it for writing |
+| progress lines | 5 lines, all matching `:4176` `/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i`, each reporting the BOOK total 133; the old `:4175` shape correctly does NOT match |
+| model-load stage | `:2526` matched `Loading Orpheus TTS with voice 'deathstalker'...`; `:2527` matched `Orpheus TTS Loaded!` |
+| the result JSON | ONE line, parsed by `:3747`'s own predicate: `{"success": true, ..., "sentences_converted": 5, "sentences_skipped": 0, "failed_indices": []}` |
+| `narrator assemble` on the resumed dir | **133 cues**, last cue ends 00:43:28.911, m4b 2609.00 s |
+
+### What the smoke settled
+
+- **Finding 9.9 (FLAC blocksize) does NOT bite here, and the smoke says why.**
+  narrator rendered these five chunks *in the same WSL env* that produced the
+  original 133, so the blocksize matched at 2304 and the set stayed homogeneous.
+  The hazard in 9.9 is specifically a **native-Windows** render into a
+  WSL-rendered book (soundfile there writes 4096); it is a property of the
+  interpreter, not of narrator, and this run confirms the benign half of it.
+- **CUDA graphs captured** (`Graph capturing finished in 109 secs`), so
+  `ORPHEUS_DISABLE_EAGER=1` crossed into the guest correctly - the whole reason
+  Orpheus routes through WSL.
+- **The `--sentences_dir` override is load-bearing on a real session.** This
+  session's `chapters_dir_sentences` names a `Z:\` network path that WSL cannot
+  see at all. The precedence documented in `session_store.sentences_dir_for` is
+  what makes the render possible, not a convenience.
+- **Two harness notes, neither a narrator defect.** (1) Git Bash mangles
+  `/mnt/...` arguments passed to `wsl.exe -c` unless `MSYS2_ARG_CONV_EXCL='*'` is
+  set - run the command from a FILE. (2) `wsl.exe > log 2>&1` from Git Bash gives
+  the two streams independent file offsets, so under heavy stderr (vLLM's tqdm)
+  stdout is silently overwritten; the first run lost every `[WORKER]` line that
+  way. Redirect to SEPARATE files. Anyone re-running this smoke needs both.
+
+### Not proven by it
+
+The session was prepped for **mistborn** and the five chunks were re-rendered
+with **deathstalker**, as the brief specified, so the resulting audiobook is
+deliberately a two-voice chimera. Nothing in the checks depends on the voice, and
+no claim here is about audio quality - nobody has listened to it.

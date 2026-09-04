@@ -80,11 +80,26 @@ class TableTest(unittest.TestCase):
                 self.assertIn(flag, flagdef.FLAGS,
                               f'{flag} ({name}) has no verdict in compat/flags.py')
 
-    def test_the_table_adds_no_flag_e2a_never_had(self):
+    #: Flags NARRATOR adds that no ebook2audiobook entry point ever declared.
+    #: The compat door started as a pure shim, so this set was empty; narrator's
+    #: second engine needs one flag of its own and it is named here rather than
+    #: allowed by loosening the test.
+    NARRATOR_ADDED_FLAGS = {
+        '--higgs_voice':
+            'Higgs has no --fine_tuned voice TOKEN - its voice is a CATALOG ID '
+            'naming a fine-tuned adapter or a set of reference clips. e2a never '
+            'had a Higgs engine, so it never had this flag.',
+    }
+
+    def test_the_table_adds_no_flag_e2a_never_had_except_the_declared_ones(self):
         every = set(E2A_APP_OPTIONS) | set(E2A_PARALLEL_OPTIONS) | set(E2A_WORKER_OPTIONS)
         extra = set(flagdef.FLAGS) - every
-        self.assertEqual(extra, set(),
-                         'compat accepts flags no e2a entry point declares')
+        self.assertEqual(extra, set(self.NARRATOR_ADDED_FLAGS),
+                         'compat accepts flags no e2a entry point declares and '
+                         'that are not declared as narrator additions')
+        for flag, reason in self.NARRATOR_ADDED_FLAGS.items():
+            self.assertIn(flag, flagdef.FLAGS)
+            self.assertTrue(reason)
 
     def test_every_verdict_is_one_of_three_and_carries_a_reason(self):
         for flag, (verdict, reason) in flagdef.FLAGS.items():
@@ -130,11 +145,22 @@ class RefusalTest(unittest.TestCase):
                 compat_app.main(argv)
         return int(caught.exception.code or 0), buf.getvalue()
 
-    def test_prep_only_is_refused_by_name_with_the_step_it_belongs_to(self):
-        code, out = self._refusal(['--headless', '--prep_only', '--ebook', 'x.epub'])
+    def test_prep_only_without_an_ebook_prints_e2as_line_and_nothing_else(self):
+        """`--prep_only` became ACCEPT at migration step 4 (`narrator.text.prep`).
+
+        What is left to assert on THIS route is e2a's own argument refusal:
+        `handlers.py:50-51` prints `Error: --prep_only requires --ebook` and
+        returns a failure dict that `app.py:277` only reads for its exit code, so
+        NO JSON is printed on this path. The prep route's real behaviour is
+        `tests/test_compat_prep.py`.
+        """
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = compat_app.main(['--headless', '--prep_only'])
+        out = buf.getvalue()
         self.assertEqual(code, 1)
-        self.assertIn('--prep_only is not supported by narrator', out)
-        self.assertIn('prep is migration step 4', out)
+        self.assertIn('Error: --prep_only requires --ebook', out)
+        self.assertNotIn('{', out)
 
     def test_every_refused_flag_names_itself(self):
         for flag, (verdict, _) in sorted(flagdef.FLAGS.items()):
@@ -168,7 +194,8 @@ class RefusalTest(unittest.TestCase):
                 ['--headless', '--worker_mode', '--session', 'x',
                  '--tts_engine', engine])
             self.assertEqual(code, 1, engine)
-            self.assertIn('narrator renders Orpheus only', out, engine)
+            self.assertIn('narrator renders', out, engine)
+            self.assertIn("'orpheus', 'higgs-v3'", out, engine)
 
     def test_an_engine_nobody_has_heard_of_is_refused_as_unknown(self):
         _, out = self._refusal(['--headless', '--worker_mode', '--session', 'x',

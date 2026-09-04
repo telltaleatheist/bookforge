@@ -36,9 +36,47 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-# The GPU engine's pins live here so `pip install -e python/` stays torch-free on
-# a machine that only assembles. Populated when engine/ lands (migration step 2).
-engine = []
+# The GPU engines' pins live here so `pip install -e python/` stays torch-free on
+# a machine that only assembles. ONE GROUP PER ENGINE, because the two engines'
+# dependency sets are mutually exclusive: Orpheus needs vLLM 0.7.3 (the last
+# version whose V0 engine takes per-request logits processors, which is what the
+# EOS boost is) pinned against torch 2.5.1+cu121, and Higgs v2 needs
+# transformers >= 5.3 for HiggsAudioV2ForConditionalGeneration, which wants a
+# much newer torch. Installing both into one env resolves torch twice and breaks
+# whichever loses.
+#
+# Every version below is READ OFF A WORKING ENV, not chosen: `pip freeze` in WSL
+# `orpheus_tts` (2026-09-04) and WSL `higgs` (2026-09-04). vLLM and torch are
+# deliberately NOT installed by pip in practice - both envs were built by hand
+# with the CUDA-matched wheels (see CLAUDE.md) - so these pins document and
+# VERIFY what must already be there rather than fetching it.
+engine = ["narrator[orpheus]"]
+
+# WSL `orpheus_tts`: python 3.11, torch 2.5.1+cu121, vLLM 0.7.3, numpy 1.26.4.
+# vllm 0.7.3 is a hard pin, not a floor: V1 has no per-request logits processor,
+# so the EOS boost silently stops applying above it (the spawn env sets
+# VLLM_USE_V1=0 for the same reason).
+orpheus = [
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "vllm==0.7.3",
+    "transformers==4.57.6",
+    "snac==1.2.1",
+]
+
+# WSL `higgs`: python 3.11, torch 2.6.0+cu124, transformers 5.16.1, numpy 2.4.6.
+# NB that env carries numpy 2.x while narrator's own pin is 1.26.4 (Orpheus's
+# vLLM needs it); narrator's engine code is 1.x/2.x-clean, and the conflict is
+# why these are separate envs and separate groups rather than one install.
+# `higgs-audio-v2-generation-3B-base` has no python package of its own - the
+# model class ships inside transformers.
+higgs = [
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "transformers==5.16.1",
+    "accelerate>=1.14",
+    "librosa>=0.11",
+]
 
 [project.scripts]
 narrator = "narrator.cli:main"

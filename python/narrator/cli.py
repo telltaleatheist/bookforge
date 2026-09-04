@@ -1,5 +1,6 @@
 """python -m narrator <subcommand>
 
+    prep       parse an EPUB into a prepared session (session layout v1)
     manifest   build a schema-v1 manifest from an e2a session directory
     render     render a sentence range of a session into <i>.flac
     retake     re-render named sentences, N takes each, in one model load
@@ -20,6 +21,11 @@ import os
 import sys
 
 from . import __version__
+# e2a's prep defaults have exactly one home in narrator - `text/lang.py`, copied
+# from `lib/conf.py` and `lib/conf_models.py`. Imported here so `--help` prints
+# the same value the code uses. Pure stdlib, so `--help` pays nothing for it.
+from .text.lang import default_language_code, default_output_format
+from .text.normalize import ORPHEUS
 
 
 def _add_session_args(p: argparse.ArgumentParser) -> None:
@@ -137,6 +143,55 @@ def build_parser() -> argparse.ArgumentParser:
     p_retake.add_argument(
         "--overrides", metavar="FILE",
         help="JSON file mapping sentence index -> replacement text",
+    )
+
+    p_prep = sub.add_parser(
+        "prep",
+        help="parse an EPUB into a prepared session (session-state.json + "
+             "chapter-provenance.json)",
+        description="Migration step 4: the port of ebook2audiobook's "
+                    "--prep_only. Writes the session layout v1 that render and "
+                    "assemble read.",
+    )
+    p_prep.add_argument("--ebook", required=True, metavar="FILE",
+                        help="the EPUB. Anything else is refused by name.")
+    p_prep.add_argument(
+        "--session-dir", metavar="DIR",
+        help="the ebook-<uuid> directory to prepare into. Default: "
+             "$E2A_TMP_DIR/ebook-<session id>, which is where "
+             "parallel-tts-bridge.ts looks for it.",
+    )
+    p_prep.add_argument("--session", metavar="ID",
+                        help="the session id (default: a fresh uuid4)")
+    p_prep.add_argument("--language", default=default_language_code,
+                        metavar="CODE",
+                        help="ISO-639-1 or -3. Orpheus is English-only. "
+                             f"(default: {default_language_code})")
+    p_prep.add_argument("--fine-tuned", metavar="VOICE",
+                        help="the Orpheus voice token, recorded into the state")
+    p_prep.add_argument("--voice", metavar="NAME",
+                        help="recorded into the state; the XTTS reference-clip "
+                             "path, unread by Orpheus")
+    p_prep.add_argument("--orpheus-model-dir", metavar="DIR")
+    p_prep.add_argument("--orpheus-adapter-dir", metavar="DIR")
+    p_prep.add_argument("--orpheus-base-dir", metavar="DIR")
+    p_prep.add_argument("--device", metavar="NAME",
+                        help="recorded into the state; prep itself is CPU work")
+    p_prep.add_argument("--output-format", default=default_output_format,
+                        metavar="EXT",
+                        help="the container final_name is built with "
+                             f"(default: {default_output_format})")
+    p_prep.add_argument("--output-dir", metavar="DIR",
+                        help="recorded into the state as audiobooks_dir")
+    p_prep.add_argument(
+        "--sentence-per-paragraph", action="store_true",
+        help="one chunk per paragraph: the packer is skipped entirely",
+    )
+    p_prep.add_argument(
+        "--skip-headings", action="store_true",
+        help="do not voice the text of h1-h6 headings (they are still parsed "
+             "for chapter detection). A TOC-matched title recovered from body "
+             "text is NOT suppressed, and never was.",
     )
 
     p_sessions = sub.add_parser(
@@ -257,8 +312,70 @@ def _run_sessions(args) -> int:
     return 0
 
 
+def _run_prep(args) -> int:
+    """`narrator prep`. The same call `compat/app.py --prep_only` makes.
+
+    Prints e2a's result JSON (`json.dumps(result, indent=2, default=str)`) and
+    THEN a one-line human summary, in that order: the JSON first so a script can
+    pipe it, the summary last so a person reading a terminal sees the chunk count
+    after the 40,000 characters of JSON rather than scrolled off above them.
+    """
+    import json
+    import uuid
+
+    from .render import session_store
+    from .text.prep import PrepOptions, prep_session
+
+    session_id = args.session or str(uuid.uuid4())
+    if args.session_dir:
+        session_dir = os.path.abspath(args.session_dir)
+    else:
+        session_dir = os.path.join(session_store.sessions_root(),
+                                   f"ebook-{session_id}")
+
+    # `PrepOptions` carries e2a's defaults, which live in ONE place
+    # (`text/lang.py`, pinned to conf.py/conf_models.py). A flag that was not
+    # given is not passed on, so no default is re-spelled here.
+    optional = {}
+    if args.fine_tuned:
+        optional["fine_tuned"] = args.fine_tuned
+
+    outcome = prep_session(
+        args.ebook,
+        session_dir,
+        PrepOptions(
+            session=session_id,
+            language=args.language,
+            tts_engine=ORPHEUS,
+            voice=args.voice,
+            device=args.device,
+            output_format=args.output_format,
+            audiobooks_dir=(os.path.abspath(args.output_dir)
+                            if args.output_dir else None),
+            orpheus_model_dir=args.orpheus_model_dir,
+            orpheus_adapter_dir=args.orpheus_adapter_dir,
+            orpheus_base_dir=args.orpheus_base_dir,
+            sentence_per_paragraph=args.sentence_per_paragraph,
+            skip_headings=args.skip_headings,
+            **optional,
+        ),
+    )
+    print(json.dumps(outcome.result, indent=2, default=str), flush=True)
+    print(
+        f"[prep] {outcome.result['total_chapters']} chapter(s), "
+        f"{outcome.result['total_sentences']} chunk(s), "
+        f"{outcome.result['total_raw_sentences']} sentence(s) -> "
+        f"{outcome.state_path}",
+        flush=True,
+    )
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.command == "prep":
+        return _run_prep(args)
 
     if args.command == "serve":
         # Imported here, not at module scope: the worker pulls in torch/vLLM (or
