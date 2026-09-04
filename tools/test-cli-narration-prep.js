@@ -474,7 +474,7 @@ test('an UNSTAMPED book is refused by name — the door never narrates raw digit
       skipAssembly: true, numberRunner: runner,
     }),
     (err) => /has not been through the narration text cleanup/.test(err.message)
-      && /Narration text cleanup/.test(err.message)
+      && /Clean text/.test(err.message)
       && /nothing was rendered/.test(err.message));
   assert.strictEqual(runner.calls.length, 0, 'and no model was asked anything');
 });
