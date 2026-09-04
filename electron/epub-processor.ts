@@ -8605,6 +8605,160 @@ export async function stripFootnoteReferencesFromBook(
   return { removed, files, breaks };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The narration-text stamp — what a FILE says about the pass that read it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The OPF metadata name the narration text pass stamps a book with.
+ *
+ * EPUB 2's `<meta name="…" content="…"/>` form on purpose, not EPUB 3's
+ * `property`: it needs no `prefix` declaration on `<package>`, every reader and
+ * every validator ignores an unknown `name`, and the two EPUB versions this app
+ * writes both carry it unchanged.
+ */
+export const NARRATION_TEXT_STAMP_NAME = 'bookforge:narration-text';
+
+/**
+ * What the narration text pass leaves behind IN THE BOOK.
+ *
+ * The ledger is where a pass is recorded for the user; this stamp is for the
+ * RENDER DOOR, which is handed a file and not a project. `prepareNarrationInput`
+ * refuses an EPUB whose stamp is missing or stale, and a CLI given a bare
+ * `.epub` on some other machine has nothing else to ask.
+ */
+export interface NarrationTextStamp {
+  /** `NORMALIZER_VERSION` — the number rules and the prompt, together. */
+  normalizerVersion: string;
+  /** `PUNCTUATION_SPEC_VERSION` — the punctuation half. */
+  punctuationSpec: string;
+  /** The model tag that read the residue. */
+  model: string;
+  /** When the pass finished, ISO 8601. */
+  at: string;
+}
+
+/** The OPF's zip entry, from the container the reader is already holding. */
+async function opfEntryOf(zipReader: EpubSource, whatFor: string): Promise<string> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const containerEntry = 'META-INF/container.xml';
+  if (!zipReader.hasEntry(containerEntry)) {
+    throw new Error(
+      `${whatFor} has no ${containerEntry}, so nothing can say where its OPF is. `
+      + 'That is not an EPUB.');
+  }
+  const doc = new DOMParser().parseFromString(
+    (await zipReader.readEntry(containerEntry)).toString('utf8'), 'application/xml');
+  const roots = doc.getElementsByTagName('rootfile');
+  for (let i = 0; i < roots.length; i++) {
+    const full = roots[i].getAttribute('full-path');
+    if (full !== null && full !== '') return normalizeZipEntryName(full);
+  }
+  throw new Error(
+    `${whatFor}'s ${containerEntry} names no rootfile, so its OPF cannot be found. `
+    + 'Nothing was read.');
+}
+
+/**
+ * Read the narration-text stamp a book carries, or null when it has none.
+ *
+ * Null is the honest answer for "this book was never passed through", and the
+ * caller is the one that decides what to do about it — this function never
+ * guesses a version.
+ */
+export async function readNarrationTextStamp(
+  bookPath: string,
+): Promise<NarrationTextStamp | null> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const whatFor = path.basename(bookPath);
+  const zipReader = await openEpubSource(bookPath);
+  try {
+    const opfEntry = await opfEntryOf(zipReader, whatFor);
+    const doc = new DOMParser().parseFromString(
+      (await zipReader.readEntry(opfEntry)).toString('utf8'), 'application/xml');
+    const metas = doc.getElementsByTagName('meta');
+    for (let i = 0; i < metas.length; i++) {
+      if (metas[i].getAttribute('name') !== NARRATION_TEXT_STAMP_NAME) continue;
+      const content = metas[i].getAttribute('content');
+      if (content === null || content === '') {
+        throw new Error(
+          `${whatFor} carries an EMPTY ${NARRATION_TEXT_STAMP_NAME} stamp. A stamp with no `
+          + 'content is a claim nobody can check; the book must be passed through the narration '
+          + 'text pass again.');
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp is not JSON: ${content.slice(0, 120)}. `
+          + 'The book must be passed through the narration text pass again.');
+      }
+      const stamp = parsed as Partial<NarrationTextStamp>;
+      for (const field of ['normalizerVersion', 'punctuationSpec', 'model', 'at'] as const) {
+        if (typeof stamp[field] !== 'string' || stamp[field] === '') {
+          throw new Error(
+            `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp has no ${field}. It describes a pass `
+            + 'nobody can identify; the book must be passed through the narration text pass again.');
+        }
+      }
+      return stamp as NarrationTextStamp;
+    }
+    return null;
+  } finally {
+    zipReader.close();
+  }
+}
+
+/**
+ * Copy a book to `outputPath` with the narration-text stamp on its OPF.
+ *
+ * Only the OPF is rewritten; every other entry goes across byte for byte, the
+ * rule `writeBookWithReplacedEntries` exists for. A stamp already on the book is
+ * REPLACED rather than joined — two stamps would be two claims about one file,
+ * and the newer pass is the one that is true.
+ */
+export async function writeNarrationTextStamp(
+  inputPath: string,
+  outputPath: string,
+  stamp: NarrationTextStamp,
+): Promise<void> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const whatFor = path.basename(inputPath);
+  const zipReader = await openEpubSource(inputPath);
+  let opfEntry: string;
+  let opfXml: string;
+  try {
+    opfEntry = await opfEntryOf(zipReader, whatFor);
+    opfXml = (await zipReader.readEntry(opfEntry)).toString('utf8');
+  } finally {
+    zipReader.close();
+  }
+
+  const doc = new DOMParser().parseFromString(opfXml, 'application/xml');
+  const metadataNodes = doc.getElementsByTagName('metadata');
+  if (metadataNodes.length === 0) {
+    throw new Error(
+      `${whatFor}'s OPF (${opfEntry}) has no <metadata>, so there is nowhere to record that the `
+      + 'narration text pass read it. Nothing was written.');
+  }
+  const metadata = metadataNodes[0];
+
+  const metas = metadata.getElementsByTagName('meta');
+  for (let i = metas.length - 1; i >= 0; i--) {
+    if (metas[i].getAttribute('name') !== NARRATION_TEXT_STAMP_NAME) continue;
+    metas[i].parentNode.removeChild(metas[i]);
+  }
+
+  const meta = doc.createElement('meta');
+  meta.setAttribute('name', NARRATION_TEXT_STAMP_NAME);
+  meta.setAttribute('content', JSON.stringify(stamp));
+  metadata.appendChild(meta);
+
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[opfEntry, serializeEditedDocument(doc)]]));
+}
+
 /**
  * Keep an element the strip just emptied in the book's enumeration, by giving
  * it a `[break]` to say.

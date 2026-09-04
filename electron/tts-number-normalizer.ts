@@ -910,6 +910,51 @@ export interface NumberNormalizationOptions {
   onProgress?: NumberNormalizationProgress;
 }
 
+/**
+ * What the written copy does BESIDES the number rewrites.
+ *
+ * Stated by the caller, never defaulted, because the two callers want opposite
+ * things and neither is "the obvious one":
+ *
+ *  - the narration cut wants all three ON — it is making the second file, the one
+ *    a voice reads, and captions, endnotes and reference markers are not read;
+ *  - the narration TEXT PASS wants all three OFF — it is editing the BOOK, on the
+ *    document chain, and a pass that removed elements would be refused by the
+ *    ledger's text-only invariant and would take the user's captions with it.
+ *
+ * `writeNarrationEpub` defaults them all to ON, which is right for the copy and
+ * catastrophic for the book, so this field is required and the mistake cannot be
+ * made by omission.
+ */
+export interface NarrationCopyShape {
+  excludeCaptions: boolean;
+  excludeFootnotes: boolean;
+  stripSupMarkers: boolean;
+}
+
+/** What the EPUB driver needs on top of the options both drivers share. */
+export interface EpubNumberNormalizationOptions extends NumberNormalizationOptions {
+  /**
+   * The 16-hex content address of the book being read — the first half of the
+   * copy's name.
+   *
+   * Supplied by the caller rather than taken here, because a book is not always
+   * a file: the document chain's working copy is a FOLDER of its parts, which
+   * `fs.readFile` cannot hash at all. `epubContentAddress` is the answer for a
+   * plain `.epub`; `bookDigest` (electron/sidecar-binding.ts) is the answer for
+   * either container, and the narration text pass uses that one.
+   */
+  inputSha16: string;
+  /** What the write does besides the rewrites. See `NarrationCopyShape`. */
+  copy: NarrationCopyShape;
+}
+
+/** The content address of a book that IS a file: the sha of its bytes. */
+export async function epubContentAddress(inputPath: string): Promise<string> {
+  const bytes = await fs.readFile(inputPath);
+  return crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+}
+
 /** The model tag, made safe to put in a filename without losing which tag it was. */
 export function sanitizeModelTag(model: string): string {
   return model.replace(/[^A-Za-z0-9.]+/g, '-').replace(/^-+|-+$/g, '');
@@ -966,12 +1011,11 @@ export function normalizedTextPaths(
 export async function normalizeNarrationNumbers(
   inputPath: string,
   runner: NumberNormalizerRunner,
-  options: NumberNormalizationOptions,
+  options: EpubNumberNormalizationOptions,
 ): Promise<NumberNormalizationOutcome | null> {
   const { readNarrationNumberTargets, writeNarrationEpub } = await import('./epub-processor.js');
 
-  const bytes = await fs.readFile(inputPath);
-  const inputSha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
+  const inputSha16 = options.inputSha16;
   const { epubPath, recordPath } = normalizedCopyPaths(options.outDir, inputSha16, runner.model);
 
   // Both halves or neither: the record IS part of the artifact (it is the review
@@ -1192,9 +1236,9 @@ export async function normalizeNarrationNumbers(
   const stagingEpub = path.join(options.outDir, `${inputSha16}.staging-${crypto.randomUUID()}.epub`);
   const stagingRecord = `${stagingEpub}.edits.json`;
   const written = await writeNarrationEpub(inputPath, stagingEpub, [], {
-    excludeCaptions: true,
-    excludeFootnotes: true,
-    stripSupMarkers: true,
+    excludeCaptions: options.copy.excludeCaptions,
+    excludeFootnotes: options.copy.excludeFootnotes,
+    stripSupMarkers: options.copy.stripSupMarkers,
     rewrites,
   });
 

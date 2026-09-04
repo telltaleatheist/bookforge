@@ -32,6 +32,7 @@ ORPHEUS_STREAM = REPO_ROOT / "cli" / "orpheus-stream.js"        # streaming path
 ORPHEUS_BATCH = REPO_ROOT / "cli" / "orpheus-batch-render.js"   # audiobook/batch path (default)
 ORPHEUS_AUDIOBOOK = REPO_ROOT / "cli" / "orpheus-audiobook-render.js"  # full M4B: tts + reassembly
 NARRATION_PREP = REPO_ROOT / "cli" / "narration-prep.js"        # narration door: cut + numbers
+NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"        # the persisted text cleanup
 AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / simplify (ai-bridge)
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
@@ -388,6 +389,59 @@ def cmd_prep(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def cmd_narration_text(args):
+    """Run the NARRATION TEXT CLEANUP on a book, and write the cleaned book beside it.
+
+    Owen, 2026-09-04: "We should make this its own intentional step that the user
+    runs and persists, so we don't have to run it again. It runs the step on an
+    epub that foundry exported/completed and it creates an updated epub. This
+    should be a foundry step that's necessary before it goes to TTS."
+
+    Three stages, in this order: punctuation canonicalization (the canonical
+    ellipsis, the quote map, the invisibles), then the deterministic number
+    rules, then the model on whatever digits are left. It writes
+
+        <stem>.narration.epub                the cleaned, STAMPED book
+        <stem>.narration.narration-text.json the receipt
+
+    and the STAMP is the point: --tts and --audiobook refuse a book that has not
+    been through this pass, by name, rather than narrating raw digits.
+
+    NOT --prep, which is the render door (the caption/endnote cut and the copy a
+    voice reads, made per render). This edits the book, once.
+    """
+    _require(bool(args.project or args.input),
+             "--narration-text needs --project <projectDir> or --input <file.epub>")
+    _require(not (args.project and args.input),
+             "--narration-text: --project and --input both name what to clean; pass one")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(NARRATION_TEXT.is_file(), f"missing adapter {NARRATION_TEXT}")
+    _require((REPO_ROOT / "dist" / "electron" / "narration-text-pass.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/narration-text-pass.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(NARRATION_TEXT)]
+    if args.project:
+        project_dir = str(Path(args.project).resolve())
+        _require((Path(project_dir) / "manifest.json").is_file(),
+                 f"not a BookForge project (no manifest.json): {project_dir}")
+        cmd += ["--project", project_dir]
+    else:
+        # node runs with cwd=REPO_ROOT, so resolve the user's path against THEIR cwd.
+        cmd += ["--input", str(Path(args.input).resolve())]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — narration text cleanup, no model loaded")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    if args.input:
+        _require(Path(args.input).is_file(), f"input file not found: {args.input}")
+
+    print("[bookforge-tts] narration text cleanup ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 def _run_ai(args, simplify):
     """Drive BookForge's REAL AI pipeline (aiBridge.cleanupEpub) headlessly — same
     chunking, prompts, num_ctx/think/keep_alive, safeguards, diff-cache + checkpoint as
@@ -677,6 +731,10 @@ COMMANDS = {
     # The narration door on its own. Distinct from --ai-cleanup below: that is the
     # OCR/model book-repair pass, this is what the narrator is handed.
     "prep": cmd_prep,
+    # The persisted text cleanup, on the document chain. --tts and --audiobook
+    # run it themselves when a book has not been through it; this is the door for
+    # running it deliberately, on its own.
+    "narration-text": cmd_narration_text,
     "ai-cleanup": cmd_ai_cleanup,
     "ai-simplify": cmd_ai_simplify,
     "generate-sentences": cmd_generate_sentences,
