@@ -349,7 +349,8 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
     (`reason`: `head` / `interior` / `tail`), with the run's first/last sentence and the
     nearest narrated neighbor on each side (text + audio timestamp). This is how you find
     where "part 2 of 5" actually begins and ends in the book.
-  - `audioNotInEpub` — audio ranges ≥30 s with no epub match (ads, intros, disc breaks),
+  - `audioNotInEpub` — audio ranges ≥`--report-min-hole` (default: `--min-hole`, 30 s)
+    with no epub match (ads, intros, disc breaks),
     with timestamps, the surrounding epub sentences, and the **whisper transcript of
     what's actually spoken there** — i.e. the ad copy itself, for a book split across
     files with GraphicAudio-style inserts.
@@ -368,6 +369,118 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
   EVERY positive gap and fills each with whisper cues (maximal ad-hunting; expect noise —
   sub-second slack between cues registers too, though slivers <0.5 s have no transcript
   segments to fill with).
+- `--report-min-hole <sec>` — **epub-align only**: how long an unmatched-audio range must
+  be to be **listed** in `audioNotInEpub`. **Defaults to `--min-hole`, so it changes
+  nothing unless you ask.** Report-only: it cannot alter a single cue — `--min-hole` still
+  governs whisper-fallback filling, and each entry carries `filledWithAsrCues` saying
+  which of the two thresholds it cleared.
+  **Know what you are lowering.** Cues are contiguous, so there is no literal gap between
+  them: `find_holes` compares each cue's span against `est_end()` — how long a *slow
+  reading* of its text would take — and reports the surplus. At 30 s that surplus is a
+  real ad/credits detector. At 3 s it fires on ordinary brisk narration (measured on
+  shipped VTTs: blacksun 1 → 65 ranges, ds 1 → 137) and the totals stop meaning anything,
+  which is why `summary.unmatchedAudioRanges`/`unmatchedAudioSeconds` always report the
+  `--min-hole` list; the lowered list is counted separately as `summary.reportedRanges`.
+- `lowSpeechCues` (report) — cues at least 3 s long whose span is ≤30 % speech, **measured**
+  by intersecting the cue with the silence map rather than guessed from reading speed.
+  This is the short-dead-air signal that lowering `--report-min-hole` was reaching for:
+  stings, applause beds, music, stretches the narrator never read. Each entry carries its
+  `speechFraction`, timestamp and text; `summary.lowSpeechCues` is the total.
+
+### Boundary accuracy (epub-align, 2026-09-03)
+
+Two changes to where a cue *starts and stops*, which is all a training-corpus cutter
+actually consumes. Both are on by default and both have an off switch.
+
+- **Paragraph-aware ebook segmentation.** `extractTextFromXhtml` preserves block structure
+  (every `</p>`, `</h1-6>`, `</li>` becomes a blank line); the sentence splitter used to
+  throw all of it away before splitting on punctuation. Publishers set headings as
+  unpunctuated blocks — `<p class="pn">Part I</p>`, `<p class="cn">1</p>` — so the
+  punctuation split could not see them and glued each onto the prose that followed:
+  *"Part I Ohio Born and Molded 1 William McKinley, Ohioan It is generally believed by
+  strangers that…"* as one 24-second cue. Now blocks split first and sentences split
+  within them, so a heading gets its own cue tagged `NOTE heading` in the VTT (same
+  mechanism as `NOTE asr-fallback`; a WebVTT NOTE is a comment every conformant parser
+  skips). A cutter drops those cues instead of guessing from the text.
+  `--no-paragraph-split` restores punctuation-only segmentation.
+
+  **What counts as a heading.** The label has teeth — a cutter that drops `NOTE heading`
+  cues drops whatever this gets wrong — so it is narrow on purpose:
+  - an `<h1>`–`<h6>` is a heading **by markup**, full stop. (`extractTextFromXhtml` gains
+    an opt-in `markHeadings` for this. It has to, because the extractor appends a period
+    to headings for the TTS read, which made a "no terminal punctuation" rule score every
+    semantically marked-up EPUB at *zero* headings.)
+  - otherwise the block must be its own paragraph, ≤90 chars, ≤12 words, carry no terminal
+    punctuation (`. ! ? … : ;` and `,`), **and** be one of: bare numbering (`1`, `IV`), a
+    heading lead word (`Part I`, `Chapter 3`, `Notes`, `Appendix B`), or two-plus words in
+    Title Case or ALL CAPS.
+
+  "Short and unpunctuated" alone was far too loose: it swallowed `<li>Bread</li>`, a
+  one-word "Yes", and dialogue fragments ending in a dash. On McKinley the narrow rule
+  labels 316 blocks where the loose one labelled 784. A numbering-only block also now
+  **gets a cue at all** — the sentence splitter's fragment filter (`length > 1 &&
+  /[A-Za-z]/`) used to bin `1` and `I` entirely, so the flagship `<p class="cn">1</p>`
+  case produced no cue and its spoken chapter number fell into the previous cue's tail.
+  Numbering is tested *before* the punctuation gate, so `1.`, `12.` and `IV.` are
+  caught too, and roman numerals use the real grammar plus a value cap — a character
+  class like `[ivxlcdm]+` matches ordinary English words (did, dim, mild, civil, mix).
+
+  > **The Title Case arm is a heuristic with known false positives.** A short
+  > capitalized line that is really prose — `Mr. Smith`, `New York`, `Thank You`,
+  > `Oh God` — will be tagged `heading`. It exists for publishers who set headings as
+  > `<p class="cn">` / `<p class="ct">` with no semantic markup, and it cannot be made
+  > exact from text alone. **`<h1>`–`<h6>` is the exact path**: those are tagged by
+  > markup, with nothing inferred. Before wiring a cutter to *drop* `NOTE heading`
+  > cues, decide whether that class of error is affordable on your books — or drop
+  > only the cues that came from real heading tags and treat the heuristic ones as
+  > advisory.
+- **Silence snapping.** `--snap-silence <sec>` (default 0.6, `--no-snap-silence` to
+  disable) pulls each cue *seam* onto the middle of the nearest detected silence within
+  that window. Forced alignment puts the seam at a CTC frame, which lands a couple hundred
+  ms early (clipping a word's tail) or late (leaking the next word's onset); the
+  narrator's pause is where the cut belongs, and its middle leaves maximum margin on both
+  sides. The window bounds the move, so a snap can correct a frame-level boundary but can
+  never manufacture drift — and seams that already sit in a silence, cues separated by a
+  gap, and books whose silence map comes back empty are all left alone. The map is scanned
+  off the already-decoded 16 kHz wav on a background thread during the align stage, so it
+  costs no wall clock. `boundarySnap` in the report records the window, the interval count,
+  and how many seams moved how far.
+
+Measure it with `tools/vtt-boundary-metric.py`, which needs no labels — it scores what
+fraction of cue boundaries land in a silence, using an ffmpeg `silencedetect` map of the
+same audio:
+
+```bash
+ffmpeg -i book.flac -af silencedetect=noise=-45dB:d=0.25 -f null - 2> silences.log
+python tools/vtt-boundary-metric.py --vtt after.vtt --compare before.vtt \
+    --silences silences.log --epub book.epub --asr-gaps book.roughcache.json
+```
+
+**`--asr-gaps` is not optional if you intend to quote a number.** With snapping on, the
+silence score is partly circular by construction: the aligner moved each seam onto the
+middle of a silencedetect interval, so scoring against a silencedetect map largely
+measures whether the snapper did what it says. `--asr-gaps` scores the same boundaries
+against faster-whisper's VAD segment gaps — a different algorithm on a different signal
+path that the snapper never sees. On McKinley the two read 18.6 % → 95.4 % (circular) and
+6.3 % → 38.2 % (independent); the second is the one that shows the boundaries genuinely
+moved into pauses.
+
+### Tests
+
+```bash
+node --require ./cli/electron-stub.js tools/tests/test-epub-align-segmentation.js  # 79
+python tools/tests/test_align_audiobook_timing.py                                  # 23
+bash   tools/tests/test-cli-flag-parity.sh                                          # 29
+```
+
+Segmentation covers heading classification in both directions (numbering incl. `1.`
+and `IV.`, and `<h1>`, are tagged; "Yes", `<li>Bread</li>`, "He said-", "The rules are:"
+and roman-letter words like "mild"/"civil" are not), plus the `--no-paragraph-split`
+regression. Timing covers snap bounds and the cue-overlap fix, scoring the SHIPPED
+`build_events` against a pre-fix copy over 20k randomized start-sets. Flag parity checks
+that `bookforge-tts.py` and `generate-sentences.js` accept and reject the same things —
+with a guard assertion that the cases are reachable at all, since an earlier version
+passed a nonexistent `--audio` and every case failed for that reason instead.
 
 ## PDF → EPUB conversion (`--generate-epub`)
 

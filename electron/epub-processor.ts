@@ -45,6 +45,16 @@ import {
 
 const inflateRaw = promisify(zlib.inflateRaw);
 
+/**
+ * Prefix stamped on every `<h1>`-`<h6>` block by `extractTextFromXhtml` when its
+ * `markHeadings` option is on (off by default — only epub-align asks for it).
+ *
+ * U+0001 is not a legal XML character, so it cannot have come from the book: a
+ * block starting with this marker is a heading BY MARKUP, with nothing inferred.
+ * Consumers must strip it before using the text.
+ */
+export const HEADING_MARKER = 'H';
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -546,10 +556,14 @@ export class EpubProcessor {
    * `keepFootnoteMarkers` turns OFF the extractor's own footnote-marker strip —
    * see `extractTextFromXhtml` for why the default has it on, and
    * `loadEpubForComparison` for the one caller that must turn it off.
+   *
+   * `markHeadings` prefixes every `<h1>`-`<h6>` block with HEADING_MARKER — see
+   * `extractTextFromXhtml`. Off by default; only epub-align asks for it.
    */
   async getChapterText(
     chapterId: string,
-    keepFootnoteMarkers = false
+    keepFootnoteMarkers = false,
+    markHeadings = false
   ): Promise<string> {
     if (!this.structure) {
       throw new Error('EPUB not open');
@@ -564,7 +578,7 @@ export class EpubProcessor {
     const xhtml = await this.readFile(href);
 
     // Extract text from XHTML
-    return this.extractTextFromXhtml(xhtml, keepFootnoteMarkers);
+    return this.extractTextFromXhtml(xhtml, keepFootnoteMarkers, markHeadings);
   }
 
   /**
@@ -747,7 +761,7 @@ export class EpubProcessor {
    * caller that must say true is the DIFF of the pass that removes them — see
    * `loadEpubForComparison`.
    */
-  private extractTextFromXhtml(xhtml: string, keepFootnoteMarkers = false): string {
+  private extractTextFromXhtml(xhtml: string, keepFootnoteMarkers = false, markHeadings = false): string {
     // Remove the entire <head> section (contains <title> which we don't want as text)
     let text = xhtml.replace(/<head[\s\S]*?<\/head>/gi, '');
 
@@ -782,6 +796,33 @@ export class EpubProcessor {
     text = text.replace(/[A-Za-zÀ-ÿ]-[ \t]*\r?\n[ \t]*(?=[A-Za-zÀ-ÿ])/g, park);
     text = text.replace(/\r\n?|\n/g, ' ');
     text = text.replace(/P(\d+)/g, (_m, i: string) => parked[Number(i)]);
+
+    // OPT-IN STRUCTURAL HEADING MARK (2026-09-04). An `<h1>`-`<h6>` is a heading
+    // BY MARKUP — there is nothing to infer. Callers that need to know say so, and
+    // get each heading as its own block prefixed with HEADING_MARKER.
+    //
+    // This runs BEFORE the period-append below, and that ORDER IS THE POINT. The
+    // append turns "Chapter One" into "Chapter One." so TTS pauses; a downstream
+    // heading classifier keyed on "no terminal punctuation" then sees a full stop
+    // and calls it prose. Every semantically marked-up EPUB scored zero headings
+    // because of it. Marking first means the classifier never has to guess for a
+    // real heading tag.
+    //
+    // THE CLOSING TAG IS PUT BACK (`</h${lvl}>`), and that is not cosmetic. The
+    // first version of this CONSUMED it, which silently disabled the period-append
+    // below — that regex needs the tag in order to match. The damage landed on
+    // --no-paragraph-split, whose entire job is to restore pre-branch behaviour and
+    // which instead became WORSE than it: with no period appended and no block
+    // split, `<h1>Chapter One</h1><p>It was a dark night.</p>` collapsed into one
+    // sentence, "Chapter One It was a dark night." (pre-branch: two sentences).
+    // Emitting the tag back leaves the append — and the `</h[1-6]>` -> '\n\n' rule
+    // further down — working exactly as they did before.
+    if (markHeadings) {
+      text = text.replace(
+        /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi,
+        (_m, lvl: string, inner: string) => `\n\n${HEADING_MARKER}${inner}</h${lvl}>\n\n`,
+      );
+    }
 
     // Add period after headings (h1-h6) for natural TTS pause, but only if not already punctuated
     text = text.replace(/([^.!?\s])<\/h[1-6]>/gi, '$1.');
@@ -1875,7 +1916,11 @@ export async function updateEpubMetadataStandalone(
  * So the pass says true and sees its own work. Nothing else does: a Simplify
  * diff showing marker churn would be noise about text the narrator never reads.
  */
-export async function loadEpubForComparison(epubPath: string, keepFootnoteMarkers = false): Promise<{
+export async function loadEpubForComparison(
+  epubPath: string,
+  keepFootnoteMarkers = false,
+  markHeadings = false,
+): Promise<{
   chapters: Array<{
     id: string;
     title: string;
@@ -1901,7 +1946,7 @@ export async function loadEpubForComparison(epubPath: string, keepFootnoteMarker
     for (const chapter of structure.chapters) {
       const archivePath = processor.resolvePath(chapter.href);
       try {
-        const text = await processor.getChapterText(chapter.id, keepFootnoteMarkers);
+        const text = await processor.getChapterText(chapter.id, keepFootnoteMarkers, markHeadings);
         chapters.push({
           id: chapter.id,
           title: chapter.title,

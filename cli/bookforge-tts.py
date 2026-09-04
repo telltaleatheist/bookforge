@@ -527,6 +527,18 @@ def cmd_generate_sentences(args):
              "--align-workers requires --epub (it sizes the epub-align worker pool)")
     _require(not (args.align_workers is not None and args.align_workers < 1),
              f"--align-workers must be >= 1 (got {args.align_workers})")
+    _require(not ((args.snap_silence is not None or args.no_snap_silence) and not args.epub),
+             "--snap-silence/--no-snap-silence require --epub (whisper mode has no cue seams to snap)")
+    _require(not (args.snap_silence is not None and args.no_snap_silence),
+             "--snap-silence and --no-snap-silence are mutually exclusive")
+    _require(not (args.snap_silence is not None and args.snap_silence < 0),
+             f"--snap-silence must be >= 0 seconds (got {args.snap_silence}); 0 = off")
+    _require(not (args.no_paragraph_split and not args.epub),
+             "--no-paragraph-split requires --epub (it changes ebook segmentation)")
+    _require(not (args.report_min_hole is not None and not args.epub),
+             "--report-min-hole requires --epub")
+    _require(not (args.report_min_hole is not None and args.report_min_hole < 0),
+             f"--report-min-hole must be >= 0 (got {args.report_min_hole})")
 
     audio_path = str(Path(args.audio).resolve())
     out_path = str(Path(args.out).resolve())
@@ -552,6 +564,14 @@ def cmd_generate_sentences(args):
         cmd += ["--rough-cache", rough_cache_path]
     if args.align_workers is not None:
         cmd += ["--align-workers", str(args.align_workers)]
+    if args.no_snap_silence:
+        cmd += ["--no-snap-silence"]
+    elif args.snap_silence is not None:
+        cmd += ["--snap-silence", str(args.snap_silence)]
+    if args.no_paragraph_split:
+        cmd += ["--no-paragraph-split"]
+    if args.report_min_hole is not None:
+        cmd += ["--report-hole-min", str(args.report_min_hole)]
     if args.whisper_model:
         cmd += ["--whisper-model", args.whisper_model]
     if args.language and args.language != "en":
@@ -850,6 +870,27 @@ def build_parser():
                         "concurrent WSL vLLM lane, so it may pick 1 worker even with RAM free). "
                         "Each worker budgets ~5GB and the pool self-shrinks under memory pressure; "
                         "raise this only when the GPU/WSL lane is known idle")
+    # --- epub-align boundary accuracy (2026-09-03) ---
+    p.add_argument("--snap-silence", dest="snap_silence", type=float, default=None,
+                   help="generate-sentences (epub-align only): pull each cue seam onto the middle "
+                        "of the nearest detected silence within this many seconds (default 0.6). "
+                        "Bounded, so a snap can correct a CTC-frame boundary but can never create "
+                        "drift")
+    p.add_argument("--no-snap-silence", dest="no_snap_silence", action="store_true",
+                   help="generate-sentences (epub-align only): keep the raw forced-alignment cue "
+                        "times (pre-2026-09-03 behavior)")
+    p.add_argument("--no-paragraph-split", dest="no_paragraph_split", action="store_true",
+                   help="generate-sentences (epub-align only): segment the ebook on punctuation "
+                        "only (pre-2026-09-03). The default also splits on block boundaries, so an "
+                        "unpunctuated heading gets its own NOTE-tagged cue instead of being glued "
+                        "onto the prose that follows it")
+    p.add_argument("--report-min-hole", dest="report_min_hole", type=float, default=None,
+                   help="generate-sentences (epub-align only): list unmatched-audio ranges this "
+                        "long in the coverage report. Defaults to --min-hole, i.e. changes nothing "
+                        "unless you ask. Report-only — --min-hole still governs whisper-fallback "
+                        "cues in the VTT. NOTE it measures 'cue longer than a slow reading of its "
+                        "text', not literal unmatched audio, so low values fire on brisk "
+                        "narration; for measured dead air read lowSpeechCues in the report")
     p.add_argument("--parallel-workers", dest="parallel_workers", type=int,
                    help="AI (cloud only): concurrent chunk workers (ollama/local are always sequential)")
     p.add_argument("--no-parallel", dest="no_parallel", action="store_true",

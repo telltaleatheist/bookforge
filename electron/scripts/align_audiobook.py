@@ -21,7 +21,14 @@ Pipeline (all inside the whisperx conda env):
      correct multi-second local drift it can unambiguously confirm (music
      bridges / recap montages can strand a chunk past the true audio, where
      forced alignment cannot recover).
-  5. Emit a sentence VTT (epub text + precise times).
+  4b. Boundary snap (--snap-silence-s, default 0.6, 0 = off): pull each cue SEAM
+     onto the middle of the nearest detected silence within that window. Forced
+     alignment puts the seam at a CTC frame, which lands a couple hundred ms
+     early or late; the narrator's pause is where a corpus cutter must cut. The
+     silence map is scanned off the already-decoded 16 kHz wav on a background
+     thread during the align stage, so it costs no wall clock.
+  5. Emit a sentence VTT (epub text + precise times). Cues from heading blocks
+     carry `NOTE heading`; whisper-fallback cues carry `NOTE asr-fallback`.
 
 Default CPU. --device mps runs the align workers on Metal — measured safe and
 ~2.5x faster with 150 s chunks when torch.mps.empty_cache() runs after each
@@ -39,8 +46,10 @@ Usage:
   align_audiobook.py --audio A.m4b --sentences S.json --out O.vtt
                      [--workers N] [--chunk-s 300] [--rough-model base]
                      [--lang en] [--tmp DIR] [--rough-cache C.json]
-                     [--device cpu|mps]
+                     [--device cpu|mps] [--snap-silence-s 0.6]
+                     [--report-hole-min-s 3]
   S.json: ["sentence 1", "sentence 2", ...]  (epub sentences, in reading order)
+     or: [{"text": "...", "kind": "prose"|"heading"}, ...]  — `kind` tags the cue
 """
 import argparse, bisect, json, os, re, subprocess, sys, tempfile, threading, time
 import multiprocessing as mp
@@ -622,6 +631,188 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         "worst": offenders[:10],
     }
 
+
+# How long to wait for the background silence scan once the align pool is done.
+# It runs concurrently with ~30 min of alignment and takes ~1 min, so reaching
+# this at all means ffmpeg is wedged.
+SILENCE_SCAN_TIMEOUT_S = 120.0
+
+
+def detect_silences(wav_path, noise_db, min_s):
+    """ffmpeg silencedetect over the already-decoded 16 kHz mono wav -> sorted
+    [(start, end)]. Runs on the wav rather than the source file because the wav is
+    already on disk (the align workers need it) and decoding it again from a 6-hour
+    FLAC would cost minutes for nothing.
+
+    Called on a background thread while the align pool works, so the whole map is
+    free wall-clock. A failure here is NOT fatal: snapping is an improvement pass,
+    and no silence map simply means no snapping."""
+    p = subprocess.run(
+        ["ffmpeg", "-v", "info", "-nostats", "-i", wav_path,
+         "-af", f"silencedetect=noise={noise_db}dB:d={min_s}", "-f", "null", "-"],
+        capture_output=True, text=True, errors="replace")
+    iv, start = [], None
+    for line in p.stderr.splitlines():
+        m = re.search(r"silence_start:\s*(-?[\d.]+)", line)
+        if m:
+            start = float(m.group(1)); continue
+        m = re.search(r"silence_end:\s*(-?[\d.]+)", line)
+        if m and start is not None:
+            end = float(m.group(1))
+            if end > start: iv.append((start, end))
+            start = None
+    iv.sort()
+    return iv
+
+
+# Cue length bounds, module-level so the regression suite exercises THE SHIPPED
+# LOOP rather than a copy of it (an earlier suite reimplemented build_events in the
+# test file, so main()'s actual loop was never executed by any test).
+MAX_CUE_S = 120.0
+MIN_CUE_S = 0.4
+
+
+def build_events(sent_start, narr, sents, kinds, dur):
+    """Narrated sentences -> [[start, end, text, kind]] cues.
+
+    Dropped (non-narrated) sentences get no cue at all: their text occupies no
+    audio, so the preceding cue correctly runs to the next narrated start — capped
+    at MAX_CUE_S so a long unaligned stretch can't become one hour-long stale cue
+    (which also overflowed the mp4 muxer's 32-bit packet duration).
+
+    MIN_CUE_S is also the fix for a long-standing overlap defect. Both monotonic
+    clamps in main() use a strict `<`, so an out-of-order start is pinned EQUAL to
+    its predecessor rather than after it; when two cues then share a start, the
+    length floor used to push the earlier cue's end MIN_CUE_S PAST the later cue's
+    start, emitting an overlapping pair (present at the end of every McKinley VTT,
+    before and after the 2026-09-03 work). Pushing the NEXT start out by the same
+    amount is what keeps the timeline sorted, and the shift propagates naturally
+    through further ties because `sent_start` is what the next iteration reads for
+    its `s`. The suite scores this loop against a pre-fix copy over 20,000
+    randomized tie-heavy start-sets: 35,034 overlapping pairs -> 0 (the reviewer's
+    independent corpus, differently seeded, scored 35,065 -> 0).
+
+    MUTATES `sent_start`, deliberately — that propagation is the mechanism.
+    """
+    events = []
+    for x, i in enumerate(narr):
+        s = sent_start[i]
+        e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, dur)
+        e = min(e, s + MAX_CUE_S)
+        if e <= s:
+            e = s + MIN_CUE_S
+            if x + 1 < len(narr): sent_start[narr[x + 1]] = e
+        events.append([s, e, sents[i], kinds[i]])
+    return events
+
+
+def speech_coverage(events, silences, min_dur=3.0, max_speech=0.30, cap=40):
+    """Cues that are mostly SILENCE — the honest "audio with no narration" signal.
+
+    find_holes cannot answer this. Cues are contiguous, so there is no literal gap
+    between them; it infers one by comparing a cue's span against how long a slow
+    reading of its text would take, which is a guess about reading speed, not a
+    measurement of the audio. This is a measurement: intersect each cue's span with
+    the detected silence intervals and report the fraction that is actually spoken.
+
+    A cue at least `min_dur` long whose span is `max_speech` or less speech is
+    holding dead air, a music sting, or a stretch the narrator never read — the
+    thing you want to find, at any duration, without inventing 137 false ranges.
+
+    Returns (worst `cap` of them, total) — or (None, None) when there is NO SILENCE
+    MAP to measure against (snapping off, the scan failed, the scan was abandoned).
+    That distinction is the whole contract: returning ([], 0) there would report a
+    clean book when what actually happened is that nobody looked."""
+    if not silences:
+        return None, None
+    if not events:
+        return [], 0
+    sil_starts = [a for a, _ in silences]
+    out = []
+    for s, e, txt, _kind in events:
+        span = e - s
+        if span < min_dur:
+            continue
+        # silence intervals overlapping [s, e) — start just left of s
+        i = bisect.bisect_left(sil_starts, s)
+        if i > 0: i -= 1
+        quiet = 0.0
+        while i < len(silences) and silences[i][0] < e:
+            quiet += max(0.0, min(silences[i][1], e) - max(silences[i][0], s))
+            i += 1
+        speech = 1.0 - quiet / span
+        if speech <= max_speech:
+            out.append({"audioStart": round(s, 2), "audioEnd": round(e, 2),
+                        "startTimestamp": ts(s), "durationSeconds": round(span, 1),
+                        "speechFraction": round(speech, 3),
+                        "text": (txt[:120] + "…") if len(txt) > 120 else txt})
+    total = len(out)
+    out.sort(key=lambda c: c["speechFraction"])
+    return out[:cap], total
+
+
+def snap_boundaries(starts, ends, silences, window, min_gap=0.05):
+    """Pull each cue SEAM onto the middle of a nearby silence.
+
+    In this pipeline cues are contiguous — cue i ends exactly where cue i+1 begins
+    — so a "boundary" is ONE time shared by two cues, and it is precisely the seam
+    a training-corpus cutter cuts on. Forced alignment puts it at the CTC frame
+    where the model thinks the last phone ended, which routinely lands a couple
+    hundred ms early (clipping the word's tail) or late (leaking the next word's
+    onset). The narrator's actual pause is a silence, and its MIDDLE is the safest
+    place to cut: maximum margin on both sides, so neither clip loses a phone or
+    gains half a breath.
+
+    Rules, all of them conservative:
+      * only silences OVERLAPPING [B-window, B+window] are candidates — a snap can
+        never move a boundary further than `window`, so it cannot create drift;
+      * the target is the midpoint of the candidate CLIPPED to that window, so a
+        long silence (a chapter gap) pulls the seam to the window edge, not to its
+        own distant centre;
+      * the nearest candidate wins;
+      * monotonicity is enforced against the already-placed previous boundary and
+        the following raw one, leaving `min_gap` so no cue can collapse to zero.
+
+    Mutates nothing; returns (new_starts, new_ends, stats)."""
+    n = len(starts)
+    if n == 0 or not silences or window <= 0:
+        return starts, ends, {"considered": 0, "snapped": 0, "movedSeconds": []}
+    sil_starts = [a for a, _ in silences]
+    ns, ne = list(starts), list(ends)
+    moved = []
+    considered = 0
+    for i in range(n - 1):
+        b = ne[i]
+        # cues are only "seamed" when the next cue starts where this one ends;
+        # a gap (whisper-fallback retraction, MAX_CUE_S cap) is left alone.
+        if abs(starts[i + 1] - ends[i]) > 1e-6:
+            continue
+        considered += 1
+        lo, hi = b - window, b + window
+        # bound the move by the neighbours so ordering and non-empty cues survive
+        lo = max(lo, ns[i] + min_gap)
+        hi = min(hi, (ends[i + 1] if i + 1 < n else b) - min_gap)
+        if hi <= lo:
+            continue
+        j = bisect.bisect_left(sil_starts, b)
+        best = None
+        for k in range(max(0, j - 2), min(len(silences), j + 2)):
+            a, z = silences[k]
+            oa, oz = max(a, lo), min(z, hi)
+            if oz <= oa:
+                continue
+            mid = 0.5 * (oa + oz)
+            d = abs(mid - b)
+            if best is None or d < best[0]:
+                best = (d, mid)
+        if best is None or best[0] < 1e-3:
+            continue
+        ne[i] = best[1]
+        ns[i + 1] = best[1]
+        moved.append(round(best[1] - b, 3))
+    return ns, ne, {"considered": considered, "snapped": len(moved), "movedSeconds": moved}
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--audio", required=True)
@@ -651,10 +842,43 @@ def main():
     # audioNotInEpub entries AND whisper-fallback cue filling (same concept — audio
     # the ebook doesn't cover). Below it, gaps are absorbed as cue slack.
     ap.add_argument("--hole-min-s", type=float, default=30.0)
+    # REPORT-ONLY hole threshold, decoupled from --hole-min-s (2026-09-03). The
+    # two were one number, so the only way to see a 4-second sting or a credits
+    # read in the coverage report was to lower the threshold that also fills holes
+    # with ASR cues — i.e. to change the VTT in order to inspect it. They are
+    # separate concerns: LISTING short unmatched audio is free, FILLING it is not.
+    # DEFAULTS TO --hole-min-s (i.e. changes nothing unless you ask). It was
+    # briefly defaulted to 3 s, which was wrong: find_holes does NOT measure
+    # literal unmatched audio. Cues are contiguous, so it compares each cue's span
+    # against est_end() — "how long a slow reading of this text would take" — and
+    # reports the surplus. At 30 s that surplus is a real ad/credits detector; at
+    # 3 s it fires on ordinary brisk narration (measured on shipped VTTs: blacksun
+    # 1 -> 65 ranges, ds 1 -> 137), and summary.unmatchedAudioSeconds stops meaning
+    # anything. Lower it deliberately, per run, knowing that is what it measures.
+    # For genuinely unnarrated audio see `lowSpeechCues`, which uses the silence
+    # map rather than a reading-speed guess.
+    ap.add_argument("--report-hole-min-s", type=float, default=None)
+    # Boundary snapping (2026-09-03): a cue seam belongs in the narrator's pause,
+    # not a few hundred ms into the next word. Pull each seam onto the middle of
+    # the nearest detected silence within this window; 0 disables. Bounded so a
+    # snap can only ever make a small correction — it cannot rescue real drift,
+    # and must not be able to manufacture it.
+    ap.add_argument("--snap-silence-s", type=float, default=0.6)
+    # silencedetect parameters for the snap map. -45 dB / 0.25 s is the pause
+    # between sentences in a mastered audiobook; d must stay well BELOW a typical
+    # sentence pause or the map misses the very seams we are trying to land in.
+    ap.add_argument("--snap-noise-db", type=float, default=-45.0)
+    ap.add_argument("--snap-min-silence-s", type=float, default=0.25)
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
     args = ap.parse_args()
     if args.hole_min_s < 0:
         ap.error(f"--hole-min-s must be >= 0 (got {args.hole_min_s}); 0 = report every gap")
+    if args.report_hole_min_s is None:
+        args.report_hole_min_s = args.hole_min_s
+    if args.report_hole_min_s < 0:
+        ap.error(f"--report-hole-min-s must be >= 0 (got {args.report_hole_min_s})")
+    if args.snap_silence_s < 0:
+        ap.error(f"--snap-silence-s must be >= 0 (got {args.snap_silence_s}); 0 = no snapping")
 
     # auto: Apple-Silicon Macs get MPS — validated full-book (10539/10540 cues
     # identical to CPU, wired memory flat at ~5.3 GB, same wall time as 4 CPU
@@ -680,8 +904,15 @@ def main():
     os.environ["ALIGN_DEVICE"] = args.device
 
     sents = json.load(open(args.sentences, encoding="utf-8"))
+    # The bridge may hand us objects carrying a `kind` ("heading" = a short,
+    # unpunctuated block of its own: part/chapter numbers, chapter titles,
+    # epigraph attributions). Kept so the VTT can tag those cues; a plain list of
+    # strings still works and yields all-prose.
     if sents and isinstance(sents[0], dict):
+        kinds = [s.get("kind", "prose") for s in sents]
         sents = [s.get("text", "") for s in sents]
+    else:
+        kinds = ["prose"] * len(sents)
     N = len(sents)
     workers = args.workers if args.workers > 0 else auto_workers()
     if args.device in ("mps", "cuda") and workers != 1:
@@ -711,6 +942,10 @@ def main():
     # slices from the original audio itself), so decode it on a background
     # thread overlapped with transcribe; joined before the align pool starts.
     fd, wav = tempfile.mkstemp(suffix=".wav"); os.close(fd)
+    silences = []      # (start, end) pauses for boundary snapping — filled on a bg thread
+    sil_t = None       # ...which the finally below must join before the wav is deleted
+    silence_ok = True  # False = the map is absent or untrustworthy; consumers must skip
+                       # it rather than read a list a stranded thread may still write to
     try:
         stage("prepare"); progress(2)
         xerr = []
@@ -769,6 +1004,19 @@ def main():
         if xt.is_alive(): log("waiting on background wav extraction")
         xt.join()
         if xerr: raise xerr[0]
+
+        # Silence map for boundary snapping. Started HERE — the wav exists and the
+        # align pool is about to run for ~30 minutes — so the scan is free wall
+        # clock, and it must finish before the wav is deleted in the finally below.
+        if args.snap_silence_s > 0:
+            def _bg_silences():
+                try:
+                    silences.extend(detect_silences(wav, args.snap_noise_db, args.snap_min_silence_s))
+                except Exception as e:
+                    # leaves `silences` empty, which every consumer already treats
+                    # as "no map" — see the `and silences` guards below
+                    log(f"silence detection failed ({e}); boundary snapping disabled this run")
+            sil_t = threading.Thread(target=_bg_silences, daemon=True); sil_t.start()
 
         # chunk over the NARRATED sentences at gaps ~every chunk-s. rough=None
         # means "not narrated" (interior drop) — excluded from chunk text so the
@@ -844,9 +1092,31 @@ def main():
             if not shrink:
                 break
     finally:
+        # The silence scan reads the wav — it must finish before the file goes.
+        # BOUNDED: this finally also runs on the error path, and an ffmpeg wedged
+        # on a bad file would otherwise hang the script forever holding a failure
+        # nobody ever sees. Snapping is an improvement pass; losing it is a
+        # degraded run, not a broken one, so we give up on it and say so.
+        if sil_t is not None and sil_t.is_alive():
+            log("waiting on background silence detection")
+            sil_t.join(timeout=SILENCE_SCAN_TIMEOUT_S)
+            if sil_t.is_alive():
+                # DO NOT clear `silences` here. The abandoned thread is still alive
+                # and will extend() that same list when its ffmpeg finally returns,
+                # so clearing it only opens a race: a later consumer would read a
+                # map that filled in behind it, half-written, from a scan of a wav
+                # this function is about to delete. Gate on a flag the consumers
+                # check; leave the list alone.
+                silence_ok = False
+                log(f"silence detection still running after {SILENCE_SCAN_TIMEOUT_S:.0f}s "
+                    f"— abandoning it; boundary snapping and speech coverage are "
+                    f"disabled for this run")
         if os.path.exists(wav):
             try: os.remove(wav)
             except OSError: pass
+    if args.snap_silence_s > 0:
+        log(f"silence map: {len(silences)} interval(s) at {args.snap_noise_db:g}dB / "
+            f"{args.snap_min_silence_s:g}s")
 
     if failed_chunks:
         log(f"align: {len(failed_chunks)}/{len(chunks)} chunk(s) FAILED — their sentences "
@@ -911,13 +1181,22 @@ def main():
     # audio, so the preceding cue correctly runs to the next narrated start —
     # capped at MAX_CUE_S so a long unaligned stretch can't become one hour-long
     # stale cue (which also overflowed the mp4 muxer's 32-bit packet duration).
-    MAX_CUE_S = 120.0
-    events = []  # [start, end, text] — ebook-aligned cues
-    for x, i in enumerate(narr):
-        s = sent_start[i]; e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, DUR)
-        e = min(e, s + MAX_CUE_S)
-        if e <= s: e = s + 0.4
-        events.append([s, e, sents[i]])
+    events = build_events(sent_start, narr, sents, kinds, DUR)
+
+    # Boundary snapping. Runs BEFORE hole detection and fallback so every
+    # downstream consumer sees the final times. Only touches seams (cue i's end ==
+    # cue i+1's start) and only within --snap-silence-s, so it cannot reorder cues,
+    # empty one, or move anything far enough to count as drift.
+    snap_stats = {"considered": 0, "snapped": 0, "movedSeconds": []}
+    if args.snap_silence_s > 0 and silence_ok and silences and events:
+        _s = [c[0] for c in events]; _e = [c[1] for c in events]
+        _ns, _ne, snap_stats = snap_boundaries(_s, _e, silences, args.snap_silence_s)
+        for x in range(len(events)):
+            events[x][0] = _ns[x]; events[x][1] = _ne[x]
+        mv = sorted(abs(m) for m in snap_stats["movedSeconds"])
+        log(f"boundary snap: {snap_stats['snapped']}/{snap_stats['considered']} seam(s) moved "
+            f"onto a silence (window {args.snap_silence_s:g}s"
+            + (f", |move| median {mv[len(mv)//2]:.3f}s max {mv[-1]:.3f}s" if mv else "") + ")")
 
     # Whisper-text fallback: audio stretches with no matching ebook text (intros,
     # credits, music, content missing from the epub) get cues from the rough
@@ -931,21 +1210,54 @@ def main():
     HOLE_MIN_S = args.hole_min_s
     def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
         return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
-    holes = []  # (lo, hi, index of preceding event or None)
-    if events:
-        if events[0][0] > HOLE_MIN_S: holes.append((0.0, events[0][0], None))
+    def find_holes(min_s):
+        h = []  # (lo, hi, index of preceding event or None)
+        if not events:
+            return [(0.0, DUR, None)]
+        if events[0][0] > min_s: h.append((0.0, events[0][0], None))
         for x in range(len(events)):
             lo = min(events[x][1], est_end(x))
             hi = events[x + 1][0] if x + 1 < len(events) else DUR
-            if hi - lo > HOLE_MIN_S: holes.append((lo, hi, x))
-    else:
-        holes.append((0.0, DUR, None))
+            if hi - lo > min_s: h.append((lo, hi, x))
+        return h
+    holes = find_holes(HOLE_MIN_S)
+    # The REPORT's list is computed separately (2026-09-03). Fusing the two meant
+    # the only way to SEE a 5-second sting or an unlisted credits read was to lower
+    # the threshold that also injects ASR cues into the VTT. Listing is free.
+    # Identical to `holes` unless the caller asked for a different threshold.
+    report_holes = holes if args.report_hole_min_s == HOLE_MIN_S else find_holes(args.report_hole_min_s)
+
+    def hole_transcripts(hole_list):
+        """Rough-transcript text for each hole: ONE cursored pass over rough_segs
+        (holes are in timeline order), selecting segments whose START falls in
+        [lo, hi - 0.5).
+
+        That selection rule is the one the fallback loop below uses to decide which
+        segments belong to a hole. It is NOT the whole of what the fallback does —
+        the fallback additionally clips each segment to the hole and to MAX_CUE_S,
+        because it is building cues, whereas this is only gathering text. An
+        earlier version recomputed the report's text with a different, cursor-less
+        filter, which silently changed what the `transcript` field meant; sharing
+        the selection rule is what stops that recurring."""
+        out = [None] * len(hole_list)
+        if not rough_segs:
+            return out
+        si = 0
+        for hx, (lo, hi, _ev) in enumerate(hole_list):
+            texts = []
+            while si < len(rough_segs) and rough_segs[si][0] < lo: si += 1
+            sj = si
+            while sj < len(rough_segs) and rough_segs[sj][0] < hi - 0.5:
+                if rough_segs[sj][2]: texts.append(rough_segs[sj][2])
+                sj += 1
+            if texts: out[hx] = " ".join(texts)
+        return out
+
     fallback = []
-    hole_text = [None] * len(holes)  # rough-transcript text per hole (for --report)
     if rough_segs:
         si = 0  # rough_segs cursor — holes are in timeline order, so one pass
-        for hx, (lo, hi, ev_x) in enumerate(holes):
-            first = None; texts = []
+        for lo, hi, ev_x in holes:
+            first = None
             while si < len(rough_segs) and rough_segs[si][0] < lo: si += 1
             while si < len(rough_segs) and rough_segs[si][0] < hi - 0.5:
                 ss, se, txt = rough_segs[si]; si += 1
@@ -953,9 +1265,7 @@ def main():
                 cs = max(ss, lo); ce = min(max(se, ss + 0.4), hi, ss + MAX_CUE_S)
                 if ce <= cs: continue
                 fallback.append([cs, ce, txt])
-                texts.append(txt)
                 if first is None: first = cs
-            if texts: hole_text[hx] = " ".join(texts)
             if ev_x is not None and first is not None and first < events[ev_x][1]:
                 events[ev_x][1] = max(events[ev_x][0] + 0.4, first)
         if fallback:
@@ -969,13 +1279,21 @@ def main():
     # WebVTT spec a NOTE block between cues is a comment and is skipped by every
     # conformant parser (native <track>, ffmpeg's webvtt reader); the cue id,
     # timestamps, and payload text are byte-identical to a run without NOTEs.
-    tagged = [(s, e, txt, False) for s, e, txt in events] \
-           + [(s, e, txt, True) for s, e, txt in fallback]
-    lines = ["WEBVTT", ""]; n = 0
-    for s, e, txt, is_fallback in sorted(tagged, key=lambda c: c[0]):
+    #
+    # HEADING cues carry `NOTE heading` by the same mechanism (2026-09-03). The
+    # paragraph-aware segmenter now gives an unpunctuated block of its own — "Part
+    # I", "1", "William McKinley, Ohioan" — its own cue instead of gluing it onto
+    # the following prose. A training-corpus cutter wants those DROPPED (a title
+    # announcement is not narration of the sentence it precedes), and reading a tag
+    # beats every consumer re-deriving "looks like a heading" from the text.
+    tagged = [(s, e, txt, "heading" if kind == "heading" else None) for s, e, txt, kind in events] \
+           + [(s, e, txt, "asr-fallback") for s, e, txt in fallback]
+    lines = ["WEBVTT", ""]; n = 0; heading_cues = 0
+    for s, e, txt, note in sorted(tagged, key=lambda c: c[0]):
         n += 1
-        if is_fallback:
-            lines += ["NOTE asr-fallback", ""]
+        if note:
+            lines += [f"NOTE {note}", ""]
+            if note == "heading": heading_cues += 1
         lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
     if n == 0:
         # A bare WEBVTT is not a transcript — refuse to write it and claim success.
@@ -990,6 +1308,13 @@ def main():
     # text snippets + timestamps so a human can search the epub / seek the audio
     # to find each boundary (sentence indexes refer to the extracted sentence
     # list, which the reader doesn't have — the text IS the locator).
+    low_speech, low_speech_total = speech_coverage(events, silences if silence_ok else [])
+    if low_speech_total is None:
+        log("speech coverage: NOT MEASURED (no silence map this run) — "
+            "lowSpeechCues is null, which is not the same as zero")
+    elif low_speech_total:
+        log(f"speech coverage: {low_speech_total} cue(s) ≥3s are ≤30% speech "
+            f"(dead air / stings / unread text) — see the report")
     if args.report:
         def _clip(s, cap=200):
             s = " ".join(s.split())
@@ -1017,8 +1342,10 @@ def main():
                 "narratedAfter": _neighbor(j) if j < N else None,
             })
             i = j
+        report_hole_text = hole_transcripts(report_holes)
+        hole_set = set(holes)   # O(1) "did this range also get ASR cues"
         audio_unmatched = []
-        for hx, (lo, hi, ev_x) in enumerate(holes):
+        for hx, (lo, hi, ev_x) in enumerate(report_holes):
             if ev_x is not None:
                 before = _neighbor(narr[ev_x])
                 after = _neighbor(narr[ev_x + 1]) if ev_x + 1 < len(narr) else None
@@ -1031,7 +1358,10 @@ def main():
                 "durationSeconds": round(hi - lo, 1),
                 "epubBefore": before,
                 "epubAfter": after,
-                "transcript": _clip(hole_text[hx], 2500) if hole_text[hx] else None,
+                "transcript": _clip(report_hole_text[hx], 2500) if report_hole_text[hx] else None,
+                # true when this range ALSO got whisper-fallback cues in the VTT
+                # (i.e. it cleared --hole-min-s, not just --report-hole-min-s)
+                "filledWithAsrCues": (lo, hi, ev_x) in hole_set,
             })
         report = {
             "audio": os.path.abspath(args.audio),
@@ -1046,9 +1376,48 @@ def main():
                 "interiorDropped": interior_dropped,
                 "audioDurationSeconds": round(DUR, 1),
                 "audioDurationTimestamp": ts(DUR),
+                # These two keep their original meaning: the --hole-min-s list, the
+                # one that also drives whisper-fallback cues. They do NOT follow
+                # --report-hole-min-s, because that threshold changes what the
+                # measure IS (see find_holes) and a summary total computed at 3 s
+                # is not comparable with one computed at 30 s.
                 "unmatchedAudioRanges": len(holes),
                 "unmatchedAudioSeconds": round(sum(hi - lo for lo, hi, _ in holes), 1),
                 "holeThresholdSeconds": HOLE_MIN_S,
+                # The threshold the audioNotInEpub LIST below uses. Equal to
+                # holeThresholdSeconds unless the caller lowered it on purpose.
+                "reportHoleThresholdSeconds": args.report_hole_min_s,
+                "reportedRanges": len(report_holes),
+                "headingCues": heading_cues,
+                # null, NOT 0, when there was no silence map to measure against —
+                # "nobody looked" and "looked and found nothing" are different facts.
+                "lowSpeechCues": low_speech_total,
+            },
+            # Cues whose audio is mostly silence — measured against the silence map,
+            # not guessed from reading speed. This is the short-unnarrated-audio
+            # signal that lowering --report-hole-min-s was reaching for.
+            # `measured` says whether the question was asked at all; `cues` is null
+            # rather than [] when it was not, so a consumer cannot read an unrun
+            # scan as a clean book.
+            "lowSpeechCues": {
+                "measured": low_speech is not None,
+                "count": low_speech_total,
+                "cues": low_speech,
+            },
+            # Boundary snapping: how many cue seams the silence map was able to
+            # place inside a pause, and how far each moved. `snapped/considered`
+            # IS the measurement — a low ratio means the silence map is too coarse
+            # for this master (raise --snap-noise-db or lower --snap-min-silence-s),
+            # not that the alignment is bad.
+            "boundarySnap": {
+                "windowSeconds": args.snap_silence_s,
+                "noiseDb": args.snap_noise_db,
+                "minSilenceSeconds": args.snap_min_silence_s,
+                "silenceIntervals": len(silences) if silence_ok else 0,
+                "seamsConsidered": snap_stats["considered"],
+                "seamsSnapped": snap_stats["snapped"],
+                "medianAbsMoveSeconds": round(sorted(abs(m) for m in snap_stats["movedSeconds"])[len(snap_stats["movedSeconds"]) // 2], 3) if snap_stats["movedSeconds"] else 0.0,
+                "maxAbsMoveSeconds": round(max((abs(m) for m in snap_stats["movedSeconds"]), default=0.0), 3),
             },
             "epubNotInAudio": excluded,
             "audioNotInEpub": audio_unmatched,
@@ -1079,7 +1448,8 @@ def main():
         with open(args.report, "w", encoding="utf-8") as f:
             json.dump(report, f, ensure_ascii=False, indent=2)
         log(f"coverage report: {len(excluded)} excluded epub run(s), "
-            f"{len(holes)} unmatched audio range(s) -> {args.report}")
+            f"{len(report_holes)} unmatched audio range(s) ≥{args.report_hole_min_s:g}s "
+            f"({len(holes)} of them ASR-filled) -> {args.report}")
 
     progress(100)
     emit("RESULT " + json.dumps({"ok": True, "vtt": args.out, "cues": n,
@@ -1091,7 +1461,10 @@ def main():
                                  "failedChunks": len(failed_chunks), "totalChunks": len(chunks),
                                  "driftChecked": drift["checked"],
                                  "driftMaxAbs": round(drift["maxAbs"], 2),
-                                 "driftFixed": drift["fixed"]}))
+                                 "driftFixed": drift["fixed"],
+                                 "snappedBoundaries": snap_stats["snapped"],
+                                 "totalBoundaries": snap_stats["considered"],
+                                 "headingCues": heading_cues}))
 
 if __name__ == "__main__":
     try:
