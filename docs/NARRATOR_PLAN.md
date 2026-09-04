@@ -430,3 +430,14 @@ only to consecutive short prose/dialogue paragraphs and to tier-2 fragments. The
 `max_chars` is MEASURED per fine-tune (min of the length-sweep recommendation and the
 corpus-derived cap = p1 training-clip seconds x chars/s; ~1,200-1,500 for a ds_ad4l cut
 with 100 s clips) and read from the catalog; 600 is the zero-shot placeholder.
+
+### Ruling (Owen, 2026-09-04 evening): Higgs v3 IS the second engine; Higgs v2 is DROPPED
+
+"Basically just Orpheus and we know Orpheus better." The concrete second engine is
+**Higgs v3 as a SERVED backend** against the patched vllm-omni stack (WSL env `higgs3`,
+`serve_v3.sh`, the two site-packages patches, `POST /v1/audio/speech`, sampling via
+`extra_params`, 30 s total reference cap, no scene/emotion tokens). Any v2 code stays
+only as interface scaffolding (`higgs-v2-scaffold`), never shipped. Voice object for the
+v3 deathstalker = the fine-tuned adapter (text-only prompt) once the ds_ad4l full-corpus
+train exists; reference-clip cloning remains the path for voices without a fine-tune.
+The measured `max_chars` and the adapter path follow from that train.
