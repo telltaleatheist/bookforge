@@ -10,13 +10,16 @@ THE CLASSES YOU ARE BEING ASKED ABOUT
 
 2. ABBREVIATIONS a narrator says in full: "Dr." is "Doctor", "St." is "Saint" or "Street" depending on the sentence, "Mt." is "Mount", "e.g." is "for example", "i.e." is "that is", "etc." is "et cetera", "vs." is "versus", "&" is "and". Leave "Mr.", "Mrs.", "Ms." exactly as printed — every voice already says those correctly, and expanding them adds nothing.
 
-3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces — "FBI" is "F B I", "NSDAP" is "N S D A P" — because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case — "he SAID so" is "he said so" — because the capitals are typography, not sound.
+3. ALL-CAPS RUNS. An acronym said as letters is spelled out with spaces — "FBI" is "F B I", "NSDAP" is "N S D A P" — because a voice handed "FBI" may try to say it as a word. An acronym said AS a word is left alone: NASA, NATO, UNESCO, laser, radar. A word in capitals for EMPHASIS is written in ordinary case — "he SAID so" is "he said so" — because the capitals are typography, not sound. Write the letters in the case they were printed in ("F B I", never "f b i") and the emphasis reading in ordinary lower case.
 
-4. BRACKETED INSERTIONS. A parenthesis or a bracket a narrator reads straight through needs no edit. One that is apparatus — an editorial "[sic]", a cross-reference "(see p. 12)", a source in brackets — is not spoken, and the edit that removes it must be the whole insertion INCLUDING its brackets, replaced by nothing but the surrounding spacing. If you are not certain the insertion is apparatus, leave it.
+4. BRACKETED INSERTIONS. Two different edits, and which one depends on what is inside.
+   APPARATUS is not spoken and is REMOVED whole, brackets and all, replaced by nothing but the surrounding spacing: "[sic]", "[12]", "[ed.]", "[...]", "(sic)", "(emphasis added)", "(see page twelve)", "(Kershaw 1993)", "(12)".
+   AN INTERPOLATION OF WORDS in SQUARE brackets is READ, not removed: the edit drops the brackets and keeps every word — "[he said]" becomes "he said". Never delete words.
+   A PARENTHESIS is the author’s own punctuation and stays exactly as printed unless its contents are one of the apparatus shapes above. "(he was lying)" and "(note she wept)" are the book. If you are not certain, leave it.
 
 5. A SPACED HYPHEN used as a dash — "the man - who had waited - left" — is an em dash in disguise. Replace the spaced hyphen with an em dash. A hyphen inside a compound ("far-right") and a hyphen between numbers are NOT this and must be left.
 
-6. ROMAN NUMERALS that name a person or a part are read as words: "Henry VIII" is "Henry the Eighth", "Part IV" is "Part Four", "World War II" is "World War Two". A roman numeral that is a citation or a volume — "Document II 9/34", "vol. iii" — is apparatus and stays exactly as printed.
+6. ROMAN NUMERALS are read as words ONLY where a book prints a numeral: after a part word ("Part IV" is "Part Four", "Chapter IX", "Book II"), after a name ("Henry VIII" is "Henry the Eighth", "Pius XII"), or before a century ("the XIX century"). Anywhere else a run of capitals is an ACRONYM even when its letters are all I V X L C D M: "MIX", "MD", "CD", "MM", "XL", "IX" and "CIV" are read as their own letters spaced, or left alone. A roman numeral that is a citation or a volume — "Document II 9/34", "vol. iii" — is apparatus and stays exactly as printed.
 
 7. DIGIT RESIDUE. If a digit is still printed anywhere in the block after your edits, you have missed one. Go back and read it, or leave it deliberately because it is a code.
 
@@ -24,6 +27,7 @@ FOOTNOTE AND REFERENCE MARKERS ARE NOT YOURS. A superscript reference number, a 
 
 THE RULES THAT BOUND EVERY EDIT
 
+- KEEP THE PUNCTUATION. Every comma, semicolon, colon, dash, quote and bracket the `find` prints outside the word you are changing must appear again in the `replace`, in the same order. "Dr. Kempner; they" may become "Doctor Kempner; they" and never "Doctor Kempner they". If the abbreviation ends the span and a capital follows it in the block, its period may be ending a sentence — keep it: "Oxford St. The rain" becomes "Oxford Street. The rain".
 - ONE TOKEN PER EDIT. The replacement must repeat every word of the `find`, in order, EXCEPT the single token the class is about — the abbreviation, the run of capitals, the roman numeral. "Dr. Kempner" may become "Doctor Kempner"; it may not become "Doctor Kempner of Berlin", and "Kempner" may not become "Kempler". An edit that changes any other word is refused.
 - NEVER PARAPHRASE. You may change the SPOKEN FORM of a span. You may not improve a sentence, reorder it, shorten it, translate it, or replace a word with a synonym. If the only change you can think of is a better way of saying it, make no edit.
 - Every `find` is verbatim and occurs exactly once in the TARGET. If a span occurs twice, extend the find with the words around it until it is unique, or leave it.
@@ -39,6 +43,11 @@ TARGET: The Reichstag met on March twenty-third, and Dr. Kempner of the FBI (see
 TARGET: Henry VIII had waited - and waited - for an answer he never SAID he wanted.
 <answer>
 {"edits": [{"find": "Henry VIII", "replace": "Henry the Eighth"}, {"find": "waited - and", "replace": "waited—and"}, {"find": "waited - for", "replace": "waited—for"}, {"find": "never SAID he", "replace": "never said he"}]}
+</answer>
+
+TARGET: He turned into Oxford St. The clerk [he said] worked for the MIX, no. 4 on the list.
+<answer>
+{"edits": [{"find": "Oxford St.", "replace": "Oxford Street."}, {"find": "[he said]", "replace": "he said"}, {"find": "MIX", "replace": "M I X"}]}
 </answer>
 
 TARGET: A paragraph of ordinary prose with nothing in it that is printed one way and read another.
