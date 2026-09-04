@@ -7511,6 +7511,23 @@ export interface NarrationNumberTarget {
   text: string;
   /** The length of each of those text nodes, in order. Sums to `text.length`. */
   segments: number[];
+  /**
+   * THE WHITESPACE IN THIS ELEMENT IS THE AUTHOR'S, and no pass may touch it.
+   *
+   * True for a `<pre>`, for anything inside one, for anything containing one,
+   * and for anything whose inline style declares `white-space: pre` (or
+   * `pre-wrap` / `pre-line` / `break-spaces`). Everywhere else a run of spaces
+   * is a layout artifact and the punctuation stage collapses it; in a code
+   * listing, an ASCII table or a verse laid out with leading spaces it is the
+   * content, and collapsing it destroys the user's book permanently — the pass
+   * rewrites the working copy, so the indentation is recoverable only from the
+   * archive (the adversarial review, 2026-09-04).
+   *
+   * Reported rather than silently skipped, because the count belongs in the
+   * receipt: "this book has forty blocks nobody normalized" is a fact about the
+   * pass, not an absence.
+   */
+  preformatted: boolean;
 }
 
 /**
@@ -7528,6 +7545,32 @@ function unitTextNodes(node: any, into: any[]): void {
   if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
   if (!node.childNodes) return;
   for (let i = 0; i < node.childNodes.length; i++) unitTextNodes(node.childNodes[i], into);
+}
+
+/**
+ * Is this element's whitespace the author's — a `<pre>`, or styled as one?
+ *
+ * Four ways for it to be true: the element IS a pre, it holds one, it sits
+ * inside one, or it (or an ancestor) declares a preserving `white-space` inline.
+ * A stylesheet-declared one is not detectable without a CSS cascade, which this
+ * app does not run; the inline case is what publisher EPUBs and this app's own
+ * conversions actually emit.
+ */
+const PRESERVES_SPACE = /white-space\s*:\s*(?:pre|pre-wrap|pre-line|break-spaces)/i;
+
+function isPreformattedElement(el: any): boolean {
+  const declares = (node: any): boolean => {
+    const tag = (node.tagName ?? '').toLowerCase();
+    if (tag === 'pre') return true;
+    const style = typeof node.getAttribute === 'function' ? node.getAttribute('style') : null;
+    return style !== null && style !== undefined && PRESERVES_SPACE.test(style);
+  };
+  if (declares(el)) return true;
+  if ((el.getElementsByTagName?.('pre')?.length ?? 0) > 0) return true;
+  for (let node = el.parentNode; node != null && node.nodeType === 1; node = node.parentNode) {
+    if (declares(node)) return true;
+  }
+  return false;
 }
 
 /** The length of each of an element's text nodes, in order. */
@@ -7657,6 +7700,7 @@ export async function readNarrationNumberTargets(
           statedCategory: stamp?.statedCategory ?? null,
           text: getUnitTextContent(c.el),
           segments: textNodeSegments(c.el),
+          preformatted: isPreformattedElement(c.el),
         });
       }
     }
@@ -7672,6 +7716,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -7691,6 +7738,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -7710,6 +7760,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -8636,6 +8689,21 @@ export interface NarrationTextStamp {
   model: string;
   /** When the pass finished, ISO 8601. */
   at: string;
+  /**
+   * How many punctuation spans the pass could NOT canonicalize — a run of
+   * spaces straddling an `<em>`, a `<pre>` whose whitespace is the author's.
+   *
+   * In the stamp, not only in the receipt, because the stamp is what travels
+   * with the FILE. Without it a book with three hundred unresolved ellipses is
+   * byte-indistinguishable from a clean one to every consumer downstream, and a
+   * second run reports "already canonical … passes through untouched" while the
+   * residue is unreachable forever (the adversarial review, 2026-09-04).
+   *
+   * It is NOT a reason to refuse the book: a refused span is a permanent
+   * property of that markup, and re-running would refuse it again. It is a fact
+   * the gate reports and the summary says out loud.
+   */
+  punctuationRefused: number;
 }
 
 /** The OPF's zip entry, from the container the reader is already holding. */
@@ -8701,6 +8769,13 @@ export async function readNarrationTextStamp(
             `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp has no ${field}. It describes a pass `
             + 'nobody can identify; the book must be passed through the narration text pass again.');
         }
+      }
+      if (typeof stamp.punctuationRefused !== 'number'
+        || !Number.isFinite(stamp.punctuationRefused)) {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp does not say how many spans the pass `
+          + 'could not canonicalize, so there is no telling whether it finished. The book must be '
+          + 'passed through the narration text pass again.');
       }
       return stamp as NarrationTextStamp;
     }

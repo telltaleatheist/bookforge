@@ -81,33 +81,55 @@ with its text intact; more than 10% of blocks failing to parse fails the whole
 pass by name. **A paraphrase is never silently accepted** — but see the OPEN
 CONCERN below.
 
-### OPEN CONCERN — text edits have no lexical anchor
+### The one-token law — what stands in for a lexical anchor
 
-The caps above bound *size*, not *meaning*. A short, word-shaped paraphrase of
-one clause ("the man who had waited" → "the waiting man") satisfies every one of
-them. The receipt names every accepted edit with its class and its span, so it
-can be seen after the fact; nothing refuses it at the time. This was implemented
-as ruled rather than quietly kept deterministic, and is recorded here so it can
-be put to Owen: the options, if it turns out to matter, are a per-class allowlist
-of shapes, or a second model call that judges each accepted text edit against its
-find.
+> Owen, 2026-09-04: for a non-number class the replacement must preserve every
+> alphabetic word of the find, in order, EXCEPT the single token the class is
+> allowed to change. **One-token edits only.**
 
-**It is text only.** `excludeCaptions`, `excludeFootnotes` and `stripSupMarkers`
-are all forced OFF, against `writeNarrationEpub`'s own defaults, because this
-edits *the book on the chain*. A pass that removed an element would be refused by
-`registerLedgerPass`'s structural invariant and by `verifyNarrationCarry`, and
-would move every narration strike the user ever made onto the wrong paragraph.
-The caption/endnote/marker cut stays where it always was: in the render door, on
-the second file.
+A *number* edit has a lexical anchor: `keepsEveryWord` proves every prose word of
+the find survives and `NUMBER_DROPPED` proves every printed number came out as
+words. A *text* edit has none — "Dr." to "Doctor" legitimately replaces the
+letters — so before this law the caps bounded size and nothing bounded meaning.
+The adversarial review of 2026-09-04 measured what got through: a name swapped, a
+negation flipped, an OCR "correction", a heading rewritten whole, an
+89-character sentence 80 of whose characters were replaced. Every one is refused
+now, and every one is a keeper test.
 
-A punctuation span that would have to cross an `<em>` or a `<sup>` is **refused
-and recorded**, never flattened. The receipt names each one.
+How it is enforced:
 
----
+* the span's class is derived from the span (`classifyEdit`), never declared by
+  the model;
+* a span whose class is **other** — ordinary prose — is `NOT_A_CLASS`;
+* at most **one** word token of the find may be missing from the replacement, and
+  that one must be the class's own: a dotted abbreviation, a run of capitals, a
+  roman numeral. Anything else is `WORDS_DROPPED`;
+* a **spaced hyphen** edit may change no word at all — it is punctuation;
+* a **removal** is allowed only for a whole bracketed insertion of at most three
+  alphabetic words, so `[sic]` and `(see page twelve)` go and
+  `(the guarantee would hold)` stays;
+* a **number** reading may hold the find's own words, its number words and three
+  joins, and no more — `WORDS_ADDED`, which is what stops
+  "The 12 men who refused were shot" becoming "… were spared, and the men who
+  shot" while passing every number invariant.
+
+The em dash is **the one character this pass may invent**, and only for a text
+edit whose find printed a hyphen. A number edit can never invent one.
+
 
 ## Where it runs
 
 ### 1. As a ledger pass — the main door
+
+**The button is "Clean text…"**, on every EPUB version row of the versions page,
+immediately left of "Narrate…" (`studio-versions.component.ts`,
+`cleanNarrationText`). It submits through `processing:submit-chain` with the
+pressed file as `sourcePath`, so the planner resolves the chain that file belongs
+to and the pass cleans that book rather than the default family's.
+
+The Narrate gate's offer (below) is the second door, not the only one — the first
+cut of this work had no first-class control at all, which made the pass's own
+"run it again" message name something the user could not find.
 
 Kind `narration-text`, label **"Narration text cleanup"**, offered in
 `BOOK_PASS_OPTIONS` beside `footnote-refs` / `simplify` / `translate`, planned by
@@ -136,10 +158,22 @@ python cli/bookforge-tts.py --narration-text --input book.epub
 python cli/bookforge-tts.py --narration-text --project "<projectDir>"
 ```
 
-It writes `<stem>.narration.epub` and `<stem>.narration.narration-text.json`
-beside the input. A file that already exists and describes a **different** book
+**`--project` and `--input` are two different acts.** `--project` runs the app's
+own pass (`planProcessingChain` + `runProcessingPass`), so the ledger, the
+provenance record, the working-copy promotion and the narration re-cut all
+happen exactly as they do from the button — writing a cleaned file *beside* a
+project and touching nothing else left the project reading `missing` in the app
+while its file carried a current stamp, which is the divergence that made the
+re-run deadlock reachable. `--input` is the bare-EPUB door, for a file with no
+project around it.
+
+`--input` writes `<stem>.narration.epub` and
+`<stem>.narration.narration-text.json` beside the input. A file that already exists and describes a **different** book
 is never overwritten — `uniqueOutputPath` gives the new one its `" (2)"`. A
-cleaned book whose receipt names *this* source at *this* version is reused.
+cleaned book whose receipt names *this* source at *this* version is reused, and
+the reuse check enumerates **every** ` (n)` sibling: stat-ing only the bare name
+meant that after one collision every later run minted a new copy and paid for a
+full model pass while correctly-cleaned copies sat unread.
 
 `cli/narration-text-step.js` is the one door; `cli/narration-text.js` is the
 standalone command; both call the compiled `runNarrationTextPass` — the same
@@ -150,9 +184,11 @@ function the queue job runs, never a reimplementation.
 
 ### 3. On the streaming path — punctuation only
 
-`electron/tts-api-server.ts` and `electron/reader-stream-bridge.ts`, in
-`handleSpeak`, immediately before `splitForTts`: the text is passed through
-`canonicalizePunctuationText` and nothing else. Stage 1 is pure and instant and
+**All three doors**, each immediately before `splitForTts`: the live stream
+(`electron/tts-api-server.ts`, `electron/reader-stream-bridge.ts`, in
+`handleSpeak`) and the persistent whole-book render the same bookshelf reader
+plays from (`electron/book-render-service.ts`, both plan builders). The text is
+passed through `canonicalizePunctuationText` and nothing else. Stage 1 is pure and instant and
 has no opinion to get wrong; stages 2 and 3 are minutes of model time over a book
 and are a *pass*, not something to do to a paragraph somebody is waiting to hear.
 
@@ -189,7 +225,7 @@ Two gates, one meaning:
 
 | gate | asks | used by |
 |---|---|---|
-| `narrationTextGate(bookPath)` — `electron/narration-text-pass.ts` | a **file**: is there a stamp, and is it this build's version? | `prepareNarrationInput`, `cli/narration-text-step.js` |
+| `narrationTextGate(bookPath)` — `electron/narration-text-pass.ts` | a **file**: is there a stamp, and is it this build's version? | `prepareNarrationInput`, `cli/narration-text-step.js`, and the Narrate gate for the pressed row |
 | `narrationTextReadiness(appliedPasses)` — `electron/narration-text-readiness.ts` | a **project**: is there a `narration-text` entry, and is it the LAST text-changing one? | the app's Narrate door, over IPC `narration:text-readiness` |
 
 The project gate knows something the file cannot: a `simplify` or `translate`
@@ -205,6 +241,33 @@ there. So the answer is three-valued, and the third value has its own sentence:
   to run again." (Or, for a version mismatch: "…ran at n4/s1, and this build reads
   text by n5/s1. It has to run again.")
 * **ok**.
+
+A stamp this build cannot read — malformed, or written by a version that did not
+record every field — reads **stale**, carrying the reader's own sentence inside
+the reason. It never throws out of the render door.
+
+**The pass guards itself with the LEDGER, not the stamp.** `simplify` copies the
+OPF byte for byte, so a book cleaned and then simplified still carries a current
+stamp while its text is no longer the text that was cleaned — which is exactly
+why the project gate reports `stale`. Guarding the pass on the stamp made the
+"Run cleanup again, then narrate" flow a hard deadlock: the pass refused as
+"already done", the step failed, and the chained narration never ran. There is
+one authority now, and "nothing to do" is a **success with a note** rather than a
+failure, because work is chained behind it.
+
+**Three answers, not two.** The readiness IPC returns the chain's answer *and*
+the pressed file's own, because they can disagree:
+
+| chain | file | what the modal does |
+|---|---|---|
+| not ok | — | offers the cleanup, chains the narration behind it |
+| ok | not ok | "This version was exported before the cleanup" — offers to narrate the current book instead |
+| unresolvable (two chains, the row names neither) | ok | proceeds; the file's stamp is authoritative |
+| unresolvable | not ok | refuses, naming the chain problem and the file's reason |
+
+The gate only fires when something will actually be **read** — a cache-context
+run ("assemble the clips I already rendered") reads no book text and is not
+asked about.
 
 `prepareNarrationInput` refuses with the file gate's sentence plus
 `"(Narration was asked to read <book>; nothing was rendered.)"`. It does **not**
@@ -244,17 +307,58 @@ single queue-engine job with ordered steps:
 4. `final-denoise` / `reassembly` — when the run asked for them
 5. `video-assembly` — when the run asked for it
 
-The follow-on steps are re-pointed at the family's **book** path (which the pass
-rewrites in place) rather than at whichever version row opened the dialog: an
-exported copy cut before the cleanup describes a book nobody has any more. The
-TTS copy is re-cut from the book by `prepareNarrationInput`'s caption/endnote cut
-as the render starts, and `ensureNarrationEpub` treats an export cut from older
-bytes as stale in exactly the same way.
+**What the follow-on narration reads is chosen by the PASS, not by the caller.**
+The queue gives a chained step its parent's produced artifact and nothing else
+(`queue-engine.resolveInput`: `sourceRef` is consulted only for a step with no
+parent), and `tts-conversion` reads `ctx.input.path` with no config fallback. So
+a caller "setting" `epubPath` on a follow-on job is inert — measured. The pass
+therefore re-cuts the family's narration copy from the book it has just rewritten
+(`ensureNarrationEpub`, which re-cuts exactly when `fromEpubSha256` no longer
+matches) and names it in `PassJobResult.narrationInputPath`;
+`queue-steps/pass.ts` produces that as the step's artifact. A re-cut that fails
+is **said** — the pass still succeeded, the book is written and recorded — and
+the chained step then reads the book itself, which `prepareNarrationInput` cuts
+on its way in; what is lost is the user's own strikes, and the note says so.
 
 The CLI's unattended chains do the same thing without asking, because they have
 nobody to ask.
 
 ---
+
+## What the pass will not touch
+
+**Preformatted text.** A `<pre>`, anything inside or containing one, and anything
+whose inline style declares `white-space: pre` / `pre-wrap` / `pre-line` /
+`break-spaces` is refused by BOTH stages and counted
+(`NarrationNumberTarget.preformatted`). Everywhere else a run of spaces is a
+layout artifact; in a code listing, an ASCII table or a verse laid out by hand it
+is the content, and the pass rewrites the working copy — so collapsing it
+destroys the user's book with only the archive to recover from.
+
+**Footnote and reference markers.** The render door strips them from the
+narration copy deterministically (`stripSupMarkers`). The prompt says so, and
+does not ask the model for them.
+
+**A span that crosses a text node.** Refused and recorded, never flattened.
+
+Every refusal is counted in the receipt AND in the stamp
+(`punctuationRefused`), so a book with three hundred unreachable ellipses is not
+byte-indistinguishable from a clean one, and the "nothing to do" line on a second
+run says how many spans it could not reach rather than claiming the book is
+already canonical.
+
+## Known limitation, not fixed here
+
+`<br/>` fuses the words either side of it in the string the walk produces
+(`<p>a<br/>b</p>` reads `"ab"`), so a heading split across a line break reaches
+the rules and the model as `Chapter 1Dawn`. Pre-existing, and NOT fixed in this
+pass: `getUnitTextContent` and `textNodeSegments` are one contract — the segments
+are text-node lengths that must sum to `text.length` — and every offset in this
+pass, in `applyNumberRules` and in `applyTextNodeRewrites` is expressed against
+it. Inserting a synthetic space for a `<br/>` would make the segments describe a
+string that is not the DOM's, which is precisely the class of bug the two-write
+staging exists to make impossible. It belongs in the extractor, with its own
+tests, not here.
 
 ## Version bump policy
 
@@ -428,4 +532,7 @@ asserts no digit-adjacent colon survives.
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
 | `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
-| `shared/processing/book-passes.ts` etc. | the pass kind, registered in eleven tables |
+| `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables |
+| `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
+| `studio-versions.component.ts` | the **Clean text…** button, beside Narrate |
+| `electron/book-render-service.ts` | the third streaming door |

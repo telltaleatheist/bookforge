@@ -1397,12 +1397,19 @@ export interface ElectronAPI {
    * Nothing else may build pass jobs by hand.
    */
   narration: {
-    textReadiness: (projectDir: string, askedPath?: string, familyId?: string) => Promise<{
+    textReadiness: (projectDir: string, askedPath?: string, familyId?: string) =>
+      Promise<{
       success: boolean;
       readiness?: { ok: true; at: string; model: string }
-        | { ok: false; state: 'missing' | 'stale'; reason: string };
+        | { ok: false; state: 'missing' | 'stale'; reason: string }
+        | null;
+      fileState?: { ok: true; stamp: { normalizerVersion: string; punctuationSpec: string;
+        model: string } }
+        | { ok: false; state: 'missing' | 'stale'; reason: string }
+        | null;
       familyId?: string | null;
       bookPath?: string | null;
+      familyNote?: string;
       error?: string;
     }>;
   };

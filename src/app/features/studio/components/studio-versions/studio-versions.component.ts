@@ -348,6 +348,10 @@ const AUDIO_EXTS = new Set([
                          the lead style, because Open is what an EPUB row is FOR
                          and one emphasized act per row is this rail's rule. -->
                     @if (canNarrate(v)) {
+                      <button class="quiet" (click)="cleanNarrationText(v)"
+                              title="Read every number as words and canonicalize the punctuation, once, so this book is ready to narrate">Clean text…</button>
+                    }
+                    @if (canNarrate(v)) {
                       <button class="quiet" (click)="narrate(v, 'document')"
                               title="Read this version aloud, convert the voice, or assemble the audiobook">Narrate…</button>
                     }
@@ -1482,6 +1486,61 @@ export class StudioVersionsComponent {
    * cache's Process means 'cache'. Guessing from the argument would be this
    * side inventing which press was made.
    */
+/**
+   * Run the NARRATION TEXT CLEANUP on this version's chain, on its own.
+   *
+   * ── Why this button exists ──────────────────────────────────────────────
+   *
+   * The adversarial review of 2026-09-04 found the pass had NO door: the passes
+   * modal that used to offer simplify / translate / footnotes was deleted on
+   * 2026-08-18, `BOOK_PASS_OPTIONS` has no consumer, and Foundry's host
+   * operations are a closed union of narrate / enhance / assemble. So the only
+   * way to start it was the Narrate gate's offer — and the pass's own stale
+   * message told users to "Run Narration text cleanup again", naming a control
+   * they could not find.
+   *
+   * It sits beside Narrate because that is the act it belongs to: this is the
+   * step that has to happen once before a book is read aloud, and Owen's ruling
+   * puts it "just like translate/simplify" on the book's own line.
+   *
+   * QUEUED, never inline — every pass in this app is minutes to hours of model
+   * time, and a run that is not a queue row is a run nobody can watch or stop.
+   */
+  async cleanNarrationText(v: ResolvedProjectVariant): Promise<void> {
+    const abs = await this.variantFile(v, 'clean this version\'s text');
+    if (!abs) return;
+    const dir = this.projectDir();
+    if (!dir) {
+      await this.electron.showMessageDialog({
+        title: 'Could not clean this version',
+        message: 'This book has no project directory, so there is nowhere to record the pass or '
+          + 'to write the book it produces.',
+        type: 'error',
+      });
+      return;
+    }
+    // The FILE is what names the chain: a project can hold two, and the planner
+    // resolves which one from the version the button was pressed on.
+    const run = await this.queue.submitProcessingRun({
+      projectDir: dir,
+      sourcePath: abs,
+      passes: [{ kind: 'narration-text' }],
+    });
+    await this.electron.showMessageDialog(run.success
+      ? {
+        title: 'Narration text cleanup queued',
+        message: 'The punctuation and the numbers of this book are being read into the form a '
+          + 'narrator says. It runs in the queue; the book\'s versions page will show the pass '
+          + 'in its history when it finishes.',
+        type: 'info',
+      }
+      : {
+        title: 'Could not queue the narration text cleanup',
+        message: run.error ?? 'The run could not be queued, and gave no reason.',
+        type: 'error',
+      });
+  }
+
   async narrate(v: ResolvedProjectVariant, context: NarrationEntryContext): Promise<void> {
     const abs = await this.variantFile(v, 'narrate this version');
     if (!abs) return;

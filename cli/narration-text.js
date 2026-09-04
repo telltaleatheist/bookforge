@@ -24,7 +24,6 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
-const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { applyE2aScratchDir } = require('./e2a-scratch.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
 
@@ -42,6 +41,53 @@ function parseArgs(argv) {
   return a;
 }
 
+/**
+ * A PROJECT is cleaned through the app's own pass, not beside it.
+ *
+ * The adversarial review of 2026-09-04: writing "<stem>.narration.epub" next to
+ * a project's book and touching nothing else left the project reading MISSING in
+ * the app while its file carried a current stamp — the exact divergence that
+ * made the re-run deadlock reachable. A project has a ledger, a provenance
+ * record and a working copy to promote into; the pass that knows how to do all
+ * three is `runProcessingPass`, and this calls it.
+ *
+ * So --project and --input are two different acts on purpose. --project is the
+ * app's pass, headless. --input is the bare-EPUB door, for a file with no
+ * project around it.
+ */
+async function cleanProject(projectDir, model) {
+  const { planProcessingChain } = require('../dist/electron/processing-chain.js');
+  const { runProcessingPass } = require('../dist/electron/processing-passes.js');
+
+  const plan = await planProcessingChain({
+    projectDir,
+    passes: [{ kind: 'narration-text' }],
+  });
+  if (plan.jobs.length !== 1) {
+    throw new Error(`the planner produced ${plan.jobs.length} jobs for one pass`);
+  }
+  console.log(`[narration-text] project book: ${plan.bookEpubPath}`);
+  console.log(`[narration-text] stage: ${plan.jobs[0].config.stageRelDir}`);
+  if (model) console.log(`[narration-text] note: --model is ignored for a project run; `
+    + 'the app reads its model from Settings so the pass and the app agree.');
+
+  const jobId = `cli-narration-text-${crypto.randomUUID()}`;
+  const t0 = Date.now();
+  const result = await runProcessingPass(jobId, plan.jobs[0].config, null);
+  console.log(`[narration-text] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
+  if (!result.success) throw new Error(result.error || 'the pass failed and gave no reason');
+  console.log(`[narration-text] book:    ${result.outputPath}`);
+  if (result.narrationInputPath) {
+    console.log(`[narration-text] to narrate: ${result.narrationInputPath}`);
+  }
+  console.log(`[narration-text] ${result.summary}`);
+  if (result.ledgerEntryId) console.log(`[narration-text] ledger: ${result.ledgerEntryId}`);
+  if (result.ledgerRefusal) console.log(`[narration-text] ledger: ${result.ledgerRefusal}`);
+  if (result.narrationCarryNote) {
+    console.log(`[narration-text] strikes: ${result.narrationCarryNote}`);
+  }
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.project && !args.input) {
@@ -51,31 +97,25 @@ async function main() {
     throw new Error('--project and --input both name what to clean; pass one');
   }
 
-  let inputPath;
+  const bridge = require('../dist/electron/parallel-tts-bridge.js');
+  // A real log sink, CLI-specific, so the app's own worker-output.log is never
+  // clobbered by a headless run.
+  await bridge.initializeLogger(path.join(USER_DATA, 'cli'));
+
   if (args.project) {
     const projectDir = path.resolve(args.project);
     if (!fs.existsSync(path.join(projectDir, 'manifest.json'))) {
       throw new Error(`not a BookForge project (no manifest.json): ${projectDir}`);
     }
-    // The RECORDED book, through the same door every act in the app resolves.
-    inputPath = await resolveInputEpub(projectDir);
-    console.log(`[narration-text] project book: ${inputPath}`);
     // The intermediates go where the app's render door looks for them, so a
     // later render reuses this run's model answers instead of paying again.
     const libraryRoot = path.dirname(path.dirname(projectDir));
     console.log(`[narration-text] scratch: ${applyE2aScratchDir(libraryRoot)}`);
-  } else {
-    inputPath = path.resolve(args.input);
+    await cleanProject(projectDir, typeof args.model === 'string' ? args.model : null);
+    process.exit(0);
   }
 
-  const bridge = require('../dist/electron/parallel-tts-bridge.js');
-  // A real log sink, CLI-specific, so the app's own worker-output.log is never
-  // clobbered by a headless run.
-  await bridge.initializeLogger(path.join(USER_DATA, 'cli'));
-  // A job id of this run's own, so the door's log lines are attributable to it.
-  process.env.BOOKFORGE_CLI_JOB_ID = `cli-narration-text-${crypto.randomUUID()}`;
-
-  const step = await runNarrationTextStep(inputPath, {
+  const step = await runNarrationTextStep(path.resolve(args.input), {
     ...(typeof args.model === 'string' ? { model: args.model } : {}),
   });
   if (!step.ran) {

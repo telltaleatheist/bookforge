@@ -603,6 +603,53 @@ test('--prep is a registered command with a handler and an adapter', () => {
   assert.ok(py.includes('NOT --ai-cleanup'), 'and says which cleanup it is not');
 });
 
+test('--narration-text is registered, with a handler and an adapter', () => {
+  const py = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf8');
+  assert.ok(/COMMANDS = \{[\s\S]*"narration-text": cmd_narration_text,/.test(py), 'registered');
+  assert.ok(py.includes('def cmd_narration_text(args):'), 'and has its handler');
+  assert.ok(py.includes('NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"'));
+  assert.ok(fs.existsSync(path.join(REPO, 'cli', 'narration-text.js')), 'the adapter exists');
+  // The two doors stay distinct by name in the help text: --prep is the render
+  // door, this one edits the book.
+  assert.ok(py.includes('NOT --prep'), 'and says which cleanup it is not');
+});
+
+test('--narration-text --project goes through the APP\'S PASS, so the ledger records it', () => {
+  // The adversarial review of 2026-09-04: writing "<stem>.narration.epub" beside
+  // a project's book and touching nothing else left the project reading MISSING
+  // in the app while its file carried a current stamp — which is the divergence
+  // that made the re-run deadlock reachable. A project is cleaned through
+  // `planProcessingChain` + `runProcessingPass`, the same pair the button uses.
+  const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text.js'), 'utf8');
+  assert.ok(source.includes("require('../dist/electron/processing-chain.js')"),
+    'it plans through the app\'s planner');
+  assert.ok(source.includes("require('../dist/electron/processing-passes.js')"),
+    'and runs through the app\'s pass, which records the ledger row');
+  assert.ok(source.includes('runProcessingPass('), 'by calling it');
+  // And the bare-EPUB door is still the step, not a second implementation.
+  assert.ok(source.includes("require('./narration-text-step.js')"),
+    '--input still goes through the shared step');
+});
+
+test('the CLI reuse check sees every " (n)" sibling, not just the bare name', () => {
+  const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text-step.js'), 'utf8');
+  assert.ok(source.includes('function cleanedSiblings('), 'the siblings are enumerated');
+  assert.ok(source.includes('for (const candidate of cleanedSiblings('),
+    'and the reuse check walks them');
+  // Exercised, not merely present: a book filename is full of regex
+  // metacharacters, so the matcher is string comparison and this proves it.
+  const fn = source.slice(source.indexOf('function siblingIndex('),
+    source.indexOf('function cleanedSiblings('));
+  // eslint-disable-next-line no-eval
+  const siblingIndex = eval(`(${fn.slice(fn.indexOf('function siblingIndex'))})`);
+  const base = 'Working Towards The Fuhrer. Kershaw, Ian. (1993).narration';
+  assert.strictEqual(siblingIndex(`${base}.epub`, base), 0);
+  assert.strictEqual(siblingIndex(`${base} (2).epub`, base), 2);
+  assert.strictEqual(siblingIndex(`${base} (17).epub`, base), 17);
+  assert.strictEqual(siblingIndex(`${base}.narration-text.json`, base), null);
+  assert.strictEqual(siblingIndex('Another Book.narration.epub', base), null);
+});
+
 test('both --prep and --audiobook resolve a project book through the app\'s RECORD, not a filename', async () => {
   for (const adapter of ['narration-prep.js', 'orpheus-audiobook-render.js']) {
     const source = fs.readFileSync(path.join(REPO, 'cli', adapter), 'utf8');

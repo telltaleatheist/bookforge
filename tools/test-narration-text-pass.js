@@ -112,6 +112,10 @@ const CHAPTER = `<?xml version="1.0" encoding="utf-8"?>
 <p data-bf-cat="text">He paused… then went on, and it wasn’t his to give.</p>
 <p data-bf-cat="text">A dot .<em> </em>. . split by markup.</p>
 <p data-bf-cat="text">A dash a<em>-</em>-b split by markup.</p>
+<pre data-bf-cat="text">def f(x):
+    return  x   # two spaces, and they are the author's
+</pre>
+<p data-bf-cat="text" style="white-space: pre-wrap">  laid   out   by   hand  </p>
 <p data-bf-cat="caption">Figure 7. The plate above, taken in 1936.</p>
 </body>
 </html>`;
@@ -158,6 +162,12 @@ function optionsFor(epubPath, runner, name) {
     model: runner.model,
     runner,
   };
+}
+
+/** Did the scripted model see a block starting with this text? */
+function runnerSawText(result, prefix) {
+  return result.receipt.numbers !== null
+    && result.receipt.numbers.units.some((u) => u.text.trim().startsWith(prefix));
 }
 
 /** Every element of the book, by document, as the narration walk sees them. */
@@ -277,11 +287,13 @@ test('a span that would cross an <em> is REFUSED and recorded, never flattened',
   const book = await buildBook('spans-markup.epub');
   const result = await pass.runNarrationTextPass(
     optionsFor(book, scriptedRunner(), 'spans-markup'));
-  const refused = result.receipt.punctuation.refused;
+  // The markup refusal, apart from the preformatted ones (which have a test of
+  // their own): this book carries exactly one span that crosses a text node.
+  const refused = result.receipt.punctuation.refused
+    .filter((r) => r.reason.includes('text-node boundary'));
   assert.strictEqual(refused.length, 1, JSON.stringify(refused));
   assert.strictEqual(refused[0].find, '--');
   assert.strictEqual(refused[0].replace, punct.CANONICAL_DASH);
-  assert.ok(refused[0].reason.includes('text-node boundary'), refused[0].reason);
   // The book still prints what it printed there: the refusal costs the canonical
   // form, never the text.
   assert.strictEqual(
@@ -339,7 +351,7 @@ test('the gate says MISSING and STALE differently, and names the pass', async ()
   const old = path.join(ROOT, 'gate-stale.epub');
   await writeNarrationTextStamp(book, old, {
     normalizerVersion: 'n1', punctuationSpec: 's0', model: 'fake:1b',
-    at: new Date().toISOString(),
+    at: new Date().toISOString(), punctuationRefused: 0,
   });
   const stale = await pass.narrationTextGate(old);
   assert.strictEqual(stale.ok, false);
@@ -362,6 +374,73 @@ test('a second run over the SAME book produces the same text', async () => {
     await textStartingWith(first.outPath, 'Mr. Smith'));
   assert.strictEqual(second.receipt.punctuation.spansApplied, 0);
   assert.strictEqual(second.receipt.changed, false);
+});
+
+test('PREFORMATTED text is refused, never flattened', async () => {
+  const book = await buildBook('preformatted.epub');
+  const result = await pass.runNarrationTextPass(
+    optionsFor(book, scriptedRunner(), 'preformatted'));
+
+  // The author's own spacing survives, character for character.
+  const code = await textStartingWith(result.outPath, 'def f(x)');
+  assert.ok(code.includes('    return  x'), JSON.stringify(code));
+  const styled = await textStartingWith(result.outPath, '  laid');
+  assert.strictEqual(styled, '  laid   out   by   hand  ');
+
+  // And the pass SAYS it did not touch them.
+  const refused = result.receipt.punctuation.refused;
+  assert.strictEqual(refused.filter((r) => r.reason.includes('preserves its own whitespace'))
+    .length, 2, JSON.stringify(refused.map((r) => r.reason)));
+
+  // The number stage leaves them alone too: a code listing is not prose.
+  assert.ok(!runnerSawText(result, 'def f(x)'), 'the listing was not sent to the model');
+});
+
+test('a punctuation INSERTION is absorbed, never thrown on', () => {
+  // The two strings the adversarial review reproduced: a soft hyphen, curly
+  // quotes, an NBSP and a trailing space are enough for diffChars to choose an
+  // alignment that emits a pure insertion.
+  for (const printed of ['a\u00adb \u201cc\u201d\u00a0d ', '\u201c\u201d\u00a0a ']) {
+    const canonical = punct.canonicalizePunctuationText(printed);
+    const spans = pass.punctuationSpans(printed, canonical);
+    assert.ok(spans.every((s) => s.find !== ''), 'no span has an empty find');
+    let text = printed;
+    for (const s of [...spans].sort((a, b) => b.at - a.at)) {
+      assert.strictEqual(text.slice(s.at, s.at + s.find.length), s.find);
+      text = text.slice(0, s.at) + s.replace + text.slice(s.at + s.find.length);
+    }
+    assert.strictEqual(text, canonical, JSON.stringify(printed));
+  }
+});
+
+test('the STAMP says how much the pass could not reach', async () => {
+  const book = await buildBook('stamp-refused.epub');
+  const result = await pass.runNarrationTextPass(
+    optionsFor(book, scriptedRunner(), 'stamp-refused'));
+  const stamp = await readNarrationTextStamp(result.outPath);
+  assert.strictEqual(stamp.punctuationRefused, result.receipt.punctuation.refused.length);
+  assert.ok(stamp.punctuationRefused > 0, 'this book has spans the stage cannot reach');
+  const gate = await pass.narrationTextGate(result.outPath);
+  assert.strictEqual(gate.stamp.punctuationRefused, stamp.punctuationRefused);
+});
+
+test('a stamp this build cannot read is STALE, not an exception', async () => {
+  const book = await buildBook('stamp-broken.epub');
+  const broken = path.join(ROOT, 'stamp-broken.stamped.epub');
+  const { writeNarrationTextStamp } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+  await writeNarrationTextStamp(book, broken, {
+    normalizerVersion: norm.NORMALIZER_VERSION,
+    punctuationSpec: punct.PUNCTUATION_SPEC_VERSION,
+    model: 'fake:1b',
+    at: new Date().toISOString(),
+    // The field a build before this one did not write.
+    punctuationRefused: undefined,
+  });
+  const gate = await pass.narrationTextGate(broken);
+  assert.strictEqual(gate.ok, false);
+  assert.strictEqual(gate.state, 'stale');
+  assert.ok(gate.reason.includes('cannot read'), gate.reason);
+  assert.ok(gate.reason.includes('Narration text cleanup'), gate.reason);
 });
 
 test('the pass REFUSES to write over the book it is reading', async () => {

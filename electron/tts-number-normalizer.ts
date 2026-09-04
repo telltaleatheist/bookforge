@@ -420,6 +420,11 @@ export function selectNumberTargets(
   return targets.filter((t) => {
     if (ask === 'digit-bearing' && !DIGIT.test(t.text)) return false;
     if (t.statedCategory === 'caption' || t.statedCategory === 'footnote') return false;
+    // A code listing is not prose. Its digits are a program's, its spacing is
+    // the author's, and a narrator reading "for i in range(ten)" is not an
+    // improvement on one reading "range(10)". The punctuation stage refuses it
+    // for the same reason (electron/narration-text-pass.ts).
+    if (t.preformatted === true) return false;
     return true;
   });
 }

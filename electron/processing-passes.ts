@@ -80,8 +80,11 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * A PDF project with no book is still refused, by name: converting the pages is
  * what makes a book, and no amount of copying gets you one.
  */
-export async function requireBookEpub(projectDir: string): Promise<string> {
-  const record = await manifestService.ensureBookEpub(projectDir);
+export async function requireBookEpub(
+  projectDir: string,
+  familyId?: string,
+): Promise<string> {
+  const record = await manifestService.ensureBookEpub(projectDir, familyId);
   return record.absPath;
 }
 
@@ -843,23 +846,44 @@ async function runNarrationTextPass(
   jobId: string,
   config: PassJobConfig
 ): Promise<PassJobResult> {
-  const bookPath = await requireBookEpub(config.projectDir);
-  const stageDir = absStage(config);
-  await fs.promises.mkdir(stageDir, { recursive: true });
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
+  const { runNarrationTextPass: runPass } = await import('./narration-text-pass.js');
+  const { narrationTextReadiness } = await import('./narration-text-readiness.js');
 
-  const { narrationTextGate, runNarrationTextPass: runPass } =
-    await import('./narration-text-pass.js');
+  // ── ALREADY DONE? Asked of the LEDGER, which is the authority the UI used ──
+  //
+  // This guarded itself with the FILE STAMP until the adversarial review of
+  // 2026-09-04 traced what that costs. `simplify` copies the OPF byte for byte,
+  // so a book cleaned and then simplified still carries a current stamp while
+  // its text is no longer the text that was cleaned — which is precisely why
+  // `narrationTextReadiness` reports `stale` and why the Narrate gate offers
+  // "Run cleanup again, then narrate". The stamp said `ok`, this returned a
+  // refusal, the step failed, and the chained narration never ran: the offer the
+  // design document describes could not complete, ever.
+  //
+  // Two authorities answering one question is the defect. There is one now.
+  const already = narrationTextReadiness(
+    await manifestService.readAppliedPasses(config.projectDir, config.familyId));
 
-  const already = await narrationTextGate(bookPath);
+  // ── AND "NOTHING TO DO" IS A SUCCESS, because work may be chained behind it ──
+  //
+  // `runFootnoteRefsPass` returns `success:false` for its own no-op and that is
+  // right for it: nothing is ever queued behind it, so the red row IS the
+  // message. This pass stands in front of a narration run, and a step that fails
+  // takes the run with it. So it succeeds, records nothing, and says so.
   if (already.ok) {
     return {
-      success: false,
-      error: 'This book has already been through the narration text cleanup at this version '
-        + `(${already.stamp.normalizerVersion}/${already.stamp.punctuationSpec}, read by `
-        + `${already.stamp.model}), so nothing was changed and nothing was recorded. It is ready `
-        + 'to narrate — check the book\'s ledger for the run that did it.',
+      success: true,
+      outputPath: bookPath,
+      summary: 'This book had already been through the narration text cleanup at this version '
+        + `(read by ${already.model}), so nothing was changed and nothing was recorded. It is `
+        + 'ready to narrate — the book\'s ledger names the run that did it.',
     };
   }
+
+  // Made only now, so a refusal above leaves no empty stage directory behind.
+  const stageDir = absStage(config);
+  await fs.promises.mkdir(stageDir, { recursive: true });
 
   // The before-text, read now: the pass is about to replace the file it came
   // from, and the diff is computed against this.
@@ -943,9 +967,46 @@ async function runNarrationTextPass(
   const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
   const ledger = await recordInLedger(config, 'Narration text cleanup', applied);
 
+  // ── THE NARRATION COPY, RE-CUT FROM THE BOOK THIS PASS JUST WROTE ─────────
+  //
+  // Owen's ruling of 2026-09-04 ends "…and then they export the epub and queue
+  // narration", and this is that export. The copy on record was cut from bytes
+  // that no longer exist — `fromEpubSha256` says so — and `ensureNarrationEpub`
+  // re-cuts exactly when that is true.
+  //
+  // It is named as this step's artifact because the queue gives a chained step
+  // its PARENT'S artifact and nothing else: `tts-conversion` reads
+  // `ctx.input.path` with no config fallback, so a follow-on narration reads
+  // whatever is named here, and naming the book instead would narrate the whole
+  // book where the user pressed a button on one version's copy (the adversarial
+  // review, 2026-09-04).
+  //
+  // A re-cut that FAILS is said, not swallowed — and the pass still succeeded,
+  // because the book is written, its provenance records it and its ledger row
+  // exists. The chained step then reads the book itself, which
+  // `prepareNarrationInput` cuts on its way in; what is lost is the user's own
+  // strikes, and the note is what says so.
+  let narrationInputPath = bookAfter;
+  let recutNote: string | null = null;
+  try {
+    const { ensureNarrationEpub } = await import('./narration-export.js');
+    const cut = await ensureNarrationEpub(config.projectDir, undefined, config.familyId);
+    narrationInputPath = cut.epubPath;
+    console.log(
+      `[processing-pass] narration copy re-cut from the cleaned book`
+      + `${cut.cutReason === null ? ' (the one on record still described it)' : `: ${cut.cutReason}`}`
+      + ` — ${cut.epubPath}`);
+  } catch (err) {
+    recutNote = 'The book was cleaned, but its narration copy could not be re-cut from it: '
+      + `${(err as Error).message} Anything narrated from here reads the book itself, so the `
+      + 'passages struck out for narration will be read aloud until the copy is remade.';
+    console.warn(`[processing-pass] ${recutNote}`);
+  }
+
   return {
     success: true,
     outputPath: bookAfter,
+    narrationInputPath,
     summary: `${punctuation.spansApplied} punctuation span(s) canonicalized and `
       + `${numbers === null ? 0 : numbers.appliedSpans} number(s) read as words `
       + `(${numbers === null ? 0 : numbers.appliedByRules} by rule, `
@@ -953,6 +1014,7 @@ async function runNarrationTextPass(
       + `${classSummary === '' ? '' : `; ${classSummary}`}). The book is stamped `
       + `${outcome.receipt.normalizerVersion}/${outcome.receipt.punctuationSpec} and is ready to `
       + 'narrate.'
+      + (recutNote === null ? '' : ` ${recutNote}`)
       + (punctuation.refused.length > 0
         ? ` ${punctuation.refused.length} span(s) were left as printed because canonicalizing them `
           + 'would have meant flattening an <em> or a <sup>; the receipt names each one.'

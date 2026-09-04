@@ -9512,15 +9512,49 @@ ipcMain.handle('narration:text-readiness', async (
   _event, projectDir: string, askedPath?: string, familyId?: string) => {
   try {
     const { narrationTextReadiness } = await import('./narration-text-readiness.js');
+    const { narrationTextGate } = await import('./narration-text-pass.js');
+
+    // ── THE FILE'S OWN ANSWER, which needs no chain to be resolved ──────────
+    //
+    // The render door reads the stamp on the file it is handed, so the button
+    // has to be able to read the same thing — and a project with two chains
+    // must not be able to make that unanswerable. Computed FIRST and
+    // independently for exactly that reason.
+    const fileState = askedPath === undefined || !fsSync.existsSync(askedPath)
+      ? null
+      : await narrationTextGate(askedPath);
+
+    // ── THE CHAIN'S ANSWER, when the chain can be named ─────────────────────
+    //
+    // `familyForOpen` matches the asked path against a family's source, book and
+    // narration copy. A version row that is none of those, in a project with two
+    // archive EPUBs, names no chain — and `readAppliedPasses(projectDir,
+    // undefined)` then REFUSES ("Press the button on the version you mean"),
+    // which used to make every Narrate button in such a project un-pressable
+    // (the adversarial review, 2026-09-04). Now it is a null answer with a
+    // sentence, and the file's own answer above still stands.
     const resolved = await manifestService.familyForOpen(projectDir, askedPath, familyId);
-    const family = resolved === null ? undefined : resolved.family.id;
+    if (resolved === null) {
+      return {
+        success: true,
+        readiness: null,
+        fileState,
+        familyId: null,
+        bookPath: null,
+        familyNote: 'This project holds more than one book chain, and the version you pressed '
+          + 'belongs to none of them by name, so its history could not be read. The file itself '
+          + 'still says whether it has been cleaned.',
+      };
+    }
+    const family = resolved.family.id;
     const passes = await manifestService.readAppliedPasses(projectDir, family);
     const book = await manifestService.bookForAct(projectDir, family);
     return {
       success: true,
       readiness: narrationTextReadiness(passes),
-      familyId: family ?? null,
-      bookPath: book?.absPath ?? null,
+      fileState,
+      familyId: family,
+      bookPath: book === null ? null : book.absPath,
     };
   } catch (err) {
     return { success: false, error: (err as Error).message };

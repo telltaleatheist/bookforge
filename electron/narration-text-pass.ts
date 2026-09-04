@@ -53,10 +53,20 @@
  * `excludeCaptions`, `excludeFootnotes` and `stripSupMarkers` are all OFF here,
  * against `writeNarrationEpub`'s own defaults. This pass edits THE BOOK, on the
  * chain, so it may change TEXT and must never add, remove or reorder an element
- * — that is the invariant `registerLedgerPass` and `verifyNarrationCarry` both
- * check, and a pass that failed it would move every narration strike the user
- * ever made onto the wrong paragraph. The caption/endnote/marker cut stays where
- * it is: in the render door, on the second file, which is what it always was.
+ * — a pass that failed that would move every narration strike the user ever made
+ * onto the wrong paragraph. The caption/endnote/marker cut stays where it is: in
+ * the render door, on the second file, which is what it always was.
+ *
+ * WHAT ACTUALLY ENFORCES IT, stated exactly, because an earlier draft of this
+ * comment credited two checks that are weaker than it claimed (the adversarial
+ * review, 2026-09-04): `verifyNarrationCarry` answers "nothing to carry" for a
+ * book with no strike record, and `registerLedgerPass`'s own check compares
+ * element COUNTS per file, runs after the book has been replaced, and degrades
+ * to a warning. The real guarantee is `writeNarrationEpub`'s own accounting —
+ * every element accounted for, every rewrite proved to have landed against the
+ * file on disk, the output destroyed on mismatch — cross-checked here by
+ * `punctuateBook`'s `written.rewrittenSpans === spansApplied`. The two ledger
+ * checks are what CARRY the strikes and RECORD the row; they are not the wall.
  */
 import * as crypto from 'crypto';
 import { promises as fs } from 'fs';
@@ -190,10 +200,22 @@ export interface NarrationTextPassOptions {
  * are in the BEFORE text because that is the text the book prints and the writer
  * splices into.
  *
- * A pure insertion (an empty `find`) is impossible here: every punctuation rule
- * either deletes characters or replaces them, so an empty find would mean the
- * grouping below is wrong, and it THROWS rather than writing a span the writer
- * would have to guess a home for.
+ * A PURE INSERTION is possible, and this used to throw on it, blaming a
+ * condition the author had declared impossible. The rules are innocent — they
+ * only delete and replace — but `diffChars` chooses a different minimal
+ * alignment when a deletion sits near a run of identically-replaced glyphs, and
+ * emits an insertion group. `"a\u00adb \u201cc\u201d\u00a0d "` is enough: a soft
+ * hyphen, two curly quotes, an NBSP and a trailing space in one short string.
+ * Long prose gives the differ unique anchors and never trips it; the pass also
+ * collects SHORT targets — nav anchors, NCX labels, the OPF title, headings —
+ * which is exactly the regime where it does (the adversarial review, 2026-09-04:
+ * 40,027 of 386,344 fuzzed strings).
+ *
+ * So an insertion is ABSORBED into the character beside it, which is always
+ * well defined and preserves the canonical text exactly: an insertion at `p`
+ * becomes a replacement of `text[p-1]` by itself plus the inserted characters
+ * (or of `text[0]` when there is nothing before it). Nothing throws, and a span
+ * that then turns out to cross a text node is refused like any other.
  */
 export function punctuationSpans(before: string, after: string): NarrationTextRewrite[] {
   if (before === after) return [];
@@ -220,9 +242,17 @@ export function punctuationSpans(before: string, after: string): NarrationTextRe
       i++;
     }
     if (find === '') {
-      throw new Error(
-        `The punctuation stage produced an INSERTION of "${replace}" at ${start}, and every rule `
-        + 'it runs either deletes or replaces. Nothing was written.');
+      // Absorb the neighbour, preferring the one BEFORE — an insertion belongs
+      // to the text it follows, and taking the character before keeps the span
+      // out of the way of whatever the differ emits next.
+      if (start > 0) {
+        out.push({ at: start - 1, find: before[start - 1], replace: before[start - 1] + replace });
+      } else if (before.length > 0) {
+        out.push({ at: 0, find: before[0], replace: replace + before[0] });
+      }
+      // A span of an empty string cannot carry an insertion anywhere; there is
+      // nothing to canonicalize in it either.
+      continue;
     }
     out.push({ at: start, find, replace });
   }
@@ -258,6 +288,26 @@ interface PunctuatedTarget {
  * the characters.
  */
 export function punctuateTarget(target: NarrationNumberTarget): PunctuatedTarget {
+  // THE AUTHOR'S OWN WHITESPACE IS NOT AN ARTIFACT. A `<pre>`, or anything
+  // styled to preserve space, holds a code listing, an ASCII table or a verse
+  // laid out with leading spaces — and `REPEATED_SPACE` and `TRAILING_SPACE`
+  // would flatten every one of them, permanently, in the user's own working
+  // copy (the adversarial review, 2026-09-04). Refused by name and counted, so
+  // the receipt says how much of the book nobody normalized.
+  if (target.preformatted) {
+    return {
+      rewrites: [],
+      counts: {},
+      refused: [{
+        key: target.key,
+        file: target.file,
+        find: target.text.slice(0, 80),
+        replace: '(not attempted)',
+        reason: 'the element preserves its own whitespace — a <pre>, or styled as one — and '
+          + 'canonicalizing it would flatten a layout the author set',
+      }],
+    };
+  }
   const outcome = canonicalizePunctuation(target.text);
   if (outcome.text === target.text) return { rewrites: [], counts: {}, refused: [] };
 
@@ -318,9 +368,16 @@ async function punctuateBook(
   };
 
   if (rewrites.size === 0) {
+    // SAY THE REFUSALS. "already prints canonical punctuation" was false in
+    // exactly the state that matters — a book whose every remaining span is one
+    // this stage cannot reach (the adversarial review, 2026-09-04) — and it is
+    // the line a second run prints, so it was the line a maintainer would read.
     console.log(
-      `[NARRATION-TEXT] ${path.basename(inputPath)} already prints canonical punctuation — `
-      + 'the book passes through this stage untouched.');
+      `[NARRATION-TEXT] ${path.basename(inputPath)} has no punctuation span this stage can `
+      + `canonicalize${refused.length === 0
+        ? ' — it already prints the canonical form throughout.'
+        : `; ${refused.length} span(s) are refused because the markup or the layout will not `
+          + 'let them be touched. The book passes through this stage unchanged.'}`);
     return { punctuatedPath: inputPath, record };
   }
 
@@ -433,6 +490,7 @@ export async function runNarrationTextPass(
     punctuationSpec: PUNCTUATION_SPEC_VERSION,
     model: options.model,
     at,
+    punctuationRefused: punctuation.refused.length,
   });
 
   const receipt: NarrationTextReceipt = {
@@ -466,7 +524,21 @@ export async function runNarrationTextPass(
 
 /** Why a book may not be narrated yet, or null when it may. */
 export type NarrationTextGate =
-  | { ok: true; stamp: { normalizerVersion: string; punctuationSpec: string; model: string } }
+  | {
+    ok: true;
+    stamp: {
+      normalizerVersion: string;
+      punctuationSpec: string;
+      model: string;
+      /**
+       * How many spans the pass could not reach. NOT a refusal — a refused span
+       * is a permanent property of that markup and re-running would refuse it
+       * again — but a fact every consumer should be able to see rather than
+       * infer from a book that reads as clean.
+       */
+      punctuationRefused: number;
+    };
+  }
   | { ok: false; state: 'missing' | 'stale'; reason: string };
 
 /**
@@ -484,8 +556,24 @@ export type NarrationTextGate =
  */
 export async function narrationTextGate(bookPath: string): Promise<NarrationTextGate> {
   const { readNarrationTextStamp } = await import('./epub-processor.js');
-  const stamp = await readNarrationTextStamp(bookPath);
   const book = path.basename(bookPath);
+  // A MALFORMED STAMP IS A STALE ONE, not an exception. The reader throws with a
+  // precise sentence about the damage — which is right for a reader — but this
+  // is a GATE, and a gate that propagates a raw exception out of
+  // `prepareNarrationInput` gives the user a stack trace where the actionable
+  // sentence belongs (the adversarial review, 2026-09-04). The damage is kept in
+  // the reason, so nothing is hidden.
+  let stamp;
+  try {
+    stamp = await readNarrationTextStamp(bookPath);
+  } catch (err) {
+    return {
+      ok: false,
+      state: 'stale',
+      reason: `${book} carries a narration-text stamp this build cannot read — `
+        + `${(err as Error).message} Run "Narration text cleanup" again.`,
+    };
+  }
   if (stamp === null) {
     return {
       ok: false,
@@ -512,6 +600,7 @@ export async function narrationTextGate(bookPath: string): Promise<NarrationText
       normalizerVersion: stamp.normalizerVersion,
       punctuationSpec: stamp.punctuationSpec,
       model: stamp.model,
+      punctuationRefused: stamp.punctuationRefused,
     },
   };
 }

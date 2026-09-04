@@ -2406,12 +2406,22 @@ export class ElectronService {
    * Read-only. The Narrate door asks before it queues anything, so a missing or
    * stale cleanup can be OFFERED rather than thrown from inside a running job.
    */
-  async narrationTextReadiness(projectDir: string, askedPath?: string, familyId?: string): Promise<{
+  async narrationTextReadiness(
+    projectDir: string, askedPath?: string, familyId?: string,
+  ): Promise<{
     success: boolean;
+    /** The CHAIN's answer, or null when this project's chains cannot name one. */
     readiness?: { ok: true; at: string; model: string }
-      | { ok: false; state: 'missing' | 'stale'; reason: string };
+      | { ok: false; state: 'missing' | 'stale'; reason: string }
+      | null;
+    /** The FILE's own answer — the stamp the render door will read. */
+    fileState?: { ok: true; stamp: { normalizerVersion: string; punctuationSpec: string;
+      model: string } }
+      | { ok: false; state: 'missing' | 'stale'; reason: string }
+      | null;
     familyId?: string | null;
     bookPath?: string | null;
+    familyNote?: string;
     error?: string;
   }> {
     if (this.isElectron) {

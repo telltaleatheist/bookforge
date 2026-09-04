@@ -95,6 +95,19 @@ export interface PassJobConfig {
   projectDir: string;
   /** Project-relative stage dir this pass works and writes its diff in. */
   stageRelDir: string;
+  /**
+   * WHICH OF THE PROJECT'S CHAINS this pass is about.
+   *
+   * A project can hold several — two archive EPUBs are two families — and every
+   * question about a book's history has to name one or a project with two of
+   * them refuses to answer at all ("Press the button on the version you mean").
+   * Resolved by the planner from the file the run was pointed at, so the pass
+   * reads the same chain the user pressed.
+   *
+   * Absent means the project has one chain and the resolvers may find it
+   * themselves, which is what every caller before 2026-09-04 relied on.
+   */
+  familyId?: string;
   simplify?: SimplifyPassParams;
   translate?: TranslatePassParams;
 }
@@ -151,6 +164,22 @@ export interface PassJobResult {
   success: boolean;
   /** The book EPUB, after the pass. Absent for a pass that produced no book. */
   outputPath?: string;
+  /**
+   * The file a NARRATION step chained behind this pass must read, when it is not
+   * `outputPath`.
+   *
+   * The queue's chaining is strict: a step with a parent reads its parent's
+   * produced artifact and nothing else (`queue-engine.resolveInput`), and
+   * `tts-conversion` has no config fallback for the book — so whatever a caller
+   * "sets" on a follow-on job is inert (the adversarial review of 2026-09-04
+   * measured exactly that). The pass is therefore the only place that can name
+   * the right file, and the narration text cleanup does: it re-cuts the family's
+   * narration copy from the book it just rewrote and names THAT here.
+   *
+   * Absent means the pass's own output is what a chained step reads, which is
+   * true of every other pass.
+   */
+  narrationInputPath?: string;
   error?: string;
   /**
    * What the pass did, in one sentence, when there is something to say beyond

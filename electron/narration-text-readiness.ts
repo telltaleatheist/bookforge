@@ -22,6 +22,17 @@
  * Every pass that rewrites the words a narrator would read. `vlm-convert` is the
  * book's ORIGIN rather than a change to one, and the retired kinds are history
  * that cannot be re-run, so neither can make a cleanup stale.
+ *
+ * A RECORD AND NOT A SET, and the direction is the point. As a `Set` literal
+ * this failed OPEN: a new text-rewriting kind added to `AppliedPassKind` left
+ * the literal untouched, nothing complained, and a book rewritten by it went on
+ * reporting `ok: true` — narrated against text the cleanup never saw. Written
+ * as an exhaustive `Record`, adding a kind is a COMPILE error until somebody
+ * answers the question. Reported by the adversarial review, 2026-09-04.
+ *
+ * A kind a persisted manifest carries that this build does not know is treated
+ * as text-changing by `isTextChanging` below — the safe direction for the one
+ * case the compiler cannot see, an older or newer build's manifest.
  */
 import { PUNCTUATION_SPEC_VERSION } from './tts-punctuation.js';
 import { NORMALIZER_VERSION } from './tts-number-normalizer.js';
@@ -36,9 +47,23 @@ export const NARRATION_TEXT_LABEL = 'Narration text cleanup';
  * `narration-text` is in the set because it is the one this readiness is ABOUT:
  * the question is whether it is the LAST of these, so it has to be one of them.
  */
-const TEXT_CHANGING: ReadonlySet<AppliedPassKind> = new Set<AppliedPassKind>([
-  'simplify', 'translate', 'footnote-refs', 'narration-text',
-]);
+const TEXT_CHANGING: Readonly<Record<AppliedPassKind, boolean>> = {
+  simplify: true,
+  translate: true,
+  'footnote-refs': true,
+  'narration-text': true,
+  // A book's ORIGIN rather than a change to one: a conversion cannot make a
+  // cleanup stale because there was no cleaned text before it.
+  'vlm-convert': false,
+  // Retired, and unrunnable. They appear only in an old book's history.
+  'get-text': false,
+  blocks: false,
+  reflow: false,
+  footnotes: false,
+  tesseract: false,
+  'ocr-correction': false,
+  detection: false,
+};
 
 export type NarrationTextReadiness =
   | { ok: true; at: string; model: string }
@@ -60,10 +85,22 @@ function versionsOf(pass: AppliedPass): { normalizer: string; punctuation: strin
  * `passes` is the family's `appliedPasses`, in the order they ran — what
  * `manifestService.readAppliedPasses(projectDir, familyId)` answers.
  */
+/**
+ * Does this pass rewrite the words a narrator reads?
+ *
+ * An unknown kind — a manifest written by a build this one does not know —
+ * answers YES. A cleanup that might be stale reads stale; the cost is one re-run
+ * the user can see, against a book narrated from text nothing ever cleaned.
+ */
+function isTextChanging(kind: AppliedPassKind): boolean {
+  const known = TEXT_CHANGING[kind];
+  return known === undefined ? true : known;
+}
+
 export function narrationTextReadiness(
   passes: readonly AppliedPass[],
 ): NarrationTextReadiness {
-  const textChanging = passes.filter((p) => TEXT_CHANGING.has(p.kind));
+  const textChanging = passes.filter((p) => isTextChanging(p.kind));
   const last = textChanging.length === 0 ? undefined : textChanging[textChanging.length - 1];
 
   if (!textChanging.some((p) => p.kind === 'narration-text')) {

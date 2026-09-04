@@ -1496,6 +1496,35 @@ export class NarrationModalComponent {
    * nothing built rather than emitting a request with a hole in it: a workflow
    * half in the queue cannot be retried without double-queueing it.
    */
+  /**
+   * Say what is missing, and offer to fix it. True means go on and queue.
+   *
+   * Its own method because the sentence is the user's whole understanding of
+   * why a button they pressed did not do what they expected — and because
+   * "run it" and "run it again" are different instructions to somebody who
+   * believes they already did.
+   */
+  private async offerCleanup(
+    cleanup: { state: 'missing' | 'stale'; reason: string },
+    book: NarrationRunBook,
+  ): Promise<boolean> {
+    const { confirmed } = await this.electron.showConfirmDialog({
+      title: 'Narration text cleanup',
+      message: cleanup.reason,
+      detail: 'Run it now? The cleanup is queued first, and this narration run is queued behind '
+        + 'it — it will read the copy the cleanup produces from '
+        + `${book.title || 'this book'}. It is minutes of model time over the blocks of the `
+        + 'book, and it only has to happen once.',
+      confirmLabel: cleanup.state === 'stale'
+        ? 'Run cleanup again, then narrate'
+        : 'Run cleanup, then narrate',
+      cancelLabel: 'Cancel',
+      type: 'question',
+    });
+    if (!confirmed) this.error.set(cleanup.reason);
+    return confirmed;
+  }
+
   async onSubmit(): Promise<void> {
     if (this.submitDisabled()) return;
     this.error.set(null);
@@ -1561,6 +1590,10 @@ export class NarrationModalComponent {
         startFresh: this.resumable() !== null && this.resumeChoice() === 'fresh',
       };
 
+      // The file this run actually reads. The pressed row by default; the
+      // family book when the pressed export predates the cleanup and the user
+      // said to narrate the current book instead.
+      let narratedPath = book.epubPath;
       const jobs = buildNarrationJobs(book, settings, {
         narrate: this.narrate(),
         enhance: this.enhance(),
@@ -1596,63 +1629,108 @@ export class NarrationModalComponent {
        * epub they were trying to narrate, and then they export the epub and
        * queue narration."*
        *
-       * So this is NOT a dead lock. The gate says what is missing, by name,
-       * offers to fix it, and on yes queues ONE run: the cleanup first, then
-       * this narration behind it, chained to it — which is exactly what
-       * `submitProcessingRun`'s `followOn` is for.
+       * NOT a lock. The gate says what is missing, by name, offers to fix it,
+       * and on yes queues ONE run: the cleanup first, then this narration
+       * chained behind it — which is what \`submitProcessingRun\`'s \`followOn\`
+       * is for. The render door checks the same thing again on the FILE it is
+       * handed, and that backstop is why this can afford to be a question.
        *
-       * The render door checks the same thing again on the FILE it is handed
-       * (`prepareNarrationInput`), and refuses there too. That backstop is why
-       * this can afford to be a question rather than a refusal.
+       * ONLY WHEN SOMETHING WILL BE READ. A cache-context run — "assemble the
+       * clips I already rendered" — reads no book text at all, and demanding
+       * minutes of model time over a book nobody is reading was the adversarial
+       * review's Finding 15.
        */
-      const readiness = await this.electron.narrationTextReadiness(
-        book.projectDir, book.epubPath);
-      if (!readiness.success) {
-        throw new Error(
-          `This book's history could not be read, so there is no way to tell whether the narration `
-          + `text cleanup has run: ${readiness.error}`);
-      }
-      if (readiness.readiness !== undefined && !readiness.readiness.ok) {
-        const cleanup = readiness.readiness;
-        const { confirmed } = await this.electron.showConfirmDialog({
-          title: 'Narration text cleanup',
-          message: cleanup.reason,
-          detail: 'Run it now? The cleanup is queued first, and this narration run is queued '
-            + 'behind it — it will read the book the cleanup produced. It is minutes of model '
-            + 'time over the blocks of the book, and it only has to happen once.',
-          confirmLabel: cleanup.state === 'stale'
-            ? 'Run cleanup again, then narrate'
-            : 'Run cleanup, then narrate',
-          cancelLabel: 'Cancel',
-          type: 'question',
-        });
-        if (!confirmed) {
-          this.error.set(cleanup.reason);
-          return;
+      if (this.narrate()) {
+        const readiness = await this.electron.narrationTextReadiness(
+          book.projectDir, book.epubPath, undefined);
+        if (!readiness.success) {
+          throw new Error(
+            `This book's history could not be read, so there is no way to tell whether the `
+            + `narration text cleanup has run: ${readiness.error}`);
         }
+
+        const chain = readiness.readiness ?? null;
+        const file = readiness.fileState ?? null;
+
         /*
-         * The cleanup rewrites the FAMILY'S BOOK in place, so the run behind it
-         * has to read that path and not whichever version row opened this
-         * dialog: an exported copy cut before the cleanup describes a book
-         * nobody has any more, and the render door would refuse it by name.
+         * The CHAIN could not be named — a project with two book chains, and a
+         * version row belonging to neither by name. The file's own stamp is
+         * still authoritative (it is what the render door reads), so that is
+         * what decides; what is lost is only the ability to offer a fix,
+         * because nothing can say which chain to clean.
          */
-        const cleaned = readiness.bookPath ?? book.epubPath;
-        const followOn = jobs.map((job) => (job.epubPath === book.epubPath
-          ? { ...job, epubPath: cleaned }
-          : job));
-        const run = await this.queue.submitProcessingRun({
-          projectDir: book.projectDir,
-          passes: [{ kind: 'narration-text' }],
-        }, followOn);
-        if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
-        this.queued.emit({ jobs: followOn.length + 1 });
-        return;
+        if (chain === null) {
+          if (file !== null && !file.ok) {
+            this.error.set(
+              `${file.reason} ${readiness.familyNote ?? ''} Open the version this one came from `
+              + 'and run the cleanup there.');
+            return;
+          }
+        } else if (!chain.ok) {
+          const proceed = await this.offerCleanup(chain, book);
+          if (!proceed) return;
+          const cleaned = readiness.bookPath;
+          if (cleaned === null || cleaned === undefined) {
+            throw new Error(
+              'The cleanup was accepted, but this project could not name the book it applies '
+              + 'to, so there is nothing to run it on. Nothing was queued.');
+          }
+          const run = await this.queue.submitProcessingRun({
+            projectDir: book.projectDir,
+            /*
+             * The FILE the user pressed, so the planner resolves the chain it
+             * belongs to and the pass cleans that book rather than the default
+             * family's. The follow-on's own \`epubPath\` is NOT patched here: the
+             * queue gives a chained step its parent's artifact and nothing else,
+             * so what a narration step reads is what the pass NAMES — the
+             * narration copy it re-cuts from the book it just wrote
+             * (electron/processing-passes.ts, \`narrationInputPath\`). Patching
+             * the request was inert, and the adversarial review measured it so.
+             */
+            sourcePath: book.epubPath,
+            passes: [{ kind: 'narration-text' }],
+          }, jobs);
+          if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
+          this.queued.emit({ jobs: jobs.length + 1 });
+          return;
+        } else if (file !== null && !file.ok) {
+          /*
+           * The BOOK has been cleaned and this VERSION has not — an export made
+           * before the cleanup ran. Queueing it would die in the render door
+           * with the file's own sentence and nothing would offer a way out (the
+           * adversarial review's Finding 8). So the way out is offered here.
+           */
+          const useBook = await this.electron.showConfirmDialog({
+            title: 'This version was exported before the cleanup',
+            message: file.reason,
+            detail: 'The book itself has been cleaned. Narrate the current book instead? '
+              + 'It is the same text, with the passages you struck out removed as usual.',
+            confirmLabel: 'Narrate the current book',
+            cancelLabel: 'Cancel',
+            type: 'question',
+          });
+          if (!useBook.confirmed) { this.error.set(file.reason); return; }
+          const current = readiness.bookPath;
+          if (current === null || current === undefined) {
+            throw new Error(
+              'This project could not name its current book, so there is nothing to narrate in '
+              + 'place of the export. Nothing was queued.');
+          }
+          // The run now reads the CURRENT book, and the master row names it
+          // too, so nothing in the queue claims a file this run does not touch.
+          const wasPressed = book.epubPath;
+          for (const job of jobs) {
+            if (job.epubPath === wasPressed) job.epubPath = current;
+          }
+          narratedPath = current;
+        }
       }
+
 
       const workflowId = `tts-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       const master = await this.queue.addJob({
         type: 'audiobook',
-        epubPath: book.epubPath,
+        epubPath: narratedPath,
         variantId: book.variantId,
         ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
         metadata: { title: book.title, author: book.author },

@@ -178,6 +178,10 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   }
 
   const sourcePath = await resolveSource(request, projectDir, manifest);
+  // The chain the source belongs to. Null when the file names none — a project
+  // with one family needs no id and the resolvers find it themselves.
+  const resolvedFamily = await manifestService.familyForOpen(projectDir, sourcePath);
+  const familyId = resolvedFamily === null ? null : resolvedFamily.family.id;
   // `isBookPath`, not the extension: the project's own working copy is an
   // exploded directory whose "extension" reads `.working`, so an extension test
   // here refused every migrated project its own book and told the user to "pick
@@ -213,6 +217,11 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       kind: pass.kind,
       projectDir,
       stageRelDir: manifestService.passStageRelDir(base + i + 1, pass.kind),
+      // WHICH CHAIN, resolved from the file the run was pointed at rather than
+      // left for each resolver to guess. A project with two archive EPUBs has
+      // two chains, and a pass that did not name one would read the default
+      // family's book while the user pressed a button on the other's.
+      ...(familyId === null ? {} : { familyId }),
       ...(pass.simplify ? { simplify: pass.simplify } : {}),
       ...(pass.translate ? { translate: pass.translate } : {}),
     };
