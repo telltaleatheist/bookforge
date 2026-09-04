@@ -41,6 +41,8 @@ const stopBtn = $('stopBtn') as HTMLButtonElement;
 const nowNote = $('nowNote') as HTMLDivElement;
 const voiceEl = $('voice') as HTMLSelectElement;
 const idleEl = $('idle') as HTMLSelectElement;
+const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
+const bufferNote = $('bufferNote') as HTMLDivElement;
 const workersEl = $('workers') as HTMLInputElement;
 const applyEngineBtn = $('applyEngine') as HTMLButtonElement;
 const engineNote = $('engineNote') as HTMLDivElement;
@@ -412,6 +414,26 @@ idleEl.addEventListener('change', () => {
   send({ target: 'background', cmd: 'set-idle', minutes: Number(idleEl.value) });
 });
 
+// ─── Buffer before playing (fast start) ───────────────────────────────────────
+//
+// The same switch as the one on the Options page, on the same chrome.storage key —
+// duplicated because Owen's ruling of 2026-09-04 is that this is a thing you try
+// mid-read, and the popup is what is already open when you decide the wait is too
+// long. It takes effect on the NEXT block that starts generating: a session was
+// launched with (or without) fastStart on the wire and the server cannot change
+// its mind about a batch already in flight.
+
+function renderBuffering(): void {
+  bufferNote.textContent = bufferEl.checked
+    ? 'Waits for a cushion, then plays through without gaps.'
+    : 'Fast start: plays after ~1s. May pause if the engine falls behind.';
+}
+
+bufferEl.addEventListener('change', () => {
+  void chrome.storage.local.set({ bufferBeforePlaying: bufferEl.checked });
+  renderBuffering();
+});
+
 voiceEl.addEventListener('change', () => {
   // Picking a voice IS the instruction to use it: generation stops, the engine
   // loads that model, and playback restarts in it once the engine confirms. No
@@ -518,11 +540,14 @@ void loadSettings().then((s) => {
   selectedVoice = s.voice;
   recordSpeed = (RECORD_SPEEDS as readonly number[]).includes(s.recordSpeed) ? s.recordSpeed : 1;
   recordingsDir = s.recordingsDir || DEFAULT_RECORDINGS_DIR;
+  bufferEl.checked = s.bufferBeforePlaying;
+  renderBuffering();
   voicesSig = null;
   render();
 });
 
 // Ask background for current state; it replies via a 'snapshot' push (and the
 // offscreen player broadcasts a fresh one right after).
+renderBuffering();  // matches the markup's default until settings land
 render();
 send({ target: 'background', cmd: 'sync' });

@@ -89,6 +89,7 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
  "preempt": true,                                  // optional, default true: cancel OTHER CLIENTS' sessions (take over the audio output)
  "background": false,                              // optional, default false: true = a read-ahead block, batched at low pool priority
  "startSentence": 0,                               // optional, default 0: resume a partly-rendered block at this sentence
+ "fastStart": false,                               // optional, default false: stream each sentence sub-sentence (see "Fast start")
  "settings": {                                     // optional, all fields optional
    "voice": "ScarlettJohansson",                   // BINDING when present (see below); omit to inherit the engine's current/last voice
    "speed": 1.1,                                   // playback-rate baked into the audio, default 1.0
@@ -191,6 +192,27 @@ The same applies to `config.set` with a `voice`: a live load that fails now answ
 ### Resuming a partly-rendered block
 
 A block that was interrupted (the user stopped, or the session was preempted) leaves the client holding audio for sentences `[0, n)`. Re-requesting it with `"startSentence": n` generates only the tail; the client concatenates it onto the audio it kept. Because segmentation is deterministic for identical text, the sentence list in the `speaking` reply will match the one the prefix was rendered against — verify it anyway, and fall back to a whole re-render if it ever doesn't.
+
+### Fast start
+
+By default a sentence is delivered as ONE `chunk` when it has finished generating. On
+Orpheus that means nothing at all arrives until the whole batch carrying it retires,
+which is why a client gates playback on a cushion and why the first word can be half a
+minute away.
+
+`"fastStart": true` asks the server to emit each sentence of that session as **several**
+`chunk` events **while it is still generating** — roughly 0.34s of audio at a time —
+followed by its usual `done`. Nothing else changes: the event shape is identical, so a
+client that already assembles by `(sentenceIndex, seq)` needs no new code, it simply
+receives more chunks, sooner. A client can then start playing on about a second of audio.
+
+The trade is real and it is the client's to make: the pipeline is no faster, so a
+generator that falls behind playback now stalls audibly instead of being waited out up
+front. The BookForge extension exposes exactly this choice as a **"Buffer before playing"**
+switch, on by default.
+
+Honoured only for a foreground `speak`. A `background:true` read-ahead block ignores the
+flag — nobody is waiting on its first second, and it will be played from cache later.
 
 ### Concurrency model
 

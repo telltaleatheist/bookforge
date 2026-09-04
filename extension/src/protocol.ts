@@ -78,6 +78,15 @@ export type ClientAction =
   // settings.voice is always sent and is binding: the server loads exactly that
   // voice or fails the request. startSentence resumes a partly-rendered block —
   // we still hold the earlier sentences' audio, so only the tail is generated.
+  //
+  // fastStart is the "Buffer before playing" switch turned OFF (Owen's ruling of
+  // 2026-09-04). The server then emits each sentence of THIS session as several
+  // 'chunk' events while it is still generating, so playback can begin on about a
+  // second of audio instead of on a cushion deep enough to guarantee no hole. Same
+  // event shape as always — just more of them, sooner — so nothing downstream of
+  // the socket has to know. Sent only on the FOREGROUND speak: read-ahead has
+  // nobody waiting on its first second, and the server ignores the flag on a
+  // background session regardless.
   | {
       action: 'speak';
       requestId: string;
@@ -86,6 +95,7 @@ export type ClientAction =
       preempt?: boolean;
       background?: boolean;
       startSentence?: number;
+      fastStart?: boolean;
     }
   | { action: 'playhead'; requestId: string; sentenceIndex: number }
   | { action: 'cancel'; requestId: string }

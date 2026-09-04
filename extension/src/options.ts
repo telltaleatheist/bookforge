@@ -1,8 +1,14 @@
 /**
- * Options page — connection settings only (host / port / token) plus a "Test
- * connection" that authenticates against the server and reports engine state +
- * discovered voices. Voice and CPU worker count are configured in the popup
- * (under "Engine settings"), since it has live engine state.
+ * Options page — connection settings (host / port / token), the recordings folder,
+ * the "Buffer before playing" switch, and a "Test connection" that authenticates
+ * against the server and reports engine state + discovered voices. Voice and CPU
+ * worker count are configured in the popup (under "Engine settings"), since it has
+ * live engine state.
+ *
+ * "Buffer before playing" is duplicated in the popup ON PURPOSE (Owen's ruling of
+ * 2026-09-04): it is a thing to try mid-read — turn it off, listen, turn it back on
+ * — and here is where you go to read what it actually does. Both pickers write the
+ * same chrome.storage key, so neither is the master.
  */
 
 import { DEFAULT_SETTINGS, Settings, loadSettings } from './messages';
@@ -14,6 +20,7 @@ const hostEl = $('host') as HTMLInputElement;
 const portEl = $('port') as HTMLInputElement;
 const tokenEl = $('token') as HTMLInputElement;
 const recordingsDirEl = $('recordingsDir') as HTMLInputElement;
+const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
 const testBtn = $('test') as HTMLButtonElement;
 const testResult = $('testResult') as HTMLSpanElement;
 const savedNote = $('saved') as HTMLSpanElement;
@@ -24,10 +31,15 @@ async function restore(): Promise<void> {
   portEl.value = String(s.port);
   tokenEl.value = s.token;
   recordingsDirEl.value = s.recordingsDir;
+  bufferEl.checked = s.bufferBeforePlaying;
 }
 
-function current(): Pick<Settings, 'host' | 'port' | 'token' | 'recordingsDir'> {
+function current(): Pick<Settings, 'host' | 'port' | 'token' | 'recordingsDir' | 'bufferBeforePlaying'> {
   return {
+    // The checkbox IS the setting — no `|| default` here. A default would only ever
+    // fire for a box that is genuinely unchecked, i.e. it would refuse to let the
+    // user turn fast start on.
+    bufferBeforePlaying: bufferEl.checked,
     host: hostEl.value.trim() || DEFAULT_SETTINGS.host,
     port: Number(portEl.value) || DEFAULT_SETTINGS.port,
     token: tokenEl.value.trim(),
@@ -45,7 +57,7 @@ async function save(): Promise<void> {
   setTimeout(() => { savedNote.textContent = ''; }, 1200);
 }
 
-for (const el of [hostEl, portEl, tokenEl, recordingsDirEl]) {
+for (const el of [hostEl, portEl, tokenEl, recordingsDirEl, bufferEl]) {
   el.addEventListener('change', () => void save());
 }
 

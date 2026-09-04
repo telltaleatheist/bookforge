@@ -77,6 +77,22 @@
         <code>&lt;page title&gt;-&lt;timestamp&gt;.flac</code> with a <code>.json</code> sidecar.</p>
     </div>
 
+    <h2 style="font-size:13px;text-transform:uppercase;letter-spacing:0.04em;opacity:0.6;margin:18px 0 0">Playback</h2>
+    <div class="field">
+      <div class="checkbox">
+        <!-- checked in the markup so the first paint matches the DEFAULT; the
+             stored value overwrites it as soon as settings load. -->
+        <input id="bufferBeforePlaying" type="checkbox" checked />
+        <label for="bufferBeforePlaying" style="font-weight:600;margin:0">Buffer before playing</label>
+      </div>
+      <p class="hint">On (recommended): a paragraph waits until enough of it is rendered to play
+        straight through, so the read never stops mid-sentence. On Orpheus that is roughly half a
+        minute before the first word.<br />
+        Off (<strong>fast start</strong>): audio starts after about a second, streamed while it is
+        still being generated. First words come almost immediately; if the engine falls behind,
+        playback can pause mid-read until it catches up.</p>
+    </div>
+
     <div class="field">
       <button id="test">Test connection</button>
       <span id="testResult" class="result"></span>

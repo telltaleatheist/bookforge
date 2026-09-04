@@ -13,7 +13,7 @@
  *     {action:'engine.restart', voice?, cpuWorkers?}   // apply a new worker count / voice
  *     {action:'config.get'}                            // read engine topology
  *     {action:'config.set', cpuWorkers?, voice?, idleMinutes?}  // persist worker count; warm voice; idle window
- *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?, startSentence?}
+ *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?, startSentence?, fastStart?}
  *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window; promotes a background block to playing
  *     {action:'cancel', requestId}
  *
@@ -26,6 +26,16 @@
  *   worker busy even when each block is a one-sentence paragraph. startSentence
  *   (default 0) resumes a partly-rendered block: the client still holds the audio
  *   for the earlier sentences, so only the tail is generated.
+ *
+ *   fastStart (default false) is the client saying it would rather hear something
+ *   in a second than be guaranteed a read with no holes — the browser extension's
+ *   "Buffer before playing" switch, turned OFF (Owen's ruling of 2026-09-04). The
+ *   session's sentences then arrive as SEVERAL 'chunk' events each, emitted while
+ *   the sentence is still generating, followed by its 'done'. Nothing else about
+ *   the protocol changes and no client has to opt in: absent or false is the
+ *   behaviour every client had before the flag existed. It is honoured only for a
+ *   FOREGROUND speak (background read-ahead never streams — see
+ *   stream-scheduler's StartOptions.fastStart).
  *
  *   An explicit settings.voice is a CONTRACT: the engine is loaded with that voice
  *   and the speak is rejected if it somehow isn't, rather than quietly rendering in
@@ -771,6 +781,11 @@ export class TtsApiServer {
     // session at low pool priority.
     const preempt = msg.preempt !== false;
     const background = msg.background === true;
+    // The client's "I'd rather hear something now" flag. Strictly opt-in — anything
+    // but an explicit true is the pre-2026-09-04 path — and the scheduler ignores it
+    // on a background session anyway, so a client that sets it blanket-wide still
+    // only streams the block being listened to.
+    const fastStart = msg.fastStart === true;
     if (preempt) {
       for (const id of streamScheduler.activeIds()) {
         if (!state.activeRequestIds.has(id) && id !== requestId) streamScheduler.stop(id);
@@ -804,7 +819,8 @@ export class TtsApiServer {
       // must not run its own stopAll — that would take this client's read-ahead
       // down with everyone else's.
       preempt: false,
-      priority: !background
+      priority: !background,
+      fastStart
     });
     if (!result.success) {
       state.activeRequestIds.delete(requestId);

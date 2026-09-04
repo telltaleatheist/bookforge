@@ -415,6 +415,21 @@ export interface Settings {
   /** where the SERVER saves recordings. May start with `~` — the extension has
    *  no filesystem, so the server expands it (and refuses a relative path). */
   recordingsDir: string;
+  /**
+   * "Buffer before playing" — ON by default, and ON is the behaviour this extension
+   * has always had: a block waits until enough of it is rendered that the generator
+   * cannot be caught, then plays through without a hole. That costs ~30s before the
+   * first word on Orpheus, because a sentence only exists once its whole batch
+   * retires.
+   *
+   * OFF is FAST START (Owen's ruling of 2026-09-04): the speak carries
+   * `fastStart:true`, the server streams each sentence in sub-sentence chunks as it
+   * generates, and the player starts on about a second of audio. Stalls become
+   * possible — that is the trade, and the switch is how you take the other side of
+   * it. He wanted to try both on Windows (vLLM) and the Mac (MLX) without moving
+   * anything around, so it is a setting, not a build.
+   */
+  bufferBeforePlaying: boolean;
 }
 
 // Injected by build.mjs (esbuild `define`) from the app's tts-api.json. Declared
@@ -431,7 +446,10 @@ export const DEFAULT_SETTINGS: Settings = {
   rate: 1,
   volume: 1,
   recordSpeed: 1,
-  recordingsDir: DEFAULT_RECORDINGS_DIR
+  recordingsDir: DEFAULT_RECORDINGS_DIR,
+  // ON: the gate that has always been here. Fast start is opt-OUT of seamlessness,
+  // never the default.
+  bufferBeforePlaying: true
 };
 
 export async function loadSettings(): Promise<Settings> {

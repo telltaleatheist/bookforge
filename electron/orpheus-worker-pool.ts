@@ -202,7 +202,7 @@ export const STREAM_RAMP_WIDTH = 8;
 
 interface OrpheusResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped'
-      | 'batch_item' | 'batch_done';
+      | 'batch_item' | 'batch_chunk' | 'batch_done';
   device?: string;
   /** e2a's detected backend, on 'ready' (probe) and 'loaded' (the built engine). */
   backend?: string;
@@ -214,13 +214,25 @@ interface OrpheusResponse {
   seq?: number;
   chunks?: number;
   cancelled?: boolean;
-  /** batch_item: the caller-supplied index of this item within the batch */
+  /** batch_item / batch_chunk: the caller-supplied index of this item in the batch */
   i?: number;
+  /** batch_item: this row's audio ALREADY went out as batch_chunks (fast start), so
+   *  the item carries no `data` — only the totals. See BatchItem.onChunk. */
+  streamed?: boolean;
   /** batch_done: how many items the batch contained */
   count?: number;
 }
 
-type GenResult = { success: boolean; audio?: AudioChunk; error?: string };
+/** A batch row's result. `streamed` rows carry no `audio`: every byte of it was
+ *  already delivered through the row's onChunk while it generated (fast start), and
+ *  `duration` is the total the worker sent. */
+type GenResult = {
+  success: boolean;
+  audio?: AudioChunk;
+  streamed?: boolean;
+  duration?: number;
+  error?: string;
+};
 
 interface PendingRequest {
   resolve: (result: GenResult) => void;
@@ -234,6 +246,11 @@ interface PendingRequest {
 interface PendingBatch {
   resolvers: Map<number, (r: GenResult) => void>;
   timeout: NodeJS.Timeout;
+  /** Where a row's fast-start chunks go, by the same index — present only for rows
+   *  that asked to stream (BatchItem.onChunk). A 'batch_chunk' whose index has no
+   *  sink is a protocol break, not a race to swallow: the worker only streams rows
+   *  the pool marked `stream:true`. */
+  chunkSinks: Map<number, (chunk: StreamChunk) => void>;
   /** Each row's staleness predicate, by the same index. Kept for the life of the
    *  batch so a preempt can ask whether EVERY row is now dead — which is the only
    *  condition under which the batch may be cancelled (see
@@ -1110,6 +1127,12 @@ interface BatchItem {
    *  it differs from the loaded voice. Undefined = the loaded voice, which keeps the
    *  wire message byte-identical to the single-voice case. */
   voice?: string;
+  /** FAST START (Owen 2026-09-04). Present when the caller wants this sentence's
+   *  audio delivered in sub-sentence chunks WHILE IT GENERATES rather than as one
+   *  payload when the batch retires. Its presence is what puts `stream:true` on the
+   *  wire item; absent, the item is byte-identical to what it always was, which is
+   *  what keeps the extension's "Buffer before playing" switch a no-change path. */
+  onChunk?: (chunk: StreamChunk) => void;
 }
 const batchQueue: BatchItem[] = [];
 let flushScheduled = false;
@@ -1189,10 +1212,20 @@ function flushBatch(): void {
   const picked = batchQueue.splice(0, batchWidth());
   const resolvers = new Map<number, (r: GenResult) => void>();
   const cancels = new Map<number, () => boolean>();
+  const chunkSinks = new Map<number, (chunk: StreamChunk) => void>();
   const items = picked.map((it, i) => {
     resolvers.set(i, it.resolve);
     if (it.isCancelled) cancels.set(i, it.isCancelled);
-    return { i, text: it.text, ...(it.voice ? { voice: it.voice } : {}) };
+    // FAST START: a row carrying a chunk sink is marked for the worker. Only the
+    // rows that asked stream — a batch mixes the block being listened to with
+    // read-ahead behind it, and read-ahead has nobody waiting on its first second.
+    if (it.onChunk) chunkSinks.set(i, it.onChunk);
+    return {
+      i,
+      text: it.text,
+      ...(it.voice ? { voice: it.voice } : {}),
+      ...(it.onChunk ? { stream: true } : {}),
+    };
   });
 
   const timeout = setTimeout(() => {
@@ -1207,7 +1240,7 @@ function flushBatch(): void {
     }
   }, 180000);
 
-  worker.pendingBatch = { resolvers, timeout, cancels };
+  worker.pendingBatch = { resolvers, timeout, cancels, chunkSinks };
   send({ action: 'generate_batch', items });
 }
 
@@ -1269,13 +1302,20 @@ function runOnWorker<T>(
 // Generation
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * `onChunk` is FAST START (Owen 2026-09-04): give it and this sentence's audio is
+ * delivered in sub-sentence chunks as the row generates, and the promise resolves
+ * `{success:true, streamed:true, duration}` with NO `audio` — it has all already
+ * been handed over. Omit it and nothing about this call changes.
+ */
 export async function generateSentence(
   text: string,
   _sentenceIndex: number,
   settings: PlaySettings,
   priority = false,
-  isCancelled?: () => boolean
-): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
+  isCancelled?: () => boolean,
+  onChunk?: (chunk: StreamChunk) => void
+): Promise<GenResult> {
   touchActivity();
   if (!worker) return { success: false, error: 'No workers available' };
   // The sentence's OWN voice, honoured per request. `settings` used to be discarded
@@ -1289,7 +1329,7 @@ export async function generateSentence(
   // run one-at-a-time. (Sampling is per-voice catalog tuning applied at load, so the
   // remaining per-sentence settings still don't apply to Orpheus.)
   return new Promise<GenResult>((resolve) => {
-    enqueueBatchItem({ text, resolve, isCancelled, priority, voice: resolved.voice });
+    enqueueBatchItem({ text, resolve, isCancelled, priority, voice: resolved.voice, onChunk });
   });
 }
 
@@ -1593,12 +1633,43 @@ function send(command: Record<string, unknown>): void {
 }
 
 function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
-  if (response.type !== 'chunk') {
+  if (response.type !== 'chunk' && response.type !== 'batch_chunk') {
     console.log('[Orpheus Pool] Response:', response.type, response.message || '');
   }
 
   if (response.type === 'status') {
     reportWarmup(response.message);
+    return;
+  }
+
+  // FAST START: a sub-sentence payload of a row that is still generating. Routed to
+  // that row's sink and NOT to its resolver — the row stays outstanding until its
+  // 'batch_item' arrives, exactly like every other row in the batch.
+  //
+  // A chunk with nowhere to go is logged LOUDLY rather than dropped quietly: the
+  // worker only streams rows flushBatch marked `stream:true`, so an unmatched index
+  // means the two sides disagree about which rows those are, and silence would turn
+  // that into a sentence of missing audio nobody can trace.
+  if (response.type === 'batch_chunk') {
+    const idx = response.i ?? -1;
+    const sink = w.pendingBatch?.chunkSinks.get(idx);
+    if (!sink) {
+      console.error(
+        `[Orpheus Pool] batch_chunk for item i=${idx} seq=${response.seq} has no chunk sink` +
+        `${w.pendingBatch ? '' : ' (no batch in flight — stale from a timed-out batch)'} — dropping it`
+      );
+      return;
+    }
+    if (!response.data) {
+      console.error(`[Orpheus Pool] batch_chunk for item i=${idx} seq=${response.seq} carried no data — dropping it`);
+      return;
+    }
+    sink({
+      seq: response.seq ?? 0,
+      data: response.data,
+      duration: response.duration || 0,
+      sampleRate: response.sampleRate || 24000,
+    });
     return;
   }
 
@@ -1616,7 +1687,14 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
     const r = w.pendingBatch.resolvers.get(idx);
     if (r) {
       w.pendingBatch.resolvers.delete(idx);
-      if (response.data) {
+      w.pendingBatch.chunkSinks.delete(idx);
+      if (response.streamed === true) {
+        // FAST START terminal: this row's audio left as batch_chunks. There is no
+        // payload to hand back — only the totals — and the caller must not treat a
+        // missing `audio` as a failure. Same staleness/timeout accounting as any
+        // other batch_item: it resolves the row and nothing else.
+        r({ success: true, streamed: true, duration: response.duration || 0 });
+      } else if (response.data) {
         r({ success: true, audio: { data: response.data, duration: response.duration || 0, sampleRate: response.sampleRate || 24000 } });
       } else {
         r({ success: false, error: response.message || 'No audio generated' });
