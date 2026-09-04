@@ -273,3 +273,67 @@ decode (Higgs) as well as SNAC's 7-token frames; the serving seam must allow a
 different server stack per engine (vLLM 0.7.3 vs vLLM-Omni) behind the same
 JSON-lines worker protocol; the voice seam carries a reference clip + transcript in a
 conversation history. Extraction starts when the Higgs v3 measured fields arrive.
+
+### Higgs measurements (orpheus-training session, 2026-09-04; full notes in
+`E:\training\_campaigns\2026-09-01-cod-full-rebuild\higgs\HIGGS_NOTES.md`)
+
+Both v2 and v3: 24 kHz mono; tokenizer 8 codebooks x 1024 + stream bos/eos 1024/1025;
+25 LM steps per second of audio (delay pattern); decode = codec over the frame matrix
+with a `frames - 7` delay-pattern trim; NO pads or fades at either end (assembly must
+supply gaps); EOS fires reliably unaided; no cap hits.
+- **v2** (`higgs-audio-v2-generation-3B-base`, transformers `HiggsAudioV2ForConditionalGeneration`,
+  `use_text_head=True` for PEFT/SFT): deathstalker clone from two reference clips in the
+  chat history; nine Pokemon paragraphs (132-898 chars) at length ratios 0.83-1.26, EOS
+  9/9, zero runaways; gen RTF 1.12 single-stream, decode RTF 0.004, 16.3 GB peak, 15.6 s
+  load. Licence: Boson Higgs Audio 2 Community (attribution; "Higgs Audio 2" in any
+  fine-tune's name).
+- **v3** (`higgs-audio-v3-tts-4b` via vllm-omni 0.28.0, `--attention-backend FLASH_ATTN`;
+  FlashInfer fails on sm_86 with torch 2.13+cu130): serves text-only (default voice) but
+  every reference-audio shape returns HTTP 400 "Token id -100 is out of vocabulary"
+  (config `audio_token_id -100`, tokenizer has no audio placeholder) - cloning BROKEN in
+  that stack; stops early on long paragraphs un-cloned (ratio 0.49-0.64); RTF 2.46;
+  cold start 55 s; preallocates ~24 GB. Licence research/non-commercial. A v3 port waits
+  for a serving stack whose cloning works (SGLang-Omni docker is the card's path).
+- Bandwidth vs the real narrator (>4 kHz energy): Orpheus 0.346 % vs 0.358 % real;
+  Higgs v2 duller (0.229 %); v3 brighter but a different speaker.
+
+## Engine interface (design, 2026-09-04 - extraction is the next engine task)
+
+Shaped by two measured engines (Orpheus/SNAC and Higgs/8-codebook delay pattern) and
+one rejected (Llasa). Everything below the manifest is engine-specific; nothing above
+it is. `engine/` gains a small protocol and the Orpheus mixins become its first
+implementation without changing a line of their bodies.
+
+```
+engine/
+  protocol.py     Engine, Codec, VoiceRef, Budget, Backend  (typing.Protocol + dataclasses)
+  orpheus/        today's engine/ modules moved unchanged (OrpheusEngine implements Engine)
+  higgs/          later: v2 via transformers first (the one whose cloning works)
+  registry.py     engine id -> factory; catalog rows carry {engine, voice}
+```
+
+- **`Codec`**: `sample_rate`, `frames_per_second`, `tokens_per_frame` (SNAC 7 @ ~12 Hz;
+  Higgs 8 codebooks @ 25 Hz with delay pattern), `decode(tokens) -> float32 mono`,
+  `trim` convention (SNAC: +75 samples per window; Higgs: `frames - 7`), and the
+  windowed streaming decoder (`WindowedFrameEmitter` is SNAC's; Higgs needs a
+  delay-pattern-aware one or a per-frame decoder - measured later).
+- **`VoiceRef`**: a tagged union - `{kind: 'token', name}` (Orpheus fine-tuned voice),
+  `{kind: 'clips', clips: [(path, transcript)], history: ...}` (Higgs chat-history
+  clones), `{kind: 'description', text}` (Maya1). The catalog (`orpheus-models.json`
+  becomes `engines/*.json`) keys tuning on `(engine, voice)`.
+- **`Budget`**: `max_chars(voice)`, `max_chars_per_sec(voice)`, and
+  `max_total_tokens(prompt_tokens, voice)` - Orpheus's audio-token cap (3700) and
+  chars/sec guard; Higgs's 8,192-token window at 25 tok/s. The chunk packer (step 4)
+  asks the Budget, never a constant. Llasa's 2048 wall is what proved this seam.
+- **Stop levers** (EOS boost/floor, rate ratchet, truncation ladder, short-chunk
+  backstop) are Orpheus-private; the protocol exposes only `stop_policy(voice)` so the
+  worker and the streaming server stay engine-agnostic. Higgs: none needed (measured).
+- **`Backend`**: vLLM 0.7.3 (Orpheus), MLX (Orpheus on Mac), transformers (Higgs v2),
+  vLLM-Omni/SGLang-Omni (Higgs v3, later). The serve worker's JSON-lines protocol and
+  `generate_batch_stream(texts, voices, stream_rows, on_chunk, on_row, should_stop)`
+  are the engine-agnostic surface; each backend implements them.
+- **Gaps**: Orpheus bakes lead/trail silence into each chunk FLAC; Higgs emits none,
+  so gap realization moves to the SentenceSink (engine reports `pads: bool`) and the
+  manifest's `gapBefore/gapAfter` become live for Higgs. The assembler already reads
+  them.
+- Guard events, progress lines and the VTT are unchanged by engine choice.
