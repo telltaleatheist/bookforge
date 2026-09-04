@@ -297,7 +297,7 @@ supply gaps); EOS fires reliably unaided; no cap hits.
 - Bandwidth vs the real narrator (>4 kHz energy): Orpheus 0.346 % vs 0.358 % real;
   Higgs v2 duller (0.229 %); v3 brighter but a different speaker.
 
-## Engine interface (design, 2026-09-04 - extraction is the next engine task)
+## Engine interface (EXTRACTED 2026-09-04 - see "What is real" at the end)
 
 Shaped by two measured engines (Orpheus/SNAC and Higgs/8-codebook delay pattern) and
 one rejected (Llasa). Everything below the manifest is engine-specific; nothing above
@@ -337,3 +337,88 @@ engine/
   manifest's `gapBefore/gapAfter` become live for Higgs. The assembler already reads
   them.
 - Guard events, progress lines and the VTT are unchanged by engine choice.
+
+### What is REAL vs what is still DESIGNED (2026-09-04, after the extraction)
+
+The section above is the design. This is the state of the code, so nobody plans
+against a paragraph that has not been built. Full detail:
+`python/narrator/engine/PORT_NOTES.md` section 12.
+
+**Real, tested, on both interpreters (Windows 3.12 and WSL `orpheus_tts` 3.11):**
+
+- `engine/protocol.py` - `Codec`, `Budget`, `Engine`, `ServedBackend` as
+  runtime-checkable Protocols; `StopPolicy`, `BackendSpec`, `SpeechRequest`,
+  `ReferenceClip` and the `VoiceRef` union (`TokenVoice` | `ClipsVoice` |
+  `DescriptionVoice`) as frozen dataclasses. No torch, no backend.
+- `engine/registry.py` - `'orpheus'` and `'higgs-v2'` as lazy factories; an
+  unknown id raises rather than defaulting.
+- `engine/orpheus/**` - every Orpheus module, MOVED, bodies unchanged, plus
+  `interface.py` (`OrpheusCodec`, `OrpheusBudget`, the `stop_policy` view). The
+  engine test suite is 136 tests, unchanged, OK on both interpreters.
+- `engine/higgs/**` - Higgs Audio 2 (`higgs-audio-v2-generation-3B-base`) end to
+  end in code: chat-history construction, the six-step decode, the budget, the
+  stop policy, the voice document, the transformers backend. 67 tests, none of
+  which needs a model.
+- `serve/worker.py` selects its engine from `NARRATOR_ENGINE` (default
+  `orpheus`), and `--fake-engine` has a fake per engine, so the JSON-lines
+  protocol is exercised for Higgs (24 kHz, `pads = False`) as well as Orpheus.
+- `pyproject.toml` gains mutually exclusive `[orpheus]` and `[higgs]` extras,
+  pinned to what the two WSL envs actually have.
+
+**Designed, not built:**
+
+- **Higgs v3 as a `served` backend.** `engine/higgs/v3_served.py` records the
+  launch line, the two required site-packages patches, the exact request body
+  and every gotcha - and raises `NotImplementedError` on every call. Its licence
+  (Research and Non-Commercial) is the real blocker, not the engineering.
+- **Real batching or streaming for Higgs.** v2 is serial and emits whole rows;
+  `HiggsCodec.streaming_decoder()` returns None, on purpose, because a
+  delay-pattern codec has no sound windowed decode. Batching belongs with a
+  served backend.
+- **The ASR coverage gate.** `StopPolicy.coverage_check == 'asr'` for Higgs is a
+  hook with a name, nothing more. It matters: a duration ratio is NOT a coverage
+  proxy on this family (0.99 while dropping 22 % of the text).
+- **`SentenceSink` reading `pads` / `edge_fade_ms`.** There is no SentenceSink
+  yet; the engine reports both and the assembler must consume them when it
+  lands. Until then, only Orpheus (`pads = True`, fade 0) is assembled, which is
+  today's behaviour exactly.
+- **The catalog keyed on (engine, voice).** `orpheus-models.json` is still
+  Orpheus-only, so `OrpheusBudget.max_chars` reads the payload the engine was
+  constructed with and REFUSES anything else rather than guessing a chunk size.
+- **The rest of `serve/worker.py`.** Its load path is still Orpheus-shaped
+  (VALID_VOICES, merged/adapter/base modes, `set_voice`, per-request LoRA);
+  Higgs refuses the parts it cannot honour by name.
+
+**Not run:** no Higgs model has been loaded from narrator's code. The GPU was
+held by another agent's `external-gpu-job.lock` for the whole of this work.
+
+## Chunking rule (Owen, 2026-09-04, relayed by the orpheus-training session) - the engine-aware packer
+
+Chunks represent PARAGRAPHS (complete thoughts), not character windows. Measured on
+the EPUBs as printed: Mutineer's Moon 2,107 blocks, median 221 ch, p99 822, max 1,213,
+23 % under 100 ch (dialogue lines; 51 % start with a quote); Pokemon 689 blocks, median
+263, max 1,060; McKinley 1,134 blocks, median 263, p90 774, max 1,507, 44 % under 100.
+Higgs v3's budget (8,192 tokens, 25 audio tok/s, ~1.9 tokens per character) is ~4,000
+characters per chunk - every paragraph in these books fits with 2.5x room; the practical
+limit is what the fine-tune sustains (zero-shot 600 safe / 900 drops tails; the v3
+deathstalker corpus is being trained on clips up to ~100 s to learn paragraph reads).
+
+Two tiers:
+1. **EPUB paragraphs are authoritative.** A chunk ends ONLY at a paragraph end; never
+   split a paragraph. Consecutive SHORT paragraphs (dialogue turns) may travel together
+   up to a floor of ~300 characters so one-line chunks do not render as cold starts.
+   Scene breaks and chapter boundaries are hard walls.
+2. **PDF-derived blocks (Foundry / dots layout output) are PROVISIONAL.** A block that
+   does not end in terminal punctuation is a fragment (page break, column, running
+   header) and is JOINED to the following block BEFORE the floor/wall logic runs:
+   reconstruct the complete thought first, then chunk.
+
+Per engine, through the `Budget` seam: for Orpheus the paragraph chunk must still
+respect its 44 s audio budget, so Orpheus falls back to sentence-boundary splitting
+INSIDE a long paragraph; for Higgs v3 the paragraph is the chunk.
+
+Relation to step 4: the ported e2a packer (`text/packer.py`) stays as the PARITY
+packer (what today's sessions were rendered with; resume of an e2a session depends on
+it). The paragraph packer is a second policy (`text/paragraph_packer.py`) selected by
+`(engine, voice)`; new Orpheus renders move to it only after an ear check on a real book
+(the plan's "diffs are ear-checked" rule applies twice over here).
