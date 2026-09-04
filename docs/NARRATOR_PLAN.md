@@ -228,3 +228,28 @@ zero-shot render (prompt format, token rates, decode path measured on the
 deathstalker reference), so the seams are shaped by two real engines, not one.
 Nothing in the manifest, session layout, VTT or assembly contracts depends on the
 engine; `sampleRate` is already a manifest field for this reason.
+
+### Llasa-8B measurements (orpheus-training session, 2026-09-04; full notes in
+`E:\training\_campaigns\2026-09-01-cod-full-rebuild\llasa\LLASA_NOTES.md`)
+
+- Codec X-codec2: single codebook 65,536, 16 kHz mono float out, measured 49.07 audio
+  tokens/s (nominal 50); decode = X-codec2 decoder over the token list, NO trim
+  convention (unlike SNAC's +75 samples per window).
+- Prompt: Llama-3.1 chat framing; speech tokens are ordinary vocabulary entries
+  `<|s_N|>` plus a few special tokens (ids/order in the notes). Training rows start with
+  ONE BOS 128000 - mlx-lm's loader adds its own (trainer trap).
+- Zero-shot cloning: the reference clip is embedded as its X-codec2 tokens after the
+  reference transcript (12 s clip = 552 tokens). So "voice" = reference clip + transcript.
+- Stop invariant is TOTAL SEQUENCE LENGTH (trained window 2048): chunks over ~2200
+  total tokens stop early with a CLEAN EOS and silently drop the remaining text (never
+  a loop). Ladder: 1500 chars 3/3 failed, 750 chars 5/6 failed, 375 chars 12/12 clean.
+  => the chunk-sizing cap for this engine is tokens-in-window (prompt + reference +
+  audio), not chars/sec; the manifest's caps object must be per (engine, voice).
+- EOS fires reliably unaided: no boost/floor needed (Orpheus-specific levers stay
+  behind the Orpheus backend).
+- Serving: plain Llama causal LM with an extended vocab; TokensPrompt in, ids out,
+  decode outside; transformers bf16 single-stream 20 tok/s (0.38x realtime, 19 GB).
+- License CC BY-NC 4.0 (personal use here; Owen: not a blocker).
+- Fine-tune prepared on the Mac (MLX bf16, LoRA r32 attn+MLP, 20.6 GB peak, 3.1 s/it)
+  but NOT run: Owen wants Higgs auditioned first; Higgs notes follow, and the engine
+  interface is extracted after BOTH are in hand.
