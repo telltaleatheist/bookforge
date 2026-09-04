@@ -338,106 +338,82 @@ engine/
   them.
 - Guard events, progress lines and the VTT are unchanged by engine choice.
 
-### What is REAL vs what is still DESIGNED (2026-09-04, after the extraction)
+### Ruling 2026-09-04 (evening): the second engine is Higgs v3; v2 is DROPPED
 
-The section above is the design. This is the state of the code, so nobody plans
-against a paragraph that has not been built. Full detail:
+Owen, relayed: "basically just Orpheus and we know Orpheus better". Higgs **v2**
+is not shipped. The v2 code built earlier that day is KEPT as interface
+SCAFFOLDING - registry id `higgs-v2-scaffold` - because it is a complete, tested
+reference implementation of the Protocol for an engine that is not SNAC, emits no
+pads and carries its voice as clips in a chat history, and it proves the seams
+fit something that is not Orpheus without a server in the way. No GPU smoke is
+owed for it and nothing renders a book with it.
+
+The v3 cloning failure reported in the earlier audition was WRONG about the
+cause: it was a one-line vLLM 0.28 bug rejecting vllm-omni's -100 audio
+placeholder, fixed by `work/patch_vllm.py`. Cloned v3 measures ECAPA cosine
+0.704 against a 0.766 narrator self-ceiling (92 %).
+
+### What is REAL vs what is still DESIGNED (2026-09-04, end of the engine task)
+
+The sections above are the design. This is the state of the code, so nobody
+plans against a paragraph that has not been built. Full detail:
 `python/narrator/engine/PORT_NOTES.md` section 12.
 
 **Real, tested, on both interpreters (Windows 3.12 and WSL `orpheus_tts` 3.11):**
 
 - `engine/protocol.py` - `Codec`, `Budget`, `Engine`, `ServedBackend` as
-  runtime-checkable Protocols; `StopPolicy`, `BackendSpec`, `SpeechRequest`,
-  `ReferenceClip` and the `VoiceRef` union (`TokenVoice` | `ClipsVoice` |
-  `DescriptionVoice`) as frozen dataclasses. No torch, no backend.
-- `engine/registry.py` - `'orpheus'` and `'higgs-v2'` as lazy factories; an
-  unknown id raises rather than defaulting.
+  runtime-checkable Protocols; `StopPolicy` (with `coverage_check`),
+  `BackendSpec` (`inprocess` | `served`), `SpeechRequest`, `ReferenceClip` and
+  the `VoiceRef` union as frozen dataclasses. No torch, no backend.
+- `engine/registry.py` - `orpheus`, `higgs-v3`, `higgs-v2-scaffold` as lazy
+  factories; an unknown id raises rather than defaulting.
 - `engine/orpheus/**` - every Orpheus module, MOVED, bodies unchanged, plus
   `interface.py` (`OrpheusCodec`, `OrpheusBudget`, the `stop_policy` view). The
-  engine test suite is 136 tests, unchanged, OK on both interpreters.
-- `engine/higgs/**` - Higgs Audio 2 (`higgs-audio-v2-generation-3B-base`) end to
-  end in code: chat-history construction, the six-step decode, the budget, the
-  stop policy, the voice document, the transformers backend. 67 tests, none of
-  which needs a model.
+  engine test suite is 137 tests, unchanged, OK on both interpreters.
+- `engine/higgs/v3_served.py` + `v3_engine.py` - the SERVED second engine:
+  launch (invoking their `serve_v3.sh`), `/health` polling, stop, the request
+  builder (sampling in `extra_params` and nowhere else), the response decoder,
+  the 45-token control-token allowlist, the one-reference / 30 s rules, the two
+  adapter strategies, `pads=False`, `edge_fade_ms=25`, `max_chars=600`,
+  `coverage_check='asr'`. **Rendered a sentence end to end on the GPU** - see
+  PORT_NOTES 12.7.
+- `engine/higgs/{config,codec,prompt,transformers_backend,engine}.py` - the v2
+  scaffold, 70 tests, none of which needs a model.
 - `serve/worker.py` selects its engine from `NARRATOR_ENGINE` (default
-  `orpheus`), and `--fake-engine` has a fake per engine, so the JSON-lines
-  protocol is exercised for Higgs (24 kHz, `pads = False`) as well as Orpheus.
-- `pyproject.toml` gains mutually exclusive `[orpheus]` and `[higgs]` extras,
-  pinned to what the two WSL envs actually have.
+  `orpheus`) and gained ONE branch for a served backend
+  (`engine.render_audio(text)`). `--fake-engine` has a fake per engine.
+- `pyproject.toml` gains three mutually exclusive extras, pinned to what the
+  three WSL envs actually have.
 
 **Designed, not built:**
 
-- **Higgs v3 as a `served` backend.** `engine/higgs/v3_served.py` records the
-  launch line, the two required site-packages patches, the exact request body
-  and every gotcha - and raises `NotImplementedError` on every call. Its licence
-  (Research and Non-Commercial) is the real blocker, not the engineering.
-- **Real batching or streaming for Higgs.** v2 is serial and emits whole rows;
-  `HiggsCodec.streaming_decoder()` returns None, on purpose, because a
-  delay-pattern codec has no sound windowed decode. Batching belongs with a
-  served backend.
-- **The ASR coverage gate.** `StopPolicy.coverage_check == 'asr'` for Higgs is a
-  hook with a name, nothing more. It matters: a duration ratio is NOT a coverage
-  proxy on this family (0.99 while dropping 22 % of the text).
+- **The ASR coverage gate.** `StopPolicy.coverage_check == 'asr'` is a hook with
+  a name. It matters more on v3 than anywhere: a chunk measured a duration ratio
+  of 0.99 while dropping 22 % of its text and inserting filler.
+- **A v3 fine-tune.** `ADAPTER_STRATEGIES` expresses both possible shapes
+  (`lora-modules` at launch, `merged-dir` as a model swap - both a server
+  restart); which one vllm-omni actually supports for this model class is NOT
+  yet exercised, and an adapter with no strategy is refused by name.
+- **v3 streaming and batching.** The buffered POST endpoint is what is wired;
+  `/v1/audio/speech/stream` and `/v1/audio/speech/batch` are unmeasured.
 - **`SentenceSink` reading `pads` / `edge_fade_ms`.** There is no SentenceSink
-  yet; the engine reports both and the assembler must consume them when it
-  lands. Until then, only Orpheus (`pads = True`, fade 0) is assembled, which is
-  today's behaviour exactly.
+  yet; the engines report both and the assembler must consume them - for v3 that
+  means realizing the manifest's gaps AND fading 10 ms in / 25 ms out.
 - **The catalog keyed on (engine, voice).** `orpheus-models.json` is still
   Orpheus-only, so `OrpheusBudget.max_chars` reads the payload the engine was
-  constructed with and REFUSES anything else rather than guessing a chunk size.
+  constructed with and REFUSES anything else, and v3's 600 is a placeholder.
 - **The rest of `serve/worker.py`.** Its load path is still Orpheus-shaped
-  (VALID_VOICES, merged/adapter/base modes, `set_voice`, per-request LoRA);
-  Higgs refuses the parts it cannot honour by name.
+  (VALID_VOICES, merged/adapter/base modes, `set_voice`, per-request LoRA); the
+  Higgs engines refuse the parts they cannot honour by name.
+- **A managed `higgs3` env.** The two site-packages patches are hand-applied
+  today and must be re-applied after any pip upgrade there.
 
-**Not run:** no Higgs model has been loaded from narrator's code. The GPU was
-held by another agent's `external-gpu-job.lock` for the whole of this work.
-
-## Chunking rule (Owen, 2026-09-04, relayed by the orpheus-training session) - the engine-aware packer
-
-Chunks represent PARAGRAPHS (complete thoughts), not character windows. Measured on
-the EPUBs as printed: Mutineer's Moon 2,107 blocks, median 221 ch, p99 822, max 1,213,
-23 % under 100 ch (dialogue lines; 51 % start with a quote); Pokemon 689 blocks, median
-263, max 1,060; McKinley 1,134 blocks, median 263, p90 774, max 1,507, 44 % under 100.
-Higgs v3's budget (8,192 tokens, 25 audio tok/s, ~1.9 tokens per character) is ~4,000
-characters per chunk - every paragraph in these books fits with 2.5x room; the practical
-limit is what the fine-tune sustains (zero-shot 600 safe / 900 drops tails; the v3
-deathstalker corpus is being trained on clips up to ~100 s to learn paragraph reads).
-
-Two tiers:
-1. **EPUB paragraphs are authoritative.** A chunk ends ONLY at a paragraph end; never
-   split a paragraph. Consecutive SHORT paragraphs (dialogue turns) may travel together
-   up to a floor of ~300 characters so one-line chunks do not render as cold starts.
-   Scene breaks and chapter boundaries are hard walls.
-2. **PDF-derived blocks (Foundry / dots layout output) are PROVISIONAL.** A block that
-   does not end in terminal punctuation is a fragment (page break, column, running
-   header) and is JOINED to the following block BEFORE the floor/wall logic runs:
-   reconstruct the complete thought first, then chunk.
-
-Per engine, through the `Budget` seam: for Orpheus the paragraph chunk must still
-respect its 44 s audio budget, so Orpheus falls back to sentence-boundary splitting
-INSIDE a long paragraph; for Higgs v3 the paragraph is the chunk.
-
-Relation to step 4: the ported e2a packer (`text/packer.py`) stays as the PARITY
-packer (what today's sessions were rendered with; resume of an e2a session depends on
-it). The paragraph packer is a second policy (`text/paragraph_packer.py`) selected by
-`(engine, voice)`; new Orpheus renders move to it only after an ear check on a real book
-(the plan's "diffs are ear-checked" rule applies twice over here).
-
-Refinement (Owen, same day): short blocks that are complete, separate thoughts are NOT
-merged - list items are the example (each `[item]` is read on its own, never joined to
-its neighbours for context; the 2026-08-29 item rule stands). The ~300-char floor applies
-only to consecutive short prose/dialogue paragraphs and to tier-2 fragments. The Higgs v3
-`max_chars` is MEASURED per fine-tune (min of the length-sweep recommendation and the
-corpus-derived cap = p1 training-clip seconds x chars/s; ~1,200-1,500 for a ds_ad4l cut
-with 100 s clips) and read from the catalog; 600 is the zero-shot placeholder.
-
-### Ruling (Owen, 2026-09-04 evening): Higgs v3 IS the second engine; Higgs v2 is DROPPED
-
-"Basically just Orpheus and we know Orpheus better." The concrete second engine is
-**Higgs v3 as a SERVED backend** against the patched vllm-omni stack (WSL env `higgs3`,
-`serve_v3.sh`, the two site-packages patches, `POST /v1/audio/speech`, sampling via
-`extra_params`, 30 s total reference cap, no scene/emotion tokens). Any v2 code stays
-only as interface scaffolding (`higgs-v2-scaffold`), never shipped. Voice object for the
-v3 deathstalker = the fine-tuned adapter (text-only prompt) once the ds_ad4l full-corpus
-train exists; reference-clip cloning remains the path for voices without a fine-tune.
-The measured `max_chars` and the adapter path follow from that train.
+**Budget rule for adapter voices (measured by the training session, 2026-09-04 night):** a
+fine-tuned Higgs adapter's stop length tracks its TRAINING CLIP LENGTH, not the text (a
+30-minute adapter trained on 8-22 s clips stops after ~6-10 s of audio on any prompt over
+~150 characters; 900 chars -> 9.6 s). So `max_chars` for an `{kind:'adapter'}` voice MUST
+come from that model's own length sweep, carried per voice in the catalog with its
+provenance, and an adapter voice without a measured cap is REFUSED by name. The 600-char
+zero-shot placeholder applies only to `{kind:'clips'}` voices. Also measured: one reference
+clip per request under the 30 s cap (multi-clip = one pre-joined wav + one transcript);
+cold start 297 s to /health (55 s only on a warm restart).
