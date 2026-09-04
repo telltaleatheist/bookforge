@@ -43,11 +43,16 @@ function receiptPathFor(outPath) {
  * version and the punctuation spec's. Any disagreement means the file describes
  * a different book or a different pass, and it is left exactly where it is.
  */
-function reusable(receipt, inputSha16, normalizerVersion, punctuationSpec) {
+function reusable(receipt, inputSha16, normalizerVersion, punctuationSpec, model) {
   return receipt !== null
     && receipt.inputSha16 === inputSha16
     && receipt.normalizerVersion === normalizerVersion
-    && receipt.punctuationSpec === punctuationSpec;
+    && receipt.punctuationSpec === punctuationSpec
+    // AND THE SAME MODEL. `ask: 'every-block'` means a book read by a 3B and a
+    // book read by a 14B are materially different work; reusing one for the
+    // other is a cache that lies about which model wrote the text (the second
+    // adversarial review, 2026-09-04).
+    && receipt.model === model;
 }
 
 /**
@@ -143,6 +148,11 @@ async function runNarrationTextStep(inputPath, opts) {
   }
 
   const inputSha16 = (await sidecar.bookDigest(resolved)).hex.slice(0, 16);
+  const { numberNormalizerModel } = require('../dist/electron/tts-number-normalizer-runner.js');
+  // Read ONCE and carried: the tag is part of the cache path, of the stamp AND
+  // of what makes a cleaned copy reusable, so a run that read it twice could
+  // reuse a copy one model made while claiming another.
+  const model = opts && opts.model ? opts.model : numberNormalizerModel();
   const stem = path.basename(resolved, path.extname(resolved));
   const wanted = path.join(path.dirname(resolved), `${stem}.narration.epub`);
 
@@ -155,7 +165,7 @@ async function runNarrationTextStep(inputPath, opts) {
   for (const candidate of cleanedSiblings(wanted)) {
     const existing = readReceipt(receiptPathFor(candidate));
     if (reusable(existing, inputSha16, normalizer.NORMALIZER_VERSION,
-      punctuation.PUNCTUATION_SPEC_VERSION)) {
+      punctuation.PUNCTUATION_SPEC_VERSION, model)) {
       console.log(`[narration-text] reusing the cleaned book beside the input: ${candidate}`);
       return {
         inputPath: candidate, receiptPath: receiptPathFor(candidate), receipt: existing,
@@ -165,14 +175,9 @@ async function runNarrationTextStep(inputPath, opts) {
   }
 
   const outPath = naming.uniqueOutputPath(wanted);
-  const { createOllamaNormalizerRunner, numberNormalizerModel } =
+  const { createOllamaNormalizerRunner } =
     require('../dist/electron/tts-number-normalizer-runner.js');
   const { loadNarrationTextPrompt } = require('../dist/electron/ai-bridge.js');
-
-  // Read ONCE and carried: the tag is part of the cache path and of the stamp, so
-  // a run that read it twice could name the copy after one model and make it with
-  // another.
-  const model = opts && opts.model ? opts.model : numberNormalizerModel();
   const t0 = Date.now();
   const result = await pass.runNarrationTextPass({
     epubPath: resolved,

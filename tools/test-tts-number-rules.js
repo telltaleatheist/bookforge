@@ -357,6 +357,34 @@ test('glued: digits glued to letters are READ — "that is how it is pronounced"
   reads('7-Eleven', 'seven-Eleven');
 });
 
+test('glued: a FUSED suffix leaves the digits, because <br/> joins words', () => {
+  // The walk joins the words either side of a line break with nothing between
+  // them, so "the 3rd<br/>day" arrives as "the 3rdday". The trailing lookahead
+  // that used to guard this was defeated by exactly that, and the token read
+  // "three rdday" (the second adversarial review, 2026-09-04). n4 left the
+  // digits for the model; so does n5.
+  untouched('the 3rdday');
+  untouched('the 21stcentury');
+  untouched('mid-90sera');
+  untouched('the 2ndhalf');
+  untouched('a 4thwall');
+});
+
+test('glued: digits pressed against letters are a MEASUREMENT, left to the model', () => {
+  // This rule has no table of units and cannot tell "4a" (a Sonderkommando) from
+  // "4A" (a seat), so it read "one hundred five mm" and destroyed the digits.
+  for (const printed of [
+    'a 105mm gun', '9mm rounds', '20km away', '5kg of it', '12V supply', '8GB of RAM',
+    '6ft tall', 'Sonderkommando 4a',
+  ]) untouched(printed);
+  // And the LETTER-prefix and hyphenated forms this rule is for are unaffected.
+  reads('an F8F fighter', 'an F eight F fighter');
+  reads('a C18 engine', 'a C eighteen engine');
+  reads('a V-2 rocket', 'a V-two rocket');
+  reads('the 7-Eleven', 'the seven-Eleven');
+  reads('a 24-hour day', 'a twenty four-hour day');
+});
+
 test('glued: a code is still a code — the guards, one by one', () => {
   untouched('X-007 file');            // a leading zero
   untouched('model Z-12345');         // five digits

@@ -70,6 +70,10 @@ import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
 import { applyNumberRules, bareWord, sitsInCitation, stillHasDigits } from './tts-number-rules.js';
+import {
+  ABBREVIATION_READINGS, abbreviationReadingRefusal, bracketRemovalRefusal, capsReadingRefusal,
+  romanReadingRefusal, romanValue,
+} from './tts-spoken-forms.js';
 import type { NumberRuleOutcome } from './tts-number-rules.js';
 import type { NarrationNumberTarget, NarrationTextRewrite } from './epub-processor.js';
 
@@ -192,6 +196,15 @@ export type NumberEditStatus =
   | 'TOO_MANY_EDITS'
   /** The block's non-number edits together would rewrite too much of it. */
   | 'BLOCK_BUDGET'
+  /**
+   * The replacement is not a READING of the token it changed.
+   *
+   * The model decides WHETHER a token is read differently than it is printed;
+   * `electron/tts-spoken-forms.ts` decides what it may become. An abbreviation
+   * this build has no reading for is refused here BY NAME, so the tokens real
+   * books print arrive as a review list and the table grows on purpose.
+   */
+  | 'NOT_A_READING'
   /** The span is not one of the classes this pass asks about — it is prose. */
   | 'NOT_A_CLASS'
   /** The reading invents words the find does not account for. */
@@ -259,8 +272,16 @@ export function classifyEdit(find: string): NumberEditClass {
   if (/[()[\]]/.test(find)) return 'bracketed';
   if (ROMAN_WORD.test(find)) return 'roman';
   if (/\s-\s/.test(find)) return 'spaced-hyphen';
-  if (/[A-Za-zÀ-ÿ]{1,6}\./.test(find)) return 'abbreviation';
-  if (/[A-Z]{2,}/.test(find)) return 'all-caps';
+  // ANCHORED TO A WHOLE TOKEN. Unanchored, this matched any span containing a
+  // word followed by a period — so "He did not believe it." classified as an
+  // abbreviation edit and the one-token law let the sentence be extended (the
+  // second adversarial review, 2026-09-04). An abbreviation is a token that ENDS
+  // in a period, or one built of single letters and periods ("e.g.", "a.m.").
+  if (hasAbbreviationToken(find)) return 'abbreviation';
+  // A run of capitals as a WHOLE word. The word boundaries matter: without
+  // them a lower-case span with two adjacent capitals anywhere in it reads as an
+  // acronym edit.
+  if (/(?<![A-Za-z])[A-Z]{2,}(?![A-Za-z])/.test(find)) return 'all-caps';
   return 'other';
 }
 
@@ -546,16 +567,102 @@ const wordKey = (token: string): string => token.toLowerCase().replace(/\./g, ''
  * one the class was allowed to change.
  */
 function droppedWords(find: string, replace: string): string[] {
+  return alignWords(find, replace).dropped;
+}
+
+/** "e.g.", "a.m." — single letters joined by periods, which are always one. */
+const DOTTED_LETTERS = /^(?:[A-Za-zÀ-ÿ]\.)+$/;
+
+/**
+ * Is this word token SHAPED like an abbreviation?
+ *
+ * Used to pick which reading table judges a token that changed. It is a shape
+ * test and nothing more: "it." passes it, and the abbreviation table then
+ * refuses "it." by name, which is the right answer for a model that tried to
+ * read the last word of a sentence.
+ */
+function isAbbreviationToken(token: string): boolean {
+  return token.endsWith('.') || DOTTED_LETTERS.test(token);
+}
+
+/**
+ * Does this span hold an abbreviation, for the purpose of CLASSIFYING it?
+ *
+ * The position matters, and this is where the second adversarial review's
+ * finding lands: a period at the END of a span is a sentence, not an
+ * abbreviation, so "He did not believe it." is prose. A period anywhere else in
+ * the span is an abbreviation — nothing else puts one mid-sentence — and a
+ * span-final token is one only when the table already knows it, which is the
+ * same "never guessed" rule the readings follow.
+ */
+function hasAbbreviationToken(find: string): boolean {
+  const tokens = wordTokens(find);
+  if (tokens.length === 0) return false;
+  if (tokens.slice(0, -1).some(isAbbreviationToken)) return true;
+  const last = tokens[tokens.length - 1]!;
+  if (DOTTED_LETTERS.test(last)) return true;
+  return last.endsWith('.')
+    && ABBREVIATION_READINGS.has(last.toLowerCase().replace(/[^a-zà-ÿ]/g, ''));
+}
+
+/** What the alignment of a find against its replacement found. */
+interface WordAlignment {
+  /** Find tokens with no match in the replacement, in order. */
+  dropped: string[];
+  /** The replacement's words that stand where the single dropped token was. */
+  reading: string[];
+  /** Replacement words that are neither a matched find word nor that reading. */
+  inserted: number;
+}
+
+/**
+ * Line the find's words up against the replacement's, and say exactly what
+ * happened to each.
+ *
+ * ── Why an alignment and not a subsequence test ─────────────────────────────
+ *
+ * The one-token law bounded DELETION and SUBSTITUTION and not INSERTION: a
+ * subsequence check is satisfied by a replacement that keeps every word and adds
+ * a sentence after them. The second adversarial review of 2026-09-04 measured
+ * both halves of that hole —
+ *
+ *   "He did not believe it." -> "He did not believe it. He had never believed
+ *                               it, and he said so."          APPLIED
+ *   "Dr. Kempner was convinced" -> "Dr. Kempner was not convinced"   APPLIED
+ *
+ * — so the alignment counts what was ADDED as well as what went missing, and it
+ * also hands back the words that stand where the dropped token was, which is
+ * what `electron/tts-spoken-forms.ts` needs to say whether they are a READING of
+ * it.
+ */
+function alignWords(find: string, replace: string): WordAlignment {
   const wanted = wordTokens(find);
-  const got = wordTokens(replace).map(wordKey);
-  const missing: string[] = [];
+  const got = wordTokens(replace);
+  const gotKeys = got.map(wordKey);
+  const dropped: string[] = [];
+  /** Where in `got` each matched find token landed. */
+  const matchedAt: number[] = [];
+  let droppedIndex = -1;
   let at = 0;
   for (const token of wanted) {
-    const found = got.indexOf(wordKey(token), at);
-    if (found < 0) { missing.push(token); continue; }
+    const found = gotKeys.indexOf(wordKey(token), at);
+    if (found < 0) {
+      if (dropped.length === 0) droppedIndex = matchedAt.length;
+      dropped.push(token);
+      continue;
+    }
+    matchedAt.push(found);
     at = found + 1;
   }
-  return missing;
+  // The window the single dropped token's reading occupies: everything in the
+  // replacement between the matched word before it and the matched word after.
+  let reading: string[] = [];
+  if (dropped.length === 1) {
+    const before = droppedIndex > 0 ? matchedAt[droppedIndex - 1]! : -1;
+    const after = droppedIndex < matchedAt.length ? matchedAt[droppedIndex]! : got.length;
+    reading = got.slice(before + 1, after);
+  }
+  return { dropped, reading, inserted: got.length - matchedAt.length - reading.length };
 }
 
 /**
@@ -985,6 +1092,15 @@ export function validateNumberEdits(
             + 'something');
           continue;
         }
+        // WHICH BRACKET, and what is in it. Square brackets are editorial by
+        // convention; round brackets are the author's until the contents prove
+        // otherwise, because the shape test alone deleted "(he was lying)" for
+        // wearing parentheses (the second adversarial review, 2026-09-04).
+        const notApparatus = bracketRemovalRefusal(find);
+        if (notApparatus !== null) {
+          reject(find, replace, 'EMPTY_REPLACE', notApparatus);
+          continue;
+        }
         if (wordTokens(find).length > MAX_BRACKET_WORDS) {
           reject(find, replace, 'EMPTY_REPLACE',
             `a bracketed insertion of ${wordTokens(find).length} words is a clause of the book, `
@@ -1003,7 +1119,8 @@ export function validateNumberEdits(
             + 'bracketed insertion — the pass has no reading to give it');
           continue;
         }
-        const dropped = droppedWords(find, replace);
+        const aligned = alignWords(find, replace);
+        const dropped = aligned.dropped;
         if (inner === 'spaced-hyphen' && dropped.length > 0) {
           reject(find, replace, 'WORDS_DROPPED',
             'reading a spaced hyphen as a dash changes punctuation, never a word');
@@ -1015,11 +1132,43 @@ export function validateNumberEdits(
             + `(${dropped.join(', ')}); a reading may change exactly one`);
           continue;
         }
-        if (dropped.length === 1 && !isClassToken(dropped[0])) {
-          reject(find, replace, 'WORDS_DROPPED',
-            `"${dropped[0]}" is an ordinary word, not the abbreviation, run of capitals or `
-            + 'roman numeral this reading is about');
+        // NOTHING MAY BE ADDED EITHER. The law bounded what went missing and
+        // said nothing about what arrived, so a replacement that kept every word
+        // and appended a sentence passed (the second adversarial review,
+        // 2026-09-04). The replacement's words are the find's words, minus the
+        // one token that changed, plus that token's reading. Nothing else.
+        if (aligned.inserted > 0) {
+          reject(find, replace, 'WORDS_ADDED',
+            `the reading adds ${aligned.inserted} word(s) the span does not account for; a `
+            + 'reading replaces one token and repeats the rest');
           continue;
+        }
+        const changed = dropped[0];
+        if (changed !== undefined) {
+          if (!isClassToken(changed)) {
+            reject(find, replace, 'WORDS_DROPPED',
+              `"${changed}" is an ordinary word, not the abbreviation, run of capitals or `
+              + 'roman numeral this reading is about');
+            continue;
+          }
+          // ── AND IS THE REPLACEMENT A READING OF IT? ────────────────────────
+          //
+          // The law above says WHICH token changed. It never said what it was
+          // allowed to become, and the second adversarial review measured the
+          // cost: FBI -> Gestapo, SAID -> whispered, St. -> Moscow, Part IV ->
+          // Part Nine, all APPLIED, each a different book. The model decides
+          // WHETHER a token is read differently; tts-spoken-forms.ts decides
+          // what it may be read AS, from tables a person wrote.
+          const bareChanged = changed.replace(/\.+$/, '');
+          const notAReading = isAbbreviationToken(changed)
+            ? abbreviationReadingRefusal(changed, aligned.reading)
+            : (romanValue(bareChanged) !== null && /^[IVXLCDM]+$/i.test(bareChanged)
+              ? romanReadingRefusal(changed, aligned.reading)
+              : capsReadingRefusal(changed, aligned.reading));
+          if (notAReading !== null) {
+            reject(find, replace, 'NOT_A_READING', notAReading);
+            continue;
+          }
         }
       }
       // The budget counts whichever side is bigger: a sixty-character find that

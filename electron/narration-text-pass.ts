@@ -435,7 +435,7 @@ export async function runNarrationTextPass(
   options: NarrationTextPassOptions,
 ): Promise<NarrationTextPassResult> {
   const {
-    readNarrationNumberTargets, writeNarrationTextStamp,
+    NARRATION_TEXT_STAMP_VERSION, readNarrationNumberTargets, writeNarrationTextStamp,
   } = await import('./epub-processor.js');
 
   if (path.resolve(options.epubPath) === path.resolve(options.outPath)) {
@@ -486,6 +486,7 @@ export async function runNarrationTextPass(
   options.onProgress?.(1, 1, 'Stamping the book');
   await fs.mkdir(path.dirname(options.outPath), { recursive: true });
   await writeNarrationTextStamp(cleanedPath, options.outPath, {
+    stampVersion: NARRATION_TEXT_STAMP_VERSION,
     normalizerVersion: NORMALIZER_VERSION,
     punctuationSpec: PUNCTUATION_SPEC_VERSION,
     model: options.model,
@@ -555,7 +556,8 @@ export type NarrationTextGate =
  * instructions to a user who believes they already did.
  */
 export async function narrationTextGate(bookPath: string): Promise<NarrationTextGate> {
-  const { readNarrationTextStamp } = await import('./epub-processor.js');
+  const { NARRATION_TEXT_STAMP_VERSION, readNarrationTextStamp } =
+    await import('./epub-processor.js');
   const book = path.basename(bookPath);
   // A MALFORMED STAMP IS A STALE ONE, not an exception. The reader throws with a
   // precise sentence about the damage — which is right for a reader — but this
@@ -571,7 +573,7 @@ export async function narrationTextGate(bookPath: string): Promise<NarrationText
       ok: false,
       state: 'stale',
       reason: `${book} carries a narration-text stamp this build cannot read — `
-        + `${(err as Error).message} Run "Narration text cleanup" again.`,
+        + `${(err as Error).message} Press "Clean text…" on this book’s version row to clean it again.`,
     };
   }
   if (stamp === null) {
@@ -579,8 +581,17 @@ export async function narrationTextGate(bookPath: string): Promise<NarrationText
       ok: false,
       state: 'missing',
       reason: `${book} has not been through the narration text cleanup, so its punctuation is `
-        + 'whatever the book printed and its numbers are still digits. Run "Narration text '
-        + 'cleanup" on this book first — it is the step that makes the text the voice reads.',
+        + 'whatever the book printed and its numbers are still digits. '
+        + 'Press "Clean text…" on this book’s version row first — it is the step that makes the text the voice reads.',
+    };
+  }
+  if (stamp.stampVersion !== NARRATION_TEXT_STAMP_VERSION) {
+    return {
+      ok: false,
+      state: 'stale',
+      reason: `${book} carries a narration-text stamp of shape ${stamp.stampVersion}; this build `
+        + `writes shape ${NARRATION_TEXT_STAMP_VERSION}, in which a reading has to be a reading `
+        + 'of the token it replaced. Run "Clean text…" on this version row again.',
     };
   }
   if (stamp.normalizerVersion !== NORMALIZER_VERSION
@@ -591,7 +602,7 @@ export async function narrationTextGate(bookPath: string): Promise<NarrationText
       reason: `${book} was cleaned by an older narration text pass `
         + `(${stamp.normalizerVersion}/${stamp.punctuationSpec}; this build runs `
         + `${NORMALIZER_VERSION}/${PUNCTUATION_SPEC_VERSION}), so parts of it would be narrated by `
-        + 'rules this build no longer uses. Run "Narration text cleanup" again.',
+        + 'Press "Clean text…" on this book’s version row to clean it again.',
     };
   }
   return {

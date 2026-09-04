@@ -911,6 +911,25 @@ const GLUED_MAX_DIGITS = 3;
 const GLUED_MAX_RUNS = 3;
 
 /**
+ * A token that OPENS with digits pressed straight against letters — "105mm",
+ * "9mm", "20km", "5kg", "12V", "8GB", "6ft", "4a".
+ *
+ * That shape is a MEASUREMENT or a designation, and its letters are a unit
+ * abbreviation the narrator says as a word ("millimetre", "kilograms") or as
+ * letters ("G B") — never as the printed letters glued to a number. This rule
+ * has no table of units and no way to tell "4a" (a Sonderkommando) from "4A" (a
+ * seat), so it read "one hundred five mm" and destroyed the digits on the way
+ * (the second adversarial review, 2026-09-04). Left for the model, which can see
+ * the sentence.
+ *
+ * The LETTER-PREFIX forms are untouched and are what this rule is for: "B-17",
+ * "COVID-19", "R2D2", "F8F", "C18", "V-2", "MP3". So are the hyphenated ones
+ * that open with digits, where the hyphen says the number is its own word:
+ * "7-Eleven", "24-hour", "30-year-old".
+ */
+const DIGITS_THEN_UNIT = /^\d+[A-Za-z]/;
+
+/**
  * A digit run whose shape belongs to an EARLIER rule, and which this catch-all
  * must therefore not read.
  *
@@ -929,8 +948,18 @@ const GLUED_MAX_RUNS = 3;
  * A run followed by "s" is a decade or a plural; a run followed by an ordinal
  * suffix is an ordinal. Either way the reading is not a bare cardinal, and a
  * rule that cannot tell which reading it is has no business guessing.
+ *
+ * NO TRAILING LOOKAHEAD, and its absence is the fix. `(?![A-Za-z])` said "only
+ * when the suffix ENDS the run", which `<br/>` fusion defeats: the walk joins
+ * the words either side of a line break with nothing between them, so a book
+ * printing "the 3rd<br/>day" hands this rule "the 3rdday" and the lookahead
+ * failed — the token was read "three rdday" (the second adversarial review,
+ * 2026-09-04). n4 left those digits for the model, which is the right answer,
+ * and dropping the lookahead restores it. The reviewer probed every intended
+ * reading: none regresses, because no shape this rule is FOR has a digit run
+ * followed by "s" or by an ordinal suffix at all.
  */
-const CLAIMED_BY_ANOTHER_RULE = /^(?:s(?![A-Za-z])|(?:st|nd|rd|th)(?![A-Za-z]))/i;
+const CLAIMED_BY_ANOTHER_RULE = /^(?:s|st|nd|rd|th)/i;
 
 function gluedCandidates(text: string): Candidate[] {
   const out: Candidate[] = [];
@@ -943,6 +972,8 @@ function gluedCandidates(text: string): Candidate[] {
     // A serial, a leading zero, or a number no cardinal covers: left as printed.
     if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
     if (runs.some((run) => run.length > 1 && run.startsWith('0'))) continue;
+    // A measurement or a designation: digits pressed straight against letters.
+    if (DIGITS_THEN_UNIT.test(token)) continue;
     // A run whose shape another rule owns — a decade's "s", an ordinal's suffix.
     // Checked per run, against what FOLLOWS it inside the token.
     let claimed = false;

@@ -661,5 +661,125 @@
     "in": "a 30-year-old man",
     "want": "a thirty-year-old man",
     "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "leave-fused-ordinal-3rd",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 3rdday",
+    "want": "the 3rdday",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-ordinal-21st",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 21stcentury",
+    "want": "the 21stcentury",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-decade-90s",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "mid-90sera",
+    "want": "mid-90sera",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-ordinal-2nd",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 2ndhalf",
+    "want": "the 2ndhalf",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-unit-mm",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a 105mm gun",
+    "want": "a 105mm gun",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-9mm",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "9mm rounds",
+    "want": "9mm rounds",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-km",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "20km away",
+    "want": "20km away",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-kg",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "5kg of it",
+    "want": "5kg of it",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-volt",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "12V supply",
+    "want": "12V supply",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-gb",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "8GB of RAM",
+    "want": "8GB of RAM",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-ft",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "6ft tall",
+    "want": "6ft tall",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-kommando",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Sonderkommando 4a",
+    "want": "Sonderkommando 4a",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "glued-fighter",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "an F8F fighter",
+    "want": "an F eight F fighter",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "glued-engine",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a C18 engine",
+    "want": "a C eighteen engine",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "glued-rocket",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a V-2 rocket",
+    "want": "a V-two rocket",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
   }
 ]

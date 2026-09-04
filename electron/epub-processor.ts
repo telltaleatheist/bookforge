@@ -8673,6 +8673,19 @@ export async function stripFootnoteReferencesFromBook(
 export const NARRATION_TEXT_STAMP_NAME = 'bookforge:narration-text';
 
 /**
+ * THE SHAPE of the stamp, versioned apart from the rules it records.
+ *
+ * 1 -> 2 (2026-09-04): `punctuationRefused` became a required field, and the
+ * validator learned to check that a reading is a reading. Neither is a change to
+ * the PUNCTUATION spec, so bumping `PUNCTUATION_SPEC_VERSION` would have told
+ * the training side a rule moved when none did; and `NORMALIZER_VERSION` is n5
+ * either way because n5 has never shipped. What did change is what a stamp
+ * MEANS, so books stamped by an earlier build of this branch must read stale —
+ * by rule, from this number, rather than by accident.
+ */
+export const NARRATION_TEXT_STAMP_VERSION = 2;
+
+/**
  * What the narration text pass leaves behind IN THE BOOK.
  *
  * The ledger is where a pass is recorded for the user; this stamp is for the
@@ -8681,6 +8694,8 @@ export const NARRATION_TEXT_STAMP_NAME = 'bookforge:narration-text';
  * `.epub` on some other machine has nothing else to ask.
  */
 export interface NarrationTextStamp {
+  /** `NARRATION_TEXT_STAMP_VERSION` — the shape of this record. */
+  stampVersion: number;
   /** `NORMALIZER_VERSION` — the number rules and the prompt, together. */
   normalizerVersion: string;
   /** `PUNCTUATION_SPEC_VERSION` — the punctuation half. */
@@ -8769,6 +8784,12 @@ export async function readNarrationTextStamp(
             `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp has no ${field}. It describes a pass `
             + 'nobody can identify; the book must be passed through the narration text pass again.');
         }
+      }
+      if (typeof stamp.stampVersion !== 'number' || !Number.isFinite(stamp.stampVersion)) {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp does not say which shape it is, so `
+          + 'there is no telling what it claims. The book must be passed through the narration '
+          + 'text pass again.');
       }
       if (typeof stamp.punctuationRefused !== 'number'
         || !Number.isFinite(stamp.punctuationRefused)) {

@@ -108,7 +108,7 @@ const CHAPTER = `<?xml version="1.0" encoding="utf-8"?>
 <body>
 <h2 data-bf-cat="chapter">The Long Year</h2>
 <p data-bf-cat="text">“You mean . . . ?” “Precisely, Commander.”</p>
-<p data-bf-cat="text">Mr. Smith read Col. 3:19-4:1 and then 250 members left in 1934.</p>
+<p data-bf-cat="text">Mr. Smith and Dr. Jones read Col. 3:19-4:1 and then 250 members left in 1934.</p>
 <p data-bf-cat="text">He paused… then went on, and it wasn’t his to give.</p>
 <p data-bf-cat="text">A dot .<em> </em>. . split by markup.</p>
 <p data-bf-cat="text">A dash a<em>-</em>-b split by markup.</p>
@@ -257,8 +257,8 @@ test('the three stages run, in order, over one book', async () => {
   // stood between "Mr." and "Smith" is an ordinary space by the time they read it.
   assert.strictEqual(
     await textStartingWith(result.outPath, 'Mr. Smith'),
-    'Mr. Smith read Colossians three nineteen through four one and then two hundred fifty '
-    + 'members left in nineteen thirty-four.');
+    'Mr. Smith and Dr. Jones read Colossians three nineteen through four one and then two '
+    + 'hundred fifty members left in nineteen thirty-four.');
 
   assert.ok(runner.released, 'the model\'s VRAM is given back before the pass returns');
 });
@@ -343,13 +343,15 @@ test('the gate says MISSING and STALE differently, and names the pass', async ()
   const missing = await pass.narrationTextGate(book);
   assert.strictEqual(missing.ok, false);
   assert.strictEqual(missing.state, 'missing');
-  assert.ok(missing.reason.includes('Narration text cleanup'), missing.reason);
+  assert.ok(missing.reason.includes('Clean text'), missing.reason);
 
   // A book stamped by an OLDER pass: written by hand, because the only way to
   // get one otherwise is to check out last week's build.
   const { writeNarrationTextStamp } = require(path.join(DIST, 'electron', 'epub-processor.js'));
   const old = path.join(ROOT, 'gate-stale.epub');
+  const { NARRATION_TEXT_STAMP_VERSION } = require(path.join(DIST, 'electron', 'epub-processor.js'));
   await writeNarrationTextStamp(book, old, {
+    stampVersion: NARRATION_TEXT_STAMP_VERSION,
     normalizerVersion: 'n1', punctuationSpec: 's0', model: 'fake:1b',
     at: new Date().toISOString(), punctuationRefused: 0,
   });
@@ -358,6 +360,8 @@ test('the gate says MISSING and STALE differently, and names the pass', async ()
   assert.strictEqual(stale.state, 'stale');
   assert.ok(stale.reason.includes('n1/s0'), stale.reason);
   assert.ok(stale.reason.includes('again'), stale.reason);
+  // And it names the control the user can actually press.
+  assert.ok(stale.reason.includes('Clean text'), stale.reason);
 });
 
 test('a second run over the SAME book produces the same text', async () => {
@@ -433,6 +437,7 @@ test('a stamp this build cannot read is STALE, not an exception', async () => {
     punctuationSpec: punct.PUNCTUATION_SPEC_VERSION,
     model: 'fake:1b',
     at: new Date().toISOString(),
+    stampVersion: 2,
     // The field a build before this one did not write.
     punctuationRefused: undefined,
   });
@@ -440,7 +445,7 @@ test('a stamp this build cannot read is STALE, not an exception', async () => {
   assert.strictEqual(gate.ok, false);
   assert.strictEqual(gate.state, 'stale');
   assert.ok(gate.reason.includes('cannot read'), gate.reason);
-  assert.ok(gate.reason.includes('Narration text cleanup'), gate.reason);
+  assert.ok(gate.reason.includes('Clean text'), gate.reason);
 });
 
 test('the pass REFUSES to write over the book it is reading', async () => {
@@ -479,13 +484,16 @@ test('a block with no digit in it is asked about too', async () => {
 test('a TEXT edit — an abbreviation — is applied and recorded with its class', async () => {
   const book = await buildBook('text-edit.epub');
   const runner = scriptedRunner({
-    'Mr. Smith': '{"edits": [{"find": "Mr. Smith", "replace": "Mister Smith"}]}',
+    'Dr. Jones': '{"edits": [{"find": "Dr. Jones", "replace": "Doctor Jones"}]}',
   });
   const result = await pass.runNarrationTextPass(optionsFor(book, runner, 'text-edit'));
-  assert.ok(
-    (await textStartingWith(result.outPath, 'Mister Smith')).startsWith('Mister Smith read'));
+  assert.ok((await textStartingWith(result.outPath, 'Mr. Smith')).includes('Doctor Jones'));
   assert.strictEqual(result.receipt.numbers.appliedByClass.abbreviation, 1,
     JSON.stringify(result.receipt.numbers.appliedByClass));
+  // And "Mr." is NOT one this build reads: the prompt says to leave it, every
+  // voice already says it, and an edit naming it is refused rather than obeyed.
+  assert.strictEqual(
+    verdictOf('Mr. Smith waited.', 'Mr. Smith', 'Mister Smith').status, 'NOT_A_READING');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -666,10 +674,19 @@ test('a bracketed insertion is apparatus only while it is SHORT', () => {
   assert.strictEqual(
     verdictOf('He said (see page twelve) so.', ' (see page twelve)', '').status, 'APPLIED');
   assert.strictEqual(verdictOf('It was [sic] there', '[sic] ', '').status, 'APPLIED');
+  // ROUND brackets are the author's until the contents prove otherwise.
   const clause = 'He said (though not by the men who signed it) so.';
   const refused = verdictOf(clause, ' (though not by the men who signed it)', '');
   assert.strictEqual(refused.status, 'EMPTY_REPLACE');
-  assert.ok(refused.detail.includes('clause of the book'), refused.detail);
+  assert.ok(refused.detail.includes('round brackets'), refused.detail);
+  assert.strictEqual(
+    verdictOf('He agreed (he was lying) then.', ' (he was lying)', '').status, 'EMPTY_REPLACE');
+  // SQUARE brackets are editorial, and the word count is what bounds them.
+  const square = 'He said [the guarantee would hold] so.';
+  const long = verdictOf(square, ' [the guarantee would hold]', '');
+  assert.strictEqual(long.status, 'EMPTY_REPLACE');
+  assert.ok(long.detail.includes('clause of the book'), long.detail);
+  assert.strictEqual(verdictOf('It was [ed.] there', '[ed.] ', '').status, 'APPLIED');
 });
 
 test('each class may change its OWN token, and only that one', () => {
@@ -724,6 +741,92 @@ test('a number reading may not invent a clause either', () => {
     assert.strictEqual(verdictOf(`x ${find} y`, find, replace).status, 'APPLIED',
       `${find} -> ${replace}`);
   }
+});
+
+/**
+ * NOTHING MAY BE ADDED, and the replacement must be a READING of the token that
+ * changed.
+ *
+ * The second adversarial review of 2026-09-04 found the one-token law bounded
+ * deletion and substitution but not INSERTION, and never checked WHAT a token
+ * became — so a sentence could be extended, a negation inserted, and every
+ * class token swapped for an unrelated word.
+ */
+test('a text reading may not ADD words either', () => {
+  // A whole sentence is prose, and a period at the END of a span is a sentence
+  // and not an abbreviation — the unanchored test read it as one, which is how
+  // this got as far as the one-token law at all.
+  const target = 'He did not believe it.';
+  assert.strictEqual(norm.classifyEdit(target), 'other');
+  assert.strictEqual(
+    verdictOf(target, target, 'He did not believe it. He had never believed it, and he said so.')
+      .status, 'NOT_A_CLASS');
+  // A real class token, with a word inserted beside it: this is the bound.
+  assert.strictEqual(
+    verdictOf('Dr. Kempner was convinced', 'Dr. Kempner was convinced',
+      'Dr. Kempner was not convinced').status, 'WORDS_ADDED');
+  assert.strictEqual(
+    verdictOf('the FBI agent came', 'the FBI agent', 'the F B I agent of the Gestapo').status,
+    'WORDS_ADDED');
+  assert.strictEqual(norm.classifyEdit('Dr. Kempner'), 'abbreviation');
+  // A period mid-span is an abbreviation; a span-final one only when the table
+  // already knows it, which is the same "never guessed" rule the readings keep.
+  assert.strictEqual(norm.classifyEdit('Kempner of the Dept. said'), 'abbreviation');
+  assert.strictEqual(norm.classifyEdit('he read etc.'), 'abbreviation');
+  assert.strictEqual(norm.classifyEdit('he believed it.'), 'other');
+});
+
+test('a caps word is read as ITS letters or ITS own word, never another', () => {
+  assert.strictEqual(verdictOf('the FBI agent', 'FBI', 'F B I').status, 'APPLIED');
+  assert.strictEqual(verdictOf('he never SAID so', 'never SAID so', 'never said so').status,
+    'APPLIED');
+  for (const [target, find, replace] of [
+    ['the FBI agent', 'FBI', 'Gestapo'],
+    ['the SS men', 'SS', 'Gestapo'],
+    ['he never SAID so', 'never SAID so', 'never whispered so'],
+  ]) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'NOT_A_READING',
+      `${find} -> ${replace}`);
+  }
+  // An acronym a person decided is said as a WORD is read as printed.
+  assert.strictEqual(verdictOf('the NASA launch', 'NASA', 'N A S A').status, 'NOT_A_READING');
+});
+
+test('an abbreviation is read from the TABLE, and an unknown one is refused by name', () => {
+  assert.strictEqual(verdictOf('in St. Petersburg', 'St. Petersburg', 'Saint Petersburg').status,
+    'APPLIED');
+  assert.strictEqual(verdictOf('on Baker St. now', 'Baker St.', 'Baker Street').status, 'APPLIED');
+  assert.strictEqual(verdictOf('the plan, e.g. the map', 'e.g.', 'for example').status, 'APPLIED');
+  assert.strictEqual(verdictOf('in St. Petersburg', 'St. Petersburg', 'Moscow Petersburg').status,
+    'NOT_A_READING');
+  assert.strictEqual(verdictOf('at nine a.m. sharp', 'nine a.m. sharp', 'nine midnight sharp')
+    .status, 'NOT_A_READING');
+  const unknown = verdictOf('the Ptre. said', 'Ptre. said', 'Presbyter said');
+  assert.strictEqual(unknown.status, 'NOT_A_READING');
+  assert.ok(unknown.detail.includes('never guessed'), unknown.detail);
+  assert.ok(unknown.detail.includes('Ptre.'), 'and it names the token, so it can be reviewed');
+});
+
+test('a roman numeral is read as its own value, and no other', () => {
+  assert.strictEqual(verdictOf('Henry VIII reigned', 'Henry VIII', 'Henry the Eighth').status,
+    'APPLIED');
+  assert.strictEqual(verdictOf('Part IV begins', 'Part IV', 'Part Four').status, 'APPLIED');
+  const wrong = verdictOf('Part IV begins', 'Part IV', 'Part Nine');
+  assert.strictEqual(wrong.status, 'NOT_A_READING');
+  assert.ok(wrong.detail.includes('IV is 4'), wrong.detail);
+});
+
+test('the tables are the one place a reading is decided', () => {
+  const forms = require(path.join(DIST, 'electron', 'tts-spoken-forms.js'));
+  assert.strictEqual(forms.romanValue('VIII'), 8);
+  assert.strictEqual(forms.romanValue('XIV'), 14);
+  assert.strictEqual(forms.romanValue('IIII'), null, 'a numeral nobody writes is not one');
+  assert.strictEqual(forms.romanValue('FBI'), null);
+  assert.ok(forms.ABBREVIATION_READINGS.has('dr'));
+  assert.ok(!forms.ABBREVIATION_READINGS.has('mr'), 'Mr. is left as printed, on purpose');
+  assert.strictEqual(forms.bracketRemovalRefusal('[sic]'), null);
+  assert.strictEqual(forms.bracketRemovalRefusal('(see page twelve)'), null);
+  assert.ok(forms.bracketRemovalRefusal('(he was lying)') !== null);
 });
 
 test('the number invariants are untouched for a digit-bearing find', () => {
