@@ -381,6 +381,157 @@ test('the input book is never touched', async () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// EVERY BLOCK goes to the model — Owen, 2026-09-04
+// ─────────────────────────────────────────────────────────────────────────────
+
+test('a block with no digit in it is asked about too', async () => {
+  const book = await buildBook('every-block.epub');
+  const runner = scriptedRunner();
+  await pass.runNarrationTextPass(optionsFor(book, runner, 'every-block'));
+
+  // The paragraph that prints no digit at all — invisible to a digit test, and
+  // exactly the paragraph an abbreviation or an acronym would be in.
+  assert.ok(runner.calls.some((c) => c.includes('He paused')), 'the digit-free block was asked');
+  // And the CAPTION was not: narrating a caption is the cut's decision, not this
+  // pass's, and that exclusion is by category and holds in both modes.
+  assert.ok(!runner.calls.some((c) => c.includes('Figure 7')), 'the caption was not');
+});
+
+test('a TEXT edit — an abbreviation — is applied and recorded with its class', async () => {
+  const book = await buildBook('text-edit.epub');
+  const runner = scriptedRunner({
+    'Mr. Smith': '{"edits": [{"find": "Mr. Smith", "replace": "Mister Smith"}]}',
+  });
+  const result = await pass.runNarrationTextPass(optionsFor(book, runner, 'text-edit'));
+  assert.ok(
+    (await textStartingWith(result.outPath, 'Mister Smith')).startsWith('Mister Smith read'));
+  assert.strictEqual(result.receipt.numbers.appliedByClass.abbreviation, 1,
+    JSON.stringify(result.receipt.numbers.appliedByClass));
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// What stands in for a lexical anchor on a text edit
+// ─────────────────────────────────────────────────────────────────────────────
+
+console.log('\n── the text-edit invariants ──');
+
+/** Validate one proposed edit against a block, under the narration policy. */
+function verdictOf(target, find, replace, policy = norm.EVERY_CLASS) {
+  const { records } = norm.validateNumberEdits(
+    target, [target.length], [{ find, replace }], [], policy);
+  return records[0];
+}
+
+test('classifyEdit names the class from the span, never from the model', () => {
+  assert.strictEqual(norm.classifyEdit('1934'), 'number');
+  assert.strictEqual(norm.classifyEdit('Dr. Kempner'), 'abbreviation');
+  assert.strictEqual(norm.classifyEdit('FBI'), 'all-caps');
+  assert.strictEqual(norm.classifyEdit(' (see the note)'), 'bracketed');
+  // A WHOLE bracketed insertion is a bracket first, even with a number in it —
+  // which is a fact about the RECEIPT. What invariants it has to satisfy is
+  // asked directly (does it print a digit; is it a removal).
+  assert.strictEqual(norm.classifyEdit(' (see p. 12)'), 'bracketed');
+  assert.strictEqual(norm.classifyEdit('cost (1934) and'), 'number');
+  assert.strictEqual(norm.classifyEdit('waited - and'), 'spaced-hyphen');
+  assert.strictEqual(norm.classifyEdit('Henry VIII'), 'roman');
+  assert.strictEqual(norm.classifyEdit('he SAID so'), 'all-caps');
+  assert.strictEqual(norm.classifyEdit('a quiet phrase'), 'other');
+});
+
+test('a text edit is REFUSED outright by the number pass, as it always was', () => {
+  const record = verdictOf('Dr. Smith waited.', 'Dr. Smith', 'Doctor Smith', norm.NUMBERS_ONLY);
+  assert.strictEqual(record.status, 'NO_DIGIT_IN_FIND');
+});
+
+test('a text edit is accepted by the narration policy', () => {
+  const record = verdictOf('Dr. Smith waited.', 'Dr. Smith', 'Doctor Smith');
+  assert.strictEqual(record.status, 'APPLIED');
+  assert.strictEqual(record.editClass, 'abbreviation');
+});
+
+test('a DELETION is only ever a bracketed insertion', () => {
+  assert.strictEqual(
+    verdictOf('He said (see p. 12) so.', ' (see p. 12)', '').status, 'APPLIED');
+  assert.strictEqual(
+    verdictOf('He said the thing so.', 'the thing ', '').status, 'EMPTY_REPLACE');
+});
+
+test('a find long enough to be a clause is refused', () => {
+  const target = `${'word '.repeat(60)}end.`;
+  const find = target.slice(0, 205);
+  assert.strictEqual(verdictOf(target, find, 'a short reading').status, 'EDIT_TOO_LONG');
+});
+
+test('a replacement no reading justifies is refused', () => {
+  const record = verdictOf('He said FBI there.', 'FBI', 'F B I '.repeat(20));
+  assert.strictEqual(record.status, 'REPLACE_TOO_LONG');
+});
+
+/** N distinct all-letter tokens, so every slice of the block is unique. */
+function uniqueWords(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(String.fromCharCode(97 + Math.floor(i / 26) % 26)
+      + String.fromCharCode(97 + (i % 26)) + 'ord');
+  }
+  return out;
+}
+
+test('a block whose text edits would rewrite a quarter of it is stopped', () => {
+  // A six-hundred-character block, so the budget is a hundred and fifty. One
+  // hundred-character reading fits; the second does not.
+  const target = `${uniqueWords(100).join(' ')}.`;
+  const budget = Math.floor(target.length * 0.25);
+  assert.ok(budget > 100 && budget < 200, `budget ${budget} for ${target.length} chars`);
+  const { records } = norm.validateNumberEdits(target, [target.length], [
+    { find: target.slice(0, 100), replace: 'the first reading' },
+    { find: target.slice(300, 400), replace: 'the second reading' },
+  ], [], norm.EVERY_CLASS);
+  assert.strictEqual(records[0].status, 'APPLIED', JSON.stringify(records[0]));
+  assert.strictEqual(records[1].status, 'BLOCK_BUDGET', JSON.stringify(records[1]));
+  assert.ok(records[1].detail.includes('25%'), records[1].detail);
+});
+
+test('the budget has a FLOOR, so a heading\'s only edit is not refused', () => {
+  // A quarter of "Dr. Smith waited." is four characters; without the floor the
+  // one honest reading in it would be refused for being too big for its block.
+  assert.strictEqual(verdictOf('Dr. Smith waited.', 'Dr. Smith', 'Doctor Smith').status,
+    'APPLIED');
+});
+
+test('a block that proposes a rewrite\'s worth of edits is stopped', () => {
+  // A block long enough that the CHARACTER budget affords all forty readings —
+  // so the per-block CAP is the only thing that can stop the flood, which is
+  // what this is here to prove.
+  const words = uniqueWords(40);
+  const target = `${words.join(' ')} ${uniqueWords(400).slice(40).join(' ')}.`;
+  const edits = words.map((w) => ({ find: w, replace: `${w} said` }));
+  const { records } = norm.validateNumberEdits(
+    target, [target.length], edits, [], norm.EVERY_CLASS);
+  const applied = records.filter((r) => r.status === 'APPLIED').length;
+  assert.strictEqual(applied, 24, `${applied} applied — the cap is 24`);
+  assert.ok(records.some((r) => r.status === 'TOO_MANY_EDITS'), 'the cap fired');
+});
+
+test('the number invariants are untouched for a digit-bearing find', () => {
+  assert.strictEqual(
+    verdictOf('Leviticus 20:6 forbids', '20:6', 'twenty').status, 'NUMBER_DROPPED');
+  assert.strictEqual(
+    verdictOf('in 1934 he left', '1934', 'nineteen 34').status, 'DIGIT_IN_REPLACE');
+  assert.strictEqual(
+    verdictOf('on 12 June 1933', '12 June 1933', 'the twelfth, nineteen thirty-three').status,
+    'WORDS_DROPPED');
+});
+
+test('an edit may not reach into a span the RULES already read', () => {
+  const target = 'He read page twenty three there.';
+  const { records } = norm.validateNumberEdits(
+    target, [target.length], [{ find: 'page twenty three', replace: 'page twenty-three' }],
+    [{ at: 8, end: 25 }], norm.EVERY_CLASS);
+  assert.strictEqual(records[0].status, 'OVERLAPS_APPLIED');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 
 (async () => {
   for (const t of tests) {

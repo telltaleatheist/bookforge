@@ -24,7 +24,17 @@ Three stages, over every text of the book, **in this order**:
 |---|---|---|---|
 | 1 | **Punctuation** | canonical ellipsis `...`, the quote map, control characters and invisibles deleted, every space variant to U+0020, repeated spaces collapsed, `--` to an em dash, `?!!` to one mark, trailing line space trimmed. **Dashes the book printed are kept.** | `electron/tts-punctuation.ts` (spec `s1`) |
 | 2 | **The number rules** | the shapes a narrator's reading is *guaranteed*: scripture, dates, clock times, money, percent, decades, ordinals, `#N`, comma-grouped and bare integers. Citation apparatus is left as printed. | `electron/tts-number-rules.ts` |
-| 3 | **The model, on the residue** | a bare four-digit year, a range, a decimal — the judgements only the sentence can settle. Every edit passes a wall of validators; a rejected edit means the printed digits stand and the rejection is recorded by name. | `electron/tts-number-normalizer.ts` (`NORMALIZER_VERSION`) |
+| 3 | **The model, on EVERY block** | every judgement only the sentence can settle: number residue, abbreviations, all-caps runs, bracketed apparatus, spaced hyphens, roman numerals, footnote markers. Every edit passes a wall of validators; a rejected edit means the text stands as printed and the rejection is recorded by name. | `electron/tts-number-normalizer.ts` (`NORMALIZER_VERSION`) |
+
+> Owen, 2026-09-04: *"send every single block through to be sure. I suspect
+> deterministic decisions on this aren't the right way to do it. Let the model
+> decide what should be updated."*
+>
+> So stage 3's selection is **not** a digit test. Every block of the book goes to
+> the model — one call per block, `qwen3.8:27b`, temperature 0 — with the whole
+> instruction set as the prompt. That cost is accepted for this pass because the
+> pass runs **once** and the book keeps the result. The plain-text audition path
+> (`--tts --text`) keeps the digit test: it has no chain, no stamp, and no book.
 
 **The order is load-bearing.** `normalizeQuotes` turning `…` into `...` *after*
 `applyNumberRules` had computed offsets would invalidate every one of them.
@@ -37,6 +47,50 @@ every number that stands beside a canonicalized quote, or hand-merging
 overlapping spans: a second coordinate system to keep true. Both writes go
 through `writeNarrationEpub`, which proves every rewrite landed or destroys its
 output, and the intermediate is content-addressed and reused.
+
+### What the model may and may not do
+
+The model returns an **anchored edit list** — `{find, replace}` pairs, each a
+verbatim span of the block — or an empty list. It never returns rewritten text.
+Every edit is judged by `validateNumberEdits`, and the class it belongs to is
+derived from the span (`classifyEdit`), never declared by the model.
+
+A **number** edit has a lexical anchor: `keepsEveryWord` proves every prose word
+of the find survives, and `NUMBER_DROPPED` proves every printed number came out
+as words. Those invariants are unchanged.
+
+A **text** edit — an abbreviation, an acronym, a bracketed aside — has no such
+anchor: "Dr." → "Doctor" legitimately replaces the letters, so nothing can
+compare the two sides word for word. What guards it instead:
+
+| invariant | disposition |
+|---|---|
+| the find is verbatim in the block and occurs exactly once | `NOT_FOUND` / `AMBIGUOUS_FIND` |
+| the find is at most 200 characters — a span, not a clause | `EDIT_TOO_LONG` |
+| the replacement is spoken words, and carries no digit | `REPLACE_NOT_WORDS` / `DIGIT_IN_REPLACE` |
+| the replacement is at most `4 × find + 40` characters | `REPLACE_TOO_LONG` |
+| a **removal** is allowed only for a whole bracketed insertion | `EMPTY_REPLACE` |
+| the text edits together replace at most 25% of the block (floor: 80 characters, so a heading's one edit is not refused) | `BLOCK_BUDGET` |
+| at most 24 edits are accepted per block | `TOO_MANY_EDITS` |
+| the edit may not touch a span the deterministic rules already rewrote | `OVERLAPS_APPLIED` |
+| the span may not cross a text node — an `<em>`, a `<sup>`, a link | `SPANS_MARKUP` |
+
+A block whose answer will not parse is retried once at the same settings
+(temperature is pinned to 0 for every request), then recorded `UNIT_PARSE_FAIL`
+with its text intact; more than 10% of blocks failing to parse fails the whole
+pass by name. **A paraphrase is never silently accepted** — but see the OPEN
+CONCERN below.
+
+### OPEN CONCERN — text edits have no lexical anchor
+
+The caps above bound *size*, not *meaning*. A short, word-shaped paraphrase of
+one clause ("the man who had waited" → "the waiting man") satisfies every one of
+them. The receipt names every accepted edit with its class and its span, so it
+can be seen after the fact; nothing refuses it at the time. This was implemented
+as ruled rather than quietly kept deterministic, and is recorded here so it can
+be put to Owen: the options, if it turns out to matter, are a per-class allowlist
+of shapes, or a second model call that judges each accepted text edit against its
+find.
 
 **It is text only.** `excludeCaptions`, `excludeFootnotes` and `stripSupMarkers`
 are all forced OFF, against `writeNarrationEpub`'s own defaults, because this
@@ -136,7 +190,7 @@ Two gates, one meaning:
 | gate | asks | used by |
 |---|---|---|
 | `narrationTextGate(bookPath)` — `electron/narration-text-pass.ts` | a **file**: is there a stamp, and is it this build's version? | `prepareNarrationInput`, `cli/narration-text-step.js` |
-| `narrationTextReadiness(appliedPasses)` — `electron/narration-text-readiness.ts` | a **project**: is there a `narration-text` entry, and is it the LAST text-changing one? | the app's Narrate / Process door |
+| `narrationTextReadiness(appliedPasses)` — `electron/narration-text-readiness.ts` | a **project**: is there a `narration-text` entry, and is it the LAST text-changing one? | the app's Narrate door, over IPC `narration:text-readiness` |
 
 The project gate knows something the file cannot: a `simplify` or `translate`
 recorded *after* the cleanup leaves the stamp on the book (those passes rewrite
@@ -160,6 +214,45 @@ the ruling moved out of there.
 "Everything after it is finalized/fixed" is what that staleness rule means in
 code: the pass may be run at any point, and the TTS copy is always cut from the
 book as it stands after it.
+
+### The gate is a question, not a lock
+
+> Owen, 2026-09-04: *"If the user hits narrate before it does cleanup, it tells
+> the user it still needs to do the cleanup step; then it does the cleanup step
+> on whatever the last step they did before exporting the epub they were trying
+> to narrate, and then they export the epub and queue narration."*
+
+So the narration modal's `onSubmit` asks `narration:text-readiness` **before it
+queues anything**. When the answer is missing or stale it shows a confirm dialog:
+
+* **title** — "Narration text cleanup"
+* **message** — the readiness sentence verbatim (see the three above)
+* **detail** — "Run it now? The cleanup is queued first, and this narration run is
+  queued behind it — it will read the book the cleanup produced. It is minutes of
+  model time over the blocks of the book, and it only has to happen once."
+* **confirm** — "Run cleanup, then narrate" (or "Run cleanup again, then narrate"
+  when the state is stale) · **cancel** — "Cancel"
+
+**Cancel** puts the readiness sentence in the dialog's error line and queues
+nothing. **Confirm** queues ONE run through `QueueService.submitProcessingRun` —
+which is `processing:submit-chain` with a `followOn` — so the whole thing is a
+single queue-engine job with ordered steps:
+
+1. `narration-text` (the pass, on the family's book)
+2. `tts-conversion`
+3. `rvc-enhancement` — when the run asked for it
+4. `final-denoise` / `reassembly` — when the run asked for them
+5. `video-assembly` — when the run asked for it
+
+The follow-on steps are re-pointed at the family's **book** path (which the pass
+rewrites in place) rather than at whichever version row opened the dialog: an
+exported copy cut before the cleanup describes a book nobody has any more. The
+TTS copy is re-cut from the book by `prepareNarrationInput`'s caption/endnote cut
+as the render starts, and `ensureNarrationEpub` treats an export cut from older
+bytes as stale in exactly the same way.
+
+The CLI's unattended chains do the same thing without asking, because they have
+nobody to ask.
 
 ---
 
@@ -246,6 +339,51 @@ definition are both BookForge's.
 
 ---
 
+## Owen's 2026-09-04 revision of the leave-as-printed list
+
+Two shapes moved OFF it, into rules of their own:
+
+| printed | read | rule |
+|---|---|---|
+| `p. 23` | page twenty three | `page` |
+| `pp. 65-71` | pages sixty five to seventy one | `page` |
+| `COVID-19` | COVID-nineteen | `glued` |
+| `B-17` | B-seventeen | `glued` |
+| `I-95` | I-ninety five | `glued` |
+| `7-Eleven` | seven-Eleven | `glued` |
+| `R2D2` | R two D two | `glued` |
+| `1940s-era` | nineteen forties-era | `decade` (it already owned it) |
+
+Owen: *"COVID-nineteen is actually correct, that's how it's pronounced in real
+life."*
+
+**The cardinals are unhyphenated**, because that is what `cardinalWords` produces
+and what the fine-tunes were trained on — `tts-number-rules.ts`'s own doctrine
+note says the hyphenating `integerToWords` serves the OCR pass instead. So this
+produces `I-ninety five` and `page twenty three` where the handoff's prose wrote
+`I-ninety-five` and `twenty-three`: same reading, the corpus's own spelling. The
+range word for pages is **"to"**, not the verse range's "through". The letters
+are the book's and are never re-cased — `7-Eleven` keeps its capital E.
+
+`CITATION_LEAD` lost `p.`/`pp.` and kept `vol. no. ibid. cf. fol.`. The guard is
+shared with the model validator, so removing the page lead is what lets the model
+read one too. The `glued` rule runs LAST of all the rules and refuses by shape,
+not by list: a digit run over four digits, more than three runs, a leading zero,
+a `/` on either side, or a `.` followed by a digit. `X-007`, `Z-12345`,
+`A1B2C3D4`, `v1.2`, `298/38`, `Document II 9/34` and `AfW HH R 231191` are all
+still printed as printed.
+
+## Ask 2c — a comma is a separator inside one number
+
+`NUMBER_DROPPED` counted runs of digits, and a comma splits one number into
+several, so `"5,000 copies"` → *"five thousand copies"* was refused for having
+two number words where three were demanded. Measured by the training side on
+tr_dn3 (NORMALIZATION_SPEC.md §F4): it also refused `18,000-strong` and
+`20-30,000`, and both rows still print their digits in the served corpus.
+`digitRuns` now reads a comma-grouped number as ONE number. The floor it was
+protecting still fires: `20:6` → *"twenty"* and `1914-1918` → *"nineteen
+fourteen"* are both still refused.
+
 ## The two rule fixes in n5
 
 **Ask 2 — an archive sigil in front of a bare integer is citation apparatus.**
@@ -289,3 +427,5 @@ asserts no digit-adjacent colon survives.
 | `tools/test-text-normalization.js` | the shared fixtures + both fixes |
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
+| `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
+| `shared/processing/book-passes.ts` etc. | the pass kind, registered in eleven tables |

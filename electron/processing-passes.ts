@@ -867,7 +867,7 @@ async function runNarrationTextPass(
 
   const { createOllamaNormalizerRunner, numberNormalizerModel } =
     await import('./tts-number-normalizer-runner.js');
-  const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
+  const { loadNarrationTextPrompt } = await import('./ai-bridge.js');
   const { narrationCutsDir } = await import('./parallel-tts-bridge.js');
   // Read ONCE and carried: the tag is part of the cache path AND of the stamp,
   // so a run that read it twice could name the copy after one model and make it
@@ -881,7 +881,7 @@ async function runNarrationTextPass(
     // The SAME scratch the render door looks in, so the copies this pass makes
     // are the copies a later render finds instead of paying for them again.
     cacheDir: narrationCutsDir(),
-    systemPrompt: await loadNumberNormalizePrompt(),
+    systemPrompt: await loadNarrationTextPrompt(),
     model,
     runner: createOllamaNormalizerRunner(model),
     onProgress: (done, total, label) => {
@@ -917,6 +917,9 @@ async function runNarrationTextPass(
 
   const punctuation = outcome.receipt.punctuation;
   const numbers = outcome.receipt.numbers;
+  const byClass = numbers === null ? {} : numbers.appliedByClass;
+  const classSummary = Object.entries(byClass)
+    .sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(', ');
   const applied: AppliedPass = {
     kind: 'narration-text',
     at: outcome.receipt.at,
@@ -930,6 +933,9 @@ async function runNarrationTextPass(
       numbersApplied: numbers === null ? 0 : numbers.appliedSpans,
       numbersByRules: numbers === null ? 0 : numbers.appliedByRules,
       numbersByModel: numbers === null ? 0 : numbers.appliedByModel,
+      // What the pass actually DID, by kind of reading — the number a reviewer
+      // looks at first now that the model is asked about more than digits.
+      appliedByClass: numbers === null ? {} : numbers.appliedByClass,
       receipt: receiptRel,
     },
     diff: diff.rel,
@@ -943,7 +949,8 @@ async function runNarrationTextPass(
     summary: `${punctuation.spansApplied} punctuation span(s) canonicalized and `
       + `${numbers === null ? 0 : numbers.appliedSpans} number(s) read as words `
       + `(${numbers === null ? 0 : numbers.appliedByRules} by rule, `
-      + `${numbers === null ? 0 : numbers.appliedByModel} by ${model}). The book is stamped `
+      + `${numbers === null ? 0 : numbers.appliedByModel} by ${model}`
+      + `${classSummary === '' ? '' : `; ${classSummary}`}). The book is stamped `
       + `${outcome.receipt.normalizerVersion}/${outcome.receipt.punctuationSpec} and is ready to `
       + 'narrate.'
       + (punctuation.refused.length > 0

@@ -110,7 +110,7 @@ async function runNarrationTextStep(inputPath, opts) {
   const outPath = naming.uniqueOutputPath(wanted);
   const { createOllamaNormalizerRunner, numberNormalizerModel } =
     require('../dist/electron/tts-number-normalizer-runner.js');
-  const { loadNumberNormalizePrompt } = require('../dist/electron/ai-bridge.js');
+  const { loadNarrationTextPrompt } = require('../dist/electron/ai-bridge.js');
 
   // Read ONCE and carried: the tag is part of the cache path and of the stamp, so
   // a run that read it twice could name the copy after one model and make it with
@@ -121,7 +121,7 @@ async function runNarrationTextStep(inputPath, opts) {
     epubPath: resolved,
     outPath,
     cacheDir: bridge.narrationCutsDir(),
-    systemPrompt: await loadNumberNormalizePrompt(),
+    systemPrompt: await loadNarrationTextPrompt(),
     model,
     runner: createOllamaNormalizerRunner(model),
     ...(opts && opts.onProgress ? { onProgress: opts.onProgress } : {}),
@@ -139,9 +139,13 @@ async function runNarrationTextStep(inputPath, opts) {
     + `— ${Object.entries(p.counts).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`
     + `${p.refused.length > 0 ? `; ${p.refused.length} refused (crosses markup)` : ''}`);
   console.log(
-    `[narration-text] numbers: ${n === null ? 0 : n.appliedSpans} read as words `
+    `[narration-text] readings: ${n === null ? 0 : n.appliedSpans} applied `
     + `(${n === null ? 0 : n.appliedByRules} by rule, ${n === null ? 0 : n.appliedByModel} by `
-    + `${model}) over ${n === null ? 0 : n.targetsSelected} passage(s)`);
+    + `${model}) over ${n === null ? 0 : n.targetsSelected} block(s), `
+    + `${n === null ? 0 : n.targetsAsked} asked`);
+  console.log(
+    `[narration-text] by class: ${n === null ? '(none)'
+      : Object.entries(n.appliedByClass).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`);
   console.log(`[narration-text] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
   return { inputPath: result.outPath, receiptPath, receipt: result.receipt, ran: true };

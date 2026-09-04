@@ -182,17 +182,94 @@ export type NumberEditStatus =
   | 'SPANS_MARKUP'
   /** The span overlaps one already accepted for this target, rule or model. */
   | 'OVERLAPS_APPLIED'
+  /** `replace` is empty or blank: a deletion, which only the marker class may be. */
+  | 'EMPTY_REPLACE'
+  /** `find` is longer than one span whose reading differs — a clause, or a paraphrase. */
+  | 'EDIT_TOO_LONG'
+  /** `replace` is far longer than what it replaces: an expansion nothing justifies. */
+  | 'REPLACE_TOO_LONG'
+  /** This block proposed more edits than a block of spoken-form fixes can have. */
+  | 'TOO_MANY_EDITS'
+  /** The block's non-number edits together would rewrite too much of it. */
+  | 'BLOCK_BUDGET'
   /** The heading and its contents entry could not take the SAME edit. */
   | 'TOC_MISMATCH'
   /** A deterministic rule read it, before the model was asked anything. */
   | 'APPLIED_RULE'
   | 'APPLIED';
 
+/**
+ * WHICH KIND OF READING an edit is about.
+ *
+ * Derived from the `find` rather than declared by the model — a model that names
+ * its own class would be trusted about the one thing the record exists to check.
+ * The receipt tallies by class, which is how "the model made 400 all-caps edits
+ * on this book" becomes a thing anyone can see.
+ */
+export type NumberEditClass =
+  /** The find prints a digit. Every number invariant applies to it. */
+  | 'number'
+  /** An abbreviation with a period — "Dr.", "e.g.", "St." */
+  | 'abbreviation'
+  /** A run of capitals — an acronym said as letters, or emphasis. */
+  | 'all-caps'
+  /** A parenthesis or bracket: apparatus a narrator does not read. */
+  | 'bracketed'
+  /** A hyphen used as a dash, with spaces around it. */
+  | 'spaced-hyphen'
+  /** A roman numeral naming a person or a part. */
+  | 'roman'
+  /** Anything else. The class the receipt watches hardest. */
+  | 'other';
+
+/** A roman-numeral token of two or more characters, as a whole word. */
+const ROMAN_WORD = /(?:^|\s)[IVXLCDM]{2,}(?:$|[\s,.;:)\]])/;
+
+/**
+ * A WHOLE bracketed insertion, with whatever spacing stands around it —
+ * " (see p. 12)", "[sic]".
+ *
+ * This exact shape is the only one a REMOVAL is allowed for: apparatus a
+ * narrator does not read. A find that merely CONTAINS a bracket ("cost (1934)
+ * and") is not this, and removing it would take prose with it.
+ */
+const WHOLE_BRACKET = /^\s*[([][^()[\]]*[)\]]\s*$/;
+
+/** Is this span a bracketed insertion and nothing else? */
+export function isWholeBracketedInsertion(find: string): boolean {
+  return WHOLE_BRACKET.test(find);
+}
+
+/**
+ * Which class this edit is about, from the span it names.
+ *
+ * FOR THE RECEIPT, not for the enforcement. What invariants an edit has to
+ * satisfy is decided by two explicit questions in `validateNumberEdits` — does
+ * the find print a digit, and is this a bracketed removal — because a bracketed
+ * span with a page number in it is both a bracket and a number, and the two
+ * questions have different answers.
+ */
+export function classifyEdit(find: string): NumberEditClass {
+  if (isWholeBracketedInsertion(find)) return 'bracketed';
+  if (DIGIT.test(find)) return 'number';
+  if (/[()[\]]/.test(find)) return 'bracketed';
+  if (ROMAN_WORD.test(find)) return 'roman';
+  if (/\s-\s/.test(find)) return 'spaced-hyphen';
+  if (/[A-Za-zÀ-ÿ]{1,6}\./.test(find)) return 'abbreviation';
+  if (/[A-Z]{2,}/.test(find)) return 'all-caps';
+  return 'other';
+}
+
 /** One proposed edit and what became of it. */
 export interface NumberEditRecord {
   find: string;
   replace: string;
   status: NumberEditStatus;
+  /**
+   * Which reading this edit is about. Absent on records written before the pass
+   * asked about anything but numbers.
+   */
+  editClass?: NumberEditClass;
   /** Why, when the status alone does not say it (the oracle's own reading, etc.). */
   detail?: string;
 }
@@ -255,6 +332,15 @@ export interface NumberNormalizationRecord {
   /** And how many the model read. The two sum to `appliedSpans`. */
   appliedByModel: number;
   dispositions: Record<string, number>;
+  /**
+   * How many edits of each class were APPLIED — 'number', 'abbreviation',
+   * 'all-caps', 'bracketed', 'spaced-hyphen', 'roman', 'other'.
+   *
+   * Separate from `dispositions`, which counts verdicts: this counts what the
+   * pass actually DID to the book, by kind of reading, which is the number a
+   * reviewer looks at first when the pass is allowed to change more than digits.
+   */
+  appliedByClass: Record<string, number>;
   units: NumberUnitRecord[];
 }
 
@@ -309,9 +395,26 @@ const DIGIT = /[0-9]/;
  */
 export function selectNumberTargets(
   targets: readonly NarrationNumberTarget[],
+  /**
+   * WHICH TARGETS GO TO THE MODEL.
+   *
+   * 'digit-bearing' is the rule this pass had until 2026-09-04: a digit test,
+   * and nothing else. 'every-block' is Owen's ruling of that day — *"send every
+   * single block through to be sure. I suspect deterministic decisions on this
+   * aren't the right way to do it. Let the model decide what should be
+   * updated."* — because the classes the pass now asks about (an abbreviation,
+   * an acronym, a bracketed aside, a spaced hyphen, a roman numeral) print no
+   * digit at all, so a digit test would never show the model one of them.
+   *
+   * THE CAPTION AND FOOTNOTE EXCLUSION HOLDS EITHER WAY. Narrating a caption is
+   * a decision the cut owns (the narrationInputFor door removes them from the file a
+   * render reads), and this pass must not make one speakable that the cut would
+   * have removed.
+   */
+  ask: 'digit-bearing' | 'every-block' = 'digit-bearing',
 ): NarrationNumberTarget[] {
   return targets.filter((t) => {
-    if (!DIGIT.test(t.text)) return false;
+    if (ask === 'digit-bearing' && !DIGIT.test(t.text)) return false;
     if (t.statedCategory === 'caption' || t.statedCategory === 'footnote') return false;
     return true;
   });
@@ -510,6 +613,98 @@ interface ValidatedEdits {
 }
 
 /**
+ * What the validator is asked to allow, and the caps it enforces when it does.
+ *
+ * ── Why there is a second mode at all ───────────────────────────────────────
+ *
+ * Owen, 2026-09-04: *"send every single block through to be sure. I suspect
+ * deterministic decisions on this aren't the right way to do it. Let the model
+ * decide what should be updated."* So the narration text pass asks about every
+ * block and about more than numbers — abbreviations, all-caps runs, bracketed
+ * apparatus, spaced hyphens, roman numerals, footnote markers.
+ *
+ * ── What that costs, said plainly ───────────────────────────────────────────
+ *
+ * A NUMBER edit has a lexical anchor: `keepsEveryWord` proves every prose word
+ * of the find survives, and `NUMBER_DROPPED` proves every printed number came
+ * out as words. A TEXT edit has NO such anchor — "Dr." → "Doctor" and "e.g." →
+ * "for example" both legitimately replace the letters, so nothing can compare
+ * the two sides word for word. What guards a text edit instead is: it must be
+ * anchored (verbatim, exactly once), it must be short, its replacement must be
+ * spoken words and no longer than an expansion justifies, it may not touch a
+ * span the rules already read, and the block as a whole has a CHANGE BUDGET —
+ * the text edits together may not rewrite more than a quarter of it. A short,
+ * word-shaped paraphrase of one clause can still pass all of that; the
+ * `.receipt.json` names every accepted edit with its class so it can be seen.
+ */
+export interface NumberEditPolicy {
+  /**
+   * May an edit whose `find` prints NO digit be accepted?
+   *
+   * False is the number pass as it has always been: a find with no digit is
+   * `NO_DIGIT_IN_FIND`, so prose the model felt like tidying cannot ride in on a
+   * number edit. True is the narration text pass.
+   */
+  allowTextEdits: boolean;
+}
+
+/** The number pass's own policy — the behaviour every caller had before 2026-09-04. */
+export const NUMBERS_ONLY: NumberEditPolicy = { allowTextEdits: false };
+/** The narration text pass's policy: every class, under the caps below. */
+export const EVERY_CLASS: NumberEditPolicy = { allowTextEdits: true };
+
+/**
+ * The longest span whose READING can differ from its printing.
+ *
+ * "Kretschmar/Nicolaisen, Document II 9/34" is 38 characters and is the longest
+ * real find measured on the fixture book. 200 leaves room for a find extended
+ * with surrounding words to make it unique (which the prompt asks for) and still
+ * refuses a clause: a find longer than this is a paraphrase wearing an edit's
+ * clothes.
+ */
+const MAX_FIND_CHARS = 200;
+
+/**
+ * How much longer a replacement may be than what it replaces.
+ *
+ * The largest honest expansion is a number: "$1,250,000" (10 characters) reads
+ * "one million two hundred fifty thousand dollars" (46) — 4.6x. The formula is
+ * `4x + 40`, which admits that and every acronym spelled out, and refuses a
+ * replacement that is a new sentence.
+ */
+const replaceCap = (find: string): number => find.length * 4 + 40;
+
+/**
+ * How many edits one block may propose.
+ *
+ * A block is a paragraph. Twenty-four spans whose reading differs is already an
+ * extraordinary paragraph (the densest fixture, an archive citation line, has
+ * six); beyond it the model is rewriting rather than reading.
+ */
+const MAX_EDITS_PER_BLOCK = 24;
+
+/**
+ * The share of a block's characters the TEXT edits together may replace.
+ *
+ * Number edits are excluded from the budget: a paragraph that is a table of
+ * dates legitimately changes most of its characters, and the number invariants
+ * already prove each one. What this bounds is the class with no lexical anchor —
+ * a model that "improved" a paragraph one short span at a time.
+ */
+const MAX_TEXT_EDIT_SHARE = 0.25;
+
+/**
+ * And the FLOOR under that share, in characters.
+ *
+ * A quarter of a paragraph is a real bound; a quarter of a HEADING is four
+ * characters, and a heading is exactly the block whose whole text might be one
+ * abbreviation ("Dr. Smith", "Part IV"). Without a floor the budget would refuse
+ * every short block's only honest edit. Eighty characters is longer than any
+ * heading this app has measured and far shorter than a paragraph.
+ */
+const MIN_TEXT_EDIT_BUDGET = 80;
+
+/**
  * Check one target's proposed edits and return the ones that may be applied.
  *
  * EVERY outcome is recorded, and a rejection means the printed digits stand for
@@ -536,6 +731,12 @@ export function validateNumberEdits(
    * improvement on either.
    */
   reserved: ReadonlyArray<{ at: number; end: number }> = [],
+  /**
+   * Which classes may be accepted. Defaults to NUMBERS ONLY, which is the
+   * behaviour every caller had before 2026-09-04 and is what keeps the vendored
+   * copy of this module answering the way the corpora were built with.
+   */
+  policy: NumberEditPolicy = NUMBERS_ONLY,
 ): ValidatedEdits {
   const starts: number[] = [];
   let running = 0;
@@ -546,21 +747,58 @@ export function validateNumberEdits(
   const accepted: NarrationTextRewrite[] = [];
   const records: NumberEditRecord[] = [];
   const reject = (find: string, replace: string, status: NumberEditStatus, detail?: string): void => {
-    records.push(detail === undefined ? { find, replace, status } : { find, replace, status, detail });
+    const editClass = classifyEdit(find);
+    records.push(detail === undefined
+      ? { find, replace, status, editClass }
+      : { find, replace, status, editClass, detail });
   };
+
+  // How many characters the accepted TEXT edits have replaced so far. Number
+  // edits are outside the budget — their own invariants prove each one.
+  let textBudgetSpent = 0;
+  const textBudget = Math.max(
+    MIN_TEXT_EDIT_BUDGET, Math.floor(target.length * MAX_TEXT_EDIT_SHARE));
 
   for (const proposed of edits) {
     const find = typeof proposed?.find === 'string' ? proposed.find : '';
     const replace = typeof proposed?.replace === 'string' ? proposed.replace : '';
+    const editClass = classifyEdit(find);
+    // WHICH INVARIANTS APPLY, asked directly rather than read off the class: a
+    // bracketed insertion carrying a page number is both a bracket and a number,
+    // and the two questions have different answers. A digit-bearing find with a
+    // real replacement is a NUMBER edit and every number invariant applies; a
+    // removal is judged by whether it is apparatus.
+    const isRemoval = replace.trim() === '';
+    const isNumber = DIGIT.test(find) && !isRemoval;
 
     if (find === '' || find === replace) { reject(find, replace, 'NOOP'); continue; }
+    if (accepted.length >= MAX_EDITS_PER_BLOCK) {
+      reject(find, replace, 'TOO_MANY_EDITS',
+        `a block may carry ${MAX_EDITS_PER_BLOCK} spans whose reading differs; beyond that the `
+        + 'answer is a rewrite of the block and not a list of readings');
+      continue;
+    }
+    if (find.length > MAX_FIND_CHARS) {
+      reject(find, replace, 'EDIT_TOO_LONG',
+        `a find of ${find.length} characters is a clause, not a span whose reading differs`);
+      continue;
+    }
 
     const occurrences = digitBoundedOccurrences(target, find);
     if (occurrences.length === 0) { reject(find, replace, 'NOT_FOUND'); continue; }
     if (occurrences.length > 1) { reject(find, replace, 'AMBIGUOUS_FIND'); continue; }
     const at = occurrences[0];
-    if (!DIGIT.test(find)) { reject(find, replace, 'NO_DIGIT_IN_FIND'); continue; }
+    if (!isNumber && !policy.allowTextEdits) {
+      reject(find, replace, 'NO_DIGIT_IN_FIND');
+      continue;
+    }
     if (DIGIT.test(replace)) { reject(find, replace, 'DIGIT_IN_REPLACE'); continue; }
+    if (replace.length > replaceCap(find)) {
+      reject(find, replace, 'REPLACE_TOO_LONG',
+        `${replace.length} characters for a ${find.length}-character span is an expansion no `
+        + 'reading justifies');
+      continue;
+    }
     if (!spokenWords(find, replace)) { reject(find, replace, 'REPLACE_NOT_WORDS'); continue; }
     if (punctuationNameCount(replace) > punctuationNameCount(find)) {
       reject(find, replace, 'PUNCTUATION_SPOKEN',
@@ -572,19 +810,43 @@ export function validateNumberEdits(
         'a list marker keeps its period — "1." is read "one.", not "one"');
       continue;
     }
-    if (!keepsEveryWord(find, replace)) { reject(find, replace, 'WORDS_DROPPED'); continue; }
-    // Every run of digits has to come out as at least one number word. Measured
-    // on the n2 acceptance run, 2026-09-02: "20:6" came back as "twenty" — the
-    // verse silently gone, and nothing above could see it because the answer was
-    // plain words with no digit in it. "1985" → "nineteen eighty-five" is three
-    // words for one run; "28:7-8" → "twenty-eight seven through eight" is three
-    // for three; "20:6" → "twenty" is one for two, and refused.
-    if (numberWordCount(replace) < fewestNumberWords(find)) {
-      reject(find, replace, 'NUMBER_DROPPED',
-        `${digitRunCount(find)} group(s) of digits need at least ${fewestNumberWords(find)} number `
-        + `word(s); the reading has ${numberWordCount(replace)}`);
-      continue;
+
+    if (isNumber) {
+      // ── The number invariants, unchanged, and they apply to nothing else ──
+      if (!keepsEveryWord(find, replace)) { reject(find, replace, 'WORDS_DROPPED'); continue; }
+      // Every run of digits has to come out as at least one number word. Measured
+      // on the n2 acceptance run, 2026-09-02: "20:6" came back as "twenty" — the
+      // verse silently gone, and nothing above could see it because the answer was
+      // plain words with no digit in it. "1985" → "nineteen eighty-five" is three
+      // words for one run; "28:7-8" → "twenty-eight seven through eight" is three
+      // for three; "20:6" → "twenty" is one for two, and refused.
+      if (numberWordCount(replace) < fewestNumberWords(find)) {
+        reject(find, replace, 'NUMBER_DROPPED',
+          `${digitRunCount(find)} group(s) of digits need at least ${fewestNumberWords(find)} `
+          + `number word(s); the reading has ${numberWordCount(replace)}`);
+        continue;
+      }
+    } else {
+      // ── The TEXT invariants, which are what stand in for a lexical anchor ──
+      //
+      // A DELETION is allowed for exactly one class: bracketed apparatus, which
+      // is not read aloud at all ("[sic]", "(see p. 12)"). Every other class
+      // must SAY something — a replacement that empties a span of prose is a
+      // model deciding a sentence is better without it.
+      if (isRemoval && !isWholeBracketedInsertion(find)) {
+        reject(find, replace, 'EMPTY_REPLACE',
+          'only a bracketed insertion may be removed outright; every other reading says something');
+        continue;
+      }
+      if (textBudgetSpent + find.length > textBudget) {
+        reject(find, replace, 'BLOCK_BUDGET',
+          `the readings accepted so far already replace ${textBudgetSpent} of this block's `
+          + `${target.length} characters, and a block whose text is rewritten past `
+          + `${Math.round(MAX_TEXT_EDIT_SHARE * 100)}% is being paraphrased, not read`);
+        continue;
+      }
     }
+
     if (sitsInCitation(target, find, at)) { reject(find, replace, 'CITATION_CODE'); continue; }
 
     const end = at + find.length;
@@ -595,8 +857,9 @@ export function validateNumberEdits(
       continue;
     }
 
+    if (!isNumber) textBudgetSpent += find.length;
     accepted.push({ find, replace, at });
-    records.push({ find, replace, status: 'APPLIED' });
+    records.push({ find, replace, status: 'APPLIED', editClass });
   }
   return { accepted, records };
 }
@@ -783,11 +1046,15 @@ function toOriginalOffset(
 function ruleRecords(ruled: NumberRuleOutcome): NumberEditRecord[] {
   const out: NumberEditRecord[] = [];
   for (const edit of ruled.rewrites) {
-    out.push({ find: edit.find, replace: edit.replace, status: 'APPLIED_RULE', detail: edit.rule });
+    out.push({
+      find: edit.find, replace: edit.replace, status: 'APPLIED_RULE',
+      editClass: classifyEdit(edit.find), detail: edit.rule,
+    });
   }
   for (const refusal of ruled.refused) {
     out.push({
       find: refusal.find, replace: refusal.replace, status: 'SPANS_MARKUP',
+      editClass: classifyEdit(refusal.find),
       detail: `the ${refusal.rule} rule: ${refusal.reason}`,
     });
   }
@@ -815,6 +1082,16 @@ async function askAboutEach(
   runner: NumberNormalizerRunner,
   systemPrompt: string,
   onProgress: NumberNormalizationProgress | undefined,
+  /**
+   * Which blocks reach the model, and which classes their answers may carry.
+   *
+   * 'digit-bearing' + NUMBERS_ONLY is the number pass: a span the rules finished
+   * costs no request at all, which is what `RULES_ONLY` records. 'every-block' +
+   * EVERY_CLASS is the narration text pass: one request per block, whatever it
+   * prints, because an abbreviation and an acronym are invisible to a digit test.
+   */
+  ask: 'digit-bearing' | 'every-block' = 'digit-bearing',
+  policy: NumberEditPolicy = NUMBERS_ONLY,
 ): Promise<{ decisions: Map<string, AskOutcome>; parseFailed: number; asked: number }> {
   // ── The deterministic pass, first and for everything ──────────────────────
   const ruledOf = new Map<string, NumberRuleOutcome>();
@@ -826,11 +1103,16 @@ async function askAboutEach(
   const inputs = new Map<string, string>();
   const asContext = (text: string | null): string | null =>
     text === null ? null : applyNumberRules(text, [text.length]).text;
-  for (const ask of asks) {
-    const ruled = ruledOf.get(ask.key)!;
-    if (!stillHasDigits(ruled.text)) continue;
-    inputs.set(ask.key,
-      buildNormalizerInput(ruled.text, asContext(ask.previous), asContext(ask.next)));
+  for (const one of asks) {
+    const ruled = ruledOf.get(one.key)!;
+    // A block with nothing left to read is skipped ONLY when the question is
+    // about digits. When the question is "does anything here print one way and
+    // read another", a block with no digit is exactly the block that might.
+    if (ask === 'digit-bearing' && !stillHasDigits(ruled.text)) continue;
+    // A block with no text at all is nothing to ask about in either mode.
+    if (ruled.text.trim() === '') continue;
+    inputs.set(one.key,
+      buildNormalizerInput(ruled.text, asContext(one.previous), asContext(one.next)));
   }
   const total = inputs.size;
 
@@ -875,7 +1157,7 @@ async function askAboutEach(
         // the original: the two differ by exactly the rules' own length deltas.
         const spans = ruleSpansInApplied(ruled);
         const { accepted, records } =
-          validateNumberEdits(ruled.text, ruled.segments, answer.edits, spans);
+          validateNumberEdits(ruled.text, ruled.segments, answer.edits, spans, policy);
         const mapped = accepted.map((edit) => {
           const at = toOriginalOffset(spans, edit.at);
           if (ask.text.slice(at, at + edit.find.length) !== edit.find) {
@@ -967,6 +1249,21 @@ export interface EpubNumberNormalizationOptions extends NumberNormalizationOptio
   inputSha16: string;
   /** What the write does besides the rewrites. See `NarrationCopyShape`. */
   copy: NarrationCopyShape;
+  /**
+   * WHICH BLOCKS ARE ASKED ABOUT, and therefore what the model is asked.
+   *
+   * 'digit-bearing' is the number pass: a digit test selects, and only a
+   * digit-bearing find may be accepted. 'every-block' is Owen's ruling of
+   * 2026-09-04 for the narration text pass — every block goes, and the answer
+   * may name an abbreviation, an acronym, a bracketed aside, a spaced hyphen or
+   * a roman numeral as well as a number.
+   *
+   * Stated, never defaulted: the two cost wildly different amounts of model time
+   * (one call per digit-bearing passage against one call per block of the book)
+   * and a caller that did not say which it wanted would be guessing with an hour
+   * of GPU.
+   */
+  ask: 'digit-bearing' | 'every-block';
 }
 
 /** The content address of a book that IS a file: the sha of its bytes. */
@@ -1050,8 +1347,10 @@ export async function normalizeNarrationNumbers(
     return { epubPath, recordPath, reused: true, record };
   } catch { /* not normalized yet, or the record is not beside it */ }
 
+  const policy: NumberEditPolicy =
+    options.ask === 'every-block' ? EVERY_CLASS : NUMBERS_ONLY;
   const targets = await readNarrationNumberTargets(inputPath);
-  const selected = selectNumberTargets(targets);
+  const selected = selectNumberTargets(targets, options.ask);
   if (selected.length === 0) {
     console.log(
       `[TTS-NUMBERS] ${path.basename(inputPath)} prints no digits a narrator would read — `
@@ -1094,7 +1393,8 @@ export async function normalizeNarrationNumbers(
   });
 
   const { decisions: pending, parseFailed, asked: targetsAsked } =
-    await askAboutEach(asks, runner, options.systemPrompt, options.onProgress);
+    await askAboutEach(asks, runner, options.systemPrompt, options.onProgress,
+      options.ask, policy);
 
   // ── The heading and its contents entries, made to say ONE thing ───────────
   //
@@ -1161,7 +1461,7 @@ export async function normalizeNarrationNumbers(
       const landed = new Set<string>(ruleIdsOf(member.key));
       for (const edit of validateNumberEdits(
         ruled.text, ruled.segments, proposal.filter((e) => !byRule(e)),
-        ruleSpansInApplied(ruled)).accepted) {
+        ruleSpansInApplied(ruled), policy).accepted) {
         landed.add(editId(edit));
       }
       for (const id of [...survives]) if (!landed.has(id)) survives.delete(id);
@@ -1177,7 +1477,7 @@ export async function normalizeNarrationNumbers(
         .map(({ at, find, replace }) => ({ at, find, replace }));
       const fromModel = validateNumberEdits(
         ruled.text, ruled.segments,
-        proposal.filter((e) => survives.has(editId(e)) && !byRule(e)), spans,
+        proposal.filter((e) => survives.has(editId(e)) && !byRule(e)), spans, policy,
       ).accepted.map((edit) => ({
         find: edit.find, replace: edit.replace, at: toOriginalOffset(spans, edit.at),
       }));
@@ -1227,6 +1527,7 @@ export async function normalizeNarrationNumbers(
   const rewrites = new Map<string, NarrationTextRewrite[]>();
   const units: NumberUnitRecord[] = [];
   const dispositions: Record<string, number> = {};
+  const appliedByClass: Record<string, number> = {};
   for (const target of selected) {
     const settled = pending.get(target.key);
     if (settled === undefined) {
@@ -1240,6 +1541,9 @@ export async function normalizeNarrationNumbers(
     if (settled.accepted.length > 0) rewrites.set(target.key, settled.accepted);
     for (const record of settled.records) {
       dispositions[record.status] = (dispositions[record.status] ?? 0) + 1;
+      if (record.status !== 'APPLIED' && record.status !== 'APPLIED_RULE') continue;
+      const klass = record.editClass ?? classifyEdit(record.find);
+      appliedByClass[klass] = (appliedByClass[klass] ?? 0) + 1;
     }
     units.push({
       key: target.key, kind: target.kind, file: target.file, status: settled.status,
@@ -1280,6 +1584,7 @@ export async function normalizeNarrationNumbers(
     appliedByRules: dispositions.APPLIED_RULE ?? 0,
     appliedByModel: dispositions.APPLIED ?? 0,
     dispositions,
+    appliedByClass,
     units,
   };
   await fs.writeFile(stagingRecord, JSON.stringify(record, null, 2), 'utf8');
@@ -1406,6 +1711,7 @@ export async function normalizeTextBlocks(
   const rewritten = [...blocks];
   const units: NumberUnitRecord[] = [];
   const dispositions: Record<string, number> = {};
+  const appliedByClass: Record<string, number> = {};
   let appliedSpans = 0;
   for (const block of selected) {
     const settled = decisions.get(block.key);
@@ -1436,6 +1742,9 @@ export async function normalizeTextBlocks(
 
     for (const record of settled.records) {
       dispositions[record.status] = (dispositions[record.status] ?? 0) + 1;
+      if (record.status !== 'APPLIED' && record.status !== 'APPLIED_RULE') continue;
+      const klass = record.editClass ?? classifyEdit(record.find);
+      appliedByClass[klass] = (appliedByClass[klass] ?? 0) + 1;
     }
     units.push({
       key: block.key, kind: 'text-block', file: path.basename(options.source),
@@ -1466,6 +1775,7 @@ export async function normalizeTextBlocks(
     appliedByRules: dispositions.APPLIED_RULE ?? 0,
     appliedByModel: dispositions.APPLIED ?? 0,
     dispositions,
+    appliedByClass,
     units,
   };
   await fs.writeFile(stagingRecord, JSON.stringify(record, null, 2), 'utf8');

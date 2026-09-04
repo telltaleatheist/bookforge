@@ -1584,6 +1584,71 @@ export class NarrationModalComponent {
        */
       if (this.video() && this.assemble()) jobs.push(this.videoRequest(book));
 
+      /*
+       * ── THE NARRATION TEXT CLEANUP HAS TO HAVE RUN ────────────────────────
+       *
+       * Owen, 2026-09-04: *"a step that can be performed at any point, including
+       * on an epub, but it's a computationally expensive step that needs to take
+       * place somewhere along the line, and everything after it is
+       * finalized/fixed… If the user hits narrate before it does cleanup, it
+       * tells the user it still needs to do the cleanup step; then it does the
+       * cleanup step on whatever the last step they did before exporting the
+       * epub they were trying to narrate, and then they export the epub and
+       * queue narration."*
+       *
+       * So this is NOT a dead lock. The gate says what is missing, by name,
+       * offers to fix it, and on yes queues ONE run: the cleanup first, then
+       * this narration behind it, chained to it — which is exactly what
+       * `submitProcessingRun`'s `followOn` is for.
+       *
+       * The render door checks the same thing again on the FILE it is handed
+       * (`prepareNarrationInput`), and refuses there too. That backstop is why
+       * this can afford to be a question rather than a refusal.
+       */
+      const readiness = await this.electron.narrationTextReadiness(
+        book.projectDir, book.epubPath);
+      if (!readiness.success) {
+        throw new Error(
+          `This book's history could not be read, so there is no way to tell whether the narration `
+          + `text cleanup has run: ${readiness.error}`);
+      }
+      if (readiness.readiness !== undefined && !readiness.readiness.ok) {
+        const cleanup = readiness.readiness;
+        const { confirmed } = await this.electron.showConfirmDialog({
+          title: 'Narration text cleanup',
+          message: cleanup.reason,
+          detail: 'Run it now? The cleanup is queued first, and this narration run is queued '
+            + 'behind it — it will read the book the cleanup produced. It is minutes of model '
+            + 'time over the blocks of the book, and it only has to happen once.',
+          confirmLabel: cleanup.state === 'stale'
+            ? 'Run cleanup again, then narrate'
+            : 'Run cleanup, then narrate',
+          cancelLabel: 'Cancel',
+          type: 'question',
+        });
+        if (!confirmed) {
+          this.error.set(cleanup.reason);
+          return;
+        }
+        /*
+         * The cleanup rewrites the FAMILY'S BOOK in place, so the run behind it
+         * has to read that path and not whichever version row opened this
+         * dialog: an exported copy cut before the cleanup describes a book
+         * nobody has any more, and the render door would refuse it by name.
+         */
+        const cleaned = readiness.bookPath ?? book.epubPath;
+        const followOn = jobs.map((job) => (job.epubPath === book.epubPath
+          ? { ...job, epubPath: cleaned }
+          : job));
+        const run = await this.queue.submitProcessingRun({
+          projectDir: book.projectDir,
+          passes: [{ kind: 'narration-text' }],
+        }, followOn);
+        if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
+        this.queued.emit({ jobs: followOn.length + 1 });
+        return;
+      }
+
       const workflowId = `tts-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       const master = await this.queue.addJob({
         type: 'audiobook',

@@ -89,6 +89,7 @@ const SUITES = [
   'test-narration-chain',
   'test-text-normalization',
   'test-narration-text-pass',
+  'test-narration-text-readiness',
   'test-tts-number-rules',
   'test-tts-number-normalizer',
   'test-cli-narration-prep',

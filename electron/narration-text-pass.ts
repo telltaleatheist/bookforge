@@ -412,6 +412,14 @@ export async function runNarrationTextPass(
     // TEXT ONLY — the same refusal the punctuation write makes, for the same
     // reason: this is the book, not the narration copy.
     copy: { excludeCaptions: false, excludeFootnotes: false, stripSupMarkers: false },
+    // EVERY BLOCK. Owen, 2026-09-04: "send every single block through to be
+    // sure. I suspect deterministic decisions on this aren't the right way to do
+    // it. Let the model decide what should be updated." One model call per block
+    // of the book, and the answer may name an abbreviation, an acronym, a
+    // bracketed aside, a spaced hyphen or a roman numeral as well as a number.
+    // That cost is accepted for this pass because the pass runs ONCE and the
+    // book keeps the result.
+    ask: 'every-block',
     ...(options.onProgress === undefined ? {} : { onProgress: options.onProgress }),
   });
 
@@ -443,9 +451,10 @@ export async function runNarrationTextPass(
 
   console.log(
     `[NARRATION-TEXT] ${punctuation.spansApplied} punctuation span(s) and `
-    + `${outcome === null ? 0 : outcome.record.appliedSpans} number(s) — `
+    + `${outcome === null ? 0 : outcome.record.appliedSpans} reading(s) — `
     + `${outcome === null ? 0 : outcome.record.appliedByRules} by rule, `
     + `${outcome === null ? 0 : outcome.record.appliedByModel} by ${options.model}; `
+    + `by class ${JSON.stringify(outcome === null ? {} : outcome.record.appliedByClass)}; `
     + `stamped ${NORMALIZER_VERSION}/${PUNCTUATION_SPEC_VERSION}: ${options.outPath}`);
 
   return { outPath: options.outPath, receipt, reusedNumbers: outcome?.reused === true };

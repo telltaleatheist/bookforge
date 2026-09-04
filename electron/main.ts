@@ -9494,6 +9494,39 @@ function setupIpcHandlers(): void {
    * The wizard uses it to show the plan and to refuse an impossible ordering
    * while the user is still composing it.
    */
+/**
+ * IS THIS BOOK READY TO NARRATE — has it had the narration text cleanup, and is
+ * that cleanup still the last word on its text?
+ *
+ * Read-only, and it answers about a PROJECT rather than a file: the ledger knows
+ * something the OPF stamp cannot, which is whether a later simplify or translate
+ * rewrote the text after the cleanup ran. `narrationTextGate` is the file-level
+ * answer and is what the render door uses; this is what the Narrate button uses,
+ * because a button can offer to fix it and a running job cannot.
+ *
+ * The family is resolved the way `projects:export-info` resolves it — by the
+ * file being opened — because the narration dialog carries a VARIANT id, which
+ * is a different id-space from a family id and cannot be used as one.
+ */
+ipcMain.handle('narration:text-readiness', async (
+  _event, projectDir: string, askedPath?: string, familyId?: string) => {
+  try {
+    const { narrationTextReadiness } = await import('./narration-text-readiness.js');
+    const resolved = await manifestService.familyForOpen(projectDir, askedPath, familyId);
+    const family = resolved === null ? undefined : resolved.family.id;
+    const passes = await manifestService.readAppliedPasses(projectDir, family);
+    const book = await manifestService.bookForAct(projectDir, family);
+    return {
+      success: true,
+      readiness: narrationTextReadiness(passes),
+      familyId: family ?? null,
+      bookPath: book?.absPath ?? null,
+    };
+  } catch (err) {
+    return { success: false, error: (err as Error).message };
+  }
+});
+
   ipcMain.handle('processing:plan-chain', async (
     _event, request: import('./processing-chain.js').ProcessingChainRequest) => {
     try {
