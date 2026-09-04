@@ -151,15 +151,90 @@ def boundary_times(cues):
 
 # ---------------- heading detection ----------------
 
+# MIRROR OF looksLikeHeading IN electron/whisperx-align-bridge.ts, and it has to be:
+# this decides which epub blocks count as headings when scoring merges, so a rule
+# looser than the shipped classifier reports merges for blocks the aligner would
+# never have tagged. It was left as the loose round-1 rule (short + unpunctuated)
+# after the classifier was tightened, which inflated the count. The TS side is the
+# source of truth; keep the two in step.
 HEAD_MAX_CHARS, HEAD_MAX_WORDS = 90, 12
-TERMINAL = re.compile(r'[.!?…]["”’\')\]]*$')
+TERMINAL = re.compile(r'[.!?…:;,]["”’\')\]]*$')
+HEADING_LEAD = re.compile(
+    r'^(part|chapter|book|section|appendix|prologue|epilogue|introduction|foreword'
+    r'|preface|afterword|conclusion|contents|notes|index|bibliography'
+    r'|acknowledgments|acknowledgements)\b', re.I)
+ROMAN_NUMERAL = re.compile(r'^(?=[MDCLXVI])M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$')
+ROMAN_MAX = 100
+_ROMAN_VALUES = [('CM', 900), ('CD', 400), ('XC', 90), ('XL', 40), ('IX', 9), ('IV', 4),
+                 ('M', 1000), ('D', 500), ('C', 100), ('L', 50), ('X', 10), ('V', 5), ('I', 1)]
+TITLE_STOPWORDS = {
+    'a', 'an', 'and', 'as', 'at', 'but', 'by', 'for', 'from', 'in', 'into', 'nor',
+    'of', 'on', 'onto', 'or', 'over', 'the', 'to', 'up', 'upon', 'with', 'via',
+    'vs', 'versus', 'per', 'than',
+}
+
+
+def _roman_value(s):
+    v, i = 0, 0
+    while i < len(s):
+        for sym, val in _ROMAN_VALUES:
+            if s.startswith(sym, i):
+                v += val; i += len(sym); break
+        else:
+            return None
+    return v
+
+
+def is_numbering_only(b):
+    core = re.sub(r'\s*[.,):\]]$', '', b).strip()
+    if not core:
+        return False
+    if re.fullmatch(r'\d{1,4}', core):
+        return True
+    if core != core.upper() and core != core.lower():
+        return False          # "Mix" is not how anyone sets a chapter number
+    up = core.upper()
+    if not ROMAN_NUMERAL.match(up):
+        return False
+    v = _roman_value(up)
+    return v is not None and 0 < v <= ROMAN_MAX
+
+
+def _core_of(word):
+    return re.sub(r'^[^\w]+|[^\w]+$', '', word, flags=re.UNICODE)
+
+
+def is_title_or_all_caps(words):
+    cores = [c for c in (_core_of(w) for w in words) if c]
+    if len(cores) < 2:
+        return False
+    if all(not any(ch.islower() for ch in c) for c in cores):
+        return True                                   # ALL CAPS
+    if not (cores[0][:1].isupper() or cores[0][:1].isdigit()):
+        return False
+    capped = 0
+    for c in cores:
+        if c[:1].isupper() or c[:1].isdigit():
+            capped += 1
+        elif c.lower() not in TITLE_STOPWORDS:
+            return False
+    return capped >= 2
 
 
 def looks_like_heading(block):
     b = ' '.join(block.split())
-    if not b or len(b) > HEAD_MAX_CHARS or len(b.split()) > HEAD_MAX_WORDS:
+    if not b or len(b) > HEAD_MAX_CHARS:
         return False
-    return not TERMINAL.search(b)
+    words = b.split(' ')
+    if len(words) > HEAD_MAX_WORDS:
+        return False
+    if is_numbering_only(b):        # before the punctuation gate, as on the TS side
+        return True
+    if TERMINAL.search(b):
+        return False
+    if HEADING_LEAD.match(b):
+        return True
+    return is_title_or_all_caps(words)
 
 
 def epub_heading_blocks(epub_path):

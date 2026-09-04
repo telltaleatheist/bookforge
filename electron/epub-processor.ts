@@ -806,11 +806,21 @@ export class EpubProcessor {
     // heading classifier keyed on "no terminal punctuation" then sees a full stop
     // and calls it prose. Every semantically marked-up EPUB scored zero headings
     // because of it. Marking first means the classifier never has to guess for a
-    // real heading tag, and the append still happens for the TTS read.
+    // real heading tag.
+    //
+    // THE CLOSING TAG IS PUT BACK (`</h${lvl}>`), and that is not cosmetic. The
+    // first version of this CONSUMED it, which silently disabled the period-append
+    // below — that regex needs the tag in order to match. The damage landed on
+    // --no-paragraph-split, whose entire job is to restore pre-branch behaviour and
+    // which instead became WORSE than it: with no period appended and no block
+    // split, `<h1>Chapter One</h1><p>It was a dark night.</p>` collapsed into one
+    // sentence, "Chapter One It was a dark night." (pre-branch: two sentences).
+    // Emitting the tag back leaves the append — and the `</h[1-6]>` -> '\n\n' rule
+    // further down — working exactly as they did before.
     if (markHeadings) {
       text = text.replace(
         /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/gi,
-        (_m, _lvl, inner: string) => `\n\n${HEADING_MARKER}${inner}\n\n`,
+        (_m, lvl: string, inner: string) => `\n\n${HEADING_MARKER}${inner}</h${lvl}>\n\n`,
       );
     }
 

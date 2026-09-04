@@ -421,6 +421,19 @@ actually consumes. Both are on by default and both have an off switch.
   **gets a cue at all** — the sentence splitter's fragment filter (`length > 1 &&
   /[A-Za-z]/`) used to bin `1` and `I` entirely, so the flagship `<p class="cn">1</p>`
   case produced no cue and its spoken chapter number fell into the previous cue's tail.
+  Numbering is tested *before* the punctuation gate, so `1.`, `12.` and `IV.` are
+  caught too, and roman numerals use the real grammar plus a value cap — a character
+  class like `[ivxlcdm]+` matches ordinary English words (did, dim, mild, civil, mix).
+
+  > **The Title Case arm is a heuristic with known false positives.** A short
+  > capitalized line that is really prose — `Mr. Smith`, `New York`, `Thank You`,
+  > `Oh God` — will be tagged `heading`. It exists for publishers who set headings as
+  > `<p class="cn">` / `<p class="ct">` with no semantic markup, and it cannot be made
+  > exact from text alone. **`<h1>`–`<h6>` is the exact path**: those are tagged by
+  > markup, with nothing inferred. Before wiring a cutter to *drop* `NOTE heading`
+  > cues, decide whether that class of error is affordable on your books — or drop
+  > only the cues that came from real heading tags and treat the heuristic ones as
+  > advisory.
 - **Silence snapping.** `--snap-silence <sec>` (default 0.6, `--no-snap-silence` to
   disable) pulls each cue *seam* onto the middle of the nearest detected silence within
   that window. Forced alignment puts the seam at a CTC frame, which lands a couple hundred
@@ -455,15 +468,19 @@ moved into pauses.
 ### Tests
 
 ```bash
-node --require ./cli/electron-stub.js tools/tests/test-epub-align-segmentation.js  # 41
-python tools/tests/test_align_audiobook_timing.py                                  # 19
-bash   tools/tests/test-cli-flag-parity.sh                                          # 24
+node --require ./cli/electron-stub.js tools/tests/test-epub-align-segmentation.js  # 79
+python tools/tests/test_align_audiobook_timing.py                                  # 23
+bash   tools/tests/test-cli-flag-parity.sh                                          # 29
 ```
 
-Segmentation covers heading classification in both directions (numbering and `<h1>` are
-tagged; "Yes", `<li>Bread</li>`, "He said-", "The rules are:" are not). Timing covers
-snap bounds and the cue-overlap fix against 20k randomized start-sets. Flag parity checks
-that `bookforge-tts.py` and `generate-sentences.js` accept and reject the same things.
+Segmentation covers heading classification in both directions (numbering incl. `1.`
+and `IV.`, and `<h1>`, are tagged; "Yes", `<li>Bread</li>`, "He said-", "The rules are:"
+and roman-letter words like "mild"/"civil" are not), plus the `--no-paragraph-split`
+regression. Timing covers snap bounds and the cue-overlap fix, scoring the SHIPPED
+`build_events` against a pre-fix copy over 20k randomized start-sets. Flag parity checks
+that `bookforge-tts.py` and `generate-sentences.js` accept and reject the same things —
+with a guard assertion that the cases are reachable at all, since an earlier version
+passed a nonexistent `--audio` and every case failed for that reason instead.
 
 ## PDF → EPUB conversion (`--generate-epub`)
 

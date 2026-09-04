@@ -1,13 +1,14 @@
 #!/usr/bin/env python
 """
-Timing invariants for align_audiobook.py — snapping, the overlap fix, and the
+Timing invariants for align_audiobook.py — snapping, the cue-overlap fix, and the
 speech-coverage measure.
 
     python tools/tests/test_align_audiobook_timing.py
 
 Every case is a review finding that shipped once. The overlap test is randomized
 because the defect only appears when the monotonic clamp pins two starts EQUAL,
-which no hand-written fixture would have found.
+which no hand-written fixture would have found — and it scores the SHIPPED loop
+(`aa.build_events`) against a local copy of the pre-fix one, never two copies.
 """
 import importlib.util, os, random, sys
 
@@ -48,7 +49,6 @@ check('tight neighbours stay ordered and non-empty',
 check('an empty silence map is a no-op', sb([0.0], [5.0], [], 0.6)[2]['snapped'] == 0)
 check('window 0 disables snapping', sb([0.0, 10.0], [10.0, 20.0], [(9.9, 10.1)], 0.0)[2]['snapped'] == 0)
 
-# randomized: a snap must never reorder, empty, or move further than the window
 random.seed(7)
 bad = 0
 for _ in range(2000):
@@ -72,19 +72,29 @@ check('2000 randomized snaps: no empty cue, no overlap, no move beyond the windo
 
 # ------------------------------------------------------- the overlap defect
 print('\nevent construction — the MIN_CUE_S overlap fix')
+check('N8: the suite drives the SHIPPED loop, not a copy of it',
+      callable(getattr(aa, 'build_events', None)) and aa.MIN_CUE_S == 0.4 and aa.MAX_CUE_S == 120.0,
+      'aa.build_events / MIN_CUE_S / MAX_CUE_S missing from the module')
 
 
-def build_events(sent_start, narr, dur=10_000.0, max_cue_s=120.0, min_cue_s=0.4, fixed=True):
-    """Mirror of align_audiobook.py's event loop. `fixed=False` reproduces the old
-    behaviour so the test proves the fix is what changed the outcome."""
+def build_events(sent_start, narr, dur=10_000.0):
+    """The SHIPPED loop, imported from the module — this is what main() runs."""
+    n = len(sent_start)
+    ev = aa.build_events(list(sent_start), narr, [''] * n, ['prose'] * n, dur)
+    return [[c[0], c[1]] for c in ev]
+
+
+def legacy_build_events(sent_start, narr, dur=10_000.0):
+    """The PRE-FIX loop, kept ONLY so the fix can be scored against it: identical
+    except that it does not push the next start out."""
     ss = list(sent_start)
     ev = []
     for x, i in enumerate(narr):
-        s = ss[i]; e = ss[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, dur)
-        e = min(e, s + max_cue_s)
+        s = ss[i]
+        e = ss[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, dur)
+        e = min(e, s + aa.MAX_CUE_S)
         if e <= s:
-            e = s + min_cue_s
-            if fixed and x + 1 < len(narr): ss[narr[x + 1]] = e
+            e = s + aa.MIN_CUE_S
         ev.append([s, e])
     return ev
 
@@ -99,6 +109,8 @@ check('the shared-start cue still gets its minimum length', abs(ev[0][1] - ev[0]
 ev = build_events([5.0, 5.0, 5.0, 5.0], [0, 1, 2, 3])
 check('a run of four tied starts stays ordered', overlaps(ev) == 0, f'{ev}')
 check('ties propagate rather than pile up', all(ev[i + 1][0] >= ev[i][1] - 1e-9 for i in range(3)), f'{ev}')
+check('text and kind survive the loop',
+      aa.build_events([0.0, 5.0], [0, 1], ['a', 'b'], ['heading', 'prose'], 100.0)[0][2:] == ['a', 'heading'])
 
 random.seed(11)
 old_bad = new_bad = 0
@@ -108,15 +120,15 @@ for _ in range(20_000):
     ss = sorted(random.choice([0.0, 1.0, 2.0, 3.0, 4.0]) + random.choice([0.0, 0.0, 0.0, 0.3])
                 for _i in range(n))
     narr = list(range(n))
-    old_bad += overlaps(build_events(ss, narr, fixed=False))
-    new_bad += overlaps(build_events(ss, narr, fixed=True))
-check(f'20k randomized start-sets: overlaps {old_bad} (old) -> {new_bad} (fixed)', new_bad == 0,
+    old_bad += overlaps(legacy_build_events(ss, narr))
+    new_bad += overlaps(build_events(ss, narr))
+check(f'20k randomized start-sets: overlaps {old_bad} (pre-fix) -> {new_bad} (shipped)', new_bad == 0,
       f'{new_bad} remain')
 check('the randomized corpus really did exercise the defect', old_bad > 0, f'old_bad={old_bad}')
 
 
 # ------------------------------------------------------- speech coverage
-print('\nspeech_coverage — measured dead air, not a reading-speed guess')
+print('\nspeech_coverage — measured dead air, and "not measured" is not zero')
 sc = aa.speech_coverage
 ev = [(0.0, 10.0, 'a sting with no narration', 'prose'),
       (10.0, 20.0, 'a normally narrated sentence', 'prose'),
@@ -126,8 +138,12 @@ low, total = sc(ev, sil)
 check('a mostly-silent cue is flagged', total == 1 and abs(low[0]['audioStart']) < 1e-9, f'{low}')
 check('a normally narrated cue is not flagged', all(c['audioStart'] != 10.0 for c in low), f'{low}')
 check('cues under the duration floor are ignored', all(c['audioStart'] != 20.0 for c in low), f'{low}')
-check('no silence map -> no findings', sc(ev, [])[1] == 0)
 check('speechFraction is reported', 'speechFraction' in low[0] and low[0]['speechFraction'] < 0.3, f'{low}')
+# N7: no silence map is "nobody looked", not "looked and found nothing"
+check('N7: no silence map -> (None, None), never ([], 0)', sc(ev, []) == (None, None), f'{sc(ev, [])}')
+check('N7: a silence map with no findings is a measured zero', sc(ev, [(50.0, 51.0)]) == ([], 0),
+      f'{sc(ev, [(50.0, 51.0)])}')
+check('no cues but a real map is a measured zero', sc([], sil) == ([], 0), f'{sc([], sil)}')
 
 print(f'\n{PASS} passed, {FAIL} failed')
 sys.exit(1 if FAIL else 0)

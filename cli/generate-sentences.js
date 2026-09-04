@@ -61,6 +61,22 @@ function parseArgs(argv) {
   return a;
 }
 
+/**
+ * A pure on/off switch: present means true, and a VALUE is an error.
+ *
+ * `parseArgs` stores `--flag` as boolean true but `--flag=false` as the STRING
+ * "false", which is truthy — so a plain `args['no-paragraph-split'] ? ... ` turned
+ * an explicit "off" into "on". argparse rejects `--store-true-flag=false` for the
+ * same reason, and bookforge-tts.py inherits that, so rejecting here also keeps the
+ * two entry points saying the same thing.
+ */
+function switchFlag(args, name) {
+  const v = args[name];
+  if (v === undefined) return false;
+  if (v === true) return true;
+  throw new Error(`--${name} is a switch and takes no value (got '${v}') — omit it to leave the behaviour on`);
+}
+
 /** Stub BrowserWindow: the bridges use win ONLY as an event sink (sendProgress guards
  *  isDestroyed then webContents.send). We print the events instead. */
 function makeProgressWindow() {
@@ -94,7 +110,11 @@ function printCoverageSummary(reportPath) {
     console.log(`[sentences]   report lists ${s.reportedRanges} range(s) at the lower ≥${s.reportHoleThresholdSeconds}s ` +
       `threshold (a reading-speed estimate, not measured silence — see lowSpeechCues)`);
   }
-  if (s.lowSpeechCues) {
+  // null (not 0) means the silence map was absent, so nothing was measured — say so
+  // rather than printing a reassuring zero.
+  if (s.lowSpeechCues == null && rep.lowSpeechCues && rep.lowSpeechCues.measured === false) {
+    console.log('[sentences]   dead air: not measured (no silence map this run)');
+  } else if (s.lowSpeechCues) {
     console.log(`[sentences]   dead air: ${s.lowSpeechCues} cue(s) ≥3s are ≤30% speech (measured against the silence map)`);
   }
   if (s.headingCues != null) console.log(`[sentences]   headings: ${s.headingCues} cue(s) tagged NOTE heading`);
@@ -158,10 +178,14 @@ async function ensureWhisperReady(modelId) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
+  // ARGUMENTS FIRST, FILESYSTEM SECOND. The existence checks used to sit up here,
+  // above every flag check, so a bad flag combination was reported as "audio file
+  // not found" whenever the path happened to be wrong — and, worse, a flag-parity
+  // test could not tell a rejected flag from a missing file, because both exited 1
+  // with the same message. bookforge-tts.py already validates flags first (argparse
+  // does it before any of its _require file checks); this makes the adapter agree.
   if (!args.audio) throw new Error('--audio <file> is required');
-  if (!fs.existsSync(args.audio)) throw new Error(`audio file not found: ${args.audio}`);
   if (!args.out) throw new Error('--out <file.vtt> is required');
-  if (args.epub && !fs.existsSync(args.epub)) throw new Error(`epub file not found: ${args.epub}`);
   if (args.report && !args.epub) {
     throw new Error('--report requires --epub (coverage is epub-vs-audio; whisper mode has no epub to compare against)');
   }
@@ -191,7 +215,7 @@ async function main() {
   // entry point you call is worse than no flag.
   let snapSilenceS;
   const snapGiven = args['snap-silence'] !== undefined;
-  const noSnap = Boolean(args['no-snap-silence']);
+  const noSnap = switchFlag(args, 'no-snap-silence');
   if (snapGiven && noSnap) {
     throw new Error('--snap-silence and --no-snap-silence are mutually exclusive');
   }
@@ -211,7 +235,7 @@ async function main() {
   }
   // --no-paragraph-split: pre-2026-09-03 punctuation-only ebook segmentation
   // (headings glued onto the following prose).
-  const paragraphAware = args['no-paragraph-split'] ? false : undefined;
+  const paragraphAware = switchFlag(args, 'no-paragraph-split') ? false : undefined;
   if (paragraphAware === false && !args.epub) {
     throw new Error('--no-paragraph-split requires --epub (it changes ebook segmentation)');
   }
@@ -237,6 +261,10 @@ async function main() {
       throw new Error(`--align-workers must be a positive integer, got '${args['align-workers']}'`);
     }
   }
+
+  // Now that every flag is known good, touch the filesystem.
+  if (!fs.existsSync(args.audio)) throw new Error(`audio file not found: ${args.audio}`);
+  if (args.epub && !fs.existsSync(args.epub)) throw new Error(`epub file not found: ${args.epub}`);
 
   const jobId = `cli-sent-${crypto.randomUUID()}`;
   const language = args.language || 'auto';

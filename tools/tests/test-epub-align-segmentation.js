@@ -24,10 +24,17 @@ function kindsOf(text) { return splitSentences(text, true).map((s) => `${s.kind[
 
 console.log('\nF1 — a numeric/roman heading block must still produce a cue');
 {
-  // The filter `s.length > 1 && /[A-Za-z]/` in the sentence splitter binned both of
-  // these, so `<p class="cn">1</p>` got no cue and its spoken chapter number fell
+  // The filter `s.length > 1 && /[A-Za-z]/` in the sentence splitter binned the bare
+  // forms, so `<p class="cn">1</p>` got no cue and its spoken chapter number fell
   // into the tail of the previous prose cue.
-  for (const n of ['1', '7', '12', 'I', 'IV', 'XVII']) {
+  //
+  // N2: the PUNCTUATED forms were still broken after that fix, because the
+  // classifier tested terminal punctuation BEFORE numbering — which made the `[.)]`
+  // tail in the numbering pattern dead code. "1." and "12." were dropped entirely
+  // and "IV." came out as prose, and `<p class="cn">1.</p>` is at least as common
+  // in the wild as the bare "1".
+  for (const n of ['1', '7', '12', 'I', 'IV', 'XVII',
+                   '1.', '12.', '7 .', '1,', 'I.', 'IV.', '3)', 'xvii.']) {
     const r = one(n);
     check(`"${n}" -> one heading cue`, r.length === 1 && r[0].kind === 'heading' && r[0].text === n,
       JSON.stringify(r));
@@ -57,6 +64,56 @@ console.log('\nF2 — <h1>-<h6> headings are tagged even though the extractor pu
   const r4 = splitSentences(`${HEADING_MARKER}Chapter One. It began.`, false);
   check('marker stripped in --no-paragraph-split mode',
     r4.every((s) => !s.text.includes(HEADING_MARKER)), JSON.stringify(r4));
+}
+
+console.log('\nN3 — English words made of roman letters must NOT read as numerals');
+{
+  // `[ivxlcdm]{1,7}` matched all of these, tagging them heading (= droppable).
+  const words = ['did', 'dim', 'lid', 'mid', 'mix', 'mild', 'mill', 'civil', 'vivid',
+                 'ill', 'id', 'dill', 'DID', 'MIX', 'CIVIL', 'Mix', 'Did'];
+  for (const w of words) {
+    const r = one(w);
+    check(`"${w}" is not a numeral`, r.length >= 1 && r.every((s) => s.kind === 'prose'),
+      JSON.stringify(r));
+  }
+  // ...while real numerals still are. MIX is a valid numeral (1009); the value cap
+  // is what excludes it, and it also keeps every plausible chapter number.
+  for (const n of ['ii', 'III', 'ix', 'XL', 'xcix', 'C']) {
+    check(`"${n}" is still a numeral`, one(n)[0].kind === 'heading', JSON.stringify(one(n)));
+  }
+  check('a numeral above the chapter-number cap is not a heading', one('MMXXIV')[0].kind === 'prose');
+}
+
+console.log('\nN1 — --no-paragraph-split must restore pre-branch behaviour, not beat it');
+{
+  // markHeadings used to CONSUME </h1-6>, which disabled the period-append and made
+  // --no-paragraph-split WORSE than the pre-branch path: with no period and no block
+  // split, the heading fused with the following sentence.
+  const { EpubProcessor } = require(path.join(ROOT, 'dist/electron/epub-processor.js'));
+  const xhtml = '<html><body><h1>Chapter One</h1><p>It was a dark night.</p></body></html>';
+  const extract = (mark) => new EpubProcessor()['extractTextFromXhtml'](xhtml, false, mark);
+
+  const marked = extract(true);
+  check('the period-append still fires under markHeadings', /Chapter One\./.test(marked),
+    JSON.stringify(marked));
+  check('the heading is still marked', marked.includes(HEADING_MARKER), JSON.stringify(marked));
+
+  const flat = splitSentences(marked, false).map((s) => s.text);
+  check('--no-paragraph-split yields TWO sentences, not one fused run',
+    flat.length === 2 && /^Chapter One\.$/.test(flat[0]) && /^It was a dark night\.$/.test(flat[1]),
+    JSON.stringify(flat));
+  check('no marker leaks into --no-paragraph-split output',
+    flat.every((t) => !t.includes(HEADING_MARKER)), JSON.stringify(flat));
+
+  // and unmarked extraction is byte-identical to what it always produced
+  check('markHeadings=false leaves the extractor output unchanged',
+    extract(false) === 'Chapter One.\n\nIt was a dark night.', JSON.stringify(extract(false)));
+
+  // paragraph-aware still tags it
+  const aware = splitSentences(marked, true);
+  check('paragraph-aware still tags the h1 as heading',
+    aware.length === 2 && aware[0].kind === 'heading' && aware[1].kind === 'prose',
+    JSON.stringify(aware));
 }
 
 console.log('\nF4 — short unpunctuated PROSE must NOT be tagged heading');

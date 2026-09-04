@@ -163,9 +163,48 @@ const TITLE_STOPWORDS = new Set([
 /** Words that open a heading whatever follows ("Part I", "Chapter 3", "Notes"). */
 const HEADING_LEAD = /^(part|chapter|book|section|appendix|prologue|epilogue|introduction|foreword|preface|afterword|conclusion|contents|notes|index|bibliography|acknowledgments|acknowledgements)\b/i;
 
-/** "1", "12", "IV", "xvii", "3." — a bare number or roman numeral standing alone is
- *  the classic chapter-number block, a heading with no ambiguity. */
-const NUMBERING_ONLY = /^(?:\d{1,4}|[IVXLCDM]{1,7}|[ivxlcdm]{1,7})\s*[.)]?$/;
+/**
+ * "1", "12", "IV", "xvii", "3.", "12.", "1)" — a bare number or roman numeral
+ * standing alone is the classic chapter-number block, a heading with no ambiguity.
+ *
+ * A CHARACTER CLASS IS NOT A ROMAN NUMERAL. The first version tested
+ * `[ivxlcdm]{1,7}`, which matches ordinary English words built from those letters —
+ * did, dim, lid, mid, mild, mill, civil, vivid, ill, id, dill, and their capitalized
+ * forms — every one of which would have been tagged `heading`, i.e. droppable by a
+ * corpus cutter. This is the real grammar, anchored and non-empty, plus a value cap:
+ * `MIX` genuinely is a valid numeral (1009), as are `DI`, `MC` and friends, and the
+ * cap is what keeps those English words out while leaving every plausible chapter or
+ * front-matter number in.
+ */
+const ROMAN_NUMERAL = /^(?=[MDCLXVI])M{0,3}(?:CM|CD|D?C{0,3})(?:XC|XL|L?X{0,3})(?:IX|IV|V?I{0,3})$/;
+const ROMAN_MAX = 100;
+const ROMAN_VALUES: ReadonlyArray<readonly [string, number]> = [
+  ['CM', 900], ['CD', 400], ['XC', 90], ['XL', 40], ['IX', 9], ['IV', 4],
+  ['M', 1000], ['D', 500], ['C', 100], ['L', 50], ['X', 10], ['V', 5], ['I', 1],
+];
+function romanValue(s: string): number {
+  let v = 0;
+  outer: for (let i = 0; i < s.length; ) {
+    for (const [sym, val] of ROMAN_VALUES) {
+      if (s.startsWith(sym, i)) { v += val; i += sym.length; continue outer; }
+    }
+    return NaN;
+  }
+  return v;
+}
+
+/** A block that is nothing but a chapter number, with at most one trailing mark. */
+function isNumberingOnly(b: string): boolean {
+  const core = b.replace(/\s*[.,):\]]$/, '').trim();
+  if (!core) return false;
+  if (/^\d{1,4}$/.test(core)) return true;
+  // uniform case only — "Mix" is not how anyone sets a chapter number
+  if (core !== core.toUpperCase() && core !== core.toLowerCase()) return false;
+  const up = core.toUpperCase();
+  if (!ROMAN_NUMERAL.test(up)) return false;
+  const v = romanValue(up);
+  return Number.isFinite(v) && v > 0 && v <= ROMAN_MAX;
+}
 
 function coreOf(word: string): string {
   return word.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
@@ -201,12 +240,25 @@ function isTitleOrAllCaps(words: string[]): boolean {
  * `<li>Bread</li>`, a one-word "Yes", a dialogue fragment ending in a dash. A
  * block now has to LOOK like a set heading:
  *
- *   * bare numbering ("1", "IV") — the chapter-number block; or
+ *   * bare numbering ("1", "IV", "12.") — the chapter-number block; or
  *   * a recognized heading lead word ("Part I", "Chapter 3", "Notes"); or
- *   * two or more words, all Title Case or all ALL CAPS.
+ *   * two or more words, all Title Case or all ALL CAPS,
  *
- * and in every case be short and carry no terminal punctuation — where terminal
- * now includes ':' and ';', which end a lead-in ("The rules are:"), not a title.
+ * the last two also being short and carrying no terminal punctuation — where
+ * terminal includes ':' and ';', which end a lead-in ("The rules are:"), not a title.
+ *
+ * NUMBERING IS TESTED FIRST, BEFORE THE PUNCTUATION GATE, and the order is the
+ * whole point. Testing it after meant the `[.)]` tail in the numbering pattern was
+ * dead code: "1." and "12." were rejected by the punctuation gate before numbering
+ * was ever consulted, so a `<p class="cn">1.</p>` chapter number — at least as
+ * common as the bare "1" — got no cue at all and its spoken announcement fell into
+ * the previous prose cue's tail, while "IV." came out as ordinary prose.
+ *
+ * KNOWN LIMIT (accepted): the Title Case arm will tag a short capitalized line that
+ * is really prose — "Mr. Smith", "New York", "Thank You", "Oh God" — as a heading.
+ * It is a heuristic for publishers who set headings as `<p class="cn">`, and it
+ * cannot be made exact from text alone. `<h1>`-`<h6>` is the exact path; see the
+ * README's note before wiring a cutter to drop these cues.
  */
 function looksLikeHeading(block: string, structural = false): boolean {
   const b = block.replace(/\s+/g, ' ').trim();
@@ -215,8 +267,8 @@ function looksLikeHeading(block: string, structural = false): boolean {
   if (b.length > HEADING_MAX_CHARS) return false;
   const words = b.split(' ');
   if (words.length > HEADING_MAX_WORDS) return false;
+  if (isNumberingOnly(b)) return true;
   if (/[.!?…:;,]["”’')\]]*$/.test(b)) return false;
-  if (NUMBERING_ONLY.test(b)) return true;
   if (HEADING_LEAD.test(b)) return true;
   return isTitleOrAllCaps(words);
 }
