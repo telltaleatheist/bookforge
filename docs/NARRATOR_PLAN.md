@@ -422,3 +422,11 @@ packer (what today's sessions were rendered with; resume of an e2a session depen
 it). The paragraph packer is a second policy (`text/paragraph_packer.py`) selected by
 `(engine, voice)`; new Orpheus renders move to it only after an ear check on a real book
 (the plan's "diffs are ear-checked" rule applies twice over here).
+
+Refinement (Owen, same day): short blocks that are complete, separate thoughts are NOT
+merged - list items are the example (each `[item]` is read on its own, never joined to
+its neighbours for context; the 2026-08-29 item rule stands). The ~300-char floor applies
+only to consecutive short prose/dialogue paragraphs and to tier-2 fragments. The Higgs v3
+`max_chars` is MEASURED per fine-tune (min of the length-sweep recommendation and the
+corpus-derived cap = p1 training-clip seconds x chars/s; ~1,200-1,500 for a ds_ad4l cut
+with 100 s clips) and read from the catalog; 600 is the zero-shot placeholder.
