@@ -86,6 +86,9 @@ CONCERN below.
 > Owen, 2026-09-04: for a non-number class the replacement must preserve every
 > alphabetic word of the find, in order, EXCEPT the single token the class is
 > allowed to change. **One-token edits only.**
+>
+> And the second adversarial review's ruling on top of it: the validator must
+> verify that the replacement **is a reading of that token**.
 
 A *number* edit has a lexical anchor: `keepsEveryWord` proves every prose word of
 the find survives and `NUMBER_DROPPED` proves every printed number came out as
@@ -112,6 +115,26 @@ How it is enforced:
   joins, and no more — `WORDS_ADDED`, which is what stops
   "The 12 men who refused were shot" becoming "… were spared, and the men who
   shot" while passing every number invariant.
+
+* **nothing may be ADDED** either — the replacement's words are the find's words,
+  minus the token that changed, plus that token's reading, and no more
+  (`WORDS_ADDED`). Without it a replacement could keep every word and append a
+  sentence, or insert a "not";
+* and the replacement must be **a reading of the token that changed**
+  (`NOT_A_READING`). The model decides WHETHER a token is read differently;
+  `electron/tts-spoken-forms.ts` decides what it may become:
+
+| class | allowed reading |
+|---|---|
+| all-caps | its own letters, spaced (`FBI` → `F B I`), or its own word in ordinary case (`SAID` → `said`). An acronym a person listed as *said as a word* (NASA, NATO, …) is read as printed |
+| abbreviation | an entry from the curated table — Dr. Prof. St. Mt. Ave. Blvd. Rd. Jr. Sr. No. e.g. i.e. etc. vs. viz. cf. a.m. p.m. and the rest. **An unknown abbreviation is REFUSED and named**, never guessed, so the tokens real books print arrive as a review list and the table grows on purpose. Mr./Mrs./Ms. are deliberately absent — the prompt says to leave them |
+| roman | exactly the cardinal or ordinal words of its value, with or without a leading "the". `IV` is four or fourth, never nine |
+| bracket | removal only. **Square brackets are editorial**; **round brackets are the author's** unless the contents open like apparatus (`see`, `cf.`, `ibid.`, `sic`, `emphasis`…), so `[sic]` and `(see page twelve)` go and `(he was lying)` stays. The word cap applies after that, to what is already apparatus |
+
+`classifyEdit` is per-token and position-aware: a period at the **end** of a span
+is a sentence, not an abbreviation, so `He did not believe it.` is prose; a period
+anywhere else is an abbreviation; a span-final one counts only when the table
+already knows it.
 
 The em dash is **the one character this pass may invent**, and only for a text
 edit whose find printed a hyphen. A number edit can never invent one.
@@ -331,6 +354,18 @@ nobody to ask.
 
 ## What the pass will not touch
 
+**A digit run glued to letters that OPEN a token** — `105mm`, `9mm`, `20km`,
+`5kg`, `12V`, `8GB`, `6ft`, `4a`. That shape is a measurement or a designation
+and its letters are a unit; this rule has no table of units, so it goes to the
+model. The letter-prefix and hyphenated forms are exactly what the rule is for
+and are untouched: `B-17`, `COVID-19`, `R2D2`, `F8F`, `C18`, `V-2`, `MP3`,
+`7-Eleven`, `24-hour`, `30-year-old`.
+
+**A digit run whose suffix another rule owns** — `mid-1920s`, `pre-1914`,
+`mid-19th`, and the `<br/>`-fused forms `3rdday`, `21stcentury`, `90sera`. Those
+are the decade, year and ordinal rules' shapes, and reading them here produced
+`mid-one thousand nine hundred twenty s`.
+
 **Preformatted text.** A `<pre>`, anything inside or containing one, and anything
 whose inline style declares `white-space: pre` / `pre-wrap` / `pre-line` /
 `break-spaces` is refused by BOTH stages and counted
@@ -350,6 +385,16 @@ Every refusal is counted in the receipt AND in the stamp
 byte-indistinguishable from a clean one, and the "nothing to do" line on a second
 run says how many spans it could not reach rather than claiming the book is
 already canonical.
+
+## The stamp's own version
+
+`stampVersion` (currently **2**) versions the SHAPE of the stamp, apart from the
+rules it records. It went 1 → 2 when `punctuationRefused` became required and the
+validator learned that a reading must be a reading: neither is a change to the
+punctuation spec, so bumping `PUNCTUATION_SPEC_VERSION` would have told the
+training side a rule moved when none did, and `NORMALIZER_VERSION` is `n5` either
+way because n5 has never shipped. What changed is what a stamp *means*, so books
+stamped by an earlier build read stale **by rule** rather than by accident.
 
 ## Known limitation, not fixed here
 
