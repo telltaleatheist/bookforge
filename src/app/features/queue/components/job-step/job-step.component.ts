@@ -15,6 +15,7 @@
 
 import { Component, computed, inject, input, output } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { engineDisplayName } from '@shared/tts/engine-caps';
 import { JobType, ParallelWorkerProgress, QueueJob } from '../../models/queue.types';
 import { stagesFor } from '../../models/job-stages';
 import { JobEtaService } from '../../services/job-eta.service';
@@ -555,11 +556,9 @@ export class JobStepComponent {
     }
   }
 
+  /** See job-details' copy: one table decides how an engine id is spelled, so a
+   *  retired engine cannot read as live in one view and retired in another. */
   private capitalizeEngine(engine: string): string {
-    switch (engine.toLowerCase()) {
-      case 'xtts': return 'XTTS';
-      case 'orpheus': return 'Orpheus';
-      default: return engine.charAt(0).toUpperCase() + engine.slice(1);
-    }
+    return engineDisplayName(engine);
   }
 }

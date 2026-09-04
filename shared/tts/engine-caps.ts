@@ -47,15 +47,61 @@
  */
 
 /**
- * THE ENGINES THIS BUILD HAS, as an id.
+ * THE ENGINES A NARRATION RUN CAN BE RENDERED IN TODAY.
  *
- * Declared here rather than in the renderer's `language-learning.types.ts`, which
- * is where it used to live, because it is the key of the table below and a union
- * whose definition sits in a program main cannot compile is a union main cannot
- * name. That file now re-exports this one, so its own importers are unchanged and
- * there is still exactly one list of engine ids in the repository.
+ * Two, on purpose (Owen, 2026-09-04): "Orpheus is a choice, XTTS used to be a
+ * choice but can now be removed, Higgs will have to be added as an option."
+ *
+ * This is the union a caller should name when it means "an engine that can
+ * render", and it is deliberately NARROWER than `TTSEngine` below. The two
+ * cannot be collapsed, because a retired engine has to stay NAMEABLE: a job
+ * record written last year says `xtts`, that record must still load and still
+ * display, and the only way to both load it and refuse to run it is to have a
+ * type for "an id this build recognises" that is not the same type as "an id
+ * this build will render".
  */
-export type TTSEngine = 'xtts' | 'orpheus' | 'voxtral' | 'f5';
+export type TtsEngineId = 'orpheus' | 'higgs';
+
+/**
+ * Engine ids that exist ONLY in records and saved settings written before the
+ * engine was retired. Never offered, never rendered, always displayed.
+ *
+ * - `xtts` — retired 2026-09-04 on Owen's call. The reason is recorded across
+ *   the project: every voice that matters is an Orpheus fine-tune, and XTTS was
+ *   being kept alive as an option nobody picked. Its e2a code path is NOT
+ *   deleted — assembly still passes the literal `--tts_engine xtts` to e2a as
+ *   engine-agnostic scaffolding (see `parallel-tts-bridge.ts` `asmEngineArg`
+ *   and narrator's `compat/FLAGS.md`), and bilingual books still render through
+ *   it. What is gone is the CHOICE.
+ * - `f5`, `voxtral` — never retired by a decision, but they fall out of the
+ *   narration picker as a CONSEQUENCE of narrowing it to the two engines above,
+ *   and saying so here is better than letting them vanish silently. Both are
+ *   component-gated (`f5-env` / `voxtral-env`) so neither was visible on a
+ *   machine that had not installed them; their `getEnvPathForEngine` wiring in
+ *   `electron/e2a-paths.ts` is untouched. Moving either back into
+ *   `TtsEngineId` and `SELECTABLE_ORDER` is the whole of un-retiring it.
+ */
+export type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral';
+
+/**
+ * EVERY ENGINE ID THIS BUILD CAN NAME — runnable plus retired.
+ *
+ * The key of the table below, and the type a RECORD field should have. Declared
+ * here rather than in the renderer's `language-learning.types.ts`, which is
+ * where it used to live, because a union whose definition sits in a program main
+ * cannot compile is a union main cannot name. That file re-exports this one, so
+ * its own importers are unchanged and there is still exactly one list of engine
+ * ids in the repository.
+ */
+export type TTSEngine = TtsEngineId | RetiredTtsEngine;
+
+/** Why an engine is no longer offered, and since when. */
+export interface TtsEngineRetirement {
+  /** ISO date the engine stopped being offered. */
+  since: string;
+  /** One sentence a person reads in a refusal message. */
+  reason: string;
+}
 
 export type TtsDevice = 'auto' | 'cpu' | 'gpu' | 'mps';
 
@@ -123,6 +169,17 @@ export interface TtsEngineCaps {
 
   voices: TtsVoiceModel;
   sampling: TtsSamplingControls;
+
+  /**
+   * `null` for an engine that renders; a note for one that does not.
+   *
+   * This flag is what makes "load the record, display it, refuse to run it"
+   * expressible in one place. `displayName` still reads as the plain engine name
+   * so that a table of engines is a table of engines; the "(retired)" suffix a
+   * person sees comes from `engineDisplayName()`, which composes the two — so a
+   * caller cannot accidentally print a retired engine as if it were live.
+   */
+  retired: TtsEngineRetirement | null;
 }
 
 // Orpheus finetune voices (e2a VALID_VOICES), ordered best → worst prosody
@@ -160,18 +217,6 @@ const VOXTRAL_EN_VOICES = [
 ];
 
 export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
-  xtts: {
-    id: 'xtts',
-    displayName: 'XTTS',
-    statusText: 'Multi-language',
-    requiresComponent: null, // bundled
-    runtime: 'native',
-    device: { cpuCapable: true, gpuRequired: false },
-    maxWorkers: 4,
-    voices: { kind: 'catalog', canDownloadMore: true, canClone: true },
-    sampling: { temperature: true, topP: true, topK: true, repetitionPenalty: true, speed: true },
-  },
-
   orpheus: {
     id: 'orpheus',
     displayName: 'Orpheus',
@@ -182,6 +227,55 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     maxWorkers: 1, // vLLM; serializes
     voices: { kind: 'preset', presets: ORPHEUS_VOICES },
     sampling: {}, // fixed internal sampling
+    retired: null,
+  },
+
+  higgs: {
+    id: 'higgs',
+    displayName: 'Higgs',
+    statusText: 'Higgs Audio v3 · zero-shot clone or fine-tune',
+    // The v3 stack is vLLM-Omni, which has no Windows build at all — the same
+    // reason the page-reader VLM is WSL-only, and a stronger one than Orpheus's
+    // (Orpheus runs natively and merely runs badly). See docs/HIGGS_ENGINE.md.
+    requiresComponent: 'higgs-env',
+    runtime: 'wsl',
+    device: { cpuCapable: false, gpuRequired: true },
+    // One resident vllm-omni server per GPU; the server batches internally, and
+    // it preallocates ~24 GB at 0.60 utilisation, so a second is not a thing.
+    maxWorkers: 1,
+    // The roster is `electron/data/higgs-models.json`, reached over the
+    // `higgsModels` IPC — there is no built-in named-voice list to state here,
+    // the way Orpheus genuinely has one. `presets: []` is that fact, not a
+    // placeholder: a Higgs voice is either the served model's own default or a
+    // catalog artifact, and both come from the catalog.
+    voices: { kind: 'preset', presets: [], canClone: true },
+    // Sampling is FIXED at the server's own shipped defaults (temperature 1.0,
+    // top_p 0.95, top_k 50). Deviations were measured across 0.3/0.7/1.0 and the
+    // spread sat INSIDE single-seed noise, so a slider here would be a control
+    // that moves nothing measurable — the same reason Orpheus and Voxtral expose
+    // none. There is also a trap a slider would walk into: these are not fields
+    // of the request body and pydantic drops them silently unless they are sent
+    // inside `extra_params`.
+    sampling: {},
+    retired: null,
+  },
+
+  xtts: {
+    id: 'xtts',
+    displayName: 'XTTS',
+    statusText: 'Multi-language',
+    requiresComponent: null, // bundled
+    runtime: 'native',
+    device: { cpuCapable: true, gpuRequired: false },
+    maxWorkers: 4,
+    voices: { kind: 'catalog', canDownloadMore: true, canClone: true },
+    sampling: { temperature: true, topP: true, topK: true, repetitionPenalty: true, speed: true },
+    retired: {
+      since: '2026-09-04',
+      reason:
+        'XTTS is retired as a narration engine — every voice BookForge ships is an Orpheus ' +
+        'or Higgs model. Re-render this job on Orpheus or Higgs.',
+    },
   },
 
   voxtral: {
@@ -197,6 +291,12 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     // sets the right per-backend params (MLX: temp 0.35/top_p 0.9/top_k 50;
     // vLLM: cfg_alpha), so exposing a control would only mislead.
     sampling: {},
+    retired: {
+      since: '2026-09-04',
+      reason:
+        'Voxtral is no longer offered for narration — the picker was narrowed to Orpheus and ' +
+        'Higgs. Its environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
+    },
   },
 
   f5: {
@@ -209,8 +309,27 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     maxWorkers: 2,
     voices: { kind: 'catalog', canDownloadMore: true, canClone: true },
     sampling: { speed: true },
+    retired: {
+      since: '2026-09-04',
+      reason:
+        'F5-TTS is no longer offered for narration — the picker was narrowed to Orpheus and ' +
+        'Higgs. Its environment wiring is intact; re-listing it is one line in SELECTABLE_ORDER.',
+    },
   },
 };
+
+/**
+ * The engines the narration picker offers, in display order.
+ *
+ * THIS ARRAY IS THE REMOVAL. Everything that used to show XTTS — the narration
+ * modal's engine strip, the pipeline-defaults panel, the wizard — reads its list
+ * from `selectableEngines()`, which reads this. So one edit here removed XTTS
+ * from every one of them, and adding `'higgs'` added it to every one of them,
+ * with no per-page list to keep in step. That was already the design; it is only
+ * being recorded because the alternative (a hardcoded `@for` in each template)
+ * is exactly how a "removed" engine survives in one forgotten page.
+ */
+const SELECTABLE_ORDER: readonly TtsEngineId[] = ['orpheus', 'higgs'];
 
 /**
  * Is this string one of the engines this build has?
@@ -230,4 +349,61 @@ export function engineCaps(id: TTSEngine): TtsEngineCaps {
   const caps = TTS_ENGINES[id];
   if (!caps) throw new Error(`Unknown TTS engine: ${id}`);
   return caps;
+}
+
+/**
+ * Is this an engine that can actually RENDER a narration today?
+ *
+ * The companion to `isTtsEngine`, and the two answer genuinely different
+ * questions. `isTtsEngine('xtts')` is TRUE — that id is real, its record loads,
+ * its display name exists. `isRunnableTtsEngine('xtts')` is FALSE. Code that
+ * reads an engine out of a saved blob asks the first; code that is about to
+ * queue work asks the second.
+ */
+export function isRunnableTtsEngine(id: string): id is TtsEngineId {
+  return isTtsEngine(id) && TTS_ENGINES[id].retired === null;
+}
+
+/**
+ * Narrow an engine id to a runnable one, or throw naming it and saying why.
+ *
+ * THE REFUSAL IS BY NAME, NEVER A COERCION. The tempting alternative — quietly
+ * substituting Orpheus for a record that says `xtts` — is the failure this whole
+ * split exists to prevent: it renders a book in a voice nobody chose and reports
+ * success. A person reading "XTTS is retired … re-render on Orpheus or Higgs"
+ * can act; a person listening to the wrong narrator cannot.
+ */
+export function assertRunnableTtsEngine(id: string): TtsEngineId {
+  if (!isTtsEngine(id)) {
+    throw new Error(
+      `Unknown TTS engine "${id}". This build renders: ${SELECTABLE_ORDER.join(', ')}.`,
+    );
+  }
+  const caps = TTS_ENGINES[id];
+  if (caps.retired) {
+    throw new Error(
+      `${caps.displayName} was retired on ${caps.retired.since} and cannot render: ${caps.retired.reason}`,
+    );
+  }
+  return id as TtsEngineId;
+}
+
+/**
+ * What a PERSON should see for an engine id, retirement included.
+ *
+ * Every place that used to print a bare engine name — a job's details row, a
+ * step label, a settings header — goes through here, so a retired engine can
+ * never be displayed as though it were still on offer. An id this build has
+ * never heard of comes back quoted rather than throwing: a display function is
+ * called while rendering a list and must not take a page down over one bad row.
+ */
+export function engineDisplayName(id: string): string {
+  if (!isTtsEngine(id)) return `Unknown engine "${id}"`;
+  const caps = TTS_ENGINES[id];
+  return caps.retired ? `${caps.displayName} (retired)` : caps.displayName;
+}
+
+/** The runnable engines, in display order — the list a picker offers from. */
+export function narrationEngineOrder(): readonly TtsEngineId[] {
+  return SELECTABLE_ORDER;
 }

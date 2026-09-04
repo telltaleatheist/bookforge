@@ -23,15 +23,22 @@
  * end.
  */
 
-import { TTS_ENGINES, type TTSEngine, type TtsEngineCaps } from '@shared/tts/engine-caps';
+import { TTS_ENGINES, narrationEngineOrder, type TtsEngineCaps } from '@shared/tts/engine-caps';
 
 export {
   TTS_ENGINES,
   engineCaps,
   isTtsEngine,
+  isRunnableTtsEngine,
+  assertRunnableTtsEngine,
+  engineDisplayName,
+  narrationEngineOrder,
 } from '@shared/tts/engine-caps';
 export type {
   TTSEngine,
+  TtsEngineId,
+  RetiredTtsEngine,
+  TtsEngineRetirement,
   TtsDevice,
   TtsVoiceModel,
   TtsSamplingControls,
@@ -40,12 +47,18 @@ export type {
 
 /**
  * Engines selectable right now, in display order. `isInstalled` gates engines that
- * require an optional component (Orpheus/Voxtral/F5 envs); bundled engines always
- * pass. Pass `componentService.isInstalled` bound to its service.
+ * require an optional component (the Orpheus env, the Higgs WSL env); a bundled
+ * engine always passes. Pass `componentService.isInstalled` bound to its service.
+ *
+ * THE ORDER IS NO LONGER WRITTEN HERE. It used to be a literal
+ * `['xtts', 'f5', 'orpheus', 'voxtral']` on this line, which made this file a
+ * second place an engine could be listed or forgotten — and the retirement of
+ * XTTS is exactly the change that would have gone wrong that way, because the
+ * capability table and this array would each have had to be edited to agree.
+ * `narrationEngineOrder()` is the one list, beside the table it indexes.
  */
 export function selectableEngines(isInstalled: (componentId: string) => boolean): TtsEngineCaps[] {
-  const order: TTSEngine[] = ['xtts', 'f5', 'orpheus', 'voxtral'];
-  return order
+  return narrationEngineOrder()
     .map((id) => TTS_ENGINES[id])
     .filter((c) => c.requiresComponent === null || isInstalled(c.requiresComponent));
 }

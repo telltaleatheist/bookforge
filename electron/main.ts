@@ -7835,6 +7835,31 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // The Higgs narration roster. Deliberately NOT the shape of the Orpheus handler
+  // above: there is no folder discovery and no \\wsl$ models dir to touch, so no
+  // WSL liveness probe is needed — the catalog is a repo file that reads even when
+  // the VM is wedged. Errors propagate; the renderer logs them rather than
+  // presenting an empty dropdown that would be indistinguishable from "no voices".
+  ipcMain.handle('higgs:list-models', async () => {
+    try {
+      const { higgsNarrationVoices } = await import('./higgs-models.js');
+      return { success: true, data: higgsNarrationVoices() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The full Higgs catalog entries, for the Settings → Higgs voices panel (the
+  // narration picker only needs value/label, above).
+  ipcMain.handle('higgs:list-catalog', async () => {
+    try {
+      const { listHiggsModels } = await import('./higgs-models.js');
+      return { success: true, data: listHiggsModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // Voices selectable for full-audiobook generation — installed voices only, so
   // every option works even though BookForge no longer bundles every clip.
   ipcMain.handle('voices:list-audiobook', async () => {

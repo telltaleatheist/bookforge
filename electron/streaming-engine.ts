@@ -325,9 +325,37 @@ function orpheusAvailability(): EngineInfo {
   }
 }
 
+/**
+ * The streaming engines the Listen pickers offer.
+ *
+ * XTTS IS STILL LISTED, AND IT IS LISTED AS UNAVAILABLE. Two things are true at
+ * once after the 2026-09-04 retirement and the listing has to say both: a machine
+ * whose `tts-engine.json` says `xtts` is still RUNNING XTTS and must keep
+ * working (Listen is not a narration render — nothing here was re-pointed), while
+ * nobody may newly CHOOSE it. Reporting `available: false` with the reason is
+ * exactly that pair: both pickers (the Settings toggle and the Listen tab's
+ * `@for` over this list) already disable an unavailable engine and show its
+ * reason on hover, so one edit here retires it in both without either template
+ * learning a special case, and without a running engine being torn out from
+ * under anyone.
+ *
+ * Higgs is deliberately ABSENT rather than listed-and-unavailable. It is not a
+ * streaming engine at all: the v3 backend is a served vllm-omni endpoint and its
+ * codec is a delay-pattern one with no sound windowed decode, so there is no
+ * partial support to report — narrator's `HiggsCodec.streaming_decoder()`
+ * returns None on purpose. Listing it would promise a Listen feature that does
+ * not exist.
+ */
 export function getAvailableEngines(): EngineInfo[] {
   return [
-    { id: 'xtts', name: 'XTTS', available: true },
+    {
+      id: 'xtts',
+      name: 'XTTS (retired)',
+      available: false,
+      reason:
+        'XTTS was retired as a narration engine on 2026-09-04. An existing XTTS ' +
+        'streaming session keeps working; it can no longer be selected.',
+    },
     orpheusAvailability(),
   ];
 }

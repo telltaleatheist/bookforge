@@ -164,10 +164,22 @@ export class WorkerConfigService {
     }
   }
 
-  /** The streaming engine backing the Listen feature ('xtts' | 'orpheus'). */
+  /** The streaming engine backing the Listen feature ('xtts' | 'orpheus'). The
+   *  seed is what main persists as its own default when nothing is configured,
+   *  so the two agree during the moment before the first config arrives. XTTS is
+   *  retired as a CHOICE but is still the bundled streaming runtime, which is
+   *  why this seed did not move with the retirement — see
+   *  `streaming-engine.ts:getSelectedEngineName`. */
   readonly engine = computed(() => this.config()?.engine ?? 'xtts');
-  /** Engines usable on this machine (for the chooser's availability). */
-  readonly engines = computed(() => this.config()?.engines ?? [{ id: 'xtts' as const, name: 'XTTS', available: true }]);
+  /**
+   * Engines usable on this machine (for the chooser's availability).
+   *
+   * SEEDED EMPTY. It used to seed `[{ id: 'xtts', available: true }]`, which is
+   * now a false statement — main reports XTTS as unavailable-because-retired —
+   * and a picker that renders one wrong row for a beat before main answers is
+   * worse than one that renders none.
+   */
+  readonly engines = computed(() => this.config()?.engines ?? []);
   /** True when Orpheus is the active engine — worker-count/device controls are
    *  XTTS concepts and don't apply. */
   readonly isOrpheus = computed(() => this.engine() === 'orpheus');

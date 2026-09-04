@@ -687,16 +687,22 @@ export class FirstRunSetupComponent {
         'Optional — AI cleans up OCR text before narration. Add a bundled local model, connect Ollama, or save a Claude/OpenAI key.'
     },
     {
-      id: 'xtts',
-      title: 'XTTS — the built-in narrator',
+      id: 'orpheus',
+      title: 'Orpheus — the narration engine',
       subtitle:
-        'Voices and language packs for the narration engine that ships with BookForge. One voice is built in; common languages are bundled. Pick extras now or anytime from Settings.'
+        'The engine BookForge narrates with. Install it and its voice models here; add more voice sources anytime.'
     },
     {
-      id: 'orpheus',
-      title: 'Orpheus (optional)',
+      // The step id stays 'xtts' because it is also the Settings SECTION key that
+      // `@case ('xtts')` renders and that the translation panel deep-links to.
+      // What changed is the framing: XTTS stopped being "the built-in narrator"
+      // on 2026-09-04, and this step now exists for the two things under it that
+      // no other page owns — the Stanza language packs (sentence segmentation,
+      // which every engine's prep needs) and a user's own uploaded voices.
+      id: 'xtts',
+      title: 'Language packs',
       subtitle:
-        'A more natural, GPU-heavy narration engine. Install the engine and its voice models here; add more voice sources anytime.'
+        'Sentence-splitting language packs, used by every narration engine, plus any voices you have uploaded yourself. Common languages are bundled — pick extras now or anytime from Settings.'
     },
     {
       id: 'rvc',

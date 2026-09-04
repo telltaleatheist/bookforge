@@ -1,0 +1,112 @@
+{
+  "version": 1,
+  "engine": "higgs",
+  "_comment": "Repo-tracked CURATED catalog for Higgs Audio v3 narration voices — the Higgs counterpart of orpheus-models.json, and deliberately NOT the same shape where the two engines differ. Orpheus's catalog OVERLAYS a per-machine runtime install manifest (models.json in the models dir) because Orpheus voices are folder-discovered. Higgs has no folder discovery: a Higgs voice is either the served model's own zero-shot voice or a named artifact this file points at, so THIS FILE IS THE WHOLE ROSTER. There is no runtime manifest to merge and no reconcile fallback — a voice that is not listed here does not exist, and higgs-models.ts refuses it BY NAME rather than falling through to the default voice (the same refusal rule pushVoiceArgs applies to a non-stock Orpheus voice, for the same reason: a silent fall-back renders an ENTIRE book in the wrong voice with only a console warning). Every number in backends.served is MEASURED — the provenance is in E:\\training\\_campaigns\\2026-09-01-cod-full-rebuild\\higgs\\HIGGS_V3_LEVERS.md — or is a documented placeholder carrying a _pendingNote.",
+  "_licenseComment": "Higgs Audio v3 (bosonai/higgs-audio-v3-tts-4b) ships under the Boson Higgs TTS 3 RESEARCH AND NON-COMMERCIAL license, and a fine-tune of those weights INHERITS it. That is why every entry here carries an explicit `license` and why `commercialUse` is false on all of them: this engine is enabled for Owen's personal evaluation and cannot be shipped in a commercial BookForge build without a separate licence from Boson AI. Higgs Audio v2 is the trainable-and-shippable family (Boson Higgs Audio 2 Community licence, attribution plus a naming constraint) and is NOT in this catalog — Owen dropped v2 on 2026-09-04 ('basically just Orpheus and we know Orpheus better'), so v2 exists only as interface scaffolding on the narrator side and is never offered here.",
+  "_voiceComment": "`voice` is the VoiceRef the narrator engine is constructed with, and it is a tagged union with exactly two forms in this catalog:  {kind:'adapter', path}  names a LoRA adapter dir or a merged checkpoint dir, WSL-native (the same convention as the Orpheus models dir: BookForge points at /home/<user>/higgs-models/<voice> so the weights load off ext4 rather than the slow /mnt/c 9p mount).  {kind:'clips', clips:[{path, transcript}]}  is a zero-shot clone conditioned on reference audio in the request; EVERY clip must carry a BOOK-EXACT transcript (the training-text doctrine: epub book-truth, never bare ASR) and higgs-models.ts REFUSES a clip whose transcript is missing or blank rather than sending the clip untranscribed. An EMPTY clips array is not a missing transcript — it is the server's own default voice, sent with no `references` field at all, which is exactly the condition HIGGS_V3_LEVERS.md measures as 'no reference'.",
+  "serving": {
+    "_comment": "The shared v3 serving stack, selected by a model's engineVersion. A model entry may declare its own `serving` block, which is used INSTEAD of this one (never field-merged) so a voice has exactly one serving answer. Transcribed from E:\\training\\_campaigns\\2026-09-01-cod-full-rebuild\\higgs\\serve_v3.sh — keep the two in step; electron/scripts/higgs/serve_higgs_v3.sh is the checked-in copy the installer deploys.",
+    "engineVersion": "v3",
+    "model": "bosonai/higgs-audio-v3-tts-4b",
+    "env": "higgs3",
+    "condaEnvName": "higgs3",
+    "launchScript": "serve_higgs_v3.sh",
+    "servedModelName": "higgs-v3",
+    "host": "127.0.0.1",
+    "port": 8095,
+    "endpoint": "/v1/audio/speech",
+    "gpuMemoryUtilization": 0.6,
+    "maxModelLen": 8192,
+    "maxNumSeqs": 2,
+    "attentionBackend": "FLASH_ATTN",
+    "coldStartSeconds": 55,
+    "_coldStartNote": "MEASURED 2026-09-04: ~55 s from launch to first served request, and the server preallocates ~24 GB unless gpu-memory-utilization is lowered (0.60 here). Any watchdog in front of a Higgs job must allow this before it calls the run dead.",
+    "_flashInferNote": "FlashInfer is unavailable on sm_86 with torch 2.13+cu130 — its JIT nvcc build rejects the CUDA 13 nvcc from the pip wheel — so the launch pins VLLM_USE_FLASHINFER_SAMPLER=0, VLLM_DISABLE_FLASHINFER_PREFILL=1 and --attention-backend FLASH_ATTN. This is speed-only; the flashinfer-jit-cache cu130/sm_86 wheel from https://flashinfer.ai/whl/cu130/torch2.13/ is the route if v3 speed ever matters.",
+    "patches": [
+      {
+        "id": "vllm-negative-token-id",
+        "script": "patch_vllm.py",
+        "target": "vllm/v1/engine/input_processor.py",
+        "marker": "min_input_id != -100",
+        "why": "vLLM 0.28's blanket negative-token-id rejection fires on vllm-omni's AUDIO_PLACEHOLDER_ID (-100) and returns HTTP 400 'Token id -100 is out of vocabulary' for EVERY voice-clone request. Without this patch, cloning is dead and only the default voice serves."
+      },
+      {
+        "id": "higgs-tail-trim",
+        "script": "patch_tail_trim.py",
+        "target": "vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py",
+        "marker": "_trim_trailing_sentinel_frames",
+        "why": "vllm-omni substitutes the ramp-down BOC/EOC sentinels with codec code 0 (a VALID code that decodes to real sound) and then trims exactly ONE frame, leaving ~240 ms of audible garbage at the end of every chunk — Owen heard it as 'a stray syllable or sound after each sentence'. The patch drops the trailing run of sentinel-bearing frames by CONTENT, which cannot eat real speech. Terminal burst peak measured 12-20 dB quieter after it."
+      }
+    ]
+  },
+  "models": [
+    {
+      "id": "default",
+      "label": "Higgs v3 default (zero-shot)",
+      "engineVersion": "v3",
+      "voice": {
+        "kind": "clips",
+        "clips": []
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-04",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "_maxCharsNote": "600 is the ZERO-SHOT placeholder and it is measured, not guessed: coverage by faster-whisper/difflib alignment is 1.000 at 213/440/504 chars and holds through 600, while 898 chars fails REPRODUCIBLY (coverage 0.86 and 0.78 on two seeds, tail coverage 0.314 and 0.000 — it drops the end of the paragraph). A reference clip does NOT fix it; this is a v3 model property that v2 does not have. maxChars is MEASURED PER FINE-TUNE for any adapter voice (min of the length-sweep recommendation and the corpus-derived cap = p1 training-clip seconds x chars/s), so this number must not be copied onto one. DURATION RATIO IS NOT A COVERAGE PROXY: at temperature 0.7 the 898-char chunk produced ratio 0.99 while actually delivering coverage 0.778 with a 26% insert rate — it dropped text and padded the duration with hallucinated words. Any future cap must be re-measured by ASR alignment, never by duration.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "_edgeFadeNote": "Applied at ASSEMBLY, never baked into the per-chunk wav (chunks are written exactly as decoded so the raw model output stays inspectable). Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — so the decoded chunk ends at a hard sample boundary, which is a step discontinuity and therefore a click. 25 ms cosine out / 10 ms in removes it; this is normal practice for concatenating decoded segments, not a workaround. It is also why the manifest's gapBefore/gapAfter become LIVE for Higgs where they are inert for Orpheus.",
+          "sampling": {
+            "temperature": 1.0,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "_samplingNote": "These are the server's OWN shipped defaults (vllm_omni/deploy/higgs_multimodal_qwen3.yaml, stage 0 default_sampling_params) and the delivered render sends NO extra_params at all so they apply verbatim. They are declared here anyway so the value that renders is written down rather than inherited invisibly from a yaml inside site-packages. TWO TRAPS: (1) temperature/top_p/top_k are NOT fields of OpenAICreateSpeechRequest — sent at the top level pydantic silently DROPS them and the render runs at 1.0/0.95/50 regardless; they must go inside `extra_params`. (2) Deviations were measured (temp 0.3/0.7/1.0 at top_p 0.95 gave cosine 0.653/0.675/0.642 at 368 chars) and the spread is INSIDE single-seed noise — two seeds of the same setting differ by 0.04 — so one seed per cell cannot rank them and none beat the default enough to leave it.",
+          "referenceSecondsCap": 30,
+          "_referenceCapNote": "HARD server limit: a 42 s reference returns HTTP 400 'Reference audio too long (42.0s). Maximum 30s supported'. vllm-omni accepts EXACTLY ONE reference, so several clips means one concatenated wav (joined by 0.35 s of silence) with the transcripts joined in the same order — which is what a multi-clip `clips` array means here. Go to the cap: 27 s costs ~685 placeholder rows against an 8192 budget and more conditioning is otherwise free.",
+          "allowedControls": [],
+          "_allowedControlsNote": "EMPTY ON PURPOSE, and this is a safety rule rather than a preference. An inline control token that is NOT in get_added_vocab() is split into 7-10 ordinary text pieces and READ ALOUD, which derails generation into a degenerate loop: ASR coverage 0.000, pitch std collapsing to 0.28 st, speaker cosine 0.05. A typo is not ignored — it destroys the render. v3 also has NO scene-description mechanism at all (<|scene_desc_start|> is a v2 token, absent from v3's vocabulary) and no `neutral`/`calm` emotion. At default sampling no control token beat plain text on speaker cosine, and the one candidate (<|prosody:long_pause|>) did not change measured pause density. The delivered render uses none. An engine must validate every control token against get_added_vocab() before sending; an empty allowlist means it never has to."
+        }
+      },
+      "note": "The model's own voice with no reference audio. MEASURED at ECAPA speaker cosine 0.0929 against the deathstalker narrator — 12% of that narrator's own 0.7656 self-consistency ceiling — i.e. it is a DIFFERENT SPEAKER, not a weak clone. It is listed because it is the one Higgs voice that needs no artifact on disk, so it is what a machine can audition the serving stack with before any fine-tune exists. Do not narrate a book in it expecting a particular narrator."
+    },
+    {
+      "id": "deathstalker",
+      "label": "Deathstalker (Higgs v3)",
+      "engineVersion": "v3",
+      "voice": {
+        "kind": "adapter",
+        "path": "/home/telltale/higgs-models/deathstalker"
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-04",
+      "_pendingNote": "THE ADAPTER PATH ABOVE IS A DOCUMENTED PLACEHOLDER AND NOTHING IS INSTALLED AT IT YET. It states the convention (WSL-native /home/<user>/higgs-models/<voice>, mirroring the Orpheus models dir) so the routing can be built and tested before the artifact lands. What exists on 2026-09-04 is a QUICK 300-step r32 LoRA at /mnt/e/training/_campaigns/2026-09-01-cod-full-rebuild/higgs/v3_ft/runs/quick30_r32/final, trained by the orpheus-training session against a from-scratch v3 module (v3 ships no training code); the full 12.4 h ds_ad4 corpus run has NOT been started. THREE THINGS BLOCK PROMOTION: (1) the artifact must be copied to the path above; (2) THE LORA LOADING MECHANISM IN vllm-omni IS NOT ESTABLISHED — the fine-tune was rendered through the trainer's own generate_audio, never through the served stack, so it is not yet known whether vllm-omni takes --lora-modules at launch (which would mean a server restart per adapter) or whether a MERGED checkpoint served as a model dir is the only route; (3) maxChars below must be re-measured on the finished fine-tune. Until all three are done, higgs-models.ts refuses this voice by name — a placeholder path must never be allowed to silently serve the default voice.",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "_maxCharsNote": "PLACEHOLDER — this is the ZERO-SHOT figure and it is NOT valid for a fine-tune. The real number is measured per fine-tune as min(the length-sweep recommendation, the corpus-derived cap = p1 training-clip seconds x chars/s). The ds_ad4l cut trains on clips up to ~100 s specifically so the model learns paragraph-length reads, which projects to roughly 1,200-1,500 chars — i.e. two to three times this placeholder. RE-MEASURE BY ASR ALIGNMENT before rendering a book, and remember that duration ratio passed a render that had dropped 22% of its text.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1.0,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      },
+      "note": "The deathstalker narrator as a v3 LoRA. WHY AN ADAPTER RATHER THAN REFERENCE CLIPS: zero-shot cloning already recovers 92% of the narrator's speaker-identity ceiling (cosine 0.7037 of 0.7656, from a 27.4 s two-clip same-book reference), so TIMBRE is largely solved without any training. What cloning does NOT recover is PHRASING — the render places 2.01 pauses per 100 chars against the narrator's 1.39 and runs pitch std 5.17 st against his 4.36, i.e. it performs the text rather than reading it, and no reference, sampling setting or control token moved either number. Only a fine-tune on his phrasing closes that gap, which is what this entry is for. Channel/book consistency was worth +0.076 cosine against +0.012 for a second clip, so a reference set must come from ONE book.",
+      "_cloneFallbackNote": "There is deliberately no clips-based deathstalker entry standing in for this one. The measured best zero-shot configuration is 27.4 s of cd_cd_00001100.wav + cd_cd_00001951.wav from the ds_ad4s cut with their book-exact transcripts, and it renders well — but those clips live under E:\\training and are not a deployable artifact location. Adding an entry that points at a training scratch dir would be a voice that works on exactly one machine, which is the failure mode this catalog exists to prevent. When a clips voice is wanted, stage the concatenated reference wav and its transcript under /home/<user>/higgs-models/<voice>/refs/ and declare it here."
+    }
+  ]
+}

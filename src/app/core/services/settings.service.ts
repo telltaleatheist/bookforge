@@ -11,6 +11,7 @@ import {
   DEFAULT_VLM_ENDPOINT_CONFIG,
   type VlmEndpointConfig,
 } from '@shared/vlm/conversion';
+import type { TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
@@ -22,7 +23,16 @@ export interface PipelineDefaults {
   cleanupProvider: AIProvider; cleanupModel: string;
   simplifyProvider: AIProvider; simplifyModel: string;
   translateProvider: AIProvider; translateModel: string;
-  ttsEngine: 'xtts' | 'orpheus' | 'voxtral' | 'f5';
+  /**
+   * The engine a new narration run starts on.
+   *
+   * Typed as the WIDE union (`TTSEngine`, retired ids included) rather than
+   * `TtsEngineId`, because this value is read back out of a settings blob that
+   * may have been written when XTTS was still a choice. It has to load. What it
+   * cannot do is run: the picker only offers `narrationEngineOrder()`, and the
+   * bridge calls `assertRunnableTtsEngine` before it queues anything.
+   */
+  ttsEngine: TTSEngine;
   /**
    * Processing device. 'auto' (the default) runs on the best device present —
    * CUDA when the GPU pack is installed, Metal (MPS) on Apple Silicon, else CPU.
@@ -81,9 +91,15 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   cleanupProvider: 'ollama', cleanupModel: '',
   simplifyProvider: 'ollama', simplifyModel: '',
   translateProvider: 'ollama', translateModel: '',
-  ttsEngine: 'xtts',
+  // Was 'xtts' with voice 'ScarlettJohansson'. XTTS is retired (2026-09-04) and a
+  // DEFAULT that names a retired engine is the one place the refusal would fire on
+  // a user who never chose anything — so the default moved to the engine every
+  // shipped voice is now a fine-tune of, and the voice moved with it: leaving an
+  // XTTS reference-clip name against an Orpheus default would be a pair that
+  // cannot render.
+  ttsEngine: 'orpheus',
   ttsDevice: 'auto',
-  ttsVoice: 'ScarlettJohansson',
+  ttsVoice: 'leah',
   ttsSpeed: 1.0,
   ttsTemperature: 0.7,
   ttsTopP: 0.9,
@@ -442,16 +458,6 @@ export class SettingsService {
       // as "pick your engine, set it up here". Cross-cutting tools stay in the
       // General Add-ons page below.
       {
-        // XTTS — the built-in narration engine. Voices (premium + your own),
-        // Stanza language packs (sentence segmentation), and its GPU
-        // acceleration packs (CUDA PyTorch + DeepSpeed).
-        id: 'xtts',
-        name: 'XTTS',
-        description: 'The built-in narration engine: voices, language packs, and GPU acceleration',
-        icon: '🗣️',
-        fields: [], // Custom UI (app-voices-panel + app-languages-panel + app-add-ons-panel)
-      },
-      {
         // Orpheus — engine install, downloadable custom voices (HuggingFace
         // catalogue), models directory, and the WSL2 runner (Windows).
         id: 'orpheus',
@@ -459,6 +465,32 @@ export class SettingsService {
         description: 'Orpheus TTS: engine, custom voice models, and WSL2 setup',
         icon: '🎙️',
         fields: [], // Custom UI
+      },
+      {
+        // Higgs — the WSL vllm-omni serving env, its two required site-packages
+        // patches, and the voice catalog. Same shape as the Orpheus page.
+        id: 'higgs',
+        name: 'Higgs',
+        description: 'Higgs Audio v3: the WSL serving environment and the voice catalog',
+        icon: '🎚️',
+        fields: [], // Custom UI (app-higgs-voices-panel + app-add-ons-panel)
+      },
+      {
+        // ── RETIRED ENGINE, LIVE PAGE ────────────────────────────────────────
+        // XTTS stopped being a narration CHOICE on 2026-09-04, and this page did
+        // NOT go with it. Two things still live here that nothing else owns:
+        // the Stanza LANGUAGE PACKS (sentence segmentation — engine-agnostic,
+        // used by every render) and the user's own uploaded XTTS voices
+        // (electron/custom-voices.ts ties the whole "add your own voice" feature
+        // to this engine — see docs/HIGGS_ENGINE.md, "What XTTS still owns").
+        // The section id stays 'xtts' because it is a ROUTE KEY: the translation
+        // panel deep-links `?section=xtts` for "download more language packs",
+        // and renaming it would break that link to fix a word.
+        id: 'xtts',
+        name: 'XTTS (retired)',
+        description: 'Retired as a narration engine. Language packs and your own uploaded voices still live here.',
+        icon: '🗣️',
+        fields: [], // Custom UI (app-voices-panel + app-languages-panel + app-add-ons-panel)
       },
       {
         // Dedicated screen for the optional RVC voice-enhancement engine + its

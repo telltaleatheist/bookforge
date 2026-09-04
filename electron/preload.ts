@@ -788,6 +788,39 @@ export interface CompletedAudiobook {
 }
 
 /**
+ * One Higgs catalog voice as `higgsModels.listCatalog` returns it — the
+ * renderer-side mirror of electron/higgs-models' `HiggsModel` (this file must not
+ * import from the main process).
+ *
+ * `_pendingNote` travels because the Settings panel SHOWS it: a voice waiting on
+ * an artifact is the one a person most wants an explanation for, and the note is
+ * the explanation. The narration picker only ever sees the value/label pair.
+ */
+export interface HiggsModelDto {
+  id: string;
+  label: string;
+  engineVersion: string;
+  voice:
+    | { kind: 'adapter'; path: string }
+    | { kind: 'clips'; clips: Array<{ path: string; transcript: string }> };
+  license: string;
+  commercialUse: boolean;
+  sampleRate: number;
+  addedAt: string;
+  backends?: {
+    served?: {
+      maxChars?: number;
+      edgeFadeMs?: { in: number; out: number };
+      sampling?: { temperature?: number; topP?: number; topK?: number };
+      referenceSecondsCap?: number;
+      allowedControls?: string[];
+    };
+  };
+  _pendingNote?: string;
+  note?: string;
+}
+
+/**
  * One downloadable Orpheus voice as `orpheusModels.catalogList` returns it — the
  * renderer-side mirror of electron/orpheus-hf-catalog's OrpheusCatalogEntry (this file
  * must not import from the main process). Named as a DTO because it also travels back
@@ -1181,6 +1214,16 @@ export interface ElectronAPI {
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
     /** Installed voices selectable for full-audiobook generation (value/label). */
     listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
+  };
+  higgsModels: {
+    /** The Higgs narration roster as a picker wants it. A voice whose artifact has
+     *  not landed yet is INCLUDED, with "— not installed yet" in its label: the
+     *  catalog is the whole roster, so omitting it would leave nothing anywhere
+     *  saying the voice exists. `resolveHiggsModel` refuses to render it. */
+    list: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
+    /** The full catalog entries — voice ref, licence, measured caps — for the
+     *  Settings → Higgs voices panel. */
+    listCatalog: () => Promise<{ success: boolean; data?: HiggsModelDto[]; error?: string }>;
   };
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name).
@@ -2909,6 +2952,12 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('custom-voices:remove', id),
     listAudiobook: () =>
       ipcRenderer.invoke('voices:list-audiobook'),
+  },
+  higgsModels: {
+    list: () =>
+      ipcRenderer.invoke('higgs:list-models'),
+    listCatalog: () =>
+      ipcRenderer.invoke('higgs:list-catalog'),
   },
   orpheusModels: {
     list: () =>

@@ -410,18 +410,23 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 <div class="settings-group">
                   <h4>Voice Engine</h4>
                   <p class="field-description">
-                    The TTS engine used for streaming playback. <strong>XTTS</strong>
-                    streams sentence audio as it generates and supports the full voice
-                    library. <strong>Orpheus</strong> has the most natural prosody and
-                    runs a single GPU worker. Applies the next time the engine starts —
-                    switching stops the current engine first.
+                    The TTS engine used for streaming playback. <strong>Orpheus</strong>
+                    has the most natural prosody and runs a single GPU worker. Applies the
+                    next time the engine starts — switching stops the current engine first.
+                    <strong>XTTS</strong> was retired on 2026-09-04: a machine already
+                    streaming on it keeps working, but it can no longer be selected.
                   </p>
                   <div class="worker-options">
+                    <!-- Shown, disabled, and labelled retired rather than deleted: a
+                         machine whose persisted engine is still XTTS would otherwise
+                         show NOTHING selected, which reads as a broken setting rather
+                         than as the true "you are on the retired engine". -->
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'xtts'"
-                      (click)="setStreamEngine('xtts')"
-                    >XTTS</button>
+                      [disabled]="true"
+                      [title]="streamEngineInfo('xtts')?.reason || 'Retired'"
+                    >XTTS (retired)</button>
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'orpheus'"
@@ -2209,7 +2214,10 @@ export class SettingsComponent implements OnInit {
     void this.workerCfg.setDevicePref(pref);
   }
 
-  /** Choose which TTS engine backs the Listen feature (applies on next start). */
+  /** Choose which TTS engine backs the Listen feature (applies on next start).
+   *  Only 'orpheus' is reachable from the UI now — the XTTS button is disabled
+   *  (see the template) — but the parameter keeps the wider type because the
+   *  worker config it forwards to still round-trips a persisted 'xtts'. */
   setStreamEngine(engine: 'xtts' | 'orpheus'): void {
     void this.workerCfg.setEngine(engine);
   }
