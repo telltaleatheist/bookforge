@@ -1,8 +1,16 @@
 """python -m narrator <subcommand>
 
     manifest   build a schema-v1 manifest from an e2a session directory
+    render     render a sentence range of a session into <i>.flac
+    retake     re-render named sentences, N takes each, in one model load
+    sessions   list resumable sessions, or report one session's progress
     assemble   assemble that session into one m4b + one VTT
     serve      run the resident Orpheus streaming worker
+
+The render/retake/sessions subcommands are THIN: they parse dashes-and-words
+into the same `render.worker.WorkerRequest` / `render.session_store` calls
+`compat/app.py` builds from ebook2audiobook's underscore flags, so the two doors
+cannot diverge. `compat/FLAGS.md` maps one to the other.
 """
 
 from __future__ import annotations
@@ -79,6 +87,71 @@ def build_parser() -> argparse.ArgumentParser:
         help="also write the manifest that was assembled from",
     )
 
+    # ---- render / retake / sessions ---------------------------------------
+    #
+    # `--session-dir` here is the SAME argument the assembler takes (the hash
+    # dir, or the ebook-<uuid> dir above it - session_store resolves either), so
+    # a session named once can be rendered and assembled with the same string.
+
+    def _add_voice_args(p: argparse.ArgumentParser) -> None:
+        p.add_argument("--session-dir", required=True, metavar="DIR")
+        p.add_argument(
+            "--session", metavar="ID",
+            help="the session id, echoed into the result JSON (default: the "
+                 "session_id in session-state.json)",
+        )
+        p.add_argument(
+            "--sentences-dir", metavar="DIR",
+            help="where <i>.flac is written and skip-checked. Default: the "
+                 "state's chapters_dir_sentences, else <session>/chapters/sentences",
+        )
+        p.add_argument("--fine-tuned", metavar="VOICE", help="the Orpheus voice token")
+        p.add_argument("--orpheus-model-dir", metavar="DIR", help="a merged fine-tune")
+        p.add_argument("--orpheus-adapter-dir", metavar="DIR", help="a LoRA voice adapter")
+        p.add_argument("--orpheus-base-dir", metavar="DIR", help="the adapter's base model")
+        p.add_argument("--device", metavar="NAME", help="reported in the log only")
+
+    p_render = sub.add_parser(
+        "render", help="render a sentence range into <i>.flac"
+    )
+    _add_voice_args(p_render)
+    p_render.add_argument("--sentence-start", type=int, metavar="N")
+    p_render.add_argument("--sentence-end", type=int, metavar="N")
+    p_render.add_argument("--chapter-start", type=int, metavar="N")
+    p_render.add_argument("--chapter-end", type=int, metavar="N")
+
+    p_retake = sub.add_parser(
+        "retake",
+        help="re-render named sentences, N takes each, into take<k>/ subdirs",
+    )
+    _add_voice_args(p_retake)
+    p_retake.add_argument(
+        "--indices", required=True, metavar="LIST",
+        help="comma-separated global 0-based sentence indices",
+    )
+    p_retake.add_argument("--num-takes", type=int, default=1, metavar="N")
+    p_retake.add_argument(
+        "--take-temperatures", metavar="LIST",
+        help="comma-separated per-take temperatures; the count sets --num-takes",
+    )
+    p_retake.add_argument(
+        "--overrides", metavar="FILE",
+        help="JSON file mapping sentence index -> replacement text",
+    )
+
+    p_sessions = sub.add_parser(
+        "sessions", help="list resumable sessions, or report one session's progress"
+    )
+    p_sessions.add_argument(
+        "--root", metavar="DIR",
+        help="the sessions root to walk (default: $E2A_TMP_DIR)",
+    )
+    p_sessions.add_argument(
+        "--session-dir", metavar="DIR",
+        help="report on ONE session instead of listing; prints e2a's "
+             "--resume_session payload",
+    )
+
     # The streaming worker takes NO arguments: its whole interface is the
     # JSON-lines protocol on stdin/stdout plus the ORPHEUS_* env the pool exports
     # at spawn (see narrator/serve/__main__.py). There is nothing to re-declare
@@ -94,6 +167,96 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _run_render(args) -> int:
+    """`narrator render` / `narrator retake`.
+
+    Both build ONE `WorkerRequest` and hand it to the same loop; `retake` differs
+    only in that it names indices instead of a range, and in the take fan-out.
+    The result is printed as `json.dumps(..., indent=2)` - the same payload
+    `compat/app.py` prints, so a script can read either door.
+    """
+    import json
+
+    from .render import retake as retake_mod
+    from .render import session_store
+    from .render.worker import (
+        WorkerRequest,
+        install_signal_handlers,
+        run_worker,
+        start_parent_watch,
+    )
+
+    install_signal_handlers()
+    start_parent_watch()
+
+    process_dir = session_store.resolve_process_dir(args.session_dir)
+    state = session_store.load_state_from_process_dir(process_dir)
+    session_id = args.session or state["session_id"]
+
+    is_retake = args.command == "retake"
+    try:
+        indices = retake_mod.parse_sentence_indices(args.indices) if is_retake else None
+        temps = (retake_mod.parse_take_temperatures(args.take_temperatures)
+                 if is_retake else None)
+        overrides = (retake_mod.parse_sentence_overrides(args.overrides)
+                     if is_retake else None)
+    except retake_mod.RetakeArgumentError as bad:
+        # e2a prints `Error: <message>` and exits 1 for each of these
+        # (worker.py:437-465); a traceback is not something it ever produced.
+        print(f"Error: {bad}", flush=True)
+        return 1
+    num_takes = retake_mod.effective_num_takes(
+        args.num_takes if is_retake else 1, temps)
+
+    request = WorkerRequest(
+        session_id=session_id,
+        session_dir=args.session_dir,
+        sentence_start=None if is_retake else args.sentence_start,
+        sentence_end=None if is_retake else args.sentence_end,
+        chapter_start=None if is_retake else args.chapter_start,
+        chapter_end=None if is_retake else args.chapter_end,
+        sentence_indices=indices,
+        sentence_overrides=overrides,
+        num_takes=num_takes,
+        take_temperatures=temps,
+        sentences_dir=args.sentences_dir,
+        tts_engine=state.get("tts_engine"),
+        fine_tuned=args.fine_tuned,
+        device=args.device,
+        orpheus_model_dir=args.orpheus_model_dir,
+        orpheus_adapter_dir=args.orpheus_adapter_dir,
+        orpheus_base_dir=args.orpheus_base_dir,
+    )
+
+    if is_retake:
+        result = retake_mod.run_retake(request)
+    else:
+        if request.sentence_start is None and request.chapter_start is None:
+            raise SystemExit(
+                "narrator render needs --sentence-start/--sentence-end or "
+                "--chapter-start/--chapter-end")
+        result = run_worker(request)
+
+    print(json.dumps(result, indent=2), flush=True)
+    return 0 if result.get("success") else 1
+
+
+def _run_sessions(args) -> int:
+    """`narrator sessions`. Lists, or reports on one session."""
+    import json
+
+    from .render import session_store
+
+    if args.session_dir:
+        result = session_store.resume_session(args.session_dir, root=args.root)
+        print(json.dumps(result, indent=2), flush=True)
+        return 0 if result.get("success") else 1
+
+    sessions = session_store.list_resumable_sessions(args.root)
+    print(json.dumps(sessions, indent=2), flush=True)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -104,6 +267,12 @@ def main(argv: list[str] | None = None) -> int:
         from .serve.worker import main as serve_main
 
         return serve_main()
+
+    if args.command in ("render", "retake"):
+        return _run_render(args)
+
+    if args.command == "sessions":
+        return _run_sessions(args)
 
     # Imported here so `--help` and `--version` do not pay for them.
     from .render.session_v1 import build_manifest

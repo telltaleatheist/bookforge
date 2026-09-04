@@ -29,6 +29,9 @@ requires-python = ">=3.11"
 dependencies = [
     "numpy==1.26.4",
     "soundfile>=0.12",
+    # psutil: render/worker.py log_memory (ported from e2a worker_core); present in
+    # every env that has run an e2a worker and in the Windows test interpreter.
+    "psutil>=5.9",
     "mutagen>=1.45",
 ]
 
