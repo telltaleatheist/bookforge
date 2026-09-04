@@ -818,12 +818,24 @@ function drainWorkerWaiters(): void {
 /**
  * Generate audio for a sentence using the next available worker
  */
+/**
+ * `_onChunk` is the StreamingEngine's FAST-START hook (Owen 2026-09-04) and XTTS
+ * ACCEPTS AND IGNORES IT — deliberately, and with no behaviour change of any kind.
+ * Fast start exists because an Orpheus sentence only becomes audible when its whole
+ * batch retires; XTTS has no such wait. It is not a batching engine, its multi-worker
+ * pool already renders above realtime, and the scheduler still routes its opening
+ * sentence through the genuine token stream (generateSentenceStream), which is a
+ * better version of the same thing. So there is nothing here for the switch to buy,
+ * and pretending otherwise would mean inventing a second chunking path for an engine
+ * that already has one. The caller gets `audio` exactly as it always has.
+ */
 export async function generateSentence(
   text: string,
   sentenceIndex: number,
   settings: PlaySettings,
   priority = false,
-  isCancelled?: () => boolean
+  isCancelled?: () => boolean,
+  _onChunk?: (chunk: StreamChunk) => void
 ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }> {
   touchActivity();
   return runOnFreeWorker<{ success: boolean; audio?: AudioChunk; error?: string }>(

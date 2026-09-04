@@ -46,6 +46,11 @@
         width: 100%; box-sizing: border-box; padding: 6px 8px; border-radius: 6px;
         border: 1px solid #8884; background: #2a3140; color: #f2f3f5; font: inherit;
       }
+      /* .field label is block by default (it sits above a select); a checkbox row
+         puts the two side by side instead. */
+      .checkbox { display: flex; align-items: center; gap: 8px; }
+      .checkbox label { display: inline; margin: 0; }
+      .checkbox input { width: auto; margin: 0; }
       .wrow { display: flex; gap: 8px; align-items: center; }
       .wrow input[type="number"] { width: 70px; flex: none; }
       .wrow button { flex: 1; }
@@ -123,6 +128,18 @@
       <button id="stopBtn">Stop ■</button>
     </div>
     <div class="note" id="nowNote"></div>
+
+    <!-- Here as well as in Options because it is a switch you flip WHILE listening:
+         start a read, decide the wait is too long, turn it off, play again. -->
+    <div class="field">
+      <div class="checkbox">
+        <!-- checked in the markup so the first paint matches the DEFAULT; the
+             stored value overwrites it as soon as settings load. -->
+        <input id="bufferBeforePlaying" type="checkbox" checked />
+        <label for="bufferBeforePlaying">Buffer before playing</label>
+      </div>
+      <div class="note" id="bufferNote"></div>
+    </div>
 
     <!-- Recorder: capture THIS tab's decoded audio, losslessly, into BookForge.
          The button lives in the popup because chrome.tabCapture.getMediaStreamId

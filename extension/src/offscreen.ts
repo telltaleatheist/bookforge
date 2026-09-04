@@ -131,6 +131,25 @@ const DEFAULT_SECONDS_PER_SENTENCE = 7.5;
 // guarantees an immediate re-stall, i.e. a stutter loop. 4s gives the generator room
 // to get back ahead. The buffering grace below hides the reload itself from the UI.
 const RESUME_MIN_SECONDS = 4;
+// ── FAST START (the "Buffer before playing" switch, OFF) ─────────────────────
+// Owen's ruling of 2026-09-04: the gate above is right, and it costs half a minute
+// of staring at a spinner. He wanted the other side of that bargain available
+// without moving anything around, so the switch picks between two GATES, not
+// between two settings of one gate — every constant and every line of reasoning
+// above belongs to the ON path and is left exactly as it was.
+//
+// With the switch off, the session is started with fastStart:true and the server
+// streams each sentence in ~0.34s chunks as it generates. There is then no cushion
+// to wait for and no rate to project from: the whole point is to begin. One second
+// is simply "enough audio that the <audio> element has something to chew on while
+// the next chunk lands" — roughly three chunks at Orpheus's cadence.
+//
+// The same number covers an underrun, for the same reason. RESUME_MIN_SECONDS is 4
+// because resuming early against a below-realtime BATCH generator guarantees an
+// immediate re-stall; against a streaming one, audio is arriving continuously and
+// waiting 4s is just four seconds of silence added to a stall the listener already
+// heard. Stalls are the accepted cost of this mode — dragging them out is not.
+const FAST_START_MIN_SECONDS = 1.0;
 // Continuous read-ahead depth. Across a run of blocks, keep the single global server
 // session generating upcoming blocks into the cache — in playback order — until this
 // many seconds of audio sit ready ahead of the current block. Crossing a block
@@ -207,6 +226,13 @@ class Session {
   lastArrivalAt: number | null = null;
   lastArrivalSeconds = 0;
   maxGapSeconds = 0;
+  /** This session was started with fastStart:true — the server is streaming its
+   *  sentences sub-sentence, and the fast gate applies to it. Carried on the SESSION
+   *  rather than read from the live setting, because the setting can be flipped
+   *  mid-read and a session must be judged by the bargain it was actually started
+   *  under: a read-ahead session (never fast) that is later adopted keeps the gate
+   *  its audio was generated for. */
+  fastStart = false;
 
   constructor(requestId: string) { this.requestId = requestId; }
 
@@ -1458,7 +1484,14 @@ async function startCurrent(preempt: boolean): Promise<void> {
   const speakSettings: SpeakSettings = { speed: 1.0 };
   if (voice) speakSettings.voice = voice;
   preState = engineState === 'running' ? 'buffering' : 'starting-engine';
+  // "Buffer before playing" OFF ⇒ fast start (Owen 2026-09-04): ask the server to
+  // stream this block's sentences sub-sentence, and judge it with the fast gate.
+  // Recorded on the session, not consulted globally, so flipping the switch never
+  // re-judges a session already generating under the other bargain. Only the
+  // FOREGROUND block — startPrefetch deliberately never sets it.
+  s.fastStart = settings.bufferBeforePlaying === false;
   console.log('[BFR] speak', s.requestId, '| engine', engineState, '|', item.text.length, 'chars',
+    s.fastStart ? '| fast start' : '',
     s.resumeFrom > 0 ? `| resuming at sentence ${s.resumeFrom}` : '');
   // Generation starts NOW: everything already in `segments` is a cached prefix, so
   // the adaptive start gate measures the rate from here (see startThresholdSeconds).
@@ -1474,7 +1507,8 @@ async function startCurrent(preempt: boolean): Promise<void> {
     settings: speakSettings,
     preempt,
     background: false,
-    startSentence: s.resumeFrom
+    startSentence: s.resumeFrom,
+    ...(s.fastStart ? { fastStart: true } : {})
   });
   broadcast();
   fillPrefetch(); // generate upcoming blocks alongside this one (sent after, so it's served first)
@@ -1552,6 +1586,9 @@ function afterData(): void {
  */
 function startGateOpen(fromSeconds = 0): boolean {
   if (!session) return false;
+  // FAST START is a DIFFERENT GATE, not this one with smaller numbers — everything
+  // below this line is the "buffer before playing" path and is untouched by it.
+  if (session.fastStart) return fastStartGateOpen(session, fromSeconds);
   if (session.generationDone) return true;
   if (session.sentences.length > 0 && session.appendCursor >= session.sentences.length) return true;
   const threshold = startThresholdSeconds({
@@ -1565,6 +1602,26 @@ function startGateOpen(fromSeconds = 0): boolean {
     remainingSentences: session.sentences.length - session.appendCursor
   });
   return session.seconds - fromSeconds >= threshold;
+}
+
+/**
+ * The FAST-START gate: may playback begin, given that this session's audio is being
+ * streamed to us as it is generated?
+ *
+ * Three ways to open, and none of them is a projection:
+ *   - the block is done (a cache hit, or generation ended) — nothing to stall on;
+ *   - every announced sentence has drained — the whole block is here;
+ *   - one second of audio sits ahead of the start point.
+ *
+ * There is deliberately no rate estimate and no gap cover. Those exist because a
+ * batch engine delivers in bursts and the buffer has to survive the next silence;
+ * this mode has decided it would rather start and risk the silence. Trying to be
+ * clever here would reinvent the gate the switch was flipped to escape.
+ */
+function fastStartGateOpen(s: Session, fromSeconds: number): boolean {
+  if (s.generationDone) return true;
+  if (s.sentences.length > 0 && s.appendCursor >= s.sentences.length) return true;
+  return s.seconds - fromSeconds >= FAST_START_MIN_SECONDS;
 }
 
 // ─── gate math (pure; exercised by scratchpad/gate-math.test.mjs) ──────────────
@@ -1685,6 +1742,16 @@ function resumeIfReady(): void {
   if (!session || !audio.ended) return;
   const pending = session.bytes - blobBytes;
   if (pending <= 0) { maybeFinalize(); return; }
+  // FAST START: its own resume rule, for the reason spelled out at
+  // FAST_START_MIN_SECONDS — audio is arriving continuously here, so the 4s that
+  // stops a batch generator from re-stalling immediately would just be four more
+  // seconds of the silence the listener is already sitting through.
+  if (session.fastStart) {
+    if (session.generationDone || pending >= FAST_START_MIN_SECONDS * BYTES_PER_SECOND) {
+      loadBlob(blobBytes / BYTES_PER_SECOND, true);
+    }
+    return;
+  }
   if (session.generationDone || pending >= RESUME_MIN_SECONDS * BYTES_PER_SECOND) {
     loadBlob(blobBytes / BYTES_PER_SECOND, true);
   }

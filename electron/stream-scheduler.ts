@@ -25,6 +25,13 @@
  * WebSocket client. Event shapes:
  *   {kind:'chunk',    requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
  *   {kind:'done',     requestId, sentenceIndex, duration}   // sentence fully generated
+ *
+ * A sentence normally emits ONE chunk (seq 0) and then its 'done'. Two paths emit
+ * several: XTTS's streamed opener, and any sentence of a fastStart session (see
+ * StartOptions.fastStart, added for Owen's 2026-09-04 ruling), which delivers 4 SNAC
+ * frames at a time while it generates and then a 'done' with NO further chunk. The
+ * shape is the same either way, so a client that assembles by (sentenceIndex, seq)
+ * needs to know nothing about which it is getting.
  *   {kind:'failed',   requestId, sentenceIndex, error}
  *   {kind:'complete', requestId}                            // nothing left to generate
  *   {kind:'cancelled',requestId}                            // stopped or preempted by a new start
@@ -151,6 +158,8 @@ interface SchedulerSession {
   streamingCount: number;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
+  /** FAST START — see StartOptions.fastStart. */
+  fastStart: boolean;
 }
 
 /** Every generating session, keyed by requestId. */
@@ -198,6 +207,28 @@ export interface StartOptions {
   /** Generate-ahead window (seconds of audio ahead of the playhead). Defaults
    *  deep (whole short article); long single-session callers pass ~45. */
   lookaheadSeconds?: number;
+  /**
+   * FAST START. Default false, which is every path that existed before 2026-09-04.
+   *
+   * Owen's ruling of that date: the batch design above is right for a read that has
+   * to play through without a hole, and it costs ~30s before the first word. He
+   * wanted the choice — a switch in the browser extension, ON ("buffer before
+   * playing") by default and behaving exactly as it always has, OFF ("fast start")
+   * accepting stalls in exchange for hearing something in about a second.
+   *
+   * OFF sets this. It does NOT change batching or scheduling: same width, same
+   * ramp, same order, same pool. What changes is WHEN audio leaves the worker — the
+   * engine emits each sentence in sub-sentence chunks as it generates instead of one
+   * payload when the batch retires — and, on the client, when playback starts. Read
+   * the batch-width and first-batch-ramp blocks at the top of this file before
+   * touching it: none of that reasoning is wrong, it is simply a different bargain,
+   * and this flag is which bargain the listener chose.
+   *
+   * Only the PLAYING session ever streams. Background read-ahead has nobody waiting
+   * on its first second, and streaming it would spend chunk traffic on audio that
+   * will be played from cache minutes later, if at all.
+   */
+  fastStart?: boolean;
 }
 
 /**
@@ -237,11 +268,12 @@ export function start(
     sink,
     priority,
     streamingCount: 0,
-    lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS
+    lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS,
+    fastStart: opts.fastStart === true
   };
   sessions.set(requestId, s);
 
-  console.log(`[StreamScheduler] Start req=${requestId} ${priority ? 'play' : 'prefetch'} from sentence ${startIndex}/${sentences.length}${preempt ? ' (preempt)' : ''}`);
+  console.log(`[StreamScheduler] Start req=${requestId} ${priority ? 'play' : 'prefetch'} from sentence ${startIndex}/${sentences.length}${preempt ? ' (preempt)' : ''}${s.fastStart && priority ? ' [fast start]' : ''}`);
   pump(s);
   return { success: true };
 }
@@ -419,12 +451,43 @@ function dispatch(s: SchedulerSession, sentenceIndex: number): void {
     return;
   }
 
+  // FAST START (see StartOptions.fastStart): sink this sentence's audio in
+  // sub-sentence chunks as it generates, instead of one chunk when it lands. The
+  // sink shape is IDENTICAL to the one the batch path emits below — same 'chunk'
+  // event, same fields — so the client needs no new event type: it simply receives
+  // several per sentence, earlier, and assembles them by (sentenceIndex, seq)
+  // exactly as it already does for the XTTS opener.
+  //
+  // Only the playing session, and only when the client asked. A background
+  // read-ahead session never streams: nobody is waiting on its first second.
+  const onChunk = s.fastStart && s.priority
+    ? (chunk: StreamChunk) => {
+        if (isStale()) return;
+        s.sink({
+          kind: 'chunk',
+          requestId,
+          sentenceIndex,
+          seq: chunk.seq,
+          data: chunk.data,
+          duration: chunk.duration,
+          sampleRate: chunk.sampleRate
+        });
+      }
+    : undefined;
+
   void getActiveEngine()
-    .generateSentence(text, sentenceIndex, s.settings, s.priority, isStale)
+    .generateSentence(text, sentenceIndex, s.settings, s.priority, isStale, onChunk)
     .then((result) => {
       if (isStale()) return;
       s.inFlight.delete(sentenceIndex);
-      if (result.success && result.audio) {
+      if (result.success && result.streamed) {
+        // Fast start: the audio already went out chunk by chunk above, so the ONLY
+        // thing left to say is that the sentence is finished. Emitting a seq-0 chunk
+        // here would deliver it a second time.
+        const duration = result.duration || 0;
+        s.durations.set(sentenceIndex, duration);
+        s.sink({ kind: 'done', requestId, sentenceIndex, duration });
+      } else if (result.success && result.audio) {
         s.durations.set(sentenceIndex, result.audio.duration);
         s.sink({
           kind: 'chunk',

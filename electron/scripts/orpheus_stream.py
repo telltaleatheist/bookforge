@@ -25,7 +25,7 @@ Protocol (one JSON object per line):
                             warm?: bool}   # warm=False: skip the first-load warmup
                                            # because a speak is already waiting
           {action: 'generate', text, voice?, stream?: bool, ...}
-          {action: 'generate_batch', items: [{i, text, voice?}], ...}
+          {action: 'generate_batch', items: [{i, text, voice?, stream?: bool}], ...}
           {action: 'cancel' | 'stop' | 'quit'}
                  # 'cancel'/'stop' ABORT a running generate_batch — see the reader
                  # thread in run(). Un-rendered rows come back as ordinary per-item
@@ -35,6 +35,18 @@ Protocol (one JSON object per line):
           {type: 'audio', format:'pcm16', data, duration, sampleRate}        # batch
           {type: 'chunk', seq, format:'pcm16', data, duration, sampleRate}   # stream
           {type: 'done', duration, chunks, cancelled}                        # stream end
+          {type: 'batch_chunk', i, seq, format:'pcm16', data, duration, sampleRate}
+          {type: 'batch_item', i, streamed: true, duration, chunks}          # fast start
+
+FAST START (Owen's ruling of 2026-09-04). An item carrying `stream: true` is a row
+whose audio must reach the client WHILE IT IS STILL GENERATING, in sub-sentence
+chunks, so the browser extension can begin playing in about a second instead of
+waiting out a whole batch. That is the ONLY thing it changes: the batch is the same
+width, scheduled the same way, on the same engine. A generate_batch with no
+`stream` flag anywhere takes the pre-existing code path, byte for byte — the switch
+in the extension defaults to "buffer before playing", and that setting has to be
+the code that was already there, not a re-implementation of it that happens to
+agree today.
 
 Four kinds of voice, distinguished by what a 'load' carries:
 
@@ -220,11 +232,31 @@ def normalize_for_tts(text, language='en'):
 
 
 # ── stdout protocol ───────────────────────────────────────────────────────────
+# One lock around the ONE print. Every message used to be written from the main
+# thread (see _read_stdin's note: the reader thread only ever sets a flag), so a
+# JSON line could not be interleaved with another. Fast start breaks that
+# assumption on MLX: e2a decodes streamed frames on its own decoder thread and
+# invokes on_chunk from there, so two threads can reach this function at once and
+# `print` is not atomic — a torn line is an unparseable line, and the pool logs a
+# JSON parse error and drops it.
+#
+# A lock rather than a queue-to-the-main-thread hop because the main thread is
+# BLOCKED inside generate_batch_stream for the whole batch and has nothing to
+# drain with. The ordering guarantees the protocol actually relies on survive it:
+# a row's chunks carry `seq` and the client assembles by (i, seq), and 'batch_done'
+# is still written by the main thread after generate_batch_stream has returned and
+# every callback with it. Uncontended on the classic path, so switch-ON pays
+# nothing for it.
+_stdout_lock = threading.Lock()
+
+
 def send_response(response_type: str, data: dict = None):
     msg = {'type': response_type}
     if data:
         msg.update(data)
-    print(json.dumps(msg), flush=True)
+    line = json.dumps(msg)
+    with _stdout_lock:
+        print(line, flush=True)
 
 
 def audio_to_pcm16_base64(audio_array) -> str:
@@ -1169,6 +1201,215 @@ class OrpheusStreamServer:
                 })
             send_response('batch_done', {'count': len(items)})
 
+    def _generate_batch_streaming(self, items, language: str):
+        """FAST START: render the batch through e2a's generate_batch_stream so the
+        rows marked `stream: true` deliver sub-sentence chunks WHILE THEY GENERATE.
+
+        Owen's ruling of 2026-09-04: today the extension waits ~30s before the first
+        word, because a sentence only exists once its whole batch retires and the
+        client then gates playback on a cushion. With the extension's "Buffer before
+        playing" switch OFF, the row being listened to streams instead — 4 SNAC
+        frames (~0.34s) at a time — and the client starts on about a second of audio.
+        Stalls are an accepted cost of that mode; the switch is how you avoid them.
+
+        This does NOT change batching or scheduling. Same width, same order, same
+        engine, same sampling (the EOS boost/floor apply per request exactly as they
+        do on the classic path). The only thing that moves is WHEN audio leaves the
+        worker.
+
+        Wire shape, per streamed row i:
+            {type:'batch_chunk', i, seq, format:'pcm16', data, duration, sampleRate}
+            ... in seq order from 0 ...
+            {type:'batch_item',  i, streamed:true, duration, chunks}    # no data
+        A failed/cancelled row is the ordinary {type:'batch_item', i, message} and
+        the client throws away whatever chunks it already had. Non-streamed rows in
+        the same batch keep the exact per-item shape _emit_batch_item has always
+        sent, so a mixed batch needs nothing new on the client.
+
+        WHAT IS NOT DONE TO STREAMED AUDIO. finalize_audio trims the leading/trailing
+        silence, peak-normalizes and appends the inter-sentence gap — all decisions
+        about a whole waveform, and by the time the last chunk exists the first has
+        already been PLAYED. So streamed chunks go out raw and unretouched, and the
+        only piece of finalize_audio that can still be honoured is the gap: it is
+        emitted as one final silent chunk after the row's audio, which keeps
+        sentences breathing without pretending we can revise what was heard. For the
+        same reason a streamed row is never re-rendered: e2a logs the truncation
+        guard's verdict and the audio stands.
+
+        The retake ladder and the truncation guard for NON-streamed rows live inside
+        generate_batch_stream (that is what "exactly as today" means for them), so
+        unlike _generate_batch_mlx_ordered this method does not run _guard_truncation
+        itself — running it here would be a second, divergent copy of a ladder e2a
+        has already applied.
+
+        THREADING: on MLX the SNAC decode runs on e2a's decoder thread, so on_chunk
+        (and possibly on_row) is called from a thread that is not this one. Every
+        stdout write goes through send_response's lock, and the bookkeeping below is
+        guarded so a row can be answered exactly once no matter which thread gets
+        there first.
+        """
+        orph = self.orph
+        # No silent fallback to the classic path: the client has been told this batch
+        # will stream, the scheduler has wired chunk sinks for it, and quietly
+        # rendering it whole would look like a 40s stall with no explanation. Fail
+        # loudly with the fix in the message.
+        if not hasattr(orph, 'generate_batch_stream'):
+            for it in items:
+                send_response('batch_item', {
+                    'i': it.get('i'),
+                    'message': ('this e2a checkout has no generate_batch_stream — '
+                                'pull the bookforge branch'),
+                })
+            send_response('batch_done', {'count': len(items)})
+            return
+
+        state_lock = threading.Lock()
+        emitted = set()          # positions in `items` already answered
+        chunk_counts = {}        # position -> chunks emitted for that row so far
+
+        def _claim(pos) -> bool:
+            """Take the right to answer `pos`. False when someone already has."""
+            with state_lock:
+                if pos in emitted:
+                    return False
+                emitted.add(pos)
+                return True
+
+        try:
+            # Per-item voice check first, exactly as the other batch paths do: a row
+            # this engine/backend cannot serve fails ON ITS OWN and its neighbours
+            # render normally.
+            positions = []          # positions into `items` that will be rendered
+            for pos, it in enumerate(items):
+                try:
+                    voice = self._resolve_row(it)
+                except Exception as e:
+                    if _claim(pos):
+                        send_response('batch_item', {'i': it.get('i'), 'message': str(e)})
+                    continue
+                cleaned = orph._clean_sentence_for_tts(
+                    normalize_for_tts(it.get('text', ''), language))
+                if not cleaned:
+                    # Genuinely empty text → tiny silence, the same contract every
+                    # other path here keeps. Never streamed: there is nothing to wait
+                    # for, so it is answered immediately and dropped from the batch.
+                    if _claim(pos):
+                        self._emit_batch_item(
+                            it, np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                    continue
+                positions.append((pos, cleaned, voice))
+
+            if not positions:
+                return
+
+            texts = [c for _pos, c, _v in positions]
+            voices = [v for _pos, _c, v in positions]
+            # Row index (into `texts`) -> position into `items`, since e2a's callbacks
+            # speak in row indices and the wire speaks in the caller's own `i`.
+            row_to_pos = [pos for pos, _c, _v in positions]
+            stream_rows = {row for row, (pos, _c, _v) in enumerate(positions)
+                           if items[pos].get('stream') is True}
+            print(f'[orpheus_stream] fast-start: streaming {len(stream_rows)} of '
+                  f'{len(texts)} rows', file=sys.stderr)
+
+            def on_chunk(row, seq, audio):
+                """One sub-sentence payload of a streaming row. Called from e2a's
+                decoder thread on MLX — see the THREADING note above."""
+                pos = row_to_pos[row]
+                if audio is None or len(audio) == 0:
+                    return
+                a = np.asarray(audio, dtype=np.float32).flatten()
+                with state_lock:
+                    if pos in emitted:
+                        # The row was already answered (a failure, or the cancel
+                        # sweep). Chunks after that point belong to nothing and the
+                        # client has discarded the row — say so rather than emit an
+                        # orphan the pool would have to reject.
+                        print(f'[orpheus_stream] dropping chunk seq={seq} for row '
+                              f'[{items[pos].get("i")}] — already answered',
+                              file=sys.stderr)
+                        return
+                    chunk_counts[pos] = chunk_counts.get(pos, 0) + 1
+                send_response('batch_chunk', {
+                    'i': items[pos].get('i'),
+                    'seq': seq,
+                    'format': 'pcm16',
+                    'data': audio_to_pcm16_base64(a),
+                    'duration': len(a) / DEFAULT_SAMPLERATE,
+                    'sampleRate': DEFAULT_SAMPLERATE,
+                })
+
+            def on_row(row, audio):
+                """A row retired. Streamed rows are CLOSED here (their audio already
+                went out as chunks); every other row is emitted exactly as the
+                classic batch path emits it."""
+                pos = row_to_pos[row]
+                streamed = row in stream_rows
+                if not streamed:
+                    if _claim(pos):
+                        self._emit_batch_item(
+                            items[pos],
+                            None if audio is None or len(audio) == 0 else finalize_audio(audio))
+                    return
+                total = 0.0 if audio is None else len(audio) / DEFAULT_SAMPLERATE
+                with state_lock:
+                    sent = chunk_counts.get(pos, 0)
+                if sent == 0 or total <= 0:
+                    # Nothing was ever streamed: a failed row. Report it as a
+                    # failure — never as a silent success the client would play as a
+                    # missing sentence.
+                    if _claim(pos):
+                        send_response('batch_item',
+                                      {'i': items[pos].get('i'), 'message': 'No audio generated'})
+                    return
+                # The inter-sentence gap finalize_audio would have appended, sent as
+                # the row's LAST chunk (see the docstring): the only part of
+                # finalization that can still be applied to audio already in flight.
+                if STREAM_GAP_SEC > 0:
+                    gap = np.zeros(int(DEFAULT_SAMPLERATE * STREAM_GAP_SEC), dtype=np.float32)
+                    on_chunk(row, sent, gap)
+                    total += STREAM_GAP_SEC
+                    with state_lock:
+                        sent = chunk_counts.get(pos, 0)
+                if _claim(pos):
+                    send_response('batch_item', {
+                        'i': items[pos].get('i'),
+                        'streamed': True,
+                        'duration': total,
+                        'chunks': sent,
+                    })
+
+            try:
+                orph.generate_batch_stream(texts, voices, stream_rows,
+                                           on_chunk, on_row, self._is_cancelled)
+            except Exception as e:
+                import traceback
+                traceback.print_exc(file=sys.stderr)
+                for pos, _c, _v in positions:
+                    if _claim(pos):
+                        send_response('batch_item',
+                                      {'i': items[pos].get('i'),
+                                       'message': f'Batch generation failed: {e}'})
+        except Exception as e:
+            import traceback
+            traceback.print_exc(file=sys.stderr)
+            for pos, it in enumerate(items):
+                if _claim(pos):
+                    send_response('batch_item',
+                                  {'i': it.get('i'), 'message': f'Batch generation failed: {e}'})
+        finally:
+            # Same one-answer-per-item guarantee the other two batch paths keep: the
+            # pool resolves a batch by index, and a row with no message hangs its
+            # sentence until the 180s timeout taints the worker.
+            cancelled = self._is_cancelled()
+            for pos, it in enumerate(items):
+                if _claim(pos):
+                    send_response('batch_item', {
+                        'i': it.get('i'),
+                        'message': 'cancelled' if cancelled else 'No audio generated',
+                    })
+            send_response('batch_done', {'count': len(items)})
+
     def generate_batch(self, items, language: str = 'en'):
         """Generate a batch of sentences (read-ahead). Emits one 'batch_item' per
         item (keyed by its caller-supplied index `i`) then a 'batch_done'. A failure
@@ -1180,11 +1421,24 @@ class OrpheusStreamServer:
 
         An item may carry its own `voice`; omitted means the loaded one. On vLLM the
         batch is NOT regrouped by voice — vLLM takes a per-prompt LoRA list, so mixed
-        voices ride one call and the read-ahead window keeps its reading order."""
+        voices ride one call and the read-ahead window keeps its reading order.
+
+        An item may also carry `stream: true` (fast start, Owen 2026-09-04), which
+        routes the WHOLE batch through _generate_batch_streaming so those rows emit
+        sub-sentence 'batch_chunk's as they generate. The test is deliberately "does
+        ANY item ask for it": a batch mixes the block being listened to with
+        read-ahead behind it, and only the former streams, so the streaming path has
+        to be able to carry both. With no stream flag anywhere — which is what the
+        extension's default "Buffer before playing" produces — nothing below this
+        line is reached and the batch takes the code that was already here."""
         if self.orph is None:
             for it in items:
                 send_response('batch_item', {'i': it.get('i'), 'message': 'Model not loaded'})
             send_response('batch_done', {'count': len(items)})
+            return
+
+        if any(it.get('stream') is True for it in items):
+            self._generate_batch_streaming(items, language)
             return
 
         if self.orph.backend == 'mlx':

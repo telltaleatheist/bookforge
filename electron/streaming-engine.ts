@@ -48,13 +48,28 @@ export interface StreamingEngine {
    *  waiting on audio nobody hears. XTTS has no such warmup — its checkpoint load
    *  IS the warm-up — so its pool accepts the option and ignores it. */
   loadVoice(voice: string, opts?: LoadVoiceOptions): Promise<{ success: boolean; error?: string }>;
+  /**
+   * Render one sentence through the engine's batch path.
+   *
+   * `onChunk` is FAST START (Owen's ruling of 2026-09-04, see stream-scheduler's
+   * `fastStart`). Supplying it asks the engine to deliver this sentence's audio in
+   * sub-sentence chunks WHILE IT IS STILL GENERATING rather than as one payload at
+   * the end. An engine that streams that way resolves `{success:true, streamed:true,
+   * duration}` and NO `audio` — everything it had to say, it already said through
+   * the callback. An engine that does not (XTTS, whose pool takes the parameter and
+   * ignores it) resolves with `audio` exactly as before, so a caller must handle
+   * both and never assume which it got.
+   *
+   * Omitting `onChunk` is the pre-fast-start contract, unchanged in every respect.
+   */
   generateSentence(
     text: string,
     sentenceIndex: number,
     settings: PlaySettings,
     priority?: boolean,
-    isCancelled?: () => boolean
-  ): Promise<{ success: boolean; audio?: AudioChunk; error?: string }>;
+    isCancelled?: () => boolean,
+    onChunk?: (chunk: StreamChunk) => void
+  ): Promise<{ success: boolean; audio?: AudioChunk; streamed?: boolean; duration?: number; error?: string }>;
   generateSentenceStream(
     text: string,
     settings: PlaySettings,
