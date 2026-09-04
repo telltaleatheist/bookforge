@@ -93,8 +93,20 @@ export { sitsInCitation, bareWord };
  * number the passage prints twice.
  * n3 → n4 (2026-09-03, after the Mac's live run): the clock rule ("2:00 p.m."
  * had read "two oh two p.m."); the prompt's rule for an abbreviated range.
+ * n4 → n5 (2026-09-04, the shared-normalization handoff): a PUNCTUATION stage
+ * now runs ahead of these rules (`electron/tts-punctuation.ts`, spec s1 — the
+ * canonical ellipsis, the quote map, the invisibles and the space variants), so
+ * the text the rules and the model are handed is not the text an `.n4.` copy was
+ * made from; plus the two rule defects the orpheus-finetune side reported —
+ * an archive sigil in front of a bare integer is citation apparatus
+ * (`isArchiveSigil`), and a chapter-crossing scripture range no longer orphans
+ * its second colon (`SCRIPTURE_REF`).
+ *
+ * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
+ * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
+ * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n4';
+export const NORMALIZER_VERSION = 'n5';
 
 /**
  * The model this pass uses when the setting is absent.

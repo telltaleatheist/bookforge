@@ -1,0 +1,414 @@
+[
+  {
+    "id": "year-plain",
+    "stage": "model",
+    "rule": "year",
+    "in": "He died in 1944.",
+    "want": "He died in nineteen forty-four."
+  },
+  {
+    "id": "year-oh",
+    "stage": "model",
+    "rule": "year",
+    "in": "The photograph is from 1905.",
+    "want": "The photograph is from nineteen oh five."
+  },
+  {
+    "id": "year-2000s",
+    "stage": "model",
+    "rule": "year",
+    "in": "It reopened in 2006.",
+    "want": "It reopened in two thousand six."
+  },
+  {
+    "id": "year-hundred",
+    "stage": "model",
+    "rule": "year",
+    "in": "the year 1900, exactly",
+    "want": "the year nineteen hundred, exactly"
+  },
+  {
+    "id": "year-range-full",
+    "stage": "model",
+    "rule": "range",
+    "in": "The occupation ran from 1914-1918.",
+    "want": "The occupation ran from nineteen fourteen to nineteen eighteen."
+  },
+  {
+    "id": "year-range-abbrev",
+    "stage": "model",
+    "rule": "range",
+    "in": "released in the course of 1933-6.",
+    "want": "released in the course of nineteen thirty-three to nineteen thirty-six."
+  },
+  {
+    "id": "qty-not-year",
+    "stage": "model",
+    "rule": "year",
+    "in": "By spring 1200 workers were on the line.",
+    "want": "By spring twelve hundred workers were on the line."
+  },
+  {
+    "id": "scripture-abbrev",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see 2 Cor. 10:4 for the argument",
+    "want": "see Second Corinthians ten four for the argument"
+  },
+  {
+    "id": "scripture-range",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Jeremiah 44:17-19 is the passage.",
+    "want": "Jeremiah forty four seventeen through nineteen is the passage."
+  },
+  {
+    "id": "scripture-full",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see 1 Corinthians 13:4",
+    "want": "see First Corinthians thirteen four"
+  },
+  {
+    "id": "scripture-list",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Leviticus 19:31; 20:6 forbid it.",
+    "want": "Leviticus nineteen thirty one; twenty six forbid it."
+  },
+  {
+    "id": "scripture-bare-bk",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "quoting 2 Corinthians at length",
+    "want": "quoting Second Corinthians at length"
+  },
+  {
+    "id": "date-mdy",
+    "stage": "rules",
+    "rule": "date",
+    "in": "On June 12, 1933 he left.",
+    "want": "On June twelfth, nineteen thirty-three he left."
+  },
+  {
+    "id": "date-dmy",
+    "stage": "rules",
+    "rule": "date",
+    "in": "But on 23 March 1933 they still managed",
+    "want": "But on March twenty-third, nineteen thirty-three they still managed"
+  },
+  {
+    "id": "date-no-year",
+    "stage": "rules",
+    "rule": "date",
+    "in": "It was December 19 when the letter came.",
+    "want": "It was December nineteenth when the letter came."
+  },
+  {
+    "id": "date-abbrev-month",
+    "stage": "rules",
+    "rule": "date",
+    "in": "Dec. 19, 1991 was the last entry.",
+    "want": "December nineteenth, nineteen ninety-one was the last entry."
+  },
+  {
+    "id": "clock-meridiem",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "The meeting was at 2:00 p.m. sharp.",
+    "want": "The meeting was at two p.m. sharp."
+  },
+  {
+    "id": "clock-minutes",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "The train left at 10:05 am.",
+    "want": "The train left at ten oh five am."
+  },
+  {
+    "id": "clock-half",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "Dinner at 7:30 P.M. as always.",
+    "want": "Dinner at seven thirty P.M. as always."
+  },
+  {
+    "id": "clock-oclock",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "He woke at 6:00 and dressed.",
+    "want": "He woke at six o'clock and dressed."
+  },
+  {
+    "id": "money-cents",
+    "stage": "rules",
+    "rule": "money",
+    "in": "It cost $5.50 at the door.",
+    "want": "It cost five dollars and fifty cents at the door."
+  },
+  {
+    "id": "money-scale",
+    "stage": "rules",
+    "rule": "money",
+    "in": "a $1.5 million grant",
+    "want": "a one point five million dollars grant"
+  },
+  {
+    "id": "money-plain",
+    "stage": "rules",
+    "rule": "money",
+    "in": "he paid $3 for it",
+    "want": "he paid three dollars for it"
+  },
+  {
+    "id": "money-grouped",
+    "stage": "rules",
+    "rule": "money",
+    "in": "the house sold for $70,000",
+    "want": "the house sold for seventy thousand dollars"
+  },
+  {
+    "id": "percent-int",
+    "stage": "rules",
+    "rule": "percent",
+    "in": "a 40% rise",
+    "want": "a forty percent rise"
+  },
+  {
+    "id": "percent-decimal",
+    "stage": "rules",
+    "rule": "percent",
+    "in": "up 87.5 per cent on the year",
+    "want": "up eighty seven point five per cent on the year"
+  },
+  {
+    "id": "decade-full",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "back in the 1930s",
+    "want": "back in the nineteen thirties"
+  },
+  {
+    "id": "decade-apostrophe",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "he grew up in the '70s",
+    "want": "he grew up in the seventies"
+  },
+  {
+    "id": "ordinal",
+    "stage": "rules",
+    "rule": "ordinal",
+    "in": "the 23rd of the month",
+    "want": "the twenty-third of the month"
+  },
+  {
+    "id": "marker-hash",
+    "stage": "rules",
+    "rule": "marker",
+    "in": "see chart #3 below",
+    "want": "see chart number three below"
+  },
+  {
+    "id": "grouped-int",
+    "stage": "rules",
+    "rule": "grouped",
+    "in": "670,992 votes were counted",
+    "want": "six hundred seventy thousand nine hundred ninety two votes were counted"
+  },
+  {
+    "id": "bare-int",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "with 250 members present",
+    "want": "with two hundred fifty members present"
+  },
+  {
+    "id": "list-marker",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "4. The final clause stands.",
+    "want": "four. The final clause stands."
+  },
+  {
+    "id": "chapter-heading",
+    "stage": "model",
+    "rule": "model",
+    "in": "Chapter 3: The Long Year",
+    "want": "Chapter Three: The Long Year"
+  },
+  {
+    "id": "decimal-bare",
+    "stage": "model",
+    "rule": "model",
+    "in": "a total membership of 2.9 million",
+    "want": "a total membership of two point nine million"
+  },
+  {
+    "id": "leave-page-cite",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Wurm, Record, pp. 65-71, and ibid., p. 23.",
+    "want": "Wurm, Record, pp. 65-71, and ibid., p. 23."
+  },
+  {
+    "id": "leave-doc-code",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Kretschmar/Nicolaisen, Document II 9/34, p. 23.",
+    "want": "Kretschmar/Nicolaisen, Document II 9/34, p. 23."
+  },
+  {
+    "id": "leave-archive",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "HSG 11 Js. Sond. 298/38; GnH 3659/42; AfW HH R 231191.",
+    "want": "HSG 11 Js. Sond. 298/38; GnH 3659/42; AfW HH R 231191.",
+    "fixed_in": "n5 — isArchiveSigil (BOOKFORGE_HANDOFF.md Ask 2)"
+  },
+  {
+    "id": "leave-glued",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a B-17 flying past, COVID-19 era, R2D2 beeping",
+    "want": "a B-17 flying past, COVID-19 era, R2D2 beeping"
+  },
+  {
+    "id": "leave-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "file 001 is missing",
+    "want": "file 001 is missing"
+  },
+  {
+    "id": "leave-phone",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "call (405) 235-5396 after six",
+    "want": "call (405) 235-5396 after six"
+  },
+  {
+    "id": "leave-clock-range",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "open 5:30-6:00 only",
+    "want": "open 5:30-6:00 only"
+  },
+  {
+    "id": "punct-ellipsis-spaced",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "\"You mean . . . ?\" \"Precisely, Commander.\"",
+    "want": "\"You mean ... ?\" \"Precisely, Commander.\""
+  },
+  {
+    "id": "punct-ellipsis-char",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He paused… then went on.",
+    "want": "He paused... then went on."
+  },
+  {
+    "id": "punct-ellipsis-four",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "a kind of serenity.... He made no sound.",
+    "want": "a kind of serenity... He made no sound."
+  },
+  {
+    "id": "punct-curly-quotes",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "“You mean it?” she said, ‘quietly’.",
+    "want": "\"You mean it?\" she said, 'quietly'."
+  },
+  {
+    "id": "punct-curly-apostrophe",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "It wasn’t his to give.",
+    "want": "It wasn't his to give."
+  },
+  {
+    "id": "punct-nbsp",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "Mr. Smith arrived late.",
+    "want": "Mr. Smith arrived late."
+  },
+  {
+    "id": "punct-double-space",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He stopped.  Then he ran.",
+    "want": "He stopped. Then he ran."
+  },
+  {
+    "id": "punct-control",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "page one\fpage two",
+    "want": "page onepage two"
+  },
+  {
+    "id": "punct-soft-hyphen",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "an unmis­takable sound",
+    "want": "an unmistakable sound"
+  },
+  {
+    "id": "punct-keep-em-dash",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He turned—slowly—and left.",
+    "want": "He turned—slowly—and left."
+  },
+  {
+    "id": "punct-keep-en-dash",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "the 1914–1918 war",
+    "want": "the 1914–1918 war"
+  },
+  {
+    "id": "scripture-cross-chapter",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "(Col. 3:19-4:1 and parallels)",
+    "want": "(Colossians three nineteen through four one and parallels)",
+    "added_in": "n5 — SCRIPTURE_REF cross-chapter range (BOOKFORGE_HANDOFF.md Ask 2b)"
+  },
+  {
+    "id": "scripture-cross-chapter-endash",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see Rom. 5:12–6:2 there",
+    "want": "see Romans five twelve through six two there",
+    "added_in": "n5 — the same range printed with an en dash"
+  },
+  {
+    "id": "scripture-verse-range-plain",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Col. 3:19-21 alone",
+    "want": "Colossians three nineteen through twenty one alone",
+    "added_in": "n5 — the other direction: a VERSE range is unchanged by the fix"
+  },
+  {
+    "id": "scripture-lone-ref",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Col. 3:19 alone",
+    "want": "Colossians three nineteen alone",
+    "added_in": "n5 — the other direction: a lone reference is unchanged by the fix"
+  },
+  {
+    "id": "archive-sigil-not-prose",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "The 11 men waited.",
+    "want": "The eleven men waited.",
+    "added_in": "n5 — the other direction: a capitalized PROSE word is not a sigil"
+  }
+]

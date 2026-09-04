@@ -570,12 +570,16 @@ test('fixture date11 — an archive file number is not converted', () => {
   if (FIXTURES === null) { console.log('   (fixture_texts.json not on this machine)'); return; }
   const target = fixtureText('date11');
   // "AfW HH, 260488, Bl. twenty nine" — six digits that are a file reference.
-  // Nothing in the citation rules catches a bare integer after a place name, so
-  // this is the PROMPT's job, and the test records the boundary honestly: the
-  // validator would let it through, which is why the prompt names archive file
-  // numbers explicitly and why the record exists to be reviewed.
+  //
+  // Until n5 this was the PROMPT's job alone: no citation rule caught a bare
+  // integer after an archive sigil, the validator let the edit through, and the
+  // test recorded that boundary honestly. `isArchiveSigil` closed it (the
+  // orpheus-finetune side's "Ask 2") — "HH" is a two-character all-caps token
+  // standing immediately in front of the number, so the guard now answers
+  // CITATION_CODE and the file reference is left exactly as the archive prints
+  // it, whatever the model proposes.
   assert.strictEqual(only(target, '260488', 'two hundred sixty thousand four hundred eighty-eight'),
-    'APPLIED');
+    'CITATION_CODE');
 });
 
 test('fixtures with no digits are never selected at all', () => {

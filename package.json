@@ -45,6 +45,7 @@
     "watch": "ng build --watch --configuration development",
     "watch:electron": "npx tsc -p tsconfig.electron.json --watch",
     "test": "ng test",
+    "test:text-normalization": "npx tsc -p tsconfig.electron.json && node tools/test-text-normalization.js",
     "test:retired-passes": "npx tsc -p tsconfig.electron.json && node tools/test-retired-passes.js",
     "test:document-binding": "npx tsc -p tsconfig.electron.json && node tools/test-document-binding.js",
     "test:processing-chain": "npx tsc -p tsconfig.electron.json && node tools/test-processing-chain.js",

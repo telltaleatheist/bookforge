@@ -142,6 +142,40 @@ const CITATION_LEAD = /(?:^|[\s(\[“"])(?:pp?|vols?|nos?|ibid|cf|fol)\.\s*$/i;
 const ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
 
 /**
+ * AN ARCHIVE SIGIL: the two-to-four letter code a records citation prints in
+ * front of a file number — "HSG 11 Js. Sond. 298/38", "GnH 3659/42", "AfW HH R
+ * 231191".
+ *
+ * Two shapes, and the shape is the whole guarantee: a token that is ENTIRELY
+ * uppercase ("HSG", "HH"), or one that carries an uppercase letter somewhere
+ * after its first character ("GnH", "AfW"). Ordinary prose has neither — "The",
+ * "In", "One" capitalize position 0 and nothing else, so they do not match, and
+ * "the 11 men" is still read.
+ *
+ * Reported by the orpheus-finetune side (BOOKFORGE_HANDOFF.md, "Ask 2") against
+ * the very line this app's own prompt already lists as leave-as-printed:
+ * `sitsInCitation` knew p./pp./vol./no./ibid./cf./fol., a slash between digits,
+ * a roman-numeral neighbour and half a phone number, and did NOT know the sigil,
+ * so the bare-integer rule read the "11" out of an archive reference.
+ *
+ * THE OTHER HALF OF THAT ASK IS DELIBERATELY NOT ADOPTED. The handoff also notes
+ * that an abbreviation token AFTER the span ("Js.", "Sond.") marks a citation.
+ * It does — and so do "U.S.", "Dr.", "Mr.", "St." and every other abbreviation
+ * ordinary prose prints after a number ("the 11 U.S. soldiers"). This guard is
+ * shared with the model validator (`CITATION_CODE`), so a false positive here
+ * means the digits reach the narrator with nothing downstream able to convert
+ * them. The sigil is a shape; "a period on the next word" is not.
+ */
+const ARCHIVE_SIGIL = /^[A-Za-z]{2,4}$/;
+
+/** Does this token look like the archive sigil in front of a file number? */
+function isArchiveSigil(token: string): boolean {
+  const word = bareWord(token);
+  if (!ARCHIVE_SIGIL.test(word)) return false;
+  return word === word.toUpperCase() || /[A-Z]/.test(word.slice(1));
+}
+
+/**
  * Half a phone number, as a whole token: a parenthesized area code — "(405)" —
  * or a hyphenated digit group — "235-5396", "471-1722".
  *
@@ -177,6 +211,8 @@ export function bareWord(token: string): string {
  *  4. HALF A PHONE NUMBER as the token directly before or after it — an area
  *     code in parentheses, or a hyphenated digit group — which makes the span
  *     the other half of it.
+ *  5. AN ARCHIVE SIGIL immediately before a bare integer — "HSG 11" — see
+ *     `isArchiveSigil`.
  *
 
  * It lives in this file rather than beside the validator because BOTH halves of
@@ -198,6 +234,11 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
   const priorToken = priorTokens.length > 0 ? priorTokens[priorTokens.length - 1] : '';
   const nextToken = nextTokens.length > 0 ? nextTokens[0] : '';
   if (PHONE_PART.test(priorToken) || PHONE_PART.test(nextToken)) return true;
+  // 5. AN ARCHIVE SIGIL immediately before a BARE INTEGER — "HSG 11", "GnH 3659".
+  //    The bare-integer condition is what keeps this off a date or a scripture
+  //    reference standing after an acronym; a sigil in front of a whole phrase
+  //    says nothing about that phrase.
+  if (/^\d+$/.test(bareWord(find)) && isArchiveSigil(priorToken)) return true;
   return ROMAN_TOKEN.test(bareWord(priorToken)) || ROMAN_TOKEN.test(bareWord(nextToken));
 }
 
@@ -457,19 +498,36 @@ function clockCandidates(text: string): Candidate[] {
 /**
  * A chapter:verse reference, with everything that legitimately hangs off it.
  *
- * `[<1|2|3> ][Book ]c:v[a][–v2[b]][ff.]`. The book token and the numeric prefix
- * are optional and are only PART of the rewritten span when they have to change
- * — "Jeremiah 44:17-19" rewrites "44:17-19" and leaves the name alone, while
- * "2 Cor. 10:4" rewrites the lot because both the prefix and the abbreviation
- * are read differently than they are printed.
+ * `[<1|2|3> ][Book ]c:v[a][–[c2:]v2[b]][ff.]`. The book token and the numeric
+ * prefix are optional and are only PART of the rewritten span when they have to
+ * change — "Jeremiah 44:17-19" rewrites "44:17-19" and leaves the name alone,
+ * while "2 Cor. 10:4" rewrites the lot because both the prefix and the
+ * abbreviation are read differently than they are printed.
+ *
+ * THE RANGE MAY CROSS A CHAPTER, and that production is not optional garnish.
+ * Reported by the orpheus-finetune side (BOOKFORGE_HANDOFF.md, "Ask 2b"), found
+ * by running this pass over a real corpus: modelling the second number as a
+ * VERSE only, "(Col. 3:19-4:1 and parallels)" took the `4` as the verse, emitted
+ * "Colossians three nineteen through four", and LEFT ":1" standing in the text.
+ * A raw colon reached the narrator — worse than an unconverted number, because
+ * `stillHasDigits` then sent the wreckage to the model, which correctly declined
+ * to touch a fragment it could not parse, and `NUMBER_DROPPED` could not see it
+ * because a rule and not the model had produced it.
+ *
+ * `Col. 3:19-4:1` now reads "Colossians three nineteen through four one" —
+ * "through" is already the verse-range word and a chapter-crossing range has no
+ * separate spoken convention worth inventing. A plain verse range ("3:19-21")
+ * and a lone reference ("3:19") are untouched by this production.
  */
 const SCRIPTURE_REF = new RegExp(
   '(?:(?<![\\w:.\\-])([123])\\s+)?'          // 1 an optional volume number
   + '(?:([A-Z][A-Za-z]{1,13})(\\.?)\\s+)?'   // 2 the book token, 3 its period
   + '(?<![\\d:.])(\\d{1,3}):(\\d{1,3})'      // 4 chapter, 5 verse
   + '(?:(?!ff\\.)([a-z])(?![a-z\\d]))?'      // 6 an optional verse letter
-  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?'  // 7 v2, 8 letter
-  + '(ff\\.)?'                               // 9 "and following"
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*'
+  + '(?:(\\d{1,3}):)?'                       // 7 the range's own chapter, if any
+  + '(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?'  // 8 v2, 9 its letter
+  + '(ff\\.)?'                               // 10 "and following"
   + '(?![A-Za-z\\d])',                       // and nothing else glued to it
   'gd');
 
@@ -498,7 +556,8 @@ function scriptureCandidates(text: string): Candidate[] {
   // reference right after it inherits.
   let anchoredEnd = -1;
   for (const m of matches(SCRIPTURE_REF, text)) {
-    const [whole, prefix, bookToken, , chapter, verse, verseLetter, verse2, verse2Letter, ff] = m;
+    const [whole, prefix, bookToken, , chapter, verse, verseLetter,
+      chapter2, verse2, verse2Letter, ff] = m;
     const spans = m.indices!;
     const book = bookToken === undefined ? null : bibleBook(bookToken);
     const end = m.index + whole.length;
@@ -529,7 +588,15 @@ function scriptureCandidates(text: string): Candidate[] {
     if (verse2 !== undefined) {
       const verse2Words = cardinalWords(Number(verse2));
       if (verse2Words === null) continue;
-      spoken += ` through ${verse2Words}`;
+      spoken += ' through';
+      // A chapter-crossing range names its chapter first, exactly as the printed
+      // form does: "3:19-4:1" is "three nineteen through four one".
+      if (chapter2 !== undefined) {
+        const chapter2Words = cardinalWords(Number(chapter2));
+        if (chapter2Words === null) continue;
+        spoken += ` ${chapter2Words}`;
+      }
+      spoken += ` ${verse2Words}`;
       if (verse2Letter !== undefined) spoken += ` ${verse2Letter}`;
     }
     // "ff." is READ, not dropped. e2a's port swallows it, but this pass refuses
