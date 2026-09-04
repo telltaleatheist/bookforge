@@ -155,15 +155,35 @@ def epub_heading_blocks(epub_path):
     return heads
 
 
+_PUNCT = str.maketrans({'‘': "'", '’': "'", '“': '"', '”': '"',
+                        '–': '-', '—': '-', ' ': ' '})
+
+
 def _norm(s):
-    return re.sub(r'[^a-z0-9 ]', '', s.lower())
+    """Light normalization only — case and word boundaries are LOAD-BEARING here
+    (see count_heading_merges), so nothing is lowercased or stripped of letters."""
+    return ' '.join(s.translate(_PUNCT).split())
 
 
 def count_heading_merges(cues, heads):
-    """A cue is heading-merged when its text OPENS with a heading and keeps going.
-    A cue that IS the heading (and nothing more) is the desired outcome, not a
-    defect, so it is counted separately."""
-    nheads = sorted({_norm(h) for h in heads if len(_norm(h)) >= 4}, key=len, reverse=True)
+    """A cue is heading-merged when its text OPENS with a heading and then runs on
+    into a new sentence. A cue that IS the heading (and nothing more) is the
+    desired outcome, not a defect, so it is counted separately.
+
+    TWO GUARDS, both learned from false positives on the first pass:
+
+      * the heading must be at least 2 words. "McKinley" is a standalone block
+        somewhere in this book (a running head), which made every one of the 60-odd
+        cues that legitimately BEGIN with the word "McKinley" score as a merge.
+      * what follows the heading must start with a CAPITAL — a merge is a heading
+        butted against the start of a new sentence. "McKinley reclaimed my serious
+        attention…" continues in lowercase and is plainly one sentence, not a
+        heading plus prose.
+
+    Both guards are applied identically to the before and after VTT, so the
+    comparison stands whatever residual error the heuristic has."""
+    nheads = sorted({_norm(h) for h in heads if len(_norm(h).split()) >= 2 and len(_norm(h)) >= 6},
+                    key=len, reverse=True)
     merged, standalone, examples = 0, 0, []
     for s, _e, text, _n in cues:
         nt = _norm(text)
@@ -172,9 +192,12 @@ def count_heading_merges(cues, heads):
                 standalone += 1
                 break
             if nt.startswith(h + ' '):
+                rest = nt[len(h) + 1:]
+                if not rest or not rest[0].isupper():
+                    continue          # not a seam — keep looking for a longer head
                 merged += 1
                 if len(examples) < 12:
-                    examples.append({'start': round(s, 2), 'heading': h[:60], 'text': text[:160]})
+                    examples.append({'start': round(s, 2), 'heading': h[:60], 'text': text[:180]})
                 break
     return merged, standalone, examples
 
