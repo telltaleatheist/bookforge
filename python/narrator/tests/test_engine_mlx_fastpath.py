@@ -58,6 +58,32 @@ except Exception:                      # noqa: BLE001
     make_repetition_penalty = None
     _HAS_MLX = False
 
+
+def _has_generation_batch() -> bool:
+    """Does this mlx_lm have the class install() patches?
+
+    `GenerationBatch` was added in mlx-lm 0.31.3 - the version the fast path is
+    PINNED to - so below the pin install() cannot run at all and every case in
+    MlxFastPathInstallTest is unreachable.
+
+    NB the import must go through importlib: `import mlx_lm.generate as G` binds
+    the generate FUNCTION (mlx_lm re-exports it from __init__), not the submodule.
+    """
+    if not _HAS_MLX:
+        return False
+    try:
+        import importlib
+        return hasattr(importlib.import_module('mlx_lm.generate'), 'GenerationBatch')
+    except Exception:                  # noqa: BLE001
+        return False
+
+
+_HAS_GENERATION_BATCH = _has_generation_batch()
+_NO_INSTALL_REASON = (
+    'mlx_lm.generate has no GenerationBatch, so install() cannot run - the fast '
+    f'path is pinned to mlx-lm {fp.REQUIRED_MLX_LM if fp else "0.31.3"} and this '
+    'environment is below it')
+
 V = 156940
 B = 7
 TOL = 1e-6
@@ -410,6 +436,72 @@ class MlxFastPathEquivalenceTest(unittest.TestCase):
 
 
 @unittest.skipUnless(_HAS_MLX, 'mlx is not installed (Mac only)')
+class MlxFastPathPinTest(unittest.TestCase):
+    """What install() does when this mlx_lm is BELOW the pin - which is the case
+    on the Mac's live Orpheus env today (mlx_lm 0.29.1 vs the pinned 0.31.3).
+
+    THE ONE INVARIANT THAT MATTERS EITHER WAY: install() must never SILENTLY
+    return. A caller that got no exception is entitled to believe
+    GenerationBatch._step was replaced, and rendering a book on a step that was
+    never patched - with the penalty applied over the wrong set - is precisely
+    the failure the whole module is built to refuse.
+    """
+
+    @staticmethod
+    def _model(embed, tied=True):
+        inner = types.SimpleNamespace(embed_tokens=embed)
+        return types.SimpleNamespace(
+            args=types.SimpleNamespace(tie_word_embeddings=tied), model=inner)
+
+    def test_install_never_returns_silently_below_the_pin(self):
+        import mlx.nn as nn
+        embed = nn.Embedding(fp.SLICE_HI + 2, 8)
+        mx.eval(embed.weight)
+        model = self._model(embed)
+        if _HAS_GENERATION_BATCH:
+            # At the pin the good case installs; its own test covers the detail.
+            try:
+                self.assertIn('fast path installed',
+                              fp.install(model, rep_window=8192, max_tokens=3700))
+            finally:
+                fp.uninstall(model)
+            return
+        with self.assertRaises(Exception) as ctx:
+            fp.install(model, rep_window=8192, max_tokens=3700)
+        message = str(ctx.exception)
+        self.assertTrue(
+            'GenerationBatch' in message or fp.REQUIRED_MLX_LM in message,
+            f'the refusal must name what is missing or the pin; got: {message!r}')
+
+    @unittest.skipIf(_HAS_GENERATION_BATCH,
+                     'this mlx_lm HAS GenerationBatch, so the refusal is the '
+                     'version check and it is well-named')
+    def test_below_the_pin_the_refusal_is_an_ImportError_not_FastPathUnsupported(self):
+        """A SUSPECTED e2a BUG, PRESERVED - see PORT_NOTES "Suspected bugs".
+
+        orpheus_mlx_fastpath.install() does `from mlx_lm.generate import
+        GenerationBatch` BEFORE it checks `mlx_lm.__version__`, so on an mlx_lm
+        that lacks the class the caller gets a bare ImportError instead of the
+        FastPathUnsupported the module's own docstring promises ("Raises
+        FastPathUnsupported, by name, for every condition the patch cannot
+        honour"). narrator reproduces the ordering exactly rather than quietly
+        improving on it; this test PINS the current behaviour so that when e2a
+        fixes it - or narrator is authorised to - the change is deliberate and
+        visible here rather than silent.
+
+        It still refuses, which is what protects a render. Only the message is
+        worse than advertised.
+        """
+        import mlx.nn as nn
+        embed = nn.Embedding(fp.SLICE_HI + 2, 8)
+        mx.eval(embed.weight)
+        with self.assertRaises(ImportError) as ctx:
+            fp.install(self._model(embed), rep_window=8192, max_tokens=3700)
+        self.assertIn('GenerationBatch', str(ctx.exception))
+
+
+@unittest.skipUnless(_HAS_MLX, 'mlx is not installed (Mac only)')
+@unittest.skipUnless(_HAS_GENERATION_BATCH, _NO_INSTALL_REASON)
 class MlxFastPathInstallTest(unittest.TestCase):
     """install() refuses every model it cannot serve, BY NAME."""
 

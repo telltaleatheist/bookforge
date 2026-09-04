@@ -7,9 +7,24 @@ six rows, same assertions; only the module paths and the harness changed.
 
 REQUIRES mlx: the stream plumbing under test (new_thread_unsafe_stream +
 mx.stream in another thread) is genuinely exercised, pinned to the CPU device.
-It needs no model and no GPU, but a machine with no mlx SKIPS - which today is
-every machine but the Mac. THIS PORT HAS NOT BEEN RUN; see PORT_NOTES.md
-"Could not verify".
+It needs no model and no GPU, but a machine with no mlx SKIPS.
+
+AND IT REQUIRES `mx.new_thread_unsafe_stream`, which arrived in mlx 0.32.0.
+Below that the engine REFUSES to overlap - by design, loudly:
+
+    [ORPHEUS] MLX decode overlap unavailable
+    (mlx.core.new_thread_unsafe_stream missing); decoding serially after the batch
+
+so every assertion about WHICH THREAD did what is unreachable and skips. The
+result-correctness assertions still run, because the serial path must produce
+identical answers - that is the whole promise of the kill switch.
+
+MEASURED, NOT ASSUMED (Mac, 2026-09-04, mlx 0.30.4 / mlx_lm 0.29.1): e2a's OWN
+tools/test_mlx_decode_overlap.py, run unmodified in that same env, fails the same
+four thread-placement checks and passes every correctness check - so this is an
+ENVIRONMENT fact, not a port regression. `test_it_degrades_to_serial_without_a_
+cross_thread_stream` below turns that fallback into an asserted contract instead
+of a hole.
 
 WHAT IS BEING PROVED. A retired row used to wait for the slowest row of its
 batch before anything was decoded; now it is handed to ONE decoder thread the
@@ -54,6 +69,15 @@ try:
 except Exception:                      # noqa: BLE001 - any import failure = skip
     mx = None
     _HAS_MLX = False
+
+# The exact condition _mlx_decode_stream() tests. mlx 0.32.0 added it; 0.30.4
+# (the Mac's Orpheus env today) does not have it, and the engine then declines to
+# overlap rather than sharing the generation stream.
+_HAS_THREAD_STREAM = _HAS_MLX and hasattr(mx, 'new_thread_unsafe_stream')
+_NO_STREAM_REASON = (
+    'mlx.core.new_thread_unsafe_stream is missing (needs mlx >= 0.32.0), so the '
+    'engine declines to overlap by design - there is no decoder thread to make '
+    'assertions about')
 
 DEPTH = 5            # token cap for the fake batch - small so a cap hit is cheap
 MARKER_BATCH = 1000  # audio value for a row decoded from its batch tokens
@@ -266,21 +290,34 @@ class MlxDecodeOverlapTest(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
+        import contextlib
+        import io as _io
         _install_mlx_audio_stub()
         cls.out_serial, cls.rec_serial = run(overlap=False)
 
         # Hold close() until the decoder thread has written the rows that retired
         # early - that is what "overlapped" means, and without the wait the
         # assertion would be a race rather than a proof.
+        #
+        # Skipped entirely when there is no cross-thread stream: nothing will
+        # ever write early there, so the wait would just burn its whole deadline
+        # before every run on such a machine.
         def wait_for_early_saves():
+            if not _HAS_THREAD_STREAM:
+                return
             deadline = time.time() + 10.0
             while time.time() < deadline:
                 if len(RECORDER.of('save')) >= 2:
                     return
                 time.sleep(0.01)
 
-        cls.out_overlap, cls.rec_overlap = run(overlap=True,
-                                               before_close=wait_for_early_saves)
+        # Captured so the fallback contract can be asserted on the engine's own
+        # words rather than inferred from what did not happen.
+        sink = _io.StringIO()
+        with contextlib.redirect_stdout(sink):
+            cls.out_overlap, cls.rec_overlap = run(overlap=True,
+                                                   before_close=wait_for_early_saves)
+        cls.overlap_log = sink.getvalue()
         cls.main_name = threading.current_thread().name
 
     def _assert_common(self, label, out, rec):
@@ -324,12 +361,42 @@ class MlxDecodeOverlapTest(unittest.TestCase):
         self.assertEqual(self.out_overlap, self.out_serial,
                          'overlap: identical result list to the serial path')
 
+    def test_it_degrades_to_serial_without_a_cross_thread_stream(self):
+        """THE FALLBACK IS A CONTRACT, not an accident - so assert it either way.
+
+        With a cross-thread stream: a decoder thread exists and rows land on it.
+        Without one: the engine says so in one line and decodes serially, and the
+        RESULTS are identical - which is the only thing the kill switch promises.
+        Nothing may silently share the generation stream.
+        """
+        marker = ('MLX decode overlap unavailable '
+                  '(mlx.core.new_thread_unsafe_stream missing)')
+        worker_events = [e for e in self.rec_overlap.events
+                         if e['thread'].startswith('orpheus-mlx-decode')]
+        if _HAS_THREAD_STREAM:
+            self.assertNotIn(marker, self.overlap_log)
+            self.assertTrue(worker_events,
+                            'with a cross-thread stream the decoder thread must be used')
+        else:
+            self.assertIn(marker, self.overlap_log,
+                          'the engine must SAY it is declining to overlap')
+            self.assertEqual(worker_events, [],
+                             'nothing may run on a decoder thread that was never '
+                             'created - decoding on the generation stream from '
+                             'another thread is the race _mlx_decode_stream refuses')
+        # Either way: same answers as the serial path. Asserted here too (not
+        # only in test_overlap_path_is_equivalent) because on a machine without
+        # the stream this IS the whole behaviour under test.
+        self.assertEqual(self.out_overlap, self.out_serial)
+
+    @unittest.skipUnless(_HAS_THREAD_STREAM, _NO_STREAM_REASON)
     def test_rows_are_written_while_the_batch_is_still_generating(self):
         close_seq = self.rec_overlap.of('close')[0]['seq']
         early = [e for e in self.rec_overlap.of('save') if e['seq'] < close_seq]
         self.assertGreaterEqual(len(early), 2,
                                 f'rows written before close: {[e["idx"] for e in early]}')
 
+    @unittest.skipUnless(_HAS_THREAD_STREAM, _NO_STREAM_REASON)
     def test_the_split_between_the_threads(self):
         worker_saves = {e['idx'] for e in self.rec_overlap.of('save')
                         if e['thread'].startswith('orpheus-mlx-decode')}

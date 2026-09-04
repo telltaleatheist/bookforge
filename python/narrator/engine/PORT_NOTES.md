@@ -71,11 +71,11 @@ complete list of the SYMBOLS it actually used from them (measured, not assumed:
 | `tts_engine` | 1 (`load_engine_presets(session['tts_engine'])`) | dropped with the preset loader |
 | `final_name` | 1 (in `create_vtt`) | n/a  -  not ported |
 
-`EngineConfig` adds four fields e2a carried in the environment or not at all:
+`EngineConfig` adds three fields e2a carried in the environment or not at all:
 `caps` (the catalog payload the streaming server used to register in a separate
-step), `backend` (the constructor form of `ORPHEUS_BACKEND`), `audio_format`
-(was `lib/conf.default_audio_proc_format`), and `reject_dir` (was
-`ORPHEUS_REJECT_DIR` only  -  the env var still works and still wins the same way).
+step), `backend` (the constructor form of `ORPHEUS_BACKEND`, which is still
+honoured), and `audio_format` (was `lib/conf.default_audio_proc_format`). It
+deliberately has NO `reject_dir` and NO `language` field - see section 8.
 
 ---
 
@@ -333,7 +333,74 @@ then None**.
 
 ## 7. Suspected bugs preserved
 
-None found. Two places where a reader might expect a bug and there is none:
+**One, found by running the MLX tests on the Mac (2026-09-04).**
+
+`mlx_fastpath.install()` imports the class it is going to patch BEFORE it checks
+the version pin:
+
+```python
+def install(model, *, rep_window, max_tokens):
+    import mlx.nn as nn
+    import mlx_lm
+    from mlx_lm.generate import GenerationBatch      # <- line 3
+    version = getattr(mlx_lm, '__version__', '<unknown>')
+    if version != REQUIRED_MLX_LM:                   # <- the pin check, line 5
+        raise FastPathUnsupported('... pinned to mlx-lm 0.31.3 ...')
+```
+
+`GenerationBatch` was added in mlx-lm **0.31.3** - the pinned version - so on any
+older mlx_lm the import on line 3 raises a bare `ImportError` and line 5 never
+runs. The module's own docstring promises the opposite: *"Raises
+FastPathUnsupported, by name, for every condition the patch cannot honour."*
+
+MEASURED on the Mac's live Orpheus env (`ebook2audiobook-orpheus`, mlx_lm 0.29.1):
+
+```
+install() raised ImportError (NOT the documented refusal):
+  cannot import name 'GenerationBatch' from 'mlx_lm.generate'
+```
+
+**Preserved, not fixed** - the port reproduces e2a's ordering exactly (this file's
+rule: note a suspected bug, do not repair it). It still REFUSES, which is what
+protects a render; only the message is worse than advertised, and
+`_load_mlx_engine` does not catch either exception so the load fails loudly
+either way. `tests/test_engine_mlx_fastpath.py::MlxFastPathPinTest` pins both
+halves: `test_install_never_returns_silently_below_the_pin` (the invariant that
+actually matters, asserted in every env) and
+`test_below_the_pin_the_refusal_is_an_ImportError_not_FastPathUnsupported` (the
+defect itself, so a future fix is deliberate and visible rather than silent).
+
+> **Operational consequence, for whoever owns the Mac env.** With mlx_lm 0.29.1
+> installed, `_load_mlx_engine` -> `mlx_fastpath.install(...)` raises
+> `ImportError` and the MLX load DIES, unless `ORPHEUS_MLX_FASTPATH=0` is set.
+> That is e2a@9daab0ba's behaviour too, not something this port introduced. The
+> fix is the env, not the code: see section 7a.
+
+### 7a. What the MLX backend requires of its environment
+
+Measured across the three conda envs on the Mac, 2026-09-04:
+
+| env | mlx | mlx_lm | `new_thread_unsafe_stream` | `GenerationBatch` |
+|---|---|---|---|---|
+| `ebook2audiobook-orpheus` (BookForge's Orpheus env) | 0.30.4 | 0.29.1 | no | no |
+| `ebook2audiobook` | 0.30.4 | 0.30.5 | no | no |
+| `finetune` | **0.32.0** | **0.31.3** | **yes** | **yes** |
+
+- **mlx-lm == 0.31.3** for the batched fast path. `mlx_fastpath` is pinned, not
+  feature-detected, on purpose ("a silently different `_step` is exactly the
+  failure this module must not have"). Below it, `install()` refuses.
+- **mlx >= 0.32.0** for decode overlap. `_mlx_decode_stream()` needs
+  `mx.new_thread_unsafe_stream`; without it the engine prints
+  `[ORPHEUS] MLX decode overlap unavailable ...` and decodes serially. Correct
+  audio, no overlap - a documented, asserted fallback, not a failure.
+- `mlx_audio` is needed only for real rendering; every test stubs it.
+
+NB when checking these by hand: `import mlx_lm.generate as G` binds the generate
+FUNCTION (mlx_lm re-exports it from `__init__`), **not** the submodule, so
+`hasattr(G, 'GenerationBatch')` is always False that way. Use
+`importlib.import_module('mlx_lm.generate')`.
+
+Two places where a reader might expect a bug and there is none:
 
 - `_mlx_eos_boost_processor`'s `len(tokens)` includes the PROMPT, while
   `_eos_boost_processor`'s does not. e2a documents this divergence in
@@ -532,14 +599,17 @@ every `ready`/`loaded`.
 
 ## 10. Could not verify
 
-- **The three MLX test ports** (`test_engine_mlx_decode_overlap.py`,
-  `test_engine_mlx_continuous.py`, `test_engine_mlx_fastpath.py`) are faithful
-  transcriptions but have **never been executed**: they require `mlx`, which is
-  installed on neither the Windows interpreter nor the WSL `orpheus_tts` env
-  (that is a CUDA env). They SKIP on both. **The Mac owes them a run**, and
-  until it happens the MLX backend port is unproven beyond "it imports".
-- **The MLX backend itself** (`mlx_backend.py`, `mlx_fastpath.py`, the MLX half
-  of `adapters.py`) has been import-checked only.
+- ~~The three MLX test ports have never been executed~~ **RESOLVED 2026-09-04**:
+  run on the Mac in both `ebook2audiobook-orpheus` (43 tests, OK, 8 skipped -
+  the env is below both API floors, section 7a) and `finetune` (43 tests, OK,
+  1 skipped - at the mlx-lm pin, so every install and thread-placement case
+  actually EXERCISES). The MLX backend's batched logits math, the decode-overlap
+  hand-off, continuous batching and every `install()` refusal are now proven, not
+  merely imported. They still SKIP on Windows and in WSL `orpheus_tts` (no mlx).
+- **No MLX model has been loaded.** The tests stub `mlx_audio`'s llama module and
+  fake the BatchGenerator, so `_load_mlx_engine`, `_patch_mlx_prompt_framing`,
+  `_generate_mlx` and the MLX half of `adapters.py` (`_mlx_adapter_plan` /
+  `_apply_mlx_adapter`) are still import-checked only - they need real weights.
 - **No GPU render** - the GPU was held by another job's lock
   (`%APPDATA%\BookForge\external-gpu-job.lock`, `ds_ad4s raw-verbatim
   train+gate chain`) at 13.2 GB / 94-98% / 76 C, so the smoke guard was not met
@@ -569,3 +639,12 @@ this worktree:
 | F5 | `NARRATOR_FAKE_ENGINE=1` could put the production entry point into sine-tone mode via a forwarded env var | replaced with the `--fake-engine` argv flag + a stderr banner at startup and at every `ready`/`loaded` |
 | F6 | section 8 "exhaustive" was not | `_reject_dir` restored to env-only and `EngineConfig.reject_dir`/`language` removed; the `_sentence_file` guard, `trim_audio`'s two dead returns and all 30 changed message strings now listed (AST-diffed, four mechanical causes) |
 | F7 | re-verify | suite re-run both ways; nothing outside column E touched |
+
+**2026-09-04, Mac run of the MLX suite** (coordinator: 103 tests, 2 failures,
+6 errors). Both were **environment facts, not port regressions**, and both are
+now asserted contracts instead of holes:
+
+| what failed | cause | proof | fix |
+|---|---|---|---|
+| 6 errors, all `MlxFastPathInstallTest`: `ImportError: cannot import name 'GenerationBatch'` | `GenerationBatch` exists only at mlx-lm 0.31.3 (the pin); the test env has 0.29.1, so `install()` is unreachable | measured across all three Mac envs (section 7a); e2a's `install()` has the identical import ordering, so it errors the same way - confirmed by running it directly | `MlxFastPathInstallTest` skips below the pin, naming the version; new `MlxFastPathPinTest` asserts install() never returns silently, in every env, and pins the ImportError-vs-refusal defect (section 7) |
+| 2 failures, `test_rows_are_written_while_the_batch_is_still_generating` and `test_the_split_between_the_threads` | `mx.new_thread_unsafe_stream` arrived in mlx 0.32.0; the env has 0.30.4, so `_mlx_decode_stream()` returns None and the engine DECLINES to overlap - it printed `[ORPHEUS] MLX decode overlap unavailable ...` in the failing run | **e2a's own `tools/test_mlx_decode_overlap.py`, run unmodified in the same env, fails the same four thread-placement checks and passes every correctness check**; and the port's `_mlx_decode_stream` + overlap-decision block are byte-identical to e2a's (diffed, 9 and 19 lines) | the two thread-placement tests skip without the stream; new `test_it_degrades_to_serial_without_a_cross_thread_stream` asserts the fallback either way - the log line and no decoder thread when absent, a live decoder thread when present, identical results in both |
