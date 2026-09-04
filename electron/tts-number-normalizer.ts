@@ -192,6 +192,10 @@ export type NumberEditStatus =
   | 'TOO_MANY_EDITS'
   /** The block's non-number edits together would rewrite too much of it. */
   | 'BLOCK_BUDGET'
+  /** The span is not one of the classes this pass asks about — it is prose. */
+  | 'NOT_A_CLASS'
+  /** The reading invents words the find does not account for. */
+  | 'WORDS_ADDED'
   /** The heading and its contents entry could not take the SAME edit. */
   | 'TOC_MISMATCH'
   /** A deterministic rule read it, before the model was asked anything. */
@@ -485,14 +489,114 @@ function punctuationNameCount(text: string): number {
  * semicolon — because refusing the book's own punctuation refuses correct
  * readings. Never a digit, a currency sign or markup, whatever the find held.
  */
-function spokenWords(find: string, replace: string): boolean {
+function spokenWords(find: string, replace: string, extra = ''): boolean {
   if (NEVER_SPOKEN.test(replace)) return false;
-  const fromFind = new Set([...find]);
+  const fromFind = new Set([...find, ...extra]);
   return [...replace].every((ch) => SPOKEN_BASE.test(ch) || fromFind.has(ch));
 }
 
+/**
+ * THE HYPHEN-TO-EM-DASH ALLOWANCE, and the only character this pass may invent.
+ *
+ * A spaced hyphen used as a dash — "the man - who had waited - left" — is an em
+ * dash in disguise, and reading it as one is a class the prompt asks about. But
+ * `SPOKEN_BASE` holds no U+2014 and `spokenWords` otherwise admits only what the
+ * find already carried, so EVERY edit of that class was rejected
+ * REPLACE_NOT_WORDS. Found by the adversarial review of 2026-09-04 by running
+ * the prompt's own worked example through this validator.
+ *
+ * Scoped as narrowly as the defect: only when text edits are allowed at all, and
+ * only when the find actually printed a hyphen for the dash to have come from.
+ * A number edit can still never invent one.
+ */
+const HYPHEN_DASH_ALLOWANCE = '\u2014';
+
 /** A bare list marker — "1.", "12." — where the period is part of the reading. */
 const LIST_MARKER = /^\d{1,3}\.$/;
+
+/**
+ * The WORDS of a span, with a dotted abbreviation counted as ONE word.
+ *
+ * Split on letters rather than on whitespace, so "waited—and" is two words and
+ * "e.g." is one. That distinction is the whole of the one-token law below: a
+ * class-5 edit changes punctuation between two words and must keep both, while a
+ * class-2 edit replaces one dotted token and must keep everything else.
+ */
+const WORD_TOKEN = /[A-Za-zÀ-ÿ]+(?:\.[A-Za-zÀ-ÿ]+)*\.?/g;
+
+/** The raw word tokens of a span, in order. */
+function wordTokens(text: string): string[] {
+  return text.match(WORD_TOKEN) ?? [];
+}
+
+/** How two word tokens are compared: case and interior periods do not count. */
+const wordKey = (token: string): string => token.toLowerCase().replace(/\./g, '');
+
+/**
+ * The word tokens of `find` that do not appear, IN ORDER, in `replace`.
+ *
+ * Greedy and left to right, the same shape as `keepsEveryWord`'s subsequence
+ * walk, but it reports WHICH words went missing rather than only whether any
+ * did — because the one-token law has to know whether the one that went is the
+ * one the class was allowed to change.
+ */
+function droppedWords(find: string, replace: string): string[] {
+  const wanted = wordTokens(find);
+  const got = wordTokens(replace).map(wordKey);
+  const missing: string[] = [];
+  let at = 0;
+  for (const token of wanted) {
+    const found = got.indexOf(wordKey(token), at);
+    if (found < 0) { missing.push(token); continue; }
+    at = found + 1;
+  }
+  return missing;
+}
+
+/**
+ * Is this word token the one its CLASS is allowed to change?
+ *
+ * The pending ruling of 2026-09-04, implemented as the default: for a non-number
+ * class the replacement must preserve every alphabetic word of the find in
+ * order EXCEPT the single token the class is about — a dotted abbreviation, a
+ * run of capitals, a roman numeral. One-token edits only.
+ *
+ * A word that is none of those is prose, and prose is not this pass's to
+ * rewrite: "tarmac" → "terrace" is an OCR correction, "cheered" → "jeered" is an
+ * invention, and both were APPLIED before this law existed (measured by the
+ * adversarial review of 2026-09-04, cases A5 and A6).
+ */
+function isClassToken(token: string): boolean {
+  if (token.includes('.')) return true;                       // Dr. · e.g. · St.
+  const bare = token.replace(/\./g, '');
+  if (/^[IVXLCDM]{2,}$/.test(bare)) return true;              // VIII · XIV
+  return /^[A-Z]{2,}$/.test(bare);                            // FBI · NSDAP
+}
+
+/**
+ * How many alphabetic words a BRACKETED insertion may hold and still be
+ * removable as apparatus.
+ *
+ * "[sic]" is one, "(emphasis added)" is two, "(see page twelve)" is three. Four
+ * is "(the guarantee would hold)" — a clause of the author's prose, which the
+ * shape test alone happily deleted (the adversarial review's case A4). Three is
+ * the last count at which every measured apparatus insertion still fits and no
+ * measured clause does.
+ */
+const MAX_BRACKET_WORDS = 3;
+
+/**
+ * How many words a number's reading may add beyond the find's own.
+ *
+ * `keepsEveryWord` proves nothing is LOST; nothing proved nothing was GAINED,
+ * so "The 12 men who refused were shot" → "The twelve men who refused were
+ * spared, and the men who shot" passed every number invariant and inverted the
+ * sentence (the adversarial review, 2026-09-04). The reading may hold the find's
+ * own words, plus the number words the conversion produces, plus this much slack
+ * for the joins a reading legitimately needs — "to" in a range, "and" in
+ * "five dollars and fifty cents", "point" in a decimal.
+ */
+const NUMBER_WORD_SLACK = 3;
 
 /**
  * The words a number is made of when spoken. Hyphenated compounds are split
@@ -699,10 +803,13 @@ const MAX_TEXT_EDIT_SHARE = 0.25;
  * A quarter of a paragraph is a real bound; a quarter of a HEADING is four
  * characters, and a heading is exactly the block whose whole text might be one
  * abbreviation ("Dr. Smith", "Part IV"). Without a floor the budget would refuse
- * every short block's only honest edit. Eighty characters is longer than any
- * heading this app has measured and far shorter than a paragraph.
+ * every short block's only honest edit. SIXTY, lowered from eighty by the adversarial review of 2026-09-04, which
+ * measured an eighty-nine-character sentence having eighty of its characters
+ * replaced and accepted. It is still longer than any heading this app has
+ * measured, and the one-token law above is what now bounds MEANING — this is
+ * the backstop, not the guard.
  */
-const MIN_TEXT_EDIT_BUDGET = 80;
+const MIN_TEXT_EDIT_BUDGET = 60;
 
 /**
  * Check one target's proposed edits and return the ones that may be applied.
@@ -799,7 +906,14 @@ export function validateNumberEdits(
         + 'reading justifies');
       continue;
     }
-    if (!spokenWords(find, replace)) { reject(find, replace, 'REPLACE_NOT_WORDS'); continue; }
+    // The one character this pass may invent, and only for the class it exists
+    // for: a hyphen the book printed, read as the em dash it stands in for.
+    const extraAllowed = !isNumber && policy.allowTextEdits && find.includes('-')
+      ? HYPHEN_DASH_ALLOWANCE : '';
+    if (!spokenWords(find, replace, extraAllowed)) {
+      reject(find, replace, 'REPLACE_NOT_WORDS');
+      continue;
+    }
     if (punctuationNameCount(replace) > punctuationNameCount(find)) {
       reject(find, replace, 'PUNCTUATION_SPOKEN',
         'the replacement says the NAME of a punctuation mark the book only prints');
@@ -826,19 +940,88 @@ export function validateNumberEdits(
           + `number word(s); the reading has ${numberWordCount(replace)}`);
         continue;
       }
-    } else {
-      // ── The TEXT invariants, which are what stand in for a lexical anchor ──
-      //
-      // A DELETION is allowed for exactly one class: bracketed apparatus, which
-      // is not read aloud at all ("[sic]", "(see p. 12)"). Every other class
-      // must SAY something — a replacement that empties a span of prose is a
-      // model deciding a sentence is better without it.
-      if (isRemoval && !isWholeBracketedInsertion(find)) {
-        reject(find, replace, 'EMPTY_REPLACE',
-          'only a bracketed insertion may be removed outright; every other reading says something');
+      // And nothing proved that no words were GAINED. "The 12 men who refused
+      // were shot" -> "The twelve men who refused were spared, and the men who
+      // shot" keeps every prose word in order, converts the number, prints no
+      // digit — and inverts the sentence. Measured by the adversarial review,
+      // 2026-09-04. The reading may hold the find's own words, the number words
+      // the conversion produced, and NUMBER_WORD_SLACK joins. Nothing more.
+      const allowedWords =
+        wordTokens(find).length + numberWordCount(replace) + NUMBER_WORD_SLACK;
+      if (wordTokens(replace).length > allowedWords) {
+        reject(find, replace, 'WORDS_ADDED',
+          `the reading has ${wordTokens(replace).length} words for a span of `
+          + `${wordTokens(find).length}; a conversion may add its number words and `
+          + `${NUMBER_WORD_SLACK} joining word(s), not a clause`);
         continue;
       }
-      if (textBudgetSpent + find.length > textBudget) {
+    } else {
+      // ── THE ONE-TOKEN LAW, which stands in for a lexical anchor ─────────
+      //
+      // Owen's ruling of 2026-09-04: for a non-number class the replacement must
+      // preserve every alphabetic word of the find, in order, EXCEPT the single
+      // token the class is allowed to change. One-token edits only.
+      //
+      // Without it the caps bound SIZE and nothing bounds MEANING, and the
+      // adversarial review measured what got through: a name swapped
+      // ("Neville Chamberlain" -> "Winston Churchill"), a negation flipped
+      // ("was not convinced by any of it" -> "was convinced by all of it"), an
+      // OCR "correction" ("tarmac" -> "terrace"), a heading rewritten whole.
+      // Every one of those changes a word the class was never about.
+      //
+      // A DELETION is allowed for exactly one class: bracketed apparatus, which
+      // is not read aloud at all ("[sic]", "(see page twelve)"). And only when
+      // the insertion is SHORT — the shape test alone let a clause of the
+      // author's prose be deleted for wearing parentheses.
+      if (isRemoval) {
+        if (!isWholeBracketedInsertion(find)) {
+          reject(find, replace, 'EMPTY_REPLACE',
+            'only a bracketed insertion may be removed outright; every other reading says '
+            + 'something');
+          continue;
+        }
+        if (wordTokens(find).length > MAX_BRACKET_WORDS) {
+          reject(find, replace, 'EMPTY_REPLACE',
+            `a bracketed insertion of ${wordTokens(find).length} words is a clause of the book, `
+            + `not apparatus; at most ${MAX_BRACKET_WORDS} may be removed`);
+          continue;
+        }
+      } else {
+        // Which class this span belongs to, with the brackets set aside: a
+        // parenthesis around an acronym is still an acronym edit.
+        const inner = editClass === 'bracketed'
+          ? classifyEdit(find.replace(/^\s*[([]|[)\]]\s*$/g, ''))
+          : editClass;
+        if (inner === 'other' || inner === 'bracketed') {
+          reject(find, replace, 'NOT_A_CLASS',
+            'this span is prose, not an abbreviation, a run of capitals, a roman numeral or a '
+            + 'bracketed insertion — the pass has no reading to give it');
+          continue;
+        }
+        const dropped = droppedWords(find, replace);
+        if (inner === 'spaced-hyphen' && dropped.length > 0) {
+          reject(find, replace, 'WORDS_DROPPED',
+            'reading a spaced hyphen as a dash changes punctuation, never a word');
+          continue;
+        }
+        if (dropped.length > 1) {
+          reject(find, replace, 'WORDS_DROPPED',
+            `${dropped.length} words of the span are missing from the reading `
+            + `(${dropped.join(', ')}); a reading may change exactly one`);
+          continue;
+        }
+        if (dropped.length === 1 && !isClassToken(dropped[0])) {
+          reject(find, replace, 'WORDS_DROPPED',
+            `"${dropped[0]}" is an ordinary word, not the abbreviation, run of capitals or `
+            + 'roman numeral this reading is about');
+          continue;
+        }
+      }
+      // The budget counts whichever side is bigger: a sixty-character find that
+      // became two hundred characters of invention spent sixty of the block's
+      // budget before this was measured (the adversarial review, 2026-09-04).
+      const spends = Math.max(find.length, replace.length);
+      if (textBudgetSpent + spends > textBudget) {
         reject(find, replace, 'BLOCK_BUDGET',
           `the readings accepted so far already replace ${textBudgetSpent} of this block's `
           + `${target.length} characters, and a block whose text is rewritten past `
@@ -857,7 +1040,7 @@ export function validateNumberEdits(
       continue;
     }
 
-    if (!isNumber) textBudgetSpent += find.length;
+    if (!isNumber) textBudgetSpent += Math.max(find.length, replace.length);
     accepted.push({ find, replace, at });
     records.push({ find, replace, status: 'APPLIED', editClass });
   }

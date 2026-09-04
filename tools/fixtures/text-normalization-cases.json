@@ -533,5 +533,133 @@
     "in": "v1.2 of the spec",
     "want": "v1.2 of the spec",
     "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-decade-mid",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "By the mid-1920s at the latest",
+    "want": "By the mid-1920s at the latest",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-post",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "post-1990s attitudes",
+    "want": "post-1990s attitudes",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-2000s",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a mid-2000s revival",
+    "want": "a mid-2000s revival",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-early",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "early-1900s",
+    "want": "early-1900s",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-anti",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "anti-1960s backlash",
+    "want": "anti-1960s backlash",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-pre",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "pre-1914 Europe",
+    "want": "pre-1914 Europe",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-post",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "post-1945 Germany",
+    "want": "post-1945 Germany",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-name",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the Kennedy-1963 assassination",
+    "want": "the Kennedy-1963 assassination",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-roman",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Louis XIV-1715",
+    "want": "Louis XIV-1715",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-ordinal-19th",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a mid-19th century view",
+    "want": "a mid-19th century view",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-ordinal-18th",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the mid-18th-century church",
+    "want": "the mid-18th-century church",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "glued-catch22",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "Catch-22",
+    "want": "Catch-twenty two",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-tank",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a T-34 tank",
+    "want": "a T-thirty four tank",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-isotope",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "U-235",
+    "want": "U-two hundred thirty five",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-hour",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a 24-hour day",
+    "want": "a twenty four-hour day",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-year-old",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a 30-year-old man",
+    "want": "a thirty-year-old man",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
   }
 ]

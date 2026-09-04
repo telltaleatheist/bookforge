@@ -477,19 +477,46 @@ function uniqueWords(n) {
   return out;
 }
 
+/** N distinct all-letter tokens, so every slice of the block is unique. */
+function uniqueWords(n) {
+  const out = [];
+  for (let i = 0; i < n; i++) {
+    out.push(String.fromCharCode(97 + Math.floor(i / 26) % 26)
+      + String.fromCharCode(97 + (i % 26)) + 'ord');
+  }
+  return out;
+}
+
+/** A block of `n` "Dr. <word>" spans — every one a legitimate class-2 edit. */
+function doctorBlock(n) {
+  return `${uniqueWords(n).map((w) => `Dr. ${w}`).join(', ')}.`;
+}
+
 test('a block whose text edits would rewrite a quarter of it is stopped', () => {
-  // A six-hundred-character block, so the budget is a hundred and fifty. One
-  // hundred-character reading fits; the second does not.
-  const target = `${uniqueWords(100).join(' ')}.`;
-  const budget = Math.floor(target.length * 0.25);
-  assert.ok(budget > 100 && budget < 200, `budget ${budget} for ${target.length} chars`);
-  const { records } = norm.validateNumberEdits(target, [target.length], [
-    { find: target.slice(0, 100), replace: 'the first reading' },
-    { find: target.slice(300, 400), replace: 'the second reading' },
-  ], [], norm.EVERY_CLASS);
-  assert.strictEqual(records[0].status, 'APPLIED', JSON.stringify(records[0]));
-  assert.strictEqual(records[1].status, 'BLOCK_BUDGET', JSON.stringify(records[1]));
-  assert.ok(records[1].detail.includes('25%'), records[1].detail);
+  // Every edit here is a real abbreviation reading — the one-token law has no
+  // objection to any of them — so what stops the flood is the CHARACTER budget
+  // and nothing else, which is what this is here to prove.
+  const words = uniqueWords(40);
+  const target = doctorBlock(40);
+  const budget = Math.max(60, Math.floor(target.length * 0.25));
+  const edits = words.map((w) => ({ find: `Dr. ${w}`, replace: `Doctor ${w}` }));
+  const { records } = norm.validateNumberEdits(
+    target, [target.length], edits, [], norm.EVERY_CLASS);
+  const applied = records.filter((r) => r.status === 'APPLIED');
+  assert.ok(applied.length > 0, 'the honest readings are taken');
+  const stopped = records.find((r) => r.status === 'BLOCK_BUDGET');
+  assert.ok(stopped !== undefined, JSON.stringify(records.map((r) => r.status)));
+  assert.ok(stopped.detail.includes('25%'), stopped.detail);
+  // And it stopped where the budget said it would: each reading spends the
+  // longer of its two sides, which is "Doctor <word>" at eleven characters.
+  assert.ok(applied.length * 11 <= budget + 11, `${applied.length} applied for a ${budget} budget`);
+});
+
+test('the budget has a FLOOR, so a heading\'s only edit is not refused', () => {
+  // A quarter of "Dr. Smith waited." is four characters; without the floor the
+  // one honest reading in it would be refused for being too big for its block.
+  assert.strictEqual(verdictOf('Dr. Smith waited.', 'Dr. Smith', 'Doctor Smith').status,
+    'APPLIED');
 });
 
 test('the budget has a FLOOR, so a heading\'s only edit is not refused', () => {
@@ -501,16 +528,123 @@ test('the budget has a FLOOR, so a heading\'s only edit is not refused', () => {
 
 test('a block that proposes a rewrite\'s worth of edits is stopped', () => {
   // A block long enough that the CHARACTER budget affords all forty readings —
-  // so the per-block CAP is the only thing that can stop the flood, which is
-  // what this is here to prove.
+  // so the per-block CAP is the only thing that can stop the flood.
   const words = uniqueWords(40);
-  const target = `${words.join(' ')} ${uniqueWords(400).slice(40).join(' ')}.`;
-  const edits = words.map((w) => ({ find: w, replace: `${w} said` }));
+  const target = `${doctorBlock(40)} ${uniqueWords(400).slice(40).join(' ')}.`;
+  const edits = words.map((w) => ({ find: `Dr. ${w}`, replace: `Doctor ${w}` }));
   const { records } = norm.validateNumberEdits(
     target, [target.length], edits, [], norm.EVERY_CLASS);
   const applied = records.filter((r) => r.status === 'APPLIED').length;
   assert.strictEqual(applied, 24, `${applied} applied — the cap is 24`);
   assert.ok(records.some((r) => r.status === 'TOO_MANY_EDITS'), 'the cap fired');
+});
+
+/**
+ * THE ONE-TOKEN LAW, and the table the adversarial review of 2026-09-04 built
+ * to show it was needed.
+ *
+ * Owen's ruling: for a non-number class the replacement must repeat every word
+ * of the find, in order, EXCEPT the single token the class is about. Before it,
+ * every row below was APPLIED — measured, not supposed — because the caps bound
+ * SIZE and nothing bound MEANING.
+ */
+const CHAMBERLAIN = 'Neville Chamberlain returned from Munich with a piece of paper in his '
+  + 'hand, and the man who had waited all afternoon on the tarmac was not convinced by any of '
+  + 'it. The crowds cheered anyway. He did not believe the guarantee would hold, and he had '
+  + 'already decided otherwise.';
+
+test('the review\'s adversarial table — every row is refused, by name', () => {
+  const rows = [
+    ['A1 paraphrase', 'the man who had waited', 'the waiting man', 'NOT_A_CLASS'],
+    ['A2 negation', 'was not convinced by any of it', 'was convinced by all of it', 'NOT_A_CLASS'],
+    ['A3 name swap', 'Neville Chamberlain', 'Winston Churchill', 'NOT_A_CLASS'],
+    ['A4 prose in brackets', 'the guarantee would hold', '', 'EMPTY_REPLACE'],
+    ['A5a word swap', 'cheered', 'jeered', 'NOT_A_CLASS'],
+    ['A5b negation', 'did not believe', 'believed', 'NOT_A_CLASS'],
+    ['A5c negation', 'already decided', 'not yet decided', 'NOT_A_CLASS'],
+    ['A6 OCR correction', 'tarmac', 'terrace', 'NOT_A_CLASS'],
+    ['B1 prose deleted', 'The crowds cheered anyway. ', '', 'EMPTY_REPLACE'],
+  ];
+  for (const [name, find, replace, want] of rows) {
+    assert.strictEqual(verdictOf(CHAMBERLAIN, find, replace).status, want, name);
+  }
+});
+
+test('a whole heading, and a whole sentence, are not readings', () => {
+  assert.strictEqual(
+    verdictOf('The Coming of the War', 'The Coming of the War', 'How the War Arrived').status,
+    'NOT_A_CLASS');
+  const sentence = 'She had loved him once, and the memory of it was the only thing she still '
+    + 'owned';
+  assert.strictEqual(
+    verdictOf(sentence, sentence,
+      'She had hated him always, and the forgetting of it was the one thing she never owned')
+      .status,
+    'NOT_A_CLASS');
+});
+
+test('a bracketed insertion is apparatus only while it is SHORT', () => {
+  assert.strictEqual(
+    verdictOf('He said (see page twelve) so.', ' (see page twelve)', '').status, 'APPLIED');
+  assert.strictEqual(verdictOf('It was [sic] there', '[sic] ', '').status, 'APPLIED');
+  const clause = 'He said (though not by the men who signed it) so.';
+  const refused = verdictOf(clause, ' (though not by the men who signed it)', '');
+  assert.strictEqual(refused.status, 'EMPTY_REPLACE');
+  assert.ok(refused.detail.includes('clause of the book'), refused.detail);
+});
+
+test('each class may change its OWN token, and only that one', () => {
+  const ok = [
+    ['abbreviation', 'Dr. Smith waited.', 'Dr. Smith', 'Doctor Smith'],
+    ['dotted abbreviation', 'the plan, e.g. the map, held', 'e.g.', 'for example'],
+    ['all-caps', 'the FBI agent', 'FBI', 'F B I'],
+    ['roman', 'Henry VIII reigned', 'Henry VIII', 'Henry the Eighth'],
+    ['emphasis, a case change', 'he never SAID so', 'never SAID so', 'never said so'],
+    ['spaced hyphen, punctuation only', 'the man - who waited', 'man - who', 'man\u2014who'],
+  ];
+  for (const [name, target, find, replace] of ok) {
+    assert.strictEqual(verdictOf(target, find, replace).status, 'APPLIED', name);
+  }
+  // And the neighbouring words may not move.
+  assert.strictEqual(
+    verdictOf('Dr. Smith waited.', 'Dr. Smith', 'Doctor Jones').status, 'WORDS_DROPPED');
+  assert.strictEqual(
+    verdictOf('the man - who waited', 'man - who', 'fellow\u2014who').status, 'WORDS_DROPPED');
+});
+
+test('the em dash is the ONE character this pass may invent, and only from a hyphen', () => {
+  // The class the adversarial review found could never produce an accepted edit:
+  // SPOKEN_BASE holds no U+2014 and spokenWords admits only what the find had.
+  assert.strictEqual(
+    verdictOf('the man - who waited', 'man - who', 'man\u2014who').status, 'APPLIED');
+  // A find with no hyphen has no dash to have come from.
+  assert.strictEqual(
+    verdictOf('the FBI agent', 'FBI', 'F\u2014B\u2014I').status, 'REPLACE_NOT_WORDS');
+  // And a NUMBER edit can never invent one, hyphen or no hyphen.
+  assert.strictEqual(
+    verdictOf('from 1914-1918 it ran', '1914-1918', 'nineteen fourteen\u2014nineteen eighteen')
+      .status,
+    'REPLACE_NOT_WORDS');
+});
+
+test('a number reading may not invent a clause either', () => {
+  // Measured by the review: every number invariant passed and the sentence was
+  // inverted. WORDS_ADDED is what sees it.
+  const inverted = verdictOf('The 12 men who refused were shot',
+    'The 12 men who refused were shot',
+    'The twelve men who refused were spared, and the men who shot');
+  assert.strictEqual(inverted.status, 'WORDS_ADDED');
+  assert.ok(inverted.detail.includes('joining word'), inverted.detail);
+  // While the readings a conversion legitimately needs still fit.
+  for (const [find, replace] of [
+    ['1200 workers', 'twelve hundred workers'],
+    ['1914-1918', 'nineteen fourteen to nineteen eighteen'],
+    ['$5.50', 'five dollars and fifty cents'],
+    ['June 12, 1933', 'June twelfth, nineteen thirty-three'],
+  ]) {
+    assert.strictEqual(verdictOf(`x ${find} y`, find, replace).status, 'APPLIED',
+      `${find} -> ${replace}`);
+  }
 });
 
 test('the number invariants are untouched for a digit-bearing find', () => {
@@ -524,10 +658,10 @@ test('the number invariants are untouched for a digit-bearing find', () => {
 });
 
 test('an edit may not reach into a span the RULES already read', () => {
-  const target = 'He read page twenty three there.';
+  const target = 'He read Dr. Smith there, page twenty three.';
   const { records } = norm.validateNumberEdits(
-    target, [target.length], [{ find: 'page twenty three', replace: 'page twenty-three' }],
-    [{ at: 8, end: 25 }], norm.EVERY_CLASS);
+    target, [target.length], [{ find: 'Dr. Smith', replace: 'Doctor Smith' }],
+    [{ at: 8, end: 17 }], norm.EVERY_CLASS);
   assert.strictEqual(records[0].status, 'OVERLAPS_APPLIED');
 });
 

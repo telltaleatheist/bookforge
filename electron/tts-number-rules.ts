@@ -893,10 +893,44 @@ function pageCandidates(text: string): Candidate[] {
  */
 const GLUED_ALNUM = /(?<![\w/.\-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w/\-])/g;
 
-/** The longest digit run this rule will read. Beyond it a number is a serial. */
-const GLUED_MAX_DIGITS = 4;
+/**
+ * The longest digit run this rule will read.
+ *
+ * THREE, not four, and the fourth digit is where the corpus contract lives. A
+ * four-digit run inside a hyphenated token is a YEAR — "pre-1914", "post-1945",
+ * "Kennedy-1963", "Louis XIV-1715" — and a year is the model's judgement, never
+ * a rule's (`BARE_INT` stops at three digits for exactly this reason). Reading
+ * one here would say "pre-one thousand nine hundred fourteen", which is not what
+ * anybody says and not what the four served fine-tunes were trained on.
+ *
+ * Found by the adversarial review of 2026-09-04, which measured the first cut of
+ * this rule against an n4 build over the same corpus.
+ */
+const GLUED_MAX_DIGITS = 3;
 /** And the most runs. "A1B2C3D4" is a part number, not a word with a number in it. */
 const GLUED_MAX_RUNS = 3;
+
+/**
+ * A digit run whose shape belongs to an EARLIER rule, and which this catch-all
+ * must therefore not read.
+ *
+ * `FULL_DECADE`, the year rule and `ORDINAL` each carry a `(?<![\w.\-])`
+ * lookbehind that excludes a preceding hyphen, so every one of these was left as
+ * printed before this rule existed — and this rule runs LAST, which is exactly
+ * why it would otherwise claim them all:
+ *
+ *   mid-1920s   -> "mid-one thousand nine hundred twenty s"   (decade, hyphenated)
+ *   mid-19th    -> "mid-nineteen th"                          (ordinal, hyphenated)
+ *
+ * Both are MALFORMED, and they carry no digit afterwards, so `stillHasDigits`
+ * never sends them to the model and no downstream guard can see them — the same
+ * failure class as the orphaned colon this version's scripture fix removed.
+ *
+ * A run followed by "s" is a decade or a plural; a run followed by an ordinal
+ * suffix is an ordinal. Either way the reading is not a bare cardinal, and a
+ * rule that cannot tell which reading it is has no business guessing.
+ */
+const CLAIMED_BY_ANOTHER_RULE = /^(?:s(?![A-Za-z])|(?:st|nd|rd|th)(?![A-Za-z]))/i;
 
 function gluedCandidates(text: string): Candidate[] {
   const out: Candidate[] = [];
@@ -909,6 +943,16 @@ function gluedCandidates(text: string): Candidate[] {
     // A serial, a leading zero, or a number no cardinal covers: left as printed.
     if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
     if (runs.some((run) => run.length > 1 && run.startsWith('0'))) continue;
+    // A run whose shape another rule owns — a decade's "s", an ordinal's suffix.
+    // Checked per run, against what FOLLOWS it inside the token.
+    let claimed = false;
+    for (const runMatch of token.matchAll(/\d+/g)) {
+      if (CLAIMED_BY_ANOTHER_RULE.test(token.slice(runMatch.index! + runMatch[0].length))) {
+        claimed = true;
+        break;
+      }
+    }
+    if (claimed) continue;
     // "v1.2" — a version, not a word with a number in it.
     if (/^\.\d/.test(text.slice(m.index + token.length))) continue;
     if (sitsInCitation(text, token, m.index)) continue;
