@@ -253,3 +253,23 @@ engine; `sampleRate` is already a manifest field for this reason.
 - Fine-tune prepared on the Mac (MLX bf16, LoRA r32 attn+MLP, 20.6 GB peak, 3.1 s/it)
   but NOT run: Owen wants Higgs auditioned first; Higgs notes follow, and the engine
   interface is extracted after BOTH are in hand.
+
+### Ruling 2026-09-04 ~16:25 (Owen, relayed): Llasa is OUT; second engine = Higgs v3
+
+Llasa is counted out (16 kHz codec, 2048-token stop wall). Likely engine set:
+**Orpheus + Higgs v3 (4B)** - Owen's ear on a v2 sample: "not bad, about Orpheus
+quality"; the v3 render is in progress and the eight-field notes follow. Card facts:
+backbone Qwen3-4B, context 8,192; tokenizer = 8 codebooks x 1,026 entries with a delay
+pattern and a fused multi-codebook embedding, 25 frames/s, 24 kHz mono (NOT SNAC), so
+~5 min of audio per window vs Orpheus's 44 s; voice object = reference clip in the
+conversation history (or a scene description; multi-speaker assignment is native);
+serving via vLLM-Omni / SGLang-Omni (a separate serving stack from our vLLM 0.7.3; a
+WSL env `higgs3` exists with vLLM-Omni); license research/non-commercial (accepted:
+personal use); no training code - a LoRA fine-tune is build-it-ourselves. Higgs v2
+(3B Llama-style, transformers HiggsAudioV2, LoRA-able) is the comparison only.
+
+Interface consequences: the codec seam must cover multi-codebook-with-delay-pattern
+decode (Higgs) as well as SNAC's 7-token frames; the serving seam must allow a
+different server stack per engine (vLLM 0.7.3 vs vLLM-Omni) behind the same
+JSON-lines worker protocol; the voice seam carries a reference clip + transcript in a
+conversation history. Extraction starts when the Higgs v3 measured fields arrive.
