@@ -9535,6 +9535,26 @@ ipcMain.handle('narration:text-readiness', async (
     // sentence, and the file's own answer above still stands.
     const resolved = await manifestService.familyForOpen(projectDir, askedPath, familyId);
     if (resolved === null) {
+      // ZERO CHAINS AND MANY CHAINS ARE NOT THE SAME ANSWER. `familyForOpen`
+      // returns null for both, and calling them both "more than one book chain"
+      // sent a project that simply has no recorded chain yet down the path that
+      // offers nothing — where the round-1 code had correctly offered the
+      // cleanup (the second adversarial review, 2026-09-04). A project with no
+      // chain has not been cleaned, by definition, so it reads MISSING and the
+      // offer stands.
+      const families = (await manifestService.readProjectManifest(projectDir)).families ?? [];
+      if (families.length === 0) {
+        const { narrationTextReadiness: readiness } =
+          await import('./narration-text-readiness.js');
+        const book = await manifestService.bookForAct(projectDir);
+        return {
+          success: true,
+          readiness: readiness([]),
+          fileState,
+          familyId: null,
+          bookPath: book === null ? null : book.absPath,
+        };
+      }
       return {
         success: true,
         readiness: null,

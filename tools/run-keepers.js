@@ -91,6 +91,7 @@ const SUITES = [
   'test-narration-text-pass',
   'test-narration-text-readiness',
   'test-prompt-examples',
+  'test-narration-text-two-family',
   'test-tts-number-rules',
   'test-tts-number-normalizer',
   'test-cli-narration-prep',

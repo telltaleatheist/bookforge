@@ -349,7 +349,10 @@ const AUDIO_EXTS = new Set([
                          and one emphasized act per row is this rail's rule. -->
                     @if (canNarrate(v)) {
                       <button class="quiet" (click)="cleanNarrationText(v)"
-                              title="Read every number as words and canonicalize the punctuation, once, so this book is ready to narrate">Clean text…</button>
+                              [disabled]="cleanupInFlight()"
+                              [title]="cleanupInFlight()
+                                ? 'A narration text cleanup is already queued for this book'
+                                : 'Read every number as words and canonicalize the punctuation, once, so this book is ready to narrate'">Clean text…</button>
                     }
                     @if (canNarrate(v)) {
                       <button class="quiet" (click)="narrate(v, 'document')"
@@ -1519,6 +1522,16 @@ export class StudioVersionsComponent {
       });
       return;
     }
+    if (this.cleanupInFlight()) {
+      await this.electron.showMessageDialog({
+        title: 'Already queued',
+        message: 'A narration text cleanup is already queued or running for this book. It '
+          + 'rewrites the book in place, so a second one would be two writers on one file. Wait '
+          + 'for the first to finish.',
+        type: 'info',
+      });
+      return;
+    }
     // The FILE is what names the chain: a project can hold two, and the planner
     // resolves which one from the version the button was pressed on.
     const run = await this.queue.submitProcessingRun({
@@ -2661,6 +2674,24 @@ export class StudioVersionsComponent {
    * job's project is in its config; the older job families carry it as `bfpPath`
    * or `projectDir`, the persisted key names.
    */
+  /**
+   * Is a narration text cleanup already queued or running for THIS project?
+   *
+   * The pass rewrites the book in place and re-cuts its narration copy, so two
+   * of them against one project is two writers on one file. The queue lives in
+   * the renderer, so this is the honest place to ask — the signal IS the queue.
+   */
+  readonly cleanupInFlight = computed(() => {
+    const dir = this.projectDir();
+    if (!dir) return false;
+    const same = (p?: string) => !!p && p.replace(/[\/]+$/, '') === dir.replace(/[\/]+$/, '');
+    return this.queue.jobs().some(j =>
+      j.type === 'narration-text'
+      && (j.status === 'pending' || j.status === 'processing')
+      && (same(j.bfpPath) || same(j.projectDir)
+        || same((j.config as { projectDir?: string } | undefined)?.projectDir)));
+  });
+
   private blockingQueueJobs(dir: string): Array<{ type: string; label: string }> {
     const same = (p?: string) => !!p && p.replace(/[\\/]+$/, '') === dir.replace(/[\\/]+$/, '');
     return this.queue.jobs()

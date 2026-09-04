@@ -114,9 +114,10 @@ export async function requireBookEpub(
  */
 async function replaceBookEpub(
   projectDir: string,
-  producedAbsPath: string
+  producedAbsPath: string,
+  familyId?: string
 ): Promise<{ bookPath: string; digest: string }> {
-  const bookPath = await requireBookEpub(projectDir);
+  const bookPath = await requireBookEpub(projectDir, familyId);
   if (!fs.existsSync(producedAbsPath)) {
     throw new Error(`The pass reported success but wrote no file at ${producedAbsPath}.`);
   }
@@ -385,7 +386,8 @@ async function recordInLedger(
   pass: AppliedPass
 ): Promise<{ ledgerEntryId?: string; note?: string }> {
   const { registerLedgerPass } = await import('./book-ledger.js');
-  const recorded = await registerLedgerPass(config.projectDir, { kind: pass.kind, label, pass });
+  const recorded = await registerLedgerPass(
+    config.projectDir, { kind: pass.kind, label, pass, familyId: config.familyId });
   if (recorded.refusal !== null) {
     console.warn(`[processing-pass] ${recorded.refusal}`);
     return { note: recorded.refusal };
@@ -503,8 +505,13 @@ async function carryNarrationAcrossPass(
   beforeAbsPath: string,
   producedAbsPath: string,
 ): Promise<{ carry: NarrationDeletionsCarry; bookAfter: string }> {
-  const verdict = await verifyNarrationCarry(config.projectDir, beforeAbsPath, producedAbsPath);
-  const landed = await replaceBookEpub(config.projectDir, producedAbsPath);
+  // THE WHOLE WAY DOWN. Threading the family into the pass and then dropping it
+  // here only moved the family-less resolvers' refusal to AFTER the model pass,
+  // which is the most expensive place in the run to discover it (the second
+  // adversarial review, 2026-09-04).
+  const verdict = await verifyNarrationCarry(
+    config.projectDir, beforeAbsPath, producedAbsPath, config.familyId);
+  const landed = await replaceBookEpub(config.projectDir, producedAbsPath, config.familyId);
   return {
     carry: await sealNarrationCarry(verdict, landed.bookPath, landed.digest),
     bookAfter: landed.bookPath,
@@ -543,7 +550,7 @@ async function runSimplifyPass(
   const params = config.simplify;
   if (!params) throw new Error('A simplify pass was queued without its settings (mode, provider, model).');
 
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -607,7 +614,7 @@ async function runSimplifyPass(
     params: { mode: params.mode, provider: params.aiProvider, model: params.aiModel },
     diff: diff.rel,
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   const ledger = await recordInLedger(config, 'Simplify', applied);
   return {
     success: true,
@@ -633,7 +640,7 @@ async function runTranslatePass(
   const params = config.translate;
   if (!params) throw new Error('A translate pass was queued without its languages and model.');
 
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -676,7 +683,7 @@ async function runTranslatePass(
       model: params.aiModel,
     },
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   // No diff to freeze — a translation shares no words with what it replaced, so
   // the entry's receipt is null and the row says so rather than offering a review
   // of a wall of red and green.
@@ -726,7 +733,7 @@ async function runTranslatePass(
  * nothing to do, and saying that is the whole of the right answer.
  */
 async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult> {
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -788,7 +795,7 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     params: { removed: strip.removed, files: strip.files.length, breaks: strip.breaks },
     diff: diff.rel,
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   const ledger = await recordInLedger(config, 'Remove footnote references', applied);
   return {
     success: true,
@@ -804,6 +811,42 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
   };
 }
+
+/**
+ * The narration copy, re-cut from the book as it stands.
+ *
+ * The strikes live in `ensureNarrationEpub`, not in the book, so a chained
+ * narration handed the raw book reads every passage the user struck out. That is
+ * why BOTH exits of the pass go through here — the one that did work, and the
+ * one that found nothing to do (the second adversarial review, 2026-09-04: the
+ * "already clean" success returned the book and lost the strikes).
+ *
+ * A failure is SAID, not swallowed, and it is not the pass's failure: the book
+ * is written and recorded either way. The caller then names the book itself,
+ * which `prepareNarrationInput` cuts on its way in — what is lost is the user's
+ * own strikes, and the note is what says so.
+ */
+async function recutNarrationCopy(
+  config: PassJobConfig,
+  bookPath: string,
+): Promise<{ narrationInputPath: string; note: string | null }> {
+  try {
+    const { ensureNarrationEpub } = await import('./narration-export.js');
+    const cut = await ensureNarrationEpub(config.projectDir, undefined, config.familyId);
+    console.log(
+      '[processing-pass] narration copy re-cut from the cleaned book'
+      + `${cut.cutReason === null ? ' (the one on record still described it)' : `: ${cut.cutReason}`}`
+      + ` — ${cut.epubPath}`);
+    return { narrationInputPath: cut.epubPath, note: null };
+  } catch (err) {
+    const note = 'The book was cleaned, but its narration copy could not be re-cut from it: '
+      + `${(err as Error).message} Anything narrated from here reads the book itself, so the `
+      + 'passages struck out for narration will be read aloud until the copy is remade.';
+    console.warn(`[processing-pass] ${note}`);
+    return { narrationInputPath: bookPath, note };
+  }
+}
+
 
 /**
  * The narration text cleanup, as a pass on the book's chain.
@@ -872,12 +915,18 @@ async function runNarrationTextPass(
   // message. This pass stands in front of a narration run, and a step that fails
   // takes the run with it. So it succeeds, records nothing, and says so.
   if (already.ok) {
+    // THE COPY IS STILL RE-CUT. A no-op that handed a chained narration the raw
+    // book would narrate every passage the user struck out, because the strikes
+    // live in the cut and not in the book (the second adversarial review).
+    const recut = await recutNarrationCopy(config, bookPath);
     return {
       success: true,
       outputPath: bookPath,
+      narrationInputPath: recut.narrationInputPath,
       summary: 'This book had already been through the narration text cleanup at this version '
         + `(read by ${already.model}), so nothing was changed and nothing was recorded. It is `
-        + 'ready to narrate — the book\'s ledger names the run that did it.',
+        + 'ready to narrate; the ledger of this version names the run that did it.'
+        + (recut.note === null ? '' : ` ${recut.note}`),
     };
   }
 
@@ -964,44 +1013,15 @@ async function runNarrationTextPass(
     },
     diff: diff.rel,
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   const ledger = await recordInLedger(config, 'Narration text cleanup', applied);
 
-  // ── THE NARRATION COPY, RE-CUT FROM THE BOOK THIS PASS JUST WROTE ─────────
-  //
-  // Owen's ruling of 2026-09-04 ends "…and then they export the epub and queue
-  // narration", and this is that export. The copy on record was cut from bytes
-  // that no longer exist — `fromEpubSha256` says so — and `ensureNarrationEpub`
-  // re-cuts exactly when that is true.
-  //
-  // It is named as this step's artifact because the queue gives a chained step
-  // its PARENT'S artifact and nothing else: `tts-conversion` reads
-  // `ctx.input.path` with no config fallback, so a follow-on narration reads
-  // whatever is named here, and naming the book instead would narrate the whole
-  // book where the user pressed a button on one version's copy (the adversarial
-  // review, 2026-09-04).
-  //
-  // A re-cut that FAILS is said, not swallowed — and the pass still succeeded,
-  // because the book is written, its provenance records it and its ledger row
-  // exists. The chained step then reads the book itself, which
-  // `prepareNarrationInput` cuts on its way in; what is lost is the user's own
-  // strikes, and the note is what says so.
-  let narrationInputPath = bookAfter;
-  let recutNote: string | null = null;
-  try {
-    const { ensureNarrationEpub } = await import('./narration-export.js');
-    const cut = await ensureNarrationEpub(config.projectDir, undefined, config.familyId);
-    narrationInputPath = cut.epubPath;
-    console.log(
-      `[processing-pass] narration copy re-cut from the cleaned book`
-      + `${cut.cutReason === null ? ' (the one on record still described it)' : `: ${cut.cutReason}`}`
-      + ` — ${cut.epubPath}`);
-  } catch (err) {
-    recutNote = 'The book was cleaned, but its narration copy could not be re-cut from it: '
-      + `${(err as Error).message} Anything narrated from here reads the book itself, so the `
-      + 'passages struck out for narration will be read aloud until the copy is remade.';
-    console.warn(`[processing-pass] ${recutNote}`);
-  }
+  // The narration copy, re-cut from the book this pass just wrote — and named
+  // as this step's artifact, because the queue gives a chained step its PARENT'S
+  // artifact and nothing else.
+  const recut = await recutNarrationCopy(config, bookAfter);
+  const narrationInputPath = recut.narrationInputPath;
+  const recutNote = recut.note;
 
   return {
     success: true,

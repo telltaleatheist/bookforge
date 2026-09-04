@@ -131,8 +131,12 @@ The Narrate gate's offer (below) is the second door, not the only one — the fi
 cut of this work had no first-class control at all, which made the pass's own
 "run it again" message name something the user could not find.
 
-Kind `narration-text`, label **"Narration text cleanup"**, offered in
-`BOOK_PASS_OPTIONS` beside `footnote-refs` / `simplify` / `translate`, planned by
+Kind `narration-text`, label **"Narration text cleanup"**, listed in
+`BOOK_PASS_OPTIONS` beside `footnote-refs` / `simplify` / `translate` — a list
+that **has no consumer today**: the passes modal it fed was deleted on
+2026-08-18 and nothing renders it, so the entry keeps the data true and offers
+nothing on its own. The live control is the **"Clean text…"** button above.
+Planned by
 `electron/processing-chain.ts`, queued through `processing:submit-chain`, run by
 `electron/queue-steps/pass.ts`'s shared `passModule`, executed by
 `runNarrationTextPass` in `electron/processing-passes.ts`. It never runs inline.
@@ -531,8 +535,10 @@ asserts no digit-adjacent colon survives.
 | `tools/test-text-normalization.js` | the shared fixtures + both fixes |
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
+| `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |
+| `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables |
 | `electron/prompts/tts-narration-text.txt` | the wider instruction, appended to the number prompt |
-| `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables |
+| `shared/processing/book-passes.ts` etc. | the pass kind, registered in fourteen tables (that list itself has no consumer — see above) |
 | `tools/test-prompt-examples.js` | every prompt example, through the validator that judges it |
 | `studio-versions.component.ts` | the **Clean text…** button, beside Narrate |
 | `electron/book-render-service.ts` | the third streaming door |

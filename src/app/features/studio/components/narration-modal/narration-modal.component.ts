@@ -1508,13 +1508,17 @@ export class NarrationModalComponent {
     cleanup: { state: 'missing' | 'stale'; reason: string },
     book: NarrationRunBook,
   ): Promise<boolean> {
+    // The row the user pressed, named in the dialog, because the file this run
+    // ends up reading is NOT that row's file and saying so is the whole of the
+    // honesty here (the second adversarial review's Finding 4, partial).
+    const pressed = book.epubPath.split(/[\/]/).pop() ?? 'this version';
     const { confirmed } = await this.electron.showConfirmDialog({
       title: 'Narration text cleanup',
       message: cleanup.reason,
-      detail: 'Run it now? The cleanup is queued first, and this narration run is queued behind '
-        + 'it — it will read the copy the cleanup produces from '
-        + `${book.title || 'this book'}. It is minutes of model time over the blocks of the `
-        + 'book, and it only has to happen once.',
+      detail: `You pressed ${pressed}. The cleanup runs on this book's working copy and then `
+        + 'cuts a fresh narration copy from it, and THAT is the file this run will read — not '
+        + `the file on the row you pressed. It is minutes of model time over the blocks of `
+        + `${book.title || 'the book'}, and it only has to happen once.`,
       confirmLabel: cleanup.state === 'stale'
         ? 'Run cleanup again, then narrate'
         : 'Run cleanup, then narrate',
@@ -1716,11 +1720,20 @@ export class NarrationModalComponent {
               'This project could not name its current book, so there is nothing to narrate in '
               + 'place of the export. Nothing was queued.');
           }
-          // The run now reads the CURRENT book, and the master row names it
-          // too, so nothing in the queue claims a file this run does not touch.
+          /*
+           * EVERY COPY OF THE PATH, not just `epubPath`. `buildNarrationSteps`
+           * also sets `sourceRef: {kind:'epub', path}` on the tts step, and the
+           * queue PREFERS `sourceRef` when it resolves a parentless step's
+           * input — so patching `epubPath` alone left the run reading the stale
+           * export while the card claimed the current book (the second
+           * adversarial review, 2026-09-04).
+           */
           const wasPressed = book.epubPath;
           for (const job of jobs) {
             if (job.epubPath === wasPressed) job.epubPath = current;
+            if (job.sourceRef?.kind === 'epub' && job.sourceRef.path === wasPressed) {
+              job.sourceRef = { ...job.sourceRef, path: current };
+            }
           }
           narratedPath = current;
         }

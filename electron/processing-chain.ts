@@ -194,7 +194,14 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const record = await manifestService.readExportEpub(projectDir);
+  // WITH THE FAMILY, every time. Resolving the chain and then asking the
+  // family-less resolvers about the project is how "Clean text…" and "Run
+  // cleanup, then narrate" both died at PLAN time in exactly the two-chain
+  // projects the readiness gate was written for: `familyForListing` refuses to
+  // guess and throws "Press the button on the version you mean" (the second
+  // adversarial review, 2026-09-04).
+  const family = familyId === null ? undefined : familyId;
+  const record = await manifestService.readExportEpub(projectDir, family);
   const bookEpubPath = record?.absPath ?? sourcePath;
 
   // Stage numbering carries on from what the book already records: a pass writes
@@ -203,7 +210,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   // so a project with several versions cannot number this run's stages from a
   // different version's history — and so `record` and this count are answers
   // about the same book.
-  const base = record ? (await manifestService.readAppliedPasses(projectDir)).length : 0;
+  const base = record ? (await manifestService.readAppliedPasses(projectDir, family)).length : 0;
 
   const jobs: PlannedPassJob[] = passes.map((pass: ChainPassRequest, i: number) => {
     if (pass.kind === 'simplify' && !pass.simplify) {
