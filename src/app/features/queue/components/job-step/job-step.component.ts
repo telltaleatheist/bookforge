@@ -541,6 +541,7 @@ export class JobStepComponent {
       case 'simplify': return 'Simplify';
       case 'translate-pass': return 'Translate';
       case 'footnote-refs': return 'Remove footnote references';
+      case 'narration-text': return 'Narration text cleanup';
       case 'vlm-convert': return 'Convert to EPUB';
       case 'foundry-job': return 'Foundry';
     }

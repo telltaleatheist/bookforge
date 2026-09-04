@@ -61,6 +61,15 @@ export type JobType =
   | 'simplify'
   | 'translate-pass'
   | 'footnote-refs'
+  /**
+   * THE NARRATION TEXT CLEANUP — punctuation, then the number rules, then the
+   * model on whatever digits are left, written into the book and stamped on it.
+   *
+   * A pass row like the three above it, and NOT part of a narration run: it edits
+   * the book on the chain, once, and every render afterwards reads the result.
+   * `prepareNarrationInput` refuses a book that has not had it.
+   */
+  | 'narration-text'
   | 'vlm-convert'
   /**
    * WORK ORDERED INSIDE THE HOSTED FOUNDRY WINDOW — read the pages, render the
@@ -81,7 +90,7 @@ export type JobType =
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([
-  'simplify', 'translate-pass', 'footnote-refs',
+  'simplify', 'translate-pass', 'footnote-refs', 'narration-text',
 ]);
 
 /**

@@ -1131,6 +1131,12 @@ export type AppliedPassKind =
   // from the retired `footnotes` kind below, which was an AI pass that decided
   // for itself what a footnote was.
   | 'footnote-refs'
+  // THE NARRATION TEXT CLEANUP: punctuation canonicalization, then the
+  // deterministic number rules, then the model on whatever digits are left
+  // (electron/narration-text-pass.ts). It edits the BOOK, once, and stamps it,
+  // and `prepareNarrationInput` refuses a book that has not had it — so this is
+  // the pass that stands between a finished book and a render.
+  | 'narration-text'
   // The route to a book: a document vision model read the pages and foundry
   // assembled them (`foundry vlm-convert`). A book's ORIGIN rather than a
   // transformation of one, so it is the first record in a converted book's

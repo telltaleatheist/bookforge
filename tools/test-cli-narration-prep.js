@@ -394,6 +394,8 @@ test('a block and a paragraph go through the SAME loop, and answer the same', as
   const fromBook = await norm.normalizeNarrationNumbers(book, bookRunner, {
     systemPrompt: PROMPT,
     outDir: path.join(ROOT, 'shared-book'),
+    inputSha16: await norm.epubContentAddress(book),
+    copy: { excludeCaptions: true, excludeFootnotes: true, stripSupMarkers: true },
     onProgress: (done, total, label) => bookTicks.push({ done, total, label }),
   });
 
@@ -454,23 +456,57 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
   assert.ok(fs.readFileSync(prep.inputPath, 'utf8').includes('March twenty-third'));
 });
 
-test('the door routes an .epub through the CUT and then the numbers', async () => {
+/**
+ * The door's EPUB half, since the text cleanup became a pass of its own.
+ *
+ * `prepareNarrationInput` used to run the numbers here, per render, on a scratch
+ * copy. Owen moved that onto the document chain (2026-09-04), so what the door
+ * does now is CHECK: it reads the narration-text stamp on the book and refuses a
+ * book that has not been through the pass. The caption/endnote cut stays exactly
+ * where it was — that is about the second file, not about the text.
+ */
+test('an UNSTAMPED book is refused by name — the door never narrates raw digits', async () => {
+  const book = await buildBook('door-unstamped.epub', CHAPTER(
+    SHARED_PARAGRAPH, '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
+  const runner = scriptedRunner({});
+  await assert.rejects(
+    () => bridge.prepareNarrationInput(book, 'test-epub-unstamped', {
+      skipAssembly: true, numberRunner: runner,
+    }),
+    (err) => /has not been through the narration text cleanup/.test(err.message)
+      && /Clean text/.test(err.message)
+      && /nothing was rendered/.test(err.message));
+  assert.strictEqual(runner.calls.length, 0, 'and no model was asked anything');
+});
+
+test('a STAMPED book goes through the cut, and the door reads the stamp', async () => {
   const book = await buildBook('door.epub', CHAPTER(
     SHARED_PARAGRAPH, '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
-  const runner = scriptedRunner({
-    'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
+  const pass = require(path.join(DIST, 'electron', 'narration-text-pass.js'));
+  const cleaned = path.join(ROOT, 'door.cleaned.epub');
+  await pass.runNarrationTextPass({
+    epubPath: book,
+    outPath: cleaned,
+    cacheDir: path.join(ROOT, 'door-cache'),
+    systemPrompt: PROMPT,
+    model: 'fake:1b',
+    runner: scriptedRunner({
+      'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
+    }),
   });
-  const prep = await bridge.prepareNarrationInput(book, 'test-epub', {
+
+  const runner = scriptedRunner({});
+  const prep = await bridge.prepareNarrationInput(cleaned, 'test-epub', {
     skipAssembly: true, numberRunner: runner,
   });
 
-  assert.ok(prep.inputPath.endsWith('.norm.tts.epub'), `a book copy: ${prep.inputPath}`);
-  assert.strictEqual(path.dirname(prep.inputPath), CUTS);
+  assert.strictEqual(path.dirname(prep.inputPath), CUTS, `a cut of the book: ${prep.inputPath}`);
+  assert.strictEqual(prep.model, 'fake:1b', 'the model named on the stamp');
+  assert.strictEqual(runner.calls.length, 0, 'the door asks no model anything any more');
   const chapter = await entryText(prep.inputPath, 'OEBPS/chapter-01.xhtml');
-  assert.ok(chapter.includes('March twenty-third, nineteen thirty-three'), 'the numbers ran');
+  assert.ok(chapter.includes('March twenty-third, nineteen thirty-three'),
+    'the numbers were read by the PASS, and the cut carried them across');
   assert.ok(!chapter.includes('Figure 7'), 'and the caption was cut — which a .txt has none of');
-  assert.ok(!runner.calls.some((c) => targetOf(c).includes('Figure 7')),
-    'the caption was never offered to the model either');
 });
 
 test('the door reuses a copy on a second run, and says so', async () => {
@@ -565,6 +601,53 @@ test('--prep is a registered command with a handler and an adapter', () => {
   assert.ok(fs.existsSync(path.join(REPO, 'cli', 'narration-prep.js')), 'the adapter exists');
   // The two "cleanup" commands stay distinct by name in the help text.
   assert.ok(py.includes('NOT --ai-cleanup'), 'and says which cleanup it is not');
+});
+
+test('--narration-text is registered, with a handler and an adapter', () => {
+  const py = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf8');
+  assert.ok(/COMMANDS = \{[\s\S]*"narration-text": cmd_narration_text,/.test(py), 'registered');
+  assert.ok(py.includes('def cmd_narration_text(args):'), 'and has its handler');
+  assert.ok(py.includes('NARRATION_TEXT = REPO_ROOT / "cli" / "narration-text.js"'));
+  assert.ok(fs.existsSync(path.join(REPO, 'cli', 'narration-text.js')), 'the adapter exists');
+  // The two doors stay distinct by name in the help text: --prep is the render
+  // door, this one edits the book.
+  assert.ok(py.includes('NOT --prep'), 'and says which cleanup it is not');
+});
+
+test('--narration-text --project goes through the APP\'S PASS, so the ledger records it', () => {
+  // The adversarial review of 2026-09-04: writing "<stem>.narration.epub" beside
+  // a project's book and touching nothing else left the project reading MISSING
+  // in the app while its file carried a current stamp — which is the divergence
+  // that made the re-run deadlock reachable. A project is cleaned through
+  // `planProcessingChain` + `runProcessingPass`, the same pair the button uses.
+  const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text.js'), 'utf8');
+  assert.ok(source.includes("require('../dist/electron/processing-chain.js')"),
+    'it plans through the app\'s planner');
+  assert.ok(source.includes("require('../dist/electron/processing-passes.js')"),
+    'and runs through the app\'s pass, which records the ledger row');
+  assert.ok(source.includes('runProcessingPass('), 'by calling it');
+  // And the bare-EPUB door is still the step, not a second implementation.
+  assert.ok(source.includes("require('./narration-text-step.js')"),
+    '--input still goes through the shared step');
+});
+
+test('the CLI reuse check sees every " (n)" sibling, not just the bare name', () => {
+  const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text-step.js'), 'utf8');
+  assert.ok(source.includes('function cleanedSiblings('), 'the siblings are enumerated');
+  assert.ok(source.includes('for (const candidate of cleanedSiblings('),
+    'and the reuse check walks them');
+  // Exercised, not merely present: a book filename is full of regex
+  // metacharacters, so the matcher is string comparison and this proves it.
+  const fn = source.slice(source.indexOf('function siblingIndex('),
+    source.indexOf('function cleanedSiblings('));
+  // eslint-disable-next-line no-eval
+  const siblingIndex = eval(`(${fn.slice(fn.indexOf('function siblingIndex'))})`);
+  const base = 'Working Towards The Fuhrer. Kershaw, Ian. (1993).narration';
+  assert.strictEqual(siblingIndex(`${base}.epub`, base), 0);
+  assert.strictEqual(siblingIndex(`${base} (2).epub`, base), 2);
+  assert.strictEqual(siblingIndex(`${base} (17).epub`, base), 17);
+  assert.strictEqual(siblingIndex(`${base}.narration-text.json`, base), null);
+  assert.strictEqual(siblingIndex('Another Book.narration.epub', base), null);
 });
 
 test('both --prep and --audiobook resolve a project book through the app\'s RECORD, not a filename', async () => {

@@ -75,6 +75,20 @@ export const BOOK_PASS_OPTIONS: readonly BookPassOption[] = [
     needsOptions: false,
   },
   {
+    // The step that stands between a finished book and a render. Owen,
+    // 2026-09-04: "a step that can be performed at any point, including on an
+    // epub, but it's a computationally expensive step that needs to take place
+    // somewhere along the line, and everything after it is finalized/fixed."
+    // Offered here like any other pass; what makes it different is that
+    // `prepareNarrationInput` REFUSES a book that has not had it, and that a
+    // later simplify or translate makes its stamp stale.
+    kind: 'narration-text',
+    label: 'Narration text cleanup',
+    note: 'Canonicalizes the punctuation and reads every number as the words a narrator says. '
+      + 'Required before narration; minutes of model time over the passages that print digits.',
+    needsOptions: false,
+  },
+  {
     kind: 'simplify',
     label: 'Simplify',
     note: 'Rewrites the book in plainer language. Hours of model time over every paragraph.',

@@ -1,0 +1,872 @@
+[
+  {
+    "id": "year-plain",
+    "stage": "model",
+    "rule": "year",
+    "in": "He died in 1944.",
+    "want": "He died in nineteen forty-four."
+  },
+  {
+    "id": "year-oh",
+    "stage": "model",
+    "rule": "year",
+    "in": "The photograph is from 1905.",
+    "want": "The photograph is from nineteen oh five."
+  },
+  {
+    "id": "year-2000s",
+    "stage": "model",
+    "rule": "year",
+    "in": "It reopened in 2006.",
+    "want": "It reopened in two thousand six."
+  },
+  {
+    "id": "year-hundred",
+    "stage": "model",
+    "rule": "year",
+    "in": "the year 1900, exactly",
+    "want": "the year nineteen hundred, exactly"
+  },
+  {
+    "id": "year-range-full",
+    "stage": "model",
+    "rule": "range",
+    "in": "The occupation ran from 1914-1918.",
+    "want": "The occupation ran from nineteen fourteen to nineteen eighteen."
+  },
+  {
+    "id": "year-range-abbrev",
+    "stage": "model",
+    "rule": "range",
+    "in": "released in the course of 1933-6.",
+    "want": "released in the course of nineteen thirty-three to nineteen thirty-six."
+  },
+  {
+    "id": "qty-not-year",
+    "stage": "model",
+    "rule": "year",
+    "in": "By spring 1200 workers were on the line.",
+    "want": "By spring twelve hundred workers were on the line."
+  },
+  {
+    "id": "scripture-abbrev",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see 2 Cor. 10:4 for the argument",
+    "want": "see Second Corinthians ten four for the argument"
+  },
+  {
+    "id": "scripture-range",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Jeremiah 44:17-19 is the passage.",
+    "want": "Jeremiah forty four seventeen through nineteen is the passage."
+  },
+  {
+    "id": "scripture-full",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see 1 Corinthians 13:4",
+    "want": "see First Corinthians thirteen four"
+  },
+  {
+    "id": "scripture-list",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Leviticus 19:31; 20:6 forbid it.",
+    "want": "Leviticus nineteen thirty one; twenty six forbid it."
+  },
+  {
+    "id": "scripture-bare-bk",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "quoting 2 Corinthians at length",
+    "want": "quoting Second Corinthians at length"
+  },
+  {
+    "id": "date-mdy",
+    "stage": "rules",
+    "rule": "date",
+    "in": "On June 12, 1933 he left.",
+    "want": "On June twelfth, nineteen thirty-three he left."
+  },
+  {
+    "id": "date-dmy",
+    "stage": "rules",
+    "rule": "date",
+    "in": "But on 23 March 1933 they still managed",
+    "want": "But on March twenty-third, nineteen thirty-three they still managed"
+  },
+  {
+    "id": "date-no-year",
+    "stage": "rules",
+    "rule": "date",
+    "in": "It was December 19 when the letter came.",
+    "want": "It was December nineteenth when the letter came."
+  },
+  {
+    "id": "date-abbrev-month",
+    "stage": "rules",
+    "rule": "date",
+    "in": "Dec. 19, 1991 was the last entry.",
+    "want": "December nineteenth, nineteen ninety-one was the last entry."
+  },
+  {
+    "id": "clock-meridiem",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "The meeting was at 2:00 p.m. sharp.",
+    "want": "The meeting was at two p.m. sharp."
+  },
+  {
+    "id": "clock-minutes",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "The train left at 10:05 am.",
+    "want": "The train left at ten oh five am."
+  },
+  {
+    "id": "clock-half",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "Dinner at 7:30 P.M. as always.",
+    "want": "Dinner at seven thirty P.M. as always."
+  },
+  {
+    "id": "clock-oclock",
+    "stage": "rules",
+    "rule": "clock",
+    "in": "He woke at 6:00 and dressed.",
+    "want": "He woke at six o'clock and dressed."
+  },
+  {
+    "id": "money-cents",
+    "stage": "rules",
+    "rule": "money",
+    "in": "It cost $5.50 at the door.",
+    "want": "It cost five dollars and fifty cents at the door."
+  },
+  {
+    "id": "money-scale",
+    "stage": "rules",
+    "rule": "money",
+    "in": "a $1.5 million grant",
+    "want": "a one point five million dollars grant"
+  },
+  {
+    "id": "money-plain",
+    "stage": "rules",
+    "rule": "money",
+    "in": "he paid $3 for it",
+    "want": "he paid three dollars for it"
+  },
+  {
+    "id": "money-grouped",
+    "stage": "rules",
+    "rule": "money",
+    "in": "the house sold for $70,000",
+    "want": "the house sold for seventy thousand dollars"
+  },
+  {
+    "id": "percent-int",
+    "stage": "rules",
+    "rule": "percent",
+    "in": "a 40% rise",
+    "want": "a forty percent rise"
+  },
+  {
+    "id": "percent-decimal",
+    "stage": "rules",
+    "rule": "percent",
+    "in": "up 87.5 per cent on the year",
+    "want": "up eighty seven point five per cent on the year"
+  },
+  {
+    "id": "decade-full",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "back in the 1930s",
+    "want": "back in the nineteen thirties"
+  },
+  {
+    "id": "decade-apostrophe",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "he grew up in the '70s",
+    "want": "he grew up in the seventies"
+  },
+  {
+    "id": "ordinal",
+    "stage": "rules",
+    "rule": "ordinal",
+    "in": "the 23rd of the month",
+    "want": "the twenty-third of the month"
+  },
+  {
+    "id": "marker-hash",
+    "stage": "rules",
+    "rule": "marker",
+    "in": "see chart #3 below",
+    "want": "see chart number three below"
+  },
+  {
+    "id": "grouped-int",
+    "stage": "rules",
+    "rule": "grouped",
+    "in": "670,992 votes were counted",
+    "want": "six hundred seventy thousand nine hundred ninety two votes were counted"
+  },
+  {
+    "id": "bare-int",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "with 250 members present",
+    "want": "with two hundred fifty members present"
+  },
+  {
+    "id": "list-marker",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "4. The final clause stands.",
+    "want": "four. The final clause stands."
+  },
+  {
+    "id": "chapter-heading",
+    "stage": "model",
+    "rule": "model",
+    "in": "Chapter 3: The Long Year",
+    "want": "Chapter Three: The Long Year"
+  },
+  {
+    "id": "decimal-bare",
+    "stage": "model",
+    "rule": "model",
+    "in": "a total membership of 2.9 million",
+    "want": "a total membership of two point nine million"
+  },
+  {
+    "id": "leave-page-cite",
+    "stage": "rules",
+    "rule": "page",
+    "in": "Wurm, Record, pp. 65-71, and ibid., p. 23.",
+    "want": "Wurm, Record, pages sixty five to seventy one, and ibid., page twenty three.",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: a page reference is READ. \"ibid.\" is still apparatus."
+  },
+  {
+    "id": "leave-doc-code",
+    "stage": "rules",
+    "rule": "page",
+    "in": "Kretschmar/Nicolaisen, Document II 9/34, p. 23.",
+    "want": "Kretschmar/Nicolaisen, Document II 9/34, page twenty three.",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: the document code stays as printed (a slash between digits, a roman neighbour); the page reference beside it is read."
+  },
+  {
+    "id": "leave-archive",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "HSG 11 Js. Sond. 298/38; GnH 3659/42; AfW HH R 231191.",
+    "want": "HSG 11 Js. Sond. 298/38; GnH 3659/42; AfW HH R 231191.",
+    "fixed_in": "n5 — isArchiveSigil (BOOKFORGE_HANDOFF.md Ask 2)"
+  },
+  {
+    "id": "leave-glued",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a B-17 flying past, COVID-19 era, R2D2 beeping",
+    "want": "a B-seventeen flying past, COVID-nineteen era, R two D two beeping",
+    "changed_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list: digits glued to letters are READ. Owen: \"COVID-nineteen is actually correct, that is how it is pronounced in real life.\""
+  },
+  {
+    "id": "leave-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "file 001 is missing",
+    "want": "file 001 is missing"
+  },
+  {
+    "id": "leave-phone",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "call (405) 235-5396 after six",
+    "want": "call (405) 235-5396 after six"
+  },
+  {
+    "id": "leave-clock-range",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "open 5:30-6:00 only",
+    "want": "open 5:30-6:00 only"
+  },
+  {
+    "id": "punct-ellipsis-spaced",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "\"You mean . . . ?\" \"Precisely, Commander.\"",
+    "want": "\"You mean ... ?\" \"Precisely, Commander.\""
+  },
+  {
+    "id": "punct-ellipsis-char",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He paused… then went on.",
+    "want": "He paused... then went on."
+  },
+  {
+    "id": "punct-ellipsis-four",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "a kind of serenity.... He made no sound.",
+    "want": "a kind of serenity... He made no sound."
+  },
+  {
+    "id": "punct-curly-quotes",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "“You mean it?” she said, ‘quietly’.",
+    "want": "\"You mean it?\" she said, 'quietly'."
+  },
+  {
+    "id": "punct-curly-apostrophe",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "It wasn’t his to give.",
+    "want": "It wasn't his to give."
+  },
+  {
+    "id": "punct-nbsp",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "Mr. Smith arrived late.",
+    "want": "Mr. Smith arrived late."
+  },
+  {
+    "id": "punct-double-space",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He stopped.  Then he ran.",
+    "want": "He stopped. Then he ran."
+  },
+  {
+    "id": "punct-control",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "page one\fpage two",
+    "want": "page onepage two"
+  },
+  {
+    "id": "punct-soft-hyphen",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "an unmis­takable sound",
+    "want": "an unmistakable sound"
+  },
+  {
+    "id": "punct-keep-em-dash",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "He turned—slowly—and left.",
+    "want": "He turned—slowly—and left."
+  },
+  {
+    "id": "punct-keep-en-dash",
+    "stage": "punct",
+    "rule": "punct",
+    "in": "the 1914–1918 war",
+    "want": "the 1914–1918 war"
+  },
+  {
+    "id": "scripture-cross-chapter",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "(Col. 3:19-4:1 and parallels)",
+    "want": "(Colossians three nineteen through four one and parallels)",
+    "added_in": "n5 — SCRIPTURE_REF cross-chapter range (BOOKFORGE_HANDOFF.md Ask 2b)"
+  },
+  {
+    "id": "scripture-cross-chapter-endash",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "see Rom. 5:12–6:2 there",
+    "want": "see Romans five twelve through six two there",
+    "added_in": "n5 — the same range printed with an en dash"
+  },
+  {
+    "id": "scripture-verse-range-plain",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Col. 3:19-21 alone",
+    "want": "Colossians three nineteen through twenty one alone",
+    "added_in": "n5 — the other direction: a VERSE range is unchanged by the fix"
+  },
+  {
+    "id": "scripture-lone-ref",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "Col. 3:19 alone",
+    "want": "Colossians three nineteen alone",
+    "added_in": "n5 — the other direction: a lone reference is unchanged by the fix"
+  },
+  {
+    "id": "archive-sigil-not-prose",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "The 11 men waited.",
+    "want": "The eleven men waited.",
+    "added_in": "n5 — the other direction: a capitalized PROSE word is not a sigil"
+  },
+  {
+    "id": "page-single",
+    "stage": "rules",
+    "rule": "page",
+    "in": "see p. 23 now",
+    "want": "see page twenty three now",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-range",
+    "stage": "rules",
+    "rule": "page",
+    "in": "pp. 65-71 of the record",
+    "want": "pages sixty five to seventy one of the record",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-range-endash",
+    "stage": "rules",
+    "rule": "page",
+    "in": "pp. 65–71 of the record",
+    "want": "pages sixty five to seventy one of the record",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "page-capital",
+    "stage": "rules",
+    "rule": "page",
+    "in": "P. 23 has the figure.",
+    "want": "Page twenty three has the figure.",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-page-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "He read pp. 007-010 there",
+    "want": "He read pp. 007-010 there",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-volume-number",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "vol. 2 and no. 5 stay",
+    "want": "vol. 2 and no. 5 stay",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-interstate",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "I-95 north",
+    "want": "I-ninety five north",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-brand",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "the 7-Eleven",
+    "want": "the seven-Eleven",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-droid",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "R2D2 beeping",
+    "want": "R two D two beeping",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-format",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "an MP3 player",
+    "want": "an MP three player",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "glued-decade-era",
+    "stage": "rules",
+    "rule": "decade",
+    "in": "the 1940s-era rules",
+    "want": "the nineteen forties-era rules",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-leading-zero",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the X-007 file",
+    "want": "the X-007 file",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-serial",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "model Z-12345 here",
+    "want": "model Z-12345 here",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-partno",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "part A1B2C3D4 here",
+    "want": "part A1B2C3D4 here",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-version",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "v1.2 of the spec",
+    "want": "v1.2 of the spec",
+    "added_in": "n5 — Owen's ruling 2026-09-04 revised the leave-as-printed list (page references and letter-digit glue are read; codes are not)"
+  },
+  {
+    "id": "leave-glued-decade-mid",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "By the mid-1920s at the latest",
+    "want": "By the mid-1920s at the latest",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-post",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "post-1990s attitudes",
+    "want": "post-1990s attitudes",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-2000s",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a mid-2000s revival",
+    "want": "a mid-2000s revival",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-early",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "early-1900s",
+    "want": "early-1900s",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-decade-anti",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "anti-1960s backlash",
+    "want": "anti-1960s backlash",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-pre",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "pre-1914 Europe",
+    "want": "pre-1914 Europe",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-post",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "post-1945 Germany",
+    "want": "post-1945 Germany",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-name",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the Kennedy-1963 assassination",
+    "want": "the Kennedy-1963 assassination",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-year-roman",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Louis XIV-1715",
+    "want": "Louis XIV-1715",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-ordinal-19th",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a mid-19th century view",
+    "want": "a mid-19th century view",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "leave-glued-ordinal-18th",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the mid-18th-century church",
+    "want": "the mid-18th-century church",
+    "added_in": "n5 — the adversarial review of 2026-09-04: the `glued` catch-all claimed shapes the decade, year and ordinal rules deliberately leave to the model, and read them MALFORMED (\"mid-one thousand nine hundred twenty s\"). One case per measured row."
+  },
+  {
+    "id": "glued-catch22",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "Catch-22",
+    "want": "Catch-twenty two",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-tank",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a T-34 tank",
+    "want": "a T-thirty four tank",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-isotope",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "U-235",
+    "want": "U-two hundred thirty five",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-hour",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a 24-hour day",
+    "want": "a twenty four-hour day",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "glued-year-old",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a 30-year-old man",
+    "want": "a thirty-year-old man",
+    "added_in": "n5 — the other direction of the same review row: a hyphenated token whose digit run is NOT a year, a decade or an ordinal is still read."
+  },
+  {
+    "id": "leave-fused-ordinal-3rd",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 3rdday",
+    "want": "the 3rdday",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-ordinal-21st",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 21stcentury",
+    "want": "the 21stcentury",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-decade-90s",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "mid-90sera",
+    "want": "mid-90sera",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-fused-ordinal-2nd",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "the 2ndhalf",
+    "want": "the 2ndhalf",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: <br/> fusion joins the words either side of a line break, so the trailing lookahead on CLAIMED_BY_ANOTHER_RULE was defeated and \"3rdday\" read \"three rdday\". n4 left the digits for the model; so does n5."
+  },
+  {
+    "id": "leave-unit-mm",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "a 105mm gun",
+    "want": "a 105mm gun",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-9mm",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "9mm rounds",
+    "want": "9mm rounds",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-km",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "20km away",
+    "want": "20km away",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-kg",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "5kg of it",
+    "want": "5kg of it",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-volt",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "12V supply",
+    "want": "12V supply",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-gb",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "8GB of RAM",
+    "want": "8GB of RAM",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-ft",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "6ft tall",
+    "want": "6ft tall",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "leave-unit-kommando",
+    "stage": "leave",
+    "rule": "leave",
+    "in": "Sonderkommando 4a",
+    "want": "Sonderkommando 4a",
+    "added_in": "n5 — the second adversarial review of 2026-09-04: a digit run pressed straight against letters is a measurement or a designation, and the glued rule has no table of units, so it read \"one hundred five mm\" and destroyed the digits. Left for the model."
+  },
+  {
+    "id": "glued-fighter",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "an F8F fighter",
+    "want": "an F eight F fighter",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "glued-engine",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a C18 engine",
+    "want": "a C eighteen engine",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "glued-rocket",
+    "stage": "rules",
+    "rule": "glued",
+    "in": "a V-2 rocket",
+    "want": "a V-two rocket",
+    "added_in": "n5 — the other direction of the same review row: a LETTER-prefix or hyphenated form is still read."
+  },
+  {
+    "id": "date-day-first-no-year-kershaw",
+    "stage": "rules",
+    "rule": "date",
+    "in": "He wrote his last detailed report, which was on 4 September.",
+    "want": "He wrote his last detailed report, which was on September fourth."
+  },
+  {
+    "id": "date-day-first-no-year",
+    "stage": "rules",
+    "rule": "date",
+    "in": "The order of 23 March was clear.",
+    "want": "The order of March twenty-third was clear."
+  },
+  {
+    "id": "date-day-first-no-year-abbrev",
+    "stage": "rules",
+    "rule": "date",
+    "in": "it was on 4 Sept. and later",
+    "want": "it was on September fourth and later"
+  },
+  {
+    "id": "date-day-first-no-year-abbrev-sentence-end",
+    "stage": "rules",
+    "rule": "date",
+    "in": "It was 4 Sept. The next day it rained.",
+    "want": "It was September fourth. The next day it rained."
+  },
+  {
+    "id": "date-month-first-no-year-day",
+    "stage": "rules",
+    "rule": "date",
+    "in": "The meeting was September 4 in Berlin.",
+    "want": "The meeting was September fourth in Berlin."
+  },
+  {
+    "id": "date-day-first-with-year-not-double-handled",
+    "stage": "rules",
+    "rule": "date",
+    "in": "On 4 September 1939 the war began.",
+    "want": "On September fourth, nineteen thirty-nine the war began."
+  },
+  {
+    "id": "date-lead-keeps-a-numbered-thing",
+    "stage": "rules",
+    "rule": "date",
+    "in": "Chapter 4 September opens the file.",
+    "want": "Chapter four September opens the file."
+  },
+  {
+    "id": "date-page-lead-keeps-a-page",
+    "stage": "rules",
+    "rule": "page",
+    "in": "see p. 4 September there",
+    "want": "see page four September there"
+  },
+  {
+    "id": "leave-roman-citation-lead-range",
+    "stage": "model",
+    "rule": "citation",
+    "in": "iii. 1281-2 is the passage cited."
+  },
+  {
+    "id": "leave-roman-citation-lead-mid-sentence",
+    "stage": "model",
+    "rule": "citation",
+    "in": "He cites iii. 1281-2 there."
+  },
+  {
+    "id": "leave-roman-citation-lead-upper",
+    "stage": "model",
+    "rule": "citation",
+    "in": "The note reads II. 45 exactly."
+  },
+  {
+    "id": "leave-abbreviated-page-range",
+    "stage": "model",
+    "rule": "citation",
+    "in": "See pp. 51-2 for this."
+  },
+  {
+    "id": "roman-lead-does-not-claim-an-english-word",
+    "stage": "rules",
+    "rule": "integer",
+    "in": "he did. 45 men remained",
+    "want": "he did. forty five men remained"
+  }
+]

@@ -7556,6 +7556,23 @@ export interface NarrationNumberTarget {
   text: string;
   /** The length of each of those text nodes, in order. Sums to `text.length`. */
   segments: number[];
+  /**
+   * THE WHITESPACE IN THIS ELEMENT IS THE AUTHOR'S, and no pass may touch it.
+   *
+   * True for a `<pre>`, for anything inside one, for anything containing one,
+   * and for anything whose inline style declares `white-space: pre` (or
+   * `pre-wrap` / `pre-line` / `break-spaces`). Everywhere else a run of spaces
+   * is a layout artifact and the punctuation stage collapses it; in a code
+   * listing, an ASCII table or a verse laid out with leading spaces it is the
+   * content, and collapsing it destroys the user's book permanently — the pass
+   * rewrites the working copy, so the indentation is recoverable only from the
+   * archive (the adversarial review, 2026-09-04).
+   *
+   * Reported rather than silently skipped, because the count belongs in the
+   * receipt: "this book has forty blocks nobody normalized" is a fact about the
+   * pass, not an absence.
+   */
+  preformatted: boolean;
 }
 
 /**
@@ -7573,6 +7590,32 @@ function unitTextNodes(node: any, into: any[]): void {
   if (UNIT_TEXT_SKIP_TAGS.has(tag)) return;
   if (!node.childNodes) return;
   for (let i = 0; i < node.childNodes.length; i++) unitTextNodes(node.childNodes[i], into);
+}
+
+/**
+ * Is this element's whitespace the author's — a `<pre>`, or styled as one?
+ *
+ * Four ways for it to be true: the element IS a pre, it holds one, it sits
+ * inside one, or it (or an ancestor) declares a preserving `white-space` inline.
+ * A stylesheet-declared one is not detectable without a CSS cascade, which this
+ * app does not run; the inline case is what publisher EPUBs and this app's own
+ * conversions actually emit.
+ */
+const PRESERVES_SPACE = /white-space\s*:\s*(?:pre|pre-wrap|pre-line|break-spaces)/i;
+
+function isPreformattedElement(el: any): boolean {
+  const declares = (node: any): boolean => {
+    const tag = (node.tagName ?? '').toLowerCase();
+    if (tag === 'pre') return true;
+    const style = typeof node.getAttribute === 'function' ? node.getAttribute('style') : null;
+    return style !== null && style !== undefined && PRESERVES_SPACE.test(style);
+  };
+  if (declares(el)) return true;
+  if ((el.getElementsByTagName?.('pre')?.length ?? 0) > 0) return true;
+  for (let node = el.parentNode; node != null && node.nodeType === 1; node = node.parentNode) {
+    if (declares(node)) return true;
+  }
+  return false;
 }
 
 /** The length of each of an element's text nodes, in order. */
@@ -7702,6 +7745,7 @@ export async function readNarrationNumberTargets(
           statedCategory: stamp?.statedCategory ?? null,
           text: getUnitTextContent(c.el),
           segments: textNodeSegments(c.el),
+          preformatted: isPreformattedElement(c.el),
         });
       }
     }
@@ -7717,6 +7761,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -7736,6 +7783,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -7755,6 +7805,9 @@ export async function readNarrationNumberTargets(
           statedCategory: null,
           text: getUnitTextContent(el),
           segments: textNodeSegments(el),
+          // A contents anchor, an NCX label and the OPF title hold one line of
+          // text and no markup: there is no preformatted case here.
+          preformatted: false,
         });
       });
     }
@@ -8648,6 +8701,203 @@ export async function stripFootnoteReferencesFromBook(
 
   await writeBookWithReplacedEntries(inputPath, outputPath, replacements);
   return { removed, files, breaks };
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// The narration-text stamp — what a FILE says about the pass that read it
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * The OPF metadata name the narration text pass stamps a book with.
+ *
+ * EPUB 2's `<meta name="…" content="…"/>` form on purpose, not EPUB 3's
+ * `property`: it needs no `prefix` declaration on `<package>`, every reader and
+ * every validator ignores an unknown `name`, and the two EPUB versions this app
+ * writes both carry it unchanged.
+ */
+export const NARRATION_TEXT_STAMP_NAME = 'bookforge:narration-text';
+
+/**
+ * THE SHAPE of the stamp, versioned apart from the rules it records.
+ *
+ * 1 -> 2 (2026-09-04): `punctuationRefused` became a required field, and the
+ * validator learned to check that a reading is a reading. Neither is a change to
+ * the PUNCTUATION spec, so bumping `PUNCTUATION_SPEC_VERSION` would have told
+ * the training side a rule moved when none did; and `NORMALIZER_VERSION` is n5
+ * either way because n5 has never shipped. What did change is what a stamp
+ * MEANS, so books stamped by an earlier build of this branch must read stale —
+ * by rule, from this number, rather than by accident.
+ */
+export const NARRATION_TEXT_STAMP_VERSION = 2;
+
+/**
+ * What the narration text pass leaves behind IN THE BOOK.
+ *
+ * The ledger is where a pass is recorded for the user; this stamp is for the
+ * RENDER DOOR, which is handed a file and not a project. `prepareNarrationInput`
+ * refuses an EPUB whose stamp is missing or stale, and a CLI given a bare
+ * `.epub` on some other machine has nothing else to ask.
+ */
+export interface NarrationTextStamp {
+  /** `NARRATION_TEXT_STAMP_VERSION` — the shape of this record. */
+  stampVersion: number;
+  /** `NORMALIZER_VERSION` — the number rules and the prompt, together. */
+  normalizerVersion: string;
+  /** `PUNCTUATION_SPEC_VERSION` — the punctuation half. */
+  punctuationSpec: string;
+  /** The model tag that read the residue. */
+  model: string;
+  /** When the pass finished, ISO 8601. */
+  at: string;
+  /**
+   * How many punctuation spans the pass could NOT canonicalize — a run of
+   * spaces straddling an `<em>`, a `<pre>` whose whitespace is the author's.
+   *
+   * In the stamp, not only in the receipt, because the stamp is what travels
+   * with the FILE. Without it a book with three hundred unresolved ellipses is
+   * byte-indistinguishable from a clean one to every consumer downstream, and a
+   * second run reports "already canonical … passes through untouched" while the
+   * residue is unreachable forever (the adversarial review, 2026-09-04).
+   *
+   * It is NOT a reason to refuse the book: a refused span is a permanent
+   * property of that markup, and re-running would refuse it again. It is a fact
+   * the gate reports and the summary says out loud.
+   */
+  punctuationRefused: number;
+}
+
+/** The OPF's zip entry, from the container the reader is already holding. */
+async function opfEntryOf(zipReader: EpubSource, whatFor: string): Promise<string> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const containerEntry = 'META-INF/container.xml';
+  if (!zipReader.hasEntry(containerEntry)) {
+    throw new Error(
+      `${whatFor} has no ${containerEntry}, so nothing can say where its OPF is. `
+      + 'That is not an EPUB.');
+  }
+  const doc = new DOMParser().parseFromString(
+    (await zipReader.readEntry(containerEntry)).toString('utf8'), 'application/xml');
+  const roots = doc.getElementsByTagName('rootfile');
+  for (let i = 0; i < roots.length; i++) {
+    const full = roots[i].getAttribute('full-path');
+    if (full !== null && full !== '') return normalizeZipEntryName(full);
+  }
+  throw new Error(
+    `${whatFor}'s ${containerEntry} names no rootfile, so its OPF cannot be found. `
+    + 'Nothing was read.');
+}
+
+/**
+ * Read the narration-text stamp a book carries, or null when it has none.
+ *
+ * Null is the honest answer for "this book was never passed through", and the
+ * caller is the one that decides what to do about it — this function never
+ * guesses a version.
+ */
+export async function readNarrationTextStamp(
+  bookPath: string,
+): Promise<NarrationTextStamp | null> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const whatFor = path.basename(bookPath);
+  const zipReader = await openEpubSource(bookPath);
+  try {
+    const opfEntry = await opfEntryOf(zipReader, whatFor);
+    const doc = new DOMParser().parseFromString(
+      (await zipReader.readEntry(opfEntry)).toString('utf8'), 'application/xml');
+    const metas = doc.getElementsByTagName('meta');
+    for (let i = 0; i < metas.length; i++) {
+      if (metas[i].getAttribute('name') !== NARRATION_TEXT_STAMP_NAME) continue;
+      const content = metas[i].getAttribute('content');
+      if (content === null || content === '') {
+        throw new Error(
+          `${whatFor} carries an EMPTY ${NARRATION_TEXT_STAMP_NAME} stamp. A stamp with no `
+          + 'content is a claim nobody can check; the book must be passed through the narration '
+          + 'text pass again.');
+      }
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp is not JSON: ${content.slice(0, 120)}. `
+          + 'The book must be passed through the narration text pass again.');
+      }
+      const stamp = parsed as Partial<NarrationTextStamp>;
+      for (const field of ['normalizerVersion', 'punctuationSpec', 'model', 'at'] as const) {
+        if (typeof stamp[field] !== 'string' || stamp[field] === '') {
+          throw new Error(
+            `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp has no ${field}. It describes a pass `
+            + 'nobody can identify; the book must be passed through the narration text pass again.');
+        }
+      }
+      if (typeof stamp.stampVersion !== 'number' || !Number.isFinite(stamp.stampVersion)) {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp does not say which shape it is, so `
+          + 'there is no telling what it claims. The book must be passed through the narration '
+          + 'text pass again.');
+      }
+      if (typeof stamp.punctuationRefused !== 'number'
+        || !Number.isFinite(stamp.punctuationRefused)) {
+        throw new Error(
+          `${whatFor}'s ${NARRATION_TEXT_STAMP_NAME} stamp does not say how many spans the pass `
+          + 'could not canonicalize, so there is no telling whether it finished. The book must be '
+          + 'passed through the narration text pass again.');
+      }
+      return stamp as NarrationTextStamp;
+    }
+    return null;
+  } finally {
+    zipReader.close();
+  }
+}
+
+/**
+ * Copy a book to `outputPath` with the narration-text stamp on its OPF.
+ *
+ * Only the OPF is rewritten; every other entry goes across byte for byte, the
+ * rule `writeBookWithReplacedEntries` exists for. A stamp already on the book is
+ * REPLACED rather than joined — two stamps would be two claims about one file,
+ * and the newer pass is the one that is true.
+ */
+export async function writeNarrationTextStamp(
+  inputPath: string,
+  outputPath: string,
+  stamp: NarrationTextStamp,
+): Promise<void> {
+  const { DOMParser } = require('@xmldom/xmldom');
+  const whatFor = path.basename(inputPath);
+  const zipReader = await openEpubSource(inputPath);
+  let opfEntry: string;
+  let opfXml: string;
+  try {
+    opfEntry = await opfEntryOf(zipReader, whatFor);
+    opfXml = (await zipReader.readEntry(opfEntry)).toString('utf8');
+  } finally {
+    zipReader.close();
+  }
+
+  const doc = new DOMParser().parseFromString(opfXml, 'application/xml');
+  const metadataNodes = doc.getElementsByTagName('metadata');
+  if (metadataNodes.length === 0) {
+    throw new Error(
+      `${whatFor}'s OPF (${opfEntry}) has no <metadata>, so there is nowhere to record that the `
+      + 'narration text pass read it. Nothing was written.');
+  }
+  const metadata = metadataNodes[0];
+
+  const metas = metadata.getElementsByTagName('meta');
+  for (let i = metas.length - 1; i >= 0; i--) {
+    if (metas[i].getAttribute('name') !== NARRATION_TEXT_STAMP_NAME) continue;
+    metas[i].parentNode.removeChild(metas[i]);
+  }
+
+  const meta = doc.createElement('meta');
+  meta.setAttribute('name', NARRATION_TEXT_STAMP_NAME);
+  meta.setAttribute('content', JSON.stringify(stamp));
+  metadata.appendChild(meta);
+
+  await writeBookWithReplacedEntries(
+    inputPath, outputPath, new Map([[opfEntry, serializeEditedDocument(doc)]]));
 }
 
 /**

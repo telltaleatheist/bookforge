@@ -1269,6 +1269,35 @@ export async function loadNumberNormalizePrompt(): Promise<string> {
 }
 
 /**
+ * The wider instruction the NARRATION TEXT PASS asks every block against.
+ *
+ * Owen, 2026-09-04: *"send every single block through to be sure. I suspect
+ * deterministic decisions on this aren't the right way to do it. Let the model
+ * decide what should be updated."* So the pass no longer selects by digit: every
+ * block goes, and the question it is asked is wider than numbers — abbreviations,
+ * all-caps runs, bracketed apparatus, spaced hyphens, roman numerals, footnote
+ * markers, and whatever digits the rules declined.
+ *
+ * COMPOSED, not rewritten. The number half IS
+ * `electron/prompts/tts-number-normalize.txt` — the file the orpheus-finetune
+ * side vendors byte-for-byte — with the additional classes appended after it.
+ * A second copy of the number instructions would be a second thing to keep true,
+ * and the corpora would eventually be built against one and the renders against
+ * the other.
+ */
+const NARRATION_TEXT_PROMPT_FILE_PATH =
+  path.join(__dirname, 'prompts', 'tts-narration-text.txt');
+
+let cachedNarrationTextPrompt: string | null = null;
+export async function loadNarrationTextPrompt(): Promise<string> {
+  if (cachedNarrationTextPrompt) return cachedNarrationTextPrompt;
+  const numbers = await loadNumberNormalizePrompt();
+  const wider = (await fsPromises.readFile(NARRATION_TEXT_PROMPT_FILE_PATH, 'utf-8')).trim();
+  cachedNarrationTextPrompt = `${numbers}\n\n${wider}`;
+  return cachedNarrationTextPrompt;
+}
+
+/**
  * Load the TTS cleanup prompt from file.
  * Throws if the file doesn't exist — prompt files are required, not optional.
  */

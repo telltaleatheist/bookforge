@@ -370,9 +370,18 @@ test('CITATION_CODE — a slash between digits, in the find or against its edge'
     only('Cited as 298/38 in the file.', '38', 'thirty-eight'), 'CITATION_CODE');
 });
 
-test('CITATION_CODE — a page abbreviation immediately before the number', () => {
-  for (const lead of ['p.', 'pp.', 'vol.', 'no.', 'nos.', 'ibid.', 'cf.', 'fol.']) {
+test('CITATION_CODE — a volume abbreviation immediately before the number', () => {
+  // "p." and "pp." were on this list until Owen's ruling of 2026-09-04: a page
+  // reference is READ now ("p. 23" is "page twenty three"), by a rule of its
+  // own, so the guard must NOT refuse the model an edit there either — the two
+  // halves of the pass owe the same answer about a shape. What is left is the
+  // apparatus with no spoken reading at all.
+  for (const lead of ['vol.', 'no.', 'nos.', 'ibid.', 'cf.', 'fol.']) {
     assert.strictEqual(
+      only(`See ${lead} 23 for the rest.`, '23', 'twenty-three'), 'CITATION_CODE', lead);
+  }
+  for (const lead of ['p.', 'pp.']) {
+    assert.notStrictEqual(
       only(`See ${lead} 23 for the rest.`, '23', 'twenty-three'), 'CITATION_CODE', lead);
   }
 });
@@ -570,12 +579,16 @@ test('fixture date11 — an archive file number is not converted', () => {
   if (FIXTURES === null) { console.log('   (fixture_texts.json not on this machine)'); return; }
   const target = fixtureText('date11');
   // "AfW HH, 260488, Bl. twenty nine" — six digits that are a file reference.
-  // Nothing in the citation rules catches a bare integer after a place name, so
-  // this is the PROMPT's job, and the test records the boundary honestly: the
-  // validator would let it through, which is why the prompt names archive file
-  // numbers explicitly and why the record exists to be reviewed.
+  //
+  // Until n5 this was the PROMPT's job alone: no citation rule caught a bare
+  // integer after an archive sigil, the validator let the edit through, and the
+  // test recorded that boundary honestly. `isArchiveSigil` closed it (the
+  // orpheus-finetune side's "Ask 2") — "HH" is a two-character all-caps token
+  // standing immediately in front of the number, so the guard now answers
+  // CITATION_CODE and the file reference is left exactly as the archive prints
+  // it, whatever the model proposes.
   assert.strictEqual(only(target, '260488', 'two hundred sixty thousand four hundred eighty-eight'),
-    'APPLIED');
+    'CITATION_CODE');
 });
 
 test('fixtures with no digits are never selected at all', () => {
@@ -608,6 +621,23 @@ const passOptions = (runner, extra = {}) => ({
   ...extra,
 });
 
+
+/**
+ * The EPUB driver, with the two facts every caller of it owes.
+ *
+ * `inputSha16` is the copy's name and `copy` is what the write does besides
+ * the rewrites — both stated, never defaulted, since the narration TEXT pass
+ * became the other caller and wants the opposite of the cut on every one of
+ * them (electron/tts-number-normalizer.ts, `NarrationCopyShape`). These are
+ * the CUT's answers, because that is what this suite is about.
+ */
+const bookPass = async (book, runner, extra = {}) => norm.normalizeNarrationNumbers(
+  book, runner, {
+    ...passOptions(runner, extra),
+    inputSha16: await norm.epubContentAddress(book),
+    copy: { excludeCaptions: true, excludeFootnotes: true, stripSupMarkers: true },
+  });
+
 /** A cache directory two runs SHARE, so reuse can be measured. */
 const sharedCache = (name) => path.join(ROOT, `shared-${name}`);
 
@@ -623,7 +653,7 @@ test('the pass rewrites TEXT NODES and leaves every tag where it was', async () 
     'A printer is represented': editsJson(
       ['1934', 'nineteen thirty-four'], ['1935', 'nineteen thirty-five']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   assert.ok(out !== null);
 
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
@@ -655,7 +685,7 @@ test('the pass VERIFIES the rewrite landed, against the written file', async () 
   const runner = scriptedRunner({
     'members watched': editsJson(['1200 members', 'twelve hundred members']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   // `writeNarrationEpub` re-reads the copy and walks it before this returns; a
   // rewrite that did not land destroys the file rather than shipping it. The
   // proof it ran is the count it reports, measured on disk.
@@ -673,7 +703,7 @@ test('a span across an <em> is refused and RECORDED, never flattened', async () 
   const runner = scriptedRunner({
     'He was born in': editsJson(['1944', 'nineteen forty-four']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const statuses = statusesFor(out.record, 'He was born in');
   assert.deepStrictEqual(statuses, ['SPANS_MARKUP']);
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
@@ -685,7 +715,7 @@ test('the heading and its contents entries end up saying ONE string', async () =
   const runner = scriptedRunner({
     'Chapter 3: The Long Year': editsJson(['Chapter 3', 'Chapter Three']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
 
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   const nav = await entryText(out.epubPath, 'OEBPS/nav.xhtml');
@@ -707,7 +737,7 @@ test('the OPF title is normalized too — it is spoken', async () => {
   const runner = scriptedRunner({
     'The 1933 Book': editsJson(['1933', 'nineteen thirty-three']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const opf = await entryText(out.epubPath, 'OEBPS/content.opf');
   assert.ok(opf.includes('The nineteen thirty-three Book'));
 });
@@ -730,7 +760,7 @@ test('a book that prints no digits comes back UNTOUCHED, with no model call', as
   assert.ok(nav === 'x');
 
   const runner = scriptedRunner({});
-  const out = await norm.normalizeNarrationNumbers(digitless, runner, passOptions(runner));
+  const out = await bookPass(digitless, runner);
   assert.strictEqual(out, null, 'the pass reports nothing to do');
   assert.strictEqual(runner.calls.length, 0, 'and the model was never loaded');
 });
@@ -753,11 +783,11 @@ test('a copy already on disk is REUSED, without calling the model', async () => 
   const answers = { 'On 23 March 1933': editsJson(['$5.50', 'five dollars and fifty cents']) };
   const dir = sharedCache('reuse');
   const first = scriptedRunner(answers);
-  const one = await norm.normalizeNarrationNumbers(book, first, passOptions(first, { outDir: dir }));
+  const one = await bookPass(book, first, { outDir: dir });
   assert.ok(first.calls.length > 0);
 
   const second = scriptedRunner(answers);
-  const two = await norm.normalizeNarrationNumbers(book, second, passOptions(second, { outDir: dir }));
+  const two = await bookPass(book, second, { outDir: dir });
   assert.strictEqual(two.epubPath, one.epubPath, 'the same path');
   assert.strictEqual(two.reused, true);
   assert.strictEqual(second.calls.length, 0, 'and not one request went out');
@@ -768,11 +798,11 @@ test('a copy whose RECORD is missing is re-made — the record is part of it', a
   const answers = { 'On 23 March 1933': editsJson(['$5.50', 'five dollars and fifty cents']) };
   const dir = sharedCache('halved');
   const first = scriptedRunner(answers);
-  const one = await norm.normalizeNarrationNumbers(book, first, passOptions(first, { outDir: dir }));
+  const one = await bookPass(book, first, { outDir: dir });
   fs.unlinkSync(one.recordPath);
 
   const second = scriptedRunner(answers);
-  const two = await norm.normalizeNarrationNumbers(book, second, passOptions(second, { outDir: dir }));
+  const two = await bookPass(book, second, { outDir: dir });
   assert.strictEqual(two.reused, false);
   assert.ok(second.calls.length > 0);
   assert.ok(fs.existsSync(two.recordPath));
@@ -784,7 +814,7 @@ test('more than 10% of passages failing to parse FAILS the job, by name', async 
   // Every answer is garbage: no JSON object anywhere in it.
   runner.generate = async (input) => { runner.calls.push(input); return 'I cannot help with that.'; };
   await assert.rejects(
-    norm.normalizeNarrationNumbers(book, runner, passOptions(runner)),
+    bookPass(book, runner),
     (err) => {
       assert.ok(err.message.includes('fake:1b'), 'the model is named');
       assert.ok(/failed to produce a usable edit list for \d+ of \d+/.test(err.message),
@@ -806,7 +836,7 @@ test('one bad answer among many is recorded UNIT_PARSE_FAIL, and the book stands
     if (targetOf(input).includes('Paragraph 4:')) { seen++; return 'not json at all'; }
     return '{"edits": []}';
   };
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   assert.strictEqual(seen, 2, 'a parse failure is retried exactly once');
   const failed = out.record.units.filter((u) => u.status === 'UNIT_PARSE_FAIL');
   assert.strictEqual(failed.length, 1);
@@ -822,7 +852,7 @@ test('an unreachable model THROWS, naming the model tag', async () => {
   const book = await buildBook('unreachable.epub');
   const runner = scriptedRunner({}, { throws: 'connect ECONNREFUSED 127.0.0.1:11434' });
   await assert.rejects(
-    norm.normalizeNarrationNumbers(book, runner, passOptions(runner)),
+    bookPass(book, runner),
     (err) => {
       assert.ok(err.message.includes('fake:1b'), `names the model: ${err.message}`);
       assert.ok(err.message.includes('ECONNREFUSED'), 'and says what happened');
@@ -841,7 +871,7 @@ test('a transport failure is retried ONCE, then the pass carries on', async () =
       ? editsJson(['$5.50', 'five dollars and fifty cents'])
       : '{"edits": []}';
   };
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const chapter = await entryText(out.epubPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes('five dollars and fifty cents'));
 });
@@ -850,8 +880,8 @@ test('progress is counted over the passages that are actually ASKED', async () =
   const book = await buildBook('progress.epub');
   const runner = scriptedRunner({});
   const ticks = [];
-  const out = await norm.normalizeNarrationNumbers(book, runner,
-    passOptions(runner, { onProgress: (done, total, label) => ticks.push({ done, total, label }) }));
+  const out = await bookPass(book, runner,
+    { onProgress: (done, total, label) => ticks.push({ done, total, label }) });
   assert.ok(out !== null);
   assert.ok(ticks.length > 1);
   assert.strictEqual(ticks[0].label, 'Normalizing numbers');
@@ -872,7 +902,7 @@ test('the record names every proposed edit and its disposition', async () => {
       ['five dollars and fifty cents', 'five fifty'],
       ['Reichstag', 'parliament']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
   assert.strictEqual(record.normalizerVersion, norm.NORMALIZER_VERSION);
   assert.strictEqual(record.model, 'fake:1b');
@@ -898,7 +928,7 @@ test('a passage the RULES finished is never sent to the model', async () => {
     'and the pamphlet sold for $5.50');
   const book = await buildBook('rules-only.epub', chapter);
   const runner = scriptedRunner({});
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
 
   const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
   assert.strictEqual(unit.status, 'RULES_ONLY');
@@ -918,7 +948,7 @@ test('a model edit is mapped back past the rules\' own length changes', async ()
   const runner = scriptedRunner({
     'members watched': editsJson(['1200 members', 'twelve hundred members']),
   });
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
   // "23 March 1933" grew by twenty-odd characters before the model's own span,
   // so an unmapped offset would splice "twelve hundred members" into the middle
@@ -939,7 +969,7 @@ test('a rule refusal is RECORDED, and the span is left for nobody', async () => 
     'sell for $5.50.', 'sell for $5.<em>5</em>0.');
   const book = await buildBook('rule-refused.epub', chapter);
   const runner = scriptedRunner({});
-  const out = await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  const out = await bookPass(book, runner);
   const unit = out.record.units.find((u) => u.text.includes('On 23 March 1933'));
   const refusal = unit.edits.find((e) => e.status === 'SPANS_MARKUP');
   assert.ok(refusal !== undefined, JSON.stringify(unit.edits));
@@ -952,7 +982,7 @@ test('a rule refusal is RECORDED, and the span is left for nobody', async () => 
 test('the context window is pinned ONCE, to the longest request', async () => {
   const book = await buildBook('pin.epub');
   const runner = scriptedRunner({});
-  await norm.normalizeNarrationNumbers(book, runner, passOptions(runner));
+  await bookPass(book, runner);
   assert.ok(runner.pinned !== null, 'the runner was given a chance to size itself');
   assert.strictEqual(runner.pinned.systemPrompt, PROMPT);
   for (const call of runner.calls) {

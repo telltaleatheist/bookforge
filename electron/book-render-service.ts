@@ -26,6 +26,13 @@ import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from '.
 import { getProjectPath, registerAudiobookOutput } from './manifest-service';
 import { embedAndVerifyVtt } from './metadata-tools';
 import { splitForTts } from './bilingual-processor';
+// PUNCTUATION ONLY, the streaming path's share of the narration text pass.
+// This is the whole-book render the same bookshelf reader plays from, so its
+// text has to reach the voice with the same canonical ellipsis and the same
+// quotes the live stream and the audiobook do -- the third door, and the one the
+// first cut of this work missed (the adversarial review, 2026-09-04). The other
+// two stages are minutes of model time and are a PASS the user runs on the book.
+import { canonicalizePunctuationText } from './tts-punctuation';
 import { getFfmpegPath } from './tool-paths';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────
@@ -103,7 +110,7 @@ export async function saveRenderPlan(
   const chapterTitles: string[] = [];
   let ci = -1;
   for (const raw of doc.blocks) {
-    const text = (raw.text || '').replace(/\s+/g, ' ').trim();
+    const text = canonicalizePunctuationText((raw.text || '').replace(/\s+/g, ' ').trim());
     if (!text) continue;
     if (raw.chapterStart || ci < 0) {
       ci++;
@@ -266,7 +273,7 @@ class BookRenderService {
       const sentenceBlock: number[] = [];
       const chapterOf: number[] = [];
       for (const block of res.blocks) {
-        const text = (block || '').replace(/\s+/g, ' ').trim();
+        const text = canonicalizePunctuationText((block || '').replace(/\s+/g, ' ').trim());
         if (!text) continue;
         const bi = blocks.length;
         blocks.push({ id: `b${bi}`, text, chapterStart: false });
