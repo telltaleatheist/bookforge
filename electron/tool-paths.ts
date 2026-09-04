@@ -152,6 +152,16 @@ export interface ToolPathsConfig {
   wslE2aPath?: string;             // e2a path inside WSL (e.g., "/home/user/ebook2audiobook")
   wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 
+  // Higgs Audio v3, served from WSL. The same shape as the Orpheus pair above and
+  // for a STRONGER reason than Orpheus's: Orpheus runs on native Windows and
+  // merely runs badly there (vLLM's CUDA graphs don't capture, so it needs
+  // enforce_eager and goes ~6x slower). Higgs v3's serving stack is vLLM-Omni,
+  // which has no Windows build at all — the page-reader VLM's situation, not
+  // Orpheus's. So there is no native fallback to be slower than, and the toggle
+  // is what decides whether the engine can run at all rather than how fast.
+  useWsl2ForHiggs?: boolean;       // Route Higgs jobs through WSL (Windows only)
+  wslHiggsCondaEnv?: string;       // Conda env name for Higgs in WSL (default: "higgs3")
+
   // Page reading (Convert to EPUB) served from WSL. Same shape as the Orpheus
   // pair above and for a related but DISTINCT reason: Orpheus needs WSL because
   // vLLM's CUDA graphs don't capture on native Windows, while the page reader
@@ -318,6 +328,7 @@ const BOOLEAN_CONFIG_KEYS: ReadonlySet<string> = new Set([
   'useWsl2ForAllTts',
   'useWsl2ForOrpheus',
   'useWsl2ForVlm',
+  'useWsl2ForHiggs',
 ]);
 
 export function updateConfig(updates: Partial<ToolPathsConfig>): ToolPathsConfig {
@@ -864,6 +875,202 @@ export function checkWslOrpheusSetup(config: {
   };
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The Higgs WSL doctor
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** One thing the doctor looked at, and what it found. */
+export interface HiggsCheck {
+  /** Stable id, so a UI can key on it without matching prose. */
+  id: 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher';
+  /** What a person reads. Patch rows carry the patch's own id here. */
+  label: string;
+  ok: boolean;
+  /** Present when `ok` is false: what is wrong, in a sentence someone can act on. */
+  detail?: string;
+}
+
+export interface WslHiggsSetupResult {
+  valid: boolean;
+  checks: HiggsCheck[];
+  /** The env prefix the probe resolved, for error messages and the installer. */
+  envPrefix?: string;
+}
+
+/**
+ * The two site-packages patches the Higgs v3 stack does not work without.
+ *
+ * MIRRORED FROM THE CATALOG ON PURPOSE, and the duplication is deliberate rather
+ * than sloppy: `higgs-models.json`'s copy is the RECORD (what the patch is, why
+ * it exists, which script applies it) and belongs with the voices, while this
+ * copy is what a doctor running before any voice is chosen needs. Importing the
+ * catalog here would make `tool-paths.ts` — which every path resolution in the
+ * app goes through — depend on a JSON file it has no other reason to read, and
+ * would make a malformed catalog break WSL detection. The two are kept in step by
+ * `tools/test-higgs-doctor.js`, which asserts the ids and markers match.
+ *
+ * `marker` is a string the patch INTRODUCES that the pristine file cannot
+ * contain, so grepping for it answers "is this patch applied" without diffing.
+ * Both must be re-applied after any pip upgrade in the env, which is why they are
+ * reported BY NAME instead of as one "the env looks wrong".
+ */
+export const HIGGS_PATCHES: ReadonlyArray<{
+  id: string;
+  relPath: string;
+  marker: string;
+  why: string;
+}> = [
+  {
+    id: 'vllm-negative-token-id',
+    relPath: 'vllm/v1/engine/input_processor.py',
+    marker: 'min_input_id != -100',
+    why:
+      "vLLM 0.28's blanket negative-token-id rejection fires on vllm-omni's audio " +
+      'placeholder (-100), so every voice-clone request returns HTTP 400 and only the ' +
+      'default voice can serve.',
+  },
+  {
+    id: 'higgs-tail-trim',
+    relPath: 'vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py',
+    marker: '_trim_trailing_sentinel_frames',
+    why:
+      'Without it every rendered chunk ends with ~240 ms of audible garbage — the ' +
+      'ramp-down sentinels decode as real sound because they are substituted with ' +
+      'codec code 0 and only one frame is trimmed.',
+  },
+];
+
+/** The launcher the installer deploys INTO the env, so the stack is self-contained. */
+export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
+
+/**
+ * Is the Higgs v3 serving stack actually usable in WSL?
+ *
+ * ONE `wsl.exe` ROUND TRIP, not five. Each spawn of `wsl.exe` costs the better
+ * part of a second on a cold VM, and a doctor that takes five seconds is a doctor
+ * nobody runs. The probe emits one `key=value` line per check and this parses
+ * them, so adding a check is a line in the script and a row in the result rather
+ * than another spawn.
+ *
+ * EVERY CHECK IS REPORTED, PASS OR FAIL — the probe never short-circuits. "The
+ * env exists, vllm-omni imports, the tail-trim patch is missing" is a different
+ * problem from "there is no env", and a doctor that stopped at the first failure
+ * would make them look the same.
+ */
+export function checkWslHiggsSetup(config: {
+  distro?: string;
+  condaPath?: string;
+  higgsCondaEnv?: string;
+} = {}): WslHiggsSetupResult {
+  if (os.platform() !== 'win32') {
+    return {
+      valid: false,
+      checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
+    };
+  }
+
+  const distro = config.distro || getWslDistro();
+  const condaPath = config.condaPath || getWslCondaPath();
+  const envName = config.higgsCondaEnv || getWslHiggsCondaEnv();
+  // `<base>/bin/conda` → `<base>/envs/<name>`. The same derivation
+  // checkWslOrpheusSetup does from the same setting, so the two doctors cannot
+  // disagree about where conda keeps its environments.
+  const condaBase = condaPath.replace(/\/bin\/conda$/, '');
+  const envPrefix = `${condaBase}/envs/${envName}`;
+
+  const distroArg = distro ? `-d ${distro}` : '';
+  const patchProbe = HIGGS_PATCHES.map(
+    (p) =>
+      `f=$(ls ${envPrefix}/lib/python*/site-packages/${p.relPath} 2>/dev/null | head -1); ` +
+      `if [ -n "$f" ] && grep -q '${p.marker}' "$f"; then echo 'patch:${p.id}=ok'; ` +
+      `elif [ -n "$f" ]; then echo 'patch:${p.id}=unpatched'; else echo 'patch:${p.id}=absent'; fi`,
+  ).join('; ');
+
+  const script = [
+    `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
+    `${envPrefix}/bin/python -c 'import vllm_omni' >/dev/null 2>&1 && echo 'omni=ok' || echo 'omni=absent'`,
+    patchProbe,
+    `test -x ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} && echo 'launcher=ok' || echo 'launcher=absent'`,
+  ].join('; ');
+
+  let out = '';
+  let probeError: string | null = null;
+  try {
+    out = execSync(`wsl.exe ${distroArg} bash -c "${script.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  } catch (err) {
+    probeError = err instanceof Error ? err.message : String(err);
+  }
+
+  const seen = new Map<string, string>();
+  for (const line of out.split('\n')) {
+    const m = line.replace(/\0/g, '').trim().match(/^([^=]+)=(.+)$/);
+    if (m) seen.set(m[1], m[2]);
+  }
+
+  const checks: HiggsCheck[] = [];
+
+  checks.push(
+    probeError
+      ? {
+          id: 'distro',
+          label: `WSL distribution${distro ? ` "${distro}"` : ''}`,
+          ok: false,
+          detail: `Could not run a command in WSL: ${probeError}`,
+        }
+      : { id: 'distro', label: `WSL distribution${distro ? ` "${distro}"` : ''}`, ok: true },
+  );
+
+  // Every check below reads a probe line. A MISSING line is not a pass: when the
+  // probe itself failed there is no line at all, and defaulting those to ok would
+  // report a green doctor for a machine with no WSL.
+  const envOk = seen.get('env') === 'ok';
+  checks.push({
+    id: 'env',
+    label: `Conda env "${envName}"`,
+    ok: envOk,
+    detail: envOk ? undefined : `Not found at ${envPrefix}. Install it from Settings → Higgs.`,
+  });
+
+  const omniOk = seen.get('omni') === 'ok';
+  checks.push({
+    id: 'vllm-omni',
+    label: 'vllm-omni importable',
+    ok: omniOk,
+    detail: omniOk
+      ? undefined
+      : `${envPrefix}/bin/python could not import vllm_omni — the serving stack is not installed in this env.`,
+  });
+
+  for (const p of HIGGS_PATCHES) {
+    const state = seen.get(`patch:${p.id}`);
+    checks.push({
+      id: 'patch',
+      label: `Patch "${p.id}"`,
+      ok: state === 'ok',
+      detail:
+        state === 'ok'
+          ? undefined
+          : state === 'unpatched'
+            ? `${p.relPath} is present but NOT patched. ${p.why} Re-run the Higgs installer — a pip upgrade in this env reverts it.`
+            : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
+    });
+  }
+
+  const launcherOk = seen.get('launcher') === 'ok';
+  checks.push({
+    id: 'launcher',
+    label: HIGGS_LAUNCH_SCRIPT,
+    ok: launcherOk,
+    detail: launcherOk ? undefined : `Not executable at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}.`,
+  });
+
+  return { valid: checks.every((c) => c.ok), checks, envPrefix };
+}
+
 /**
  * WSL routing for TTS.
  *
@@ -997,6 +1204,41 @@ export function getWslOrpheusCondaEnv(): string {
 }
 
 /**
+ * Should Higgs jobs run inside WSL?
+ *
+ * Windows-only and explicitly opted into, exactly like `shouldUseWsl2ForOrpheus`.
+ * It is a SEPARATE toggle rather than a second reader of the Orpheus one for the
+ * same reason `useWsl2ForVlm` is separate: a machine can perfectly well have a
+ * WSL env for one of these and not the other, and folding them together would
+ * make enabling Orpheus silently promise a Higgs env that is not there.
+ *
+ * On macOS/Linux this is false and Higgs runs natively — there is no WSL to route
+ * through, and the vllm-omni stack installs directly.
+ */
+export function shouldUseWsl2ForHiggs(): boolean {
+  if (os.platform() !== 'win32') return false;
+  loadConfig();
+  return state.config.useWsl2ForHiggs === true;
+}
+
+/**
+ * The conda env in WSL that holds the Higgs v3 serving stack.
+ *
+ * HAS A DEFAULT (`higgs3`), unlike `getWslVlmCondaEnv()`, and for the reason that
+ * one gives for not having one: `higgs3` is a name BookForge's own installer
+ * creates, so it is a true statement about a machine that ran the installer
+ * rather than a guess about an env the user built themselves.
+ */
+export function getWslHiggsCondaEnv(): string {
+  // CLI/dev seam, mirroring WSL_ORPHEUS_CONDA_ENV: override for one process
+  // without editing the config file.
+  const envOverride = process.env.WSL_HIGGS_CONDA_ENV?.trim();
+  if (envOverride) return envOverride;
+  loadConfig();
+  return state.config.wslHiggsCondaEnv || 'higgs3';
+}
+
+/**
  * Convert a WSL path to a Windows UNC path that Node.js can access
  * e.g., /home/user/file.txt -> \\wsl$\Ubuntu\home\user\file.txt
  */
@@ -1043,12 +1285,15 @@ export const toolPaths = {
   // WSL2 functions
   detectWslAvailability,
   checkWslOrpheusSetup,
+  checkWslHiggsSetup,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
+  shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
   getWslOrpheusCondaEnv,
+  getWslHiggsCondaEnv,
   wslPathToWindows,
   windowsToWslPath,
 };

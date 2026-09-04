@@ -788,6 +788,26 @@ export interface CompletedAudiobook {
 }
 
 /**
+ * What the Higgs doctor found. Mirrors electron/tool-paths' WslHiggsSetupResult.
+ *
+ * A LIST OF CHECKS, not a boolean plus a message. "The env exists, vllm-omni
+ * imports, the tail-trim patch is missing" is a different problem from "there is
+ * no WSL env", and the panel has to be able to say which — a single `valid: false`
+ * with one string could not, and the patches in particular need naming because a
+ * pip upgrade reverts them silently.
+ */
+export interface HiggsDoctorResult {
+  valid: boolean;
+  checks: Array<{
+    id: 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher';
+    label: string;
+    ok: boolean;
+    detail?: string;
+  }>;
+  envPrefix?: string;
+}
+
+/**
  * One Higgs catalog voice as `higgsModels.listCatalog` returns it — the
  * renderer-side mirror of electron/higgs-models' `HiggsModel` (this file must not
  * import from the main process).
@@ -1224,6 +1244,14 @@ export interface ElectronAPI {
     /** The full catalog entries — voice ref, licence, measured caps — for the
      *  Settings → Higgs voices panel. */
     listCatalog: () => Promise<{ success: boolean; data?: HiggsModelDto[]; error?: string }>;
+    /** Is the serving stack usable? Every check reported, pass or fail. */
+    doctor: () => Promise<{ success: boolean; data?: HiggsDoctorResult; error?: string }>;
+    /** Build the WSL env (or, with `check`, probe without touching anything).
+     *  Long-running; output arrives on `onInstallProgress`. */
+    installEnv: (opts?: { check?: boolean }) =>
+      Promise<{ success: boolean; code?: number; output?: string; error?: string }>;
+    /** Live installer output. Returns its own unsubscribe. */
+    onInstallProgress: (cb: (text: string) => void) => () => void;
   };
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name).
@@ -2958,6 +2986,15 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('higgs:list-models'),
     listCatalog: () =>
       ipcRenderer.invoke('higgs:list-catalog'),
+    doctor: () =>
+      ipcRenderer.invoke('higgs:doctor'),
+    installEnv: (opts?: { check?: boolean }) =>
+      ipcRenderer.invoke('higgs:install-env', opts),
+    onInstallProgress: (cb: (text: string) => void) => {
+      const listener = (_e: unknown, text: string) => cb(text);
+      ipcRenderer.on('higgs:install-progress', listener);
+      return () => { ipcRenderer.removeListener('higgs:install-progress', listener); };
+    },
   },
   orpheusModels: {
     list: () =>

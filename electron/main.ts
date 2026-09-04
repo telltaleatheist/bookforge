@@ -7835,6 +7835,73 @@ function setupIpcHandlers(): void {
     }
   });
 
+  // Is the Higgs serving stack usable? One WSL round trip; every check reported
+  // pass or fail (see checkWslHiggsSetup for why it never short-circuits).
+  ipcMain.handle('higgs:doctor', async () => {
+    try {
+      const { checkWslHiggsSetup } = await import('./tool-paths.js');
+      return { success: true, data: checkWslHiggsSetup() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Build the Higgs WSL environment. NEVER RUNS AUTOMATICALLY — it downloads many
+   * GB and the server it prepares preallocates ~24 GB of VRAM, so it starts
+   * because a person pressed a button.
+   *
+   * Progress is streamed line-by-line to the renderer rather than buffered: the
+   * pip install alone runs for minutes, and a spinner with no output is
+   * indistinguishable from a hang (the reason every other long install in this
+   * app streams too).
+   */
+  ipcMain.handle('higgs:install-env', async (event, opts?: { check?: boolean }) => {
+    try {
+      const { getWslDistro, getWslCondaPath, getWslHiggsCondaEnv } = await import('./tool-paths.js');
+      const { windowsToWslPath } = await import('./e2a-paths.js');
+      const { spawn } = await import('child_process');
+      const pathMod = await import('path');
+      const fsMod = await import('fs');
+
+      // Same resolution the other bundled scripts use: the app path in dev, the
+      // asarUnpack'd copy when packaged (a spawned bash cannot read app.asar).
+      let scriptDir = pathMod.join(app.getAppPath(), 'electron', 'scripts', 'higgs');
+      if (!fsMod.existsSync(scriptDir)) {
+        scriptDir = pathMod.join(__dirname, 'scripts', 'higgs');
+      }
+      const { toUnpackedPath } = await import('./e2a-paths.js');
+      const scriptWsl = windowsToWslPath(toUnpackedPath(scriptDir));
+
+      const distro = getWslDistro();
+      const conda = getWslCondaPath();
+      const envName = getWslHiggsCondaEnv();
+      const bash =
+        `bash ${JSON.stringify(`${scriptWsl}/install_higgs_env.sh`)} ` +
+        `--env-name ${JSON.stringify(envName)} --conda ${JSON.stringify(conda)}` +
+        (opts?.check ? ' --check' : '');
+      const args = distro ? ['-d', distro, 'bash', '-lc', bash] : ['bash', '-lc', bash];
+
+      return await new Promise((resolve) => {
+        const proc = spawn('wsl.exe', args, { windowsHide: true });
+        const lines: string[] = [];
+        const emit = (chunk: Buffer) => {
+          const text = chunk.toString('utf8');
+          lines.push(text);
+          event.sender.send('higgs:install-progress', text);
+        };
+        proc.stdout.on('data', emit);
+        proc.stderr.on('data', emit);
+        proc.on('error', (err) => resolve({ success: false, error: err.message }));
+        proc.on('close', (code) =>
+          resolve({ success: code === 0, code, output: lines.join('') }),
+        );
+      });
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   // The Higgs narration roster. Deliberately NOT the shape of the Orpheus handler
   // above: there is no folder discovery and no \\wsl$ models dir to touch, so no
   // WSL liveness probe is needed — the catalog is a repo file that reads even when
