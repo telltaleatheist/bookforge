@@ -119,11 +119,74 @@ function resolveAlignScript(): string {
   return toUnpackedPath(found);
 }
 
+/** A sentence handed to the aligner, plus what kind of block it came from. */
+export interface AlignSentence {
+  text: string;
+  /** 'heading' = a short, unpunctuated block of its own (part/chapter number,
+   *  chapter title, running head, epigraph attribution). Everything else is
+   *  'prose'. align_audiobook.py tags heading cues `NOTE heading` in the VTT so a
+   *  downstream corpus cutter can drop them without guessing from the text. */
+  kind: 'prose' | 'heading';
+}
+
+/** A block is heading-like when it is short and carries no sentence terminator —
+ *  the shape of "Part I", "Ohio Born and Molded", "1", "William McKinley,
+ *  Ohioan", "The Ohio Guide (WPA)". Deliberately conservative: real prose
+ *  paragraphs end in punctuation, so a false positive needs an unpunctuated
+ *  paragraph under 12 words, which is a heading in all but name. Nothing is
+ *  DROPPED by this classification — it only labels. */
+const HEADING_MAX_CHARS = 90;
+const HEADING_MAX_WORDS = 12;
+function looksLikeHeading(block: string): boolean {
+  const b = block.replace(/\s+/g, ' ').trim();
+  if (!b || b.length > HEADING_MAX_CHARS) return false;
+  if (b.split(' ').length > HEADING_MAX_WORDS) return false;
+  return !/[.!?…]["”’')\]]*$/.test(b);
+}
+
 /**
- * Split a block of plain ebook text into sentences (reading order). Normalizes
- * whitespace, then splits on sentence-final punctuation followed by whitespace and
- * an opening capital/quote. Simple and robust — the aligner is tolerant of rough
- * boundaries, and keeping this cheap avoids dragging in an NLP dependency.
+ * Split the ebook's plain text into sentences (reading order).
+ *
+ * PARAGRAPH STRUCTURE IS A SENTENCE BOUNDARY (2026-09-03). `extractTextFromXhtml`
+ * goes to real trouble to preserve block structure — every `</p>`, `</h1-6>`,
+ * `</li>`, `</blockquote>`, `</figcaption>` becomes a blank line — and this
+ * function used to throw all of it away on its first statement (`\s+` → ' ')
+ * before splitting on punctuation alone. The cost was measured on William
+ * McKinley (Phillips, 2003): headings are `<p class="pn">Part I</p>`,
+ * `<p class="cn">1</p>`, `<p class="ct">William McKinley, Ohioan</p>` — separate
+ * blocks with NO terminal punctuation, so the punctuation split could not see
+ * them and glued each one onto the prose that followed:
+ *
+ *   "Part I Ohio Born and Molded 1 William McKinley, Ohioan It is generally
+ *    believed by strangers that…"  → ONE 24-second cue.
+ *
+ * 168 of 2,370 cues (7.1%) opened that way. Every one is poison for a
+ * training-corpus cut: the heading read, and the long pause the narrator leaves
+ * after it, are invisible inside a prose cue, so the cutter slices mid-pause and
+ * ships a clip whose first seconds are a title announcement.
+ *
+ * So: split on blank lines FIRST, sentence-split WITHIN each block. Headings get
+ * their own cue and a `kind`; nothing crosses a paragraph boundary. Single
+ * newlines (authored `<br>`, verse lines) still do not split — only real block
+ * boundaries do.
+ */
+export function splitSentences(text: string, paragraphAware = true): AlignSentence[] {
+  const blocks = paragraphAware ? text.split(/\n[ \t]*\n+/) : [text];
+  const out: AlignSentence[] = [];
+  for (const block of blocks) {
+    const heading = paragraphAware && looksLikeHeading(block);
+    for (const s of splitBlockIntoSentences(block)) {
+      out.push({ text: s, kind: heading ? 'heading' : 'prose' });
+    }
+  }
+  return out;
+}
+
+/**
+ * Sentence-split ONE block: normalizes whitespace, then splits on sentence-final
+ * punctuation followed by whitespace and an opening capital/quote. Simple and
+ * robust — the aligner is tolerant of rough boundaries, and keeping this cheap
+ * avoids dragging in an NLP dependency.
  *
  * Scene-break glyphs (`*`, `* * *`, `⁂`, `•`) between sentences are treated as
  * part of the separator and dropped. Gluing across them was an alignment trap:
@@ -132,7 +195,7 @@ function resolveAlignScript(): string {
  * is exactly where dramatized audiobooks put music bridges, so the aligner keyed
  * the new scene's first cue on words that are never spoken there.
  */
-function splitSentences(text: string): string[] {
+function splitBlockIntoSentences(text: string): string[] {
   const normalized = text.replace(/\s+/g, ' ').trim()
     // ORPHANED ENDNOTE MARKERS (2026-07-24). epub-processor now strips digits-only
     // <sup> at the source, but text can reach us already flattened (a supplied VTT,
@@ -207,6 +270,11 @@ interface AlignResult {
   driftChecked?: number;
   driftMaxAbs?: number;
   driftFixed?: number;
+  /** Boundary snapping: cue seams moved onto the middle of a detected silence / total seams considered. */
+  snappedBoundaries?: number;
+  totalBoundaries?: number;
+  /** Cues carrying a `NOTE heading` tag (headings the segmenter gave their own cue). */
+  headingCues?: number;
   /** Path of the coverage report the script wrote (only when --report was passed). */
   report?: string | null;
 }
@@ -264,6 +332,16 @@ export async function runEpubAlign(
  * WSL vLLM lane, so it may pick 1 worker even with RAM free). Pass a positive int
  * only when the GPU/WSL lane is known idle; each worker budgets ~5 GB and the pool
  * self-shrinks under memory pressure regardless.
+ * `opts.paragraphAware`: default true — segment the ebook on block boundaries as
+ * well as punctuation, so unpunctuated headings stop being glued onto the prose
+ * that follows them (see splitSentences). Pass false for the pre-2026-09-03
+ * punctuation-only segmentation.
+ * `opts.snapSilenceS`: default 0.6 — bounded window (s) for snapping each cue
+ * boundary to the middle of a detected silence. 0 disables snapping.
+ * `opts.reportHoleMinS`: minimum unmatched-audio duration (s) LISTED IN THE
+ * REPORT, decoupled from `holeMinS` (which still governs whisper-fallback cue
+ * filling and so changes the VTT). Default 3 — short stings, credits and applause
+ * beds surface without inserting a single ASR cue.
  */
 export async function runEpubAlignOnFiles(
   jobId: string,
@@ -271,7 +349,10 @@ export async function runEpubAlignOnFiles(
   epubPath: string,
   audioPath: string,
   language?: string,
-  opts?: { reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number; device?: string },
+  opts?: {
+    reportPath?: string; holeMinS?: number; roughCachePath?: string; alignWorkers?: number; device?: string;
+    paragraphAware?: boolean; snapSilenceS?: number; reportHoleMinS?: number;
+  },
 ): Promise<{ vttPath: string; cues: number; warning?: string; reportPath?: string }> {
   const reportPath = opts?.reportPath;
   if (!fs.existsSync(epubPath)) throw new Error(`Ebook file not found: ${epubPath}`);
@@ -280,10 +361,16 @@ export async function runEpubAlignOnFiles(
   // 2. Extract sentences from the ebook in reading order.
   glog(`[epub-align] extracting sentences from ${epubPath}`);
   const { chapters } = await loadEpubForComparison(epubPath);
-  const fullText = chapters.map((c) => c.text).join('\n');
-  const sentences = splitSentences(fullText);
+  // '\n\n', not '\n': a chapter seam is a block boundary like any other, and the
+  // paragraph-aware splitter reads blank lines. Joining on a single newline let
+  // the last sentence of one chapter fuse with the first heading of the next.
+  const fullText = chapters.map((c) => c.text).join('\n\n');
+  const paragraphAware = opts?.paragraphAware !== false;
+  const sentences = splitSentences(fullText, paragraphAware);
   if (sentences.length === 0) throw new Error('No sentences extracted from the ebook');
-  glog(`[epub-align] extracted ${sentences.length} sentences`);
+  const headingCount = sentences.filter((s) => s.kind === 'heading').length;
+  glog(`[epub-align] extracted ${sentences.length} sentences (${headingCount} heading-like, ` +
+    `paragraph-aware=${paragraphAware})`);
 
   // 3. Resolve the whisperx env python.
   const envRoot = resolveWhisperxEnvRoot();
@@ -349,6 +436,20 @@ export async function runEpubAlignOnFiles(
           return;
         }
         args.push('--hole-min-s', String(opts.holeMinS));
+      }
+      if (opts?.snapSilenceS !== undefined) {
+        if (!Number.isFinite(opts.snapSilenceS) || opts.snapSilenceS < 0) {
+          reject(new Error(`snapSilenceS must be a finite number >= 0 (got ${opts.snapSilenceS})`));
+          return;
+        }
+        args.push('--snap-silence-s', String(opts.snapSilenceS));
+      }
+      if (opts?.reportHoleMinS !== undefined) {
+        if (!Number.isFinite(opts.reportHoleMinS) || opts.reportHoleMinS < 0) {
+          reject(new Error(`reportHoleMinS must be a finite number >= 0 (got ${opts.reportHoleMinS})`));
+          return;
+        }
+        args.push('--report-hole-min-s', String(opts.reportHoleMinS));
       }
 
       let child: ChildProcess;
@@ -455,7 +556,7 @@ export async function runEpubAlignOnFiles(
         if (code === 0 && result && result.ok === true && result.vtt) {
           stages.completeAll();
           emitStages();
-          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0} driftChecked=${result.driftChecked ?? 0} driftMaxAbs=${result.driftMaxAbs ?? 0}s driftFixed=${result.driftFixed ?? 0}`);
+          glog(`[epub-align] script DONE cues=${result.cues} fallbackCues=${result.fallbackCues ?? 0} trimmedHead=${result.trimmedHead} trimmedTail=${result.trimmedTail} failedSlices=${result.failedSlices ?? 0}/${result.totalSlices ?? 0} failedChunks=${result.failedChunks ?? 0}/${result.totalChunks ?? 0} driftChecked=${result.driftChecked ?? 0} driftMaxAbs=${result.driftMaxAbs ?? 0}s driftFixed=${result.driftFixed ?? 0} snapped=${result.snappedBoundaries ?? 0}/${result.totalBoundaries ?? 0} headingCues=${result.headingCues ?? 0}`);
           // Partial failures still complete (coverage exists) but must be SEEN:
           // each failed slice is ~10 min of audio absent from the anchor stream,
           // each failed chunk leaves its sentences on coarse timing.

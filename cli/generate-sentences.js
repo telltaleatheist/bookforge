@@ -20,6 +20,20 @@
  *        --audio book.m4b --out book.vtt [--epub book.epub] [--whisper-model small]
  *        [--language en] [--device auto|cpu|cuda] [--embed] [--report coverage.json]
  *        [--hole-min 30] [--rough-cache rough.json] [--align-workers N]
+ *        [--snap-silence 0.6 | --no-snap-silence] [--no-paragraph-split]
+ *        [--report-hole-min 3]
+ *
+ * Boundary accuracy (epub-align only, 2026-09-03):
+ *   --snap-silence <s>     pull each cue seam onto the middle of the nearest
+ *                          detected silence within <s> seconds (default 0.6).
+ *   --no-snap-silence      keep the raw forced-alignment times.
+ *   --no-paragraph-split   segment the ebook on punctuation only (pre-2026-09-03);
+ *                          the default also splits on block boundaries, so an
+ *                          unpunctuated heading gets its own cue instead of being
+ *                          glued onto the prose that follows it.
+ *   --report-hole-min <s>  unmatched-audio ranges this long are LISTED in the
+ *                          coverage report (default 3). Report-only: --hole-min
+ *                          still governs whisper-fallback cues in the VTT.
  *
  * --report (epub-align only): also write a coverage JSON — epub sentence runs the
  * narrator never read (with text anchors + neighboring narrated timestamps) and
@@ -74,8 +88,16 @@ function printCoverageSummary(reportPath) {
   console.log(`[sentences] coverage report -> ${reportPath}`);
   console.log(`[sentences]   epub: ${s.narratedSentences}/${s.epubSentences} sentences narrated; ` +
     `${s.excludedSentences} excluded in ${s.excludedRuns} run(s) (head ${s.trimmedHead}, interior ${s.interiorDropped}, tail ${s.trimmedTail})`);
-  console.log(`[sentences]   audio: ${s.unmatchedAudioRanges} range(s) with no epub match, ` +
+  console.log(`[sentences]   audio: ${s.unmatchedAudioRanges} range(s) with no epub match ` +
+    `(≥${s.reportHoleThresholdSeconds ?? s.holeThresholdSeconds}s; ${s.asrFilledRanges ?? s.unmatchedAudioRanges} ASR-filled), ` +
     `${Math.round(s.unmatchedAudioSeconds)}s of ${s.audioDurationTimestamp} total`);
+  if (s.headingCues != null) console.log(`[sentences]   headings: ${s.headingCues} cue(s) tagged NOTE heading`);
+  const bs = rep.boundarySnap;
+  if (bs && bs.windowSeconds > 0) {
+    console.log(`[sentences]   boundary snap: ${bs.seamsSnapped}/${bs.seamsConsidered} seam(s) moved onto a silence ` +
+      `(window ${bs.windowSeconds}s, ${bs.silenceIntervals} silence intervals; ` +
+      `|move| median ${bs.medianAbsMoveSeconds}s max ${bs.maxAbsMoveSeconds}s)`);
+  }
   const MAX_LIST = 12;
   const bigRuns = rep.epubNotInAudio.filter((r) => r.count >= 3);
   for (const r of bigRuns.slice(0, MAX_LIST)) {
@@ -152,6 +174,37 @@ async function main() {
     if (args['rough-cache'] === true) throw new Error('--rough-cache needs a path (the dispatcher derives a default; pass --rough-cache <file.json> when calling this adapter directly)');
     roughCachePath = path.resolve(args['rough-cache']);
   }
+  // --snap-silence <s> / --no-snap-silence: bounded window for pulling each cue
+  // seam onto the middle of a detected silence. Flag absent = the bridge default
+  // (0.6 s). --no-snap-silence restores the pre-2026-09-03 raw aligner times.
+  let snapSilenceS;
+  if (args['no-snap-silence']) snapSilenceS = 0;
+  if (args['snap-silence'] !== undefined && args['snap-silence'] !== true) {
+    snapSilenceS = Number(args['snap-silence']);
+    if (!Number.isFinite(snapSilenceS) || snapSilenceS < 0) {
+      throw new Error(`--snap-silence must be a number >= 0 seconds, got '${args['snap-silence']}' (0 = off)`);
+    }
+  }
+  if (snapSilenceS !== undefined && !args.epub) {
+    throw new Error('--snap-silence/--no-snap-silence require --epub (whisper mode has no cue seams to snap)');
+  }
+  // --no-paragraph-split: pre-2026-09-03 punctuation-only ebook segmentation
+  // (headings glued onto the following prose).
+  const paragraphAware = args['no-paragraph-split'] ? false : undefined;
+  if (paragraphAware === false && !args.epub) {
+    throw new Error('--no-paragraph-split requires --epub (it changes ebook segmentation)');
+  }
+  // --report-hole-min <s>: threshold for unmatched-audio ranges LISTED IN THE
+  // REPORT. Separate from --hole-min, which also fills holes with ASR cues and so
+  // changes the VTT; this one is report-only and safe to lower.
+  let reportHoleMinS;
+  if (args['report-hole-min'] !== undefined) {
+    if (!args.epub) throw new Error('--report-hole-min requires --epub');
+    reportHoleMinS = Number(args['report-hole-min']);
+    if (!Number.isFinite(reportHoleMinS) || reportHoleMinS < 0) {
+      throw new Error(`--report-hole-min must be a number >= 0, got '${args['report-hole-min']}'`);
+    }
+  }
   let alignWorkers;
   if (args['align-workers'] !== undefined) {
     if (!args.epub) throw new Error('--align-workers requires --epub (it sizes the epub-align worker pool)');
@@ -178,7 +231,8 @@ async function main() {
     const reportPath = args.report ? path.resolve(args.report) : undefined;
     if (reportPath) fs.mkdirSync(path.dirname(reportPath), { recursive: true });
     const r = await wab.runEpubAlignOnFiles(jobId, makeProgressWindow(), args.epub, args.audio, language,
-      { reportPath, holeMinS, roughCachePath, alignWorkers, device: args.device });
+      { reportPath, holeMinS, roughCachePath, alignWorkers, device: args.device,
+        snapSilenceS, paragraphAware, reportHoleMinS });
     vttSource = r.vttPath;
     cues = r.cues;
     warning = r.warning;

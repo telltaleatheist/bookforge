@@ -349,7 +349,8 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
     (`reason`: `head` / `interior` / `tail`), with the run's first/last sentence and the
     nearest narrated neighbor on each side (text + audio timestamp). This is how you find
     where "part 2 of 5" actually begins and ends in the book.
-  - `audioNotInEpub` — audio ranges ≥30 s with no epub match (ads, intros, disc breaks),
+  - `audioNotInEpub` — audio ranges ≥`--report-min-hole` (default 3 s) with no epub match
+    (ads, intros, disc breaks, stings, credits),
     with timestamps, the surrounding epub sentences, and the **whisper transcript of
     what's actually spoken there** — i.e. the ad copy itself, for a book split across
     files with GraphicAudio-style inserts.
@@ -368,6 +369,50 @@ python cli/bookforge-tts.py --generate-sentences --audio part2.mp3 --epub book.e
   EVERY positive gap and fills each with whisper cues (maximal ad-hunting; expect noise —
   sub-second slack between cues registers too, though slivers <0.5 s have no transcript
   segments to fill with).
+- `--report-min-hole <sec>` — **epub-align only**: how long an unmatched-audio range must
+  be to be **listed** in `audioNotInEpub` (default 3). Report-only, so it cannot change a
+  single cue — `--min-hole` still governs whisper-fallback filling. These used to be one
+  number, which meant the only way to SEE a 4-second sting or an unlisted credits read was
+  to lower the threshold that also injects ASR cues into the VTT. Each entry now carries
+  `filledWithAsrCues` saying which of the two thresholds it cleared.
+
+### Boundary accuracy (epub-align, 2026-09-03)
+
+Two changes to where a cue *starts and stops*, which is all a training-corpus cutter
+actually consumes. Both are on by default and both have an off switch.
+
+- **Paragraph-aware ebook segmentation.** `extractTextFromXhtml` preserves block structure
+  (every `</p>`, `</h1-6>`, `</li>` becomes a blank line); the sentence splitter used to
+  throw all of it away before splitting on punctuation. Publishers set headings as
+  unpunctuated blocks — `<p class="pn">Part I</p>`, `<p class="cn">1</p>` — so the
+  punctuation split could not see them and glued each onto the prose that followed:
+  *"Part I Ohio Born and Molded 1 William McKinley, Ohioan It is generally believed by
+  strangers that…"* as one 24-second cue. Now blocks split first and sentences split
+  within them, so a heading gets its own cue tagged `NOTE heading` in the VTT (same
+  mechanism as `NOTE asr-fallback`; a WebVTT NOTE is a comment every conformant parser
+  skips). A cutter drops those cues instead of guessing from the text.
+  `--no-paragraph-split` restores punctuation-only segmentation.
+- **Silence snapping.** `--snap-silence <sec>` (default 0.6, `--no-snap-silence` to
+  disable) pulls each cue *seam* onto the middle of the nearest detected silence within
+  that window. Forced alignment puts the seam at a CTC frame, which lands a couple hundred
+  ms early (clipping a word's tail) or late (leaking the next word's onset); the
+  narrator's pause is where the cut belongs, and its middle leaves maximum margin on both
+  sides. The window bounds the move, so a snap can correct a frame-level boundary but can
+  never manufacture drift — and seams that already sit in a silence, cues separated by a
+  gap, and books whose silence map comes back empty are all left alone. The map is scanned
+  off the already-decoded 16 kHz wav on a background thread during the align stage, so it
+  costs no wall clock. `boundarySnap` in the report records the window, the interval count,
+  and how many seams moved how far.
+
+Measure it with `tools/vtt-boundary-metric.py`, which needs no labels — it scores what
+fraction of cue boundaries land in a silence, using an ffmpeg `silencedetect` map of the
+same audio:
+
+```bash
+ffmpeg -i book.flac -af silencedetect=noise=-45dB:d=0.6 -f null - 2> silences.log
+python tools/vtt-boundary-metric.py --vtt after.vtt --compare before.vtt \
+    --silences silences.log --epub book.epub
+```
 
 ## PDF → EPUB conversion (`--generate-epub`)
 
