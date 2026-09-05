@@ -9001,6 +9001,71 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
 }
 
 /**
+ * THE LAST BRACE-BALANCED JSON VALUE IN A STDOUT BUFFER.
+ *
+ * narrator's `app.py` door prints its result as `json.dumps(result, indent=2)` —
+ * pretty-printed, so it spans lines — and e2a's `app.py:278` did the same. The
+ * readers here used to scan stdout LINE BY LINE calling `JSON.parse` on each and
+ * taking the first that parsed. Against an indented object no line is valid JSON
+ * on its own, so `--resume_session` always fell through to "Failed to parse
+ * resume check output" and `--list_sessions` was documented as "human-readable
+ * (not JSON)" and hard-coded to return an empty list.
+ *
+ * Scanning for balance instead reads either shape, and reads the LAST value
+ * rather than the first because a route may print warnings — `resume_session`
+ * prints `Warning: <compat>` lines before its result — and a warning that happens
+ * to contain a brace must not become the answer.
+ *
+ * Strings are tracked so a `{` or `]` inside a title or a path cannot unbalance
+ * the scan; escapes are honoured so a title ending in a backslash cannot swallow
+ * the closing quote.
+ */
+function lastJsonValue(stdout: string, open: '{' | '['): any {
+  const close = open === '{' ? '}' : ']';
+  for (let start = stdout.lastIndexOf(open); start >= 0; start = stdout.lastIndexOf(open, start - 1)) {
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let i = start; i < stdout.length; i++) {
+      const ch = stdout[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') { inString = true; continue; }
+      if (ch === open) depth++;
+      else if (ch === close) {
+        depth--;
+        if (depth === 0) {
+          try {
+            return JSON.parse(stdout.slice(start, i + 1));
+          } catch {
+            // A balanced span that is not JSON (a Python repr in a log line, say).
+            // Keep walking left rather than giving up on the whole buffer.
+          }
+          break;
+        }
+      }
+    }
+    if (start === 0) break;
+  }
+  return null;
+}
+
+/** The last complete JSON OBJECT printed on stdout, or null. */
+function lastJsonObject(stdout: string): any {
+  return lastJsonValue(stdout, '{');
+}
+
+/** The last complete JSON ARRAY printed on stdout, or null. */
+function lastJsonArray(stdout: string): any[] | null {
+  const v = lastJsonValue(stdout, '[');
+  return Array.isArray(v) ? v : null;
+}
+
+/**
  * Check if a session can be resumed (detailed check with subprocess)
  * Accepts either an epub path (will search for matching session) or a session path
  * Calls e2a's --resume_session to scan for completed sentences
@@ -9017,24 +9082,27 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     sessionPath = foundSession;
   }
 
-  const appPath = path.join(getDefaultE2aPath(), 'app.py');
+  // Engine-agnostic, like assembly: it reads session-state.json and counts files
+  // on disk. `compat/app.py` routes `--resume_session` before any engine
+  // resolution, so passing an engine would only decide which multi-gigabyte
+  // environment to start a filesystem scan in — which is why buildNarratorSpawn
+  // REFUSES one on this phase rather than ignoring it.
+  const plan = buildNarratorSpawn({
+    phase: 'resume',
+    args: ['--headless', '--resume_session', sessionPath],
+    envExtras: {},
+    cwdHint: getDefaultE2aPath(),
+  });
 
-  const args = [
-    ...pythonInvocation().args,
-    appPath,
-    '--headless',
-    '--resume_session', sessionPath
-  ];
-
-  console.log('[PARALLEL-TTS] Checking resume status:', sessionPath);
+  console.log('[PARALLEL-TTS] Checking resume status:', sessionPath, '→', plan.describe());
 
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
 
-    const resumeCheckProcess = spawn(pythonInvocation().command, args, {
-      cwd: getDefaultE2aPath(),
-      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+    const resumeCheckProcess = spawn(plan.command, plan.args, {
+      cwd: plan.cwd,
+      env: plan.env,
     });
 
     resumeCheckProcess.stdout?.on('data', (data: Buffer) => {
@@ -9048,13 +9116,20 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     resumeCheckProcess.on('close', (code: number | null) => {
       if (code === 0) {
         try {
-          // Find the JSON output in stdout
-          const lines = stdout.split('\n').filter(l => l.trim());
-          for (let i = lines.length - 1; i >= 0; i--) {
-            try {
-              const parsed = JSON.parse(lines[i]);
-              if (parsed.success !== undefined) {
-                // Map e2a's snake_case to camelCase
+          // THE RESULT IS PRETTY-PRINTED, so it is not on one line.
+          //
+          // This used to walk the lines backwards calling JSON.parse on each and
+          // taking the first that parsed with a `success` key. Against
+          // `json.dumps(result, indent=2)` — which is what both e2a's app.py:278
+          // and narrator's `_print_app_result` write — NO line is valid JSON on
+          // its own, so the loop always fell through to "Failed to parse resume
+          // check output". `lastJsonObject` scans for a brace-balanced object
+          // instead, which reads either shape.
+          const parsed = lastJsonObject(stdout);
+          {
+            {
+              if (parsed && parsed.success !== undefined) {
+                // Map narrator's snake_case to camelCase
                 const result: ResumeCheckResult = {
                   success: parsed.success,
                   complete: parsed.complete,
@@ -9078,8 +9153,6 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
                 resolve(result);
                 return;
               }
-            } catch {
-              continue;
             }
           }
           resolve({ success: false, error: 'Failed to parse resume check output' });
@@ -9113,23 +9186,21 @@ export async function listResumableSessions(): Promise<Array<{
   language?: string;
   voice?: string;
 }>> {
-  const appPath = path.join(getDefaultE2aPath(), 'app.py');
-
-  const args = [
-    ...pythonInvocation().args,
-    appPath,
-    '--headless',
-    '--list_sessions'
-  ];
+  const plan = buildNarratorSpawn({
+    phase: 'list',
+    args: ['--headless', '--list_sessions'],
+    envExtras: {},
+    cwdHint: getDefaultE2aPath(),
+  });
 
   console.log('[PARALLEL-TTS] Listing resumable sessions');
 
   return new Promise((resolve) => {
     let stdout = '';
 
-    const listProcess = spawn(pythonInvocation().command, args, {
-      cwd: getDefaultE2aPath(),
-      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
+    const listProcess = spawn(plan.command, plan.args, {
+      cwd: plan.cwd,
+      env: plan.env,
     });
 
     listProcess.stdout?.on('data', (data: Buffer) => {
@@ -9137,10 +9208,30 @@ export async function listResumableSessions(): Promise<Array<{
     });
 
     listProcess.on('close', () => {
-      // Parse the human-readable output (not JSON for --list_sessions)
-      // For now, return empty - this is optional functionality
-      console.log('[PARALLEL-TTS] List sessions output:', stdout);
-      resolve([]);
+      // IT IS JSON, and it always was. This said "human-readable output (not
+      // JSON for --list_sessions)", logged the stdout and resolved `[]` — so the
+      // list has been empty for as long as the comment has been wrong.
+      // `session_store.list_resumable_sessions` returns a list of dicts and
+      // `route_list_sessions` prints `json.dumps(sessions, indent=2)`, exactly as
+      // e2a's handlers.py:31-34 did.
+      const rows = lastJsonArray(stdout);
+      if (!rows) {
+        console.warn('[PARALLEL-TTS] list_sessions produced no JSON array:', stdout.slice(0, 400));
+        resolve([]);
+        return;
+      }
+      resolve(rows.map((r: any) => ({
+        sessionId: r.session_id,
+        sessionDir: r.session_dir,
+        title: r.title,
+        totalSentences: r.total_sentences,
+        completedSentences: r.completed_sentences,
+        missingSentences: r.missing_sentences,
+        progressPercent: r.progress_percent,
+        createdAt: r.created_at,
+        language: r.language,
+        voice: r.voice,
+      })));
     });
 
     listProcess.on('error', () => {

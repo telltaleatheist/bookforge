@@ -2613,8 +2613,8 @@ function sendProgress(
  * environment does not change under a running app.
  *
  * `customTmpPath` is accepted and ignored: it named an e2a install to look beside,
- * and there is no longer an e2a install. Kept so the IPC caller does not have to
- * change shape in the same commit.
+ * and there is no longer an e2a install. Kept so a caller that still holds a tmp
+ * path does not have to be rewritten to ask this question.
  */
 let narratorReadyCache: boolean | null = null;
 
