@@ -43,7 +43,6 @@
  */
 
 import { app } from 'electron';
-import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import {
@@ -356,25 +355,19 @@ export function getNarratorMlxEnv(): string {
 }
 
 /**
- * Directories where conda keeps its named environments, best-effort: derived from the
- * resolved conda executable's base, the user's ~/.conda, and CONDA_ENVS_DIRS/PATH.
- * Empty when we can't locate a real conda install (e.g. conda is only a bare command
- * on PATH). Exported for the one-time tools-env migration in tool-paths.ts, which
- * has to find a conda env by NAME to record its prefix.
+ * NO NAMED-ENV ARM ANY MORE, and that is a deletion worth naming.
+ *
+ * `resolveCondaEnv` used to have a third kind beside 'relocatable' and 'prefix':
+ * a conda env resolved BY NAME (`conda run -n ebook2audiobook`), reached when no
+ * prefix env existed inside the checkout. It is how Owen's Mac ran every tools
+ * door — that machine has the env under a name and no `python_env` folder to
+ * find. It is gone because a name is not a location: two conda installs on one
+ * machine can both answer to it, and which one `conda run -n` picks depends on
+ * the conda that happens to resolve first.
+ *
+ * The Mac keeps working because `adoptLegacyToolsEnv` (tool-paths.ts) records
+ * that env's PREFIX once, so it becomes a stated `toolsEnvPath` like any other.
  */
-export function condaEnvsDirs(): string[] {
-  const dirs: string[] = [];
-  const condaExe = getCondaPath();
-  // .../base/bin/conda  ·  .../base/condabin/conda(.bat)  ·  ...\Scripts\conda.exe
-  // → strip the executable and its bin/Scripts/condabin dir to get the conda base.
-  if (condaExe && condaExe !== 'conda' && fs.existsSync(condaExe)) {
-    dirs.push(path.join(path.dirname(path.dirname(condaExe)), 'envs'));
-  }
-  dirs.push(path.join(os.homedir(), '.conda', 'envs'));
-  const envVar = process.env.CONDA_ENVS_DIRS || process.env.CONDA_ENVS_PATH;
-  if (envVar) for (const d of envVar.split(path.delimiter)) if (d.trim()) dirs.push(d.trim());
-  return dirs;
-}
 
 export interface PythonInvocation {
   command: string;
