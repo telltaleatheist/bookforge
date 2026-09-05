@@ -267,9 +267,9 @@ class V3TestCase(unittest.TestCase):
         return HiggsV3Config(**kwargs)
 
     def quiet_config(self, **kwargs):
-        """A config whose load runs no tail-trim probe - for the tests that are
-        counting requests or asserting seeds."""
-        kwargs.setdefault('probe_tail_trim', False)
+        """A config whose load runs no sentinel-filter probe - for the tests
+        that are counting requests or asserting seeds."""
+        kwargs.setdefault('probe_sentinel_filter', False)
         return self.config(**kwargs)
 
 
@@ -512,7 +512,7 @@ class CheckpointVoiceTest(V3TestCase):
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         with self.assertRaises(ValueError) as caught:
             engine.set_voice('another-voice')
@@ -530,7 +530,7 @@ class CheckpointVoiceTest(V3TestCase):
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.render_audio('It was a Saturday morning.')
         self.assertNotIn('references', self.server.requests[-1])
@@ -709,7 +709,7 @@ class ServedSamplingTest(V3TestCase):
         voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         kwargs.setdefault('base_url', self.server.base_url)
-        kwargs.setdefault('probe_tail_trim', False)
+        kwargs.setdefault('probe_sentinel_filter', False)
         return HiggsV3Config(voice=voice, **kwargs)
 
     def test_base_weights_state_the_sampling_in_extra_params(self):
@@ -981,9 +981,9 @@ class EngineTest(V3TestCase):
         self.assertIsNone(codec.streaming_decoder(lambda a, b: None))
 
     def test_the_codec_refuses_to_decode_because_the_server_did(self):
-        """The patched server already trimmed the sentinel tail BY CONTENT
-        (work/patch_tail_trim.py); a second client-side trim would eat speech,
-        and there are no tokens on this side anyway."""
+        """The patched server already dropped every sentinel frame BY TOKEN
+        IDENTITY (work/patch_sentinel_filter.py); a second client-side trim
+        would eat speech, and there are no tokens on this side anyway."""
         engine = HiggsV3Engine(self.config())
         self.addCleanup(engine.cleanup)
         with self.assertRaises(NotImplementedError) as caught:
@@ -1225,43 +1225,335 @@ class ServerIdentityTest(V3TestCase):
         self.assertIn('cannot be identified', str(caught.exception))
 
 
-class TailTrimProbeTest(V3TestCase):
-    """The patch that fails SILENTLY. See probe_tail_trim's docstring."""
+class SentinelFilterProbeTest(V3TestCase):
+    """A SENSOR, not a gate. See probe_sentinel_filter's docstring.
 
-    def test_a_patched_server_passes(self):
-        """Our smoke measured -62.4 dBFS over the last 300 ms; the fake's
-        silence-tailed wav is quieter still."""
+    The gate this replaces (-45 dBFS over the last 300 ms) was valid against the
+    retired band-aid and is invalid under patch_sentinel_filter.py: the filter
+    removes the sentinel frames rather than quieting them, so the window holds
+    the model's own audio and the certifying box read -35..-38 dBFS on BOTH
+    builds. These tests pin that the probe MEASURES and does not refuse on the
+    level - a re-introduced threshold fails here.
+    """
+
+    def test_the_probe_measures_and_returns_the_tail_level(self):
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        dbfs = backend.probe_tail_trim(self.voice())
-        self.assertLess(dbfs, v3_served.HiggsV3ServedBackend.TAIL_TRIM_MAX_DBFS)
+        dbfs = backend.probe_sentinel_filter(self.voice())
+        self.assertIsInstance(dbfs, float)
+        self.assertLess(dbfs, 0.0, 'dBFS is a level below full scale')
 
-    def test_an_unpatched_server_is_refused_by_name(self):
-        """Reproduce the defect's signature: ~250 ms of the ramp-down sentinels
-        decoded as real sound at about -30 dB on the end of the clip."""
+    def test_a_LOUD_tail_is_reported_and_NOT_refused(self):
+        """The old gate's failing case: ~250 ms at about -30 dB on the end.
+
+        Under the sentinel filter that level says nothing about the patch - the
+        certified server measures -35..-38 dBFS here, which is inside the same
+        neighbourhood - so refusing on it would fail correct servers. It is
+        reported instead.
+        """
         self.server.httpd.tail_burst_dbfs = -30.0
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        with self.assertRaises(HiggsV3ServerError) as caught:
-            backend.probe_tail_trim(self.voice())
-        message = str(caught.exception)
-        self.assertIn('tail-trim probe FAILED', message)
-        self.assertIn('patch_tail_trim.py', message)
+        dbfs = backend.probe_sentinel_filter(self.voice())
+        self.assertGreater(dbfs, -35.0, 'the fixture did not produce a loud tail')
 
-    def test_the_gate_sits_between_the_two_measured_states(self):
-        gate = v3_served.HiggsV3ServedBackend.TAIL_TRIM_MAX_DBFS
-        self.assertLess(-62.4, gate, 'a patched server must pass')
-        self.assertLess(gate, -31.0, 'an unpatched server must fail')
+    def test_a_200_with_no_audio_IS_refused(self):
+        """The one thing left that is decidable rather than a level."""
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+        real = v3_served.decode_response
+        v3_served.decode_response = lambda body, ctype=None: (np.zeros(0, dtype=np.float32), 24000)
+        try:
+            with self.assertRaises(HiggsV3ServerError) as caught:
+                backend.probe_sentinel_filter(self.voice())
+        finally:
+            v3_served.decode_response = real
+        self.assertIn('produced no audio', str(caught.exception))
+
+    def test_no_level_threshold_survives(self):
+        """The gate is gone by NAME, not merely unused: a constant called
+        MAX_DBFS is how one comes back."""
+        backend = v3_served.HiggsV3ServedBackend
+        self.assertFalse([n for n in dir(backend) if n.endswith('MAX_DBFS')])
+        low, high = backend.SENTINEL_TAIL_CERTIFIED_DBFS
+        self.assertLess(low, high)
+        self.assertEqual((low, high), (-38.0, -35.0),
+                         'the certified band is what the box measured on both builds')
 
     def test_the_engine_runs_the_probe_at_load(self):
         engine = HiggsV3Engine(self.config())
         self.addCleanup(engine.cleanup)
         bodies = [r for r in self.server.requests
-                  if r['input'] == v3_served.HiggsV3ServedBackend.TAIL_TRIM_PROBE_TEXT]
+                  if r['input'] == v3_served.HiggsV3ServedBackend.SENTINEL_PROBE_TEXT]
         self.assertEqual(len(bodies), 1, 'exactly one probe render per load')
 
     def test_the_probe_can_be_turned_off(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         self.assertEqual(self.server.requests, [])
+
+
+class SentinelProofTest(V3TestCase):
+    """PROOF (a) OF THE SENTINEL FILTER: the server's own log, READ.
+
+    The patch's two halves are proved in two different places. (b) "no one-frame
+    trim left in the stage processor" is a static grep BookForge's Higgs doctor
+    runs before any server starts. (a) is this: the decode path says what it did,
+    in the server's log - and until 2026-09-05 narrator threw that away on
+    `subprocess.DEVNULL`, which is why the TODO existed.
+
+    THE FIXTURES ARE LOG LINES because that is the interface. vLLM's logger emits
+    `WARNING <date> [<file>:<line>] <message>`; on the certified build the three
+    lines the filter can write are `higgs_audio_v3.py:403` (the trailing ramp),
+    `:126` (a sync interior drop) and `:119` (a chunk with no audio at all). The
+    matching is on the MESSAGE, not on the line number - a number is a property
+    of the patch's layout and the queued one-line fix for the count below moves
+    all three - so these fixtures carry a locator that is deliberately NOT what
+    is matched.
+    """
+
+    # A CLEAN chunk, and it is not zero frames: the patch counts out-of-range
+    # frames BEFORE it trims the trailing run, so it counts the model's normal
+    # 2-frame EOC ramp and mislabels it "outside the trailing run".
+    ASYNC_2 = ('WARNING 09-05 12:00:01 [higgs_audio_v3.py:403] higgs_audio_v3 '
+               '(async): 2 frame(s) carry a stream sentinel outside the trailing run')
+    ASYNC_3 = ('WARNING 09-05 12:00:02 [higgs_audio_v3.py:403] higgs_audio_v3 '
+               '(async): 3 frame(s) carry a stream sentinel outside the trailing run')
+    SYNC_INTERIOR = ('WARNING 09-05 12:00:03 [higgs_audio_v3.py:126] higgs_audio_v3 '
+                     '(sync): 1 interior sentinel frame(s) dropped (248/249 frames '
+                     'kept) -- this is not an expected shape')
+    EMPTY_CHUNK = ('WARNING 09-05 12:00:04 [higgs_audio_v3.py:119] higgs_audio_v3 '
+                   '(sync): every frame carried a stream sentinel; emitting no audio '
+                   'for this chunk')
+    NOISE = 'INFO 09-05 12:00:00 [api_server.py:1] Started server process [1234]'
+
+    def write_log(self, *lines):
+        path = os.path.join(self.dir, 'serve_current.log')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n')
+        return path
+
+    def attached_to(self, path):
+        """A backend in ATTACH mode whose log the OPERATOR named.
+
+        Through the documented door - the environment variable - rather than by
+        setting the attribute, so what is tested is the contract an operator has.
+        """
+        if path is not None:
+            os.environ[v3_served.SERVER_LOG_ENV] = path
+        else:
+            os.environ.pop(v3_served.SERVER_LOG_ENV, None)
+        self.addCleanup(os.environ.pop, v3_served.SERVER_LOG_ENV, None)
+        return HiggsV3ServedBackend(base_url=self.server.base_url)
+
+    def test_a_log_of_two_frame_lines_PASSES_and_reports_what_it_read(self):
+        path = self.write_log(self.NOISE, self.ASYNC_2, self.NOISE, self.ASYNC_2,
+                              self.ASYNC_2)
+        report = self.attached_to(path).verify_sentinel_filter()
+        self.assertEqual(report['log'], path)
+        self.assertEqual(report['trailingRampLines'], 3)
+        self.assertEqual(report['framesPerLine'], 2)
+        self.assertEqual(report['syncInteriorDrops'], 0)
+        self.assertEqual(report['linesRead'], 5)
+
+    def test_a_THREE_frame_line_is_refused_BY_NAME(self):
+        """Any count but 2 is a sentinel the trailing-run trim did not reach -
+        and those frames were substituted with codec code 0, a VALID code that
+        decodes to real sound."""
+        path = self.write_log(self.ASYNC_2, self.ASYNC_3)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('sentinel proof FAILED', message)
+        self.assertIn('3 sentinel frame(s)', message)
+        self.assertIn(path, message)
+        self.assertIn('higgs_audio_v3.py:403', message,
+                      'the offending line itself must be quoted back')
+
+    def test_NO_LOG_AT_ALL_is_refused_the_proof_needs_the_stream(self):
+        """An attached server whose operator named nothing. narrator will not
+        guess a path: a stale log from an earlier run would let this pass on
+        evidence from a server that is no longer up."""
+        backend = self.attached_to(None)
+        self.assertIsNone(backend.proof_log())
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('no server log to read', message)
+        self.assertIn(v3_served.SERVER_LOG_ENV, message)
+        self.assertIn('serve_current.log', message,
+                      'the refusal should say where the training side tees')
+
+    def test_a_NAMED_log_that_does_not_exist_is_refused_too(self):
+        missing = os.path.join(self.dir, 'nothing-here.log')
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(missing).verify_sentinel_filter()
+        self.assertIn('could not be read', str(caught.exception))
+        self.assertIn(missing, str(caught.exception))
+
+    def test_a_SYNC_interior_drop_is_refused(self):
+        """The sync path takes the FULL filter, so an interior drop is a frame
+        that failed the token test between two good ones - never observed
+        offline, and a hole in the middle of that chunk's audio."""
+        path = self.write_log(self.ASYNC_2, self.SYNC_INTERIOR)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('SYNC path', message)
+        self.assertIn('INTERIOR', message)
+        self.assertIn('higgs_audio_v3.py:126', message)
+
+    def test_a_chunk_with_no_audio_at_all_is_refused(self):
+        path = self.write_log(self.EMPTY_CHUNK)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        self.assertIn('NO audio', str(caught.exception))
+
+    def test_a_log_with_no_sentinel_lines_at_all_PASSES(self):
+        """Zero ramp lines is not a failure. The refusals here are "a count that
+        is not 2" and "there is no stream"; requiring a line would make the proof
+        depend on how many chunks happened to be rendered before it ran."""
+        report = self.attached_to(self.write_log(self.NOISE)).verify_sentinel_filter()
+        self.assertEqual(report['trailingRampLines'], 0)
+
+    def test_the_engine_says_UNAVAILABLE_rather_than_passing_silently(self):
+        """Attached, no named log: `load_engine` must not call the proof, and
+        must not report success either. "Not proved" and "proved" have to look
+        different in a run log."""
+        backend = self.attached_to(None)
+        self.assertIsNone(backend.proof_log())
+        lines = []
+        real = v3_served.log
+        v3_served.log = lambda *a, **k: lines.append(a[0] if a else '')
+        try:
+            engine = HiggsV3Engine(self.config())
+            self.addCleanup(engine.cleanup)
+        finally:
+            v3_served.log = real
+        # The engine logs through its own module, so assert on the outcome that
+        # matters: the load did not raise, and the backend it built has no proof
+        # stream to read.
+        self.assertIsNone(engine.server.proof_log())
+
+
+class ServerLogIsOwnedTest(V3TestCase):
+    """The server's output goes to a FILE THIS BACKEND OWNS, never DEVNULL.
+
+    The regression this pins is the one that made proof (a) impossible: both
+    streams went to `subprocess.DEVNULL`, so the sentinel filter's own report of
+    what it did was discarded, and `wait_ready`'s "check its log" pointed at
+    nothing.
+    """
+
+    def launching_backend(self, **kwargs):
+        """A backend in LAUNCH mode against a port nothing answers, so `start()`
+        launches rather than adopting."""
+        dead = FakeV3Server(healthy=False)
+        self.addCleanup(dead.close)
+        backend = HiggsV3ServedBackend(
+            base_url=dead.base_url, serve_script='/campaign/serve_v3.sh', **kwargs)
+        self.addCleanup(backend._close_log)
+        return backend
+
+    def start_capturing_popen(self, backend):
+        """Run `start()` with Popen replaced, and return its kwargs."""
+        import subprocess
+        seen = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            def poll(self):
+                return 0                     # so _read_guest_pid returns at once
+
+        def fake_popen(command, **kwargs):
+            seen.update(kwargs)
+            seen['command'] = command
+            return _FakeProc()
+
+        # The pid read is stubbed as well: it shells out through
+        # `subprocess.run`, which would go through the fake Popen too and has
+        # nothing to do with what this test is about (which handles the LAUNCH
+        # call is given).
+        real = subprocess.Popen
+        subprocess.Popen = fake_popen
+        backend._read_guest_pid = lambda *a, **k: None
+        try:
+            backend.start()
+        finally:
+            subprocess.Popen = real
+        return seen
+
+    def test_both_streams_go_to_the_backends_own_file(self):
+        import subprocess
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        seen = self.start_capturing_popen(backend)
+        self.assertIsNot(seen['stdout'], subprocess.DEVNULL,
+                         'the server log went to DEVNULL again')
+        self.assertEqual(getattr(seen['stdout'], 'name', None), path)
+        self.assertIs(seen['stderr'], subprocess.STDOUT,
+                      'vLLM logs to stderr; it has to be merged into the file')
+        self.assertTrue(os.path.exists(path))
+
+    def test_the_log_is_the_one_the_session_named_and_the_spec_reports_it(self):
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        self.assertEqual(backend.launch_log, path)
+        self.assertEqual(backend.proof_log(), path)
+        self.assertEqual(backend.spec.server_log, path)
+
+    def test_with_no_session_the_log_is_PER_INSTANCE_beside_the_pid_file(self):
+        """Two workers must never share one log, for the same reason they must
+        never share one pid file."""
+        one = self.launching_backend()
+        two = self.launching_backend()
+        self.assertNotEqual(one.launch_log, two.launch_log)
+        for backend in (one, two):
+            self.assertTrue(backend.launch_log.endswith('.log'))
+            self.assertIn('narrator-higgs3-', os.path.basename(backend.launch_log))
+
+    def test_an_ADOPTED_server_stops_claiming_our_log(self):
+        """`start()` adopts a server already on the port. That process's output
+        went wherever its own launcher sent it, so the file we would have
+        written is not the proof stream and the spec must stop naming it."""
+        os.environ.pop(v3_served.SERVER_LOG_ENV, None)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       serve_script='/campaign/serve_v3.sh')
+        self.assertEqual(backend.proof_log(), backend.launch_log)
+        backend.start()                      # the fake server is already healthy
+        self.addCleanup(backend._close_log)
+        self.assertIsNone(backend.proof_log())
+        self.assertIsNone(backend.spec.server_log)
+
+    def test_the_loaded_message_carries_the_server_log(self):
+        from narrator.serve.worker import _server_log_of
+        path = self.write_named_log()
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        self.assertEqual(_server_log_of(engine), path)
+
+    def write_named_log(self):
+        path = os.path.join(self.dir, 'serve_current.log')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('')
+        os.environ[v3_served.SERVER_LOG_ENV] = path
+        self.addCleanup(os.environ.pop, v3_served.SERVER_LOG_ENV, None)
+        return path
+
+    def test_an_in_process_engine_reports_no_server_log(self):
+        from narrator.engine.protocol import BackendSpec
+        from narrator.serve.worker import _server_log_of
+
+        class _InProcess:
+            def backend_spec(self):
+                return BackendSpec(kind='inprocess', name='mlx')
+
+        self.assertIsNone(_server_log_of(_InProcess()))
+        self.assertIsNone(_server_log_of(object()))
+
+    def test_an_in_process_spec_may_not_carry_a_server_log(self):
+        from narrator.engine.protocol import BackendSpec
+        with self.assertRaises(ValueError) as caught:
+            BackendSpec(kind='inprocess', name='mlx', server_log='/a/b.log')
+        self.assertIn('server_log', str(caught.exception))
 
 
 class FailedLoadReleasesTheServerTest(V3TestCase):
@@ -1283,7 +1575,11 @@ class FailedLoadReleasesTheServerTest(V3TestCase):
         self.assertTrue(stopped, 'a failed load must stop the server it started')
 
     def test_a_failed_probe_also_stops_it(self):
-        self.server.httpd.tail_burst_dbfs = -30.0
+        # The probe no longer refuses on a LEVEL (see SentinelFilterProbeTest),
+        # so the failure driven here is the probe RENDER failing - which is what
+        # this test was always about: anything that raises after start() must
+        # stop the ~14 GB server rather than leak it.
+        self.server.httpd.error = (500, 'probe render exploded')
         stopped = []
         real_stop = HiggsV3ServedBackend.stop
         HiggsV3ServedBackend.stop = lambda self, *a, **k: stopped.append(True)
@@ -1413,7 +1709,7 @@ class SeedRuleTest(V3TestCase):
     def test_chunk_i_renders_with_seed_plus_i(self):
         """Rendering every sentence at a flat seed makes a whole book of
         identical draws for identical text."""
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.generate_batch_stream(['One.', 'Two.', 'Three.'], None, None, None,
                                      lambda i, pcm: None)
@@ -1421,7 +1717,7 @@ class SeedRuleTest(V3TestCase):
         self.assertEqual(seeds, [1234, 1235, 1236])
 
     def test_convert_seeds_by_sentence_number(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False,
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False,
                                            sentences_dir=self.dir))
         self.addCleanup(engine.cleanup)
         engine.convert(7, 'Hello.')
@@ -1478,13 +1774,34 @@ class WindowsLaunchTest(_LaunchTestBase):
             serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
         command = backend.launch_command()
         self.assertTrue(command[0].endswith('wsl.exe'), command)
-        self.assertEqual(command[1:5], ['-d', 'Ubuntu', 'bash', '-c'])
-        self.assert_wrapper(command[5], backend, '/mnt/c/campaign/serve_v3.sh')
+        self.assertEqual(command[1:6], ['-d', 'Ubuntu', '--exec', 'bash', '-c'])
+        self.assert_wrapper(command[6], backend, '/mnt/c/campaign/serve_v3.sh')
+
+    def test_the_wrapper_runs_WITHOUT_the_distros_default_shell(self):
+        """`--exec`, and it is the difference between a pid file and an empty one.
+
+        Without it wsl.exe runs the command line through the distro's default
+        shell, which expands `$!` before bash sees the wrapper - so the pid file
+        is written EMPTY and `wait $!` becomes a bare `wait`. Measured on
+        owens-pc 2026-09-05 through this argv: bare -> `pid=[]`, `--` ->
+        `pid=[]`, `--exec` -> `pid=[42679]`. `stop()` then has no pid to signal
+        inside the distro, which is how a ~14 GB vllm-omni survives its own
+        teardown.
+        """
+        backend = HiggsV3ServedBackend(
+            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+        command = backend.launch_command()
+        self.assertIn('--exec', command, command)
+        # BEFORE the script, or the shell has already run by the time it applies.
+        self.assertLess(command.index('--exec'), command.index('-c'))
+        self.assertNotIn('--', command,
+                         "`--` is not a substitute: it stops wsl.exe parsing its "
+                         'own options and still runs the default shell')
 
     def test_a_script_inside_the_distro_is_not_mangled(self):
         backend = HiggsV3ServedBackend(
             serve_script=r'\\wsl$\Ubuntu\home\telltale\serve_v3.sh')
-        self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[5])
+        self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[-1])
 
     def test_stop_signals_the_guest_pid_when_the_server_outlives_wsl_exe(self):
         """Terminating wsl.exe kills the Windows-side relay; the guest process
@@ -1562,7 +1879,7 @@ class PosixLaunchTest(_LaunchTestBase):
 class SetVoiceTest(V3TestCase):
 
     def test_a_second_load_for_another_voice_is_refused_by_name(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         with self.assertRaises(ValueError) as caught:
             engine.set_voice('someone_else')
@@ -1571,12 +1888,12 @@ class SetVoiceTest(V3TestCase):
         self.assertIn('needs a NEW server', message)
 
     def test_reloading_the_same_voice_is_a_no_op(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.set_voice(engine.voice)
 
     def test_orpheus_caps_on_a_v3_load_are_refused(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine._apply_voice_caps('deathstalker', {})     # the pool's reset: a no-op
         with self.assertRaises(ValueError):
@@ -1864,7 +2181,7 @@ class VoiceDocumentShapesTest(V3TestCase):
         voice = self._load({'default': {'kind': 'default'}})['default']
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         audio = engine.render_audio('It was a Saturday morning.')
         self.assertGreater(audio.size, 0)

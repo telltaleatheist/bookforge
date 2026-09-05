@@ -457,6 +457,28 @@ def _uses_orpheus_token_pipeline(engine) -> bool:
     return getattr(engine, 'ENGINE_ID', None) == 'orpheus'
 
 
+def _server_log_of(engine):
+    """Where this engine's SERVER writes, or None - reported in `loaded`.
+
+    Only a 'served' backend has one (Higgs v3 under vllm-omni); every in-process
+    engine answers None, because its logs are this process's own. It is on the
+    wire because the log is EVIDENCE, not a debugging convenience: it is the
+    stream `v3_served.verify_sentinel_filter` reads to prove the sentinel-filter
+    patch is doing its job, so a tool or a ledger entry that wants to re-run
+    that proof - or just to say which file it was proved from - must be able to
+    find it without reconstructing a path.
+
+    NO FALLBACK and no invention: an engine that declares no `backend_spec` at
+    all, or one whose spec names no log, reports None. None means "narrator
+    neither started this server nor was told where its log is", which is a
+    different and honest answer.
+    """
+    spec_of = getattr(engine, 'backend_spec', None)
+    if not callable(spec_of):
+        return None
+    return getattr(spec_of(), 'server_log', None)
+
+
 def _edge_fade_of(engine):
     """The engine's EdgeFade, as the manifest and the pool see it.
 
@@ -1858,6 +1880,10 @@ class OrpheusStreamServer:
                     #   edgeFadeMs    the fade an ASSEMBLER must apply at each
                     #                 chunk edge before joining (Higgs 25, since
                     #                 a decoded edge sits near -30 dB and clicks)
+                    #   serverLog     for a SERVED backend, the file its server's
+                    #                 stdout+stderr go to - the stream the Higgs
+                    #                 v3 sentinel-filter proof reads. None for
+                    #                 every in-process engine.
                     send_response('loaded', {
                         'voice': self.current_voice,
                         'backend': self.backend,
@@ -1865,6 +1891,7 @@ class OrpheusStreamServer:
                         'sampleRate': active_samplerate(),
                         'pads': bool(getattr(self.orph, 'pads', True)),
                         'edgeFadeMs': _edge_fade_of(self.orph).as_manifest(),
+                        'serverLog': _server_log_of(self.orph),
                     })
             elif action == 'generate':
                 text = request.get('text', '')

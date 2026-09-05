@@ -754,7 +754,7 @@ export interface CompletedAudiobook {
  * What the Higgs doctor found. Mirrors electron/tool-paths' HiggsSetupResult.
  *
  * A LIST OF CHECKS, not a boolean plus a message. "The env exists, vllm-omni
- * imports, the tail-trim patch is missing" is a different problem from "there is
+ * imports, the sentinel-filter patch is missing" is a different problem from "there is
  * no WSL env", and the panel has to be able to say which — a single `valid: false`
  * with one string could not, and the patches in particular need naming because a
  * pip upgrade reverts them silently.

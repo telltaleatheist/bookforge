@@ -68,6 +68,12 @@ const SUITES = [
   // the spawn; this one is about which environment a machine is asked about, and
   // it drives every platform as a fixture.
   'test-higgs-doctor-arms',
+  // The wsl.exe argv trap: a script handed to wsl.exe without --exec is run
+  // through the distro's default shell, which expands every $ before bash sees
+  // it. That silently made the Higgs doctor report a correctly patched env as
+  // missing both patches (measured 2026-09-05). Half of this suite is pure and
+  // runs everywhere; the live half is win32-and-wsl-gated and skips by name.
+  'test-wsl-script-invocation',
   // 'test-orpheus-argv-snapshot' was here until 2026-09-04, and the file itself is
   // gone as of 2026-09-05. It pinned the five ebook2audiobook command lines; Phase
   // 3 replaced all five, so its anchors named code that no longer exists and it

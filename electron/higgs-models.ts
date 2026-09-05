@@ -262,6 +262,19 @@ export interface HiggsPatchSpec {
   script: string;
   target: string;
   marker: string;
+  /**
+   * A string the PATCHED file must NOT contain — the other half of the proof.
+   *
+   * A marker alone answers "did somebody apply something here". For the
+   * sentinel filter that is not enough, because the retired `patch_tail_trim.py`
+   * wrote one of the same helpers; what has to be true is that upstream's
+   * ONE-FRAME TRIM is gone. `[:, :-1]` occurs twice in the pristine stage
+   * processor and zero times after the filter patch (measured on the certifying
+   * box, vllm-omni 0.28.0, 2026-09-05), so marker-present plus this-absent is
+   * exactly "the token-identity filter is in and no trim code remains" — the
+   * half of the patch's proof that can be checked without rendering anything.
+   */
+  absentMarker?: string;
   why: string;
 }
 

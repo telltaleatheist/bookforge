@@ -811,7 +811,12 @@ export function checkWslOrpheusSetup(config: {
   }
 
   const errors: string[] = [];
-  const distroArg = config.distro ? `-d ${config.distro}` : '';
+  // The execSync string form of the ONE argv builder — see wslScriptArgs. These
+  // probes carry no `$` of their own, but their default paths do ($USER), and a
+  // probe that silently loses a `$` is exactly what broke the Higgs doctor, so
+  // they take the same route rather than being the three that still do not.
+  const wslPrefix = wslScriptArgs(config.distro, '').slice(0, -1).join(' ');
+  const wslLoginPrefix = wslPrefix.replace(/ -c$/, ' -lc');
 
   // Default paths if not specified
   const condaPath = config.condaPath || '/home/$USER/anaconda3/bin/conda';
@@ -825,7 +830,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check conda exists
     const condaCheck = execSync(
-      `wsl.exe ${distroArg} bash -c "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslPrefix} "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     condaFound = condaCheck.includes('found');
@@ -839,7 +844,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check e2a directory exists
     const e2aCheck = execSync(
-      `wsl.exe ${distroArg} bash -c "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslPrefix} "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     e2aFound = e2aCheck.includes('found');
@@ -855,7 +860,7 @@ export function checkWslOrpheusSetup(config: {
     // Use conda env list to check if the environment exists
     const condaBase = condaPath.replace(/\/bin\/conda$/, '');
     const orpheusCheck = execSync(
-      `wsl.exe ${distroArg} bash -lc "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslLoginPrefix} "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 15000, windowsHide: true }
     ).trim();
     orpheusEnvFound = orpheusCheck.includes('found');
@@ -966,6 +971,19 @@ export const HIGGS_PATCHES: ReadonlyArray<{
   id: string;
   relPath: string;
   marker: string;
+  /**
+   * A string the patched file must NOT contain — the other half of the proof.
+   *
+   * A marker alone answers "did somebody apply something here". For the
+   * sentinel filter that is not enough: the retired `patch_tail_trim.py` wrote
+   * one of the same helpers, and the thing that actually has to be true is that
+   * upstream's ONE-FRAME TRIM is gone. `[:, :-1]` occurs twice in the pristine
+   * stage processor and zero times after the filter patch (measured on the
+   * certifying box, vllm-omni 0.28.0, 2026-09-05), so marker-present plus
+   * this-absent is exactly "the token-identity filter is in and no trim code
+   * remains".
+   */
+  absentMarker?: string;
   why: string;
 }> = [
   {
@@ -978,13 +996,19 @@ export const HIGGS_PATCHES: ReadonlyArray<{
       'default voice can serve.',
   },
   {
-    id: 'higgs-tail-trim',
+    id: 'higgs-sentinel-filter',
     relPath: 'vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py',
-    marker: '_trim_trailing_sentinel_frames',
+    // NOT `_trim_trailing_sentinel_frames`: the patch writes that helper too, and
+    // so did the retired patch_tail_trim.py — grepping for it would certify a
+    // band-aided file as patched.
+    marker: '_filter_sentinel_frames',
+    absentMarker: '[:, :-1]',
     why:
       'Without it every rendered chunk ends with ~240 ms of audible garbage — the ' +
-      'ramp-down sentinels decode as real sound because they are substituted with ' +
-      'codec code 0 and only one frame is trimmed.',
+      'ramp-down sentinels are substituted with codec code 0, which is a VALID code ' +
+      'that decodes to real sound, and only one of the seven frames they smear ' +
+      'across is trimmed. The patch keeps a frame only when all 8 codebooks are in ' +
+      '[0, 1023], so nothing out of range reaches the codec at all.',
   },
 ];
 
@@ -992,15 +1016,66 @@ export const HIGGS_PATCHES: ReadonlyArray<{
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
 
 /**
+ * THE ARGV FOR RUNNING A SHELL SCRIPT INSIDE WSL — and the `--exec` is the whole
+ * point of this function existing.
+ *
+ * MEASURED ON owens-pc, 2026-09-05, through the SAME `spawn('wsl.exe', args)`
+ * the doctor uses:
+ *
+ *   ['-d','Ubuntu','bash','-c','f=hi; echo f=$f']            -> "f="     WRONG
+ *   ['-d','Ubuntu','--','bash','-c','f=hi; echo f=$f']       -> "f="     WRONG
+ *   ['-d','Ubuntu','--exec','bash','-c','f=hi; echo f=$f']   -> "f=hi"   right
+ *   ['-d','Ubuntu','-e','bash','-c','f=hi; echo f=$f']       -> "f=hi"   right
+ *
+ * WITHOUT `--exec`, `wsl.exe` hands the command line to the distro's DEFAULT
+ * SHELL first, so that shell expands every `$` before `bash -c` ever sees the
+ * script. A variable the script assigns to itself is unset in that outer shell,
+ * so it expands to EMPTY and the script runs with a hole in it. `$(...)`
+ * assigned to a variable goes the same way, and so does `$!`.
+ *
+ * `--` DOES NOT FIX IT, which is worth stating because it is the obvious guess:
+ * it stops wsl.exe parsing the rest as its own options, but the default shell
+ * still runs the command. `--exec` (`-e`) is the flag that means "no shell",
+ * and it is what `vlm-page-server.ts`, `cli/orpheus-batch-render.js` and
+ * `narrator/serve/__main__.py` were already using.
+ *
+ * WHAT IT COST: the Higgs doctor's patch probe is
+ * `f=$(ls <glob> | head -1); if [ -n "$f" ] ...`, so `$f` was always empty and
+ * BOTH patch rows reported "was not found in <env>" on a machine whose files
+ * were present AND correctly patched (sentinel marker present, `[:, :-1]`
+ * absent, sha 0b36f650 — the certifying server's own file). A doctor that
+ * reports a good env as broken sends someone to run Install/Repair over a
+ * working install, which on this box would have overwritten the patched
+ * site-packages file the current certificate is bound to.
+ *
+ * Anything passing a SCRIPT to wsl.exe goes through here. Passing an argv
+ * directly (`wsl.exe -d D cat /path`) is unaffected — there is no `$` for a
+ * shell to eat — and so is `bash -s` with the script on STDIN, which is why
+ * `wsl-mounts.ts` needs no change.
+ */
+export function wslScriptArgs(distro: string | undefined, script: string): string[] {
+  return [...(distro ? ['-d', distro] : []), '--exec', 'bash', '-c', script];
+}
+
+/**
  * The Higgs doctor's probe script and its result parsing, shared by the sync and
  * async entry points so the two can never disagree about what "green" means.
  */
 function higgsProbeScript(envPrefix: string): string {
+  // `grep -qF`, fixed-string: `absentMarker` is `[:, :-1]`, which as a BASIC
+  // REGULAR EXPRESSION is a bracket expression matching one character out of a
+  // set — it would match almost every line of the file and report every env as
+  // broken. The markers have no metacharacters today, but they are greppd the
+  // same way so that adding one later cannot quietly change what is being asked.
   const patchProbe = HIGGS_PATCHES.map(
     (p) =>
       `f=$(ls ${envPrefix}/lib/python*/site-packages/${p.relPath} 2>/dev/null | head -1); ` +
-      `if [ -n "$f" ] && grep -q '${p.marker}' "$f"; then echo 'patch:${p.id}=ok'; ` +
-      `elif [ -n "$f" ]; then echo 'patch:${p.id}=unpatched'; else echo 'patch:${p.id}=absent'; fi`,
+      `if [ -z "$f" ]; then echo 'patch:${p.id}=absent'; ` +
+      `elif ! grep -qF '${p.marker}' "$f"; then echo 'patch:${p.id}=unpatched'; ` +
+      (p.absentMarker
+        ? `elif grep -qF '${p.absentMarker}' "$f"; then echo 'patch:${p.id}=trim-survived'; `
+        : '') +
+      `else echo 'patch:${p.id}=ok'; fi`,
   ).join('; ');
   return [
     `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
@@ -1065,7 +1140,12 @@ function higgsChecksFrom(
           ? undefined
           : state === 'unpatched'
             ? `${p.relPath} is present but NOT patched. ${p.why} Re-run the Higgs installer — a pip upgrade in this env reverts it.`
-            : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
+            : state === 'trim-survived'
+              ? `${p.relPath} carries the patch marker "${p.marker}" AND still contains ` +
+                `"${p.absentMarker}", which the patch removes. That is a half-applied or ` +
+                `stacked state, not a patched one. Restore the file (reinstall the package) and ` +
+                `re-run the Higgs installer.`
+              : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
     });
   }
 
@@ -1119,9 +1199,7 @@ export function checkWslHiggsSetupAsync(config: {
     });
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const args = distro
-    ? ['-d', distro, 'bash', '-c', higgsProbeScript(envPrefix)]
-    : ['bash', '-c', higgsProbeScript(envPrefix)];
+  const args = wslScriptArgs(distro, higgsProbeScript(envPrefix));
 
   return new Promise((resolve) => {
     let out = '';
@@ -1168,7 +1246,7 @@ export function checkWslHiggsSetupAsync(config: {
  * than another spawn.
  *
  * EVERY CHECK IS REPORTED, PASS OR FAIL — the probe never short-circuits. "The
- * env exists, vllm-omni imports, the tail-trim patch is missing" is a different
+ * env exists, vllm-omni imports, the sentinel-filter patch is missing" is a different
  * problem from "there is no env", and a doctor that stopped at the first failure
  * would make them look the same.
  */
@@ -1186,13 +1264,18 @@ export function checkWslHiggsSetup(config: {
     };
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const distroArg = distro ? `-d ${distro}` : '';
+  // The SAME argv the async doctor builds, joined for execSync's command string.
+  // Built from wslScriptArgs so the two forms cannot drift on the one flag that
+  // decides whether the probe works at all — see that function.
   const script = higgsProbeScript(envPrefix);
+  const syncArgv = wslScriptArgs(distro, script)
+    .slice(0, -1)
+    .join(' ');
 
   let out = '';
   let probeError: string | null = null;
   try {
-    out = execSync(`wsl.exe ${distroArg} bash -c "${script.replace(/"/g, '\\"')}"`, {
+    out = execSync(`wsl.exe ${syncArgv} "${script.replace(/"/g, '\\"')}"`, {
       encoding: 'utf8',
       timeout: 30000,
       windowsHide: true,

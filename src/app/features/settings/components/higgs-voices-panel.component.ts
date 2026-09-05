@@ -64,7 +64,7 @@ interface HiggsCatalogVoice {
  * which is shown with its own reason.
  *
  * A green tick that hides which of the five it is would be worse than no page:
- * "the tail-trim patch is missing" and "there is no WSL distro" are both
+ * "the sentinel-filter patch is missing" and "there is no WSL distro" are both
  * `valid: false` and have nothing else in common.
  *
  * ── The rows are the DOCTOR'S, whichever arm ran ────────────────────────────

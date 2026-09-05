@@ -26,7 +26,7 @@
 # ── The two patches are not optional ────────────────────────────────────────
 #
 # Without patch_vllm.py, every voice-clone request returns HTTP 400 and only the
-# model's own default speaker can serve. Without patch_tail_trim.py, every
+# model's own default speaker can serve. Without patch_sentinel_filter.py, every
 # rendered chunk ends with ~240 ms of audible garbage. BOTH MUST BE RE-APPLIED
 # AFTER ANY PIP UPGRADE IN THIS ENV — an upgrade replaces the site-packages file
 # and silently reverts the patch, which is why the doctor greps for their markers
@@ -107,7 +107,7 @@ fi
 if [ ! -x "$PY" ]; then
   bad "vllm-omni=absent"
   bad "patch:vllm-negative-token-id=absent"
-  bad "patch:higgs-tail-trim=absent"
+  bad "patch:higgs-sentinel-filter=absent"
   bad "launcher=absent"
   bad "weights=absent"
   exit $fail
@@ -134,21 +134,29 @@ fi
 # ── 4. the two patches ──────────────────────────────────────────────────────
 # Marker-based, exactly as electron/tool-paths.ts HIGGS_PATCHES checks them, so a
 # green run here and a green doctor mean the same thing.
-check_patch() {  # id  relpath  marker
-  local id="$1" rel="$2" marker="$3"
+# grep -qF, FIXED STRING: the absent-marker is `[:, :-1]`, which as a basic
+# regular expression is a bracket expression matching a single character out of a
+# set and would match nearly every line.
+check_patch() {  # id  relpath  marker  [absent-marker]
+  local id="$1" rel="$2" marker="$3" absent="${4:-}"
   local f
   f=$(ls "$ENV_PREFIX"/lib/python*/site-packages/"$rel" 2>/dev/null | head -1)
   if [ -z "$f" ]; then bad "patch:$id=absent"; return 2; fi
-  if grep -q "$marker" "$f"; then say "patch:$id=ok"; return 0; fi
-  bad "patch:$id=unpatched"; return 1
+  if ! grep -qF "$marker" "$f"; then bad "patch:$id=unpatched"; return 1; fi
+  if [ -n "$absent" ] && grep -qF "$absent" "$f"; then
+    # Marker present AND the string the patch removes still there: half-applied
+    # or stacked, which is not patched.
+    bad "patch:$id=trim-survived"; return 3
+  fi
+  say "patch:$id=ok"; return 0
 }
 
 check_patch vllm-negative-token-id \
   "vllm/v1/engine/input_processor.py" "min_input_id != -100"
 p1=$?
-check_patch higgs-tail-trim \
+check_patch higgs-sentinel-filter \
   "vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py" \
-  "_trim_trailing_sentinel_frames"
+  "_filter_sentinel_frames" "[:, :-1]"
 p2=$?
 
 if [ "$CHECK_ONLY" = "0" ]; then
@@ -157,8 +165,8 @@ if [ "$CHECK_ONLY" = "0" ]; then
     "$PY" "$SCRIPT_DIR/patch_vllm.py" "$ENV_PREFIX" || exit 13
   fi
   if [ "$p2" != "0" ]; then
-    echo "== applying patch_tail_trim.py =="
-    "$PY" "$SCRIPT_DIR/patch_tail_trim.py" "$ENV_PREFIX" || exit 13
+    echo "== applying patch_sentinel_filter.py =="
+    "$PY" "$SCRIPT_DIR/patch_sentinel_filter.py" "$ENV_PREFIX" || exit 13
   fi
 fi
 

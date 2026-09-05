@@ -357,12 +357,23 @@ class BackendSpec:
                  and kill it - see ServedBackend.
 
     `base_url` is meaningful only for 'served'.
+
+    `server_log` is where that server's stdout+stderr are being written, and it
+    is meaningful only for 'served' too. It is carried HERE, on the spec the
+    `loaded` message reports, because the log is not a debugging convenience: it
+    is the stream the Higgs v3 sentinel-filter proof READS (v3_served
+    `verify_sentinel_filter`), so a tool or a ledger entry that wants to re-run
+    that proof has to be able to find the file without guessing a path. None
+    means narrator neither started this server nor was told where its log is -
+    an attached server with no `NARRATOR_HIGGS3_SERVER_LOG` - and the proof
+    reports itself unavailable rather than inventing a path.
     """
     kind: str
     name: str
     version: Optional[str] = None
     base_url: Optional[str] = None
     notes: str = ''
+    server_log: Optional[str] = None
 
     KINDS = ('inprocess', 'served')
 
@@ -379,6 +390,11 @@ class BackendSpec:
             raise ValueError(
                 f"BackendSpec(kind='inprocess', name={self.name!r}) carries a "
                 f'base_url ({self.base_url!r}); an in-process backend has no URL.')
+        if self.kind == 'inprocess' and self.server_log:
+            raise ValueError(
+                f"BackendSpec(kind='inprocess', name={self.name!r}) carries a "
+                f'server_log ({self.server_log!r}); an in-process backend has no '
+                'separate server, and its logs are this process\'s own.')
 
 
 @dataclass(frozen=True)
