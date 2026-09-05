@@ -89,6 +89,13 @@ class TableTest(unittest.TestCase):
             'Higgs has no --fine_tuned voice TOKEN - its voice is a CATALOG ID '
             'naming a fine-tuned adapter or a set of reference clips. e2a never '
             'had a Higgs engine, so it never had this flag.',
+        '--coverage_report':
+            'The report `narrator align --report` writes. An engine guarded by '
+            'post-render forced alignment (higgs-v3) refuses to assemble '
+            'without one, and this door had no way to supply it, so a v3 book '
+            'through --assemble_only would have read as "assembly is broken" '
+            'rather than "run align first". e2a had no such guard and so no '
+            'such flag. A no-op for orpheus.',
     }
 
     def test_the_table_adds_no_flag_e2a_never_had_except_the_declared_ones(self):
@@ -665,6 +672,70 @@ class RoutingTest(unittest.TestCase):
         # session.py:1310-1314 + handlers.py:138.
         self.assertIn('assemble_audiobook() Exception:', out)
         self.assertFalse(self.app_result(out)['success'])
+
+    def test_the_assembly_door_can_supply_a_coverage_report(self):
+        """Review finding 4: an engine guarded by post-render forced alignment
+        REFUSES to assemble without a coverage report, and this door had no way
+        to give it one - so a Higgs v3 book through `--assemble_only` would have
+        read as "assembly is broken" rather than "run align first".
+
+        Checked where it can be checked without an aligner: the flag parses,
+        and it arrives at `assemble()` as `coverage_report`.
+        """
+        from unittest import mock
+
+        out_dir = os.path.join(self.root, 'staging-coverage')
+        os.makedirs(out_dir, exist_ok=True)
+        report = os.path.join(self.root, 'coverage.json')
+        argv = ['--headless', '--assemble_only', '--session', 'x',
+                '--session_dir', self.session_dir, '--output_dir', out_dir,
+                '--tts_engine', 'xtts', '--coverage_report', report]
+        flagdef.reject_unknown(argv)
+        args = compat_app.build_parser().parse_args(argv)
+        self.assertEqual(args.coverage_report, report)
+
+        seen = {}
+
+        def fake_assemble(manifest, output_dir, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError('stop here - the wiring is what is under test')
+
+        import narrator.assemble.run as assemble_run
+        import narrator.render.session_v1 as session_v1
+        with mock.patch.object(assemble_run, 'assemble', fake_assemble),                 mock.patch.object(session_v1, 'build_manifest',
+                                  lambda *a, **k: object()):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                compat_app.dispatch(args, argv)
+        self.assertEqual(seen.get('coverage_report'), report)
+
+    def test_the_assembly_door_still_works_with_no_coverage_report(self):
+        """Orpheus is not guarded, so absence must stay the ordinary case -
+        `coverage_report=None` reaches `assemble()` and the gate no-ops."""
+        from unittest import mock
+
+        out_dir = os.path.join(self.root, 'staging-nocoverage')
+        os.makedirs(out_dir, exist_ok=True)
+        argv = ['--headless', '--assemble_only', '--session', 'x',
+                '--session_dir', self.session_dir, '--output_dir', out_dir,
+                '--tts_engine', 'xtts']
+        args = compat_app.build_parser().parse_args(argv)
+
+        seen = {}
+
+        def fake_assemble(manifest, output_dir, **kwargs):
+            seen.update(kwargs)
+            raise RuntimeError('stop here')
+
+        import narrator.assemble.run as assemble_run
+        import narrator.render.session_v1 as session_v1
+        with mock.patch.object(assemble_run, 'assemble', fake_assemble),                 mock.patch.object(session_v1, 'build_manifest',
+                                  lambda *a, **k: object()):
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                compat_app.dispatch(args, argv)
+        self.assertIn('coverage_report', seen)
+        self.assertIsNone(seen['coverage_report'])
 
     def test_the_inline_assembly_spawns_engine_literal_is_also_accepted(self):
         """`parallel-tts-bridge.ts:5164` + `:5199-5210`. Same literal, different

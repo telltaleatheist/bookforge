@@ -24,6 +24,7 @@ from . import cuda_env
 from .errors import TokenStreamMisaligned, is_fatal_cuda_error
 from .snac import (PAYLOAD_FRAMES, RIGHT_CONTEXT_FRAMES, TOKENS_PER_FRAME,
                    WindowedFrameEmitter)
+from ..log import log
 
 # Same platform conditions, same values, same ordering-before-torch as e2a.
 cuda_env.apply()
@@ -108,7 +109,7 @@ class VllmBackendMixin:
             random_port = random.randint(40000, 50000)
             os.environ['VLLM_RPC_PORT'] = str(random_port)
 
-        print(f"Loading Orpheus model with vLLM: {self.TRANSFORMERS_MODEL}")
+        log(f"Loading Orpheus model with vLLM: {self.TRANSFORMERS_MODEL}")
 
         # Load tokenizer (needed for prompt formatting with special tokens)
         self.tokenizer = AutoTokenizer.from_pretrained(self.TRANSFORMERS_MODEL)
@@ -121,10 +122,10 @@ class VllmBackendMixin:
 
         if disable_eager:
             use_eager = False
-            print("Orpheus: CUDA graphs ENABLED (ORPHEUS_DISABLE_EAGER=1)")
+            log("Orpheus: CUDA graphs ENABLED (ORPHEUS_DISABLE_EAGER=1)")
         elif force_eager or is_windows:
             use_eager = True
-            print("Orpheus: Using eager mode (no CUDA graphs) for Windows compatibility")
+            log("Orpheus: Using eager mode (no CUDA graphs) for Windows compatibility")
         else:
             use_eager = False
 
@@ -136,7 +137,7 @@ class VllmBackendMixin:
             torch.cuda.synchronize()
             # Reset CUDA context to clean state
             torch.cuda.reset_peak_memory_stats()
-            print("Orpheus: CUDA state cleaned before vLLM init")
+            log("Orpheus: CUDA state cleaned before vLLM init")
 
         # gpu_memory_utilization: fraction of TOTAL VRAM vLLM reserves for weights
         # + KV cache. Default 0.70 (not 0.85) because on a desktop the GPU is SHARED
@@ -147,7 +148,7 @@ class VllmBackendMixin:
         # leaves ample KV cache for batched Orpheus (weights are only ~6.2 GiB).
         # Override with ORPHEUS_GPU_MEM_UTIL for headless / dedicated-GPU machines.
         gpu_mem_util = float(os.environ.get('ORPHEUS_GPU_MEM_UTIL', '0.70'))
-        print(f"Orpheus: vLLM gpu_memory_utilization={gpu_mem_util}")
+        log(f"Orpheus: vLLM gpu_memory_utilization={gpu_mem_util}")
         # dtype: the fine-tune checkpoints are bfloat16; the old hardcoded
         # "float16" forced a lossy cast on load. A/B'd 2026-07-12: bf16 is
         # AUDIBLY clearer / less muffled (Owen: "significantly... a keeper")
@@ -155,7 +156,7 @@ class VllmBackendMixin:
         # speed; Ampere+ runs bf16 natively (pre-Ampere would need the env
         # override back to float16). ORPHEUS_VLLM_DTYPE overrides.
         vllm_dtype = os.environ.get('ORPHEUS_VLLM_DTYPE', 'bfloat16')
-        print(f"Orpheus: vLLM dtype={vllm_dtype}")
+        log(f"Orpheus: vLLM dtype={vllm_dtype}")
         # Multi-LoRA is an ENGINE-CONSTRUCTION property - it cannot be turned on for a
         # later request - so it is set here, for this session, from the session's own
         # base key. A session with no base_dir (stock from the HF cache, or a merged
@@ -173,7 +174,7 @@ class VllmBackendMixin:
                 max_loras=self.LORA_MAX_LORAS,
                 max_cpu_loras=self.LORA_MAX_CPU_LORAS,
             )
-            print(f"Orpheus: vLLM multi-LoRA enabled (max_lora_rank={self.LORA_MAX_RANK}, "
+            log(f"Orpheus: vLLM multi-LoRA enabled (max_lora_rank={self.LORA_MAX_RANK}, "
                   f"max_loras={self.LORA_MAX_LORAS}, max_cpu_loras={self.LORA_MAX_CPU_LORAS})")
         engine = LLM(
             model=self.TRANSFORMERS_MODEL,
@@ -203,7 +204,7 @@ class VllmBackendMixin:
 
         try:
             from snac import SNAC
-            print("Loading SNAC audio decoder...")
+            log("Loading SNAC audio decoder...")
 
             # Determine device
             if torch.cuda.is_available():
@@ -215,7 +216,7 @@ class VllmBackendMixin:
 
             self.snac_model = SNAC.from_pretrained("hubertsiuzdak/snac_24khz").to(self._device)
             self.snac_model.eval()
-            print(f"SNAC loaded on {self._device}")
+            log(f"SNAC loaded on {self._device}")
             return self.snac_model
         except Exception as e:
             raise ValueError(f"Failed to load SNAC decoder: {e}")
@@ -334,7 +335,7 @@ class VllmBackendMixin:
                     waves.append(self._tokens_to_audio(tokens))
                     continue
                 except TokenStreamMisaligned as align_err:
-                    print(f"Orpheus: split part token stream misaligned ({align_err}); re-rendering once")
+                    log(f"Orpheus: split part token stream misaligned ({align_err}); re-rendering once")
             waves.append(self._generate_audio_vllm_safe(part, depth, voice=voice))
         return waves
 
@@ -374,7 +375,7 @@ class VllmBackendMixin:
                     self._ratchet_after_resplit(clean, audio_np)
                 results[idx] = self._save_audio(idx, audio_np, gap[0], gap[1])
             except Exception as resplit_err:
-                print(f"Orpheus deferred re-render failed for sentence {idx}: {resplit_err}")
+                log(f"Orpheus deferred re-render failed for sentence {idx}: {resplit_err}")
                 if is_fatal_cuda_error(resplit_err):
                     # Poisoned context - every remaining sentence would fail instantly.
                     raise
@@ -436,13 +437,13 @@ class VllmBackendMixin:
                             # Stochastic sampling glitch - one re-render (fresh
                             # tokens) almost always fixes it. If it misaligns
                             # again, the outer except fails just this sentence.
-                            print(f"Orpheus: sentence {idx} token stream misaligned ({align_err}); re-rendering once")
+                            log(f"Orpheus: sentence {idx} token stream misaligned ({align_err}); re-rendering once")
                             audio_np = self._generate_audio_vllm_safe(clean)
                     else:
                         # Hit the token cap without finishing -> the chunk was too long
                         # and the audio would be clipped. Re-render it split at sentence
                         # boundaries so nothing is cut off.
-                        print(f"Orpheus: sentence {idx} hit the audio-token cap; re-rendering split at sentence boundaries")
+                        log(f"Orpheus: sentence {idx} hit the audio-token cap; re-rendering split at sentence boundaries")
                         # Keep the RUNAWAY itself before the re-render overwrites it:
                         # this is the one failure that never leaves evidence otherwise.
                         try:
@@ -472,7 +473,7 @@ class VllmBackendMixin:
                         idx, clean, audio_np, self._generate_audio_vllm_safe)
                     results[idx] = self._save_audio(idx, audio_np, gap[0], gap[1])
                 except Exception as decode_err:
-                    print(f"Orpheus batch decode error for sentence {idx}: {decode_err}")
+                    log(f"Orpheus batch decode error for sentence {idx}: {decode_err}")
                     if is_fatal_cuda_error(decode_err):
                         # Poisoned CUDA context: every remaining sentence would
                         # fail instantly too. Die loudly; the worker respawns and
@@ -673,9 +674,8 @@ class VllmBackendMixin:
                 # The finally aborts what is still live; say what happened, and
                 # do NOT answer the abandoned rows (that is the contract).
                 live = [r.index for r in rows.values() if not r.retired]
-                print(f'[ORPHEUS][STREAM] vLLM batch abandoned on request '
-                      f'({len(live)} of {len(rows)} rows unrendered)',
-                      file=sys.stderr, flush=True)
+                log(f'[ORPHEUS][STREAM] vLLM batch abandoned on request '
+                      f'({len(live)} of {len(rows)} rows unrendered)', flush=True)
                 return
 
             # THE SWEEP. has_unfinished_requests() has gone false, so nothing of
@@ -686,9 +686,9 @@ class VllmBackendMixin:
             for row in sorted(rows.values(), key=lambda r: r.index):
                 if row.retired:
                     continue
-                print(f'[ORPHEUS][STREAM] row {row.index} never finished although '
+                log(f'[ORPHEUS][STREAM] row {row.index} never finished although '
                       f'the engine reports nothing unfinished; reporting it as a '
-                      f'failure', file=sys.stderr, flush=True)
+                      f'failure', flush=True)
                 row.retired = True
                 deliver(row.index, None)
 
@@ -721,8 +721,8 @@ class VllmBackendMixin:
                             self._ratchet_after_resplit(row.clean, audio, row.voice)
                     deliver(row.index, audio)
                 except Exception as deferred_err:
-                    print(f'[ORPHEUS][STREAM] deferred re-render failed for row '
-                          f'{row.index}: {deferred_err}', file=sys.stderr, flush=True)
+                    log(f'[ORPHEUS][STREAM] deferred re-render failed for row '
+                          f'{row.index}: {deferred_err}', flush=True)
                     if is_fatal_cuda_error(deferred_err):
                         # Poisoned context - every remaining row would fail
                         # instantly. The finally still answers them.
@@ -746,8 +746,8 @@ class VllmBackendMixin:
                 try:
                     llm_engine.abort_request(live)
                 except Exception as abort_err:
-                    print(f'[ORPHEUS][STREAM] could not abort {len(live)} live '
-                          f'request(s): {abort_err}', file=sys.stderr, flush=True)
+                    log(f'[ORPHEUS][STREAM] could not abort {len(live)} live '
+                          f'request(s): {abort_err}', flush=True)
                 for rid in live:
                     rows[rid].retired = True
             if not stopped:
@@ -759,15 +759,14 @@ class VllmBackendMixin:
                                  if r.index not in answered)
                 for i in orphans:
                     try:
-                        print(f'[ORPHEUS][STREAM] row {i} left unanswered when the '
-                              f'batch ended; reporting it as a failure',
-                              file=sys.stderr, flush=True)
+                        log(f'[ORPHEUS][STREAM] row {i} left unanswered when the '
+                              f'batch ended; reporting it as a failure', flush=True)
                         deliver(i, None)
                     except Exception as sweep_err:
                         # A raising on_row is the caller's bug; it must not cost
                         # the REST of the orphans their answer.
-                        print(f'[ORPHEUS][STREAM] on_row raised while failing row '
-                              f'{i}: {sweep_err}', file=sys.stderr, flush=True)
+                        log(f'[ORPHEUS][STREAM] on_row raised while failing row '
+                              f'{i}: {sweep_err}', flush=True)
 
     def _emit_vllm_stream(self, row, kind, on_chunk) -> bool:
         """Run the emitter for `row` ('push' mid-row, 'flush' at the end), hand
@@ -789,9 +788,9 @@ class VllmBackendMixin:
                      else row.emitter.push(len(row.audio_tokens)))
         except Exception as emit_err:
             row.failed = True
-            print(f'[ORPHEUS][STREAM] row {row.index} windowed decode failed '
+            log(f'[ORPHEUS][STREAM] row {row.index} windowed decode failed '
                   f'({emit_err}); the row is reported as a failure and its '
-                  f'chunks are discarded', file=sys.stderr, flush=True)
+                  f'chunks are discarded', flush=True)
             return False
         for seq, pcm in pairs:
             row.chunks.append(pcm)
@@ -816,10 +815,10 @@ class VllmBackendMixin:
             ok = self._emit_vllm_stream(row, 'flush', on_chunk)
             full = np.concatenate(row.chunks) if (ok and row.chunks) else None
             if not row.eos_seen:
-                print(f'[ORPHEUS][STREAM] row {row.index} stopped without an '
+                log(f'[ORPHEUS][STREAM] row {row.index} stopped without an '
                       f'end-of-speech token ({len(row.audio_tokens)} audio tokens); '
                       'the streamed audio stands - nothing can retract audio that '
-                      'has already been played', file=sys.stderr, flush=True)
+                      'has already been played', flush=True)
             if full is not None:
                 # Verdict only. _needs_resplit still logs the detection and keeps
                 # the reject, which is how a fast/empty streamed read stays
@@ -827,9 +826,8 @@ class VllmBackendMixin:
                 # get is the re-render.
                 verdict = self._needs_resplit(row.index, row.clean, full, row.voice)
                 if verdict is not None:
-                    print(f'[ORPHEUS][STREAM] row {row.index} truncation verdict '
-                          f'{verdict!r}: kept as streamed, no re-render',
-                          file=sys.stderr, flush=True)
+                    log(f'[ORPHEUS][STREAM] row {row.index} truncation verdict '
+                          f'{verdict!r}: kept as streamed, no re-render', flush=True)
             deliver(row.index, full)
             return
         # Not streamed: today's ladder, one row at a time.
@@ -840,8 +838,7 @@ class VllmBackendMixin:
             tokens = row.raw_tokens[:row.raw_tokens.index(self.END_OF_AUDIO_TOKEN)]
             audio = self._tokens_to_audio(tokens)
         except Exception as decode_err:
-            print(f'[ORPHEUS][STREAM] row {row.index} decode failed: {decode_err}',
-                  file=sys.stderr, flush=True)
+            log(f'[ORPHEUS][STREAM] row {row.index} decode failed: {decode_err}', flush=True)
             if is_fatal_cuda_error(decode_err):
                 raise
             deliver(row.index, None)

@@ -75,6 +75,14 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument('--sentences_dir', type=str, default=None)
     p.add_argument('--encoded_chapters_dir', type=str, default=None)
     p.add_argument('--output_dir', type=str, default=None)
+    # NARRATOR'S OWN, not e2a's: the coverage report `narrator align --report`
+    # wrote. An engine guarded by post-render forced alignment (Higgs v3)
+    # REFUSES to assemble without one, and this door had no way to supply it -
+    # so a v3 book through --assemble_only would have read as "assembly is
+    # broken" rather than "run align first" (review finding 4). Absent is
+    # correct for Orpheus, whose policy is not enforced and for which the gate
+    # is a no-op. See compat/FLAGS.md.
+    p.add_argument('--coverage_report', type=str, default=None)
 
     # range
     p.add_argument('--sentence_start', type=int, default=None)
@@ -440,6 +448,13 @@ def route_assemble(args) -> int:
 
     `assemble()` prints its own `{"success": true, ...}` block with `indent=2`,
     exactly as e2a's handlers did, so nothing is printed twice here.
+
+    `--coverage_report` is narrator's addition and reaches `assemble()`
+    unchanged. For Orpheus it is a no-op whether given or not; for an engine
+    guarded by forced alignment it is how the guard is satisfied, and its
+    absence is a refusal that says so. A `CoverageRefusal` comes out of the
+    `except Exception` below as a RESULT the bridge can read, exactly like every
+    other assembly failure - never as a bare traceback.
     """
     from ..assemble import assemble
     from ..render.session_v1 import build_manifest
@@ -476,6 +491,7 @@ def route_assemble(args) -> int:
             args.output_dir,
             encoded_chapters_dir=args.encoded_chapters_dir,
             post_render_filter=args.post_render_filter,
+            coverage_report=args.coverage_report,
             **kwargs,
         )
     except Exception as e:

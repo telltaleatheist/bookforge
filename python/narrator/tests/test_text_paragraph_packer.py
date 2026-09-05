@@ -220,7 +220,8 @@ class WallTest(unittest.TestCase):
                                walls={pp.PARAGRAPH})
 
     def test_every_wall_kind_holds_independently(self):
-        for kind in (pp.HEADING, pp.ITEM, pp.SCENE_BREAK, pp.CHAPTER_START):
+        for kind in (pp.HEADING, pp.ITEM, pp.TABLE, pp.SCENE_BREAK,
+                     pp.CHAPTER_START):
             blocks = [para('"One."', 0), pp.Block('Wall.', kind, index=1),
                       para('"Two."', 2)]
             report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER,
@@ -627,6 +628,195 @@ class ExtractBlocksTest(unittest.TestCase):
                          [(0,), (1,), (2, 3, 4), (6,), (7,), (8,), (10,)])
 
 
+TABLE_FIXTURE = """<body>
+<p>The prose before the table is a complete thought that ends with a full stop.</p>
+<table>
+<tr><th>Year</th><th>Office</th></tr>
+<tr><td>1933</td><td>Chancellor</td></tr>
+<tr><td>1934</td><td>Fuhrer</td></tr>
+<tr><th>a stray header row with no data cells</th></tr>
+</table>
+<p>The prose after the table is also a complete thought that ends with a stop.</p>
+</body>"""
+
+
+class TableLikeTest(unittest.TestCase):
+    """Point 2 of the Higgs v3 design: table-like fragments are their own chunks
+    and walls, exactly as headings and list items already are."""
+
+    # ---- the shape detector -------------------------------------------------
+
+    def test_cell_separated_lines_are_table_rows(self):
+        for text in ('1933\tChancellor',
+                     '1933  Chancellor',
+                     'Year | Office',
+                     'Deaths   1941   1942   1943',
+                     'Total: 42%   Rate: 3.1'):
+            self.assertTrue(pp.looks_table_like(text), text)
+
+    def test_a_bare_run_of_numbers_is_a_table_row(self):
+        self.assertTrue(pp.looks_table_like('1933 1934 1935 1936'))
+
+    def test_prose_is_never_a_table_row(self):
+        for text in (
+            'He wrote a long sentence about the year 1933 and what it meant.',
+            '"Are you sure?" she said.',
+            'Mr. Darcy said so.',
+            'In 1933, 1934 and 1935 he wrote three books about the same thing.',
+            'The first paragraph runs on for a while with nothing numeric in it '
+            'at all, which is the ordinary case this rule must never touch.',
+        ):
+            self.assertFalse(pp.looks_table_like(text), text)
+
+    def test_the_bare_branch_no_longer_promotes_two_token_prose(self):
+        """Review B2, measured against this very function on 2026-09-05.
+
+        Every one of these was classified TABLE at the old gates
+        (MIN_TOKENS 2 / FRACTION 0.5 / no minimum numeric count). A promoted
+        block becomes a WALL, so tier 2 can never rejoin it to the sentence it
+        was a fragment of - which is the specific harm.
+        """
+        for text in ('Chapter 12', 'Apollo 11', 'Room 101', 'Act 3',
+                     'Genesis 1:1', 'John 3:16', 'Psalm 23', 'verse 14',
+                     'Page 42', 'Volume 3', 'Figure 12', 'Amendment 14',
+                     '30 years', '12 men', 'and 1940', 'roughly 30',
+                     'some 500', 'nearly 1,000', 'No. 7', 'pp. 22-31',
+                     # three-token cases the MIN_NUMERIC and FRACTION gates take
+                     'It was 1940', 'in 1939 and 1940', 'the Chapter 12 heading',
+                     # a clock is a clock, not a table row
+                     '2:00 p.m.', 'It was 2:00'):
+            self.assertFalse(pp.looks_table_like(text), text)
+
+    def test_the_bare_branch_still_takes_a_real_column_of_numbers(self):
+        for text in ('1933 1934 1935 1936', 'Year 1933 1934 1935',
+                     '1941 1942 1943 1944 1945'):
+            self.assertTrue(pp.looks_table_like(text), text)
+
+    def test_no_block_of_the_epub_fixture_is_mistaken_for_a_table(self):
+        blocks = pp.extract_blocks(_FixtureDoc(FIXTURE), 'text/c0001.xhtml',
+                                   source_kind=pp.PDF_DERIVED)
+        self.assertNotIn(pp.TABLE, [b.kind for b in blocks])
+
+    def test_classification_touches_paragraphs_only_and_is_idempotent(self):
+        """classify_table_blocks must actually classify - and only paragraphs.
+
+        The first assertion is what makes this test able to fail: a classifier
+        that never classified anything would pass a "compare the output to the
+        input" check identically (review note 12).
+        """
+        blocks = [pp.Block('1933  Chancellor', pp.PARAGRAPH, index=0),
+                  pp.Block('1933  Chancellor', pp.HEADING, index=1),
+                  pp.Block('1933  Chancellor', pp.ITEM, index=2)]
+        once = pp.classify_table_blocks(blocks)
+        self.assertEqual([b.kind for b in once],
+                         [pp.TABLE, pp.HEADING, pp.ITEM])
+        self.assertEqual([b.kind for b in pp.classify_table_blocks(once)],
+                         [b.kind for b in once])
+
+    # ---- the shape detector reaches the pipeline, and only for PDFs ---------
+
+    SHAPE_FIXTURE = ("<body><p>Prose that ends in a full stop.</p>"
+                     "<p>1933\t\tChancellor</p>"
+                     "<p>1934&#160;&#160;&#160;Fuhrer</p>"
+                     "<p>Year | Office</p></body>")
+
+    def test_tab_and_space_cells_survive_to_the_detector(self):
+        """Review B3: `block_text` collapses \\s+, so a block classified AFTER
+        it could only ever match on '|'. The tab and the two-space run must be
+        seen on the PRE-COLLAPSE text or the primary branch is dead code."""
+        blocks = pp.extract_blocks(_FixtureDoc(self.SHAPE_FIXTURE), 'text/t.xhtml',
+                                   source_kind=pp.PDF_DERIVED)
+        self.assertEqual([b.kind for b in blocks],
+                         [pp.PARAGRAPH, pp.TABLE, pp.TABLE, pp.TABLE])
+        # ...and what is STORED is still the collapsed text everything
+        # downstream expects.
+        self.assertEqual(blocks[1].text, '1933 Chancellor')
+        self.assertEqual(blocks[2].text, '1934 Fuhrer')
+
+    def test_the_shape_detector_does_not_run_on_a_publisher_epub(self):
+        """Review B2: a PDF-shape heuristic has no business over an EPUB, which
+        writes its tables as <table> and gets them from the lineage branch."""
+        blocks = pp.extract_blocks(_FixtureDoc(self.SHAPE_FIXTURE), 'text/t.xhtml',
+                                   source_kind=pp.EPUB_NATIVE)
+        self.assertEqual([b.kind for b in blocks], [pp.PARAGRAPH] * 4)
+        default = pp.extract_blocks(_FixtureDoc(self.SHAPE_FIXTURE), 'text/t.xhtml')
+        self.assertEqual([b.kind for b in default], [pp.PARAGRAPH] * 4)
+
+    def test_pack_paragraphs_leaves_the_pdf_heuristic_off_by_default(self):
+        blocks = [pp.Block('1933 1934 1935 1936', pp.PARAGRAPH, index=0)]
+        off = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.kind for c in off.chunks], ['prose'])
+        on = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300,
+                                table_detect=True)
+        self.assertEqual([c.kind for c in on.chunks], ['item'])
+
+    # ---- markup lineage -----------------------------------------------------
+
+    def test_a_table_becomes_one_block_per_data_row(self):
+        blocks = pp.extract_blocks(_FixtureDoc(TABLE_FIXTURE), 'text/t.xhtml')
+        self.assertEqual([b.kind for b in blocks],
+                         [pp.PARAGRAPH, pp.TABLE, pp.TABLE, pp.PARAGRAPH])
+
+    def test_a_row_is_built_with_e2as_own_cell_recipe(self):
+        blocks = pp.extract_blocks(_FixtureDoc(TABLE_FIXTURE), 'text/t.xhtml')
+        self.assertEqual(blocks[1].text,
+                         'Year: 1933' + pp.TABLE_CELL_JOIN + 'Office: Chancellor.')
+        self.assertEqual(blocks[2].text,
+                         'Year: 1934' + pp.TABLE_CELL_JOIN + 'Office: Fuhrer.')
+
+    def test_a_row_with_no_data_cells_speaks_nothing(self):
+        blocks = pp.extract_blocks(_FixtureDoc(TABLE_FIXTURE), 'text/t.xhtml')
+        self.assertNotIn('stray header', ' '.join(b.text for b in blocks))
+
+    def test_a_table_with_no_rows_contributes_nothing(self):
+        blocks = pp.extract_blocks(
+            _FixtureDoc('<body><p>Only prose here, ending properly.</p>'
+                        '<table></table></body>'), 'text/t.xhtml')
+        self.assertEqual([b.kind for b in blocks], [pp.PARAGRAPH])
+
+    # ---- the packing rule ---------------------------------------------------
+
+    def test_a_table_row_is_its_own_chunk_carrying_the_item_marker(self):
+        blocks = pp.extract_blocks(_FixtureDoc(TABLE_FIXTURE), 'text/t.xhtml')
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.kind for c in report.chunks],
+                         ['prose', 'item', 'item', 'prose'])
+        for chunk in report.chunks[1:3]:
+            self.assertIn('[item]', chunk.text)
+            # THE REAL GUARD, and the reason a bare assertNotIn('[table]') was
+            # not one: whatever marker a table row carries must be a token the
+            # unspoken-tag pattern STRIPS. A `[table]` marker is in neither
+            # TTS_SML nor SML_UNSPOKEN_PATTERN, so it would survive `spoken()`
+            # and the engine would read it aloud - which this catches.
+            self.assertNotIn('[', spoken(chunk.text))
+            self.assertTrue(spoken(chunk.text).startswith('Year: 19'))
+        self.assertEqual([c.blocks for c in report.chunks],
+                         [(0,), (1,), (2,), (3,)])
+
+    def test_a_table_row_stops_a_merge_the_way_a_list_item_does(self):
+        blocks = [para('"One."', 0), para('"Two."', 1),
+                  pp.Block('1933  Chancellor.', pp.TABLE, index=2),
+                  para('"Three."', 3), para('"Four."', 4)]
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        prose = [c.blocks for c in report.chunks if c.kind == 'prose']
+        self.assertEqual(prose, [(0, 1), (3, 4)])
+
+    def test_tier_two_must_not_weld_a_table_row_onto_the_block_after_it(self):
+        """The order in `make_chapter_chunker`: classify, THEN join fragments.
+
+        A table row rarely ends in a full stop, so tier 2 would otherwise treat
+        it as an incomplete thought and glue the next paragraph onto it.
+        """
+        raw = [pp.Block('1933  Chancellor', pp.PARAGRAPH, index=0),
+               pp.Block('Then the prose resumes and ends properly.',
+                        pp.PARAGRAPH, index=1)]
+        welded = pp.join_provisional_fragments(raw)
+        self.assertEqual(len(welded), 1, 'tier 2 alone welds the row')
+
+        kept = pp.join_provisional_fragments(pp.classify_table_blocks(raw))
+        self.assertEqual([b.kind for b in kept], [pp.TABLE, pp.PARAGRAPH])
+
+
 class PrepPolicyTest(unittest.TestCase):
     """The switch in `prep_session`, and that the default changes nothing."""
 
@@ -664,7 +854,7 @@ class PrepPolicyTest(unittest.TestCase):
                           'max_chars_per_sec': 22.6})
         self.assertEqual(record['walls'],
                          sorted(['chapter-start', 'heading', 'item',
-                                 'scene-break']))
+                                 'scene-break', 'table']))
 
 
 if __name__ == '__main__':

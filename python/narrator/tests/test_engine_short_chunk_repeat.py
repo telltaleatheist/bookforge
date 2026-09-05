@@ -58,6 +58,36 @@ if _PYTHON_ROOT not in sys.path:
 
 from narrator.engine import OrpheusEngine  # noqa: E402
 
+
+@contextlib.contextmanager
+def captured_engine_log():
+    """Capture the ENGINE's log channel - not stdout.
+
+    These reports used to be bare `print`s, so this file read them off stdout.
+    They now go through `narrator.engine.log`, whose stream the HOST owns:
+    `narrator.serve`'s stdout is the JSON-lines protocol and a stray engine line
+    there breaks the client's parse, while `narrator.compat.worker` deliberately
+    points the same channel AT stdout because parallel-tts-bridge.ts parses it
+    (see narrator/engine/log.py and tests/test_engine_log_stream.py).
+
+    Pointing that channel at a sink is also strictly MORE precise than
+    redirecting stdout was: it captures the engine's own lines and nothing
+    else's.
+    """
+    from narrator.engine.log import current_log_stream, set_log_stream
+    previous = current_log_stream()
+    sink = io.StringIO()
+    set_log_stream(sink)
+    try:
+        yield sink
+    finally:
+        # RESTORE, not reset. `set_log_stream(None)` is a clobber that happens
+        # to be right only while nothing else has set the stream in this
+        # process - true today, and not a property a test should depend on.
+        set_log_stream(previous)
+
+
+
 # (chars, raw_seconds, label). BAD marks the one take Owen heard spoken twice.
 BAD = 'Introduction.'
 # Named in the report as a second suspect (6.3 ch/s where 30-40 char peers run
@@ -229,7 +259,7 @@ class ShortChunkRepeatTest(unittest.TestCase):
         for chars, seconds, label in FIXTURE:
             audio = np.zeros(int(seconds * OrpheusEngine.SAMPLE_RATE), dtype=np.float32)
             before = audio.copy()
-            with io.StringIO() as sink, contextlib.redirect_stdout(sink):
+            with captured_engine_log() as sink:
                 said = self.tts._report_short_chunk_overrun(0, 'x' * chars, audio)
                 line = sink.getvalue()
             if said:
@@ -244,7 +274,7 @@ class ShortChunkRepeatTest(unittest.TestCase):
 
     def test_the_log_line_is_one_greppable_line_with_every_field(self):
         audio = np.zeros(int(4.267 * OrpheusEngine.SAMPLE_RATE), dtype=np.float32)
-        with io.StringIO() as sink, contextlib.redirect_stdout(sink):
+        with captured_engine_log() as sink:
             self.tts._report_short_chunk_overrun(4242, 'Introduction.', audio)
             line = sink.getvalue().strip()
         self.assertEqual(line.count('\n'), 0,
@@ -262,7 +292,7 @@ class ShortChunkRepeatTest(unittest.TestCase):
         saved = OrpheusEngine.SHORT_CHUNK_MAX_CHARS
         try:
             OrpheusEngine.SHORT_CHUNK_MAX_CHARS = 0
-            with io.StringIO() as sink, contextlib.redirect_stdout(sink):
+            with captured_engine_log() as sink:
                 said = self.tts._report_short_chunk_overrun(0, 'Introduction.', audio)
                 line = sink.getvalue()
             self.assertFalse(said)

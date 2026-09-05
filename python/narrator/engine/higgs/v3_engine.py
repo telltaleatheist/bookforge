@@ -117,9 +117,13 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
 class HiggsV3Config:
     """What one HiggsV3Engine is built from.
 
-    `sampling` EMPTY means the server's own stage-0 defaults (temperature 1.0,
-    top_p 0.95, top_k 50), which is what the delivered render used and what Owen
-    asked for. Anything set rides in `extra_params`.
+    `sampling` EMPTY means THE MODEL DIRECTORY'S OWN SAMPLING - see
+    `served_sampling`. For a checkpoint voice that is the directory's
+    `generation_config.json`, which the server reads for itself and which
+    narrator has proved is there; for base weights there IS no such file in the
+    bosonai snapshot, so v3's deploy default is sent EXPLICITLY rather than
+    left to a bare `SamplingParams()` (top_p 1.0, top_k disabled - the babble
+    case, PORT_NOTES 12.8d). Anything set here rides in `extra_params` on top.
     """
     voice: ClipsVoice
     base_url: Optional[str] = None
@@ -168,7 +172,82 @@ class HiggsV3Config:
         if voice_checkpoint and not self.checkpoint_dir:
             self.checkpoint_dir = voice_checkpoint
         if self.checkpoint_dir:
-            v3_served.checkpoint_serve_target(self.checkpoint_dir)
+            # Also proves the directory carries the generation_config.json the
+            # server will read its sampling out of - see
+            # v3_served.require_generation_config.
+            v3_served.checkpoint_serve_target(self.checkpoint_dir,
+                                              self.voice.name)
+
+    #: The keys of `SERVER_DEFAULT_SAMPLING` that may ride in `extra_params`.
+    #: `seed` is excluded: it is the request's TOP-LEVEL field and
+    #: `build_request_body` refuses the duplicate.
+    EXTRA_PARAM_KEYS = tuple(k for k in v3_served.SERVER_DEFAULT_SAMPLING
+                             if k != 'seed')
+
+    def served_sampling(self) -> dict:
+        """What rides in the request's `extra_params` - decided by voice KIND.
+
+        THE SYMMETRY WITH THE MLX ARM (`HiggsV3MlxConfig.mlx_sampling`). Both
+        answer the same question - "what sampling does this voice render at?" -
+        and both branch on whether the voice IS a merged checkpoint, never on
+        whether some file happens to exist.
+
+          checkpoint voice   SEND NOTHING. The server reads
+                             `<checkpointDir>/generation_config.json` for
+                             itself, and `require_generation_config` has already
+                             proved it is there and carries usable sampling. An
+                             `extra_params` here would OVERRIDE the model's own
+                             declared sampling with narrator's opinion of it.
+          base weights       SEND v3's deploy default EXPLICITLY. The
+                             `bosonai/higgs-audio-v3-tts-4b` snapshot ships no
+                             `generation_config.json` at all (verified on the
+                             WSL HF cache and the Mac's base copy), so sending
+                             nothing here is NOT "the deploy defaults" - it is
+                             vllm-omni's bare `SamplingParams()`: top_p 1.0,
+                             top_k DISABLED, the untruncated 1026-way codebook
+                             tail that derails long chunks into babble. That is
+                             the exact failure this branch exists to prevent,
+                             and until 2026-09-05 it was live for every
+                             non-checkpoint voice on the served arm.
+
+        `sampling` is a named per-config override and is merged on top of
+        either.
+        """
+        # `self.checkpoint_dir` and not `self.voice.checkpoint_dir`: this is the
+        # config's resolved answer to "which directory is this server running
+        # on", which __post_init__ takes from the voice when the voice names one
+        # and which an operator may state directly.
+        if self.checkpoint_dir:
+            resolved = {}
+        else:
+            resolved = {k: v3_served.SERVER_DEFAULT_SAMPLING[k]
+                        for k in self.EXTRA_PARAM_KEYS}
+        resolved.update(self.sampling or {})
+        return resolved
+
+    def applied_sampling(self) -> dict:
+        """What the model will actually SAMPLE at - which is not always what is
+        sent (`served_sampling`), because a checkpoint's numbers live in its own
+        directory and reach the server without passing through narrator.
+
+        This is what `stop_policy` reports, and the manifest is the artifact that
+        outlives the render: reporting the base default for a fine-tune would
+        name sampling nobody used.
+
+        A key the checkpoint's file omits is vLLM's own default; narrator has not
+        measured those and does not state them, so only what the file says is
+        reported.
+        """
+        if self.checkpoint_dir:
+            document = v3_served.require_generation_config(
+                self.checkpoint_dir, self.voice.name)
+            resolved = {k: document[k] for k in self.EXTRA_PARAM_KEYS
+                        if k in document}
+        else:
+            resolved = {k: v3_served.SERVER_DEFAULT_SAMPLING[k]
+                        for k in self.EXTRA_PARAM_KEYS}
+        resolved.update(self.sampling or {})
+        return resolved
 
 
 class HiggsV3Codec:
@@ -286,12 +365,14 @@ def higgs_v3_stop_policy(config: HiggsV3Config) -> StopPolicy:
     """v3 stops on its own and never hit the cap - but it DROPS TEXT, so
     `coverage_check` is 'asr' and it is not optional politeness.
 
-    `levers` reports what will actually be sent: the server's stage-0 defaults
-    when `sampling` is empty (which is the delivered render's choice), the
-    override otherwise.
+    `levers` reports what the model will actually SAMPLE AT, which is not the
+    same as what is sent: a checkpoint voice sends no `extra_params` because its
+    own directory carries `generation_config.json`, and THOSE are the numbers
+    the render used. Reporting the base default for a fine-tune would put
+    sampling nobody used into the manifest - the artifact that outlives the
+    render. See `HiggsV3Config.applied_sampling`.
     """
-    sampling = dict(v3_served.SERVER_DEFAULT_SAMPLING)
-    sampling.update(config.sampling or {})
+    sampling = config.applied_sampling()
     return StopPolicy(
         max_new_tokens=v3_served.cap_frames('x' * int(config.max_chars)),
         eos_reliable=True,
@@ -406,9 +487,16 @@ class HiggsV3Engine:
                 "NARRATOR_HIGGS_VOICES document; there is no default, and the model's "
                 'own voice sits at 12 % of the narrator ceiling.')
         from .config import load_voice
-        load_voice(name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
-                   max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
-                   placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        resolved = load_voice(
+            name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+            max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+            placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        checkpoint = getattr(resolved, 'checkpoint_dir', None)
+        if checkpoint:
+            # A checkpoint voice's REQUIRED FILES are checked here, at the load
+            # message, for the same reason `maxChars` is: the refusal belongs
+            # before a 55-297 s server start and before anything holds a GPU.
+            v3_served.checkpoint_serve_target(checkpoint, resolved.name)
         return name
 
     def backend_spec(self) -> BackendSpec:
@@ -464,9 +552,10 @@ class HiggsV3Engine:
 
     def _apply_voice_caps(self, voice: str, caps: dict) -> None:
         """Orpheus's per-voice tuning registry has no v3 counterpart - v3's
-        sampling is the server's stage-0 defaults or `extra_params`. An EMPTY
-        payload is the pool's "no catalog tuning" signal and is accepted as the
-        no-op it is; anything else is refused by name rather than looking
+        sampling comes from the MODEL DIRECTORY's `generation_config.json`
+        (12.8d), with `extra_params` the only channel that can override it. An
+        EMPTY payload is the pool's "no catalog tuning" signal and is accepted
+        as the no-op it is; anything else is refused by name rather than looking
         applied."""
         if caps:
             raise ValueError(
@@ -514,7 +603,7 @@ class HiggsV3Engine:
             text=clean, voice=self.voice_ref,
             max_new_tokens=self._budget.cap_frames(clean),
             seed=self._seed_for(index) if seed is None else seed,
-            sampling=dict(self.config.sampling or {}))
+            sampling=self.config.served_sampling())
         audio, _rate = self.server.speak(request)
         return audio
 

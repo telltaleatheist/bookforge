@@ -28,6 +28,7 @@ import time
 from dataclasses import dataclass
 
 from ..manifest import Manifest, validate
+from . import coverage_gate
 from . import encode as encode_mod
 from .chapters import ChapterPlan, plan_chapters, total_duration
 from .ffmpeg_tools import FfmpegError, probe_duration, resolve_binary
@@ -168,6 +169,7 @@ def assemble(
     output_format: str = "m4b",
     channels: int = 1,
     post_render_filter: str | None = None,
+    coverage_report: str | None = None,
 ) -> AssembleResult:
     """Assemble the book the manifest describes into `output_dir`.
 
@@ -175,10 +177,19 @@ def assemble(
     them. The lines are the ones electron/reassembly-bridge.ts already parses -
     see `assemble/README.md` for which regex each one satisfies - so a cut-over
     needs no bridge change.
+
+    `coverage_report` is the report `narrator align` wrote. For an engine whose
+    `CoveragePolicy` is ENFORCED (Higgs v3) it is REQUIRED, and its absence -
+    like a failed chunk in it - refuses the assembly by name: see
+    `assemble/coverage_gate.py`. Orpheus keeps its own guards and reads a report
+    only if one is named.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
     validate(manifest)
+    # BEFORE a single ffmpeg is spawned, and before the VTT is written: a book
+    # that dropped a fifth of a chunk's text must not reach an encoder.
+    coverage_gate.check(manifest, coverage_report, log)
     ffmpeg_bin = resolve_binary("ffmpeg", ffmpeg)
     ffprobe_bin = resolve_binary("ffprobe", ffprobe)
 

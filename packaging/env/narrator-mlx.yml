@@ -1,0 +1,109 @@
+# narrator-mlx - THE MAC'S narrator environment, for BOTH MLX engines.
+#
+#     conda env create -f packaging/env/narrator-mlx.yml
+#     conda run -p <prefix> pip install -e python/
+#
+# It serves Orpheus (`engine/orpheus/mlx_backend.py`) and Higgs v3
+# (`engine/higgs/mlx_backend.py`), which share every pin: measured on the Mac
+# 2026-09-05, `mlx_audio` 0.4.8 carries `tts/models/higgs_audio_v3` and
+# `codec/models/higgs_audio` as well as the Orpheus path, and Higgs adds no
+# package of its own.
+#
+# THIS IS THE IMPORT CLOSURE, NOT A `pip freeze`. Every line below is here
+# because narrator (or a library narrator calls) imports it on the Orpheus MLX
+# path, the Higgs MLX path, the text-prep path or the assembler - checked
+# against the live env's freeze on 2026-09-05, with the measured version in the
+# comment where the pin is a range. Transitive dependencies are left to pip:
+# freezing them would pin `tokenizers`, `safetensors` and `huggingface_hub` to
+# whatever transformers happened to want that day and turn every upgrade into a
+# conflict.
+#
+# WHY conda AND pip. Only python itself, ffmpeg and the build basics come from
+# conda-forge; mlx, mlx-lm and mlx-audio are pip-only, and pinning torch through
+# conda on Apple Silicon has historically fought the pip wheels the mlx stack
+# expects. So conda provides the interpreter and the binaries, pip provides the
+# python packages, and `pip install -e python/` on top installs narrator with
+# its `[narrator-mlx]` extra resolved from `python/pyproject.toml` - which is
+# the SINGLE source of truth for the version pins. The duplicates below exist so
+# `conda env create` alone produces a working env; when they disagree,
+# pyproject.toml wins and this file is the one to fix.
+#
+# TWO PINS ARE EXACT FOR MEASURED REASONS (see pyproject `narrator-mlx`):
+#   mlx-lm==0.31.3   Orpheus's batched fast path reproduces `GenerationBatch._step`
+#                    line for line and REFUSES below it.
+#   mlx-audio==0.4.8 0.5.1 cannot render Orpheus at all (`_eos_ids` does
+#                    `set(...)` on an int under transformers 5.x and raises on
+#                    EVERY generate). 0.3.x drags mlx-lm below the fast-path pin.
+#                    0.4.8 is the one version that renders BOTH engines.
+#
+# NUMPY IS 2.x HERE, deliberately: this env's torch is 2.14.0, built against
+# numpy 2. The WSL Orpheus env is numpy 1.26.4 under torch 2.5.1+cu121. That is
+# why `python/pyproject.toml` carries a RANGE as its base dependency and the
+# exact number in each env's extra - a base pin of 1.26.4 downgraded numpy
+# underneath torch here.
+name: narrator-mlx
+channels:
+  - conda-forge
+dependencies:
+  - python=3.11
+  # The assembler shells out to both (`assemble/encode.py`); nothing imports a
+  # python binding for them.
+  - ffmpeg
+  - pip
+  - pip:
+      # -- the MLX stack: both engines --------------------------------------
+      - mlx==0.32.0            # >=0.32.0 for mx.new_thread_unsafe_stream
+      - mlx-lm==0.31.3
+      - mlx-audio==0.4.8
+      # -- Orpheus -----------------------------------------------------------
+      - snac==1.2.1            # the Orpheus codec
+      # torch is NOT the media stack: `trim_audio` (the chars/sec guard) and
+      # `_cleanup_memory` use it, and `detect_backend` probes `torch.cuda`.
+      # torchaudio comes with it for the two remaining reads in engine/.
+      - torch>=2.5             # 2.14.0 measured
+      - torchaudio             # 2.11.0 measured
+      # Orpheus's tokenizer, and Higgs v3's: mlx-audio's higgs_audio_v3
+      # post-load hook builds a PreTrainedTokenizerFast from tokenizer.json.
+      - transformers>=4.57     # 5.16.1 measured
+      # -- narrator's own base dependencies ----------------------------------
+      # Kept in step with python/pyproject.toml [project].dependencies.
+      - numpy>=2,<3            # 2.4.6 measured; see the note above
+      - soundfile>=0.12        # 0.14.0
+      - psutil>=5.9            # 7.2.2
+      - mutagen>=1.45          # 1.48.1 - the m4b freeform tags AND the cover
+      # -- the text-prep path ------------------------------------------------
+      # All five were reached at runtime and declared nowhere until the Mac
+      # cut-over proof crashed on them one at a time (2026-09-05).
+      - beautifulsoup4>=4.12   # 4.15.0
+      - pillow>=10             # 12.3.0
+      - ebooklib>=0.18         # 0.20 (the distribution is spelt `EbookLib`)
+      # THE NAME IS A TRAP. PyPI also has `python-iso639` and `iso-639`; both
+      # install a module called `iso639` with a DIFFERENT API. Only
+      # `iso639-lang` has the `Lang` class `text/prep.py` imports.
+      - iso639-lang>=2.2       # 2.6.3
+      # Not only for foreign scripts: a digits-only token ('1993') scores
+      # script 'unknown' and passes through unidecode as an identity, so it is
+      # on the ENGLISH path.
+      - unidecode>=1.3         # 1.4.0
+      # serve/worker.py's LISTEN-path normalization ("$5.50", "1995", "50%").
+      # The audiobook path normalizes upstream in BookForge; the browser
+      # extension's streaming path does not.
+      - num2words>=0.5.12      # 0.5.14
+      # Pulling the base weights: `huggingface_hub.snapshot_download` fetches
+      # bosonai/higgs-audio-v3-tts-4b (~8.5 GB) into
+      # ~/Library/Application Support/BookForge/runtime/higgs-models/base.
+      # It arrives with transformers anyway; named because narrator's setup
+      # step calls it directly.
+      - huggingface_hub>=0.30  # 1.30.0
+#
+# DELIBERATELY ABSENT, and why:
+#   pypinyin / pykakasi / phonemizer  text/normalize.py imports them lazily and
+#       only a NON-LATIN word reaches them. English-only product; declaring them
+#       would install espeak for a branch no book here takes.
+#   torchcodec                        present in the live env, imported by
+#       nothing in narrator - the soundfile writer replaced every torchaudio
+#       write (PORT_NOTES 12.8a).
+#   scipy / librosa / einops / sentencepiece  transitive; narrator imports none
+#       of them directly.
+#   vllm / vllm-omni                  the CUDA engines. They cannot share an env
+#       with this one and never will (see pyproject's per-engine groups).

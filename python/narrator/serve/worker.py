@@ -222,22 +222,39 @@ def _engine_config(**kwargs):
 # The listen path hands raw page text straight to the model; the audiobook path
 # normalizes upstream (BookForge's own model pass over the narration copy).
 # Mirror the common cases here so "$5.50", "1995", "50%" read naturally.
-# Guarded: if num2words isn't importable, pass through. That guard is the
-# behaviour this file has always had - it is not a new one - and it is why
-# num2words is an OPTIONAL dependency of the streaming worker rather than a
-# required one of the engine.
-try:
-    from num2words import num2words as _num2words
-    _HAS_NUM2WORDS = True
-except Exception:
-    _HAS_NUM2WORDS = False
+# num2words is a DECLARED BASE DEPENDENCY (python/pyproject.toml), imported
+# plainly. It used to sit behind `try/except -> _HAS_NUM2WORDS`, and that guard
+# was a FALLBACK of the worst kind: with it, a machine missing the module read
+# every "$5.50" out as punctuation and every "1995" digit by digit for a whole
+# listening session, and said nothing. This path is NOT dead - `normalize_for_tts`
+# runs on every `generate` and every streamed batch row, which is the browser
+# extension's listen path. (The audiobook path normalizes upstream in BookForge
+# and never arrives here.)
+#
+# A missing module is now an ImportError at worker start: loud, immediate, and
+# fixed by installing the dependency the project already declares.
+from num2words import num2words as _num2words
+
+
+def _number_refusal(value, lang, exc):
+    """Every num2words failure, refused by name.
+
+    These four helpers each used to end in `except Exception: return str(n)` -
+    the same silent passthrough as the import guard, one layer down. A number
+    this function cannot say is a defect in the caller's regex or in the
+    language, and the listener must not be the one to discover it.
+    """
+    return ValueError(
+        f'num2words could not render {value!r} in {lang!r}: {exc}. The listen '
+        'path normalizes numbers before the model sees them; handing the raw '
+        'digits on would have the model read them as punctuation.')
 
 
 def _to_words(n, lang):
     try:
         return _num2words(int(n), lang=lang)
-    except Exception:
-        return str(n)
+    except Exception as exc:
+        raise _number_refusal(n, lang, exc) from exc
 
 
 def _num_phrase(token, lang):
@@ -249,15 +266,15 @@ def _num_phrase(token, lang):
             digits = ' '.join(_num2words(int(d), lang=lang) for d in frac)
             return f"{words} point {digits}"
         return _num2words(int(token), lang=lang)
-    except Exception:
-        return token
+    except Exception as exc:
+        raise _number_refusal(token, lang, exc) from exc
 
 
 def _ordinal(n, lang):
     try:
         return _num2words(int(n), lang=lang, to='ordinal')
-    except Exception:
-        return str(n)
+    except Exception as exc:
+        raise _number_refusal(n, lang, exc) from exc
 
 
 def _year_to_words(y, lang):
@@ -273,14 +290,67 @@ def _year_to_words(y, lang):
             lo_words = _to_words(lo, lang) if lo >= 10 else f"oh {_to_words(lo, lang)}"
             return f"{_to_words(hi, lang)} {lo_words}"
         return _to_words(y, lang)
-    except Exception:
-        return str(y)
+    except Exception as exc:
+        raise _number_refusal(y, lang, exc) from exc
 
 
-def normalize_for_tts(text, language='en'):
-    if not _HAS_NUM2WORDS or not text:
+#: Languages num2words has already been asked about, so `check_language` costs
+#: one call per language per process rather than one per sentence.
+_LANGUAGE_VERDICTS = {}
+
+
+def resolve_language(language) -> str:
+    """The bare language subtag, or a refusal naming what arrived.
+
+    `(language or 'en')` used to sit inside `normalize_for_tts` - a second
+    default underneath the protocol's own `request.get('language', 'en')`, and a
+    `x or default` on a value the caller is supposed to supply. The wire field
+    is optional and its default is documented at the top of this module; a
+    request that reaches here with a BLANK one is a caller bug, and narrating an
+    unknown language as English is the silent substitution this file spent a
+    commit removing.
+    """
+    lang = (language or '').split('-')[0].strip().lower()
+    if not lang:
+        raise ValueError(
+            f'normalize_for_tts got language={language!r}. The protocol field is '
+            "optional and defaults to 'en' at the request boundary; a blank one "
+            'arriving here is a caller bug, and reading an unknown language as '
+            'English is a silent substitution.')
+    return lang
+
+
+def check_language(language) -> str:
+    """Ask num2words ONCE whether it can speak this language. Refuse by name.
+
+    THE REASON THIS IS NOT PER SENTENCE. num2words raises `NotImplementedError`
+    for a language it has no module for, and that is a property of the SESSION,
+    not of the sentence: without this, every sentence containing a digit failed
+    one at a time with the same message for a whole book. One refusal, before
+    any audio is rendered, at the point where the language is actually known -
+    the `generate` / `generate_batch` request that carries it.
+    """
+    lang = resolve_language(language)
+    if lang not in _LANGUAGE_VERDICTS:
+        try:
+            _num2words(0, lang=lang)
+            _LANGUAGE_VERDICTS[lang] = None
+        except Exception as exc:
+            _LANGUAGE_VERDICTS[lang] = (
+                f'num2words cannot speak {lang!r} ({exc}). The listen path '
+                'normalizes numbers before the model sees them, so this whole '
+                'request is refused rather than every sentence with a digit in '
+                'it failing separately for the same reason.')
+    verdict = _LANGUAGE_VERDICTS[lang]
+    if verdict:
+        raise ValueError(verdict)
+    return lang
+
+
+def normalize_for_tts(text, language):
+    if not text:
         return text
-    lang = (language or 'en').split('-')[0].lower()
+    lang = resolve_language(language)
     s = text
 
     def _money(m):
@@ -294,8 +364,11 @@ def normalize_for_tts(text, language='en'):
                 if c:
                     out += f" and {_to_words(c, lang)} cent" + ('' if c == 1 else 's')
             return out
-        except Exception:
-            return m.group(0)
+        except Exception as exc:
+            # The FIFTH site of the same defect the reviewer named three of.
+            # `return m.group(0)` hands "$5.50" back verbatim for the model to
+            # read as punctuation - silently, for every price in the book.
+            raise _number_refusal(m.group(0), lang, exc) from exc
     s = re.sub(r'\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?', _money, s)
     s = re.sub(r'(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s?%',
                lambda m: f"{_num_phrase(m.group(1), lang)} percent", s)
@@ -361,6 +434,27 @@ _ACTIVE_SAMPLERATE = DEFAULT_SAMPLERATE
 #: Whether the loaded engine BAKES its own silence into a clip (`Engine.pads`).
 #: Orpheus does; Higgs does not. Read by finalize_audio - see there.
 _ACTIVE_PADS = True
+
+
+def _uses_orpheus_token_pipeline(engine) -> bool:
+    """True when this worker must drive the engine through ORPHEUS's own render
+    methods rather than through `render_audio(text, index=i)`.
+
+    THE DISCRIMINATOR IS THE ENGINE, NOT THE BACKEND NAME. The mlx / vllm /
+    transformers arms below call `_generate_mlx_safe`, `_generate_mlx_batch_audio`,
+    `_generate_audio_vllm_safe`, `_guard_truncation` and `_tokens_to_audio` -
+    every one of them an OrpheusEngine method. They used to be selected by
+    `engine.backend`, which is a RUNTIME name and not an engine: Higgs v3 on the
+    Mac loads through mlx-audio and truthfully reports `backend == 'mlx'` while
+    having none of those methods, so a Higgs load would have been routed into
+    Orpheus's MLX ladder and failed on the first sentence. The backend name now
+    only picks BETWEEN Orpheus's three.
+
+    Every other engine renders one chunk with `render_audio` - Higgs v2's
+    scaffold, Higgs v3 served, Higgs v3 on MLX - and an engine that offers
+    neither is a named error, never a fallback.
+    """
+    return getattr(engine, 'ENGINE_ID', None) == 'orpheus'
 
 
 def _edge_fade_of(engine):
@@ -841,7 +935,14 @@ class OrpheusStreamServer:
             return self._ensure_engine(voice, model_dir, caps, adapter_dir, base_dir,
                                        voice_id, warm)
         except Exception as e:
-            send_response('error', {'message': f'Failed to load Orpheus: {e}'})
+            # NAME THE ENGINE THAT ACTUALLY FAILED. This said "Failed to load
+            # Orpheus" for every engine, so a Higgs load failure on the Mac
+            # reported the wrong model by name - which is precisely the moment
+            # someone is trying to work out WHICH of two engines is broken.
+            # engine_id() cannot raise here: an unservable NARRATOR_ENGINE is
+            # refused in main() before any load is accepted.
+            send_response('error',
+                          {'message': f'Failed to load {engine_id()}: {e}'})
             return False
 
     def _row_voice(self, voice) -> str:
@@ -943,7 +1044,27 @@ class OrpheusStreamServer:
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
             return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
-        if orph.backend == 'mlx':
+        if not _uses_orpheus_token_pipeline(orph):
+            # NOT AN ORPHEUS ENGINE. Higgs v3 - served by vllm-omni on
+            # Windows/Linux, in-process through mlx-audio on the Mac. Either
+            # way there is no token stream on this side to decode and none of
+            # Orpheus's re-render ladders apply (v3 stops on its own; what it
+            # does instead is drop the tail of a long chunk, which is a PACKER
+            # concern - StopPolicy.max_chars - not a retry). One call, one
+            # waveform.
+            self._reject_per_request_voice(v)   # one voice per loaded engine
+            render = getattr(orph, 'render_audio', None)
+            # `index` seeds the row (seed + i). The sequential fallback in
+            # _generate_audio_batch passes the row's own index, so a batch does
+            # not render every sentence from the same draw; a single 'generate'
+            # is index 0, which is the whole batch it is.
+            if render is None:
+                raise RuntimeError(
+                    f"engine '{getattr(orph, 'ENGINE_ID', '?')}' is not Orpheus and "
+                    'offers no render_audio(text). This worker has no way to render '
+                    'one sentence with it.')
+            audio = render(clean, index=index)
+        elif orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
             # sentence boundaries if that render hit the token cap, so a long sentence
@@ -966,25 +1087,12 @@ class OrpheusStreamServer:
                 v
             )
         elif orph.backend not in ('vllm', 'mlx', 'transformers'):
-            # A SERVED engine - Higgs v3 under vllm-omni. The model is behind an
-            # HTTP boundary, so there is no token stream on this side to decode
-            # and none of Orpheus's re-render ladders apply (v3 stops on its own;
-            # what it does instead is drop the tail of a long chunk, which is a
-            # PACKER concern - StopPolicy.max_chars - not a retry). One call, one
-            # waveform.
-            self._reject_per_request_voice(v)   # one voice per server process
-            render = getattr(orph, 'render_audio', None)
-            # `index` seeds the row (seed + i). The sequential fallback in
-            # _generate_audio_batch passes the row's own index, so a batch does
-            # not render every sentence from the same draw; a single 'generate'
-            # is index 0, which is the whole batch it is.
-            if render is None:
-                raise RuntimeError(
-                    f"engine '{getattr(orph, 'ENGINE_ID', '?')}' reports backend "
-                    f"'{orph.backend}', which is neither one of Orpheus's three nor "
-                    'an engine offering render_audio(text). This worker has no way '
-                    'to render one sentence with it.')
-            audio = render(clean, index=index)
+            # An ORPHEUS engine reporting a backend Orpheus does not have. Not a
+            # served engine - that arm is the first branch now - so there is
+            # nothing calibrated to render it with.
+            raise RuntimeError(
+                f"Orpheus reports backend '{orph.backend}', which is none of its "
+                'three (vllm / mlx / transformers). This worker has no path for it.')
         else:
             self._reject_per_request_voice(v)   # transformers: same one-voice limit
             audio = orph._tokens_to_audio(
@@ -1010,7 +1118,7 @@ class OrpheusStreamServer:
         row_voices = [self._row_voice(voices[i] if voices else None)
                       for i in range(len(texts))]
 
-        if orph.backend == 'vllm':
+        if _uses_orpheus_token_pipeline(orph) and orph.backend == 'vllm':
             from vllm import TokensPrompt
             results = [None] * len(texts)
             nonempty = [i for i, c in enumerate(cleaned) if c]
@@ -1075,7 +1183,7 @@ class OrpheusStreamServer:
                     results[i] = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
             return results
 
-        if orph.backend == 'mlx':
+        if _uses_orpheus_token_pipeline(orph) and orph.backend == 'mlx':
             # In-memory MLX batch (_generate_mlx_batch_audio): one BatchGenerator pass
             # over the cleaned sentences, ~3.6x per-sentence throughput. Returns raw
             # waveforms (None for empty/failed); finalize each, fill tiny silence ONLY
@@ -1533,11 +1641,28 @@ class OrpheusStreamServer:
             send_response('batch_done', {'count': len(items)})
             return
 
+        # ONE language check for the whole batch, before any audio. Without it a
+        # language num2words cannot speak fails every digit-bearing row of the
+        # batch separately with the same message - N refusals for one cause.
+        # Reported per item, because that is this method's contract: the caller
+        # gets a batch_item for every i it sent, then batch_done.
+        try:
+            check_language(language)
+        except ValueError as exc:
+            for it in items:
+                send_response('batch_item',
+                              {'i': it.get('i'), 'message': str(exc)})
+            send_response('batch_done', {'count': len(items)})
+            return
+
         if any(it.get('stream') is True for it in items):
             self._generate_batch_streaming(items, language)
             return
 
-        if self.orph.backend == 'mlx':
+        if _uses_orpheus_token_pipeline(self.orph) and self.orph.backend == 'mlx':
+            # ORPHEUS's MLX grouping (_generate_mlx_batch_audio). Higgs v3 on MLX
+            # also reports backend 'mlx' and has no such method: it renders one
+            # chunk at a time through the classic loop below.
             self._generate_batch_mlx_ordered(items, language)
             return
 
@@ -1606,6 +1731,7 @@ class OrpheusStreamServer:
             send_response('error', {'message': 'Model not loaded'})
             return
         try:
+            check_language(language)
             text = normalize_for_tts(text, language)
             audio = self._generate_audio(text, voice)
             if audio is None or len(audio) == 0:
@@ -1783,6 +1909,17 @@ def main(argv=None):
     (and printed no `ready`).
     """
     global _FAKE_ENGINE
+    # THIS WORKER'S STDOUT IS THE PROTOCOL. Engine log lines must never land on
+    # it: one bare `print` between two JSON messages breaks the client's parse
+    # (measured 2026-09-05 - a Higgs load banner arrived where a `loaded` line
+    # was expected). stderr is `narrator.engine.log`'s default, and the pool
+    # reads it (orpheus-worker-pool.ts logs `[Orpheus Pool stderr]`); this says
+    # so explicitly rather than depending on a default staying put.
+    # Imported HERE, not at module scope: `narrator.serve` sends its `ready`
+    # line before any heavy import, and engine.log costs only `sys` but the
+    # rule is worth keeping unbroken.
+    from ..engine.log import set_log_stream
+    set_log_stream(sys.stderr)
     argv = sys.argv[1:] if argv is None else list(argv)
     unknown = [a for a in argv if a != '--fake-engine']
     if unknown:

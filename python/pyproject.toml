@@ -8,16 +8,42 @@ version = "0.1.0"
 description = "BookForge's audiobook render pipeline: manifest, render sessions, assembly."
 requires-python = ">=3.11"
 
-# Pinned to what the two hand-built Orpheus envs ALREADY have, not to what pip
-# would prefer (WSL orpheus_tts: numpy 1.26.4; the e2a python_env used for tests:
-# numpy 1.26.4 / soundfile 0.13.1). Resolving numpy upward would drag torch and
-# vLLM with it and break CUDA-graph capture, which is the whole reason those envs
-# are pinned by hand. See docs/NARRATOR_PLAN.md "Risks".
+# NUMPY IS A RANGE HERE AND AN EXACT PIN IN THE PER-ENV EXTRAS. It used to be
+# `numpy==1.26.4` as a BASE dependency, which is a WSL fact wearing the clothes
+# of a project fact: `orpheus_tts` runs torch 2.5.1+cu121, whose ABI needs numpy
+# 1.x, and resolving numpy upward there drags torch and vLLM with it and breaks
+# CUDA-graph capture. The MAC's `narrator-mlx` env is the counter-example -
+# measured 2026-09-05: numpy 2.4.6 under torch 2.14.0 - and a base pin of
+# 1.26.4 would have `pip install -e python/` DOWNGRADE numpy underneath a torch
+# that was built against 2.x. narrator's own code is 1.x/2.x-clean, so the base
+# takes the range and each env's exact number lives with that env's extra:
 #
-# numpy, soundfile and mutagen are the ONLY runtime dependencies outside
-# engine/: the manifest, the FLAC header reader and the assembler are otherwise
-# stdlib + subprocess ffmpeg. soundfile is used by the tests to synthesise real
-# FLACs, and by nothing in manifest/render/assemble at import time.
+#   orpheus        numpy==1.26.4   (WSL orpheus_tts, torch 2.5.1+cu121)
+#   narrator-mlx   numpy>=2,<3     (Mac narrator-mlx, torch 2.14.0; 2.4.6 today)
+#
+# WHAT THE BASE DEPENDENCIES ARE FOR. numpy, soundfile and mutagen carry the
+# manifest, the FLAC header reader and the assembler (otherwise stdlib +
+# subprocess ffmpeg). The remaining four are the TEXT PREP path, which the Mac
+# cut-over proof found undeclared one crash at a time (2026-09-05):
+#
+#   beautifulsoup4  text/ EPUB chapter + cover parsing
+#   pillow          the same
+#   ebooklib        text/epub.py, text/paragraph_packer.py - reading the EPUB
+#   iso639-lang     text/prep.py `from iso639 import Lang`. THE NAME IS A TRAP:
+#                   PyPI also carries `python-iso639` and `iso-639`, both of
+#                   which install a module called `iso639` with a DIFFERENT API.
+#                   `iso639-lang` is the one that has `Lang`.
+#   unidecode       text/normalize.py. Not only for foreign scripts: a
+#                   digits-only token ('1993') scores script 'unknown' and goes
+#                   through unidecode (as an identity), so it is on the ENGLISH
+#                   prep path. e2a imported it at the top of lib/core.py for the
+#                   same reason. pypinyin / pykakasi / phonemizer stay
+#                   UNDECLARED and lazily imported - they are unreachable for
+#                   Latin and digit tokens, and this is an English-only product.
+#   num2words       serve/worker.py's listen-path text normalization ("$5.50",
+#                   "1995", "50%"). The audiobook path normalizes upstream in
+#                   BookForge and never reaches it, but the STREAMING path -
+#                   the browser extension - does.
 #
 # mutagen is REQUIRED, not a convenience: it is the only way to have both the
 # m4b's freeform tags and its cover art. ffmpeg's mov muxer will not write a
@@ -27,7 +53,8 @@ requires-python = ">=3.11"
 # ebook2audiobook does it (lib/core.py:4384-4391, MP4/MP4Cover). It is already
 # present in both Orpheus envs because e2a imports it for the same reason.
 dependencies = [
-    "numpy==1.26.4",
+    # See the note above: a RANGE, with the exact number in each env's extra.
+    "numpy>=1.26.4,<3",
     "soundfile>=0.12",
     # psutil: render/worker.py log_memory (ported from e2a worker_core); present in
     # every env that has run an e2a worker and in the Windows test interpreter.
@@ -37,6 +64,14 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "pillow>=10",
     "mutagen>=1.45",
+    # The text-prep path. All four were reached at runtime and declared nowhere
+    # until the Mac cut-over proof crashed on them, one at a time.
+    "ebooklib>=0.18",
+    # NOT `python-iso639` and NOT `iso-639`: both ship a module named `iso639`
+    # with a different API, and only this one has `Lang`.
+    "iso639-lang>=2.2",
+    "unidecode>=1.3",
+    "num2words>=0.5.12",
 ]
 
 [project.optional-dependencies]
@@ -71,6 +106,8 @@ engine = ["narrator[orpheus]"]
 # so the EOS boost silently stops applying above it (the spawn env sets
 # VLLM_USE_V1=0 for the same reason).
 orpheus = [
+    # THE numpy pin for this env (the base dependency is a range - see above).
+    "numpy==1.26.4",
     "torch==2.5.1",
     "torchaudio==2.5.1",
     "vllm==0.7.3",
@@ -78,8 +115,15 @@ orpheus = [
     "snac==1.2.1",
 ]
 
-# Orpheus on Apple Silicon (the Mac's MLX backend). A SEPARATE group: it shares
-# the engine but none of the CUDA stack.
+# THE MAC'S ENV, for BOTH engines: Orpheus's MLX backend and Higgs v3's.
+#
+# Renamed from `orpheus-mlx` to `narrator-mlx` on 2026-09-05, when Higgs v3
+# gained an in-process MLX backend (`engine/higgs/mlx_backend.py`): the group is
+# no longer Orpheus's, it is THE MAC's, and it is named after the conda env it
+# installs into (`packaging/env/narrator-mlx.yml`). `orpheus-mlx` is kept below
+# as an alias so an existing install line keeps working.
+#
+# A SEPARATE group: it shares the engines but none of the CUDA stack.
 #
 # EVERY PIN IS LOAD-BEARING, and two of them are exact for measured reasons:
 #   mlx-lm==0.31.3    the batched fast path is version-PINNED, not
@@ -99,7 +143,18 @@ orpheus = [
 # torch itself is still needed - `trim_audio` (the chars/sec guard) and
 # `_cleanup_memory` use it - so it stays, but it is the CPU/MPS wheel with no
 # media stack attached.
-orpheus-mlx = [
+#   HIGGS v3 SHARES EVERY ONE OF THESE PINS and adds none. Measured on the Mac,
+#   2026-09-05: `mlx_audio.tts.models.higgs_audio_v3` (the Qwen3-backed model)
+#   and `mlx_audio.codec.models.higgs_audio` (the 8-codebook DAC) are both in
+#   0.4.8, they load the OFFICIAL `bosonai/higgs-audio-v3-tts-4b` safetensors
+#   with no conversion step, and the codec comes out of the same shards - so
+#   there is no second model download and no mlx-community repo in the picture.
+#   `transformers` is on this list for Higgs as well as Orpheus: v3's tokenizer
+#   is built by `PreTrainedTokenizerFast` in mlx-audio's post-load hook.
+narrator-mlx = [
+    # THE numpy pin for this env. torch 2.14 on the Mac is built against numpy
+    # 2.x; the base dependency's range exists so this does not get downgraded.
+    "numpy>=2,<3",
     "mlx>=0.32.0",
     "mlx-lm==0.31.3",
     "mlx-audio==0.4.8",
@@ -107,6 +162,10 @@ orpheus-mlx = [
     "snac==1.2.1",
     "transformers>=4.57",
 ]
+
+# The old name for the group above, kept so an existing `pip install
+# narrator[orpheus-mlx]` still resolves. It is the SAME env - the Mac runs one.
+orpheus-mlx = ["narrator[narrator-mlx]"]
 
 # WSL `higgs`: python 3.11, torch 2.6.0+cu124, transformers 5.16.1, numpy 2.4.6.
 # NB that env carries numpy 2.x while narrator's own pin is 1.26.4 (Orpheus's

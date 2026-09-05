@@ -46,12 +46,55 @@ def _orpheus_config(**kwargs):
     return EngineConfig(**kwargs)
 
 
+#: `higgs-v3` is ONE engine with TWO backends, chosen by PLATFORM - the id, the
+#: voice document, the geometry, the budget and the stop policy are identical
+#: and only the runtime differs:
+#:
+#:   darwin       IN-PROCESS through mlx-audio's `higgs_audio_v3`. Apple Silicon
+#:                runs the whole model natively, so the weights load into the
+#:                worker and there is no server between a chunk and its audio.
+#:                Owen, 2026-09-05: the Mac's Listen streaming is used
+#:                constantly and needs Higgs.
+#:   everything   SERVED by vllm-omni over HTTP. On Windows/Linux there is no
+#:   else         choice: v3 has no HF modeling class, and vllm-omni's torch
+#:                cannot share an env with Orpheus's vLLM 0.7.3.
+#:
+#: This is a function of `sys.platform` alone and takes no arguments beyond it,
+#: so a test can ask for either arm on any machine.
+HIGGS_V3_BACKENDS = ('inprocess-mlx', 'served')
+
+
+def higgs_v3_backend_for_platform(platform_name: str) -> str:
+    """'inprocess-mlx' on darwin, 'served' anywhere else.
+
+    NOT a capability probe: whether mlx-audio happens to be importable is a
+    question about an ENVIRONMENT, and answering it here would let a Mac with a
+    broken install silently fall through to a served backend whose server does
+    not exist on that machine. The platform decides; the backend then fails
+    loudly if its runtime is missing (`detect_backend` imports mlx_audio).
+    """
+    name = (platform_name or '').strip().lower()
+    if not name:
+        raise ValueError(
+            'higgs_v3_backend_for_platform() needs a platform name (sys.platform); '
+            'an empty one cannot choose between an in-process model and a server.')
+    return 'inprocess-mlx' if name.startswith('darwin') else 'served'
+
+
 def _higgs_v3_engine():
+    import sys
+    if higgs_v3_backend_for_platform(sys.platform) == 'inprocess-mlx':
+        from .higgs import HiggsV3MlxEngine
+        return HiggsV3MlxEngine
     from .higgs import HiggsV3Engine
     return HiggsV3Engine
 
 
 def _higgs_v3_config(**kwargs):
+    import sys
+    if higgs_v3_backend_for_platform(sys.platform) == 'inprocess-mlx':
+        from .higgs import higgs_v3_mlx_config_from_worker_kwargs
+        return higgs_v3_mlx_config_from_worker_kwargs(**kwargs)
     from .higgs import higgs_v3_config_from_worker_kwargs
     return higgs_v3_config_from_worker_kwargs(**kwargs)
 

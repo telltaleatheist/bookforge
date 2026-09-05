@@ -205,9 +205,21 @@ class RegistryTest(unittest.TestCase):
             self.assertIn('Refusing to substitute', message)
 
     def test_the_registry_resolves_every_engine(self):
-        from narrator.engine.higgs import HiggsV3Engine
+        """`higgs-v3` is ONE id with TWO backends, chosen by PLATFORM.
+
+        On darwin it is the in-process MLX engine (mlx-audio runs the whole
+        model natively on Apple Silicon); everywhere else it is the vllm-omni
+        served one. Both carry ENGINE_ID 'higgs-v3' and every number the
+        assembler and packer read off an engine; only where the weights run
+        differs. See engine/registry.py:higgs_v3_backend_for_platform and
+        PORT_NOTES 13.
+        """
+        import sys
+        from narrator.engine.higgs import HiggsV3Engine, HiggsV3MlxEngine
         self.assertIs(registry.engine_class('orpheus'), OrpheusEngine)
-        self.assertIs(registry.engine_class('higgs-v3'), HiggsV3Engine)
+        expected = (HiggsV3MlxEngine if sys.platform.startswith('darwin')
+                    else HiggsV3Engine)
+        self.assertIs(registry.engine_class('higgs-v3'), expected)
         self.assertIs(registry.engine_class('higgs-v2-scaffold'), HiggsEngine)
 
     def test_every_engine_reports_the_id_that_selected_it(self):

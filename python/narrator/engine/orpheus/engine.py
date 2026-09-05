@@ -48,6 +48,7 @@ from .sampling import SamplingMixin
 from .snac import SnacMixin
 from .transformers_backend import TransformersBackendMixin
 from .vllm_backend import VllmBackendMixin
+from ..log import log
 
 # Track active engine instances for cleanup on exit
 _active_instances = weakref.WeakSet()
@@ -164,14 +165,14 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
 
             # Get voice from config
             voice = config.voice if config.voice is not None else self.DEFAULT_VOICE
-            print(f"[ORPHEUS] Session fine_tuned value: '{voice}'")
+            log(f"[ORPHEUS] Session fine_tuned value: '{voice}'")
 
             if self.custom_model_dir:
                 self.MLX_MODEL = self.custom_model_dir
                 self.TRANSFORMERS_MODEL = self.custom_model_dir
                 self.voice = (voice or '').strip().lower() or self.DEFAULT_VOICE
-                print(f"[ORPHEUS] Custom model dir: {self.custom_model_dir}")
-                print(f"[ORPHEUS] Using custom voice token: '{self.voice}'")
+                log(f"[ORPHEUS] Custom model dir: {self.custom_model_dir}")
+                log(f"[ORPHEUS] Using custom voice token: '{self.voice}'")
             elif self.adapter_dir:
                 # The base is the model that gets SERVED; the adapter carries the
                 # voice. The token is taken verbatim for the same reason the custom
@@ -199,9 +200,9 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                         f'Orpheus adapter mode ({self.adapter_dir}) needs a voice token: '
                         'the token the adapter was trained on.'
                     )
-                print(f"[ORPHEUS] Adapter base dir: {self.base_dir}")
-                print(f"[ORPHEUS] Adapter dir: {self.adapter_dir}")
-                print(f"[ORPHEUS] Using adapter voice token: '{self.voice}'")
+                log(f"[ORPHEUS] Adapter base dir: {self.base_dir}")
+                log(f"[ORPHEUS] Adapter dir: {self.adapter_dir}")
+                log(f"[ORPHEUS] Using adapter voice token: '{self.voice}'")
             else:
                 # STOCK-FROM-LOCAL-BASE: base_dir with no adapter. The weights served
                 # are the same unsloth/orpheus-3b-0.1-ft checkpoint the stock path
@@ -221,7 +222,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                     # the honesty of the key is.
                     self.TRANSFORMERS_MODEL = self.base_dir
                     self.MLX_MODEL = self.base_dir
-                    print(f"[ORPHEUS] Stock voice served from local base dir: {self.base_dir}")
+                    log(f"[ORPHEUS] Stock voice served from local base dir: {self.base_dir}")
 
                 # Handle preset lookups
                 if voice in self.models:
@@ -232,11 +233,11 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
 
                 # Validate voice
                 if voice_lower not in self.VALID_VOICES:
-                    print(f"Warning: Unknown Orpheus voice '{voice}', defaulting to '{self.DEFAULT_VOICE}'")
+                    log(f"Warning: Unknown Orpheus voice '{voice}', defaulting to '{self.DEFAULT_VOICE}'")
                     voice_lower = self.DEFAULT_VOICE
 
                 self.voice = voice_lower
-                print(f"[ORPHEUS] Using voice: '{self.voice}'")
+                log(f"[ORPHEUS] Using voice: '{self.voice}'")
 
             # The catalog's per-voice tuning. UNCONDITIONAL, with `or {}` - the
             # same call e2a's streaming worker made (`register_voice_caps(v,
@@ -330,9 +331,9 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
 
             # Clear CUDA cache
             self._cleanup_memory()
-            print("[ORPHEUS] Cleanup complete - resources released")
+            log("[ORPHEUS] Cleanup complete - resources released")
         except Exception as e:
-            print(f"[ORPHEUS] Cleanup warning: {e}")
+            log(f"[ORPHEUS] Cleanup warning: {e}")
 
     def __del__(self):
         """Destructor - ensure cleanup when object is garbage collected"""
@@ -382,38 +383,38 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
         # ORPHEUS_BACKEND can be: mlx, vllm, transformers
         forced_backend = (forced or os.environ.get('ORPHEUS_BACKEND', '')).lower()
         if forced_backend:
-            print(f"Orpheus: Backend override via ORPHEUS_BACKEND={forced_backend}")
+            log(f"Orpheus: Backend override via ORPHEUS_BACKEND={forced_backend}")
             if forced_backend in ('mlx', 'vllm', 'transformers'):
                 return forced_backend
             else:
-                print(f"Warning: Unknown backend '{forced_backend}', using auto-detect")
+                log(f"Warning: Unknown backend '{forced_backend}', using auto-detect")
 
         # Try MLX first on Mac (19x faster than transformers!)
         if is_mac:
             try:
                 from mlx_audio.tts.utils import load_model  # noqa: F401
-                print("Orpheus: Using MLX backend (Apple Silicon optimized)")
+                log("Orpheus: Using MLX backend (Apple Silicon optimized)")
                 return 'mlx'
             except ImportError:
-                print("Orpheus: MLX not available (install with: pip install mlx-audio)")
+                log("Orpheus: MLX not available (install with: pip install mlx-audio)")
 
         # Try vLLM on CUDA (best for Windows/Linux)
         if has_cuda and not is_mac:
             try:
                 from vllm import LLM  # noqa: F401
-                print("Orpheus: Using vLLM backend (CUDA detected)")
+                log("Orpheus: Using vLLM backend (CUDA detected)")
                 return 'vllm'
             except ImportError:
-                print("Orpheus: vLLM not available, trying transformers...")
+                log("Orpheus: vLLM not available, trying transformers...")
 
         # Fall back to transformers (works everywhere but slow on Mac)
         try:
             from transformers import AutoModelForCausalLM, AutoTokenizer  # noqa: F401
             backend_device = "MPS" if is_mac else ("CUDA" if has_cuda else "CPU")
-            print(f"Orpheus: Using transformers backend ({backend_device})")
+            log(f"Orpheus: Using transformers backend ({backend_device})")
             if is_mac:
-                print("WARNING: Transformers on Mac MPS is ~27x slower than MLX!")
-                print("         Install mlx-audio for much better performance: pip install mlx-audio")
+                log("WARNING: Transformers on Mac MPS is ~27x slower than MLX!")
+                log("         Install mlx-audio for much better performance: pip install mlx-audio")
             return 'transformers'
         except ImportError:
             raise ImportError(
@@ -426,7 +427,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
     def load_engine(self):
         try:
             msg = f"Loading Orpheus TTS with voice '{self.voice}'..."
-            print(msg)
+            log(msg)
             self._cleanup_memory()
 
             # Check if already loaded - but ONLY reuse the process-global cache when
@@ -454,7 +455,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                 self.tokenizer = LOADED.get('orpheus_tokenizer', None)
                 self._device = LOADED.get('orpheus_device', 'cpu')
                 self.mlx_model = LOADED.get('orpheus_mlx_model', None)
-                print(f"Orpheus already loaded (backend: {self.backend}, model_dir: {cached_dir}, "
+                log(f"Orpheus already loaded (backend: {self.backend}, model_dir: {cached_dir}, "
                       f"base_dir: {cached_base})")
                 # A cached MLX model carries whatever adapter the PREVIOUS instance
                 # applied to it - the weights are shared, so "same engine" does not
@@ -469,7 +470,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
             if engine:
                 # A different model is cached (switching custom voices, custom<->stock,
                 # or merged<->adapter). Evict it so its weights free before we load the new one.
-                print(f"Orpheus model changed (cached={cached_dir!r}/{cached_base!r} -> "
+                log(f"Orpheus model changed (cached={cached_dir!r}/{cached_base!r} -> "
                       f"want={self.custom_model_dir!r}/{self.base_dir!r}); reloading")
                 self._evict_global_cache()
 
@@ -534,7 +535,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                 self._register_lora(self.voice, self.adapter_dir,
                                     self._adapter_fingerprint(self.adapter_dir))
 
-            print('Orpheus TTS Loaded!')
+            log('Orpheus TTS Loaded!')
             return engine
 
         except Exception as e:
@@ -548,7 +549,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
     def convert(self, sentence_index: int, sentence: str) -> bool:
         try:
             if not self.engine:
-                print("Orpheus TTS engine not loaded!")
+                log("Orpheus TTS engine not loaded!")
                 return False
 
             lead_gap, trail_gap = self._classify_gap(sentence)
@@ -576,7 +577,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                     except TokenStreamMisaligned as align_err:
                         # Stochastic sampling glitch - one re-render (fresh tokens)
                         # almost always fixes it. If it misaligns again, let it fail.
-                        print(f"Orpheus: sentence {sentence_index} token stream misaligned ({align_err}); re-rendering once")
+                        log(f"Orpheus: sentence {sentence_index} token stream misaligned ({align_err}); re-rendering once")
                         audio_np = self._generate_audio_vllm_safe(clean)
                     # Backstop a silent early-EOS truncation (audio too short for text).
                     audio_np = self._guard_truncation(
@@ -597,7 +598,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                 self._cleanup_memory()
                 return ok
             except Exception as gen_error:
-                print(f"Orpheus generation error for sentence {sentence_index}: {gen_error}")
+                log(f"Orpheus generation error for sentence {sentence_index}: {gen_error}")
                 import traceback
                 traceback.print_exc()
                 if is_fatal_cuda_error(gen_error):
@@ -609,7 +610,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
         except Exception as e:
             if is_fatal_cuda_error(e):
                 raise
-            print(f'OrpheusEngine.convert() error: {e}')
+            log(f'OrpheusEngine.convert() error: {e}')
             import traceback
             traceback.print_exc()
             return False
@@ -637,7 +638,7 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
         try:
             return self._convert_vllm_batch(items)
         except Exception as e:
-            print(f'OrpheusEngine.convert_batch() error: {e}')
+            log(f'OrpheusEngine.convert_batch() error: {e}')
             import traceback
             traceback.print_exc()
             if is_fatal_cuda_error(e):
@@ -746,8 +747,8 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
                 'answers them as silence itself.')
         # stderr, not stdout: this lands mid-batch and the streaming worker's
         # stdout is the protocol. Once per batch, as the contract specifies.
-        print(f'[ORPHEUS][STREAM] fast-start: streaming {len(stream_rows)} of '
-              f'{len(texts)} rows', file=sys.stderr, flush=True)
+        log(f'[ORPHEUS][STREAM] fast-start: streaming {len(stream_rows)} of '
+              f'{len(texts)} rows', flush=True)
         if self.backend == 'vllm':
             self._generate_batch_stream_vllm(texts, voices, stream_rows,
                                              on_chunk, on_row, should_stop)
