@@ -428,18 +428,86 @@ const activeClosedDirs = new Map<string, string>();
  * invented here would put that name into the argv and, eventually, into somebody's
  * explanation of what they are listening to.
  */
-function narratorEngineForSession(recorded: string | undefined): string {
-  const id = recorded?.trim().toLowerCase();
-  if (id === 'orpheus') return 'orpheus';
-  if (id === 'higgs') return 'higgs-v3';
-  throw new Error(
-    id
-      ? `This session was rendered by '${recorded}', which narrator cannot assemble. `
-        + 'It serves orpheus and higgs; XTTS was retired 2026-09-04 and its sessions '
-        + 'load read-only.'
-      : 'This session records no TTS engine, so there is nothing to assemble it as. '
-        + 'Re-render it, or assemble it with the app that wrote it.',
-  );
+/**
+ * THE ENGINE THAT RENDERED THIS SESSION, from the file that actually records it.
+ *
+ * ── The two files, and why only one of them is the truth ────────────────────
+ *
+ * A process dir holds both:
+ *
+ *   session-state.json   HYPHEN. narrator's own, written by every prep on every
+ *                        path. `tts_engine` is the flag the render was given
+ *                        ('orpheus' or 'higgs-v3') and `fine_tuned` /
+ *                        `higgs_voice` the voice.
+ *   session_state.json   UNDERSCORE. BookForge's sidecar — runs, rates, settings.
+ *                        Written ONLY by `savePersistentState`, whose callers are
+ *                        `startParallelConversion`, the resume path and two timers.
+ *
+ * An earlier version of this function read the UNDERSCORE file, and the Mac's
+ * live run of 2026-09-05 found what that costs: `renderRangeHeadless` — the CLI
+ * path — never writes the sidecar, and neither did any app session from before it
+ * existed. So a headless render that had just produced 108/108 sentences and 40
+ * minutes of audio was refused at assembly with "This session records no TTS
+ * engine", pointing at the absence of a file that was never part of the record.
+ *
+ * The refusal itself was right; it was reading the wrong thing. narrator writes
+ * the truthful one, so this reads that.
+ *
+ * ── The sidecar is still worth consulting, as a CROSS-CHECK ─────────────────
+ *
+ * When present it must AGREE. The two are written by different code at different
+ * times, and a disagreement means one of them describes a different render — a
+ * session directory reused, or a sidecar left behind by an earlier pass. Assembling
+ * under either name would be a guess about which, so it refuses naming both.
+ *
+ * They spell the engine differently and that is not a disagreement: BookForge says
+ * `higgs`, narrator says `higgs-v3` (`higgs` is an ENGINE_NEAR_MISS in
+ * compat/flags.py), so the comparison is made after normalising.
+ */
+async function narratorEngineForSession(processDir: string): Promise<string> {
+  let recorded: string | undefined;
+  try {
+    const raw = await fs.promises.readFile(path.join(processDir, 'session-state.json'), 'utf-8');
+    const state = JSON.parse(raw);
+    recorded = typeof state?.tts_engine === 'string' ? state.tts_engine : undefined;
+  } catch {
+    recorded = undefined;
+  }
+
+  const normalise = (v: string | undefined): string | null => {
+    const id = v?.trim().toLowerCase();
+    if (id === 'orpheus') return 'orpheus';
+    // Both spellings of Higgs land on narrator's, which is the one an argv may carry.
+    if (id === 'higgs' || id === 'higgs-v3') return 'higgs-v3';
+    return null;
+  };
+
+  const engine = normalise(recorded);
+  if (!engine) {
+    throw new Error(
+      recorded
+        ? `This session's session-state.json records tts_engine '${recorded}', which narrator `
+          + 'cannot assemble. It serves orpheus and higgs-v3; XTTS was retired 2026-09-04 and '
+          + 'its sessions load read-only.'
+        : 'This session\'s session-state.json records no tts_engine, so there is nothing to '
+          + 'assemble it as. narrator writes that field on every prep — a session without it was '
+          + 'not written by a narrator prep.',
+    );
+  }
+
+  // The sidecar, when there is one. Absent is the NORMAL case for a headless
+  // render and is not an error; only a contradiction is.
+  const sidecar = normalise((await parseSessionProvenance(processDir))?.ttsEngine);
+  if (sidecar && sidecar !== engine) {
+    throw new Error(
+      `This session disagrees with itself about what rendered it: session-state.json says `
+      + `'${recorded}' and BookForge's session_state.json sidecar says `
+      + `'${(await parseSessionProvenance(processDir))?.ttsEngine}'. One of them describes a `
+      + 'different render (a reused session directory, or a sidecar left by an earlier pass). '
+      + 'Refusing to guess which.',
+    );
+  }
+  return engine;
 }
 
 /**
@@ -965,8 +1033,7 @@ export async function startReassembly(
    */
   let asmEngine: string;
   try {
-    const provenance = await parseSessionProvenance(config.processDir);
-    asmEngine = narratorEngineForSession(provenance?.ttsEngine);
+    asmEngine = await narratorEngineForSession(config.processDir);
   } catch (err) {
     const error = err instanceof Error ? err.message : String(err);
     reassemblyLog.error('Reassembly refused', { jobId, error });

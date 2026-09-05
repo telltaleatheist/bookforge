@@ -359,6 +359,30 @@ export async function setSelectedEngineName(name: string): Promise<void> {
       `Unknown streaming engine: ${name}. This build streams: ${Object.keys(ENGINES).join(', ')}.`,
     );
   }
+  if (name === getSelectedEngineName()) return;
+
+  // AN UNAVAILABLE ENGINE IS REFUSED, with the reason the picker would have shown.
+  //
+  // Selecting one used to succeed: the name is spelled correctly, so nothing
+  // objected, and the failure arrived later as every `speak` erroring against an
+  // environment that is not there — with the Settings page reporting the engine
+  // happily selected. That is the same shape as an availability probe that lies,
+  // and the fix is the same: refuse where the user can still act on it.
+  const info = getAvailableEngines().find((e) => e.id === name);
+  if (info && !info.available) {
+    throw new Error(`${info.name} cannot stream on this machine. ${info.reason ?? ''}`.trim());
+  }
+
+  // THE WORKER MUST GO. Both engines are served by the SAME pool object — one
+  // resident process, whose engine was fixed by `NARRATOR_ENGINE` when it was
+  // spawned. Leaving it up would have the app reporting Higgs while an Orpheus
+  // worker went on answering every sentence, which is the worst available outcome:
+  // audio that is fine, in the wrong voice, with nothing anywhere saying so.
+  //
+  // Ended BEFORE the selection is written, so a failure to stop leaves the
+  // selection alone rather than pointing at an engine that is not running.
+  await getActiveEngine().endSession();
+
   selected = name;
   const cfg = readPersisted();
   cfg.engine = name;

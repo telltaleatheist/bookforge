@@ -72,6 +72,8 @@ const SUITES = [
   'test-serve-spawn-env',
   'test-narrator-log-strings',
   'test-no-e2a-doors',
+  'test-stream-engine-availability',
+  'test-session-engine-provenance',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',
