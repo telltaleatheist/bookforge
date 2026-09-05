@@ -1814,6 +1814,58 @@ comparable either (`mx.random.seed` vs vLLM's). That is a listening test, not an
 assertion this code makes.
 
 
+### 13.13 A checkpoint is staged PER ARM, and certified per (dir, BACKEND)
+
+The host side of 13.11, recorded here because the *reason* is this section's. Both
+halves follow from one fact: **the two arms share a voice, and share nothing
+else.**
+
+**THE PATH.** BookForge's catalog held ONE `voice.checkpointDir` per fine-tune,
+and it was the WSL guest's (`/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080`).
+The voice document is written per spawn, so on the Mac that path went into
+`checkpointDir` verbatim and `require_generation_config` refused it - correctly,
+by name, and only after the environment had been reported ready. narrator was
+right; the catalog could not say the true thing. It now names the directory once
+per arm and `higgsVoicesDocument()` writes the one belonging to the arm being
+spawned, so **the wire format is unchanged**: `checkpointDir` is still one
+absolute directory. The Mac's copy lives at
+
+    /Users/<account>/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080
+
+(stored in the catalog as `runtime/higgs-models/ds_ad4lm_prod_ckpt1080`, relative
+to userData, because a Mac's Application Support path carries the account name and
+the catalog is repo-tracked). It sits beside `runtime/higgs-models/base`, the
+directory `NARRATOR_HIGGS3_MLX_MODEL` names for a `default` or `clips` voice
+(13.10) - so one directory holds everything this backend loads, and a `checkpoint`
+voice still ignores that variable entirely (`model_dir = checkpoint or
+model_dir_from_env()`).
+
+**THE CERTIFICATE.** 13.11's closing paragraph - *"feeding both the same three
+numbers makes the CONFIGURATION identical, not the draws"* - is why the copy does
+not bring its cap. BookForge's `backends` block is now per BACKEND (`served` for
+vllm-omni, `mlx` for this one) and the MLX cap for deathstalker is `null` until
+its own length sweep runs: the same ladder (600/900/1200/1500), 4 seeds per
+length, ASR alignment and never duration ratio, cap = the largest length with zero
+babble and >= 90 % coverage on EVERY seed, contiguous from the shortest.
+
+**WHAT NARRATOR ALREADY DOES RIGHT, and was verified rather than changed.** The
+darwin door needed no new code and no new test:
+`higgs_v3_mlx_config_from_worker_kwargs` calls `checkpoint_serve_target`, and
+`HiggsV3MlxConfig.__post_init__` calls `mlx_sampling()`, which calls
+`require_generation_config` - so a checkpoint dir that is not a directory, or does
+not carry `generation_config.json`, or carries an unparseable one, is refused at
+the LOAD MESSAGE on this arm exactly as on the served one.
+`tests/test_higgs_mlx.py` already drives all of it through that door
+(`test_a_checkpoint_whose_generation_config_is_gone_is_refused`,
+`test_the_config_validates_at_CONSTRUCTION_like_its_served_twin`,
+`test_a_repetition_penalty_the_runtime_cannot_apply_is_REFUSED`,
+`test_a_checkpoint_voice_samples_from_ITS_generation_config`). What BookForge had
+to add was resolving its userData-relative catalog path to an ABSOLUTE one before
+writing the document - `require_generation_config` does `os.path.isdir` on the
+string it is given, and a relative one would resolve against whatever cwd the
+worker happened to have.
+
+
 ### 13.12 BookForge has TWO Higgs doctors now, one per arm (2026-09-05)
 
 The host side of this arm, recorded here because the *reason* is narrator's: one
