@@ -225,7 +225,8 @@ tier ratchet also depends on the message reaching stdout/stderr unchanged.
 
 ## 8. Behaviour differences (exhaustive)
 
-Twelve, all structural.
+Fourteen. Twelve are structural and change no output; the last two are
+BEHAVIOUR deviations found on the Mac MLX run and are called out as such.
 
 1. **`engine_factory` is a parameter of `run_worker`.** e2a built
    `TTSManager(session)` inline, which made the loop untestable without a 6 GB
@@ -321,6 +322,65 @@ Twelve, all structural.
    with a message that says what is wrong instead of "No session-state.json found
    in <dir>".
 
+13. **A FAILED sentence is no longer counted as CONVERTED.** THE ONE PLACE THIS
+   PORT FIXES AN e2a BUG RATHER THAN PRESERVING IT.
+
+   e2a: `actual_converted = processed - skipped` (`worker_core.py:561`).
+   `processed` increments for every sentence including failures
+   (`worker_core.py:490` batched, `:551` serial) and a failure increments nothing
+   else, so a failed sentence landed in `sentences_converted`. Measured on the
+   Mac MLX run: `"sentences_converted": 2, "sentences_failed": 2,
+   "failed_indices": [0, 1]` - two sentences, both failed, both reported as
+   rendered.
+
+   narrator: `processed - skipped - len(failed)`, so the three counts partition
+   `sentences_processed` exactly (`converted + skipped + failed == processed`,
+   asserted by `AccountingTest.assert_partitions`).
+
+   Fixed rather than recorded because these are not decoration: the worker's
+   result dict is what `parallel-tts-bridge.ts` parses off stdout, and a caller
+   trusting `sentences_converted` treats a book full of holes as rendered. A
+   CLEAN run's number is unchanged, which is what makes this safe to change -
+   only a run that already failed reports differently, and it now reports the
+   truth. `success` was already correct (`not failed`); this makes the counts
+   agree with it.
+
+14. **A resume now says what it skipped** - one line per contiguous run:
+   `[WORKER] skipped 128 already-rendered sentences (5..132)`.
+
+   e2a prints NOTHING for a skipped sentence: both skip sites `continue` before
+   the `Converting sentence` print (`worker_core.py:498-505` batched,
+   `:519-525` serial). A resume of a nearly-complete book therefore emits 131
+   progress lines for 133 sentences and gives no account of the other two, and
+   an operator reading the log cannot tell "resumed past them" from "never
+   reached them".
+
+   **The per-sentence silence is KEPT.** `Converting sentence N/M` means "index N
+   was just rendered" to the bridge's `noteRendered` (`:4197-4204`), so emitting
+   it for a skip would be a lie that also inflates the rendered-index set. The
+   summary is a separate line that trips NO bridge matcher - verified against all
+   eight in `SkippedRunReportTest.test_the_line_trips_no_bridge_matcher`.
+
+   > **It does NOT feed the watchdog, and the watchdog does not need it.** The
+   > brief for this change asked for a line that both matches no bridge regex and
+   > keeps the watchdog alive; those are mutually exclusive. MEASURED: all seven
+   > `worker.lastProgressAt = Date.now()` sites in `parallel-tts-bridge.ts` are
+   > inside a matched branch (`:4203`/`:4286` progress, `:4211`/`:4306`
+   > `MODEL_ACTIVITY_RE`, `:4263`/`:4319` `GENERATION_ACTIVITY_RE`, plus `:2002`
+   > at spawn). There is no catch-all, so a non-matching line refreshes nothing.
+   >
+   > It also turns out not to matter. A skip is two stat calls: MEASURED 67 us
+   > each on local NTFS over the kershaw golden set, so 10,000 skipped sentences
+   > cost 0.67 s and exhausting the 12-minute `WORKER_PROGRESS_TIMEOUT_MS` would
+   > take ~10.8 million consecutive skips. Even at 100x the cost (a 9p `/mnt/c`
+   > or a Z: network path) a 10,000-chunk book skips in ~67 s. **The silence was
+   > an operator-visibility problem, not a watchdog one.**
+   >
+   > If watchdog coverage is ever genuinely wanted here it needs a one-line
+   > change in `electron/` (a catch-all `worker.lastProgressAt = Date.now()` on
+   > any stdout line, or this phrase added to `GENERATION_ACTIVITY_RE`) - not a
+   > worker that pretends to be generating.
+
 ### Every changed message string
 
 | e2a | narrator | cause |
@@ -331,6 +391,7 @@ Twelve, all structural.
 | every `—`/`→` in the watchdog's refusal lines | `-` / `->` | same |
 | `No tts_engine in session state or args — the session state must name its engine` | `... - the session ...` | same |
 | `[MEMORY] Before TTSManager init` / `After TTSManager init (model loaded)` | `Before engine init` / `After engine init (model loaded)` | `TTSManager` does not exist in narrator. Verified against all seven bridge regexes: none matches either form (`MODEL_LOAD_DONE_RE` needs a `!`) |
+| - | **added:** `[WORKER] skipped N already-rendered sentences (i..j)` | e2a prints nothing for a skipped sentence; see deviation 14 |
 | `[WORKER] Registered TTS engine: <name>` | not emitted | `register_tts_engine` was a dynamic importlib dispatch over eight engine modules, to avoid loading 20 GB of unused engines. narrator has one engine and imports it directly |
 | `[MEMORY] After imports` (`worker_core.py:56`) | not emitted | printed at IMPORT of `worker_core`, measuring the cost of the module-scope torch/psutil/TTSManager imports narrator does not have |
 | `[MEMORY] After register_tts_engine` (`worker_core.py:370`) | not emitted | measures the importlib dispatch above, which is gone |

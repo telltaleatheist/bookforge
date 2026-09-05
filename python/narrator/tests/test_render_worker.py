@@ -436,6 +436,188 @@ class ResumeTest(WorkerTestBase):
 # Batching
 # =============================================================================
 
+class AccountingTest(WorkerTestBase):
+    """`converted + skipped + failed == processed`, exactly.
+
+    e2a computes `actual_converted = processed - skipped` (`worker_core.py:561`)
+    and increments `processed` for a FAILED sentence without incrementing
+    anything else, so a failure was reported as converted. Measured on the Mac
+    MLX run: two sentences, both failed, `"sentences_converted": 2,
+    "sentences_failed": 2`. Fixed here as a deliberate deviation - the bridge's
+    post-run handling reads these counts.
+    """
+
+    def assert_partitions(self, result):
+        self.assertEqual(
+            result['sentences_converted'] + result['sentences_skipped']
+            + result['sentences_failed'],
+            result['sentences_processed'],
+            f'the three counts do not partition sentences_processed: {result}')
+
+    def test_a_failed_sentence_is_not_also_counted_as_converted(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, _, _ = self.run_it(self.request(sentence_start=0, sentence_end=1),
+                                   fail_indices=(0, 1))
+        self.assertFalse(result['success'])
+        self.assertEqual(result['sentences_processed'], 2)
+        self.assertEqual(result['sentences_failed'], 2)
+        self.assertEqual(result['failed_indices'], [0, 1])
+        # e2a would have said 2 here - the exact number measured on the Mac.
+        self.assertEqual(result['sentences_converted'], 0)
+        self.assert_partitions(result)
+
+    def test_the_mixed_case_partitions_too(self):
+        """Some already rendered, some fresh, some failed, in one run."""
+        for i in (0, 1, 2, 3, 4):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, _, _ = self.run_it(self.request(sentence_start=0, sentence_end=9),
+                                   fail_indices=(1, 3))
+        self.assertEqual(result['sentences_processed'], 10)
+        self.assertEqual(result['sentences_skipped'], 5)      # 5..9 were present
+        self.assertEqual(result['sentences_failed'], 2)       # 1 and 3
+        self.assertEqual(result['sentences_converted'], 3)    # 0, 2, 4
+        self.assert_partitions(result)
+
+    def test_a_clean_run_is_unchanged(self):
+        """The deviation must not move the number anyone already relies on."""
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, _, _ = self.run_it(self.request(sentence_start=0, sentence_end=4))
+        self.assertTrue(result['success'])
+        self.assertEqual(result['sentences_converted'], 5)
+        self.assertEqual(result['sentences_failed'], 0)
+        self.assert_partitions(result)
+
+    def test_the_Completed_log_line_agrees_with_the_result(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=3),
+                                     fail_indices=(2,))
+        self.assertIn(f"[WORKER] Completed: {result['sentences_converted']} converted, "
+                      f"{result['sentences_skipped']} skipped", out)
+        self.assertIn('[WORKER] ERROR: 1 sentence(s) failed to convert: [2]', out)
+
+
+class SkippedRunReportTest(WorkerTestBase):
+    """A resume says how many sentences it skipped, and which.
+
+    e2a says NOTHING: both skip sites `continue` before the `Converting sentence`
+    print (`worker_core.py:498-505`, `:519-525`), so a resume of a nearly
+    complete book emits 131 lines for 133 sentences with no account of the other
+    two. Per-sentence silence is kept (a `Converting sentence` line means "this
+    index was just rendered"); a summary per contiguous run is added.
+    """
+
+    #: The bridge matchers this line must NOT trip, verbatim with their file:line.
+    MUST_NOT_MATCH = {
+        ':4176': BRIDGE_PROGRESS_RE,
+        ':4175': BRIDGE_PROGRESS_RE_OLD,
+        ':2513': BRIDGE_GENERATION_ACTIVITY_RE,
+        ':2526': BRIDGE_MODEL_LOAD_START_RE,
+        ':2527': BRIDGE_MODEL_LOAD_DONE_RE,
+        ':2534': BRIDGE_REPAIR_START_RE,
+    }
+
+    def skip_lines(self, out):
+        return [l for l in out.splitlines()
+                if l.startswith('[WORKER] skipped ')]
+
+    def test_a_full_resume_reports_the_whole_run(self):
+        result, out, engine = self.run_it(
+            self.request(sentence_start=0, sentence_end=9))
+        self.assertTrue(result['success'])
+        self.assertEqual(engine.calls, [])
+        self.assertEqual(
+            self.skip_lines(out),
+            ['[WORKER] skipped 10 already-rendered sentences (0..9)'])
+
+    def test_each_contiguous_run_gets_its_own_line(self):
+        for i in (3, 4, 7):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=9))
+        self.assertTrue(result['success'])
+        self.assertEqual(self.skip_lines(out), [
+            '[WORKER] skipped 3 already-rendered sentences (0..2)',
+            '[WORKER] skipped 2 already-rendered sentences (5..6)',
+            '[WORKER] skipped 2 already-rendered sentences (8..9)',
+        ])
+
+    def test_nothing_is_printed_when_nothing_is_skipped(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        _, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=3))
+        self.assertEqual(self.skip_lines(out), [])
+
+    def test_a_scattered_index_set_reports_its_own_runs(self):
+        """Discrete-index mode: the run is over the WORK ORDER, and two indices
+        that are not adjacent are two runs even when both are skipped."""
+        result, out, _ = self.run_it(
+            self.request(sentence_indices=[1, 2, 8], num_takes=1))
+        self.assertTrue(result['success'])
+        self.assertEqual(self.skip_lines(out), [
+            '[WORKER] skipped 2 already-rendered sentences (1..2)',
+            '[WORKER] skipped 1 already-rendered sentences (8..8)',
+        ])
+
+    def test_an_empty_row_ends_a_run_rather_than_joining_it(self):
+        """An empty sentence is WRITTEN (0.1 s of silence), not resumed past, so
+        it must not be counted as already-rendered."""
+        chapters = [['One.', '   ', 'Three.', 'Four.']]
+        root = tempfile.mkdtemp(prefix='narrator-R-skipempty-')
+        self.addCleanup(shutil.rmtree, root, ignore_errors=True)
+        session_dir = os.path.join(root, 'ebook-y')
+        os.makedirs(session_dir)
+        process_dir = synthetic.build_session(
+            session_dir, chapter_sentences=chapters,
+            chunk_seconds=[1.0, 1.0, 1.0, 1.0],
+            chapter_docs=['text/c1.xhtml'], titles_by_doc={'text/c1.xhtml': 'One'})
+        sentences_dir = os.path.join(process_dir, 'chapters', 'sentences')
+        os.remove(os.path.join(sentences_dir, '1.flac'))    # the empty row
+
+        _, out, _ = self.run_it(WorkerRequest(
+            session_id='y', session_dir=session_dir, sentences_dir=sentences_dir,
+            tts_engine='orpheus', device='cpu', sentence_start=0, sentence_end=3))
+        self.assertEqual(self.skip_lines(out), [
+            '[WORKER] skipped 1 already-rendered sentences (0..0)',
+            '[WORKER] skipped 2 already-rendered sentences (2..3)',
+        ])
+
+    def test_the_batched_arm_reports_the_same_runs(self):
+        for i in (4, 5):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        _, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=9),
+                                engine_cls=BatchedFakeEngine)
+        self.assertEqual(self.skip_lines(out), [
+            '[WORKER] skipped 4 already-rendered sentences (0..3)',
+            '[WORKER] skipped 4 already-rendered sentences (6..9)',
+        ])
+
+    # -- the contract with the bridge ---------------------------------------
+
+    def test_the_line_trips_no_bridge_matcher(self):
+        """It must not look like progress, a repair, a model load or generation
+        activity - each of those drives a different part of the UI."""
+        _, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=9))
+        lines = self.skip_lines(out)
+        self.assertTrue(lines)
+        for line in lines:
+            for where, pattern in self.MUST_NOT_MATCH.items():
+                self.assertIsNone(
+                    pattern.search(line),
+                    f'parallel-tts-bridge.ts{where} would match {line!r}')
+            self.assertNotIn(BRIDGE_GUARD_EVENT_PREFIX, line)
+            line.encode('ascii')
+
+    def test_a_skipped_sentence_still_emits_no_progress_line(self):
+        """PARITY, deliberately kept: `Converting sentence N/M` means "index N was
+        just rendered" to the bridge's `noteRendered`. Emitting it for a skip
+        would be a lie about what the worker did."""
+        _, out, _ = self.run_it(self.request(sentence_start=0, sentence_end=9))
+        self.assertEqual(
+            [l for l in out.splitlines() if l.startswith('Converting sentence')], [])
+
+
 class BatchTest(WorkerTestBase):
 
     def test_a_batched_engine_flushes_at_its_batch_size(self):

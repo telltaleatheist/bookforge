@@ -152,6 +152,25 @@ class RetakeRunTest(WorkerTestBase):
                  if 'After first sentence TTS' in l]
         self.assertEqual(len(lines), 3, out)
 
+    def test_the_counts_partition_across_takes_when_one_index_fails(self):
+        """The converted/skipped/failed fix has to hold for the OTHER caller too:
+        a retake renders each index once per take, so a consistently failing
+        index is counted once per take in both `processed` and `failed`."""
+        request = self.request(sentences_dir=self.scratch(),
+                               sentence_indices=[0, 1],
+                               take_temperatures=[0.4, 0.8], num_takes=2)
+        result, _, engine = self.run_it(request, fail_indices=(1,))
+
+        self.assertFalse(result['success'])
+        self.assertEqual(result['sentences_processed'], 4)   # 2 indices x 2 takes
+        self.assertEqual(result['sentences_failed'], 2)      # index 1, both takes
+        self.assertEqual(result['failed_indices'], [1, 1])
+        self.assertEqual(result['sentences_converted'], 2)   # index 0, both takes
+        self.assertEqual(
+            result['sentences_converted'] + result['sentences_skipped']
+            + result['sentences_failed'],
+            result['sentences_processed'])
+
     def test_a_single_temperature_still_lands_in_take0(self):
         scratch = self.scratch()
         request = self.request(sentences_dir=scratch, sentence_indices=[5],

@@ -838,7 +838,22 @@ def run_worker(request: WorkerRequest, engine_factory=None) -> dict:
                          in_flight, announce_batch=(take == 0))
 
         elapsed = time.time() - start_time
-        actual_converted = counters.processed - counters.skipped
+        # DELIBERATE DEVIATION from e2a - see PORT_NOTES section 8.
+        #
+        # e2a: `actual_converted = processed - skipped` (worker_core.py:561).
+        # `processed` increments for EVERY sentence including the ones that
+        # FAILED, and a failure increments no other counter, so a failed sentence
+        # was reported as CONVERTED. Measured on the Mac MLX run:
+        # `"sentences_converted": 2, "sentences_failed": 2, "failed_indices": [0, 1]`
+        # - two sentences, both failed, both counted as rendered.
+        #
+        # Fixed rather than preserved because these counts are not decoration:
+        # the bridge's post-run handling reads them, and a caller trusting
+        # `sentences_converted` treats a book full of holes as rendered. The
+        # three fields now partition `sentences_processed` exactly:
+        # converted + skipped + failed == processed.
+        actual_converted = (counters.processed - counters.skipped
+                            - len(counters.failed))
         log_memory("After all sentences processed")
 
         print(f"[WORKER] Completed: {actual_converted} converted, "
@@ -1010,6 +1025,49 @@ def _pool_size(engine, batch_size: int) -> int:
     return pool
 
 
+class _SkipRun:
+    """Collapses a contiguous run of already-rendered sentences into ONE line.
+
+    e2a prints NOTHING for a skipped sentence: both skip sites `continue` before
+    the `Converting sentence` print (`worker_core.py:498-505` and `:519-525`), so
+    a resume of a mostly-complete book emits 131 progress lines for 133 sentences
+    and says nothing at all about the other two. That silence is invisible to an
+    operator reading a worker log, who cannot tell "resumed past them" from
+    "never reached them".
+
+    So the per-sentence silence is KEPT (parity: no line per skip, and no
+    `Converting sentence` for a sentence that was not converted - that line means
+    "this index was just rendered" to `noteRendered`), and a SUMMARY is printed
+    when each run ends.
+
+    THE LINE DELIBERATELY MATCHES NO BRIDGE REGEX, which also means it does NOT
+    refresh the watchdog - see PORT_NOTES section 8 for the measurement behind
+    that sentence and what a watchdog fix would actually require.
+    """
+
+    def __init__(self):
+        self.start = None
+        self.last = None
+        self.count = 0
+
+    def note(self, index: int) -> None:
+        if self.start is not None and index != self.last + 1:
+            self.flush()
+        if self.start is None:
+            self.start = index
+        self.last = index
+        self.count += 1
+
+    def flush(self) -> None:
+        if self.start is None:
+            return
+        print(f"[WORKER] skipped {self.count} already-rendered "
+              f"sentences ({self.start}..{self.last})", flush=True)
+        self.start = None
+        self.last = None
+        self.count = 0
+
+
 def _already_rendered(pass_dir: str, index: int) -> bool:
     """The resume skip. STRICTLY greater than 1024 bytes - see RESUME_MIN_BYTES."""
     output_file = os.path.join(pass_dir, f'{index}.{AUDIO_PROC_FORMAT}')
@@ -1037,18 +1095,25 @@ def _write_empty_sentence_silence(engine, index: int) -> None:
 
 def _render_serial(engine, work_indices, all_sentences, overrides, pass_dir,
                    counters, total_to_process, total_sentences, in_flight) -> None:
+    skips = _SkipRun()
     for i in work_indices:
         if _already_rendered(pass_dir, i):
+            skips.note(i)
             counters.skipped += 1
             counters.processed += 1
             continue
 
         sentence = _text_for(i, all_sentences, overrides)
         if not sentence or not sentence.strip():
+            # An empty row is WRITTEN, not skipped-as-already-rendered, so it
+            # ends the run rather than joining it.
+            skips.flush()
             _write_empty_sentence_silence(engine, i)
             counters.skipped += 1
             counters.processed += 1
             continue
+
+        skips.flush()
 
         progress_pct = (counters.processed / total_to_process) * 100
         print(f"Converting sentence {i}/{total_sentences} ({progress_pct:.1f}%)",
@@ -1070,6 +1135,8 @@ def _render_serial(engine, work_indices, all_sentences, overrides, pass_dir,
             log_memory("After first sentence TTS")
 
         memory_cleanup(counters.processed, interval=10)
+
+    skips.flush()
 
 
 def _render_batched(engine, work_indices, all_sentences, overrides, pass_dir,
@@ -1105,20 +1172,25 @@ def _render_batched(engine, work_indices, all_sentences, overrides, pass_dir,
                 first_logged = True
         pending.clear()
 
+    skips = _SkipRun()
     for i in work_indices:
         # Skip already-rendered (resume) and empty sentences - the same as the
         # per-sentence path; empties never reach the batch.
         if _already_rendered(pass_dir, i):
+            skips.note(i)
             counters.skipped += 1
             counters.processed += 1
             continue
         sentence = _text_for(i, all_sentences, overrides)
         if not sentence or not sentence.strip():
+            skips.flush()
             _write_empty_sentence_silence(engine, i)
             counters.skipped += 1
             counters.processed += 1
             continue
+        skips.flush()
         pending.append((i, sentence))
         if len(pending) >= pool_size:
             flush()
     flush()
+    skips.flush()
