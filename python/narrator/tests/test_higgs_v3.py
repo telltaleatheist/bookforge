@@ -41,6 +41,7 @@ if _PYTHON_ROOT not in sys.path:
 
 from narrator.engine import registry                                  # noqa: E402
 from narrator.engine.higgs import v3_served                           # noqa: E402
+from narrator.engine.higgs import config as v3_config           # noqa: E402
 from narrator.engine.higgs.v3_engine import (HiggsV3Budget,           # noqa: E402
                                              HiggsV3Config,
                                              HiggsV3Defaults,
@@ -199,6 +200,23 @@ class FakeV3Server:
         self.thread.join(timeout=10)
 
 
+#: THE REAL FILE, byte for byte. Copied 2026-09-05 out of the merged fine-tune
+#: `/home/telltale/higgs_v3_merged/ds_ad4lm` (WSL), whose `merge_manifest.json`
+#: records its provenance as
+#: `"generation_config_source": "OVERRIDE from runs/ds_ad4lm_r32/
+#: generation_config.override.json"` - the values being vllm-omni's own
+#: `deploy/higgs_multimodal_qwen3.yaml` stage-0 `default_sampling_params`.
+#: EMBEDDED rather than read from that path: a test that reads a machine's
+#: working directory passes or fails on what somebody else did there.
+MERGED_GENERATION_CONFIG = """{
+  "temperature": 1.0,
+  "top_p": 0.95,
+  "top_k": 50,
+  "repetition_penalty": 1.0
+}
+"""
+
+
 class V3TestCase(unittest.TestCase):
     """A fake server and a one-clip deathstalker voice, for every subclass."""
 
@@ -213,6 +231,29 @@ class V3TestCase(unittest.TestCase):
     def _rmtree(self):
         import shutil
         shutil.rmtree(self.dir, ignore_errors=True)
+
+    def merged_checkpoint(self, name='ds-merged', generation_config=...):
+        """A directory shaped like a real merged Higgs v3 checkpoint - minus the
+        8.5 GB of weights, which nothing here reads.
+
+        `generation_config` is written verbatim; `...` writes THE REAL FILE'S
+        CONTENT (see MERGED_GENERATION_CONFIG) and None writes no file at all,
+        which is the misconfigured dir `require_generation_config` exists to
+        refuse.
+        """
+        path = os.path.join(self.dir, name)
+        os.makedirs(path, exist_ok=True)
+        with open(os.path.join(path, 'config.json'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('{}')
+        if generation_config is None:
+            return path
+        body = (MERGED_GENERATION_CONFIG if generation_config is ...
+                else generation_config)
+        with open(os.path.join(path, 'generation_config.json'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write(body)
+        return path
 
     def voice(self, seconds=27.42, clips=1, **kwargs):
         return ClipsVoice(
@@ -386,10 +427,11 @@ class CheckpointVoiceTest(V3TestCase):
 
     def test_the_serve_target_is_the_checkpoint_itself(self):
         """No extra launch arguments: there is no adapter to name."""
-        self.assertEqual(v3_served.checkpoint_serve_target('/models/ds-merged'),
-                         '/models/ds-merged')
+        merged = self.merged_checkpoint()
+        self.assertEqual(v3_served.checkpoint_serve_target(merged, 'ds-ft'),
+                         merged)
         with self.assertRaises(ValueError) as caught:
-            v3_served.checkpoint_serve_target('')
+            v3_served.checkpoint_serve_target('', 'ds-ft')
         self.assertIn('checkpointDir', str(caught.exception))
 
     def test_a_load_message_adapterDir_is_refused_at_that_boundary_too(self):
@@ -410,10 +452,11 @@ class CheckpointVoiceTest(V3TestCase):
 
     def test_a_checkpoint_voice_carries_its_directory_into_the_config(self):
         from narrator.engine.protocol import DefaultVoice
-        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+        merged = self.merged_checkpoint()
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='length-sweep')
         config = HiggsV3Config(voice=voice, base_url=self.server.base_url)
-        self.assertEqual(config.checkpoint_dir, '/models/ds-merged')
+        self.assertEqual(config.checkpoint_dir, merged)
 
     def test_a_voice_and_a_config_that_disagree_are_refused(self):
         from narrator.engine.protocol import DefaultVoice
@@ -462,9 +505,10 @@ class CheckpointVoiceTest(V3TestCase):
 
     def test_a_voice_change_on_a_live_engine_names_the_restart(self):
         from narrator.engine.protocol import DefaultVoice
-        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ds-merged'
+        merged = self.merged_checkpoint()
+        os.environ[v3_served.CHECKPOINT_ENV] = merged
         self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
-        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
@@ -479,9 +523,10 @@ class CheckpointVoiceTest(V3TestCase):
     def test_a_checkpoint_voice_renders_text_only(self):
         """THE PRODUCTION PATH: no `references` key at all."""
         from narrator.engine.protocol import DefaultVoice
-        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ds-merged'
+        merged = self.merged_checkpoint()
+        os.environ[v3_served.CHECKPOINT_ENV] = merged
         self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
-        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
@@ -489,6 +534,326 @@ class CheckpointVoiceTest(V3TestCase):
         self.addCleanup(engine.cleanup)
         engine.render_audio('It was a Saturday morning.')
         self.assertNotIn('references', self.server.requests[-1])
+
+
+class GenerationConfigTest(V3TestCase):
+    """`generation_config.json` is a REQUIRED file of a Higgs v3 checkpoint.
+
+    WHY IT IS REQUIRED, measured by the fine-tune campaign 2026-09-05:
+    `vllm-omni serve <dir>` resolves sampling FROM THE MODEL DIRECTORY
+    (`--generation-config` defaults to `auto`). A merged dir without the file
+    makes vllm-omni's stage fallback (`entrypoints/openai/stage_params.py`) hand
+    back a bare `SamplingParams()` - top_p 1.0, top_k DISABLED - which samples
+    the untruncated 1026-way codebook tail and derails long prompts into babble.
+    `OpenAICreateSpeechRequest` carries no temperature/top_p/top_k, so nothing
+    per-request can correct it: the directory is the ONLY lever.
+
+    PROVENANCE. The `bosonai/higgs-audio-v3-tts-4b` base ships NO such file
+    (verified across the whole HF cache, 2026-09-05). Every merged dir gets one
+    WRITTEN BY THE MERGE from a recorded per-run override whose values are
+    vllm-omni's own `deploy/higgs_multimodal_qwen3.yaml` stage-0
+    `default_sampling_params`, and `merge_manifest.json` records which. narrator
+    never writes it: a dir that lacks it is MISCONFIGURED, and synthesizing one
+    here would be narrator deciding a model's sampling.
+    """
+
+    def _voice(self, checkpoint):
+        from narrator.engine.protocol import DefaultVoice
+        return DefaultVoice(name='ds-ft', checkpoint_dir=checkpoint,
+                            max_chars=500, max_chars_source='catalog')
+
+    def _voices_document(self, checkpoint):
+        path = os.path.join(self.dir, 'voices.json')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({'ds-ft': {'kind': 'checkpoint',
+                                 'checkpointDir': checkpoint,
+                                 'maxChars': 500}}, handle)
+        os.environ[v3_config.VOICES_ENV] = path
+        self.addCleanup(os.environ.pop, v3_config.VOICES_ENV, None)
+        return path
+
+    # -- the states of the file ----------------------------------------------
+
+    def test_present_and_valid_is_accepted_and_read_back(self):
+        """THE REAL FILE'S CONTENT - see MERGED_GENERATION_CONFIG. Read back
+        rather than merely accepted: the MLX arm renders at these numbers."""
+        merged = self.merged_checkpoint()
+        document = v3_served.require_generation_config(merged, 'ds-ft')
+        self.assertEqual(document, {'temperature': 1.0, 'top_p': 0.95,
+                                    'top_k': 50, 'repetition_penalty': 1.0})
+
+    def test_absent_is_refused_naming_the_voice_the_dir_and_the_file(self):
+        merged = self.merged_checkpoint(generation_config=None)
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn(merged, message)
+        self.assertIn('generation_config.json', message)
+        self.assertIn('top_k', message)          # it says WHY, not just what
+
+    def test_unparseable_json_is_refused_by_name(self):
+        merged = self.merged_checkpoint(
+            generation_config='{"temperature": 1.0, "top_p": ,}')
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('generation_config.json', message)
+        self.assertIn('JSON', message)
+
+    def test_a_file_that_carries_no_sampling_is_refused(self):
+        """A generation_config.json without temperature/top_p/top_k is not the
+        file this needs: the server reads it, finds no sampling and falls back
+        exactly as if it were absent."""
+        cases = (('{"eos_token_id": 128009}',
+                  ('temperature', 'top_p', 'top_k')),
+                 ('{"temperature": 1.0, "top_p": 0.95}', ('top_k',)),
+                 ('{"temperature": 1.0, "top_k": 50}', ('top_p',)),
+                 ('{"top_p": 0.95, "top_k": 50}', ('temperature',)))
+        for index, (body, missing) in enumerate(cases):
+            with self.subTest(body=body):
+                merged = self.merged_checkpoint(name=f'partial-{index}',
+                                                generation_config=body)
+                with self.assertRaises(ValueError) as caught:
+                    v3_served.require_generation_config(merged, 'ds-ft')
+                message = str(caught.exception)
+                for key in missing:
+                    self.assertIn(key, message)
+
+    def test_a_json_document_that_is_not_an_object_is_refused(self):
+        merged = self.merged_checkpoint(generation_config='[1.0, 0.95, 50]')
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, 'ds-ft')
+        self.assertIn('list', str(caught.exception))
+
+    def test_a_checkpoint_directory_that_is_not_there_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(
+                os.path.join(self.dir, 'nothing-here'), 'ds-ft')
+        self.assertIn('not a directory', str(caught.exception))
+
+    def test_an_unnamed_voice_is_refused_rather_than_reported_anonymously(self):
+        merged = self.merged_checkpoint()
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, '   ')
+        self.assertIn('VOICE NAME', str(caught.exception))
+
+    # -- the doors that carry the refusal ------------------------------------
+
+    def test_the_serve_target_refuses_a_dir_without_it(self):
+        """`checkpoint_serve_target` is the one place that decides which
+        directory a voice's server runs on, so it is where that directory's
+        required files are proved."""
+        merged = self.merged_checkpoint(generation_config=None)
+        with self.assertRaises(ValueError) as caught:
+            v3_served.checkpoint_serve_target(merged, 'ds-ft')
+        self.assertIn('generation_config.json', str(caught.exception))
+
+    def test_the_served_config_refuses_it_before_a_server_is_started(self):
+        """55-297 s of cold start and ~14 GB of VRAM are paid AFTER this point,
+        so the refusal belongs before them."""
+        merged = self.merged_checkpoint(generation_config=None)
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Config(voice=self._voice(merged),
+                          base_url=self.server.base_url)
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('generation_config.json', message)
+
+    def test_a_load_message_for_such_a_voice_is_refused(self):
+        """`resolve_load_voice` validates a load AS THIS ENGINE understands it,
+        and a checkpoint's required files are part of that - the same layer that
+        refuses a fine-tune with no maxChars."""
+        self._voices_document(self.merged_checkpoint(generation_config=None))
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Engine.resolve_load_voice('ds-ft')
+        self.assertIn('generation_config.json', str(caught.exception))
+
+    def test_the_same_load_passes_once_the_file_is_there(self):
+        self._voices_document(self.merged_checkpoint())
+        self.assertEqual(HiggsV3Engine.resolve_load_voice('ds-ft'), 'ds-ft')
+
+    def test_narrator_never_writes_the_file_itself(self):
+        """A refusal that repaired the directory would be a fallback: the merge
+        is what puts this file there, and its values are a property of the
+        model."""
+        merged = self.merged_checkpoint(generation_config=None)
+        with self.assertRaises(ValueError):
+            v3_served.checkpoint_serve_target(merged, 'ds-ft')
+        self.assertFalse(
+            os.path.exists(os.path.join(merged, 'generation_config.json')),
+            'the refusal must not create the file it refused over')
+
+
+class ServedSamplingTest(V3TestCase):
+    """WHAT THE SERVED ARM SENDS, and it is not the same for the two kinds.
+
+    "Send nothing and get the deploy defaults" was the belief this branch
+    refuted: `vllm-omni serve` resolves sampling from the MODEL DIRECTORY
+    (`--generation-config auto`), so an empty request gets whatever that
+    directory holds - and the `bosonai/higgs-audio-v3-tts-4b` snapshot holds NO
+    generation_config.json, which is a bare SamplingParams(): top_p 1.0, top_k
+    DISABLED, the untruncated 1026-way tail. So base weights must STATE the
+    values and a checkpoint must not.
+    """
+
+    def _checkpoint_config(self, **kwargs):
+        from narrator.engine.protocol import DefaultVoice
+        merged = kwargs.pop('merged', None) or self.merged_checkpoint()
+        # Which checkpoint the server is running cannot be discovered, so it is
+        # STATED - the engine refuses a checkpoint voice against a server that
+        # says nothing (CheckpointVoiceTest covers that refusal itself).
+        os.environ[v3_served.CHECKPOINT_ENV] = merged
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
+                             max_chars=500, max_chars_source='catalog')
+        kwargs.setdefault('base_url', self.server.base_url)
+        kwargs.setdefault('probe_tail_trim', False)
+        return HiggsV3Config(voice=voice, **kwargs)
+
+    def test_base_weights_state_the_sampling_in_extra_params(self):
+        """The bosonai snapshot ships no generation_config.json, so sending
+        nothing here is the babble sampling, not the deploy default."""
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        extra = self.server.requests[-1]['extra_params']
+        self.assertEqual(extra['temperature'], 1.0)
+        self.assertEqual(extra['top_p'], 0.95)
+        self.assertEqual(extra['top_k'], 50)
+        self.assertEqual(extra['repetition_penalty'], 1.0)
+
+    def test_the_seed_never_rides_inside_extra_params(self):
+        """It is the request's TOP-LEVEL field, and two sources for one number
+        is one too many - build_request_body refuses the duplicate."""
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        body = self.server.requests[-1]
+        self.assertNotIn('seed', body['extra_params'])
+        self.assertEqual(body['seed'], 1234)
+
+    def test_a_checkpoint_voice_sends_NO_extra_params(self):
+        """Its directory carries the file and the server reads it; an
+        extra_params here would override the model's own declared sampling with
+        narrator's opinion of it."""
+        engine = HiggsV3Engine(self._checkpoint_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        self.assertNotIn('extra_params', self.server.requests[-1])
+
+    def test_an_override_still_rides_for_either_kind(self):
+        engine = HiggsV3Engine(
+            self._checkpoint_config(sampling={'temperature': 0.7}))
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        self.assertEqual(self.server.requests[-1]['extra_params'],
+                         {'temperature': 0.7})
+
+    # -- what the stop policy reports (the manifest outlives the render) ------
+
+    def test_the_stop_policy_reports_the_checkpoints_OWN_levers(self):
+        import json as _json
+        merged = self.merged_checkpoint(
+            generation_config=_json.dumps({'temperature': 0.6, 'top_p': 0.85,
+                                           'top_k': 30}))
+        policy = higgs_v3_stop_policy(self._checkpoint_config(merged=merged))
+        self.assertEqual(policy.levers,
+                         {'temperature': 0.6, 'top_p': 0.85, 'top_k': 30.0})
+
+    def test_the_stop_policy_reports_the_deploy_default_for_base_weights(self):
+        policy = higgs_v3_stop_policy(self.config())
+        self.assertEqual(policy.levers['temperature'], 1.0)
+        self.assertEqual(policy.levers['top_p'], 0.95)
+        self.assertEqual(policy.levers['top_k'], 50.0)
+        self.assertNotIn('seed', policy.levers,
+                         'the seed is not a sampling lever')
+
+
+class GenerationConfigTypesTest(V3TestCase):
+    """Presence is not validation. A number that is wrong in a way nobody says
+    out loud is exactly what this file exists to stop."""
+
+    def _refuse(self, body):
+        merged = self.merged_checkpoint(name='typed-' + str(abs(hash(body))),
+                                        generation_config=body)
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('generation_config.json', message)
+        return message
+
+    def test_a_float_top_k_is_refused_rather_than_truncated(self):
+        """`int(50.7)` is 50 everywhere that touches it - a DIFFERENT sampling
+        than the file states, arrived at silently."""
+        message = self._refuse('{"temperature": 1.0, "top_p": 0.95, '
+                               '"top_k": 50.7}')
+        self.assertIn('top_k', message)
+        self.assertIn('whole number', message)
+
+    def test_a_null_value_is_refused_by_name(self):
+        for body, key in (
+                ('{"temperature": null, "top_p": 0.95, "top_k": 50}',
+                 'temperature'),
+                ('{"temperature": 1.0, "top_p": null, "top_k": 50}', 'top_p'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": null}',
+                 'top_k')):
+            with self.subTest(key=key):
+                self.assertIn(key, self._refuse(body))
+
+    def test_a_string_value_is_refused_rather_than_coerced(self):
+        self.assertIn('top_p', self._refuse(
+            '{"temperature": 1.0, "top_p": "0.95", "top_k": 50}'))
+
+    def test_a_boolean_is_not_a_number(self):
+        """`True` is an int in Python; it is not a top-k."""
+        self.assertIn('top_k', self._refuse(
+            '{"temperature": 1.0, "top_p": 0.95, "top_k": true}'))
+
+    def test_out_of_range_values_are_refused(self):
+        for body, word in (
+                ('{"temperature": -0.5, "top_p": 0.95, "top_k": 50}',
+                 'negative'),
+                ('{"temperature": 1.0, "top_p": 1.5, "top_k": 50}',
+                 'probability mass'),
+                ('{"temperature": 1.0, "top_p": 0.0, "top_k": 50}',
+                 'probability mass'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": -1}',
+                 'non-negative'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": 50, '
+                 '"repetition_penalty": 0.0}', 'positive')):
+            with self.subTest(body=body):
+                self.assertIn(word, self._refuse(body))
+
+    def test_the_values_a_checkpoint_may_legitimately_state_are_accepted(self):
+        """0.0 temperature is greedy, 1.0 top_p is the untruncated tail and 0
+        top_k disables top-k. A checkpoint that says so is saying it
+        deliberately, and narrator does not second-guess a model's own file."""
+        merged = self.merged_checkpoint(
+            name='edge',
+            generation_config='{"temperature": 0.0, "top_p": 1.0, "top_k": 0}')
+        document = v3_served.require_generation_config(merged, 'ds-ft')
+        self.assertEqual(document['top_k'], 0)
+
+    def test_an_unreadable_file_is_refused_by_name(self):
+        """Permissions, a broken symlink, a wedged mount. The file passes
+        `isfile` and then the read fails - and every OTHER state of this file
+        refuses with the voice, the path and why, so a bare OSError here would
+        be the one refusal in this feature that names neither. The failure is
+        injected rather than staged on disk because there is no portable way to
+        make a file unreadable on both Windows and Linux."""
+        from unittest import mock
+        merged = self.merged_checkpoint(name='unreadable')
+        with mock.patch('builtins.open',
+                        side_effect=OSError('Permission denied')):
+            with self.assertRaises(ValueError) as caught:
+                v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('could not be read', message)
+        self.assertIn('Permission denied', message)
 
 
 class LifecycleTest(V3TestCase):
@@ -595,7 +960,11 @@ class EngineTest(V3TestCase):
         self.assertGreater(audio.size, 0)
         sent = self.server.requests[-1]
         self.assertEqual(sent['input'], 'It was a Saturday morning.')
-        self.assertNotIn('extra_params', sent)
+        # BASE WEIGHTS STATE THEIR SAMPLING. Sending no extra_params would mean
+        # the model directory's generation_config.json, and the bosonai snapshot
+        # carries none - i.e. a bare SamplingParams(), top_p 1.0 / top_k off.
+        # See ServedSamplingTest.
+        self.assertEqual(sent['extra_params']['top_p'], 0.95)
 
     def test_the_seam_facts(self):
         engine = HiggsV3Engine(self.config())
@@ -1030,7 +1399,8 @@ class VoiceTuningTest(V3TestCase):
 
     def test_the_budget_refuses_a_checkpoint_voice_assembled_in_code(self):
         bare = ClipsVoice(clips=(ReferenceClip(self.clip, X2_TEXT, seconds=14.0),),
-                          name='ds-ft', checkpoint_dir='/models/ds-merged')
+                          name='ds-ft',
+                          checkpoint_dir=self.merged_checkpoint())
         budget = HiggsV3Budget(HiggsV3Config(voice=bare,
                                              base_url=self.server.base_url))
         with self.assertRaises(ValueError) as caught:

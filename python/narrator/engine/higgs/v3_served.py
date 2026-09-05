@@ -67,8 +67,17 @@ WHAT THE REQUEST LOOKS LIKE, and the two ways it goes silently wrong:
   * SAMPLING MUST RIDE IN `extra_params`. `temperature` / `top_p` / `top_k` are
     not fields of `OpenAICreateSpeechRequest`; pydantic drops them without a
     word, and the whole first audition therefore ran at the server default
-    while reporting 0.3. Sending NOTHING is the delivered render's choice and
-    uses the deploy defaults (temperature 1.0, top_p 0.95, top_k 50).
+    while reporting 0.3. AND "the server default" IS THE MODEL DIRECTORY:
+    sending nothing means whatever `<model dir>/generation_config.json` holds,
+    because `--generation-config` defaults to `auto` and `serve_v3.sh` passes no
+    override. A validated merged checkpoint holds temperature 1.0, top_p 0.95,
+    top_k 50, repetition_penalty 1.0; a directory WITHOUT the file - which is
+    every unmerged `bosonai/higgs-audio-v3-tts-4b` snapshot - gets a bare
+    `SamplingParams()` instead: top_p 1.0 and top_k DISABLED, the untruncated
+    1026-way codebook tail, which derails long chunks into babble. See
+    `require_generation_config` and ../PORT_NOTES.md 12.8d. So base weights are
+    sent `SERVER_DEFAULT_SAMPLING` EXPLICITLY (HiggsV3Config.served_sampling)
+    and only a checkpoint voice sends nothing.
   * A CONTROL TOKEN THAT IS NOT IN THE VOCABULARY IS READ ALOUD AS WORDS and
     derails generation into a degenerate loop - ASR coverage 0.000, pitch std
     0.28 st, speaker cosine 0.05. `<|emotion:calm|>`, `<|emotion:neutral|>`,
@@ -130,8 +139,22 @@ WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
 #: silent assumption, which is a whole book in the wrong narrator.
 CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
 
-#: `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0. Sending no
-#: `extra_params` uses these verbatim, which is what the delivered render did.
+#: `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0 - THE DEPLOY DEFAULT
+#: FOR THE BASE WEIGHTS, and nothing more than that.
+#:
+#: It is NOT what a request gets by sending no `extra_params`. `vllm-omni serve`
+#: on the CLI never reads that YAML; it resolves sampling from the MODEL
+#: DIRECTORY (`--generation-config` defaults to `auto`), so an empty request
+#: gets `<model dir>/generation_config.json` - and, when the directory has no
+#: such file, a bare `SamplingParams()`: top_p 1.0, top_k DISABLED. The
+#: `bosonai/higgs-audio-v3-tts-4b` snapshot ships no such file, which is why a
+#: merged checkpoint must carry one (`require_generation_config`) and why base
+#: weights are sent these values EXPLICITLY rather than assumed
+#: (`HiggsV3Config.served_sampling`). See ../PORT_NOTES.md 12.8d.
+#:
+#: `seed` rides at the request's TOP LEVEL and never inside `extra_params`
+#: (`build_request_body` refuses the duplicate), so it is excluded wherever this
+#: mapping is used as a sampling payload.
 SERVER_DEFAULT_SAMPLING = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50,
                            'repetition_penalty': 1.0, 'seed': 42}
 
@@ -352,18 +375,197 @@ def check_strategy(strategy: str) -> str:
         'own.')
 
 
-def checkpoint_serve_target(checkpoint_dir: str) -> str:
+#: THE SAMPLING AUTHORITY OF A MERGED CHECKPOINT, and a REQUIRED file of one.
+#:
+#: `vllm-omni serve <dir>` resolves sampling from the MODEL DIRECTORY:
+#: `--generation-config` defaults to `auto`, so this file - and only this file -
+#: sets temperature / top_p / top_k for every request the server answers.
+#: `OpenAICreateSpeechRequest` has no temperature / top_p / top_k fields (see the
+#: module docstring: pydantic drops them silently), so there is no per-request
+#: lever that can correct it.
+#:
+#: MEASURED, 2026-09-05 (the fine-tune campaign): a merged dir WITHOUT this file
+#: makes vllm-omni's stage fallback (`entrypoints/openai/stage_params.py`) hand
+#: back a bare `SamplingParams()` - temperature 1.0, **top_p 1.0, top_k
+#: DISABLED** - which samples the untruncated 1026-way codebook tail and derails
+#: long prompts into babble (seed-dependent collapse to 3-10 s of audio at >= 600
+#: chars). With the file present the same server renders the same prompts
+#: correctly.
+GENERATION_CONFIG_FILE = 'generation_config.json'
+
+#: The keys that make that file the SAMPLING file. A `generation_config.json`
+#: carrying none of them (an eos_token_id stub, say) is not the file this needs -
+#: the server would read it, find no sampling, and fall back exactly as if it
+#: were absent. So its presence is checked by CONTENT, not by name.
+GENERATION_CONFIG_SAMPLING_KEYS = ('temperature', 'top_p', 'top_k')
+
+#: What a correct one holds for this model family, recorded so a reader can see
+#: what "present and valid" looks like. NOT a default and NEVER written by
+#: narrator: the FILE is the authority and the merge is what puts it there.
+#: These are `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0's
+#: `default_sampling_params` - which `vllm-omni serve` on the CLI does not read,
+#: which is why the values have to be materialised into the model directory.
+GENERATION_CONFIG_EXPECTED = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50,
+                              'repetition_penalty': 1.0}
+
+_WHY_GENERATION_CONFIG = (
+    'vllm-omni serves a checkpoint DIRECTORY and resolves sampling from it '
+    '(--generation-config defaults to "auto"), so that file is the temperature / '
+    'top_p / top_k the server actually uses; without it vLLM falls back to a bare '
+    'SamplingParams (top_p 1.0, top_k DISABLED), which samples the untruncated '
+    '1026-way codebook tail and derails long chunks into babble - and '
+    'OpenAICreateSpeechRequest has no sampling fields, so no request can correct '
+    'it.')
+
+
+def require_generation_config(checkpoint_dir: str, voice_name: str) -> dict:
+    """Read a merged checkpoint's `generation_config.json`, or refuse BY NAME.
+
+    THE ONE PLACE the file is validated, for both arms (see
+    `checkpoint_serve_target`). Returns the parsed document so a caller that
+    needs the values - the MLX backend, which has no server to read them for it -
+    takes them from the FILE and never from a constant here.
+
+    Nothing is copied, synthesized or defaulted. A merged dir that does not
+    carry this file is MISCONFIGURED, not under-specified: the merge that built
+    it is what puts the file there (it asserts byte-equality with the base, or
+    copies a recorded per-run override), and narrator writing one would be
+    narrator deciding a model's sampling.
+    """
+    name = (voice_name or '').strip()
+    if not name:
+        raise ValueError(
+            'require_generation_config() needs the VOICE NAME: every refusal it '
+            'makes has to say which voice is misconfigured, and an unnamed one is '
+            'a refusal nobody can act on.')
+    if not os.path.isdir(checkpoint_dir):
+        raise ValueError(
+            f"Higgs v3 voice '{name}' names the merged checkpoint directory "
+            f'{checkpoint_dir}, which is not a directory. The checkpoint IS the '
+            'voice - there is nothing to serve, and nothing to read its sampling '
+            'from.')
+    path = os.path.join(checkpoint_dir, GENERATION_CONFIG_FILE)
+    if not os.path.isfile(path):
+        raise ValueError(
+            f"Higgs v3 voice '{name}': the merged checkpoint {checkpoint_dir} does "
+            f'not carry {GENERATION_CONFIG_FILE}, which is a REQUIRED file of a '
+            f'Higgs v3 checkpoint - {_WHY_GENERATION_CONFIG} Re-merge the '
+            'checkpoint (the merge writes it) rather than dropping one in by hand.')
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            text = handle.read()
+    except OSError as exc:
+        # Permissions, a DIRECTORY named generation_config.json, a broken
+        # symlink, an unreadable mount. Every other state of this file is
+        # refused with the voice, the path and why; a bare OSError from here
+        # would be the one refusal in this feature that names neither.
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} exists but could not be read "
+            f'({exc}). {_WHY_GENERATION_CONFIG}') from exc
+    try:
+        document = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} is not parseable JSON ({exc}). "
+            f'{_WHY_GENERATION_CONFIG} A file the server cannot parse is a file it '
+            'does not apply.') from exc
+    if not isinstance(document, dict):
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} holds a "
+            f'{type(document).__name__}, not a JSON object of sampling '
+            f'parameters. {_WHY_GENERATION_CONFIG}')
+    missing = [key for key in GENERATION_CONFIG_SAMPLING_KEYS
+               if key not in document]
+    if missing:
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} carries no "
+            f"{', '.join(missing)}. A generation_config.json that does not carry "
+            'sampling is not the file this needs - the server reads it, finds no '
+            f'sampling and falls back exactly as if it were absent. '
+            f'{_WHY_GENERATION_CONFIG} It should hold '
+            f'{GENERATION_CONFIG_EXPECTED} for this model family.')
+    _check_sampling_types(document, path, name)
+    return document
+
+
+def _check_sampling_types(document: dict, path: str, name: str) -> None:
+    """The three (four, with `repetition_penalty`) values must be NUMBERS OF THE
+    RIGHT KIND, refused by name exactly as absence is.
+
+    Presence without type is not validation. `"top_k": 50.7` truncates silently
+    to 50 the moment anything calls `int()` on it; `"temperature": null` raises a
+    bare TypeError from whichever caller touched it first, naming neither the
+    voice nor the file; and on the served arm nothing reads the values at all, so
+    a malformed one goes straight to vLLM. A number that is wrong in a way
+    nobody says out loud is the failure this whole file exists to stop.
+
+    `bool` is excluded deliberately: `True` is an `int` in Python and
+    `"top_k": true` is not a top-k.
+    """
+    for key in ('temperature', 'top_p', 'repetition_penalty'):
+        if key not in document:
+            # Only `repetition_penalty` can be absent here - the other two are
+            # required above - and an absent one is vLLM's own default, which
+            # narrator neither states nor checks.
+            continue
+        value = document[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives {key} as "
+                f'{value!r} ({type(value).__name__}), which is not a number. '
+                f'{_WHY_GENERATION_CONFIG}')
+        value = float(value)
+        if value != value or value in (float('inf'), float('-inf')):
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives {key} as {value!r}, "
+                'which is not a finite number.')
+        if key == 'temperature' and value < 0.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives temperature {value!r}. "
+                'Temperature is a divisor of the logits and cannot be negative; '
+                '0.0 is greedy decoding.')
+        if key == 'top_p' and not 0.0 < value <= 1.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives top_p {value!r}. "
+                'top_p is a probability mass and must be in (0.0, 1.0]. (1.0 is '
+                'accepted and means the UNTRUNCATED tail - if a checkpoint '
+                'really wants that, it says so here and narrator does not '
+                'second-guess it.)')
+        if key == 'repetition_penalty' and value <= 0.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives repetition_penalty "
+                f'{value!r}, which must be positive (1.0 is no penalty).')
+    top_k = document['top_k']
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} gives top_k as {top_k!r} "
+            f'({type(top_k).__name__}). top_k is a COUNT of candidate tokens and '
+            'must be a whole number - a float here is silently truncated by '
+            'every consumer, which is a different sampling than the file states.')
+    if top_k < 0:
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} gives top_k {top_k!r}. It must be "
+            'a non-negative count. (0 is accepted and DISABLES top-k - a '
+            'checkpoint that states that is stating it deliberately.)')
+
+
+def checkpoint_serve_target(checkpoint_dir: str, voice_name: str) -> str:
     """What `vllm-omni serve <...>` is pointed at for this voice.
 
     It IS the checkpoint dir - there are no extra launch arguments, because
     there is no adapter to name. Kept as a function so the one place that
     decides "which directory does this voice's server run on" has a name and a
-    test.
+    test - and, since 2026-09-05, so that the one place also PROVES the directory
+    carries the sampling the server will read out of it
+    (`require_generation_config`). Both v3 arms call this: the served config
+    (`HiggsV3Config.__post_init__`), the MLX config builder, and both
+    `resolve_load_voice`s.
     """
     if not (checkpoint_dir or '').strip():
         raise ValueError(
             'Higgs v3: a fine-tuned voice needs its merged checkpoint directory '
             '(checkpointDir). There is no adapter to load onto a base server.')
+    require_generation_config(checkpoint_dir, voice_name)
     return checkpoint_dir
 
 
@@ -393,9 +595,14 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     own voice, or a fine-tune whose weights are the voice - no `references` key
     at all), or None (the same, unnamed).
 
-    `sampling` EMPTY OR NONE means the server's own defaults, which is what the
-    delivered render used. Anything given rides in `extra_params`, never at the
-    top level - see the module docstring.
+    `sampling` EMPTY OR NONE sends no `extra_params` at all, which means THE
+    MODEL DIRECTORY'S `generation_config.json` decides - a validated merged
+    checkpoint's four numbers, or, for a directory without the file, a bare
+    `SamplingParams()` (top_p 1.0, top_k DISABLED: the babble case, 12.8d). So
+    an empty `sampling` is only correct for a checkpoint voice; base weights
+    must state the values, and `HiggsV3Config.served_sampling` is what decides
+    which of the two this is. Anything given rides in `extra_params`, never at
+    the top level - see the module docstring.
     """
     if not (text or '').strip():
         raise ValueError('Higgs v3 request: no text')

@@ -1180,6 +1180,103 @@ one fixed-seed word at load and refuses a server whose last 300 ms is above
 -45 dBFS. That gate is about the SERVER's output, so it keeps working unchanged
 when the upstream fix lands and the site-packages patch goes away.
 
+### 12.8d `generation_config.json` is a REQUIRED file of a merged checkpoint
+
+Measured by the fine-tune campaign, 2026-09-05, and now refused by name in
+narrator: **the checkpoint directory's `generation_config.json` is the sampling
+the served model actually uses.**
+
+`vllm-omni serve <dir>` resolves sampling FROM THE MODEL DIRECTORY -
+`--generation-config` defaults to `auto`, and `serve_v3.sh` passes no override.
+A merged dir WITHOUT the file makes vllm-omni's stage fallback
+(`vllm_omni/entrypoints/openai/stage_params.py`) hand back a bare
+`SamplingParams()`: temperature 1.0, **top_p 1.0, top_k DISABLED**. That samples
+the untruncated 1026-way codebook tail, and long prompts derail into babble -
+a seed-dependent collapse to 3-10 s of audio at >= 600 characters. The same
+server with the file present renders the same prompts correctly.
+
+**Nothing per-request can correct it.** `OpenAICreateSpeechRequest` has no
+`temperature` / `top_p` / `top_k` fields at all; pydantic drops them silently
+(the same trap the module docstring records for `extra_params`). The MODEL
+DIRECTORY is the only lever there is.
+
+WHERE THE FILE COMES FROM - the provenance, which is not "the base ships one":
+
+| | |
+|---|---|
+| `bosonai/higgs-audio-v3-tts-4b` | ships **NO** `generation_config.json`. Verified 2026-09-05 across the whole WSL HF cache AND the Mac's `runtime/higgs-models/base` snapshot. This is precisely why a merged dir has to carry one. |
+| every merged dir | gets one **written by the merge** (`v3_ft/merge_for_serving.py`, `ensure_generation_config`) from a recorded per-run override, `runs/<run>/generation_config.override.json`. The merge REFUSES to write a served dir without it. |
+| the values | vllm-omni's own `deploy/higgs_multimodal_qwen3.yaml` stage-0 `default_sampling_params` - `{"temperature": 1.0, "top_p": 0.95, "top_k": 50, "repetition_penalty": 1.0}`. vllm-omni ships that YAML for this model and `vllm-omni serve` on the CLI **does not read it**, so the values have to be materialised into the directory. |
+| the record | `merge_manifest.json` beside the weights carries `generation_config_source`, `generation_config_override` and the resulting `sampling`. |
+
+Those four numbers are also what `v3_served.SERVER_DEFAULT_SAMPLING` has always
+held; that constant is now documented AT ITS DEFINITION as the deploy default
+for the BASE WEIGHTS, and is never used to stand in for a checkpoint's file.
+Every docstring that used to say "sending no `extra_params` uses these verbatim"
+said the thing this section refutes, and now says what actually happens.
+
+**AND BASE WEIGHTS MUST STATE THEM.** The corollary took a review to see: if
+sending nothing means the model directory, and the base snapshot has no file,
+then a `clips` or `default` voice rendering against the base was itself getting
+top_p 1.0 / top_k disabled - the babble sampling, live on the served arm for
+every non-checkpoint voice. So `HiggsV3Config.served_sampling()` branches on
+voice KIND exactly as the MLX arm does:
+
+    checkpoint voice   send NO extra_params. The server reads the directory's
+                       file for itself, and an extra_params here would override
+                       the model's own declared sampling with narrator's opinion
+                       of it.
+    base weights       send SERVER_DEFAULT_SAMPLING explicitly (minus `seed`,
+                       which is the request's top-level field and which
+                       `build_request_body` refuses inside extra_params).
+
+`HiggsV3Config.applied_sampling()` is the other half: what the model will
+actually SAMPLE at, which for a checkpoint is its directory's file and is NOT
+what was sent. That is what `higgs_v3_stop_policy` reports, because the manifest
+outlives the render and reporting the base default for a fine-tune would name
+sampling nobody used.
+
+TYPES, NOT JUST PRESENCE. The validator also checks what the three values ARE:
+`temperature` and `top_p` (and `repetition_penalty` when present) must be finite
+non-bool numbers in range, and `top_k` must be a whole number >= 0. Presence
+without type is not validation - `"top_k": 50.7` truncates silently to 50 in
+every consumer, `"top_p": "0.95"` coerces, and `"temperature": null` used to
+raise a bare `TypeError` naming neither the voice nor the file. `0.0`
+temperature, `1.0` top_p and `0` top_k are ACCEPTED: a checkpoint that states
+them is stating them deliberately and narrator does not second-guess a model's
+own file. An unreadable file (permissions, a broken symlink) is refused by name
+like every other state rather than raising a bare `OSError`.
+
+WHAT NARRATOR DOES ABOUT IT. One validator,
+`v3_served.require_generation_config(checkpoint_dir, voice_name)`, called from
+`v3_served.checkpoint_serve_target()` - the one place that decides which
+directory a voice's server runs on - and therefore from every door that resolves
+a checkpoint voice: `HiggsV3Config.__post_init__`,
+`HiggsV3Engine.resolve_load_voice`, `HiggsV3MlxEngine.resolve_load_voice` and
+`higgs_v3_mlx_config_from_worker_kwargs`. It refuses, naming the voice, the
+directory, the file and why, when the file is
+
+- **absent**, or its checkpoint directory is not a directory;
+- **unparseable** JSON, or a JSON document that is not an object;
+- **present but carrying no sampling** - missing any of `temperature`, `top_p`,
+  `top_k`. A `generation_config.json` without those is not the file this needs:
+  the server reads it, finds no sampling, and falls back exactly as if it were
+  absent, so presence is checked BY CONTENT and not by name.
+
+It reads the file and returns it; it never copies, synthesizes or defaults one.
+Writing the file would be narrator deciding a model's sampling, and repairing a
+misconfigured directory is the kind of silent substitution this codebase does
+not do. The refusal lands at LOAD - before the 55-297 s server start and before
+anything holds the GPU - which is the same layer as, and for the same reason as,
+the missing-`maxChars` refusal beside it.
+
+Tested behaviourally in `tests/test_higgs_v3.py::GenerationConfigTest` on real
+temp-dir layouts (absent / malformed / missing-key / present-and-valid, plus
+each door), with the valid case carrying the real merged dir's file content
+byte for byte. Mutation-checked: neutering the absent-file check fails six
+tests, and emptying the missing-key list fails all four subtests of the sampling
+case.
+
 ### 12.9 Every guess in this work, and what would settle it
 
 Written down rather than buried, because each one is a place a reader should
@@ -1608,3 +1705,85 @@ cut-over's to confirm (12.9 guess 5, 13.8 guess 5).
 TWO THINGS THAT DO NOT NEED IT. A `checkpoint` voice names its own merged
 directory in the voice document and loads that instead - the variable is only
 the BASE. And the served (Windows/WSL) arm never reads it at all.
+
+### 13.11 mlx-audio does NOT read `generation_config.json` - so narrator does
+
+The counterpart of 12.8d on this arm, established by reading mlx-audio 0.4.8 in
+the Mac's `narrator-mlx` env
+(`/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx/lib/python3.11/
+site-packages/mlx_audio/`), 2026-09-05.
+
+**THE FINDING.** `grep -rn generation_config` over
+`tts/models/higgs_audio_v3/` returns NOTHING - no match in `model.py`,
+`generation.py`, `config.py`, `prompt.py` or `continuous_batching.py`. It is not
+that mlx-audio has no such convention: three other packages in the SAME release
+do read the file -
+
+| file:line | what it reads |
+|---|---|
+| `tts/models/moss_tts/moss_tts.py:349-361` | `_load_generation_config(model_path)` -> `model.generation_config`, then `temperature` / `top_p` / `top_k` / `repetition_penalty` off it (`:1610-1636`) |
+| `tts/models/qwen3_tts/qwen3_tts.py:2914` | `gen_config_path = model_path / "generation_config.json"` |
+| `stt/models/whisper/whisper.py:716-726` | alignment heads out of the same file |
+
+so its absence in `higgs_audio_v3` is a GAP, not a convention. Nor does the
+loader supply it: `tts/utils.py:load_model` (`:100-129`) delegates to
+`mlx_audio/utils.py`'s loader, which reads `config.json` to pick an
+architecture and attaches no generation config to the model object.
+
+**WHAT THE SAMPLER APPLIES.** `higgs_audio_v3/model.py:737-758` -
+`Model.generate(...)` defaults `temperature: float = 1.0`,
+`top_p: Optional[float] = None`, `top_k: Optional[int] = None`, and takes NO
+repetition-penalty argument (there is no repetition penalty anywhere in the
+package). `generation.py:114-141` - `step()` takes `temperature`, `top_p` and
+`top_k` as REQUIRED keyword arguments and forwards them to `sample_independent`
+(`generation.py:80-95`), which divides the logits by `temperature`, then applies
+`_apply_top_k` and `_apply_top_p`. Both of those are NO-OPS for `None`
+(`generation.py:62-77`: top_k is skipped when `None`, `<= 0` or `>= vocab`;
+top_p when `None`, `<= 0.0` or `>= 1.0`). So mlx-audio's own default - and
+anything that passes nothing - samples the untruncated codebook tail exactly as
+an unconfigured vllm-omni does.
+
+**THEREFORE narrator reads the file itself.** `HiggsV3MlxConfig.mlx_sampling()`
+no longer resolves from a constant:
+
+    checkpoint voice   <checkpointDir>/generation_config.json, through
+                       v3_served.require_generation_config - the SAME file
+                       vllm-omni reads on the other arm, so one voice renders at
+                       one sampling on both. The refusal in 12.8d has already
+                       proved it is there and carries all three keys.
+    base weights       there is no file to read: the bosonai snapshot ships none
+                       (verified on the WSL HF cache and on the Mac's
+                       runtime/higgs-models/base). The stated authority is v3's
+                       documented deploy default,
+                       v3_served.SERVER_DEFAULT_SAMPLING, which is the same
+                       stage-0 block the served arm runs those weights under.
+
+It is resolved ONCE, in `HiggsV3MlxEngine.__init__`, and logged at load with its
+source; re-reading per chunk would ask the same question thousands of times a
+book and would let the answer change mid-render. `HiggsV3MlxConfig.sampling`
+stays what it was: a named per-config override on top, and
+`HiggsV3MlxConfig.__post_init__` now resolves the sampling at CONSTRUCTION, the
+same moment its served twin validates, so a caller building the dataclass
+directly cannot get an object whose first refusal arrives from inside the
+generation loop.
+
+**A `repetition_penalty` other than 1.0 in the file is REFUSED here, not
+dropped.** mlx-audio has no such lever at all - `Model.generate` takes no such
+argument and the word appears nowhere in the package - so honouring the file is
+impossible on this runtime, and ignoring it would give one checkpoint two
+samplings: penalised on the vllm-omni server, unpenalised on the Mac, from the
+same file. 1.0 is a no-op and is accepted as the nothing it is, which is what
+every correctly merged checkpoint carries. The same rule already applied to a
+user-supplied `repetition_penalty`; a lever the runtime cannot honour is a
+refusal at either door.
+
+`higgs_v3_mlx_stop_policy` therefore reports the CHECKPOINT's own levers, so a
+manifest never names sampling nobody used.
+
+WHAT THIS DOES NOT SETTLE. mlx-audio's sampler and vLLM's are different
+implementations of top-k/top-p over different runtimes; feeding both the same
+three numbers makes the CONFIGURATION identical, not the draws. Nothing here has
+compared a Mac render against a WSL one at the same seed - and the seeds are not
+comparable either (`mx.random.seed` vs vLLM's). That is a listening test, not an
+assertion this code makes.
+
