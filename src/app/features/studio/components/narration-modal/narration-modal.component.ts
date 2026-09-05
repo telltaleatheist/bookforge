@@ -119,6 +119,7 @@ import {
   type NarrationEnhancementOrder,
   type NarrationRunBook,
   type NarrationRunSettings,
+  type NarrationTextCleanupChoice,
 } from '../../../queue/jobs/narration-run';
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import {
@@ -1537,39 +1538,48 @@ export class NarrationModalComponent {
    * half in the queue cannot be retried without double-queueing it.
    */
   /**
-   * Say what is missing, and offer to fix it. True means go on and queue.
+   * Say this file has not been cleaned, and offer the three answers.
    *
-   * Its own method because the sentence is the user's whole understanding of
-   * why a button they pressed did not do what they expected — and because
-   * "run it" and "run it again" are different instructions to somebody who
-   * believes they already did.
+   * ── Owen's ruling, 2026-09-05 ─────────────────────────────────────────────
+   *
+   * *"make it so i dont HAVE to run cleanup. give me a skip button on that
+   * cleanup modal that appears."* And: *"if that flag isnt set, ask the user if
+   * they want to run cleanup on the document when they hit the narrate button.
+   * yes/no/cancel."*
+   *
+   * So this is ONE dialog with THREE buttons, not a confirm with the second real
+   * answer folded into Cancel. "No" is a real instruction — narrate this book as
+   * printed — and a user who pressed Cancel meaning that would have cancelled
+   * the thing they came here to do.
+   *
+   * Its own method because the sentence is the user's whole understanding of why
+   * a button they pressed asked them a question first.
    */
   private async offerCleanup(
-    cleanup: { state: 'missing' | 'stale'; reason: string },
     book: NarrationRunBook,
-  ): Promise<boolean> {
-    // The row the user pressed, named in the dialog, because the file this run
-    // ends up reading is NOT that row's file and saying so is the whole of the
-    // honesty here (the second adversarial review's Finding 4, partial).
-    const pressed = book.epubPath.split(/[\/]/).pop() ?? 'this version';
-    const { confirmed } = await this.electron.showConfirmDialog({
+    /** Why this file is not cleaned, in the words of whichever gate said so. */
+    why: string,
+  ): Promise<'run' | 'skip' | 'cancel'> {
+    // The row the user pressed, named in the dialog, because on "Yes" the file
+    // this run ends up reading is NOT that row's file and saying so is the whole
+    // of the honesty here (the second adversarial review's Finding 4, partial).
+    const pressed = book.epubPath.split(/[\\/]/).pop() ?? 'this version';
+    const answer = await this.electron.showChoiceDialog({
       title: 'Narration text cleanup',
-      message: cleanup.reason,
-      detail: `You pressed ${pressed}. The cleanup runs on this book's working copy and then `
-        + 'cuts a fresh narration copy from it, and THAT is the file this run will read — not '
-        + `the file on the row you pressed. It is minutes of model time over the blocks of `
-        + `${book.title || 'the book'}, and it only has to happen once.`,
-      confirmLabel: cleanup.state === 'stale'
-        ? 'Run cleanup again, then narrate'
-        : 'Run cleanup, then narrate',
-      // INTERIM (Owen, 2026-09-05): the cleanup is optional. Declining means
-      // "narrate as printed" and the run proceeds; the render door logs the
-      // skip instead of refusing. The three-button yes/no/cancel form with a
-      // project-level "cleanup done" flag is on fix/narration-cleanup-skip.
-      cancelLabel: 'No, narrate as printed',
+      message: `${why} Run it before narrating?`,
+      detail: `You pressed ${pressed}. Yes runs the cleanup on this book first and queues this `
+        + 'narration behind it, reading the book the cleanup produced rather than the file on the '
+        + 'row you pressed — minutes of model time over the whole book, once, and everything you '
+        + 'do afterwards carries it along. No narrates the text exactly as printed: a year stays '
+        + 'four digits for the voice to guess at, and the punctuation is the book’s own.',
+      confirmLabel: 'Yes, run cleanup then narrate',
+      alternateLabel: 'No, narrate as printed',
+      cancelLabel: 'Cancel',
       type: 'question',
     });
-    return confirmed;
+    if (answer === 'confirm') return 'run';
+    if (answer === 'alternate') return 'skip';
+    return 'cancel';
   }
 
   async onSubmit(): Promise<void> {
@@ -1588,6 +1598,81 @@ export class NarrationModalComponent {
         outputFilename: this.outputFilename(),
         isArticle: this.isArticle(),
       };
+
+      /*
+       * ── THE CLEANUP IS OFFERED, NEVER DEMANDED ────────────────────────────
+       *
+       * Owen, 2026-09-05: *"text cleanup should be an optional (but encouraged)
+       * step where the user runs it at any point and everything they do after
+       * that carries the cleanup along… There can be a flag set for the project
+       * when cleanup is done to tell BookForge that cleanup was done. If that
+       * flag isnt set, ask the user if they want to run cleanup on the document
+       * when they hit the narrate button. yes/no/cancel."*
+       *
+       * So there is a "cleanup done" signal and it is DERIVED, never stored — a
+       * stored project flag would skip the offer exactly when the user narrates
+       * a reading that predates the cleanup (the Foundry agent's point, and it
+       * is right). What answers is the FILE this run will read: the OPF
+       * narration-text stamp, the same one the render door reads, which travels
+       * with every export cut after the pass. Blocks struck out afterwards, a
+       * later simplify, a translate: none of them ask again, because the cut
+       * they export still carries the stamp — the cleanup is carried along by
+       * everything done after it exactly as a translate is.
+       *
+       * The CHAIN's own answer (`cleanupDone`, the ledger's `narration-text`
+       * entry) is asked only when the file could not be read to ask for its
+       * stamp. Two sources, in that order, and neither of them a fallback for a
+       * bug: a file that can speak for itself always does.
+       *
+       * The answer travels with the run as `textCleanup`, stated always, and the
+       * render door reads it by name. This decision is made BEFORE the settings
+       * are built, because the settings are where it is carried.
+       *
+       * ONLY WHEN SOMETHING WILL BE READ. A cache-context run — "assemble the
+       * clips I already rendered" — reads no book text at all, and asking about
+       * minutes of model time over a book nobody is reading was the adversarial
+       * review's Finding 15.
+       */
+      let textCleanup: NarrationTextCleanupChoice = 'required';
+      let runCleanupFirst = false;
+      if (this.narrate()) {
+        const readiness = await this.electron.narrationTextReadiness(
+          book.projectDir, book.epubPath, undefined);
+        if (!readiness.success) {
+          throw new Error(
+            `This book's history could not be read, so there is no way to tell whether the `
+            + `narration text cleanup has run: ${readiness.error}`);
+        }
+        // Absent rather than false: an answer that came back without the flag is
+        // an older main process, not a book that has never been cleaned, and
+        // reading it as either would be this window deciding.
+        if (readiness.cleanupDone === undefined) {
+          throw new Error(
+            `This book's history was read, but the answer did not say whether the narration `
+            + 'text cleanup has run, so there is nothing to ask you about. Nothing was queued.');
+        }
+        const file = readiness.fileState ?? null;
+        const cleaned = file === null ? readiness.cleanupDone : file.ok;
+        if (!cleaned) {
+          // The gate's OWN sentence, because "it has never been cleaned" and
+          // "it was cleaned by rules this build no longer reads by" are
+          // different things to a user who believes they already did it.
+          const why = file !== null && !file.ok
+            ? file.reason
+            : `${book.title || 'This book'} has not been through the narration text cleanup, so `
+              + 'its punctuation is whatever the book printed and its numbers are still digits.';
+          const answer = await this.offerCleanup(book, why);
+          if (answer === 'cancel') {
+            this.error.set(
+              'Nothing was queued. Run "Clean text…" on this book when you are ready, or press '
+              + 'Narrate again and choose "No, narrate as printed".');
+            return;
+          }
+          if (answer === 'skip') textCleanup = 'skipped';
+          else runCleanupFirst = true;
+        }
+      }
+
       const settings: NarrationRunSettings = {
         language: RUN_LANGUAGE,
         ttsEngine: this.engine(),
@@ -1632,12 +1717,16 @@ export class NarrationModalComponent {
          * of GPU nobody mentioned.
          */
         startFresh: this.resumable() !== null && this.resumeChoice() === 'fresh',
+        /*
+         * THE USER'S OWN ANSWER ABOUT THE CLEANUP, set explicitly above and
+         * never defaulted downstream. 'required' is the ordinary case — the
+         * project's flag says the cleanup has run, or the cleanup is queued in
+         * front of this run — and 'skipped' is set only when the user was shown
+         * the offer and pressed "No, narrate as printed".
+         */
+        textCleanup,
       };
 
-      // The file this run actually reads. The pressed row by default; the
-      // family book when the pressed export predates the cleanup and the user
-      // said to narrate the current book instead.
-      let narratedPath = book.epubPath;
       const jobs = buildNarrationJobs(book, settings, {
         narrate: this.narrate(),
         enhance: this.enhance(),
@@ -1662,126 +1751,37 @@ export class NarrationModalComponent {
       if (this.video() && this.assemble()) jobs.push(this.videoRequest(book));
 
       /*
-       * ── THE NARRATION TEXT CLEANUP HAS TO HAVE RUN ────────────────────────
+       * ── YES: THE CLEANUP FIRST, THIS RUN CHAINED BEHIND IT ──────────────
        *
-       * Owen, 2026-09-04: *"a step that can be performed at any point, including
-       * on an epub, but it's a computationally expensive step that needs to take
-       * place somewhere along the line, and everything after it is
-       * finalized/fixed… If the user hits narrate before it does cleanup, it
-       * tells the user it still needs to do the cleanup step; then it does the
-       * cleanup step on whatever the last step they did before exporting the
-       * epub they were trying to narrate, and then they export the epub and
-       * queue narration."*
-       *
-       * NOT a lock. The gate says what is missing, by name, offers to fix it,
-       * and on yes queues ONE run: the cleanup first, then this narration
-       * chained behind it — which is what \`submitProcessingRun\`'s \`followOn\`
-       * is for. The render door checks the same thing again on the FILE it is
-       * handed, and that backstop is why this can afford to be a question.
-       *
-       * ONLY WHEN SOMETHING WILL BE READ. A cache-context run — "assemble the
-       * clips I already rendered" — reads no book text at all, and demanding
-       * minutes of model time over a book nobody is reading was the adversarial
-       * review's Finding 15.
+       * ONE run through `submitProcessingRun` — `processing:submit-chain` with a
+       * `followOn` — so the pass and the whole narration are a single queue-engine
+       * job with ordered steps, and there is nothing for the user to press twice.
        */
-      if (this.narrate()) {
-        const readiness = await this.electron.narrationTextReadiness(
-          book.projectDir, book.epubPath, undefined);
-        if (!readiness.success) {
-          throw new Error(
-            `This book's history could not be read, so there is no way to tell whether the `
-            + `narration text cleanup has run: ${readiness.error}`);
-        }
-
-        const chain = readiness.readiness ?? null;
-        const file = readiness.fileState ?? null;
-
-        /*
-         * The CHAIN could not be named — a project with two book chains, and a
-         * version row belonging to neither by name. The file's own stamp is
-         * still authoritative (it is what the render door reads), so that is
-         * what decides; what is lost is only the ability to offer a fix,
-         * because nothing can say which chain to clean.
-         */
-        if (chain === null) {
-          if (file !== null && !file.ok) {
-            this.error.set(
-              `${file.reason} ${readiness.familyNote ?? ''} Open the version this one came from `
-              + 'and run the cleanup there.');
-            return;
-          }
-        } else if (!chain.ok) {
-          const proceed = await this.offerCleanup(chain, book);
-          // "No, narrate as printed": fall through and queue the jobs as pressed.
-          // The recorded-book check that used to sit here was dead — the pass runs
-          // on the FILE the user pressed (`sourcePath` below), never on that value.
-          if (proceed) {
-          const run = await this.queue.submitProcessingRun({
-            projectDir: book.projectDir,
-            /*
-             * The FILE the user pressed, so the planner resolves the chain it
-             * belongs to and the pass cleans that book rather than the default
-             * family's. The follow-on's own \`epubPath\` is NOT patched here: the
-             * queue gives a chained step its parent's artifact and nothing else,
-             * so what a narration step reads is what the pass NAMES — the
-             * narration copy it re-cuts from the book it just wrote
-             * (electron/processing-passes.ts, \`narrationInputPath\`). Patching
-             * the request was inert, and the adversarial review measured it so.
-             */
-            sourcePath: book.epubPath,
-            passes: [{ kind: 'narration-text' }],
-          }, jobs);
-          if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
-          this.queued.emit({ jobs: jobs.length + 1 });
-          return;
-          }
-        } else if (file !== null && !file.ok) {
+      if (runCleanupFirst) {
+        const run = await this.queue.submitProcessingRun({
+          projectDir: book.projectDir,
           /*
-           * The BOOK has been cleaned and this VERSION has not — an export made
-           * before the cleanup ran. Queueing it would die in the render door
-           * with the file's own sentence and nothing would offer a way out (the
-           * adversarial review's Finding 8). So the way out is offered here.
+           * The FILE the user pressed, so the planner resolves the chain it
+           * belongs to and the pass cleans that book rather than the default
+           * family's. The follow-on's own `epubPath` is NOT patched here: the
+           * queue gives a chained step its parent's artifact and nothing else,
+           * so what a narration step reads is what the pass NAMES — the
+           * narration copy it re-cuts from the book it just wrote
+           * (electron/processing-passes.ts, `narrationInputPath`). Patching the
+           * request was inert, and the adversarial review measured it so.
            */
-          const useBook = await this.electron.showConfirmDialog({
-            title: 'This version was exported before the cleanup',
-            message: file.reason,
-            detail: 'The book itself has been cleaned. Narrate the current book instead? '
-              + 'It is the same text, with the passages you struck out removed as usual.',
-            confirmLabel: 'Narrate the current book',
-            cancelLabel: 'Cancel',
-            type: 'question',
-          });
-          if (!useBook.confirmed) { this.error.set(file.reason); return; }
-          const current = readiness.bookPath;
-          if (current === null || current === undefined) {
-            throw new Error(
-              'This project could not name its current book, so there is nothing to narrate in '
-              + 'place of the export. Nothing was queued.');
-          }
-          /*
-           * EVERY COPY OF THE PATH, not just `epubPath`. `buildNarrationSteps`
-           * also sets `sourceRef: {kind:'epub', path}` on the tts step, and the
-           * queue PREFERS `sourceRef` when it resolves a parentless step's
-           * input — so patching `epubPath` alone left the run reading the stale
-           * export while the card claimed the current book (the second
-           * adversarial review, 2026-09-04).
-           */
-          const wasPressed = book.epubPath;
-          for (const job of jobs) {
-            if (job.epubPath === wasPressed) job.epubPath = current;
-            if (job.sourceRef?.kind === 'epub' && job.sourceRef.path === wasPressed) {
-              job.sourceRef = { ...job.sourceRef, path: current };
-            }
-          }
-          narratedPath = current;
-        }
+          sourcePath: book.epubPath,
+          passes: [{ kind: 'narration-text' }],
+        }, jobs);
+        if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
+        this.queued.emit({ jobs: jobs.length + 1 });
+        return;
       }
-
 
       const workflowId = `tts-${Date.now()}-${Math.random().toString(36).substring(2, 8)}`;
       const master = await this.queue.addJob({
         type: 'audiobook',
-        epubPath: narratedPath,
+        epubPath: book.epubPath,
         variantId: book.variantId,
         ...(book.isArticle ? { projectDir: book.projectDir } : { bfpPath: book.projectDir }),
         metadata: { title: book.title, author: book.author },

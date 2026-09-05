@@ -67,7 +67,8 @@ export type JobType =
    *
    * A pass row like the three above it, and NOT part of a narration run: it edits
    * the book on the chain, once, and every render afterwards reads the result.
-   * `prepareNarrationInput` refuses a book that has not had it.
+   * The Narrate button offers it when the file it is about to read carries no
+   * stamp; the render door reads the stamp for what it says, not for permission.
    */
   | 'narration-text'
   | 'vlm-convert'

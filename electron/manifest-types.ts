@@ -1129,8 +1129,9 @@ export type AppliedPassKind =
   // THE NARRATION TEXT CLEANUP: punctuation canonicalization, then the
   // deterministic number rules, then the model on whatever digits are left
   // (electron/narration-text-pass.ts). It edits the BOOK, once, and stamps it,
-  // and `prepareNarrationInput` refuses a book that has not had it — so this is
-  // the pass that stands between a finished book and a render.
+  // the Narrate button offers it when the file it is about to read carries no
+  // stamp — so this is the pass that stands between a finished book and a render
+  // reading its digits as printed. Offered, never demanded (Owen, 2026-09-05).
   | 'narration-text'
   // The route to a book: a document vision model read the pages and foundry
   // assembled them (`foundry vlm-convert`). A book's ORIGIN rather than a

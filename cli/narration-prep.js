@@ -85,7 +85,11 @@ async function main() {
   // run and not to a queued job that never happened.
   const jobId = `cli-prep-${crypto.randomUUID()}`;
   const t0 = Date.now();
-  const prep = await runNarrationPrep(bridge, inputPath, jobId, { skipAssembly: true });
+  // 'required': this command IS the cleanup step, so a book it preps is one the
+  // operator means to have cleaned. There is no skip here — skipping the cleanup
+  // is a thing you ask of a RENDER, and this renders nothing.
+  const prep = await runNarrationPrep(
+    bridge, inputPath, jobId, { skipAssembly: true, textCleanup: 'required' });
 
   if (prep.recordPath === null) {
     console.log(`[prep] nothing written — ${inputPath} is already what the narrator reads`);

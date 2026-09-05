@@ -27,7 +27,12 @@
  * @param {object} bridge   the required dist/electron/parallel-tts-bridge.js
  * @param {string} inputPath  the .epub or .txt the render was asked for
  * @param {string} jobId    the adapter's own job id, so the door's log lines join it
- * @param {{skipAssembly: boolean}} opts
+ * @param {{skipAssembly: boolean, textCleanup: 'required'|'skipped'}} opts
+ *   `textCleanup` is the run's own answer about the narration text cleanup, and
+ *   it is stated rather than defaulted — 'required' for every unattended chain
+ *   (they run the pass themselves first), 'skipped' only when the operator asked
+ *   for the book to be read exactly as printed (`--skip-text-cleanup`). The door
+ *   refuses neither; it says which case applied, and the two lines differ.
  * @returns {Promise<object>} the door's NarrationPrepResult
  */
 async function runNarrationPrep(bridge, inputPath, jobId, opts) {
@@ -40,11 +45,26 @@ async function runNarrationPrep(bridge, inputPath, jobId, opts) {
     throw new Error('runNarrationPrep needs skipAssembly (the job\'s own flag), not a guess');
   }
 
+  if (opts.textCleanup !== 'required' && opts.textCleanup !== 'skipped') {
+    throw new Error(
+      "runNarrationPrep needs textCleanup ('required' or 'skipped'), not a guess — it is what "
+      + "the door writes in the log about how this book's numbers were read");
+  }
+
   const prep = await bridge.prepareNarrationInput(inputPath, jobId, {
     skipAssembly: opts.skipAssembly,
+    textCleanup: opts.textCleanup,
   });
 
-  if (prep.recordPath === null) {
+  if (prep.cleanup === 'skipped-by-user') {
+    console.log(
+      '[prep] narration text cleanup SKIPPED for this run — numbers and punctuation are read '
+      + `as printed → ${prep.inputPath}`);
+  } else if (prep.cleanup === 'unstamped') {
+    console.log(
+      `[prep] ${prep.model} — this book carries no current narration-text stamp; the render `
+      + `reads it as printed → ${prep.inputPath}`);
+  } else if (prep.recordPath === null) {
     console.log('[prep] no digits a narrator reads — input passes through untouched');
   } else {
     console.log(

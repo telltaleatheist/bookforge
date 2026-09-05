@@ -313,24 +313,30 @@ why the project gate reports `stale`. Guarding the pass on the stamp made the
 one authority now, and "nothing to do" is a **success with a note** rather than a
 failure, because work is chained behind it.
 
-**Three answers, not two.** The readiness IPC returns the chain's answer *and*
-the pressed file's own, because they can disagree:
+**The FILE decides whether to ask; the chain is the second source.** The
+readiness IPC returns both, and the Narrate button reads them in that order:
 
-| chain | file | what the modal does |
+| what answers | when | what the modal does |
 |---|---|---|
-| not ok | — | offers the cleanup, chains the narration behind it |
-| ok | not ok | "This version was exported before the cleanup" — offers to narrate the current book instead |
-| unresolvable (two chains, the row names neither) | ok | proceeds; the file's stamp is authoritative |
-| unresolvable | not ok | refuses, naming the chain problem and the file's reason |
+| the file's stamp | always, when the pressed file can be read | current stamp → no question; no stamp, or a stamp at older rule versions → the offer, quoting the gate's own sentence |
+| the chain's ledger (`cleanupDone`) | only when the file could not be read at all | ever cleaned → no question; never → the offer |
+
+"Cleanup done" is **derived, never stored**. There is deliberately no
+`cleanupDone` field on a project: a stored flag answers a question about the
+PROJECT, while what a narration reads is a FILE, so it would skip the offer
+exactly when the user narrates a reading that predates the cleanup. The stamp
+travels with every cut exported after the pass, which is what makes "everything
+they do after that carries the cleanup along" true in code — strike blocks,
+simplify, translate, export again, and the cut still carries it.
 
 The gate only fires when something will actually be **read** — a cache-context
 run ("assemble the clips I already rendered") reads no book text and is not
 asked about.
 
-`prepareNarrationInput` refuses with the file gate's sentence plus
-`"(Narration was asked to read <book>; nothing was rendered.)"`. It does **not**
-run the pass itself: an hour of model time inside a render's prep is exactly what
-the ruling moved out of there.
+`prepareNarrationInput` **does not refuse**. It reads the stamp for what it says,
+writes one line about it, and renders (see *Skipping the cleanup* below). It does
+**not** run the pass itself either: an hour of model time inside a render's prep
+is exactly what the ruling moved out of there.
 
 "Everything after it is finalized/fixed" is what that staleness rule means in
 code: the pass may be run at any point, and the TTS copy is always cut from the
@@ -343,19 +349,34 @@ book as it stands after it.
 > on whatever the last step they did before exporting the epub they were trying
 > to narrate, and then they export the epub and queue narration."*
 
+> Owen, 2026-09-05: *"make it so i dont HAVE to run cleanup. give me a skip
+> button on that cleanup modal that appears."* And: *"text cleanup should be an
+> optional (but encouraged) step where the user runs it at any point and
+> everything they do after that carries the cleanup along… If that flag isnt set,
+> ask the user if they want to run cleanup on the document when they hit the
+> narrate button. yes/no/cancel."*
+
 So the narration modal's `onSubmit` asks `narration:text-readiness` **before it
-queues anything**. When the answer is missing or stale it shows a confirm dialog:
+queues anything**. When the file it is about to read is not cleaned it shows ONE
+dialog with THREE buttons (`ElectronService.showChoiceDialog` →
+`DialogService.choose`, the in-app dialog's third-button form — not two stacked
+confirms):
 
 * **title** — "Narration text cleanup"
-* **message** — the readiness sentence verbatim (see the three above)
-* **detail** — "Run it now? The cleanup is queued first, and this narration run is
-  queued behind it — it will read the book the cleanup produced. It is minutes of
-  model time over the blocks of the book, and it only has to happen once."
-* **confirm** — "Run cleanup, then narrate" (or "Run cleanup again, then narrate"
-  when the state is stale) · **cancel** — "Cancel"
+* **message** — the gate's own sentence, then "Run it before narrating?"
+* **detail** — "You pressed &lt;file&gt;. Yes runs the cleanup on this book first and
+  queues this narration behind it, reading the book the cleanup produced rather
+  than the file on the row you pressed — minutes of model time over the whole
+  book, once, and everything you do afterwards carries it along. No narrates the
+  text exactly as printed: a year stays four digits for the voice to guess at,
+  and the punctuation is the book's own."
+* **Yes, run cleanup then narrate** · **No, narrate as printed** · **Cancel**
 
-**Cancel** puts the readiness sentence in the dialog's error line and queues
-nothing. **Confirm** queues ONE run through `QueueService.submitProcessingRun` —
+**Cancel** queues nothing and says so in the dialog's error line ("Run 'Clean
+text…' on this book when you are ready, or press Narrate again and choose 'No,
+narrate as printed'."). **No** queues the run exactly as pressed, carrying
+`textCleanup: 'skipped'` — see *Skipping the cleanup*. **Yes** queues ONE run
+through `QueueService.submitProcessingRun` —
 which is `processing:submit-chain` with a `followOn` — so the whole thing is a
 single queue-engine job with ordered steps:
 
@@ -380,6 +401,75 @@ on its way in; what is lost is the user's own strikes, and the note says so.
 
 The CLI's unattended chains do the same thing without asking, because they have
 nobody to ask.
+
+---
+
+## Skipping the cleanup
+
+> Owen, 2026-09-05: *"make it so i dont HAVE to run cleanup."*
+
+### The flag
+
+One field on the run, stated by the modal and never defaulted downstream:
+
+```ts
+// shared/queue/narration-run.ts
+type NarrationTextCleanupChoice = 'required' | 'skipped';
+NarrationRunSettings.textCleanup: NarrationTextCleanupChoice
+```
+
+* `'required'` — the ordinary case. The file the run is about to read carries a
+  current stamp, or the cleanup is queued in front of this run, or an unattended
+  CLI chain ran the pass itself.
+* `'skipped'` — set **only** when the user was shown the offer above and pressed
+  **No, narrate as printed**.
+
+### Its path, from the button to the door
+
+| where | what carries it |
+|---|---|
+| the modal | `NarrationRunSettings.textCleanup`, set explicitly before the settings are built |
+| the run description | `NarrationTtsConfig.textCleanup` (`narrationTtsStep`); `requireNarrationRun` refuses a run that says neither, at runtime as well as in the types |
+| the queue row | `TtsConversionConfig.textCleanup` (renderer) / `TtsConfig.textCleanup` (`electron/queue-steps/tts-conversion.ts`) |
+| the conversion | `ParallelConversionConfig.textCleanup` — beside `skipAssembly`, because both are facts about the DOOR rather than about the voice. Not on `config.settings`: those are what `renderRangeHeadless` is handed, and it preps nothing |
+| the door | `NarrationPrepOptions.textCleanup`, required, checked at runtime too (the CLI adapters are plain JS against the compiled bundle) |
+
+`startParallelConversion` **refuses** a conversion whose config does not say — a
+queue.json row from a build that had no such question fails with "press Narrate
+again on the book's version row", it is not read as either answer.
+
+### What the door does with it
+
+`prepareNarrationInput` never refuses about the cleanup any more. It writes one
+line and renders, and `NarrationPrepResult.cleanup` names which case it was:
+
+| `cleanup` | when | the line |
+|---|---|---|
+| `'skipped-by-user'` | `textCleanup: 'skipped'` | `console.log` **and** `logger.log('WARN')`: *"narration text cleanup SKIPPED by the user for this run — numbers and punctuation are read as printed"* |
+| `'unstamped'` | `'required'`, and the file carries no current stamp | `console.warn` + WARN, quoting the gate's own reason: the render reads it **as printed** |
+| `'stamped'` | `'required'`, current stamp | the INFO line naming the stamp's versions and model |
+| `'normalized-inline'` | a `.txt` input | this door reads its numbers itself; there is no stamp and no ledger to carry |
+
+The skip's provenance is deliberately not a model tag: `reused: false` and
+`model: 'skipped (the user chose to narrate as printed)'`, because no model read
+this book and naming one would be a lie in the render's record. The WARN goes to
+the job's own persisted log (`audiobook-logger`, under this job's id), which is
+where a finished render's receipt is read back from.
+
+**What the listener hears.** e2a has no number transform of its own (permanently
+disabled, 2026-09-02), so a skipped run is narrated exactly as the book prints:
+`1933` is whatever the voice makes of four digits, `23/3/1933` likewise, and the
+punctuation is the publisher's rather than the canonical set the pass writes.
+That is the choice the button offers, said plainly.
+
+### Headless
+
+`cli/orpheus-audiobook-render.js --skip-text-cleanup` is the same instruction
+without a user: it skips `runNarrationTextStep` **and** passes
+`textCleanup: 'skipped'` to the door, so the log names the skip instead of
+reporting an absent stamp. Every other adapter passes `'required'`
+(`cli/narration-prep.js`, `cli/orpheus-batch-render.js`), and `runNarrationPrep`
+refuses a caller that passes neither.
 
 ---
 
@@ -1029,7 +1119,9 @@ and the live run measured it making it correctly.
 | `electron/tts-number-rules.ts` | stage 2 — the rules, and `scriptureSpans` (detect-and-protect) |
 | `electron/tts-number-normalizer.ts` | stage 3 + the record (`NORMALIZER_VERSION`) |
 | `electron/narration-text-pass.ts` | the pass, the receipt, `narrationTextGate` |
-| `electron/narration-text-readiness.ts` | the ledger-side gate |
+| `electron/narration-text-readiness.ts` | the ledger-side gate, and `narrationTextCleanupDone` (derived, never stored) |
+| `shared/queue/narration-run.ts` | `NarrationTextCleanupChoice` and the run's `textCleanup` |
+| `electron/parallel-tts-bridge.ts` | `prepareNarrationInput` — the render door, which logs the cleanup's case and refuses nothing |
 | `electron/epub-processor.ts` | `readNarrationTextStamp` / `writeNarrationTextStamp` |
 | `electron/processing-passes.ts` | `runNarrationTextPass` — the ledger pass |
 | `electron/queue-steps/pass.ts` | `narrationTextStep` |

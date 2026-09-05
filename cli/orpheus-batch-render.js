@@ -173,14 +173,14 @@ async function main() {
   // words the voice gets are decided here or nowhere.
   // ── The NARRATION TEXT CLEANUP first, and automatically ──────────────────
   //
-  // This chain is unattended, and `prepareNarrationInput` now REFUSES a book
-  // that has not been through the persisted text pass rather than narrating
-  // raw digits. A batch run has nobody to ask, so it runs the pass itself and
-  // renders the book it produced. A book that already carries a current stamp
-  // costs one hash and no model call.
+  // This chain is unattended and nobody is here to be asked whether to clean,
+  // so it runs the pass itself and renders the book it produced — which is what
+  // makes an audition measure the shipped pipeline. A book that already carries
+  // a current stamp costs one hash and no model call.
   const cleaned = await runNarrationTextStep(inputPath, {});
 
-  const prepared = await runNarrationPrep(bridge, cleaned.inputPath, jobId, { skipAssembly: true });
+  const prepared = await runNarrationPrep(
+    bridge, cleaned.inputPath, jobId, { skipAssembly: true, textCleanup: 'required' });
 
   console.log(`[batch] renderRangeHeadless — prep packs chunks, VRAM-tier sizing, WSL-safe worker...`);
   const { sentencesDir, totalSentences, scratchSessionDir, normalizedSessionDir } =

@@ -8,14 +8,26 @@
  * stamp on the OPF, and it is what the render door and the CLI use, because they
  * are handed a path and nothing else.
  *
- * This one asks a PROJECT, from its ledger, and it is what the app's Narrate
- * button uses — because the ledger knows something the file cannot: whether a
- * LATER pass rewrote the text after the cleanup ran. A simplify or a translate
- * recorded after `narration-text` leaves the stamp on the book (the pass wrote
- * text nodes, it did not touch the OPF) while making it a claim about text that
- * is no longer there. "Stale, re-run" and "missing, run it" are different
- * instructions to a user who believes they already did it, so they are different
- * states with different sentences.
+ * This one asks a PROJECT, from its ledger, because the ledger knows something
+ * the file cannot: whether a LATER pass rewrote the text after the cleanup ran.
+ * A simplify or a translate recorded after `narration-text` leaves the stamp on
+ * the book (the pass wrote text nodes, it did not touch the OPF) while making it
+ * a claim about text that is no longer there. "Stale, re-run" and "missing, run
+ * it" are different instructions to a user who believes they already did it, so
+ * they are different states with different sentences.
+ *
+ * ── WHO ASKS WHICH, since Owen's ruling of 2026-09-05 ───────────────────────
+ *
+ * The NARRATE BUTTON no longer asks this. It asks
+ * {@link narrationTextCleanupDone} — one boolean, "has the cleanup ever run on
+ * this chain" — because the cleanup is an optional step the user may run at any
+ * point and everything done afterwards carries it along. A later pass makes a
+ * re-run WORTH offering; it does not make the book unnarratable, and the render
+ * door no longer refuses either way.
+ *
+ * `narrationTextReadiness` — the three-valued one below — is what the PASS
+ * itself asks (`processing-passes.ts`, `runNarrationTextPass`) to decide whether
+ * a re-run has any work to do. That is the question it was always right for.
  *
  * ── What counts as text-changing ────────────────────────────────────────────
  *
@@ -68,6 +80,50 @@ const TEXT_CHANGING: Readonly<Record<AppliedPassKind, boolean>> = {
 export type NarrationTextReadiness =
   | { ok: true; at: string; model: string }
   | { ok: false; state: 'missing' | 'stale'; reason: string };
+
+/**
+ * HAS THE NARRATION TEXT CLEANUP EVER BEEN RUN ON THIS CHAIN?
+ *
+ * ── DERIVED, NEVER STORED ───────────────────────────────────────────────────
+ *
+ * There is no "cleanup done" field on a project, deliberately (the Foundry
+ * agent's point, 2026-09-05, and it is right): a stored flag answers a question
+ * about the PROJECT, and what a narration reads is a FILE — so a stored flag
+ * would skip the offer exactly when the user narrates a reading that predates
+ * the cleanup. This is computed, per call, from the ledger the pass already
+ * writes.
+ *
+ * And it is the SECOND source, not the first. The Narrate offer asks the FILE
+ * being narrated — the OPF stamp `narrationTextGate` reads, which travels with
+ * every export cut after the pass — and asks this only when the file cannot
+ * answer at all. See `narration-modal.component.ts`.
+ *
+ * ── Owen's ruling, 2026-09-05 ───────────────────────────────────────────────
+ *
+ * *"text cleanup should be an optional (but encouraged) step where the user runs
+ * it at any point and everything they do after that carries the cleanup along.
+ * If they delete blocks and then run cleanup, just like with translate or
+ * simplify, it changes the contents of the text that the user sees. They can
+ * delete blocks or whatever after that. There can be a flag set for the project
+ * when cleanup is done to tell BookForge that cleanup was done. If that flag
+ * isn't set, ask the user if they want to run cleanup on the document when they
+ * hit the narrate button."*
+ *
+ * It is deliberately the simplest possible reading of the ledger: the pass
+ * RECORDS ITSELF as a `narration-text` entry when it completes, and this says
+ * whether such an entry exists. Nothing unsets it — not a later simplify, not a
+ * translate, not the blocks the user struck out afterwards. The cleanup is
+ * carried along by everything done after it, exactly as translate and simplify
+ * are, so a later edit is not a reason to ask again.
+ *
+ * It is NOT {@link narrationTextReadiness}, which asks the sharper question —
+ * "is the cleanup still the last word on this text, at this build's rule
+ * versions?" — and is what the PASS itself uses to decide whether a re-run has
+ * work to do. That question earns a re-run; it no longer earns a demand.
+ */
+export function narrationTextCleanupDone(passes: readonly AppliedPass[]): boolean {
+  return passes.some((p) => p.kind === 'narration-text');
+}
 
 /** The pass this record says ran, when it names one this build understands. */
 function versionsOf(pass: AppliedPass): { normalizer: string; punctuation: string } | null {
@@ -159,6 +215,21 @@ export function narrationTextReadiness(
 /** What the readiness door answers. */
 export interface NarrationTextReadinessAnswer {
   success: boolean;
+  /**
+   * The CHAIN's answer to "has the cleanup ever run here" — derived from the
+   * ledger on every call, never stored. See {@link narrationTextCleanupDone}.
+   *
+   * The Narrate offer consults it only when `fileState` is null, i.e. when the
+   * file being narrated could not be read to ask for its stamp; the file is the
+   * authority whenever it can answer, because what a narration reads is a file.
+   *
+   * FALSE when the chain could not be named at all — a project with several book
+   * chains and a pressed version belonging to none of them by name. A project
+   * that cannot say it has been cleaned has not been cleaned as far as this
+   * question goes, and the answer to that is the same offer everybody else gets
+   * rather than a dead end with nothing on it to press.
+   */
+  cleanupDone?: boolean;
   /** The CHAIN's answer, or null when this project's chains cannot name one. */
   readiness?: NarrationTextReadiness | null;
   /** The FILE's own answer — the stamp the render door will read. */
@@ -211,6 +282,8 @@ export async function narrationTextReadinessFor(
         const book = await manifestService.bookForAct(projectDir);
         return {
           success: true,
+          // No chain at all, so no pass was ever recorded: not cleaned.
+          cleanupDone: false,
           readiness: narrationTextReadiness([]),
           fileState,
           familyId: null,
@@ -219,6 +292,7 @@ export async function narrationTextReadinessFor(
       }
       return {
         success: true,
+        cleanupDone: false,
         readiness: null,
         fileState,
         familyId: null,
@@ -233,6 +307,7 @@ export async function narrationTextReadinessFor(
     const book = await manifestService.bookForAct(projectDir, family);
     return {
       success: true,
+      cleanupDone: narrationTextCleanupDone(passes),
       readiness: narrationTextReadiness(passes),
       fileState,
       familyId: family,

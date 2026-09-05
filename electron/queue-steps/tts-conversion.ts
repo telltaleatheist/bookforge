@@ -134,6 +134,18 @@ interface TtsConfig {
   resumeInfo?: Record<string, unknown>;
   missingRanges?: unknown;
   startFresh?: boolean;
+  /**
+   * WHETHER THE NARRATION TEXT CLEANUP IS REQUIRED OF THIS RUN — 'required' or
+   * 'skipped', stated by whoever queued the row (the Narrate button asks the
+   * user when the file it is about to read carries no current stamp).
+   *
+   * Optional HERE because this interface also describes rows persisted in
+   * queue.json by builds that had no such question. It is not defaulted: the
+   * bridge refuses a conversion that does not say, in its own sentence, because
+   * the two values are two different things to write in the log about an hour
+   * of GPU.
+   */
+  textCleanup?: 'required' | 'skipped';
   sentencePerParagraph?: boolean;
   skipHeadings?: boolean;
   testMode?: boolean;
@@ -219,6 +231,9 @@ export const ttsConversionStep: StepModule = {
         outputFilename: config.metadata?.outputFilename || config.outputFilename,
       },
       skipAssembly: config.skipAssembly,
+      // Carried, never invented: absent here reaches the bridge as absent, and
+      // the bridge refuses it by name rather than reading it as either answer.
+      textCleanup: config.textCleanup,
       bfpPath: projectDir || undefined,
       isArticle: config.isArticle,
       rvcEnhancement: config.rvcEnhancement,

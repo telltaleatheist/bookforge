@@ -80,8 +80,9 @@ export const BOOK_PASS_OPTIONS: readonly BookPassOption[] = [
     // epub, but it's a computationally expensive step that needs to take place
     // somewhere along the line, and everything after it is finalized/fixed."
     // Offered here like any other pass; what makes it different is that
-    // `prepareNarrationInput` REFUSES a book that has not had it, and that a
-    // later simplify or translate makes its stamp stale.
+    // the Narrate button OFFERS it when the file it is about to read carries no
+    // stamp (yes / no, narrate as printed / cancel), and that a later simplify
+    // or translate gives a re-run something to do.
     kind: 'narration-text',
     label: 'Narration text cleanup',
     note: 'Canonicalizes the punctuation and reads every number as the words a narrator says. '

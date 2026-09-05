@@ -600,8 +600,9 @@ export type AppliedPassKind =
   // itself what a footnote was.
   | 'footnote-refs'
   // The narration text cleanup: punctuation, the number rules, then the model on
-  // the residue. It edits the BOOK and stamps it; a render refuses a book that
-  // has not had it. Mirrors electron/manifest-types.ts.
+  // the residue. It edits the BOOK and stamps it; the Narrate button offers it
+  // when the file it is about to read carries no stamp. Mirrors
+  // electron/manifest-types.ts.
   | 'narration-text'
   // The route to a book: a document vision model read the pages
   // (`foundry vlm-convert`). A book's ORIGIN — never a transformation of one,

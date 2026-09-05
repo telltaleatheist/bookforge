@@ -45,6 +45,7 @@ export type {
   NarrationRunSettings,
   NarrationRunStages,
   NarrationRvcSettings,
+  NarrationTextCleanupChoice,
 } from '@shared/queue/narration-run';
 
 /**
