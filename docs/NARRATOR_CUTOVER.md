@@ -340,6 +340,28 @@ branch left for it:
   will ask — otherwise the Listen picker would report "Orpheus: available" on a
   Mac with no `narrator-mlx`.
 
+### Phase 6 is a RELOCATION, not a rename
+
+Measured on this machine, 2026-09-05:
+
+```
+e2a root  : C:\Users\tellt\Projects\ebook2audiobook
+tools env : C:\Users\tellt\Projects\ebook2audiobook\python_env
+tmp root  : C:\Users\tellt\Projects\ebook2audiobook\tmp
+```
+
+The tools environment — the bundled relocatable python that every assembly,
+resume and list door runs in — physically lives INSIDE the ebook2audiobook
+checkout, and so does the default sessions root. All six doors pass
+`cwdHint: getDefaultE2aPath()`, which is that same directory.
+
+So "remove e2a" is not finished when nothing spawns `app.py`. Deleting the
+checkout today takes the python interpreter and the session scratch with it. Phase
+6 has to MOVE the env and the scratch somewhere that is BookForge's, and the
+`e2a-paths.ts` → `tools-paths-python.ts` rename is the small half of that job, not
+the job. Until it happens, `getDefaultE2aPath()` names a directory that must
+continue to exist even though nothing in it is run any more.
+
 **Phase 6 — assets, packaging, names.** `E2A_TMP_DIR` is still the variable
 `narrator.render.session_store.sessions_root()` reads, and `EBOOK2AUDIOBOOK_PATH`
 still names the tools-env root in `tool-paths.ts` and in `packaging/`. Both are

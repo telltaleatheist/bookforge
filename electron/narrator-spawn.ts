@@ -42,19 +42,39 @@
  *
  * ── What crosses into the process, and what does not ────────────────────────
  *
- * Exactly `envExtras`, plus the four this module owns (`PYTHONUNBUFFERED`,
- * `PYTHONIOENCODING`, `PYTHONPATH`, and `NARRATOR_ENGINE` when an engine is
- * named). Never `process.env` wholesale into the guest, and never the old
- * `forwardKeys` allowlist — an allowlist is a list of variables somebody
- * remembered, and the ones that matter are the ones nobody did.
+ * THE TWO ARMS ARE NOT THE SAME, and the difference is load-bearing rather than
+ * incidental.
  *
- * On the NATIVE arm the child inherits the parent environment, as every native
- * spawn in this app always has (`buildCondaSpawnEnv` spreads `process.env` and
- * repairs PATH for conda). That is not a contradiction: a native child is on the
- * same machine and the same filesystem as its parent, so inheritance is the
- * normal, correct thing. The WSL arm is different in kind — nothing crosses the
- * VM boundary unless this module writes it into the `export` line — and that is
- * the boundary the rule is about.
+ * **WSL**: exactly `envExtras`, plus the four this module owns
+ * (`PYTHONUNBUFFERED`, `PYTHONIOENCODING`, `PYTHONPATH`, and `NARRATOR_ENGINE`
+ * when an engine is named). Nothing else crosses, because nothing crosses a
+ * `wsl.exe bash -c` boundary unless it is written into the `export` line. Never
+ * `process.env` wholesale, and never the old `forwardKeys` allowlist — an
+ * allowlist is a list of variables somebody remembered, and the ones that matter
+ * are the ones nobody did.
+ *
+ * **Native**: the same four and `envExtras`, ON TOP OF `buildCondaSpawnEnv`,
+ * which spreads `process.env` and then adds three things of its own:
+ *
+ *   `E2A_TMP_DIR`   the sessions root, always set (from the configured scratch,
+ *                   else `<tools-env-root>/tmp`). `narrator.render.session_store
+ *                   .sessions_root()` READS IT, and `--list_sessions` and a
+ *                   `--resume_session` given a bare id have nothing else to go on
+ *                   — every other door passes `--session_dir` explicitly and
+ *                   never reaches it. So this is not inherited clutter; it is the
+ *                   whole interface for two of the six doors.
+ *   `CONDA_PREFIX`  set when the bundled relocatable env is in play, replicating
+ *                   what `conda activate` would have done.
+ *   `PATH`          prepended with the resolved ffmpeg directory and the env's
+ *                   own bin dirs, because a packaged app launched from Finder or
+ *                   Explorer inherits a minimal PATH and narrator's assembly
+ *                   shells out to ffmpeg/ffprobe.
+ *
+ * A native child is on the same machine and filesystem as its parent, so
+ * inheritance there is the normal thing rather than a leak. Saying so explicitly
+ * matters because an earlier version of this header claimed "exactly envExtras
+ * plus four" for BOTH arms, which would make `--list_sessions` inexplicable: it
+ * passes no session path and would have no way to find one.
  *
  * ── PYTHONPATH, not `pip install -e` ────────────────────────────────────────
  *
