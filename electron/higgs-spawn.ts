@@ -38,11 +38,12 @@
  * and it is recorded in docs/HIGGS_ENGINE.md, not papered over here.
  *
  * `--session_dir` IS MANDATORY ON EVERY NARRATOR SPAWN, prep included.
- * `session_store.sessions_root()` reads `$E2A_TMP_DIR`; e2a survived without the
- * flag because `lib/conf.py` fell back to `<e2a_root>/tmp`, which happened to be
- * the path the bridge had computed. narrator has no e2a root and refuses to
- * guess. Forwarding `E2A_TMP_DIR` is NOT an alternative: it holds a WINDOWS path
- * while a WSL prep derives its session dir from the WSL e2a root.
+ * `session_store.sessions_root()` reads `$NARRATOR_SESSIONS_ROOT`; e2a survived
+ * without the flag because `lib/conf.py` fell back to `<e2a_root>/tmp`, which
+ * happened to be the path the bridge had computed. narrator has no default
+ * sessions root and refuses to guess. Forwarding `NARRATOR_SESSIONS_ROOT` is NOT
+ * an alternative: it holds a HOST path, while a WSL prep derives its session dir
+ * from the GUEST sessions root (`<guest home>/bookforge-sessions`).
  *
  * ── Reconciled against narrator's real contract ─────────────────────────────
  *

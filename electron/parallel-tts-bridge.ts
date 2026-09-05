@@ -3323,11 +3323,11 @@ export async function prepareSession(
   // `--session_dir` IS MANDATORY, and it is the one flag that was NOT here
   // before. e2a survived without it because `lib/conf.py` fell back to
   // `<e2a_root>/tmp`, which happened to be the directory this function had
-  // already computed. narrator has no e2a root: `session_store.sessions_root()`
-  // reads `$E2A_TMP_DIR` and otherwise refuses to guess. Forwarding E2A_TMP_DIR
-  // is NOT an alternative — it holds a WINDOWS path while a WSL prep derives its
-  // session dir from the guest's filesystem, so the two would disagree exactly
-  // where it matters.
+  // already computed. narrator has no default sessions root:
+  // `session_store.sessions_root()` reads `$NARRATOR_SESSIONS_ROOT` and otherwise
+  // refuses to guess. Forwarding that variable is NOT an alternative — it holds a
+  // HOST path while a WSL prep derives its session dir from the guest's
+  // filesystem, so the two would disagree exactly where it matters.
   const args = [
     '--headless',
     '--ebook', ebookArgPath,

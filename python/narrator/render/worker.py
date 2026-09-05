@@ -410,7 +410,7 @@ def resolve_session_dir(request: WorkerRequest) -> str:
     """e2a: `session_dir_override or os.path.join(tmp_dir, f"ebook-{session_id}")`.
 
     narrator has no `tmp_dir`, so the derived form reads the same environment
-    variable e2a's `lib/conf` did (`E2A_TMP_DIR`, which every BookForge spawn
+    variable e2a's `lib/conf` did (`NARRATOR_SESSIONS_ROOT`, which every BookForge spawn
     sets) and refuses when it is absent rather than guessing a directory. Every
     live spawn passes `--session_dir` explicitly, so the derived form is the
     hand-run case.

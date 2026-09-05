@@ -1467,8 +1467,9 @@ process.on('exit', () => {
   });
 
   check('prep ALWAYS carries --session_dir', () => {
-    // narrator has no e2a root to fall back to and refuses to guess; forwarding
-    // E2A_TMP_DIR is not an alternative because it holds a Windows path.
+    // narrator has no default sessions root and refuses to guess; forwarding
+    // NARRATOR_SESSIONS_ROOT is not an alternative because it holds a HOST path
+    // while a guest render derives its session dir from the guest root.
     assert.match(prepLine, /--session_dir/);
   });
 

@@ -233,7 +233,7 @@ def route_prep(args) -> int:
       4. normalize `--device` through e2a's devices table.
 
     WHERE THE SESSION GOES. e2a put it at `<tmp_dir>/ebook-<session_id>` with
-    `tmp_dir = $E2A_TMP_DIR`, and `parallel-tts-bridge.ts:3178-3183` COMPUTES THE
+    `tmp_dir = $NARRATOR_SESSIONS_ROOT`, and `parallel-tts-bridge.ts:3178-3183` COMPUTES THE
     SAME PATH ITSELF and then reads `session-state.json` out of it - it never
     parses this command's stdout (`:3394-3435`; it even skips logging any line
     starting with `{`, `:3305`). So the placement is the contract, not the
@@ -242,7 +242,7 @@ def route_prep(args) -> int:
 
     AT CUT-OVER THE PREP SPAWN MUST PASS `--session_dir`, and there is no second
     option: for a WSL prep the bridge derives the session dir from the WSL e2a
-    ROOT (`${wslE2aPath}/tmp/ebook-<id>`, `:3180`) while `E2A_TMP_DIR` holds a
+    ROOT (`${wslE2aPath}/tmp/ebook-<id>`, `:3180`) while `NARRATOR_SESSIONS_ROOT` holds a
     WINDOWS path, so forwarding that variable into the guest would point prep at
     a path that does not exist there. See `compat/FLAGS.md`, "The prep route".
 
@@ -321,7 +321,7 @@ def route_prep(args) -> int:
     )
 
     try:
-        # INSIDE the try. `sessions_root()` raises when `E2A_TMP_DIR` is unset
+        # INSIDE the try. `sessions_root()` raises when `NARRATOR_SESSIONS_ROOT` is unset
         # and no `--session_dir` was passed - which is precisely the cut-over
         # case above - and raising it outside sent a bare traceback to a caller
         # that e2a would have answered with a result dict.
@@ -549,6 +549,23 @@ def dispatch(args, argv: list[str], engine_factory=None) -> int:
 
 def main(argv: list[str] | None = None, engine_factory=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+
+    # BEFORE anything else, including the flag parse: a stale `NARRATOR_SESSIONS_ROOT` is
+    # refused by name on EVERY door, not only on the two that read the sessions
+    # root. A door that carries `--session_dir` would never reach
+    # `sessions_root()`, so it would have rendered happily while the machine's
+    # environment still said e2a - which is exactly the "keeps working by
+    # accident" the rename exists to prevent.
+    #
+    # Reported as `Error: <message>` + exit 1, the shape every other named
+    # refusal in this file uses, rather than as a traceback.
+    from ..render import session_store as _session_store
+    from ..render.session_store import SessionStateError as _SessionStateError
+    try:
+        _session_store.refuse_legacy_sessions_root_env()
+    except _SessionStateError as refused:
+        print(f'Error: {refused}', flush=True)
+        return 1
 
     # e2a rejected unknown options BEFORE argparse (app.py:226-230) so a typo
     # names itself instead of being swallowed; so does narrator.
