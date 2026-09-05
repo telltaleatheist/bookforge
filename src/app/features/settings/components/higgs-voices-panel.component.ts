@@ -23,13 +23,15 @@ interface HiggsCatalogVoice {
   id: string;
   label: string;
   engineVersion: string;
-  voice:
-    | { kind: 'adapter'; path: string }
-    | { kind: 'clips'; clips: Array<{ path: string; transcript: string }> };
+  kind: 'adapter' | 'clips';
+  voice: {
+    clips: Array<{ path: string; transcript: string; seconds: number }>;
+    adapterDir?: string;
+  };
   license: string;
   commercialUse: boolean;
   sampleRate: number;
-  backends?: { served?: { maxChars?: number; referenceSecondsCap?: number } };
+  backends?: { served?: { maxChars?: number | null; maxCharsSource?: string | null; referenceSecondsCap?: number } };
   _pendingNote?: string;
   note?: string;
 }
@@ -128,7 +130,7 @@ interface HiggsCatalogVoice {
             <div class="voice-meta">
               <span>v{{ v.engineVersion }}</span>
               <span>{{ v.sampleRate / 1000 }} kHz</span>
-              @if (v.backends?.served?.maxChars; as mc) { <span>{{ mc }} chars/chunk</span> }
+              <span>{{ capLabel(v) }}</span>
               <span class="licence">{{ v.license }}</span>
             </div>
             @if (v._pendingNote) { <p class="voice-note pending-note">{{ v._pendingNote }}</p> }
@@ -299,9 +301,21 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   }
 
   kindLabel(v: HiggsCatalogVoice): string {
-    if (v.voice.kind === 'adapter') return 'fine-tune';
+    if (v.kind === 'adapter') return 'fine-tune';
     return v.voice.clips.length === 0
       ? 'zero-shot (served default voice)'
-      : `zero-shot clone · ${v.voice.clips.length} reference clip(s)`;
+      : `zero-shot clone · ${v.voice.clips[0].seconds.toFixed(1)} s reference`;
+  }
+
+  /**
+   * The chunk cap as a person should read it — including the case that matters
+   * most, which is that a fine-tune has not been measured yet. Showing a blank
+   * cell there would read as "no cap"; it is the opposite.
+   */
+  capLabel(v: HiggsCatalogVoice): string {
+    const cap = v.backends?.served?.maxChars;
+    if (typeof cap !== 'number') return 'chunk cap not measured';
+    const src = v.backends?.served?.maxCharsSource;
+    return src ? `${cap} chars/chunk (${src})` : `${cap} chars/chunk`;
   }
 }

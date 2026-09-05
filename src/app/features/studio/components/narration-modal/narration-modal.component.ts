@@ -122,7 +122,7 @@ import {
 } from '../../../queue/jobs/narration-run';
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import {
-  engineCaps, selectableEngines,
+  engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
 } from '../../../language-learning/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
 import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
@@ -1056,6 +1056,11 @@ export class NarrationModalComponent {
   constructor() {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
+    // Whether a Higgs run could start, asked once while the dialog is opening.
+    // Cheap when the answer is "no Higgs on this build" and a single WSL round
+    // trip otherwise, so it is not gated on the engine currently selected — the
+    // user may switch to Higgs after it has already answered.
+    void this.checkHiggsReady();
 
     /*
      * THE DOOR SETS THE PLAN.
@@ -1417,8 +1422,50 @@ export class NarrationModalComponent {
       return 'No voice is selected, so this run would be rendered in whatever voice the queue '
         + 'happened to default to. Pick one on the Reading tab.';
     }
+    // A retired engine reaching this far means the choice came from a saved
+    // PRESET or from pipeline defaults written before the retirement — the
+    // picker itself cannot offer one. Named here rather than left to the bridge
+    // because a person with the dialog still open can just pick another engine.
+    if (this.narrate() && !isRunnableTtsEngine(this.engine())) {
+      const caps = TTS_ENGINES[this.engine()];
+      return `${caps.displayName} was retired on ${caps.retired?.since} and cannot render this book. `
+        + `${caps.retired?.reason ?? ''} Pick another engine on the Reading tab.`;
+    }
+    // The Higgs environment, asked BEFORE the job is queued rather than an hour
+    // into it. `higgsReady` is a snapshot the dialog takes on open (see
+    // checkHiggsReady) — a live probe cannot run inside a computed, and the
+    // bridge re-checks at spawn time anyway, which is what catches an env that
+    // broke between queueing and starting.
+    if (this.narrate() && this.engine() === 'higgs') {
+      const why = this.higgsBlocked();
+      if (why) return why;
+    }
     return null;
   });
+
+  /**
+   * Why a Higgs run cannot start, as of when this dialog opened. Null when it can,
+   * or when the check has not answered yet — an unanswered probe is not evidence
+   * of a broken environment, and blocking on it would make the button dead for as
+   * long as WSL takes to wake up. The bridge's own preflight is the real gate.
+   */
+  readonly higgsBlocked = signal<string | null>(null);
+
+  /** Ask main whether the Higgs stack is usable. Fire-and-forget from ngOnInit. */
+  private async checkHiggsReady(): Promise<void> {
+    const api = (window as any).electron?.higgsModels;
+    if (!api?.doctor) return;
+    const res = await api.doctor();
+    if (!res?.success || !res.data) return;
+    const failed = (res.data.checks ?? []).filter((c: { ok: boolean }) => !c.ok);
+    this.higgsBlocked.set(
+      failed.length === 0
+        ? null
+        : 'The Higgs environment is not ready, so this run would fail as soon as it started: '
+          + failed.map((c: { label: string }) => c.label).join(', ')
+          + '. Set it up in Settings → Higgs, or pick Orpheus on the Reading tab.',
+    );
+  }
 
   /**
    * Why this dialog cannot queue anything AT ALL, or null.

@@ -198,6 +198,15 @@ import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, g
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import {
+  HIGGS_PREP_ENGINE_ALIAS,
+  HIGGS_PREP_ENV_ENGINE,
+  HIGGS_NARRATOR_ENGINE,
+  HIGGS_VOICE_FLAG,
+  buildHiggsSpawn,
+  higgsPreflight,
+  higgsPrepMaxChars,
+} from './higgs-spawn';
+import {
   findForeignRenders,
   gpuOwnershipRefusal,
   gpuOwnershipOverrideNote,
@@ -2238,6 +2247,41 @@ function pythonInvocation(ttsEngine?: string): PythonInvocation {
   return getPythonInvocation(getDefaultE2aPath(), ttsEngine);
 }
 
+/**
+ * Is this job a Higgs job? The single predicate every Higgs branch in this file
+ * is written against, so "what did the Higgs change touch" is one grep.
+ *
+ * Everything gated on it is additive: an Orpheus job takes the same branch it
+ * always did, with the same argv (asserted by tools/test-orpheus-argv-snapshot.js).
+ */
+export function isHiggsJob(settings: ParallelTtsSettings): boolean {
+  return settings.ttsEngine === 'higgs';
+}
+
+/**
+ * What e2a's PREP is told, for a job whose real engine e2a has never heard of.
+ *
+ * Returns the pair `{ cliEngine, envEngine }` because they are genuinely two
+ * different answers for Higgs and the same answer for everything else:
+ *
+ *  - `cliEngine` goes in `--tts_engine` and selects e2a's PACKER behaviour. For
+ *    Higgs that is `orpheus`, because the packer branches on that literal string
+ *    to reach the `ORPHEUS_MAX_CHARS` cap, which is the knob Higgs needs.
+ *  - `envEngine` picks the conda environment. For Higgs that is the generic
+ *    bundled one: prep imports no TTS backend, and naming the Orpheus env here
+ *    would route a text-parsing pass through the WSL Orpheus spawn.
+ *
+ * See electron/higgs-spawn.ts for the read of e2a's own source that establishes
+ * prep loads no model. This is the same scaffolding move the assembly path
+ * already makes in the opposite direction (`asmEngineArg`).
+ */
+export function prepEngineFor(settings: ParallelTtsSettings): { cliEngine: string; envEngine: string } {
+  if (isHiggsJob(settings)) {
+    return { cliEngine: HIGGS_PREP_ENGINE_ALIAS, envEngine: HIGGS_PREP_ENV_ENGINE };
+  }
+  return { cliEngine: settings.ttsEngine, envEngine: settings.ttsEngine };
+}
+
 // DeepSpeed accelerates XTTS's GPT decoder ~1.5x, but it must be installed (with a
 // GPU-arch-matched, prebuilt transformer_inference op) in the XTTS env — which it
 // is NOT on a stock install (the prebuilt kernel is machine-specific). So we
@@ -3207,19 +3251,30 @@ export async function prepareSession(
   assertDeviceUsable(settings.device, deviceArg);
   console.log(`[PARALLEL-TTS] Device: requested='${settings.device}' → running on ${deviceArg}`);
 
+  // For every engine but Higgs both halves are `settings.ttsEngine`, so this is
+  // the same argv and the same env as before — see prepEngineFor.
+  const prepEngine = prepEngineFor(settings);
+
   const args = [
-    ...pythonInvocation(settings.ttsEngine).args,
+    ...pythonInvocation(prepEngine.envEngine).args,
     appPath,
     '--headless',
     '--ebook', ebookArgPath,
     '--session', sessionId,
     '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,
+    '--tts_engine', prepEngine.cliEngine,
     '--device', deviceArg,
     '--prep_only'
   ];
 
-  pushVoiceArgs(args, settings);
+  // A Higgs voice has no `--fine_tuned`/`--orpheus_*` flags to give e2a: its
+  // voice lives in an adapter the SERVED backend loads, or in reference clips the
+  // request carries. Passing an Orpheus-shaped voice arg here would make e2a try
+  // to resolve a model folder that has nothing to do with this render — and prep
+  // does not need to know the voice at all, because it only packs text.
+  if (!isHiggsJob(settings)) {
+    pushVoiceArgs(args, settings);
+  }
 
   // Pass XTTS settings explicitly (stored in session-state.json for workers)
   if (settings.ttsEngine === 'xtts') {
@@ -3283,8 +3338,15 @@ export async function prepareSession(
 
     // Per-voice caps for the selected fine-tune (maxChars is the one prep consumes).
     const voiceCaps = orpheusVoiceCaps(settings);
+    // A Higgs job's packing cap comes from the Higgs catalog, through the SAME
+    // ORPHEUS_MAX_CHARS variable — because that is the variable e2a's packer
+    // reads, and prep is running as `--tts_engine orpheus` scaffolding. The value
+    // is Higgs's measured cap; only the transport is Orpheus-shaped.
+    const higgsPrepCap = isHiggsJob(settings)
+      ? higgsPrepMaxChars(higgsPreflight(settings.fineTuned))
+      : undefined;
     const prepProcess = spawnWithWslSupport(
-      pythonInvocation(settings.ttsEngine).command,
+      pythonInvocation(prepEngine.envEngine).command,
       args,
       {
         cwd: getDefaultE2aPath(),
@@ -3298,10 +3360,13 @@ export async function prepareSession(
           ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS?.trim() || voiceCaps.maxChars !== undefined)
             ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS?.trim() || String(voiceCaps.maxChars) }
             : {}),
+          ...(higgsPrepCap !== undefined ? { ORPHEUS_MAX_CHARS: String(higgsPrepCap) } : {}),
         }),
         shell: false
       },
-      settings.ttsEngine
+      // The env engine, not the real one: this decides WSL routing, and a Higgs
+      // prep is a text pass in the bundled Windows env with no WSL involved.
+      prepEngine.envEngine
     );
 
     // Log stdout for visibility (but don't parse it)
@@ -3993,7 +4058,70 @@ function startWorker(
   const rejectDir = rejectDirHost && shouldUseWslForSpawn(settings.ttsEngine)
     ? uncToWslPath(rejectDirHost)
     : rejectDirHost;
-  const workerProcess = spawnWithWslSupport(
+  // ── The Higgs route ────────────────────────────────────────────────────────
+  //
+  // A Higgs worker does not go to ebook2audiobook at all. It goes to narrator's
+  // `compat.worker`, which answers the SAME command line e2a's worker.py answers
+  // (that is what `compat/` is for) — so `args` above is reused verbatim from
+  // `--session` onward, with two substitutions: the interpreter prefix, which is
+  // narrator's `-m` module spawn instead of a script path, and `--tts_engine`,
+  // which names the engine narrator's registry will construct.
+  //
+  // WHY NOT spawnWithWslSupport. Its `buildWslBashCommand` rewrites argv by
+  // pattern — anything containing 'orpheus' becomes `-n <orpheusEnv>`, anything
+  // under the e2a root is remapped onto the WSL e2a checkout, and it exports a
+  // fixed list of ORPHEUS_* variables. Every one of those rules is wrong here,
+  // and silently so: a Higgs command through that function comes out an Orpheus
+  // command. Leaving it untouched is also what keeps the Orpheus argv provably
+  // identical to before this change (tools/test-orpheus-argv-snapshot.js).
+  // The plan is built here and SPAWNED at the shared call below, rather than
+  // spawned here and returned early, so that everything downstream — the stdout
+  // progress regex, the stall watchdog, the kill handlers, the result parsing —
+  // is the same code for both engines. A second copy of that machinery is how the
+  // two routes would drift.
+  const higgsPlan = isHiggsJob(settings)
+    ? (() => {
+        // Refuses by name: no WSL toggle, a doctor check that is not green, an
+        // unknown or not-yet-installed voice, an untranscribed reference clip, or
+        // a narrator build with no Higgs backend yet.
+        const higgsModel = higgsPreflight(settings.fineTuned);
+        const higgsArgs = args.slice(args.indexOf('--session'));
+        const engineFlag = higgsArgs.indexOf('--tts_engine');
+        if (engineFlag < 0) {
+          throw new Error(
+            'Higgs worker argv is missing --tts_engine — refusing to spawn a worker whose engine is unstated.',
+          );
+        }
+        higgsArgs[engineFlag + 1] = HIGGS_NARRATOR_ENGINE;
+        // The voice, as a CATALOG ID. Not `--fine_tuned`: that flag carries an
+        // Orpheus voice TOKEN that rides in the prompt, while `--higgs_voice`
+        // indexes the voice document named by NARRATOR_HIGGS_VOICES. narrator
+        // accepts both flags and they are not interchangeable, so sending the
+        // wrong one names something the engine has no use for and leaves the
+        // real voice unsaid.
+        higgsArgs.push(HIGGS_VOICE_FLAG, higgsModel.id);
+        return buildHiggsSpawn('worker', {
+          model: higgsModel,
+          args: higgsArgs,
+          cwd: getDefaultE2aPath(),
+          jobId: session.jobId,
+        });
+      })()
+    : null;
+
+  if (higgsPlan) {
+    const msg = `[PARALLEL-TTS] Worker ${workerId} → narrator (Higgs): ${higgsPlan.describe()}`;
+    console.log(msg);
+    writeWorkerLog(msg);
+  }
+
+  const workerProcess = higgsPlan
+    ? spawn(higgsPlan.command, higgsPlan.args, {
+        cwd: higgsPlan.cwd,
+        env: higgsPlan.env,
+        shell: false,
+      })
+    : spawnWithWslSupport(
     pythonInvocation(settings.ttsEngine).command,
     args,
     {
@@ -5235,7 +5363,36 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // Orpheus generation ran in WSL, but after normalization the session lives on
     // Windows, so assembly runs natively here (asmRoutingEngine is undefined →
     // native spawn). Only a failed normalization keeps it on the WSL path.
-    session.assemblyProcess = spawnWithWslSupport(
+    // A Higgs book is assembled by narrator, not e2a. `--assemble_only` is the one
+    // route narrator does NOT gate on `--tts_engine` (FLAGS.md: assembly combines
+    // audio and never consults the name), so the engine flag rides along unchanged
+    // and the whole argv from `--headless` onward is reused verbatim.
+    //
+    // It has to be narrator rather than e2a for a reason specific to this engine:
+    // Higgs emits NO lead/trail silence of its own, so the manifest's
+    // gapBefore/gapAfter and the 10 ms/25 ms chunk-edge fades are LIVE for a Higgs
+    // book where they are inert for an Orpheus one — and it is narrator's
+    // assembler that reads them. e2a's assembly would concatenate the chunks at
+    // their hard sample boundaries and click on every join.
+    const higgsAsmPlan = isHiggsJob(settings)
+      ? buildHiggsSpawn('assembly', {
+          model: higgsPreflight(settings.fineTuned),
+          args: args.slice(args.indexOf('--headless')),
+          cwd: getDefaultE2aPath(),
+          jobId: session.jobId,
+        })
+      : null;
+    if (higgsAsmPlan) {
+      console.log('[PARALLEL-TTS] Assembly → narrator (Higgs):', higgsAsmPlan.describe());
+    }
+
+    session.assemblyProcess = higgsAsmPlan
+      ? spawn(higgsAsmPlan.command, higgsAsmPlan.args, {
+          cwd: higgsAsmPlan.cwd,
+          env: higgsAsmPlan.env,
+          shell: false,
+        })
+      : spawnWithWslSupport(
       asmInvocation.command,
       args,
       {

@@ -820,16 +820,24 @@ export interface HiggsModelDto {
   id: string;
   label: string;
   engineVersion: string;
-  voice:
-    | { kind: 'adapter'; path: string }
-    | { kind: 'clips'; clips: Array<{ path: string; transcript: string }> };
+  /** BookForge's rule set for this voice — see electron/higgs-models.ts. */
+  kind: 'adapter' | 'clips';
+  /** narrator's document shape: always clips, with adapterDir for a fine-tune. */
+  voice: {
+    clips: Array<{ path: string; transcript: string; seconds: number }>;
+    adapterDir?: string;
+    scene?: string;
+  };
+  adapterStrategy?: 'lora-modules' | 'merged-dir';
   license: string;
   commercialUse: boolean;
   sampleRate: number;
   addedAt: string;
   backends?: {
     served?: {
-      maxChars?: number;
+      /** null = declared UNMEASURED, which for an adapter is a refusal. */
+      maxChars?: number | null;
+      maxCharsSource?: string | null;
       edgeFadeMs?: { in: number; out: number };
       sampling?: { temperature?: number; topP?: number; topK?: number };
       referenceSecondsCap?: number;

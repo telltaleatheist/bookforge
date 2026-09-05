@@ -60,6 +60,8 @@ if (newestSource > newestCompiled) {
 }
 
 const SUITES = [
+  'test-higgs-engine',
+  'test-orpheus-argv-snapshot',
   'test-editor-state-store',
   'test-family-lifecycle',
   'test-working-copy-remint',
