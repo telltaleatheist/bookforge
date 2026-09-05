@@ -954,6 +954,27 @@ export async function startReassembly(
   }
 
   /*
+   * WHAT ENGINE RENDERED THIS SESSION — asked FIRST, because the answer can be a
+   * refusal and a refusal is worth nothing after the work.
+   *
+   * Below this line are gap normalization, the pre-closed-chapter resolver and
+   * the RVC pass: minutes of CPU, and a chapter closer that writes into the
+   * session. An XTTS session (a real thing on Owen's disk) has to be refused
+   * BEFORE any of that, not after — the same rule the variant filing above
+   * follows, and for the same reason.
+   */
+  let asmEngine: string;
+  try {
+    const provenance = await parseSessionProvenance(config.processDir);
+    asmEngine = narratorEngineForSession(provenance?.ttsEngine);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    reassemblyLog.error('Reassembly refused', { jobId, error });
+    sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error });
+    return { success: false, error };
+  }
+
+  /*
    * IS THIS RUN MAKING A SECOND AUDIOBOOK, and if so what is it called —
    * answered HERE, at the top, because both of its refusals ("which voice?",
    * "no filename to derive one from") are things this run can never learn later,
@@ -1449,23 +1470,6 @@ export async function startReassembly(
     }
   }
 
-  // The engine this session was RENDERED by, in narrator's spelling, READ from the
-  // session's own state file — never guessed.
-  //
-  // This door used to send the literal 'xtts' on every book including Orpheus ones,
-  // and narrator would not care either way: `compat/app.py` routes
-  // `--assemble_only` before any engine resolution. What changed is that the argv
-  // and the session stopped contradicting each other.
-  //
-  // THE `: 'orpheus'` THAT WAS HERE WAS A FALLBACK, and it was the wrong kind. An
-  // XTTS session — a real thing, on Owen's disk, with real audio — would have been
-  // assembled under the label `orpheus`, which is a claim about the recording that
-  // is simply false. It read as harmless because nothing on this path consumes the
-  // flag, but "nothing reads it today" is the argument that ends with somebody
-  // reading it. A session whose recorded engine is not runnable is refused BY NAME,
-  // which is the standing rule for retired engines everywhere else in the app.
-  const asmProvenance = await parseSessionProvenance(config.processDir);
-  const asmEngine = narratorEngineForSession(asmProvenance?.ttsEngine);
 
   return new Promise((resolve) => {
     // ASSEMBLY IS NATIVE. The `sessionInWsl` branch that stood here ran the whole

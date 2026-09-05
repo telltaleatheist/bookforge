@@ -61,11 +61,13 @@ if (newestSource > newestCompiled) {
 
 const SUITES = [
   'test-higgs-engine',
-  // 'test-orpheus-argv-snapshot' was here until 2026-09-04. It pinned the five
-  // ebook2audiobook command lines, and Phase 3 of the e2a removal replaced all
-  // five — its anchors name doors that no longer exist. Superseded by
-  // test-narrator-argv-snapshot; the file and its baseline are kept as the record
-  // of what BookForge used to send e2a.
+  // 'test-orpheus-argv-snapshot' was here until 2026-09-04, and the file itself is
+  // gone as of 2026-09-05. It pinned the five ebook2audiobook command lines; Phase
+  // 3 replaced all five, so its anchors named code that no longer exists and it
+  // could not run at all — a test nobody can run is worse than no test, because it
+  // looks like coverage in a directory listing. Superseded by
+  // test-narrator-argv-snapshot. Its BASELINE is kept, as data:
+  // tools/snapshots/orpheus-argv-base.json, described in that directory's README.
   'test-narrator-argv-snapshot',
   'test-serve-spawn-env',
   'test-narrator-log-strings',

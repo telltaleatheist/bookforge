@@ -421,12 +421,6 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
  * "Orpheus: available" on a Mac with no narrator-mlx environment — a promise
  * every spawn would then break, one refusal at a time.
  *
- * Exported because  asks the same question for a different
- * purpose: whether to offer Orpheus in the Listen picker at all. Asking it here
- * rather than re-deriving it there is what stops the picker from saying "Orpheus:
- * available" on a Mac with no narrator-mlx env, which is a promise every spawn
- * would then break.
- *
  * `undefined` — the tools phases — resolves the GENERIC bundled environment, the
  * same one `parallel-tts-bridge.ts` already uses for a native Orpheus assembly
  * (`pythonInvocation(undefined)`): `getPythonInvocation` with no engine returns

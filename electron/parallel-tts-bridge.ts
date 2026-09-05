@@ -2423,8 +2423,19 @@ const PROGRESS_LINE_RE = /Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i;
  * that is still better than an empty message.
  */
 function spawnFailureDetail(stdoutTail: string, stderrTail: string, limit = 1200): string {
-  const out = (stdoutTail || '').trim();
-  const err = (stderrTail || '').trim();
+  // THE WORKER'S STARTUP PREAMBLE IS DROPPED FIRST. Every narrator worker opens
+  // with two `[WORKER] ... parent watchdog ...` lines about the orphan check, and
+  // they are the FIRST thing in the tail — so a toast, which shows the front of
+  // the message, showed the watchdog's configuration instead of the diagnosis.
+  // They stay in the worker log, where they belong; they are not what a person
+  // reads a failure to find out.
+  const strip = (t: string) => (t || '')
+    .split(/\r?\n/)
+    .filter((l) => !/^\[WORKER\]\s+(no BOOKFORGE_OWNER_PID|parent watchdog)/.test(l.trim()))
+    .join('\n')
+    .trim();
+  const out = strip(stdoutTail);
+  const err = strip(stderrTail);
   const detail = out || err;
   if (!detail) return '';
   // Collapsed to one line: these land in a job-log line and a toast, and a Python
@@ -4785,7 +4796,16 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
       const workerErrors = failedWorkersList.length > 0
         ? ` (${failedWorkersList.length} worker(s) also failed)`
         : '';
-      emitComplete(session, false, undefined, `Assembly failed: ${err}${workerErrors}`);
+      // THE STAGE, NOT A GUESS AT IT. Everything in this try block reports as
+      // "Assembly failed" by default, but `normalizeWslSessionToWindows` now throws
+      // from BEFORE assembly — the copy of the rendered session out of the guest.
+      // Telling a user their assembly failed when the audio never left WSL sends
+      // them to look at the wrong half of the pipeline, and the fix is the opposite
+      // one (retry the job, not re-encode).
+      const stage = String(err).includes('could not be copied out of WSL')
+        ? 'Session copy failed'
+        : 'Assembly failed';
+      emitComplete(session, false, undefined, `${stage}: ${err}${workerErrors}`);
     }
     activeSessions.delete(session.jobId);
   }

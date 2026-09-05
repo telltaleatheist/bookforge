@@ -5,7 +5,9 @@
  *   npx tsc -p tsconfig.electron.json && node tools/test-narrator-argv-snapshot.js
  *
  * Successor to `test-orpheus-argv-snapshot.js`, which pinned the five e2a doors
- * and is retired (see its header). This pins what replaced them.
+ * and is deleted — Phase 3 replaced all five, so it could no longer run. Its
+ * baseline survives as data (`tools/snapshots/orpheus-argv-base.json`, described
+ * in that directory's README). This pins what replaced them.
  *
  * ── What each half catches ──────────────────────────────────────────────────
  *

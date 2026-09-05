@@ -394,9 +394,12 @@ recorded here so it is mechanical rather than a judgement call at merge time:
    branch IS Phase 4). Keep this branch's door rewrites and its `--tts_engine`
    literal drop. `pythonInvocation` loses its last caller with the DeepSpeed probe
    and can go.
-3. **`tools/test-orpheus-argv-snapshot.js` + `orpheus-argv-base.json`** — keep
-   this branch's retirement header, and keep their regenerated assembly row. The
-   header now says so.
+3. **`tools/test-orpheus-argv-snapshot.js` + `orpheus-argv-base.json`** — the
+   keeper is DELETED (2026-09-05: it could not run at all, since Phase 3 replaced
+   every door its anchors named, and a test nobody can run looks like coverage in
+   a directory listing). Their regenerated assembly row is kept. The baseline
+   survives as data; `tools/snapshots/README.md` records what it is and the one
+   caveat on reading it.
 
 Renames on their side that any surviving import must follow:
 `bilingual-processor.ts` → `text-ai.ts` (`splitForTts`), `ll-jobs.ts` →
