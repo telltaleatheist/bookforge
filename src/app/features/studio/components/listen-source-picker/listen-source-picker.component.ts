@@ -1,15 +1,13 @@
 import { ChangeDetectionStrategy, Component, computed, input, output, signal } from '@angular/core';
 
-/** One listenable thing in the project (an M4B, a bilingual pair, or a live-TTS EPUB). */
+/** One listenable thing in the project (an M4B or a live-TTS EPUB). */
 export interface ListenSource {
   id: string;
-  type: 'mono-m4b' | 'bilingual-m4b' | 'epub';
+  type: 'mono-m4b' | 'epub';
   label: string;
   sublabel: string;
   /** Audio entries only: an EPUB is newer than this M4B */
   stale?: boolean;
-  /** bilingual-m4b: key into item.bilingualOutputs */
-  pairKey?: string;
   /** epub: absolute path to stream */
   epubPath?: string;
   /** mono-m4b: absolute path to this audiobook variant's .m4b */

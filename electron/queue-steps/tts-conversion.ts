@@ -124,17 +124,12 @@ interface TtsConfig {
   language: string;
   ttsEngine: string;
   fineTuned: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
   outputFilename?: string;
   outputDir?: string;
   parallelWorkers?: number;
   parallelMode?: 'sentences' | 'chapters';
-  bilingual?: { enabled: boolean; pauseDuration?: number; gapDuration?: number };
   skipAssembly?: boolean;
   resumeInfo?: Record<string, unknown>;
   missingRanges?: unknown;
@@ -209,10 +204,6 @@ export const ttsConversionStep: StepModule = {
         language: config.language,
         ttsEngine: config.ttsEngine,
         fineTuned: config.fineTuned,
-        temperature: config.temperature,
-        topP: config.topP,
-        topK: config.topK,
-        repetitionPenalty: config.repetitionPenalty,
         speed: config.speed,
         enableTextSplitting: config.enableTextSplitting,
         sentencePerParagraph: config.sentencePerParagraph,
@@ -227,7 +218,6 @@ export const ttsConversionStep: StepModule = {
         coverPath: config.metadata?.coverPath,
         outputFilename: config.metadata?.outputFilename || config.outputFilename,
       },
-      bilingual: config.bilingual,
       skipAssembly: config.skipAssembly,
       bfpPath: projectDir || undefined,
       isArticle: config.isArticle,

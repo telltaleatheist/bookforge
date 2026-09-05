@@ -20,7 +20,6 @@ import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
-import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { Quire } from '../packages/quire/src';
 import {
   setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
@@ -806,8 +805,8 @@ async function startTtsApiServerOnce(): Promise<void> {
 
 async function doRuntimeSetup(): Promise<boolean> {
   const {
-    ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza,
-    ensureLibraryVoices, beginSetupDownload, setupDownloadProgress,
+    ensureBundledEnv, ensureBundledE2a, ensureEnglishStanza,
+    beginSetupDownload, setupDownloadProgress,
   } = await import('./e2a-env-bootstrap.js');
 
   const logger = getMainLogger();
@@ -835,7 +834,6 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   await step('Bundled e2a code setup', () => ensureBundledE2a(emit));
   await step('Python env setup', () => ensureBundledEnv(emit));
-  await step('Default voice setup', () => ensureDefaultVoice(emit));
   await step('English language pack setup', () => ensureEnglishStanza(emit));
 
   if (firstError) {
@@ -845,22 +843,6 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   setRuntimeStatus({ state: 'ready', message: 'Ready' });
   await startTtsApiServerOnce();
-
-  // The Voice Library clips are an OPTIONAL background pull — not bundled in the
-  // installer and not gating readiness. Fire-and-forget after the app is ready;
-  // the library voices appear in the pickers once it lands. A failure is logged
-  // and retried on the next launch (the ready-marker isn't written on failure).
-  void ensureLibraryVoices((message) => logger.info(message))
-    .then(async () => {
-      // New clips on disk — drop the scan cache so they show in the pickers now,
-      // and refresh the TTS API server's exposed voice list.
-      const { invalidateVoiceScanCache } = await import('./xtts-voices.js');
-      invalidateVoiceScanCache();
-      void refreshTtsApiVoices();
-    })
-    .catch((err) => {
-      logger.warn('Voice library download failed (will retry next launch)', { error: (err as Error).message });
-    });
 
   return true;
 }
@@ -2122,7 +2104,7 @@ async function actOnFoundryNode(
  * ── The MAIN window and no other ────────────────────────────────────────────
  *
  * `app:show-book-conversion`'s rule, for the same reason: a standalone
- * listen/editor/alignment popup has the shell but no nav rail and no route to
+ * listen/editor popup has the shell but no nav rail and no route to
  * /queue, and a broadcast would have every window that happens to be open race
  * to answer a click meant for one place. So this sends to `mainWindow` alone.
  *
@@ -4716,10 +4698,8 @@ function setupIpcHandlers(): void {
   // The OS can't let an app delete itself, so the renderer then tells the user
   // to drag the app to the Trash (mac) / run the uninstaller (win).
   ipcMain.handle('app:remove-all-data', async () => {
-    // Stop the streaming engines first so the bundled env isn't locked.
+    // Stop the streaming engine first so the bundled env isn't locked.
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      await xttsWorkerPool.endSession();
       const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
       await orpheusWorkerPool.endSession();
     } catch { /* engine wasn't running */ }
@@ -7425,36 +7405,6 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Bilingual Assembly handlers (for dual-voice language learning audiobooks)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('bilingual-assembly:run', async (_event, jobId: string, config: {
-    projectId: string;
-    sourceSentencesDir: string;
-    targetSentencesDir: string;
-    sentencePairsPath: string;
-    outputDir: string;
-    pauseDuration?: number;
-    gapDuration?: number;
-    audioFormat?: string;
-    // Output naming with language suffix
-    outputName?: string;
-    title?: string;
-    sourceLang?: string;
-    targetLang?: string;
-    bfpPath?: string;
-  }) => {
-    try {
-      const { initBilingualAssemblyBridge, runBilingualAssembly } = await import('./bilingual-assembly-bridge.js');
-      initBilingualAssemblyBridge(mainWindow!);
-      const result = await runBilingualAssembly(jobId, config);
-      return { success: result.success, data: result, error: result.error };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
   // Video Assembly handlers (render subtitle MP4 from M4B + VTT)
   // ─────────────────────────────────────────────────────────────────────────────
 
@@ -7537,7 +7487,7 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // XTTS Worker Pool handlers (for Play tab real-time TTS with parallel generation)
+  // Streaming worker pool handlers (Play tab / TTS API real-time TTS)
   // ─────────────────────────────────────────────────────────────────────────────
 
   ipcMain.handle('play:start-session', async () => {
@@ -7697,18 +7647,13 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-stream:set-worker-config', async (
     _event,
-    updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }
+    // `engine` stays a bare string: it crosses IPC as untyped JSON and
+    // setStreamConfig refuses an engine this build does not have BY NAME.
+    updates: { engine?: string; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }
   ) => {
     try {
-      const { setStreamConfig, getSelectedEngineName } = await import('./streaming-engine.js');
-      const before = getSelectedEngineName();
+      const { setStreamConfig } = await import('./streaming-engine.js');
       const data = await setStreamConfig(updates);
-      // Switching engines changes the available voice set (XTTS library vs
-      // Orpheus's built-in voices); refresh so connected extension clients see it.
-      if (data.engine !== before) {
-        const { ttsApiServer } = await import('./tts-api-server.js');
-        await ttsApiServer.refreshInstalledVoices();
-      }
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -7832,22 +7777,9 @@ function setupIpcHandlers(): void {
 
   // ── RVC enhancement voices ────────────────────────────────────────────────
   // RVC voice models are first-class optional components (kind 'rvc-model') and
-  // flow through the SAME components:* IPC + ComponentService as XTTS voices —
+  // flow through the SAME components:* IPC + ComponentService the XTTS voices used —
   // download, status, and removal are handled there (see rvc-voice-components.ts
   // + component-manager's fetchRvcVoice). No dedicated RVC-voice IPC remains.
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Custom (user-added) XTTS voices — Play tab + browser extension
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('custom-voices:list', async () => {
-    try {
-      const { listCustomVoices } = await import('./custom-voices.js');
-      return { success: true, data: listCustomVoices() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
 
   // Folder-discovered custom Orpheus models (runtime/orpheus-models/<voice>/) —
   // surfaced as extra Orpheus voices in the TTS dropdowns.
@@ -7955,55 +7887,6 @@ function setupIpcHandlers(): void {
     try {
       const { listHiggsModels } = await import('./higgs-models.js');
       return { success: true, data: listHiggsModels() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Voices selectable for full-audiobook generation — installed voices only, so
-  // every option works even though BookForge no longer bundles every clip.
-  ipcMain.handle('voices:list-audiobook', async () => {
-    try {
-      const { getAudiobookVoiceOptions } = await import('./components/installed-voices.js');
-      return { success: true, data: await getAudiobookVoiceOptions() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Pick a checkpoint folder, validate it, and register it as a custom voice.
-  ipcMain.handle('custom-voices:add', async () => {
-    try {
-      if (!mainWindow) return { success: false, error: 'No window' };
-      const picked = await dialog.showOpenDialog(mainWindow, {
-        title: 'Select a fine-tuned XTTS voice folder',
-        message: 'Pick the folder containing config.json, model.pth, vocab.json and a reference .wav',
-        properties: ['openDirectory'],
-      });
-      if (picked.canceled || picked.filePaths.length === 0) {
-        return { success: false, canceled: true };
-      }
-
-      const [{ addCustomVoiceFromFolder }, { getStreamVoices }] = await Promise.all([
-        import('./custom-voices.js'),
-        import('./xtts-voices.js'),
-      ]);
-      // Reserve existing catalog ids so a custom voice can't shadow a built-in one.
-      const reserved = new Set(getStreamVoices().map((v) => v.id));
-      const result = addCustomVoiceFromFolder(picked.filePaths[0], reserved);
-      if (result.success) void refreshTtsApiVoices();
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('custom-voices:remove', async (_event, id: string) => {
-    try {
-      const { removeCustomVoice } = await import('./custom-voices.js');
-      const result = removeCustomVoice(id);
-      void refreshTtsApiVoices();
-      return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -8127,23 +8010,20 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:get-voices', async () => {
     try {
-      const { getSelectedEngineName, getActiveEngine } = await import('./streaming-engine.js');
+      const { getActiveEngine } = await import('./streaming-engine.js');
       // Full catalog (id, name, group) so the dropdown can label and group
       // voices; available before the engine starts. Orpheus's voices are built
-      // into the model — synthesize catalog entries from its voice list.
-      if (getSelectedEngineName() === 'orpheus') {
-        const voices = getActiveEngine().getAvailableVoices().map((id) => ({
-          id,
-          name: id.charAt(0).toUpperCase() + id.slice(1),
-          group: 'Orpheus',
-          repo: '',
-          sub: '',
-          refPath: '',
-        }));
-        return { success: true, data: { voices } };
-      }
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const voices = xttsWorkerPool.getVoiceCatalog();
+      // into the model — synthesize catalog entries from its voice list. (The
+      // other arm of this used to read the XTTS pool's downloaded-clip catalog;
+      // that pool is gone, and Orpheus is the only streaming engine.)
+      const voices = getActiveEngine().getAvailableVoices().map((id) => ({
+        id,
+        name: id.charAt(0).toUpperCase() + id.slice(1),
+        group: 'Orpheus',
+        repo: '',
+        sub: '',
+        refPath: '',
+      }));
       return { success: true, data: { voices } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -9394,132 +9274,6 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Finalize bilingual assembly output for manifest projects
-  // Copies audio+VTT to project output dir, updates manifest
-  ipcMain.handle('bilingual-assembly:finalize-output', async (_event, params: {
-    audioPath: string;
-    vttPath?: string;
-    projectDir: string;
-    projectId: string;
-    sourceLang: string;
-    targetLang: string;
-    metadataFilename?: string; // e.g., "Aesop's Fables. Aesopus. (2011). Unknown (language learning)"
-    sentencePairsPath?: string; // Absolute path to sentence_pairs_{lang}.json
-  }) => {
-    try {
-      const { audioPath, vttPath, projectDir, sourceLang, targetLang, metadataFilename, sentencePairsPath } = params;
-      // projectId may be a full absolute path (from StudioItem.id) — use folder name
-      const projectId = path.basename(projectDir);
-      console.log('[bilingual-assembly:finalize-output] Params:', { audioPath, vttPath, projectDir, projectId, sourceLang, targetLang, metadataFilename, sentencePairsPath });
-
-      // 1. Ensure project output dir exists
-      const outputDir = path.join(projectDir, 'output');
-      await fs.mkdir(outputDir, { recursive: true });
-
-      // 2. Clean up old bilingual output files for this language pair, then copy new ones
-      const langKey = `${sourceLang}-${targetLang}`;
-      const projectAudioPath = path.join(outputDir, `bilingual-${langKey}.m4b`);
-      const projectVttPath = path.join(outputDir, `bilingual-${langKey}.vtt`);
-      const projectMp4Path = path.join(outputDir, `bilingual-${langKey}.mp4`);
-
-      // Remove old bilingual files for this language pair
-      for (const oldFile of [projectAudioPath, projectVttPath, projectMp4Path]) {
-        if (fsSync.existsSync(oldFile)) {
-          try {
-            fsSync.unlinkSync(oldFile);
-            console.log('[bilingual-assembly:finalize-output] Cleaned up old file:', oldFile);
-          } catch {
-            // Non-fatal
-          }
-        }
-      }
-
-      if (audioPath && fsSync.existsSync(audioPath)) {
-        // Atomic copy: write to .tmp- then rename so Syncthing never sees partial files
-        const tmpAudio = path.join(outputDir, `.tmp-bilingual-${langKey}.m4b`);
-        await fs.copyFile(audioPath, tmpAudio);
-        await fs.rename(tmpAudio, projectAudioPath);
-        console.log('[bilingual-assembly:finalize-output] Copied M4B to:', projectAudioPath);
-      } else {
-        return { success: false, error: `Audio file not found: ${audioPath}` };
-      }
-
-      if (vttPath && fsSync.existsSync(vttPath)) {
-        const tmpVtt = path.join(outputDir, `.tmp-bilingual-${langKey}.vtt`);
-        await fs.copyFile(vttPath, tmpVtt);
-        await fs.rename(tmpVtt, projectVttPath);
-        console.log('[bilingual-assembly:finalize-output] Copied VTT to:', projectVttPath);
-      }
-
-      // 3. Apply metadata (cover, title, author) to M4B
-      try {
-        const manifestResult0 = await manifestService.getManifest(projectId);
-        if (manifestResult0.success && manifestResult0.manifest) {
-          const meta = manifestResult0.manifest.metadata;
-          let coverAbsPath: string | undefined;
-          if (meta.coverPath) {
-            const candidate = path.join(getLibraryRoot(), meta.coverPath);
-            if (fsSync.existsSync(candidate)) {
-              coverAbsPath = candidate;
-              console.log('[bilingual-assembly:finalize-output] Cover resolved:', coverAbsPath);
-            } else {
-              console.warn('[bilingual-assembly:finalize-output] Cover in manifest but file missing:', candidate);
-            }
-          } else {
-            console.log('[bilingual-assembly:finalize-output] No coverPath in manifest');
-          }
-          await applyMetadata(projectAudioPath, {
-            title: meta.title,
-            author: meta.author,
-            year: meta.year,
-            narrator: meta.narrator,
-            series: meta.series,
-            coverPath: coverAbsPath,
-          });
-          console.log('[bilingual-assembly:finalize-output] Metadata applied (cover:', coverAbsPath ? 'yes' : 'none', ')');
-        }
-      } catch (metaErr) {
-        console.error('[bilingual-assembly:finalize-output] Failed to apply metadata (non-fatal):', metaErr);
-      }
-
-      // 4. Update manifest with bilingual output paths
-      // Convert absolute sentencePairsPath to relative for manifest storage
-      let relativeSentencePairsPath: string | undefined;
-      if (sentencePairsPath && sentencePairsPath.startsWith(projectDir)) {
-        relativeSentencePairsPath = sentencePairsPath.slice(projectDir.length).replace(/^[/\\]/, '');
-      } else if (sentencePairsPath) {
-        // Not under project dir — check if file exists and use as-is for logging
-        console.warn('[bilingual-assembly:finalize-output] sentencePairsPath not under projectDir, storing absolute:', sentencePairsPath);
-        relativeSentencePairsPath = sentencePairsPath;
-      }
-      const manifestUpdate = {
-        projectId,
-        outputs: {
-          bilingualAudiobooks: {
-            [langKey]: {
-              path: `output/bilingual-${langKey}.m4b`,
-              vttPath: `output/bilingual-${langKey}.vtt`,
-              sentencePairsPath: relativeSentencePairsPath,
-              completedAt: new Date().toISOString()
-            }
-          }
-        }
-      };
-
-      const manifestResult = await manifestService.updateManifest(manifestUpdate);
-      if (manifestResult.success) {
-        console.log('[bilingual-assembly:finalize-output] Manifest updated with bilingual output');
-      } else {
-        console.error('[bilingual-assembly:finalize-output] Failed to update manifest:', manifestResult.error);
-      }
-
-      return { success: true, projectAudioPath, projectVttPath };
-    } catch (err) {
-      console.error('[bilingual-assembly:finalize-output] Error:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   // ─────────────────────────────────────────────────────────────────────────────
   // Media handlers - for external image storage
   // ─────────────────────────────────────────────────────────────────────────────
@@ -10438,7 +10192,14 @@ ipcMain.handle('narration:text-readiness', async (
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Language Learning handlers
+  // ARTICLE IMPORT — two handlers whose channel names are historical.
+  //
+  // The `language-learning:` prefix is all that is left of that feature (removed
+  // 2026-09-05). Neither of these is about bilingual books: `fetch-url` is the
+  // studio's "add from a URL" door (web-fetch-bridge), and `finalize-content`
+  // writes the article EPUB the studio's content editor produces. The channel
+  // names are the wire contract with preload + `ElectronService`, so renaming
+  // them is a rename across three files to fix a word, not a bug fix.
   // ─────────────────────────────────────────────────────────────────────────────
 
   ipcMain.handle('language-learning:fetch-url', async (_event, url: string, projectId?: string) => {
@@ -10455,113 +10216,6 @@ ipcMain.handle('narration:text-readiness', async (
     }
   });
 
-  ipcMain.handle('language-learning:save-project', async (_event, project: any) => {
-    try {
-      const { saveProject } = await import('./web-fetch-bridge.js');
-      return await saveProject(project, getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:load-project', async (_event, projectId: string) => {
-    try {
-      const { loadProject } = await import('./web-fetch-bridge.js');
-      return await loadProject(projectId, getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:list-projects', async () => {
-    try {
-      const { listProjects } = await import('./web-fetch-bridge.js');
-      return await listProjects(getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:delete-project', async (_event, projectId: string) => {
-    try {
-      const { deleteProject } = await import('./web-fetch-bridge.js');
-      return await deleteProject(projectId, getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:update-project', async (_event, projectId: string, updates: any) => {
-    try {
-      const { updateProject } = await import('./web-fetch-bridge.js');
-      return await updateProject(projectId, updates, getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:confirm-delete', async (_event, title: string) => {
-    const { dialog } = await import('electron');
-    const result = await dialog.showMessageBox(mainWindow!, {
-      type: 'warning',
-      buttons: ['Cancel', 'Delete'],
-      defaultId: 0,
-      cancelId: 0,
-      title: 'Delete Project',
-      message: `Delete "${title}"?`,
-      detail: 'This will permanently delete the project and any associated audiobook files.',
-    });
-    return { confirmed: result.response === 1 };
-  });
-
-  ipcMain.handle('language-learning:ensure-directory', async (_event, dirPath: string) => {
-    try {
-      const { ensureDirectory } = await import('./web-fetch-bridge.js');
-      return await ensureDirectory(dirPath);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:delete-audiobooks', async (_event, projectId: string) => {
-    try {
-      const { deleteProjectAudiobooks } = await import('./web-fetch-bridge.js');
-      return await deleteProjectAudiobooks(projectId, getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:list-completed', async () => {
-    try {
-      const { listCompletedAudiobooks } = await import('./web-fetch-bridge.js');
-      return await listCompletedAudiobooks(getLibraryRoot());
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:extract-text', async (_event, htmlPath: string, deletedSelectors: string[]) => {
-    try {
-      const { extractTextFromHtml } = await import('./web-fetch-bridge.js');
-      return await extractTextFromHtml(htmlPath, deletedSelectors);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:write-file', async (_event, filePath: string, content: string) => {
-    try {
-      const fsPromises = await import('fs/promises');
-      await fsPromises.writeFile(filePath, content, 'utf-8');
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Finalize article content - filters HTML using deletedSelectors, generates EPUB
-  // NOTE: We ignore the passed finalizedHtml and filter on the backend for reliability
   ipcMain.handle('language-learning:finalize-content', async (_event, projectId: string, _finalizedHtml: string) => {
     try {
       const pathMod = await import('path');
@@ -10787,673 +10441,6 @@ ipcMain.handle('narration:text-readiness', async (
       return { success: true, epubPath };
     } catch (err) {
       console.error(`[MAIN] Failed to finalize content for ${projectId}:`, err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Player-related handlers for bilingual audiobooks
-  ipcMain.handle('language-learning:get-audio-path', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
-      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
-
-      // Check if file exists
-      try {
-        await fsPromises.access(audioPath);
-        return { success: true, path: audioPath };
-      } catch {
-        return { success: false, error: 'Audio file not found' };
-      }
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Get audio as base64 data URL (more reliable than custom protocols)
-  ipcMain.handle('language-learning:get-audio-data', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
-      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
-
-      // Read file as buffer and convert to base64
-      const buffer = await fsPromises.readFile(audioPath);
-      const base64 = buffer.toString('base64');
-      const dataUrl = `data:audio/mp4;base64,${base64}`;
-
-      console.log(`[MAIN] Loaded audio for ${projectId}: ${buffer.length} bytes`);
-      return { success: true, dataUrl, size: buffer.length };
-    } catch (err) {
-      console.error(`[MAIN] Failed to load audio for ${projectId}:`, err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Check if audio exists for a project (quick check without loading)
-  ipcMain.handle('language-learning:has-audio', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
-      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
-
-      try {
-        await fsPromises.access(audioPath);
-        return { success: true, hasAudio: true };
-      } catch {
-        return { success: true, hasAudio: false };
-      }
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Delete audio and associated data for a project (for re-generation)
-  ipcMain.handle('language-learning:delete-audio', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
-      const projectsDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
-
-      // Delete audio file
-      const audioPath = path.join(audiobooksDir, `${projectId}.m4b`);
-      try {
-        await fsPromises.unlink(audioPath);
-        console.log(`[MAIN] Deleted audio: ${audioPath}`);
-      } catch { /* File might not exist */ }
-
-      // Delete VTT file
-      const vttPath = path.join(audiobooksDir, `${projectId}.vtt`);
-      try {
-        await fsPromises.unlink(vttPath);
-        console.log(`[MAIN] Deleted VTT: ${vttPath}`);
-      } catch { /* File might not exist */ }
-
-      // Delete generated EPUBs and data from project folder
-      // EPUBs are named by language (e.g., en.epub, de.epub) - delete all .epub files
-      const sentencePairs = path.join(projectsDir, 'sentence_pairs.json');
-      const cleanedTxt = path.join(projectsDir, 'cleaned.txt');
-      const analyticsJson = path.join(projectsDir, 'analytics.json');
-
-      // Delete known data files
-      for (const file of [sentencePairs, cleanedTxt, analyticsJson]) {
-        try {
-          await fsPromises.unlink(file);
-          console.log(`[MAIN] Deleted: ${file}`);
-        } catch { /* File might not exist */ }
-      }
-
-      // Delete all language-named EPUBs (en.epub, de.epub, etc.)
-      try {
-        const files = await fsPromises.readdir(projectsDir);
-        for (const file of files) {
-          if (file.endsWith('.epub') && file.length <= 7) { // e.g., "en.epub" = 7 chars
-            const epubPath = path.join(projectsDir, file);
-            await fsPromises.unlink(epubPath);
-            console.log(`[MAIN] Deleted: ${epubPath}`);
-          }
-        }
-      } catch { /* Directory might not exist */ }
-
-      return { success: true };
-    } catch (err) {
-      console.error(`[MAIN] Failed to delete audio for ${projectId}:`, err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:read-vtt', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const audiobooksDir = path.join(getLibraryRoot(), 'language-learning', 'audiobooks');
-      // VTT files are stored alongside the M4B files
-      const vttPath = path.join(audiobooksDir, `${projectId}.vtt`);
-
-      const content = await fsPromises.readFile(vttPath, 'utf-8');
-      return { success: true, content };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:read-sentence-pairs', async (_event, projectId: string) => {
-    try {
-      const fsPromises = await import('fs/promises');
-
-      // 1. Try manifest project: check manifest for sentencePairsPath, then scan stages/02-translate/
-      const manifestProjectDir = manifestService.getProjectPath(projectId);
-      if (manifestProjectDir) {
-        // Check manifest outputs first
-        const manifestResult = await manifestService.getManifest(projectId);
-        if (manifestResult.success && manifestResult.manifest?.outputs?.bilingualAudiobooks) {
-          const keys = Object.keys(manifestResult.manifest.outputs.bilingualAudiobooks);
-          if (keys.length > 0) {
-            const bilingual = manifestResult.manifest.outputs.bilingualAudiobooks[keys[0]];
-            if (bilingual.sentencePairsPath) {
-              const absPairsPath = path.join(manifestProjectDir, bilingual.sentencePairsPath);
-              if (fsSync.existsSync(absPairsPath)) {
-                const content = await fsPromises.readFile(absPairsPath, 'utf-8');
-                return { success: true, pairs: JSON.parse(content) };
-              }
-            }
-          }
-        }
-
-        // Scan stages/02-translate/ for sentence_pairs_*.json
-        const translateDir = path.join(manifestProjectDir, 'stages', '02-translate');
-        if (fsSync.existsSync(translateDir)) {
-          const files = await fsPromises.readdir(translateDir);
-          const pairsFile = files.find(f => f.startsWith('sentence_pairs_') && f.endsWith('.json'));
-          if (pairsFile) {
-            const content = await fsPromises.readFile(path.join(translateDir, pairsFile), 'utf-8');
-            return { success: true, pairs: JSON.parse(content) };
-          }
-        }
-      }
-
-      // 2. Fallback: legacy LL article path
-      const legacyDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
-      const pairsPath = path.join(legacyDir, 'sentence_pairs.json');
-      const content = await fsPromises.readFile(pairsPath, 'utf-8');
-      return { success: true, pairs: JSON.parse(content) };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:get-analytics', async (_event, projectId: string) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const projectDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
-      const analyticsPath = path.join(projectDir, 'analytics.json');
-
-      const content = await fsPromises.readFile(analyticsPath, 'utf-8');
-      const analytics = JSON.parse(content);
-      return { success: true, analytics };
-    } catch (err) {
-      // Analytics file may not exist yet - that's OK
-      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
-        return { success: true, analytics: null };
-      }
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:save-analytics', async (_event, projectId: string, analytics: any) => {
-    try {
-      const path = await import('path');
-      const fsPromises = await import('fs/promises');
-      const projectDir = path.join(getLibraryRoot(), 'language-learning', 'projects', projectId);
-      const analyticsPath = path.join(projectDir, 'analytics.json');
-
-      await fsPromises.writeFile(analyticsPath, JSON.stringify(analytics, null, 2), 'utf-8');
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('language-learning:run-job', async (_event, jobId: string, config: {
-    projectId: string;
-    sourceUrl: string;
-    sourceLang: string;
-    targetLang: string;
-    htmlPath: string;
-    pdfPath?: string;
-    deletedBlockIds: string[];
-    title?: string;
-    aiProvider: 'ollama' | 'claude' | 'openai';
-    aiModel: string;
-    ollamaBaseUrl?: string;
-    claudeApiKey?: string;
-    openaiApiKey?: string;
-    sourceVoice: string;
-    targetVoice: string;
-    ttsEngine: 'xtts' | 'orpheus';
-    speed: number;
-    device: 'gpu' | 'mps' | 'cpu';
-  }) => {
-    try {
-      const { runLanguageLearningJob } = await import('./language-learning-jobs.js');
-      return await runLanguageLearningJob(jobId, config, mainWindow);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Bilingual Processing Pipeline Jobs
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // Job 1: AI Cleanup - reads from source EPUB, writes to cleaned.epub or simplified.epub
-  ipcMain.handle('bilingual-cleanup:run', async (_event, jobId: string, config: {
-    projectId: string;
-    projectDir: string;
-    sourceEpubPath?: string;
-    sourceLang: string;
-    aiProvider: 'ollama' | 'claude' | 'openai';
-    aiModel: string;
-    ollamaBaseUrl?: string;
-    claudeApiKey?: string;
-    openaiApiKey?: string;
-    cleanupPrompt?: string;
-    customInstructions?: string;
-    simplifyForLearning?: boolean;
-    testMode?: boolean;
-    testModeChunks?: number;
-  }) => {
-    try {
-      const { runLLCleanup } = await import('./ll-jobs.js');
-      return await runLLCleanup(jobId, config, mainWindow);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Job 2: Translation — reads the cleaned/simplified EPUB, writes the per-language
-  // EPUBs of the sentence-aligned pipeline. Whole-book translation is the Translate
-  // PASS (processing-passes.ts), which calls runMonoTranslation directly; the
-  // `monoTranslation` flag that used to fork this handler had no submitter left.
-  ipcMain.handle('bilingual-translation:run', async (_event, jobId: string, config: {
-    projectId?: string;
-    projectDir?: string;
-    cleanedEpubPath?: string;
-    sourceLang: string;
-    targetLang: string;
-    title?: string;
-    aiProvider: 'ollama' | 'claude' | 'openai';
-    aiModel: string;
-    ollamaBaseUrl?: string;
-    claudeApiKey?: string;
-    openaiApiKey?: string;
-    translationPrompt?: string;
-    customInstructions?: string;
-    testMode?: boolean;
-    testModeChunks?: number;
-  }) => {
-    try {
-      const { runLLTranslation } = await import('./ll-jobs.js');
-      return await runLLTranslation(jobId, config, mainWindow);
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Sentence Cache IPC Handlers
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  // Language name mapping for display
-  const LANGUAGE_NAMES: Record<string, string> = {
-    'en': 'English', 'de': 'German', 'es': 'Spanish', 'fr': 'French',
-    'hu': 'Hungarian', 'it': 'Italian', 'pt': 'Portuguese', 'nl': 'Dutch',
-    'pl': 'Polish', 'ru': 'Russian', 'ja': 'Japanese', 'zh': 'Chinese', 'ko': 'Korean',
-  };
-
-  // List cached languages for a project
-  ipcMain.handle('sentence-cache:list', async (_event, audiobookFolder: string) => {
-    try {
-      const sentencesDir = path.join(audiobookFolder, 'sentences');
-
-      // Check if sentences folder exists
-      if (!fsSync.existsSync(sentencesDir)) {
-        return { success: true, languages: [] };
-      }
-
-      const files = await fs.readdir(sentencesDir);
-      const languages: Array<{
-        code: string;
-        name: string;
-        sentenceCount: number;
-        sourceLanguage: string | null;
-        createdAt: string;
-        hasAudio: boolean;
-        ttsSettings?: { engine: string; voice: string; speed: number };
-      }> = [];
-
-      for (const file of files) {
-        if (!file.endsWith('.json')) continue;
-
-        const code = file.replace('.json', '');
-        const filePath = path.join(sentencesDir, file);
-
-        try {
-          const content = await fs.readFile(filePath, 'utf-8');
-          const cache = JSON.parse(content);
-          languages.push({
-            code,
-            name: LANGUAGE_NAMES[code] || code.toUpperCase(),
-            sentenceCount: cache.sentenceCount || 0,
-            sourceLanguage: cache.sourceLanguage,
-            createdAt: cache.createdAt || new Date().toISOString(),
-            hasAudio: cache.hasAudio || false,
-            ttsSettings: cache.ttsSettings,
-          });
-        } catch {
-          // Skip invalid JSON files
-        }
-      }
-
-      // Sort by createdAt (newest first)
-      languages.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-
-      return { success: true, languages };
-    } catch (err) {
-      return { success: false, languages: [], error: (err as Error).message };
-    }
-  });
-
-  // Get sentences for a specific language
-  ipcMain.handle('sentence-cache:get', async (_event, audiobookFolder: string, language: string) => {
-    try {
-      const filePath = path.join(audiobookFolder, 'sentences', `${language}.json`);
-
-      if (!fsSync.existsSync(filePath)) {
-        return { success: false, error: `No cache found for language: ${language}` };
-      }
-
-      const content = await fs.readFile(filePath, 'utf-8');
-      const cache = JSON.parse(content);
-
-      return { success: true, cache };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Save sentences for a language
-  ipcMain.handle('sentence-cache:save', async (_event, audiobookFolder: string, language: string, data: {
-    language: string;
-    sourceLanguage: string | null;
-    sentences: string[] | Array<{ source: string; target: string }>;
-  }) => {
-    try {
-      const sentencesDir = path.join(audiobookFolder, 'sentences');
-
-      // Ensure directory exists
-      if (!fsSync.existsSync(sentencesDir)) {
-        await fs.mkdir(sentencesDir, { recursive: true });
-      }
-
-      const filePath = path.join(sentencesDir, `${language}.json`);
-
-      // Build cache object
-      const cache = {
-        language: data.language,
-        sourceLanguage: data.sourceLanguage,
-        createdAt: new Date().toISOString(),
-        sentenceCount: data.sentences.length,
-        sentences: data.sentences,
-      };
-
-      await fs.writeFile(filePath, JSON.stringify(cache, null, 2));
-
-      console.log(`[SENTENCE-CACHE] Saved ${cache.sentenceCount} sentences for ${language} to ${filePath}`);
-      return { success: true };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Clear cache for specific languages or all
-  ipcMain.handle('sentence-cache:clear', async (_event, audiobookFolder: string, languages?: string[]) => {
-    try {
-      const sentencesDir = path.join(audiobookFolder, 'sentences');
-      const cleared: string[] = [];
-
-      if (!fsSync.existsSync(sentencesDir)) {
-        return { success: true, cleared };
-      }
-
-      if (languages && languages.length > 0) {
-        // Clear specific languages
-        for (const lang of languages) {
-          const filePath = path.join(sentencesDir, `${lang}.json`);
-          if (fsSync.existsSync(filePath)) {
-            await fs.unlink(filePath);
-            cleared.push(lang);
-          }
-        }
-      } else {
-        // Clear all
-        const files = await fs.readdir(sentencesDir);
-        for (const file of files) {
-          if (file.endsWith('.json')) {
-            await fs.unlink(path.join(sentencesDir, file));
-            cleared.push(file.replace('.json', ''));
-          }
-        }
-      }
-
-      console.log(`[SENTENCE-CACHE] Cleared cache for: ${cleared.join(', ')}`);
-      return { success: true, cleared };
-    } catch (err) {
-      return { success: false, cleared: [], error: (err as Error).message };
-    }
-  });
-
-  // Run TTS on a cached language's EPUB and cache the audio
-  ipcMain.handle('sentence-cache:run-tts', async (_event, config: {
-    audiobookFolder: string;
-    language: string;
-    ttsConfig: {
-      engine: 'xtts' | 'orpheus';
-      voice: string;
-      speed: number;
-      device: 'cpu' | 'mps' | 'gpu';
-      workers: number;
-    };
-  }) => {
-    const { audiobookFolder, language, ttsConfig } = config;
-    console.log(`[SENTENCE-CACHE] Running TTS for ${language}`, { audiobookFolder, ttsConfig });
-
-    try {
-      // Check if the EPUB exists
-      const epubPath = path.join(audiobookFolder, `${language}.epub`);
-      if (!fsSync.existsSync(epubPath)) {
-        return { success: false, error: `EPUB not found: ${epubPath}` };
-      }
-
-      const { parallelTtsBridge } = await import('./parallel-tts-bridge.js');
-      await parallelTtsBridge.initializeLogger(getLibraryRoot());
-
-      // Map engine to ttsEngine name
-      const ttsEngine = ttsConfig.engine === 'orpheus' ? 'orpheus' : 'xtts';
-
-      // ── Queued, not spawned behind the queue's back ────────────────────────
-      //
-      // This handler used to mint its own job id and call the TTS bridge
-      // directly. Nothing registered a cancel for it (FALLBACK_AUDIT.md:159), so
-      // the only way to stop a nine-hour render started here was to quit the app
-      // — and because the id was never in the queue, it also ran BESIDE whatever
-      // the queue was doing, two e2a worker sets on one card.
-      //
-      // It is a narration step now: one job, released immediately (the user
-      // pressed the button; there is nothing to hold for), scheduled against the
-      // same single GPU slot, cancellable by its step id like any other. The
-      // caller still receives an id and still listens for `parallel-tts:complete`
-      // — the bridge is called with the STEP id, so that event arrives exactly as
-      // it did.
-      const queueEngine = await import('./queue-engine.js');
-      const job = queueEngine.enqueue({
-        title: `${path.basename(audiobookFolder)} (${language})`,
-        projectId: audiobookFolder,
-        documentPath: epubPath,
-        release: true,
-        steps: [{
-          type: 'tts-conversion',
-          label: `Narrate ${language}`,
-          sourceRef: { kind: 'epub', path: epubPath },
-          config: {
-            device: ttsConfig.device,
-            language,
-            ttsEngine,
-            fineTuned: ttsConfig.voice,
-            temperature: 0.75,
-            topP: 0.85,
-            topK: 50,
-            repetitionPenalty: 5.0,
-            speed: ttsConfig.speed,
-            enableTextSplitting: false,
-            sentencePerParagraph: true,  // Important for chaptered EPUBs
-            skipHeadings: true,
-            parallelWorkers: ttsConfig.workers,
-            parallelMode: 'sentences',
-            outputDir: path.join(audiobookFolder, 'audiobook'),  // Unused with skipAssembly
-            skipAssembly: true,  // Sentence audio, not a final M4B
-            // A cached-language render is always fresh: the sentences it is
-            // about to write ARE the cache, so an older partial one is not a
-            // checkpoint to resume, it is the thing being replaced.
-            startFresh: true,
-            bfpPath: audiobookFolder,
-            metadata: { title: `${path.basename(audiobookFolder)} (${language})` },
-          },
-        }],
-      });
-
-      return {
-        success: true,
-        jobId: job.steps[0].id,
-        message: `TTS queued for ${language}`,
-        // The sentencesDir will be in the completion event outputPath
-      };
-    } catch (err) {
-      console.error('[SENTENCE-CACHE] TTS error:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Update sentence cache after TTS completes - copies audio to cache and updates JSON
-  ipcMain.handle('sentence-cache:cache-audio', async (_event, config: {
-    audiobookFolder: string;
-    language: string;
-    sentencesDir: string;  // Source directory from TTS job
-    ttsSettings: {
-      engine: 'xtts' | 'orpheus';
-      voice: string;
-      speed: number;
-    };
-  }) => {
-    const { audiobookFolder, language, sentencesDir, ttsSettings } = config;
-    console.log(`[SENTENCE-CACHE] Caching audio for ${language}`, { audiobookFolder, sentencesDir });
-
-    try {
-      // Create audio cache directory
-      const audioDir = path.join(audiobookFolder, 'audio', language);
-      await fs.mkdir(audioDir, { recursive: true });
-
-      // Copy all .flac files from sentencesDir to audioDir
-      const files = await fs.readdir(sentencesDir);
-      const audioFiles = files.filter(f => f.endsWith('.flac'));
-
-      // Zero files copied is a FAILURE, not an empty success — marking the cache
-      // hasAudio=true with no audio behind it silently breaks later assembly.
-      if (audioFiles.length === 0) {
-        console.error(`[SENTENCE-CACHE] No .flac sentence audio found in ${sentencesDir}`);
-        return { success: false, error: `No sentence audio (.flac) found in ${sentencesDir}` };
-      }
-
-      for (const file of audioFiles) {
-        const src = path.join(sentencesDir, file);
-        const dst = path.join(audioDir, file);
-        await fs.copyFile(src, dst);
-      }
-
-      console.log(`[SENTENCE-CACHE] Copied ${audioFiles.length} audio files to ${audioDir}`);
-
-      // Update the sentence cache JSON
-      const cacheFile = path.join(audiobookFolder, 'sentences', `${language}.json`);
-      if (fsSync.existsSync(cacheFile)) {
-        const cacheContent = await fs.readFile(cacheFile, 'utf-8');
-        const cache = JSON.parse(cacheContent);
-        cache.hasAudio = true;
-        cache.audioDir = audioDir;
-        cache.ttsSettings = ttsSettings;
-        await fs.writeFile(cacheFile, JSON.stringify(cache, null, 2));
-        console.log(`[SENTENCE-CACHE] Updated cache JSON with hasAudio=true`);
-      }
-
-      return { success: true, audioDir, fileCount: audioFiles.length };
-    } catch (err) {
-      console.error('[SENTENCE-CACHE] Cache audio error:', err);
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Run bilingual assembly from cached audio
-  ipcMain.handle('sentence-cache:run-assembly', async (_event, config: {
-    audiobookFolder: string;
-    languages: string[];  // e.g., ['en', 'de'] - first is source, second is target
-    pattern: 'interleaved' | 'sequential';
-    pauseBetweenLanguages: number;  // milliseconds
-    outputFormat: 'm4b' | 'mp3';
-  }) => {
-    const { audiobookFolder, languages, pattern, pauseBetweenLanguages, outputFormat } = config;
-    console.log(`[SENTENCE-CACHE] Running assembly`, { audiobookFolder, languages, pattern });
-
-    if (languages.length < 2) {
-      return { success: false, error: 'Need at least 2 languages for assembly' };
-    }
-
-    // Reject configs this handler cannot actually honor rather than silently
-    // degrading them. runBilingualAssembly only produces m4b and only consumes
-    // the first two languages, so an mp3 request or a 3+ language request would
-    // otherwise return the WRONG output while reporting success.
-    if (languages.length > 2) {
-      return { success: false, error: `Multi-language assembly is not supported yet (received ${languages.length} languages); only 2 (source + target) are supported.` };
-    }
-    if (outputFormat && outputFormat !== 'm4b') {
-      return { success: false, error: `Output format "${outputFormat}" is not supported yet; only m4b is available.` };
-    }
-
-    try {
-      // Verify all languages have cached audio
-      for (const lang of languages) {
-        const audioDir = path.join(audiobookFolder, 'audio', lang);
-        if (!fsSync.existsSync(audioDir)) {
-          return { success: false, error: `No cached audio for language: ${lang}` };
-        }
-      }
-
-      const [sourceLang, targetLang] = languages;
-      const sourceAudioDir = path.join(audiobookFolder, 'audio', sourceLang);
-      const targetAudioDir = path.join(audiobookFolder, 'audio', targetLang);
-      const sentencePairsPath = path.join(audiobookFolder, 'sentence_pairs.json');
-
-      // Generate job ID
-      const jobId = `cache-assembly-${Date.now()}`;
-
-      // Import bilingual assembly bridge
-      const { runBilingualAssembly } = await import('./bilingual-assembly-bridge.js');
-
-      // Run assembly
-      const result = await runBilingualAssembly(jobId, {
-        projectId: path.basename(audiobookFolder),
-        sourceSentencesDir: sourceAudioDir,
-        targetSentencesDir: targetAudioDir,
-        sentencePairsPath,
-        outputDir: path.join(audiobookFolder, 'audiobook'),
-        pauseDuration: pauseBetweenLanguages / 1000,  // Convert ms to seconds
-        gapDuration: pattern === 'interleaved' ? 1.0 : 0.5,
-        sourceLang,
-        targetLang,
-        bfpPath: audiobookFolder,  // For saving output to BFP audiobook folder
-      });
-
-      return {
-        success: result.success,
-        audioPath: result.audioPath,
-        vttPath: result.vttPath,
-        error: result.error,
-      };
-    } catch (err) {
-      console.error('[SENTENCE-CACHE] Assembly error:', err);
       return { success: false, error: (err as Error).message };
     }
   });
@@ -12139,7 +11126,7 @@ ipcMain.handle('narration:text-readiness', async (
   });
 
   // ── Listen window (Play / Stream player) ──
-  // The XTTS stream engine's lifetime is tied to these windows: when the last
+  // The stream engine's lifetime is tied to these windows: when the last
   // listen window closes, the engine is shut down. That guarantees the engine
   // is only ever running while a player window is open.
   const listenWindows = new Map<string, BrowserWindow>();
@@ -12532,16 +11519,6 @@ app.whenReady().then(async () => {
     }
   }
 
-  // Load the downloadable-component catalog (voices + language packs): seed from
-  // the embedded bundle, load any cached catalog, and kick off a background
-  // refresh from the catalog server. Non-blocking — never delays the window.
-  try {
-    const { catalogService } = await import('./components/catalog-service.js');
-    await catalogService.init();
-  } catch (err) {
-    logger.warn('Catalog init failed', { error: (err as Error).message });
-  }
-
   // Clean up stale temp folders from previous sessions (Syncthing compatibility)
   try {
     const { cleanupStaleTempFolders } = await import('./parallel-tts-bridge.js');
@@ -12687,7 +11664,6 @@ app.whenReady().then(async () => {
   registerAudioProtocol();
 
   setupIpcHandlers();
-  setupAlignmentIpc();
   registerClipforgeIpc();
   registerDocumentIpc();
   // The queue, before any window exists. It is main's now: its state is loaded
@@ -13376,14 +12352,10 @@ app.on('before-quit', async (event) => {
     }
   });
 
-  // Kill the streaming worker pools (XTTS and Orpheus) so no Python — or the WSL
-  // vLLM process behind Orpheus — outlives the app.
+  // Kill the streaming worker pool so no Python — or the WSL vLLM process behind
+  // Orpheus — outlives the app.
   await quitStepWithDeadline('end streaming TTS sessions', 20_000, async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      if (xttsWorkerPool.isSessionActive()) {
-        await xttsWorkerPool.endSession();
-      }
       const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
       if (orpheusWorkerPool.isSessionActive()) {
         await orpheusWorkerPool.endSession();

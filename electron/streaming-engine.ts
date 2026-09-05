@@ -2,22 +2,22 @@
  * Streaming Engine selector — chooses which TTS engine backs the Listen feature
  * (the in-app Play tab, the TTS API server, and the browser extension).
  *
- * Both engine pools (XTTS, Orpheus) expose the same {@link StreamingEngine} surface,
- * so the stream-scheduler and TTS API server drive whichever one is active without
- * caring which it is. The choice persists in `tts-engine.json` (userData) and takes
- * effect on the next engine start: switching engines stops the previously-active
- * pool so the next `speak` warms the newly-chosen one.
+ * ONE ENGINE, AND THE SELECTOR STAYS. Since XTTS was pulled out of the root
+ * (2026-09-05) Orpheus is the only pool that implements {@link StreamingEngine},
+ * so `StreamEngineName` is a one-member union. The indirection is kept rather
+ * than inlined because it is what makes the selection OBSERVABLE (see
+ * `observable()` below) and what the TTS Server settings payload, the browser
+ * extension's `config` message and the persisted `tts-engine.json` are all
+ * written against. Higgs is deliberately not here — see `getAvailableEngines`.
  *
- * The XTTS pool's own worker-count/device settings live in `tts-stream.json` and are
- * untouched by the engine switch — switch to Orpheus and back, and the XTTS topology
- * is exactly as it was.
+ * The choice persists in `tts-engine.json` (userData) and takes effect on the
+ * next engine start.
  */
 
 import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { xttsWorkerPool } from './xtts-worker-pool';
 import { orpheusWorkerPool } from './orpheus-worker-pool';
 import {
   PlaySettings,
@@ -27,7 +27,7 @@ import {
   StreamWorkerConfig,
   EngineState,
   LoadVoiceOptions,
-} from './xtts-worker-pool';
+} from './orpheus-worker-pool';
 import {
   getDefaultE2aPath,
   getPythonInvocation,
@@ -35,18 +35,17 @@ import {
 } from './e2a-paths';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 
-export type StreamEngineName = 'xtts' | 'orpheus';
+export type StreamEngineName = 'orpheus';
 
-/** The methods the scheduler + API server invoke on an engine pool. Both pools
- *  implement this; getVoiceCatalog (XTTS-only, in-app dropdown) is intentionally
- *  NOT part of it and is accessed on xttsWorkerPool directly where needed. */
+/** The methods the scheduler + API server invoke on an engine pool. */
 export interface StreamingEngine {
   setMainWindow(window: Electron.BrowserWindow | null): void;
   startSession(): Promise<{ success: boolean; voices?: string[]; error?: string }>;
   /** Load a voice. `opts.warm` (default true) allows a first load's discarded
    *  warm-up renders; a speak-triggered load passes false so the user isn't kept
-   *  waiting on audio nobody hears. XTTS has no such warmup — its checkpoint load
-   *  IS the warm-up — so its pool accepts the option and ignores it. */
+   *  waiting on audio nobody hears. Optional because a pool whose checkpoint load
+   *  IS its warm-up has nothing discardable to skip: it accepts the option and
+   *  ignores it. */
   loadVoice(voice: string, opts?: LoadVoiceOptions): Promise<{ success: boolean; error?: string }>;
   /**
    * Render one sentence through the engine's batch path.
@@ -56,9 +55,9 @@ export interface StreamingEngine {
    * sub-sentence chunks WHILE IT IS STILL GENERATING rather than as one payload at
    * the end. An engine that streams that way resolves `{success:true, streamed:true,
    * duration}` and NO `audio` — everything it had to say, it already said through
-   * the callback. An engine that does not (XTTS, whose pool takes the parameter and
-   * ignores it) resolves with `audio` exactly as before, so a caller must handle
-   * both and never assume which it got.
+   * the callback. An engine that does not stream takes the parameter, ignores it,
+   * and resolves with `audio` exactly as before — so a caller must handle both and
+   * never assume which it got.
    *
    * Omitting `onChunk` is the pre-fast-start contract, unchanged in every respect.
    */
@@ -76,13 +75,12 @@ export interface StreamingEngine {
     onChunk: (chunk: StreamChunk) => void,
     isCancelled?: () => boolean
   ): Promise<StreamResult>;
-  cancelStreaming(): void;
   /** Optional. Abort the engine's in-flight BATCH, but only if every row still
    *  outstanding in it has been marked stale by its own isCancelled predicate.
    *  Called when a session ends, so a preempting play/voice switch does not have to
    *  wait out ~40s of renders whose results will be thrown away. Absent on engines
-   *  whose renders are short or whose batches cannot be interrupted (XTTS), where a
-   *  stale render costs one sentence, not a whole read-ahead window. */
+   *  whose renders are short or whose batches cannot be interrupted, where a stale
+   *  render costs one sentence, not a whole read-ahead window. */
   cancelPendingBatchIfStale?(): void;
   stop(): void;
   endSession(): Promise<void>;
@@ -118,9 +116,8 @@ export interface StreamingEngine {
   }): StreamWorkerConfig;
 }
 
-// Compile-time proof both pools satisfy the contract.
+// Compile-time proof the pool satisfies the contract.
 const ENGINES: Record<StreamEngineName, StreamingEngine> = {
-  xtts: xttsWorkerPool,
   orpheus: orpheusWorkerPool,
 };
 
@@ -133,9 +130,13 @@ let selected: StreamEngineName | null = null;
 // Persisted in tts-engine.json: the engine choice plus a per-engine default
 // voice (so a voice picked in Settings sticks across restarts — the pools'
 // lastVoice is in-memory only).
+// `engine` is typed `string`, not `StreamEngineName`: this is the ON-DISK shape,
+// and a file written by an older build can name an engine this one has retired.
+// Deciding what to do about that is getSelectedEngineName's job, and it cannot do
+// it if the type has already asserted the file is well-formed.
 interface PersistedStreamConfig {
-  engine?: StreamEngineName;
-  voices?: Partial<Record<StreamEngineName, string>>;
+  engine?: string;
+  voices?: Record<string, string>;
 }
 
 function configPath(): string {
@@ -160,7 +161,7 @@ function writePersisted(cfg: PersistedStreamConfig): void {
 }
 
 function isEngineName(v: unknown): v is StreamEngineName {
-  return v === 'xtts' || v === 'orpheus';
+  return v === 'orpheus';
 }
 
 // Fired whenever the stream selection changes (engine or default voice), from
@@ -183,10 +184,56 @@ function emitStreamConfigChanged(): void {
   }
 }
 
+/**
+ * Engine names this file used to write into `tts-engine.json` and no longer runs.
+ * A machine that ever listened on XTTS has `"engine": "xtts"` on disk, and that
+ * file outlives the code that wrote it.
+ */
+const RETIRED_ENGINE_NAMES = new Set(['xtts']);
+
+/**
+ * The active streaming engine.
+ *
+ * THERE IS NO DEFAULTING HERE, and the three cases are deliberately different:
+ *
+ *  - NOTHING RECORDED (a fresh install, or a file written before the engine was
+ *    ever a choice) → Orpheus. Not a fallback: `StreamEngineName` has one member,
+ *    so "no choice recorded" and "the only choice" are the same statement.
+ *  - A RETIRED NAME (`xtts`) → migrated, loudly, and the file is rewritten so the
+ *    stale preference stops being re-read. This is the same shape as
+ *    `loadWorkerCfg`'s legacy `cpuWorkers` migration. It is safe in a way a
+ *    narration engine substitution would NOT be: Listen renders what it is asked
+ *    for sentence by sentence in a voice the user can hear immediately, and there
+ *    is no other pool left to route to — the alternative is a Listen feature that
+ *    throws forever on every machine that used XTTS, including from the Settings
+ *    page that would repair it.
+ *  - AN UNKNOWN NAME → refused BY NAME. A string nobody in this build has ever
+ *    written is a bug or a hand-edited file, and quietly treating it as Orpheus
+ *    would hide it.
+ */
 export function getSelectedEngineName(): StreamEngineName {
   if (selected !== null) return selected;
   const cfg = readPersisted();
-  selected = isEngineName(cfg.engine) ? cfg.engine : 'xtts';
+  if (cfg.engine === undefined) {
+    selected = 'orpheus';
+    return selected;
+  }
+  if (isEngineName(cfg.engine)) {
+    selected = cfg.engine;
+    return selected;
+  }
+  if (!RETIRED_ENGINE_NAMES.has(cfg.engine)) {
+    throw new Error(
+      `tts-engine.json names a streaming engine this build has never had: "${cfg.engine}". ` +
+      `This build streams: ${Object.keys(ENGINES).join(', ')}.`,
+    );
+  }
+  console.error(
+    `[StreamingEngine] tts-engine.json selects "${cfg.engine}", which was retired on 2026-09-05. ` +
+    'Migrating the saved selection to Orpheus, the only streaming engine this build has.',
+  );
+  selected = 'orpheus';
+  writePersisted({ ...cfg, engine: selected });
   return selected;
 }
 
@@ -216,7 +263,6 @@ function observable(pool: StreamingEngine): StreamingEngine {
 }
 
 const OBSERVABLE: Record<StreamEngineName, StreamingEngine> = {
-  xtts: observable(ENGINES.xtts),
   orpheus: observable(ENGINES.orpheus),
 };
 
@@ -269,27 +315,29 @@ export async function setDefaultStreamVoice(voice: string): Promise<{ success: b
 }
 
 /**
- * Switch the streaming engine. Persists the choice and stops the previously-active
- * pool so the next start warms the newly-chosen one. No-op (besides persistence)
- * when the name is unchanged.
+ * Select the streaming engine and persist the choice.
+ *
+ * `name` is typed `string`, not `StreamEngineName`, because every caller is a
+ * BOUNDARY — the settings IPC and the extension's `config.set` message — where the
+ * value arrived as untyped JSON. Typing the parameter as the union would let the
+ * compiler assert something only this function can check, and the check is the
+ * whole point: an engine this build does not have is REFUSED BY NAME rather than
+ * quietly becoming Orpheus.
+ *
+ * There is one engine, so there is no longer a previous pool to tear down; the
+ * function survives because the choice is still persisted, still broadcast to the
+ * pickers, and still the place a second engine would be admitted.
  */
-export async function setSelectedEngineName(name: StreamEngineName): Promise<void> {
-  if (!isEngineName(name)) throw new Error(`Unknown streaming engine: ${name}`);
-  const prev = getSelectedEngineName();
+export async function setSelectedEngineName(name: string): Promise<void> {
+  if (!isEngineName(name)) {
+    throw new Error(
+      `Unknown streaming engine: ${name}. This build streams: ${Object.keys(ENGINES).join(', ')}.`,
+    );
+  }
   selected = name;
   const cfg = readPersisted();
   cfg.engine = name;
   writePersisted(cfg);
-  if (prev !== name) {
-    // Free the old engine's process/VRAM; the new one starts on the next speak.
-    console.log(`[StreamingEngine] Switching ${prev} → ${name}; stopping previous engine`);
-    try {
-      await ENGINES[prev].endSession();
-    } catch (err) {
-      console.error('[StreamingEngine] Error stopping previous engine:', err);
-    }
-  }
-  // Engine switch changes the available voice set + default voice — sync pickers.
   emitStreamConfigChanged();
 }
 
@@ -328,16 +376,11 @@ function orpheusAvailability(): EngineInfo {
 /**
  * The streaming engines the Listen pickers offer.
  *
- * XTTS IS STILL LISTED, AND IT IS LISTED AS UNAVAILABLE. Two things are true at
- * once after the 2026-09-04 retirement and the listing has to say both: a machine
- * whose `tts-engine.json` says `xtts` is still RUNNING XTTS and must keep
- * working (Listen is not a narration render — nothing here was re-pointed), while
- * nobody may newly CHOOSE it. Reporting `available: false` with the reason is
- * exactly that pair: both pickers (the Settings toggle and the Listen tab's
- * `@for` over this list) already disable an unavailable engine and show its
- * reason on hover, so one edit here retires it in both without either template
- * learning a special case, and without a running engine being torn out from
- * under anyone.
+ * ONE ROW. XTTS was listed-and-disabled for a day (2026-09-04) so a machine still
+ * running it would not have the engine torn out from under it; its pool and its
+ * Python worker were then removed from the root entirely (2026-09-05), so there
+ * is nothing left to list — a disabled row for code that no longer exists is a
+ * promise the build cannot keep.
  *
  * Higgs is deliberately ABSENT rather than listed-and-unavailable. It is not a
  * streaming engine at all: the v3 backend is a served vllm-omni endpoint and its
@@ -347,17 +390,7 @@ function orpheusAvailability(): EngineInfo {
  * not exist.
  */
 export function getAvailableEngines(): EngineInfo[] {
-  return [
-    {
-      id: 'xtts',
-      name: 'XTTS (retired)',
-      available: false,
-      reason:
-        'XTTS was retired as a narration engine on 2026-09-04. An existing XTTS ' +
-        'streaming session keeps working; it can no longer be selected.',
-    },
-    orpheusAvailability(),
-  ];
+  return [orpheusAvailability()];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -399,10 +432,12 @@ export function getStreamConfigPayload(): StreamConfigPayload {
 /**
  * Apply a settings update from the TTS Server UI. `engine` switches the active
  * engine; worker-count/device updates are delegated to the active engine (a no-op
- * on Orpheus, persisted for XTTS). Returns the refreshed payload.
+ * on Orpheus, which is single-worker on a fixed device). Returns the refreshed
+ * payload.
  */
 export async function setStreamConfig(updates: {
-  engine?: StreamEngineName;
+  /** Untyped at the boundary on purpose — see setSelectedEngineName. */
+  engine?: string;
   enabled?: boolean;
   count?: number;
   devicePref?: StreamWorkerConfig['devicePref'];
@@ -443,22 +478,15 @@ export async function setStreamConfig(updates: {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Engine-state bridge — forward BOTH pools' state changes as the ACTIVE engine's
-// state, so a single subscription (the TTS API server) always reflects reality
-// regardless of which pool fired (e.g. the old pool stopping during a switch).
+// Engine-state bridge — forward the pool's state changes as the ACTIVE engine's
+// state, so a single subscription (the TTS API server) always reflects reality.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export function onActiveEngineState(
   listener: (state: EngineState, isServiceMode: boolean) => void
 ): () => void {
-  const forward = () => {
+  return orpheusWorkerPool.onEngineState(() => {
     const engine = getActiveEngine();
     listener(engine.getEngineState(), engine.isServiceMode());
-  };
-  const offXtts = xttsWorkerPool.onEngineState(forward);
-  const offOrpheus = orpheusWorkerPool.onEngineState(forward);
-  return () => {
-    offXtts();
-    offOrpheus();
-  };
+  });
 }

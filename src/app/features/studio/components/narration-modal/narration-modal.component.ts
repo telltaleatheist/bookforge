@@ -123,9 +123,9 @@ import {
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import {
   engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
-} from '../../../language-learning/models/tts-engine-registry';
+} from '../../../../core/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
-import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
+import type { TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * The sentences this project already has on disk, as main reports them.
@@ -370,36 +370,14 @@ function fileName(fullPath: string): string {
                 </div>
               }
 
-              <!-- The sampling trio is the ENGINE's, not the dialog's: Orpheus
-                   and Voxtral fix theirs inside the engine class, so drawing
-                   these for them would be three controls that change nothing. -->
-              @if (showsSampling()) {
-                <div class="nm-field">
-                  <label class="nm-label">Temperature: {{ temperature() }}</label>
-                  <input type="range" class="nm-slider" min="0.1" max="1.0" step="0.05"
-                         [disabled]="!narrate()"
-                         [value]="temperature()"
-                         (input)="temperature.set(+$any($event.target).value)" />
-                </div>
-                <div class="nm-field">
-                  <label class="nm-label">Top P: {{ topP() }}</label>
-                  <input type="range" class="nm-slider" min="0.1" max="1.0" step="0.05"
-                         [disabled]="!narrate()"
-                         [value]="topP()" (input)="topP.set(+$any($event.target).value)" />
-                </div>
-                <div class="nm-field">
-                  <label class="nm-label">Repetition penalty: {{ repetitionPenalty() }}</label>
-                  <input type="range" class="nm-slider" min="1" max="10" step="0.5"
-                         [disabled]="!narrate()"
-                         [value]="repetitionPenalty()"
-                         (input)="repetitionPenalty.set(+$any($event.target).value)" />
-                </div>
-              } @else {
-                <p class="nm-hint">
-                  {{ engineDisplayName() }} sets its own temperature, top-p and repetition
-                  penalty inside the engine, so there is nothing here to move.
-                </p>
-              }
+              <!-- The sampling trio was the ENGINE's, not the dialog's, and both
+                   engines this build renders in fix theirs inside the engine
+                   class. The three sliders drew for XTTS alone and went with it
+                   on 2026-09-05; what is left is the sentence saying so. -->
+              <p class="nm-hint">
+                {{ engineDisplayName() }} sets its own temperature, top-p and repetition
+                penalty inside the engine, so there is nothing here to move.
+              </p>
             }
 
             <!-- ── Enhance: two GPU passes, and their order ─────────────── -->
@@ -960,9 +938,6 @@ export class NarrationModalComponent {
   readonly voice = signal<string>(this.defaults.ttsVoice);
   readonly device = signal<'auto' | 'gpu' | 'mps' | 'cpu'>(this.defaults.ttsDevice);
   readonly speed = signal(this.defaults.ttsSpeed);
-  readonly temperature = signal(this.defaults.ttsTemperature);
-  readonly topP = signal(this.defaults.ttsTopP);
-  readonly repetitionPenalty = signal(this.defaults.ttsRepetitionPenalty);
   readonly workers = signal(1);
 
   /**
@@ -1242,11 +1217,6 @@ export class NarrationModalComponent {
   readonly maxWorkers = computed(() =>
     this.workerCfg.enabled() ? this.caps().maxWorkers : 1);
 
-  readonly showsSampling = computed(() => {
-    const s = this.caps().sampling;
-    return !!(s.temperature || s.topP || s.repetitionPenalty);
-  });
-
   /**
    * The voices this engine can be asked for.
    *
@@ -1297,9 +1267,6 @@ export class NarrationModalComponent {
       p.ttsEngine === this.engine()
       && p.ttsVoice === this.voice()
       && p.ttsSpeed === this.speed()
-      && p.ttsTemperature === this.temperature()
-      && p.ttsTopP === this.topP()
-      && p.ttsRepetitionPenalty === this.repetitionPenalty()
       && p.rvcEnhancementEnabled === this.rvcEnabled()
       && p.rvcEnhancementVoiceId === this.rvcVoiceId()
       && p.rvcEnhancementIndexRate === this.rvcIndexRate()
@@ -1327,9 +1294,6 @@ export class NarrationModalComponent {
     this.voice.set(preset.ttsVoice);
     this.device.set(preset.ttsDevice);
     this.speed.set(preset.ttsSpeed);
-    this.temperature.set(preset.ttsTemperature);
-    this.topP.set(preset.ttsTopP);
-    this.repetitionPenalty.set(preset.ttsRepetitionPenalty);
     // A preset states the CONVERSION, which is one of the two enhancement
     // passes, so it moves that pass's check and the stage follows the same rule
     // a click on the check follows. It says nothing about the denoise, so the
@@ -1354,9 +1318,6 @@ export class NarrationModalComponent {
       ttsDevice: this.device(),
       ttsVoice: this.voice(),
       ttsSpeed: this.speed(),
-      ttsTemperature: this.temperature(),
-      ttsTopP: this.topP(),
-      ttsRepetitionPenalty: this.repetitionPenalty(),
       rvcEnhancementEnabled: this.rvcEnabled(),
       rvcEnhancementVoiceId: this.rvcVoiceId(),
       rvcEnhancementIndexRate: this.rvcIndexRate(),
@@ -1620,9 +1581,6 @@ export class NarrationModalComponent {
         ttsEngine: this.engine(),
         voice: this.voice(),
         device: this.device(),
-        temperature: this.temperature(),
-        topP: this.topP(),
-        repetitionPenalty: this.repetitionPenalty(),
         speed: this.speed(),
         workers: this.maxWorkers() > 1 ? this.workers() : 1,
         // Non-null by `refusal()`, which `submitDisabled` gates on: a run with

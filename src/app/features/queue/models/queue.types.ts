@@ -333,10 +333,6 @@ export interface TtsConversionConfig {
   language: string;
   ttsEngine: string;        // e.g., 'xtts'
   fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
   outputFilename?: string;
@@ -345,14 +341,7 @@ export interface TtsConversionConfig {
   parallelWorkers?: number; // undefined = auto, 1 = sequential, 2-4 = parallel workers
   useParallel?: boolean;    // Enable parallel processing (default: false for backwards compat)
   parallelMode?: 'sentences' | 'chapters'; // Division strategy (default: sentences for fine-grained)
-  // Bilingual mode for language learning audiobooks
-  bilingual?: {
-    enabled: boolean;
-    pauseDuration?: number;  // Seconds between source and target (default 0.3)
-    gapDuration?: number;    // Seconds between pairs (default 1.0)
-  };
-  // Skip assembly - for dual-voice bilingual workflows where assembly happens after
-  // both source and target TTS jobs complete
+  // Skip assembly — an assembly step follows in this chain and does it instead.
   skipAssembly?: boolean;
   // Resume info (saved after prep for resume capability)
   resumeInfo?: TtsResumeInfo;
@@ -728,10 +717,6 @@ export interface ResumeRenderSettings {
   device?: string;
   language?: string;
   speed?: number;
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  repetitionPenalty?: number;
   enableTextSplitting?: boolean;
 }
 

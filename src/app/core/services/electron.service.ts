@@ -81,10 +81,10 @@ export interface StreamWorkerConfig {
   activeWorkers: number;
   /** The streaming engine backing the Listen feature. Persisted; applies on the
    *  next engine start. */
-  engine?: 'xtts' | 'orpheus';
-  /** Which engines are usable on this machine (XTTS always; Orpheus when its env
+  engine?: 'orpheus';
+  /** Which engines are usable on this machine (Orpheus when its env
    *  / WSL is set up). Drives the engine chooser's availability. */
-  engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[];
+  engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[];
   /** Voices the active engine can use (for the voice picker). */
   voices?: string[];
   /** The persisted default voice the server warms on start. */
@@ -158,9 +158,7 @@ export type GpuKind = 'apple-silicon' | 'cuda' | 'any' | 'none';
 export type ComponentKind =
   | 'binary'
   | 'conda-env'
-  | 'tts-model'
   | 'rvc-model'
-  | 'language-pack'
   | 'stt-model'
   | 'blocks-model'
   | 'system';
@@ -215,8 +213,6 @@ export interface OptionalComponent {
   sizeBytes: number;
   requirements: ComponentRequirements;
   artifacts: ComponentArtifact[];
-  installTarget?: 'components' | 'e2a-hf-cache';
-  hf?: { repo: string; sub: string; files: string[] };
   detect?: DetectSpec;
   verify: VerifySpec;
   version: string;
@@ -2941,7 +2937,7 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Play Tab operations (XTTS Streaming)
+  // Play Tab operations (streaming TTS)
   // ─────────────────────────────────────────────────────────────────────────────
 
   async playStartSession(): Promise<{
@@ -3163,7 +3159,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }
@@ -3550,11 +3546,18 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Language Learning
+  // ARTICLE IMPORT
+  //
+  // Two methods under the `languageLearning` preload key, which is all that is
+  // left of that namespace after the feature was removed on 2026-09-05. Neither
+  // was ever about bilingual books — this is the studio's "add from a URL" door
+  // and the writer for the article EPUB its content editor produces. The names
+  // are the wire contract with preload; renaming them is a rename across three
+  // files to fix a word.
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Fetch a URL and extract article content for language learning
+   * Fetch a URL and extract its article content into a new project.
    * @param url The URL to fetch
    * @param projectId Optional projectId to use (if not provided, one will be generated)
    */
@@ -3586,247 +3589,6 @@ export class ElectronService {
 
   /**
    * Save a language learning project
-   */
-  async languageLearningSaveProject(project: any): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.saveProject(project);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Load a language learning project
-   */
-  async languageLearningLoadProject(projectId: string): Promise<{
-    success: boolean;
-    project?: any;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.loadProject(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * List all language learning projects
-   */
-  async languageLearningListProjects(): Promise<{
-    success: boolean;
-    projects?: any[];
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.listProjects();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Delete a language learning project
-   */
-  async languageLearningDeleteProject(projectId: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.deleteProject(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Show native confirmation dialog for deleting a project
-   */
-  async languageLearningConfirmDelete(title: string): Promise<{
-    confirmed: boolean;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.confirmDelete(title);
-    }
-    return { confirmed: false };
-  }
-
-  /**
-   * Ensure a directory exists
-   */
-  async languageLearningEnsureDirectory(dirPath: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.ensureDirectory(dirPath);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Delete existing audiobook files for a project (before re-running TTS)
-   */
-  async languageLearningDeleteAudiobooks(projectId: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.deleteAudiobooks(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * List completed bilingual audiobooks
-   */
-  async languageLearningListCompleted(): Promise<{
-    success: boolean;
-    audiobooks?: any[];
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.listCompleted();
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Extract text from HTML file with deleted elements removed
-   */
-  async languageLearningExtractText(htmlPath: string, deletedSelectors: string[]): Promise<{
-    success: boolean;
-    text?: string;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.extractText(htmlPath, deletedSelectors);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async languageLearningWriteFile(filePath: string, content: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.writeFile(filePath, content);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Get the audio file path for a language learning audiobook
-   */
-  async languageLearningGetAudioPath(projectId: string): Promise<{
-    success: boolean;
-    path?: string;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.getAudioPath(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Get audio file as base64 data URL for playback
-   */
-  async languageLearningGetAudioData(projectId: string): Promise<{
-    success: boolean;
-    dataUrl?: string;
-    size?: number;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.getAudioData(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Check if audio file exists for a project
-   */
-  async languageLearningHasAudio(projectId: string): Promise<{
-    success: boolean;
-    hasAudio?: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.hasAudio(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Delete audio and associated data for re-generation
-   */
-  async languageLearningDeleteAudio(projectId: string): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.deleteAudio(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Read VTT subtitle file for a language learning audiobook
-   */
-  async languageLearningReadVtt(projectId: string): Promise<{
-    success: boolean;
-    content?: string;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.readVtt(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Read sentence pairs for a language learning audiobook
-   */
-  async languageLearningReadSentencePairs(projectId: string): Promise<{
-    success: boolean;
-    pairs?: Array<{
-      index: number;
-      source: string;
-      target: string;
-      sourceTimestamp?: number;
-      targetTimestamp?: number;
-    }>;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.readSentencePairs(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async languageLearningGetAnalytics(projectId: string): Promise<{
-    success: boolean;
-    analytics?: any;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.getAnalytics(projectId);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  async languageLearningSaveAnalytics(projectId: string, analytics: any): Promise<{
-    success: boolean;
-    error?: string;
-  }> {
-    if (this.isElectron && (window as any).electron.languageLearning) {
-      return (window as any).electron.languageLearning.saveAnalytics(projectId, analytics);
-    }
-    return { success: false, error: 'Not running in Electron' };
-  }
-
-  /**
-   * Finalize article content - saves the filtered HTML for processing
    */
   async languageLearningFinalizeContent(projectId: string, finalizedHtml: string): Promise<{
     success: boolean;

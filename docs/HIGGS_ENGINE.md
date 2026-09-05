@@ -1,5 +1,14 @@
 # Higgs as a narration engine
 
+> **SUPERSEDED IN PART (2026-09-05).** This document records the branch that made
+> Higgs an engine and XTTS a *retired choice*. The follow-up branch pulled XTTS,
+> F5 and Voxtral out of the root entirely, so §2's "What STAYS" table is now
+> history: the XTTS streaming pool, the voice catalog, `custom-voices.ts` (§8's
+> "biggest loose end") and `catalog.bundled.ts` are all gone. What survived, and
+> why, is in **`docs/XTTS_REMOVAL.md`**. Everything about the ENGINE MODEL below
+> — the two unions, the refusal-by-name, the Higgs catalog — is unchanged and
+> still current.
+
 Built 2026-09-04 on branch `feat/higgs-engine-option`, cut from `01a3799b`.
 
 Owen: *"Orpheus is a choice, XTTS used to be a choice but can now be removed,

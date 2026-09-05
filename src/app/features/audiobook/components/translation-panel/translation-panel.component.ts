@@ -24,9 +24,6 @@ import { AIProvider } from '../../../../core/models/ai-config.types';
       <div class="panel-header">
         <h4>Translation</h4>
         <p>Translate to English (auto-detects source language).</p>
-        <button type="button" class="add-langs-btn" (click)="openLanguages()">
-          + Add more languages
-        </button>
       </div>
 
       <!-- Workflow Note -->
@@ -536,11 +533,6 @@ export class TranslationPanelComponent implements OnInit {
 
   goToSettings(): void {
     this.router.navigate(['/settings']);
-  }
-
-  /** Jump to Settings → Languages to download more source-language packs. */
-  openLanguages(): void {
-    this.router.navigate(['/settings'], { queryParams: { section: 'xtts' } });
   }
 
   async addToQueue(): Promise<void> {

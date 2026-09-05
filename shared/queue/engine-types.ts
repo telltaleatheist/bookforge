@@ -607,6 +607,19 @@ export const RETIRED_JOB_TYPES: ReadonlyMap<string, string> = new Map([
     + 'row.'],
   ['foundry-detect', 'Detection is gone with the Tesseract pipeline it labelled. Remove this '
     + 'row.'],
+  // The language-learning pipeline (removed 2026-09-05). Its three steps were a
+  // chain: clean the source text, translate it sentence-by-sentence, then
+  // interleave two voices into one audiobook. A queue written before then can
+  // hold any of the three.
+  ['bilingual-cleanup', 'The language-learning pipeline is gone, and this was its AI cleanup '
+    + 'step. Run AI cleanup on the book itself instead — it is a pass on the Process tab. '
+    + 'Remove this row.'],
+  ['bilingual-translation', 'The language-learning pipeline is gone, and this was its '
+    + 'sentence-by-sentence translation. A whole-book translation is a pass on the Process tab '
+    + 'now. Remove this row.'],
+  ['bilingual-assembly', 'Dual-voice bilingual audiobooks are gone: assembly interleaved a '
+    + 'source and a target rendering, and nothing produces the pair any more. Narrate the book '
+    + 'in one voice instead. Remove this row.'],
   // The master container row. It never executed anything: it existed to group a
   // workflow, which is the job itself now.
   ['audiobook', 'This row was a container for the steps below it. Runs are one row with their '

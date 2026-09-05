@@ -644,7 +644,7 @@ async function runTranslatePass(
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
-  const { runMonoTranslation } = await import('./ll-jobs.js');
+  const { runMonoTranslation } = await import('./mono-translation-job.js');
   const result = await runMonoTranslation(
     jobId,
     {

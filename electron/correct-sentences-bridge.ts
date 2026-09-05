@@ -322,14 +322,25 @@ function scratchRoot(sessionId: string): string {
 }
 
 /**
- * Spread of per-take sampling temperatures so re-rolls are genuinely varied rather than
- * near-identical (temp 0.6 alone barely moves the reading). Base is the temperature the
- * book was rendered at (Orpheus default 0.6); offsets give one cooler take (can clean up a
- * glitchy read) and hotter takes that rephrase more freely. Only Orpheus honors these; XTTS
- * ignores them and just renders `count` stochastic takes at its own temperature.
+ * Orpheus's own generation temperature, and the base every re-roll spreads around.
+ *
+ * It used to be read off `settings.temperature` with `?? 0.6` behind it. That
+ * field was XTTS's — the ONLY writer was the Pipeline Defaults temperature
+ * slider, which no engine this build renders in ever honoured — so on every real
+ * Orpheus book the base WAS 0.6, arrived at through the fallback rather than
+ * stated. The setting left with XTTS on 2026-09-05; the number that always
+ * applied is now written down.
  */
-function computeTakeTemperatures(settings: ParallelTtsSettings, count: number): number[] {
-  const base = typeof settings.temperature === 'number' ? settings.temperature : 0.6;
+const ORPHEUS_BASE_TEMPERATURE = 0.6;
+
+/**
+ * Spread of per-take sampling temperatures so re-rolls are genuinely varied rather than
+ * near-identical (temp 0.6 alone barely moves the reading). Offsets give one cooler take
+ * (can clean up a glitchy read) and hotter takes that rephrase more freely. Only Orpheus
+ * honors these.
+ */
+function computeTakeTemperatures(count: number): number[] {
+  const base = ORPHEUS_BASE_TEMPERATURE;
   const OFFSETS = [-0.2, 0.2, 0.4];
   const clamp = (t: number) => Math.max(0.1, Math.min(1.5, Math.round(t * 100) / 100));
   const out: number[] = [];
@@ -400,8 +411,8 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   const longIdx = indices.filter(isLong);
   const normalIdx = indices.filter((i) => !isLong(i));
 
-  const temps = computeTakeTemperatures(settings, takes);
-  const baseTemp = typeof settings.temperature === 'number' ? settings.temperature : 0.6;
+  const temps = computeTakeTemperatures(takes);
+  const baseTemp = ORPHEUS_BASE_TEMPERATURE;
   const totalUnits = normalIdx.length * temps.length + longIdx.length;
   let done = 0;
   const onProg = () => { done += 1; onProgress?.(done, totalUnits); };

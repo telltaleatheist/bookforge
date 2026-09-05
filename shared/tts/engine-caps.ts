@@ -66,20 +66,27 @@ export type TtsEngineId = 'orpheus' | 'higgs';
  * Engine ids that exist ONLY in records and saved settings written before the
  * engine was retired. Never offered, never rendered, always displayed.
  *
- * - `xtts` — retired 2026-09-04 on Owen's call. The reason is recorded across
- *   the project: every voice that matters is an Orpheus fine-tune, and XTTS was
- *   being kept alive as an option nobody picked. Its e2a code path is NOT
- *   deleted — assembly still passes the literal `--tts_engine xtts` to e2a as
- *   engine-agnostic scaffolding (see `parallel-tts-bridge.ts` `asmEngineArg`
- *   and narrator's `compat/FLAGS.md`), and bilingual books still render through
- *   it. What is gone is the CHOICE.
- * - `f5`, `voxtral` — never retired by a decision, but they fall out of the
+ * - `xtts` — retired as a CHOICE on 2026-09-04 (every voice that matters is an
+ *   Orpheus fine-tune, and XTTS was being kept alive as an option nobody
+ *   picked), then REMOVED FROM THE ROOT on 2026-09-05: the streaming pool, the
+ *   Python worker, the voice catalog, the "add your own voice" feature and the
+ *   DeepSpeed pack are all gone (docs/XTTS_REMOVAL.md). Nothing in this build
+ *   can render it. The one place the string survives in a live code path is
+ *   engine-agnostic scaffolding — assembly passes the literal `--tts_engine
+ *   xtts` to e2a because the assembler combines audio and never consults the
+ *   name (`parallel-tts-bridge.ts` `asmEngineArg`, `reassembly-bridge.ts`, and
+ *   narrator's `compat/FLAGS.md`).
+ * - `f5`, `voxtral` — never retired by a decision; they fell out of the
  *   narration picker as a CONSEQUENCE of narrowing it to the two engines above,
- *   and saying so here is better than letting them vanish silently. Both are
- *   component-gated (`f5-env` / `voxtral-env`) so neither was visible on a
- *   machine that had not installed them; their `getEnvPathForEngine` wiring in
- *   `electron/e2a-paths.ts` is untouched. Moving either back into
- *   `TtsEngineId` and `SELECTABLE_ORDER` is the whole of un-retiring it.
+ *   and their components (`f5-env` / `voxtral-env`) and `getEnvPathForEngine`
+ *   rows were deleted with the rest on 2026-09-05. Un-retiring one is no longer
+ *   a line in `SELECTABLE_ORDER`: it needs its component and its env routing
+ *   back first.
+ *
+ * ALL THREE STILL LOAD AND STILL DISPLAY. That is the whole point of this union
+ * being separate from `TtsEngineId` — a job record or a saved setting written
+ * last year names one of these, and refusing to PARSE it would be a worse
+ * failure than refusing to RUN it.
  */
 export type RetiredTtsEngine = 'xtts' | 'f5' | 'voxtral';
 
@@ -406,6 +413,63 @@ export function assertRunnableTtsEngine(id: string): TtsEngineId {
     );
   }
   return id as TtsEngineId;
+}
+
+/**
+ * WHAT A SAVED SETTING'S ENGINE SHOULD RESOLVE TO, and what to say about it.
+ *
+ * `assertRunnableTtsEngine` above is for code about to queue work: it refuses,
+ * full stop, because substituting an engine at RENDER time hands back a book in
+ * a voice nobody chose. This is the other half of that story — the one a stored
+ * PREFERENCE needs — and it exists because refusing at read time is not free
+ * either. A machine whose Pipeline Defaults say `xtts` has an engine button
+ * group with nothing selected and a run that throws at every attempt, from a
+ * page that offers no way to repair it. Both failure modes are real; they need
+ * different answers, and the difference is what is at stake:
+ *
+ *   - A RETIRED id → migrated to the default runnable engine, LOUDLY, and the
+ *     caller is expected to write the repair back so the stale value stops being
+ *     re-read. Nothing is rendered wrong by this: it is a default for the NEXT
+ *     run, shown in a picker the user can see and change before anything starts.
+ *     The paired VOICE belonged to the retired engine, so a caller that stores
+ *     one must reset it too — an Orpheus engine beside a Scarlett clip is the
+ *     unrenderable pair this is supposed to end.
+ *   - AN UNKNOWN id → thrown, by name. A string no build ever wrote is a bug or
+ *     a hand-edited file, and quietly treating it as Orpheus would hide it.
+ *
+ * `electron/streaming-engine.ts`'s `getSelectedEngineName` is the same shape over
+ * `tts-engine.json`; it cannot share this function because its union is the
+ * STREAMING engines, not the narration ones.
+ */
+export interface SavedTtsEngineResolution {
+  /** The engine to use. */
+  engine: TtsEngineId;
+  /** Set only when a retired id was migrated — the id that was stored. */
+  migratedFrom?: RetiredTtsEngine;
+  /** A sentence for the log, when `migratedFrom` is set. */
+  note?: string;
+}
+
+/** The engine a saved setting resolves to when it names nothing runnable. */
+export const DEFAULT_TTS_ENGINE: TtsEngineId = 'orpheus';
+
+export function resolveSavedTtsEngine(id: string): SavedTtsEngineResolution {
+  if (!isTtsEngine(id)) {
+    throw new Error(
+      `Saved settings name a TTS engine this build has never had: "${id}". ` +
+        `This build renders: ${SELECTABLE_ORDER.join(', ')}.`,
+    );
+  }
+  if (isRunnableTtsEngine(id)) return { engine: id };
+  const caps = TTS_ENGINES[id];
+  return {
+    engine: DEFAULT_TTS_ENGINE,
+    migratedFrom: id as RetiredTtsEngine,
+    note:
+      `Saved narration engine "${id}" was retired on ${caps.retired!.since} and cannot render. ` +
+      `Migrating the saved default to ${TTS_ENGINES[DEFAULT_TTS_ENGINE].displayName}, and ` +
+      `resetting the voice that was paired with it.`,
+  };
 }
 
 /**

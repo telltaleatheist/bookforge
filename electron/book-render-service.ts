@@ -25,7 +25,7 @@ import { spawn } from 'child_process';
 import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from './streaming-engine';
 import { getProjectPath, registerAudiobookOutput } from './manifest-service';
 import { embedAndVerifyVtt } from './metadata-tools';
-import { splitForTts } from './bilingual-processor';
+import { splitForTts } from './text-ai';
 // PUNCTUATION ONLY, the streaming path's share of the narration text pass.
 // This is the whole-book render the same bookshelf reader plays from, so its
 // text has to reach the voice with the same canonical ellipsis and the same

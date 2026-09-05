@@ -1,16 +1,29 @@
 /**
- * CUDA acceleration for XTTS text-to-speech (PyTorch GPU build).
+ * CUDA PyTorch for the bundled runtime env (the "Faster Voice Narration" pack).
  *
- * The bundled conda env ships CPU-only PyTorch (small, portable), so XTTS runs
- * on the CPU. On a Windows machine with an NVIDIA GPU, this OPTIONAL component
- * downloads the CUDA build of PyTorch (`torch+cu126`, matching the bundled
- * torch 2.7.1 so coqui-tts stays compatible) and overlays it into the runtime
- * env, replacing the CPU torch. After that, `torch.cuda.is_available()` is True,
- * so the streaming worker (xtts_stream.py) and the job workers auto-select the
- * GPU — generation runs ~5-10x faster.
+ * The bundled conda env ships CPU-only PyTorch (small, portable). On a Windows
+ * machine with an NVIDIA GPU, this OPTIONAL component downloads the CUDA build
+ * (`torch+cu126`, matching the bundled torch 2.7.1) and overlays it into the
+ * runtime env, replacing the CPU torch. After that `torch.cuda.is_available()`
+ * is True for everything running in there.
  *
- * This is NOT the same as `llama-cuda` (that's the CUDA build of llama.cpp for
- * the local LLM). This one is PyTorch for the TTS engine.
+ * ── WHY THIS SURVIVED THE XTTS REMOVAL (2026-09-05) ─────────────────────────
+ *
+ * It was written for XTTS and its user-facing name still says "Voice Narration",
+ * but it was never XTTS-only, and deleting it with the engine would have taken
+ * something else down silently. Two things in the bundled env still read this
+ * torch:
+ *   - faster-whisper transcription (the `whisper` overlay — see whisper-env.ts,
+ *     which says so: "a CUDA GPU (via the cuda-tts overlay) makes transcription
+ *     much faster"), and
+ *   - `resolveTtsDeviceArg`'s `auto` resolution in parallel-tts-bridge.ts, which
+ *     answers CUDA when this pack is installed. Removing it would have quietly
+ *     resolved native-Windows Orpheus jobs to CPU.
+ * Renaming the component id is a migration (installed records are keyed on it),
+ * so the id stays `cuda-tts` and the honest description lives here.
+ *
+ * This is NOT the same as `llama-cuda` (the CUDA build of llama.cpp for the
+ * local LLM), nor `cuda-rvc` (the same overlay against the rvc-env).
  *
  * Install mechanism: download the wheels from the upstream PyTorch CDN and
  * `pip install --no-deps --force-reinstall` them into the runtime

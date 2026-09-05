@@ -11,7 +11,7 @@ This document is a complete, self-contained spec for building a **Chrome extensi
 
 ## The server
 
-BookForge (an Electron desktop app) runs a WebSocket server that fronts a pool of XTTS (neural TTS) worker processes (worker count is user-configurable, default 4 on CPU).
+BookForge (an Electron desktop app) runs a WebSocket server that fronts a single **Orpheus** neural-TTS engine process on the GPU (vLLM on CUDA, MLX on Apple Silicon). It renders a whole BATCH of sentences at once rather than running several worker processes in parallel — which matters to the extension mostly in one place: what it should prefetch (see *Audio assembly rules*). Until 2026-09-05 this was a pool of XTTS processes, and the worker-count fields below are what is left of that; they are still on the wire and still honest, they just describe one engine now.
 
 | Property | Value |
 |---|---|
@@ -71,14 +71,15 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 // the engine cold starts it WITHOUT them: someone is already waiting, and the first
 // real batch absorbs the same compile (~10s, once) instead of queueing behind them.
 {"action": "engine.stop"}                          // shut the engine down (frees ~20 GB RAM)
-{"action": "engine.restart", "voice": "RayPorter", "cpuWorkers": 4}
-// Bounce the pool to apply a new worker count and/or warm a voice. Both optional;
-// cpuWorkers is persisted server-side. Service mode (resident server) is preserved.
+{"action": "engine.restart", "voice": "leah"}
+// Bounce the engine and/or warm a voice. `cpuWorkers` is still accepted and is now a
+// NO-OP: Orpheus is one process on one GPU, so there is no topology to change.
+// Service mode (resident server) is preserved.
 
 {"action": "config.get"}                           // read engine topology (workers/device)
-{"action": "config.set", "cpuWorkers": 4, "voice": "RayPorter", "idleMinutes": 15}
-// Persist the CPU worker count (applies on next start — pair with engine.restart to
-// apply now). A voice given while the engine is RUNNING is warmed immediately.
+{"action": "config.set", "voice": "leah", "idleMinutes": 15}
+// `cpuWorkers` is accepted and ignored, as above. A voice given while the engine is
+// RUNNING is warmed immediately.
 // idleMinutes sets how long the engine may sit unused before shutting itself down
 // (0 = never); it takes effect on the running engine's next sweep. The current
 // value and the choices to offer come back as config.idleMinutes / config.idleChoices.
@@ -105,13 +106,19 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 ```jsonc
 {"type": "hello", "version": 1, "state": "stopped|starting|running",
- "serviceMode": false, "voices": ["ScarlettJohansson", "..."], "currentVoice": null,
- "config": {"cpuWorkers": 4, "defaultCpuWorkers": 4, "minWorkers": 1, "maxWorkers": 8,
-            "device": "cpu", "deviceWorkers": 4, "activeWorkers": 0}}
+ "serviceMode": false, "voices": ["leah", "..."], "currentVoice": null,
+ "config": {"cpuWorkers": 1, "defaultCpuWorkers": 1, "minWorkers": 1, "maxWorkers": 1,
+            "device": "cuda", "deviceWorkers": 16, "activeWorkers": 1}}
 // Reply to hello. voices is [] while the engine is cold (it's discovered on engine start).
-// config.device is null until a non-mac engine first probes torch; activeWorkers is 0
-// while stopped. deviceWorkers is what the active device will actually run — cpuWorkers
-// on CPU, 1 on CUDA (the GPU serializes decode, so the worker count is moot there).
+// config.device is null until the engine first probes its runtime; activeWorkers is 0
+// while stopped, 1 once running.
+//
+// READ deviceWorkers AS PREFETCH DEPTH, NOT AS A PROCESS COUNT. On the old XTTS pool it
+// was literally how many workers the device would run. Orpheus is one process that
+// BATCHES, so it reports its batch width here instead — that is the number of blocks
+// worth keeping in flight to keep the batch full, which is what the field was always
+// FOR from the extension's side. cpuWorkers/minWorkers/maxWorkers are all 1: there is
+// no topology left to configure.
 
 {"type": "status", ...same fields as hello minus version}   // reply to status / engine.start / engine.restart
 
@@ -166,10 +173,10 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 ### Audio assembly rules (important)
 
-Multiple workers generate in parallel (4 by default), so **sentences complete out of order**:
+The engine renders a batch of sentences at a time and they retire in the runtime's own order, so **sentences complete out of order**:
 
-- Sentence **0** (the playhead sentence) streams in multiple small chunks (`seq` 0,1,2,… ~1 s of audio each) so playback can start fast. Chunks *within* one sentence always arrive in `seq` order.
-- All other sentences arrive as a **single chunk** (`seq: 0`) each, in whatever order workers finish.
+- A sentence normally arrives as a **single chunk** (`seq: 0`). Chunks *within* one sentence always arrive in `seq` order.
+- With `fastStart` (see `speak`), the sentence being listened to is sunk in several sub-sentence chunks (`seq` 0,1,2,…) WHILE it generates, then a `done` with no further chunk. The event shape is identical either way, so a client that assembles by `(sentenceIndex, seq)` needs to know nothing about which it got. (The old XTTS pool streamed its opening sentence this way unconditionally; that path is gone with it.)
 - Buffer per `(sentenceIndex, seq)`. A sentence is playable once its `done` event arrives (or, for sentence 0, you can start playing chunks as they arrive). Play sentences strictly in `sentenceIndex` order; if the next sentence isn't done yet, wait (show buffering) — in practice generation runs ~2× realtime so this is rare after the start.
 - Concatenated PCM of all sentences in index order = the full audio for the block. There is no silence padding between sentences; small natural pauses are already in the generated audio.
 
@@ -227,9 +234,9 @@ Multiple WebSocket connections are fine; audio events are routed only to the con
 
 ### Engine lifecycle notes
 
-- `speak` on a cold engine **auto-starts it** (N Python processes — 4 by default, configurable in BookForge → Settings → TTS Server — ~5 GB RAM each, ~60 s to ready on the user's M1 Ultra). Show "starting TTS engine…" while `state` is `starting`. With fewer workers, generation is slower than the default ~2× realtime, so buffering pauses mid-playback are more likely — the extension shouldn't assume generation outruns playback.
+- `speak` on a cold engine **auto-starts it** (one Python process holding a ~6 GB model on the GPU, ~60 s to ready on the user's M1 Ultra). Show "starting TTS engine…" while `state` is `starting`. A batch runs faster than speech only when it is FULL — a narrow batch generates slower than realtime — so the extension should keep `deviceWorkers` blocks in flight and must not assume generation outruns playback.
 - The engine idles out after a configurable window without generation — **15 minutes** by default, `0` for never, unless the user pinned it as a service inside BookForge. Read it from `config.idleMinutes` and set it with `config.set`. A `speak` after idle-out just cold-starts again — handle it with the same spinner.
-- Voice switching is valid per-`speak` via `settings.voice` but reloads models on all workers (takes a while); the extension should default to *omitting* `voice` so it uses whatever is already loaded, and offer voice choice in options. Voice names come from the `hello`/`status` reply (e.g. `ScarlettJohansson`, `DavidAttenborough`, `MorganFreeman`, `NeilGaiman`, `RayPorter`, `RosamundPike` — but always use the list from the server, it's discovered at runtime).
+- Voice switching is valid per-`speak` via `settings.voice`. Orpheus's built-in voices are a prompt prefix and cost nothing to switch between; a fine-tune is its own model and switching to one REBUILDS the engine (takes a while). The extension should default to *omitting* `voice` so it uses whatever is already loaded, and offer voice choice in options. Voice names come from the `hello`/`status` reply (e.g. `leah`, `tara`, `zoe`, `dan`, `leo` — but always use the list from the server, it's discovered at runtime).
 
 ## Tab recording (`record.*`)
 

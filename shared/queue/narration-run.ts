@@ -179,9 +179,6 @@ export interface NarrationRunSettings {
   /** The voice. Empty is refused by name rather than defaulted. */
   readonly voice: string;
   readonly device: 'auto' | 'gpu' | 'mps' | 'cpu';
-  readonly temperature: number;
-  readonly topP: number;
-  readonly repetitionPenalty: number;
   readonly speed: number;
   readonly workers: number;
   /** The library's audiobooks folder — where the finished M4B is filed. */
@@ -245,10 +242,6 @@ export interface NarrationTtsConfig {
   readonly ttsEngine: string;
   /** The voice. `fine_tuned` on e2a's side, which is where the name comes from. */
   readonly fineTuned: string;
-  readonly temperature: number;
-  readonly topP: number;
-  readonly topK: number;
-  readonly repetitionPenalty: number;
   readonly speed: number;
   readonly enableTextSplitting: boolean;
   readonly useParallel: boolean;
@@ -433,13 +426,6 @@ export interface NarrationStepPlan {
   readonly sourceRef?: ArtifactRef;
 }
 
-/**
- * `topK` is not a control anywhere in the app and never has been — it is stated
- * here so the one value every caller sends is written down once instead of once
- * per process.
- */
-const TOP_K = 50;
-
 /** Refuse a run that cannot be described, naming the field that is missing. */
 export function requireNarrationRun(
   book: NarrationRunBook,
@@ -539,10 +525,6 @@ export function narrationTtsStep(
       language: settings.language,
       ttsEngine: settings.ttsEngine,
       fineTuned: settings.voice,
-      temperature: settings.temperature,
-      topP: settings.topP,
-      topK: TOP_K,
-      repetitionPenalty: settings.repetitionPenalty,
       speed: settings.speed,
       enableTextSplitting: true,
       useParallel: true,

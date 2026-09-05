@@ -211,15 +211,16 @@ async function main() {
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
 
-  // ParallelTtsSettings. For Orpheus, temperature/topP/topK/repetitionPenalty/speed and
-  // enableTextSplitting are INERT (Orpheus sampling is fixed in orpheus.py; they're here
-  // to satisfy the shape). Env seams (ORPHEUS_MEMORY_TIER, etc.) are read by the pipeline.
+  // ParallelTtsSettings. speed and enableTextSplitting are INERT for Orpheus (its sampling
+  // is fixed in orpheus.py; they are here to satisfy the shape). The four sampling fields
+  // that used to sit beside them left the interface with XTTS on 2026-09-05. Env seams
+  // (ORPHEUS_MEMORY_TIER, etc.) are read by the pipeline.
   const settings = {
     device: 'auto',
     language: args.language || 'en',
     ttsEngine: 'orpheus',
     fineTuned: voice,
-    temperature: 0.6, topP: 0.8, topK: 0, repetitionPenalty: 1.1, speed: 1.0,
+    speed: 1.0,
     enableTextSplitting: false,
   };
   if (args['model-dir']) settings.orpheusModelDir = args['model-dir'];

@@ -1,9 +1,10 @@
 /**
  * Orpheus Worker Pool — single-process streaming engine for the Listen feature.
  *
- * The Orpheus counterpart to xtts-worker-pool.ts, exposing the SAME StreamingEngine
- * surface (start/load/generate/stream/cancel/end + state/voice accessors) so the
- * stream-scheduler and TTS API server drive it identically. Differences from XTTS:
+ * THE streaming engine for Listen, and since 2026-09-05 the only one — it declares
+ * the {@link StreamingEngine} contract's types below and implements its surface
+ * (start/load/generate/stream/cancel/end + state/voice accessors), which the
+ * stream-scheduler and TTS API server drive through `streaming-engine.ts`.
  *
  *   - ONE worker, always. Orpheus uses vLLM (CUDA) or MLX (Apple Silicon), both of
  *     which saturate the single GPU and have built-in batching — extra processes
@@ -42,15 +43,6 @@ import {
 import { computeSafeGpuUtil, getGpuMemMB } from './gpu-arbiter';
 import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier } from './orpheus-memory';
 import {
-  PlaySettings,
-  AudioChunk,
-  StreamChunk,
-  StreamResult,
-  StreamWorkerConfig,
-  EngineState,
-  LoadVoiceOptions,
-} from './xtts-worker-pool';
-import {
   resolveOrpheusModel,
   listOrpheusModels,
   orpheusVoiceCapsForModel,
@@ -58,6 +50,94 @@ import {
 } from './orpheus-models';
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
 import { getIdleTimeoutMs } from './stream-idle';
+
+// ─────────────────────────────────────────────────────────────────────────────
+// THE STREAMING CONTRACT
+//
+// These types are the shape every Listen consumer speaks — the scheduler, the
+// TTS API server, the reader bridge and `streaming-engine.ts`'s `StreamingEngine`
+// interface. They lived in `xtts-worker-pool.ts` until XTTS was removed from the
+// root (2026-09-05), for the historical reason that XTTS was the FIRST pool; the
+// contract was never XTTS's to own. It moved here rather than into a new
+// `stream-types.ts` because there is now exactly one streaming pool and a
+// separate module for four interfaces nobody else declares would be indirection
+// for its own sake. If a second pool ever lands, that is the moment to split.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** What a client asks a sentence to be rendered as. `voice` is the only field
+ *  Orpheus honours — the sampling fields are carried for wire compatibility with
+ *  clients written against the XTTS-era protocol and are ignored (Orpheus's
+ *  sampling is fixed per fine-tune, see the catalog caps). */
+export interface PlaySettings {
+  voice: string;
+  speed: number;
+  temperature?: number;
+  topP?: number;
+  repetitionPenalty?: number;
+}
+
+/** One fully-rendered sentence, base64 WAV. */
+export interface AudioChunk {
+  data: string;
+  duration: number;
+  sampleRate: number;
+}
+
+/** One sub-sentence slice of a sentence still being generated, base64 PCM16. */
+export interface StreamChunk {
+  seq: number;
+  data: string;
+  duration: number;
+  sampleRate: number;
+}
+
+export interface StreamResult {
+  success: boolean;
+  duration?: number;
+  cancelled?: boolean;
+  error?: string;
+}
+
+/**
+ * Options for a voice load.
+ *
+ * `warm` says whether the load may spend time on DISCARDED renders before it
+ * reports ready. A prewarm (the reader UI was shown; nobody is waiting on audio)
+ * passes true and pays it; a load triggered by a pending speak passes false,
+ * because the user is staring at a spinner and the first REAL batch can absorb
+ * the same lazy-compile cost itself (~10s once) instead of ~40s of throwaway
+ * renders in front of it.
+ */
+export interface LoadVoiceOptions {
+  /** Run the engine's discarded warm-up renders on a first load. Default true. */
+  warm?: boolean;
+}
+
+/** Device a streaming pool may be pinned to. Orpheus reports its own and takes
+ *  no preference (see setStreamWorkerConfig); the type stays because the TTS
+ *  Server settings payload and its clients are written against it. */
+export type DevicePref = 'auto' | 'cpu' | 'gpu' | 'mps';
+
+/** The topology the TTS Server settings UI and the browser extension read. */
+export interface StreamWorkerConfig {
+  /** Multi-worker capability toggle (off ⇒ always 1 worker) */
+  enabled: boolean;
+  /** The chosen count (kept even when disabled, so a slider remembers it) */
+  count: number;
+  defaultCount: number;
+  minWorkers: number;
+  maxWorkers: number;
+  /** User's device preference for the streaming engine */
+  devicePref: DevicePref;
+  /** null until the first engine start probes the runtime */
+  device: 'cpu' | 'cuda' | 'mps' | null;
+  /** Workers the active device will actually run */
+  deviceWorkers: number;
+  /** Workers currently alive — 0 when the engine is stopped */
+  activeWorkers: number;
+}
+
+export type EngineState = 'stopped' | 'starting' | 'warming' | 'running';
 
 const E2A_PATH = getDefaultE2aPath();
 
@@ -471,8 +551,6 @@ function stopIdleWatch(): void {
 // ─────────────────────────────────────────────────────────────────────────────
 // Engine state
 // ─────────────────────────────────────────────────────────────────────────────
-
-export type { EngineState };
 
 export function getEngineState(): EngineState {
   if (startingSession) return 'starting';
@@ -1419,13 +1497,6 @@ function streamOnWorker(
   });
 }
 
-/** Orpheus generation isn't interruptible mid-sentence (vLLM/MLX generate whole);
- *  the scheduler drops stale results. We still send 'cancel' so the worker can
- *  acknowledge and stay in sync. */
-export function cancelStreaming(): void {
-  if (worker?.pendingRequest?.resolveStream) send({ action: 'cancel' });
-}
-
 export function stop(): void {
   if (worker?.isReady) send({ action: 'stop' });
 }
@@ -1777,7 +1848,6 @@ export const orpheusWorkerPool = {
   loadVoice,
   generateSentence,
   generateSentenceStream,
-  cancelStreaming,
   cancelPendingBatchIfStale,
   stop,
   endSession,

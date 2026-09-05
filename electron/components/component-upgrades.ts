@@ -21,7 +21,7 @@
  *  0. It is CONTENT rather than a tool → keep, always. Owen, 2026-08-05: "the
  *     only situation in which a voice will be downloaded again is if its fully
  *     missing. they dont have versions." Weights are present or absent. A voice,
- *     a Stanza pack, a Whisper model, the page-layout GGUF — you have it or you
+ *     a Whisper model, the page-layout GGUF — you have it or you
  *     do not, and the thing a user wants from a voice is the voice they already
  *     chose, not a newer one arriving unasked at launch. Tools are the opposite:
  *     a CLI at the wrong version breaks the pipeline, which is why upgrading it
@@ -85,8 +85,8 @@ import type { ComponentKind } from './component-types';
  * content — a tool at the wrong version breaks the pipeline that drives it, so
  * keeping it current is maintenance of a choice the user already made.
  *
- * Everything absent from this set is weights: `tts-model`, `rvc-model`,
- * `language-pack`, `stt-model`. Those are present or absent (rule 0). `system`
+ * Everything absent from this set is weights: `rvc-model`,
+ * `stt-model`. Those are present or absent (rule 0). `system`
  * is here-or-not by definition and has nothing to download.
  */
 const TOOL_KINDS: ReadonlySet<ComponentKind> = new Set<ComponentKind>([
