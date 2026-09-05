@@ -38,7 +38,6 @@
 
 import { spawn } from 'child_process';
 import * as fs from 'fs';
-import * as path from 'path';
 import { app } from 'electron';
 import {
   checkWslHiggsSetupAsync,
@@ -224,7 +223,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
     return Promise.resolve(mlxResult(
       [
         { id: 'env', label: 'Conda env "narrator-mlx"', ok: false, detail: resolved.error },
-        ...mlxProbeChecks(new Map(), 'the environment could not be resolved, so nothing was probed'),
+        ...mlxProbeChecks(new Map(), 'the environment could not be resolved, so nothing was probed', ''),
         weightsCheck(baseDir),
       ],
       remedy,
@@ -242,7 +241,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
   const root = attempt(() => narratorPythonRoot());
   if ('error' in root) {
     return Promise.resolve(mlxResult(
-      [envCheck, ...mlxProbeChecks(new Map(), root.error), weightsCheck(baseDir)],
+      [envCheck, ...mlxProbeChecks(new Map(), root.error, ''), weightsCheck(baseDir)],
       remedy,
       mlxVoiceNotes(baseWeightsOk(baseDir)),
       envPrefixOf(invocation),
@@ -261,18 +260,28 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
 
   return new Promise((resolve) => {
     let out = '';
+    // STDERR IS KEPT, AND IT IS THE POINT. `conda run` writes its own failures
+    // there — "EnvironmentLocationNotFound", a bad interpreter, a broken
+    // activation — and a doctor that discarded them reported "the probe printed
+    // no answer", which is a symptom rather than a reason. On the Mac the person
+    // reading that line is Owen, and conda's sentence is the one he needs.
+    let err = '';
     let done = false;
     const finish = (probeError: string | null) => {
       if (done) return;
       done = true;
-      const checks = [envCheck, ...mlxProbeChecks(probeLines(out), probeError), weightsCheck(baseDir)];
+      const checks = [
+        envCheck,
+        ...mlxProbeChecks(probeLines(out), probeError, err),
+        weightsCheck(baseDir),
+      ];
       resolve(mlxResult(checks, remedy, mlxVoiceNotes(baseWeightsOk(baseDir)), envPrefixOf(invocation)));
     };
     let proc: ReturnType<typeof spawn>;
     try {
       proc = spawn(invocation.command, args, { env: spawnEnv, windowsHide: true });
-    } catch (err) {
-      finish(err instanceof Error ? err.message : String(err));
+    } catch (spawnErr) {
+      finish(spawnErr instanceof Error ? spawnErr.message : String(spawnErr));
       return;
     }
     const timer = setTimeout(() => {
@@ -280,9 +289,37 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
       finish(`the narrator-mlx probe did not answer within ${PROBE_TIMEOUT_MS / 1000} s`);
     }, PROBE_TIMEOUT_MS);
     proc.stdout?.on('data', (c: Buffer) => { out += c.toString('utf8'); });
-    proc.on('error', (err) => { clearTimeout(timer); finish(err.message); });
-    proc.on('close', () => { clearTimeout(timer); finish(null); });
+    proc.stderr?.on('data', (c: Buffer) => { err += c.toString('utf8'); });
+    proc.on('error', (spawnErr) => { clearTimeout(timer); finish(spawnErr.message); });
+    // A NON-ZERO EXIT IS A PROBE ERROR. The python program catches every question
+    // it asks, so it exits 0 even on a machine with no mlx at all — a non-zero
+    // code therefore means conda or the interpreter failed before the program
+    // ran, which is a different failure from any row and must not be reported as
+    // four silent rows.
+    proc.on('close', (code) => {
+      clearTimeout(timer);
+      finish(code === 0 ? null : `${describeInvocation(invocation)} exited ${code}${stderrTail(err)}`);
+    });
   });
+}
+
+/** `conda run … python`, as a person would type it, for an error message. */
+function describeInvocation(invocation: { command: string; args: string[] }): string {
+  return [invocation.command, ...invocation.args].join(' ');
+}
+
+/**
+ * The last of stderr, ready to append to a sentence — or '' when there was none.
+ *
+ * TAILED, not truncated arbitrarily: a conda traceback's LAST lines carry the
+ * reason and its first lines carry the banner, and this string lands in a modal
+ * that is one paragraph wide.
+ */
+function stderrTail(err: string): string {
+  const text = err.trim();
+  if (!text) return '';
+  const tail = text.length > 400 ? `…${text.slice(-400)}` : text;
+  return `: ${tail.split('\n').map((l) => l.trim()).filter(Boolean).join(' / ')}`;
 }
 
 /** `conda run --no-capture-output -p <prefix> python` → `<prefix>`. */
@@ -305,14 +342,18 @@ function mlxResult(
  * failure — the program prints all four unconditionally, so an absent one means
  * the interpreter died partway, which is not a pass.
  */
-function mlxProbeChecks(seen: Map<string, string>, probeError: string | null): HiggsCheck[] {
+function mlxProbeChecks(
+  seen: Map<string, string>, probeError: string | null, stderr: string,
+): HiggsCheck[] {
   const value = (key: string): string | undefined => seen.get(key);
   const failed = (key: string): string => {
     if (probeError) return `The probe did not run: ${probeError}`;
     const answer = value(key);
     if (answer === undefined) {
+      // WITH WHATEVER THE PROBE SAID ON STDERR. The interpreter died partway
+      // through and its complaint is the only evidence of why.
       return 'The probe printed no answer for this, which means the interpreter died partway '
-        + 'through — the environment is not usable as it stands.';
+        + `through — the environment is not usable as it stands${stderrTail(stderr)}`;
     }
     return answer;
   };
@@ -376,33 +417,44 @@ function mlxProbeChecks(seen: Map<string, string>, probeError: string | null): H
 
 /** Does the base weights directory hold everything the MLX backend opens? */
 function baseWeightsOk(baseDir: string): boolean {
-  return missingWeightFiles(baseDir).length === 0;
+  return weightsProblem(baseDir) === null;
 }
 
-/** What the base weights directory is missing, named file by file. */
-function missingWeightFiles(baseDir: string): string[] {
+/**
+ * What is wrong with the base weights directory, as a sentence — or null.
+ *
+ * THE ERRNO IS PART OF THE ANSWER. An earlier version caught the `readdir` and
+ * reported "missing the directory itself" for every failure, which makes ENOENT
+ * (download the weights), EACCES (a permissions problem on Application Support)
+ * and EIO (a failing external disk — Owen keeps models on one) look identical
+ * and sends all three to the same wrong fix. Node's own message names the syscall
+ * and the path, so it is quoted rather than paraphrased.
+ *
+ * ONE `readdir` ANSWERS BOTH QUESTIONS — the named files and the shard scan — so
+ * the row costs one directory read rather than one per file.
+ */
+function weightsProblem(baseDir: string): string | null {
   let entries: string[];
   try {
     entries = fs.readdirSync(baseDir);
-  } catch {
-    return ['the directory itself'];
+  } catch (err) {
+    return `${baseDir} could not be read: ${err instanceof Error ? err.message : String(err)}.`;
   }
-  const missing: string[] = MLX_BASE_REQUIRED_FILES
-    .filter((f) => !fs.existsSync(path.join(baseDir, f)));
+  const missing: string[] = MLX_BASE_REQUIRED_FILES.filter((f) => !entries.includes(f));
   if (!entries.some((e) => e.endsWith('.safetensors'))) missing.push('*.safetensors (the weights)');
-  return missing;
+  if (missing.length === 0) return null;
+  return `${baseDir} is missing ${missing.join(', ')}.`;
 }
 
 function weightsCheck(baseDir: string): HiggsCheck {
-  const missing = missingWeightFiles(baseDir);
+  const problem = weightsProblem(baseDir);
   return {
     id: 'weights',
     label: 'Higgs v3 base weights',
-    ok: missing.length === 0,
-    ...(missing.length === 0 ? {} : {
-      detail: `${baseDir} is missing ${missing.join(', ')}. The MLX backend loads the merged `
-        + 'weights from that directory and has no default and no search — download '
-        + 'bosonai/higgs-audio-v3-tts-4b (~8.5 GB) into it.',
+    ok: problem === null,
+    ...(problem === null ? {} : {
+      detail: `${problem} The MLX backend loads the merged weights from that directory and has `
+        + 'no default and no search — download bosonai/higgs-audio-v3-tts-4b (~8.5 GB) into it.',
     }),
   };
 }

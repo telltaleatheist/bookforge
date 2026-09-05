@@ -87,7 +87,7 @@ interface HiggsCatalogVoice {
         <p>
           <strong>Higgs Audio v3</strong> clones a narrator from up to 30&nbsp;seconds of
           reference audio, or renders from a fine-tuned checkpoint.
-          @if (doctor()?.arm === 'mlx') {
+          @if (hostArm() === 'mlx') {
             On this Mac it runs <strong>in-process on mlx-audio</strong>, in the
             <code>narrator-mlx</code> environment — there is no server and no WSL.
           } @else {
@@ -104,7 +104,7 @@ interface HiggsCatalogVoice {
       <!-- ── The environment ─────────────────────────────────────────────── -->
       <div class="section">
         <div class="section-head">
-          <h4>{{ doctor()?.arm === 'mlx' ? 'Rendering environment' : 'Serving environment' }}</h4>
+          <h4>{{ hostArm() === 'mlx' ? 'Rendering environment' : 'Serving environment' }}</h4>
           <div class="head-actions">
             <desktop-button size="sm" variant="secondary"
                             [disabled]="busy()" (clicked)="runDoctor()">
@@ -117,8 +117,14 @@ interface HiggsCatalogVoice {
               spawned wsl.exe on a Mac would look like a broken app rather than a
               button that does not apply. The remedy line below says what to do
               instead — it comes from the doctor, which knows which arm it ran.
+
+              KEYED ON THE HOST, NOT ON THE DOCTOR'S ANSWER. The doctor's reply
+              is null while the first check is in flight AND after a check that
+              FAILED — and a Windows machine whose doctor cannot answer is exactly
+              the one whose owner needs Install/Repair. Gating the button on the
+              reply would take the repair door away at the moment it is wanted.
             -->
-            @if (doctor()?.arm === 'wsl') {
+            @if (hostArm() === 'wsl') {
               <desktop-button size="sm" variant="primary"
                               [disabled]="busy()" (clicked)="install()">
                 {{ installing() ? 'Installing…' : (doctor()?.valid ? 'Repair' : 'Install') }}
@@ -126,6 +132,13 @@ interface HiggsCatalogVoice {
             }
           </div>
         </div>
+
+        @if (hostArm() === null) {
+          <p class="check-fail">
+            This build did not report which platform it is running on, so this page cannot say
+            which Higgs backend applies. The check rows below are still the doctor's own.
+          </p>
+        }
 
         @if (doctorError(); as err) {
           <p class="check-fail">Could not run the check: {{ err }}</p>
@@ -287,6 +300,29 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   readonly log = signal<string | null>(null);
 
   readonly busy = computed(() => this.checking() || this.installing());
+
+  /**
+   * WHICH ARM THIS MACHINE IS — from the host, not from the doctor's reply.
+   *
+   * The two are the same answer (`higgsDoctor()` dispatches on the same
+   * `process.platform`), but they are not available at the same times: the
+   * doctor's reply is absent while the first check runs and absent again after a
+   * check that FAILED, and a Windows machine whose doctor cannot answer is
+   * precisely the one whose owner wants Install/Repair. So the page's own
+   * layout — heading, explainer, which buttons exist — keys on the host, and only
+   * the CHECK ROWS come from the doctor.
+   *
+   * `null` when this build did not report a platform at all. That is not a
+   * platform to guess at, and the template says so instead of quietly deciding
+   * this is not Windows.
+   */
+  readonly hostArm = computed<'wsl' | 'mlx' | 'none' | null>(() => {
+    const platform = (window as any).electron?.platform;
+    if (typeof platform !== 'string' || !platform) return null;
+    if (platform === 'win32') return 'wsl';
+    if (platform === 'darwin') return 'mlx';
+    return 'none';
+  });
 
   private unsubscribe: (() => void) | null = null;
 

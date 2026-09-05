@@ -423,7 +423,7 @@ stays in `tool-paths.ts` where it was.
 | `process.platform` | doctor | `arm` |
 |---|---|---|
 | `win32` | the WSL doctor below, with the **"WSL2 for Higgs" toggle as its own row in front of it** | `wsl` |
-| `darwin` | `checkDarwinHiggsSetupAsync()` — one `conda run -n narrator-mlx python -c` | `mlx` |
+| `darwin` | `checkDarwinHiggsSetupAsync()` — one `conda run --no-capture-output -p <narrator-mlx prefix> python -c` | `mlx` |
 | anything else | a refusal that **names the platform** (BookForge builds neither backend on Linux) | `none` |
 
 **Why this exists.** Until 2026-09-05 there was one doctor and it answered
@@ -447,7 +447,9 @@ panel has to be able to show that.
 
 #### The macOS doctor's checks
 
-**ONE `conda run` round trip**, same rule as the WSL one, and it **imports, it
+**ONE `conda run` round trip** — by PREFIX (`-p`), never by name (`-n`), because that
+is what `narratorNativePython('higgs')` builds and the whole point is to probe the
+environment the render will use — same one-round-trip rule as the WSL one, and it **imports, it
 does not load** — the backend module imports mlx lazily by design, so the whole
 probe is about a second rather than 8.5 GB.
 

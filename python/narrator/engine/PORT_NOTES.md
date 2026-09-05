@@ -1794,8 +1794,9 @@ The host side of this arm, recorded here because the *reason* is narrator's: one
 engine with two backends means "is Higgs ready" has two different answers.
 `electron/higgs-doctor.ts` dispatches on `process.platform` - win32 to the WSL
 doctor (vllm-omni, the two site-packages patches, the launch script), darwin to a
-new one that probes THIS arm's requirements in one `conda run -n narrator-mlx
-python -c`: `mlx`, `mlx_audio` at the pinned `MLX_AUDIO_VERSION`,
+new one that probes THIS arm's requirements in one `conda run --no-capture-output
+-p <narrator-mlx prefix> python -c` (by PREFIX, as `narratorNativePython('higgs')`
+builds it, not by name): `mlx`, `mlx_audio` at the pinned `MLX_AUDIO_VERSION`,
 `narrator.engine.higgs.mlx_backend` importable with `PYTHONPATH` set as the spawn
 sets it, and the `NARRATOR_HIGGS3_MLX_MODEL` directory holding the files
 `load_model`/`post_load_hook` open (`config.json`, `tokenizer.json`,

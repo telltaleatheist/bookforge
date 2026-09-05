@@ -44,8 +44,11 @@ const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
 if (!fs.existsSync(path.join(DIST, 'higgs-doctor.js'))) {
+  // exitCode + return, NOT process.exit(): this report goes to a pipe under
+  // tools/run-keepers.js, and a hard exit truncates whatever is still buffered.
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 
 // ── The fixture machine ──────────────────────────────────────────────────────
@@ -89,11 +92,22 @@ const childProcess = require('child_process');
 const realSpawn = childProcess.spawn;
 /** The last spawn each doctor asked for. */
 let lastSpawn = null;
-/** What the fake child prints on stdout, and how it ends. */
-let probeScript = { stdout: '', exit: 'close' };
+/**
+ * What the fake child prints, and how it ends — set per fixture by `onPlatform`.
+ *
+ * NULL MEANS "NO PROBE MAY RUN", and the stub throws if one does. There is no
+ * default script: a fixture that expects no spawn (linux, an unresolvable env)
+ * and silently got a blank one would report the doctor as green-by-accident, and
+ * the blank default is exactly the shape of that mistake.
+ */
+let probeScript = null;
 
 childProcess.spawn = function (command, args, opts) {
   lastSpawn = { command, args, opts };
+  if (probeScript === null) {
+    throw new Error(
+      `a probe ran on a fixture that declared none: ${command} ${args.join(' ')}`);
+  }
   const child = new EventEmitter();
   child.stdout = new EventEmitter();
   child.stderr = new EventEmitter();
@@ -104,7 +118,10 @@ childProcess.spawn = function (command, args, opts) {
       return;
     }
     if (probeScript.stdout) child.stdout.emit('data', Buffer.from(probeScript.stdout, 'utf8'));
-    child.emit('close', 0);
+    if (probeScript.stderr) child.stderr.emit('data', Buffer.from(probeScript.stderr, 'utf8'));
+    // THE EXIT CODE IS PART OF THE FIXTURE. `conda run` failing before the
+    // program runs is a different machine from one where every import failed.
+    child.emit('close', probeScript.code === undefined ? 0 : probeScript.code);
   });
   return child;
 };
@@ -157,7 +174,7 @@ function onPlatform(opts, fn) {
   // doctor's own guard has to see the fixture's platform too.
   const realOsPlatform = os.platform;
   os.platform = () => opts.platform;
-  probeScript = opts.probe ?? { stdout: '', exit: 'close' };
+  probeScript = opts.probe === undefined ? null : opts.probe;
   if (opts.weights === 'present') {
     fs.mkdirSync(BASE_DIR, { recursive: true });
     fs.writeFileSync(path.join(BASE_DIR, 'config.json'), '{}');
@@ -320,13 +337,68 @@ check('a Mac failure names the MAC remedy — never "Settings → Higgs" alone',
   },
 ));
 
-check('the missing weights are named FILE BY FILE', () => onPlatform(
+check('an unreadable weights directory names the ERRNO, not just "missing"', () => onPlatform(
   { platform: 'darwin', probe: MLX_GREEN, weights: 'absent' },
   async () => {
     const res = await doctorMod.higgsDoctor();
     const weights = res.checks.find((c) => c.id === 'weights');
     assert.ok(weights && !weights.ok);
     assert.match(weights.detail, /higgs-models[\\/]base/);
+    // ENOENT (download the weights), EACCES (a permissions problem on
+    // Application Support) and EIO (a failing external disk — Owen keeps models
+    // on one) are three different fixes, and "missing the directory itself"
+    // sends all three to the first.
+    assert.match(weights.detail, /ENOENT/,
+      'the readdir errno was swallowed — the row cannot tell a dead disk from a missing download');
+  },
+));
+
+check('a weights directory missing ONE file names that file', () => onPlatform(
+  { platform: 'darwin', probe: MLX_GREEN, weights: 'present' },
+  async () => {
+    fs.rmSync(path.join(BASE_DIR, 'tokenizer.json'));
+    const res = await doctorMod.higgsDoctor();
+    const weights = res.checks.find((c) => c.id === 'weights');
+    assert.strictEqual(weights.ok, false, 'a half-downloaded checkpoint reported as ready');
+    assert.match(weights.detail, /tokenizer\.json/);
+  },
+));
+
+check('a NON-ZERO probe exit carries conda\'s own reason, not "no answer"', () => onPlatform(
+  {
+    platform: 'darwin', weights: 'present',
+    probe: {
+      stdout: '', exit: 'close', code: 1,
+      stderr: 'EnvironmentLocationNotFound: Not a conda environment: /opt/.../narrator-mlx\n',
+    },
+  },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    for (const id of ['python', 'mlx', 'mlx-audio', 'narrator']) {
+      const row = res.checks.find((c) => c.id === id);
+      assert.strictEqual(row.ok, false);
+      // The line Owen actually reads has to hold the REASON and the exit code.
+      assert.match(row.detail, /EnvironmentLocationNotFound/,
+        `${id} discarded stderr — the row states a symptom, not a reason`);
+      assert.match(row.detail, /exited 1/, `${id} does not report the exit code`);
+    }
+  },
+));
+
+check('an interpreter that dies PARTWAY still surfaces its stderr', () => onPlatform(
+  {
+    platform: 'darwin', weights: 'present',
+    probe: {
+      stdout: 'python=3.11.9\n', exit: 'close', code: 0,
+      stderr: 'Fatal Python error: Segmentation fault\n',
+    },
+  },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    const row = res.checks.find((c) => c.id === 'mlx');
+    assert.strictEqual(row.ok, false);
+    assert.match(row.detail, /Segmentation fault/,
+      'the only evidence of why the probe stopped was thrown away');
   },
 ));
 
@@ -483,6 +555,25 @@ check('the higgs:doctor IPC handler DISPATCHES rather than calling the WSL docto
   assert.match(body, /higgsDoctor\(\)/, 'the handler does not call the platform dispatcher');
   assert.doesNotMatch(body, /checkWslHiggsSetup/,
     'the handler is hard-wired to the WSL doctor again — this is the Mac defect');
+});
+
+check('the Settings Install/Repair button is gated on the HOST, not on the doctor\'s reply', () => {
+  // `doctor()` is null while the first check is in flight AND after a check that
+  // FAILED, and a Windows machine whose doctor cannot answer is exactly the one
+  // whose owner needs the repair door. Source-level because this is a template
+  // condition; the shape of the mistake is `doctor()?.arm === 'wsl'` guarding the
+  // button, which is what shipped in this branch's first draft.
+  const src = fs.readFileSync(path.join(
+    REPO, 'src', 'app', 'features', 'settings', 'components',
+    'higgs-voices-panel.component.ts'), 'utf-8');
+  const install = src.indexOf('(clicked)="install()"');
+  assert.ok(install > 0, 'the panel no longer has an install button');
+  // The nearest @if above the button is the one that gates it.
+  const guard = src.lastIndexOf('@if (', install);
+  const condition = src.slice(guard, src.indexOf('{', guard));
+  assert.match(condition, /hostArm\(\)/, 'the install button is not keyed on the host platform');
+  assert.doesNotMatch(condition, /doctor\(\)/,
+    'the repair door disappears exactly when the doctor cannot answer');
 });
 
 check('the mlx-audio pin agrees with the backend module', () => {
