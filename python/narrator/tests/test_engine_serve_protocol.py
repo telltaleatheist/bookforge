@@ -83,6 +83,25 @@ class Worker:
             return None
         return json.loads(line)
 
+    def died_because(self):
+        """Why the worker produced nothing - its own stderr, and its exit code.
+
+        `readline()` blocks, so "no output" is never a slow start: it means the
+        process ENDED. Without this the failure reads "worker produced no output
+        at all", which is indistinguishable between a crash, a refused engine
+        and a missing dependency. The worker prints all three on stderr.
+        """
+        try:
+            self.proc.wait(timeout=60)
+        except Exception:
+            pass
+        try:
+            err = self.proc.stderr.read() or ''
+        except Exception:
+            err = '(stderr unreadable)'
+        return (f'worker exited {self.proc.returncode} before its handshake.\n'
+                f'--- stderr ---\n{err.strip() or "(empty)"}')
+
     def read_until(self, *types, limit=400):
         """Every message up to and including the first of `types`."""
         out = []
@@ -166,7 +185,8 @@ class ServeProtocolTest(unittest.TestCase):
 
     def _ready(self):
         msg = self.w.read()
-        self.assertIsNotNone(msg, 'worker produced no output at all')
+        if msg is None:
+            self.fail(self.w.died_because())
         self.assertEqual(msg['type'], 'ready')
         return msg
 

@@ -22,7 +22,7 @@ The three objects it produces:
 No torch, no vLLM, no mlx at import: the decode methods this file calls import
 theirs inside themselves, exactly as before.
 """
-from ..protocol import BackendSpec, StopPolicy
+from ..protocol import BackendSpec, EdgeFade, StopPolicy
 from .snac import SAMPLES_PER_FRAME, TOKENS_PER_FRAME, WindowedFrameEmitter
 
 
@@ -143,9 +143,9 @@ class OrpheusInterfaceMixin:
     pads = True
 
     # No assembler-side fade: _save_audio trims the clip and writes the silence
-    # around it itself, so the edges are already silent. (Higgs needs 10-25 ms;
-    # see protocol.Engine.edge_fade_ms.)
-    edge_fade_ms = 0.0
+    # around it itself, so the edges are already silent. Matches
+    # assemble.engine_profiles.PROFILES['orpheus'] (0.0 / 0.0).
+    edge_fade = EdgeFade(0.0, 0.0)
 
     # The eight stock voices. Custom fine-tunes are NOT here - they arrive with
     # a merged model dir or a LoRA adapter and use their token verbatim.

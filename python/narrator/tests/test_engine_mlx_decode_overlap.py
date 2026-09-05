@@ -62,11 +62,30 @@ _PYTHON_ROOT = os.path.dirname(os.path.dirname(_HERE))
 if _PYTHON_ROOT not in sys.path:
     sys.path.insert(0, _PYTHON_ROOT)
 
+def _mlx_import_error(exc: BaseException) -> bool:
+    """True only for "MLX is not installed here".
+
+    NARROW ON PURPOSE (found on the Mac, 2026-09-04). This guard used to be a
+    bare `except Exception`, so an ImportError raised by narrator's OWN layout -
+    a module moved, a name not re-exported - was reported as "mlx is not
+    installed (Mac only)" and SKIPPED 25 tests on a machine that has mlx. A skip
+    that hides a broken import is worse than a failure: the suite goes green on
+    the one machine that can actually exercise this code. Anything that is not
+    an ImportError naming an mlx package is re-raised.
+    """
+    if not isinstance(exc, ImportError):
+        return False
+    name = (getattr(exc, 'name', '') or '').split('.')[0]
+    return name in ('mlx', 'mlx_lm', 'mlx_audio')
+
+
 try:
     import mlx.core as mx
     mx.set_default_device(mx.cpu)
     _HAS_MLX = True
-except Exception:                      # noqa: BLE001 - any import failure = skip
+except ImportError as exc:
+    if not _mlx_import_error(exc):
+        raise
     mx = None
     _HAS_MLX = False
 

@@ -37,6 +37,7 @@ import time
 import numpy as np
 
 from ..engine.orpheus.prompt import PromptMixin
+from ..engine.protocol import EdgeFade
 from ..engine.orpheus.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
 
 SAMPLE_RATE = 24000
@@ -81,7 +82,7 @@ class FakeEngine(PromptMixin):
     SAMPLE_RATE = SAMPLE_RATE
     # Orpheus bakes its gaps into each chunk and needs no assembler-side fade.
     pads = True
-    edge_fade_ms = 0.0
+    edge_fade = EdgeFade(0.0, 0.0)
     VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'}
     DEFAULT_VOICE = 'leah'
 
@@ -273,8 +274,8 @@ class FakeHiggsEngine(FakeEngine):
       pads = False        Higgs emits bare speech - no silence, no fade at
                           either end - so the manifest's gapBefore/gapAfter are
                           live and the assembler realizes them.
-      edge_fade_ms = 10   the assembler fades each chunk edge (-30 dB -> about
-                          -46 dB) before joining.
+      edge_fade 10/25     the assembler fades each chunk edge (-30 dB -> about
+                          -46 dB) before joining, asymmetrically.
 
     It also streams the way the real HiggsEngine does: ONE whole-row chunk at
     retirement, because a delay-pattern codec has no sound windowed decode (see
@@ -289,7 +290,7 @@ class FakeHiggsEngine(FakeEngine):
     # that selected it (see fake_engine_class).
     ENGINE_ID = 'higgs'
     pads = False
-    edge_fade_ms = 10.0
+    edge_fade = EdgeFade(10.0, 25.0)
 
     @classmethod
     def resolve_load_voice(cls, voice, model_dir=None, adapter_dir=None,

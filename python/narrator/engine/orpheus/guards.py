@@ -30,7 +30,7 @@ class GuardsMixin:
     # once: the MLX decoder thread takes a retired row's _needs_resplit verdict
     # while the main thread takes another row's, and fast start makes that the
     # NORM rather than a rarity (a streamed row's verdict is taken on the
-    # decoder thread at every flush). The body makedirs, torchaudio.save's a
+    # decoder thread at every flush). The body makedirs, writes a
     # numbered stem, and - the part that actually corrupts - APPENDS a JSON line
     # to one shared events.jsonl. Two interleaved appends produce a half-written
     # record that no post-mortem can parse.
@@ -141,8 +141,6 @@ class GuardsMixin:
         the lock wraps every path including the early return."""
         import json as _json
         import numpy as np
-        import torch
-        import torchaudio
         # Same getattr as _reject_dir, for the same reason: the record's provenance
         # fields are an honest hole when there is no config, never an exception
         # that eats the whole record. (e2a: `getattr(self, 'session', None) or {}`.)
@@ -154,10 +152,13 @@ class GuardsMixin:
         stem = os.path.join(directory, f'{sentence_index:06d}_{reason}')
         seconds = None
         if audio_np is not None and len(audio_np) > 0:
-            wave = torch.from_numpy(np.asarray(audio_np)).float()
-            if wave.dim() == 1:
-                wave = wave.unsqueeze(0)
-            torchaudio.save(stem + '.wav', wave, self.SAMPLE_RATE)
+            wave = np.asarray(audio_np, dtype=np.float32)
+            # Same one-writer rule as the chunk files (audio.py:
+            # write_chunk_file): torchaudio.save is wheel-dependent - it routes
+            # through TorchCodec on current wheels and dies without FFmpeg
+            # dylibs. A post-mortem clip that fails to write is a post-mortem
+            # nobody can listen to, on exactly the run that needed it.
+            self.write_chunk_file(stem + '.wav', wave, self.SAMPLE_RATE)
             seconds = round(float(wave.shape[-1]) / self.SAMPLE_RATE, 3)
         record = {
             'sentence_index': sentence_index,

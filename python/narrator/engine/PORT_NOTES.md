@@ -666,10 +666,19 @@ now asserted contracts instead of holes:
 measured engines - Orpheus/SNAC and Higgs v2's 8-codebook delay pattern - and one
 rejected (Llasa-8B). This is what the extraction actually did.
 
-**Rule of the move: no Orpheus body changed.** The files moved; the class gained
-one mixin. Proof is the unchanged test suite: 136 engine tests on the Windows
-interpreter (43 skipped - the MLX ones) and the same 136 in WSL `orpheus_tts`,
-both OK, with the 103 that existed before untouched.
+**Rule of the move: no Orpheus METHOD BODY changed.** Not "two lines" - that
+was wrong and is corrected here. What actually changed in the moved files:
+
+| file | change |
+|---|---|
+| `orpheus/engine.py` | ONE import (`from .interface import OrpheusInterfaceMixin`) and the `class OrpheusEngine(...)` statement, which gained that mixin |
+| `orpheus/__init__.py` | ~15 lines: the package docstring's opening (it is now the Orpheus package, not `narrator.engine`) plus the `interface` imports and three `__all__` entries |
+
+Every other moved file is byte-identical (`git diff -M` shows pure renames), and
+no method body moved anywhere. Proof is the unchanged test suite: **147 engine
+tests** on the Windows interpreter (43 skipped - the MLX ones) and the same 147
+in WSL `orpheus_tts`, both OK, with the 103 that existed before the extraction
+untouched. The Higgs suites add **163** more, on both interpreters.
 
 ### 12.1 Old path -> new path
 
@@ -872,6 +881,57 @@ lands in `<campaign>/higgs/captures/`, `tests/test_higgs_v3.py`'s
 script-derived expectations are what it replaces, and `decode_response` is the
 single place any correction goes.
 
+### 12.10 The streaming wire: trim, gap, rate, and the `loaded` line
+
+`serve/worker.py:finalize_audio` used to do three things to every clip
+unconditionally. Two of them are Orpheus's, and one is the client's:
+
+- **The trim is ORPHEUS's** and now runs only for a `pads=True` engine. Orpheus
+  bakes its lead/trail silence in and its end-pause is long enough to hear as a
+  stall. Higgs emits bare speech, so the same 0.01-threshold trim would cut into
+  a quiet final consonant with no padding in front of it to absorb the cut.
+- **The 0.3 s gap is appended for EVERY engine, deliberately.** This is the
+  decision the review asked for. `pads` says who owns the silence INSIDE a chunk
+  file for ASSEMBLY; the streaming wire is a different contract, where the
+  player concatenates chunks with no gap of its own and the worker is the only
+  thing that can put one between two sentences. Dropping it for Higgs would make
+  every streamed sentence run into the next. The audiobook path never passes
+  through here - it writes chunk files, and the assembler realizes the
+  manifest's gaps.
+- **The rate is the LOADED ENGINE's**, not `DEFAULT_SAMPLERATE`. Both shipping
+  engines are 24 kHz, so no byte on either path changes today; what it prevents
+  is the next engine mis-timing every cue in a session.
+
+The `loaded` message gained four ADDITIVE fields - `engine`, `sampleRate`,
+`pads` and `edgeFadeMs: {in, out}` - so the pool can read the engine's edge
+contract instead of assuming Orpheus's. The existing reader takes `voice` and
+`backend` and ignores the rest, so nothing on the wire breaks.
+
+`edge_fade` is an `EdgeFade(in_ms, out_ms)`, not one float: Higgs's fade is
+ASYMMETRIC (10 in / 25 out) because a chunk ends on a decay the ear does not
+expect. The values must agree with `narrator/assemble/engine_profiles.py` -
+assembly's own copy of the table, which exists because assembly runs without an
+engine to ask - and `tests/test_engine_protocol.py` asserts they do.
+
+### 12.11 A worker that cannot render must not handshake
+
+Found on the Mac, 2026-09-04: `detect_backend()` swallowed every exception and
+"reported unknown", so an ImportError - which means NO engine will ever load in
+that process - still produced `{"type":"ready","device":"mlx"}`. The pool saw a
+healthy handshake and every generate answered "Model not loaded", forever.
+
+`detect_backend()` now raises, `main()` turns that into **exit 3 with the reason
+on stderr and no `ready` line**, and the same path catches an unservable
+`NARRATOR_ENGINE`. A backend NAME the worker does not recognise still returns
+None - the engine loaded and answered, we simply have no guard calibrated for
+what it said, which is a different thing from a dead worker.
+
+The MLX test modules had the same shape of bug and are fixed with it: their
+`except Exception` around the mlx import reported a narrator LAYOUT ImportError
+as "mlx is not installed (Mac only)" and skipped 25 tests on the one machine
+that can run them. They now catch only an ImportError naming `mlx`/`mlx_lm`/
+`mlx_audio` and re-raise anything else.
+
 ### 12.6 `NARRATOR_ENGINE`, and what it does NOT change
 
 `serve/worker.py` now picks its engine from `NARRATOR_ENGINE` (default
@@ -951,8 +1011,11 @@ notes describe, reproduced from narrator's own client.
   they belong in the component installer's recipe for that env, next to the
   `CUDA_HOME` / `VLLM_USE_FLASHINFER_SAMPLER` / `--attention-backend FLASH_ATTN`
   launch facts recorded in `higgs/v3_served.py`.
-- `pip install -e python/[higgs]` (or `[orpheus]`) into the matching env - the
-  two groups are mutually exclusive by design; see `python/pyproject.toml`.
+- `pip install -e python/[orpheus]` or `python/[higgs-v3-server]` into the
+  matching env - the groups are mutually exclusive by design (the v2 scaffold's
+  is `[higgs-v2-scaffold]`, and installing it is only for running that
+  reference implementation against a model); see `python/pyproject.toml`. NB
+  the v3 CLIENT needs none of them: numpy, soundfile and urllib.
 - A `higgs3` extra in `python/pyproject.toml` pins the SERVED env
   (torch 2.13.0+cu130, vllm 0.28.0, vllm-omni 0.28.0). It is a THIRD mutually
   exclusive group: it can share an env with neither Orpheus nor the v2
@@ -963,3 +1026,176 @@ notes describe, reproduced from narrator's own client.
 - No Higgs **v2** model has ever been loaded from narrator's code, and none is
   owed: v2 is scaffolding. Higgs **v3** rendered a sentence end to end - see
   12.7.
+
+### 12.8a One writer for every chunk file (ruled 2026-09-04, after the Mac run)
+
+**e2a's `torchaudio.save(..., format='flac')` is gone from the write path.** It
+was replaced, in `engine/orpheus/audio.py:AudioMixin.write_chunk_file`, by
+`soundfile.write(path, audio_float32, samplerate, subtype='PCM_16')` - on every
+backend (vLLM, MLX, transformers) and in every engine. This is a DELIBERATE
+DEVIATION from the port, for two measured reasons:
+
+1. **`torchaudio.save` is wheel-dependent.** On current wheels (torch 2.14 /
+   torchaudio 2.11) it routes through TorchCodec and needs the FFmpeg dylibs.
+   The Mac MLX run hit "TorchCodec is required" on EVERY SENTENCE until ffmpeg
+   was conda-installed. A renderer's file writer must not depend on a media
+   stack that may or may not be in the environment.
+2. **It is bit-depth-unstable.** The same call produced **PCM_24** there and
+   **PCM_16** under WSL/vLLM. Mixed bit depths across one session's chunks are
+   exactly what ffmpeg's concat demuxer drops frames on, SILENTLY - the failure
+   that has eaten sentences out of an assembled book before.
+
+`_write_silence` and the post-mortem reject clips (`guards.py:_keep_reject_locked`)
+go through the same writer; the container comes from the path's own extension
+(`.flac` for chunks, `.wav` for rejects) and the subtype is always stated, never
+inferred. **Reading is unchanged** - resume and `trim_audio` still use the ported
+torch path. `tests/test_engine_protocol.py:ChunkWriterTest` asserts a written
+FLAC reads back 24 kHz mono PCM_16 with the exact sample count, and AST-checks
+that nothing under `engine/orpheus/` calls `torchaudio.save` any more.
+
+### 12.8a-ii The minimal Mac (MLX) recipe, after the writer change
+
+Measured by the Mac validation run, 2026-09-04. The run itself PASSED end to
+end - 133/133 sentences rendered, fast start clean, 5.14x realtime - and these
+are the pins it needs:
+
+```
+mlx        >= 0.32.0     mx.new_thread_unsafe_stream (decode overlap; below it
+                         the engine degrades to serial, loudly)
+mlx-lm     == 0.31.3     THE fast-path pin. mlx_fastpath is version-pinned, not
+                         feature-detected; GenerationBatch exists only here
+mlx-audio  == 0.4.8      THE ONLY WORKING VERSION. 0.5.1 cannot render Orpheus:
+                         mlx_audio/lm/generate.py `_eos_ids` does
+                         `set(tokenizer.eos_token_ids)` on an int (128009) under
+                         transformers 5.x -> TypeError on EVERY generate. 0.3.x
+                         drags mlx-lm below the fast-path pin. 0.4.8 requires
+                         only mlx>=0.31.1, so all three coexist
+torch      >= 2.5        still required - see below
+snac, transformers       as the CUDA recipe
+```
+
+**torchaudio, torchcodec and ffmpeg are NO LONGER NEEDED** on this path. That is
+what the soundfile writer (12.8a) bought: the only thing that pulled them in was
+`torchaudio.save`, in the chunk writer and the reject-clip writer, and both now
+go through `soundfile`. `_save_audio`'s own arithmetic (a max, a scale, two
+concatenations) moved from torch to numpy with it.
+
+**torch itself does NOT drop out**, and this is stated plainly rather than
+claimed away: `trim_audio` - the read side the ruling preserves - is torch, and
+`_speech_rate` calls it for every chunk to compute the chars/sec guard;
+`_cleanup_memory` uses `torch.cuda` / `torch.mps`. So the Mac recipe still
+installs torch, but the CPU/MPS wheel with no media stack. Verified by AST over
+`engine/orpheus/**`: `torchaudio` now appears only in `asr_gate.py` (default
+OFF, not on the render path).
+
+### 12.8b `DefaultVoice`: the model's own voice is a shape, not an absence
+
+The app catalog ships a `default` Higgs v3 voice - no reference audio, which v3
+serves happily - and narrator refused it, because it arrived as a `ClipsVoice`
+with zero clips and `ClipsVoice` requires at least one. **That rule is right and
+stays**: a clone whose references went missing must be an error, never a silent
+downgrade to a different narrator. So "no reference" became its own member of
+the `VoiceRef` union.
+
+`DefaultVoice(kind='default')` carries `name`, `adapter_dir` and the two tuning
+fields. It sends **no `references` key at all**; the 30 s cap and the transcript
+law have nothing to apply to. `adapter_dir` is on it because a FINE-TUNE needs
+no reference clips either - its weights are the voice and its prompt is
+text-only - which is the third document shape the loader now accepts.
+
+> **Deviation, stated.** The review asked for "no fields beyond kind/name". A
+> clip-less ADAPTER entry - which the same instruction asks the loader to accept
+> - cannot then be represented at all, and the two tuning fields are what every
+> voice carries. So `DefaultVoice` has four fields, not one. Flagged rather than
+> silently widened.
+
+Three document shapes, all tested through the real loader and the real request
+builder (`tests/test_higgs_v3.py:VoiceDocumentShapesTest`):
+
+| entry | voice | request |
+|---|---|---|
+| `{"clips": [...]}` | `ClipsVoice` | one `references` entry |
+| `{"kind": "default"}` | `DefaultVoice` | no `references` key |
+| `{"kind": "adapter", "adapterDir": ...}` | `DefaultVoice` with `adapter_dir` | no `references` key |
+
+`{"clips": []}` is REFUSED and names `kind: 'default'` as what to say instead.
+An entry with no `clips`, no `adapterDir` and no `kind` is refused with what the
+default voice costs (12 % of the narrator ceiling) in the message.
+
+`max_chars_source` has a CLOSED vocabulary - `catalog` | `placeholder` |
+`length-sweep` (`protocol.MAX_CHARS_SOURCES`) - and is required whenever
+`max_chars` is set: a number whose provenance is unknown is one nobody can
+decide whether to trust.
+
+### 12.8c Fine-tuned Higgs voices are MERGED CHECKPOINTS
+
+Measured by the training side, 2026-09-04 (`HIGGS_FIELD_NOTES.md`):
+
+> **vllm-omni cannot load a LoRA at runtime.** It exposes no adapter flags at
+> all, and its `higgs_audio_v3` talker class does not implement `SupportsLoRA`.
+
+So there is no runtime adapter and no per-request adapter. Every fine-tuned
+Higgs voice ships as a MERGED CHECKPOINT DIRECTORY (~8.5 GB, Boson's layout) and
+the server is started ON that directory. The LoRA is the archival artifact;
+merging is a CPU step outside narrator.
+
+What that changed here:
+
+- `ADAPTER_STRATEGIES` is gone. There is one strategy, `CHECKPOINT_STRATEGY =
+  'checkpoint'`; `check_strategy` refuses `lora-modules` BY NAME citing
+  `SupportsLoRA`, and `merged-dir` as its old name.
+- The voice document's shape is `{"kind": "checkpoint", "checkpointDir": ...,
+  "maxChars": N}`, and `adapterDir` is refused by name with what to write
+  instead. `ClipsVoice.adapter_dir` / `DefaultVoice.adapter_dir` became
+  `checkpoint_dir`.
+- The served backend is KEYED ON ITS CHECKPOINT: a request for another voice is
+  a server RESTART (~55 s warm, up to ~300 s cold), and
+  `HiggsV3Engine.set_voice` refuses in place with that in the message.
+- **Which checkpoint is running cannot be discovered** - `/v1/models` reports
+  the served NAME (`higgs-v3`), not the path, and `serve_v3.sh` `exec`s a
+  hard-coded snapshot, so narrator can neither read it nor choose it. The
+  operator states it through `NARRATOR_HIGGS3_CHECKPOINT`. A checkpoint voice
+  with nothing stated is REFUSED, naming the variable; a stated one that
+  disagrees with the voice is refused as a mismatch; a match is logged as an
+  ASSERTION, not a verification. Unchecked, a server left running for another
+  voice renders a whole book in that narrator.
+
+**And the production path moved.** Owen, 2026-09-04 evening: production is
+FINE-TUNED VOICES ONLY - no zero-shot cloning expected. So the text-only request
+to a merged checkpoint (`DefaultVoice` with `checkpoint_dir`) is the primary,
+best-tested path, and the reference-clip path (`ClipsVoice`) is marked
+DIAGNOSTIC in its own docstring: kept working and tested because it is how a
+voice is auditioned before anyone trains it, and how a regression in the
+reference path is caught.
+
+**The chunk-tail sentinel trim is NOT baked into narrator.** It is a band-aid,
+and a token-level fix in vllm-omni's decode is queued on the training side.
+`HiggsV3Codec.decode()` therefore REFUSES - v3's tokens never reach this process
+and a client-side trim on top of the server's would eat real speech. What
+narrator does instead is DETECT a contaminated tail: `probe_tail_trim` renders
+one fixed-seed word at load and refuses a server whose last 300 ms is above
+-45 dBFS. That gate is about the SERVER's output, so it keeps working unchanged
+when the upstream fix lands and the site-packages patch goes away.
+
+### 12.9 Every guess in this work, and what would settle it
+
+Written down rather than buried, because each one is a place a reader should
+not assume measurement.
+
+| # | guess | how it would be settled |
+|---|---|---|
+| 1 | **`CONTEXT_TOKENS = 8192` for the v2 scaffold.** Taken from the plan and the v3 card. v2's Llama-3.2-3B backbone nominally carries more, and it was never probed. Conservative. | probe the v2 processor's max positions |
+| 2 | **`MAX_CHARS_PER_SEC` 20.0 on both Higgs engines.** Measured ceilings are 18.0 (v2 audition) and ~16.5 (v3 delivered); 20.0 is that plus headroom. It is ADVISORY - `coverage_check='asr'` is the real gate | an ASR coverage run over a book |
+| 3 | **v3 `max_chars = 600`.** The measured safe zone; the delivered render used 300 and 900 fails reproducibly. A PLACEHOLDER until the catalog carries it per (engine, voice) | catalog rows per voice |
+| 4 | **The response is a WAV file body.** From the render scripts, and now observed in the smoke - but there is still no byte-level capture. `decode_response` refuses a non-WAV 200 by name, so a wrong guess is loud rather than silent | a capture in `<campaign>/higgs/captures/` |
+| 5 | **The env var names** (`NARRATOR_HIGGS_VOICES`, `NARRATOR_HIGGS3_URL`, `NARRATOR_HIGGS3_SERVE_SCRIPT`, `NARRATOR_HIGGS3_ADAPTER_STRATEGY`, `NARRATOR_ENGINE`). Invented here; clips cannot ride a command line and there was no existing channel | the electron cut-over picks the names it will pass |
+| 6 | **The tail-trim probe's -45 dBFS gate.** Derived from two points: our own smoke measured -62.4 dBFS patched, and the campaign's diagnosis puts an unpatched tail near -31 dBFS. Two samples, not a distribution | run the probe against an unpatched server once |
+| 7 | ~~**The adapter strategy.**~~ SETTLED 2026-09-04: vllm-omni has no runtime LoRA (no adapter flags; the talker does not implement `SupportsLoRA`), so every voice is a merged checkpoint. See 12.8c | measured by the training side |
+| 8 | **`DefaultVoice` has four fields, not "kind/name".** See 12.8b - the review's wording would make a clip-less adapter entry unrepresentable | a ruling either way |
+| 9 | **`HiggsV3Engine.__init__` starts the server** (a constructor side effect). Reviewed and KEPT DELIBERATELY: `OrpheusEngine.__init__` loads its model, and both `serve/worker.py` and `render/worker.py` are written to that contract - deferring it for v3 alone would give those callers an engine that silently never started. Nothing needs an engine to ask a budget: `HiggsV3Budget(config)`, `higgs_v3_stop_policy(config)` and `HiggsV3Codec()` all answer with no server | a decision to change the contract for ALL engines at once |
+
+Two things the review flagged as guesses are now MEASURED-OR-REFUSED rather than
+assumed: silent server adoption (now `/v1/models` must name `higgs-v3`, and the
+adapter too) and the timeout leak (a failed load now stops the server in a
+`finally`). `finalize_audio` on served audio is a stated DECISION, not a guess -
+see 12.10.

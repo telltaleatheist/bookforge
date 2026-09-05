@@ -101,7 +101,7 @@ import urllib.request
 
 import numpy as np
 
-from ..protocol import BackendSpec, ClipsVoice
+from ..protocol import BackendSpec, ClipsVoice, DefaultVoice
 
 MODEL_ID = 'bosonai/higgs-audio-v3-tts-4b'
 SERVED_MODEL_NAME = 'higgs-v3'
@@ -117,6 +117,17 @@ SERVE_SCRIPT_ENV = 'NARRATOR_HIGGS3_SERVE_SCRIPT'
 BASE_URL_ENV = 'NARRATOR_HIGGS3_URL'
 #: The WSL distro to run the launch script in, on Windows.
 WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
+#: WHICH MERGED CHECKPOINT the server on that URL is running.
+#:
+#: It has to be told, and it cannot be discovered: vllm-omni's `/v1/models`
+#: reports the SERVED NAME (`higgs-v3`) and not the directory, and
+#: `serve_v3.sh` `exec`s a hard-coded snapshot path, so narrator can neither
+#: read the running server's checkpoint nor choose one at launch. For a
+#: fine-tuned voice the operator therefore starts the server on that checkpoint
+#: and states it here. It is an ASSERTION, not a verification - but a stated
+#: assertion that can be checked against the voice is worth far more than a
+#: silent assumption, which is a whole book in the wrong narrator.
+CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
 
 #: `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0. Sending no
 #: `extra_params` uses these verbatim, which is what the delivered render did.
@@ -288,43 +299,71 @@ def reference_for(voice: ClipsVoice) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Adapters: two strategies, neither exercised yet
+# Fine-tuned voices: MERGED CHECKPOINTS, one server each
 # ---------------------------------------------------------------------------
 
-#: How a fine-tuned v3 voice is served. WHICH ONE APPLIES IS NOT YET KNOWN:
-#: vllm-omni's LoRA support for this model class has not been exercised, and the
-#: training session will report it. Both are expressed so the answer is a
-#: catalog value, not a code change; an unknown value is refused by name.
+#: The only way vllm-omni serves a fine-tuned Higgs voice.
 #:
-#:   'lora-modules'  vllm-omni loads the adapter AT LAUNCH
-#:                   (`--enable-lora --lora-modules <name>=<path>`), so serving a
-#:                   different adapter means RESTARTING THE SERVER (55-297 s).
-#:   'merged-dir'    the adapter was merged into a full checkpoint, which is
-#:                   just a different model dir - also a restart, of the
-#:                   `vllm-omni serve <dir>` argument.
-ADAPTER_STRATEGIES = ('lora-modules', 'merged-dir')
+#: **THERE IS NO RUNTIME LoRA.** Measured by the training side, 2026-09-04
+#: (HIGGS_FIELD_NOTES.md): vllm-omni exposes no adapter flags at all, and its
+#: higgs_audio_v3 talker class does not implement `SupportsLoRA`. So a voice
+#: cannot be attached to a running server, and there is no per-request adapter
+#: either. Every fine-tuned voice ships as a MERGED CHECKPOINT DIRECTORY
+#: (~8.5 GB, Boson's own layout) and the server is started ON that directory.
+#: The LoRA is the archival artifact; merging is a CPU step that happens outside
+#: narrator.
+#:
+#: The consequence for this module: the running server is KEYED ON ITS
+#: CHECKPOINT DIR, and a request for a different voice is a server RESTART
+#: (~55 s warm, up to ~300 s cold).
+CHECKPOINT_STRATEGY = 'checkpoint'
+
+#: Refused by name. It was one of two candidate strategies while vllm-omni's
+#: LoRA support was unknown; it is now known not to exist.
+RETIRED_STRATEGIES = {
+    'lora-modules': (
+        'vllm-omni cannot load a LoRA at runtime: it exposes no adapter flags '
+        'and its higgs_audio_v3 talker does not implement SupportsLoRA '
+        '(measured 2026-09-04). A fine-tuned Higgs voice is a MERGED CHECKPOINT '
+        "directory served on its own - use kind 'checkpoint' with a "
+        'checkpointDir.'),
+    'merged-dir': (
+        "renamed to 'checkpoint' - the voice IS the checkpoint, and calling it a "
+        'merged ADAPTER dir kept implying a base model it sits on top of.'),
+}
 
 
-def adapter_launch_args(strategy: str, name: str, path: str) -> list:
-    """The extra `vllm-omni serve` arguments one adapter strategy needs.
+def check_strategy(strategy: str) -> str:
+    """The only strategy is `checkpoint`. Anything else is refused BY NAME.
 
-    Returned as data so a launcher - theirs or a future managed one - can carry
-    them, and so a test can assert them without a GPU. BOTH STRATEGIES REQUIRE A
-    SERVER RESTART; there is no per-request adapter path on this stack today.
+    A wrong strategy is a server that comes up serving the BASE voice and
+    renders a whole book in it, so this never guesses.
     """
-    if strategy not in ADAPTER_STRATEGIES:
+    if strategy == CHECKPOINT_STRATEGY:
+        return strategy
+    if strategy in RETIRED_STRATEGIES:
         raise ValueError(
-            f"Unknown Higgs v3 adapter strategy '{strategy}'. Known: "
-            f"{', '.join(ADAPTER_STRATEGIES)}. How vllm-omni takes a LoRA for "
-            'higgs_multimodal_qwen3 has NOT been exercised yet - if it cannot load '
-            "one, the fallback is a merged checkpoint served as its own model dir "
-            "('merged-dir'). Refusing to guess: the wrong strategy is a server that "
-            'comes up serving the BASE voice and renders a whole book in it.')
-    if not (path or '').strip():
-        raise ValueError(f"Higgs v3 adapter strategy '{strategy}' needs a path")
-    if strategy == 'lora-modules':
-        return ['--enable-lora', '--lora-modules', f'{name}={path}']
-    return []          # 'merged-dir': the path REPLACES the serve argument
+            f"Higgs v3 strategy '{strategy}' is retired: "
+            f'{RETIRED_STRATEGIES[strategy]}')
+    raise ValueError(
+        f"Unknown Higgs v3 voice strategy '{strategy}'. The only one is "
+        f"'{CHECKPOINT_STRATEGY}': a merged checkpoint directory, served on its "
+        'own.')
+
+
+def checkpoint_serve_target(checkpoint_dir: str) -> str:
+    """What `vllm-omni serve <...>` is pointed at for this voice.
+
+    It IS the checkpoint dir - there are no extra launch arguments, because
+    there is no adapter to name. Kept as a function so the one place that
+    decides "which directory does this voice's server run on" has a name and a
+    test.
+    """
+    if not (checkpoint_dir or '').strip():
+        raise ValueError(
+            'Higgs v3: a fine-tuned voice needs its merged checkpoint directory '
+            '(checkpointDir). There is no adapter to load onto a base server.')
+    return checkpoint_dir
 
 
 # ---------------------------------------------------------------------------
@@ -349,8 +388,9 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     """The POST body for one chunk, as work/render_final.py and work/confirm.py
     send it.
 
-    `voice` is a ClipsVoice (reference cloning) or None (the model's own default
-    voice - only ever legitimate for a smoke test, never for a book).
+    `voice` is a ClipsVoice (reference cloning), a DefaultVoice (the model's
+    own voice, or a fine-tune whose weights are the voice - no `references` key
+    at all), or None (the same, unnamed).
 
     `sampling` EMPTY OR NONE means the server's own defaults, which is what the
     delivered render used. Anything given rides in `extra_params`, never at the
@@ -367,7 +407,10 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     }
     if seed is not None:
         body['seed'] = int(seed)
-    if voice is not None:
+    if voice is not None and not isinstance(voice, DefaultVoice):
+        # A DefaultVoice sends NO `references` key: it IS the model's own voice,
+        # which v3 serves text-only. The 30 s cap and the transcript rules have
+        # nothing to apply to.
         body['references'] = [reference_for(voice)]
     if sampling:
         if 'seed' in sampling:
@@ -453,7 +496,8 @@ class HiggsV3ServedBackend:
     """
 
     def __init__(self, base_url: str = None, serve_script: str = None,
-                 wsl_distro: str = None, extra_args=None):
+                 wsl_distro: str = None, extra_args=None,
+                 checkpoint_dir: str = None):
         base_url = (base_url or os.environ.get(BASE_URL_ENV) or '').strip()
         serve_script = (serve_script
                         or os.environ.get(SERVE_SCRIPT_ENV) or '').strip()
@@ -479,6 +523,13 @@ class HiggsV3ServedBackend:
             base_url=self.base_url,
             notes=('higgs-audio-v3-tts-4b; requires patch_vllm.py and '
                    'patch_tail_trim.py in the higgs3 env'))
+        # THE SERVER IS KEYED ON THIS. A fine-tuned Higgs voice is a merged
+        # checkpoint the server runs ON, so "which voice is up" and "which
+        # directory is up" are the same question - and a request for another one
+        # is a restart, not a message.
+        self.checkpoint_dir = (checkpoint_dir
+                               or (os.environ.get(CHECKPOINT_ENV) or '').strip()
+                               or None)
         self._proc = None
         self._guest_pid = None
         self._pid_file = None
@@ -535,7 +586,7 @@ class HiggsV3ServedBackend:
                                      timeout=20)
                 if out.returncode == 0 and out.stdout.strip().isdigit():
                     self._guest_pid = int(out.stdout.strip())
-                    print(f'[HIGGS3] server guest pid {self._guest_pid}', flush=True)
+                    print(f'[HIGGS3] server guest pid {self._guest_pid}', file=sys.stderr, flush=True)
                     return self._guest_pid
             except (OSError, subprocess.SubprocessError):
                 pass
@@ -544,7 +595,7 @@ class HiggsV3ServedBackend:
             time.sleep(0.5)
         print('[HIGGS3] WARNING: the launch wrapper never wrote a pid; stop() will '
               'not be able to signal the server inside the distro if the launcher '
-              'exits without taking it down.', flush=True)
+              'exits without taking it down.', file=sys.stderr, flush=True)
         return None
 
     def start(self) -> None:
@@ -565,10 +616,10 @@ class HiggsV3ServedBackend:
             # fail to bind after paying a 55-297 s launch and ~14 GB.
             self.check_serves_expected_model()
             print(f'[HIGGS3] adopting the server already on {self.base_url}',
-                  flush=True)
+                  file=sys.stderr, flush=True)
             return
         command = self.launch_command()
-        print(f'[HIGGS3] launching: {" ".join(command)}', flush=True)
+        print(f'[HIGGS3] launching: {" ".join(command)}', file=sys.stderr, flush=True)
         self._proc = subprocess.Popen(command, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL)
         self._read_guest_pid()
@@ -587,17 +638,20 @@ class HiggsV3ServedBackend:
                 'render to it.') from exc
         return [row.get('id') for row in (payload.get('data') or [])]
 
-    def check_serves_expected_model(self, adapter: str = None) -> None:
+    def check_serves_expected_model(self, checkpoint_dir: str = None) -> None:
         """Prove the server on this port is OURS before anything is sent to it.
 
         `/health` answering 200 says only that SOMETHING is listening. This
-        checks `/v1/models` carries `higgs-v3`, and - when an adapter is
-        configured - that the adapter is served too (vllm-omni lists a
-        `--lora-modules` adapter as its own model id). Either missing is a
-        refusal by name, because the failure it prevents is silent: a leftover
-        server from another model or another adapter renders a whole book in the
-        wrong voice while every log line here names the right one.
+        checks `/v1/models` carries `higgs-v3`, and - when this voice is a
+        fine-tune - that the running server is the one started ON ITS
+        CHECKPOINT. The second check is why the backend records
+        `checkpoint_dir` at all: every Higgs voice is a whole merged checkpoint
+        and one server serves exactly one of them, so a leftover server from
+        ANOTHER voice answers `/health` and `/v1/models` identically and would
+        render a whole book in the wrong narrator while every log line here
+        named the right one.
         """
+        checkpoint_dir = checkpoint_dir or self.checkpoint_dir
         models = self.served_models()
         if SERVED_MODEL_NAME not in models:
             raise HiggsV3ServerError(
@@ -606,14 +660,35 @@ class HiggsV3ServedBackend:
                 "else's server (or one left over from another model) on this port - "
                 'refusing to render against it. Stop it, or point '
                 'NARRATOR_HIGGS3_URL somewhere else.')
-        if adapter:
-            wanted = os.path.basename(adapter.replace('\\', '/').rstrip('/'))
-            if wanted and wanted not in models:
+        if checkpoint_dir:
+            running = self.running_checkpoint()
+            if running is None:
                 raise HiggsV3ServerError(
-                    f"Higgs v3: this voice needs adapter '{wanted}' ({adapter}), but "
-                    f'the server at {self.base_url} serves {models}. An adapter is a '
-                    'LAUNCH argument (--lora-modules) - a running server cannot pick '
-                    'one up. Restart it with that adapter.')
+                    f'Higgs v3: this voice is the merged checkpoint {checkpoint_dir}, '
+                    f'but nothing says which checkpoint the server at {self.base_url} '
+                    f'is running. Set {CHECKPOINT_ENV} to the directory it was '
+                    'started on. It cannot be discovered: /v1/models reports the '
+                    'SERVED NAME, not the path, and serve_v3.sh execs a hard-coded '
+                    'snapshot - so narrator can neither read it nor choose it. '
+                    'Unchecked, a server left running for another voice would render '
+                    'this whole book in that narrator.')
+            if os.path.normpath(running) != os.path.normpath(checkpoint_dir):
+                # Both are stated; they disagree, which is decidable and fatal.
+                raise HiggsV3ServerError(
+                    f'Higgs v3: the server at {self.base_url} is running on '
+                    f'{running}, but this voice is {checkpoint_dir}. vllm-omni cannot '
+                    'load a voice into a running server - it has no adapter flags and '
+                    'its talker does not implement SupportsLoRA - so serving another '
+                    'voice means RESTARTING on that checkpoint.')
+        if checkpoint_dir:
+            print(f'[HIGGS3] serving checkpoint {checkpoint_dir} (asserted, not '
+                  'discovered - see CHECKPOINT_ENV)', file=sys.stderr, flush=True)
+
+    def running_checkpoint(self):
+        """Which merged checkpoint the server on this URL is running - as
+        recorded at construction or through `NARRATOR_HIGGS3_CHECKPOINT`, never
+        discovered. See CHECKPOINT_ENV for why it cannot be discovered."""
+        return self.checkpoint_dir
 
     #: The tail-trim probe's gate, in dBFS of RMS over the last 300 ms of a
     #: one-word render. MEASURED: narrator's own smoke against a PATCHED server
@@ -669,7 +744,7 @@ class HiggsV3ServedBackend:
                 'about -62 dBFS here.)')
         print(f'[HIGGS3] tail-trim probe OK: {dbfs:.1f} dBFS over the last '
               f'{self.TAIL_TRIM_WINDOW_SECONDS * 1000:.0f} ms '
-              f'(gate {self.TAIL_TRIM_MAX_DBFS:.0f})', flush=True)
+              f'(gate {self.TAIL_TRIM_MAX_DBFS:.0f})', file=sys.stderr, flush=True)
         return dbfs
 
     def ping(self) -> bool:
@@ -708,8 +783,9 @@ class HiggsV3ServedBackend:
     def stop(self, timeout: float = 60.0) -> None:
         """Terminate the server we launched, and VERIFY it is gone.
 
-        Idempotent, and it never kills a process it did not start (attach mode
-        leaves it running).
+        Idempotent, and it never kills a process it did not start: in ATTACH
+        mode (`NARRATOR_HIGGS3_URL`) it returns at once, leaving the server
+        running and unpolled.
 
         THE WINDOWS PROBLEM. On Linux the child IS `vllm-omni` (serve_v3.sh
         `exec`s it), so SIGTERM reaches the server. On Windows the child is
@@ -722,6 +798,13 @@ class HiggsV3ServedBackend:
         pkill pattern: `pkill -f "vllm-omni serve"` would kill another agent's
         server too.
         """
+        if not self.serve_script:
+            # ATTACH MODE: this backend never launched anything, so there is
+            # nothing of ours to terminate and nothing to wait for. Returning
+            # immediately is not a shortcut - polling the port here would block
+            # on somebody else's healthy server for the whole timeout and then
+            # report it as a leak.
+            return
         proc = self._proc
         self._proc = None
         if proc is not None and proc.poll() is None:
@@ -733,7 +816,7 @@ class HiggsV3ServedBackend:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
                 print('[HIGGS3] launcher did not stop on SIGTERM; killing',
-                      flush=True)
+                      file=sys.stderr, flush=True)
                 proc.kill()
                 try:
                     proc.wait(timeout=30)
@@ -755,10 +838,10 @@ class HiggsV3ServedBackend:
         if self._guest_pid is None:
             print(f'[HIGGS3] WARNING: something is still serving {self.base_url} '
                   'and this process did not record a guest pid for it; leaving it '
-                  'alone rather than killing a server it may not own.', flush=True)
+                  'alone rather than killing a server it may not own.', file=sys.stderr, flush=True)
             return
         print(f'[HIGGS3] server still up after the launcher exited; signalling '
-              f'guest pid {self._guest_pid}', flush=True)
+              f'guest pid {self._guest_pid}', file=sys.stderr, flush=True)
         self._signal_guest(self._guest_pid, 'TERM')
         deadline = time.time() + 30.0
         while time.time() < deadline:
@@ -766,7 +849,7 @@ class HiggsV3ServedBackend:
                 return
             time.sleep(1.0)
         print(f'[HIGGS3] guest pid {self._guest_pid} ignored TERM; sending KILL',
-              flush=True)
+              file=sys.stderr, flush=True)
         self._signal_guest(self._guest_pid, 'KILL')
 
     def _signal_guest(self, pid: int, signame: str) -> None:
@@ -776,7 +859,7 @@ class HiggsV3ServedBackend:
                 os.kill(int(pid), signal.SIGKILL if signame == 'KILL'
                         else signal.SIGTERM)
             except OSError as exc:
-                print(f'[HIGGS3] could not signal {pid}: {exc}', flush=True)
+                print(f'[HIGGS3] could not signal {pid}: {exc}', file=sys.stderr, flush=True)
             return
         wsl = shutil.which('wsl.exe') or 'wsl.exe'
         try:
@@ -784,7 +867,7 @@ class HiggsV3ServedBackend:
                             str(pid)], timeout=30, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f'[HIGGS3] could not signal guest pid {pid}: {exc}', flush=True)
+            print(f'[HIGGS3] could not signal guest pid {pid}: {exc}', file=sys.stderr, flush=True)
 
     # -- use -----------------------------------------------------------------
 

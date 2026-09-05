@@ -102,14 +102,27 @@ class TokenVoice:
 
 @dataclass(frozen=True)
 class ClipsVoice:
-    """Higgs: the voice is reference clips placed in the CHAT HISTORY, each as a
+    """Zero-shot cloning: reference clips placed in the CHAT HISTORY, each as a
     (user: transcript, assistant: audio) turn, optionally under a scene
-    description. Zero-shot - no weights of its own, unless `adapter_dir` names a
-    fine-tune to load on top (Higgs v2 is PEFT/SFT-able; a v3 deathstalker LoRA
-    is in training on Boson's own trainer as of 2026-09-04).
+    description.
+
+    **DIAGNOSTIC, NOT THE PRODUCTION PATH** (Owen, 2026-09-04 evening).
+    Production narration is FINE-TUNED VOICES ONLY - a merged checkpoint whose
+    weights are the voice, prompted with text alone (`DefaultVoice`). Zero-shot
+    cloning stays working and tested because it is how a voice is auditioned
+    before anyone trains it, and how a regression in the reference path is
+    caught - but it recovers only ~90 % of speaker identity (0.692 ECAPA cosine
+    against a 0.766 self-ceiling) and no book is expected to ship on it.
 
     Two engine-version constraints ride on this object rather than on a constant
     somewhere downstream, because they differ BETWEEN Higgs versions:
+
+    `checkpoint_dir` names a MERGED fine-tune whose weights are the voice. Not
+    an adapter: vllm-omni cannot load a LoRA at runtime (it exposes no adapter
+    flags and its talker class does not implement `SupportsLoRA`), so a Higgs
+    voice ships as a full ~8.5 GB checkpoint directory and the server is started
+    ON it. The LoRA is the archival artifact; merging is a CPU step outside
+    narrator.
 
     `allowed_controls`   the inline control tokens this engine understands
                          (v3: emotion / style / prosody / sfx; v2: none, and
@@ -138,7 +151,7 @@ class ClipsVoice:
     clips: Tuple[ReferenceClip, ...]
     name: Optional[str] = None
     scene: Optional[str] = None
-    adapter_dir: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
     allowed_controls: Tuple[str, ...] = ()
     max_reference_seconds: Optional[float] = None
     max_chars: Optional[int] = None
@@ -156,12 +169,71 @@ class ClipsVoice:
                 raise ValueError(
                     f'ClipsVoice takes ReferenceClip objects, got {type(clip).__name__} '
                     f'({clip!r}) - the transcript is part of the voice, not optional.')
-        if self.max_chars is not None and self.max_chars_source is None:
+        _check_max_chars(self)
+
+
+#: Where a voice's `max_chars` came from. A number with no provenance is one
+#: nobody can decide whether to trust, so the source is required alongside it.
+#:   catalog       declared for this voice in the voice document
+#:   placeholder   the engine's measured default for its BASE weights
+#:   length-sweep  measured for this voice by a coverage sweep
+MAX_CHARS_SOURCES = ('catalog', 'placeholder', 'length-sweep')
+
+
+@dataclass(frozen=True)
+class DefaultVoice:
+    """A TEXT-ONLY PROMPT: no reference audio in the request at all.
+
+    Two things wear this shape, and the second is **the production path**:
+
+      `checkpoint_dir` set   a FINE-TUNED voice. Its weights ARE the voice, so
+                             it needs no reference clips and is prompted with
+                             text alone. Owen, 2026-09-04: production narration
+                             is fine-tuned voices only. This is the primary,
+                             best-tested request narrator makes.
+      `checkpoint_dir` None  the model's OWN voice - the base checkpoint with
+                             no conditioning. A legitimate served shape (v3
+                             renders text-only happily, and the app catalog
+                             ships exactly one such entry) and the right thing
+                             for a smoke test or a demo. KNOW WHAT IT COSTS:
+                             0.093 ECAPA cosine against the narrator, 12 % of
+                             the 0.766 self-ceiling. It is never what a book
+                             asked for by accident.
+
+    It is a separate member of the union rather than "a ClipsVoice with no
+    clips" because those are different things and only one of them is
+    intentional - `ClipsVoice` keeps its >= 1 clip rule, so a clone that lost
+    its references is still an error rather than a silent downgrade to this.
+    """
+    name: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
+    max_chars: Optional[int] = None
+    max_chars_source: Optional[str] = None
+    kind: str = field(default='default', init=False)
+
+    def __post_init__(self):
+        _check_max_chars(self)
+
+
+def _check_max_chars(voice) -> None:
+    """Every voice's chunk size must say where it came from."""
+    if voice.max_chars is None:
+        if voice.max_chars_source is not None:
             raise ValueError(
-                f'ClipsVoice({self.name!r}) carries max_chars={self.max_chars} with no '
-                "max_chars_source. Say where it came from ('catalog' or "
-                "'placeholder') - a number whose provenance is unknown is one nobody "
-                'can decide whether to trust.')
+                f'{type(voice).__name__}({voice.name!r}) has max_chars_source '
+                f'{voice.max_chars_source!r} with no max_chars.')
+        return
+    if voice.max_chars_source is None:
+        raise ValueError(
+            f'{type(voice).__name__}({voice.name!r}) carries '
+            f'max_chars={voice.max_chars} with no max_chars_source. Say where it '
+            f"came from ({' | '.join(MAX_CHARS_SOURCES)}) - a number whose "
+            'provenance is unknown is one nobody can decide whether to trust.')
+    if voice.max_chars_source not in MAX_CHARS_SOURCES:
+        raise ValueError(
+            f'{type(voice).__name__}({voice.name!r}): max_chars_source '
+            f'{voice.max_chars_source!r} is not one of '
+            f"{' | '.join(MAX_CHARS_SOURCES)}.")
 
 
 @dataclass(frozen=True)
@@ -176,12 +248,46 @@ class DescriptionVoice:
             raise ValueError('DescriptionVoice requires a description')
 
 
-VoiceRef = Union[TokenVoice, ClipsVoice, DescriptionVoice]
+VoiceRef = Union[TokenVoice, ClipsVoice, DefaultVoice, DescriptionVoice]
 
 
 # ---------------------------------------------------------------------------
 # Stopping
 # ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class EdgeFade:
+    """The fade an ASSEMBLER applies at each end of a chunk, in milliseconds.
+
+    ASYMMETRIC ON PURPOSE, and that is why this is not one number: a chunk
+    begins on an attack the ear expects and ends on a decay it does not, so the
+    tail needs more than twice the window the head does. Higgs measured 10 in /
+    25 out to take a decoded edge from about -30 dB to -45..-48 dB; Orpheus is
+    0/0 because it trims and pads its own edges, so a chunk FLAC is already the
+    complete unit.
+
+    `as_manifest()` is the manifest's `edgeFadeMs` block, and the values here
+    must agree with `narrator.assemble.engine_profiles.PROFILES` - the
+    assembler's copy of the same table, which exists because assembly runs on a
+    machine with no engine to ask. `tests/test_engine_protocol.py` asserts the
+    two agree; a disagreement is an audiobook that clicks at every join.
+    """
+    in_ms: float = 0.0
+    out_ms: float = 0.0
+
+    def __post_init__(self):
+        if self.in_ms < 0 or self.out_ms < 0:
+            raise ValueError(
+                f'EdgeFade({self.in_ms}, {self.out_ms}): a fade is a non-negative '
+                'number of milliseconds.')
+
+    @property
+    def is_none(self) -> bool:
+        return self.in_ms == 0.0 and self.out_ms == 0.0
+
+    def as_manifest(self) -> dict:
+        return {'in': float(self.in_ms), 'out': float(self.out_ms)}
 
 
 @dataclass(frozen=True)
@@ -468,17 +574,36 @@ class Engine(Protocol):
     #: either end). The SentenceSink reads this to decide whether to write the
     #: silence itself.
     pads: bool
-    #: Milliseconds of fade the ASSEMBLER must apply at each chunk edge before
-    #: joining. Orpheus 0 (it trims and pads its own edges). Higgs 10-25: after
-    #: the codec's sentinel run is content-trimmed the edge still sits near
-    #: -30 dB and clicks on a join; the fade takes it to -45..-48 dB. Travels
-    #: with the engine, not with the assembler, because it is a property of the
-    #: codec's edges.
-    edge_fade_ms: float
+    #: The fade the ASSEMBLER must apply at each chunk edge before joining, as
+    #: an `EdgeFade(in_ms, out_ms)`. Orpheus 0/0 (it trims and pads its own
+    #: edges). Higgs 10/25: after the codec's sentinel run is content-trimmed
+    #: the edge still sits near -30 dB and clicks on a join, and the fade takes
+    #: it to -45..-48 dB. Travels with the engine, not with the assembler,
+    #: because it is a property of the codec's edges - and it must agree with
+    #: `narrator.assemble.engine_profiles.PROFILES`, which is assembly's copy.
+    edge_fade: EdgeFade
     #: 'vllm' | 'mlx' | 'transformers' | ... - which runtime is serving.
     backend: str
     #: The voice this engine renders by default.
     voice: str
+
+    def resolve_load_voice(self, voice, model_dir=None, adapter_dir=None,
+                           base_dir=None) -> str:
+        """Validate a load request's voice AS THIS ENGINE understands one, and
+        return the normalized name. Raise, with a message a user can act on, for
+        anything this engine cannot serve.
+
+        A CLASSMETHOD in every implementation: it runs BEFORE the engine exists,
+        because it is what decides whether to build one.
+
+        This is on the protocol because "what is a voice" is the single biggest
+        thing that differs between engines and the one place a wrong answer is
+        invisible. Orpheus's is a token - eight stock ones, or anything verbatim
+        when a modelDir/adapterDir names weights. Higgs's is a key in a voice
+        document. A worker that checked Higgs loads against Orpheus's allowlist
+        rejected every real Higgs voice by name ("Unknown Orpheus voice
+        'deathstalker'"), which is exactly how this member came to exist.
+        """
 
     def backend_spec(self) -> BackendSpec:
         """Where this engine's weights run - in this process, or in a server it
@@ -516,6 +641,9 @@ class Engine(Protocol):
 
 __all__ = [
     'BackendSpec',
+    'DefaultVoice',
+    'EdgeFade',
+    'MAX_CHARS_SOURCES',
     'Budget',
     'ClipsVoice',
     'Codec',
