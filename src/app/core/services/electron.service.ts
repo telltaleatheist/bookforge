@@ -2396,16 +2396,23 @@ export class ElectronService {
 
   /** Plan a processing run without queueing it. */
   /**
-   * Has this project's book had the narration text cleanup, and is it still the
-   * last word on its text?
+   * Has this project's book had the narration text cleanup?
    *
-   * Read-only. The Narrate door asks before it queues anything, so a missing or
-   * stale cleanup can be OFFERED rather than thrown from inside a running job.
+   * Read-only. The Narrate door asks before it queues anything, so a cleanup
+   * that has never run can be OFFERED rather than thrown from inside a running
+   * job. `cleanupDone` is the flag the door gates on; the richer `readiness` and
+   * `fileState` are provenance the offer can quote.
    */
   async narrationTextReadiness(
     projectDir: string, askedPath?: string, familyId?: string,
   ): Promise<{
     success: boolean;
+    /**
+     * THE FLAG: has the cleanup ever run on this project's chain? False when the
+     * chain cannot be named at all, because a project that cannot say it has
+     * been cleaned gets the same offer everybody else does.
+     */
+    cleanupDone?: boolean;
     /** The CHAIN's answer, or null when this project's chains cannot name one. */
     readiness?: { ok: true; at: string; model: string }
       | { ok: false; state: 'missing' | 'stale'; reason: string }
@@ -2802,6 +2809,43 @@ export class ElectronService {
       type: options.type ?? 'question',
     });
     return { confirmed };
+  }
+
+  /**
+   * Ask a question with THREE answers: the recommended one, another real one,
+   * and not doing it at all.
+   *
+   * A confirm dialog can only say yes or no, and folding a second real answer
+   * into Cancel makes the dialog describe an outcome it does not produce — the
+   * user who presses "Cancel" meaning "don't run the cleanup" has also cancelled
+   * the thing they came to do. This renders the same in-app
+   * {@link DesktopDialogComponent} every other popup uses, with a third button
+   * beside the primary one.
+   *
+   * NEVER collapses into a boolean: the caller handles 'cancel' as its own
+   * outcome, because a dismissal is not one of the two answers and must not
+   * quietly become whichever looks safer.
+   */
+  async showChoiceDialog(options: {
+    title: string;
+    message: string;
+    detail?: string;
+    /** The recommended answer. Primary-styled, and what Enter takes. */
+    confirmLabel: string;
+    /** The other real answer, beside it. */
+    alternateLabel: string;
+    cancelLabel?: string;
+    type?: 'none' | 'info' | 'error' | 'question' | 'warning';
+  }): Promise<'confirm' | 'alternate' | 'cancel'> {
+    return this.dialog.choose({
+      title: options.title,
+      message: options.message,
+      detail: options.detail,
+      confirmLabel: options.confirmLabel,
+      alternateLabel: options.alternateLabel,
+      cancelLabel: options.cancelLabel,
+      type: options.type ?? 'question',
+    });
   }
 
   /** Clear ALL persisted editor state for a project's source (deletions,

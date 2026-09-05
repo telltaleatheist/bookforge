@@ -7,6 +7,7 @@ import type { PassJobConfig } from '@shared/processing/pass-types';
 import type {
   ArtifactRef, FoundryJobLineage, JobType as EngineJobType,
 } from '@shared/queue/engine-types';
+import type { NarrationTextCleanupChoice } from '@shared/queue/narration-run';
 
 /**
  * Minimum span, in seconds, before a chunk-rate window is reported at all.
@@ -373,6 +374,17 @@ export interface TtsConversionConfig {
   // Per-job choice from the wizard (default ON there when the engine is Orpheus).
   // false/absent = zero behavioral change.
   finalDenoise?: boolean;
+  /**
+   * WHETHER THE NARRATION TEXT CLEANUP IS REQUIRED OF THIS RUN — the user's own
+   * answer, carried to `prepareNarrationInput` and read there by name.
+   *
+   * Set on every narration run this app composes (shared/queue/narration-run.ts
+   * states it always). It is optional HERE, and only here, because this
+   * interface also describes rows persisted in queue.json by builds that had no
+   * such field — and the step is where that absence is refused, in one sentence,
+   * rather than quietly read as either answer.
+   */
+  textCleanup?: NarrationTextCleanupChoice;
 }
 
 // Translation job configuration (auto-detects source language)

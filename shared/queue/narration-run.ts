@@ -221,7 +221,36 @@ export interface NarrationRunSettings {
    * a cache nobody mentioned is an hour of GPU thrown away silently.
    */
   readonly startFresh: boolean;
+  /**
+   * WHETHER THE NARRATION TEXT CLEANUP IS REQUIRED OF THIS RUN.
+   *
+   * Owen, 2026-09-05: *"make it so i dont HAVE to run cleanup. give me a skip
+   * button on that cleanup modal that appears."* So the cleanup gate is a
+   * question with three answers now — run it, skip it, or don't narrate — and
+   * this is the third of them travelling with the run.
+   *
+   * `'required'` is the ordinary answer and means exactly today's behaviour: the
+   * render door reads the book's stamp and REFUSES an unstamped book by name.
+   * `'skipped'` is set ONLY when the user was shown the offer and chose to
+   * narrate the book as printed; the door then says so, loudly, in the job log
+   * and in the prep provenance, and reads the digits as they stand.
+   *
+   * Stated always, never defaulted downstream. A run that could not say which
+   * of the two it is would be deciding, in whichever direction some `??`
+   * happened to lean, whether an hour of GPU reads "1933" or "nineteen
+   * thirty-three".
+   */
+  readonly textCleanup: NarrationTextCleanupChoice;
 }
+
+/**
+ * The two answers a run can carry about the narration text cleanup.
+ *
+ * Declared once, here, because the same word travels from the modal through the
+ * queue's job config into `prepareNarrationInput`'s options, and a second
+ * spelling of it anywhere on that path is a second answer to the same question.
+ */
+export type NarrationTextCleanupChoice = 'required' | 'skipped';
 
 // ────────────────────────────────────────────────────────────────────────────
 // The configs
@@ -251,6 +280,15 @@ export interface NarrationTtsConfig {
   readonly skipAssembly: boolean;
   readonly finalDenoise: boolean;
   readonly startFresh: boolean;
+  /**
+   * The user's answer about the cleanup, carried all the way to the door.
+   *
+   * `startParallelConversion` hands it to `prepareNarrationInput`, which either
+   * consults the book's stamp (`'required'`) or announces the skip and reads the
+   * book as printed (`'skipped'`). Not optional: see
+   * {@link NarrationRunSettings.textCleanup}.
+   */
+  readonly textCleanup: NarrationTextCleanupChoice;
 }
 
 /** Re-render the sentences through an RVC model. */
@@ -460,6 +498,20 @@ export function requireNarrationRun(
   if (!settings.ttsEngine) {
     throw new Error('No TTS engine is selected, so there is nothing to render this book with.');
   }
+  // Checked at RUNTIME as well as in the types, because one caller is an IPC
+  // door (main's `bookforge.narrate`, ordered from the hosted Foundry window)
+  // and a field that arrived as undefined there would reach the render door as
+  // neither answer — where the only remaining behaviours are "refuse the book"
+  // and "read the digits as printed", and picking either silently is a decision
+  // nobody made.
+  if (settings.textCleanup !== 'required' && settings.textCleanup !== 'skipped') {
+    throw new Error(
+      `Cannot queue narration for ${book.epubPath}: the run does not say whether the narration `
+      + `text cleanup is required of it (got ${JSON.stringify(settings.textCleanup)}). It is `
+      + "'required' unless the user was shown the cleanup offer and chose to narrate the book as "
+      + 'printed.'
+    );
+  }
 }
 
 /** Where the assembled audiobook is written, inside the project. */
@@ -535,6 +587,7 @@ export function narrationTtsStep(
       // Only consumed when this step assembles inline, i.e. when nothing follows it.
       finalDenoise: settings.finalDenoise,
       startFresh: settings.startFresh,
+      textCleanup: settings.textCleanup,
     },
   };
 }
