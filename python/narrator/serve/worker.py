@@ -223,13 +223,20 @@ def _engine_config(**kwargs):
 # normalizes upstream (BookForge's own model pass over the narration copy).
 # Mirror the common cases here so "$5.50", "1995", "50%" read naturally.
 # Guarded: if num2words isn't importable, pass through. That guard is the
-# behaviour this file has always had - it is not a new one - and it is why
-# num2words is an OPTIONAL dependency of the streaming worker rather than a
-# required one of the engine.
+# behaviour this file has always had - it is not a new one.
+#
+# BUT num2words IS NOW A DECLARED BASE DEPENDENCY of narrator (2026-09-05), and
+# this path is NOT dead: `normalize_for_tts` runs on every `generate` and every
+# streamed batch row, which is the browser extension's listen path. The
+# audiobook path normalizes upstream in BookForge and never arrives here. The
+# guard therefore covers a MISCONFIGURED env, not a supported one - so it
+# catches ImportError ONLY. A bare `except Exception` would swallow a broken
+# install, a version incompatibility or a circular import and silently read
+# "$5.50" out as punctuation for a whole session.
 try:
     from num2words import num2words as _num2words
     _HAS_NUM2WORDS = True
-except Exception:
+except ImportError:
     _HAS_NUM2WORDS = False
 
 
@@ -361,6 +368,27 @@ _ACTIVE_SAMPLERATE = DEFAULT_SAMPLERATE
 #: Whether the loaded engine BAKES its own silence into a clip (`Engine.pads`).
 #: Orpheus does; Higgs does not. Read by finalize_audio - see there.
 _ACTIVE_PADS = True
+
+
+def _uses_orpheus_token_pipeline(engine) -> bool:
+    """True when this worker must drive the engine through ORPHEUS's own render
+    methods rather than through `render_audio(text, index=i)`.
+
+    THE DISCRIMINATOR IS THE ENGINE, NOT THE BACKEND NAME. The mlx / vllm /
+    transformers arms below call `_generate_mlx_safe`, `_generate_mlx_batch_audio`,
+    `_generate_audio_vllm_safe`, `_guard_truncation` and `_tokens_to_audio` -
+    every one of them an OrpheusEngine method. They used to be selected by
+    `engine.backend`, which is a RUNTIME name and not an engine: Higgs v3 on the
+    Mac loads through mlx-audio and truthfully reports `backend == 'mlx'` while
+    having none of those methods, so a Higgs load would have been routed into
+    Orpheus's MLX ladder and failed on the first sentence. The backend name now
+    only picks BETWEEN Orpheus's three.
+
+    Every other engine renders one chunk with `render_audio` - Higgs v2's
+    scaffold, Higgs v3 served, Higgs v3 on MLX - and an engine that offers
+    neither is a named error, never a fallback.
+    """
+    return getattr(engine, 'ENGINE_ID', None) == 'orpheus'
 
 
 def _edge_fade_of(engine):
@@ -943,7 +971,27 @@ class OrpheusStreamServer:
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
             return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
-        if orph.backend == 'mlx':
+        if not _uses_orpheus_token_pipeline(orph):
+            # NOT AN ORPHEUS ENGINE. Higgs v3 - served by vllm-omni on
+            # Windows/Linux, in-process through mlx-audio on the Mac. Either
+            # way there is no token stream on this side to decode and none of
+            # Orpheus's re-render ladders apply (v3 stops on its own; what it
+            # does instead is drop the tail of a long chunk, which is a PACKER
+            # concern - StopPolicy.max_chars - not a retry). One call, one
+            # waveform.
+            self._reject_per_request_voice(v)   # one voice per loaded engine
+            render = getattr(orph, 'render_audio', None)
+            # `index` seeds the row (seed + i). The sequential fallback in
+            # _generate_audio_batch passes the row's own index, so a batch does
+            # not render every sentence from the same draw; a single 'generate'
+            # is index 0, which is the whole batch it is.
+            if render is None:
+                raise RuntimeError(
+                    f"engine '{getattr(orph, 'ENGINE_ID', '?')}' is not Orpheus and "
+                    'offers no render_audio(text). This worker has no way to render '
+                    'one sentence with it.')
+            audio = render(clean, index=index)
+        elif orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
             # sentence boundaries if that render hit the token cap, so a long sentence
@@ -966,25 +1014,12 @@ class OrpheusStreamServer:
                 v
             )
         elif orph.backend not in ('vllm', 'mlx', 'transformers'):
-            # A SERVED engine - Higgs v3 under vllm-omni. The model is behind an
-            # HTTP boundary, so there is no token stream on this side to decode
-            # and none of Orpheus's re-render ladders apply (v3 stops on its own;
-            # what it does instead is drop the tail of a long chunk, which is a
-            # PACKER concern - StopPolicy.max_chars - not a retry). One call, one
-            # waveform.
-            self._reject_per_request_voice(v)   # one voice per server process
-            render = getattr(orph, 'render_audio', None)
-            # `index` seeds the row (seed + i). The sequential fallback in
-            # _generate_audio_batch passes the row's own index, so a batch does
-            # not render every sentence from the same draw; a single 'generate'
-            # is index 0, which is the whole batch it is.
-            if render is None:
-                raise RuntimeError(
-                    f"engine '{getattr(orph, 'ENGINE_ID', '?')}' reports backend "
-                    f"'{orph.backend}', which is neither one of Orpheus's three nor "
-                    'an engine offering render_audio(text). This worker has no way '
-                    'to render one sentence with it.')
-            audio = render(clean, index=index)
+            # An ORPHEUS engine reporting a backend Orpheus does not have. Not a
+            # served engine - that arm is the first branch now - so there is
+            # nothing calibrated to render it with.
+            raise RuntimeError(
+                f"Orpheus reports backend '{orph.backend}', which is none of its "
+                'three (vllm / mlx / transformers). This worker has no path for it.')
         else:
             self._reject_per_request_voice(v)   # transformers: same one-voice limit
             audio = orph._tokens_to_audio(
@@ -1010,7 +1045,7 @@ class OrpheusStreamServer:
         row_voices = [self._row_voice(voices[i] if voices else None)
                       for i in range(len(texts))]
 
-        if orph.backend == 'vllm':
+        if _uses_orpheus_token_pipeline(orph) and orph.backend == 'vllm':
             from vllm import TokensPrompt
             results = [None] * len(texts)
             nonempty = [i for i, c in enumerate(cleaned) if c]
@@ -1075,7 +1110,7 @@ class OrpheusStreamServer:
                     results[i] = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
             return results
 
-        if orph.backend == 'mlx':
+        if _uses_orpheus_token_pipeline(orph) and orph.backend == 'mlx':
             # In-memory MLX batch (_generate_mlx_batch_audio): one BatchGenerator pass
             # over the cleaned sentences, ~3.6x per-sentence throughput. Returns raw
             # waveforms (None for empty/failed); finalize each, fill tiny silence ONLY
@@ -1537,7 +1572,10 @@ class OrpheusStreamServer:
             self._generate_batch_streaming(items, language)
             return
 
-        if self.orph.backend == 'mlx':
+        if _uses_orpheus_token_pipeline(self.orph) and self.orph.backend == 'mlx':
+            # ORPHEUS's MLX grouping (_generate_mlx_batch_audio). Higgs v3 on MLX
+            # also reports backend 'mlx' and has no such method: it renders one
+            # chunk at a time through the classic loop below.
             self._generate_batch_mlx_ordered(items, language)
             return
 

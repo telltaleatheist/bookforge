@@ -1202,3 +1202,249 @@ assumed: silent server adoption (now `/v1/models` must name `higgs-v3`, and the
 adapter too) and the timeout leak (a failed load now stops the server in a
 `finally`). `finalize_audio` on served audio is a stated DECISION, not a guess -
 see 12.10.
+
+---
+
+## 13. Higgs v3 on the Mac: the in-process MLX backend (2026-09-05)
+
+Owen, 2026-09-05: *"make sure the Mac has Higgs built in for streaming the model
+via the browser extension. I use that constantly on the Mac."*
+
+`higgs-v3` is now ONE engine with TWO backends, chosen by **platform** in
+`engine/registry.py:higgs_v3_backend_for_platform()`:
+
+| platform | backend | `BackendSpec.kind` | module |
+|---|---|---|---|
+| `darwin` | mlx-audio, in this process | `inprocess` | `engine/higgs/mlx_backend.py` |
+| everything else | vllm-omni over HTTP | `served` | `engine/higgs/v3_engine.py` |
+
+The id, the voice document, the geometry (8 codebooks / 25 fps / 24 kHz / 960
+samples), the budget, `pads = False`, `edge_fade = EdgeFade(10, 25)` and
+`StopPolicy(eos_reliable=True, resplit_on_cap=False, coverage_check='asr')` are
+IDENTICAL on both arms - they are properties of the model, not of the runtime.
+Only *where the weights run* differs.
+
+It is a function of `sys.platform` and NOT a capability probe. Whether
+mlx-audio happens to import is a question about an environment; answering it
+here would let a Mac with a broken install fall silently through to a served
+backend whose server does not exist on that machine. The platform decides; the
+backend then fails loudly (`detect_backend()` imports `mlx_audio.tts.utils`).
+
+### 13.1 What mlx-audio provides, and what narrator kept for itself
+
+mlx-audio **0.4.8** - the version already pinned for Orpheus - carries
+`tts/models/higgs_audio_v3/` (a Qwen3 backbone with a fused multi-codebook head)
+and `codec/models/higgs_audio/` (the 8-codebook DAC). Measured on the Mac
+2026-09-05: **the OFFICIAL `bosonai/higgs-audio-v3-tts-4b` safetensors load
+directly.** There is no MLX conversion step, no `mlx-community` repo, and no
+separate codec download - `post_load_hook` builds the tokenizer from
+`tokenizer.json` and the codec from the *same* shards
+(`HiggsAudioTokenizer.from_higgs_tts_checkpoint`, prefix
+`tied.embedding.modality_embeddings.0.model.`).
+
+narrator borrows the model, the weights, the tokenizer, the prompt builder, the
+codec and the per-step sampler (`generation.step`). It keeps the **generation
+loop** and the **decode**, for three reasons that are contracts rather than
+preferences:
+
+1. `Model.generate` applies `fade_in_ms=30, fade_out_ms=15` **by default**.
+   narrator's fade is the ASSEMBLER's (`edge_fade`); an engine that bakes one in
+   gets it applied twice.
+2. `Model.generate` has no `should_stop`, and yields once at the end. One v3
+   chunk is up to 600 characters - tens of seconds - so a cancel could only land
+   *between* rows. narrator's loop checks every step.
+3. `Model._decode_audio` hands the reverted frames to the codec with no check
+   that every code is a real code. See 13.3.
+
+### 13.2 `model_type` is passed EXPLICITLY, and that is a bug workaround
+
+v3's `config.json` says `model_type: "higgs_multimodal_qwen3"`. mlx-audio 0.4.8
+*does* carry the alias (`tts/utils.py:MODEL_REMAPPING`), but
+`utils.get_model_class` can never reach it: the branch that applies a remapping
+is `elif model_type_mapped is not None`, guarded by
+`if model_name is not None and model_type_mapped != model_type` - and a real
+remapping ALWAYS differs from its key, so the first branch always wins. That
+branch instead scans the model PATH's components for something named like a
+model directory. Measured:
+
+    ValueError: Model type higgs_multimodal_qwen3 not supported for tts.
+
+Naming the weights directory `higgs_audio_v3` would satisfy the scan. That is
+the wrong fix: it makes a load depend on a directory name, and it leaves the
+same scan free to pick a DIFFERENT architecture out of any other path component
+(`llama`, `spark` and `dense` are all real model packages). narrator passes
+`model_type='higgs_audio_v3'` and then ASSERTS the class it got
+(`_require_mlx_audio_surface`), so a hijack is loud rather than a book in the
+wrong model.
+
+### 13.3 The end of a chunk, at the TOKEN level - and why there is NO trim
+
+The brief for this work asked for "trim the trailing sentinel run by content".
+**It was not implemented, because the measurement says there is nothing to
+trim.** The mechanism, established rather than assumed:
+
+v3's audio vocabulary is 8 codebooks x 1024 real codes plus stream sentinels
+**1024 (BOC)** and **1025 (EOC)**; the codec's codebooks hold exactly 1024
+entries, and mlx's `nn.Embedding` does not bounds-check a gather, so a sentinel
+reaching the codec is whatever memory that index lands on, decoded as sound.
+The delay pattern offsets codebook `c` by `c` rows; reverting takes the diagonal
+`raw[t, c] = delayed[t + c, c]` and consumes `Q - 1 = 7` rows.
+
+- **Ramp-up**: rows 0..6 carry FORCED BOC in every codebook *above* the diagonal
+  (`generation.step`, the `delay_count < n` branch). The revert reads only ON and
+  BELOW it, so **no BOC can reach the codec from the head.**
+- **Clean end**: codebook 0 emits EOC at row `e`; the sampler runs `n - 2 = 6`
+  more rows and stops, so `L = e + 7` and `T = L - 7 = e`. The EOC diagonal sits
+  at `delayed[e + c, c]` = raw frame `t = e`, **one past the last frame the
+  revert produces.** On a clean ending the revert is EXACT.
+- **Ragged end** (cap hit, abandoned mid-ramp, an off-diagonal sentinel): a
+  sentinel CAN land inside a frame the revert keeps.
+
+Measured on the Mac, 2026-09-05, `bosonai/higgs-audio-v3-tts-4b`, a 107-char
+chunk, two fixed seeds, decoded twice over the SAME token matrix:
+
+| seed | rows | audio frames | out-of-range codes | tail 300 ms RMS, untreated | ...filtered |
+|---|---|---|---|---|---|
+| 1234 | 152 | 145 | **0** | -60.13 dB | -60.13 dB |
+| 1235 | 154 | 147 | **0** | -47.64 dB | -47.64 dB |
+
+Identical sample counts, identical RMS: on these endings a filter removes
+nothing and **a trailing trim would have removed real audio.** The "every chunk
+ends in garbage" story belongs to vllm-omni, whose upstream substituted **0** for
+every sentinel - 0 being a VALID code that decodes to real sound, so the
+substitution WAS the artifact - and then trimmed exactly one frame. mlx-audio
+does neither, so neither defect exists on this path.
+
+What narrator ships instead is a **sensor**, not a repair: after the revert, a
+frame is kept iff **all 8 codebooks are in [0, 1023]** (`real_code_frames`).
+Nothing out of range ever reaches the codec; nothing is substituted; a dropped
+frame is *gone*, not zeroed. `FrameFilterReport` separates leading / interior /
+trailing, and an INTERIOR drop is logged loudly because it is not an expected
+shape. No fade: a cut in the code domain lands on a frame boundary the codec
+never rendered, so there is nothing to click.
+
+The filter is pinned against the SAVED TOKEN MATRICES from the training side's
+vllm-omni investigation, copied read-only into
+`tests/golden/higgs_sentinel/talker_rows_*.npy`:
+
+| fixture | raw frames | kept | leading | interior | trailing |
+|---|---|---|---|---|---|
+| `talker_rows_{0,1,2,clean}` | 301/451/201/301 | raw-1 | 0 | 0 | **1** |
+| `talker_rows_capped` | 260 | 260 | 0 | 0 | **0** |
+| `talker_rows_partial_ramp` | 236 | 236 | 0 | 0 | **0** |
+| `talker_rows_pad_row` | 201 | 192 | 0 | **8** | 1 |
+
+`capped` and `partial_ramp` are the shapes upstream's blind one-frame trim was
+eating a REAL 40 ms frame on. `pad_row` is the one no positional trim can reach:
+8 interior frames of `-1` pad, which a trailing walk-back never sees. Those two
+rows are the whole argument for deciding by token identity.
+
+### 13.4 The worker no longer routes by backend NAME
+
+`serve/worker.py`'s mlx / vllm / transformers arms call ORPHEUS's own methods
+(`_generate_mlx_safe`, `_generate_mlx_batch_audio`, `_generate_audio_vllm_safe`,
+`_guard_truncation`, `_tokens_to_audio`). They were selected by
+`engine.backend`, which is a RUNTIME name and not an engine - and Higgs v3 on
+the Mac truthfully reports `backend == 'mlx'` while having none of them. A Higgs
+load would have gone straight into Orpheus's MLX ladder.
+
+`_uses_orpheus_token_pipeline(engine)` (`ENGINE_ID == 'orpheus'`) is now the
+discriminator, in three places: `_generate_audio`, `_generate_audio_batch` and
+the `generate_batch` dispatcher. The backend name only picks BETWEEN Orpheus's
+three. Everything else renders one chunk with `render_audio(text, index=i)`, and
+an engine offering neither is a named error.
+
+`serve/fake_engine.py:FakeHiggsEngine` gained `render_audio` with it. It had none
+- it reported `backend='transformers'` and was therefore driven through
+Orpheus's transformers arm, testing a code path no Higgs engine has ever used.
+
+### 13.5 Engine logs go to STDERR
+
+Found the first time this backend was driven through the real worker: a bare
+`print` from the engine layer lands on **stdout, which IS the JSON-lines
+protocol**, between two protocol messages. `mlx_backend._log()` writes to stderr.
+
+**PRE-EXISTING, NOT FIXED HERE, in Orpheus's column:** `serve/worker.py` does no
+stdout redirection, and `engine/orpheus/mlx_backend.py` prints its load banner,
+its cache limit and its batch budget with a bare `print` - so a real (non-fake)
+Orpheus worker emits non-JSON lines on the protocol stream. The protocol tests
+never see it because they run `--fake-engine`. A strict client (the smoke script
+here, and `tests/test_engine_serve_protocol.py`'s reader) treats a non-JSON line
+as a hard failure.
+
+### 13.6 What was measured, end to end (Mac, 2026-09-05)
+
+`python -m narrator.serve` with `NARRATOR_ENGINE=higgs-v3`, the `default` voice,
+through the real JSON-lines protocol - one `generate` and one `generate_batch`
+with one row streamed. **ALL PASS.**
+
+    {"type":"ready","device":"mlx","backend":"mlx"}
+    {"type":"loaded","voice":"base","backend":"mlx","engine":"higgs-v3",
+     "sampleRate":24000,"pads":false,"edgeFadeMs":{"in":10.0,"out":25.0}}
+
+| measurement | value |
+|---|---|
+| model download | 8.7 GiB, 12 files, official HF repo, not gated |
+| cold load (warm page cache) | 2.8 s; `ready` -> `loaded` 3.7 s |
+| peak memory, one row | 8.89 GB (10.32 GB across the two-seed probe) |
+| single `generate` | 5.90 s of audio in 3.37 s wall - **RTF 0.571** |
+| speech rate | 15.9 chars/s (probe: 18.2-18.5) |
+| batch of 2, one streamed | `batch_chunk` x2, `batch_item` x2, `batch_done` |
+
+Wav: `~/narrator-smoke/higgs3-mlx-one.wav`, copied to
+`C:\tmp\narrator-smoke\mac\`. **NOT EAR-CHECKED** - no one has listened to it.
+
+### 13.7 Streaming is PER ROW, and that is the honest cadence
+
+`generate_batch_stream` emits a streamed row as one `on_chunk(row, 0, pcm)` at
+retirement, then `on_row`. `codec().streaming_decoder()` returns None. A
+delay-pattern codec's window is incomplete in its last 7 frames by construction,
+and the ragged-ending filter can only run once generation has finished, so a
+mid-row window cannot tell a ramp-down from speech. `should_stop` IS checked
+every generation step, so a cancel lands in milliseconds even though audio does
+not. Whether the DAC decoder tolerates overlapped windows the way SNAC does is
+**unmeasured**; that is the open question if per-row latency turns out to matter
+for the browser extension.
+
+`BATCH_SIZE = 1`. mlx-audio HAS a `batch_generate` with a left-padded
+`BatchKVCache` and narrator does not use it: nothing here has measured it, and
+mixed-length MLX batches are a known corruption hazard on this runtime.
+
+### 13.8 Guesses and open questions in THIS work
+
+| # | guess / open question | how it would be settled |
+|---|---|---|
+| 1 | **`MLX_AUDIO_VERSION = '0.4.8'` is a hard pin and the private members it drives (`_build_prompt_embeddings`, `_audio_logits`, `_embed_audio_codes`) are not a public API.** A rename is a refusal, not an adaptation | re-measure the loop against a newer mlx-audio |
+| 2 | **Interior sentinels never occur on the MLX path.** 0 in 2 fixed-seed renders is not a distribution; the code logs them rather than assuming | a book's worth of renders with the warning watched |
+| 3 | **`max_chars = 600` and `max_chars_per_sec = 20.0` are inherited from the SERVED arm.** The tail-dropping that set 600 was measured on vllm-omni, not on MLX | a coverage sweep on the Mac |
+| 4 | **Per-row streaming is the only sound cadence.** Argued from the delay pattern; the DAC decoder's behaviour on overlapped windows is untested | a windowed-decode experiment against a whole-row reference |
+| 5 | **`NARRATOR_HIGGS3_MLX_MODEL`** - invented here, like the other v3 variables | the electron cut-over picks the names it will pass |
+| 6 | **The audio has not been heard.** Every number above is arithmetic | someone listens to `higgs3-mlx-one.wav` |
+
+### 13.9 Incident: the Mac GPU lock was overwritten (2026-09-05)
+
+Recorded so the procedure is fixed rather than remembered. This session took
+`/tmp/bookforge-mac-gpu.lock` with a plain truncating redirect:
+
+    echo "narrator-higgs-mlx $(date -u +%Y-%m-%dT%H:%M:%SZ)" > /tmp/bookforge-mac-gpu.lock
+
+The file did not exist when this session checked for it, and did when it wrote -
+another agent's 108-sentence Orpheus proof had taken it in between. `>` is a
+truncate, not a claim: it destroyed the holder's record. (The render survived on
+memory headroom.) The release was `rm -f`, which is the same defect at the other
+end - it removes whoever's lock is there.
+
+**The lock is exclusive, must be taken ATOMICALLY, and a lock you did not take
+is not yours to remove:**
+
+    # take: fails if it exists, so two writers cannot both win
+    ( set -o noclobber
+      echo "narrator-higgs-mlx $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+        > /tmp/bookforge-mac-gpu.lock ) 2>/dev/null \
+      || { echo "held by: $(cat /tmp/bookforge-mac-gpu.lock)"; exit 1; }
+    # ... load the model, do the work, then release ONLY your own:
+    grep -q narrator-higgs-mlx /tmp/bookforge-mac-gpu.lock \
+      && rm /tmp/bookforge-mac-gpu.lock
+
+If it exists, READ IT, name the holder in the log, and WAIT (poll 30-60 s, up to
+90 min). Never overwrite.

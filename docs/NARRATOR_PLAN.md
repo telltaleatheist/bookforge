@@ -458,6 +458,35 @@ cold start 297 s to /health (55 s only on a warm restart).
 3. The chunk-tail sentinel trim is a band-aid on the server side; a token-level fix in
    vllm-omni's decode is queued there. narrator never trims client-side.
 
+### Higgs on the Mac (BUILT + SMOKED 2026-09-05; full notes in engine/PORT_NOTES.md 13)
+
+Owen: *"make sure the Mac has Higgs built in for streaming the model via the browser
+extension. I use that constantly on the Mac."* Done. `higgs-v3` is now ONE engine with
+TWO backends chosen by `sys.platform`: **darwin -> in-process through mlx-audio**
+(`engine/higgs/mlx_backend.py`, `BackendSpec.kind == 'inprocess'`), everything else ->
+the vllm-omni server. Every number the plan states about v3 - 8 codebooks at 25 fps,
+24 kHz, `pads = False`, `EdgeFade(10, 25)`, EOS reliable, `coverage_check = 'asr'`,
+the voice document, the 45-token control allowlist - is unchanged on both arms; only
+where the weights run differs.
+
+- **No conversion step.** mlx-audio 0.4.8 (already pinned for Orpheus) loads the
+  official `bosonai/higgs-audio-v3-tts-4b` safetensors directly, codec included, from
+  the same shards. No mlx-community repo, no second download.
+- **Measured, Mac, 2026-09-05:** 8.7 GiB download; 2.8 s cold load; 8.89 GB peak;
+  **RTF 0.571** (5.90 s of audio in 3.37 s) at 15.9 chars/s. `ready`/`loaded` carry
+  `engine: higgs-v3`, `backend: mlx`, `sampleRate 24000`, `pads false`,
+  `edgeFadeMs {in:10, out:25}`. NOT ear-checked.
+- **Point 3 below ("narrator never trims client-side") STANDS, and now has a
+  measurement behind it on this path.** At the token level, mlx-audio's delay-pattern
+  revert already ends one frame BEFORE the EOC diagonal, so on a clean ending it is
+  exact and there is nothing to trim - 0 out-of-range codes reached the codec in 2/2
+  fixed-seed renders, and the trailing-300 ms RMS was identical treated and untreated.
+  What narrator ships is a token-identity GATE (keep a frame iff all 8 codebooks are
+  in [0, 1023]), which is a defect sensor for ragged endings, not a trim.
+- **Streaming is per ROW at retirement.** A delay-pattern codec has no sound windowed
+  decode. `should_stop` is checked every generation step, so a cancel still lands in
+  milliseconds.
+
 ## Higgs v3 path design points (Owen, approved 2026-09-05 night, relayed by the orpheus-training session)
 
 Orpheus keeps its 44 s sentence split. For Higgs v3:

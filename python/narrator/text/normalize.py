@@ -109,14 +109,18 @@ def _script_of(word: str) -> str:
 def _romanize(word: str) -> str:
     """One word token, romanized.
 
-    A Latin word is returned UNCHANGED and touches no import, which is why an
-    English book never reaches any of the branches below - the whole function is
-    an identity for Latin-script prose. (A digits-only token like '1993' scores
-    'unknown' and goes through `unidecode`, which returns it unchanged.)
+    A Latin WORD is returned UNCHANGED and touches no import. That is not the
+    same as "an English book never reaches the branches below", which is what
+    this docstring used to claim and which its own parenthetical contradicted:
+    a digits-only token like '1993' scores 'unknown', falls to the last line,
+    and IS passed through `unidecode` (which returns it unchanged). English
+    prose has numbers in it, so **`unidecode` is on the English prep path** and
+    is a declared base dependency of `narrator` for exactly that reason. e2a had
+    it for the same reason and simply imported it at the top of lib/core.py.
 
-    `unidecode` is imported HERE rather than at module scope, unlike e2a, which
-    imports it beside `pypinyin`/`pykakasi`/`phonemizer` at the top of core.py.
-    Every one of these is reachable only from a NON-LATIN word, so importing them
+    `unidecode` is nevertheless imported HERE rather than at module scope, so it
+    sits beside the three that are genuinely unreachable for Latin/digit tokens
+    and stay UNDECLARED - `pypinyin`, `pykakasi`, `phonemizer`. Importing those
     at module scope would make `narrator.text` un-importable on a machine that
     can still prep every English book it will ever be asked to. Declared in
     PORT_NOTES: the failure moves later, the output does not move at all.

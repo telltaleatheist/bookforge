@@ -336,6 +336,25 @@ class FakeHiggsEngine(FakeEngine):
         text = prompt.split(': ', 1)[-1]
         return list(range(self.frames_for(text) * 8))
 
+    def render_audio(self, text: str, seed=None, index: int = 0,
+                     should_stop=None) -> np.ndarray:
+        """ONE chunk in, one waveform out - the per-chunk entry point EVERY real
+        Higgs engine has (`HiggsEngine`, `HiggsV3Engine`, `HiggsV3MlxEngine`)
+        and the one the worker actually calls for a non-Orpheus engine.
+
+        Before the worker keyed its render arms on ENGINE_ID rather than on the
+        backend NAME, this fake was driven through
+        `_generate_tokens_transformers` + `_tokens_to_audio` - Orpheus's
+        transformers arm - because it reports `backend = 'transformers'`. It
+        therefore tested a code path no Higgs engine has ever used. Those two
+        methods stay (the v2 scaffold really does run on transformers, and the
+        geometry they encode is still 8 entries per frame), but this is the
+        method under test now.
+        """
+        if not (text or '').strip():
+            raise ValueError('FakeHiggsEngine.render_audio(): the chunk has no text')
+        return self.audio_for(text)
+
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:
         """Whole rows, at retirement - the real Higgs cadence."""
