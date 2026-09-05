@@ -1963,7 +1963,15 @@ class WindowsLaunchTest(_LaunchTestBase):
         backend._guest_pid = 4242
         calls = []
         real_run = v3_served.subprocess.run
-        v3_served.subprocess.run = lambda argv, **kw: calls.append(argv)
+
+        def fake_run(argv, **kw):
+            # The signal program prints the group it signalled; `_signal_guest`
+            # reads the return code and that stdout, so the fake answers as the
+            # real call does rather than returning None.
+            calls.append(argv)
+            return v3_served.subprocess.CompletedProcess(argv, 0, stdout='4242\n', stderr='')
+
+        v3_served.subprocess.run = fake_run
         try:
             backend._verify_gone(timeout=2)
         finally:
@@ -2479,6 +2487,113 @@ class VoiceDocumentShapesTest(V3TestCase):
         with self.assertRaises(ValueError) as caught:
             DefaultVoice(name='x', max_chars=600)
         self.assertIn('provenance', str(caught.exception))
+
+
+# =============================================================================
+# convert_many: the server is fed continuously
+# =============================================================================
+
+class ConvertManyTest(unittest.TestCase):
+    """The stream keeps exactly BATCH_SIZE rows in flight, refills a slot the
+    moment it retires, reports every row, and a dead server ends it without
+    submitting what was still queued. No server: `_convert_one` is faked."""
+
+    def engine(self, width, convert_one):
+        eng = HiggsV3Engine.__new__(HiggsV3Engine)
+        eng.BATCH_SIZE = width
+        eng._convert_one = convert_one
+        return eng
+
+    def test_width_is_held_and_slots_refill_as_rows_retire(self):
+        lock = threading.Lock()
+        active = [0]
+        peak = [0]
+        release = {i: threading.Event() for i in range(8)}
+
+        def convert_one(index, text):
+            with lock:
+                active[0] += 1
+                peak[0] = max(peak[0], active[0])
+            release[index].wait(5)
+            with lock:
+                active[0] -= 1
+            return True
+
+        eng = self.engine(3, convert_one)
+        done = []
+        in_flight = []
+        pulled = []
+
+        def rows():
+            for i in range(8):
+                pulled.append(i)
+                yield i, f'row {i}'
+
+        t = threading.Thread(target=eng.convert_many,
+                             args=(rows(), lambda i, ok: done.append((i, ok)), in_flight))
+        t.start()
+        # Three submitted at once, and only three: the fourth waits for a slot.
+        deadline = threading.Event()
+        for _ in range(50):
+            if len(pulled) == 3:
+                break
+            deadline.wait(0.02)
+        self.assertEqual(pulled, [0, 1, 2])
+        self.assertEqual(sorted(in_flight), [0, 1, 2])
+        # Retire the middle row: exactly one more is pulled, and it is the next.
+        release[1].set()
+        for _ in range(50):
+            if len(pulled) == 4:
+                break
+            deadline.wait(0.02)
+        self.assertEqual(pulled, [0, 1, 2, 3])
+        self.assertEqual(done, [(1, True)])
+        self.assertEqual(sorted(in_flight), [0, 2, 3])
+        for i in range(8):
+            release[i].set()
+        t.join(5)
+        self.assertFalse(t.is_alive())
+        self.assertEqual(peak[0], 3)
+        self.assertEqual(sorted(i for i, _ in done), list(range(8)))
+        self.assertEqual(in_flight, [])
+
+    def test_a_failed_row_is_reported_false_and_the_stream_goes_on(self):
+        eng = self.engine(2, lambda i, text: i != 3)
+        done = []
+        eng.convert_many(((i, 'x') for i in range(6)),
+                         lambda i, ok: done.append((i, ok)), [])
+        self.assertEqual(sorted(done), [(0, True), (1, True), (2, True),
+                                        (3, False), (4, True), (5, True)])
+
+    def test_a_dead_server_ends_the_stream_before_the_queue_is_submitted(self):
+        def convert_one(index, text):
+            if index == 1:
+                raise v3_served.HiggsV3ServerDown('port 8100 refused')
+            return True
+
+        eng = self.engine(2, convert_one)
+        pulled = []
+
+        def rows():
+            for i in range(10):
+                pulled.append(i)
+                yield i, 'x'
+
+        in_flight = []
+        with self.assertRaises(v3_served.HiggsV3ServerDown):
+            eng.convert_many(rows(), lambda i, ok: None, in_flight)
+        # The queue was NOT drained into the dead server: only the rows that
+        # had already refilled a retiring slot before the failure was observed
+        # were ever pulled, and nothing is pulled after the exception.
+        seen = len(pulled)
+        self.assertLess(seen, 10)
+        threading.Event().wait(0.1)
+        self.assertEqual(len(pulled), seen)
+        self.assertIn(1, in_flight)
+
+    def test_the_served_engine_declares_itself_continuous(self):
+        self.assertTrue(HiggsV3Engine.CONTINUOUS_BATCH)
+        self.assertTrue(HiggsV3Engine.SUPPORTS_BATCH)
 
 
 if __name__ == '__main__':

@@ -730,7 +730,11 @@ def run_worker(request: WorkerRequest, engine_factory=None) -> dict:
     The engine must offer exactly what `TTSManager` delegated to:
     `SUPPORTS_BATCH`, `BATCH_SIZE`, `batch_pool_size`, `params['samplerate']`,
     `voice`, `register_voice_caps` or `TEMPERATURE`, `convert`, `convert_batch`,
-    `_write_silence`, and a mutable `config.sentences_dir`.
+    `_write_silence`, and a mutable `config.sentences_dir`. An engine whose batch
+    is N CONCURRENT REQUESTS against a continuously batching server (served
+    Higgs) also offers `CONTINUOUS_BATCH = True` and `convert_many`, and the take
+    then keeps `BATCH_SIZE` rows in flight for its whole length instead of
+    flushing pools - see `_render_continuous`.
     """
     # Sentence indices whose output file may be half-written right now. A
     # cooperative stop (SIGTERM -> SystemExit) can land mid-conversion; the except
@@ -988,8 +992,24 @@ def _render_take(engine, work_indices, all_sentences, overrides, pass_dir,
                           and hasattr(engine, 'convert_batch'))
     batch_size = int(getattr(engine, 'BATCH_SIZE', 1) or 1)
     use_batch = supports_batch and batch_size > 1
+    continuous = bool(use_batch and getattr(engine, 'CONTINUOUS_BATCH', False)
+                      and hasattr(engine, 'convert_many'))
 
-    if use_batch:
+    if continuous:
+        # The engine's batch is N concurrent requests against a server that
+        # batches continuously on its own. A pool-and-flush shape starves it:
+        # every flush ends in a drain while the worker waits for the slowest
+        # row (MEASURED 2026-09-05: 10.9 of 16 in flight on average, GPU
+        # 20-74%). So the take is one stream - `BATCH_SIZE` in flight, a slot
+        # refilled the moment it retires, a progress line per row AT retirement
+        # (the bridge's counter sees them as they happen, not in blocks), and a
+        # cooperative stop drops exactly the rows that were running.
+        if announce_batch:
+            print(f"[WORKER] Continuous batching enabled ({batch_size} in flight)",
+                  flush=True)
+        _render_continuous(engine, work_indices, all_sentences, overrides, pass_dir,
+                           counters, total_to_process, total_sentences, in_flight)
+    elif use_batch:
         # An engine may ask for a POOL deeper than its batch size and re-slice
         # internally; it never generates a batch WIDER than batch_size. Orpheus/MLX
         # asks for 4x while continuous batching is on: one BatchGenerator spans the
@@ -1136,6 +1156,51 @@ def _render_serial(engine, work_indices, all_sentences, overrides, pass_dir,
 
         memory_cleanup(counters.processed, interval=10)
 
+    skips.flush()
+
+
+def _render_continuous(engine, work_indices, all_sentences, overrides, pass_dir,
+                       counters, total_to_process, total_sentences,
+                       in_flight) -> None:
+    """One stream over the take: the engine keeps `BATCH_SIZE` rows in flight
+    and calls back at each retirement. Skips and empties are decided as the
+    engine PULLS rows, so the skip summary lines land where the run reaches
+    them, exactly as on the other two arms; `in_flight` is the engine's to keep
+    exact (see `convert_many`)."""
+    skips = _SkipRun()
+    first_logged = False
+
+    def rows():
+        for i in work_indices:
+            if _already_rendered(pass_dir, i):
+                skips.note(i)
+                counters.skipped += 1
+                counters.processed += 1
+                continue
+            sentence = _text_for(i, all_sentences, overrides)
+            if not sentence or not sentence.strip():
+                skips.flush()
+                _write_empty_sentence_silence(engine, i)
+                counters.skipped += 1
+                counters.processed += 1
+                continue
+            skips.flush()
+            yield i, sentence
+
+    def on_done(index: int, ok: bool) -> None:
+        nonlocal first_logged
+        if not ok:
+            print(f"[WORKER] Warning: Failed to convert sentence {index}", flush=True)
+            counters.failed.append(index)
+        counters.processed += 1
+        progress_pct = (counters.processed / total_to_process) * 100
+        print(f"Converting sentence {index}/{total_sentences} ({progress_pct:.1f}%)",
+              flush=True)
+        if not first_logged:
+            log_memory("After first sentence TTS")
+            first_logged = True
+
+    engine.convert_many(rows(), on_done, in_flight)
     skips.flush()
 
 

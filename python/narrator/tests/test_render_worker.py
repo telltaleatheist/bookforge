@@ -183,6 +183,24 @@ class BatchedFakeEngine(FakeRenderEngine):
     BATCH_SIZE = 4
 
 
+class ContinuousFakeEngine(BatchedFakeEngine):
+    """An engine whose batch is N concurrent requests against a continuously
+    batching server (served Higgs): it pulls rows and calls back per row. The
+    fake runs them one at a time - the CONTRACT under test is the worker's
+    (announce, one progress line per row at retirement, skips, failures, and
+    `in_flight` naming exactly the running row at a stop)."""
+
+    CONTINUOUS_BATCH = True
+
+    def convert_many(self, rows, on_done, in_flight) -> None:
+        self.many_calls = getattr(self, 'many_calls', 0) + 1
+        for index, sentence in rows:
+            in_flight.append(index)
+            ok = self.convert(index, sentence)
+            in_flight.remove(index)
+            on_done(index, ok)
+
+
 class DeepPoolFakeEngine(BatchedFakeEngine):
     """An engine asking for a POOL deeper than its batch, like Orpheus/MLX with
     continuous batching on."""
@@ -660,6 +678,65 @@ class BatchTest(WorkerTestBase):
         self.assertIn('[WORKER] Warning: Failed to convert sentence 2', out)
         # The rest of the batch still ran - e2a keeps going and reports at the end.
         self.assertIn('[WORKER] Warning: Failed to convert sentence 6', out)
+
+
+class ContinuousTest(WorkerTestBase):
+
+    def test_a_continuous_engine_streams_the_take_through_convert_many(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, out, engine = self.run_it(
+            self.request(sentence_start=0, sentence_end=9),
+            engine_cls=ContinuousFakeEngine)
+
+        self.assertTrue(result['success'], result)
+        self.assertEqual(engine.many_calls, 1)
+        self.assertEqual(engine.batches, [])   # convert_batch never called
+        self.assertIn('[WORKER] Continuous batching enabled (4 in flight)', out)
+        self.assertNotIn('Batched inference enabled', out)
+        lines = [l for l in out.splitlines() if l.startswith('Converting sentence')]
+        self.assertEqual(len(lines), 10)
+        self.assertEqual(lines[-1].split()[2], '9/10')
+
+    def test_a_failed_row_is_reported_at_its_retirement(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, out, _ = self.run_it(
+            self.request(sentence_start=0, sentence_end=9),
+            engine_cls=ContinuousFakeEngine, fail_indices=(3,))
+
+        self.assertFalse(result['success'])
+        self.assertEqual(result['failed_indices'], [3])
+        self.assertIn('[WORKER] Warning: Failed to convert sentence 3', out)
+        # The rest of the take still ran.
+        self.assertEqual(result['sentences_failed'], 1)
+
+    def test_skips_are_decided_as_rows_are_pulled(self):
+        # 0..3 already rendered and never handed to the engine; 4..9 rendered.
+        for i in range(4, 10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        result, out, engine = self.run_it(
+            self.request(sentence_start=0, sentence_end=9),
+            engine_cls=ContinuousFakeEngine)
+
+        self.assertTrue(result['success'], result)
+        self.assertIn('[WORKER] skipped 4 already-rendered sentences (0..3)', out)
+        self.assertEqual([i for i, _ in engine.calls], [4, 5, 6, 7, 8, 9])
+        lines = [l for l in out.splitlines() if l.startswith('Converting sentence')]
+        self.assertEqual(len(lines), 6)
+
+    def test_a_stop_mid_flight_drops_exactly_the_running_row(self):
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        with self.assertRaises(SystemExit):
+            self.run_it(self.request(sentence_start=0, sentence_end=9),
+                        engine_cls=ContinuousFakeEngine, stop_at=6)
+        # 0..5 finished and stay; 6 was in flight and is gone; 7..9 never started.
+        for i in range(6):
+            self.assertTrue(os.path.exists(os.path.join(self.sentences_dir, f'{i}.flac')), i)
+        self.assertFalse(os.path.exists(os.path.join(self.sentences_dir, '6.flac')))
+        for i in range(7, 10):
+            self.assertFalse(os.path.exists(os.path.join(self.sentences_dir, f'{i}.flac')), i)
 
 
 # =============================================================================

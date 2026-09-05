@@ -53,7 +53,8 @@ WHAT IS DIFFERENT FROM ORPHEUS
                 callback by row and the batch-stream contract permits it.
 """
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import (FIRST_COMPLETED, ThreadPoolExecutor, as_completed,
+                                wait)
 from dataclasses import dataclass
 from typing import Optional
 
@@ -409,6 +410,18 @@ class HiggsV3Engine:
     pads = False
     edge_fade = HiggsV3Defaults.EDGE_FADE
     SUPPORTS_BATCH = True
+    #: THE SERVER IS FED CONTINUOUSLY, not in pools. A batch on this backend is
+    #: N concurrent requests, and the server itself batches continuously
+    #: (vLLM's scheduler admits a new sequence the step after one retires), so
+    #: the only way to leave it idle is to stop sending. `convert_batch` did
+    #: exactly that once per pool: 32 rows through 16 threads, then a drain
+    #: while the worker waited for the slowest row before handing over the next
+    #: pool. MEASURED on Owen's witches render (2026-09-05, 259 requests): the
+    #: server averaged 10.9 of 16 in flight and sat at 16 for 409 of 993
+    #: seconds; GPU utilization swung 20-74%. `convert_many` keeps BATCH_SIZE in
+    #: flight for the whole take and refills a slot the moment it retires, which
+    #: is what the render worker uses when this attribute is True.
+    CONTINUOUS_BATCH = True
     #: Class-level floor; the INSTANCE sets its own from `serve_concurrency()`
     #: (the render worker reads the attribute off the instance).
     BATCH_SIZE = 1
@@ -742,6 +755,63 @@ class HiggsV3Engine:
             # executor's __exit__ then waits for the rows already in flight,
             # which fail fast against a dead port.
             return [future.result() for future in futures]
+
+    def convert_many(self, rows, on_done, in_flight) -> None:
+        """`BATCH_SIZE` rows in flight for as long as `rows` has any.
+
+        `rows` is an ITERATOR of `(index, text)` and is pulled lazily: a slot is
+        refilled from it the moment a row retires, so the server never sees the
+        drain a pool boundary made. `on_done(index, ok)` is called from THIS
+        thread at each retirement, in completion order, so the worker's counters
+        and progress lines stay single-threaded. `in_flight` is the worker's
+        list of indices whose files may be half-written right now; it is kept
+        exact here (appended at submit, removed at retirement) so a cooperative
+        stop deletes precisely the rows that were running.
+
+        A dead server (`HiggsV3ServerDown`, raised by any row) ends the take:
+        the rows still queued are never submitted, the rows already running are
+        left to fail fast against the dead port, and the exception propagates.
+        That is `convert_batch`'s policy, kept - every remaining row would fail
+        the same way, and marking the book failed one sentence at a time is the
+        thing this backend refuses to do.
+        """
+        rows = iter(rows)
+        width = int(self.BATCH_SIZE)
+        if width < 1:
+            raise ValueError(f'convert_many needs BATCH_SIZE >= 1; got {width}.')
+        pool = ThreadPoolExecutor(max_workers=width, thread_name_prefix='higgs3-render')
+        running = {}  # future -> index
+
+        def submit_next() -> bool:
+            try:
+                index, text = next(rows)
+            except StopIteration:
+                return False
+            in_flight.append(index)
+            running[pool.submit(self._convert_one, index, text)] = index
+            return True
+
+        try:
+            for _ in range(width):
+                if not submit_next():
+                    break
+            while running:
+                done, _ = wait(list(running), return_when=FIRST_COMPLETED)
+                for future in done:
+                    index = running.pop(future)
+                    ok = future.result()  # re-raises HiggsV3ServerDown
+                    in_flight.remove(index)
+                    on_done(index, bool(ok))
+                    submit_next()
+        except BaseException:
+            # A stop or a dead server: nothing queued is submitted, and the
+            # rows already running are not waited for - they fail fast against
+            # a killed port, and `in_flight` still names them for the worker's
+            # cleanup. `shutdown(wait=True)` here would hold a cooperative stop
+            # open for as long as the slowest HTTP timeout.
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        pool.shutdown(wait=True)
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:
