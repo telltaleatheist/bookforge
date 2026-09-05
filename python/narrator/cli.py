@@ -145,6 +145,12 @@ def build_parser() -> argparse.ArgumentParser:
              "them (a spot check; the report is then partial and an enforced "
              "engine will refuse it)",
     )
+    p_align.add_argument(
+        "--continue-on-error", action="store_true",
+        help="finish the pass and record every failed chunk in the report "
+             "instead of stopping at the first one. Default is to STOP, naming "
+             "the chunk, and write nothing",
+    )
 
     # ---- render / retake / sessions ---------------------------------------
     #
@@ -458,7 +464,7 @@ def _run_align(args, manifest) -> int:
         result = align_session(
             manifest, backend=args.backend, language=args.language,
             device=args.device, python_exe=args.python, ffmpeg=args.ffmpeg,
-            indices=indices)
+            indices=indices, continue_on_error=args.continue_on_error)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)

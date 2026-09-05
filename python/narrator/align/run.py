@@ -16,11 +16,14 @@ WHAT COMES OUT. `<stem>.sentences.vtt` (additive - the chunk-level `<stem>.vtt`
 is untouched and stays what training and the bridges read) and `coverage.json`,
 which `assemble()` consults for an engine whose policy is enforced.
 
-A CHUNK THAT FAILS TO ALIGN does not stop the pass: it is recorded in the
-report's `errors` with its index and the aligner's own message, and it
-contributes NO sentence cues. That is not a fallback - nothing is invented for
-it - and for an enforced engine the report is what refuses the book afterwards,
-naming every one of them at once rather than dying on the first.
+A CHUNK THAT FAILS TO ALIGN STOPS THE RUN, naming the chunk (Owen's ruling,
+2026-09-05). No second attempt, no other backend, and no partial VTT written on
+top of a failure. `continue_on_error=True` (`--continue-on-error`) is the
+deliberate opposite for a sweep: it records every failure in the report's
+`errors` with its index and the aligner's own message and finishes the pass, so
+an operator auditing a 1,400-chunk book sees all of them once instead of one per
+run. Neither mode invents anything for a failed chunk - it contributes no
+sentence cues either way.
 """
 
 from __future__ import annotations
@@ -64,6 +67,7 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   python_exe: Optional[str] = None,
                   ffmpeg: Optional[str] = None,
                   indices: Optional[Sequence[int]] = None,
+                  continue_on_error: bool = False,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -119,6 +123,12 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     errors = []
     for (chunk, start, end), result in zip(aligned_spans, results):
         if not result['ok']:
+            if not continue_on_error:
+                raise AlignerError(
+                    f'chunk {chunk.index} failed to align, so the run stops '
+                    f'here and writes nothing: {result["error"]}\n'
+                    f'Pass --continue-on-error to audit the whole book and '
+                    f'collect every failure in the report instead.')
             errors.append({'index': chunk.index, 'stage': 'align',
                            'error': result['error']})
             log(f'[align] chunk {chunk.index} FAILED to align: {result["error"]}')
@@ -131,6 +141,11 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                 chunk_end_s=end, is_heading=chunk.kind == 'heading',
                 text=chunk.text))
         except AlignerError as refused:
+            if not continue_on_error:
+                raise AlignerError(
+                    f'chunk {chunk.index} produced no sentence cues, so the run '
+                    f'stops here and writes nothing: {refused}\n'
+                    f'Pass --continue-on-error to audit the whole book instead.')
             errors.append({'index': chunk.index, 'stage': 'cues',
                            'error': str(refused)})
             log(f'[align] chunk {chunk.index} produced no sentence cues: {refused}')

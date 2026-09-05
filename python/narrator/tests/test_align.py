@@ -513,6 +513,14 @@ class CliTest(unittest.TestCase):
         self.assertEqual(args.backend, 'whisperx')
         self.assertEqual(args.device, 'cpu')
 
+    def test_a_failure_stops_the_run_unless_the_operator_says_otherwise(self):
+        from narrator.cli import build_parser
+        default = build_parser().parse_args(['align', '--session-dir', 'D'])
+        self.assertFalse(default.continue_on_error)
+        asked = build_parser().parse_args(
+            ['align', '--session-dir', 'D', '--continue-on-error'])
+        self.assertTrue(asked.continue_on_error)
+
     def test_assemble_takes_the_coverage_report(self):
         from narrator.cli import build_parser
         args = build_parser().parse_args(

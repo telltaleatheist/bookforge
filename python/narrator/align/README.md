@@ -57,12 +57,18 @@ the AUDIO end every time (overshoot 8.9-20.9 s). Point 4's "audio with no text"
 is undetectable with the second behaviour. That, plus the deprecation, is why
 WhisperX ships.
 
-**No automatic switching** (Owen's ruling, 2026-09-05). There is no "try A then
-B" path anywhere: `align_chunk` raises `AlignerError` naming the chunk and the
-run stops. `--backend torchaudio` is an operator's explicit choice for
-comparison and refuses by name when torchaudio has no `forced_align` (2.9+) or
-for a language it has no bundle for. A test asserts the absence of a fallback on
-the source, not just on behaviour.
+**No automatic switching, and a failure stops the run** (Owen's ruling,
+2026-09-05). There is no "try A then B" path anywhere: `align_chunk` raises
+`AlignerError` naming the chunk, and `narrator align` stops there and writes
+nothing. `--backend torchaudio` is an operator's explicit choice for comparison
+and refuses by name when torchaudio has no `forced_align` (2.9+) or for a
+language it has no bundle for. A test asserts the absence of a fallback on the
+source, not just on behaviour.
+
+`--continue-on-error` is the deliberate opposite, for auditing: it finishes the
+pass and records every failure in the report's `errors`, so a 1,400-chunk book
+can be swept once instead of once per bad chunk. It invents nothing either way -
+a failed chunk contributes no sentence cues in either mode.
 
 ## How a coverage failure is actually detected
 
