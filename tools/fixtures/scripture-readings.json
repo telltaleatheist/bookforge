@@ -1,5 +1,5 @@
 {
-  "note": "THE READING of a scripture reference is the MODEL's, not a rule's (Owen, 2026-09-05). This file is the evidence that judges it: every case is a reference the deterministic pass DETECTS and protects, with the readings a narrator is measured to produce. THE DEFAULT IS MEASURED, NOT CHOSEN: whisper over the 23 scripture references with numbers in the deathstalker corpus (E:\\training\\deathstalker\\build\\ds_ad4s\\scripture_spoken_forms_report.txt, 2026-09-05) found 22 of 23 saying \"verse\"/\"verses\", one bare, NONE saying \"chapter\", and \"Psalm\" singular before a number 4 times out of 4. So the default reading is \"<Book> <chapter>, verse <n>\" and the bare comma form is accepted beside it. `accept` lists the default first. Comparison ignores hyphens. Run offline (tools/test-tts-number-rules.js) this file proves the DETECTOR sees every shape; run with a model (tools/test-tts-number-normalizer.js --scripture <model>) it proves the model READS them.",
+  "note": "THE READING of a scripture reference is the MODEL's, not a rule's (Owen, 2026-09-05). This file is the evidence that judges it: every case is a reference the deterministic pass DETECTS and protects, with the readings a narrator is measured to produce. THE DEFAULT IS MEASURED, NOT CHOSEN: whisper over the 23 scripture references with numbers in the deathstalker corpus (E:\\training\\deathstalker\\build\\ds_ad4s\\scripture_spoken_forms_report.txt, 2026-09-05) found 22 of 23 saying \"verse\"/\"verses\", one bare, NONE saying \"chapter\", and \"Psalm\" singular before a number 4 times out of 4. So the default reading is \"<Book> <chapter>, verse <n>\" and the bare comma form is accepted beside it. `accept` lists the default first. Comparison ignores hyphens. A VOLUME NUMBER may be arabic, roman or ordinal — \"1 John\", \"II Cor.\", \"1st John\" — and all three are read the same way. Run offline (tools/test-tts-number-rules.js) this file proves the DETECTOR sees every shape; run with a model (tools/test-tts-number-normalizer.js --scripture <model>) it proves the model READS them.",
   "cases": [
     {
       "id": "corpus-first-john-one-nine",
@@ -77,6 +77,38 @@
         "Isaiah fifty seven, twenty"
       ],
       "measured": "clip cd_cd_00000141 — \"Isaiah 57 verse 20\"."
+    },
+    {
+      "id": "roman-volume-second",
+      "in": "See II Cor. 5:17 there.",
+      "find": "II Cor. 5:17",
+      "accept": [
+        "Second Corinthians five, verse seventeen",
+        "Second Corinthians five verse seventeen",
+        "Second Corinthians five, seventeen"
+      ],
+      "measured": "A ROMAN volume numeral is ordinary in older Anglo-American religious typography, which is the corpus this branch exists for. With the numeral standing OUTSIDE the detected span both readings the model could offer were refused — one WORDS_DROPPED, one CITATION_CODE — and the reference was narrated as digits (adversarial review, 2026-09-05)."
+    },
+    {
+      "id": "roman-volume-third",
+      "in": "See III John 1:4 there.",
+      "find": "III John 1:4",
+      "accept": [
+        "Third John one, verse four",
+        "Third John one verse four",
+        "Third John one, four"
+      ]
+    },
+    {
+      "id": "ordinal-volume-first",
+      "in": "See 1st John 1:9 there.",
+      "find": "1st John 1:9",
+      "accept": [
+        "First John one, verse nine",
+        "First John one verse nine",
+        "First John one, nine"
+      ],
+      "measured": "The printed ordinal form. Before the volume group admitted it, the span was \"John 1:9\" and the stranded \"1st\" was read by the ordinal rule as a lowercase \"first\"."
     },
     {
       "id": "shape-cross-chapter-range",

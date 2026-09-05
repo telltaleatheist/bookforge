@@ -16,7 +16,7 @@
  *
  * ── THE TWO FILES HAVE DIVERGED, AND THIS IS THE LEDGER OF IT ───────────────
  *
- * As of 2026-09-05 this file holds **127** cases against their **53**, and until
+ * As of 2026-09-05 this file holds **132** cases against their **53**, and until
  * their `cases.json` is updated the corpora and the renders normalize
  * DIFFERENTLY — by design, from rulings they have not mirrored yet, not by
  * accident. What the training side owes:
@@ -128,7 +128,7 @@ for (const c of CASES) {
 test('every stage the shared file declares is actually exercised', () => {
   assert.deepStrictEqual(
     Object.keys(byStage).sort(), ['leave', 'model', 'punct', 'rules']);
-  assert.ok(CASES.length >= 127, `${CASES.length} cases — the shared set is 53 plus ours`);
+  assert.ok(CASES.length >= 132, `${CASES.length} cases — the shared set is 53 plus ours`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────

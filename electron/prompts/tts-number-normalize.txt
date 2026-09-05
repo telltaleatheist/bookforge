@@ -47,23 +47,34 @@ TIMES — a clock time with a.m./p.m. or on the hour is already converted. A bar
 
 SCRIPTURE REFERENCES are yours, and they are the one place you may change a word.
 
-Read a reference as: the book's FULL name, then the chapter as a number word, then the verse.
+THE FORM, which is how a narrator actually reads one: the book's FULL name, then the chapter as a number word, then a COMMA, then the word "verse", then the verse.
 
-Between the chapter and the verse there must be a PAUSE, and it may be written either way. Both are correct; PREFER the first.
-- A COMMA: "1 Pet. 3:7" is "First Peter three, seven"; "1 John 1:9" is "First John one, nine".
-- Or the word VERSE: "Rom. 5:17" is "Romans five verse seventeen"; "Ps. 63:6" is "Psalm sixty-three verse six".
+- "1 Pet. 3:7" is "First Peter three, verse seven".
+- "Jas. 1:17" is "James one, verse seventeen".
+- "Rom. 5:17" is "Romans five, verse seventeen".
+- "Ps. 63:6" is "Psalm sixty-three, verse six".
+- "John 3:16" is "John three, verse sixteen".
+
+A RANGE takes the plural: "verses N to M".
+- "Jer. 44:17-19" is "Jeremiah forty four, verses seventeen to nineteen".
+- "Matt. 12:34-36" is "Matthew twelve, verses thirty four to thirty six".
+
+A LIST of verses in one chapter says "verse" once, and "and" before the last.
+- "Ps. 119:97, 101, 102" is "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two".
+
 NEVER the word "chapter", and never "colon". "Psalm chapter sixty three, verse six" is wrong. "Psalm sixty three six", with the two numbers run together and no pause between them, is wrong.
 
-- A LEADING BOOK NUMBER is an ordinal word: 1 is "First", 2 is "Second", 3 is "Third" — never "one", never "two". "2 Cor. 5:17" is "Second Corinthians five, seventeen".
+A bare comma with no "verse" is also accepted where it reads better — "First John one, nine" — but the form above is the one to use unless you have a reason.
+
+- A LEADING BOOK NUMBER is an ordinal word: 1 is "First", 2 is "Second", 3 is "Third" — never "one", never "two". "2 Cor. 5:17" is "Second Corinthians five, verse seventeen". A ROMAN numeral is the same number: "II Cor. 5:17" is "Second Corinthians five, verse seventeen", and "III John 1:4" is "Third John one, verse four".
 - Expand the abbreviation to the book it stands for, however the book prints it: "Gen." is Genesis, "Phlm." is Philemon, "Jas." is James, "Song" is the Song of Songs. Never leave a shortened name with its period in the reading.
-- Read "Ps." and "Psa." as the SINGULAR "Psalm"; read the plural "Pss." as "Psalms". Both take the chapter and the verse after them: "Ps. 63:6" reads "Psalm sixty-three, verse six".
-- A book already printed in full is read as printed: "John 3:16" is "John three, sixteen".
-- A VERSE RANGE reads "to": "Jer. 44:17-19" is "Jeremiah forty four, seventeen to nineteen".
-- A RANGE ACROSS CHAPTERS names both: "Col. 3:19-4:1" is "Colossians three, nineteen to four, one".
-- A LIST keeps its punctuation, and every reference in it gets its own pause: "Lev. 19:31; 20:6" is "Leviticus nineteen, thirty one; twenty, six".
-- "ff." is read "and following". A verse letter is read as the letter: "18:23b" is "eighteen, twenty three b".
+- Read "Ps." and "Psa." as the SINGULAR "Psalm"; read the plural "Pss." as "Psalms".
+- A RANGE ACROSS CHAPTERS names both: "Col. 3:19-4:1" is "Colossians three, verse nineteen to four, verse one".
+- A LIST ACROSS CHAPTERS keeps its punctuation, and every reference in it gets its own pause: "Lev. 19:31; 20:6" is "Leviticus nineteen, verse thirty one; twenty, verse six".
+- "ff." is read "and following". A verse letter is read as the letter: "18:23b" is "eighteen, verse twenty three b".
 - A CHAPTER with no verse reads as the chapter alone: "1 Pet. 3" is "First Peter three".
-- A capitalized word before a colon-number that is NOT a book is not a reference and gets no reading: "Chapter 3:7", "Room 3:15", "Jan. 3:7" (a month), "Act 3:2" of a play. Leave those to the ordinary rules above.
+- A capitalized word before a colon-number that is NOT a book is not a reference and gets NO reading of this kind. "Chapter 3:7", "Room 3:15", "Jan. 3:7" (a month), "Act 3:2" of a play, "Widescreen 16:9", "Flight 12:30" — read those as ordinary numbers, or leave them, whichever the sentence calls for.
+- An ABBREVIATION that is not a book is still an abbreviation: read "Sec. 3:7" as "Section three seven", "Ch. 3:7" as "Chapter three seven". Expand it, and give it no verse.
 
 DATES already came through the deterministic pass in the form "June twelfth, nineteen thirty-three". If you see one that did not, read it that way: month, ordinal day, pair-form year — "23 March 1933" is "March twenty-third, nineteen thirty-three". Never "twelve June". Never "the twelfth of June".
 
@@ -86,12 +97,12 @@ TARGET: By spring 1200 workers were on the line, and the war had been over since
 
 TARGET: 2 Cor. 10:4 says the weapons are not carnal, and 5,000 copies went out in 1985.
 <answer>
-{"edits": [{"find": "2 Cor. 10:4", "replace": "Second Corinthians ten, four"}, {"find": "1985", "replace": "nineteen eighty-five"}]}
+{"edits": [{"find": "2 Cor. 10:4", "replace": "Second Corinthians ten, verse four"}, {"find": "1985", "replace": "nineteen eighty-five"}]}
 </answer>
 
 TARGET: We are to dwell with each other according to knowledge (1 Pet. 3:7).
 <answer>
-{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, seven"}]}
+{"edits": [{"find": "1 Pet. 3:7", "replace": "First Peter three, verse seven"}]}
 </answer>
 
 TARGET: Four separate archive files are cited: SLG HH, HSG 11 Js. Sond. 298/38; GnH 3659/42; VVN HH, Komiteeakten XZ 1; AfW HH R 231191.
@@ -111,7 +122,7 @@ TARGET: The occupation ran from 1914-1918, and the plant reopened in 1923.
 
 TARGET: Job 41:1–2, 14–34 is the passage he read.
 <answer>
-{"edits": [{"find": "Job 41:1–2, 14–34", "replace": "Job forty one, one to two, fourteen to thirty four"}]}
+{"edits": [{"find": "Job 41:1–2, 14–34", "replace": "Job forty one, verses one to two, fourteen to thirty four"}]}
 </answer>
 
 TARGET: The train left at 10:05 and reached the coast by dusk.
