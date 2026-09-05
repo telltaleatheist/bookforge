@@ -130,7 +130,7 @@
  *
  * ROUTED VERSUS INTERNAL IS A DOOR, NOT A FLAG. Every exported gesture in this
  * file is either a door a PERSON reached through the window (`enqueue`,
- * `enqueueTranslate`, `cancel`, `remove`, `start`, `clearFinished` — these route
+ * `enqueueTextPass`, `cancel`, `remove`, `start`, `clearFinished` — these route
  * when a host queue is registered) or a door FOUNDRY ITSELF reached for
  * (`enqueueHere`, `cancelHere`, `enqueueEnvInstall`, `runJob`, `runNow` — these
  * never route). Nothing below the doors consults anything: `pump`, `executeJob`
@@ -154,7 +154,7 @@ import * as os from 'node:os';
 import * as path from 'node:path';
 
 import { readAppSettings } from './app-settings';
-import { materializeTranslation } from './book';
+import { materializeTextPass } from './book';
 import { parseProgressLine, runEngine, stampMintMetadata, writeBookFile } from './engine';
 import { ENV_SPECS } from './env-catalog';
 import { destFor, installEnv } from './env-install';
@@ -173,7 +173,7 @@ import {
   recordFinal,
   recordGenerated,
   recordReading,
-  recordTranslation,
+  recordTextPass,
   restoreFinalRotation,
   restoreRotation,
   rotateFinal,
@@ -188,7 +188,7 @@ import { fold } from '../shared/original';
 import { JOB_RESOURCE, SLOTS, type JobResource } from '../shared/queue-board';
 import type {
   AnalyzeRequest, ConversionKind, EnvInstallRequest, ExportLanding, ExportMintMetadata, FoundryJobRow, Job,
-  JobKind, JobRequest, TranslateRequest,
+  JobKind, JobRequest, TextPassRequest,
 } from '../shared/types';
 
 /**
@@ -198,7 +198,22 @@ import type {
  * from here they are the same job: spawn foundry, read its stderr, report what
  * it wrote. Only `argsFor` and the reading-server wait can tell them apart.
  */
-type EngineRequest = JobRequest | TranslateRequest | AnalyzeRequest;
+type EngineRequest = JobRequest | TextPassRequest | AnalyzeRequest;
+
+/**
+ * IS THIS ONE OF THE THREE TEXT PASSES — the queue's own half of
+ * `TEXT_PASS_ACTIONS` (shared/ledger.ts).
+ *
+ * A predicate rather than three comparisons at each of the eight places that ask,
+ * and it narrows: every one of those places wants `recordsPath`, `bookPath` or
+ * `seedRecords`, which none of the other request shapes has. It was one comparison
+ * — `kind === 'translate'` — when a simplify wore the translation's name, and the
+ * split would otherwise have turned each of those eight into a two- or three-arm
+ * condition that a fourth pass would have to find again.
+ */
+function isTextPassRequest(request: EngineRequest): request is TextPassRequest {
+  return request.kind === 'translate' || request.kind === 'simplify' || request.kind === 'clean';
+}
 
 /**
  * WHAT THIS REQUEST PRODUCES — the one answer, in one place.
@@ -225,7 +240,7 @@ type EngineRequest = JobRequest | TranslateRequest | AnalyzeRequest;
  *
  * ── WHY THIS IS A FUNCTION AND NOT THREE CORRECT COPIES ─────────────────────
  *
- * It was three, and all three were right: `enqueueHere`, `enqueueTranslate` and
+ * It was three, and all three were right: `enqueueHere`, `enqueueTextPass` and
  * `runJob` each spelled as much of the rule as its own argument type could
  * reach. Three correct copies of one rule is a defect with a delay on it — the
  * day the rule gains a fourth kind, or one copy is edited under time pressure,
@@ -243,12 +258,16 @@ type EngineRequest = JobRequest | TranslateRequest | AnalyzeRequest;
  * So the rule lives here, the three callers ask, and there is no second place
  * for it to be true in a slightly different way. It takes the WIDE request type
  * on purpose — `enqueueHere` can only ever hand it a `JobRequest` and
- * `enqueueTranslate` only ever a `TranslateRequest`, and narrowing the parameter
+ * `enqueueTextPass` only ever a `TextPassRequest`, and narrowing the parameter
  * to fit either one would put the fork back where it came from.
  */
 function productOf(request: EngineRequest): string {
   if (request.kind === 'read') return request.readingsPath;
-  if (request.kind === 'translate') return request.recordsPath;
+  // EVERY TEXT PASS PRODUCES ITS RECORDS, and the test is the family's rather than
+  // the translation's: a simplify and a cleanup each write one file of per-block
+  // answers and no document, exactly as a translation does, so the records file is
+  // what collides, what is worth showing and what the row is.
+  if (isTextPassRequest(request)) return request.recordsPath;
   return request.outputPath;
 }
 
@@ -636,6 +655,12 @@ const NEVER_ROUTED: Readonly<Record<JobKind, boolean>> = {
   pdf: false,
   read: false,
   translate: false,
+  // The other two text passes, on translate's clause: engine work on the GPU lane,
+  // ordered by a person, filed by whoever is scheduling. A cleanup in particular
+  // is only ever ordered in a hosted window, so its rows are the host's by
+  // construction as well as by this table.
+  simplify: false,
+  clean: false,
   // Engine work on the GPU lane, ordered by a person. It routes for translate's
   // reason: the host chose when it ran.
   analysis: false,
@@ -920,7 +945,43 @@ const requests = new Map<string, EngineRequest>();
 const envRequests = new Map<string, EnvInstallRequest>();
 
 /**
- * Put a translation in the queue.
+ * WHAT THE SHELF CALLS A TEXT-PASS ROW, or nothing at all for the one that keeps
+ * its book's name.
+ *
+ * ── The rule, which is older than the third pass ────────────────────────────
+ *
+ * A row falls back to the project's title, and that is the right answer while a
+ * book can only be in the queue for one reason. It stopped being one the moment
+ * two different buttons produced the same kind of job about the same book:
+ * somebody who queued a rewrite and a translation of one book would be looking at
+ * two identically named rows deciding which to Start.
+ *
+ * SO THE ACT WINS OVER THE BOOK, for every row that has a choice to explain. What
+ * is on screen is a short list of things somebody is about to spend a night of GPU
+ * on, and "Clean text" is the fact they are checking; the book is one hover away
+ * in the row's paths, where every filename in this shelf already lives.
+ *
+ * A TRANSLATION IS THE ONE THAT SAYS NOTHING, and that is deliberate rather than
+ * an omission. It is the ordinary case — the row that has been named for its book
+ * since this queue existed — and the two that speak are the two that would
+ * otherwise be indistinguishable from it.
+ *
+ * "Clean text" IS OWEN'S OWN WORD, said the same in all three places a person
+ * meets it (2026-09-05): the tile, this row, and — as *"Cleaned for narration"* —
+ * the step in the history, which is read later and by somebody else.
+ *
+ * ONE FUNCTION BECAUSE TWO DOORS COMPOSE A ROW. `enqueueTextPass` and `runJob`
+ * both build one, and the title was spread inline in both — two correct copies of
+ * a rule, which `productOf`'s own header calls a defect with a delay on it.
+ */
+function titleForTextPass(request: TextPassRequest): { title: string } | Record<string, never> {
+  if (request.kind === 'simplify') return { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` };
+  if (request.kind === 'clean') return { title: 'Clean text' };
+  return {};
+}
+
+/**
+ * Put a TEXT PASS in the queue — a translation, a rewrite or a narration cleanup.
  *
  * Behind whatever is already running, always. The engine holds an Ollama model
  * for the length of a book and a conversion holds a vision model for the length
@@ -928,20 +989,42 @@ const envRequests = new Map<string, EnvInstallRequest>();
  * hardware this is built for is an out-of-memory failure four hours in.
  *
  * IT ROUTES LIKE `enqueue`, and it has no `…Here` twin for one reason: nothing
- * inside this app orders a translation. Every translation in Foundry's history
- * arrived from a person filling in the Translate dialog, so this door has exactly
- * one caller and the branch below IS the door deciding. A second, unrouted door
+ * inside this app orders a text pass. Every one of them in Foundry's history
+ * arrived from a person filling in a dialog, so this door has exactly one caller
+ * per dialog and the branch below IS the door deciding. A second, unrouted door
  * would be a name nobody could prove the need for.
+ *
+ * ── ONE DOOR FOR THREE KINDS, WHICH IS THE SHAPE OF THE SPLIT ───────────────
+ *
+ * This was `enqueueTranslate` and it took a `TranslateRequest`, because a rewrite
+ * was a translation wearing a mode. Three actions now (Owen, 2026-09-05: *"it
+ * isnt a translate job … translate, simplify, and cleanup are all three similar
+ * steps"*) and still ONE door, because everything this function does is the same
+ * for all three: route to the host if there is one, dedupe on the records file,
+ * hold the row, name the act. Three doors with one body is the defect
+ * `productOf`'s header is about, arriving at the enqueue instead of at the
+ * dedupe.
+ *
+ * ── AND WHAT ROUTING A `clean` HOSTED MEANS, SAID OUT LOUD ──────────────────
+ *
+ * It hands the host a request shape whose `kind` its VENDORED SNAPSHOT of
+ * `shared/api.ts` may predate (docs/BOOKFORGE-HANDOFF.md §8). That is deliberate
+ * and it is not `enqueueAnalysis`'s case: an analysis is refused hosted because
+ * nothing over there wants one, where a cleanup exists ONLY on BookForge's behalf
+ * (Owen: *"cleanup will only ever be done on behalf of bookforge"*) — the tile is
+ * drawn nowhere else, so the only window this door is ever reached from is one
+ * whose host asked for the feature. It goes live on the re-vendor, with the
+ * handoff doc carrying the note.
  */
-export function enqueueTranslate(
-  request: TranslateRequest,
+export function enqueueTextPass(
+  request: TextPassRequest,
   /** The position at the press. See `enqueue` above and `Job.parentStep`. */
   parentStep: string | null = null,
 ): Job {
   const host = hostQueue();
   if (host !== null) return host.enqueue(request, parentStep);
   /*
-   * WHAT THIS JOB PRODUCES, which for a translation is now the RECORDS — the same
+   * WHAT THIS JOB PRODUCES, which for every text pass is the RECORDS — the same
    * question `enqueueHere` asks about a reading and its bank, asked of the same
    * function so the two can never answer it differently. See `productOf`.
    */
@@ -953,27 +1036,14 @@ export function enqueueTranslate(
     id: randomUUID(),
     inputPath: request.inputPath,
     outputPath,
-    kind: 'translate',
+    // THE KIND IS THE REQUEST'S OWN, where it used to be the literal `'translate'`
+    // for all of them. The row is what the shelf lanes, labels and counts, and a
+    // cleanup filed as a translation is a row telling the truth only as far as its
+    // own title (`JobKind`, shared/types.ts).
+    kind: request.kind,
     state: 'held',
     progress: null,
-    /*
-     * A REWRITE NAMES ITSELF IN THE SHELF, and a translation goes on naming its
-     * book.
-     *
-     * The row falls back to the project's title, which is the right answer while
-     * a book can only be in the queue for one reason — and it stopped being one
-     * the moment two different buttons produced the same kind of job about the
-     * same book. Somebody who queued a rewrite and a translation of one book, or
-     * queued a rewrite and came back an hour later, would be looking at two rows
-     * with one name on them, deciding which to Start.
-     *
-     * SO THE ACT WINS OVER THE BOOK, for the row that has a choice to explain.
-     * What is on screen is a short list of things somebody is about to spend a
-     * night of GPU on, and "Simplify — natural voice" is the fact they are
-     * checking; the book is one hover away in the row's paths, where every
-     * filename in this shelf already lives.
-     */
-    ...(request.rewrite !== undefined ? { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` } : {}),
+    ...titleForTextPass(request),
     /*
      * A TRANSLATION IS THE STEP THIS FIELD WAS BUILT FOR. It is the one action a
      * person routinely runs from an earlier row — translate from the reading,
@@ -994,7 +1064,7 @@ export function enqueueTranslate(
 /**
  * Put an analysis in the queue.
  *
- * `enqueueTranslate`'s shape, line for line, and the same three decisions:
+ * `enqueueTextPass`'s shape, line for line, and the same three decisions:
  *
  *   IT ROUTES, and it has no `…Here` twin. Nothing inside this app orders an
  *   analysis — every one of them arrives from a person filling in the Analysis
@@ -1040,7 +1110,7 @@ export function enqueueAnalysis(
    *
    * This reaches BookForge by the normal re-vendor (docs/ANALYSIS.md §9), and the
    * function that will route it is this one, with a `hostQueue()` branch at the
-   * top exactly like `enqueueTranslate`'s.
+   * top exactly like `enqueueTextPass`'s.
    */
   const outputPath = productOf(request);
   const already = pendingFor(outputPath);
@@ -1640,7 +1710,66 @@ function argsFor(
     if (request.categories.length > 0) args.push('--categories', categoriesFileFor(request));
     return args;
   }
-  if (request.kind === 'translate') {
+  if (request.kind === 'clean') {
+    /*
+     * ── SAYING THE BOOK AGAIN SO A NARRATOR CAN READ IT ───────────────────────
+     *
+     *   foundry clean-text --book X --records Y --stamp Z [--endpoint U] [--model M]
+     *
+     * A THIRD COMMAND RATHER THAN A FOURTH FLAG ON `translate`, and the engine's
+     * side made that decision: what a cleanup does to a paragraph is not a
+     * translation's prompt with different words in it — it normalises punctuation
+     * and typography against a spec, and it refuses an edit that changes what the
+     * sentence says. A run that can REFUSE ITS OWN ANSWER on grounds a translation
+     * has never heard of is a different command.
+     *
+     * `--book` IS THE POSITION'S OWN, materialised by main with every op replayed
+     * in (`planCleanup`, electron/workspace.ts) — the same route `--book` takes on
+     * the two lines below this one, and for the same reason: a struck row is not in
+     * it, so nothing about a strike crosses the boundary and the records that come
+     * back are keyed by the ROWS' OWN IDS.
+     *
+     * `--records` IS THE CACHE AS WELL AS THE PRODUCT, exactly as it is for a
+     * translation: an unchanged block's question is already answered in there and
+     * is never asked twice, and every answer is appended the moment it is accepted.
+     * A cleanup interrupted at block 900 of 2,000 resumes for the price of the
+     * remaining 1,100.
+     *
+     * `--stamp` IS THE ONE FLAG NO OTHER COMMAND IN THIS FILE HAS. It writes what
+     * the run WAS — normaliser version, punctuation spec, model, hour, and whether
+     * any edit was refused — beside the answers, so the EPUB compiled from them can
+     * carry it into the OPF (`--narration-stamp`, the compile branch below) and a
+     * narrator can tell a cleaned book from an uncleaned one without asking this
+     * app anything.
+     *
+     * `--endpoint` AND NOT `--ollama`, which is the one place this line differs
+     * from its siblings' spelling for the same fact. The engine's own command
+     * declares it that way; a flag renamed on the way through would be this file
+     * having an opinion about somebody else's CLI.
+     *
+     * NO `--to`, NO `--from`, NO `--rewrite`. A cleanup goes into no language and
+     * asks no mode — see `PARAMS_OF.clean` (shared/ledger.ts) for the ledger half
+     * of the same sentence.
+     */
+    const args = [
+      'clean-text',
+      '--book', request.bookPath,
+      '--records', request.recordsPath,
+      '--stamp', request.stampPath,
+      '--model', request.model,
+      '--endpoint', request.ollama,
+    ];
+    /*
+     * The reading these answers are about, written into every row and read by
+     * nobody in the engine — `Overlay.generation`'s contract, exactly as the
+     * translate line below carries it.
+     */
+    if (request.generation !== undefined && request.generation.length > 0) {
+      args.push('--generation', request.generation);
+    }
+    return args;
+  }
+  if (request.kind === 'translate' || request.kind === 'simplify') {
     /*
      * A translation shares nothing with a conversion's command line but the
      * program name. No `--format` and no `--out`: this run writes RECORDS, one
@@ -1705,8 +1834,13 @@ function argsFor(
      * pair that matches, because a rewrite is same-language by design — which is
      * the one thing about this command that would look like a mistake to somebody
      * reading it in a terminal, and is not one.
+     *
+     * IT IS THE KIND THAT DECIDES IT NOW, where it used to be the presence of a
+     * field: `SimplifyRequest.rewrite` is required, so the flag is on this line
+     * exactly when the job is a rewrite and never because a mode was left over on
+     * a request somebody built by spreading another one.
      */
-    if (request.rewrite !== undefined) args.push('--rewrite', request.rewrite);
+    if (request.kind === 'simplify') args.push('--rewrite', request.rewrite);
     /*
      * The reading these answers are about, written into every row and read by
      * nobody in the engine — `Overlay.generation`'s contract, one folder over. It
@@ -1803,6 +1937,33 @@ function argsFor(
      */
     if (metadata['title'] !== undefined) args.push('--title', metadata['title']);
     if (metadata['creator'] !== undefined) args.push('--author', metadata['creator']);
+    /*
+     * ── AND THE RECEIPT, WHEN THESE WORDS WERE CLEANED FOR A NARRATOR ─────────
+     *
+     * `--narration-stamp <that step's stamp.json>` puts `bookforge:narration-text`
+     * into the OPF of the EPUB this run writes, so the FILE says what was done to
+     * it and a narrator opening it months later needs nothing from this app.
+     *
+     * COMPOSED BY THE PLAN AND NEVER HERE (`planRendering`, electron/workspace.ts),
+     * off `cleanupInEffect` at the step this rendering is about — which is the
+     * position for a press and the named row for a host's export. Deciding it here
+     * would mean this function walking a ledger it does not have, at spawn time,
+     * about a position that may have moved since the button.
+     *
+     * IT RIDES THE COMPILE ROUTE BECAUSE THAT IS WHERE THE EPUBS ARE. Every epub
+     * and txt export materialises and compiles (`planRendering`'s `compiles`), so
+     * this branch is the only one that writes a book from a position a cleanup can
+     * be in effect at — the branch below reprints a scan's photographed pages,
+     * which is a facsimile and has no narration in it.
+     *
+     * A `.txt` COMPILE CARRIES IT TOO AND IT COSTS NOTHING: there is no OPF in a
+     * text file, the engine writes nothing, and withholding the flag from one of
+     * the two formats would be this file deciding which products the engine's own
+     * command applies to.
+     */
+    if (request.narrationStamp !== undefined && request.narrationStamp.length > 0) {
+      args.push('--narration-stamp', request.narrationStamp);
+    }
     return args;
   }
 
@@ -2247,7 +2408,10 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * is not going anywhere near it.
    */
   const exporting = request.kind !== 'read'
-    && request.kind !== 'translate'
+    // NO TEXT PASS IS EVER AN EXPORT — the family, where this named the
+    // translation alone: none of the three writes a document, so there is
+    // nothing to file in the tray and nothing to rotate aside for.
+    && !isTextPassRequest(request)
     // AN ANALYSIS IS NEVER AN EXPORT, and the line is here rather than left to
     // the `export` field's absence because the narrowing this const performs is
     // what every reader below depends on. A report is not a rendering: nothing
@@ -2475,7 +2639,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
   let rotation: Rotation | null = null;
   let filedRotation: FinalRotation | null = null;
   let rotatedIn: string | null = null;
-  if (request.kind !== 'read' && request.kind !== 'translate') {
+  if (request.kind !== 'read' && !isTextPassRequest(request)) {
     const projectDir = projectDirOf(request.outputPath);
     if (projectDir !== null) {
       rotatedIn = projectDir;
@@ -2523,7 +2687,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    * branch therefore started empty and paid full model price for a book whose
    * translation was one row up. One rule, one spawn, both doors.
    */
-  if (request.kind === 'translate'
+  if (isTextPassRequest(request)
     && request.seedRecords !== undefined
     && !existsSync(request.recordsPath)
     && existsSync(request.seedRecords)) {
@@ -2616,7 +2780,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
    */
   const spawned: EngineRequest = unstamped === null
     || request.kind === 'read'
-    || request.kind === 'translate'
+    || isTextPassRequest(request)
     ? request
     : { ...request, outputPath: unstamped };
 
@@ -2867,7 +3031,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
      * have had: this run produced no document at all. It wrote
      * `readings/<key>.<tag>[.<id8>].records.jsonl` — one row per flowing block —
      * and the step that keeps what those hours cost names THAT file as its payload
-     * (`recordTranslation`, electron/projects.ts), exactly as a read step names its
+     * (`recordTextPass`, electron/projects.ts), exactly as a read step names its
      * bank.
      *
      * IT USED TO GO THROUGH `recordGenerated`, because the product was an EPUB in
@@ -2882,7 +3046,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
      * which. WHETHER THIS WAS A CHAIN IS NOT HANDED OVER, deliberately: it is a
      * fact about the row this step hangs from, the landing is holding the ledger,
      * and this request's `--from` is also where a person's typed guess about an
-     * untranslated book's language goes (`recordTranslation` argues it in full).
+     * untranslated book's language goes (`recordTextPass` argues it in full).
      *
      * AND THEN THE BOOK, WITHOUT BEING ASKED. A records file is not a thing a
      * person reads, so the row would have nothing to show until somebody ordered a
@@ -2926,24 +3090,39 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       settled(next);
       return;
     }
-    if (request.kind === 'translate') {
-      await recordTranslation(next.outputPath, {
+    if (isTextPassRequest(request)) {
+      /*
+       * ── ONE LANDING FOR THREE PASSES, AND THE ACTION IS THE THING IT CARRIES ──
+       *
+       * `recordTextPass` appends a step whose action is this job's kind, which is
+       * the whole of what the split changed here: a rewrite used to land as
+       * `translate` wearing `params.rewrite`, and a cleanup would have had to do
+       * the same. Owen ended it — *"it isnt a translate job"* — so the row says
+       * what the button said.
+       *
+       * WHAT THE JOB HANDS OVER IS WHAT NOTHING ON DISK CAN ANSWER AFTERWARDS: the
+       * language a translation went into and the mode a rewrite was asked in. Both
+       * are legible only in the records file's NAME, and reading a fact back out of
+       * a filename is what this codebase's oldest house rule forbids. A CLEANUP
+       * HANDS OVER NEITHER, because it has neither — `PARAMS_OF.clean` is empty,
+       * and the run's own facts are on the stamp beside its answers.
+       */
+      await recordTextPass(next.outputPath, {
+        action: request.kind,
         parentStep: next.parentStep ?? null,
-        language: request.to,
+        ...(request.kind === 'clean' ? {} : { language: request.to }),
         ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
-        /*
-         * AND WHICH REWRITE, WHEN IT WAS ONE — the second fact nothing on disk can
-         * answer, for the language's own reason. The step's params are what
-         * `labelFor` reads to say "Simplified — natural voice (de)" and what
-         * `reRunTarget` compares hours from now, so a mode that stopped here at
-         * the command line would leave a row calling itself a translation and a
-         * second rewrite in another mode swapping its answers into it.
-         */
-        ...(request.rewrite !== undefined ? { rewrite: request.rewrite } : {}),
+        ...(request.kind === 'simplify' ? { rewrite: request.rewrite } : {}),
       });
-      next.message = request.rewrite === undefined
-        ? `Translated ${path.basename(next.inputPath)} — the book follows.`
-        : `Simplified ${path.basename(next.inputPath)} — the book follows.`;
+      /*
+       * "the book follows" IS TRUE OF ALL THREE and is the sentence the shelf has
+       * always ended a text pass with: the records are on disk and the book is
+       * materialised from them in the next few lines, for nothing.
+       */
+      const said = request.kind === 'translate'
+        ? 'Translated'
+        : request.kind === 'simplify' ? 'Simplified' : 'Cleaned';
+      next.message = `${said} ${path.basename(next.inputPath)} — the book follows.`;
       changed();
       /*
        * AND THE BOOK OF IT, WHICH IS THE PART THAT IS NOT A RENDERING. *"When a
@@ -2963,7 +3142,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
        * already put hours of GPU safely on disk, and it says so in the terminal
        * in its own words.
        */
-      await materializeTranslation(next.outputPath);
+      await materializeTextPass(next.outputPath);
       settled(next);
       return;
     }
@@ -3137,7 +3316,7 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
      * translation does not come through here any more. This call used to carry the
      * language, the bank and the step id, because the run that produced a
      * translation ended in `generated/` and its landing was a ledger step; a
-     * records translation lands where its answers land (`recordTranslation`), and
+     * records translation lands where its answers land (`recordTextPass`), and
      * what reaches this function from a translated position is the BOOK cast from
      * those records — which carries `forStep` and returns above, uncatalogued.
      *
@@ -3293,7 +3472,7 @@ export async function runJob(
   const parentStep = opts.parentStep ?? null;
   /*
    * THE ROW, BORN RUNNING. Every field is composed exactly as `enqueueHere` and
-   * `enqueueTranslate` compose theirs — the same output identity (asked of
+   * `enqueueTextPass` compose theirs — the same output identity (asked of
    * `productOf`, which all three now share rather than each spelling as much of
    * the rule as its own argument type could reach), the same rewrite title, the
    * same `forStep` — because a row is what the shelf, the landings and the guards
@@ -3315,10 +3494,10 @@ export async function runJob(
     kind: request.kind,
     state: 'running',
     progress: null,
-    ...(request.kind === 'translate' && request.rewrite !== undefined
-      ? { title: `Simplify — ${REWRITE_LABELS[request.rewrite]}` }
-      : {}),
-    ...(request.kind !== 'read' && request.kind !== 'translate' && request.kind !== 'analysis'
+    // THE ROW'S NAME, out of the one function both doors ask — see
+    // `titleForTextPass`, where the rule and its exception live.
+    ...(isTextPassRequest(request) ? titleForTextPass(request) : {}),
+    ...(request.kind !== 'read' && !isTextPassRequest(request) && request.kind !== 'analysis'
       && request.forStep !== undefined
       ? { forStep: request.forStep }
       : {}),

@@ -350,6 +350,24 @@ export class QueueViewService {
       return `Translating ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
     }
     /*
+     * A CLEANUP COUNTS THE SAME NOUN AND IS NOT THE SAME SENTENCE, which is the
+     * whole reason it is a phase of its own rather than a reuse of the one above.
+     * Blocks are blocks — that is the fact that made reusing it tempting — but
+     * "Translating 412 / 2,081 blocks" over a run nobody asked to translate
+     * anything is a surface reporting the wrong act, and this line is the one
+     * place a person watching a night of GPU finds out what it is doing.
+     *
+     * A SIMPLIFY IS DELIBERATELY NOT A PHASE. It spawns `translate --rewrite` and
+     * the engine counts on its own `translate:` line, so the words above are the
+     * engine's own account of what is happening; what tells a rewrite from a
+     * translation on the shelf is the ROW's title, which says the mode as well.
+     * A phase invented on this side to relabel somebody else's counting line
+     * would be this app narrating a run it is only watching.
+     */
+    if (p.phase === 'clean') {
+      return `Cleaning ${p.page.toLocaleString()} / ${p.total.toLocaleString()} blocks`;
+    }
+    /*
      * AN ANALYSIS COUNTS TWO DIFFERENT THINGS AND THIS LINE NAMES THE ONE IT IS
      * COUNTING NOW. It said "Analysing 3 / 20" for both halves while the phase
      * was one member, on the argument that no other wording was true of both —

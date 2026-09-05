@@ -330,12 +330,46 @@ interface FoundryHostOperation {
   /**
    * `settings` is the answers to `form`, or `{}` for an operation with none —
    * never undefined, so a host destructuring it does not have to guard.
+   *
+   * `context` IS THE FOURTH ARGUMENT, arrived with foundry 9f4ee4e on the third
+   * one's precedent exactly (docs/BOOKFORGE-HANDOFF.md, 2026-09-05). It is
+   * `HostInvokeContext` — what Foundry knows about the PLACE the act was ordered
+   * from rather than about the press — and it carries one field:
+   *
+   *   `cleaned` — true when Foundry's NARRATION CLEANUP is in effect at the step
+   *   this was pressed on, false everywhere else AND for a `nodeId` Foundry
+   *   cannot resolve to a step (our own `bf-node:` ids, `export:<file>` rows).
+   *
+   * FALSE IS NOT "we could not tell", and that is the trap in reading it: their
+   * own docblock says the two cases share the word for different reasons. So it
+   * is a HINT ABOUT A POSITION and never an authority about a FILE. The durable
+   * record is the OPF's `bookforge:narration-text` meta, which `vlm-compile
+   * --narration-stamp` writes on an export taken from at-or-under a clean step,
+   * and which `narrationTextGate` reads — see `invokeFoundryNarrate`, where the
+   * two answers are compared out loud and neither is allowed to overrule the
+   * other.
+   *
+   * IT IS NEVER OMITTED, and a host naming three parameters keeps working: this
+   * mirror declares it because the interface is a MIRROR of the published
+   * contract rather than a list of what we happen to read.
    */
   invoke(
     projectDir: string,
     nodeId: string,
     settings: Record<string, unknown>,
+    context: FoundryHostInvokeContext,
   ): void | Promise<void>;
+}
+
+/**
+ * `HostInvokeContext` from foundry-app/shared/host-ops.ts — re-declared here for
+ * the reason every shape in this block is: the subtree is built output of a
+ * separate program and a static import would drag it into BookForge's type
+ * program.
+ */
+interface FoundryHostInvokeContext {
+  /** See `FoundryHostOperation.invoke`, where what this does and does not mean is argued. */
+  readonly cleaned: boolean;
 }
 
 /**
@@ -1719,11 +1753,38 @@ function publishFoundryHostOperations(): void {
  * A formless operation invokes with `{}` (the contract's own words: it "invokes
  * THE INSTANT IT IS PRESSED"). There is nothing in the bag and nothing that
  * could be, which is why the parameter is named for what it is.
+ *
+ * ── `context.cleaned` IS READ, AND IT DECIDES NOTHING ───────────────────────
+ *
+ * This is the one operation the narration cleanup is about, so it is the one
+ * place the fourth argument means anything at all. What it does here is say the
+ * two answers out loud together, once per press, and NOTHING ELSE:
+ *
+ *   - Foundry's, about the POSITION — is a cleanup in effect at the step this
+ *     was ordered from;
+ *   - ours, about the FILE — does the EPUB this press resolved to carry a
+ *     current `bookforge:narration-text` stamp (`narrationTextGate`).
+ *
+ * They can legitimately disagree in one direction: a press on an EXPORT row, or
+ * on one of our own nodes, is a position Foundry cannot resolve, so `cleaned` is
+ * false about a file that may well be stamped. The other direction is a DEFECT
+ * worth a line in the log — Foundry says the words were cleaned and the export it
+ * made carries no stamp, which means `vlm-compile --narration-stamp` did not ride
+ * that line and a narration is about to read the book as printed while the tree
+ * says otherwise.
+ *
+ * IT DOES NOT REFUSE AND IT DOES NOT SET ANYTHING. The narration modal asks
+ * `narration:text-readiness` about the file it is about to read and offers the
+ * three-button choice off THAT — the ruling is "the FILE decides whether to ask;
+ * the chain is the second source" (docs/NARRATION_TEXT_PASS.md), and a hint about
+ * a position quietly answering that question for the user would be this door
+ * pressing a button on their behalf.
  */
 async function invokeFoundryNarrate(
   projectDir: string,
   nodeId: string,
   _noSettingsAreAsked: Record<string, unknown>,
+  context: FoundryHostInvokeContext,
 ): Promise<void> {
   if (decodeNodeId(nodeId) !== null) {
     /*
@@ -1751,6 +1812,8 @@ async function invokeFoundryNarrate(
     sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
     throw err;
   }
+
+  await sayWhatEachSideThinksAboutTheCleanup(target.variantPath, nodeId, context);
 
   const projectId = path.basename(target.bookDir);
   const got = await manifestService.getManifest(projectId);
@@ -1819,6 +1882,71 @@ async function invokeFoundryNarrate(
   mainWindow.webContents.send('foundry-host:narrate', opened);
 }
 
+/**
+ * ONE LINE PER NARRATE PRESS: what Foundry says about the POSITION and what the
+ * FILE says about itself, side by side.
+ *
+ * ── Why it is written and not acted on ──────────────────────────────────────
+ *
+ * The two answers come from two different places on purpose, and each is right
+ * about a different thing. `context.cleaned` is `cleanupInEffect(ledger, step)`
+ * — available BEFORE an export exists, which is its whole reason for being on the
+ * invoke — and it is FALSE for every position Foundry cannot resolve, including
+ * an export row, which is one of the two currencies this operation is offered
+ * from. So acting on it would refuse a press on a correctly cleaned file about
+ * half the time it was made.
+ *
+ * The stamp is the durable record and the render door already reads it. What is
+ * left over, and what this writes, is the DISAGREEMENT — which is a fact neither
+ * side can see alone and which nothing else in this process would ever notice.
+ *
+ * ── The one direction that is a defect ──────────────────────────────────────
+ *
+ * Foundry says cleaned, the file carries no current stamp. That means the export
+ * this press just resolved (and may have just MADE, through `exportEpubFromStep`)
+ * was compiled without `--narration-stamp` riding the line, so the render will
+ * read the book as printed while the provenance tree says it was cleaned. It is
+ * logged with the gate's own sentence rather than dressed up, because that
+ * sentence names the state — missing, or stale at older rule versions.
+ *
+ * NOTHING IS THROWN AND NOTHING IS SET. The narration modal asks
+ * `narration:text-readiness` about this same file a moment later and puts the
+ * three-button choice to the user; a door that quietly answered it would be
+ * pressing a button on their behalf.
+ *
+ * A STAMP THAT CANNOT BE READ AT ALL IS NOT AN ERROR HERE either — a file being
+ * unreadable is the render door's business, not a log line's, and `narrationTextGate`
+ * never throws out of it.
+ */
+async function sayWhatEachSideThinksAboutTheCleanup(
+  bookPath: string,
+  nodeId: string,
+  context: FoundryHostInvokeContext,
+): Promise<void> {
+  const pass = await import('./narration-text-pass.js');
+  const gate = await pass.narrationTextGate(bookPath);
+  const file = path.basename(bookPath);
+  if (gate.ok) {
+    console.log(
+      `[foundry-host] narrate on ${nodeId}: Foundry says the cleanup is `
+      + `${context.cleaned ? 'in effect' : 'NOT in effect'} at that position; ${file} carries a `
+      + `current narration-text stamp (${gate.stamp.normalizerVersion}/`
+      + `${gate.stamp.punctuationSpec}, ${gate.stamp.model}).`);
+    return;
+  }
+  if (context.cleaned) {
+    console.warn(
+      `[foundry-host] narrate on ${nodeId}: Foundry says the narration cleanup IS in effect at `
+      + `that position, and ${file} carries no current stamp — ${gate.reason} The export was `
+      + 'compiled without --narration-stamp riding its line, so a render of this file reads the '
+      + 'book as printed while the provenance tree says it was cleaned.');
+    return;
+  }
+  console.log(
+    `[foundry-host] narrate on ${nodeId}: neither side claims a cleanup — Foundry's position says `
+    + `none and ${file} carries no current stamp. The narration dialog will offer to run it.`);
+}
+
 
 /**
  * The (job, step) a host node id names, proved against the live queue.
@@ -1884,6 +2012,15 @@ async function invokeFoundryEnhance(
   // empty object every formless operation gets. Named rather than omitted so the
   // three-argument contract is visible at every one of its implementations.
   _settings: Record<string, unknown>,
+  /*
+   * And the fourth, also unread here. `cleaned` is a fact about the WORDS of a
+   * book, and an enhancement is pressed on one of OUR OWN audio nodes — a
+   * position Foundry cannot resolve, so it is always false and would mean nothing
+   * if it were not. Named for the same reason the third is: the contract is
+   * visible at every implementation, and a signature that quietly dropped it
+   * would hide the day one of these grows an opinion about it.
+   */
+  _noPositionBehindAnAudioNode: FoundryHostInvokeContext,
 ): Promise<void> {
   const { job, step } = foundryChainTarget(nodeId);
   // An enhancement reads a narration's SESSION. The engine's own lineage check
@@ -1976,6 +2113,8 @@ async function invokeFoundryAssemble(
   nodeId: string,
   /** Empty: this operation declares no form. See `invokeFoundryEnhance`. */
   _settings: Record<string, unknown>,
+  /** Always false behind an audio node, and meaningless there. See `invokeFoundryEnhance`. */
+  _noPositionBehindAnAudioNode: FoundryHostInvokeContext,
 ): Promise<void> {
   const { job, step } = foundryChainTarget(nodeId);
   /*
@@ -2189,8 +2328,8 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
      * `submitLabel` went with the form. It was the word on a dialog that no
      * longer exists; BookForge's own dialog says "Add to queue" for itself.
      */
-    invoke: (projectDir, nodeId, settings) =>
-      invokeFoundryNarrate(projectDir, nodeId, settings),
+    invoke: (projectDir, nodeId, settings, context) =>
+      invokeFoundryNarrate(projectDir, nodeId, settings, context),
   },
   {
     id: 'bookforge.enhance',
@@ -2199,16 +2338,16 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
     appliesTo: 'audio',
     // No `form`: it asks nothing, so it runs the instant it is pressed — the
     // compatibility shape every operation had before forms existed.
-    invoke: (projectDir, nodeId, settings) =>
-      invokeFoundryEnhance(projectDir, nodeId, settings),
+    invoke: (projectDir, nodeId, settings, context) =>
+      invokeFoundryEnhance(projectDir, nodeId, settings, context),
   },
   {
     id: 'bookforge.assemble',
     label: 'Assemble',
     kind: 'assemble',
     appliesTo: 'audio',
-    invoke: (projectDir, nodeId, settings) =>
-      invokeFoundryAssemble(projectDir, nodeId, settings),
+    invoke: (projectDir, nodeId, settings, context) =>
+      invokeFoundryAssemble(projectDir, nodeId, settings, context),
   },
 ];
 

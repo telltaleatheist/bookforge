@@ -58,8 +58,77 @@ import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
 // Foundry's published shapes (foundry-app/shared/types.ts)
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** `ConversionKind | 'read' | 'env-install' | 'translate'`, minus the one we never see. */
-export type FoundryJobKind = 'epub' | 'txt' | 'pdf' | 'read' | 'translate';
+/**
+ * `ConversionKind | 'read' | 'env-install' | 'translate' | 'simplify' | 'clean'
+ * | 'mint' | 'analysis'`, minus the ones no press in the hosted window sends us.
+ *
+ * ── `simplify` AND `clean` ARE THE 2026-09-05 SPLIT ─────────────────────────
+ *
+ * A simplify used to arrive here as `kind: 'translate'` wearing a `rewrite`, and
+ * `labelFor` sniffed the field to name the row. Owen ended that on their side —
+ * *"it isnt a translate job. naming it translate is deceptive … translate,
+ * simplify, and cleanup are all three similar steps"* — so a simplify pressed in
+ * a hosted window now sends `kind: 'simplify'` and a narration cleanup sends
+ * `kind: 'clean'` (foundry 9f4ee4e; docs/BOOKFORGE-HANDOFF.md, that day's note,
+ * which calls the re-vendor REQUIRED rather than recommended for exactly this).
+ *
+ * A KIND THIS SIDE DOES NOT KNOW IS NOT A CRASH, it is a row that labels itself
+ * badly and contends for the wrong pool — which is why both members are added
+ * here, in `resourceFor` (queue-steps/foundry-job.ts) and in `labelFor` together.
+ *
+ * `mint` and `analysis` are theirs and are NOT here: neither is routed across the
+ * host queue today. The list is what we have seen pressed, and a kind arriving
+ * that is not in it is a compile error the day somebody wires it, which is the
+ * loud failure this house rule exists for.
+ */
+export type FoundryJobKind =
+  'epub' | 'txt' | 'pdf' | 'read' | 'translate' | 'simplify' | 'clean';
+
+/**
+ * THE THREE TEXT PASSES, as one question — their `isTextPassRequest`.
+ *
+ * All three write ONE FILE OF PER-BLOCK ANSWERS and no document: a translation,
+ * a rewrite and a narration cleanup each produce a records file, and that file
+ * is the row's product, its identity and what two rows would collide over. So
+ * every place this side asks "what does this job make" asks the family rather
+ * than the translation — `productOf` below is where that mattered first.
+ */
+function isTextPass(kind: FoundryJobKind): boolean {
+  return kind === 'translate' || kind === 'simplify' || kind === 'clean';
+}
+
+/**
+ * The foundry ENGINE that has a `clean-text` command at all.
+ *
+ * Owen's narration cleanup was released as foundry 1.1.0 (`ca7a666`, "the engine
+ * that owns the narration text pass"). A `clean` row scheduled here is executed
+ * by Foundry's runner spawning `foundry clean-text …`, so an older binary on the
+ * machine answers with an unknown-command usage dump — an hour into a queue, in
+ * somebody else's process, wearing a message about argv rather than about what is
+ * installed.
+ *
+ * SO IT IS REFUSED AT THE ONE DOOR THIS SIDE OWNS, by name, before the row runs.
+ * `foundryTooOldForReadingsFlags`' precedent exactly, and its sentence's shape:
+ * name the version installed, name the version the act arrived in, say where to
+ * update, and say that nothing ran.
+ *
+ * ONLY `clean` IS GATED. A `simplify` is `translate --rewrite`, which every
+ * foundry this app has ever adopted has had — the KIND is new on the wire and the
+ * COMMAND is not, and gating it would refuse work an old engine can do perfectly
+ * well. Bumped in lockstep with foundry's package.json, like
+ * `FOUNDRY_VERSION_FOR_READINGS_FLAGS`.
+ */
+export const FOUNDRY_VERSION_FOR_CLEAN_TEXT = '1.1.0';
+
+/** The refusal for a foundry with no `clean-text` in it. */
+export function foundryTooOldForCleanText(installed: string): string {
+  return (
+    'This is a Clean text run, which BookForge schedules and the foundry engine executes as '
+    + `\`foundry clean-text\` — but the installed foundry is ${installed} and that command arrived `
+    + `in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Update foundry in Settings → Add-ons and press Clean `
+    + 'text again. Nothing was cleaned and no model was loaded.'
+  );
+}
 
 /** Their `JobState`. `waiting` has no spelling there, so ours maps onto `queued`. */
 export type FoundryJobState = 'held' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
@@ -81,6 +150,14 @@ export interface FoundryJobRequest {
   readingsPath?: string;
   /** Present on a rendering: the file it writes. */
   outputPath?: string;
+  /**
+   * Present on any of the THREE TEXT PASSES — translate, simplify, clean: the
+   * one file of per-block answers the run writes, which is its product and its
+   * identity. A `clean` names no `outputPath` at all; this is the only thing it
+   * makes, and `--stamp` is a receipt the EPUB carries rather than a second
+   * product (their `CleanRequest`, foundry-app/shared/types.ts).
+   */
+  recordsPath?: string;
   [field: string]: unknown;
 }
 
@@ -99,11 +176,12 @@ export interface FoundryJobRequest {
 export interface FoundryJobProgress {
   /**
    * A count of finished things out of a known total — pages on a read or a
-   * rendering, BLOCKS on a translate, which is why `phase` travels with it.
+   * rendering, BLOCKS on a translate or a cleanup, which is why `phase` travels
+   * with it.
    */
   page: number;
   total: number;
-  phase: 'render' | 'read' | 'translate' | 'rank' | 'verify';
+  phase: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
 }
 
 /** Their `Job` (`FoundryJobRow = Job`), as their shelf draws it. */
@@ -318,14 +396,20 @@ function stateOf(step: QueueStep): FoundryJobState {
  *     because the line carries no command prefix.
  *  2. `translate: block 412/2081 (…)` — BLOCKS, not pages, matched on the word
  *     `block` so the retry notices (`attempt 2/3`) cannot be read as progress.
- *  3. `analyze: rank 141/141 …` / `analyze: verify 3/20 (…)` — matched on the
+ *  3. `clean-text: 412/2081` — the one pattern with no noun to match on, and so
+ *     the discipline is spelled the other way round: the fraction is anchored to
+ *     the END of the line. `clean-text` says what it counts only in its FINAL
+ *     line (`clean-text: 412 blocks, 87 changed, 3 edits refused in 91s`), and a
+ *     `\b` here would read "412 blocks, 87 changed" as 412 of 87 and drive the
+ *     bar past its own end at the moment the run finished.
+ *  4. `analyze: rank 141/141 …` / `analyze: verify 3/20 (…)` — matched on the
  *     two stage words specifically, because `analyze` prints many other numbers
  *     (reuse counts, floor survivors) that are not progress. The stage word is
  *     captured: rank and verify are two bars there, not one that resets.
- *  4. The `vlm-read:` / `vlm-convert:` GATE, and only then a page count. Without
+ *  5. The `vlm-read:` / `vlm-convert:` GATE, and only then a page count. Without
  *     the gate `attempt 2/3` renders as 67% and the bar leaps because an answer
  *     was RETRIED — which is the whole reason their function exists.
- *  5. The PARENTHESISED form before the bare one, because `page 143 (7/180)`
+ *  6. The PARENTHESISED form before the bare one, because `page 143 (7/180)`
  *     also contains `page 143` and would be read by the second pattern as a
  *     count of 143 out of nothing.
  */
@@ -340,6 +424,11 @@ export function parseFoundryProgressLine(line: string): FoundryJobProgress | nul
   const block = /^translate:\s+block\s+(\d+)\/(\d+)\b/.exec(trimmed);
   if (block) {
     return { phase: 'translate', page: Number(block[1]), total: Number(block[2]) };
+  }
+
+  const cleaned = /^clean-text:\s+(\d+)\/(\d+)$/.exec(trimmed);
+  if (cleaned) {
+    return { phase: 'clean', page: Number(cleaned[1]), total: Number(cleaned[2]) };
   }
 
   const analyzing = /^analyze:\s+(rank|verify)\s+(\d+)\/(\d+)\b/.exec(trimmed);
@@ -620,22 +709,52 @@ function productOf(request: FoundryJobRequest): string {
    * made "Export" after a read silently return the reading's row and start
    * nothing. Same split `rowOf` reports, for the same reason.
    */
-  const product = request.kind === 'read' ? request.readingsPath : request.outputPath;
+  /*
+   * AND A TEXT PASS PRODUCES ITS RECORDS, which is the family's answer rather
+   * than the translation's. A translate, a simplify and a clean each write one
+   * file of per-block answers and no document, so `recordsPath` is what collides
+   * — their `productOf` (foundry-app/electron/job-queue.ts) says the same words.
+   * A `clean` carries no `outputPath` AT ALL, so reading one here would give it
+   * an empty identity and dedupe it against nothing: two presses of Clean text
+   * on one book would be two rows both writing the same records file, which is
+   * precisely the collision this function exists to prevent.
+   */
+  const product = request.kind === 'read'
+    ? request.readingsPath
+    : isTextPass(request.kind) ? request.recordsPath : request.outputPath;
   return typeof product === 'string' && product !== '' ? fold(product) : '';
 }
 
-/** What the row is called, in BookForge's queue and on their shelf. */
+/**
+ * What the row is called, in BookForge's queue and on their shelf.
+ *
+ * THE ACT WINS OVER THE BOOK for the rows that have a choice to explain, which is
+ * their own rule (`titleForTextPass`, foundry-app/electron/job-queue.ts): three
+ * buttons now produce a text pass over one book, and three identically named rows
+ * would leave somebody deciding which to Start by guessing. The file is kept
+ * beside it because BookForge's queue lists work for MANY books at once, where
+ * Foundry's shelf is inside one project — the same rule, said for a longer list.
+ */
 function labelFor(request: FoundryJobRequest): string {
   const file = String(request.inputPath ?? '').split(/[\\/]/).pop() ?? 'a document';
   switch (request.kind) {
     case 'read': return `Read the pages — ${file}`;
     /*
-     * A SIMPLIFY IS A TRANSLATE STEP WEARING A REWRITE. Foundry models it that
-     * way on purpose (`TranslateRequest.rewrite`), and its own local queue
-     * names such a row "Simplify — …" — but the hosted path hands the request
-     * here before that title is composed, so keying the label off `kind` alone
-     * called every simplify a translation (Owen, 2026-08-29). The rewrite
-     * travels verbatim in the request, so the row can say what was pressed.
+     * "Clean text" IS OWEN'S OWN WORD, said the same in all three places a person
+     * meets it (2026-09-05): Foundry's tile, its queue row, and — as "Cleaned for
+     * narration" — the step in the history. A fourth spelling here would be this
+     * side renaming an act it does not own.
+     */
+    case 'clean': return `Clean text — ${file}`;
+    case 'simplify': return `Simplify — ${file}`;
+    /*
+     * A SIMPLIFY USED TO BE A TRANSLATE STEP WEARING A REWRITE, and until foundry
+     * 9f4ee4e that is how one arrived here — so keying the label off `kind` alone
+     * called every simplify a translation (Owen, 2026-08-29). It has its own kind
+     * now and the arm above names it, but the sniff STAYS: a queue.json written
+     * before that split still holds `kind: 'translate'` rows carrying a `rewrite`,
+     * and this is what those rows are. Reading a stored row for what it says is
+     * not a fallback; guessing at one that says nothing would be.
      */
     case 'translate': return typeof request.rewrite === 'string'
       ? `Simplify — ${file}`

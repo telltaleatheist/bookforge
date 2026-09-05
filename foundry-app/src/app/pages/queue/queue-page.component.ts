@@ -811,15 +811,27 @@ export class QueuePageComponent {
    * filenames and no job kinds spelled the way the wire spells them: a person
    * ordered a reading, or an export, and that is what they should read back.
    *
-   * A translation and a simplify are one kind on the wire (a simplify is a
-   * rewrite prompt on the translate command) and this does not try to tell them
-   * apart, because the row's own title already does: a simplify carries a title
-   * of its own, which is where the distinction is really kept.
+   * THE THREE TEXT PASSES ARE THREE KINDS ON THE WIRE NOW, and this column tells
+   * them apart. It used to say they were one — *"a simplify is a rewrite prompt on
+   * the translate command … the row's own title already does"* — which was true of
+   * the wire and was exactly what Owen overturned (2026-09-05): *"it isnt a
+   * translate job. naming it translate is deceptive."* The title still carries the
+   * mode a rewrite was asked in, because a kind cannot; what the kind carries is
+   * which act it is, which is what this column exists to say.
    */
   protected kindLine(job: Job): string {
     switch (job.kind) {
       case 'read': return 'Reading the pages';
       case 'translate': return 'Translating';
+      case 'simplify': return 'Simplifying';
+      /*
+       * "Cleaning the text for narration" and not "Cleaning", because the word
+       * alone says nothing about what is being done to somebody's book — the
+       * argument the analysis row below makes about itself, one act along. This
+       * column is where a person scanning a queue of expensive rows finds out what
+       * each of them is FOR, and what this one is for is a narrator.
+       */
+      case 'clean': return 'Cleaning the text for narration';
       case 'epub': return 'Casting the book';
       case 'pdf': return 'Reprinting';
       case 'txt': return 'Plain text';
@@ -851,6 +863,8 @@ export class QueuePageComponent {
     if (job.kind === 'env-install') return 'Installed';
     if (job.kind === 'read') return 'Read · the book follows';
     if (job.kind === 'translate') return 'Translated · the book follows';
+    if (job.kind === 'simplify') return 'Simplified · the book follows';
+    if (job.kind === 'clean') return 'Cleaned · the book follows';
     return this.view.made(job);
   }
 

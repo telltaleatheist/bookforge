@@ -155,6 +155,7 @@ const api: FoundryApi = {
       ipcRenderer.invoke('workspace:plan-translation', inputPath, targetLanguage),
     planSimplification: (inputPath, mode) =>
       ipcRenderer.invoke('workspace:plan-simplify', inputPath, mode),
+    planCleanup: (inputPath) => ipcRenderer.invoke('workspace:plan-clean', inputPath),
     planAnalysis: (inputPath, categories) =>
       ipcRenderer.invoke('workspace:plan-analysis', inputPath, categories),
     readAnalysis: (projectDir, stepId) =>

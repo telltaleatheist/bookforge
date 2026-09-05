@@ -493,6 +493,65 @@ export function exportOfNodeId(nodeId: string): string | null {
 }
 
 /**
+ * WHAT FOUNDRY KNOWS ABOUT THE PLACE AN ACT WAS ORDERED FROM — the fourth
+ * argument to `HostOperation.invoke` (electron/host-ops.ts), and the first thing
+ * this socket has ever told a host about a book rather than about a press.
+ *
+ * ── Why it exists at all ────────────────────────────────────────────────────
+ *
+ * Owen ruled a narration cleanup into Foundry on 2026-09-05 — a text pass that
+ * says every paragraph again with the punctuation and typography a narrator can
+ * read aloud — and ruled it *"only ever … on behalf of bookforge"*. So the party
+ * that needs to know whether a book was cleaned is the host, and the moment it
+ * needs to know is the moment it is handed a book to narrate.
+ *
+ * IT IS DERIVED AND NEVER STORED (`cleanupInEffect`, shared/ledger.ts): the answer
+ * is read off the ancestry of the step the press named, so a cleanup made under a
+ * translation is in effect and a translation made under a cleanup is not — a
+ * translator writes fresh sentences and whatever punctuation the model chose.
+ *
+ * ── THE SECOND CHANNEL FOR THE SAME FACT, AND WHY BOTH ARE WORTH HAVING ─────
+ *
+ * The EPUB itself carries it. `vlm-compile --narration-stamp` writes the run's own
+ * stamp into the OPF as `bookforge:narration-text`, so a file is self-describing
+ * wherever it ends up and whoever opens it — which is the durable answer and the
+ * one a narration should ACT on. This is the answer available BEFORE the file
+ * exists: a host act ordered from a step Foundry has not exported yet
+ * (`exportEpubFromStep`, electron/mount.ts) can decide what to ask for, or
+ * whether to warn, while the person is still standing at the dialog.
+ *
+ * ── EVERY FIELD OPTIONAL, AND THE WHOLE ARGUMENT IS THE COMPATIBILITY ONE ───
+ *
+ * BookForge reads this socket through a SEALED VENDORED SNAPSHOT of `app/`
+ * (docs/BOOKFORGE-HANDOFF.md §8) — laid down at a named commit and never
+ * hand-edited on that side — so a host built against yesterday's copy declares an
+ * `invoke` of three parameters, and JavaScript hands it a fourth it simply does not
+ * name. That is not a hazard to defend against; it is the ordinary shape of every
+ * optional thing on this seam (`form`, `submitLabel`, `mintMetaFor`), and it is
+ * why this is a fourth ARGUMENT rather than a fifth field folded into `settings`:
+ * `settings` is the host's own vocabulary, going out exactly as it came in, and
+ * Foundry putting a key of its own in there would be this app answering a question
+ * the host's form did not ask.
+ *
+ * FOUNDRY NEVER OMITS IT AND A HOST MAY ALWAYS IGNORE IT. `cleaned` is `false` for
+ * every ordinary book, which is the literal truth rather than a placeholder: no
+ * cleanup is in effect at that position.
+ */
+export interface HostInvokeContext {
+  /**
+   * TRUE WHEN THE NARRATION CLEANUP IS IN EFFECT at the step the act was ordered
+   * from — `cleanupInEffect(ledger, step)`, and false at every other position.
+   *
+   * FALSE IS NOT "we could not tell". An act ordered against a node id this ledger
+   * does not hold — a host's own node, an export row — is a position Foundry
+   * cannot resolve, and the honest answer there is the same word for a different
+   * reason: nothing here says these words were cleaned. A host that needs the
+   * distinction has the OPF meta on the file, which is the durable record.
+   */
+  cleaned: boolean;
+}
+
+/**
  * WHAT THE HOST KNOWS ABOUT WHO A BOOK IS — the seed a hosted mint modal
  * opens with, answered by `FoundryHost.mintMetaFor`.
  *

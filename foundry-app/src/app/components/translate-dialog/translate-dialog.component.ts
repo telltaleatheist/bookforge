@@ -654,7 +654,7 @@ export class TranslateDialogComponent {
        * the form this card already uses for a problem — the same shape the OCR
        * dialog has always had.
        */
-      if (await this.queue.enqueueTranslate(request) === 'already') {
+      if (await this.queue.enqueueTextPass(request) === 'already') {
         this.problem.set(
           `${to} is already queued for this book — nothing was added. It is in the queue.`,
         );

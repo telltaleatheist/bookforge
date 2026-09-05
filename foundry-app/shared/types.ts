@@ -74,8 +74,18 @@ export type { MintContributor, MintMeta };
  * so it holds a model on the card for as long as a translation does
  * (docs/ANALYSIS.md §5). What it writes is a REPORT — a file of findings about
  * the book, which nothing is ever made from.
+ *
+ * `simplify` AND `clean` ARE THE TWO KINDS THAT SPAWN THE SAME COMMANDS AS THEIR
+ * SIBLING AND ARE STILL NOT IT. A simplify spawns `foundry translate --rewrite`
+ * and a clean spawns `foundry clean-text`; both hold Ollama for the length of a
+ * book, both write a records file that is their own cache, both land as a step of
+ * their own. They are separate members because a row is READ — Owen, 2026-09-05:
+ * *"it isnt a translate job. naming it translate is deceptive."* A simplify wore
+ * `translate` with a title spread over it, which is a row telling the truth only
+ * as far as its own label, and a clean would have had to do the same.
  */
-export type JobKind = ConversionKind | 'read' | 'env-install' | 'translate' | 'mint' | 'analysis';
+export type JobKind =
+  ConversionKind | 'read' | 'env-install' | 'translate' | 'simplify' | 'clean' | 'mint' | 'analysis';
 
 /**
  * What the OCR panel can ask for. An env install is never enqueued this way.
@@ -158,7 +168,16 @@ export interface JobProgress {
    * is not a page and a passage is not a page. The two nouns are declared once,
    * beside the two labels, in `QueueViewService`.
    */
-  phase: 'render' | 'read' | 'translate' | 'rank' | 'verify';
+  /*
+   * `clean` IS THE NARRATION CLEANUP, AND IT COUNTS BLOCKS EXACTLY AS `translate`
+   * DOES. It is a member of its own rather than a reuse of `translate` for the
+   * reason the analysis stages are two members: the line under the bar names what
+   * is happening, and "Translating 412 / 2,081 blocks" over a run nobody asked to
+   * translate anything is a surface reporting the wrong act. The NOUN is the same
+   * one — blocks — which is the fact that made reusing the member tempting and is
+   * not the fact this field is about.
+   */
+  phase: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
 }
 
 /**
@@ -329,6 +348,30 @@ export interface GenerateRequest {
    * has edited — see `WorkspacePlan.bookPath`, which is where it comes from.
    */
   bookPath?: string;
+  /**
+   * `--narration-stamp` — THE RECEIPT SAYING THESE WORDS WERE CLEANED FOR A
+   * NARRATOR, put into the EPUB's OPF as `bookforge:narration-text`.
+   *
+   * ── What it is, and what it is not ──────────────────────────────────────────
+   *
+   * It is the file the CLEANUP RUN wrote beside its answers — normaliser version,
+   * punctuation spec, model, hour, and whether any edit was refused
+   * (`CleanRequest.stampPath`). This job does not make it and does not read it;
+   * it hands the engine the path and the compile copies the facts into the
+   * package it is writing.
+   *
+   * ITS PRESENCE IS THE WHOLE OF THE DECISION. Composed by the plan off
+   * `cleanupInEffect` at the step the rendering is about (`planRendering`,
+   * electron/workspace.ts), so it is here exactly when the nearest text pass above
+   * that position is a cleanup — and absent when a translation or a rewrite has
+   * been made since, because those wrote fresh sentences with whatever punctuation
+   * the model chose.
+   *
+   * ABSENT IS EVERY OTHER BOOK IN THIS APP, which is nearly all of them: no
+   * cleanup, no stamp, and an EPUB whose OPF says nothing about narration — the
+   * honest answer rather than a meta claiming the text is raw.
+   */
+  narrationStamp?: string;
   /**
    * WHO THE MINT SAYS THE BOOK IS — carried on the request so the settle can
    * stamp the finished EPUB and say the same facts in the landing
@@ -550,24 +593,17 @@ export interface TranslateRequest {
   recordsPath: string;
   /** `--to`: the BCP-47 tag to translate INTO. */
   to: string;
-  /**
-   * `--rewrite`: SAY THE BOOK AGAIN IN ITS OWN LANGUAGE, this way.
+  /*
+   * `rewrite` USED TO BE HERE AND IS `SimplifyRequest`'s OWN FIELD NOW.
    *
-   * Absent for an ordinary translation, which is what nearly every job here is.
-   * Present, it swaps the prompt and nothing else: `to` carries the book's OWN
-   * language, `from` is that same language, and the engine is content with the
-   * pair because a rewrite is same-language by design (docs, and the CLI refuses
-   * this flag without `--book` for the same reason this app has never composed a
-   * translation without one).
-   *
-   * IT TRAVELS AS FAR AS THE LANDING, not just as far as the command line, and
-   * that is the part worth being deliberate about. The step it lands as records
-   * it (`translatedInto`), which is what lets the row say "Simplified — natural
-   * voice (de)" hours later and what lets a second simplify in the SAME mode from
-   * the SAME step replace that row rather than appending a fourth German
-   * translation beside it (`PARAMS_OF`, shared/ledger.ts).
+   * It was optional on this shape because a simplify WAS a translate job wearing
+   * a mode — one request, one job kind, one ledger action, told apart by a field
+   * that might not be there. Owen ended that on 2026-09-05: *"it isnt a translate
+   * job. naming it translate is deceptive."* A required field on a shape of its
+   * own is what makes "a simplify always has a mode" a fact the compiler holds
+   * rather than a rule every reader has to remember, and it is what stops
+   * `argsFor` having to ask whether the job it is spelling is the job it says.
    */
-  rewrite?: RewriteMode;
   /**
    * `--from`. Absent means the model is told to determine it.
    *
@@ -653,6 +689,146 @@ export interface TranslateRequest {
    */
   stepId?: string;
 }
+
+/**
+ * Everything the Simplify dialog decides before a job is enqueued — a
+ * `TranslateRequest` with a mode on it and a name of its own.
+ *
+ * ── Why it EXTENDS rather than repeats ──────────────────────────────────────
+ *
+ * Because every field on the shape above is a field this one has, for the same
+ * reason and with the same meaning: the same materialised book, the same records
+ * file that is its own cache, the same seed, the same generation, the same step
+ * id minted at the plan. `planSimplification` composes exactly what
+ * `planTranslation` composes (electron/workspace.ts says so in its own words),
+ * and the engine is the same command with one flag more. Spelling the fields
+ * again would be twenty docblocks that have to be kept true in two places, and
+ * the day one of them drifted the two halves of one pipeline would disagree about
+ * what a run is.
+ *
+ * ── And why it is a SHAPE rather than an optional field ─────────────────────
+ *
+ * See the gravestone where `rewrite` used to sit. The mode is not optional about
+ * a simplify: it decides the prompt, the records file's name, the row's label and
+ * whether a later run replaces this one or sits beside it. Required here says all
+ * of that once, in the type.
+ *
+ * `to` AND `from` ARE BOTH THE BOOK'S OWN LANGUAGE, which is not a defect of
+ * borrowing the fields — it is what a rewrite IS. The engine is content with the
+ * matching pair by design, and telling the model what it is holding is worth a
+ * flag even when it could see for itself.
+ */
+export interface SimplifyRequest extends Omit<TranslateRequest, 'kind'> {
+  kind: 'simplify';
+  /**
+   * `--rewrite`: SAY THE BOOK AGAIN IN ITS OWN LANGUAGE, this way.
+   *
+   * IT TRAVELS AS FAR AS THE LANDING, not just as far as the command line, and
+   * that is the part worth being deliberate about. The step it lands as records it
+   * (`translatedInto`), which is what lets the row say "Simplified — natural voice
+   * (de)" hours later and what lets a second simplify in the SAME mode from the
+   * SAME step replace that row rather than appending a fourth German translation
+   * beside it (`PARAMS_OF`, shared/ledger.ts).
+   */
+  rewrite: RewriteMode;
+}
+
+/**
+ * Everything the Clean text dialog decides before a job is enqueued — the third
+ * text pass, and the one with no language in it at all.
+ *
+ * ── What the run is ─────────────────────────────────────────────────────────
+ *
+ *   foundry clean-text --book <book.jsonl> --records <out.records.jsonl>
+ *                      --stamp <out.stamp.json> [--endpoint <url>] [--model <name>]
+ *
+ * Same materialised book as its two siblings, so a struck row never reaches the
+ * pass. Same records format (src/translate/records.ts), one row per block asked,
+ * `parts` being the row's own id — which is what makes the resume and the cost
+ * cache identical to a translation's, and what lets one materialisation put the
+ * words back for all three.
+ *
+ * ── A SHAPE OF ITS OWN AND NOT AN EXTENSION, WHICH IS THE OTHER DIRECTION ───
+ *
+ * `SimplifyRequest` extends the translation because it IS one with a flag; this
+ * one is not. There is no `--to` and no `--from`: a cleanup does not move the book
+ * between languages and does not declare one, so a `to` here would be a field
+ * carrying the book's own language for no command line to read — the shape
+ * asserting a decision the act does not make. What it has instead is the STAMP,
+ * which no other request has.
+ */
+export interface CleanRequest {
+  kind: 'clean';
+  /**
+   * The document the person had open when they asked — the job's identity and not
+   * its input, exactly as `TranslateRequest.inputPath` is.
+   */
+  inputPath: string;
+  /**
+   * `--book`: the position's own book file, with every op on the way to it
+   * replayed in by main (`materializeBook`). `TranslateRequest.bookPath`, verbatim
+   * and for its reasons — most of all that a struck row is simply not in it, so
+   * nothing about a strike crosses the boundary.
+   */
+  bookPath: string;
+  /**
+   * `--records`: where the cleaned paragraphs go, and the whole product of this
+   * job. It is the step's payload when this lands and it is also the job's
+   * identity, which is `TranslateRequest.recordsPath`'s own arrangement.
+   */
+  recordsPath: string;
+  /**
+   * `--stamp`: WHAT THE RUN DID, as a fact about the file rather than about the
+   * book — `{stampVersion, normalizerVersion, punctuationSpec, model, at,
+   * punctuationRefused}`.
+   *
+   * IT IS NOT A SECOND PRODUCT AND IT IS NOT A PARAM. It is a receipt the EPUB
+   * carries: `vlm-compile --narration-stamp` writes it into the OPF as
+   * `bookforge:narration-text`, so a narrator opening the file can tell a book
+   * that was cleaned from one that was not without asking Foundry anything. Beside
+   * the records file and named from it (`narrationStampFileFor`,
+   * electron/projects.ts), so the sweep, the plan and the compile cannot come to
+   * three answers about where it is.
+   */
+  stampPath: string;
+  /**
+   * `--model`: the Ollama model that does the cleaning, and `--endpoint`: the
+   * server's URL. Used, never started — `TranslateRequest`'s reason exactly, and
+   * the flag is spelled `--endpoint` rather than `--ollama` because that is what
+   * the engine's own command declares.
+   */
+  model: string;
+  ollama: string;
+  /**
+   * The reading these answers are about, carried into every row and interpreted by
+   * nobody. `TranslateRequest.generation`, one command over.
+   */
+  generation?: string;
+  /**
+   * A records file to copy over `recordsPath` at spawn when `recordsPath` does not
+   * exist yet — `TranslateRequest.seedRecords`, and the same rule: copied at spawn
+   * because a plan is not a commitment, never over an existing file, and the
+   * engine never learns it happened.
+   */
+  seedRecords?: string;
+  /**
+   * The step this file belongs to, minted at the plan and travelling with it.
+   * `TranslateRequest.stepId`, for its reason.
+   */
+  stepId?: string;
+}
+
+/**
+ * THE THREE TEXT PASSES AS ONE WIRE SHAPE — what `queue:enqueue-translate` takes
+ * and what `enqueueTextPass` files.
+ *
+ * The family is named in `TEXT_PASS_ACTIONS` (shared/ledger.ts) on the ledger's
+ * side; this is the same family on the queue's. One union rather than three doors
+ * because everything the door does is the same for all three — admit the input,
+ * resolve the parent from the records file, hold the row — and three doors with
+ * one body is the shape `productOf` (electron/job-queue.ts) exists to have ended.
+ */
+export type TextPassRequest = TranslateRequest | SimplifyRequest | CleanRequest;
 
 /**
  * Everything the Analysis dialog decides before a job is enqueued.
@@ -1426,6 +1602,25 @@ export interface WorkspacePlan {
    * removes it when the job settles either way.
    */
   bookPath?: string;
+  /**
+   * THE STAMP OF THE CLEANUP IN EFFECT AT THIS POSITION, or absent when none is —
+   * `GenerateRequest.narrationStamp`, which is where this goes and where the whole
+   * argument lives.
+   *
+   * DECIDED HERE RATHER THAN AT THE SPAWN for `bookPath`'s reason, verbatim: which
+   * state of the book this export is about is the state the person chose when they
+   * pressed the button, and a pointer move made while the job waited must not
+   * change whether the file that comes out says it was cleaned.
+   *
+   * IT IS A PATH TO A FILE THIS PLAN DID NOT MAKE. The cleanup wrote it when it
+   * landed, beside its own records, and it is named from them
+   * (`narrationStampFileFor`, electron/projects.ts) so the plan, the compile and
+   * the sweep cannot come to three answers about where it is. Absent when the
+   * cleanup predates the stamp or its file is gone — a book compiled without the
+   * meta is a book saying nothing about narration, which is right, where a flag
+   * pointed at a missing file would fail the export.
+   */
+  narrationStamp?: string;
 }
 
 /**
@@ -1570,6 +1765,24 @@ export interface TranslationPlan {
    * translation the one that already exists, or a new one beside it?
    */
   stepId: string;
+  /**
+   * WHERE A CLEANUP'S STAMP GOES — `CleanRequest.stampPath` — and absent for the
+   * two passes that write none.
+   *
+   * ONE PLAN SHAPE FOR THREE PASSES, with the one field that belongs to one of
+   * them optional. The alternative was a `CleanupPlan` beside this that repeated
+   * `key`, `sourcePath`, `bookPath`, `recordsPath`, `seedRecords`, `generation`
+   * and `stepId` — seven fields whose meaning, provenance and refusals are
+   * identical, so that one of them could carry an eighth. That is the shape
+   * `planSimplification` already argues against one module over: everything these
+   * plans decide is decided the same way, and a second copy is a second place for
+   * the seeding rule or the materialise-at-plan-time rule to be got wrong.
+   *
+   * NAMED FROM THE RECORDS FILE (`narrationStampFileFor`, electron/projects.ts)
+   * rather than composed independently, so a branch's stamp lands beside a
+   * branch's answers and the sweep that finds one finds the other.
+   */
+  stampPath?: string;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -2800,7 +3013,7 @@ export type CloseAnswer = 'close' | 'save' | 'keep';
  * else's act ordered through the socket — Foundry does not know what it makes,
  * only that it consumes the book at a position.
  */
-export type MakeAct = 'export' | 'translate' | 'simplify' | 'host';
+export type MakeAct = 'export' | 'translate' | 'simplify' | 'clean' | 'host';
 
 /**
  * AND EVERY ACT THE UNAPPLIED CARD NOW STANDS IN FRONT OF, which is wider than
@@ -3162,6 +3375,56 @@ export const STEP_ACTIONS = [
    * says; the report is an apparatus a reader summons over it (§8), and the
    * pointer stays where it was rather than following the landing.
    */
+  /*
+   * `simplify` IS THE ROW A REWRITE HAS ALWAYS BEEN AND NEVER SAID IT WAS.
+   *
+   * A simplify was stored as `{action: 'translate', params: {rewrite}}` — the
+   * engine runs the translate pipeline with one word changed on the command line,
+   * so the step borrowed the pipeline's name along with its machinery. Owen ended
+   * that on 2026-09-05, about the third member of this family: *"it isnt a
+   * translate job. naming it translate is deceptive … it needs to be accurate.
+   * translate, simplify, and cleanup are all three similar steps."*
+   *
+   * SHARED MACHINERY, THREE NAMES. The three are one TEXT PASS (`TEXT_PASS_ACTIONS`,
+   * shared/ledger.ts): one records file per run, keyed by the block's own id, a
+   * derived book materialised from it when it lands, and a queue job that holds an
+   * Ollama model for the length of a book. What differs is what the row SAYS it
+   * is, and a row is the only part of this bookkeeping a person reads.
+   *
+   * EVERY STORED SIMPLIFY HEALS ON READ (`readStep`, shared/ledger.ts): a
+   * `translate` carrying a `rewrite` is one, it is read back as this, and it is
+   * persisted as this on the next write. Nothing writes the old shape again.
+   */
+  'simplify',
+  /*
+   * `clean` IS THE NARRATION CLEANUP — say every paragraph again, unchanged in
+   * meaning, with the punctuation and the typography a narrator can read aloud.
+   *
+   * Owen's ruling, 2026-09-05, verbatim: *"text cleanup should be an optional (but
+   * encouraged) step where the user runs it at any point and everything they do
+   * after that carries the cleanup along. if they delete blocks and then run
+   * cleanup, just like with translate or simplify, it changes the contents of the
+   * text that the user sees. they can delete blocks or whatever after that."*
+   *
+   * SO IT IS A TEXT PASS AND NOT A FLAG. A stored boolean would have been a fact
+   * about a project rather than a state of the book: it could not be stood before,
+   * it could not be branched from, and nothing made after it would carry it. As a
+   * step it inherits the whole model for nothing — the pointer moves onto it, the
+   * derived book at every position under it holds the cleaned words, and a
+   * translate or a simplify made afterwards makes fresh text, at which point the
+   * cleanup is no longer in effect (`cleanupInEffect`, shared/pipeline.ts).
+   *
+   * IT IS FOUNDRY'S TO RUN AND BOOKFORGE'S TO WANT. Owen: *"cleanup will only ever
+   * be done on behalf of bookforge and wont be available in foundry since foundry
+   * isnt designed to narrate text."* The step, the ledger, the queue and the render
+   * path exist here regardless; the TILE and the DIALOG are drawn only hosted
+   * (`hosted()`, src/app/core/foundry.ts) — the host acts' own arrangement, which
+   * runs zero times standalone and costs the standalone app nothing.
+   *
+   * `expensive`, on the model-pass clause `read`, `translate` and `analysis` sit
+   * on: it is one Ollama call per block over a whole book.
+   */
+  'clean',
   'analysis',
 ] as const;
 

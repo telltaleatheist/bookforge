@@ -197,6 +197,41 @@ export function canSimplifyFrom(
 }
 
 /**
+ * CAN THE NARRATION CLEANUP BE RUN FROM HERE.
+ *
+ * The same question as Simplify, delegated by name rather than repeated — a
+ * cleanup reads exactly what a rewrite reads (the position's materialised book
+ * file, every op replayed in) and writes exactly what a rewrite writes, so "is
+ * there a book at this position" has one answer and this is the third act to ask
+ * for it.
+ *
+ * IT DELEGATES TO `canSimplifyFrom` RATHER THAN TO `hasBookAt`, which is the whole
+ * of the difference between the two spellings. The chain says out loud that a
+ * cleanup's stage rule IS a rewrite's — so the day a rewrite grows a condition (a
+ * language it needs declared, a bank it needs complete) a cleanup inherits it,
+ * which is right, and the day a CLEANUP grows one there is a body here to put it
+ * in without touching the act beside it. That is `canSimplifyFrom`'s own argument
+ * about `canTranslateFrom`, one act further along.
+ *
+ * ── WHAT THIS DELIBERATELY DOES NOT ASK IS WHETHER THE WINDOW IS HOSTED ─────
+ *
+ * Owen's ruling has two halves and only one of them is a possibility: *"we can add
+ * the step/logic to foundry, but only make it visible when vendored to
+ * bookforge."* Whether the act is POSSIBLE from a stage is a fact about the book;
+ * whether it is OFFERED is a fact about who is running the window. Folding the
+ * host test in here would make a pure predicate over two records depend on a
+ * runtime global (`hosted()`, src/app/core/foundry.ts) that this module cannot
+ * see and a test cannot set — so the tile carries the `@if (hosted())` and this
+ * carries the gray, exactly as the host acts' own pair does.
+ */
+export function canCleanFrom(
+  project: ProjectSummary | null,
+  standing: LedgerStep | null,
+): boolean {
+  return canSimplifyFrom(project, standing);
+}
+
+/**
  * CAN A FINISHED COPY BE EXPORTED FROM HERE.
  *
  * `hasBookAt`, with ONE DIFFERENCE from Translate that is documented rather than

@@ -1,7 +1,29 @@
 # Foundry's IPC channels — the whole list, for the collision audit
 
 Every channel name this app owns, enumerated from `app/electron` rather than
-from memory, regenerated on 2026-08-25 for **Wave 50's hits-panel rework** —
+from memory, regenerated on 2026-09-05 for **the text-pass split** — ONE new
+door, `workspace:plan-clean` (plan a narration cleanup: which records file it
+writes, where its stamp goes, which step it will be filed as, and the position's
+book materialised for the engine to read). It takes the document and nothing
+else: a cleanup asks no language and no mode.
+
+NO CHANNEL WAS RENAMED, AND ONE DELIBERATELY WAS NOT. `queue:enqueue-translate`
+now takes all three text passes (`TextPassRequest` — a translation, a rewrite and
+a cleanup), because everything the door does is the same for all three. Renaming
+it to say so would be a new name for this file to audit plus an old one to prove
+retired, paid for a door whose behaviour is unchanged; it is the family's door,
+spelled after its eldest member.
+
+**THE COUNT IN THIS FILE WAS 96 AND THE SOURCE MEASURES 108.** Counted by script
+over `app/electron/ipc.ts` for this regeneration: **108 `ipcMain.handle` call
+sites, 108 distinct channel names, zero `ipcMain.on`**; 107 before the door above.
+Eleven doors were added under the stale 96 without this file moving — the exact
+failure the 2026-08-23 paragraph below records happening once already, and the
+standing rule it states is unchanged: regenerate this file in the same commit that
+touches `ipcMain.handle`, not on the next wave. The per-family tables below are
+the authority for the NAMES; where a total contradicts them, the tables win.
+
+Before that, regenerated on 2026-08-25 for **Wave 50's hits-panel rework** —
 two doors: `analysis:read-categories` and `analysis:write-categories`, the
 categories a person writes themselves (name + the one sentence that becomes the
 category's only hypothesis), kept app-level in `app-settings.json` beside the
@@ -457,7 +479,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `queue:clear-finished` | Clear the settled rows out of the shelf. Forwarded to the host's queue as well, where one is registered. |
 | `queue:enqueue` | Queue a reading or a rendering; captures the project's position as the parent step. Filed in the host's queue instead, where one is registered — this door is a person pressing something. |
 | `queue:enqueue-analysis` | Queue an analysis: the book read against the categories, held on the GPU lane. Never routed, and REFUSED outright hosted — the host's queue does not know this request shape, and Foundry's own queue is invisible in a hosted window. |
-| `queue:enqueue-translate` | Queue a translation or a simplification. Routed like `queue:enqueue`. |
+| `queue:enqueue-translate` | Queue a TEXT PASS — a translation, a simplification or a narration cleanup (`TextPassRequest`). Routed like `queue:enqueue`. The name is the family's eldest member, kept rather than renamed: the door's behaviour is unchanged and a rename costs this audit two entries. |
 | `queue:list` | The queue, for the renderer's mirror — the host's rows where a host queue is registered, Foundry's own otherwise. |
 | `queue:remove` | Remove a held or settled row. Forwarded to the host's queue where one is registered. |
 | `queue:run` | Run an export NOW and resolve with the settled row — the Export dialog's door. Never routed to a host queue; the row leaves the list at the settle, so nothing lingers in the shelf. Refuses a `read` by name. |
@@ -479,10 +501,12 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `vllm:stop` | Stop it. |
 | `window:close` | Close the window — the ✕, pressed by the page. Hosted, running out of tabs. |
 | `window:let-go` | The renderer's one answer to `window:closing`. |
+| `workspace:plan-clean` | Plan a narration cleanup: which records file it writes, where the run's stamp goes, which step it will be filed as, and the position's book materialised for the engine to read. Takes the document and nothing else. |
 | `workspace:plan-analysis` | Plan an analysis: which report file it writes, which step it will be filed as, and the position's book materialised for the engine to read. Checks every category name against the closed set this build knows. |
 | `workspace:plan-export` | Plan a rendering that lands in the project's `final/` tray. |
 | `workspace:plan-reading` | Plan an OCR read: which bank it fills. |
 | `workspace:plan-simplify` | Plan a rewrite in one of three modes. |
+
 | `workspace:plan-translation` | Plan a translation of an open document. |
 | `workspace:read-analysis` | One analysis step's report — the header, the findings, and one sentence about whether it is still about this book. The cache rows (one per sentence) are dropped at the parse. |
 | `wsl:facts` | The distros on this machine. |

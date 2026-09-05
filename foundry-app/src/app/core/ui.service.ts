@@ -91,6 +91,22 @@ export class UiService {
    * asking somebody to configure a job before they have said which job it is.
    */
   readonly simplifyOpen = signal(false);
+  /**
+   * The Clean text dialog — say the book again so a narrator can read it aloud.
+   *
+   * ITS OWN SIGNAL, on `simplifyOpen`'s argument one field up: the three text
+   * passes ask three different questions of a person (which language, which of
+   * three rewrites, and — here — nothing at all), and a single card switching its
+   * fields on a toggle would be asking somebody to configure a job before they
+   * have said which job it is.
+   *
+   * IT IS ONLY EVER RAISED IN A HOSTED WINDOW, and the gate is on the TILE rather
+   * than here (`@if (hosted())`, action-menu.component.ts). A dialog signal that
+   * refused to open would be a second copy of a rule the surface already keeps,
+   * and would leave the one act ordered from somewhere else — a keyboard shortcut,
+   * a future door — silently doing nothing.
+   */
+  readonly cleanOpen = signal(false);
   /** The Metadata dialog — the book's own record, not the app's idea of it. */
   readonly metadataOpen = signal(false);
   /**
@@ -362,6 +378,7 @@ export class UiService {
     this.exportOpen,
     this.translateOpen,
     this.simplifyOpen,
+    this.cleanOpen,
     this.metadataOpen,
     this.captureNewOpen,
     this.sweepOpen,
@@ -430,6 +447,14 @@ export class UiService {
 
   closeSimplify(): void {
     this.simplifyOpen.set(false);
+  }
+
+  openClean(): void {
+    this.only(this.cleanOpen);
+  }
+
+  closeClean(): void {
+    this.cleanOpen.set(false);
   }
 
   /**

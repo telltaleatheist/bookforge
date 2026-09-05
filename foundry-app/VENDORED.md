@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **009a0f1** — *feat(app): a formless host act is a launcher, and the menu learns to say so* |
-| Copied on | 2026-08-26 |
-| Copied by | `git -C <foundry> archive 009a0f1 app | tar -x --strip-components=1` |
+| Source sha | **9f4ee4e** — *feat(app): three text passes, and the cleanup a narrator can hear — clean is a step, hosted-only* |
+| Copied on | 2026-09-05 |
+| Copied by | `git -C <foundry> archive 9f4ee4e app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -739,6 +739,86 @@ document by name — a refusal our pipeline may meet). Verified: 137/137 blobs
 against `009a0f1:app/`, lockfile unmoved so `npm ci` skipped; subtree build
 clean (pre-existing 500 kB budget WARNING only); keepers ALL GREEN after the
 mirror update.
+
+**2026-09-05 — `9f4ee4e`, THE TEXT-PASS SPLIT AND THE NARRATION CLEANUP.** The
+one refresh so far that their own handoff calls **REQUIRED rather than
+recommended**, and the reason is on the wire: a simplify pressed in a hosted
+window sends `kind: 'simplify'` from the moment this snapshot lands, where it
+used to arrive as `kind: 'translate'` wearing a `rewrite`. Vendoring the app
+without teaching our queue the new kinds would have every simplify arrive as a
+row this side could not name, could not dedupe (a text pass names no
+`outputPath`) and would file on the wrong resource lane.
+
+Owen ruled that day that BookForge's narration text cleanup MOVES INTO THE
+FOUNDRY ENGINE as a third ledger action beside translate and simplify, named
+**Clean text**, hosted-only in the UI: *"cleanup will only ever be done on behalf
+of bookforge and wont be available in foundry since foundry isnt designed to
+narrate text … we can add the step/logic to foundry, but only make it visible
+when vendored to bookforge."* The tile, the dialog and the tree's "from here"
+entry are all `@if (hosted())`; the step, the queue job, the ledger row
+("Cleaned for narration") and the render path exist regardless.
+
+**THREE CONTRACT CHANGES, and all three needed code on our side:**
+
+1. **`HostOperation.invoke` gained a FOURTH argument** — `context:
+   HostInvokeContext`, which is `{ cleaned: boolean }`: true when Foundry's
+   narration cleanup is in effect at the step the act was ordered from. The
+   mirrored interface in `electron/main.ts` declares it and all three of our
+   operations name it. `invokeFoundryNarrate` READS it and DECIDES NOTHING with
+   it (`sayWhatEachSideThinksAboutTheCleanup`): `cleaned` is false for every
+   position Foundry cannot resolve — including an EXPORT row, one of the two
+   currencies Narrate is offered from — so acting on it would refuse a press on
+   a correctly cleaned file about half the time. What it does instead is write
+   one line comparing it with the FILE's own `bookforge:narration-text` stamp,
+   because the disagreement (Foundry says cleaned, the export carries no stamp
+   ⇒ `vlm-compile --narration-stamp` did not ride that line) is a fact neither
+   side can see alone.
+2. **`FoundryHostQueue.enqueue` may be handed three text-pass shapes** —
+   `TranslateRequest | SimplifyRequest | CleanRequest`. `FoundryJobKind` gained
+   `simplify` and `clean` (`electron/foundry-host-queue.ts`); `productOf` now
+   asks the FAMILY (`recordsPath`) rather than the translation, because a
+   `clean` carries no `outputPath` at all and would otherwise dedupe against
+   nothing; `labelFor` names the ACT ("Clean text — book.epub", "Simplify —
+   …"), which is their own `titleForTextPass` rule for the same reason — three
+   buttons now make a text pass over one book; and `resourceFor`
+   (`electron/queue-steps/foundry-job.ts`) files both new kinds on the **gpu**
+   lane, as their `JOB_RESOURCE` does. A cleanup is not the cheap one of the
+   three: it asks the model about EVERY block of the book, one call each.
+3. **`parseProgressLine` learned `clean-text: n/m`** — MIRROR UPDATE required,
+   the second time this has happened (the first was `analyze: rank|verify`).
+   `parseFoundryProgressLine` gained the pattern **in the vendored order** and
+   the `foundryPhase` unions widened to carry `clean`
+   (`electron/queue-engine.ts`, `shared/queue/engine-types.ts`). The pattern is
+   anchored to the END of the line (`$`) and that is load-bearing: `clean-text`
+   names what it counts only in its FINAL line, so a `\b` would read
+   "412 blocks, 87 changed" as 412 of 87 and drive the bar past its own end at
+   the moment the run finished. The drift keeper caught the change, as designed.
+
+One new IPC door on their side (`workspace:plan-clean`); `IPC-CHANNELS.md`
+regenerated at 108 handles and refreshed here from the same sha; the collision
+keeper is green.
+
+**A `clean` row needs an ENGINE that has the command.** It is released as foundry
+**1.1.0** (`ca7a666`, "the engine that owns the narration text pass" — that
+commit touches only `package.json`/`package-lock.json`, so `app/` is byte-identical
+at `9f4ee4e` and at the tag). BookForge refuses a `clean` row against an older
+binary by name, in the step module rather than at `enqueue` (that door is
+synchronous by contract and asking a binary its version is a spawn):
+`FOUNDRY_VERSION_FOR_CLEAN_TEXT` + `foundryTooOldForCleanText`, reusing the one
+comparator `foundryVersionAtLeast`. Only `clean` is gated — a simplify is
+`translate --rewrite`, a command every foundry this app has adopted has had.
+
+**What did NOT change here, and is worth saying:** the engine's `clean-text`
+reads a BOOK FILE and writes RECORDS plus a stamp; it writes no EPUB. So
+BookForge's own narration text pass (`electron/narration-text-pass.ts`) is
+UNTOUCHED by this refresh and still owns the bare-EPUB door — see
+`docs/NARRATION_TEXT_PASS.md`, which now states the division of labour and the
+measured gap.
+
+Verified: **139/139** blobs against `9f4ee4e:app/` plus `IPC-CHANNELS.md`, and
+zero strays; `package.json`/`package-lock.json` unmoved, so `npm ci` was skipped;
+subtree build clean (pre-existing 500 kB budget WARNING only, ~925 kB);
+`dist/electron/mount.js` fresh.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

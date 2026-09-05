@@ -66,7 +66,7 @@ import type {
   StepDeletion,
   StepLedgerView,
   StepRow,
-  TranslateRequest,
+  TextPassRequest,
   TranslationPlan,
   UnappliedAnswer,
   UnappliedWarning,
@@ -442,7 +442,7 @@ export interface FoundryApi {
      * pipeline with one word changed on the command line, so it writes the same
      * kind of records file, is named after the same kind of step, seeds from the
      * same kind of sibling and is cast into a book the same way. The caller builds
-     * a `TranslateRequest` from this and adds `rewrite` itself, which is the only
+     * a `SimplifyRequest` from this and adds `rewrite` itself, which is the only
      * field this window contributes that the plan does not.
      *
      * THERE IS NO LANGUAGE TO PASS, AND THAT IS THE INTERESTING PART. A rewrite
@@ -457,6 +457,29 @@ export interface FoundryApi {
       inputPath: string,
       mode: RewriteMode,
     ): Promise<TranslationPlan & { inputPath: string }>;
+    /**
+     * Where this book's NARRATION CLEANUP goes — the same answer again, about the
+     * run that says every paragraph in the words it already has, with punctuation
+     * and typography a narrator can read aloud.
+     *
+     * IT TAKES NOTHING BUT THE DOCUMENT, which is what distinguishes it from the
+     * two plans above. A translation is asked which language and a rewrite is asked
+     * which of three modes; a cleanup has no question in it at all — the act is
+     * the same whatever the book is, and the model is shown the paragraphs in front
+     * of it.
+     *
+     * WHAT COMES BACK THAT THE OTHERS DO NOT CARRY IS `stampPath`: where the run
+     * writes what it did (normaliser version, punctuation spec, model, hour), which
+     * the caller puts in `CleanRequest.stampPath` and which the EPUB later carries
+     * into its OPF. Use it verbatim; it is not a path this window may compose.
+     *
+     * THE DOOR IS OPEN STANDALONE AND THE ACT IS NOT OFFERED THERE. Owen ruled the
+     * cleanup BookForge's alone (2026-09-05), so the tile and the dialog are drawn
+     * only when `hosted()`; the plan, the step and the render path exist here
+     * regardless, because a feature half-built across two repositories is worse
+     * than one built where the ledger lives.
+     */
+    planCleanup(inputPath: string): Promise<TranslationPlan & { inputPath: string }>;
     /**
      * Where this book's ANALYSIS goes — the report a run would write, and the step
      * it would be filed as (docs/ANALYSIS.md §7).
@@ -969,8 +992,17 @@ export interface FoundryApi {
   queue: {
     list(): Promise<Job[]>;
     enqueue(request: JobRequest): Promise<Job>;
-    /** The same queue and the same GPU lane, a different command. See `TranslateRequest`. */
-    enqueueTranslate(request: TranslateRequest): Promise<Job>;
+    /**
+     * The same queue and the same GPU lane, a different command — and, since
+     * 2026-09-05, THREE commands behind one door: a translation, a rewrite and a
+     * narration cleanup (`TextPassRequest`).
+     *
+     * THE NAME IS THE FAMILY'S ELDEST MEMBER AND NOT A DESCRIPTION OF THE SET.
+     * Renaming it would rename `queue:enqueue-translate` under it, which is a new
+     * entry in BookForge's collision audit (docs/IPC-CHANNELS.md) bought for a
+     * door whose behaviour is unchanged.
+     */
+    enqueueTranslate(request: TextPassRequest): Promise<Job>;
     /**
      * The same queue and the same GPU lane again, a third command. See
      * `AnalyzeRequest`.

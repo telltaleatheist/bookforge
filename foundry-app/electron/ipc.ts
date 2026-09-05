@@ -105,13 +105,16 @@ import {
 import { readSettings, writeSettings } from './settings';
 import * as vllm from './vllm-server';
 import { answerLetGo, broadcast, foundryWindow } from './window';
-import { planAnalysis, planExport, planReading, planSimplification, planTranslation } from './workspace';
+import {
+  planAnalysis, planCleanup, planExport, planReading, planSimplification, planTranslation,
+} from './workspace';
 import { detectEnvTooling, listDistros } from './wsl';
 import { fold, isBook } from '../shared/original';
 import {
   ANALYSIS_CATEGORY_IDS,
   type CustomAnalysisCategory,
 } from '../shared/analysis-categories';
+import { cleanupInEffect } from '../shared/ledger';
 import type { ReadAsk } from '../shared/ledger';
 import type { BookOp, PendingStack } from '../shared/ops';
 import { RE_READ_CANCEL, RE_READ_PROCEED } from '../shared/reread';
@@ -141,7 +144,7 @@ import type {
   ReReadAnswer,
   RewriteMode,
   SetupRequest,
-  TranslateRequest,
+  TextPassRequest,
   AnalyzeRequest,
   UnappliedAnswer,
   UnappliedWarning,
@@ -239,6 +242,48 @@ function within(dir: string, filePath: string): boolean {
  * sentence that already reads plainly, and "1.4 GB" is the whole of what is
  * being communicated.
  */
+/**
+ * WAS THE NARRATION CLEANUP IN EFFECT where this host act was ordered from — the
+ * one field of `HostInvokeContext`, answered against the project's own ledger.
+ *
+ * ── Why the node id has to be resolved rather than trusted ──────────────────
+ *
+ * `nodeId` is three different things (`HostOperation.invoke`, electron/host-ops.ts):
+ * a ledger step id when the act was ordered from a row Foundry made, one of the
+ * HOST's own ids when it was chained onto work that has not happened yet, and
+ * `export:<file>` when it came off an export row. Only the first names a position
+ * this app can ask a question about, so the lookup is `stepOf`-shaped and every
+ * other shape falls to the same answer as a step that is not there.
+ *
+ * ── FALSE IS THE ANSWER FOR EVERY OTHER SHAPE, AND IT IS NOT A SHRUG ────────
+ *
+ * `HostInvokeContext.cleaned` documents it: nothing HERE says these words were
+ * cleaned. A host that needs the distinction between "not cleaned" and "Foundry
+ * could not tell" has the durable record on the file itself — the OPF's
+ * `bookforge:narration-text`, written by the compile — which is the answer a
+ * narration should act on in any case. Inventing a third state on this seam would
+ * be a tri-state boolean crossing a process boundary to say "ask the file",
+ * which the host can do unconditionally.
+ *
+ * IT NEVER THROWS. An unreadable manifest, a project that has moved, a ledger this
+ * build refuses — none of those is a reason to fail a button somebody pressed, and
+ * the console keeps the record.
+ */
+async function cleanupAtNode(projectDir: string, nodeId: string): Promise<boolean> {
+  try {
+    const view = await readStepLedger(projectDir);
+    if (view === null) return false;
+    const step = view.ledger.steps.find((row) => row.id === nodeId) ?? null;
+    return step === null ? false : cleanupInEffect(view.ledger, step);
+  } catch (err) {
+    console.error(
+      `[ipc] could not tell whether ${nodeId} in ${projectDir} stands under a cleanup `
+      + `(${err instanceof Error ? err.message : String(err)}); the host is told it does not.`,
+    );
+    return false;
+  }
+}
+
 function sizeOnDisk(bytes: number): string {
   const units = ['bytes', 'KB', 'MB', 'GB', 'TB'];
   let value = bytes;
@@ -349,13 +394,27 @@ export function registerIpc(): void {
      * would send two arguments and must go on working rather than handing the
      * host `undefined` for a record it is entitled to destructure.
      */
-    (
+    /*
+     * AND THE FOURTH ARGUMENT IS COMPOSED HERE RATHER THAN SENT — see
+     * `HostInvokeContext` (shared/host-ops.ts). It is what FOUNDRY knows about the
+     * position, so it is read off the ledger in main, at the moment of the press,
+     * and not taken from a renderer that holds a mirror of the same file: a mirror
+     * that had not caught up would tell somebody else's queue that a book was
+     * cleaned when it was not.
+     */
+    async (
       _event,
       operationId: string,
       projectDir: string,
       nodeId: string,
       settings: Record<string, unknown> = {},
-    ) => invokeHostOperation(operationId, projectDir, nodeId, settings),
+    ) => invokeHostOperation(
+      operationId,
+      projectDir,
+      nodeId,
+      settings,
+      { cleaned: await cleanupAtNode(projectDir, nodeId) },
+    ),
   );
 
   /*
@@ -863,6 +922,34 @@ export function registerIpc(): void {
     const source = admitted(inputPath);
     if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
     const plan = await planSimplification(source, mode);
+    return { ...plan, inputPath: plan.sourcePath };
+  });
+
+  /*
+   * A CLEANUP IS ADMITTED THE SAME WAY, AND IT ASKS NOTHING AT ALL.
+   *
+   * It is the same plan about the same open document, materialising the same book
+   * — so the allow-list check is not a pattern being copied here, it is the same
+   * check about the same act. What it carries that the two above do not is a
+   * STAMP path in the answer; what it does not carry is a question: a cleanup has
+   * no language to go into and no mode to be asked in, so this door takes the
+   * document and nothing else.
+   *
+   * IT IS NOT REFUSED HOSTED, WHICH IS `queue:enqueue-analysis`' OPPOSITE. That
+   * one refuses because the host's queue has never heard of an analysis; this act
+   * exists ONLY on the host's behalf (Owen, 2026-09-05: *"cleanup will only ever
+   * be done on behalf of bookforge and wont be available in foundry"*), so the
+   * gate is the other way round — the tile is drawn only in a hosted window
+   * (`@if (hosted())`, action-menu.component.ts), and this door serves it. It is
+   * not gated on `hosted()` in main because main's own gate would be a second
+   * copy of a rule the renderer already enforces, and because a host act that
+   * reached this from the mount seam would meet a refusal about a window rather
+   * than about a book.
+   */
+  ipcMain.handle('workspace:plan-clean', async (_event, inputPath: string) => {
+    const source = admitted(inputPath);
+    if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
+    const plan = await planCleanup(source);
     return { ...plan, inputPath: plan.sourcePath };
   });
 
@@ -2220,9 +2307,11 @@ export function registerIpc(): void {
           ? 'The translation would be made from'
           : warning.act === 'simplify'
             ? 'The rewrite would be made from'
-            : warning.act === 'export'
-              ? 'The exported book would be'
-              : 'The work would be made from')
+            : warning.act === 'clean'
+              ? 'The cleaned text would be made from'
+              : warning.act === 'export'
+                ? 'The exported book would be'
+                : 'The work would be made from')
           + ' the book as it was recorded, which is the book WITHOUT those changes — changes reach '
           + 'anything made from this book only once they are applied as a step.';
       // What happens the moment the card closes, in the words of the thing the
@@ -2232,11 +2321,13 @@ export function registerIpc(): void {
         ? 'the translation is set up'
         : warning.act === 'simplify'
           ? 'the rewrite is set up'
-          : warning.act === 'export'
-            ? 'the export is set up'
-            : warning.act === 'stand'
-              ? 'the step you clicked is opened'
-              : 'the work goes ahead';
+          : warning.act === 'clean'
+            ? 'the cleanup is set up'
+            : warning.act === 'export'
+              ? 'the export is set up'
+              : warning.act === 'stand'
+                ? 'the step you clicked is opened'
+                : 'the work goes ahead';
       return {
         kind: 'ask',
         question: {
@@ -2421,17 +2512,34 @@ export function registerIpc(): void {
     // certainly inside the project the job is about.
     await parentStepFor(request.kind === 'read' ? request.readingsPath : request.outputPath),
   ));
-  ipcMain.handle('queue:enqueue-translate', async (_event, request: TranslateRequest) => {
+  /*
+   * ── ONE DOOR FOR THREE TEXT PASSES, AND THE CHANNEL KEEPS ITS NAME ─────────
+   *
+   * A translation, a rewrite and a narration cleanup all arrive here (Owen,
+   * 2026-09-05: *"translate, simplify, and cleanup are all three similar steps"*),
+   * because everything this door does is the same for all three: re-check the
+   * input against the allow-list, resolve the position from the records file's own
+   * project, hand it to the one enqueue. A `queue:enqueue-clean` beside this would
+   * have been a second channel with an identical body.
+   *
+   * THE NAME IS NOT CHANGED EITHER, and that is a deliberate refusal rather than
+   * an oversight. docs/IPC-CHANNELS.md is BookForge's COLLISION AUDIT — the
+   * authority on every name this app owns in a process it shares — and a rename is
+   * a new name to audit plus an old one to prove retired, paid for a channel whose
+   * behaviour is unchanged. `queue:enqueue-translate` is now the family's door,
+   * spelled after its eldest member, and the doc says so.
+   */
+  ipcMain.handle('queue:enqueue-translate', async (_event, request: TextPassRequest) => {
     // The input again, because a request can arrive with any `inputPath` at all
     // — `workspace:plan-translation` checked the one it was given, not the one
     // that ends up here.
     if (admitted(request.inputPath) === null) {
       throw new Error(`${request.inputPath} was never opened in this app.`);
     }
-    // The RECORDS file, which is what a translation writes now: the position is
+    // The RECORDS file, which is what every text pass writes: the position is
     // resolved from the project that file belongs to, exactly as it used to be
     // resolved from the project the output EPUB belonged to.
-    return queue.enqueueTranslate(request, await parentStepFor(request.recordsPath));
+    return queue.enqueueTextPass(request, await parentStepFor(request.recordsPath));
   });
   /*
    * AN ANALYSIS IS QUEUED THE SAME WAY AND REFUSED HOSTED, which is the one place

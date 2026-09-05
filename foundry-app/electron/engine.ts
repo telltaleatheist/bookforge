@@ -248,6 +248,32 @@ export function parseProgressLine(line: string): JobProgress | null {
   }
 
   /*
+   * `clean-text: 412/2081`.
+   *
+   * ── The one pattern in here with no noun to match on ───────────────────────
+   *
+   * Every other line above names what it is counting — `block`, `rank`, `verify`,
+   * `page` — and the naming is what stops a bar reading a retry count or a survivor
+   * count as progress. `clean-text` counts blocks and says so only in its FINAL
+   * line: `clean-text: 412 blocks, 87 changed, 3 edits refused in 91s`. So the
+   * discipline is spelled the other way round — the fraction is anchored to the end
+   * of the line (`$`), which the summary cannot satisfy because it goes on to say
+   * "blocks, 87 changed". A `\b` here would have read "412 blocks, 87 changed" as
+   * 412 of 87 and driven the bar past its own end at the moment the run finished.
+   *
+   * ABOVE THE `vlm-convert:` GATE for `analyze`'s reason exactly: that gate rejects
+   * a prefix it has never heard of, and this is a fourth command with a fourth
+   * prefix. Below the two patterns above it, which wear prefixes this command does
+   * not — so the placement is free of the ordering hazard and is stated anyway,
+   * because the one thing this function's history says is that somebody will add a
+   * pattern to it in a hurry.
+   */
+  const cleaned = /^clean-text:\s+(\d+)\/(\d+)$/.exec(trimmed);
+  if (cleaned) {
+    return { phase: 'clean', page: Number(cleaned[1]), total: Number(cleaned[2]) };
+  }
+
+  /*
    * `analyze: rank 141/141 sentences` and `analyze: verify 3/20 (hate)`.
    *
    * ── WHERE THIS SITS IN THE ORDER, WHICH IS THE LOAD-BEARING PART ───────────

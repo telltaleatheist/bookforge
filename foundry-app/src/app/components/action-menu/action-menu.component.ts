@@ -10,7 +10,8 @@ import { exportNodeId, type HostOperationOffer } from '@shared/host-ops';
  * what a stage can do.
  */
 import {
-  canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom, canTranslateFrom,
+  canCleanFrom, canExportFrom, canReadPages, canRunHostActFrom, canSimplifyFrom,
+  canTranslateFrom,
 } from '@shared/stages';
 import { standsOnAnArrival } from '@shared/ledger';
 import { fold } from '@shared/original';
@@ -402,6 +403,48 @@ import { UnappliedService } from '../../core/unapplied.service';
           <svg class="menu-icon" aria-hidden="true"><use href="#ft-spark" /></svg>
           <span class="menu-label">Simplify</span>
         </button>
+
+        <!--
+          CLEAN TEXT, beside Simplify because it is the third of one family: the
+          model says every paragraph again, checked block by block, landing as a
+          step of its own. What differs is the destination — a NARRATOR rather
+          than a reader or a language — which is why it is a third button and not
+          a mode inside the second.
+
+          HIDDEN AND NOT GRAYED WHEN THIS WINDOW IS ITS OWN, which is the one tile
+          on this rail that disappears rather than dims. Owen's ruling
+          (2026-09-05): *"cleanup will only ever be done on behalf of bookforge and
+          wont be available in foundry since foundry isnt designed to narrate text
+          … we can add the step/logic to foundry, but only make it visible when
+          vendored to bookforge."*
+
+          This rail's usual principle is the opposite — Translate and Simplify stay
+          visible and gray on a book they cannot run on, so a person can see the
+          tool exists and is not applicable from there — and the difference is what
+          a gray MEANS. A gray says "not from here"; this act is not "not from
+          here", it is not part of this application at all, and a permanently gray
+          tile with no reachable state would be an advertisement for a feature that
+          does not exist in the window it is drawn in. Same spirit as the host acts
+          loop below, which runs zero times standalone.
+
+          THE GRAY IS STILL THERE, HOSTED, and it is the ordinary one: the same
+          stage rule Simplify is drawn by (canCleanFrom delegates to
+          canSimplifyFrom, shared/stages.ts), with a title saying why.
+        -->
+        @if (hosted()) {
+          <button
+            class="menu-item"
+            [class.active]="ui.cleanOpen()"
+            [disabled]="!canClean()"
+            [title]="canClean()
+              ? 'Say this book again with the punctuation and typography a narrator can read aloud'
+              : 'There is no book at this step to clean — read the pages first, or step onto the reading'"
+            (click)="clean()"
+          >
+            <svg class="menu-icon" aria-hidden="true"><use href="#ft-wave" /></svg>
+            <span class="menu-label">Clean text</span>
+          </button>
+        }
 
         <!--
           ANALYSIS, BESIDE TRANSLATE AND SIMPLIFY because it is the same shape of
@@ -1446,6 +1489,36 @@ export class ActionMenuComponent {
     void this.router.navigateByUrl('/');
     if (!await this.unapplied.clearedHere('simplify')) return;
     this.ui.openSimplify();
+  }
+
+  /**
+   * THE SAME QUESTION THE TWO TILES ABOVE ASK, asked by the act's own name.
+   *
+   * `canCleanFrom` delegates to `canSimplifyFrom` today (shared/stages.ts argues
+   * why it is a named function rather than a call), so the three agree — which is
+   * Owen's own rule that the offer and the possibility are one fact, and not three
+   * copies of a test that has already gone stale once on this rail.
+   *
+   * IT DOES NOT ASK `hosted()`, and the tile above it does. Whether the act is
+   * POSSIBLE from a step is a fact about the book; whether it is OFFERED is a fact
+   * about the window, and folding the second into this method would leave the gray
+   * unable to explain itself — a permanently disabled tile whose title said the
+   * book was not ready when the truth was that the feature is BookForge's.
+   */
+  protected canClean(): boolean {
+    const tab = this.stage.activeDocument();
+    if (tab === null) return false;
+    const project = this.projects.projectFor(tab.path);
+    return canCleanFrom(project, project === null ? null : this.ledger.standingIn(project.dir));
+  }
+
+  protected async clean(): Promise<void> {
+    void this.router.navigateByUrl('/');
+    // THE SAME GATE THE OTHER MAKE-ACTS PASS THROUGH. A cleanup is arithmetic over
+    // the RECORDED steps — main materialises the position's book from them — so
+    // changes nobody has applied would silently not be in the book that is cleaned.
+    if (!await this.unapplied.clearedHere('clean')) return;
+    this.ui.openClean();
   }
 
   /**

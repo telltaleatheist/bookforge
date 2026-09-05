@@ -293,15 +293,21 @@ export interface StepProgress {
    * Foundry rows only: which pass the counts in `metrics` are counting.
    *
    * It travels because the quantity changes with it — a read and a rendering
-   * count PAGES, a translate counts BLOCKS — and their shelf, which draws these
-   * rows back to the person who ordered them, says which. A bar that silently
-   * changed units mid-run would be the same lie as a bar that changed scale.
+   * count PAGES, a translate and a `clean` count BLOCKS — and their shelf, which
+   * draws these rows back to the person who ordered them, says which. A bar that
+   * silently changed units mid-run would be the same lie as a bar that changed
+   * scale.
    *
    * Its ABSENCE is also load-bearing: nothing has been counted yet, which is a
    * different statement from a count of zero, and `progressOf` returns null on
    * it rather than sending a progress with no numbers in it.
+   *
+   * `clean` arrived with foundry 9f4ee4e — the narration text pass, which counts
+   * the blocks it asks the model about (`clean-text: 412/2081`). It is a MIRROR
+   * of their `JobProgress.phase` and every member of it is theirs, so this list
+   * moves when that one does and never on its own account.
    */
-  foundryPhase?: 'render' | 'read' | 'translate' | 'rank' | 'verify';
+  foundryPhase?: 'render' | 'read' | 'translate' | 'clean' | 'rank' | 'verify';
 }
 
 /**

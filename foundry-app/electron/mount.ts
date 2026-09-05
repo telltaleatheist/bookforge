@@ -186,7 +186,9 @@ export type { HostNode, HostNodeProgress, HostNodeState, HostOperationKind, Node
  */
 export { hostQueueDrained, runJob, setHostQueueRows } from './job-queue';
 export type { FoundryHostQueue } from './host';
-export type { FoundryJobRow, Job, JobRequest, TranslateRequest } from '../shared/types';
+export type {
+  CleanRequest, FoundryJobRow, Job, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
+} from '../shared/types';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // foundry-file:// — how a book's figures reach the page
@@ -756,6 +758,19 @@ export async function exportEpubFromStep(
     ...(plan.records !== undefined ? { records: plan.records } : {}),
     ...(plan.language !== undefined ? { language: plan.language } : {}),
     ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+    /*
+     * AND THE NARRATION RECEIPT, WHICH MATTERS MOST ON EXACTLY THIS ROUTE.
+     *
+     * `planExport` composed it off `cleanupInEffect` at the step this call named
+     * (`narrationStampFor`, electron/workspace.ts), so the flag is here precisely
+     * when the nearest text pass above those words is a cleanup — and this is the
+     * EPUB BookForge narrates. A stamp carried by the dialogs and dropped here
+     * would mean the one file made for a narrator was the one file that did not
+     * say it had been prepared for one.
+     *
+     * Carried from the plan, never composed, exactly as the three lines above it.
+     */
+    ...(plan.narrationStamp !== undefined ? { narrationStamp: plan.narrationStamp } : {}),
   };
 
   return new Promise<ExportLanding>((resolve, reject) => {

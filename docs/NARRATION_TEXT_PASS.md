@@ -4,6 +4,124 @@
 BookForge's narration**, run as an intentional step the user queues and the book
 remembers.
 
+---
+
+> ## THE DOCTRINE MOVED. FOUNDRY OWNS IT NOW.
+>
+> Owen ruled on **2026-09-05** that this pass moves into the **Foundry engine** as
+> a third ledger action beside translate and simplify, named **"Clean text"**,
+> hosted-only in Foundry's own UI: *"cleanup will only ever be done on behalf of
+> bookforge and wont be available in foundry since foundry isnt designed to
+> narrate text … we can add the step/logic to foundry, but only make it visible
+> when vendored to bookforge."*
+>
+> **The authority on every judgement below is now Foundry's
+> `docs/CLEAN-TEXT.md`.** Its body IS this document, vendored byte-identical from
+> BookForge `0f962d5f` and edited only where it names a file path that has moved.
+> Foundry owns `NORMALIZER_VERSION` and `PUNCTUATION_SPEC_VERSION`, and it is the
+> source the `orpheus-finetune` training repo vendors from. **The version-bump
+> policy near the end of this file is THAT repository's to obey, not this one's.**
+>
+> The modules went across verbatim — `f2e3c2d` (the pass's ten files) and
+> `770480d` (the three leaves they import) changed not one byte, and
+> `tools/test-foundry-clean-text-vendor.js` is BookForge's own proof of it,
+> runnable here, against both repositories' git rather than either working tree.
+> `215294a` then ported them into the engine: import retargets, four provably
+> unreferenced declarations deleted, the word list imported instead of read off
+> `__dirname`, and `narration-text-pass.ts` REPLACED by a book-file driver. That
+> keeper pins those four files by sha256 with what changed in each, so the
+> documented port passes and a later, undocumented edit fails.
+>
+> ### The engine's door
+>
+> ```
+> foundry clean-text --book <book.jsonl> --records <out.records.jsonl>
+>                    --stamp <out.stamp.json> [--endpoint <url>]
+>                    [--model <name>] [--keep-model]
+> ```
+>
+> It reads a **book file**, not an EPUB, and writes a **records file** and a
+> **stamp**. **It writes no book.** The cleaned edition is materialised by
+> Foundry's app from the records and the parent book together, exactly as a
+> translation's is, and an EPUB compiled from a position at-or-under a `clean`
+> step carries the stamp because `--narration-stamp` rides the `vlm-compile`
+> line.
+>
+> ### What stayed in BookForge, and why
+>
+> Everything that READS the result. The engine has no applied-passes model, so the
+> ledger side could not have gone with it:
+>
+> | what | where | asks |
+> |---|---|---|
+> | the stamp shape and parser | `NarrationTextStamp`, `readNarrationTextStamp`, `writeNarrationTextStamp` (`electron/epub-processor.ts`) | a FILE: what does the OPF's `bookforge:narration-text` meta say |
+> | the file gate | `narrationTextGate` (`electron/narration-text-pass.ts`) | a FILE: is there a stamp, and is it this build's version |
+> | the project gate | `narrationTextReadiness` / `narrationTextReadinessFor` (`electron/narration-text-readiness.ts`), over IPC `narration:text-readiness` | a PROJECT: is there a `narration-text` entry, and is it the LAST text-changing one |
+> | the door's naming of the case | `prepareNarrationInput` → `NarrationPrepResult.cleanup`: `stamped` / `unstamped` / `skipped-by-user` / `normalized-inline` | this RUN: what was read, and what the log should say |
+> | the queue kind | `FoundryJobKind` gained `clean` and `simplify` (`electron/foundry-host-queue.ts`); a press in the hosted window mints a row HERE, Foundry executes it | scheduling, which crosses; execution, which does not |
+>
+> **The stamp is a wire between two repositories that do not compile against each
+> other**, so it is held by a keeper that drives the real engine:
+> `tools/test-foundry-narration-stamp.js` runs `foundry vlm-book --epub` and
+> `foundry vlm-compile --narration-stamp` over a fixture and reads the result back
+> with BookForge's own parser and gate, field for field, in both directions — a
+> stamp this build composed, and the exact bytes a real `clean-text` run wrote. It
+> runs no model. A field renamed on either side would otherwise make every cleaned
+> book read **stale** here, silently and forever, because the reader downgrades a
+> stamp it cannot understand rather than throwing — which is right at a render
+> door and is exactly what would hide it.
+>
+> **A `clean` row needs an engine that HAS the command** — foundry **1.1.0**
+> (`ca7a666`). `FOUNDRY_VERSION_FOR_CLEAN_TEXT` + `foundryTooOldForCleanText`
+> refuse an older one by name, in the step module rather than at `enqueue` (that
+> door is synchronous by contract and asking a binary its version is a spawn),
+> reusing the one comparator `foundryVersionAtLeast`. Only `clean` is gated: a
+> simplify is `translate --rewrite`, a command every foundry this app has adopted
+> has had.
+>
+> ### THE GAP — MEASURED, 2026-09-05, AND NOT CLOSED HERE
+>
+> **The engine cannot clean an arbitrary EPUB in place, so `prepareNarrationInput`
+> still runs BookForge's own pass for a bare book.** This was measured against the
+> real 1.1.0 binary rather than reasoned about, and all three legs of it failed:
+>
+> 1. `foundry vlm-book --epub <any.epub> --out book.jsonl` works on any publisher
+>    EPUB and needs no stamp — so a book file CAN be made here.
+> 2. `foundry clean-text` then produces records and a stamp, correctly (measured:
+>    `Dr. Smith` → *Doctor Smith*, `(1 Pet. 3:7)` → *First Peter three, verse
+>    seven*, `2:00 p.m.` → *two p.m.*, `$5,000`/`12` read as words).
+> 3. **But nothing on the CLI turns those records back into the book.**
+>    `vlm-compile` takes `--book` and `--narration-stamp` and has **no
+>    `--records`** — so compiling the parent book file writes a file that CLAIMS a
+>    cleanup over text nobody cleaned. The materialisation is Foundry's app code
+>    (`translated()`, `app/shared/materialize.ts`), reachable only through its
+>    Electron main process.
+> 4. **And the round trip is not preserving.** `vlm-compile` rebuilds a fresh
+>    foundry-shaped EPUB: every original id gone, `OEBPS/chapter1.xhtml` becomes
+>    `EPUB/text/c0001.xhtml`, `<section>` wrappers dropped, `dc:identifier`
+>    replaced with `urn:foundry:bank:<hash>`. A BookForge narration EPUB — a cut,
+>    with its working-copy identity, its chapter markers paired by position and
+>    its provenance stamps — would come back a different document.
+>
+> Re-deriving Foundry's explode here to map `records.parts` back onto our own text
+> nodes would be a second copy of a rule that lives in another repository — the
+> exact two-copies-of-one-truth failure `foundry-app/` is a sealed subtree to
+> prevent — so it was not done. **The route that DOES work end to end today is the
+> hosted one**: press Clean text in the Foundry window, the row runs in BookForge's
+> queue, and every EPUB exported from at-or-under that step carries the stamp this
+> app reads. The bare-EPUB door (`--input book.epub`, and `prepareNarrationInput`
+> for a `.txt` audition) is the case with no engine route, and it is why the
+> modules below are still in this repository.
+>
+> Two of them could not have left in any case: `canonicalizePunctuationText` is
+> stage 1 on the **streaming** path (`electron/book-render-service.ts`,
+> `electron/reader-stream-bridge.ts`, `electron/tts-api-server.ts`), and
+> `ai-cleanup-prepass.ts` / `number-expansion.ts` / `shared/text/line-join.ts` are
+> imported by `ai-bridge.ts` and `mutool-bridge.ts` for work that has nothing to do
+> with narration.
+
+---
+
 > Owen, 2026-09-04: *"We should make this its own intentional step that the user
 > runs and persists, so we don't have to run it again. It runs the step on an
 > epub that foundry exported/completed and it creates an updated epub. This
@@ -543,6 +661,14 @@ book-less rule is untouched here on purpose, because every change to it is a
 change to how `main` reads text that has nothing to do with scripture.
 
 ## Version bump policy
+
+> **THIS SECTION IS FOUNDRY'S TO OBEY NOW** (Owen, 2026-09-05). The modules it
+> names live at `src/clean/` in the Foundry repo, and `NORMALIZER_VERSION` and
+> `PUNCTUATION_SPEC_VERSION` are read from there. It stands here because the
+> BookForge copies are still on disk for the doors named in the ruling above, and
+> **an edit to one of them without the matching edit in Foundry is the drift both
+> keepers exist to catch** — `test-foundry-clean-text-vendor` fails on the bytes
+> and `test-foundry-narration-stamp` fails on the versions.
 
 **Changing `electron/tts-punctuation.ts`, `electron/tts-number-rules.ts`,
 `electron/tts-number-normalizer.ts` or `electron/prompts/tts-number-normalize.txt`

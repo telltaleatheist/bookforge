@@ -11,7 +11,8 @@ import { CHAINABLE_FROM, PRODUCES_OF, exportNodeId, exportOfNodeId } from '@shar
  * structural rather than repeated.
  */
 import {
-  canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom, hostActPositionFrom,
+  canCleanFrom, canExportFrom, canReadPages, canSimplifyFrom, canTranslateFrom,
+  hostActPositionFrom,
 } from '@shared/stages';
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
@@ -27,7 +28,7 @@ import type {
   ProjectSummary,
 } from '@shared/types';
 
-import { api } from '../../core/foundry';
+import { api, hosted } from '../../core/foundry';
 import { ConfirmService } from '../../core/confirm.service';
 import { HostOpsService } from '../../core/host-ops.service';
 import { IntakeWorkspaceService, type WorkspaceImage } from '../../core/intake-workspace.service';
@@ -2063,10 +2064,10 @@ export class OpenDocumentsComponent {
        * step's host nodes after the step's own children. Standalone the map is
        * empty and the walk emits nothing extra.
        */
-      const hosted = new Map<string, HostNode[]>();
+      const nodesByStep = new Map<string, HostNode[]>();
       for (const node of this.hostOps.nodesFor(project.dir)) {
-        const already = hosted.get(node.parentStepId);
-        if (already === undefined) hosted.set(node.parentStepId, [node]);
+        const already = nodesByStep.get(node.parentStepId);
+        if (already === undefined) nodesByStep.set(node.parentStepId, [node]);
         else already.push(node);
       }
 
@@ -2403,7 +2404,7 @@ export class OpenDocumentsComponent {
        *
        * The host echoes the invoke's nodeId into `parentStepId` verbatim, so a
        * narration ordered from an export row arrives with `export:<file>` in the
-       * field the ledger's own children are indexed by. `hosted` above cannot
+       * field the ledger's own children are indexed by. `nodesByStep` above cannot
        * hold them: its keys are step ids, and a lookup there would never match.
        * Reading them out by the same spelling the press minted is the whole of
        * the join (`exportNodeId` / `exportOfNodeId`, shared/host-ops.ts).
@@ -2462,7 +2463,7 @@ export class OpenDocumentsComponent {
       const rootKids = origin === null
         ? stranded
         : [...kids.get(origin.id) ?? [], ...stranded];
-      const rootHostNodes = origin === null ? [] : hosted.get(origin.id) ?? [];
+      const rootHostNodes = origin === null ? [] : nodesByStep.get(origin.id) ?? [];
       /*
        * THE ORPHANS RATHER THAN EVERY TERMINAL, now that most exports are drawn
        * deeper: a book whose only export hangs under a step still has children
@@ -2507,7 +2508,7 @@ export class OpenDocumentsComponent {
       if (rootOpen) {
         const walk = (step: LedgerStep, depth: number): void => {
           const under = kids.get(step.id) ?? [];
-          const jobs = hosted.get(step.id) ?? [];
+          const jobs = nodesByStep.get(step.id) ?? [];
           const key = `${project.key}:step:${step.id}`;
           const shown = !collapsed.has(key);
           rows.push({
@@ -2726,6 +2727,18 @@ export class OpenDocumentsComponent {
         out.push({ id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
           form: false,
           hint: 'Say this again in its own language: plainer, more natural, or for a learner' });
+      }
+      /*
+       * AND CLEAN TEXT, HOSTED ONLY — the tile's own rule, said again here because
+       * this is a second surface offering the same act (Owen, 2026-09-05: *"only
+       * make it visible when vendored to bookforge"*). Hidden rather than grayed,
+       * for the reason the action menu argues in full: a gray says "not from
+       * here", and this act is not part of a standalone Foundry at all.
+       */
+      if (hosted() && canCleanFrom(project, at)) {
+        out.push({ id: 'clean', label: 'Clean text', icon: 'ft-wave', audio: false, host: null,
+          form: false,
+          hint: 'Say this again with the punctuation and typography a narrator can read aloud' });
       }
       if (canExportFrom(project, at)) {
         out.push({ id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
@@ -2970,7 +2983,8 @@ export class OpenDocumentsComponent {
      */
     const made: MakeAct | null = act.host !== null
       ? 'host'
-      : act.id === 'translate' || act.id === 'simplify' || act.id === 'export'
+      : act.id === 'translate' || act.id === 'simplify' || act.id === 'clean'
+        || act.id === 'export'
         ? act.id
         : null;
     const standing = this.ledger.standingIn(row.dir)?.id ?? null;
@@ -3062,6 +3076,7 @@ export class OpenDocumentsComponent {
       if (act.id === 'read') this.ui.openOcr();
       else if (act.id === 'translate') this.ui.openTranslate();
       else if (act.id === 'simplify') this.ui.openSimplify();
+      else if (act.id === 'clean') this.ui.openClean();
       else this.ui.openExport();
     });
   }
@@ -4227,7 +4242,17 @@ function iconForTab(tab: Tab): string {
 function iconForStep(step: LedgerStep): string {
   if (step.action === 'read') return 'ft-book';
   if (step.action === 'curate' || step.action === 'edit') return 'ft-pen';
-  if (step.action === 'translate') return step.params?.rewrite === undefined ? 'ft-globe' : 'ft-spark';
+  /*
+   * THE THREE TEXT PASSES WEAR THREE MARKS, and they are the marks their own
+   * buttons wear — the globe, the spark and the wave — so a card and the button
+   * that made it are recognisably one act. This line used to ask a translate row
+   * whether it carried a `rewrite`, which was the ledger's old way of saying
+   * "simplify"; it asks the action now, because the action says so (Owen,
+   * 2026-09-05).
+   */
+  if (step.action === 'translate') return 'ft-globe';
+  if (step.action === 'simplify') return 'ft-spark';
+  if (step.action === 'clean') return 'ft-wave';
   if (step.action === 'metadata') return 'ft-tag';
   /*
    * AN ANALYSIS WEARS THE MAGNIFIER, which is the one mark on this sheet that

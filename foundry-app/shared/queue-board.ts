@@ -74,17 +74,31 @@ export type JobResource = 'gpu' | 'cpu' | 'exclusive' | 'unscheduled';
 /**
  * THE TABLE. Every kind, one resource, no default — see the module note.
  *
- * SIMPLIFY IS NOT IN HERE AND MUST NOT BE. It is a rewrite prompt on the
- * translate command (`TranslateRequest.rewrite`), the Simplify dialog calls
- * `enqueueTranslate`, and the row it produces is `kind: 'translate'` wearing a
- * title of its own. It inherits `gpu` through that, which is correct for the
- * reason the lane exists: it holds an Ollama model for the length of a book.
+ * ── SIMPLIFY IS IN HERE NOW, AND THE SENTENCE THAT SAID IT MUST NOT BE ──────
+ *
+ * It read: *"SIMPLIFY IS NOT IN HERE AND MUST NOT BE. It is a rewrite prompt on
+ * the translate command, the Simplify dialog calls `enqueueTranslate`, and the row
+ * it produces is `kind: 'translate'` wearing a title of its own."* Every clause of
+ * that was true of the queue and false of the row a person reads, which is what
+ * Owen overturned on 2026-09-05: *"it isnt a translate job. naming it translate is
+ * deceptive."* A simplify and a cleanup are kinds of their own now, and what the
+ * old paragraph was really defending — that all three hold the same lane — is
+ * stated below as three entries instead of one entry and an argument.
  */
 export const JOB_RESOURCE: Readonly<Record<JobKind, JobResource>> = {
   /** The VLM holds the card for hours. */
   read: 'gpu',
-  /** Ollama holds the card (`keep_alive: 0` on exit, Wave 4c) — and so does a Simplify. */
+  /** Ollama holds the card (`keep_alive: 0` on exit, Wave 4c). */
   translate: 'gpu',
+  /**
+   * TRANSLATE'S OWN ENTRY, TWICE. A rewrite is `foundry translate --rewrite` and a
+   * cleanup is `foundry clean-text`; both are one Ollama call per block over a
+   * whole book, which is a model resident on the card for hours. Two of these
+   * beside each other is exactly what the single GPU slot exists to prevent, and
+   * nothing about them being separate kinds changes the machine.
+   */
+  simplify: 'gpu',
+  clean: 'gpu',
   /** Engine compile or cast — disk and CPU, and no model anywhere near it. */
   epub: 'cpu',
   txt: 'cpu',
