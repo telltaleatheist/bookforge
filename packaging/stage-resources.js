@@ -217,71 +217,18 @@ fs.writeFileSync(
   JSON.stringify({ stamp, stagedFrom: e2aSource, models: includeModels, seed: seedModels }, null, 2)
 );
 
-// ── Seed: bundle only the default voice + stanza (the barebones build) ─────────
+// ── Seed: bundle the English stanza pack (the barebones build) ────────────────
 //
-// The bulk copy above already excluded models/ (EXCLUDE_TOP) but kept voices/
-// (the small reference clips every downloadable voice needs). Here we add back a
-// curated slice of models/: the base speakers_xtts.pth (required for any XTTS
-// voice to init), the ScarlettJohansson voice, and the English stanza pack. Every
-// other voice/model — including the full base XTTS model — downloads on demand
-// into the app's data folder at runtime.
+// The bulk copy above already excluded models/ (EXCLUDE_TOP). Here we add back a
+// curated slice of it: the English stanza pack. Every other language downloads on
+// demand into the app's data folder at runtime.
+//
+// This block used to seed two more things — the base `speakers_xtts.pth` (which
+// every XTTS voice needed to initialise, even the bundled fine-tune) and the
+// ScarlettJohansson checkpoint. Both left with XTTS on 2026-09-05, and with them
+// the whole `.seed-cache` / `.seed-cache-speakers` staging dance and its
+// dependency on a conda env that can run e2a's download helper.
 if (bundleSeedModels) {
-  // Build the voice checkpoint in a PERSISTENT staging cache (idempotent — a
-  // second build is instant), then clone-on-write it into the snapshot. The
-  // helper writes the exact HF-cache layout the XTTS engine reads.
-  const seedPyCmd = process.env.BOOKFORGE_SEED_PYTHON || 'conda run -n ebook2audiobook python';
-  const seedCache = path.join(repoRoot, 'packaging', '.seed-cache');
-  const ttsDest = path.join(snapshotDest, 'models', 'tts');
-  fs.mkdirSync(seedCache, { recursive: true });
-  fs.mkdirSync(ttsDest, { recursive: true });
-
-  // Base XTTS-v2: bundle ONLY speakers_xtts.pth (~7.7 MB) — the same minimal,
-  // required set on EVERY platform. It is the only base file the engine REQUIRES:
-  // xtts.py's __init__ calls _load_xtts_builtin_list() for ALL voices (incl. the
-  // bundled fine-tune Scarlett), which hf_hub_downloads + torch.loads the base
-  // repo's speakers_xtts.pth (the 58 built-in speaker fingerprints). Offline
-  // without it the engine raises LocalEntryNotFoundError and even Scarlett fails
-  // to initialize.
-  //
-  // The full base model.pth (~1.9 GB) is the inference engine ONLY for the stock
-  // "XTTS Default" voice + the reference-clip "Voice Library" clones, so it stays
-  // download-on-demand (`xtts-base`) on every platform. Fine-tuned voices ship
-  // their own model.pth and clone from a reference clip, so omitting the full
-  // base is no quality loss — speakers_xtts.pth is just an init formality for them.
-  const BASE_REPO_DIR = 'models--coqui--XTTS-v2';
-  const speakersCache = path.join(repoRoot, 'packaging', '.seed-cache-speakers');
-  fs.mkdirSync(speakersCache, { recursive: true });
-  console.log(`[stage-resources] seeding base speakers_xtts.pth (~7.7 MB) via: ${seedPyCmd}`);
-  execSync(
-    `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --repo coqui/XTTS-v2 --files speakers_xtts.pth --cache-dir "${speakersCache}"`,
-    { cwd: e2aSource, stdio: 'inherit' }
-  );
-  const baseSpeakers = path.join(speakersCache, BASE_REPO_DIR);
-  if (!fs.existsSync(baseSpeakers)) {
-    throw new Error('speakers_xtts.pth seed failed — base repo cache not created; XTTS would fail to init offline');
-  }
-  fs.cpSync(baseSpeakers, path.join(ttsDest, BASE_REPO_DIR), {
-    recursive: true, verbatimSymlinks: true, mode: CLONE,
-  });
-
-  // Premium bundled voice (fine-tune): ScarlettJohansson — standalone (its own
-  // model.pth + a reference clip).
-  console.log(`[stage-resources] seeding default voice (ScarlettJohansson) via: ${seedPyCmd}`);
-  execSync(
-    `${seedPyCmd} -m bookforge_ext.download_model --engine xtts --preset ScarlettJohansson --cache-dir "${seedCache}"`,
-    { cwd: e2aSource, stdio: 'inherit' }
-  );
-  for (const entry of fs.readdirSync(seedCache)) {
-    // Never ship the full base model — only speakers_xtts.pth (above) + the
-    // fine-tune. A prior build may have left the full base in the shared cache.
-    if (entry === BASE_REPO_DIR) continue;
-    // verbatimSymlinks: keep the HF cache's relative blob symlinks intact (else
-    // they'd dereference into full copies).
-    fs.cpSync(path.join(seedCache, entry), path.join(ttsDest, entry), {
-      recursive: true, verbatimSymlinks: true, mode: CLONE,
-    });
-  }
-
   // Stanza language packs: seed ONLY English (the universal source language and
   // the TTS segmentation default), so a fresh install can clean/narrate English
   // offline. Every OTHER language is a user download via Settings → Languages

@@ -123,6 +123,8 @@ const SUITES = [
   'test-foundry-landing',
   'test-foundry-adopt',
   'test-legacy-migration',
+  'test-legacy-bilingual-manifest',
+  'test-retired-engine-settings',
   'test-ipc-collision',
   'test-derivation-cache',
   'test-versions-page-data',

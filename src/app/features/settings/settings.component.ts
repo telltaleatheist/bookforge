@@ -8,9 +8,7 @@ import { ElectronService, OrpheusBatchConfig } from '../../core/services/electro
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
-import { VoicesPanelComponent } from './components/voices-panel.component';
 import { WhisperModelsPanelComponent } from './components/whisper-models-panel.component';
-import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { WorkerConfigService } from '../../core/services/worker-config.service';
@@ -24,7 +22,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -413,21 +411,10 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   <p class="field-description">
                     The TTS engine used for streaming playback. <strong>Orpheus</strong>
                     has the most natural prosody and runs a single GPU worker. Applies the
-                    next time the engine starts — switching stops the current engine first.
-                    <strong>XTTS</strong> was retired on 2026-09-04: a machine already
-                    streaming on it keeps working, but it can no longer be selected.
+                    next time the engine starts. It is the only streaming engine this
+                    build has — XTTS was removed on 2026-09-05.
                   </p>
                   <div class="worker-options">
-                    <!-- Shown, disabled, and labelled retired rather than deleted: a
-                         machine whose persisted engine is still XTTS would otherwise
-                         show NOTHING selected, which reads as a broken setting rather
-                         than as the true "you are on the retired engine". -->
-                    <button
-                      class="worker-btn"
-                      [class.selected]="workerCfg.engine() === 'xtts'"
-                      [disabled]="true"
-                      [title]="streamEngineInfo('xtts')?.reason || 'Retired'"
-                    >XTTS (retired)</button>
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'orpheus'"
@@ -440,7 +427,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     <span class="hint">Orpheus isn't set up yet — install/locate it in Settings → Add-ons (or enable WSL2 for Orpheus on Windows).</span>
                   }
                   @if (workerCfg.isOrpheus()) {
-                    <span class="hint">Orpheus runs one worker on the GPU — the device and worker-count options below apply to XTTS.</span>
+                    <span class="hint">Orpheus runs one worker on the GPU, so the device and worker-count options below have nothing to act on.</span>
                   }
                 </div>
 
@@ -519,7 +506,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     everywhere and frees memory.
                     @if (isMac()) {
                       <strong>GPU (MPS)</strong> uses the Apple-Silicon GPU — it's a real
-                      choice, though CPU is usually better for XTTS on Mac.
+                      choice.
                     } @else {
                       <strong>GPU</strong> (NVIDIA/CUDA) is much faster but needs the GPU
                       acceleration pack below. <strong>Auto</strong> uses the GPU when it's
@@ -740,25 +727,6 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     <strong>Tip:</strong> Leave paths empty to use auto-detection.
                     The app will search common installation locations for each tool.
                   </p>
-                </div>
-              </div>
-            } @else if (section.id === 'xtts') {
-              <!-- XTTS: voices + language packs + its GPU acceleration packs. -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Voices</h3>
-                  <p class="addons-group-sub">Download premium narration voices, or add your own.</p>
-                  <app-voices-panel></app-voices-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Language packs</h3>
-                  <p class="addons-group-sub">Stanza sentence-segmentation models used to split text for narration, cleanup &amp; translation.</p>
-                  <app-languages-panel></app-languages-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">GPU acceleration</h3>
-                  <p class="addons-group-sub">CUDA PyTorch + DeepSpeed packs that speed up XTTS narration.</p>
-                  <app-add-ons-panel [only]="xttsAddOnIds"></app-add-ons-panel>
                 </div>
               </div>
             } @else if (section.id === 'orpheus') {
@@ -1147,24 +1115,6 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
             } @else if (section.id === 'enhancement') {
               <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
               <app-rvc-enhancement-panel></app-rvc-enhancement-panel>
-            } @else if (section.id === 'f5') {
-              <!-- F5-TTS: the engine environment (download, or point at your own). -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The F5-TTS engine environment.</p>
-                  <app-add-ons-panel [only]="f5AddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
-            } @else if (section.id === 'voxtral') {
-              <!-- Voxtral: the engine environment (download, or point at your own). -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The Voxtral TTS engine environment.</p>
-                  <app-add-ons-panel [only]="voxtralAddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
             } @else if (section.id === 'speech-to-text') {
               <!-- Speech to Text: the transcription runtime + downloadable
                    models behind "Generate sentences". -->
@@ -2272,10 +2222,9 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Choose which TTS engine backs the Listen feature (applies on next start).
-   *  Only 'orpheus' is reachable from the UI now — the XTTS button is disabled
-   *  (see the template) — but the parameter keeps the wider type because the
-   *  worker config it forwards to still round-trips a persisted 'xtts'. */
-  setStreamEngine(engine: 'xtts' | 'orpheus'): void {
+   *  One engine, one button — the parameter stays because main still refuses an
+   *  engine name it does not have, and this is where a second one would arrive. */
+  setStreamEngine(engine: 'orpheus'): void {
     void this.workerCfg.setEngine(engine);
   }
 
@@ -2293,7 +2242,7 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Availability of a given streaming engine on this machine (for the chooser). */
-  streamEngineInfo(id: 'xtts' | 'orpheus'): { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
+  streamEngineInfo(id: 'orpheus'): { id: 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
     return this.workerCfg.engines().find((e) => e.id === id);
   }
 
@@ -2393,7 +2342,7 @@ export class SettingsComponent implements OnInit {
   readonly wslVerifying = signal(false);
   readonly wslSaving = signal(false);
   readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
-  // Parallel XTTS workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
+  // Parallel streaming workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
   // serializes to 1 worker — extra workers just contend for the GPU — so the
   // setting is hidden off-Mac.
   readonly isMac = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));
@@ -2474,12 +2423,9 @@ export class SettingsComponent implements OnInit {
   }
 
   // Component-id filters for the per-engine pages' embedded add-ons panels.
-  readonly xttsAddOnIds = ['cuda-tts', 'deepspeed-xtts'];
   readonly orpheusAddOnIds = ['orpheus'];
   readonly whisperAddOnIds = ['whisper'];
   readonly alignAddOnIds = ['whisperx-env'];
-  readonly f5AddOnIds = ['f5-env'];
-  readonly voxtralAddOnIds = ['voxtral-env'];
   /**
    * The cross-cutting tools, plus every downloadable task model that has no
    * picker panel of its own — today that is the page-layout model. Those are

@@ -22,7 +22,7 @@ export interface LiveTake {
   sampleRate: number;
   durationSec: number;
   /** Snapshot of the engine/voice/settings used, for A/B comparison. */
-  engine: 'xtts' | 'orpheus';
+  engine: 'orpheus';
   settings: PlaySettings;
   createdAt: number;
 }

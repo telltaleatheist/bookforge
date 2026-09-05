@@ -138,9 +138,11 @@ async function main() {
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
 
-  // ParallelTtsSettings. For Orpheus, temperature/topP/topK/repetitionPenalty/speed and
-  // enableTextSplitting are INERT — prep/worker only forward them for XTTS, and Orpheus
-  // sampling is fixed inside orpheus.py. They're present to satisfy the shape.
+  // ParallelTtsSettings. speed and enableTextSplitting are INERT for Orpheus, whose
+  // sampling is fixed inside orpheus.py; they are present to satisfy the shape. The four
+  // sampling fields that used to sit beside them (temperature/topP/topK/repetitionPenalty)
+  // left the interface with XTTS on 2026-09-05 — the only code that read them was the
+  // prep spawn's XTTS-gated flag block.
   // THE ENGINE COMES FROM THE CALLER. It was hardcoded 'orpheus', which is what
   // made the CLI the one door in the app that could not render a Higgs book —
   // against the standing rule that the CLI mirrors the app's code path. Nothing
@@ -153,7 +155,7 @@ async function main() {
     language: args.language || 'en',
     ttsEngine: engine,
     fineTuned: voice,
-    temperature: 0.6, topP: 0.8, topK: 0, repetitionPenalty: 1.1, speed: 1.0,
+    speed: 1.0,
     enableTextSplitting: false,
   };
   // Explicit model directory (CLI --model-dir): bypasses models.json resolution. Must be

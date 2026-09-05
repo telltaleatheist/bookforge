@@ -12,19 +12,14 @@ import * as path from 'path';
 
 import { getE2aPath } from '../tool-paths';
 import { getActiveBundledEnvPath, getBundledEnvDir } from '../e2a-env-bootstrap';
-import { voiceComponents } from './voice-components';
 import { rvcVoiceComponents } from './rvc-voice-components';
-import { languagePackComponents } from './language-pack-components';
 import { whisperModelComponents } from './whisper-model-components';
 import { foundryCliComponent } from './foundry-cli-components';
 import { llamaCudaComponent } from './llama-cuda';
 import { cudaTtsComponent } from './cuda-tts';
 import { cudaRvcComponent } from './cuda-rvc';
-import { deepspeedXttsComponent } from './deepspeed-xtts';
 import { whisperEnvComponent } from './whisper-env';
 import { rvcEnvComponent } from './rvc-env';
-import { voxtralEnvComponent } from './voxtral-env';
-import { f5EnvComponent } from './f5-env';
 import { resembleEnvComponent } from './resemble-env';
 import { whisperxEnvComponent } from './whisperx-env';
 import type {
@@ -249,10 +244,10 @@ const orpheus: OptionalComponent = {
 // Catalog
 // ─────────────────────────────────────────────────────────────────────────────
 
-// Built fresh on every call so it reflects the latest catalog snapshot: the
-// voice and language-pack entries come from CatalogService, which swaps in the
-// live catalog after its background network refresh. The static entries
-// (calibre, tesseract, orpheus, GPU packs) never change.
+// Built fresh on every call because the voice/whisper-model entries are read off
+// disk. Nothing here is fetched from a network catalog any more: the remote
+// catalog served exactly two lists — the XTTS voices and the Stanza language
+// packs — and both left the build (2026-09-05).
 export function getCatalog(): OptionalComponent[] {
   return [
     calibre,
@@ -261,16 +256,11 @@ export function getCatalog(): OptionalComponent[] {
     llamaCudaComponent(),
     cudaTtsComponent(),
     cudaRvcComponent(),
-    deepspeedXttsComponent(),
     whisperEnvComponent(),
     rvcEnvComponent(),
-    voxtralEnvComponent(),
-    f5EnvComponent(),
     resembleEnvComponent(),
     whisperxEnvComponent(),
-    ...voiceComponents(),
     ...rvcVoiceComponents(),
-    ...languagePackComponents(),
     ...whisperModelComponents(),
     foundryCliComponent(),
   ];

@@ -174,16 +174,19 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
     );
   }
 
-  // Engines that run in their OWN external/managed conda env (their deps conflict
-  // with the bundled env): Orpheus/Voxtral (vLLM) and F5 (f5-tts / flow-matching).
-  // The user points at it via Settings → Add-ons; we resolve through the component
-  // seam with NO silent fallback to python_env (it lacks their deps and would crash
-  // deep in the worker). The UI already hides these engines until installed; this
-  // guards stale jobs and saved settings.
+  // Orpheus runs in its OWN external/managed conda env (vLLM's deps conflict with
+  // the bundled env's). The user points at it via Settings → Add-ons; we resolve
+  // through the component seam with NO silent fallback to python_env (it lacks
+  // vLLM and would crash deep in the worker). The UI already hides the engine
+  // until installed; this guards stale jobs and saved settings.
+  //
+  // This map had two more rows — `voxtral: 'voxtral-env'` and `f5: 'f5-env'` —
+  // removed with their components on 2026-09-05 when the narration picker became
+  // Orpheus and Higgs. A saved job that still names one now falls through to the
+  // bundled env, which does not have that engine either; `assertRunnableTtsEngine`
+  // refuses both ids BY NAME long before a spawn (shared/tts/engine-caps.ts).
   const externalEngineComponent: Record<string, string> = {
     orpheus: 'orpheus',
-    voxtral: 'voxtral-env',
-    f5: 'f5-env',
   };
   const componentId = externalEngineComponent[ttsEngine?.toLowerCase() ?? ''];
   if (componentId) {

@@ -20,11 +20,12 @@
  *
  * ── What is deliberately NOT here ───────────────────────────────────────────
  *
- * The reads themselves. `getAudiobookVoiceOptions()` (installed XTTS voices) and
- * `listOrpheusModels()` (custom Orpheus folders) are main-process functions that
- * touch disk and the component registry; the renderer reaches them over
- * `voices:list-audiobook` and `orpheus:list-models`, and main calls them
- * directly. This module takes their ANSWERS and says what to do with them.
+ * The reads themselves. `listOrpheusModels()` (custom Orpheus folders) is a
+ * main-process function that touches disk and the component registry; the
+ * renderer reaches it over `orpheus:list-models`, and main calls it directly.
+ * This module takes those ANSWERS and says what to do with them. (There was a
+ * second such read — `getAudiobookVoiceOptions()`, the installed XTTS voices,
+ * over `voices:list-audiobook`. Both went with the engine on 2026-09-05.)
  */
 
 /** One choosable voice: what travels in a run's config, and what a person reads. */
@@ -102,7 +103,6 @@ export function mergeOrpheusVoices(
 export function narrationVoicesFor(
   engine: string,
   catalog: {
-    readonly xtts: readonly NarrationVoice[];
     readonly orpheus: readonly NarrationVoice[];
     readonly higgs: readonly NarrationVoice[];
   },
@@ -113,13 +113,17 @@ export function narrationVoicesFor(
     case 'higgs':
       return catalog.higgs;
     // Retired, but still reachable from a saved setting or an old job record
-    // being displayed. The list is what those records were rendered against, so
-    // showing it is honest; the refusal to RENDER lives in
+    // being displayed. EMPTY, and that is the only honest answer left: these
+    // engines' voice catalogs were removed from the build on 2026-09-05 (the
+    // XTTS list was a live read of installed checkpoints, and there is nothing
+    // to read), so there is no list to show. A record that names one of these
+    // still LOADS and still displays its voice string; what no longer exists is
+    // a set of alternatives to offer. The refusal to RENDER lives in
     // `assertRunnableTtsEngine`, not here.
     case 'xtts':
     case 'f5':
     case 'voxtral':
-      return catalog.xtts;
+      return [];
     default:
       throw new Error(
         `No voice catalog is defined for TTS engine "${engine}" — refusing to offer another ` +

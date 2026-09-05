@@ -15,7 +15,7 @@
  *
  * ITS BASELINE IS NO LONGER "01a3799b, byte for byte". `feat/xtts-removal`
  * regenerated the assembly row on 2026-09-05 when it deleted the bilingual arm
- * (`--bilingual` / `--bilingual_pause` / `--bilingual_gap`), licensed in this
+ * (`--bilingual` / `--bilingual_pause` / `--bilingual_gap`), licensed in its own
  * header at the time. Every other row is still the pre-Higgs original. Said here
  * because a baseline that claims to be a fixed commit and is not is worse than no
  * baseline at all.
@@ -47,6 +47,24 @@
  * — and this compares the current source against it. Five doors, all of them:
  * prep, retake, the lightweight worker, the app.py worker, assembly. Comments and
  * whitespace are normalised away, so reformatting passes and a moved flag fails.
+ *
+ * ── THE BASELINE MOVED ONCE, DELIBERATELY (2026-09-05) ──────────────────────
+ *
+ * The `assembly` row lost its last four tokens:
+ *
+ *     ...(config.bilingual?.enabled
+ *       ? ['--bilingual', '--bilingual_pause', …, '--bilingual_gap', …]
+ *       : [])
+ *
+ * The language-learning / bilingual feature was removed from the app on Owen's
+ * ruling ("it needs to be rebuilt anyway ... clean it all out"), and with it the
+ * only writer of `config.bilingual`. The tail was therefore already unreachable
+ * for every job the app can queue — an ORPHEUS assembly took the `: []` arm on
+ * every run, before and after — so this is a change to the argv's TEXT and not to
+ * any Orpheus job's argv. Every other row is still byte-for-byte `01a3799b`.
+ *
+ * This is the only licensed regeneration. Anything else that turns this red is a
+ * diff to read, not a baseline to refresh.
  *
  * ── If this fails ───────────────────────────────────────────────────────────
  *

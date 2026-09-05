@@ -540,7 +540,7 @@ export interface DiffLoadProgress {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Play Tab Types (XTTS Streaming)
+// Play Tab Types (streaming TTS)
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface PlaySettings {
@@ -588,10 +588,6 @@ export interface ParallelTtsSettings {
   language: string;
   ttsEngine: string;
   fineTuned: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
 }
@@ -1240,13 +1236,6 @@ export interface ElectronAPI {
     usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
     isFreshInstall: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
   };
-  customVoices: {
-    list: () => Promise<{ success: boolean; data?: Array<{ id: string; name: string; checkpointDir: string; refPath: string }>; error?: string }>;
-    add: () => Promise<{ success: boolean; voice?: { id: string; name: string; checkpointDir: string; refPath: string }; canceled?: boolean; error?: string }>;
-    remove: (id: string) => Promise<{ success: boolean; error?: string }>;
-    /** Installed voices selectable for full-audiobook generation (value/label). */
-    listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
-  };
   higgsModels: {
     /** The Higgs narration roster as a picker wants it. A voice whose artifact has
      *  not landed yet is INCLUDED, with "— not installed yet" in its label: the
@@ -1771,8 +1760,8 @@ export interface ElectronAPI {
     configure: (updates: { port?: number; host?: string }) => Promise<{ success: boolean; data?: { running: boolean; port: number; host: string; token: string; addresses: string[] }; error?: string }>;
   };
   ttsStream: {
-    getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'xtts' | 'orpheus'; engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
-    setWorkerConfig: (updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'xtts' | 'orpheus'; engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
+    getWorkerConfig: () => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'orpheus'; engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
+    setWorkerConfig: (updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }) => Promise<{ success: boolean; data?: { enabled: boolean; count: number; defaultCount: number; minWorkers: number; maxWorkers: number; devicePref: 'auto' | 'cpu' | 'gpu' | 'mps'; device: 'cpu' | 'cuda' | 'mps' | null; deviceWorkers: number; activeWorkers: number; engine?: 'orpheus'; engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[]; voices?: string[]; voice?: string; currentVoice?: string | null }; error?: string }>;
   };
   components: {
     list: () => Promise<ComponentStatus[]>;
@@ -1837,30 +1826,6 @@ export interface ElectronAPI {
     saveToBfp: (sessionDir: string, projectDir: string) => Promise<{ success: boolean; cachedPath?: string; error?: string }>;
     saveToProject: (sessionDir: string, projectDir: string, language: string) => Promise<{ success: boolean; cachedSentencesDir?: string; error?: string }>;
     scanProject: (projectDir: string) => Promise<{ success: boolean; sessions: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>; error?: string }>;
-  };
-  bilingualAssembly: {
-    run: (jobId: string, config: {
-      projectId: string;
-      sourceSentencesDir: string;
-      targetSentencesDir: string;
-      sentencePairsPath: string;
-      outputDir: string;
-      pauseDuration?: number;
-      gapDuration?: number;
-      audioFormat?: string;
-    }) => Promise<{ success: boolean; data?: { success: boolean; audioPath?: string; vttPath?: string; error?: string }; error?: string }>;
-    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => () => void;
-    onComplete: (callback: (data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => void) => () => void;
-    finalizeOutput: (params: {
-      audioPath: string;
-      vttPath?: string;
-      projectDir: string;
-      projectId: string;
-      sourceLang: string;
-      targetLang: string;
-      metadataFilename?: string;
-      sentencePairsPath?: string;
-    }) => Promise<{ success: boolean; projectAudioPath?: string; projectVttPath?: string; error?: string }>;
   };
   videoAssembly: {
     run: (jobId: string, config: {
@@ -1997,6 +1962,15 @@ export interface ElectronAPI {
       error?: string;
     }>;
   };
+  /**
+   * ARTICLE IMPORT — the two survivors of the language-learning namespace.
+   *
+   * The feature was removed on 2026-09-05; these two were never part of it.
+   * `fetchUrl` is the studio's "add from a URL" door and `finalizeContent` writes
+   * the article EPUB its content editor produces. The key and the channel names
+   * are the wire contract with main and `ElectronService`, so they keep the old
+   * spelling rather than a rename across three files to fix a word.
+   */
   languageLearning: {
     fetchUrl: (url: string, projectId?: string) => Promise<{
       success: boolean;
@@ -2012,325 +1986,9 @@ export interface ElectronAPI {
       warning?: string;
       error?: string;
     }>;
-    saveProject: (project: LanguageLearningProject) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    loadProject: (projectId: string) => Promise<{
-      success: boolean;
-      project?: LanguageLearningProject;
-      error?: string;
-    }>;
-    listProjects: () => Promise<{
-      success: boolean;
-      projects?: LanguageLearningProject[];
-      error?: string;
-    }>;
-    deleteProject: (projectId: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    updateProject: (projectId: string, updates: any) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    confirmDelete: (title: string) => Promise<{
-      confirmed: boolean;
-    }>;
-    ensureDirectory: (dirPath: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    deleteAudiobooks: (projectId: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    listCompleted: () => Promise<{
-      success: boolean;
-      audiobooks?: CompletedAudiobook[];
-      error?: string;
-    }>;
-    extractText: (htmlPath: string, deletedSelectors: string[]) => Promise<{
-      success: boolean;
-      text?: string;
-      error?: string;
-    }>;
-    writeFile: (filePath: string, content: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
     finalizeContent: (projectId: string, finalizedHtml: string) => Promise<{
       success: boolean;
       epubPath?: string;
-      error?: string;
-    }>;
-    getAudioPath: (projectId: string) => Promise<{
-      success: boolean;
-      path?: string;
-      error?: string;
-    }>;
-    getAudioData: (projectId: string) => Promise<{
-      success: boolean;
-      dataUrl?: string;
-      size?: number;
-      error?: string;
-    }>;
-    hasAudio: (projectId: string) => Promise<{
-      success: boolean;
-      hasAudio?: boolean;
-      error?: string;
-    }>;
-    deleteAudio: (projectId: string) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    readVtt: (projectId: string) => Promise<{
-      success: boolean;
-      content?: string;
-      error?: string;
-    }>;
-    readSentencePairs: (projectId: string) => Promise<{
-      success: boolean;
-      pairs?: Array<{
-        index: number;
-        source: string;
-        target: string;
-        sourceTimestamp?: number;
-        targetTimestamp?: number;
-      }>;
-      error?: string;
-    }>;
-    getAnalytics: (projectId: string) => Promise<{
-      success: boolean;
-      analytics?: any;
-      error?: string;
-    }>;
-    saveAnalytics: (projectId: string, analytics: any) => Promise<{
-      success: boolean;
-      error?: string;
-    }>;
-    runJob: (jobId: string, config: {
-      projectId: string;
-      sourceUrl: string;
-      sourceLang: string;
-      targetLang: string;
-      htmlPath: string;
-      pdfPath?: string;
-      deletedBlockIds: string[];
-      title?: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      // AI prompt settings
-      translationPrompt?: string;
-      enableCleanup?: boolean;
-      cleanupPrompt?: string;
-      // TTS settings
-      sourceVoice: string;
-      targetVoice: string;
-      ttsEngine: 'xtts' | 'orpheus';
-      sourceTtsSpeed: number;
-      targetTtsSpeed: number;
-      device: 'gpu' | 'mps' | 'cpu';
-      workerCount?: number;
-    }) => Promise<{
-      success: boolean;
-      data?: {
-        epubPath?: string;
-        sentencePairsPath?: string;
-        ttsConfig?: {
-          outputDir: string;
-          outputFilename: string;
-          title: string;
-          ttsEngine: 'xtts' | 'orpheus';
-          voice: string;
-          device: 'gpu' | 'mps' | 'cpu';
-          speed: number;
-          workerCount: number;
-          language: string;
-        };
-      };
-      error?: string;
-    }>;
-    onProgress: (callback: (data: { jobId: string; progress: {
-      phase: string;
-      currentSentence: number;
-      totalSentences: number;
-      percentage: number;
-      message: string;
-    }}) => void) => () => void;
-  };
-  bilingualCleanup: {
-    run: (jobId: string, config: {
-      projectId: string;
-      projectDir: string;
-      sourceEpubPath?: string;
-      sourceLang: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      cleanupPrompt?: string;
-      customInstructions?: string;
-      simplifyForLearning?: boolean;
-      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-      startFresh?: boolean;
-      testMode?: boolean;
-      testModeChunks?: number;
-    }) => Promise<{
-      success: boolean;
-      outputPath?: string;
-      error?: string;
-      nextJobConfig?: { cleanedEpubPath?: string };
-    }>;
-    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-  };
-  bilingualTranslation: {
-    run: (jobId: string, config: {
-      projectId?: string;
-      projectDir?: string;
-      cleanedEpubPath?: string;
-      sourceLang: string;
-      targetLang: string;
-      title?: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      translationPrompt?: string;
-      testMode?: boolean;
-      testModeChunks?: number;
-    }) => Promise<{
-      success: boolean;
-      outputPath?: string;
-      translatedEpubPath?: string;  // For mono translation, path to translated EPUB
-      error?: string;
-      nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
-    }>;
-    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => () => void;
-  };
-  alignment: {
-    getData: () => Promise<{
-      pairs: Array<{ index: number; source: string; target: string }>;
-      sourceLang: string;
-      targetLang: string;
-      blocking: boolean;
-      projectId: string;
-      jobId: string;
-    } | null>;
-    userInteracted: () => Promise<{ success: boolean }>;
-    saveResult: (result: {
-      approved: boolean;
-      pairs: Array<{ index: number; source: string; target: string }>;
-      cancelled?: boolean;
-    }) => Promise<{ success: boolean }>;
-    cancel: () => Promise<{ success: boolean }>;
-  };
-  sentenceCache: {
-    list: (audiobookFolder: string) => Promise<{
-      success: boolean;
-      languages: Array<{
-        code: string;
-        name: string;
-        sentenceCount: number;
-        sourceLanguage: string | null;
-        createdAt: string;
-        hasAudio: boolean;
-        ttsSettings?: {
-          engine: 'xtts' | 'orpheus';
-          voice: string;
-          speed: number;
-          temperature?: number;
-          topP?: number;
-        };
-      }>;
-      error?: string;
-    }>;
-    get: (audiobookFolder: string, language: string) => Promise<{
-      success: boolean;
-      cache?: {
-        language: string;
-        sourceLanguage: string | null;
-        createdAt: string;
-        sentenceCount: number;
-        sentences: string[] | Array<{ source: string; target: string }>;
-        hasAudio?: boolean;
-        audioDir?: string;
-        ttsSettings?: {
-          engine: 'xtts' | 'orpheus';
-          voice: string;
-          speed: number;
-          temperature?: number;
-          topP?: number;
-        };
-      };
-      error?: string;
-    }>;
-    save: (audiobookFolder: string, language: string, data: {
-      language: string;
-      sourceLanguage: string | null;
-      sentences: string[] | Array<{ source: string; target: string }>;
-      hasAudio?: boolean;
-      audioDir?: string;
-      ttsSettings?: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-        temperature?: number;
-        topP?: number;
-      };
-    }) => Promise<{ success: boolean; error?: string }>;
-    clear: (audiobookFolder: string, languages?: string[]) => Promise<{
-      success: boolean;
-      cleared: string[];
-      error?: string;
-    }>;
-    runTts: (config: {
-      audiobookFolder: string;
-      language: string;
-      ttsConfig: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-        device: 'cpu' | 'mps' | 'gpu';
-        workers: number;
-      };
-    }) => Promise<{
-      success: boolean;
-      jobId?: string;
-      message?: string;
-      sentencesDir?: string;
-      error?: string;
-    }>;
-    cacheAudio: (config: {
-      audiobookFolder: string;
-      language: string;
-      sentencesDir: string;
-      ttsSettings: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-      };
-    }) => Promise<{
-      success: boolean;
-      audioDir?: string;
-      fileCount?: number;
-      error?: string;
-    }>;
-    runAssembly: (config: {
-      audiobookFolder: string;
-      languages: string[];
-      pattern: 'interleaved' | 'sequential';
-      pauseBetweenLanguages: number;
-      outputFormat: 'm4b' | 'mp3';
-    }) => Promise<{
-      success: boolean;
-      audioPath?: string;
-      vttPath?: string;
       error?: string;
     }>;
   };
@@ -3000,16 +2658,6 @@ const electronAPI: ElectronAPI = {
     isFreshInstall: () =>
       ipcRenderer.invoke('runtime:is-fresh-install'),
   },
-  customVoices: {
-    list: () =>
-      ipcRenderer.invoke('custom-voices:list'),
-    add: () =>
-      ipcRenderer.invoke('custom-voices:add'),
-    remove: (id: string) =>
-      ipcRenderer.invoke('custom-voices:remove', id),
-    listAudiobook: () =>
-      ipcRenderer.invoke('voices:list-audiobook'),
-  },
   higgsModels: {
     list: () =>
       ipcRenderer.invoke('higgs:list-models'),
@@ -3443,7 +3091,7 @@ const electronAPI: ElectronAPI = {
   ttsStream: {
     getWorkerConfig: () =>
       ipcRenderer.invoke('tts-stream:get-worker-config'),
-    setWorkerConfig: (updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }) =>
+    setWorkerConfig: (updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps' }) =>
       ipcRenderer.invoke('tts-stream:set-worker-config', updates),
   },
   components: {
@@ -3609,54 +3257,6 @@ const electronAPI: ElectronAPI = {
         sessions: Array<{ language: string; sessionDir: string; sentencesDir: string; sentenceCount: number; createdAt: string }>;
         error?: string;
       }>,
-  },
-  bilingualAssembly: {
-    run: (jobId: string, config: {
-      projectId: string;
-      sourceSentencesDir: string;
-      targetSentencesDir: string;
-      sentencePairsPath: string;
-      outputDir: string;
-      pauseDuration?: number;
-      gapDuration?: number;
-      audioFormat?: string;
-      // Output naming with language suffix
-      outputName?: string;
-      title?: string;
-      sourceLang?: string;
-      targetLang?: string;
-      projectDir?: string;
-    }) =>
-      ipcRenderer.invoke('bilingual-assembly:run', jobId, config),
-    onProgress: (callback: (data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: { phase: string; percentage: number; message: string } }) => {
-        callback(data);
-      };
-      ipcRenderer.on('bilingual-assembly:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('bilingual-assembly:progress', listener);
-      };
-    },
-    onComplete: (callback: (data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; success: boolean; audioPath?: string; vttPath?: string; error?: string }) => {
-        callback(data);
-      };
-      ipcRenderer.on('bilingual-assembly:complete', listener);
-      return () => {
-        ipcRenderer.removeListener('bilingual-assembly:complete', listener);
-      };
-    },
-    finalizeOutput: (params: {
-      audioPath: string;
-      vttPath?: string;
-      projectDir: string;
-      projectId: string;
-      sourceLang: string;
-      targetLang: string;
-      metadataFilename?: string;
-      sentencePairsPath?: string;
-    }) =>
-      ipcRenderer.invoke('bilingual-assembly:finalize-output', params),
   },
   videoAssembly: {
     run: (jobId: string, config: {
@@ -3868,296 +3468,14 @@ const electronAPI: ElectronAPI = {
     saveLogs: (content: string, filename: string) =>
       ipcRenderer.invoke('debug:save-logs', content, filename),
   },
+
+  // Article import — see the note on the type declaration above.
   languageLearning: {
     fetchUrl: (url: string, projectId?: string) =>
       ipcRenderer.invoke('language-learning:fetch-url', url, projectId),
-    saveProject: (project: LanguageLearningProject) =>
-      ipcRenderer.invoke('language-learning:save-project', project),
-    loadProject: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:load-project', projectId),
-    listProjects: () =>
-      ipcRenderer.invoke('language-learning:list-projects'),
-    deleteProject: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:delete-project', projectId),
-    updateProject: (projectId: string, updates: any) =>
-      ipcRenderer.invoke('language-learning:update-project', projectId, updates),
-    confirmDelete: (title: string) =>
-      ipcRenderer.invoke('language-learning:confirm-delete', title),
-    ensureDirectory: (dirPath: string) =>
-      ipcRenderer.invoke('language-learning:ensure-directory', dirPath),
-    deleteAudiobooks: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:delete-audiobooks', projectId),
-    listCompleted: () =>
-      ipcRenderer.invoke('language-learning:list-completed'),
-    extractText: (htmlPath: string, deletedSelectors: string[]) =>
-      ipcRenderer.invoke('language-learning:extract-text', htmlPath, deletedSelectors),
-    writeFile: (filePath: string, content: string): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('language-learning:write-file', filePath, content),
-    finalizeContent: (projectId: string, finalizedHtml: string): Promise<{ success: boolean; error?: string }> =>
+    finalizeContent: (projectId: string, finalizedHtml: string): Promise<{ success: boolean; epubPath?: string; error?: string }> =>
       ipcRenderer.invoke('language-learning:finalize-content', projectId, finalizedHtml),
-    getAudioPath: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:get-audio-path', projectId),
-    getAudioData: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:get-audio-data', projectId),
-    hasAudio: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:has-audio', projectId),
-    deleteAudio: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:delete-audio', projectId),
-    readVtt: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:read-vtt', projectId),
-    readSentencePairs: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:read-sentence-pairs', projectId),
-    getAnalytics: (projectId: string) =>
-      ipcRenderer.invoke('language-learning:get-analytics', projectId),
-    saveAnalytics: (projectId: string, analytics: any) =>
-      ipcRenderer.invoke('language-learning:save-analytics', projectId, analytics),
-    runJob: (jobId: string, config: {
-      projectId: string;
-      sourceUrl: string;
-      sourceLang: string;
-      targetLang: string;
-      htmlPath: string;
-      pdfPath?: string;
-      deletedBlockIds: string[];
-      title?: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      // AI prompt settings
-      translationPrompt?: string;
-      enableCleanup?: boolean;
-      cleanupPrompt?: string;
-      // TTS settings
-      sourceVoice: string;
-      targetVoice: string;
-      ttsEngine: 'xtts' | 'orpheus';
-      sourceTtsSpeed: number;
-      targetTtsSpeed: number;
-      device: 'gpu' | 'mps' | 'cpu';
-      workerCount?: number;
-    }) =>
-      ipcRenderer.invoke('language-learning:run-job', jobId, config),
-    onProgress: (callback: (data: { jobId: string; progress: {
-      phase: string;
-      currentSentence: number;
-      totalSentences: number;
-      percentage: number;
-      message: string;
-    }}) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
-        callback(data);
-      };
-      ipcRenderer.on('language-learning:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('language-learning:progress', listener);
-      };
-    },
   },
-
-  // Bilingual Processing Pipeline Jobs
-  bilingualCleanup: {
-    run: (jobId: string, config: {
-      projectId: string;
-      projectDir: string;
-      sourceEpubPath?: string;
-      sourceLang: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      cleanupPrompt?: string;
-      customInstructions?: string;
-      simplifyForLearning?: boolean;
-      simplifyMode?: 'dejargon' | 'destiffen' | 'learner' | 'learning' | 'plain';
-      startFresh?: boolean;
-      testMode?: boolean;
-      testModeChunks?: number;
-    }): Promise<{
-      success: boolean;
-      outputPath?: string;
-      error?: string;
-      nextJobConfig?: { cleanedEpubPath?: string };
-    }> =>
-      ipcRenderer.invoke('bilingual-cleanup:run', jobId, config),
-    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
-        callback(data);
-      };
-      ipcRenderer.on('ll-job:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('ll-job:progress', listener);
-      };
-    },
-  },
-
-  bilingualTranslation: {
-    run: (jobId: string, config: {
-      projectId?: string;
-      projectDir?: string;
-      cleanedEpubPath?: string;
-      sourceLang: string;
-      targetLang: string;
-      title?: string;
-      aiProvider: 'ollama' | 'claude' | 'openai';
-      aiModel: string;
-      ollamaBaseUrl?: string;
-      claudeApiKey?: string;
-      openaiApiKey?: string;
-      translationPrompt?: string;
-      customInstructions?: string;
-      testMode?: boolean;
-      testModeChunks?: number;
-    }): Promise<{
-      success: boolean;
-      outputPath?: string;
-      translatedEpubPath?: string;
-      error?: string;
-      nextJobConfig?: { sourceEpubPath?: string; targetEpubPath?: string; sentencePairsPath?: string };
-    }> =>
-      ipcRenderer.invoke('bilingual-translation:run', jobId, config),
-    onProgress: (callback: (data: { jobId: string; progress: any }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, data: { jobId: string; progress: any }) => {
-        callback(data);
-      };
-      // Uses same progress channel as cleanup
-      ipcRenderer.on('ll-job:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('ll-job:progress', listener);
-      };
-    },
-  },
-
-  // Sentence Alignment Window
-  alignment: {
-    getData: () => ipcRenderer.invoke('alignment:get-data'),
-    userInteracted: () => ipcRenderer.invoke('alignment:user-interacted'),
-    saveResult: (result: {
-      approved: boolean;
-      pairs: Array<{ index: number; source: string; target: string }>;
-      cancelled?: boolean;
-    }) => ipcRenderer.invoke('alignment:save-result', result),
-    cancel: () => ipcRenderer.invoke('alignment:cancel'),
-  },
-
-  // Sentence Cache for Bilingual TTS
-  sentenceCache: {
-    list: (audiobookFolder: string): Promise<{
-      success: boolean;
-      languages: Array<{
-        code: string;
-        name: string;
-        sentenceCount: number;
-        sourceLanguage: string | null;
-        createdAt: string;
-        hasAudio: boolean;
-        ttsSettings?: {
-          engine: 'xtts' | 'orpheus';
-          voice: string;
-          speed: number;
-          temperature?: number;
-          topP?: number;
-        };
-      }>;
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:list', audiobookFolder),
-
-    get: (audiobookFolder: string, language: string): Promise<{
-      success: boolean;
-      cache?: {
-        language: string;
-        sourceLanguage: string | null;
-        createdAt: string;
-        sentenceCount: number;
-        sentences: string[] | Array<{ source: string; target: string }>;
-        hasAudio?: boolean;
-        audioDir?: string;
-        ttsSettings?: {
-          engine: 'xtts' | 'orpheus';
-          voice: string;
-          speed: number;
-          temperature?: number;
-          topP?: number;
-        };
-      };
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:get', audiobookFolder, language),
-
-    save: (audiobookFolder: string, language: string, data: {
-      language: string;
-      sourceLanguage: string | null;
-      sentences: string[] | Array<{ source: string; target: string }>;
-      hasAudio?: boolean;
-      audioDir?: string;
-      ttsSettings?: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-        temperature?: number;
-        topP?: number;
-      };
-    }): Promise<{ success: boolean; error?: string }> =>
-      ipcRenderer.invoke('sentence-cache:save', audiobookFolder, language, data),
-
-    clear: (audiobookFolder: string, languages?: string[]): Promise<{
-      success: boolean;
-      cleared: string[];
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:clear', audiobookFolder, languages),
-
-    runTts: (config: {
-      audiobookFolder: string;
-      language: string;
-      ttsConfig: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-        device: 'cpu' | 'mps' | 'gpu';
-        workers: number;
-      };
-    }): Promise<{
-      success: boolean;
-      jobId?: string;
-      message?: string;
-      sentencesDir?: string;
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:run-tts', config),
-
-    cacheAudio: (config: {
-      audiobookFolder: string;
-      language: string;
-      sentencesDir: string;
-      ttsSettings: {
-        engine: 'xtts' | 'orpheus';
-        voice: string;
-        speed: number;
-      };
-    }): Promise<{
-      success: boolean;
-      audioDir?: string;
-      fileCount?: number;
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:cache-audio', config),
-
-    runAssembly: (config: {
-      audiobookFolder: string;
-      languages: string[];
-      pattern: 'interleaved' | 'sequential';
-      pauseBetweenLanguages: number;
-      outputFormat: 'm4b' | 'mp3';
-    }): Promise<{
-      success: boolean;
-      audioPath?: string;
-      vttPath?: string;
-      error?: string;
-    }> => ipcRenderer.invoke('sentence-cache:run-assembly', config),
-  },
-
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Manifest Service (Unified Project Management)
-  // ─────────────────────────────────────────────────────────────────────────────
   manifest: {
     // Create a new project
     create: (

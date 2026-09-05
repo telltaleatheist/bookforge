@@ -11,11 +11,11 @@ import {
   DEFAULT_VLM_ENDPOINT_CONFIG,
   type VlmEndpointConfig,
 } from '@shared/vlm/conversion';
-import type { TTSEngine } from '@shared/tts/engine-caps';
+import { resolveSavedTtsEngine, type TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
- * user who always wants e.g. Claude for cleanup + XTTS + a particular voice
+ * user who always wants e.g. Claude for cleanup + a particular voice
  * doesn't re-pick every time. Edited in Settings → Pipeline Defaults; the wizard
  * applies them on open (a restored in-progress session still overrides them).
  */
@@ -41,12 +41,8 @@ export interface PipelineDefaults {
   ttsDevice: 'auto' | 'cpu' | 'mps' | 'gpu';
   ttsVoice: string;
   ttsSpeed: number;
-  ttsTemperature: number;
-  ttsTopP: number;
   /** Assembly output: false = audiobook (M4B), true = video. */
   generateVideo: boolean;
-  /** XTTS repetition penalty (≥1; 1 = no penalty). Higher curbs looping/hallucination. */
-  ttsRepetitionPenalty: number;
   /** RVC voice enhancement: re-render finished narration through an RVC model. */
   rvcEnhancementEnabled: boolean;
   /** Selected enhancement voice id (rvc-model component id), '' = none chosen. */
@@ -101,10 +97,7 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   ttsDevice: 'auto',
   ttsVoice: 'leah',
   ttsSpeed: 1.0,
-  ttsTemperature: 0.7,
-  ttsTopP: 0.9,
   generateVideo: false,
-  ttsRepetitionPenalty: 2.0,
   rvcEnhancementEnabled: false,
   rvcEnhancementVoiceId: '',
   rvcEnhancementIndexRate: 0.5,
@@ -133,10 +126,16 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
 
 /**
  * A named, saved bundle of TTS + RVC pipeline settings the user can apply with a
- * single pick from the wizard's preset dropdown — e.g. "Owen on F5 → Sigma RVC" or
- * "Scarlett on XTTS → Owen RVC". Captures only the engine/voice/sampling +
- * enhancement slice of {@link PipelineDefaults}; the AI-role and output choices are
- * left to the per-book flow. Picking a preset overwrites those fields in the wizard.
+ * single pick from the wizard's preset dropdown — e.g. "Leah → Sigma RVC".
+ * Captures only the engine/voice/speed + enhancement slice of
+ * {@link PipelineDefaults}; the AI-role and output choices are left to the
+ * per-book flow. Picking a preset overwrites those fields in the wizard.
+ *
+ * It carried three more fields until 2026-09-05 — ttsTemperature, ttsTopP and
+ * ttsRepetitionPenalty. They were XTTS's controls: the ONLY code that ever read
+ * them was the prep spawn's `if (settings.ttsEngine === 'xtts')` flag block, and
+ * both engines this build renders in declare `sampling: {}`. A preset saved
+ * before this still has the keys on disk; nothing reads them.
  */
 export interface PipelinePreset {
   /** Stable id (generated at save time; `builtin:*` for shipped presets). */
@@ -149,9 +148,6 @@ export interface PipelinePreset {
   ttsDevice: PipelineDefaults['ttsDevice'];
   ttsVoice: string;
   ttsSpeed: number;
-  ttsTemperature: number;
-  ttsTopP: number;
-  ttsRepetitionPenalty: number;
   rvcEnhancementEnabled: boolean;
   rvcEnhancementVoiceId: string;
   rvcEnhancementIndexRate: number;
@@ -185,9 +181,6 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsDevice: 'auto',
     ttsVoice: 'leah',
     ttsSpeed: 1.0,
-    ttsTemperature: 0.6,
-    ttsTopP: 0.9,
-    ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
     rvcEnhancementIndexRate: 0.7,
@@ -239,18 +232,13 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsVoice: 'deathstalker',
     ttsSpeed: 1.0,
     /*
-     * INERT FOR THIS ENGINE, and copied rather than chosen. Orpheus declares
-     * `sampling: {}` (shared/tts/engine-caps.ts) — it fixes its sampling inside
-     * the engine class, so none of these three reaches the render. The
-     * repetition penalty is deathstalker's own recorded value
-     * (`backends.vllm.repPenalty`, electron/data/orpheus-models.json); the other
-     * two are what the Leah preset beside it already carries for the same
-     * engine. Nothing here was invented, because a number invented for a control
-     * that does not exist would look like a tuning decision to the next reader.
+     * The three sampling fields this preset used to carry (temperature 0.6,
+     * top-p 0.9, repetition penalty 1.1) are gone with the field itself — they
+     * were XTTS's controls, INERT for Orpheus, which fixes its sampling inside
+     * the engine class. deathstalker's real repetition penalty lives where the
+     * engine reads it: `backends.vllm.repPenalty` in
+     * electron/data/orpheus-models.json.
      */
-    ttsTemperature: 0.6,
-    ttsTopP: 0.9,
-    ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
     rvcEnhancementIndexRate: 0.3,
@@ -261,15 +249,15 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
 ];
 
 /**
- * The factory ("stock") XTTS sampling values that ship with the app. The user's
- * saved Pipeline Defaults drift as they adjust the sliders; "Reset to stock"
- * restores these. Single source of truth for both the initial defaults above and
- * the reset action, so the two never diverge.
+ * The factory ("stock") TTS values that ship with the app. The user's saved
+ * Pipeline Defaults drift as they adjust the controls; "Reset to stock" restores
+ * these. Single source of truth for both the initial defaults above and the reset
+ * action, so the two never diverge.
+ *
+ * Down to ONE field: temperature/top-p/repetition-penalty were XTTS's, and left
+ * with it on 2026-09-05.
  */
 export const STOCK_TTS_SAMPLING = {
-  temperature: DEFAULT_PIPELINE_DEFAULTS.ttsTemperature,
-  topP: DEFAULT_PIPELINE_DEFAULTS.ttsTopP,
-  repetitionPenalty: DEFAULT_PIPELINE_DEFAULTS.ttsRepetitionPenalty,
   speed: DEFAULT_PIPELINE_DEFAULTS.ttsSpeed,
 } as const;
 
@@ -476,23 +464,6 @@ export class SettingsService {
         fields: [], // Custom UI (app-higgs-voices-panel + app-add-ons-panel)
       },
       {
-        // ── RETIRED ENGINE, LIVE PAGE ────────────────────────────────────────
-        // XTTS stopped being a narration CHOICE on 2026-09-04, and this page did
-        // NOT go with it. Two things still live here that nothing else owns:
-        // the Stanza LANGUAGE PACKS (sentence segmentation — engine-agnostic,
-        // used by every render) and the user's own uploaded XTTS voices
-        // (electron/custom-voices.ts ties the whole "add your own voice" feature
-        // to this engine — see docs/HIGGS_ENGINE.md, "What XTTS still owns").
-        // The section id stays 'xtts' because it is a ROUTE KEY: the translation
-        // panel deep-links `?section=xtts` for "download more language packs",
-        // and renaming it would break that link to fix a word.
-        id: 'xtts',
-        name: 'XTTS (retired)',
-        description: 'Retired as a narration engine. Language packs and your own uploaded voices still live here.',
-        icon: '🗣️',
-        fields: [], // Custom UI (app-voices-panel + app-languages-panel + app-add-ons-panel)
-      },
-      {
         // Dedicated screen for the optional RVC voice-enhancement engine + its
         // voice models. Custom UI (app-rvc-enhancement-panel).
         id: 'enhancement',
@@ -500,20 +471,6 @@ export class SettingsService {
         description: 'Optional RVC engine + voice models that re-render finished narration to smooth synthetic artifacts',
         icon: '✨',
         fields: [],
-      },
-      {
-        id: 'f5',
-        name: 'F5-TTS',
-        description: 'F5-TTS engine environment',
-        icon: '🎤',
-        fields: [], // Custom UI (app-add-ons-panel filtered to f5-env)
-      },
-      {
-        id: 'voxtral',
-        name: 'Voxtral',
-        description: 'Voxtral TTS engine environment',
-        icon: '🎵',
-        fields: [], // Custom UI (app-add-ons-panel filtered to voxtral-env)
       },
       {
         // The transcription runtime (Whisper under the hood — never named in the
@@ -896,10 +853,45 @@ export class SettingsService {
   // Pipeline Defaults
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /** The pipeline's default selections, merged with built-in defaults. */
+  /**
+   * The pipeline's default selections, merged with built-in defaults.
+   *
+   * A STORED RETIRED ENGINE IS REPAIRED HERE, and this is the same shape
+   * `streaming-engine.ts`'s `getSelectedEngineName` uses for `tts-engine.json`.
+   * Nothing recorded means the built-in defaults, which is not a fallback. A
+   * stored `xtts` / `f5` / `voxtral` — every machine that used one has it — is
+   * migrated to Orpheus with a console.error naming it, and the settings are
+   * rewritten so the stale value stops being re-read. Anything else throws by
+   * name.
+   *
+   * Without the repair the value simply spread over the defaults: the engine
+   * button group (which renders `selectableEngines()`) showed NOTHING selected,
+   * and every run threw at `assertRunnableTtsEngine` from a page that offered no
+   * way to fix it. Migrating a stored DEFAULT is safe in the way migrating a
+   * queued run would not be — it is the seed for the next run, shown in a picker
+   * before anything is rendered.
+   *
+   * THE VOICE GOES WITH THE ENGINE. A voice saved beside `xtts` is an XTTS
+   * reference clip; carrying it onto Orpheus would produce exactly the
+   * unrenderable pair this repair exists to prevent, so it resets to the default
+   * voice too.
+   */
   getPipelineDefaults(): PipelineDefaults {
     const stored = this.values()['pipelineDefaults'] as Partial<PipelineDefaults> | undefined;
-    return { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+    const merged = { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+    if (stored?.ttsEngine === undefined) return merged;
+
+    const resolved = resolveSavedTtsEngine(merged.ttsEngine);
+    if (!resolved.migratedFrom) return merged;
+
+    console.error(`[SETTINGS] ${resolved.note}`);
+    const repaired: PipelineDefaults = {
+      ...merged,
+      ttsEngine: resolved.engine,
+      ttsVoice: DEFAULT_PIPELINE_DEFAULTS.ttsVoice,
+    };
+    this.setPipelineDefaults(repaired);
+    return repaired;
   }
 
   setPipelineDefaults(defaults: PipelineDefaults): void {

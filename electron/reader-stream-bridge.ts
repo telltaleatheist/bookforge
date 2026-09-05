@@ -40,7 +40,7 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { streamScheduler } from './stream-scheduler';
 import { readerAudioStore } from './reader-audio-store';
-import { PlaySettings } from './xtts-worker-pool';
+import { PlaySettings } from './orpheus-worker-pool';
 import {
   getActiveEngine,
   getSelectedEngineName,
@@ -228,7 +228,7 @@ export class ReaderStreamBridge {
       return;
     }
 
-    const { splitForTts } = await import('./bilingual-processor.js');
+    const { splitForTts } = await import('./text-ai.js');
     // PUNCTUATION ONLY, and nothing else, on the streaming path.
     //
     // The book path runs three stages (electron/narration-text-pass.ts):
@@ -241,11 +241,10 @@ export class ReaderStreamBridge {
     const { canonicalizePunctuationText } = await import('./tts-punctuation.js');
     const speakable = canonicalizePunctuationText(text);
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
-    // audiobook path reads for ORPHEUS_MAX_CHARS. Every other engine keeps
-    // splitForTts's XTTS default, which is the only engine that number describes.
-    const maxChars = getSelectedEngineName() === 'orpheus'
-      ? (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice)
-      : undefined;
+    // audiobook path reads for ORPHEUS_MAX_CHARS. Unconditional since 2026-09-05:
+    // the ternary that guarded it fell back to splitForTts's XTTS default for any
+    // other engine, and there is no other streaming engine left.
+    const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
     const sentences = splitForTts(speakable, 'en', maxChars);
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
@@ -325,13 +324,12 @@ export class ReaderStreamBridge {
     };
   }
 
-  /** The voices the active engine can actually use (mirrors tts-api-server). */
+  /** The voices the active engine can actually use (mirrors tts-api-server).
+   *  Orpheus's voices are built into the model, so its whole set is usable —
+   *  the branch that filtered a catalog down to the checkpoints actually on disk
+   *  went with XTTS. */
   private async installedVoices(): Promise<string[]> {
-    if (getSelectedEngineName() === 'orpheus') {
-      return getActiveEngine().getAvailableVoices();
-    }
-    const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
-    return getInstalledVoiceIds();
+    return getActiveEngine().getAvailableVoices();
   }
 
   private send(ws: WebSocket, data: Record<string, unknown>): void {

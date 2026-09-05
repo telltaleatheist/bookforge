@@ -216,7 +216,7 @@ export class SetupDownloadService {
     const kind = this.components.components().find((c) => c.component.id === id)?.component.kind;
     // stt-model downloads spawn the bundled python (huggingface_hub), so they
     // also wait for the engine.
-    return kind === 'tts-model' || kind === 'language-pack' || kind === 'stt-model';
+    return kind === 'stt-model';
   }
 
   private draining = false;

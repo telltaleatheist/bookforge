@@ -3,8 +3,6 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
-import { VoicesPanelComponent } from '../settings/components/voices-panel.component';
-import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
@@ -19,7 +17,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -36,8 +34,6 @@ interface SetupStep {
   imports: [
     CommonModule,
     AiSetupWizardComponent,
-    VoicesPanelComponent,
-    LanguagesPanelComponent,
     AddOnsPanelComponent,
     RvcEnhancementPanelComponent,
     OrpheusVoicesPanelComponent,
@@ -162,13 +158,6 @@ interface SetupStep {
             }
             @case ('ai') {
               <app-ai-setup-wizard [embedded]="true" />
-            }
-            @case ('xtts') {
-              <!-- Everything the built-in narrator needs on ONE page: voices,
-                   then the Stanza language packs below them. -->
-              <app-voices-panel [selectionMode]="true" />
-              <h3 class="group-title">Language packs</h3>
-              <app-languages-panel [selectionMode]="true" />
             }
             @case ('orpheus') {
               <app-orpheus-voices-panel />
@@ -517,16 +506,6 @@ interface SetupStep {
       border-bottom: 1px solid var(--border-subtle, #2c2c2c);
     }
 
-    /* Divider heading between the two panels on the combined XTTS step. */
-    .group-title {
-      margin: 24px 0 12px;
-      font-size: 13px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      color: var(--text-secondary, #999);
-    }
-
     .review { display: flex; flex-direction: column; gap: 12px; }
     .review-empty, .review-intro {
       margin: 0;
@@ -709,18 +688,6 @@ export class FirstRunSetupComponent {
       title: 'Higgs (optional)',
       subtitle:
         'A second narration engine, served from WSL. Research/non-commercial licence — personal use. Check the environment here and install it if you want it.'
-    },
-    {
-      // The step id stays 'xtts' because it is also the Settings SECTION key that
-      // `@case ('xtts')` renders and that the translation panel deep-links to.
-      // What changed is the framing: XTTS stopped being "the built-in narrator"
-      // on 2026-09-04, and this step now exists for the two things under it that
-      // no other page owns — the Stanza language packs (sentence segmentation,
-      // which every engine's prep needs) and a user's own uploaded voices.
-      id: 'xtts',
-      title: 'Language packs',
-      subtitle:
-        'Sentence-splitting language packs, used by every narration engine, plus any voices you have uploaded yourself. Common languages are bundled — pick extras now or anytime from Settings.'
     },
     {
       id: 'rvc',

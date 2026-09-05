@@ -346,7 +346,7 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
   private captureSampleRate = 24000;
   private captureText = '';
   private captureSettings: PlaySettings = { voice: '', speed: 1 };
-  private captureEngine: 'xtts' | 'orpheus' = 'xtts';
+  private captureEngine: 'orpheus' = 'orpheus';
 
   ngOnInit(): void {
     this.unsubscribeStreamEvents = this.electron.onStreamEvent(e => this.handleStreamEvent(e));
@@ -360,7 +360,7 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
   }
 
   // ── Settings handlers (persist through WorkerConfigService, engine-aware) ──
-  setEngine(engine: 'xtts' | 'orpheus'): void { void this.workerCfg.setEngine(engine); }
+  setEngine(engine: 'orpheus'): void { void this.workerCfg.setEngine(engine); }
   onVoiceChange(voice: string): void { void this.workerCfg.setVoice(voice); }
   onDeviceChange(pref: string): void { void this.workerCfg.setDevicePref(pref as 'auto' | 'cpu' | 'gpu' | 'mps'); }
 
@@ -513,7 +513,7 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
     return m > 0 ? `${m}:${s.toString().padStart(2, '0')}` : `${sec.toFixed(1)}s`;
   }
 
-  /** XTTS voice ids can be library paths like `eng/Foo/bar.wav`; show a readable name. */
+  /** A voice id can be a library path like `eng/Foo/bar.wav`; show a readable name. */
   private prettyVoice(v: string): string {
     if (!v) return '';
     const base = v.split('/').pop() || v;

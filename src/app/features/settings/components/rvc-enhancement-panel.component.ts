@@ -10,7 +10,8 @@ import { ComponentService } from '../../../core/services/component.service';
  * from the general Add-ons hub so it reads as its own thing: install the engine,
  * then install voice models. RVC runs AFTER the audiobook is narrated (post-TTS,
  * pre-assembly): it re-renders the finished narration through a matching voice
- * model to smooth out XTTS vocoder artifacts — it does not generate the narration
+ * model to smooth out the vocoder artifacts a neural TTS leaves behind — it does
+ * not generate the narration
  * itself.
  *
  * Engine = the `rvc-env` managed component; Voices = the downloadable RVC models
@@ -28,7 +29,8 @@ import { ComponentService } from '../../../core/services/component.service';
       <div class="explainer">
         <p>
           <strong>Voice enhancement</strong> re-renders your finished narration through a matching
-          RVC voice model to smooth out the synthetic artifacts XTTS can leave behind. It runs
+          RVC voice model to smooth out the synthetic artifacts a neural voice can leave
+          behind. It runs
           <em>after</em> the audiobook is narrated (and before assembly) — it doesn't replace your
           TTS voice, it polishes it. Pick an enhancement voice close to your TTS voice; RVC keeps the
           original's words and pitch.
