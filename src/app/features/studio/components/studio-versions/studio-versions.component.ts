@@ -2276,13 +2276,17 @@ export class StudioVersionsComponent {
     if (v.format) parts.push(v.format.toUpperCase());
     if (v.metadata?.author) parts.push(v.metadata.author);
     if (v.metadata?.language) parts.push(v.metadata.language);
-    // WHERE it came from and WHEN, on the row rather than only in the indent: an
-    // export nested under a parent that has scrolled away is otherwise an
-    // unexplained duplicate of the book. Said for exports only — every other
-    // version is one the user put there themselves and needs no provenance line.
+    // WHERE it came from and WHEN, on EVERY row. Owen, 2026-09-05: "lets put
+    // the date and time on epubs so i know which one is newer in book versions"
+    // — a Foundry export said its time and the row beside it said nothing, so
+    // two EPUBs of one book could not be ordered by eye. An export keeps its
+    // provenance wording; every other version says when it was added.
     if (v.foundrySource) {
       const at = new Date(v.foundrySource.landedAt);
       parts.push(isNaN(+at) ? 'Made in Foundry' : `Made in Foundry ${at.toLocaleString()}`);
+    } else {
+      const at = new Date(v.addedAt);
+      if (!isNaN(+at)) parts.push(`Added ${at.toLocaleString()}`);
     }
     return parts.join(' · ');
   }
