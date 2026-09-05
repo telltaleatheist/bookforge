@@ -481,6 +481,11 @@ class HiggsV3Engine:
                     'first-run compilation), so a longer wait is normal; this is not. '
                     'Check its log, and that both site-packages patches are applied '
                     'in the higgs3 env.')
+            # Now that it answers, find the LISTENER (the pid the wrapper's
+            # `$!` could never be - vllm-omni re-sessions itself) so stop() has
+            # something of ours to signal. Adoption already knows the server.
+            if self.server.serve_script and self.server._proc is not None:
+                self.server._record_server()
             self.server.check_serves_expected_model(
                 checkpoint_dir=self.config.checkpoint_dir)
             if self.config.probe_sentinel_filter:

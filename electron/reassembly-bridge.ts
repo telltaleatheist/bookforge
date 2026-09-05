@@ -25,6 +25,8 @@ import { regenerateBoundSidecars } from './sidecar-migration';
 import { resolveClosedSession } from './chapter-closer';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
+import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
+import { coverageReportPath } from './coverage-align-job';
 
 /**
  * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
@@ -1571,6 +1573,18 @@ export async function startReassembly(
       '--tts_engine', asmEngine,
       '--assemble_only',
       '--no_split',
+      // THE COVERAGE REPORT, for an engine whose policy is ENFORCED.
+      //
+      // Keyed off `asmEngine`, which is the SESSION's own record of what
+      // rendered it (`narratorEngineForSession`) rather than anything this row
+      // carries — a reassembly row can outlive the dialog that composed it, and
+      // the only trustworthy answer to "is this book guarded" is what the
+      // session says rendered it. The Align step wrote the report beside the
+      // session; this hands it over. For Orpheus nothing is passed: the gate is
+      // a no-op there whether it is named or not.
+      ...(coverageEnforcedFor(asmEngine)
+        ? ['--coverage_report', coverageReportPath(config.processDir)]
+        : []),
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
       // instead of the cached XTTS sentences.
       ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []),

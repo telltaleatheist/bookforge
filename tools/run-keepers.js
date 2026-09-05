@@ -85,6 +85,11 @@ const SUITES = [
   'test-serve-spawn-env',
   'test-narrator-log-strings',
   'test-no-e2a-doors',
+  // The coverage policy is declared in two languages — narrator's
+  // engine_profiles.py and shared/queue/coverage-policy.ts — and a divergence is
+  // silent in the direction that matters: BookForge queues no Align row, passes
+  // no report, and the book stops dead at assembly after hours of render.
+  'test-coverage-policy-mirror',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
   'test-assembly-after-wsl-normalize',

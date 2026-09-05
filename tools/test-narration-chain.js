@@ -41,6 +41,7 @@ if (!fs.existsSync(MODULE)) {
 const {
   buildNarrationSteps,
   narrationEnhancementPasses,
+  requireCoverageAligner,
   requireNarrationStages,
 } = require(MODULE);
 
@@ -71,6 +72,8 @@ const RVC = {
 function settings(over = {}) {
   return Object.assign({
     language: 'en',
+    // The cleanup is a question with three answers (9e1baa00): a run states it.
+    textCleanup: 'required',
     ttsEngine: 'orpheus',
     voice: 'leah',
     device: 'gpu',
@@ -85,6 +88,11 @@ function settings(over = {}) {
     applyDeRing: false,
     rvc: null,
     startFresh: false,
+    // STATED, because the description refuses a run that cannot say it — and it
+    // was missing here, which had this whole file failing 17 of its 22 cases
+    // against a refusal that has nothing to do with what it tests. 'required' is
+    // the ordinary answer: the book's stamp decides.
+    textCleanup: 'required',
   }, over);
 }
 
@@ -300,6 +308,112 @@ test('a cache run starting on a CONVERSION points at the session too', () => {
 test('a run that narrates reads the DOCUMENT it names', () => {
   const steps = buildNarrationSteps(BOOK, settings(), stages());
   assert.deepStrictEqual(steps[0].sourceRef, { kind: 'epub', path: BOOK.epubPath });
+});
+
+// ── the coverage guard's row ────────────────────────────────────────────────
+//
+// `assemble/coverage_gate.py` refuses an ENFORCED engine's book without a
+// forced-alignment report, and refuses just as loudly when nobody checked. Until
+// the Align row existed, every app-driven Higgs v3 book reached that refusal
+// quoting a command line no part of BookForge had ever run. These pin the row
+// into the shape of the run, and pin Orpheus's runs to being unchanged.
+
+const higgs = (over = {}) => settings(Object.assign({ ttsEngine: 'higgs' }, over));
+
+test('A GUARDED ENGINE: narrate → align → assemble', () => {
+  const steps = buildNarrationSteps(BOOK, higgs(), stages());
+  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'align', 'reassembly']);
+});
+
+test('the align row sits BEHIND the render and IN FRONT of every enhancement', () => {
+  // Both orders, both passes: the guard measures the RENDER, its thresholds were
+  // calibrated on raw engine output, and it must fail before an hour of GPU.
+  for (const order of ['denoise-first', 'rvc-first']) {
+    const steps = buildNarrationSteps(
+      BOOK,
+      higgs({ finalDenoise: true, rvc: RVC, enhancementOrder: order }),
+      stages({ enhance: true }));
+    assert.strictEqual(shapeOf(steps)[0], 'tts-conversion', order);
+    assert.strictEqual(shapeOf(steps)[1], 'align',
+      `${order}: the guard must not measure what a pass made of the render`);
+    assert.strictEqual(shapeOf(steps).filter((t) => t === 'align').length, 1,
+      `${order}: exactly one align row`);
+  }
+});
+
+test('AN ORPHEUS RUN IS UNCHANGED — no align row, in any shape', () => {
+  for (const order of ['denoise-first', 'rvc-first']) {
+    for (const finalDenoise of [false, true]) {
+      for (const rvc of [null, RVC]) {
+        for (const narrate of [true, false]) {
+          const enhance = finalDenoise || rvc !== null;
+          if (!narrate && !enhance) continue; // not a run; refused elsewhere
+          const steps = buildNarrationSteps(
+            BOOK,
+            settings({ finalDenoise, rvc, enhancementOrder: order }),
+            stages({ narrate, enhance }));
+          assert.ok(!shapeOf(steps).includes('align'),
+            `orpheus/${order}/denoise=${finalDenoise}/rvc=${rvc !== null}/narrate=${narrate} `
+            + 'grew an align row; its coverage policy is not enforced');
+        }
+      }
+    }
+  }
+});
+
+test('a GUARDED cache-only run still aligns, and reads the session by kind', () => {
+  // No render in this run at all — the report may be missing (a CLI render, or a
+  // build from before the row existed), and assembly would refuse without it.
+  const steps = buildNarrationSteps(
+    BOOK, higgs({ rvc: RVC }), stages({ narrate: false, enhance: true }));
+  assert.strictEqual(shapeOf(steps)[0], 'align');
+  assert.deepStrictEqual(steps[0].sourceRef, { kind: 'audio-session' },
+    'named by kind with no path, like every other cache-run first step');
+  assert.strictEqual(steps[1].sourceRef, undefined, 'only the first step says');
+});
+
+test('a GUARDED narrate-only run aligns too — tonight, not next week', () => {
+  const steps = buildNarrationSteps(
+    BOOK, higgs(), stages({ narrate: true, enhance: false, assemble: false }));
+  assert.deepStrictEqual(shapeOf(steps), ['tts-conversion', 'align']);
+});
+
+test('the align row carries the language and blank session fields', () => {
+  const steps = buildNarrationSteps(BOOK, higgs({ language: 'de' }), stages());
+  const align = find(steps, 'align');
+  assert.strictEqual(align.metadata.title, 'Align');
+  assert.strictEqual(align.config.type, 'align');
+  assert.strictEqual(align.config.language, 'de',
+    'the aligner loads a per-language model; a guess refuses a book that was read right');
+  assert.strictEqual(align.config.sessionId, '');
+  assert.strictEqual(align.config.sessionDir, '');
+  assert.strictEqual(align.config.processDir, '',
+    'resolved at run time from the parent step, like the denoise and the assembly');
+});
+
+test('the align row never states a sentence gap', () => {
+  // It transforms no audio, so a gap on it would be a knob with no hand on it —
+  // and the "exactly once" invariant above counts every non-render step.
+  const steps = buildNarrationSteps(
+    BOOK, higgs({ finalDenoise: true, sentenceGap: 0.4 }), stages({ enhance: true }));
+  assert.strictEqual('sentenceGap' in find(steps, 'align').config, false);
+  assert.strictEqual(find(steps, 'final-denoise').config.sentenceGap, 0.4,
+    'the align row must not shift the gap off the first pass that reads raw audio');
+});
+
+test('an engine with no declared coverage policy is REFUSED, never assumed', () => {
+  assert.throws(
+    () => buildNarrationSteps(BOOK, settings({ ttsEngine: 'xtts' }), stages()),
+    /No coverage policy is declared for TTS engine 'xtts'/);
+});
+
+test('the aligner add-on is required BY NAME for a guarded run, and only then', () => {
+  assert.throws(
+    () => requireCoverageAligner(higgs(), false),
+    /Ebook Alignment \(WhisperX\)[\s\S]*Settings → Add-ons/);
+  // Installed, or not guarded: nothing to say.
+  requireCoverageAligner(higgs(), true);
+  requireCoverageAligner(settings(), false);
 });
 
 // ── run ─────────────────────────────────────────────────────────────────────

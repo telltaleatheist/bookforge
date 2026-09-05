@@ -51,6 +51,7 @@
  */
 
 import type { ArtifactRef } from './engine-types';
+import { alignerMissingRefusal, coverageEnforcedFor } from './coverage-policy';
 
 /** The RVC pass, when the user asked for one. */
 export interface NarrationRvcSettings {
@@ -357,6 +358,34 @@ export interface NarrationDenoiseConfig {
   readonly sentenceGap?: number;
 }
 
+/**
+ * FORCE-ALIGN THE RENDERED CHUNKS AND WRITE THE COVERAGE REPORT.
+ *
+ * `narrator align --session-dir <hash dir> --report <processDir>/coverage.json`.
+ * It reads the chunk FLACs the render wrote and the text the manifest says each
+ * of them was given, and it writes two things: `coverage.json`, which
+ * `assemble/coverage_gate.py` refuses an enforced engine's book without, and a
+ * `<stem>.sentences.vtt` beside the chunk-level VTT.
+ *
+ * THE SESSION FIELDS ARE EMPTY, for `NarrationDenoiseConfig`'s reason exactly:
+ * behind a narration the queue discovers the session that narration actually
+ * wrote; first in a run — aligning sentences this project already has — the step
+ * resolves the project's cached session itself. Both are "ask the disk at the
+ * time".
+ */
+export interface NarrationAlignConfig {
+  readonly type: 'align';
+  readonly sessionId: string;
+  readonly sessionDir: string;
+  readonly processDir: string;
+  /**
+   * The language the aligner loads its wav2vec2 checkpoint for. Stated, never
+   * defaulted downstream: an aligner pointed at the wrong language scores every
+   * word badly and the guard then refuses a book that was read correctly.
+   */
+  readonly language: string;
+}
+
 /** Combine the rendered sentences into the M4B. */
 export interface NarrationReassemblyConfig {
   readonly type: 'reassembly';
@@ -431,9 +460,10 @@ export interface NarrationRunMetadata {
  * choice is made here, once, rather than in each caller's mapping.
  */
 export interface NarrationStepPlan {
-  readonly type: 'tts-conversion' | 'final-denoise' | 'rvc-enhancement' | 'reassembly';
+  readonly type: 'tts-conversion' | 'align' | 'final-denoise' | 'rvc-enhancement' | 'reassembly';
   readonly config:
     | NarrationTtsConfig
+    | NarrationAlignConfig
     | NarrationDenoiseConfig
     | NarrationRvcConfig
     | NarrationReassemblyConfig;
@@ -590,6 +620,101 @@ export function narrationTtsStep(
       textCleanup: settings.textCleanup,
     },
   };
+}
+
+/**
+ * PROVE THE RENDER SAID THE BOOK — the coverage guard's own row.
+ *
+ * NULL FOR AN ENGINE WHOSE POLICY IS NOT ENFORCED, which today is Orpheus. Its
+ * chars/sec guard and its resplit ladder already work, its coverage thresholds
+ * have never been swept over its corpus, and aligning it would spend CPU minutes
+ * a book to write a report `coverage_gate.check` reads for a log line. The
+ * decision is `coverage-policy.ts`'s, once, for every caller that has to make it.
+ *
+ * ── Why the row exists at all ───────────────────────────────────────────────
+ *
+ * Higgs v3 has no duration guard worth the name: a chunk measured a duration
+ * ratio of 0.99 while dropping 22 % of its text. `assemble/coverage_gate.py`
+ * therefore refuses a v3 book unless a coverage report says every chunk was
+ * measured — and refuses just as loudly when there is no report, because
+ * "nobody checked" and "it is fine" are the same book and only one of them is
+ * honest. Until this step existed, every app-driven Higgs book reached that
+ * refusal and quoted a command line nobody had run.
+ *
+ * ── Where it sits, and why THERE ────────────────────────────────────────────
+ *
+ * Immediately behind the render, in FRONT of any enhancement. Three reasons, all
+ * of them about what the measurement means:
+ *
+ *  - IT MEASURES THE RENDER. Text with no aligned audio is a chunk the model
+ *    truncated; audio with no text is a chunk it padded with filler. A denoise
+ *    and a voice conversion are deterministic transforms that drop no words, so
+ *    running the guard behind them would attribute the render's defect to
+ *    whichever pass happened to touch the audio last.
+ *  - THE THRESHOLDS WERE CALIBRATED ON RAW ENGINE OUTPUT (`align/README.md`:
+ *    132 kershaw chunks, aligned-ratio p1 0.933). An RVC conversion re-times and
+ *    re-timbres every phone; a wav2vec2 score on that audio is a different
+ *    measurement, and applying uncalibrated thresholds to it would refuse books
+ *    that were read perfectly.
+ *  - IT FAILS BEFORE THE EXPENSIVE PART. Each enhancement pass is about an hour
+ *    of GPU over a book. Discovering a truncated chunk after two of them is the
+ *    shape this whole description exists to prevent.
+ *
+ * The report is not invalidated by what follows it: `coverage_gate.verify_report`
+ * keys a report to its engine, its session id and its chunk COUNT, and no
+ * enhancement changes any of the three.
+ *
+ * ── It is never skipped because a report already exists ─────────────────────
+ *
+ * A resume renders the chunks that were missing, and a report written before
+ * them describes a book that no longer exists. The gate catches that by chunk
+ * count and refuses BY NAME — which is the right outcome and the wrong place to
+ * discover it, an hour of encode later. So the row runs every time, and the few
+ * CPU minutes it costs are what makes the answer current. (`align/README.md`:
+ * 213.5 s of wall clock for 2,615 s of audio, RTF 0.082.)
+ */
+export function narrationAlignStep(
+  book: NarrationRunBook,
+  settings: NarrationRunSettings,
+): NarrationStepPlan | null {
+  requireNarrationRun(book, settings);
+  if (!coverageEnforcedFor(settings.ttsEngine)) return null;
+  return {
+    type: 'align',
+    bfpPath: book.projectDir,
+    variantId: book.variantId,
+    metadata: actMetadata(book, 'Align'),
+    config: {
+      type: 'align',
+      // Filled at run time by session discovery — see `NarrationAlignConfig`.
+      sessionId: '', sessionDir: '', processDir: '',
+      language: settings.language,
+    },
+  };
+}
+
+/**
+ * REFUSE A GUARDED RUN WHOSE ALIGNER IS NOT ON THIS MACHINE, before anything is
+ * queued.
+ *
+ * `installed` is a PARAMETER because this file is `shared/` — it is compiled
+ * into main and into the renderer and it may not touch a disk, a component
+ * registry or Electron. The caller that knows (the narration dialog, through
+ * `ComponentService.isInstalled('whisperx-env')`; main, through
+ * `componentManager.resolveEntry`) asks the question and this owns the ANSWER,
+ * so the sentence the user reads is the same one wherever the run was pressed.
+ *
+ * Called separately from `buildNarrationSteps` rather than folded into it for
+ * the same reason: the builder is pure and must stay drivable from a keeper with
+ * no machine behind it.
+ */
+export function requireCoverageAligner(
+  settings: NarrationRunSettings,
+  installed: boolean,
+): void {
+  if (!coverageEnforcedFor(settings.ttsEngine)) return;
+  if (installed) return;
+  throw new Error(alignerMissingRefusal(settings.ttsEngine));
 }
 
 /**
@@ -887,6 +1012,26 @@ export function buildNarrationSteps(
    * itself; this is the answer for a run described BY STAGES.
    */
   if (stages.narrate) steps.push(narrationTtsStep(book, settings, true));
+  /*
+   * THE COVERAGE GUARD, FOR AN ENGINE THAT IS GUARDED — right here, behind the
+   * render and in front of everything else.
+   *
+   * `narrationAlignStep` returns null for an engine whose policy is not enforced,
+   * so an Orpheus run is byte-for-byte the run it always was. For Higgs v3 the
+   * row is unconditional: not "when the run renders", because a run that
+   * assembles sentences it did not render still needs a report and may have none
+   * (the render may have come from the CLI, or from a build before this row
+   * existed); and not "when the run assembles", because a narrate-only run that
+   * dropped a fifth of a chunk's text should say so tonight rather than at the
+   * assembly somebody queues next week.
+   *
+   * WHY NOT BEHIND THE ENHANCEMENT — the full argument is on the step builder.
+   * In one line: it measures the RENDER, its thresholds were calibrated on raw
+   * engine output, and a defect found before an hour of GPU is worth more than
+   * the same defect found after it.
+   */
+  const align = narrationAlignStep(book, settings);
+  if (align !== null) steps.push(align);
   /*
    * THE ENHANCEMENT IS ONE ROW PER PASS, IN THE USER'S ORDER.
    *

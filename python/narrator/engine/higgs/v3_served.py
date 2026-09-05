@@ -189,11 +189,25 @@ SERVE_DEFAULT_PORT = 8095
 #: directory name of `bosonai/higgs-audio-v3-tts-4b`. A server whose root
 #: carries this is serving the BASE weights; any other root is a fine-tune.
 BASE_SNAPSHOT_MARKER = 'models--bosonai--higgs-audio-v3-tts-4b'
-#: Where launch wrappers record the server's pid, in the GUEST filesystem.
-#: One file per backend instance; the glob is what `_own_servers_on_port`
-#: scans to recognise a server narrator itself left behind.
-PID_FILE_DIR = '/tmp'
-PID_FILE_PREFIX = 'narrator-higgs3-'
+#: THE OWNERSHIP MARKER: exported into the launch wrapper's environment, and
+#: therefore into `/proc/<pid>/environ` of the server and every process it
+#: forks. Its value is the pid of the narrator process that launched it.
+#:
+#: This replaced a pid FILE holding the wrapper's `$!`. MEASURED 2026-09-05 on
+#: Owen's first Windows render: `setsid bash serve_higgs_v3.sh &` recorded
+#: 84072, but vllm-omni puts itself into a session of its own (84096 -> 84098,
+#: sid 84098), so the recorded pid was dead within a second, `kill -TERM
+#: -- -84072` was "No such process", and the server outlived the job holding
+#: 24 GB. A pid remembered at launch cannot follow a process that re-parents
+#: itself; a marker in its environment can, because environ is inherited by
+#: every fork and exec and nothing in vllm-omni rewrites it. So a server is
+#: OURS iff the process listening on our port carries this variable, and its
+#: process GROUP (read off /proc/<pid>/stat, not remembered) is what a stop
+#: signals - measured: the two `VLLM::StageEngineCoreProc` children share the
+#: listener's pgid.
+OWNER_ENV = 'NARRATOR_HIGGS3_OWNER'
+#: How long the guest-side watchdog sleeps between looks at the owner.
+WATCHDOG_INTERVAL_SECONDS = 3
 
 #: WHERE AN ATTACHED SERVER'S LOG IS, named by the operator. NO DEFAULT.
 #:
@@ -954,18 +968,15 @@ class HiggsV3ServedBackend:
         self.checkpoint_dir = (checkpoint_dir or '').strip() or None
         self._proc = None
         self._guest_pid = None
-        self._pid_file = None
 
     # -- lifecycle -----------------------------------------------------------
 
-    def pid_file(self) -> str:
-        """Where the launch wrapper writes the server's own pid, as the GUEST
-        sees the path. One per backend instance, so two workers never read each
-        other's."""
-        if self._pid_file is None:
-            self._pid_file = (f'{PID_FILE_DIR}/{PID_FILE_PREFIX}'
-                              f'{os.getpid()}-{id(self):x}.pid')
-        return self._pid_file
+    def owner_id(self) -> str:
+        """The value the server's environment carries in OWNER_ENV: this
+        process's pid. On the Windows arm it is a HOST pid the guest cannot
+        watch, and it is prefixed to say so, so the watchdog knows not to."""
+        pid = os.getpid()
+        return f'win32:{pid}' if sys.platform == 'win32' else str(pid)
 
     def _launch_exports(self) -> str:
         """The `export ...` prefix of the wrapper: every launch-script knob
@@ -982,6 +993,7 @@ class HiggsV3ServedBackend:
             f'{SERVE_HOST_ENV}={shlex.quote(host)}',
             f'{SERVE_PORT_ENV}={shlex.quote(port)}',
             f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
+            f'{OWNER_ENV}={shlex.quote(self.owner_id())}',
         ]
         if self.checkpoint_dir:
             target = (_to_wsl(self.checkpoint_dir) if sys.platform == 'win32'
@@ -995,33 +1007,143 @@ class HiggsV3ServedBackend:
     def _wrapper(self) -> str:
         """The shell the launcher actually runs.
 
-        `serve_v3.sh` ends in `exec vllm-omni ...`, so backgrounding it with `&`
-        makes `$!` THE SERVER'S OWN PID - not a shell's. `setsid` puts that
-        process at the head of ITS OWN PROCESS GROUP (pgid == pid: a
-        backgrounded child of a non-interactive bash is not a group leader, so
-        setsid(2) succeeds in place and no fork intervenes), and vllm-omni's
-        stage engines - the two `VLLM::StageEngineCoreProc` children that hold
-        the actual GPU memory - are born into that group. Recording the pid is
-        therefore recording the GROUP, and `stop()` signals the group
-        (`kill -TERM -- -<pid>`) inside the distro instead of pattern-killing
-        `vllm-omni serve`, which would take another agent's server with it.
+        Three things, in order:
 
-        Measured 2026-09-05 (Owen's first in-app render): signalling the pid
-        alone left the server up - the pid files held the wrapper shells
-        (53079, 54060) while `vllm-omni serve` ran on as 54688 holding 24 GB,
-        and it took a by-hand SIGTERM to release the card. The group is what
-        was missing.
-
-        `wait` keeps this shell alive for exactly as long as the server, so the
-        launcher process still tracks it; the exports before it are the launch
-        script's own knobs (`_launch_exports`).
+        1. The exports: the launch script's knobs and the OWNER marker
+           (`_launch_exports`). The marker rides into the server's environ and
+           is how `_server_on_port` tells OURS from a stranger's.
+        2. `setsid bash <script> &` - the script detached from this shell's
+           group so a signal to the wrapper never reaches the server by
+           accident, and `wait` so this shell lives as long as the script.
+           NO PID IS RECORDED HERE: vllm-omni re-sessions itself after exec
+           (measured 84072 -> 84096 -> 84098), so `$!` is dead within a second
+           of the server coming up. The listener on our port, found by
+           `/proc/net/tcp` after `/health` answers, is the only pid worth
+           knowing, and its group is read at the moment of the signal.
+        3. THE WATCHDOG, on the guest arm only: a stdlib python3 process,
+           detached with setsid, that watches the OWNER pid (this narrator
+           worker) and, when it is gone, SIGTERMs the group of whatever is
+           listening on our port WITH OUR MARKER - then waits for the port to
+           free and exits. That is what makes "hit Stop" and "the app died"
+           bring the server down: a worker killed with SIGKILL never runs its
+           own cleanup, and until this existed the server outlived every such
+           job holding 24 GB (Owen, 2026-09-05: "it should bring it down if i
+           hit stop or if bookforge app dies"). The watchdog also exits on its
+           own once no marked listener remains, so it never lingers. On the
+           Windows arm the owner is a host pid the guest cannot see, so no
+           watchdog is started and `stop()` is the only teardown - stated in
+           OWNER_ENV's prefix, not guessed at.
         """
         script = (_to_wsl(self.serve_script) if sys.platform == 'win32'
                   else self.serve_script)
-        pid_file = self.pid_file()
-        return (f'{self._launch_exports()}'
-                f'setsid bash {shlex.quote(script)} & '
-                f'echo $! > {shlex.quote(pid_file)}; wait $!')
+        port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
+        parts = [self._launch_exports(),
+                 f'setsid bash {shlex.quote(script)} & ']
+        if sys.platform != 'win32':
+            parts.append(
+                f'setsid python3 -c {shlex.quote(self._WATCHDOG)} '
+                f'{os.getpid()} {shlex.quote(port)} {WATCHDOG_INTERVAL_SECONDS} '
+                f'>/dev/null 2>&1 < /dev/null & ')
+        parts.append('wait')
+        return ''.join(parts)
+
+    #: Shared by the watchdog and the ownership scan: the pids LISTENING on a
+    #: TCP port, from /proc/net/tcp{,6} and every process's fd table. No `ss`,
+    #: no `lsof` - both are optional packages in a distro; /proc is not.
+    _LISTENERS_PY = r"""
+import os
+def listeners(port):
+    inodes = set()
+    for table in ('/proc/net/tcp', '/proc/net/tcp6'):
+        try:
+            rows = open(table).read().splitlines()[1:]
+        except OSError:
+            continue
+        for row in rows:
+            f = row.split()
+            if len(f) < 10 or f[3] != '0A':
+                continue
+            if int(f[1].rsplit(':', 1)[1], 16) == port:
+                inodes.add(f[9])
+    pids = []
+    if not inodes:
+        return pids
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            fds = os.listdir('/proc/%s/fd' % entry)
+        except OSError:
+            continue
+        for fd in fds:
+            try:
+                target = os.readlink('/proc/%s/fd/%s' % (entry, fd))
+            except OSError:
+                continue
+            if target.startswith('socket:[') and target[8:-1] in inodes:
+                pids.append(int(entry))
+                break
+    return pids
+def owner_of(pid):
+    try:
+        env = open('/proc/%d/environ' % pid, 'rb').read().split(b'\0')
+    except OSError:
+        return None
+    for item in env:
+        if item.startswith(b'NARRATOR_HIGGS3_OWNER='):
+            return item.split(b'=', 1)[1].decode('utf-8', 'replace')
+    return None
+def pgid_of(pid):
+    stat = open('/proc/%d/stat' % pid).read()
+    return int(stat[stat.rindex(')') + 2:].split()[2])
+"""
+
+    #: `_own_servers_on_port`'s program: one JSON list of the marked listeners.
+    _OWN_SERVERS_SCAN = _LISTENERS_PY + r"""
+import json, sys
+port = int(sys.argv[1])
+found = []
+for pid in listeners(port):
+    owner = owner_of(pid)
+    if owner is None:
+        continue
+    try:
+        pgid = pgid_of(pid)
+    except (OSError, ValueError):
+        continue
+    found.append({'pid': pid, 'pgid': pgid, 'owner': owner})
+print(json.dumps(found))
+"""
+
+    #: The watchdog's program (see `_wrapper`, item 3).
+    _WATCHDOG = _LISTENERS_PY + r"""
+import signal, sys, time
+owner = int(sys.argv[1]); port = int(sys.argv[2]); every = float(sys.argv[3])
+mark = str(owner)
+def ours():
+    return [p for p in listeners(port) if owner_of(p) == mark]
+started = time.time()
+while True:
+    time.sleep(every)
+    if os.path.exists('/proc/%d' % owner):
+        continue
+    # The owner is gone. Take down what it launched, by group, TERM only.
+    groups = set()
+    for p in ours():
+        try:
+            groups.add(pgid_of(p))
+        except (OSError, ValueError):
+            pass
+    for g in groups:
+        try:
+            os.killpg(g, signal.SIGTERM)
+        except OSError:
+            pass
+    deadline = time.time() + 180
+    while time.time() < deadline and ours():
+        time.sleep(1)
+    break
+"""
 
     def _guest_argv(self, argv: list) -> list:
         """`argv`, run INSIDE the distro on Windows and directly elsewhere.
@@ -1061,27 +1183,28 @@ class HiggsV3ServedBackend:
                     self._wrapper()]
         return ['bash', '-c', self._wrapper()]
 
-    def _read_guest_pid(self, timeout: float = 30.0):
-        """Read the pid the wrapper wrote, once it exists."""
-        read = self._guest_argv(['cat', self.pid_file()])
-        deadline = time.time() + timeout
-        while time.time() < deadline:
-            try:
-                out = subprocess.run(read, capture_output=True, text=True,
-                                     timeout=20)
-                if out.returncode == 0 and out.stdout.strip().isdigit():
-                    self._guest_pid = int(out.stdout.strip())
-                    log(f'[HIGGS3] server guest pid {self._guest_pid}', flush=True)
-                    return self._guest_pid
-            except (OSError, subprocess.SubprocessError):
-                pass
-            if self._proc is not None and self._proc.poll() is not None:
-                return None
-            time.sleep(0.5)
-        log('[HIGGS3] WARNING: the launch wrapper never wrote a pid; stop() will '
-              'not be able to signal the server inside the distro if the launcher '
-              'exits without taking it down.', flush=True)
-        return None
+    def _server_on_port(self):
+        """The server listening on our port that carries OUR marker (any
+        narrator's - the owner value is not compared here), as
+        `{'pid', 'pgid', 'owner'}`, or None. Raises if the scan cannot run:
+        an unanswerable ownership question is not a "no"."""
+        rows = self._own_servers_on_port()
+        return rows[0] if rows else None
+
+    def _record_server(self) -> None:
+        """After `/health` answers: find the listener with our marker and
+        remember its pid. Its GROUP is read again at signal time, never
+        remembered - a group id is a property of the moment."""
+        row = self._server_on_port()
+        if row is None:
+            log(f'[HIGGS3] WARNING: {self.base_url} answers but no listener on '
+                f'its port carries {OWNER_ENV}; stop() will have nothing of ours '
+                'to signal.', flush=True)
+            self._guest_pid = None
+            return
+        self._guest_pid = int(row['pid'])
+        log(f'[HIGGS3] server pid {row["pid"]} (group {row["pgid"]}, owner '
+            f'{row["owner"]})', flush=True)
 
     def start(self) -> None:
         """Launch the server. Idempotent: a second call while it is up does
@@ -1133,64 +1256,15 @@ class HiggsV3ServedBackend:
         self._proc = subprocess.Popen(command, stdout=self._log_handle,
                                       stderr=subprocess.STDOUT,
                                       start_new_session=(sys.platform != 'win32'))
-        self._read_guest_pid()
-
-    #: The scan `_own_servers_on_port` runs INSIDE the distro. Plain python3,
-    #: stdlib only, so it runs on the guest's system interpreter without the
-    #: higgs3 env: for every narrator pid file, drop it if its pid is dead, and
-    #: report it if any process in that pid's GROUP is a server bound to the
-    #: port asked for (its argv carries `--port <port>`, which the launch script
-    #: passes verbatim). Prints one JSON list.
-    _OWN_SERVERS_SCAN = r"""
-import glob, json, os, sys
-port = sys.argv[1].encode()
-found = []
-for path in sorted(glob.glob(sys.argv[2])):
-    try:
-        pid = int(open(path).read().strip())
-    except (OSError, ValueError):
-        try: os.remove(path)
-        except OSError: pass
-        continue
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        try: os.remove(path)
-        except OSError: pass
-        continue
-    except PermissionError:
-        pass
-    hit = False
-    for entry in os.listdir('/proc'):
-        if not entry.isdigit():
-            continue
-        try:
-            stat = open('/proc/%s/stat' % entry).read()
-            pgrp = int(stat[stat.rindex(')') + 2:].split()[2])
-            if pgrp != pid:
-                continue
-            argv = open('/proc/%s/cmdline' % entry, 'rb').read().split(b'\0')
-        except (OSError, ValueError):
-            continue
-        for i, a in enumerate(argv):
-            if a == b'--port' and i + 1 < len(argv) and argv[i + 1] == port:
-                hit = True
-        if hit:
-            break
-    if hit:
-        found.append({'pid': pid, 'pidFile': path})
-print(json.dumps(found))
-"""
 
     def _own_servers_on_port(self) -> list:
-        """Every server NARRATOR started that is bound to our port, as
-        `[{'pid', 'pidFile'}]`, from the pid files in the guest's /tmp. Stale
-        files (dead pids) are removed on the way. Raises if the scan itself
-        cannot run - an unanswerable ownership question is not a "no"."""
+        """Every server NARRATOR started that is listening on our port, as
+        `[{'pid', 'pgid', 'owner'}]`: the listeners whose environment carries
+        OWNER_ENV. A listener without it is somebody else's. Raises if the
+        scan itself cannot run - an unanswerable ownership question is not a
+        "no"."""
         port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
-        pattern = f'{PID_FILE_DIR}/{PID_FILE_PREFIX}*.pid'
-        argv = self._guest_argv(['python3', '-c', self._OWN_SERVERS_SCAN,
-                                 port, pattern])
+        argv = self._guest_argv(['python3', '-c', self._OWN_SERVERS_SCAN, port])
         try:
             out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
         except (OSError, subprocess.SubprocessError) as exc:
@@ -1224,14 +1298,15 @@ print(json.dumps(found))
         owned = self._own_servers_on_port()
         if not owned:
             raise HiggsV3ServerError(
-                f'{wrong} No pid file of narrator\'s names a server on that port, '
-                'so it is not one this program started and it will not be '
-                'stopped from here. Stop it yourself, or point '
-                f'{BASE_URL_ENV} at a server running the right checkpoint.') from wrong
+                f'{wrong} The listener on that port carries no {OWNER_ENV}, so it '
+                'is not a server narrator started and it will not be stopped '
+                f'from here. Stop it yourself, or point {BASE_URL_ENV} at a server '
+                'running the right checkpoint.') from wrong
         for row in owned:
             log(f'[HIGGS3] the server on {self.base_url} is the wrong checkpoint '
-                f'and it is OURS (pid {row["pid"]}, {row["pidFile"]}); stopping '
-                'it before launching', flush=True)
+                f'and it is narrator\'s (pid {row["pid"]}, group {row["pgid"]}, '
+                f'launched by {row["owner"]}); stopping it before launching',
+                flush=True)
             self._signal_guest(row['pid'], 'TERM')
         deadline = time.time() + float(timeout)
         while time.time() < deadline:
@@ -1245,16 +1320,7 @@ print(json.dumps(found))
                 f'{timeout:.0f}s after SIGTERM. It is NOT being killed: a KILL to '
                 'a process holding the GPU inside WSL wedges the VM. Wait for it, '
                 'or stop it by hand, then retry.')
-        for row in owned:
-            self._remove_guest_file(row['pidFile'])
         log(f'[HIGGS3] port {self.base_url.rsplit(":", 1)[-1]} reclaimed', flush=True)
-
-    def _remove_guest_file(self, path: str) -> None:
-        try:
-            subprocess.run(self._guest_argv(['rm', '-f', path]), timeout=30,
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        except (OSError, subprocess.SubprocessError) as exc:
-            log(f'[HIGGS3] could not remove {path}: {exc}', flush=True)
 
     def _open_log(self) -> None:
         """Open (and truncate) the launch log. Failure is LOUD.
@@ -1642,6 +1708,11 @@ print(json.dumps(found))
             # Never launched (start() adopted, or refused before Popen).
             self._close_log()
             return
+        if self._guest_pid is None and self.ping():
+            # Launched, but the server was never recorded (a load that failed
+            # before health, say). Find it now by its marker rather than leave
+            # it running.
+            self._record_server()
         # THE SERVER FIRST, BY GROUP. Signalling the wrapper shell was the
         # orphan bug: bash does not forward SIGTERM to a backgrounded child, so
         # the shell died, `proc.poll()` reported a tidy exit, and vllm-omni ran
@@ -1684,7 +1755,7 @@ print(json.dumps(found))
         deadline = time.time() + float(timeout)
         while time.time() < deadline:
             if not self.ping():
-                self._forget_pid_file()
+                self._guest_pid = None
                 return
             time.sleep(1.0)
         if self._guest_pid is None:
@@ -1698,45 +1769,50 @@ print(json.dumps(found))
         deadline = time.time() + 120.0
         while time.time() < deadline:
             if not self.ping():
-                self._forget_pid_file()
+                self._guest_pid = None
                 return
             time.sleep(1.0)
-        log(f'[HIGGS3] WARNING: guest process group {self._guest_pid} is still '
-            f'serving {self.base_url} after two SIGTERMs. NOT killing it - a KILL '
-            'on a GPU holder inside WSL wedges the VM. Its pid file '
-            f'{self.pid_file()} stays so the next start reclaims it.', flush=True)
+        log(f'[HIGGS3] WARNING: server pid {self._guest_pid} is still serving '
+            f'{self.base_url} after two SIGTERMs. NOT killing it - a KILL on a GPU '
+            'holder inside WSL wedges the VM. It still carries our marker, so the '
+            'next start reclaims it.', flush=True)
 
-    def _forget_pid_file(self) -> None:
-        """The server is gone; its pid file no longer names anything."""
-        if self._guest_pid is not None:
-            self._remove_guest_file(self.pid_file())
-        self._guest_pid = None
+    #: `_signal_guest`'s program: SIGTERM the process GROUP of one pid, the
+    #: group read at this moment. Prints the pgid it signalled.
+    _SIGNAL_GROUP = r"""
+import os, signal, sys
+pid = int(sys.argv[1])
+stat = open('/proc/%d/stat' % pid).read()
+pgid = int(stat[stat.rindex(')') + 2:].split()[2])
+os.killpg(pgid, signal.SIGTERM)
+print(pgid)
+"""
 
     def _signal_guest(self, pid: int, signame: str) -> None:
-        """Signal one process GROUP inside the distro, by its leader's pid,
-        never by pattern. The wrapper's `setsid` made the server that leader,
-        so `-<pid>` reaches the server and its stage-engine children together.
-        `KILL` is refused by name: see `_verify_gone`."""
+        """SIGTERM the process GROUP of `pid`, inside the distro, the group
+        read off /proc at this moment - never a remembered one, and never a
+        pattern. vllm-omni's stage engines share the listener's group
+        (measured), so one signal reaches all three. `KILL` is refused by name:
+        see `_verify_gone`."""
         if signame != 'TERM':
             raise ValueError(
                 f'Higgs v3: refusing to send SIG{signame} to a server process. '
                 'A KILL on a process holding the GPU inside WSL wedges the VM; '
                 'only TERM is sent, and a server that ignores it is reported, '
                 'not killed.')
-        if sys.platform != 'win32':
-            try:
-                os.killpg(int(pid), signal.SIGTERM)
-            except OSError as exc:
-                log(f'[HIGGS3] could not signal process group {pid}: {exc}',
-                    flush=True)
-            return
+        argv = self._guest_argv(['python3', '-c', self._SIGNAL_GROUP, str(int(pid))])
         try:
-            subprocess.run(self._guest_argv(['kill', '-TERM', '--', f'-{int(pid)}']),
-                           timeout=30, stdout=subprocess.DEVNULL,
-                           stderr=subprocess.DEVNULL)
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
         except (OSError, subprocess.SubprocessError) as exc:
-            log(f'[HIGGS3] could not signal guest process group {pid}: {exc}',
+            log(f'[HIGGS3] could not signal the group of pid {pid}: {exc}',
                 flush=True)
+            return
+        if out.returncode != 0:
+            log(f'[HIGGS3] could not signal the group of pid {pid}: '
+                f'{out.stderr.strip()[:300]}', flush=True)
+        else:
+            log(f'[HIGGS3] SIGTERM sent to process group {out.stdout.strip()} '
+                f'(pid {pid})', flush=True)
 
     # -- use -----------------------------------------------------------------
 
