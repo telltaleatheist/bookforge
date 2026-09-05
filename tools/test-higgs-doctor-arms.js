@@ -131,6 +131,11 @@ const spawnMod = require(path.join(DIST, 'higgs-spawn.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 const e2aPaths = require(path.join(DIST, 'e2a-paths.js'));
 const narratorSpawn = require(path.join(DIST, 'narrator-spawn.js'));
+// The doctor reaches the catalog through this module object
+// (`(0, higgs_models_1.listHiggsModels)()` in the compiled output), so stubbing a
+// property here is a real seam and not a rewrite — the same trick the probe spawn
+// uses above.
+const higgsModels = require(path.join(DIST, 'higgs-models.js'));
 
 function stub(mod, name, fn) {
   const d = Object.getOwnPropertyDescriptor(mod, name);
@@ -455,6 +460,105 @@ check('the loadable voices are NOTES, and never make a green machine invalid', (
       'a working environment with no fine-tune installed is still a working environment');
   },
 ));
+
+// ── The three checkpoint notes ──────────────────────────────────────────────
+//
+// A `checkpoint` voice is ~8.5 GB on disk and the catalog names its directory
+// ONCE PER ARM, so on the Mac there are THREE distinct answers to "can I use
+// this voice", and they send a person three different places:
+//
+//   not staged for this arm   the CATALOG names no darwin directory. Nothing to
+//                             download until someone decides to stage it — and
+//                             staging it means MEASURING this arm's own cap.
+//   staged path missing       the catalog says where it is and it is not there:
+//                             an interrupted copy. A copy fixes this one.
+//   loadable                  both.
+//
+// One sentence covered the first two until 2026-09-05, which told a person to go
+// looking on disk for a directory the catalog had never named on this arm.
+//
+// These drive the note function through a STUBBED CATALOG rather than the shipped
+// one: what is under test is the three-way branch, and the shipped row is pending
+// (so it reports the pending note) and will not stay in any one of these states.
+async function withCatalog(models, fn) {
+  const undo = stub(higgsModels, 'listHiggsModels', () => models);
+  // AWAITED INSIDE, because the notes are built after the probe's fake child
+  // emits on `setImmediate` — a `finally` that ran on the un-awaited promise put
+  // the real catalog back before the doctor had read anything.
+  try { return await fn(); } finally { undo(); }
+}
+
+/** A staged fine-tune, as the catalog holds one. */
+function checkpointRow(checkpoint) {
+  return {
+    id: 'ft', label: 'FT', kind: 'checkpoint', engineVersion: 'v3',
+    voice: { checkpoint },
+    license: 'x', commercialUse: false, sampleRate: 24000, addedAt: 'x',
+    backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } },
+  };
+}
+
+check('a fine-tune the catalog does not stage HERE reads "not staged for this arm"', () =>
+  onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
+    const res = await withCatalog(
+      [checkpointRow({ wsl: '/home/telltale/higgs_v3_merged/ds' })],
+      () => doctorMod.higgsDoctor(),
+    );
+    const note = res.notes.find((n) => n.startsWith('ft:'));
+    assert.ok(note, 'the fine-tune was not reported at all');
+    assert.match(note, /not staged for this arm/);
+    assert.match(note, /no darwin checkpoint/);
+    // It must NOT send the reader hunting for the guest's directory on this Mac.
+    assert.ok(!/\/home\/telltale/.test(note),
+      "the note names the WSL directory, which this machine has never had");
+    assert.match(note, /NEW certificate/,
+      'nothing says that staging a copy means measuring this arm again');
+    assert.strictEqual(res.valid, true, 'a voice on the other machine is not a broken install');
+  }));
+
+check('a fine-tune staged in the catalog but absent on disk says exactly that', () =>
+  onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
+    const res = await withCatalog(
+      [checkpointRow({ darwin: 'runtime/higgs-models/not-copied-yet' })],
+      () => doctorMod.higgsDoctor(),
+    );
+    const note = res.notes.find((n) => n.startsWith('ft:'));
+    assert.match(note, /staged path missing on disk/);
+    // NAMING THE RESOLVED PATH, not the catalog's relative one: the fix is a
+    // copy, and a person cannot make one to "runtime/higgs-models/…".
+    assert.ok(note.includes(path.join(FIXTURE, 'runtime', 'higgs-models', 'not-copied-yet')),
+      'the note does not name the absolute directory the copy must land in: ' + note);
+  }));
+
+check('a MALFORMED staged path is a NOTE, not a doctor that throws', () =>
+  onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
+    // A doctor that throws is a modal with no rows in it. The refusal's own
+    // sentence becomes the note — never a paraphrase, or the doctor and the
+    // loader would describe the same catalog differently.
+    const res = await withCatalog(
+      [checkpointRow({ darwin: '/Users/someone-else/Library/Application Support/BookForge/x' })],
+      () => doctorMod.higgsDoctor(),
+    );
+    const note = res.notes.find((n) => n.startsWith('ft:'));
+    assert.match(note, /is absolute/);
+    assert.strictEqual(res.valid, true, 'a bad catalog row failed the ENVIRONMENT');
+  }));
+
+check('a fine-tune that is really there reads "loadable", with the directory', () =>
+  onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
+    const dir = path.join(FIXTURE, 'runtime', 'higgs-models', 'ds_staged');
+    fs.mkdirSync(dir, { recursive: true });
+    const res = await withCatalog(
+      [checkpointRow({ darwin: 'runtime/higgs-models/ds_staged',
+                       wsl: '/home/telltale/higgs_v3_merged/ds' })],
+      () => doctorMod.higgsDoctor(),
+    );
+    const note = res.notes.find((n) => n.startsWith('ft:'));
+    assert.match(note, /loadable — fine-tuned weights at /);
+    assert.ok(note.includes(dir), 'the note does not name the weights it found: ' + note);
+    // The arm that has them, not the other one.
+    assert.ok(!note.includes('/home/telltale'), 'the note names the WSL copy on a Mac');
+  }));
 
 // ─────────────────────────────────────────────────────────────────────────────
 section('anything else → a refusal that names the platform');

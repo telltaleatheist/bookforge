@@ -794,6 +794,17 @@ export interface HiggsDoctorResult {
  * an artifact is the one a person most wants an explanation for, and the note is
  * the explanation. The narration picker only ever sees the value/label pair.
  */
+/** The measured knobs of ONE backend. See `HiggsModelDto.backends`. */
+export interface HiggsBackendCapsDto {
+  /** null = declared UNMEASURED, which for a fine-tune is a refusal. */
+  maxChars?: number | null;
+  maxCharsSource?: string | null;
+  edgeFadeMs?: { in: number; out: number };
+  sampling?: { temperature?: number; topP?: number; topK?: number };
+  referenceSecondsCap?: number;
+  allowedControls?: string[];
+}
+
 export interface HiggsModelDto {
   id: string;
   label: string;
@@ -808,23 +819,29 @@ export interface HiggsModelDto {
   kind: 'default' | 'clips' | 'checkpoint';
   voice: {
     clips?: Array<{ path: string; transcript: string; seconds: number }>;
-    checkpointDir?: string;
+    /**
+     * ONE MERGED DIRECTORY PER ARM. The two Higgs arms cannot see each other's
+     * disks — the served one loads from inside the WSL guest, the MLX one from
+     * the Mac's own userData — so a checkpoint voice names both, and an arm with
+     * no entry is an arm the voice is NOT loadable on. `wsl` is the guest's
+     * absolute path; `darwin` is relative to the app's userData directory.
+     */
+    checkpoint?: { wsl?: string; darwin?: string };
     scene?: string;
   };
   license: string;
   commercialUse: boolean;
   sampleRate: number;
   addedAt: string;
+  /**
+   * ONE BLOCK PER BACKEND — `served` is vllm-omni behind WSL, `mlx` is the
+   * in-process mlx-audio sampler on the Mac, and the loader picks by ARM. They do
+   * not share numbers: a cap is produced by rendering, and the two arms sample
+   * through different implementations over different runtimes.
+   */
   backends?: {
-    served?: {
-      /** null = declared UNMEASURED, which for an adapter is a refusal. */
-      maxChars?: number | null;
-      maxCharsSource?: string | null;
-      edgeFadeMs?: { in: number; out: number };
-      sampling?: { temperature?: number; topP?: number; topK?: number };
-      referenceSecondsCap?: number;
-      allowedControls?: string[];
-    };
+    served?: HiggsBackendCapsDto;
+    mlx?: HiggsBackendCapsDto;
   };
   _pendingNote?: string;
   note?: string;

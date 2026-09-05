@@ -26,7 +26,8 @@
  *
  * `resolveHiggsModel(id)` — the catalog entry, or a throw naming the id.
  * `higgsVoiceCapsForModel(model)` — the measured knobs, absent-means-absent.
- * `higgsVoicesDocument(model)` — narrator's voice document, as JSON.
+ * `higgsVoicesDocument(model, target)` — narrator's voice document, as JSON, with
+ *   the ONE checkpoint directory belonging to the arm the spawn will take.
  * `higgsSpawnEnv(model, opts)` — the NARRATOR_* environment its backend reads.
  *
  * ── The environment is NARRATOR'S contract, and this file was corrected to it ─
@@ -162,6 +163,60 @@ export interface HiggsReferenceClip {
 }
 
 /**
+ * WHICH MACHINE'S FILESYSTEM A CHECKPOINT DIRECTORY SITS IN.
+ *
+ * A `checkpoint` voice is ~8.5 GB of weights on disk, and the two Higgs arms
+ * cannot see each other's disks: the served arm loads from inside the WSL guest
+ * (ext4, reached by the launch script), the MLX arm loads from the Mac's own
+ * filesystem, in the app's userData. So "where is deathstalker" has TWO answers
+ * and neither is the other's — which is why this is a key rather than a single
+ * `checkpointDir` string. See `HiggsCheckpointLocations`.
+ *
+ * ── Why these names and not `HiggsArm`'s ('wsl' | 'mlx' | 'none') ───────────
+ *
+ * `HiggsArm` in tool-paths.ts answers a DIFFERENT question — which BACKEND the
+ * doctor examined — and its third member, `'none'`, is a machine on which no
+ * checkpoint can be staged at all, so it could never be a key here. This type
+ * names the FILESYSTEM the weights live on: `wsl` is the guest, `darwin` is the
+ * Mac. The two vocabularies are 1:1 today (`wsl`↔`wsl`, `darwin`↔`mlx`) and the
+ * ONE place that says so is `BACKEND_FOR_ARM` below; nothing else maps between
+ * them, because a mapping in two places is a mapping that drifts.
+ */
+export type HiggsCheckpointArm = 'wsl' | 'darwin';
+
+/**
+ * WHERE A CHECKPOINT VOICE IS STAGED, PER ARM. A missing arm is not a gap to be
+ * filled in from the other one — it means the voice IS NOT LOADABLE THERE, and
+ * `higgsCheckpointDirFor` refuses it by name.
+ *
+ * THE TWO ENTRIES ARE SHAPED DIFFERENTLY, on purpose:
+ *
+ *   `wsl`     an ABSOLUTE GUEST PATH (`/home/telltale/higgs_v3_merged/…`). It is
+ *             what the launch script receives, the guest has a fixed home, and
+ *             the directory is deliberately NOT under /mnt — the 9p mount would
+ *             dominate an 8.5 GB load. Refused if it is relative.
+ *   `darwin`  a path RELATIVE TO THE APP'S userData DIRECTORY
+ *             (`runtime/higgs-models/<dir>`), resolved to an absolute path at
+ *             document-write time. A Mac's Application Support path carries the
+ *             username, so an absolute `/Users/telltale/…` in a REPO-TRACKED
+ *             catalog is a directory that exists on exactly one machine — which
+ *             is the failure this catalog exists to prevent. The app knows its
+ *             own userData; the catalog does not. Refused if it is absolute, and
+ *             refused if it climbs out with `..`.
+ *
+ * AND A COPY IS A NEW CERTIFICATE. The same merged directory on both machines is
+ * the same weights, but a cap is measured against (directory, backend), so
+ * staging deathstalker on the Mac does not carry the served arm's number across
+ * — see `backends` and `refuseUnmeasuredAdapter`.
+ */
+export interface HiggsCheckpointLocations {
+  /** The WSL guest's own absolute path. */
+  wsl?: string;
+  /** Relative to the app's userData directory. */
+  darwin?: string;
+}
+
+/**
  * A Higgs voice, as the catalog stores it. Which fields are legal is decided by
  * the entry's `kind` — see `refuseMalformedVoice`.
  */
@@ -169,25 +224,45 @@ export interface HiggsVoiceRef {
   /** kind 'clips' only: exactly one, with a transcript and a duration. */
   clips?: HiggsReferenceClip[];
   /**
-   * kind 'checkpoint' only: the MERGED fine-tune directory the server is started
-   * on (~8.5 GB). HOST-NATIVE, like a clip path — translated per arm at
-   * document-write time.
+   * kind 'checkpoint' only: the MERGED fine-tune directory (~8.5 GB) the server
+   * is started on / the MLX backend loads, NAMED ONCE PER ARM.
+   *
+   * It replaced a single `checkpointDir` string on 2026-09-05 (see
+   * `refuseRetiredCheckpointDir`): one string can only be one machine's path,
+   * and it was the WSL guest's, so the Mac's voice document carried a
+   * `/home/telltale/…` directory that does not exist there.
    */
-  checkpointDir?: string;
+  checkpoint?: HiggsCheckpointLocations;
   /** v2-only chat role. Present for shape parity; v3 has no scene mechanism. */
   scene?: string;
 }
 
 /**
- * The measured knobs a Higgs voice declares for the SERVED backend.
+ * The measured knobs a Higgs voice declares for ONE BACKEND.
  *
  * Absent means absent — there is no invented default here, exactly as
  * `OrpheusVoiceCaps` documents. The one difference in spirit: on Orpheus an
  * absent cap means "let e2a apply its own documented default", while here an
- * absent cap means "the served stack's own shipped default applies", and both
- * are real answers rather than a fallback.
+ * absent cap means "that backend's own shipped default applies", and both are
+ * real answers rather than a fallback.
+ *
+ * ── A CERTIFICATE IS PER (DIRECTORY, BACKEND) ───────────────────────────────
+ *
+ * There is one of these per backend and they do NOT share numbers, because a cap
+ * is produced by RENDERING: the served figure was measured by driving vllm-omni
+ * on one merged directory with one patched stage processor, and the MLX arm is a
+ * different sampler over a different runtime — mlx-audio's top-k/top-p and
+ * vLLM's are different implementations, so feeding both the same three numbers
+ * makes the CONFIGURATION identical and not the draws (PORT_NOTES 13.11).
+ * Nothing has yet compared a Mac render against a WSL one at all, and their seeds
+ * are not even comparable (`mx.random.seed` vs vLLM's).
+ *
+ * So copying the merged directory to the Mac copies the weights and NOT the
+ * certificate. Until the MLX arm's own length sweep runs, `mlx.maxChars` is
+ * `null` — a DECLARED absence — and `refuseUnmeasuredAdapter` refuses the voice
+ * on darwin exactly as the served `null` refuses it on WSL.
  */
-export interface HiggsServedCaps {
+export interface HiggsBackendCaps {
   /**
    * The PREP packing cap, in characters. Consumed by BookForge, never sent to
    * narrator (see the header on why caps do not travel).
@@ -289,7 +364,13 @@ export interface HiggsModel {
   commercialUse: boolean;
   sampleRate: number;
   addedAt: string;
-  backends?: { served?: HiggsServedCaps };
+  /**
+   * THE MEASURED KNOBS, PER BACKEND — `served` is vllm-omni behind WSL, `mlx` is
+   * the in-process mlx-audio sampler on the Mac. See `HiggsBackendCaps`: they do
+   * not share numbers, because a cap is measured by rendering and the two arms
+   * render through different samplers. The loader picks the block by ARM.
+   */
+  backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
   note?: string;
@@ -358,9 +439,74 @@ export function listHiggsModels(): HiggsModel[] {
   return loadCatalog().models;
 }
 
-/** The voices that can actually render today — the pending ones removed. */
+/**
+ * THIS MACHINE'S CHECKPOINT ARM, or `null` where Higgs has no backend at all.
+ *
+ * A PLATFORM QUESTION, NOT AN INSTALLATION ONE. On Windows the only Higgs arm
+ * that exists is the WSL guest — with the "WSL2 for Higgs" toggle off there is
+ * no NATIVE arm to fall back to, there is simply no working environment, which
+ * `higgsDoctor()` reports as its own row. So this says where a checkpoint WOULD
+ * be read from on this machine, and the doctor says whether it can be read.
+ *
+ * `null` on Linux and everywhere else: vLLM-Omni installs natively there in
+ * principle and BookForge has never built or measured it, so there is no
+ * filesystem to name.
+ */
+export function higgsCheckpointArm(): HiggsCheckpointArm | null {
+  if (process.platform === 'win32') return 'wsl';
+  if (process.platform === 'darwin') return 'darwin';
+  return null;
+}
+
+/** The arm, or a throw that names the platform. Used where absence is fatal. */
+function thisMachineArm(): HiggsCheckpointArm {
+  const arm = higgsCheckpointArm();
+  if (arm) return arm;
+  throw new Error(
+    `Higgs has no backend on ${process.platform}. It ships two — a vLLM-Omni server ` +
+      'reached through WSL on Windows, and an in-process mlx-audio backend on macOS — ' +
+      `and BookForge builds neither on ${process.platform}, so there is no arm for a ` +
+      'voice to be staged on.',
+  );
+}
+
+/**
+ * WHY THIS VOICE CANNOT RENDER ON THIS MACHINE — one sentence, or `null`.
+ *
+ * The picker's half of every refusal `resolveHiggsModel` throws, and it is the
+ * SAME refusal rather than a second description of it: the message it returns is
+ * the exception's own text. Two lists that disagree about which voices work is
+ * exactly how a dropdown ends up offering a voice the run then refuses (which is
+ * what `_pendingNote` was already guarding against, one reason at a time).
+ */
+export function higgsVoiceUnavailableReason(model: HiggsModel): string | null {
+  if (model._pendingNote) return model._pendingNote;
+  try {
+    refuseRetiredCheckpointDir(model);
+    refuseMalformedVoice(model);
+    refuseUntranscribedClips(model);
+    const arm = thisMachineArm();
+    refuseUnstagedCheckpoint(model);
+    refuseUnmeasuredAdapter(model, arm);
+    refuseOversizedReference(model, arm);
+    return null;
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * The voices that can actually render ON THIS MACHINE.
+ *
+ * ARM-AWARE since 2026-09-05. It used to drop only the voices carrying a
+ * `_pendingNote`, which was the whole of "can this render" while a checkpoint had
+ * ONE directory. It has one per arm now, so a fine-tune staged in the WSL guest
+ * and not on the Mac is renderable on Windows and NOT renderable on the Mac —
+ * and offering it there would serve the model's own speaker, 12 % of the
+ * narrator's ECAPA ceiling.
+ */
 export function listRenderableHiggsModels(): HiggsModel[] {
-  return listHiggsModels().filter((m) => !m._pendingNote);
+  return listHiggsModels().filter((m) => higgsVoiceUnavailableReason(m) === null);
 }
 
 /** True when this id names a catalog voice at all (pending included). */
@@ -400,11 +546,52 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
         `Refusing to render — see electron/data/higgs-models.json for what it is waiting on.`,
     );
   }
+  refuseRetiredCheckpointDir(model);
   refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
-  refuseUnmeasuredAdapter(model);
-  refuseOversizedReference(model);
+  refuseUnstagedCheckpoint(model);
+  const arm = thisMachineArm();
+  refuseUnmeasuredAdapter(model, arm);
+  refuseOversizedReference(model, arm);
   return model;
+}
+
+/**
+ * A CATALOG STILL WRITTEN THE OLD WAY IS REFUSED, NOT READ.
+ *
+ * `voice.checkpointDir` was one string for one machine, and it held the WSL
+ * guest's path — so on the Mac it wrote a `/home/telltale/…` directory into the
+ * voice document and the MLX backend refused it (correctly, and five minutes
+ * later than here). A catalog carrying the retired key would silently lose its
+ * per-arm staging under `voice.checkpoint`, so it fails loud instead. The same
+ * shape of guard narrator applies to `adapterDir`.
+ */
+function refuseRetiredCheckpointDir(model: HiggsModel): void {
+  const legacy = (model.voice as { checkpointDir?: unknown }).checkpointDir;
+  if (legacy === undefined) return;
+  throw new Error(
+    `Higgs voice "${model.id}" names voice.checkpointDir, which is retired. A merged ` +
+      'checkpoint has ONE LOCATION PER ARM — the WSL guest cannot see the Mac\'s disk ' +
+      'and the Mac cannot see the guest\'s — so it is now ' +
+      '`voice.checkpoint: { "wsl": "<guest absolute path>", "darwin": "<path relative ' +
+      'to the app\'s userData>" }`, and an arm with no entry means the voice is not ' +
+      'staged there. Refusing to guess which arm ' + JSON.stringify(legacy) + ' belongs to.',
+  );
+}
+
+/**
+ * A CHECKPOINT VOICE THIS MACHINE HAS NO COPY OF IS REFUSED BY NAME.
+ *
+ * Not "not installed" (that is `_pendingNote`, which is about the artifact
+ * existing ANYWHERE) and not a search: the catalog either names a directory for
+ * this arm or it does not, and the honest answer to "render deathstalker on the
+ * Mac when only the WSL path is in the catalog" is a sentence saying so. The
+ * alternative — handing over the other arm's path — is a load that fails deep
+ * inside narrator with a path nobody on this machine has ever seen.
+ */
+function refuseUnstagedCheckpoint(model: HiggsModel): void {
+  if (model.kind !== 'checkpoint') return;
+  higgsCheckpointPathFor(model, thisMachineArm());
 }
 
 /**
@@ -417,14 +604,15 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
  * the wire format.
  */
 function refuseMalformedVoice(model: HiggsModel): void {
-  const { clips, checkpointDir } = model.voice;
+  const { clips, checkpoint } = model.voice;
   const has = (n: number | undefined) => n !== undefined && n > 0;
+  const staged = Object.entries(checkpoint ?? {}).filter(([, p]) => (p || '').trim());
 
   if (model.kind === 'default') {
-    if (has(clips?.length) || checkpointDir) {
+    if (has(clips?.length) || staged.length > 0) {
       throw new Error(
         `Higgs voice "${model.id}" is kind 'default' — the served model's own speaker — but ` +
-          `also declares ${has(clips?.length) ? 'reference clips' : 'a checkpointDir'}. ` +
+          `also declares ${has(clips?.length) ? 'reference clips' : 'a checkpoint location'}. ` +
           `A default voice has neither; if it is meant to be a clone or a fine-tune, say so ` +
           `in its kind.`,
       );
@@ -433,12 +621,25 @@ function refuseMalformedVoice(model: HiggsModel): void {
   }
 
   if (model.kind === 'checkpoint') {
-    if (!checkpointDir || !checkpointDir.trim()) {
+    if (staged.length === 0) {
       throw new Error(
-        `Higgs voice "${model.id}" is kind 'checkpoint' but names no checkpointDir — there is ` +
-          `no merged fine-tune for the server to start on.`,
+        `Higgs voice "${model.id}" is kind 'checkpoint' but names no checkpoint location on ` +
+          `any arm — there is no merged fine-tune for the server to start on, or for the MLX ` +
+          `backend to load. Give it a voice.checkpoint entry for at least one of: ` +
+          `${CHECKPOINT_ARMS.join(', ')}.`,
       );
     }
+    const unknown = staged.map(([arm]) => arm)
+      .filter((arm) => !(CHECKPOINT_ARMS as readonly string[]).includes(arm));
+    if (unknown.length > 0) {
+      throw new Error(
+        `Higgs voice "${model.id}" names checkpoint arm(s) ${unknown.join(', ')}, which are not ` +
+          `arms BookForge renders on. The arms are ${CHECKPOINT_ARMS.join(' and ')} — the WSL ` +
+          `guest's filesystem and the Mac's. An unrecognised key is a directory nothing will ` +
+          `ever read.`,
+      );
+    }
+    for (const arm of CHECKPOINT_ARMS) refuseMisshapedCheckpointPath(model, arm);
     if (has(clips?.length)) {
       throw new Error(
         `Higgs voice "${model.id}" is kind 'checkpoint' and also declares reference clips. A ` +
@@ -457,12 +658,159 @@ function refuseMalformedVoice(model: HiggsModel): void {
         `'default' and a different voice entirely (12 % of the narrator's ECAPA ceiling).`,
     );
   }
-  if (checkpointDir) {
+  if (staged.length > 0) {
     throw new Error(
-      `Higgs voice "${model.id}" is kind 'clips' but also names a checkpointDir. Pick one: a ` +
-        `reference clone or a merged fine-tune.`,
+      `Higgs voice "${model.id}" is kind 'clips' but also names a checkpoint location ` +
+        `(${staged.map(([arm]) => arm).join(', ')}). Pick one: a reference clone or a merged ` +
+        `fine-tune.`,
     );
   }
+}
+
+/** The arms a checkpoint may be staged on. The catalog's whole key vocabulary. */
+const CHECKPOINT_ARMS = ['wsl', 'darwin'] as const;
+
+/**
+ * WHICH `backends` BLOCK EACH ARM RENDERS THROUGH — the ONE place the two
+ * vocabularies meet.
+ *
+ * They are different words because they answer different questions. An ARM is a
+ * FILESYSTEM: which machine's disk the 8.5 GB of weights sit on. A BACKEND is a
+ * RUNTIME: `served` is vllm-omni answering HTTP, `mlx` is mlx-audio sampling in
+ * this process. They are 1:1 today and might not always be (vLLM-Omni installs
+ * natively on Linux in principle, which would be a third arm on the `served`
+ * backend), which is exactly why the mapping is a table and not a coincidence
+ * two files each rely on separately.
+ */
+const BACKEND_FOR_ARM: Record<HiggsCheckpointArm, 'served' | 'mlx'> = {
+  wsl: 'served',
+  darwin: 'mlx',
+};
+
+/**
+ * THE SHAPE OF ONE ARM'S PATH, checked whether or not this machine is that arm.
+ *
+ * Checked on BOTH arms from any machine on purpose: a Windows build is where the
+ * catalog is usually edited, and a darwin entry written as `/Users/telltale/…`
+ * would otherwise be discovered by the one person who cannot fix it quickly.
+ * These are properties of the STRING, so they need no filesystem and no arm.
+ */
+function refuseMisshapedCheckpointPath(model: HiggsModel, arm: HiggsCheckpointArm): void {
+  const raw = model.voice.checkpoint?.[arm];
+  if (raw === undefined) return;
+  const value = raw.trim();
+  if (!value) {
+    throw new Error(
+      `Higgs voice "${model.id}" has an empty ${arm} checkpoint path. An arm that is not ` +
+        'staged is left OUT — an empty string says "staged, at nowhere".',
+    );
+  }
+  if (arm === 'wsl') {
+    // GUEST-RESIDENT, in either form Windows can spell it. `/home/telltale/…` is
+    // the guest's own name for the directory, and `\\wsl$\<distro>\home\…` is the
+    // UNC form the Windows side uses for the same ext4 directory (tool-paths.ts
+    // documents it for `orpheusModelsDir`); `toGuestPath` folds the second onto
+    // the first at document-write time.
+    //
+    // A DRIVE PATH IS NOT AN ALTERNATIVE SPELLING — it is a different directory,
+    // on the Windows disk, which the guest reads over the 9p mount. That is fine
+    // for a few hundred bytes of voice document and ruinous for 8.5 GB of
+    // weights, which is exactly why the merged directories live on ext4.
+    const unc = /^[\\/]{2}wsl[$.](localhost)?[\\/]/i.test(value);
+    if (!value.startsWith('/') && !unc) {
+      throw new Error(
+        `Higgs voice "${model.id}": the wsl checkpoint ${JSON.stringify(value)} is not a ` +
+          'guest-resident path. The WSL entry is the directory the LAUNCH SCRIPT is started ' +
+          'on INSIDE the guest, so it is either the guest\'s own absolute path ' +
+          '("/home/<user>/…") or its \\\\wsl$\\<distro>\\… UNC form. A C: drive path would put ' +
+          '8.5 GB of weights behind the 9p mount.',
+      );
+    }
+    return;
+  }
+  // darwin
+  if (value.startsWith('/') || /^[A-Za-z]:[\\/]/.test(value)) {
+    throw new Error(
+      `Higgs voice "${model.id}": the darwin checkpoint ${JSON.stringify(value)} is absolute. ` +
+        "A Mac's Application Support path carries the account name, so an absolute path in a " +
+        'REPO-TRACKED catalog names a directory that exists on exactly one machine — the ' +
+        'failure this catalog exists to prevent. Write it relative to the app\'s userData ' +
+        'directory, e.g. "runtime/higgs-models/<merged dir>", which BookForge resolves at ' +
+        'document-write time.',
+    );
+  }
+  if (value.split(/[\\/]/).some((seg) => seg === '..')) {
+    throw new Error(
+      `Higgs voice "${model.id}": the darwin checkpoint ${JSON.stringify(value)} climbs out of ` +
+        "userData with \"..\". It names a location inside the app's own runtime directory; a " +
+        'path that leaves it is not staged, it is somewhere else on the machine.',
+    );
+  }
+}
+
+/**
+ * THE CATALOG'S PATH FOR ONE ARM, unresolved — or a refusal naming the voice and
+ * the arm. The string as written, so `darwin` is still userData-relative here;
+ * `higgsCheckpointDirFor` is what makes it absolute.
+ */
+function higgsCheckpointPathFor(model: HiggsModel, arm: HiggsCheckpointArm): string {
+  if (model.kind !== 'checkpoint') {
+    throw new Error(
+      `Higgs voice "${model.id}" is kind '${model.kind}' and has no checkpoint directory. ` +
+        "Only a fine-tune ('checkpoint') is loaded from one.",
+    );
+  }
+  refuseMisshapedCheckpointPath(model, arm);
+  const value = (model.voice.checkpoint?.[arm] ?? '').trim();
+  if (value) return value;
+  const other = CHECKPOINT_ARMS.filter((a) => (model.voice.checkpoint?.[a] ?? '').trim());
+  throw new Error(
+    `Higgs voice "${model.id}" is not staged for ${ARM_DESCRIPTION[arm]}: no ${arm} checkpoint ` +
+      `in the catalog${other.length ? ` (it names only: ${other.join(', ')})` : ''}. A ` +
+      'fine-tune renders from its OWN merged directory, and the two arms cannot see each ' +
+      "other's disks — so the other arm's path is not an answer, it is a directory this " +
+      'machine has never had. Copy the merged directory to this machine, add its location to ' +
+      'electron/data/higgs-models.json, and MEASURE this arm\'s cap: a copy is the same ' +
+      'weights but a new certificate.',
+  );
+}
+
+/** How each arm is named to a person. The refusals read as sentences. */
+const ARM_DESCRIPTION: Record<HiggsCheckpointArm, string> = {
+  wsl: 'WSL',
+  darwin: 'the Mac',
+};
+
+/**
+ * THE DIRECTORY THIS ARM LOADS THE WEIGHTS FROM, absolute and ready to be
+ * translated for a guest.
+ *
+ * `userDataDir` is REQUIRED on the darwin arm and refused as missing rather than
+ * guessed: the catalog stores that path relative to userData precisely because
+ * this module does not know where userData is, and `app.getPath('userData')` is
+ * the caller's to supply (this module deliberately imports no Electron).
+ */
+export function higgsCheckpointDirFor(
+  model: HiggsModel,
+  arm: HiggsCheckpointArm,
+  userDataDir?: string,
+): string {
+  const value = higgsCheckpointPathFor(model, arm);
+  if (arm === 'wsl') return value;
+  if (!userDataDir || !userDataDir.trim()) {
+    throw new Error(
+      `Higgs voice "${model.id}": the darwin checkpoint ${JSON.stringify(value)} is relative to ` +
+        "the app's userData directory, and no userData directory was given. Pass " +
+        "app.getPath('userData') — there is no default and no search, because guessing where " +
+        "a Mac's Application Support lives is how a render loads 8.5 GB of the wrong weights.",
+    );
+  }
+  return path.join(userDataDir, ...value.split(/[\\/]/));
+}
+
+/** Is this voice staged on `arm` at all? The picker's question, no throw. */
+export function higgsCheckpointStagedOn(model: HiggsModel, arm: HiggsCheckpointArm): boolean {
+  return !!(model.voice.checkpoint?.[arm] ?? '').trim();
 }
 
 /**
@@ -514,7 +862,7 @@ function refuseUntranscribedClips(model: HiggsModel): void {
  * The 30 s cap is the server's own (42 s returns HTTP 400 "Reference audio too
  * long"), and the declared `seconds` are what make it checkable before launch.
  */
-function refuseOversizedReference(model: HiggsModel): void {
+function refuseOversizedReference(model: HiggsModel, arm: HiggsCheckpointArm): void {
   const clips = model.voice.clips ?? [];
   if (clips.length > 1) {
     throw new Error(
@@ -523,7 +871,7 @@ function refuseOversizedReference(model: HiggsModel): void {
         `transcripts joined in the same order, and declare that one clip.`,
     );
   }
-  const cap = higgsVoiceCapsForModel(model).referenceSecondsCap;
+  const cap = higgsVoiceCapsForModel(model, arm).referenceSecondsCap;
   if (cap === undefined || clips.length === 0) return;
   const total = clips.reduce((sum, c) => sum + c.seconds, 0);
   if (total > cap) {
@@ -551,13 +899,18 @@ function refuseOversizedReference(model: HiggsModel): void {
  * A duration ratio in particular is not a coverage proxy on this family — a v3
  * render measured ratio 0.99 while dropping 22 % of its text.
  */
-function refuseUnmeasuredAdapter(model: HiggsModel): void {
+function refuseUnmeasuredAdapter(model: HiggsModel, arm: HiggsCheckpointArm): void {
   if (model.kind !== 'checkpoint') return;
-  const caps = higgsVoiceCapsForModel(model);
+  const backend = BACKEND_FOR_ARM[arm];
+  const caps = higgsVoiceCapsForModel(model, arm);
   if (typeof caps.maxChars === 'number' && caps.maxChars > 0 && caps.maxCharsSource) return;
   throw new Error(
-    `Higgs fine-tune "${model.id}" has no MEASURED maxChars (got ` +
-      `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}). ` +
+    `Higgs fine-tune "${model.id}" has no MEASURED maxChars on the ${backend} backend (got ` +
+      `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}, ` +
+      `from backends.${backend}). A CERTIFICATE IS PER (DIRECTORY, BACKEND): the number measured ` +
+      `on the other backend does not transfer, because the two arms sample through different ` +
+      `implementations of top-k/top-p over different runtimes — the same three numbers make the ` +
+      `configuration identical, not the draws. ` +
       `A fine-tune's stop length follows its TRAINING CLIP LENGTH, not the text — one trained ` +
       `on 8-22 s clips stops after ~6-10 s on any prompt over ~150 chars — so the zero-shot ` +
       `600 would silently lose most of every chunk. Run a length sweep on this model, verify ` +
@@ -601,10 +954,13 @@ export function higgsServingSpec(): HiggsServingSpec {
  * Absent fields stay absent. A caller can tell "this voice declares nothing"
  * from "this voice declares 600".
  */
-export function higgsVoiceCapsForModel(model: HiggsModel): HiggsServedCaps {
-  const served = model.backends?.served;
+export function higgsVoiceCapsForModel(
+  model: HiggsModel,
+  arm: HiggsCheckpointArm = thisMachineArm(),
+): HiggsBackendCaps {
+  const served = model.backends?.[BACKEND_FOR_ARM[arm]];
   if (!served) return {};
-  const caps: HiggsServedCaps = {};
+  const caps: HiggsBackendCaps = {};
   if (served.maxChars !== undefined) caps.maxChars = served.maxChars;
   if (served.maxCharsSource !== undefined) caps.maxCharsSource = served.maxCharsSource;
   if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
@@ -635,12 +991,35 @@ export function higgsVoiceCapsForModel(model: HiggsModel): HiggsServedCaps {
  * filesystem can open. It is a parameter rather than a call to `toGuestPath`
  * here because this module has no business knowing which arm the caller is
  * about to spawn on: identity on macOS/Linux, guest translation under WSL.
+ *
+ * ── ONE checkpoint path, chosen by ARM ──────────────────────────────────────
+ *
+ * `checkpointDir` stays the WIRE NAME — narrator's `load_voices` reads exactly
+ * that key and the document's shape is unchanged. What changed on 2026-09-05 is
+ * where the value comes from: the catalog names the merged directory ONCE PER
+ * ARM, and this writes the one belonging to `target.arm`. A voice with no entry
+ * for that arm is refused here rather than written with the other arm's path,
+ * which on the Mac meant a `/home/telltale/…` directory that does not exist.
  */
+export interface HiggsDocumentTarget {
+  /** The arm the spawn this document is written FOR will take. */
+  arm: HiggsCheckpointArm;
+  /**
+   * The app's userData directory. REQUIRED on the darwin arm, where a
+   * checkpoint's catalog path is relative to it; unused on the WSL arm.
+   */
+  userDataDir?: string;
+  /** Guest translation, on the arm that has a guest. Identity by default. */
+  translatePath?: (p: string) => string;
+}
+
 export function higgsVoicesDocument(
   model: HiggsModel,
-  translatePath: (p: string) => string = (p) => p,
+  target: HiggsDocumentTarget,
 ): Record<string, unknown> {
+  refuseRetiredCheckpointDir(model);
   refuseMalformedVoice(model);
+  const translatePath = target.translatePath ?? ((p: string) => p);
 
   const entry: Record<string, unknown> = { kind: model.kind };
 
@@ -651,12 +1030,19 @@ export function higgsVoicesDocument(
       seconds: c.seconds,
     }));
   }
-  if (model.kind === 'checkpoint' && model.voice.checkpointDir) {
-    entry.checkpointDir = translatePath(model.voice.checkpointDir);
+  if (model.kind === 'checkpoint') {
+    entry.checkpointDir = translatePath(
+      higgsCheckpointDirFor(model, target.arm, target.userDataDir),
+    );
   }
   if (model.voice.scene) entry.scene = model.voice.scene;
 
-  const caps = higgsVoiceCapsForModel(model);
+  // THE ARM'S OWN CAPS. A certificate is per (directory, backend), so the
+  // document for the darwin arm carries the MLX block's cap and never the
+  // served one — and a null there means no `maxChars` is emitted at all, which
+  // narrator's `load_voices` refuses for a checkpoint entry BY NAME. Two
+  // independent refusals of one unmeasured arm.
+  const caps = higgsVoiceCapsForModel(model, target.arm);
   // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
   // near-miss. narrator's `load_voices` raises for an adapter entry with no
   // `maxChars`, so `refuseUnmeasuredAdapter` was guarding a number that never
@@ -689,14 +1075,14 @@ export function higgsVoicesDocument(
 export function writeHiggsVoicesDocument(
   model: HiggsModel,
   jobId: string,
-  translatePath: (p: string) => string = (p) => p,
+  target: HiggsDocumentTarget,
 ): string {
   const dir = path.join(os.tmpdir(), 'bookforge-higgs-voices');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${jobId}-${model.id}.json`);
   fs.writeFileSync(
     file,
-    JSON.stringify(higgsVoicesDocument(model, translatePath), null, 2),
+    JSON.stringify(higgsVoicesDocument(model, target), null, 2),
     'utf-8',
   );
   return file;
@@ -761,10 +1147,17 @@ export function higgsSpawnEnv(
 ): Record<string, string> {
   // Validate before we hand anything over, so a bad voice fails here rather than
   // five minutes into a server start.
+  refuseRetiredCheckpointDir(model);
   refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
-  refuseOversizedReference(model);
-  refuseUnmeasuredAdapter(model);
+  refuseUnstagedCheckpoint(model);
+  // The spawn's arm IS this machine's arm: `checkpointArmForSpawn` in
+  // higgs-spawn.ts derives it from `narratorRunsInWsl` and refuses the one case
+  // where they could differ (Windows with the WSL toggle off, which has no arm at
+  // all) before this is ever reached.
+  const spawnArm = thisMachineArm();
+  refuseOversizedReference(model, spawnArm);
+  refuseUnmeasuredAdapter(model, spawnArm);
 
   const env: Record<string, string> = {
     NARRATOR_HIGGS_VOICES: opts.voicesPath,
@@ -794,19 +1187,21 @@ export function higgsNarrationVoices(): {
   // it is simply not on offer here.
   return listHiggsModels()
     .filter((m) => SELECTABLE_VOICE_KINDS.has(m.kind))
-    .map((m) => (
-    m._pendingNote
-      ? {
-          value: m.id,
-          label: `${m.label} — not installed yet`,
-          // The picker renders this as a DISABLED option with the note as its
-          // tooltip. It used to be label-only, which meant the one voice the
-          // catalog ships pending was fully selectable and the run died later at
-          // `resolveHiggsModel` — defeating the whole stated point of the double
-          // preflight ("turn a doomed run into a sentence someone can read while
-          // the dialog is still open").
-          unavailable: m._pendingNote,
-        }
-      : { value: m.id, label: m.label }
-  ));
+    .map((m) => {
+      // TWO WAYS TO BE UNAVAILABLE, said differently, because they send a person
+      // to different places. `_pendingNote` is "this artifact does not exist yet,
+      // anywhere" — wait for the training side. Anything else this returns is
+      // "it exists and this MACHINE cannot render it", which since 2026-09-05
+      // is most often "the merged directory is staged on the other arm".
+      const reason = higgsVoiceUnavailableReason(m);
+      if (!reason) return { value: m.id, label: m.label };
+      // The picker renders this as a DISABLED option with the reason as its
+      // tooltip. It used to be label-only, which meant the one voice the catalog
+      // ships pending was fully selectable and the run died later at
+      // `resolveHiggsModel` — defeating the whole stated point of the double
+      // preflight ("turn a doomed run into a sentence someone can read while the
+      // dialog is still open").
+      const suffix = m._pendingNote ? 'not installed yet' : 'not on this machine';
+      return { value: m.id, label: `${m.label} — ${suffix}`, unavailable: reason };
+    });
 }

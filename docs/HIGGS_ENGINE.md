@@ -130,26 +130,119 @@ roster, and a voice not in it is refused by name.
     "label": "Higgs v3 default (zero-shot)",
     "kind": "clips",              // BookForge'''s RULE selector, not the wire format
     "engineVersion": "v3",
-    "voice": {                    // narrator'''s shape: always clips
+    "voice": {
       "clips": [],                //   [{path, transcript, seconds}] - ONE at most
-      "checkpointDir": "..."      //   a MERGED fine-tune dir (~8.5 GB)
+      "checkpoint": {             //   a MERGED fine-tune dir (~8.5 GB), ONE PER ARM
+        "wsl":    "/home/telltale/higgs_v3_merged/<dir>",   // guest-absolute
+        "darwin": "runtime/higgs-models/<dir>"              // relative to userData
+      }
     },
     "license": "boson-higgs-tts-3-research-noncommercial",
     "commercialUse": false,
     "sampleRate": 24000,
     "addedAt": "2026-09-04",
     "_pendingNote": "...",        // present => artifact not installed => REFUSED
-    "backends": { "served": {
-      "maxChars": 600,            // null on an unmeasured fine-tune => REFUSED
-      "maxCharsSource": "zero-shot placeholder",
-      "edgeFadeMs": { "in": 10, "out": 25 },
-      "sampling": { "temperature": 1.0, "topP": 0.95, "topK": 50 },
-      "referenceSecondsCap": 30,
-      "allowedControls": []
-    }}
+    "backends": {               // ONE BLOCK PER BACKEND; the loader picks by ARM
+      "served": {               //   wsl    -> vllm-omni behind WSL
+        "maxChars": 600,        // null on an unmeasured fine-tune => REFUSED
+        "maxCharsSource": "placeholder",   // catalog | placeholder | length-sweep
+        "edgeFadeMs": { "in": 10, "out": 25 },
+        "sampling": { "temperature": 1.0, "topP": 0.95, "topK": 50 },
+        "referenceSecondsCap": 30,
+        "allowedControls": []
+      },
+      "mlx": { ... }            //   darwin -> in-process mlx-audio. ITS OWN cap.
+    }
   }]
 }
 ```
+
+### One checkpoint per ARM, and one certificate per BACKEND
+
+Two rules, both discovered the same way: **the two Higgs arms cannot see each
+other's disks, and cannot inherit each other's measurements.**
+
+**THE PATH.** A `checkpoint` voice had ONE `voice.checkpointDir`, and it held the
+WSL guest's path. On the Mac that wrote `/home/telltale/higgs_v3_merged/...` into
+the voice document and the MLX backend refused a directory that machine has never
+had - correctly, by name, and five minutes after the environment had been reported
+green. The merged directory is now staged on the Mac too (2026-09-05, sha256-verified
+against the frozen WSL dir, same basename), so the catalog names it once per arm:
+
+| key | shape | why |
+|---|---|---|
+| `wsl` | **absolute**, guest-resident (`/home/...`, or its `\\wsl$\<distro>\...` UNC form) | it is what the launch script is started on INSIDE the guest, whose home is fixed. A `C:` path is not another spelling - it is a different directory, behind the 9p mount, which is ruinous for 8.5 GB |
+| `darwin` | **relative to the app's userData** (`runtime/higgs-models/<dir>`) | a Mac's Application Support path carries the ACCOUNT NAME, so an absolute `/Users/telltale/...` in a repo-tracked catalog names a directory that exists on exactly one machine. The app knows its userData; the catalog does not |
+
+The exact Mac location today:
+
+    /Users/<account>/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080
+
+- beside `.../runtime/higgs-models/base`, which is where `higgsMlxBaseDir()` puts
+the zero-shot weights, so one directory holds everything the MLX arm loads.
+
+`higgsVoicesDocument(model, target)` writes the ONE path for the arm being
+spawned, resolved to absolute, so **the wire format is unchanged**: narrator still
+reads a single `checkpointDir`. The retired `voice.checkpointDir` is REFUSED if it
+reappears, the way narrator refuses `adapterDir` - a catalog still written the old
+way would silently lose its staging.
+
+**A MISSING ARM IS NOT A GAP TO FILL FROM THE OTHER ONE.** The voice is not
+loadable there, and it is refused by name:
+
+> Higgs voice "deathstalker" is not staged for the Mac: no darwin checkpoint in
+> the catalog (it names only: wsl). A fine-tune renders from its OWN merged
+> directory, and the two arms cannot see each other's disks - so the other arm's
+> path is not an answer, it is a directory this machine has never had. Copy the
+> merged directory to this machine, add its location to
+> electron/data/higgs-models.json, and MEASURE this arm's cap: **a copy is the
+> same weights but a new certificate.**
+
+`listRenderableHiggsModels()`, `higgsNarrationVoices()` and `resolveHiggsModel()`
+are arm-aware off ONE function - `higgsVoiceUnavailableReason()`, which returns
+the refusal's own text - so the narration dropdown, the Listen voice list and the
+run cannot disagree about which voices this machine has.
+
+**THE CERTIFICATE.** `backends` holds one block per BACKEND, and they share no
+numbers. An ARM is a filesystem; a BACKEND is a runtime; `BACKEND_FOR_ARM` in
+`electron/higgs-models.ts` is the one place the two vocabularies meet
+(`wsl -> served`, `darwin -> mlx`).
+
+> **A copy is the same weights but a NEW CERTIFICATE for the MLX backend.**
+
+A cap is produced by *rendering*. mlx-audio's top-k/top-p and vLLM's are different
+implementations over different runtimes, so feeding both the same three numbers
+from the same `generation_config.json` makes the **configuration** identical and
+not the draws; the seeds are not comparable either (`mx.random.seed` vs vLLM's),
+and as of 2026-09-05 nothing has compared a Mac render against a WSL one at all
+(PORT_NOTES 13.11). So `deathstalker`'s `backends.mlx.maxChars` is `null` and the
+loader refuses it on darwin - the same refusal the served `null` makes on WSL:
+
+> Higgs fine-tune "deathstalker" has no MEASURED maxChars on the mlx backend (got
+> null, source null, from backends.mlx). A CERTIFICATE IS PER (DIRECTORY,
+> BACKEND): the number measured on the other backend does not transfer ...
+
+The one thing that IS stated on both arms is a **placeholder**, and only because a
+placeholder makes no claim: `default` carries 600/`placeholder` in both blocks, as
+does narrator's own `HiggsV3Defaults.MAX_CHARS`.
+
+#### What the MLX sweep must measure
+
+Owed, on the Mac, against
+`.../runtime/higgs-models/ds_ad4lm_prod_ckpt1080` - **the same ladder and the same
+rule as the served certificate**, because the method is what transfers and the
+number is not:
+
+- lengths **600 / 900 / 1200 / 1500** characters, **4 seeds per length**;
+- scored by **ASR alignment**, never by duration ratio (a v3 render measured
+  duration ratio 0.99 while dropping 22 % of its text);
+- the cap is the **largest length carrying zero babble across every seed AND
+  >= 90 % coverage on every seed, contiguous from the shortest**;
+- record it in `backends.mlx` with `maxCharsSource: "length-sweep"`.
+
+The ckpt-480 served ladder (600 98.5 %, 900 97.7 %, 1200 95.5 %, 1500 87.2 %) is
+that method's worked example and **not** a prediction of this arm's answer: it
+belongs to another directory on another backend.
 
 ### Every number is measured
 
@@ -200,7 +293,7 @@ That format has **three shapes**, and only one of them carries clips:
 | kind | carries | what it is |
 |---|---|---|
 | `default` | nothing | the served model's own speaker |
-| `checkpoint` | `checkpointDir` | a **merged** fine-tune directory (~8.5 GB) |
+| `checkpoint` | `checkpointDir` | a **merged** fine-tune directory (~8.5 GB). ONE absolute path - the catalog holds one per arm and `higgsVoicesDocument` writes the arm's own |
 | `clips` | `clips: [1]` | a zero-shot clone — **diagnostic only** |
 
 **Why `checkpoint` and not `adapter`.** It was `adapter`/`adapterDir` until
@@ -384,6 +477,23 @@ weights: lora `runs/ds_ad4lm_prod/ckpt-480`, base snapshot `239f63fb…`,
 Its own sweep has not been run, so its cap is `null` and the voice is refused —
 by the `_pendingNote` *and*, independently, by `refuseUnmeasuredAdapter`. Copying
 1200 across would be a cap nobody measured for those weights.
+
+#### The three things the Mac doctor can say about a fine-tune
+
+`mlxVoiceNotes` in `electron/higgs-doctor.ts` reports three distinct states,
+because they send a person three different places. One sentence covered the first
+two until 2026-09-05, which told a person to go looking on disk for a directory the
+catalog had never named on this arm.
+
+| note | what is true | the fix |
+|---|---|---|
+| `not staged for this arm` | the CATALOG names no `darwin` checkpoint | nothing to download until someone stages it - and staging means MEASURING this arm's cap |
+| `staged path missing on disk` | the catalog says where it is and it is not there | copy the merged directory (~8.5 GB), or finish the interrupted copy |
+| `loadable - fine-tuned weights at <dir>` | both | - |
+
+They are **notes, never checks**: a green environment with no fine-tune staged is
+a working installation. A malformed staged path is reported as a note too (through
+`attempt()`), because a doctor that throws is a modal with no rows in it.
 
 #### A provenance correction, and the two guards it bought
 
