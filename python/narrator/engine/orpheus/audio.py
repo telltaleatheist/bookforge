@@ -23,6 +23,7 @@ wheel-dependent FFmpeg requirement, and PCM_24-vs-PCM_16 chunks that the concat
 demuxer drops frames on). Reading is unchanged from the port.
 """
 import os
+from ..log import log
 
 
 def trim_audio(audio_data, samplerate: int, silence_threshold: float = 0.003,
@@ -167,7 +168,7 @@ class AudioMixin:
         never bare (the invariant _classify_gap guarantees)."""
         import numpy as np
         if audio_np is None or len(audio_np) == 0:
-            print(f"Orpheus returned no audio data for sentence {sentence_index}")
+            log(f"Orpheus returned no audio data for sentence {sentence_index}")
             return False
         final_sentence_file = self._sentence_file(sentence_index)
         # NUMPY, NOT TORCH (2026-09-04, with the soundfile writer). The
@@ -213,5 +214,5 @@ class AudioMixin:
         del audio_tensor
         if os.path.exists(final_sentence_file):
             return True
-        print(f"Failed to create {final_sentence_file}")
+        log(f"Failed to create {final_sentence_file}")
         return False

@@ -102,6 +102,7 @@ import urllib.request
 import numpy as np
 
 from ..protocol import BackendSpec, ClipsVoice, DefaultVoice
+from ..log import log
 
 MODEL_ID = 'bosonai/higgs-audio-v3-tts-4b'
 SERVED_MODEL_NAME = 'higgs-v3'
@@ -586,16 +587,16 @@ class HiggsV3ServedBackend:
                                      timeout=20)
                 if out.returncode == 0 and out.stdout.strip().isdigit():
                     self._guest_pid = int(out.stdout.strip())
-                    print(f'[HIGGS3] server guest pid {self._guest_pid}', file=sys.stderr, flush=True)
+                    log(f'[HIGGS3] server guest pid {self._guest_pid}', flush=True)
                     return self._guest_pid
             except (OSError, subprocess.SubprocessError):
                 pass
             if self._proc is not None and self._proc.poll() is not None:
                 return None
             time.sleep(0.5)
-        print('[HIGGS3] WARNING: the launch wrapper never wrote a pid; stop() will '
+        log('[HIGGS3] WARNING: the launch wrapper never wrote a pid; stop() will '
               'not be able to signal the server inside the distro if the launcher '
-              'exits without taking it down.', file=sys.stderr, flush=True)
+              'exits without taking it down.', flush=True)
         return None
 
     def start(self) -> None:
@@ -615,11 +616,10 @@ class HiggsV3ServedBackend:
             # server; that is better than starting a second one, which would
             # fail to bind after paying a 55-297 s launch and ~14 GB.
             self.check_serves_expected_model()
-            print(f'[HIGGS3] adopting the server already on {self.base_url}',
-                  file=sys.stderr, flush=True)
+            log(f'[HIGGS3] adopting the server already on {self.base_url}', flush=True)
             return
         command = self.launch_command()
-        print(f'[HIGGS3] launching: {" ".join(command)}', file=sys.stderr, flush=True)
+        log(f'[HIGGS3] launching: {" ".join(command)}', flush=True)
         self._proc = subprocess.Popen(command, stdout=subprocess.DEVNULL,
                                       stderr=subprocess.DEVNULL)
         self._read_guest_pid()
@@ -681,8 +681,8 @@ class HiggsV3ServedBackend:
                     'its talker does not implement SupportsLoRA - so serving another '
                     'voice means RESTARTING on that checkpoint.')
         if checkpoint_dir:
-            print(f'[HIGGS3] serving checkpoint {checkpoint_dir} (asserted, not '
-                  'discovered - see CHECKPOINT_ENV)', file=sys.stderr, flush=True)
+            log(f'[HIGGS3] serving checkpoint {checkpoint_dir} (asserted, not '
+                  'discovered - see CHECKPOINT_ENV)', flush=True)
 
     def running_checkpoint(self):
         """Which merged checkpoint the server on this URL is running - as
@@ -742,9 +742,9 @@ class HiggsV3ServedBackend:
                 'nothing downstream would notice. Apply work/patch_tail_trim.py in '
                 'the higgs3 env and restart the server. (A patched server measures '
                 'about -62 dBFS here.)')
-        print(f'[HIGGS3] tail-trim probe OK: {dbfs:.1f} dBFS over the last '
+        log(f'[HIGGS3] tail-trim probe OK: {dbfs:.1f} dBFS over the last '
               f'{self.TAIL_TRIM_WINDOW_SECONDS * 1000:.0f} ms '
-              f'(gate {self.TAIL_TRIM_MAX_DBFS:.0f})', file=sys.stderr, flush=True)
+              f'(gate {self.TAIL_TRIM_MAX_DBFS:.0f})', flush=True)
         return dbfs
 
     def ping(self) -> bool:
@@ -815,8 +815,7 @@ class HiggsV3ServedBackend:
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                print('[HIGGS3] launcher did not stop on SIGTERM; killing',
-                      file=sys.stderr, flush=True)
+                log('[HIGGS3] launcher did not stop on SIGTERM; killing', flush=True)
                 proc.kill()
                 try:
                     proc.wait(timeout=30)
@@ -836,20 +835,19 @@ class HiggsV3ServedBackend:
                 return
             time.sleep(1.0)
         if self._guest_pid is None:
-            print(f'[HIGGS3] WARNING: something is still serving {self.base_url} '
+            log(f'[HIGGS3] WARNING: something is still serving {self.base_url} '
                   'and this process did not record a guest pid for it; leaving it '
-                  'alone rather than killing a server it may not own.', file=sys.stderr, flush=True)
+                  'alone rather than killing a server it may not own.', flush=True)
             return
-        print(f'[HIGGS3] server still up after the launcher exited; signalling '
-              f'guest pid {self._guest_pid}', file=sys.stderr, flush=True)
+        log(f'[HIGGS3] server still up after the launcher exited; signalling '
+              f'guest pid {self._guest_pid}', flush=True)
         self._signal_guest(self._guest_pid, 'TERM')
         deadline = time.time() + 30.0
         while time.time() < deadline:
             if not self.ping():
                 return
             time.sleep(1.0)
-        print(f'[HIGGS3] guest pid {self._guest_pid} ignored TERM; sending KILL',
-              file=sys.stderr, flush=True)
+        log(f'[HIGGS3] guest pid {self._guest_pid} ignored TERM; sending KILL', flush=True)
         self._signal_guest(self._guest_pid, 'KILL')
 
     def _signal_guest(self, pid: int, signame: str) -> None:
@@ -859,7 +857,7 @@ class HiggsV3ServedBackend:
                 os.kill(int(pid), signal.SIGKILL if signame == 'KILL'
                         else signal.SIGTERM)
             except OSError as exc:
-                print(f'[HIGGS3] could not signal {pid}: {exc}', file=sys.stderr, flush=True)
+                log(f'[HIGGS3] could not signal {pid}: {exc}', flush=True)
             return
         wsl = shutil.which('wsl.exe') or 'wsl.exe'
         try:
@@ -867,7 +865,7 @@ class HiggsV3ServedBackend:
                             str(pid)], timeout=30, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as exc:
-            print(f'[HIGGS3] could not signal guest pid {pid}: {exc}', file=sys.stderr, flush=True)
+            log(f'[HIGGS3] could not signal guest pid {pid}: {exc}', flush=True)
 
     # -- use -----------------------------------------------------------------
 

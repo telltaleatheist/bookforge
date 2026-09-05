@@ -19,6 +19,7 @@ The emitter half is pure numpy and is imported by tests with no torch present;
 import numpy as np
 
 from .errors import TokenStreamMisaligned
+from ..log import log
 
 # Orpheus/SNAC geometry. 7 tokens per frame is the model's output framing
 # (_redistribute_codes); 2048 samples per frame is snac_24khz's, and it is a
@@ -323,13 +324,13 @@ class SnacMixin:
             with torch.no_grad():
                 audio = self.snac_model.decode(codes)
         except torch.cuda.OutOfMemoryError:
-            print("Orpheus SNAC decode hit CUDA OOM; freeing the allocator cache and retrying on GPU")
+            log("Orpheus SNAC decode hit CUDA OOM; freeing the allocator cache and retrying on GPU")
             torch.cuda.empty_cache()
             try:
                 with torch.no_grad():
                     audio = self.snac_model.decode(codes)
             except torch.cuda.OutOfMemoryError:
-                print("Orpheus SNAC decode OOM persists; decoding this sentence on the CPU")
+                log("Orpheus SNAC decode OOM persists; decoding this sentence on the CPU")
                 cpu_codes = [c.cpu() for c in codes]
                 self.snac_model.to('cpu')
                 with torch.no_grad():
@@ -339,7 +340,7 @@ class SnacMixin:
                 except torch.cuda.OutOfMemoryError:
                     # Stay on CPU: future decodes follow snac_device above, so the
                     # run keeps producing audio instead of dying. Loud, not silent.
-                    print("Orpheus SNAC could not return to the GPU; leaving the decoder on CPU for the rest of this run")
+                    log("Orpheus SNAC could not return to the GPU; leaving the decoder on CPU for the rest of this run")
 
         # Convert to numpy
         audio_np = audio.squeeze().cpu().numpy()

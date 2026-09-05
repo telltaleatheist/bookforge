@@ -16,6 +16,7 @@ importable - and the EOS floor/boost math testable - with no torch, vLLM or mlx
 installed. That is what tests/test_engine_eos_floor.py relies on.
 """
 import math
+from ..log import log
 
 
 class SamplingMixin:
@@ -130,7 +131,7 @@ class SamplingMixin:
                 f'to {guard} ch/s as honest. Lower eosFloor or raise eosFloorRate.')
         if voice not in self._eos_floor_announced:
             self._eos_floor_announced.add(voice)
-            print(f'Orpheus: EOS floor for {voice}: END_OF_SPEECH forbidden below '
+            log(f'Orpheus: EOS floor for {voice}: END_OF_SPEECH forbidden below '
                   f'{ratio:g} x expected (chars / {rate:g} ch/s x '
                   f'{self.TOKENS_PER_AUDIO_SECOND} tok/s), i.e. on any read faster than '
                   f'{floor_rate:.1f} ch/s (rate guard {guard:g})')
