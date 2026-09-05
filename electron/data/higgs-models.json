@@ -51,12 +51,10 @@
   "models": [
     {
       "id": "default",
-      "label": "Higgs v3 default (zero-shot)",
-      "kind": "clips",
+      "label": "Higgs v3 built-in voice (no reference)",
+      "kind": "default",
       "engineVersion": "v3",
-      "voice": {
-        "clips": []
-      },
+      "voice": {},
       "license": "boson-higgs-tts-3-research-noncommercial",
       "commercialUse": false,
       "sampleRate": 24000,
@@ -64,13 +62,13 @@
       "backends": {
         "served": {
           "maxChars": 600,
-          "maxCharsSource": "zero-shot placeholder",
+          "maxCharsSource": "placeholder",
           "_maxCharsNote": "600 is the ZERO-SHOT figure and it is measured, not guessed: coverage by faster-whisper/difflib alignment is 1.000 at 213/440/504 chars and holds through 600, while 898 chars fails REPRODUCIBLY (coverage 0.86 and 0.78 on two seeds; tail coverage 0.314 and 0.000 — it drops the end of the paragraph). A reference clip does NOT fix it; it is a v3 model property that v2 does not have. DURATION RATIO IS NOT A COVERAGE PROXY: at temperature 0.7 the 898-char chunk produced ratio 0.99 while actually delivering coverage 0.778 with a 26% insert rate — it dropped text and padded the duration with hallucinated words, and any cap built on duration alone would have passed it. THIS NUMBER IS VALID ONLY FOR ZERO-SHOT and must never be copied onto an adapter voice; see the deathstalker entry.",
           "edgeFadeMs": {
             "in": 10,
             "out": 25
           },
-          "_edgeFadeNote": "WHO APPLIES THIS: narrator's assembler, and as of 2026-09-05 NOBODY DOES YET — Owen assigned it there (the manifest carries pads=false plus edge_fade_ms and the assembler fades each chunk edge), and until that lands a Higgs book joins at hard sample boundaries and clicks. The number is recorded here because it is MEASURED and because the catalog is where per-voice tuning lives, not because this side applies it: an earlier draft of parallel-tts-bridge.ts justified routing Higgs assembly to narrator by claiming narrator already read this field, which was false on both sides. WHY THE FADE IS NEEDED AT ALL: Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms cosine out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. It is applied at ASSEMBLY and never baked into the per-chunk wav, so the raw model output stays inspectable. This is also why the manifest gapBefore/gapAfter become LIVE for Higgs where they are inert for Orpheus.",
+          "_edgeFadeNote": "WHO APPLIES THIS: narrator's assembler, and as of narrator 4854aae4 it DOES — assemble/engine_profiles.py declares higgs-v3 as pads=false with 10/25 ms fades, assemble/edges.py applies them as RAISED-COSINE windows (zero slope at both ends, so the join has no discontinuity in the first derivative either), and _plan_unpadded realizes the manifest gapBefore/gapAfter as generated silence through one FLAC writer so the concat stays homogeneous. Prep writes the gaps.json sidecar these read, and session_v1 REFUSES a pads=false session without it. An earlier draft of parallel-tts-bridge.ts justified routing Higgs assembly to narrator by claiming narrator already read this field when neither side did; it does now, and the number is here because the catalog is where per-voice tuning lives. WHY THE FADE IS NEEDED AT ALL: Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. Applied at ASSEMBLY and never baked into the per-chunk wav, so the raw model output stays inspectable. This is also why the manifest gapBefore/gapAfter are LIVE for Higgs where they are inert for Orpheus.",
           "sampling": {
             "temperature": 1,
             "topP": 0.95,
@@ -82,7 +80,8 @@
           "_allowedControlsNote": "EMPTY ON PURPOSE, and it is a safety rule rather than a preference. An inline control token that is NOT in get_added_vocab() is split into 7-10 ordinary text pieces and READ ALOUD, which derails generation into a degenerate loop: ASR coverage 0.000, pitch std collapsing to 0.28 st, speaker cosine 0.05. A typo is not ignored — it destroys the render. v3 also has NO scene-description mechanism (<|scene_desc_start|> is a v2 chat role, absent from v3's vocabulary) and no `neutral`/`calm` emotion. At default sampling no control token beat plain text on speaker cosine, and the one candidate (<|prosody:long_pause|>) did not change measured pause density. The delivered render uses none. An empty allowlist means no engine ever has to get the validation right."
         }
       },
-      "note": "The model's own voice with no reference audio at all. MEASURED at ECAPA speaker cosine 0.0929 against the deathstalker narrator — 12% of that narrator's own 0.7656 self-consistency ceiling — i.e. it is a DIFFERENT SPEAKER, not a weak clone. It is listed because it is the one Higgs voice that needs nothing staged on disk, so it is what a machine can audition the serving stack with before any clone or fine-tune exists. Do not narrate a book in it expecting a particular narrator."
+      "note": "The model's own voice with no reference audio at all. MEASURED at ECAPA speaker cosine 0.0929 against the deathstalker narrator — 12% of that narrator's own 0.7656 self-consistency ceiling — i.e. it is a DIFFERENT SPEAKER, not a weak clone. It is listed because it is the one Higgs voice that needs nothing staged on disk, so it is what a machine can audition the serving stack with before any clone or fine-tune exists. Do not narrate a book in it expecting a particular narrator.",
+      "_kindNote": "kind default — THE SERVED MODEL'S OWN VOICE, and a distinct shape rather than an empty clips list. narrator refuses a ClipsVoice with zero clips, and it is right to: a zero-shot clone with NO reference is not a degenerate clone, it is a different thing entirely — the model's built-in speaker, which measures at 12% of the deathstalker narrator's ECAPA ceiling. An earlier draft of this catalog wrote `clips: []` for it and called that 'the served default voice', which made the two indistinguishable in the wire format and would have been refused by name."
     },
     {
       "id": "deathstalker",
@@ -90,7 +89,6 @@
       "kind": "adapter",
       "engineVersion": "v3",
       "voice": {
-        "clips": [],
         "adapterDir": "/home/telltale/higgs-models/deathstalker"
       },
       "license": "boson-higgs-tts-3-research-noncommercial",
@@ -117,7 +115,9 @@
         }
       },
       "note": "The deathstalker narrator as a v3 LoRA. WHY AN ADAPTER RATHER THAN REFERENCE CLIPS: zero-shot cloning already recovers 92% of the narrator's speaker-identity ceiling (cosine 0.7037 of 0.7656, from a 27.4 s two-clip same-book reference), so TIMBRE is largely solved without any training. What cloning does NOT recover is PHRASING — the render places 2.01 pauses per 100 chars against the narrator's 1.39 and runs pitch std 5.17 st against his 4.36, i.e. it performs the text rather than reading it, and no reference, sampling setting or control token moved either number. Only a fine-tune on his phrasing closes that gap, which is what this entry is for.",
-      "_cloneFallbackNote": "There is deliberately no clips-based deathstalker entry standing in for this one. The measured best zero-shot configuration is a 27.4 s join of cd_cd_00001100.wav + cd_cd_00001951.wav from the ds_ad4s cut with their book-exact transcripts, and it renders well — but those clips live under E:\\training and are not a deployable artifact location, so an entry pointing at them would be a voice that works on exactly one machine, which is the failure this catalog exists to prevent. To add one: join the clips to a single wav (0.35 s of silence between them), join the transcripts in the same order, stage both under /home/<user>/higgs-models/<voice>/refs/, and declare ONE clip here with its measured `seconds`."
+      "_cloneFallbackNote": "There is deliberately no clips-based deathstalker entry standing in for this one. The measured best zero-shot configuration is a 27.4 s join of cd_cd_00001100.wav + cd_cd_00001951.wav from the ds_ad4s cut with their book-exact transcripts, and it renders well — but those clips live under E:\\training and are not a deployable artifact location, so an entry pointing at them would be a voice that works on exactly one machine, which is the failure this catalog exists to prevent. To add one: join the clips to a single wav (0.35 s of silence between them), join the transcripts in the same order, stage both under /home/<user>/higgs-models/<voice>/refs/, and declare ONE clip here with its measured `seconds`.",
+      "_kindNote": "kind 'adapter' — a fine-tune, prompted TEXT-ONLY. No clips key: the voice is in the weights, not in a reference. narrator derives kind from adapterDir when it is absent, but it is stated here so nothing is inferred on a refusal path."
     }
-  ]
+  ],
+  "_pathComment": "PATHS IN THIS FILE ARE HOST-NATIVE, and they are translated for the guest at DOCUMENT-WRITE time, per spawn arm (see higgsVoicesDocument). An earlier draft stored WSL-native paths and handed them to every arm untranslated, which is correct on the Windows+WSL arm by accident and meaningless on macOS/Linux, where there is no guest to be native to. `toGuestPath` translates a Windows drive path (C:... -> /mnt/c/...) and a \\wsl$ UNC (the form tool-paths.ts already documents for orpheusModelsDir) and passes an already-guest-form path through unchanged, so a catalog written on any of the three machines resolves on all of them."
 }

@@ -75,22 +75,29 @@ import * as fs from 'fs';
  *   the condition the levers document measures as "no reference".
  */
 /**
- * Which of BookForge's TWO RULE SETS a voice falls under.
+ * THE THREE SHAPES A HIGGS VOICE COMES IN.
  *
- * NOT a wire-format distinction. In narrator's voice document a Higgs voice is
- * ALWAYS clips, and a fine-tune is an `adapterDir` riding on that same object —
- * there is no adapter kind on that side. This discriminator exists because the
- * two kinds have genuinely different REQUIREMENTS here:
+ * Not two, and the third is the one an earlier draft got wrong. It wrote
+ * `clips: []` for the served model's own voice and called that "the served
+ * default voice" — but narrator REFUSES a ClipsVoice with zero clips, and it is
+ * right to: a zero-shot clone with no reference is not a degenerate clone, it is
+ * a different thing entirely. Making them the same shape in the wire format is
+ * how "render in the narrator's voice" and "render in whoever the base model is"
+ * become indistinguishable.
  *
- *   'clips'    zero-shot. May carry the engine's measured placeholder cap (600).
- *   'adapter'  a fine-tune. `maxChars` is REQUIRED and must come from THIS
- *              model's own length sweep — see `refuseUnmeasuredAdapter`.
+ *   'default'  the served model's built-in speaker. NO clips key, no adapter.
+ *              Measures at 12 % of the deathstalker narrator's ECAPA ceiling —
+ *              a different person, which is why it is named rather than implied.
+ *   'clips'    a zero-shot clone. AT LEAST ONE clip, at most one (vllm-omni
+ *              takes exactly one reference), each with a book-exact transcript
+ *              and a declared duration.
+ *   'adapter'  a fine-tune, prompted TEXT-ONLY. `adapterDir`, no clips key, and
+ *              a MEASURED `maxChars` — see `refuseUnmeasuredAdapter`.
  *
- * and because a picker has to be able to tell a person which one they are
- * choosing. `higgsVoicesDocument()` translates to narrator's shape; that is the
- * only place the two meet.
+ * narrator derives 'adapter' from the presence of `adapterDir` when `kind` is
+ * absent; BookForge states it, so nothing is inferred on a refusal path.
  */
-export type HiggsVoiceKind = 'adapter' | 'clips';
+export type HiggsVoiceKind = 'default' | 'clips' | 'adapter';
 
 /**
  * One reference clip, in narrator's document spelling.
@@ -101,7 +108,13 @@ export type HiggsVoiceKind = 'adapter' | 'clips';
  * render time, and this catalog stores the joined result.
  */
 export interface HiggsReferenceClip {
-  /** WSL-native path to the wav. */
+  /**
+   * HOST-NATIVE path to the wav — the form the machine BookForge is running on
+   * uses. It is translated for the guest at document-write time, per spawn arm
+   * (`higgsVoicesDocument`), not stored pre-translated: a WSL-native path is
+   * right on the Windows+WSL arm by accident and meaningless on macOS/Linux,
+   * where there is no guest for it to be native to.
+   */
   path: string;
   /**
    * What is actually said in the clip, BOOK-EXACT.
@@ -125,15 +138,13 @@ export interface HiggsReferenceClip {
 }
 
 /**
- * A Higgs voice, in narrator's document spelling.
- *
- * One shape, not a union — `adapterDir` is what makes a voice a fine-tune, and
- * it sits ON the clips object. An adapter voice with an empty `clips` array is
- * the normal case: the voice is in the weights and the prompt is text-only.
+ * A Higgs voice, as the catalog stores it. Which fields are legal is decided by
+ * the entry's `kind` — see `refuseMalformedVoice`.
  */
 export interface HiggsVoiceRef {
-  clips: HiggsReferenceClip[];
-  /** A fine-tune. Its serving strategy is a WHOLE-SERVER concern — see below. */
+  /** kind 'clips' only: exactly one, with a transcript and a duration. */
+  clips?: HiggsReferenceClip[];
+  /** kind 'adapter' only. HOST-NATIVE, like a clip path. */
   adapterDir?: string;
   /** v2-only chat role. Present for shape parity; v3 has no scene mechanism. */
   scene?: string;
@@ -361,10 +372,69 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
         `Refusing to render — see electron/data/higgs-models.json for what it is waiting on.`,
     );
   }
+  refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
   refuseUnmeasuredAdapter(model);
   refuseOversizedReference(model);
   return model;
+}
+
+/**
+ * THE ENTRY'S SHAPE MUST MATCH ITS KIND — checked before anything else, because
+ * every refusal below assumes it.
+ *
+ * The failure this prevents is not a crash: it is `clips: []` on a voice that
+ * means "the model's own speaker", which narrator refuses by name, and which
+ * before that made the built-in voice and an empty clone indistinguishable in
+ * the wire format.
+ */
+function refuseMalformedVoice(model: HiggsModel): void {
+  const { clips, adapterDir } = model.voice;
+  const has = (n: number | undefined) => n !== undefined && n > 0;
+
+  if (model.kind === 'default') {
+    if (has(clips?.length) || adapterDir) {
+      throw new Error(
+        `Higgs voice "${model.id}" is kind 'default' — the served model's own speaker — but ` +
+          `also declares ${has(clips?.length) ? 'reference clips' : 'an adapterDir'}. ` +
+          `A default voice has neither; if it is meant to be a clone or a fine-tune, say so ` +
+          `in its kind.`,
+      );
+    }
+    return;
+  }
+
+  if (model.kind === 'adapter') {
+    if (!adapterDir || !adapterDir.trim()) {
+      throw new Error(
+        `Higgs voice "${model.id}" is kind 'adapter' but names no adapterDir — there is no ` +
+          `fine-tune to load.`,
+      );
+    }
+    if (has(clips?.length)) {
+      throw new Error(
+        `Higgs voice "${model.id}" is kind 'adapter' and also declares reference clips. A ` +
+          `fine-tune is prompted TEXT-ONLY: the voice is in the weights. Sending a reference ` +
+          `alongside it conditions the render on two different voices.`,
+      );
+    }
+    return;
+  }
+
+  // kind 'clips'
+  if (!has(clips?.length)) {
+    throw new Error(
+      `Higgs voice "${model.id}" is kind 'clips' but declares none. A zero-shot clone with no ` +
+        `reference is not a clone — it is the model's own built-in speaker, which is kind ` +
+        `'default' and a different voice entirely (12 % of the narrator's ECAPA ceiling).`,
+    );
+  }
+  if (adapterDir) {
+    throw new Error(
+      `Higgs voice "${model.id}" is kind 'clips' but also names an adapterDir. Pick one: a ` +
+        `reference clone or a fine-tune.`,
+    );
+  }
 }
 
 /**
@@ -383,7 +453,8 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
  * spent five minutes coming up.
  */
 function refuseUntranscribedClips(model: HiggsModel): void {
-  const bad = model.voice.clips.filter((c) => !c.transcript || !c.transcript.trim());
+  const clips = model.voice.clips ?? [];
+  const bad = clips.filter((c) => !c.transcript || !c.transcript.trim());
   if (bad.length > 0) {
     throw new Error(
       `Higgs voice "${model.id}" has ${bad.length} reference clip(s) with no transcript ` +
@@ -391,9 +462,7 @@ function refuseUntranscribedClips(model: HiggsModel): void {
         `A reference clip must carry its BOOK-EXACT text — refusing to send it untranscribed.`,
     );
   }
-  const unmeasured = model.voice.clips.filter(
-    (c) => typeof c.seconds !== 'number' || !(c.seconds > 0),
-  );
+  const unmeasured = clips.filter((c) => typeof c.seconds !== 'number' || !(c.seconds > 0));
   if (unmeasured.length > 0) {
     throw new Error(
       `Higgs voice "${model.id}" has ${unmeasured.length} reference clip(s) with no declared ` +
@@ -418,7 +487,7 @@ function refuseUntranscribedClips(model: HiggsModel): void {
  * long"), and the declared `seconds` are what make it checkable before launch.
  */
 function refuseOversizedReference(model: HiggsModel): void {
-  const clips = model.voice.clips;
+  const clips = model.voice.clips ?? [];
   if (clips.length > 1) {
     throw new Error(
       `Higgs voice "${model.id}" declares ${clips.length} reference clips. vllm-omni accepts ` +
@@ -529,35 +598,43 @@ export function higgsVoiceCapsForModel(model: HiggsModel): HiggsServedCaps {
  * with an error naming a file the user did not ask for. A document of one cannot
  * do that.
  *
- * A voice with no clips (the served default, or a text-only fine-tune) is a
- * legitimate entry with an empty array; narrator's loader requires the `clips`
- * KEY, not a non-empty list.
+ * THE SHAPE FOLLOWS THE KIND, and only 'clips' carries a `clips` key. Writing
+ * `clips: []` for the model's own voice — which an earlier draft did — is a
+ * shape narrator refuses by name, and rightly: it makes the built-in speaker and
+ * an empty clone the same object.
+ *
+ * `translatePath` turns a HOST-NATIVE catalog path into one the SPAWN's
+ * filesystem can open. It is a parameter rather than a call to `toGuestPath`
+ * here because this module has no business knowing which arm the caller is
+ * about to spawn on: identity on macOS/Linux, guest translation under WSL.
  */
-export function higgsVoicesDocument(model: HiggsModel): Record<string, unknown> {
-  const entry: Record<string, unknown> = {
-    // `kind` IS part of the document. narrator's `load_voices` reads it and,
-    // when it is absent, DERIVES it as 'adapter' from the presence of
-    // `adapterDir` — then refuses an adapter that carries no `maxChars`. An
-    // earlier draft omitted `kind` on the theory that it was BookForge-only;
-    // stating it removes the derivation from the middle of a refusal path.
-    kind: model.kind,
-    clips: model.voice.clips.map((c) => ({
-      path: c.path,
+export function higgsVoicesDocument(
+  model: HiggsModel,
+  translatePath: (p: string) => string = (p) => p,
+): Record<string, unknown> {
+  refuseMalformedVoice(model);
+
+  const entry: Record<string, unknown> = { kind: model.kind };
+
+  if (model.kind === 'clips') {
+    entry.clips = (model.voice.clips ?? []).map((c) => ({
+      path: translatePath(c.path),
       transcript: c.transcript,
       seconds: c.seconds,
-    })),
-  };
-  if (model.voice.adapterDir) entry.adapterDir = model.voice.adapterDir;
+    }));
+  }
+  if (model.kind === 'adapter' && model.voice.adapterDir) {
+    entry.adapterDir = translatePath(model.voice.adapterDir);
+  }
   if (model.voice.scene) entry.scene = model.voice.scene;
+
   const caps = higgsVoiceCapsForModel(model);
   // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
-  // near-miss. `refuseUnmeasuredAdapter` guards a number that, until now, never
-  // reached the engine: narrator's `load_voices` raises for an adapter whose
-  // entry has no `maxChars`, with its own message about a fine-tune's safe chunk
-  // length being a measured property of THAT model. So the day deathstalker is
-  // promoted with its length sweep — the exact event the `_pendingNote` waits
-  // for — narrator would have refused the render while the measured number sat
-  // in a JSON file nobody read.
+  // near-miss. narrator's `load_voices` raises for an adapter entry with no
+  // `maxChars`, so `refuseUnmeasuredAdapter` was guarding a number that never
+  // reached the engine — and the day deathstalker is promoted with its length
+  // sweep the render would have been refused while the measurement sat in a JSON
+  // file nobody read.
   //
   // This is per-voice DOCUMENT tuning, not an env `caps` payload, so it does not
   // trip `higgs_v3_config_from_worker_kwargs`'s refusal — that one is about
@@ -581,11 +658,19 @@ export function higgsVoicesDocument(model: HiggsModel): Record<string, unknown> 
  * Written per job, under the OS temp dir, named for the voice so a post-mortem
  * can tell which render it belonged to.
  */
-export function writeHiggsVoicesDocument(model: HiggsModel, jobId: string): string {
+export function writeHiggsVoicesDocument(
+  model: HiggsModel,
+  jobId: string,
+  translatePath: (p: string) => string = (p) => p,
+): string {
   const dir = path.join(os.tmpdir(), 'bookforge-higgs-voices');
   fs.mkdirSync(dir, { recursive: true });
   const file = path.join(dir, `${jobId}-${model.id}.json`);
-  fs.writeFileSync(file, JSON.stringify(higgsVoicesDocument(model), null, 2), 'utf-8');
+  fs.writeFileSync(
+    file,
+    JSON.stringify(higgsVoicesDocument(model, translatePath), null, 2),
+    'utf-8',
+  );
   return file;
 }
 
@@ -620,6 +705,7 @@ export function higgsSpawnEnv(
 ): Record<string, string> {
   // Validate before we hand anything over, so a bad voice fails here rather than
   // five minutes into a server start.
+  refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
   refuseOversizedReference(model);
   refuseUnmeasuredAdapter(model);

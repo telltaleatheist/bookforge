@@ -23,9 +23,9 @@ interface HiggsCatalogVoice {
   id: string;
   label: string;
   engineVersion: string;
-  kind: 'adapter' | 'clips';
+  kind: 'default' | 'clips' | 'adapter';
   voice: {
-    clips: Array<{ path: string; transcript: string; seconds: number }>;
+    clips?: Array<{ path: string; transcript: string; seconds: number }>;
     adapterDir?: string;
   };
   license: string;
@@ -302,9 +302,11 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
 
   kindLabel(v: HiggsCatalogVoice): string {
     if (v.kind === 'adapter') return 'fine-tune';
-    return v.voice.clips.length === 0
-      ? 'zero-shot (served default voice)'
-      : `zero-shot clone · ${v.voice.clips[0].seconds.toFixed(1)} s reference`;
+    if (v.kind === 'default') return "the model's own voice (no reference)";
+    const secs = v.voice.clips?.[0]?.seconds;
+    return secs === undefined
+      ? 'zero-shot clone'
+      : `zero-shot clone · ${secs.toFixed(1)} s reference`;
   }
 
   /**

@@ -820,11 +820,14 @@ export interface HiggsModelDto {
   id: string;
   label: string;
   engineVersion: string;
-  /** BookForge's rule set for this voice — see electron/higgs-models.ts. */
-  kind: 'adapter' | 'clips';
-  /** narrator's document shape: always clips, with adapterDir for a fine-tune. */
+  /**
+   * THREE shapes, not two — see electron/higgs-models.ts. 'default' is the served
+   * model's own speaker and carries NEITHER clips nor an adapter; it is not an
+   * empty clone, which narrator refuses by name.
+   */
+  kind: 'default' | 'clips' | 'adapter';
   voice: {
-    clips: Array<{ path: string; transcript: string; seconds: number }>;
+    clips?: Array<{ path: string; transcript: string; seconds: number }>;
     adapterDir?: string;
     scene?: string;
   };

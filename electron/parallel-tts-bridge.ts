@@ -3843,7 +3843,14 @@ export async function regenerateSentenceIndices(
     const higgsRetakePlan = isHiggsJob(settings)
       ? (() => {
           const model = higgsPreflight(settings.fineTuned);
-          const hArgs = args.slice(args.indexOf('--session'));
+          const sessionAt = args.indexOf('--session');
+          if (sessionAt < 0) {
+            throw new Error(
+              'Higgs retake argv has no --session anchor — refusing to hand narrator a ' +
+                'truncated command line.',
+            );
+          }
+          const hArgs = args.slice(sessionAt);
           const at = hArgs.indexOf('--tts_engine');
           if (at < 0) {
             throw new Error('Higgs retake argv is missing --tts_engine — refusing to spawn.');
@@ -4184,7 +4191,14 @@ function startWorker(
         // unknown or not-yet-installed voice, an untranscribed reference clip, or
         // a narrator build with no Higgs backend yet.
         const higgsModel = higgsPreflight(settings.fineTuned);
-        const higgsArgs = args.slice(args.indexOf('--session'));
+        const sessionAt = args.indexOf('--session');
+        if (sessionAt < 0) {
+          throw new Error(
+            'Higgs worker argv has no --session anchor — refusing to hand narrator a ' +
+              'truncated command line.',
+          );
+        }
+        const higgsArgs = args.slice(sessionAt);
         const engineFlag = higgsArgs.indexOf('--tts_engine');
         if (engineFlag < 0) {
           throw new Error(
@@ -5469,14 +5483,15 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // cut-over, and a Higgs session is a narrator session — prep wrote it, the
     // worker filled it, and its manifest is narrator's.
     //
-    // WHAT THIS COMMENT USED TO CLAIM, AND WHY IT WAS WRONG. It said Higgs had to
-    // come here because narrator's assembler reads `pads`/`edge_fade_ms` and
-    // applies the 10/25 ms chunk-edge fades. It does not — `assemble/` has no
-    // fade at all, and neither does BookForge. Owen has since assigned the fade
-    // to narrator's assembler (the manifest carries `pads=False` +
-    // `edge_fade_ms` and it applies them per chunk edge); until that lands, a
-    // Higgs book joins at hard sample boundaries and clicks. Recorded as an owed
-    // item in docs/HIGGS_ENGINE.md rather than asserted as a capability here.
+    // AND IT DOES READ THE ENGINE PROFILE, as of narrator 4854aae4. An earlier
+    // version of this comment asserted that before it was true — `assemble/` had
+    // no fade at all at the time, and neither did BookForge. It now has
+    // `engine_profiles.py` (higgs-v3: pads=false, 10/25 ms raised-cosine fades),
+    // `edges.py`, and `_plan_unpadded` realizing the manifest's
+    // gapBefore/gapAfter as generated silence through one FLAC writer. Prep
+    // writes the `gaps.json` those read, and `session_v1` refuses a pads=false
+    // session without it — so the routing and the capability now line up, rather
+    // than the comment describing the capability we wanted.
     //
     // NO CAPS ARE PASSED, and `--tts_engine` is OMITTED. `dispatch` routes
     // `--assemble_only` before any engine resolution (`compat/app.py:517-528`)
@@ -5486,12 +5501,27 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     // and would refuse by name the moment assembly is ever gated. Omitting it is
     // the one option that is correct both now and then.
     const higgsAsmPlan = isHiggsJob(settings)
-      ? buildHiggsSpawn('assembly', {
-          model: higgsPreflight(settings.fineTuned),
-          args: stripFlagWithValue(args.slice(args.indexOf('--headless')), '--tts_engine'),
-          cwd: getDefaultE2aPath(),
-          jobId: session.jobId,
-        })
+      ? (() => {
+          // Slice from `--headless`, which is where the e2a-shaped flags begin
+          // (everything before it is the interpreter prefix). Throwing when it is
+          // absent rather than letting `indexOf` return -1 and `slice(-1)` hand
+          // narrator a one-element argv: the worker and retake routes already
+          // refuse their own missing anchor by name, and this one was the odd
+          // door out.
+          const at = args.indexOf('--headless');
+          if (at < 0) {
+            throw new Error(
+              'Higgs assembly argv has no --headless anchor, so the e2a flag list cannot be ' +
+                'located — refusing to hand narrator a truncated command line.',
+            );
+          }
+          return buildHiggsSpawn('assembly', {
+            model: higgsPreflight(settings.fineTuned),
+            args: stripFlagWithValue(args.slice(at), '--tts_engine'),
+            cwd: getDefaultE2aPath(),
+            jobId: session.jobId,
+          });
+        })()
       : null;
     if (higgsAsmPlan) {
       console.log('[PARALLEL-TTS] Assembly → narrator (Higgs):', higgsAsmPlan.describe());

@@ -490,8 +490,11 @@ which `compat/flags.py` lists under `ENGINE_NEAR_MISSES` ("names no registry id"
 and would refuse by name the moment assembly is ever gated. Omitting it is the
 one option that is correct both now and then.
 
-Assembly passes **no caps**, and the comment no longer claims narrator's
-assembler applies the edge fade — see §3 and §8.
+Assembly passes **no caps**. It routes to narrator because a Higgs session **is**
+a narrator session — and, since narrator `4854aae4`, because narrator's assembler
+is the thing that applies the 10/25 ms raised-cosine edge fades and realizes the
+live `gapBefore`/`gapAfter` for a `pads=false` engine. Prep writes the `gaps.json`
+those read; `session_v1` refuses a `pads=false` session without it.
 
 ### Refusals, and where each one fires
 
@@ -568,12 +571,21 @@ What changed here:
 | several clips allowed | **exactly one**; multi = a pre-joined wav, joined at staging |
 | cold start ~55 s | **297 s**, against a 300 s `READY_TIMEOUT_SECONDS` |
 
-**Closed since, by the adversarial review (2026-09-05):**
+**Closed since, by the two review rounds (2026-09-05):**
 
 - `paragraph_packer.py` landed, so **Higgs prep moved to narrator** (§5) and the
   e2a scaffolding is deleted.
 - `python/**` is now in electron-builder's `files` (minus `__pycache__`, `*.pyc`,
   `narrator/tests/**` and `**/golden/**`) and in `asarUnpack`.
+- **THE EDGE FADE IS APPLIED** (narrator `4854aae4`): `assemble/engine_profiles.py`
+  (orpheus pads/no fade; higgs-v3 no pads, 10/25 ms **raised-cosine** fades),
+  `assemble/edges.py`, a manifest `engine` block (additive — absent means
+  Orpheus), and `_plan_unpadded` realizing `gapBefore`/`gapAfter` as generated
+  silence through one FLAC writer so the concat stays homogeneous. Prep writes a
+  `gaps.json` sidecar from the SAME classifier Orpheus bakes into its FLACs, and
+  `session_v1` refuses a `pads=False` session without it (or a `pads=True`
+  session with it). Orpheus golden parity unchanged. **Higgs books no longer
+  click on their joins**, and §3's note is corrected accordingly.
 
 **MERGE ORDER (Owen's ruling): `feat/narrator` lands first, or with this.** The
 package is **not** vendored or copied here; it is resolved at `<repo>/python`,
@@ -582,20 +594,12 @@ when `python/narrator/__init__.py` is absent.
 
 Still open on narrator's side:
 
-1. **The edge fade.** Owen assigned it to **narrator's assembler**: the manifest
-   / engine metadata carries `pads=false` + `edge_fade_ms` and the assembler
-   applies the fade per chunk edge. Nothing applies it today, on either side, so
-   **every Higgs book currently joins at hard sample boundaries and clicks** —
-   the precise defect the −29.8→−46.2 dB measurement exists for. Note the tail
-   trim is **server-side** (`patch_tail_trim.py`): the client must **not** trim
-   again; what is left is the sample-boundary discontinuity, which is the fade's
-   job.
-2. **Where the launch script should live.** narrator invokes the *operator's*
+1. **Where the launch script should live.** narrator invokes the *operator's*
    script rather than writing its own, and BookForge's installer deploys its copy
    to `<env>/bin/serve_higgs_v3.sh` — which is what `NARRATOR_HIGGS3_SERVE_SCRIPT`
    points at. If narrator would rather be handed the campaign path, that is a
    one-line change here.
-3. **Coverage at the new chunk sizes.** Every v3 measurement was taken at 600-char
+2. **Coverage at the new chunk sizes.** Every v3 measurement was taken at 600-char
    sentence groups; prep now packs by paragraph. Re-measure by ASR alignment
    (never by duration ratio) — training side, noted in §5.
 

@@ -32,6 +32,7 @@ const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
 const os = require('os');
+const { spawnSync } = require('child_process');
 const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
@@ -183,18 +184,46 @@ check('the shipped catalog loads and has both seeded voices', () => {
   assert.ok(ids.includes('deathstalker'), 'the deathstalker voice is missing');
 });
 
-check('the default voice is a clips voice with NO clips (the served default)', () => {
+check('the default voice is kind DEFAULT — not an empty clone', () => {
+  // The shape an earlier draft got wrong. It wrote `clips: []` and called that
+  // "the served default voice"; narrator REFUSES a ClipsVoice with zero clips,
+  // and rightly — a zero-shot clone with no reference is not a degenerate clone,
+  // it is the model's own built-in speaker, a different person (12 % of the
+  // narrator's ECAPA ceiling). Same shape in the wire format made the two
+  // indistinguishable.
   const m = higgs.listHiggsModels().find((v) => v.id === 'default');
-  assert.strictEqual(m.kind, 'clips');
-  assert.strictEqual(m.voice.clips.length, 0);
+  assert.strictEqual(m.kind, 'default');
+  assert.ok(!('clips' in m.voice), "kind 'default' must not carry a clips key");
   assert.ok(!m.voice.adapterDir);
 });
 
-check('deathstalker is an adapter voice and is marked pending', () => {
+check('deathstalker is kind ADAPTER, text-only, and marked pending', () => {
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.kind, 'adapter');
   assert.ok(m.voice.adapterDir, 'the adapter dir is missing');
+  assert.ok(!('clips' in m.voice), 'a fine-tune is prompted TEXT-ONLY — no clips key');
   assert.ok(m._pendingNote, 'the placeholder adapter path is not marked pending');
+});
+
+check('the shape must match the kind — all six malformed pairings refused', () => {
+  const cases = [
+    ['default with clips', { kind: 'default',
+      voice: { clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }] } }],
+    ['default with adapterDir', { kind: 'default', voice: { adapterDir: '/x' } }],
+    ['adapter with no adapterDir', { kind: 'adapter', voice: {},
+      backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } } }],
+    ['adapter with clips', { kind: 'adapter',
+      voice: { adapterDir: '/x', clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }] },
+      backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } } }],
+    ['clips with none', { kind: 'clips', voice: { clips: [] } }],
+    ['clips with an adapterDir', { kind: 'clips',
+      voice: { clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }], adapterDir: '/x' } }],
+  ];
+  for (const [why, overrides] of cases) {
+    const m = probeVoice(overrides);
+    assert.throws(() => higgs.higgsVoicesDocument(m), /Higgs voice "probe"/,
+      why + ' was accepted');
+  }
 });
 
 check('the seeded adapter carries NO measured cap — that is the point of it', () => {
@@ -248,10 +277,16 @@ check('the served default voice resolves', () => {
 console.log('voice refusals');
 
 const DOC_PATH = '/mnt/c/tmp/higgs-probe-voices.json';
+/**
+ * A synthesised catalog entry. Defaults to kind 'default' — the one shape that
+ * needs neither clips nor an adapter — so a test that is not about shape does
+ * not have to state one, and so the default itself is never accidentally the
+ * malformed `clips: []` this file used to build.
+ */
 function probeVoice(overrides) {
   return Object.assign({
-    id: 'probe', label: 'probe', kind: 'clips', engineVersion: 'v3',
-    voice: { clips: [] },
+    id: 'probe', label: 'probe', kind: 'default', engineVersion: 'v3',
+    voice: {},
     license: 'x', commercialUse: false, sampleRate: 24000, addedAt: 'x',
     backends: { served: { referenceSecondsCap: 30, allowedControls: [] } },
   }, overrides);
@@ -266,6 +301,7 @@ check('a blank, whitespace or missing transcript is REFUSED, naming the file', (
   // at the boundary that emits the value, which is what this asserts.
   for (const bad of ['', '   ', undefined]) {
     const m = probeVoice({
+      kind: 'clips',
       voice: { clips: [{ path: '/tmp/cd_00001100.wav', transcript: bad, seconds: 14 }] },
     });
     let threw = null;
@@ -281,6 +317,7 @@ check('a clip with no declared `seconds` is REFUSED', () => {
   // fail only after the server had spent ~5 minutes coming up.
   for (const bad of [undefined, null, 0, -1, 'x']) {
     const m = probeVoice({
+      kind: 'clips',
       voice: { clips: [{ path: '/tmp/a.wav', transcript: 'hello there', seconds: bad }] },
     });
     assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /duration/i,
@@ -290,6 +327,7 @@ check('a clip with no declared `seconds` is REFUSED', () => {
 
 check('TWO reference clips are REFUSED — vllm-omni takes exactly one', () => {
   const m = probeVoice({
+    kind: 'clips',
     voice: { clips: [
       { path: '/tmp/a.wav', transcript: 'one', seconds: 10 },
       { path: '/tmp/b.wav', transcript: 'two', seconds: 10 },
@@ -304,6 +342,7 @@ check('TWO reference clips are REFUSED — vllm-omni takes exactly one', () => {
 
 check('a reference over the 30 s server cap is REFUSED before launch', () => {
   const m = probeVoice({
+    kind: 'clips',
     voice: { clips: [{ path: '/tmp/a.wav', transcript: 'long one', seconds: 42 }] },
   });
   assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /cap/);
@@ -311,6 +350,7 @@ check('a reference over the 30 s server cap is REFUSED before launch', () => {
 
 check('a 27 s single joined reference PASSES', () => {
   const m = probeVoice({
+    kind: 'clips',
     voice: { clips: [{ path: '/tmp/joined.wav', transcript: 'a joined pair', seconds: 27.4 }] },
   });
   const e = higgs.higgsSpawnEnv(m, envOpts);
@@ -320,7 +360,7 @@ check('a 27 s single joined reference PASSES', () => {
 check('an adapter with NO measured maxChars is REFUSED, and the message says why', () => {
   const m = probeVoice({
     kind: 'adapter',
-    voice: { clips: [], adapterDir: '/home/x/higgs-models/probe' },
+    voice: { adapterDir: '/home/x/higgs-models/probe' },
     backends: { served: { maxChars: null, maxCharsSource: null } },
   });
   let threw = null;
@@ -334,7 +374,7 @@ check('an adapter inheriting the zero-shot 600 with no source is still REFUSED',
   // The number alone is not evidence; maxCharsSource is what makes it one.
   const m = probeVoice({
     kind: 'adapter',
-    voice: { clips: [], adapterDir: '/home/x/higgs-models/probe' },
+    voice: { adapterDir: '/home/x/higgs-models/probe' },
     backends: { served: { maxChars: 600 } },
   });
   assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /MEASURED maxChars/);
@@ -343,8 +383,8 @@ check('an adapter inheriting the zero-shot 600 with no source is still REFUSED',
 check('an adapter WITH a measured cap and its source passes', () => {
   const m = probeVoice({
     kind: 'adapter',
-    voice: { clips: [], adapterDir: '/home/x/higgs-models/probe' },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep 2026-09-05, ASR-verified' } },
+    voice: { adapterDir: '/home/x/higgs-models/probe' },
+    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   assert.ok(higgs.higgsSpawnEnv(m, envOpts));
 });
@@ -359,7 +399,7 @@ const defaultVoice = higgs.resolveHiggsModel('default');
 check('the measured caps come through, with their provenance', () => {
   const c = higgs.higgsVoiceCapsForModel(defaultVoice);
   assert.strictEqual(c.maxChars, 600, 'the measured zero-shot cap moved');
-  assert.strictEqual(c.maxCharsSource, 'zero-shot placeholder');
+  assert.strictEqual(c.maxCharsSource, 'placeholder');
   assert.deepStrictEqual(c.edgeFadeMs, { in: 10, out: 25 });
   assert.deepStrictEqual(c.sampling, { temperature: 1.0, topP: 0.95, topK: 50 });
   assert.strictEqual(c.referenceSecondsCap, 30);
@@ -377,14 +417,14 @@ check('the voice document is narrator-shaped and holds exactly ONE voice', () =>
   // reference fail every other voice's render with an unrelated filename.
   const doc = higgs.higgsVoicesDocument(defaultVoice);
   assert.deepStrictEqual(Object.keys(doc), ['default']);
-  assert.deepStrictEqual(doc.default.clips, []);
+  assert.strictEqual(doc.default.kind, 'default');
   assert.strictEqual(doc.default.maxReferenceSeconds, 30);
   assert.deepStrictEqual(doc.default.allowedControls, []);
 });
 
 check('a clone voice document carries path, transcript AND seconds', () => {
   const m = probeVoice({
-    id: 'ds',
+    id: 'ds', kind: 'clips',
     voice: { clips: [{ path: '/a/joined.wav', transcript: 'He said it was here.', seconds: 27.4 }] },
   });
   const doc = higgs.higgsVoicesDocument(m);
@@ -402,25 +442,27 @@ check('an adapter document carries adapterDir AND its measured cap AND kind', ()
   // (absent + adapterDir => 'adapter'), so the refusal path has nothing to infer.
   const m = probeVoice({
     id: 'ft', kind: 'adapter',
-    voice: { clips: [], adapterDir: '/home/x/higgs-models/ft' },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep 2026-09-05' } },
+    voice: { adapterDir: '/home/x/higgs-models/ft' },
+    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   const doc = higgs.higgsVoicesDocument(m);
   assert.strictEqual(doc.ft.adapterDir, '/home/x/higgs-models/ft');
-  assert.deepStrictEqual(doc.ft.clips, []);
+  assert.ok(!('clips' in doc.ft), 'a fine-tune is TEXT-ONLY — no clips key');
   assert.strictEqual(doc.ft.kind, 'adapter');
   assert.strictEqual(doc.ft.maxChars, 1350);
-  assert.strictEqual(doc.ft.maxCharsSource, 'length-sweep 2026-09-05');
+  assert.strictEqual(doc.ft.maxCharsSource, 'length-sweep');
 });
 
-check('a zero-shot document carries its cap too, so nothing is inferred', () => {
+check('the default document carries its cap too, so nothing is inferred', () => {
   // narrator would otherwise fall back to HiggsV3Defaults.MAX_CHARS — also 600,
   // and labelled a placeholder on that side. The two agreeing today is a
   // coincidence, not a contract.
   const doc = higgs.higgsVoicesDocument(defaultVoice);
-  assert.strictEqual(doc.default.kind, 'clips');
+  assert.strictEqual(doc.default.kind, 'default');
+  assert.ok(!('clips' in doc.default), "kind 'default' must not emit a clips key");
   assert.strictEqual(doc.default.maxChars, 600);
-  assert.strictEqual(doc.default.maxCharsSource, 'zero-shot placeholder');
+  // narrator VALIDATES this vocabulary: 'catalog' | 'placeholder' | 'length-sweep'.
+  assert.strictEqual(doc.default.maxCharsSource, 'placeholder');
 });
 
 const env = higgs.higgsSpawnEnv(defaultVoice, {
@@ -468,7 +510,7 @@ check('NO adapter strategy is emitted while none has been established', () => {
   // and the wrong guess is a server serving the BASE voice for a whole book.
   const m = probeVoice({
     kind: 'adapter',
-    voice: { clips: [], adapterDir: '/home/x/ft' },
+    voice: { adapterDir: '/home/x/ft' },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   assert.ok(!('NARRATOR_HIGGS3_ADAPTER_STRATEGY' in higgs.higgsSpawnEnv(m, envOpts)));
@@ -477,7 +519,7 @@ check('NO adapter strategy is emitted while none has been established', () => {
 check('a declared adapter strategy IS emitted', () => {
   const m = probeVoice({
     kind: 'adapter', adapterStrategy: 'merged-dir',
-    voice: { clips: [], adapterDir: '/home/x/ft' },
+    voice: { adapterDir: '/home/x/ft' },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   assert.strictEqual(
@@ -766,6 +808,95 @@ process.on('exit', () => {
     assert.ok(!/--tts_engine/.test(asmLine), 'assembly still sends --tts_engine');
   });
 
+  check('the WSL arm translates catalog paths INSIDE the voice document', () => {
+    // NEW-3: the document used to be written with raw catalog paths, so a
+    // host-native path reached the guest untranslated. It is translated at
+    // write time, per arm — not stored pre-translated, which is right on the
+    // WSL arm by accident and meaningless on macOS/Linux.
+    const m = probeVoice({
+      id: 'winclone', kind: 'clips',
+      voice: { clips: [{
+        path: 'C:' + B + 'refs' + B + 'joined.wav', transcript: 'a joined pair', seconds: 27.4,
+      }] },
+      backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
+    });
+    const p2 = spawnMod.buildHiggsSpawn('worker', {
+      model: m, args: workerArgs, cwd: REPO, jobId: 'jobpaths',
+    });
+    const docPath = (p2.viaWsl ? p2.args[p2.args.length - 1] : p2.args.join(' '))
+      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
+    assert.ok(docPath, 'no voices document was named');
+    // Read the document off the WINDOWS side — it is written there and only
+    // NAMED in guest form.
+    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
+    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
+    assert.strictEqual(doc.winclone.clips[0].path, '/mnt/c/refs/joined.wav',
+      'the clip path was not translated for the guest');
+  });
+
+  check('a \\\\wsl$ UNC catalog path becomes a guest path, not a UNC string', () => {
+    // The form tool-paths.ts documents for orpheusModelsDir on a Windows+WSL
+    // machine: the models dir lives on ext4 and is NAMED from Windows as a UNC.
+    // Handling only drive letters would translate a session dir correctly and
+    // leave this one unusable.
+    const m = probeVoice({
+      id: 'uncft', kind: 'adapter',
+      voice: { adapterDir: B+B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'higgs-models' + B + 'ds' },
+      backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
+    });
+    const p3 = spawnMod.buildHiggsSpawn('worker', {
+      model: m, args: workerArgs, cwd: REPO, jobId: 'jobunc',
+    });
+    const docPath = (p3.viaWsl ? p3.args[p3.args.length - 1] : p3.args.join(' '))
+      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
+    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
+    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
+    assert.strictEqual(doc.uncft.adapterDir, '/home/t/higgs-models/ds',
+      'the UNC adapter path was not translated');
+  });
+
+  check('an already-guest-form path passes through unchanged', () => {
+    // What makes the translation safe to apply to argv, to env values and to
+    // catalog paths without tracking which were already translated.
+    const m = probeVoice({
+      id: 'guestft', kind: 'adapter',
+      voice: { adapterDir: '/home/t/higgs-models/ds' },
+      backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
+    });
+    const p4 = spawnMod.buildHiggsSpawn('worker', {
+      model: m, args: workerArgs, cwd: REPO, jobId: 'jobguest',
+    });
+    const docPath = (p4.viaWsl ? p4.args[p4.args.length - 1] : p4.args.join(' '))
+      .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
+    const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
+    const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
+    assert.strictEqual(doc.guestft.adapterDir, '/home/t/higgs-models/ds');
+  });
+
+  check('the NATIVE arm writes catalog paths through UNCHANGED', () => {
+    // macOS/Linux: there is no guest, so translation would corrupt a perfectly
+    // good host path. Driven by turning the WSL toggle off, which is the same
+    // seam the arm-forcing above uses.
+    toolPaths.shouldUseWsl2ForHiggs = () => false;
+    const origPlat = Object.getOwnPropertyDescriptor(process, 'platform');
+    Object.defineProperty(process, 'platform', { value: 'darwin', configurable: true });
+    try {
+      const m = probeVoice({
+        id: 'macclone', kind: 'clips',
+        voice: { clips: [{ path: '/Users/t/refs/joined.wav', transcript: 'a pair', seconds: 27.4 }] },
+        backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
+      });
+      const written = higgs.writeHiggsVoicesDocument(m, 'jobmac');
+      const doc = JSON.parse(fs.readFileSync(written, 'utf-8'));
+      assert.strictEqual(doc.macclone.clips[0].path, '/Users/t/refs/joined.wav',
+        'a native-arm path was translated when it should not have been');
+      fs.rmSync(written, { force: true });
+    } finally {
+      Object.defineProperty(process, 'platform', origPlat);
+      toolPaths.shouldUseWsl2ForHiggs = () => true;
+    }
+  });
+
   check('assembly translates its paths too', () => {
     const leaked = asmLine.match(/[A-Za-z]:[\\\\/][^' ]*/g);
     assert.strictEqual(leaked, null, 'untranslated Windows path(s) in assembly: ' + leaked);
@@ -891,6 +1022,131 @@ check('a pending voice is offered DISABLED, with its note as the reason', () => 
   const ok = higgs.higgsNarrationVoices().find((v) => v.value === 'default');
   assert.ok(!ok.unavailable, 'a renderable voice was marked unavailable');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 10. The document, through NARRATOR'S OWN load_voices
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Every other assertion in this file describes narrator's contract from
+// BookForge's side. This one RUNS it. The `clips: []` defect is exactly the kind
+// the descriptions cannot catch: both sides were self-consistent, both had a
+// comment explaining the shape, and the shapes disagreed.
+//
+// Read-only: narrator's checkout is imported, never written, and the documents
+// are written to a scratch dir this test owns.
+console.log('cross-check against narrator load_voices');
+
+const NARRATOR_PY = path.join(
+  REPO, '..', 'narrator', 'python',
+);
+const CONFIG_PY = path.join(NARRATOR_PY, 'narrator', 'engine', 'higgs', 'config.py');
+
+function crossCheckSkipReason() {
+  if (!fs.existsSync(CONFIG_PY)) {
+    return 'narrator is not checked out beside this worktree (' + CONFIG_PY + ')';
+  }
+  // Self-clearing gate: narrator's three-shape support is landing alongside this.
+  // Until its `kind` validation knows 'default', running the new document through
+  // it would fail on a contract that has not shipped rather than on a real
+  // disagreement. The moment it lands, this check starts running for real.
+  const src = fs.readFileSync(CONFIG_PY, 'utf-8');
+  if (!/['"]default['"]/.test(src.slice(src.indexOf('def load_voices')))) {
+    return "narrator's load_voices does not know kind 'default' yet (three-shape support landing)";
+  }
+  const py = process.platform === 'win32' ? 'python' : 'python3';
+  const probe = spawnSync(py, ['-c', 'import sys; print(sys.version_info[0])'], { encoding: 'utf-8' });
+  if (probe.status !== 0) return 'no python on PATH to run narrator with';
+  return null;
+}
+
+const skipWhy = crossCheckSkipReason();
+if (skipWhy) {
+  console.log('  --  SKIPPED: ' + skipWhy);
+} else {
+  const CROSS = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-higgs-cross-'));
+  process.on('exit', () => { try { fs.rmSync(CROSS, { recursive: true, force: true }); } catch {} });
+
+  // A real wav path is needed because load_voices does os.path.isfile on every
+  // clip. An empty file is enough — it never opens it.
+  const CLIP = path.join(CROSS, 'ref.wav');
+  fs.writeFileSync(CLIP, '');
+
+  const runLoad = (doc) => {
+    const file = path.join(CROSS, 'voices.json');
+    fs.writeFileSync(file, JSON.stringify(doc, null, 2));
+    const code = [
+      'import json, sys',
+      'sys.path.insert(0, ' + JSON.stringify(NARRATOR_PY) + ')',
+      'from narrator.engine.higgs.config import load_voices',
+      'v = load_voices(' + JSON.stringify(file) + ')',
+      'name = next(iter(v))',
+      'one = v[name]',
+      // getattr, because the three shapes are three CLASSES on narrator's side —
+      // DefaultVoice has no `clips` at all, which is the whole point of it being
+      // a separate union member rather than an empty ClipsVoice. Reporting the
+      // class name is what lets the assertions below check the SHAPE and not
+      // just the field values.
+      'print(json.dumps({"name": name, "cls": type(one).__name__,',
+      '                  "clips": len(getattr(one, "clips", ()) or ()),',
+      '                  "adapter": one.adapter_dir, "max_chars": one.max_chars,',
+      '                  "source": one.max_chars_source}))',
+    ].join('\n');
+    const py = process.platform === 'win32' ? 'python' : 'python3';
+    return spawnSync(py, ['-c', code], { encoding: 'utf-8' });
+  };
+
+  check("narrator ACCEPTS the default voice's document", () => {
+    const r = runLoad(higgs.higgsVoicesDocument(higgs.resolveHiggsModel('default')));
+    assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
+    const got = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.strictEqual(got.name, 'default');
+    // A DefaultVoice, not a ClipsVoice with an empty list. narrator makes them
+    // different classes precisely so a clone that lost its references is an
+    // error rather than a silent downgrade to the model's own speaker.
+    assert.strictEqual(got.cls, 'DefaultVoice');
+    assert.strictEqual(got.clips, 0);
+    assert.strictEqual(got.max_chars, 600);
+    assert.strictEqual(got.source, 'placeholder');
+  });
+
+  check('narrator ACCEPTS a clips voice, and reads back the cap we sent', () => {
+    const m = probeVoice({
+      id: 'clone', kind: 'clips',
+      voice: { clips: [{ path: CLIP, transcript: 'He turned the corner.', seconds: 14.02 }] },
+      backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
+    });
+    const r = runLoad(higgs.higgsVoicesDocument(m));
+    assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
+    const got = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.strictEqual(got.clips, 1);
+    assert.strictEqual(got.max_chars, 600);
+    assert.strictEqual(got.source, 'catalog');
+  });
+
+  check('narrator ACCEPTS an adapter voice WITH a measured cap', () => {
+    const m = probeVoice({
+      id: 'ft', kind: 'adapter',
+      voice: { adapterDir: CROSS },
+      backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
+    });
+    const r = runLoad(higgs.higgsVoicesDocument(m));
+    assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
+    const got = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.strictEqual(got.adapter, CROSS);
+    assert.strictEqual(got.max_chars, 1350);
+    assert.strictEqual(got.source, 'length-sweep');
+  });
+
+  check('narrator REFUSES an adapter with no cap — the refusal we mirror', () => {
+    // BookForge refuses this first (refuseUnmeasuredAdapter), so the document can
+    // only be built by going round it. Doing so proves the two refusals are the
+    // same rule rather than two rules that happen to agree today.
+    const doc = { ft: { kind: 'adapter', adapterDir: CROSS } };
+    const r = runLoad(doc);
+    assert.notStrictEqual(r.status, 0, 'narrator accepted an unmeasured fine-tune');
+    assert.match(r.stderr, /maxChars/, 'refused for the wrong reason:\n' + r.stderr);
+  });
+}
 
 console.log(failures === 0 ? '\nALL OK' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

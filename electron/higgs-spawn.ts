@@ -262,7 +262,14 @@ export function buildHiggsSpawn(
   // it from. Under WSL that is /mnt/c — the 9p mount is slow, and it does not
   // matter here: this is a few hundred bytes read once at load, not the model
   // weights, which is exactly why the models dir is WSL-native and this is not.
-  const voicesHostPath = writeHiggsVoicesDocument(opts.model, opts.jobId);
+  // The document is written on the WINDOWS side (that is the filesystem this
+  // process can write) and its CONTENTS are translated for the arm that will read
+  // them: guest translation under WSL, identity on macOS/Linux where there is no
+  // guest for a path to be native to. An earlier draft stored WSL-native paths in
+  // the catalog and handed them to every arm untranslated — right on the WSL arm
+  // by accident, meaningless everywhere else.
+  const translate = viaWsl ? toGuestPath : (p: string) => p;
+  const voicesHostPath = writeHiggsVoicesDocument(opts.model, opts.jobId, translate);
   const distro = getWslDistro();
 
   // The launch script the installer deployed INTO the env. narrator invokes the
@@ -348,15 +355,32 @@ function wslCondaBase(condaPath: string): string {
 }
 
 /**
- * A Windows drive path, as the WSL guest must see it; anything else verbatim.
+ * A HOST-NATIVE path, as the WSL guest must see it. Anything else verbatim.
  *
- * BOTH SEPARATORS. `windowsToWslPath` itself normalises the separators correctly
- * (e2a-paths.ts) — it was only ever the guard that was wrong. Used for argv AND
- * for every environment value, because a path is just as unusable to the guest
- * inside `NARRATOR_HIGGS_VOICES` as it is inside `--session_dir`.
+ * THREE INPUT FORMS, because a Windows host has three ways of naming a file the
+ * guest can open:
+ *
+ *   C:\\x  /  C:/x         a drive path      -> /mnt/c/x
+ *   \\\\wsl$\\Ubuntu\\home\\x     the UNC form of a  -> /home/x
+ *   \\\\wsl.localhost\\...   guest-resident path
+ *   /home/x  /  /mnt/c/x    already guest form -> unchanged
+ *
+ * The UNC form is not hypothetical: it is what `tool-paths.ts` documents for
+ * `orpheusModelsDir` on a Windows+WSL machine, so a models directory that lives
+ * on ext4 is NAMED on the Windows side as `\\\\wsl$\\<distro>\\...`. Handling
+ * only drive letters would translate a session dir correctly and leave a models
+ * path as a UNC string the guest cannot open.
+ *
+ * Passing an already-guest-form path through unchanged is what makes this safe to
+ * apply to argv, to every environment value, and to catalog paths, without
+ * knowing which of them were already translated.
  */
 function toGuestPath(value: string): string {
-  return /^[A-Za-z]:[\\/]/.test(value) ? windowsToWslPath(value) : value;
+  if (/^[A-Za-z]:[\\/]/.test(value)) return windowsToWslPath(value);
+  const unc = value.replace(/\\/g, '/')
+    .match(/^\/\/wsl[$.](?:localhost)?\/[^/]+(\/.*)?$/i);
+  if (unc) return unc[1] || '/';
+  return value;
 }
 
 function shellQuote(s: string): string {
