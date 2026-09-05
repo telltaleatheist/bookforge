@@ -161,29 +161,75 @@ class DeviceTest(unittest.TestCase):
 
 
 class BackendSelectionTest(unittest.TestCase):
-    """Owen's ruling, 2026-09-05: one backend ships, the other is
-    operator-selected, and nothing ever switches on its own."""
+    """Owen's ruling, 2026-09-05: ONE aligner ships. There is no second backend
+    in the package to switch to, and a failing one raises."""
 
-    def test_the_shipped_backend_is_whisperx(self):
+    def test_exactly_one_aligner_ships_and_it_is_whisperx(self):
+        self.assertEqual(A.BACKENDS, ('whisperx',))
         self.assertEqual(A.DEFAULT_BACKEND, 'whisperx')
+        self.assertEqual(sorted(A._BACKEND_FUNCTIONS), ['whisperx'])
+        self.assertEqual(sorted(A._BACKEND_LOADERS), ['whisperx'])
+        self.assertEqual(sorted(E.BACKEND_MODULES), ['whisperx'])
+
+    def test_no_torchaudio_aligner_is_shipped(self):
+        """The measurement that rejected it lives in align/README.md and in
+        this module's docstring; the IMPLEMENTATION must not live in the
+        package (review note 14).
+
+        Checked on the code with the docstrings removed - the prose is supposed
+        to name the rejected candidate, and a test that forbade the name would
+        forbid recording why it was rejected.
+        """
+        import ast
+
+        with open(A.__file__, encoding='utf-8') as handle:
+            source = handle.read()
+        tree = ast.parse(source)
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.FunctionDef, ast.ClassDef)):
+                # Blank the docstring, keep the code.
+                body = node.body
+                if (body and isinstance(body[0], ast.Expr)
+                        and isinstance(body[0].value, ast.Constant)
+                        and isinstance(body[0].value.value, str)):
+                    body[0].value.value = ''
+        code = ast.unparse(tree)
+        self.assertNotIn('torchaudio', code)
+        self.assertNotIn('forced_align', code)
+        self.assertFalse(hasattr(A, '_torchaudio_words'))
+        self.assertFalse(hasattr(A, '_load_torchaudio'))
 
     def test_an_unknown_backend_is_refused_by_name(self):
         with self.assertRaises(A.AlignerError) as caught:
             A.align_chunk('x.flac', 'text', backend='gentle')
         self.assertIn('gentle', str(caught.exception))
+        with self.assertRaises(A.AlignerError):
+            A.load_backend('gentle')
+        with self.assertRaises(ValueError):
+            E.backend_importable('gentle')
 
-    def test_there_is_no_automatic_switch_between_backends(self):
-        """A failing backend must raise, never quietly run the other one.
+    def test_a_backend_that_fails_raises_rather_than_running_another(self):
+        """The rule, exercised: make the ONE backend fail and check that
+        `align_chunk` comes out as an AlignerError naming the chunk, with
+        nothing else attempted. The previous version of this test grepped the
+        source for `for backend in`, which a `try/except: run(other)` would
+        have passed (review note 12)."""
+        import numpy as np
 
-        Asserted on the SOURCE because it is a design rule, not a value: any
-        `except` around a backend call that reached for the other one would be
-        invisible to a behavioural test that never made the first one fail.
-        """
-        with open(A.__file__, encoding='utf-8') as handle:
-            source = handle.read()
-        body = source[source.index('def align_chunk('):]
-        self.assertNotIn('for backend in', body)
-        self.assertNotIn("'torchaudio'", body.split('_BACKEND_FUNCTIONS')[-1])
+        def explode(audio, text, language, device):
+            raise RuntimeError('the model is not there')
+
+        saved = A._BACKEND_FUNCTIONS['whisperx']
+        A._BACKEND_FUNCTIONS['whisperx'] = explode
+        try:
+            with self.assertRaises(A.AlignerError) as caught:
+                A.align_chunk('chunk-7.flac', 'one two three',
+                              audio=np.zeros(A.SAMPLE_RATE, dtype='float32'))
+        finally:
+            A._BACKEND_FUNCTIONS['whisperx'] = saved
+        message = str(caught.exception)
+        self.assertIn('chunk-7.flac', message)
+        self.assertIn('the model is not there', message)
 
 
 # =============================================================================
@@ -510,8 +556,12 @@ class CliTest(unittest.TestCase):
             ['align', '--session-dir', 'D', '--out', 'o.vtt',
              '--report', 'c.json'])
         self.assertEqual(args.command, 'align')
-        self.assertEqual(args.backend, 'whisperx')
         self.assertEqual(args.device, 'cpu')
+        # ONE aligner ships, so there is nothing to choose and no flag for it.
+        self.assertFalse(hasattr(args, 'backend'))
+        with self.assertRaises(SystemExit):
+            build_parser().parse_args(
+                ['align', '--session-dir', 'D', '--backend', 'torchaudio'])
 
     def test_a_failure_stops_the_run_unless_the_operator_says_otherwise(self):
         from narrator.cli import build_parser
@@ -728,38 +778,6 @@ class MeasuredAlignTest(unittest.TestCase):
         print(f'\n[measured] truncated case: ratio {result.aligned_ratio:.3f}, '
               f'worst span {worst.words} word(s) ending at word '
               f'{worst.last_word} of {len(alignment.words)}')
-
-    # ---- the comparison backend --------------------------------------------
-
-    def test_the_two_backends_agree_on_word_times(self):
-        """The measurement behind shipping WhisperX - both drive the same
-        wav2vec2 checkpoint, so their word times must agree to the CTC frame.
-
-        Skips (rather than fails) when torchaudio has dropped `forced_align`:
-        it is deprecated in 2.8 and removed in 2.9, and its absence is the
-        expected future, not a regression in narrator.
-        """
-        index = MEASURED_INDICES[3]
-        job = {'index': index,
-               'audioPath': os.path.join(KERSHAW_SENTENCES, f'{index}.flac'),
-               'text': self._spoken(self.texts[index]), 'language': 'en',
-               'backend': 'torchaudio', 'device': 'cpu', 'ffmpeg': None}
-        result = self._run([job])[0]
-        if not result['ok']:
-            if 'forced_align' in result['error']:
-                self.skipTest(result['error'])
-            self.fail(result['error'])
-        other = A.alignment_from_dict(result['alignment'])
-        mine = self._alignment(3)
-        deltas = sorted(
-            abs(a.start_s - b.start_s)
-            for a, b in zip(mine.words, other.words)
-            if a.timed and b.timed)
-        median = deltas[len(deltas) // 2]
-        print(f'\n[measured] backend agreement on chunk {index}: n={len(deltas)} '
-              f'median {median:.3f}s max {deltas[-1]:.3f}s')
-        self.assertLessEqual(median, 0.04)
-
 
 if __name__ == '__main__':
     unittest.main()

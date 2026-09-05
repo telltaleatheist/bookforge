@@ -110,17 +110,27 @@ def discover_align_python() -> Optional[str]:
     return None
 
 
+#: The module each backend needs importable. One row, because one aligner ships.
+BACKEND_MODULES = {'whisperx': 'whisperx'}
+
+
 def backend_importable(backend: str) -> bool:
-    """True when THIS interpreter can run `backend` without spawning anything."""
-    if backend == 'whisperx':
-        module = 'whisperx'
-    elif backend == 'torchaudio':
-        module = 'torchaudio'
-    else:
-        return False
+    """True when THIS interpreter can run `backend` without spawning anything.
+
+    ONLY `ImportError` means "not here". Anything else - a DLL load failure, a
+    torch/numpy ABI mismatch, both live hazards in this stack - is a whisperx
+    that IS installed and IS broken, and reporting that as "this interpreter
+    cannot import the backend, pass --python" sends the operator looking for the
+    wrong thing entirely (review finding 6). It goes up.
+    """
+    module = BACKEND_MODULES.get(backend)
+    if module is None:
+        raise ValueError(
+            f'unknown alignment backend {backend!r}; known: '
+            f'{", ".join(sorted(BACKEND_MODULES))}')
     try:
         __import__(module)
-    except Exception:
+    except ImportError:
         return False
     return True
 

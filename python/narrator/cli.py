@@ -120,12 +120,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--report", metavar="FILE",
         help="the coverage report. Default: <processDir>/coverage.json",
     )
-    p_align.add_argument(
-        "--backend", default="whisperx", choices=["whisperx", "torchaudio"],
-        help="whisperx (default, the measured choice - see "
-             "python/narrator/align/README.md); torchaudio is comparison only "
-             "and is never selected for you",
-    )
+    # No --backend: ONE aligner ships (Owen, 2026-09-05). The measurement that
+    # chose it, against torchaudio's forced_align, is the table in
+    # python/narrator/align/README.md.
     p_align.add_argument("--language", default="en", metavar="CODE")
     p_align.add_argument(
         "--device", default="cpu", metavar="NAME",
@@ -462,9 +459,9 @@ def _run_align(args, manifest) -> int:
 
     try:
         result = align_session(
-            manifest, backend=args.backend, language=args.language,
-            device=args.device, python_exe=args.python, ffmpeg=args.ffmpeg,
-            indices=indices, continue_on_error=args.continue_on_error)
+            manifest, language=args.language, device=args.device,
+            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices,
+            continue_on_error=args.continue_on_error)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)

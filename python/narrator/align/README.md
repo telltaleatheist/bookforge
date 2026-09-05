@@ -33,7 +33,15 @@ Orpheus behaviour is unchanged everywhere: same 44 s sentence split, same caps,
 same guards. Its coverage policy is `enforced=False` - measured and reported,
 blocking nothing.
 
-## The backend choice: WhisperX ships
+## The aligner: WhisperX ships, and it is the only one in the package
+
+ONE ALIGNER SHIPS (Owen's ruling, 2026-09-05). There is no `--backend` flag,
+no second implementation in `align/`, and nothing to switch to. What follows
+is the MEASUREMENT that chose it, kept because a rejected candidate with its
+numbers is worth more than a sentence saying one was rejected - but the loser
+lives in this table and nowhere else in the tree, and
+`test_no_torchaudio_aligner_is_shipped` asserts that against the module with
+its docstrings stripped.
 
 Measured on this machine (Windows, CPU, BookForge's installed `whisperx-env`:
 python 3.11.15, torch/torchaudio 2.8.0+cu128, whisperx 3.8.6), ten kershaw
@@ -69,13 +77,12 @@ Point 4's "audio with no text" is undetectable with the second behaviour - it
 reports no insertion because it has claimed the insertion as text. That, plus
 the deprecation, is why WhisperX ships.
 
-**No automatic switching, and a failure stops the run** (Owen's ruling,
-2026-09-05). There is no "try A then B" path anywhere: `align_chunk` raises
-`AlignerError` naming the chunk, and `narrator align` stops there and writes
-nothing. `--backend torchaudio` is an operator's explicit choice for comparison
-and refuses by name when torchaudio has no `forced_align` (2.9+) or for a
-language it has no bundle for. A test asserts the absence of a fallback on the
-source, not just on behaviour.
+**A failure stops the run.** There is no "try A then B" path and nothing to
+try: `align_chunk` raises `AlignerError` naming the chunk, and `narrator align`
+stops there and writes nothing. The test that guards this now MAKES the one
+backend fail and checks that the refusal names the chunk, instead of grepping
+the source for a loop shape that a `try/except: run(other)` would have slipped
+past.
 
 `--continue-on-error` is the deliberate opposite, for auditing: it finishes the
 pass and records every failure in the report's `errors`, so a 1,400-chunk book

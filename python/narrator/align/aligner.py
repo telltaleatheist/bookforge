@@ -6,21 +6,24 @@ guard both come from a CTC forced alignment of each chunk after it is rendered.
 This module is the alignment itself; `sentences.py` turns it into cues and
 `coverage.py` turns it into the guard.
 
-THE SHIPPED BACKEND IS WHISPERX. Both candidates were measured on ten kershaw
-chunks (CPU, this machine, 2026-09-05); the numbers and the reasoning are in
-`README.md`. In one line: the two agree on word times to the CTC frame (median
-delta 0.000 s, p95 0.020 s over 529 words) and cost the same wall clock, but
-only WhisperX LOCALIZES the text inside longer audio - given a chunk's text
-against that chunk plus the next one, WhisperX ended the last word 0.4-0.9 s
-past the true end while torchaudio's `forced_align` smeared it to within a
-second of the audio end in 6 pairs out of 6. Point 4's "audio with no text" is
-undetectable with the second behaviour, so WhisperX is what ships.
+ONE ALIGNER SHIPS: WHISPERX (Owen's ruling, 2026-09-05). Two candidates were
+measured on ten kershaw chunks (CPU, this machine); the numbers, the per-pair
+table and the reasoning are in `README.md`, which is where the loser now lives.
+In one line: WhisperX and torchaudio's `forced_align` agree on word times to the
+CTC frame (median delta 0.000 s, p95 0.020 s over 529 words) and cost the same
+wall clock, but only WhisperX LOCALIZES the text inside longer audio - given a
+chunk's text against that chunk plus the next one, WhisperX ended the last word
+0.42-0.94 s before the true text end while torchaudio smeared it to within
+1.0-3.3 s of the AUDIO end in 6 pairs out of 6, which makes point 4's "audio
+with no text" undetectable. torchaudio's `forced_align` is also deprecated in
+2.8 and removed in 2.9.
 
-NO AUTOMATIC SWITCHING (Owen's ruling, 2026-09-05). `torchaudio` stays as an
-operator-selected `--backend` for comparison and refuses BY NAME when its
-dependency is missing. There is no "try A then B" path anywhere in this file: a
-backend that fails on a chunk raises `AlignerError` naming the chunk, and the
-run stops.
+So there is no second backend in this package to switch to, and there never was
+a switch: a backend that fails on a chunk raises `AlignerError` naming the
+chunk, and the run stops. `BACKENDS` stays a tuple and `backend` stays a field
+because the report records which aligner produced a measurement, and because a
+future aligner must arrive by being added there and named, never by a runtime
+guess.
 
 CPU ONLY BY DEFAULT, and a CUDA request is refused by name while BookForge's
 `external-gpu-job.lock` exists - a render or a training run owns the card and an
@@ -51,9 +54,12 @@ from typing import Optional, Sequence, Tuple
 # feeds it 16 kHz mono float32, whatever the chunk's own rate is.
 SAMPLE_RATE = 16000
 
-#: The backends this module knows how to run. `whisperx` ships (see the module
-#: docstring); `torchaudio` is comparison only and never selected implicitly.
-BACKENDS = ('whisperx', 'torchaudio')
+#: THE aligner. One entry, deliberately - see the module docstring. The tuple
+#: and the `backend` field survive the pruning because the report records WHICH
+#: aligner produced a measurement, and a second engine's aligner (if one is ever
+#: measured to be better) has to arrive by being added here and chosen by name,
+#: not by a runtime guess.
+BACKENDS = ('whisperx',)
 DEFAULT_BACKEND = 'whisperx'
 
 #: Silence-map parameters. `align_audiobook.py` scans a whole audiobook with
@@ -441,106 +447,12 @@ def _whisperx_words(audio, text: str, language: str, device: str):
     return out
 
 
-#: torchaudio's forced_align is DEPRECATED (2.8 warns; the 2.9 release removes
-#: it - pytorch/audio#3902). That, and its inability to localize text inside
-#: longer audio, is why it is the comparison backend and not the shipped one.
-TORCHAUDIO_BUNDLE = 'WAV2VEC2_ASR_BASE_960H'
-
-
-def _load_torchaudio(language: str, device: str):
-    if language != 'en':
-        raise AlignerError(
-            f"backend 'torchaudio' has one bundle here ({TORCHAUDIO_BUNDLE}, "
-            f"English) and was asked for language {language!r}. Use "
-            f"--backend whisperx, which carries a model per language.")
-    try:
-        import torch
-        import torchaudio
-        import torchaudio.functional as functional
-    except ImportError as missing:
-        raise AlignerError(
-            f"backend 'torchaudio' needs torch and torchaudio ({missing})."
-        ) from missing
-    if not hasattr(functional, 'forced_align'):
-        raise AlignerError(
-            f'this torchaudio ({torchaudio.__version__}) has no '
-            'functional.forced_align - it was deprecated in 2.8 and removed in '
-            "2.9 (pytorch/audio#3902). Use --backend whisperx.")
-
-    key = ('torchaudio', language, device)
-    if key not in _MODEL_CACHE:
-        bundle = getattr(torchaudio.pipelines, TORCHAUDIO_BUNDLE)
-        model = bundle.get_model().to(device)
-        labels = bundle.get_labels()
-        # Label 0 is the CTC blank and label 1 is the word separator; neither
-        # may appear as a transcript character, so a literal '-' in the text is
-        # dropped rather than silently becoming the blank (which is what
-        # forced_align refuses outright: "targets shouldn't contain blank").
-        lookup = {c: i for i, c in enumerate(labels) if c not in ('-', '|')}
-        _MODEL_CACHE[key] = (model, lookup, labels.index('|'))
-    return _MODEL_CACHE[key]
-
-
-def _torchaudio_words(audio, text: str, language: str, device: str):
-    """torchaudio `functional.forced_align`. COMPARISON ONLY - see the README.
-
-    The same wav2vec2 checkpoint WhisperX uses for English, driven through
-    torchaudio's own CTC aligner. Refuses by name for a language it has no
-    bundle for, and for a torchaudio that has dropped `forced_align`.
-    """
-    model, lookup, separator = _load_torchaudio(language, device)
-
-    import torch
-    import torchaudio.functional as functional
-
-    words = [w for w in text.upper().split(' ') if w]
-    tokens, owner = [], []
-    for position, word in enumerate(words):
-        chars = [c for c in word if c in lookup]
-        if not chars:
-            continue
-        if tokens:
-            tokens.append(separator)
-            owner.append(-1)
-        for char in chars:
-            tokens.append(lookup[char])
-            owner.append(position)
-    if not tokens:
-        raise AlignerError(
-            f'no character of the chunk text is in the {TORCHAUDIO_BUNDLE} '
-            f'alphabet: {text[:80]!r}')
-
-    with torch.inference_mode():
-        emission, _ = model(torch.tensor(audio).unsqueeze(0).to(device))
-        log_probs = torch.log_softmax(emission, dim=-1)
-        targets = torch.tensor([tokens], dtype=torch.int32, device=device)
-        aligned, scores = functional.forced_align(log_probs, targets, blank=0)
-        spans = functional.merge_tokens(aligned[0], scores[0].exp())
-
-    ratio = audio.size / log_probs.size(1) / SAMPLE_RATE
-    per_word: dict = {}
-    for span, position in zip(spans, owner):
-        if position >= 0:
-            per_word.setdefault(position, []).append(span)
-    out = []
-    for position, word in enumerate(words):
-        found = per_word.get(position)
-        if not found:
-            out.append((word, None, None, None))
-            continue
-        score = sum(float(s.score) for s in found) / len(found)
-        out.append((word, found[0].start * ratio, found[-1].end * ratio, score))
-    return out
-
-
 _BACKEND_FUNCTIONS = {
     'whisperx': _whisperx_words,
-    'torchaudio': _torchaudio_words,
 }
 
 _BACKEND_LOADERS = {
     'whisperx': _load_whisperx,
-    'torchaudio': _load_torchaudio,
 }
 
 
@@ -548,9 +460,9 @@ def load_backend(backend: str, language: str = 'en', device: str = 'cpu') -> flo
     """Load a backend's model into this process and return the seconds it took.
 
     Called BEFORE a run so `Alignment.elapsed_s` measures alignment and not a
-    one-off model load. Measured on this machine: WhisperX 5.6 s warm / 19.5 s
-    cold, torchaudio 0.6 s warm - charged to the first chunk otherwise, which
-    made a 0.3 s chunk look like a 34 s one in the first report this wrote.
+    one-off model load. Measured on this machine: 5.6 s warm, 19.5 s cold -
+    charged to the first chunk otherwise, which made a 0.3 s chunk look like a
+    34 s one in the first report this wrote.
     """
     if backend not in BACKENDS:
         raise AlignerError(
