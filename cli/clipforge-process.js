@@ -134,7 +134,7 @@ async function runChainVerb(args) {
   console.log(`  provenance: ${result.provenancePath}`);
   if (keepStages) console.log(`  work dir (stages kept): ${workDir}`);
   console.log(`  done in ${elapsed}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
@@ -265,7 +265,7 @@ async function runSpeakers(args) {
   console.log(`  speakers.json: ${result.speakersJson}`);
   console.log(`  provenance:    ${provPath}`);
   console.log(`  done in ${elapsed}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
@@ -406,7 +406,7 @@ async function runMerge(args) {
   console.log(`  mergemap:   ${result.mergemapPath}`);
   console.log(`  provenance: ${provPath}`);
   console.log(`  done in ${elapsed}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
@@ -466,7 +466,7 @@ async function runSplit(args) {
   console.log(`  splitmap:   ${result.splitmapPath}`);
   console.log(`  provenance: ${provPath}`);
   console.log(`  done in ${elapsed}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
@@ -609,7 +609,7 @@ async function runSentences(args) {
   console.log(`  report:     ${result.reportPath}`);
   console.log(`  provenance: ${provPath}`);
   console.log(`  done in ${elapsed}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 /**
@@ -777,5 +777,5 @@ async function main() {
 
 main().catch((e) => {
   console.error('\n[clipforge-process] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -53,7 +53,8 @@ const DIST = path.join(REPO, 'dist', 'electron');
 const MODULE = path.join(DIST, 'manifest-service.js');
 if (!fs.existsSync(MODULE)) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 const manifestService = require(MODULE);
 
@@ -73,11 +74,13 @@ if (LIBRARY === null) {
   console.error(
     'Say which library to sweep: --library "E:\\Shared\\BookForge". There is no default — a '
     + 'migration that guessed which library it was rewriting is not one to run unattended.');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 if (!fs.existsSync(path.join(LIBRARY, 'projects'))) {
   console.error(`${LIBRARY} has no projects/ folder, so it is not a BookForge library.`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 // ── BookForge must not be running ────────────────────────────────────────────
@@ -101,7 +104,8 @@ if (EXECUTE && bookforgeRunning()) {
     'BookForge is running. Close it and run this again: this moves each project\'s book, and an '
     + 'open window would go on reading the archive that is about to be removed — or hold the handle '
     + 'that makes the move fail part-way. Nothing was done.');
-  process.exit(3);
+  process.exitCode = 3;
+  return;
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────
@@ -116,7 +120,8 @@ const projectIds = fs.readdirSync(projectsDir)
 
 if (ONLY !== null && projectIds.length === 0) {
   console.error(`${projectsDir} has no project called "${ONLY}".`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const bytes = (n) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
@@ -154,7 +159,8 @@ const bytes = (n) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
       console.error(
         `Stopped. ${done} project(s) were done before this one; nothing was left half-migrated. `
         + 'Fix what the refusal names and run this again — projects already unpacked are skipped.');
-      process.exit(1);
+      process.exitCode = 1;
+      return;
     }
 
     counts[result.outcome] += 1;
@@ -191,5 +197,5 @@ const bytes = (n) => `${(n / (1024 * 1024)).toFixed(1)} MB`;
   }
 })().catch((err) => {
   console.error(err);
-  process.exit(1);
+  process.exitCode = 1;
 });

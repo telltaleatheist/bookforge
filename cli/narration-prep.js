@@ -97,10 +97,10 @@ async function main() {
       tally.length === 0 ? '(none proposed)' : tally.map(([k, n]) => `${k}=${n}`).join(' ')}`);
   }
   console.log(`[prep] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[prep] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

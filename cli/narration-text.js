@@ -146,7 +146,8 @@ async function main() {
       projectDir,
       typeof args.model === 'string' ? args.model : null,
       typeof args.family === 'string' ? args.family : null);
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   }
 
   const step = await runNarrationTextStep(path.resolve(args.input), {
@@ -155,10 +156,10 @@ async function main() {
   if (!step.ran) {
     console.log('[narration-text] nothing written — the book is already what the narrator reads');
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[narration-text] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -301,10 +301,10 @@ async function main() {
   } else {
     await convert(request);
   }
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error(`\n[epub] ERROR: ${e && e.message ? e.message : e}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

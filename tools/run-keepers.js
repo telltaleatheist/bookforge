@@ -50,13 +50,15 @@ if (newestCompiled === 0) {
   console.error(
     'dist/electron holds no compiled output, and the keepers load compiled modules. '
     + 'Run: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 if (newestSource > newestCompiled) {
   console.error(
     'dist/electron is older than the TypeScript sources, so the keepers would test a build '
     + 'that no longer matches the code. Run: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 
 const SUITES = [
@@ -125,6 +127,7 @@ const SUITES = [
   'test-bookshelf-standalone',
   'test-bookshelf-queue-routes',
   'test-bookshelf-stream-teardown',
+  'test-cli-exit-drain',
 ];
 
 let failed = 0;
@@ -144,4 +147,4 @@ for (const suite of SUITES) {
   if (!ok) console.log(out.split('\n').filter((l) => /^FAIL|^ {6}/.test(l)).join('\n'));
 }
 console.log(failed === 0 ? '\nALL KEEPERS GREEN' : `\n${failed} SUITE(S) FAILING`);
-process.exit(failed === 0 ? 0 : 1);
+process.exitCode = failed === 0 ? 0 : 1;

@@ -52,14 +52,14 @@ function usage(msg) {
     '  --pdf    the scan these blocks were recognized from. Optional: without it\n' +
     '           the book still lists, and says its document is missing.\n' +
     '  --force  overwrite an existing corpus book of the same slug.');
-  process.exit(msg ? 1 : 0);
+  process.exitCode = msg ? 1 : 0;
 }
-if (flag('help') || !argv.length) usage();
+if (flag('help') || !argv.length) { usage(); return; }
 
 const book = opt('book');
-if (!book) usage('--book is required');
+if (!book) { usage('--book is required'); return; }
 const debugFile = path.join(DERIVED, book, 'derivation.debug.jsonl');
-if (!fs.existsSync(debugFile)) usage(`no derivation.debug.jsonl in ${path.join(DERIVED, book)}`);
+if (!fs.existsSync(debugFile)) { usage(`no derivation.debug.jsonl in ${path.join(DERIVED, book)}`); return; }
 
 const derivation = (() => {
   const f = path.join(DERIVED, book, 'derivation.json');
@@ -69,10 +69,11 @@ const slug = opt('slug', derivation.slug || `${book}-epub-derived`);
 const outDir = path.join(TRAINING, slug);
 if (fs.existsSync(outDir) && !flag('force')) {
   usage(`${outDir} already exists — pass --force to overwrite it`);
+  return;
 }
 
 const pdfPath = opt('pdf', null);
-if (pdfPath && !fs.existsSync(pdfPath)) usage(`no such PDF: ${pdfPath}`);
+if (pdfPath && !fs.existsSync(pdfPath)) { usage(`no such PDF: ${pdfPath}`); return; }
 
 /** Total pages in the PDF, so pageDimensions can be the length the picker expects. */
 function pdfPageCount(file) {
@@ -84,7 +85,7 @@ function pdfPageCount(file) {
 }
 
 const rows = fs.readFileSync(debugFile, 'utf-8').split('\n').filter(Boolean).map(JSON.parse);
-if (!rows.length) usage('derivation.debug.jsonl is empty');
+if (!rows.length) { usage('derivation.debug.jsonl is empty'); return; }
 
 const blocks = [];
 const labels = {};

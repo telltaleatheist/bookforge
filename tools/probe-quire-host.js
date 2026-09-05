@@ -41,7 +41,10 @@ if (!process.versions.electron) {
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
   });
-  process.exit(result.status === null ? 1 : result.status);
+  // stdio: 'inherit' — the child writes straight to this process's own stdout/
+  // stderr fds, so nothing here is buffered and there is nothing to drain.
+  process.exitCode = result.status === null ? 1 : result.status;
+  return;
 }
 
 const electronApi = require('electron');
@@ -69,7 +72,8 @@ for (let i = 0; i < argv.length; i++) {
 const runs = (letter) => only === null || only.includes(letter);
 if (!bookPath) {
   console.error('usage: node tools/probe-quire-host.js <book.epub> [--json out.json]');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const GEOMETRY = { width: 600, height: 900, fontSize: 18 };

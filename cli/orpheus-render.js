@@ -68,8 +68,8 @@ async function main() {
     stopping = true;
     console.log(`\n[render] ${sig} — endSession (guarded kill-ladder teardown)...`);
     Promise.resolve(api.endSession())
-      .then(() => process.exit(130))
-      .catch(() => process.exit(130));
+      .then(() => process.exit(130))  // abort-path: SIGINT/SIGTERM teardown
+      .catch(() => process.exit(130));  // abort-path: SIGINT/SIGTERM teardown
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -128,10 +128,10 @@ async function main() {
     }
   }
   console.log(`[render] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[render] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

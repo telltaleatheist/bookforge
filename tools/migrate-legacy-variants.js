@@ -57,7 +57,8 @@ const REPO = path.resolve(__dirname, '..');
 const MIGRATION = path.join(REPO, 'dist', 'electron', 'legacy-variant-migration.js');
 if (!fs.existsSync(MIGRATION)) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 // The migration imports `sha256File` from library-actions — the very function
 // that produced every `sourceFileHash` already in these manifests — and
@@ -105,11 +106,13 @@ if (!LIBRARY) {
     'Say which library to sweep:\n'
     + '  node tools/migrate-legacy-variants.js "E:\\Bookforge"          (dry run — writes nothing)\n'
     + '  node tools/migrate-legacy-variants.js "E:\\Bookforge" --apply  (registers what it found)');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 if (!fs.existsSync(path.join(LIBRARY, 'projects'))) {
   console.error(`${LIBRARY} has no projects/ folder, so it is not a BookForge library.`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 // ── BookForge must not be running ────────────────────────────────────────────
@@ -132,7 +135,8 @@ if (APPLY && bookforgeRunning()) {
   console.error(
     'BookForge is running. Close it and run this again: this rewrites project manifests, and an '
     + 'open window holding its own copy of one would put that copy back over this. Nothing was done.');
-  process.exit(3);
+  process.exitCode = 3;
+  return;
 }
 
 // ── Printing ─────────────────────────────────────────────────────────────────
@@ -212,7 +216,8 @@ function printProject(r) {
 
   if (ONLY !== null && reports.length === 0) {
     console.error(`${LIBRARY} has no project called "${ONLY}".`);
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
 
   const clutter = reports.reduce((n, r) => n + r.clutter.length, 0);
@@ -238,5 +243,5 @@ function printProject(r) {
   }
 })().catch((err) => {
   console.error(err);
-  process.exit(1);
+  process.exitCode = 1;
 });
