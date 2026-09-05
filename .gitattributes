@@ -13,6 +13,11 @@
 # The .py files beside them are pinned for a narrower reason: they are compared
 # against, and were copied from, the campaign originals, and a platform-dependent
 # byte difference makes "is this still the same patch" unanswerable by hashing.
+# The .txt beside them is requirements-narrator-runtime.txt, which is read INSIDE
+# the guest twice — `pip install -r` and the installer's sed/grep that pulls the
+# `# import:` annotations out of it — so a trailing CR would ride into a pip
+# requirement and into a module name the doctor then probes for.
 electron/scripts/higgs/*.sh text eol=lf
 electron/scripts/higgs/*.py text eol=lf
+electron/scripts/higgs/*.txt text eol=lf
 python/narrator/tests/golden/** text eol=lf

@@ -972,22 +972,55 @@ check('a null MLX cap REFUSES on darwin while the served cap still loads on WSL'
     'an absent mlx block silently inherited the served certificate');
 });
 
-check("the shipped deathstalker is UNCERTIFIED on BOTH arms, each saying so itself", () => {
+check('the shipped deathstalker is CERTIFIED PER ARM, each carrying its own evidence', () => {
+  // THE PREMISE OF THIS ROW CHANGED, AND IT IS THE ROW'S SUBJECT THAT DID NOT.
+  // It read "UNCERTIFIED on BOTH arms" while both caps were a declared null and
+  // the sweeps were owed. They have been run — served 1200 (2026-09-05T12:52:57)
+  // and MLX 900 (2026-09-05T13:19) — so the assertion is now the OTHER half of
+  // the same rule: each arm states a MEASURED number, with its own method, and
+  // the two are not required to agree.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   for (const backend of ['served', 'mlx']) {
-    assert.strictEqual(m.backends[backend].maxChars, null, `${backend}: cap is not a declared null`);
-    assert.strictEqual(m.backends[backend].maxCharsSource, null, `${backend}: it names a source`);
+    const caps = m.backends[backend];
+    assert.ok(Number.isInteger(caps.maxChars) && caps.maxChars > 0,
+      `${backend}: cap is ${JSON.stringify(caps.maxChars)}, not a measured number`);
+    assert.strictEqual(caps.maxCharsSource, 'length-sweep',
+      `${backend}: a measured cap must name the method that produced it`);
   }
-  // The MLX note must brief the sweep that has to be run, not just say "null":
-  // the ladder, the seed count, the scorer and the rule.
-  const note = m.backends.mlx._maxCharsNote;
-  assert.match(note, /4 seeds per length/i, 'the MLX note does not say how many seeds');
-  assert.match(note, /ASR alignment/, 'the MLX note does not name the scorer');
-  assert.match(note, /NEVER by duration ratio/i);
-  assert.match(note, /600 \/ 900 \/ 1200 \/ 1500/, 'the MLX note does not give the ladder');
-  assert.match(note, /ds_ad4lm_prod_ckpt1080/, 'the MLX note does not name the directory to sweep');
-  assert.match(note, /WILL NOT TRANSFER|does not transfer/i,
-    'nothing says the served cap will not become this one');
+
+  // A CERTIFICATE IS PER (DIRECTORY, BACKEND) — the whole reason the blocks are
+  // separate. The SAME merged directory, sha256-verified identical across the
+  // two machines, certifies at 1200 through vllm-omni's sampler and 900 through
+  // mlx-audio's. If these two ever became equal by an EDIT rather than by a
+  // measurement, that is a number carried across, which is what this refuses.
+  assert.notStrictEqual(m.backends.served.maxChars, m.backends.mlx.maxChars,
+    'both arms now claim the same cap — a certificate is per (directory, backend), and the '
+    + 'two sweeps measured 1200 and 900 on identical weights. If a new sweep really did make '
+    + 'them agree, update this row with the certificate that says so.');
+
+  // Each note must carry the evidence for ITS OWN arm: the rule, the scorer, the
+  // ladder including the length that FAILED, and the artifact it came from.
+  const served = m.backends.served._maxCharsNote;
+  assert.match(served, /ASR alignment/, 'the served note does not name the scorer');
+  assert.match(served, /never by duration ratio/i,
+    'the served note does not refuse duration ratio — a v3 render measured 0.99 while dropping '
+    + '22 % of its text');
+  assert.match(served, /1500 FAILS/, 'the served note does not give the length that failed');
+  assert.match(served, /max_chars_certificate_ckpt1080\.json/,
+    'the served note does not name its certificate');
+  assert.match(served, /max-num-seqs 64/,
+    'the served note no longer records that the certifying server ran at a different batch '
+    + 'width from the catalog\'s maxNumSeqs — the one observation that would matter if batch '
+    + 'width moved the safe chunk length');
+
+  const mlx = m.backends.mlx._maxCharsNote;
+  assert.match(mlx, /faster-whisper/, 'the MLX note does not name the scorer');
+  assert.match(mlx, /1200 FAILS/, 'the MLX note does not give the length that failed');
+  assert.match(mlx, /max_chars_certificate_mlx_ckpt1080\.json/,
+    'the MLX note does not name its certificate');
+  assert.match(mlx, /ds_ad4lm_prod_ckpt1080/, 'the MLX note does not name the directory swept');
+  assert.match(mlx, /NOT the served number|per \(directory, backend\)/i,
+    'nothing says this number is not the served one');
 });
 
 check("EVERY backend block states its cap — measured, or null, with a KNOWN source", () => {
@@ -1094,19 +1127,125 @@ check('the default document carries its cap too, so nothing is inferred', () => 
   assert.strictEqual(doc.default.maxCharsSource, 'placeholder');
 });
 
+const HIGGS3_PREFIX = '/home/t/anaconda3/envs/higgs3';
 const env = higgs.higgsSpawnEnv(defaultVoice, {
   voicesPath: '/mnt/c/tmp/voices.json',
-  serveScriptPath: '/home/t/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh',
+  serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
+  condaEnvPrefix: HIGGS3_PREFIX,
   wslDistro: 'Ubuntu',
 });
 
-check('the env uses NARRATOR_* names — every invented HIGGS_* one is gone', () => {
+check('narrator is addressed by NARRATOR_*, and the LAUNCH SCRIPT by HIGGS_*', () => {
+  // TWO SETS, TWO READERS, AND THE DISTINCTION IS THE WHOLE POINT.
+  //
+  // An early draft of higgs-models.ts INVENTED a `HIGGS_*` set as a guess at
+  // narrator's variable names, because engine/higgs had not landed yet; when it
+  // did, its names were `NARRATOR_*` and every invented one was deleted. This
+  // row asserted that deletion by refusing any `HIGGS_` prefix at all — which
+  // was right while nothing else read one, and became wrong on 2026-09-05.
+  //
+  // `serve_higgs_v3.sh` is an operator's script that narrator RUNS rather than
+  // reimplements, and a script is configured through the environment. Its
+  // variables really are `HIGGS_*`, they belong to it, and until this commit
+  // NONE of them were set — so the catalog's serving block described a
+  // configuration nothing applied.
   assert.strictEqual(env.NARRATOR_HIGGS_VOICES, '/mnt/c/tmp/voices.json');
   assert.strictEqual(env.NARRATOR_HIGGS3_SERVE_SCRIPT,
-    '/home/t/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh');
+    `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`);
   assert.strictEqual(env.NARRATOR_HIGGS3_WSL_DISTRO, 'Ubuntu');
-  const invented = Object.keys(env).filter((k) => /^HIGGS_/.test(k));
-  assert.deepStrictEqual(invented, [], 'invented HIGGS_* names survive: ' + invented);
+
+  // The launch script's set, against the catalog rather than literals.
+  const serving = higgs.higgsServingSpec();
+  assert.strictEqual(env.HIGGS_ENV, HIGGS3_PREFIX);
+  assert.strictEqual(env.HIGGS_HOST, serving.host);
+  assert.strictEqual(env.HIGGS_PORT, String(serving.port));
+  assert.strictEqual(env.HIGGS_GPU_MEM_UTIL, String(serving.gpuMemoryUtilization));
+  assert.strictEqual(env.HIGGS_CODEC_GPU_MEM_UTIL, String(serving.codecGpuMemoryUtilization));
+  assert.strictEqual(env.HIGGS_MAX_MODEL_LEN, String(serving.maxModelLen));
+  assert.strictEqual(env.HIGGS_MAX_NUM_SEQS, String(serving.maxNumSeqs));
+
+  // AND NOTHING BEYOND THE SCRIPT'S OWN CONTRACT. The old row's real value was
+  // that an invented name could not creep back in; it is kept as an allowlist
+  // read out of the script itself, so a variable BookForge sets that the script
+  // never reads fails here.
+  const script = fs.readFileSync(
+    path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_v3.sh'), 'utf-8');
+  for (const key of Object.keys(env).filter((k) => /^HIGGS_/.test(k))) {
+    assert.ok(script.includes(`${key}=`) || script.includes(`$${key}`),
+      `${key} is set by BookForge and read nowhere in serve_higgs_v3.sh`);
+  }
+});
+
+check('HIGGS_MODEL_DIR is narrator\'s to export, never BookForge\'s', () => {
+  // The server is keyed on it — it is which merged checkpoint comes up — and
+  // narrator exports it per voice from the voice document (v3_served.py
+  // `_launch_exports`), unsetting it for the base speaker. A second authority on
+  // this side would be a whole book in the wrong narrator.
+  assert.ok(!('HIGGS_MODEL_DIR' in env));
+});
+
+check('a launch script with no HIGGS_ENV is REFUSED, not defaulted', () => {
+  // The script's own fallback is a hardcoded `$HOME/anaconda3/envs/higgs3`: true
+  // on the machine it was transcribed from, and a server started out of the
+  // wrong env (or none) anywhere else. CUDA_HOME, PATH, LD_LIBRARY_PATH and the
+  // `vllm-omni` binary itself all hang off it.
+  assert.throws(() => higgs.higgsSpawnEnv(defaultVoice, {
+    voicesPath: DOC_PATH,
+    serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
+  }), /HIGGS_ENV/);
+  // And the reverse: a prefix with no script is an arm that launches nothing.
+  assert.throws(() => higgs.higgsSpawnEnv(defaultVoice, {
+    voicesPath: DOC_PATH, condaEnvPrefix: HIGGS3_PREFIX,
+  }), /no launch script/);
+});
+
+check('an arm that launches NO server gets no server-launch variable', () => {
+  // The Mac samples in-process. A bind address or a memory fraction there is a
+  // lever read by nothing, which is how a Mac spawn ends up looking like a
+  // served one.
+  const e = higgs.higgsSpawnEnv(defaultVoice, { voicesPath: DOC_PATH });
+  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
+    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG']) {
+    assert.ok(!(key in e), `a non-launching spawn carries ${key}`);
+  }
+  // EXCEPT the batch width, which narrator itself reads: `serve_concurrency()`
+  // refuses BY NAME when it is unset, so a door that renders and finds it
+  // missing dies after the session is already built.
+  assert.strictEqual(e.HIGGS_MAX_NUM_SEQS, String(higgs.higgsServingSpec().maxNumSeqs));
+});
+
+check('a serving block with a bad number is REFUSED by field name', () => {
+  // These land on a vllm-omni command line inside a guest, five minutes before
+  // anything can be heard. A substituted "plausible" value is a server that
+  // comes up at the wrong width and renders a whole book that way.
+  const spec = higgs.higgsServingSpec();
+  const withServing = (patch) => probeVoice({
+    id: 'bad', kind: 'default', voice: {},
+    serving: Object.assign({}, spec, patch),
+  });
+  const opts = {
+    voicesPath: DOC_PATH,
+    serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
+    condaEnvPrefix: HIGGS3_PREFIX,
+  };
+  assert.throws(() => higgs.higgsSpawnEnv(withServing({ maxNumSeqs: 0 }), opts), /maxNumSeqs/);
+  assert.throws(() => higgs.higgsSpawnEnv(withServing({ gpuMemoryUtilization: 1.4 }), opts),
+    /gpuMemoryUtilization/);
+  assert.throws(
+    () => higgs.higgsSpawnEnv(withServing({ codecGpuMemoryUtilization: undefined }), opts),
+    /codecGpuMemoryUtilization/);
+  assert.throws(() => higgs.higgsSpawnEnv(withServing({ maxModelLen: 8192.5 }), opts),
+    /maxModelLen/);
+  // A DECLARED null is the auto-discovered profile and emits nothing; an ABSENT
+  // key would make "nobody has decided" and "we chose the default" the same
+  // catalog, so it is refused.
+  assert.throws(() => higgs.higgsSpawnEnv(withServing({ deployConfig: undefined }), opts),
+    /deployConfig/);
+  const chosen = higgs.higgsSpawnEnv(
+    withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency' }), opts);
+  assert.strictEqual(chosen.HIGGS_DEPLOY_CONFIG, 'higgs_multimodal_qwen3_low_latency');
+  assert.ok(!('HIGGS_DEPLOY_CONFIG' in env),
+    'the shipped catalog declares deployConfig null, so nothing should be exported');
 });
 
 check('the CAPS do not travel — narrator refuses a caps payload by name', () => {
@@ -1983,7 +2122,15 @@ if (skipWhy) {
     // from this side. load_voices does not touch the checkpoint DIRECTORY (that
     // is require_generation_config's job, inside WSL), so the real document
     // loads here and proves the two sides agree about the certified row.
-    const r = runLoad(higgs.higgsVoicesDocument(higgs.resolveHiggsModel('deathstalker')));
+    //
+    // THE DOCUMENT IS WRITTEN FOR AN ARM, and this call has to say which. It
+    // read `higgsVoicesDocument(model)` until 2026-09-05 and threw
+    // "Cannot read properties of undefined (reading 'translatePath')" from that
+    // day's per-arm rewrite: a checkpoint lives on ONE machine's disk, the
+    // guest's and the Mac's cannot see each other, so there is no armless answer
+    // to "which directory does deathstalker load from".
+    const m = higgs.resolveHiggsModel('deathstalker');
+    const r = runLoad(higgs.higgsVoicesDocument(m, WSL_DOC));
     assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.name, 'deathstalker');
@@ -1992,6 +2139,25 @@ if (skipWhy) {
       '/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080');
     assert.strictEqual(got.max_chars, 1200);
     assert.strictEqual(got.source, 'length-sweep');
+
+    // AND THE MAC'S DOCUMENT IS A DIFFERENT DOCUMENT — the Mac's own copy of the
+    // directory, and the MLX sweep's 900 rather than the served 1200. Driven
+    // through the same loader, because "the cap travels" has to be true on the
+    // arm whose number is the smaller one: that is the arm where inheriting the
+    // other's cap would silently lose text.
+    const macDoc = higgs.higgsVoicesDocument(m, {
+      arm: 'darwin', userDataDir: '/Users/fake/Library/Application Support/BookForge',
+    });
+    const rm = runLoad(macDoc);
+    assert.strictEqual(rm.status, 0, 'narrator refused the Mac document:\n' + (rm.stderr || '').trim());
+    const macGot = JSON.parse(rm.stdout.trim().split('\n').pop());
+    // SEPARATORS NORMALISED, because `path.join` binds win32/posix at load and
+    // this keeper runs on both hosts — the derivation is what is under test, not
+    // which slash the machine running it prefers.
+    assert.strictEqual(macGot.checkpoint.replace(/\\/g, '/'),
+      '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080');
+    assert.strictEqual(macGot.max_chars, 900,
+      "the Mac document carries the served arm's cap — a certificate is per (directory, backend)");
   });
 
   check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {
