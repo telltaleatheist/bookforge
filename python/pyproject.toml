@@ -32,6 +32,10 @@ dependencies = [
     # psutil: render/worker.py log_memory (ported from e2a worker_core); present in
     # every env that has run an e2a worker and in the Windows test interpreter.
     "psutil>=5.9",
+    # beautifulsoup4 + pillow: text/ (EPUB chapters/cover parsing, ported from e2a which
+    # had them via ebooklib/bs4). Missing on a bare env = 55 test errors (Mac run 2026-09-05).
+    "beautifulsoup4>=4.12",
+    "pillow>=10",
     "mutagen>=1.45",
 ]
 
@@ -100,6 +104,7 @@ higgs-v2-scaffold = [
 # NB the v3 CLIENT needs none of this - it is numpy + soundfile + urllib, so the
 # engine can be driven from any env while the model runs in `higgs3`.
 higgs-v3-server = [
+    "torch==2.13.0",
     "vllm==0.28.0",
     "vllm-omni==0.28.0",
 ]
