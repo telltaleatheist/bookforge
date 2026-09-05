@@ -404,6 +404,16 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(record['budget']['max_chars'], 900)
         self.assertNotEqual(record['budget']['max_chars'], 350)
 
+    def test_a_higgs_prep_fills_toward_the_cap(self):
+        """Owen, 2026-09-05: "combine paragraphs to reach closer to the cap".
+        The merge floor equals the cap, so short paragraphs travel together
+        until the next would overflow it."""
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
+        self.assertEqual(record['floor_chars'], record['budget']['max_chars'])
+        self.assertEqual(record['floor_chars'], 900)
+
     def test_a_higgs_prep_never_reads_ORPHEUS_MAX_CHARS(self):
         os.environ['ORPHEUS_MAX_CHARS'] = '123'
         self.addCleanup(os.environ.pop, 'ORPHEUS_MAX_CHARS', None)
