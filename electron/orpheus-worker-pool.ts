@@ -683,11 +683,15 @@ export function setMainWindow(window: BrowserWindow | null): void {
  * `queue-engine.ts`'s `gpuHolderProbe`, and it means the keeper suite can drive a
  * Higgs pool without a persisted selection on disk.
  *
- * Defaulted to Orpheus rather than left null because a pool asked to spawn before
- * anything has selected an engine is a fresh install, and Orpheus is the engine
- * every supported machine can run.
+ * REQUIRED, not defaulted. It used to default to `() => 'orpheus'` on the theory
+ * that an unregistered probe means a fresh install. It does not: `streaming-engine.ts`
+ * registers the probe at module load, so the only way to reach a spawn with no probe
+ * is that the registration was dropped or reordered — and the default turned that into
+ * a Higgs selection rendering an entire session in Orpheus, silently, with the app
+ * reporting Higgs throughout. Audio that is fine, in the wrong voice, with nothing
+ * anywhere saying so. Fail instead.
  */
-let serveEngineProbe: () => StreamEngineId = () => 'orpheus';
+let serveEngineProbe: (() => StreamEngineId) | null = null;
 
 /** BookForge's streaming engine ids. Mirrors `StreamEngineName` without the
  *  import that would make a cycle; the keeper asserts they agree. */
@@ -699,6 +703,13 @@ export function setServeEngineProbe(probe: () => StreamEngineId): void {
 
 /** The engine a spawn/load is FOR. */
 function serveEngine(): StreamEngineId {
+  if (!serveEngineProbe) {
+    throw new Error(
+      'No streaming engine probe is registered, so the pool cannot say which engine '
+      + 'this spawn is for. streaming-engine.ts registers it via setServeEngineProbe() '
+      + 'at module load — it has been dropped or is being reached before that import.',
+    );
+  }
   return serveEngineProbe();
 }
 

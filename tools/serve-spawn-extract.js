@@ -216,7 +216,12 @@ if (ENGINE === 'higgs') {
 }
 
 const pool = require(path.join(DIST, 'orpheus-worker-pool.js'));
-if (ENGINE === 'higgs') pool.setServeEngineProbe(() => 'higgs');
+// ALWAYS registered, for both engines. The probe has no default any more — a pool
+// asked which engine it is spawning for with nothing registered now throws, because
+// the old `() => 'orpheus'` default answered that question wrongly and silently.
+// In the app `streaming-engine.ts` registers it at module load; this harness does not
+// load that module, so it registers the probe itself.
+pool.setServeEngineProbe(() => ENGINE);
 
 /**
  * A REFUSAL IS A CAPTURE, not a crash.

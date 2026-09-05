@@ -184,7 +184,15 @@ function writePersisted(cfg: PersistedStreamConfig): void {
 }
 
 function isEngineName(v: unknown): v is StreamEngineName {
-  return v === 'orpheus';
+  // DERIVED FROM `ENGINES`, never a literal list. It was `v === 'orpheus'`, written
+  // when there was one engine — and it stayed that way when Higgs was added to the
+  // union, to `ENGINES`, to `getAvailableEngines()`, to the Settings picker and to
+  // the extension's engine menu. Every surface offered Higgs and this one function
+  // refused it by name, so selecting it failed with "Unknown streaming engine:
+  // higgs. This build streams: orpheus, higgs." — a message that contradicts itself.
+  //
+  // A hand-written second copy of the engine list has no way to be right for long.
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(ENGINES, v);
 }
 
 // Fired whenever the stream selection changes (engine or default voice), from
@@ -368,8 +376,21 @@ export async function setSelectedEngineName(name: string): Promise<void> {
   // environment that is not there — with the Settings page reporting the engine
   // happily selected. That is the same shape as an availability probe that lies,
   // and the fix is the same: refuse where the user can still act on it.
+  //
+  // A MISSING entry is a refusal too, not a pass. `ENGINES` and
+  // `getAvailableEngines()` are two hand-maintained lists in the same file, and
+  // `if (info && ...)` read "not in the availability list ⇒ allow it" — so the one
+  // mistake this check exists to catch, an engine added to one list and forgotten in
+  // the other, was the exact case it waved through.
   const info = getAvailableEngines().find((e) => e.id === name);
-  if (info && !info.available) {
+  if (!info) {
+    throw new Error(
+      `Streaming engine '${name}' is in ENGINES but not in getAvailableEngines(), so `
+      + 'nothing can say whether this machine can run it. Refusing to select an engine '
+      + 'with no availability answer — add it to getAvailableEngines().',
+    );
+  }
+  if (!info.available) {
     throw new Error(`${info.name} cannot stream on this machine. ${info.reason ?? ''}`.trim());
   }
 

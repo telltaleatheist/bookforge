@@ -845,7 +845,6 @@ export class TtsApiServer {
    * resized live), so this is the "save settings" path; engine.restart applies it.
    */
   private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    this.applyClientWorkerCount(msg);
     // WHICH ENGINE. Applied FIRST, because everything after it — the voice, the
     // worker count — is per-engine: a voice is a name in one engine's catalog and
     // means nothing in the other's, so setting it against the outgoing engine and
@@ -871,6 +870,11 @@ export class TtsApiServer {
         return;
       }
     }
+    // Worker count, AFTER the switch — `applyClientWorkerCount` reads
+    // `getActiveEngine()`, so running it first would write the user's setting onto
+    // the engine they are leaving and the switch would discard it. That is what the
+    // comment above has always claimed and what the code did not do.
+    this.applyClientWorkerCount(msg);
     // Idle-shutdown window (minutes; 0 = never). Takes effect on the running
     // engine's next sweep, so there's nothing to restart.
     if (typeof msg.idleMinutes === 'number') {
@@ -900,9 +904,15 @@ export class TtsApiServer {
    * clears it) so a resident server stays resident after the restart.
    */
   private async handleRestart(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    this.applyClientWorkerCount(msg);
-    const wasService = getActiveEngine().isServiceMode();
     const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
+
+    // Residency is captured BEFORE the switch, deliberately, and it is the one thing
+    // here that is not per-engine. "Is a client holding this server resident" is a
+    // property of the session, not of whichever pool is loaded: a user who switches
+    // engine and restarts wants the server still resident afterwards. Reading it
+    // after the switch would ask a pool that has not been started yet, get `false`,
+    // and quietly drop residency on every engine change.
+    const wasService = getActiveEngine().isServiceMode();
 
     // The engine switch happens BEFORE the teardown below, so `getActiveEngine()`
     // from here on is the engine being restarted INTO. Selecting one already stops
@@ -920,6 +930,12 @@ export class TtsApiServer {
         return;
       }
     }
+
+    // The worker count, on the other hand, IS per-engine, and it goes after the
+    // switch. Before it, `applyClientWorkerCount` read `getActiveEngine()` and wrote
+    // the user's setting onto the pool they were leaving, where the switch discarded
+    // it — a silently ignored setting rather than a visible failure.
+    this.applyClientWorkerCount(msg);
 
     await getActiveEngine().endSession();
     // A restart is a settings action, not a play action — no audio is pending, so

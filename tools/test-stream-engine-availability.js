@@ -54,14 +54,39 @@ require.cache['electron-stub'] = {
 };
 
 let failures = 0;
+function fail(name, err) {
+  failures++;
+  console.log(`  FAIL  ${name}\n        ${err.message.split('\n').join('\n        ')}`);
+}
+
+/**
+ * A SYNCHRONOUS row. Handing this an `async` body is a mistake it now refuses
+ * rather than absorbs: the rejection would arrive after the try/catch had already
+ * printed `ok`, so the row would pass no matter what the code under it did. Use
+ * `checkAsync` for anything that returns a promise.
+ */
 function check(name, fn) {
+  let out;
   try {
-    fn();
-    console.log(`  ok    ${name}`);
+    out = fn();
   } catch (err) {
-    failures++;
-    console.log(`  FAIL  ${name}\n        ${err.message.split('\n').join('\n        ')}`);
+    fail(name, err);
+    return;
   }
+  if (out && typeof out.then === 'function') {
+    fail(name, new Error('check() is synchronous and this row returned a promise — use checkAsync'));
+    return;
+  }
+  console.log(`  ok    ${name}`);
+}
+
+/** Rows whose body returns a promise. Awaited before the exit code is decided. */
+const pending = [];
+function checkAsync(name, fn) {
+  pending.push(Promise.resolve().then(fn).then(
+    () => console.log(`  ok    ${name}`),
+    (err) => fail(name, err),
+  ));
 }
 
 const stream = require(path.join(DIST, 'streaming-engine.js'));
@@ -219,5 +244,143 @@ check('the pool and the selector agree on what an engine id is', () => {
     `the pool streams ${pool[1]} and the selector offers ${sel[1]}`);
 });
 
-console.log(failures === 0 ? '\nAll streaming-engine availability checks passed.' : `\n${failures} check(s) FAILED.`);
-process.exit(failures === 0 ? 0 : 1);
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('selection REFUSES rather than falling back');
+// ─────────────────────────────────────────────────────────────────────────────
+// `setSelectedEngineName` calls `getAvailableEngines` INTERNALLY, so stubbing the
+// module's export changes nothing about what it sees. It is lifted here with its
+// free variables rebound, the same way the other keepers exercise module-private
+// code: what runs below is the shipped body, driven against a machine whose
+// availability list is missing an engine.
+const streamJs = fs.readFileSync(path.join(DIST, 'streaming-engine.js'), 'utf-8');
+const selectSrc = streamJs.match(/async function setSelectedEngineName\(name\) \{[\s\S]*?\n}\n/);
+function liftedSelect(availability) {
+  assert.ok(selectSrc, 'setSelectedEngineName is not in the compiled selector — did it move?');
+  return eval(
+    `(function (isEngineName, ENGINES, getSelectedEngineName, getAvailableEngines,
+                getActiveEngine, readPersisted, writePersisted, emitStreamConfigChanged) {
+       let selected = null;   // the module-level binding the real body assigns to
+       ${selectSrc[0]}
+       return setSelectedEngineName;
+     })`,
+  )(
+    (v) => v === 'orpheus' || v === 'higgs',
+    { orpheus: {}, higgs: {} },
+    () => 'orpheus',
+    () => availability,
+    () => ({ endSession: async () => {} }),
+    () => ({}),
+    () => {},
+    () => {},
+  );
+}
+
+checkAsync('an engine missing from getAvailableEngines() cannot be selected', () => {
+  // `if (info && !info.available)` read "not in the availability list ⇒ allow it",
+  // so the one mistake the check exists to catch — an engine added to `ENGINES` and
+  // forgotten in `getAvailableEngines()` — was the case it waved through. The two
+  // lists are hand-maintained in one file; nothing but this makes them agree.
+  return liftedSelect([{ id: 'orpheus', name: 'Orpheus', available: true }])('higgs').then(
+    () => { throw new Error('selecting an engine with no availability row was accepted'); },
+    (err) => {
+      assert.match(err.message, /not in getAvailableEngines/i,
+        `refused, but not for the right reason: ${err.message}`);
+    },
+  );
+});
+
+checkAsync('an engine that IS listed and available is still selectable', () => {
+  // The refusal above must not be "refuse everything". This is also the row that
+  // would have caught `isEngineName` returning `v === 'orpheus'` while every other
+  // surface offered Higgs.
+  return liftedSelect([
+    { id: 'orpheus', name: 'Orpheus', available: true },
+    { id: 'higgs', name: 'Higgs', available: true },
+  ])('higgs');
+});
+
+checkAsync('every listed engine is a NAME the selector knows', () => {
+  // The REAL `setSelectedEngineName`, not the lifted one — the lifted copy is given
+  // its own `isEngineName` and so is blind to this.
+  //
+  // `isEngineName` was a hand-written second copy of the engine list, and it went
+  // stale the moment Higgs was added: Higgs reached the union, `ENGINES`,
+  // `getAvailableEngines()`, the Settings picker and the extension's engine menu,
+  // while this one function still read `v === 'orpheus'`. Selecting it failed with
+  // "Unknown streaming engine: higgs. This build streams: orpheus, higgs." — a
+  // message that contradicts itself in its own second clause.
+  //
+  // Host-independent: on a machine where an engine is unavailable the refusal names
+  // the machine, not the name. Either is fine here; "unknown" is not.
+  return Promise.all(stream.getAvailableEngines().map((e) => stream
+    .setSelectedEngineName(e.id)
+    .then(
+      () => {},
+      (err) => {
+        assert.doesNotMatch(err.message, /Unknown streaming engine/,
+          `${e.id} is offered by getAvailableEngines() and rejected by name: ${err.message}`);
+      },
+    )));
+});
+
+check('the pool refuses to name an engine when no probe is registered', () => {
+  // `serveEngineProbe` used to default to `() => 'orpheus'`. `streaming-engine.ts`
+  // registers it at module load, so the default could only ever be reached when the
+  // registration was dropped or reordered — and it answered that by rendering a Higgs
+  // session in Orpheus, silently, with the app reporting Higgs throughout.
+  const poolMod = require(path.join(DIST, 'orpheus-worker-pool.js'));
+  const src = fs.readFileSync(path.join(REPO, 'electron', 'orpheus-worker-pool.ts'), 'utf-8');
+  assert.match(src, /let serveEngineProbe: \(\(\) => StreamEngineId\) \| null = null;/,
+    'the serve-engine probe has a default again — an unregistered probe must fail, not guess');
+  assert.ok(typeof poolMod.setServeEngineProbe === 'function',
+    'setServeEngineProbe is gone, so nothing can register the engine the pool spawns for');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('per-engine settings are applied to the engine being switched TO');
+// ─────────────────────────────────────────────────────────────────────────────
+check('config.set and engine.restart apply the worker count AFTER the switch', () => {
+  // `applyClientWorkerCount` reads `getActiveEngine()`. Called before the switch it
+  // wrote the user's count onto the pool they were leaving, which the switch then
+  // discarded — a silently ignored setting, not a visible failure. Harmless only
+  // while ENGINES.orpheus and ENGINES.higgs are the same object, which is exactly
+  // the kind of "currently fine" that stops being fine without warning.
+  //
+  // Asserted on ORDER in the compiled output, because the two handlers are private
+  // methods on a server class that needs a live socket to drive.
+  const js = fs.readFileSync(path.join(DIST, 'tts-api-server.js'), 'utf-8');
+  for (const handler of ['handleConfigSet', 'handleRestart']) {
+    const body = js.match(new RegExp(`async ${handler}\\(ws, msg\\) \\{[\\s\\S]*?\\n    \\}\\n`));
+    assert.ok(body, `${handler} is not in the compiled server — did it move?`);
+    const apply = body[0].indexOf('applyClientWorkerCount');
+    const switchAt = body[0].indexOf('setStreamConfig');
+    assert.ok(apply !== -1, `${handler} no longer applies the client worker count`);
+    assert.ok(switchAt !== -1, `${handler} no longer switches engine`);
+    assert.ok(apply > switchAt,
+      `${handler} applies the worker count to the OUTGOING engine (at ${apply}, `
+      + `before the switch at ${switchAt})`);
+  }
+});
+
+check('engine.restart captures residency BEFORE the switch, on purpose', () => {
+  // The opposite order from the worker count, and deliberately so. "Is a client
+  // holding this server resident" is a property of the session, not of whichever
+  // pool is loaded. Read after the switch it would ask a pool that has not been
+  // started, get false, and drop residency on every engine change.
+  const js = fs.readFileSync(path.join(DIST, 'tts-api-server.js'), 'utf-8');
+  const body = js.match(/async handleRestart\(ws, msg\) \{[\s\S]*?\n    \}\n/);
+  assert.ok(body, 'handleRestart is not in the compiled server — did it move?');
+  const was = body[0].indexOf('isServiceMode');
+  const switchAt = body[0].indexOf('setStreamConfig');
+  assert.ok(was !== -1 && switchAt !== -1, 'handleRestart no longer does both things');
+  assert.ok(was < switchAt,
+    'residency is now read from the engine being switched INTO, which has not been '
+    + 'started — every engine change would silently stop the server being resident');
+});
+
+// The async rows settle here, before anything decides the exit code. `process.exit`
+// below would otherwise run with them still in flight and report a clean suite.
+Promise.all(pending).then(() => {
+  console.log(failures === 0 ? '\nAll streaming-engine availability checks passed.' : `\n${failures} check(s) FAILED.`);
+  process.exit(failures === 0 ? 0 : 1);
+});
