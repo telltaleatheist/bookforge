@@ -23,6 +23,23 @@
  * intended. Anything else — a variable gone, a value changed, a flag moved — is a
  * failure that names itself.
  *
+ * ── IT MUST GIVE THE SAME ANSWER ON WINDOWS AND ON A MAC ────────────────────
+ *
+ * A stated property, because it was broken and the breakage was invisible. Only
+ * the `native-mac` fixture forced `process.platform`, so on a macOS host the `wsl`
+ * and `native-win` fixtures resolved through the darwin branch and every row came
+ * back as the Mac conda invocation — a capture that compares equal to itself while
+ * describing an arm it never built. And `path.join` uses the HOST's separator
+ * (faking the platform does not change it — the path module binds win32/posix at
+ * load), so the same run stored `<REPO>\python` on Windows and `<REPO>/python` on
+ * a Mac.
+ *
+ * Three rules keep it true: the extractor forces `process.platform` per fixture
+ * arm, `canon()` collapses this checkout's location to one `<REPO>` token with
+ * separators normalised, and `hostNeutral()` applies that same normalisation to
+ * the stored BASELINE at read time — because that file records code that no longer
+ * exists and cannot be regenerated.
+ *
  * ── The intended changes ────────────────────────────────────────────────────
  *
  * Four, from PORT_NOTES section 9, on every arm:
@@ -74,14 +91,40 @@ function check(name, fn) {
   }
 }
 
-const base = JSON.parse(fs.readFileSync(BASE, 'utf-8'));
+/**
+ * THE BASELINE IS NORMALISED AT COMPARISON TIME, not rewritten.
+ *
+ * `serve-spawn-base.json` is the spawn as it stood BEFORE the cut-over. That code
+ * is gone, so it cannot be regenerated — which means the host-independence fix
+ * (collapsing `<REPO-WSL>` into `<REPO>` and normalising separators) has to be
+ * applied to BOTH sides at read time instead of baked into the file. The stored
+ * bytes stay what they were: a historical capture, from Windows, on 0f0a68d5.
+ *
+ * Without this the keeper is host-dependent in the same way the extractor was:
+ * `path.join` uses the HOST's separator (faking `process.platform` does not change
+ * it — the path module binds win32/posix at load), so a Mac would produce
+ * `<REPO>/python` against a baseline holding `<REPO>\python` and every arm would
+ * fail on a difference that is about the machine, not the spawn.
+ */
+function hostNeutral(value) {
+  if (typeof value === 'string') {
+    return value.split('<REPO-WSL>').join('<REPO>').replace(/\\/g, '/');
+  }
+  if (Array.isArray(value)) return value.map(hostNeutral);
+  if (value && typeof value === 'object') {
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, hostNeutral(v)]));
+  }
+  return value;
+}
+
+const base = hostNeutral(JSON.parse(fs.readFileSync(BASE, 'utf-8')));
 const now = {};
 for (const arm of ARMS) {
-  now[arm] = JSON.parse(execFileSync(
+  now[arm] = hostNeutral(JSON.parse(execFileSync(
     process.execPath,
     [path.join(__dirname, 'serve-spawn-extract.js'), arm],
     { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-  ));
+  )));
 }
 
 /** The environment an arm sends the worker, whichever arm shape it has. */
@@ -179,6 +222,25 @@ for (const arm of ARMS) {
     }
   });
 }
+
+console.log('the capture says the same thing on Windows and on a Mac');
+check('no captured value carries a host path separator', () => {
+  // The exact shape of the failure a macOS host reported: `path.join` gives
+  // `<REPO>\python` on Windows and `<REPO>/python` on a Mac, so an un-normalised
+  // capture can never match across the two. Checkable from one host.
+  const blob = JSON.stringify(now);
+  const at = blob.indexOf(String.fromCharCode(92));
+  assert.strictEqual(at, -1,
+    'a backslash survived canon() near: ' + blob.slice(Math.max(0, at - 90), at + 60));
+});
+check('the extractor forces the platform per fixture arm', () => {
+  // Cannot be observed from a Windows host for the two win32 arms, so it is
+  // asserted on the source: without it a macOS host resolves `wsl` and
+  // `native-win` through the darwin branch and compares a capture it never built.
+  const src = fs.readFileSync(path.join(__dirname, 'serve-spawn-extract.js'), 'utf-8');
+  assert.match(src, /ARM === 'native-mac' \? 'darwin' : 'win32'/,
+    'the extractor no longer forces process.platform from the fixture arm');
+});
 
 console.log('macOS moved to the narrator-mlx environment');
 check('the mac arm runs the narrator-mlx env, not the ebook2audiobook one', () => {

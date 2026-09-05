@@ -96,7 +96,15 @@ require.cache['electron-stub'] = {
 };
 
 // Force the platform BEFORE any module reads it.
-if (ARM === 'native-mac') Object.defineProperty(process, 'platform', { value: 'darwin' });
+// THE ARM IS THE FIXTURE'S, NOT THE HOST'S. Only the mac arm forced this, so on a
+// macOS host the 'wsl' and 'native-win' fixtures resolved through the darwin branch
+// and every row came back as the Mac conda invocation — a capture that compares
+// equal to itself while describing an arm it never built. One process per arm (see
+// the header), so nothing is restored and nothing leaks.
+Object.defineProperty(process, 'platform', {
+  value: ARM === 'native-mac' ? 'darwin' : 'win32',
+  configurable: true,
+});
 
 const paths = require(path.join(DIST, 'e2a-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
@@ -156,14 +164,26 @@ const plan = pool.resolveScriptPath
   : pool.buildSpawnPlan(GPU_UTIL);
 
 /** Replace this checkout's location with a stable token, in both filesystems. */
+/**
+ * This checkout's location → one token, separators normalised.
+ *
+ * HOST-INDEPENDENT ON PURPOSE, and the reason is that `path.join` uses the HOST's
+ * separator: faking `process.platform` does not change it, because the path module
+ * binds win32/posix at load. So `narratorPythonRoot()` yields `<REPO>\python` on
+ * Windows and `<REPO>/python` on a Mac, and an un-normalised capture can never
+ * agree across the two. `<REPO-WSL>` collapses into `<REPO>` for the same reason:
+ * on a Mac host the repo has no drive letter to translate.
+ */
 function canon(s) {
   if (typeof s !== 'string') return s;
   const win = REPO.replace(/\\/g, '\\\\');
   return s
     .split(REPO).join('<REPO>')
     .split(REPO.replace(/\\/g, '/')).join('<REPO>')
-    .split(wslish(REPO)).join('<REPO-WSL>')
-    .split(win).join('<REPO>');
+    .split(wslish(REPO)).join('<REPO>')
+    .split(win).join('<REPO>')
+    // Finally the separator itself, which is the host's and not the fixture's.
+    .replace(/\\/g, '/');
 }
 function wslish(p) {
   const m = p.replace(/\\/g, '/').match(/^([A-Za-z]):(.*)$/);
@@ -190,7 +210,9 @@ function splitBash(bash) {
   return { exports: exportsMap, cd: canon(m[2]), run: canon(m[3]) };
 }
 
-const out = { arm: ARM, command: plan.command, viaWsl: !!plan.viaWsl };
+// `command` is canon'd like everything else — it is a host path (a conda exe, a
+// relocatable python) and an un-normalised one is the separator difference again.
+const out = { arm: ARM, command: canon(plan.command), viaWsl: !!plan.viaWsl };
 if (plan.viaWsl) {
   const bash = plan.args[plan.args.length - 1];
   out.args = plan.args.slice(0, -1).map(canon);

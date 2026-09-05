@@ -174,7 +174,22 @@ if (require.main === module) {
     },
   };
 
-  if (ARM === 'native-mac') Object.defineProperty(process, 'platform', { value: 'darwin' });
+  // THE ARM IS THE FIXTURE'S, NOT THE HOST'S.
+  //
+  // Only the mac arm forced `process.platform`, so on a macOS host the 'wsl' and
+  // 'native-win' fixtures silently resolved through the darwin branch and every
+  // row came back as the Mac conda invocation. The snapshot still compared equal
+  // to ITSELF on that machine, which is the worst kind of green: the keeper
+  // reported that the WSL argv had not changed while never having built one.
+  //
+  // Forced before any module is loaded, because `narratorRunsInWsl`,
+  // `getEnvPathForEngine` and the pool all read `process.platform` at call time
+  // and some read it at module scope. This is a child process per arm (see the
+  // header), so nothing is restored and nothing else is affected.
+  Object.defineProperty(process, 'platform', {
+    value: ARM === 'native-mac' ? 'darwin' : 'win32',
+    configurable: true,
+  });
 
   const paths = require(path.join(DIST, 'e2a-paths.js'));
   const toolPaths = require(path.join(DIST, 'tool-paths.js'));
@@ -188,6 +203,8 @@ if (require.main === module) {
     else mod[name] = fn;
   }
 
+  // Both toggles follow the fixture: 'wsl' means the guest arm, 'native-win'
+  // means a Windows machine with the toggle off, 'native-mac' has no guest.
   stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => ARM === 'wsl');
   stub(toolPaths, 'shouldUseWsl2ForHiggs', () => ARM === 'wsl');
   stub(toolPaths, 'getWslCondaPath', () => FAKE.wslConda);
@@ -230,10 +247,36 @@ if (require.main === module) {
     { name: 'list', engine: undefined, phase: 'list' },
   ];
 
+  /**
+   * This checkout's location, replaced by ONE token, with separators normalised.
+   *
+   * HOST-INDEPENDENT ON PURPOSE. Three things here are the running machine's and
+   * none of them is what the snapshot is about:
+   *
+   *   - `path.join` uses the HOST's separator (faking `process.platform` does not
+   *     change it — the path module binds win32/posix at load), so
+   *     `narratorPythonRoot()` yields `<REPO>\python` on Windows and `<REPO>/python`
+   *     on a Mac;
+   *   - the repo lives at a different absolute path on every machine;
+   *   - on the WSL arm the repo's own path is translated to `/mnt/<drive>/...` on a
+   *     Windows host and left alone on a Mac (it has no drive letter to translate).
+   *
+   * So all three forms collapse to `<REPO>` and every backslash becomes a forward
+   * slash. What that gives up is the ability to SEE the host->guest translation of
+   * the repo path in the snapshot; that property is asserted directly instead, as a
+   * unit check on `toGuestPath`, which is pure and host-independent. The fixture's
+   * own argv paths (`C:\lib\tmp\ebook-abc`) are still translated to `/mnt/c/...`
+   * in the capture on either host, because that translation is string logic.
+   */
   function canon(s) {
     if (typeof s !== 'string') return s;
-    const wsl = REPO.replace(/\\/g, '/').replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
-    return s.split(REPO).join('<REPO>').split(REPO.replace(/\\/g, '/')).join('<REPO>').split(wsl).join('<REPO-WSL>');
+    const fwd = REPO.replace(/\\/g, '/');
+    const guest = fwd.replace(/^([A-Za-z]):/, (_, d) => `/mnt/${d.toLowerCase()}`);
+    return s
+      .split(REPO).join('<REPO>')
+      .split(fwd).join('<REPO>')
+      .split(guest).join('<REPO>')
+      .replace(/\\/g, '/');
   }
 
   function splitBash(bash) {
@@ -262,7 +305,10 @@ if (require.main === module) {
       envExtras: { PROBE_PLAIN: 'x', PROBE_PATH: 'C:\\lib\\rejects' },
       cwdHint: undefined,
     });
-    const row = { command: plan.command, viaWsl: !!plan.viaWsl };
+    // `command` goes through canon() like everything else: it is a host path
+    // (a conda exe, a relocatable python) and an un-normalised one is exactly the
+    // separator difference that makes a Windows capture and a Mac capture disagree.
+    const row = { command: canon(plan.command), viaWsl: !!plan.viaWsl };
     if (plan.viaWsl) {
       row.args = plan.args.slice(0, -1).map(canon);
       row.bash = splitBash(plan.args[plan.args.length - 1]);

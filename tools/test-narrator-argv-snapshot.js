@@ -24,6 +24,22 @@
  * those are exactly what the cut-over changed. A door that quietly starts
  * resolving the Orpheus env for an ASSEMBLY would still have perfect flags.
  *
+ * ── IT MUST GIVE THE SAME ANSWER ON WINDOWS AND ON A MAC ────────────────────
+ *
+ * A stated property, not an accident, because it was broken and the breakage was
+ * invisible: only the `native-mac` fixture forced `process.platform`, so on a
+ * macOS host the `wsl` and `native-win` fixtures resolved through the darwin
+ * branch and every row came back as the Mac conda invocation. The snapshot still
+ * compared equal to itself there — the keeper reported that the WSL argv had not
+ * changed while never having built one.
+ *
+ * Two rules keep it true. The extractor forces `process.platform` PER FIXTURE ARM
+ * (in a child process per arm, so nothing leaks between them) and stubs both WSL
+ * toggles from the arm rather than from the machine. And `canon()` collapses this
+ * checkout's location to one `<REPO>` token with separators normalised, because
+ * `path.join` uses the HOST's separator — faking `process.platform` does not change
+ * that, the path module binds win32/posix at load.
+ *
  * ── Regenerating ────────────────────────────────────────────────────────────
  *
  * Deliberately, and never to make this pass:
@@ -56,6 +72,22 @@ function check(name, fn) {
     console.log(`  FAIL  ${name}\n        ${err.message.split('\n').join('\n        ')}`);
   }
 }
+
+// `narrator-spawn.js` is loaded directly for the pure-function checks below.
+// `electron` is not require-able here and narrator-spawn pulls it in for
+// `app.getAppPath()`; one stub, and only `toGuestPath` (which touches neither) is
+// called from it.
+const Module = require('module');
+const originalResolve = Module._resolveFilename;
+Module._resolveFilename = function (request, ...rest) {
+  if (request === 'electron') return 'electron-stub';
+  return originalResolve.call(this, request, ...rest);
+};
+require.cache['electron-stub'] = {
+  id: 'electron-stub', filename: 'electron-stub', loaded: true,
+  exports: { app: { getAppPath: () => REPO, getPath: () => REPO, isPackaged: false }, BrowserWindow: class {} },
+};
+const spawnMod = require(path.join(REPO, 'dist', 'electron', 'narrator-spawn.js'));
 
 const base = JSON.parse(fs.readFileSync(BASE, 'utf-8'));
 const extract = (...args) => JSON.parse(execFileSync(
@@ -174,15 +206,18 @@ for (const arm of ARMS) {
     }
   });
 
-  check(`${arm}: PYTHONPATH is set on every door, in the right filesystem`, () => {
+  check(`${arm}: PYTHONPATH is set on every door`, () => {
     for (const [name, row] of Object.entries(doors)) {
       const pp = envOf(row).PYTHONPATH;
       assert.ok(pp, `${name} has no PYTHONPATH — \`-m\` cannot bootstrap sys.path`);
-      if (row.viaWsl) {
-        assert.ok(!pp.includes('\\') && !/^[A-Za-z]:/.test(pp),
-          `${name} crossed into WSL with a Windows PYTHONPATH: ${pp}`);
-      }
+      assert.match(pp, /python$/, `${name}'s PYTHONPATH is not the repo's python dir: ${pp}`);
     }
+    // NOT "and it is a guest path on the WSL arm". That assertion read the
+    // TRANSLATED REPO PATH out of the capture, which is the one thing canon() has
+    // to normalise away (the repo lives somewhere different on every machine, and
+    // on a Mac host there is no drive letter to translate). The translation itself
+    // is asserted below, on `toGuestPath` directly — pure string logic, same answer
+    // on any host.
   });
 
   check(`${arm}: EBOOK2AUDIOBOOK_PATH reaches nothing`, () => {
@@ -197,6 +232,50 @@ for (const arm of ARMS) {
       'the protocol-test flag is in a production plan');
   });
 }
+
+console.log('the capture says the same thing on Windows and on a Mac');
+check('no captured value carries a host path separator', () => {
+  // THE EXACT SHAPE OF THE MAC FAILURE. `path.join` uses the HOST's separator, so
+  // an un-normalised capture stores `<REPO>\python` on Windows and `<REPO>/python`
+  // on a Mac and the snapshot can never agree across the two. Asserting the
+  // absence of backslashes anywhere in the capture is checkable from ONE host and
+  // is precisely the property that was violated.
+  const blob = JSON.stringify(plans);
+  const at = blob.indexOf(String.fromCharCode(92));
+  assert.strictEqual(at, -1,
+    'a backslash survived canon() near: ' + blob.slice(Math.max(0, at - 90), at + 60));
+});
+check('the extractor forces the platform per fixture arm', () => {
+  // The other half, and it cannot be observed from a Windows host for the two
+  // win32 arms (they would look identical either way), so it is asserted on the
+  // source. Without it a macOS host resolves `wsl` and `native-win` through the
+  // darwin branch and the snapshot compares equal to itself while describing
+  // nothing.
+  const src = fs.readFileSync(path.join(__dirname, 'narrator-argv-extract.js'), 'utf-8');
+  assert.match(src, /Object\.defineProperty\(process, 'platform', \{[\s\S]{0,160}ARM === 'native-mac' \? 'darwin' : 'win32'/,
+    'the extractor no longer forces process.platform from the fixture arm');
+});
+
+console.log('the host->guest translation itself');
+check('toGuestPath maps every shape a Windows host can name a file by', () => {
+  // Asserted on the FUNCTION rather than inferred from a capture, so it holds on a
+  // macOS host too — where the repo has no drive letter and the capture could not
+  // show a translation even if one happened.
+  const B = String.fromCharCode(92);
+  assert.strictEqual(spawnMod.toGuestPath('C:' + B + 'lib' + B + 'python'), '/mnt/c/lib/python');
+  assert.strictEqual(spawnMod.toGuestPath('C:/lib/python'), '/mnt/c/lib/python');
+  assert.strictEqual(spawnMod.toGuestPath('E:' + B + 'training'), '/mnt/e/training');
+  // The UNC form of a guest-resident path: tool-paths documents it for
+  // orpheusModelsDir on a Windows+WSL machine.
+  assert.strictEqual(
+    spawnMod.toGuestPath(B + B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'm'),
+    '/home/t/m');
+  // Already guest-form, and non-paths, pass through untouched — which is what
+  // makes it safe to apply to every argv element and every env value.
+  assert.strictEqual(spawnMod.toGuestPath('/home/t/m'), '/home/t/m');
+  assert.strictEqual(spawnMod.toGuestPath('--session_dir'), '--session_dir');
+  assert.strictEqual(spawnMod.toGuestPath('higgs-v3'), 'higgs-v3');
+});
 
 check('wsl: argv paths AND env values are both translated for the guest', () => {
   // The pair that used to be done by different code — one correct, one not — which
