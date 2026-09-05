@@ -95,6 +95,18 @@ inclusive indices), `chapter_sentences: [[text, ...] per chapter]` with the lite
 `orpheus_base_dir`, `tts_engine`, `output_format`, `metadata: {title, creator,
 language, published}`, `bookforge_metadata: {title, author, year}`, `cover: bool`,
 `final_name`, `chapter_titles: [str]`, `chapter_docs: [str]`, `chapter_titles_by_doc`.
+`chapter_sentences` HAS ONE WRITER AND ONE CORRECTOR. Prep writes the file, once
+(`text/prep.py` -> `render/session_store.save_session_state`), and nothing on the
+render path rewrites it. The single exception is a committed sentence correction:
+`electron/correct-sentences-bridge.ts:commitSentence` replaces the ONE chunk whose
+audio it just swapped, with the same string it handed the worker as
+`--sentence_overrides` (the row's own leading/trailing SML marker runs, restored
+around the corrected words). The pre-correction row is kept beside the
+pre-correction audio at `chapters/sentences/.orig-backup/<i>.txt`, so `revert`
+undoes the text and the audio together. Nothing else may edit this key - a chunk's
+text and its FLAC are one fact, and the two writers of that fact are prep and a
+commit.
+
 Paths inside it (`session_dir`, `process_dir`, `chapters_dir`, ...) are from whichever
 machine wrote them (WSL or Windows) and are NOT trusted: the reader takes the
 directory it was given and derives everything from it, exactly as e2a's
