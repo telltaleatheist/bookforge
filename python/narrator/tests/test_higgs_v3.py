@@ -1596,20 +1596,15 @@ class ServerLogIsOwnedTest(V3TestCase):
             returncode = 0
 
             def poll(self):
-                return 0                     # so _read_guest_pid returns at once
+                return 0
 
         def fake_popen(command, **kwargs):
             seen.update(kwargs)
             seen['command'] = command
             return _FakeProc()
 
-        # The pid read is stubbed as well: it shells out through
-        # `subprocess.run`, which would go through the fake Popen too and has
-        # nothing to do with what this test is about (which handles the LAUNCH
-        # call is given).
         real = subprocess.Popen
         subprocess.Popen = fake_popen
-        backend._read_guest_pid = lambda *a, **k: None
         try:
             backend.start()
         finally:
@@ -1635,9 +1630,8 @@ class ServerLogIsOwnedTest(V3TestCase):
         self.assertEqual(backend.proof_log(), path)
         self.assertEqual(backend.spec.server_log, path)
 
-    def test_with_no_session_the_log_is_PER_INSTANCE_beside_the_pid_file(self):
-        """Two workers must never share one log, for the same reason they must
-        never share one pid file."""
+    def test_with_no_session_the_log_is_PER_INSTANCE(self):
+        """Two workers must never share one log."""
         one = self.launching_backend()
         two = self.launching_backend()
         self.assertNotEqual(one.launch_log, two.launch_log)
@@ -1891,13 +1885,17 @@ class _LaunchTestBase(unittest.TestCase):
         self.assertIn(script_in_guest, wrapper,
                       'the script path must be the one the GUEST sees')
         self.assertIn('setsid bash', wrapper,
-                      'the server must lead its own process group, so a stop '
-                      'reaches its stage engines')
-        self.assertIn('echo $!', wrapper,
-                      "serve_v3.sh execs vllm-omni, so $! IS the server's pid")
-        self.assertIn(backend.pid_file(), wrapper)
-        self.assertIn('wait $!', wrapper,
-                      'the launcher must live as long as the server')
+                      'the script must be detached from the wrapper\'s group')
+        self.assertNotIn('echo $!', wrapper,
+                         'no pid is recorded at launch: vllm-omni re-sessions '
+                         'itself and `$!` is dead within a second (measured '
+                         '84072 -> 84096 -> 84098)')
+        self.assertTrue(wrapper.rstrip().endswith('wait'),
+                        'the launcher must live as long as the script')
+        # THE OWNERSHIP MARKER rides in the server's environment; it is how a
+        # stop, a reclaim and the watchdog tell ours from a stranger's.
+        self.assertIn(f'{v3_served.OWNER_ENV}=', wrapper)
+        self.assertIn(backend.owner_id(), wrapper)
         # The launch script's knobs, STATED. Concurrency and the bind address
         # always; the checkpoint when the voice has one, else an explicit unset.
         self.assertIn(f'{v3_served.SERVE_MAX_NUM_SEQS_ENV}=2', wrapper)
@@ -1972,12 +1970,21 @@ class WindowsLaunchTest(_LaunchTestBase):
             v3_served.subprocess.run = real_run
         self.assertTrue(calls, 'stop() must escalate to a guest-side signal')
         self.assertTrue(calls[0][0].endswith('wsl.exe'), calls[0])
-        self.assertEqual(calls[0][1:4], ['-d', 'Ubuntu', '--exec'])
-        self.assertIn('kill', calls[0])
-        self.assertIn('-4242', calls[0],
-                      'the process GROUP (-<pid>), not the pid alone')
-        self.assertNotIn('-KILL', calls[0], 'never a KILL on a GPU holder')
-        self.assertNotIn('-9', calls[0])
+        self.assertEqual(calls[0][1:5], ['-d', 'Ubuntu', '--exec', 'python3'])
+        program = calls[0][calls[0].index('-c') + 1]
+        self.assertIn('killpg', program, 'the process GROUP, read off /proc now')
+        self.assertIn('SIGTERM', program)
+        self.assertNotIn('SIGKILL', program, 'never a KILL on a GPU holder')
+        self.assertEqual(calls[0][-1], '4242')
+
+    def test_the_windows_arm_starts_no_watchdog(self):
+        """The owner is a HOST pid the guest cannot watch; the marker says so
+        and no watchdog is launched - stop() is the only teardown there."""
+        backend = HiggsV3ServedBackend(
+            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+        wrapper = backend.launch_command()[6]
+        self.assertTrue(backend.owner_id().startswith('win32:'))
+        self.assertNotIn('python3 -c', wrapper)
 
     def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR_in_guest_form(self):
         backend = HiggsV3ServedBackend(
@@ -2008,25 +2015,60 @@ class PosixLaunchTest(_LaunchTestBase):
         backend = HiggsV3ServedBackend(serve_script='/home/t/serve_v3.sh')
         self.assertIn('/home/t/serve_v3.sh', backend.launch_command()[2])
 
-    def test_stop_signals_the_pid_directly(self):
+    def _capture_signals(self, backend):
+        calls = []
+
+        class _Done:
+            returncode = 0
+            stdout = '4242\n'
+            stderr = ''
+
+        real_run = v3_served.subprocess.run
+        v3_served.subprocess.run = lambda argv, **kw: (calls.append(argv), _Done())[1]
+        try:
+            backend._verify_gone(timeout=2)
+        finally:
+            v3_served.subprocess.run = real_run
+        return calls
+
+    def test_stop_signals_the_servers_group(self):
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url,
                                        serve_script='/campaign/serve_v3.sh')
         backend._guest_pid = 4242
-        signalled = []
-        real_killpg = v3_served.os.killpg
-        v3_served.os.killpg = lambda pid, sig: signalled.append((pid, sig))
-        try:
-            backend._verify_gone(timeout=2)
-        finally:
-            v3_served.os.killpg = real_killpg
-        self.assertTrue(signalled, 'stop() must escalate to the server group')
-        self.assertEqual(signalled[0][0], 4242)
-        self.assertEqual({sig for _, sig in signalled},
-                         {v3_served.signal.SIGTERM},
+        calls = self._capture_signals(backend)
+        self.assertTrue(calls, 'stop() must escalate to the server group')
+        self.assertEqual(calls[0][:2], ['python3', '-c'])
+        self.assertIn('killpg', calls[0][2], 'the GROUP, read off /proc now')
+        self.assertIn('SIGTERM', calls[0][2])
+        self.assertNotIn('SIGKILL', calls[0][2],
                          'TERM only - a KILL on a GPU holder inside WSL wedges '
                          'the VM')
+        self.assertEqual(calls[0][-1], '4242')
+
+    def test_the_guest_arm_starts_a_watchdog_on_the_owner(self):
+        """Hit Stop, or let the app die: a worker killed with SIGKILL runs no
+        cleanup, so a guest-side watchdog on the OWNER pid takes the marked
+        listener's group down (Owen, 2026-09-05: "it should bring it down if
+        i hit stop or if bookforge app dies")."""
+        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        wrapper = backend.launch_command()[2]
+        self.assertIn('setsid python3 -c', wrapper)
+        self.assertIn(f' {os.getpid()} ', wrapper, 'watches THIS process')
+        self.assertIn('killpg', wrapper)
+        self.assertIn('NARRATOR_HIGGS3_OWNER=', wrapper)
+        self.assertNotIn('SIGKILL', wrapper)
+        self.assertEqual(backend.owner_id(), str(os.getpid()))
+
+    def test_the_watchdog_program_compiles_and_only_terms_marked_listeners(self):
+        import ast
+        tree = ast.parse(backend_program := HiggsV3ServedBackend._WATCHDOG)
+        self.assertTrue(tree.body)
+        self.assertIn("owner_of(p) == mark", backend_program)
+        self.assertNotIn('SIGKILL', backend_program)
+        ast.parse(HiggsV3ServedBackend._OWN_SERVERS_SCAN)
+        ast.parse(HiggsV3ServedBackend._SIGNAL_GROUP)
 
     def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR(self):
         backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh',
@@ -2046,14 +2088,8 @@ class PosixLaunchTest(_LaunchTestBase):
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url)
-        signalled = []
-        real_killpg = v3_served.os.killpg
-        v3_served.os.killpg = lambda pid, sig: signalled.append(pid)
-        try:
-            backend._verify_gone(timeout=2)
-        finally:
-            v3_served.os.killpg = real_killpg
-        self.assertEqual(signalled, [],
+        calls = self._capture_signals(backend)
+        self.assertEqual(calls, [],
                          'no recorded pid means it is not ours to kill')
 
 

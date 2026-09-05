@@ -92,8 +92,8 @@
         "HIGGS_ENV": "/home/fake/anaconda3/envs/higgs3",
         "HIGGS_HOST": "127.0.0.1",
         "HIGGS_PORT": "8095",
-        "HIGGS_GPU_MEM_UTIL": "0.6",
-        "HIGGS_CODEC_GPU_MEM_UTIL": "0.25",
+        "HIGGS_GPU_MEM_UTIL": "0.55",
+        "HIGGS_CODEC_GPU_MEM_UTIL": "0.15",
         "HIGGS_MAX_MODEL_LEN": "8192",
         "PYTHONPATH": "<REPO>/python"
       },
