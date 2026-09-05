@@ -12326,7 +12326,7 @@ app.on('before-quit', async (event) => {
   // process, so it is the last to be cut short and the loudest when it is.
   await quitStepWithDeadline('kill and flush TTS workers (incl. WSL)', 60_000, async () => {
     try {
-      const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
+      const { killAllWorkers, forceKillAllNarratorBatchProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
       // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
       // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
       // so the flush found nothing and quitting mid-job lost the checkpoint.)
@@ -12334,7 +12334,7 @@ app.on('before-quit', async (event) => {
       // survivor (never SIGKILL — the WSL wedge trigger).
       await killAllWorkers(false);
       // Also run aggressive cleanup to catch any orphans
-      forceKillAllE2aProcesses();
+      forceKillAllNarratorBatchProcesses();
       // Global sweep for anything the session-scoped teardowns missed. Quitting without
       // this strands vLLM mid-CUDA-work inside the guest — the very thing that
       // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged

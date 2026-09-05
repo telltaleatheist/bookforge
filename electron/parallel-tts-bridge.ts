@@ -481,12 +481,23 @@ function cleanupOrphanedVllmProcesses(): void {
 }
 
 /**
- * Aggressively kill ALL Python processes related to ebook2audiobook
- * This is the nuclear option - used on app exit to ensure no orphans
- * Uses WMIC to find python processes by command line pattern
+ * Kill every narrator BATCH process still running, natively. The nuclear option,
+ * used on app exit to ensure no orphans.
+ *
+ * THIS IS THE ONLY NATIVE-WINDOWS ORPHAN SWEEP THERE IS, and until now it matched
+ * `commandline like '%app.py%'` — which appears nowhere in
+ * `python -u -m narrator.compat.app`. It has been sweeping nothing since the
+ * cut-over, and a sweep that matches nothing reports success: the log said
+ * "WMIC process search completed" either way. On a machine that renders natively
+ * (Windows without the WSL toggle, and Linux) that is a python holding the GPU
+ * after the app is gone.
+ *
+ * `narrator.serve` is excluded. It is the resident Listen server, it is not a
+ * batch job, and the pool tears it down itself through its own cooperative quit —
+ * taskkilling it here would race that and leave a wedged vLLM.
  */
-export function forceKillAllE2aProcesses(): void {
-  console.log('[PARALLEL-TTS] Force killing all e2a-related processes...');
+export function forceKillAllNarratorBatchProcesses(): void {
+  console.log('[PARALLEL-TTS] Force killing all narrator batch processes...');
 
   const extLock = externalGpuJobLock();
   if (extLock) {
@@ -496,17 +507,27 @@ export function forceKillAllE2aProcesses(): void {
 
   if (os.platform() === 'win32') {
     try {
-      // Use WMIC to find python processes with app.py in command line
-      // This catches vLLM worker processes that escape normal tree kill
+      // WMIC's `like` is SQL-ish, not a regex: `%` is the wildcard and there is no
+      // alternation, so the two batch doors need two clauses. The command line is
+      // fetched alongside the pid because the serve process must be excluded and
+      // WMIC cannot express "not like" and "like" in one readable filter here.
       const wmicOutput = execSync(
-        'wmic process where "commandline like \'%app.py%\' and name like \'%python%\'" get processid',
+        'wmic process where "(commandline like \'%narrator.compat.worker%\' '
+          + 'or commandline like \'%narrator.compat.app%\') and name like \'%python%\'" '
+          + 'get processid,commandline /format:csv',
         { encoding: 'utf8', timeout: 10000 }
       );
 
+      // /format:csv gives `Node,CommandLine,ProcessId`; the command line may itself
+      // contain commas, so the PID is taken from the LAST field and the rest is the
+      // command.
+      const serveRe = new RegExp(SERVE_PROCESS_RE);
       const pids = wmicOutput
         .split('\n')
         .map(line => line.trim())
-        .filter(line => /^\d+$/.test(line));
+        .filter(line => /,\d+$/.test(line))
+        .filter(line => !serveRe.test(line))
+        .map(line => line.slice(line.lastIndexOf(',') + 1));
 
       for (const pid of pids) {
         try {
@@ -518,7 +539,7 @@ export function forceKillAllE2aProcesses(): void {
       }
 
       if (pids.length > 0) {
-        console.log(`[PARALLEL-TTS] Force killed ${pids.length} e2a Python process(es)`);
+        console.log(`[PARALLEL-TTS] Force killed ${pids.length} narrator batch process(es)`);
       }
     } catch (err) {
       // WMIC may fail or return empty, that's OK
@@ -1522,7 +1543,7 @@ function shellQuote(s: string): string {
  *     GPU wait is what wedges the whole WSL VM until a reboot).
  *   - Escalation past SIGTERM is `wsl.exe -t <distro>` — VM terminate releases the GPU
  *     at the hypervisor level and cannot leave a half-dead process behind.
- *   - Kills are SESSION-SCOPED: the old global "ebook2audiobook.*\.py" pattern once
+ *   - Kills are SESSION-SCOPED: the old global "narrator.compat.(worker|app)" pattern once
  *     caught a freshly resumed job's worker 7s into vLLM init (the wedge trigger).
  *   - The wsl.exe wrapper on Windows is only taskkilled AFTER the guest process is
  *     confirmed dead (killing the wrapper first severed the in-guest pkill mid-flight).
@@ -1577,7 +1598,7 @@ function killWslWrapper(proc: ChildProcess, label: string): void {
  */
 export async function gracefulWslShutdown(): Promise<WslPkillOutcome> {
   if (process.platform !== 'win32' || !shouldUseWsl2ForOrpheus()) return 'none';
-  return destroyWslGuestProcesses('ebook2audiobook.*\\.py', { graceMs: 10000, label: 'app-quit' });
+  return destroyWslGuestProcesses(NARRATOR_BATCH_RE, { graceMs: 10000, label: 'app-quit' });
 }
 
 /**
@@ -1669,7 +1690,11 @@ function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
     }
   }
 
-  const pattern = scoped ? wslSessionPattern(sessionId) : 'ebook2audiobook.*\\.py|vllm';
+  // `|vllm` stays: a vLLM child that outlived its parent is exactly what this
+  // sweep is for, and it is named by its own process rather than by the module
+  // that started it. `narrator.serve`'s vLLM is the one thing that must survive —
+  // the pool owns its teardown — so the guest-side helper excludes it.
+  const pattern = scoped ? wslSessionPattern(sessionId) : `${NARRATOR_BATCH_RE}|vllm`;
   console.log(`[PARALLEL-TTS] Cleaning up orphaned WSL processes (${scoped ? `session ${sessionId}` : 'global'})...`);
   // Fire-and-forget async SIGTERM: best-effort reap of zombies from a crashed worker.
   // Verification that the guest/VRAM is actually clear happens in the spawn preflight.
@@ -6516,7 +6541,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     // available memory for cache blocks") and set up the kill-collision that wedged
     // the VM. Wait for the guest to actually clear before sizing.
     if (orpheusViaWsl) {
-      const clear = await waitForGuestExit('ebook2audiobook.*\\.py', 60_000, `job ${jobId} preflight`);
+      const clear = await waitForGuestExit(NARRATOR_BATCH_RE, 60_000, `job ${jobId} preflight`);
       if (!clear) {
         if (isWslWedged()) {
           session.gpuPreflightError = wslWedgedMessage();
