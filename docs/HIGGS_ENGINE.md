@@ -269,6 +269,11 @@ They stay on this side, and a keeper asserts none of them leaks into the spawn e
    spent five minutes coming up;
 5. a **fine-tune with no measured `maxChars`** — see below.
 
+A sixth requirement is *narrator's*, not this loader's, because it is about a
+directory only narrator's process can see: a `kind: 'checkpoint'` voice's
+directory must carry `generation_config.json` — see “A checkpoint's
+`generation_config.json` is a REQUIRED FILE” below.
+
 `higgsSpawnEnv()` re-runs (3)–(5) at the boundary that actually emits the value.
 A keeper caught an untranscribed clip reaching the document through a caller that
 held a model from `listHiggsModels()` rather than `resolveHiggsModel()`.
@@ -305,6 +310,59 @@ The seeded **deathstalker** entry therefore has `maxChars: null`,
 session sends the measured number. **The narration dropdown still shows it**,
 greyed, carrying that note: a voice everyone is waiting for should not silently be
 absent from the list.
+
+### ⚠ A checkpoint's `generation_config.json` is a REQUIRED FILE
+
+The second most dangerous thing about a fine-tune, and it is not in this catalog
+at all — it is in the checkpoint **directory**.
+
+`vllm-omni serve <dir>` takes its sampling **from the model directory**:
+`--generation-config` defaults to `auto`, and the launch script passes no
+override. A merged directory *without* `generation_config.json` falls through to
+vllm-omni's stage fallback (`entrypoints/openai/stage_params.py`), a bare
+`SamplingParams()` — temperature 1.0, **top_p 1.0, top_k DISABLED** — which
+samples the untruncated 1026-way codebook tail. Measured 2026-09-05: long
+prompts derail into babble, a seed-dependent collapse to 3–10 s of audio at
+≥ 600 characters, and the same server renders the same prompts correctly with the
+file present. **Nothing per-request can fix it**: `OpenAICreateSpeechRequest`
+carries no `temperature` / `top_p` / `top_k` fields, so the directory is the only
+lever there is.
+
+The provenance, which is *not* "the base ships one":
+
+- `bosonai/higgs-audio-v3-tts-4b` ships **no** `generation_config.json` — verified
+  across the whole WSL HF cache and the Mac's base snapshot. That is exactly why a
+  merged dir must carry one;
+- the **merge writes it**, from a recorded per-run
+  `generation_config.override.json`, and refuses to produce a served dir without
+  it;
+- the values are vllm-omni's own `deploy/higgs_multimodal_qwen3.yaml` stage-0
+  `default_sampling_params` — `{"temperature": 1.0, "top_p": 0.95, "top_k": 50,
+  "repetition_penalty": 1.0}` — which `vllm-omni serve` on the CLI does *not*
+  read, hence materialising them into the directory;
+- `merge_manifest.json` beside the weights records which source was used.
+
+So the required files of a `kind: 'checkpoint'` voice's directory are
+`config.json`, `tokenizer.json`, `tokenizer_config.json`, `chat_template.jinja`,
+the weights — **and `generation_config.json`**.
+
+**narrator refuses by name** (`v3_served.require_generation_config`, reached from
+`checkpoint_serve_target` and therefore from every door that resolves a
+checkpoint voice) when the file is absent, unparseable, or present but carrying
+none of `temperature` / `top_p` / `top_k` — a `generation_config.json` without
+sampling is not the file this needs, because the server reads it, finds nothing
+and falls back exactly as if it were absent. It never copies, synthesizes or
+defaults one: writing it would be narrator deciding a model's sampling.
+
+The refusal is narrator's and not `resolveHiggsModel()`'s on purpose: the
+checkpoint lives inside WSL (or on the Mac), and the process that can *see* the
+directory is the one that must check it.
+
+**On the Mac this is not just the server's file — it is narrator's.** mlx-audio
+0.4.8's `higgs_audio_v3` reads no `generation_config.json` at all (its
+`Model.generate` defaults `top_p` and `top_k` to `None`, which disables both), so
+the MLX backend reads the checkpoint's file itself and passes those exact values
+to the sampler. See `python/narrator/engine/PORT_NOTES.md` 12.8d and 13.11.
 
 ### Cold start: 297 s, not 55
 
