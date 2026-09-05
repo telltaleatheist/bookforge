@@ -1774,13 +1774,34 @@ class WindowsLaunchTest(_LaunchTestBase):
             serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
         command = backend.launch_command()
         self.assertTrue(command[0].endswith('wsl.exe'), command)
-        self.assertEqual(command[1:5], ['-d', 'Ubuntu', 'bash', '-c'])
-        self.assert_wrapper(command[5], backend, '/mnt/c/campaign/serve_v3.sh')
+        self.assertEqual(command[1:6], ['-d', 'Ubuntu', '--exec', 'bash', '-c'])
+        self.assert_wrapper(command[6], backend, '/mnt/c/campaign/serve_v3.sh')
+
+    def test_the_wrapper_runs_WITHOUT_the_distros_default_shell(self):
+        """`--exec`, and it is the difference between a pid file and an empty one.
+
+        Without it wsl.exe runs the command line through the distro's default
+        shell, which expands `$!` before bash sees the wrapper - so the pid file
+        is written EMPTY and `wait $!` becomes a bare `wait`. Measured on
+        owens-pc 2026-09-05 through this argv: bare -> `pid=[]`, `--` ->
+        `pid=[]`, `--exec` -> `pid=[42679]`. `stop()` then has no pid to signal
+        inside the distro, which is how a ~14 GB vllm-omni survives its own
+        teardown.
+        """
+        backend = HiggsV3ServedBackend(
+            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+        command = backend.launch_command()
+        self.assertIn('--exec', command, command)
+        # BEFORE the script, or the shell has already run by the time it applies.
+        self.assertLess(command.index('--exec'), command.index('-c'))
+        self.assertNotIn('--', command,
+                         "`--` is not a substitute: it stops wsl.exe parsing its "
+                         'own options and still runs the default shell')
 
     def test_a_script_inside_the_distro_is_not_mangled(self):
         backend = HiggsV3ServedBackend(
             serve_script=r'\\wsl$\Ubuntu\home\telltale\serve_v3.sh')
-        self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[5])
+        self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[-1])
 
     def test_stop_signals_the_guest_pid_when_the_server_outlives_wsl_exe(self):
         """Terminating wsl.exe kills the Windows-side relay; the guest process
