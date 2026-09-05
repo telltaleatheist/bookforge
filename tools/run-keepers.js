@@ -76,6 +76,7 @@ const SUITES = [
   'test-no-e2a-doors',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
+  'test-assembly-after-wsl-normalize',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',

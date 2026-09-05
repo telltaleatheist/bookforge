@@ -5118,8 +5118,10 @@ function findE2aProcessDir(sessionDir: string): string | null {
  * caller already produced a Windows copy (the project cache, which also rewrote
  * session-state.json), pass it as `windowsSentencesDir` to skip a second copy.
  *
- * Best-effort: on any failure we leave prepInfo on the WSL paths, so the existing
- * WSL assembly path still runs — no regression.
+ * NOT best-effort any more. It THROWS on failure — see the catch. There is no WSL
+ * assembly path left to fall back to, so leaving prepInfo on the guest paths would
+ * hand a native assembler a `\wsl$` UNC, which is the hazard this function exists
+ * to remove.
  */
 async function normalizeWslSessionToWindows(
   session: ConversionSession,
@@ -5157,9 +5159,42 @@ async function normalizeWslSessionToWindows(
 
     if (!fsSync.existsSync(winSentences)) throw new Error(`No sentences at ${winSentences}`);
 
+    // ALL FOUR FIELDS, OR THE COPY IS POINTLESS.
+    //
+    // `processDir` was left on the guest until 2026-09-05, and it is the one the
+    // assembly door passes as `--session_dir` — so after every WSL render the
+    // native assembler was handed a `\wsl$` UNC and read `session-state.json`
+    // over 9p, from the copy whose paths `rewriteSessionStatePaths` never touched,
+    // at lengths past 260 characters. That is exactly the state the throw below
+    // describes: mediainfo answers a too-long path with a silent 0.0 duration and
+    // the book assembles WRONG rather than failing.
+    //
+    // Derived from `winSentences` rather than carried separately, because both
+    // branches above produce it and only it: the cache-reuse branch never computes
+    // a process dir at all, which is how the field came to be missed.
+    const winChapters = path.dirname(winSentences);      // <process>/chapters
+    const winProcess = path.dirname(winChapters);        // <process>
     prep.sessionDir = winSessionDir;
-    prep.chaptersDir = path.dirname(winSentences);
+    prep.chaptersDir = winChapters;
     prep.chaptersDirSentences = winSentences;
+    prep.processDir = winProcess;
+
+    // AND SAY SO IF THEY DISAGREE. Every path this function repoints must land on
+    // the same filesystem; a mixture means one of them was missed again, and the
+    // symptom of that is a slow or silently wrong book rather than an error.
+    const stillGuest = Object.entries({
+      sessionDir: prep.sessionDir,
+      chaptersDir: prep.chaptersDir,
+      chaptersDirSentences: prep.chaptersDirSentences,
+      processDir: prep.processDir,
+    }).filter(([, v]) => isWslUncPath(v));
+    if (stillGuest.length > 0) {
+      throw new Error(
+        'Normalized the session to Windows but left '
+        + stillGuest.map(([k, v]) => `${k}=${v}`).join(', ')
+        + ' on the guest. Assembly runs natively and cannot read a \\wsl$ path safely.',
+      );
+    }
     console.log(`[PARALLEL-TTS] Orpheus session normalized to Windows: ${winSessionDir} (RVC + assembly run native)`);
     await logger.log('INFO', session.jobId, `Orpheus session normalized to Windows; RVC + assembly run native: ${winSessionDir}`);
   } catch (err) {
