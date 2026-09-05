@@ -1089,6 +1089,55 @@ class EngineTest(V3TestCase):
             HiggsV3Engine(self.config())
         self.assertIn(v3_served.SERVE_MAX_NUM_SEQS_ENV, str(caught.exception))
 
+    def test_the_packers_markers_never_reach_the_server(self):
+        """MEASURED (the Mac, 2026-09-05): 677 of 1067 chunks of Owen's first
+        Higgs book began with `[break]`, every heading with `[break][heading]`,
+        and the model READ them - "break" spoken at the head of most chunks,
+        7-15 s of gibberish before "Dedication.". The serve worker cleaned
+        before calling; the render worker hands convert() the stored text and
+        render_audio only trimmed whitespace. The strip is the model boundary's,
+        for every caller."""
+        engine = HiggsV3Engine(self.config(sentences_dir=self.dir))
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('[break][heading]Dedication.')
+        self.assertEqual(self.server.requests[-1]['input'], 'Dedication.')
+        engine.convert_batch([(3, '[break]I would like to dedicate this book.'),
+                              (4, '[item]First. [pause:1.5]Second.')])
+        inputs = sorted(r['input'] for r in self.server.requests[-2:])
+        self.assertEqual(inputs, ['First. Second.',
+                                  'I would like to dedicate this book.'])
+        for r in self.server.requests:
+            self.assertNotIn('[break]', r['input'])
+            self.assertNotIn('[heading]', r['input'])
+
+    def test_a_chunk_that_is_only_markers_is_refused_by_name(self):
+        engine = HiggsV3Engine(self.config())
+        self.addCleanup(engine.cleanup)
+        with self.assertRaises(ValueError) as caught:
+            engine.render_audio('[break][heading]')
+        self.assertIn('markers', str(caught.exception))
+
+    def test_both_higgs_engines_strip_at_the_model_boundary(self):
+        """Static: every Higgs render entry (served render_audio, MLX
+        render_audio and convert_batch) calls the shared strip. A path that
+        only `.strip()`s whitespace is the bug above."""
+        import ast
+        here = os.path.dirname(v3_served.__file__)
+        wanted = {'v3_engine.py': {'render_audio'},
+                  'mlx_backend.py': {'render_audio', 'convert_batch'}}
+        for filename, methods in wanted.items():
+            with open(os.path.join(here, filename), encoding='utf-8') as handle:
+                tree = ast.parse(handle.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.FunctionDef) and node.name in methods:
+                    calls = {n.func.attr for n in ast.walk(node)
+                             if isinstance(n, ast.Call)
+                             and isinstance(n.func, ast.Attribute)}
+                    self.assertIn('_clean_sentence_for_tts', calls,
+                                  f'{filename}:{node.name} must strip the markers')
+                    methods = methods - {node.name}
+            self.assertEqual(methods, set(), f'{filename}: not found: {methods}')
+
     def test_convert_batch_answers_every_item_in_order(self):
         engine = HiggsV3Engine(self.config(sentences_dir=self.dir))
         self.addCleanup(engine.cleanup)

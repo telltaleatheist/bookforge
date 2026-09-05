@@ -1471,9 +1471,16 @@ class HiggsV3MlxEngine:
         an explicit `seed` overrides. Returns None only when `should_stop` went
         true mid-generation.
         """
-        clean = (text or '').strip()
+        # THE MODEL BOUNDARY STRIPS THE MARKUP - once, for every caller. See
+        # HiggsV3Engine.render_audio: this path only trimmed whitespace, so the
+        # packer's `[break]` / `[heading]` reached the prompt and were READ
+        # ("break" at the head of 677 of 1067 chunks; 7-15 s of gibberish before
+        # "Dedication."), measured on this arm 2026-09-05.
+        clean = self._clean_sentence_for_tts(text)
         if not clean:
-            raise ValueError('HiggsV3MlxEngine.render_audio(): the chunk has no text')
+            raise ValueError(
+                'HiggsV3MlxEngine.render_audio(): the chunk has no text once its '
+                f'markers are stripped ({(text or "").strip()!r}).')
         # The 45-token allowlist. An UNKNOWN control token is not ignored: the
         # model reads it out loud as words and the chunk collapses.
         v3_served.validate_control_tokens(clean)
@@ -1544,10 +1551,14 @@ class HiggsV3MlxEngine:
         # refusal `render_audio` makes, made where it does not take a batch down.
         cleaned = []
         for index, text in items:
-            clean = (text or '').strip()
+            # The marker strip, per row, at the model boundary - the same one
+            # render_audio makes. Raw chunk text carries the packer's `[break]`
+            # / `[heading]`, and a prompt built from it READS them.
+            clean = self._clean_sentence_for_tts(text)
             if not clean:
                 raise ValueError(
-                    f'HiggsV3MlxEngine.convert_batch(): chunk {index} has no text')
+                    f'HiggsV3MlxEngine.convert_batch(): chunk {index} has no text '
+                    f'once its markers are stripped ({(text or "").strip()!r})')
             v3_served.validate_control_tokens(clean)
             cleaned.append((index, clean))
 

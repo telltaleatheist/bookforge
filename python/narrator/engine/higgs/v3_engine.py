@@ -652,9 +652,23 @@ class HiggsV3Engine:
         `convert` and `generate_batch_stream` do - so a book is not rendered at
         one seed from end to end.
         """
-        clean = (text or '').strip()
+        # THE MODEL BOUNDARY STRIPS THE MARKUP - here, once, for every caller.
+        # `[break]` / `[heading]` / `[item]` / `[pause:X]` are narrator's own
+        # markers: the packer writes them into the chunk text (677 of 1067
+        # chunks of Owen's first Higgs book began with `[break]`; every heading
+        # with `[break][heading]`), the assembler realizes them as gaps, and
+        # Orpheus's convert() strips them before its prompt. This path only
+        # trimmed whitespace, so Higgs READ THEM: "break" spoken at the head of
+        # most chunks, "[heading]" as 7-15 s of gibberish before "Dedication."
+        # (measured on the Mac, 2026-09-05; identical on the served arm). The
+        # serve worker cleans before it calls, which is why Listen never showed
+        # it; the render worker hands convert() the stored text, which is why
+        # every book did.
+        clean = self._clean_sentence_for_tts(text)
         if not clean:
-            raise ValueError('HiggsV3Engine.render_audio(): the chunk has no text')
+            raise ValueError(
+                'HiggsV3Engine.render_audio(): the chunk has no text once its '
+                f'markers are stripped ({(text or "").strip()!r}).')
         request = SpeechRequest(
             text=clean, voice=self.voice_ref,
             max_new_tokens=self._budget.cap_frames(clean),
@@ -795,6 +809,60 @@ class HiggsV3Engine:
                 if i in stream_rows:
                     on_chunk(i, 0, audio.copy())
                 on_row(i, audio)
+
+
+def higgs_v3_prep_budget(voice_name: str):
+    """The `Budget` a Higgs PREP packs a book against - the voice's own
+    `maxChars` from the NARRATOR_HIGGS_VOICES document, carried as data.
+
+    MEASURED BUG, both arms (the Mac agent, 2026-09-05, from Owen's "why 1067
+    chunks when Orpheus made 576"): `compat/app.py:route_prep` built a Higgs
+    prep with no budget, and `text/prep.py` then reached for
+    `orpheus_budget_from_env()` - ORPHEUS_MAX_CHARS, which a Higgs spawn never
+    carries, so e2a's 350-char default won. Every Higgs book so far was packed
+    in ~220-char chunks while the voice document beside it said 900 (MLX) or
+    1200 (served): the certified caps were never exercised by a book, and a
+    voice trained on 900-1200-char clips was read in fragments.
+
+    Same refusal as `HiggsV3Budget.max_chars`: a fine-tune with no measured cap
+    is refused by name, never packed at the base model's placeholder. The rate
+    is 0.0 - "no rate guard" - because the paragraph packer applies a rate only
+    against an engine-owned audio window, and v3 has none of Orpheus's kind.
+    """
+    from ..protocol import ClipsVoice as _Clips  # noqa: F401  (type only)
+    from ...text.paragraph_packer import CatalogBudget
+    from .config import load_voice
+
+    name = (voice_name or '').strip()
+    if not name:
+        raise ValueError(
+            'A Higgs v3 prep needs --higgs_voice: the chunk cap is the VOICE\'s '
+            'measured maxChars from the NARRATOR_HIGGS_VOICES document, and there '
+            'is no engine-wide number to pack a book against.')
+    resolved = load_voice(
+        name,
+        allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+        max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+        placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+    cap = getattr(resolved, 'max_chars', None)
+    if cap is None:
+        if getattr(resolved, 'checkpoint_dir', None):
+            raise ValueError(
+                f"Higgs v3 voice '{name}' is a fine-tune "
+                f'({resolved.checkpoint_dir}) and has no maxChars. Measure the safe '
+                'chunk length for THAT model and declare it in the voice document - '
+                f"refusing to pack a book at the base model's "
+                f'{HiggsV3Defaults.MAX_CHARS}-char placeholder.')
+        cap = HiggsV3Defaults.MAX_CHARS
+    cap = int(cap)
+    if cap <= 0:
+        raise ValueError(
+            f"Higgs v3 voice '{name}' declares maxChars {cap}, which is not a "
+            'chunk size.')
+    log(f"[HIGGS3] prep budget for '{name}': {cap} chars "
+        f'({getattr(resolved, "max_chars_source", None) or "placeholder"})',
+        flush=True)
+    return CatalogBudget(chars=cap, chars_per_sec=0.0)
 
 
 def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,

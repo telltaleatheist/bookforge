@@ -346,11 +346,97 @@ class PrepRefusalTest(_PrepDoorTest):
 class HiggsEngineTest(_PrepDoorTest):
     """THE FIRST CUT-OVER SLICE: Higgs jobs spawn narrator's compat doors."""
 
+    VOICES_ENV = 'NARRATOR_HIGGS_VOICES'
+
+    def setUp(self):
+        super().setUp()
+        # A Higgs prep reads the voice document: the chunk cap is the VOICE's
+        # measured maxChars, and a prep without one is refused. The fixture
+        # is a fine-tune (a merged dir carrying generation_config.json) certified
+        # at 900 - the Mac's number for deathstalker.
+        self.checkpoint = os.path.join(self.root, 'ds-merged')
+        os.makedirs(self.checkpoint, exist_ok=True)
+        with open(os.path.join(self.checkpoint, 'config.json'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('{}')
+        with open(os.path.join(self.checkpoint, 'generation_config.json'), 'w',
+                  encoding='utf-8') as handle:
+            handle.write('{"temperature": 1.0, "top_p": 0.95, "top_k": 50, '
+                         '"repetition_penalty": 1.0}')
+        self.voices_path = os.path.join(self.root, 'voices.json')
+        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
+                                       'checkpointDir': self.checkpoint,
+                                       'maxChars': 900,
+                                       'maxCharsSource': 'length-sweep'}})
+        self._saved_voices = os.environ.get(self.VOICES_ENV)
+        os.environ[self.VOICES_ENV] = self.voices_path
+        self.addCleanup(self._restore_voices)
+
+    def write_voices(self, document):
+        import json as _json
+        with open(self.voices_path, 'w', encoding='utf-8') as handle:
+            _json.dump(document, handle)
+
+    def _restore_voices(self):
+        if self._saved_voices is None:
+            os.environ.pop(self.VOICES_ENV, None)
+        else:
+            os.environ[self.VOICES_ENV] = self._saved_voices
+
     def _higgs_argv(self, *, voice='ds_ad4l', engine='higgs-v3', extra=()):
         return ['--headless', '--ebook', self.ebook,
                 '--session', self.session_id, '--language', 'en',
                 '--tts_engine', engine, '--device', 'CUDA',
                 '--prep_only', '--higgs_voice', voice, *extra]
+
+    def test_a_higgs_prep_packs_at_the_voices_cap_never_at_orpheus_350(self):
+        """MEASURED BUG (2026-09-05, both arms): the route built no budget, prep
+        fell through to ORPHEUS_MAX_CHARS's 350 default, and a 900/1200-certified
+        voice was read in ~220-char chunks."""
+        saved = os.environ.pop('ORPHEUS_MAX_CHARS', None)
+        if saved is not None:
+            self.addCleanup(os.environ.__setitem__, 'ORPHEUS_MAX_CHARS', saved)
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        state = self._read_state_the_way_the_bridge_does()[1]
+        record = state['bookforge_chunking']
+        self.assertEqual(record['budget']['voice'], 'ds_ad4l')
+        self.assertEqual(record['budget']['max_chars'], 900)
+        self.assertNotEqual(record['budget']['max_chars'], 350)
+
+    def test_a_higgs_prep_never_reads_ORPHEUS_MAX_CHARS(self):
+        os.environ['ORPHEUS_MAX_CHARS'] = '123'
+        self.addCleanup(os.environ.pop, 'ORPHEUS_MAX_CHARS', None)
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        self.assertEqual(self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']['budget']['max_chars'],
+                         900)
+
+    def test_a_fine_tune_with_no_cap_is_refused_before_any_chunk(self):
+        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
+                                       'checkpointDir': self.checkpoint}})
+        code, out = self._run(self._higgs_argv())
+        self.assertNotEqual(code, 0)
+        self.assertIn('maxChars', out)
+        self.assertIn('ds_ad4l', out)
+
+    def test_a_higgs_prep_without_a_voice_is_refused_by_name(self):
+        argv = [a for a in self._higgs_argv() if a not in ('--higgs_voice', 'ds_ad4l')]
+        code, out = self._run(argv)
+        self.assertNotEqual(code, 0)
+        self.assertIn('--higgs_voice', out)
+
+    def test_prep_itself_refuses_a_higgs_options_with_no_budget(self):
+        """The belt under the route: text/prep.py never reaches for Orpheus's
+        env budget on a Higgs prep."""
+        from narrator.text.prep import PrepOptions, PrepError, prep_session
+        options = PrepOptions(session=self.session_id, tts_engine='higgs-v3',
+                              higgs_voice='ds_ad4l', chunking='paragraph')
+        with self.assertRaises(PrepError) as caught:
+            prep_session(self.ebook,
+                         os.path.join(self.sessions_root, f'ebook-{self.session_id}'),
+                         options)
+        self.assertIn('Orpheus', str(caught.exception))
 
     def _door_refusal(self, argv):
         buf = io.StringIO()
