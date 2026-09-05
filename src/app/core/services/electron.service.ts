@@ -3432,7 +3432,7 @@ export class ElectronService {
   }
 
   async correctSentencesCommit(
-    params: { projectDir: string; index: number; sourceFlacPath: string }
+    params: { projectDir: string; index: number; sourceFlacPath: string; text?: string }
   ): Promise<{ success: boolean; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.correctSentences.commit(params);

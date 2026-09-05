@@ -49,23 +49,37 @@ Two other facts about the retake spawn, from the same bridge:
   (`matchSampleFmtInPlace`, 163-174) before it is offered - which is what keeps
   a committed take inside the assembler's FLAC homogeneity guard.
 
-AN EDITED SENTENCE'S TEXT IS NOT WRITTEN BACK ANYWHERE
-------------------------------------------------------
+AN EDITED SENTENCE'S TEXT IS WRITTEN BACK BY THE COMMIT, NOT BY THIS MODULE
+--------------------------------------------------------------------------
 
-`--sentence_overrides` reaches exactly one place: the string handed to the
-engine for THIS render (`render/worker.py:_text_for`). Nothing writes it into
-`session-state.json`'s `chapter_sentences`, and every consumer of the chunk's
-TEXT reads it from there - the VTT
-(`bookforge_ext/parallel/session.py:build_vtt_file`), the manifest
-(`render/session_v1.py`), and Studio's own cue list
-(`correct-sentences-bridge.ts:281-283`, which reads `chapter_sentences`
-directly and says so). So after committing an edited take the audio says one
-thing and the transcript says another, permanently.
+`--sentence_overrides` reaches exactly one place from here: the string handed to
+the engine for THIS render (`render/worker.py:_text_for`). Nothing in Python
+writes it into `session-state.json`'s `chapter_sentences`, and that is still
+correct - a take is a CANDIDATE, and candidates must not change the book.
 
-This is e2a's behaviour exactly and is preserved (see
-`render/PORT_NOTES.md` section 9). It is not fixable here: the fix is for the
-edit to land in whatever owns the chunk text, which is prep's manifest -
-migration step 4.
+What changed on 2026-09-05 is what happens when a person approves one.
+`correct-sentences-bridge.ts:commitSentence` now replaces that chunk's row in
+`chapter_sentences` with the SAME string it passed here as the override, in the
+same act that swaps `<i>.flac`. Every consumer of the chunk's TEXT reads that
+key - the VTT builder, the manifest (`render/session_v1.py`), the worker's own
+resume (`flatten_sentences`), and Studio's cue list - so the audio and the
+transcript now say the same thing, and a later re-render of that index produces
+the reading that was approved instead of silently restoring the old one.
+
+Two consequences for anything spawning a retake:
+
+- The override the bridge sends already carries the row's own leading and
+  trailing SML marker runs (`[heading]`, `[item]`, `[break]`, `[pause:X]`).
+  Those markers are the chunk's structure, not its words: handing this module
+  the bare words would render the take under different gap and heading rules
+  than the row it replaces.
+- The pre-correction row is kept at
+  `<sentences_dir>/.orig-backup/<i>.txt`, beside the pre-correction audio, so a
+  revert restores both halves.
+
+e2a left the transcript stale here (`render/PORT_NOTES.md` section 9 records the
+old behaviour); the hole is closed where the chunk text lives, not by ranking or
+selecting takes - nothing in Python does that.
 """
 from __future__ import annotations
 

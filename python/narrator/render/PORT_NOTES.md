@@ -484,7 +484,7 @@ line. The `indent=2` in `handlers.py` is what breaks 9.6 and would have broken
 the worker too; see section 8's `_print_worker_result` / `_print_app_result`
 split.
 
-### 9.8 An edited sentence's TEXT is never written back
+### 9.8 An edited sentence's TEXT is never written back BY PYTHON
 
 `--sentence_overrides` reaches exactly one place: the string handed to the engine
 for that render (`render/worker.py:_text_for`, the port of
@@ -510,6 +510,18 @@ effect of porting the packer. So the bug is DEFERRED to the manifest era, where
 the manifest (not the session state) owns chunk text and a retake can amend the
 document it came from. Owed to the orchestrator as a decision, not to a builder as
 a task. See `text/PORT_NOTES.md` section 5.8.
+
+**RESOLVED 2026-09-05, and NOT in this column.** The decision above went the other
+way: the session state is what every reader has today, so waiting for the manifest
+era meant shipping a door whose corrections do not survive their own book. The
+write-back lives at the moment a take becomes the book -
+`electron/correct-sentences-bridge.ts:commitSentence` - which replaces exactly the
+one chunk whose FLAC it swapped, with the same string it passed as
+`--sentence_overrides`, and backs the pre-correction row up beside the
+pre-correction audio (`.orig-backup/<i>.txt`) so `revertSentence` undoes both. It
+is still true that NOTHING IN PYTHON writes `chapter_sentences` after prep: a
+take is a candidate, and candidates must not change the book. `CONTRACTS.md`
+names prep and the commit as the key's only two writers.
 
 ### 9.9 "The same FLAC parameters" is only true given the same interpreter
 

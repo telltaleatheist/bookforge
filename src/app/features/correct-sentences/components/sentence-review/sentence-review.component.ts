@@ -202,6 +202,20 @@ export class SentenceReviewComponent implements OnDestroy {
     this.updateRow(row.index, (r) => ({ ...r, selected: optIdx }));
   }
 
+  /**
+   * The words a committed take was rendered from, when the user changed them.
+   *
+   * A take is only ever generated from the row's CURRENT text, so an edited row's
+   * approved audio says `row.text` and the session's stored chunk still says the
+   * original. Sent with the commit so the two stop disagreeing - the main process
+   * writes it back into `chapter_sentences`, which is what the VTT, the assembler
+   * and a later resume all read. A plain re-roll sends nothing: there is no
+   * correction to record.
+   */
+  private correctedText(row: ReviewRow): { text?: string } {
+    return row.edited && row.text.trim() ? { text: row.text.trim() } : {};
+  }
+
   toggleReroll(row: ReviewRow): void {
     this.updateRow(row.index, (r) => ({ ...r, reroll: !r.reroll }));
   }
@@ -211,6 +225,7 @@ export class SentenceReviewComponent implements OnDestroy {
     if (opt && !opt.isOriginal) {
       const res = await this.electron.correctSentencesCommit({
         projectDir: this.projectDir(), index: row.index, sourceFlacPath: opt.path,
+        ...this.correctedText(row),
       });
       if (!res?.success) { this.toasts.problem(res?.error || 'That take could not be saved into the book.'); return; }
     }
@@ -226,6 +241,7 @@ export class SentenceReviewComponent implements OnDestroy {
       if (opt && !opt.isOriginal) {
         const res = await this.electron.correctSentencesCommit({
           projectDir: this.projectDir(), index: r.index, sourceFlacPath: opt.path,
+          ...this.correctedText(r),
         });
         if (!res?.success) { this.toasts.problem(res?.error || 'That take could not be saved into the book.'); return; }
       }

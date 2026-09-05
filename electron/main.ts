@@ -2353,8 +2353,39 @@ async function sweepDirContents(dir: string): Promise<void> {
     }
   }
 
+  /*
+   * A RENDER ON THE OTHER MACHINE IS NOT A LEFTOVER EITHER.
+   *
+   * The scratch dir is `<library>/tmp`, and the library is a share both machines
+   * mount (Z: on Windows, /Volumes/iO on the Mac). "Nothing is converting yet at
+   * startup" is a fact about THIS computer; it says nothing about the Mac, which
+   * may be eight minutes into a book.
+   *
+   * MEASURED, 2026-09-05: this sweep deleted `Z:\bookforge\tmp\ebook-83fa5cb8-…`
+   * while the Mac was rendering into it. The FLACs its workers held open survived,
+   * `session-state.json` and the ownership sidecar did not — and the render went
+   * on to publish a project cache with audio and no text, over a complete one.
+   *
+   * Each scratch session says which host owns it (`bookforge-session.json`'s
+   * `host`). Sessions belonging to another machine are left entirely alone: not
+   * rescued (that would publish a partial render), and not deleted.
+   */
+  // Not wrapped in a try: if ownership cannot be established at all, the sweep must
+  // not run. Deleting everything because we could not tell whose it was is the
+  // failure this block exists to prevent.
+  const { rescueOrphanedScratchSessions, foreignSessionHost } = await import('./parallel-tts-bridge.js');
+  const foreign: string[] = [];
+  for (const name of names) {
+    if (!name.startsWith('ebook-')) continue;
+    const host = await foreignSessionHost(path.join(dir, name));
+    if (host) {
+      foreign.push(name);
+      console.log(`[MAIN] Scratch session ${name} is owned by ${host} — not sweeping it.`);
+    }
+  }
+  if (foreign.length) names = names.filter((name) => !foreign.includes(name));
+
   try {
-    const { rescueOrphanedScratchSessions } = await import('./parallel-tts-bridge.js');
     await rescueOrphanedScratchSessions(dir);
   } catch (err) {
     console.error('[MAIN] Scratch rescue failed before sweep (continuing):', err);
@@ -10016,7 +10047,7 @@ ipcMain.handle('narration:text-readiness', async (
 
   ipcMain.handle('correct-sentences:commit', async (
     _event,
-    params: { projectDir: string; index: number; sourceFlacPath: string }
+    params: { projectDir: string; index: number; sourceFlacPath: string; text?: string }
   ) => {
     try {
       const { commitSentence } = await import('./correct-sentences-bridge.js');

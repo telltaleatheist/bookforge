@@ -786,6 +786,75 @@ async function stageSessionStateForWsl(
 }
 
 /**
+ * The `<hash>` dir under a session dir that holds `session-state.json`, or the
+ * session dir itself when the state sits directly in it.
+ *
+ * Returns null when there is no state file anywhere — which is not a layout the
+ * callers below may guess around, so each of them says what it wanted.
+ */
+async function findStateDir(sessionDir: string): Promise<string | null> {
+  try {
+    await fs.access(path.join(sessionDir, 'session-state.json'));
+    return sessionDir;
+  } catch { /* look one level down */ }
+  let entries: import('fs').Dirent[];
+  try {
+    entries = await fs.readdir(sessionDir, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    if (!entry.isDirectory() || entry.name.startsWith('.') || entry.name.startsWith('ebook-')) continue;
+    const candidate = path.join(sessionDir, entry.name);
+    try {
+      await fs.access(path.join(candidate, 'session-state.json'));
+      return candidate;
+    } catch { /* not this subdir */ }
+  }
+  return null;
+}
+
+/**
+ * REFUSE TO PUBLISH A SESSION THAT IS NOT ONE.
+ *
+ * A cached session is the durable record of a render, and `session-state.json`'s
+ * `chapter_sentences` is the only place a chunk's TEXT is written down. Audio
+ * without it is unusable: the assembler has no chapters to build
+ * (`render/session_v1.py:build_manifest`), the VTT has no cue text, a resume has
+ * no work list, and the Correct Sentences door can only say which file it wanted.
+ *
+ * MEASURED, 2026-09-05: the witches session was published exactly like that —
+ * `chapters/sentences` and BookForge's own sidecar, no `session-state.json` — and
+ * because the destructive half of caching ran BEFORE the copy, the complete
+ * 771-chunk cache it replaced was already gone. Both halves are fixed: the source
+ * is checked before anything is deleted, and the caller reports the reason.
+ *
+ * Returns the source's process dir so the caller does not walk it twice.
+ */
+async function assertPublishableSession(sessionDir: string, what: string): Promise<string> {
+  const stateDir = await findStateDir(sessionDir);
+  if (!stateDir) {
+    throw new Error(
+      `${what}: ${sessionDir} has no session-state.json (checked the directory itself and `
+      + `each hash subdirectory). Prep writes that file; a session without it carries no `
+      + `chunk text, so caching it would replace a usable cache with audio nobody can `
+      + `assemble, transcribe or correct.`
+    );
+  }
+  const statePath = path.join(stateDir, 'session-state.json');
+  let state: any;
+  try {
+    state = JSON.parse(await fs.readFile(statePath, 'utf-8'));
+  } catch (err) {
+    throw new Error(`${what}: ${statePath} could not be read: ${(err as Error).message}`);
+  }
+  if (!Array.isArray(state?.chapter_sentences) || state.chapter_sentences.length === 0) {
+    throw new Error(`${what}: ${statePath} has no chapter_sentences — there is no book in it.`);
+  }
+  return stateDir;
+}
+
+/**
  * Cache the full TTS session folder from e2a tmp into the project for permanent storage.
  * After caching, the original session in e2a tmp is removed.
  *
@@ -803,6 +872,9 @@ export async function cacheSessionToBfp(
   console.log(`[PARALLEL-TTS]   bfpPath: ${bfpPath}`);
 
   try {
+    // Before anything is deleted or renamed: is there a session here at all?
+    await assertPublishableSession(sessionDir, 'Refusing to cache this session');
+
     const audiobookDir = getAudiobookDirFromBfp(bfpPath);
     const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
     const sessionParent = path.join(audiobookDir, 'session');
@@ -829,6 +901,12 @@ export async function cacheSessionToBfp(
       await fs.cp(sessionDir, tempDestDir, { recursive: true });
     }
 
+    // Rewrite session-state.json paths to point at where the copy will live.
+    // Done on the TEMP copy, before the old session is removed: a failure here
+    // leaves the existing cache untouched instead of replacing it with one whose
+    // paths still name the machine that rendered it.
+    await rewriteSessionStatePaths(tempDestDir, destDir);
+
     // Atomic swap: remove old session(s), rename temp into place.
     // Only one session should exist per project audiobook folder.
     try {
@@ -847,10 +925,6 @@ export async function cacheSessionToBfp(
     // Rename temp dir to final name (atomic on same filesystem)
     await fs.rename(tempDestDir, destDir);
     console.log(`[PARALLEL-TTS] Session cached to: ${destDir}`);
-
-    // Rewrite session-state.json paths to point to the cached location.
-    // The original paths reference the e2a tmp dir (possibly on another OS/WSL).
-    await rewriteSessionStatePaths(destDir);
 
     // Remove original from e2a tmp
     try {
@@ -900,6 +974,9 @@ export async function cacheSessionToProject(
   console.log(`[PARALLEL-TTS]   language: ${language}`);
 
   try {
+    // Before anything is deleted or renamed: is there a session here at all?
+    await assertPublishableSession(sessionDir, 'Refusing to cache this session');
+
     const sessionFolderName = path.basename(sessionDir); // e.g. "ebook-{id}"
     const langSessionParent = path.join(projectDir, 'stages', '03-tts', 'sessions', language);
     const destDir = path.join(langSessionParent, sessionFolderName);
@@ -940,7 +1017,33 @@ export async function cacheSessionToProject(
     // Clean up any leftover temp dir from a previous failed attempt
     try { await fs.rm(tempDestDir, { recursive: true, force: true }); } catch { /* may not exist */ }
 
-    // Remove old session for this language only (keeps other languages intact)
+    // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
+    const isWslSession = isWslUncPath(sessionDir);
+
+    if (isWslSession && process.platform === 'win32') {
+      // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
+      // Windows side to a drive the guest cannot see (network drives never
+      // appear under /mnt — the titan library's Z: is the live case).
+      await copyDirOutOfWsl(sessionDir, tempDestDir);
+    } else {
+      // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
+      // scratch dir on the library volume this is near-instant regardless of
+      // session size. Falls back to a regular copy automatically elsewhere.
+      await fs.cp(sessionDir, tempDestDir, {
+        recursive: true,
+        mode: fsSync.constants.COPYFILE_FICLONE,
+      });
+    }
+
+    // Rewrite session-state.json paths to point at where the copy will live —
+    // on the TEMP copy, before anything existing is removed.
+    await rewriteSessionStatePaths(tempDestDir, destDir);
+
+    // THE DESTRUCTIVE HALF, AND IT COMES LAST. Removing the previous cache for
+    // this language before the replacement existed is how a complete 771-chunk
+    // session was traded for a partial one that could not even be read
+    // (2026-09-05). The new copy is now on disk and verified before the old one
+    // is touched, so every failure above leaves the existing cache intact.
     try {
       const existingEntries = await fs.readdir(langSessionParent, { withFileTypes: true });
       for (const entry of existingEntries) {
@@ -959,24 +1062,6 @@ export async function cacheSessionToProject(
       }
     } catch (err) {
       console.error('[PARALLEL-TTS] Failed to clean old sessions (non-fatal):', err);
-    }
-
-    // Determine if the session is in WSL filesystem (handles \\wsl$\ and \\wsl.localhost\)
-    const isWslSession = isWslUncPath(sessionDir);
-
-    if (isWslSession && process.platform === 'win32') {
-      // Routed copy-out: guest-side to a mounted drive, \\wsl$ read on the
-      // Windows side to a drive the guest cannot see (network drives never
-      // appear under /mnt — the titan library's Z: is the live case).
-      await copyDirOutOfWsl(sessionDir, tempDestDir);
-    } else {
-      // Clone-on-write where the filesystem supports it (APFS/ReFS) — with the
-      // scratch dir on the library volume this is near-instant regardless of
-      // session size. Falls back to a regular copy automatically elsewhere.
-      await fs.cp(sessionDir, tempDestDir, {
-        recursive: true,
-        mode: fsSync.constants.COPYFILE_FICLONE,
-      });
     }
 
     // Rename temp dir to final name
@@ -1007,9 +1092,6 @@ export async function cacheSessionToProject(
         }
       } catch { /* readdir failed */ }
     }
-
-    // Rewrite session-state.json paths to point to the cached location.
-    await rewriteSessionStatePaths(destDir);
 
     console.log(`[PARALLEL-TTS] LL session cached: ${destDir}`);
     console.log(`[PARALLEL-TTS] Cached sentences dir: ${cachedSentencesDir}`);
@@ -1062,45 +1144,44 @@ async function removeScratchSession(sessionDir: string): Promise<void> {
 }
 
 /**
- * Rewrite absolute paths in session-state.json to match the current cached location.
+ * Rewrite absolute paths in session-state.json to match the cached location.
  * e2a writes paths that reference the original tmp dir (e.g., /home/user/.../tmp/ebook-xxx/hash/).
  * When the session is cached to a project folder (and synced across Mac/Windows/WSL via Syncthing),
  * those paths become stale. This rewrites them to the actual on-disk location.
  *
- * @param sessionDir - The ebook-{uuid} directory (may contain a hash subdirectory)
+ * @param sessionDir  The ebook-{uuid} directory to EDIT (may contain a hash subdirectory).
+ *                    This is the staging copy while a cache is being published.
+ * @param finalDir    Where that directory will LIVE once published. Defaults to
+ *                    `sessionDir`; caching passes the post-rename destination, because
+ *                    the paths written into the state must name where the session ends
+ *                    up, not the `.tmp-` name it is being assembled under.
+ *
+ * Raises when there is no state file — the caller has already refused a session without
+ * one (`assertPublishableSession`), so reaching here without it means the copy lost it.
  */
-async function rewriteSessionStatePaths(sessionDir: string): Promise<void> {
-  // Find processDir: either sessionDir itself or a hash subdirectory
-  let processDir = sessionDir;
-  const directState = path.join(sessionDir, 'session-state.json');
-  try {
-    await fs.access(directState);
-  } catch {
-    const entries = await fs.readdir(sessionDir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.isDirectory() && !entry.name.startsWith('.') && !entry.name.startsWith('ebook-')) {
-        const candidatePath = path.join(sessionDir, entry.name, 'session-state.json');
-        try {
-          await fs.access(candidatePath);
-          processDir = path.join(sessionDir, entry.name);
-          break;
-        } catch { /* not this subdir */ }
-      }
-    }
+async function rewriteSessionStatePaths(sessionDir: string, finalDir: string = sessionDir): Promise<void> {
+  const stateDir = await findStateDir(sessionDir);
+  if (!stateDir) {
+    throw new Error(
+      `Cannot rewrite session paths: no session-state.json under ${sessionDir}. `
+      + `The copy did not bring the session's text with it.`
+    );
   }
+  // Where this process dir will be once the publish completes.
+  const finalProcessDir = path.join(finalDir, path.relative(sessionDir, stateDir));
 
-  const statePath = path.join(processDir, 'session-state.json');
+  const statePath = path.join(stateDir, 'session-state.json');
   const stateContent = await fs.readFile(statePath, 'utf-8');
   const state = JSON.parse(stateContent);
 
-  state.chapters_dir_sentences = path.join(processDir, 'chapters', 'sentences');
-  state.chapters_dir = path.join(processDir, 'chapters');
+  state.chapters_dir_sentences = path.join(finalProcessDir, 'chapters', 'sentences');
+  state.chapters_dir = path.join(finalProcessDir, 'chapters');
   if (state.epub_path) {
-    state.epub_path = path.join(processDir, path.basename(state.epub_path));
+    state.epub_path = path.join(finalProcessDir, path.basename(state.epub_path));
   }
 
   await fs.writeFile(statePath, JSON.stringify(state, null, 2));
-  console.log(`[PARALLEL-TTS] Rewrote session-state.json paths → ${processDir}`);
+  console.log(`[PARALLEL-TTS] Rewrote session-state.json paths → ${finalProcessDir}`);
 }
 
 /**
@@ -1199,12 +1280,30 @@ export async function scanProjectSessions(
  */
 const SESSION_OWNER_FILE = 'bookforge-session.json';
 
-interface SessionOwnerInfo {
+export interface SessionOwnerInfo {
   jobId: string;
   bfpPath?: string;
   language: string;
   epubPath: string;
   createdAt: string;
+  /**
+   * WHICH MACHINE IS RENDERING THIS. The scratch dir is `<library>/tmp`, and the
+   * library is a share both machines mount (Z: on Windows, /Volumes/iO on the
+   * Mac), so "this scratch dir" is not "this computer's scratch dir". The startup
+   * sweep's licence — "nothing is converting yet at startup, so everything here is
+   * from a dead run" — is only ever true of THIS host's sessions.
+   *
+   * MEASURED, 2026-09-05: Windows started while the Mac was 8 minutes into a
+   * render, swept `Z:\bookforge\tmp\ebook-83fa5cb8-…` out from under it, and took
+   * `session-state.json` and this sidecar with it. The Mac kept rendering into the
+   * gutted directory and later cached a session with audio and no text.
+   *
+   * Absent on sidecars written before this field existed; those are treated as
+   * this host's, which is the behaviour they had.
+   */
+  host?: string;
+  /** The rendering process, for a log line that can be checked by hand. */
+  pid?: number;
 }
 
 /** Write (or refresh) the ownership sidecar for a session. Best-effort, never throws. */
@@ -1217,6 +1316,8 @@ async function writeSessionOwner(session: ConversionSession): Promise<void> {
     language: session.config.settings.language || 'en',
     epubPath: session.config.epubPath,
     createdAt: new Date().toISOString(),
+    host: os.hostname(),
+    pid: process.pid,
   };
   try {
     await fs.writeFile(path.join(sessionDir, SESSION_OWNER_FILE), JSON.stringify(owner, null, 2));
@@ -1226,7 +1327,7 @@ async function writeSessionOwner(session: ConversionSession): Promise<void> {
 }
 
 /** Read the ownership sidecar from a scratch session dir. Returns null when absent/unreadable. */
-async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
+export async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
   try {
     const raw = await fs.readFile(path.join(sessionDir, SESSION_OWNER_FILE), 'utf-8');
     const parsed = JSON.parse(raw) as SessionOwnerInfo;
@@ -1235,6 +1336,20 @@ async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | 
   } catch {
     return null;
   }
+}
+
+/**
+ * The name of the machine that owns this scratch session, when it is NOT this one.
+ *
+ * `null` means "ours to sweep, rescue and delete": either the sidecar names this
+ * host, or there is no sidecar (a pre-sidecar session, or a run that never reached
+ * prep — both of which the sweep has always treated as leftovers).
+ */
+export async function foreignSessionHost(sessionDir: string): Promise<string | null> {
+  const owner = await readSessionOwner(sessionDir);
+  const host = owner?.host;
+  if (!host || host === os.hostname()) return null;
+  return host;
 }
 
 /**
@@ -1295,6 +1410,19 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
     const sessionDir = path.join(scratchDir, entry.name);
 
     try {
+      // ANOTHER MACHINE'S RENDER IS NOT AN ORPHAN. The library scratch dir is
+      // shared, so a session here may be mid-render on the Mac while this host
+      // starts up. Promoting it would publish a partial render over a complete
+      // cache, and the sweep that follows this pass would delete the live session
+      // out from under the renderer.
+      const foreign = await foreignSessionHost(sessionDir);
+      if (foreign) {
+        ttsLog.info('Scratch session belongs to another machine — leaving it alone', {
+          sessionDir, host: foreign,
+        });
+        continue;
+      }
+
       const owner = await readSessionOwner(sessionDir);
       const ours = await countRenderedSentencesInSessionDir(sessionDir);
 

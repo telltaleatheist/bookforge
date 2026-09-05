@@ -31,7 +31,7 @@ moves.
 | 1 | `<process_dir>/chapters/sentences/<i>.flac`, 0-based, contiguous | Written by the worker; read by 20+ sites, most of which build the path with a literal `path.join(processDir, 'chapters', 'sentences')` rather than through `derived-sentences.ts` |
 | 1b | **The contiguity is ENFORCED, not merely expected** | `lib/classes/tts_engines/common/utils.py:637-644` globs `*.flac`, sorts by `int(p.stem)`, and refuses unless the stems are exactly `range(len(files))` - `Missing audio sentence files: [...]` - then refuses again unless that count equals the sentence count. **This is why `take<k>/` and `.orig-backup/` are SUBDIRECTORIES**: any extra `<n>.flac` beside the set would be globbed in and shift every later index |
 | 2 | The derived-set names `chapters/sentences-denoised`, `chapters/sentences-rvc-<voiceId>`, and chained `sentences-<a>-<b>` | `electron/derived-sentences.ts:236-290` is the formula; `--sentences_dir` points assembly at one of them |
-| 3 | `session-state.json` (HYPHEN) is e2a's; `session_state.json` (UNDERSCORE) is BookForge's own sidecar | Two different files in the same directory, one Python reader, one TS reader. `correct-sentences-bridge.ts:305-308` and `reassembly-bridge.ts:737-769` both call the distinction out explicitly |
+| 3 | `session-state.json` (HYPHEN) is e2a's - now narrator's prep's; `session_state.json` (UNDERSCORE) is BookForge's own sidecar | Two different files in the same directory, one Python reader, one TS reader. `correct-sentences-bridge.ts:305-308` and `reassembly-bridge.ts:737-769` both call the distinction out explicitly |
 | 4 | The state KEY `chapters_dir_sentences` | Written at `session.py:91`, read by `worker_core.py:215`, `session.py:628`, and five TS sites. The single highest-leverage name in the layout |
 | 5 | The state KEYS `chapter_sentences`, `total_sentences`, `chapters`, `chapter_titles`, `metadata`, `bookforge_metadata`, `epub_path`, `source_epub_path`, `cover` | Read across the reassembly bridge, the correct-sentences bridge, and the assembler |
 | 6 | 1024 bytes is the "is it rendered" floor | `scan_completed_sentences`, both copies. A 0.1 s silence FLAC is ~100 bytes and therefore never counts |
@@ -104,7 +104,8 @@ CURRENT two rules, not the removed three-tier logic.
 |---|---|---|
 | 708-741 | R/W | Stages `session-state.json` into a WSL-visible dir so the worker can read it |
 | 996 | R | Regex `[\\/]stages[\\/]03-tts[\\/]sessions[\\/]` gates the WSL-cache logic - the stage path is hardcoded |
-| 1022-1060 | R/W | `rewriteSessionStatePaths`: rewrites the KEYs `chapters_dir_sentences`, `chapters_dir`, `epub_path` after a move |
+| 1022-1060 | R/W | `rewriteSessionStatePaths(sessionDir, finalDir)`: rewrites the KEYs `chapters_dir_sentences`, `chapters_dir`, `epub_path` after a move. Runs on the `.tmp-` staging copy and writes the paths the session will have once renamed; RAISES when no `session-state.json` is under it |
+| `cacheSessionToBfp` / `cacheSessionToProject` | R/W | `assertPublishableSession` REFUSES to publish a session dir with no `session-state.json`, or with an empty `chapter_sentences`, naming the path - and the removal of the previous cache happens LAST, after the copy exists. Publishing audio with no chunk text (witches, 2026-09-05) left the assembler, the VTT, resume and the correction door with nothing to read, and the complete cache it replaced was already gone |
 | 2421-2468 | R | Reads `chapter_sentences` KEY; throws when absent |
 | 2699-2953 | R/W | `PersistentSessionState`: BookForge's OWN `session_state.json` at `<processDir>/session_state.json` |
 | 3392-3440 | R | Finds the process dir under a session dir; derives `<processDir>/chapters/sentences` |
@@ -128,7 +129,8 @@ CURRENT two rules, not the removed three-tier logic.
 |---|---|---|
 | `electron/derived-sentences.ts:236-290` | R | **The naming formula**: `derivedChainDir` = `join(processDir,'chapters','sentences-'+chain.join('-'))`; `rawSentencesDir` = `join(processDir,'chapters','sentences')` |
 | `electron/correct-sentences-bridge.ts:195-247` | R | `<processDir>/chapters/sentences`, listed for the retake picker |
-| `electron/correct-sentences-bridge.ts:281-283` | R | `buildCuesFromSessionState`: cue text from `session-state.json`'s `chapter_sentences`, not from a VTT |
+| `electron/correct-sentences-bridge.ts` `readStoredChunks` | R | The cue list: `session-state.json`'s `chapter_sentences`, flattened, NOT a VTT. RAISES naming the path when the file is missing, unparseable or holds no chunks - the door's "sentence text wasn't found" message used to stand for all three |
+| **`electron/correct-sentences-bridge.ts` `writeStoredChunk`** | **W** | **The SECOND writer of `chapter_sentences`** (prep is the first). A committed correction replaces the ONE chunk whose FLAC it just swapped, with the same string it gave the worker as `--sentence_overrides`. Atomic (temp + rename). The pre-correction row is backed up to `<sentencesDir>/.orig-backup/<i>.txt` beside the pre-correction audio, and `revertSentence` restores both |
 | `electron/correct-sentences-bridge.ts:232, 305-308, 378` | R | `readSessionSettings`: BookForge's `session_state.json` (underscore) |
 | `electron/correct-sentences-bridge.ts:451-526` | R/W | `<sentencesDir>/<i>.flac`; `<sentencesDir>/.orig-backup/` holds the pre-retake original |
 | `electron/denoise-job.ts:81-226`, `electron/rvc-job.ts:73-265` | R | `rawSentencesDir` / `derivedChainDir` / the derived-set manifest, for provenance |
