@@ -811,7 +811,12 @@ export function checkWslOrpheusSetup(config: {
   }
 
   const errors: string[] = [];
-  const distroArg = config.distro ? `-d ${config.distro}` : '';
+  // The execSync string form of the ONE argv builder — see wslScriptArgs. These
+  // probes carry no `$` of their own, but their default paths do ($USER), and a
+  // probe that silently loses a `$` is exactly what broke the Higgs doctor, so
+  // they take the same route rather than being the three that still do not.
+  const wslPrefix = wslScriptArgs(config.distro, '').slice(0, -1).join(' ');
+  const wslLoginPrefix = wslPrefix.replace(/ -c$/, ' -lc');
 
   // Default paths if not specified
   const condaPath = config.condaPath || '/home/$USER/anaconda3/bin/conda';
@@ -825,7 +830,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check conda exists
     const condaCheck = execSync(
-      `wsl.exe ${distroArg} bash -c "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslPrefix} "test -f ${condaPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     condaFound = condaCheck.includes('found');
@@ -839,7 +844,7 @@ export function checkWslOrpheusSetup(config: {
   try {
     // Check e2a directory exists
     const e2aCheck = execSync(
-      `wsl.exe ${distroArg} bash -c "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslPrefix} "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
     e2aFound = e2aCheck.includes('found');
@@ -855,7 +860,7 @@ export function checkWslOrpheusSetup(config: {
     // Use conda env list to check if the environment exists
     const condaBase = condaPath.replace(/\/bin\/conda$/, '');
     const orpheusCheck = execSync(
-      `wsl.exe ${distroArg} bash -lc "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
+      `wsl.exe ${wslLoginPrefix} "source ${condaBase}/etc/profile.d/conda.sh && conda env list | grep -q '^${orpheusCondaEnv} ' && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 15000, windowsHide: true }
     ).trim();
     orpheusEnvFound = orpheusCheck.includes('found');
@@ -1011,6 +1016,48 @@ export const HIGGS_PATCHES: ReadonlyArray<{
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
 
 /**
+ * THE ARGV FOR RUNNING A SHELL SCRIPT INSIDE WSL — and the `--exec` is the whole
+ * point of this function existing.
+ *
+ * MEASURED ON owens-pc, 2026-09-05, through the SAME `spawn('wsl.exe', args)`
+ * the doctor uses:
+ *
+ *   ['-d','Ubuntu','bash','-c','f=hi; echo f=$f']            -> "f="     WRONG
+ *   ['-d','Ubuntu','--','bash','-c','f=hi; echo f=$f']       -> "f="     WRONG
+ *   ['-d','Ubuntu','--exec','bash','-c','f=hi; echo f=$f']   -> "f=hi"   right
+ *   ['-d','Ubuntu','-e','bash','-c','f=hi; echo f=$f']       -> "f=hi"   right
+ *
+ * WITHOUT `--exec`, `wsl.exe` hands the command line to the distro's DEFAULT
+ * SHELL first, so that shell expands every `$` before `bash -c` ever sees the
+ * script. A variable the script assigns to itself is unset in that outer shell,
+ * so it expands to EMPTY and the script runs with a hole in it. `$(...)`
+ * assigned to a variable goes the same way, and so does `$!`.
+ *
+ * `--` DOES NOT FIX IT, which is worth stating because it is the obvious guess:
+ * it stops wsl.exe parsing the rest as its own options, but the default shell
+ * still runs the command. `--exec` (`-e`) is the flag that means "no shell",
+ * and it is what `vlm-page-server.ts`, `cli/orpheus-batch-render.js` and
+ * `narrator/serve/__main__.py` were already using.
+ *
+ * WHAT IT COST: the Higgs doctor's patch probe is
+ * `f=$(ls <glob> | head -1); if [ -n "$f" ] ...`, so `$f` was always empty and
+ * BOTH patch rows reported "was not found in <env>" on a machine whose files
+ * were present AND correctly patched (sentinel marker present, `[:, :-1]`
+ * absent, sha 0b36f650 — the certifying server's own file). A doctor that
+ * reports a good env as broken sends someone to run Install/Repair over a
+ * working install, which on this box would have overwritten the patched
+ * site-packages file the current certificate is bound to.
+ *
+ * Anything passing a SCRIPT to wsl.exe goes through here. Passing an argv
+ * directly (`wsl.exe -d D cat /path`) is unaffected — there is no `$` for a
+ * shell to eat — and so is `bash -s` with the script on STDIN, which is why
+ * `wsl-mounts.ts` needs no change.
+ */
+export function wslScriptArgs(distro: string | undefined, script: string): string[] {
+  return [...(distro ? ['-d', distro] : []), '--exec', 'bash', '-c', script];
+}
+
+/**
  * The Higgs doctor's probe script and its result parsing, shared by the sync and
  * async entry points so the two can never disagree about what "green" means.
  */
@@ -1152,9 +1199,7 @@ export function checkWslHiggsSetupAsync(config: {
     });
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const args = distro
-    ? ['-d', distro, 'bash', '-c', higgsProbeScript(envPrefix)]
-    : ['bash', '-c', higgsProbeScript(envPrefix)];
+  const args = wslScriptArgs(distro, higgsProbeScript(envPrefix));
 
   return new Promise((resolve) => {
     let out = '';
@@ -1219,13 +1264,18 @@ export function checkWslHiggsSetup(config: {
     };
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const distroArg = distro ? `-d ${distro}` : '';
+  // The SAME argv the async doctor builds, joined for execSync's command string.
+  // Built from wslScriptArgs so the two forms cannot drift on the one flag that
+  // decides whether the probe works at all — see that function.
   const script = higgsProbeScript(envPrefix);
+  const syncArgv = wslScriptArgs(distro, script)
+    .slice(0, -1)
+    .join(' ');
 
   let out = '';
   let probeError: string | null = null;
   try {
-    out = execSync(`wsl.exe ${distroArg} bash -c "${script.replace(/"/g, '\\"')}"`, {
+    out = execSync(`wsl.exe ${syncArgv} "${script.replace(/"/g, '\\"')}"`, {
       encoding: 'utf8',
       timeout: 30000,
       windowsHide: true,

@@ -864,14 +864,28 @@ class HiggsV3ServedBackend:
 
     def launch_command(self) -> list:
         """The command `start()` runs. Public so a test and a log line can see
-        it without a GPU."""
+        it without a GPU.
+
+        `--exec` ON THE WINDOWS ARM IS LOAD-BEARING, and its absence was a live
+        bug. Without it `wsl.exe` hands the command line to the distro's DEFAULT
+        SHELL, which expands every `$` before `bash -c` sees the script - so
+        `_wrapper()`'s `echo $! > <pidfile>; wait $!` wrote an EMPTY pid file and
+        degenerated into a bare `wait`. Measured on owens-pc 2026-09-05 through
+        this exact argv: bare and `--` both write `pid=[]`; `--exec` writes
+        `pid=[42679]`. The consequence is not cosmetic - `stop()` could then
+        never signal the server BY PID inside the distro, which is the one path
+        that stops a ~14 GB vllm-omni after the Windows-side `wsl.exe` relay has
+        been terminated out from under it. `--` is NOT a substitute: it stops
+        wsl.exe parsing its own options and still runs the default shell.
+        """
         if not self.serve_script:
             raise ValueError(
                 f'This backend is in ATTACH mode ({BASE_URL_ENV}={self.base_url}); '
                 'it has no launch command.')
         if sys.platform == 'win32':
             wsl = shutil.which('wsl.exe') or 'wsl.exe'
-            return [wsl, '-d', self.wsl_distro, 'bash', '-c', self._wrapper()]
+            return [wsl, '-d', self.wsl_distro, '--exec', 'bash', '-c',
+                    self._wrapper()]
         return ['bash', '-c', self._wrapper()]
 
     def _read_guest_pid(self, timeout: float = 30.0):
