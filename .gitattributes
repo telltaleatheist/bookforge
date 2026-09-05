@@ -1,0 +1,19 @@
+# Line endings for files that are EXECUTED BY A LINUX SHELL.
+#
+# This repo is developed on Windows with core.autocrlf=true, so a checkout
+# rewrites tracked text files to CRLF. That is harmless for TypeScript and for
+# the Python scripts BookForge spawns (CPython accepts CRLF), and it is FATAL for
+# a shell script that runs inside WSL: bash reads `#!/bin/bash\r` as an
+# interpreter path ending in a carriage return and answers
+# "/bin/bash^M: bad interpreter: No such file or directory", and every `if`/`fi`
+# in the body inherits the same stray byte.
+#
+# `eol=lf` pins these to LF in the WORKING TREE regardless of autocrlf, which is
+# what the WSL side actually reads (BookForge hands wsl.exe a /mnt/c path to the
+# checked-out file — it does not stage a copy).
+#
+# The .py files beside them are pinned for a narrower reason: they are compared
+# against, and were copied from, the campaign originals, and a platform-dependent
+# byte difference makes "is this still the same patch" unanswerable by hashing.
+electron/scripts/higgs/*.sh text eol=lf
+electron/scripts/higgs/*.py text eol=lf

@@ -31,6 +31,19 @@
 export interface NarrationVoice {
   readonly value: string;
   readonly label: string;
+  /**
+   * Why this voice cannot be chosen, or absent when it can.
+   *
+   * A voice that is LISTED but not RENDERABLE is a real state — a Higgs catalog
+   * entry whose artifact has not landed is the case this exists for. Omitting it
+   * from the list would leave nothing anywhere saying the voice exists; offering
+   * it as though it worked queues a run that dies at preflight. So it is listed,
+   * disabled, and carries the reason as its tooltip.
+   *
+   * Present on the option means the picker must render it `disabled`; a caller
+   * that ignores this is offering a voice it will then refuse.
+   */
+  readonly unavailable?: string;
 }
 
 /**
@@ -72,14 +85,45 @@ export function mergeOrpheusVoices(
 /**
  * The voices THIS engine can be asked for.
  *
- * Orpheus has a roster of its own; everything else (XTTS, F5, Voxtral) renders
- * from the XTTS-family reference clips, which is what the installed-voice list
- * describes. One function so the modal and the host operation cannot disagree
- * about which list belongs to which engine.
+ * ── Why this is a switch and no longer a ternary ────────────────────────────
+ *
+ * It used to read `engine === 'orpheus' ? catalog.orpheus : catalog.xtts`, i.e.
+ * every engine that was not Orpheus was ASSUMED to render from the XTTS-family
+ * reference clips. That was true while the other engines were XTTS, F5 and
+ * Voxtral, and it is a trap the moment a fourth engine exists: adding Higgs
+ * without touching this line would have offered the Higgs picker a list of XTTS
+ * reference clips, every one of which is a voice Higgs cannot be asked for — and
+ * nothing would have failed until a render came back in the wrong voice.
+ *
+ * So the mapping is now explicit per engine and an unknown engine THROWS rather
+ * than defaulting into somebody else's roster. That is the same rule the rest of
+ * this module already follows: never offer a voice that is not there.
  */
 export function narrationVoicesFor(
   engine: string,
-  catalog: { readonly xtts: readonly NarrationVoice[]; readonly orpheus: readonly NarrationVoice[] },
+  catalog: {
+    readonly xtts: readonly NarrationVoice[];
+    readonly orpheus: readonly NarrationVoice[];
+    readonly higgs: readonly NarrationVoice[];
+  },
 ): readonly NarrationVoice[] {
-  return engine === 'orpheus' ? catalog.orpheus : catalog.xtts;
+  switch (engine) {
+    case 'orpheus':
+      return catalog.orpheus;
+    case 'higgs':
+      return catalog.higgs;
+    // Retired, but still reachable from a saved setting or an old job record
+    // being displayed. The list is what those records were rendered against, so
+    // showing it is honest; the refusal to RENDER lives in
+    // `assertRunnableTtsEngine`, not here.
+    case 'xtts':
+    case 'f5':
+    case 'voxtral':
+      return catalog.xtts;
+    default:
+      throw new Error(
+        `No voice catalog is defined for TTS engine "${engine}" — refusing to offer another ` +
+          `engine's voices. Add a case here when the engine is added.`,
+      );
+  }
 }

@@ -11,6 +11,7 @@
 
 import { Component, input, output, inject } from '@angular/core';
 import { CommonModule } from '@angular/common';
+import { engineDisplayName } from '@shared/tts/engine-caps';
 import { FormsModule } from '@angular/forms';
 import { DesktopButtonComponent } from '../../../../creamsicle-desktop';
 import {
@@ -453,12 +454,13 @@ export class JobDetailsComponent {
       });
   }
 
+  /**
+   * The engine's name as a person reads it. Delegates to the capability table so
+   * an old job whose engine is retired shows "XTTS (retired)" rather than "XTTS"
+   * — this row is the main place someone looks to find out why a re-run refuses.
+   */
   capitalizeEngine(engine: string): string {
-    switch (engine.toLowerCase()) {
-      case 'xtts': return 'XTTS';
-      case 'orpheus': return 'Orpheus';
-      default: return engine.charAt(0).toUpperCase() + engine.slice(1);
-    }
+    return engineDisplayName(engine);
   }
 
   formatProvider(provider: string): string {

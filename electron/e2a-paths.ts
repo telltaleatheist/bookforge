@@ -21,10 +21,12 @@ import {
   updateConfig as updateToolConfig,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
+  shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
   getWslOrpheusCondaEnv,
+  getWslHiggsCondaEnv,
   wslPathToWindows,
 } from './tool-paths';
 import { componentManager } from './components/component-manager';
@@ -142,6 +144,34 @@ export function getEnvPathForEngine(ttsEngine?: string, e2aPath?: string): strin
   // (that component isn't installed when Orpheus runs in WSL).
   if (ttsEngine?.toLowerCase() === 'orpheus' && shouldUseWsl2ForOrpheus()) {
     return path.join(basePath, 'orpheus_wsl_env');
+  }
+
+  // Higgs never resolves to a WINDOWS env, ever — not even the "point at your own
+  // install" shape F5 and Voxtral have. Its serving stack is vLLM-Omni, which has
+  // no Windows build at all, so the only correct answer on win32 is the WSL env
+  // prefix and the only correct answer without the WSL toggle is a refusal.
+  //
+  // THE REFUSAL IS THE POINT. Falling through to the branch below would hand back
+  // `<e2a>/python_env` — the generic bundled env — which does not contain
+  // vllm_omni and would fail somewhere deep in a worker with an ImportError that
+  // says nothing about WSL. This says the thing a person can act on.
+  if (ttsEngine?.toLowerCase() === 'higgs') {
+    if (process.platform === 'win32') {
+      if (!shouldUseWsl2ForHiggs()) {
+        throw new Error(
+          'Higgs runs on vLLM-Omni, which has no Windows build. Enable "WSL2 for Higgs" in ' +
+            'Settings → Higgs and install the Higgs environment there.',
+        );
+      }
+      // A marker path, not a real Windows one: the spawn layer resolves the WSL
+      // env by NAME (`-n <wslHiggsCondaEnv>`), exactly as it does for Orpheus.
+      return path.join(basePath, 'higgs_wsl_env');
+    }
+    const managed = componentManager.resolveEntry('higgs-env');
+    if (managed) return managed;
+    throw new Error(
+      'Higgs TTS environment not found. Install or locate it in Settings → Higgs.',
+    );
   }
 
   // Engines that run in their OWN external/managed conda env (their deps conflict
@@ -417,7 +447,7 @@ export function wslToWindowsPath(wslPath: string): string {
  * Check if the current configuration should use WSL for TTS
  * Re-exported for convenience
  */
-export { shouldUseWsl2ForAllTts, shouldUseWsl2ForOrpheus, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, wslPathToWindows };
+export { shouldUseWsl2ForAllTts, shouldUseWsl2ForOrpheus, shouldUseWsl2ForHiggs, getWslDistro, getWslCondaPath, getWslE2aPath, getWslOrpheusCondaEnv, getWslHiggsCondaEnv, wslPathToWindows };
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Safe env builder for conda spawns
@@ -501,7 +531,9 @@ export const e2aPaths = {
   wslPathToWindows,
   // WSL config (re-exported from tool-paths)
   shouldUseWsl2ForOrpheus,
+  shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
   getWslE2aPath,
+  getWslHiggsCondaEnv,
 };

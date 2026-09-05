@@ -22,6 +22,13 @@ export interface DesktopSelectOption {
   label: string;
   disabled?: boolean;
   /**
+   * Hover text. Added for the case a disabled option always raises: the row is
+   * there, it cannot be picked, and the label has no room to say why — a Higgs
+   * voice whose artifact has not landed is the first of these. A disabled option
+   * with no explanation is worse than an absent one.
+   */
+  title?: string;
+  /**
    * Optional trailing text pinned to the right edge. Unlike the label (which
    * truncates with an ellipsis when space is tight), the badge is never
    * truncated — use it for information that must always stay visible, e.g. a
@@ -43,6 +50,7 @@ interface FlatRow {
   label: string;
   value?: any;
   disabled?: boolean;
+  title?: string;
   badge?: string;
   /** index into the navigable option list (only for kind === 'option') */
   optionIndex?: number;
@@ -133,6 +141,7 @@ function isGroup(item: DesktopSelectOption | DesktopSelectOptionGroup): item is 
               [class.active]="row.optionIndex === activeIndex()"
               [attr.aria-selected]="isSelected(row.value)"
               [disabled]="row.disabled"
+              [attr.title]="row.title || null"
               (mouseenter)="activeIndex.set(row.optionIndex!)"
               (click)="choose(row.value)"
             >
@@ -444,10 +453,10 @@ export class DesktopSelectComponent implements ControlValueAccessor {
       if (isGroup(item)) {
         out.push({ kind: 'header', label: item.label });
         for (const opt of item.options) {
-          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, badge: opt.badge, optionIndex: optionIndex++ });
+          out.push({ kind: 'option', label: opt.label, value: opt.value, disabled: opt.disabled, title: opt.title, badge: opt.badge, optionIndex: optionIndex++ });
         }
       } else {
-        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, badge: item.badge, optionIndex: optionIndex++ });
+        out.push({ kind: 'option', label: item.label, value: item.value, disabled: item.disabled, title: item.title, badge: item.badge, optionIndex: optionIndex++ });
       }
     }
     return out;

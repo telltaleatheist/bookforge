@@ -141,10 +141,17 @@ async function main() {
   // ParallelTtsSettings. For Orpheus, temperature/topP/topK/repetitionPenalty/speed and
   // enableTextSplitting are INERT — prep/worker only forward them for XTTS, and Orpheus
   // sampling is fixed inside orpheus.py. They're present to satisfy the shape.
+  // THE ENGINE COMES FROM THE CALLER. It was hardcoded 'orpheus', which is what
+  // made the CLI the one door in the app that could not render a Higgs book —
+  // against the standing rule that the CLI mirrors the app's code path. Nothing
+  // else here changes: `renderRangeHeadless` routes Higgs to narrator inside the
+  // bridge, exactly as the app's narration modal does, so the CLI gets the
+  // prep/worker/assembly split for free rather than reimplementing it.
+  const engine = args.engine || 'orpheus';
   const settings = {
     device: 'auto',
     language: args.language || 'en',
-    ttsEngine: 'orpheus',
+    ttsEngine: engine,
     fineTuned: voice,
     temperature: 0.6, topP: 0.8, topK: 0, repetitionPenalty: 1.1, speed: 1.0,
     enableTextSplitting: false,

@@ -18,12 +18,13 @@ import { ComponentService } from '../../core/services/component.service';
 import { PipelineDefaultsPanelComponent } from './components/pipeline-defaults-panel.component';
 import { RvcEnhancementPanelComponent } from './components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from './components/orpheus-voices-panel.component';
+import { HiggsVoicesPanelComponent } from './components/higgs-voices-panel.component';
 import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -410,18 +411,23 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 <div class="settings-group">
                   <h4>Voice Engine</h4>
                   <p class="field-description">
-                    The TTS engine used for streaming playback. <strong>XTTS</strong>
-                    streams sentence audio as it generates and supports the full voice
-                    library. <strong>Orpheus</strong> has the most natural prosody and
-                    runs a single GPU worker. Applies the next time the engine starts —
-                    switching stops the current engine first.
+                    The TTS engine used for streaming playback. <strong>Orpheus</strong>
+                    has the most natural prosody and runs a single GPU worker. Applies the
+                    next time the engine starts — switching stops the current engine first.
+                    <strong>XTTS</strong> was retired on 2026-09-04: a machine already
+                    streaming on it keeps working, but it can no longer be selected.
                   </p>
                   <div class="worker-options">
+                    <!-- Shown, disabled, and labelled retired rather than deleted: a
+                         machine whose persisted engine is still XTTS would otherwise
+                         show NOTHING selected, which reads as a broken setting rather
+                         than as the true "you are on the retired engine". -->
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'xtts'"
-                      (click)="setStreamEngine('xtts')"
-                    >XTTS</button>
+                      [disabled]="true"
+                      [title]="streamEngineInfo('xtts')?.reason || 'Retired'"
+                    >XTTS (retired)</button>
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'orpheus'"
@@ -1081,6 +1087,62 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     {{ status.message }}
                   </div>
                 }
+              </div>
+            } @else if (section.id === 'higgs') {
+              <!-- Higgs: the WSL serving env (doctor + installer) and the voice
+                   catalog. The WSL routing toggle sits here rather than on the
+                   Orpheus page because the two envs are independent — a machine
+                   can have one and not the other. -->
+              <div class="tools-section">
+                @if (isWindows()) {
+                  <div class="wsl-section">
+                    <h3 class="wsl-section-title">WSL2 for Higgs</h3>
+                    <p class="wsl-description">
+                      Higgs Audio v3 serves through vLLM-Omni, which has no Windows build at
+                      all — so unlike Orpheus (which runs natively, just slowly), this is not
+                      a speed switch: it is what lets the engine run. It uses the same WSL
+                      distribution and conda path as the Orpheus settings.
+                    </p>
+                    <div class="tool-row">
+                      <div class="tool-info">
+                        <h4>Enable WSL2 for Higgs</h4>
+                        <p class="tool-description">Route Higgs narration jobs through WSL</p>
+                      </div>
+                      <div class="tool-control">
+                        <input
+                          type="checkbox"
+                          class="toggle-input"
+                          [checked]="getToolPathValue('useWsl2ForHiggs') === 'true'"
+                          (change)="toggleWsl2ForHiggs($any($event.target).checked)"
+                        />
+                      </div>
+                    </div>
+                    <div class="tool-row">
+                      <div class="tool-info">
+                        <h4>WSL Higgs conda env</h4>
+                        <p class="tool-description">Name of the conda env holding vllm-omni (default: higgs3)</p>
+                      </div>
+                      <div class="tool-control">
+                        <input
+                          type="text"
+                          class="text-input"
+                          [value]="getToolPathValue('wslHiggsCondaEnv')"
+                          placeholder="higgs3"
+                          (change)="updateToolPath('wslHiggsCondaEnv', $any($event.target).value)"
+                        />
+                      </div>
+                    </div>
+                    <div class="save-section">
+                      <desktop-button variant="primary" size="md" (click)="saveTools()" [disabled]="!toolPathsDirty() || toolPathsSaving()">
+                        {{ toolPathsSaving() ? 'Saving…' : (toolPathsDirty() ? 'Save Changes' : 'Saved') }}
+                      </desktop-button>
+                    </div>
+                  </div>
+                }
+
+                <div class="wsl-section">
+                  <app-higgs-voices-panel />
+                </div>
               </div>
             } @else if (section.id === 'enhancement') {
               <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
@@ -2209,7 +2271,10 @@ export class SettingsComponent implements OnInit {
     void this.workerCfg.setDevicePref(pref);
   }
 
-  /** Choose which TTS engine backs the Listen feature (applies on next start). */
+  /** Choose which TTS engine backs the Listen feature (applies on next start).
+   *  Only 'orpheus' is reachable from the UI now — the XTTS button is disabled
+   *  (see the template) — but the parameter keeps the wider type because the
+   *  worker config it forwards to still round-trips a persisted 'xtts'. */
   setStreamEngine(engine: 'xtts' | 'orpheus'): void {
     void this.workerCfg.setEngine(engine);
   }
@@ -2974,6 +3039,13 @@ export class SettingsComponent implements OnInit {
     } finally {
       this.wslVerifying.set(false);
     }
+  }
+
+  /** Route Higgs jobs through WSL. Separate from the Orpheus toggle on purpose:
+   *  the two envs are independent, and folding them together would make enabling
+   *  Orpheus silently promise a Higgs env that is not there. */
+  toggleWsl2ForHiggs(enabled: boolean): void {
+    this.updateToolPath('useWsl2ForHiggs', enabled ? 'true' : '');
   }
 
   toggleWsl2ForOrpheus(enabled: boolean): void {

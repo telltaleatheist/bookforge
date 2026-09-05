@@ -788,6 +788,71 @@ export interface CompletedAudiobook {
 }
 
 /**
+ * What the Higgs doctor found. Mirrors electron/tool-paths' WslHiggsSetupResult.
+ *
+ * A LIST OF CHECKS, not a boolean plus a message. "The env exists, vllm-omni
+ * imports, the tail-trim patch is missing" is a different problem from "there is
+ * no WSL env", and the panel has to be able to say which — a single `valid: false`
+ * with one string could not, and the patches in particular need naming because a
+ * pip upgrade reverts them silently.
+ */
+export interface HiggsDoctorResult {
+  valid: boolean;
+  checks: Array<{
+    id: 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher';
+    label: string;
+    ok: boolean;
+    detail?: string;
+  }>;
+  envPrefix?: string;
+}
+
+/**
+ * One Higgs catalog voice as `higgsModels.listCatalog` returns it — the
+ * renderer-side mirror of electron/higgs-models' `HiggsModel` (this file must not
+ * import from the main process).
+ *
+ * `_pendingNote` travels because the Settings panel SHOWS it: a voice waiting on
+ * an artifact is the one a person most wants an explanation for, and the note is
+ * the explanation. The narration picker only ever sees the value/label pair.
+ */
+export interface HiggsModelDto {
+  id: string;
+  label: string;
+  engineVersion: string;
+  /**
+   * THREE shapes, not two — see electron/higgs-models.ts. 'default' is the served
+   * model's own speaker and carries NEITHER clips nor a checkpoint; it is not an
+   * empty clone, which narrator refuses by name. 'checkpoint' is a MERGED
+   * fine-tune directory (vllm-omni has no runtime LoRA path), and it is the only
+   * kind besides 'default' the narration dropdown offers.
+   */
+  kind: 'default' | 'clips' | 'checkpoint';
+  voice: {
+    clips?: Array<{ path: string; transcript: string; seconds: number }>;
+    checkpointDir?: string;
+    scene?: string;
+  };
+  license: string;
+  commercialUse: boolean;
+  sampleRate: number;
+  addedAt: string;
+  backends?: {
+    served?: {
+      /** null = declared UNMEASURED, which for an adapter is a refusal. */
+      maxChars?: number | null;
+      maxCharsSource?: string | null;
+      edgeFadeMs?: { in: number; out: number };
+      sampling?: { temperature?: number; topP?: number; topK?: number };
+      referenceSecondsCap?: number;
+      allowedControls?: string[];
+    };
+  };
+  _pendingNote?: string;
+  note?: string;
+}
+
+/**
  * One downloadable Orpheus voice as `orpheusModels.catalogList` returns it — the
  * renderer-side mirror of electron/orpheus-hf-catalog's OrpheusCatalogEntry (this file
  * must not import from the main process). Named as a DTO because it also travels back
@@ -1181,6 +1246,24 @@ export interface ElectronAPI {
     remove: (id: string) => Promise<{ success: boolean; error?: string }>;
     /** Installed voices selectable for full-audiobook generation (value/label). */
     listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
+  };
+  higgsModels: {
+    /** The Higgs narration roster as a picker wants it. A voice whose artifact has
+     *  not landed yet is INCLUDED, with "— not installed yet" in its label: the
+     *  catalog is the whole roster, so omitting it would leave nothing anywhere
+     *  saying the voice exists. `resolveHiggsModel` refuses to render it. */
+    list: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
+    /** The full catalog entries — voice ref, licence, measured caps — for the
+     *  Settings → Higgs voices panel. */
+    listCatalog: () => Promise<{ success: boolean; data?: HiggsModelDto[]; error?: string }>;
+    /** Is the serving stack usable? Every check reported, pass or fail. */
+    doctor: () => Promise<{ success: boolean; data?: HiggsDoctorResult; error?: string }>;
+    /** Build the WSL env (or, with `check`, probe without touching anything).
+     *  Long-running; output arrives on `onInstallProgress`. */
+    installEnv: (opts?: { check?: boolean }) =>
+      Promise<{ success: boolean; code?: number; output?: string; error?: string }>;
+    /** Live installer output. Returns its own unsubscribe. */
+    onInstallProgress: (cb: (text: string) => void) => () => void;
   };
   orpheusModels: {
     /** Folder-discovered custom Orpheus models (id = voice token = folder name).
@@ -2926,6 +3009,21 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('custom-voices:remove', id),
     listAudiobook: () =>
       ipcRenderer.invoke('voices:list-audiobook'),
+  },
+  higgsModels: {
+    list: () =>
+      ipcRenderer.invoke('higgs:list-models'),
+    listCatalog: () =>
+      ipcRenderer.invoke('higgs:list-catalog'),
+    doctor: () =>
+      ipcRenderer.invoke('higgs:doctor'),
+    installEnv: (opts?: { check?: boolean }) =>
+      ipcRenderer.invoke('higgs:install-env', opts),
+    onInstallProgress: (cb: (text: string) => void) => {
+      const listener = (_e: unknown, text: string) => cb(text);
+      ipcRenderer.on('higgs:install-progress', listener);
+      return () => { ipcRenderer.removeListener('higgs:install-progress', listener); };
+    },
   },
   orpheusModels: {
     list: () =>

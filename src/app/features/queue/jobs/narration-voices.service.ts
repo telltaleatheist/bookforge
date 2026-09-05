@@ -61,15 +61,33 @@ export class NarrationVoicesService {
    */
   private readonly orpheus = signal<readonly NarrationVoice[]>(ORPHEUS_BUILTIN_VOICES);
 
+  /**
+   * Higgs voices. UNSEEDED, and that is the difference from the two lists above.
+   *
+   * Orpheus and XTTS both ship voices — a roster the engine genuinely has, which
+   * is why stating it is not a fallback. Higgs ships none: every Higgs voice,
+   * including the served model's own zero-shot default, is a row in
+   * `electron/data/higgs-models.json`, so there is nothing true to say here
+   * before main answers. An empty list until `load()` returns is the honest
+   * state, and the picker showing "no voices yet" beats it showing one that
+   * cannot render.
+   */
+  private readonly higgs = signal<readonly NarrationVoice[]>([]);
+
   /** Done once per app: the machine does not grow voices while a modal is open. */
   private loaded = false;
 
   readonly xttsVoices = computed(() => this.xtts());
   readonly orpheusVoices = computed(() => this.orpheus());
+  readonly higgsVoices = computed(() => this.higgs());
 
   /** The voices THIS engine can be asked for. The shared rule, over live lists. */
   voicesFor(engine: string): readonly NarrationVoice[] {
-    return narrationVoicesFor(engine, { xtts: this.xtts(), orpheus: this.orpheus() });
+    return narrationVoicesFor(engine, {
+      xtts: this.xtts(),
+      orpheus: this.orpheus(),
+      higgs: this.higgs(),
+    });
   }
 
   /** The installed RVC enhancement models, as the enhancement picker lists them. */
@@ -95,7 +113,31 @@ export class NarrationVoicesService {
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    await Promise.all([this.loadXtts(), this.loadOrpheus()]);
+    await Promise.all([this.loadXtts(), this.loadOrpheus(), this.loadHiggs()]);
+  }
+
+  /**
+   * Ask main for the Higgs catalog.
+   *
+   * NOT silent on failure, unlike the two loads below it, and the asymmetry is
+   * deliberate. Those two have a real shipped list to keep when the call fails;
+   * this one has nothing, so a swallowed error would present an empty dropdown
+   * that looks exactly like "this build has no Higgs voices" — a wrong statement
+   * with no way to tell it from the true one. The catalog is a repo file whose
+   * loader already fails loud on a packaging bug, so a failure here IS news.
+   */
+  private async loadHiggs(): Promise<void> {
+    const api = (window as any).electron?.higgsModels;
+    if (!api?.list) {
+      console.warn('[NARRATION-VOICES] No higgsModels IPC on this build — Higgs voices unavailable.');
+      return;
+    }
+    const res = await api.list();
+    if (!res?.success) {
+      console.error('[NARRATION-VOICES] Failed to load the Higgs voice catalog:', res?.error);
+      return;
+    }
+    this.higgs.set(res.data as NarrationVoice[]);
   }
 
   private async loadXtts(): Promise<void> {

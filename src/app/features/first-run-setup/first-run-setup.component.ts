@@ -8,6 +8,7 @@ import { LanguagesPanelComponent } from '../settings/components/languages-panel.
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
+import { HiggsVoicesPanelComponent } from '../settings/components/higgs-voices-panel.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
@@ -18,7 +19,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -40,6 +41,7 @@ interface SetupStep {
     AddOnsPanelComponent,
     RvcEnhancementPanelComponent,
     OrpheusVoicesPanelComponent,
+    HiggsVoicesPanelComponent,
     MultiWorkerToggleComponent
   ],
   template: `
@@ -170,6 +172,12 @@ interface SetupStep {
             }
             @case ('orpheus') {
               <app-orpheus-voices-panel />
+            }
+            @case ('higgs') {
+              <!-- The doctor and the voice catalog, the same panel Settings shows.
+                   Its own first section is the environment check, which is the
+                   only thing a first run can usefully act on. -->
+              <app-higgs-voices-panel />
             }
             @case ('rvc') {
               <app-rvc-enhancement-panel />
@@ -687,16 +695,32 @@ export class FirstRunSetupComponent {
         'Optional — AI cleans up OCR text before narration. Add a bundled local model, connect Ollama, or save a Claude/OpenAI key.'
     },
     {
-      id: 'xtts',
-      title: 'XTTS — the built-in narrator',
+      id: 'orpheus',
+      title: 'Orpheus — the narration engine',
       subtitle:
-        'Voices and language packs for the narration engine that ships with BookForge. One voice is built in; common languages are bundled. Pick extras now or anytime from Settings.'
+        'The engine BookForge narrates with. Install it and its voice models here; add more voice sources anytime.'
     },
     {
-      id: 'orpheus',
-      title: 'Orpheus (optional)',
+      // The second narration engine, beside Orpheus rather than buried in
+      // Settings. There is still no engine PICKER in this wizard — both steps
+      // are set-up pages — so a machine can arrive with both, one, or neither
+      // and the narration modal offers whichever the doctor says can run.
+      id: 'higgs',
+      title: 'Higgs (optional)',
       subtitle:
-        'A more natural, GPU-heavy narration engine. Install the engine and its voice models here; add more voice sources anytime.'
+        'A second narration engine, served from WSL. Research/non-commercial licence — personal use. Check the environment here and install it if you want it.'
+    },
+    {
+      // The step id stays 'xtts' because it is also the Settings SECTION key that
+      // `@case ('xtts')` renders and that the translation panel deep-links to.
+      // What changed is the framing: XTTS stopped being "the built-in narrator"
+      // on 2026-09-04, and this step now exists for the two things under it that
+      // no other page owns — the Stanza language packs (sentence segmentation,
+      // which every engine's prep needs) and a user's own uploaded voices.
+      id: 'xtts',
+      title: 'Language packs',
+      subtitle:
+        'Sentence-splitting language packs, used by every narration engine, plus any voices you have uploaded yourself. Common languages are bundled — pick extras now or anytime from Settings.'
     },
     {
       id: 'rvc',

@@ -6,6 +6,15 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getPluginRegistry } from './plugins/plugin-registry';
+// The engine table is in shared/ precisely so MAIN can read it — see its header.
+// Until now no main-process file imported it, which is why the retired-engine
+// refusal every comment promised did not exist.
+//
+// RELATIVE, not the `@shared/*` alias. tsconfig.electron.json defines that alias
+// for TYPE resolution and tsc emits the specifier VERBATIM, so an aliased import
+// compiles clean and then throws MODULE_NOT_FOUND in Node at run time. Every
+// other electron/ file reaches shared/ by relative path for this reason.
+import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
@@ -7202,6 +7211,28 @@ function setupIpcHandlers(): void {
    * the wrong thing and arrives after the queue has already reported "running".
    */
   const narrationInputRefusal = (config: any): string | null => {
+    // THE ENGINE, REFUSED BY NAME AT THE QUEUE BOUNDARY.
+    //
+    // This is the main-process door every narration run goes through, and until
+    // now the ONLY run-time gate on a retired engine was the narration modal's
+    // `stageRefusal` — a renderer computed feeding a disabled button. Four source
+    // comments and the design doc claimed "the bridge calls
+    // `assertRunnableTtsEngine` before it queues anything"; nothing did, and no
+    // main-process file imported the module at all. A saved job whose ttsEngine
+    // is `xtts`, re-run from the queue page, went straight to a spawn.
+    //
+    // HERE rather than deeper in the bridge because this is where the job is
+    // CREATED: the refusal arrives before the queue says "running", and it names
+    // the engine and the date instead of failing somewhere inside a worker.
+    const engine = config?.settings?.ttsEngine;
+    if (typeof engine === 'string' && engine.length > 0) {
+      try {
+        assertRunnableTtsEngine(engine);
+      } catch (err) {
+        return (err as Error).message;
+      }
+    }
+
     const epubPath = config?.epubPath;
     if (typeof epubPath !== 'string' || epubPath.length === 0) {
       return 'This narration run was queued without a book to read. Start it from the version you '
@@ -7830,6 +7861,100 @@ function setupIpcHandlers(): void {
       await isWslAlive();
       const { listOrpheusModels } = await import('./orpheus-models.js');
       return { success: true, data: listOrpheusModels() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // Is the Higgs serving stack usable? One WSL round trip; every check reported
+  // pass or fail (see checkWslHiggsSetup for why it never short-circuits).
+  ipcMain.handle('higgs:doctor', async () => {
+    try {
+      // ASYNC: this handler runs on the main thread and the sync probe blocks it
+      // for about a second against a cold VM.
+      const { checkWslHiggsSetupAsync } = await import('./tool-paths.js');
+      return { success: true, data: await checkWslHiggsSetupAsync() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Build the Higgs WSL environment. NEVER RUNS AUTOMATICALLY — it downloads many
+   * GB and the server it prepares preallocates ~24 GB of VRAM, so it starts
+   * because a person pressed a button.
+   *
+   * Progress is streamed line-by-line to the renderer rather than buffered: the
+   * pip install alone runs for minutes, and a spinner with no output is
+   * indistinguishable from a hang (the reason every other long install in this
+   * app streams too).
+   */
+  ipcMain.handle('higgs:install-env', async (event, opts?: { check?: boolean }) => {
+    try {
+      const { getWslDistro, getWslCondaPath, getWslHiggsCondaEnv } = await import('./tool-paths.js');
+      const { windowsToWslPath } = await import('./e2a-paths.js');
+      const { spawn } = await import('child_process');
+      const pathMod = await import('path');
+      const fsMod = await import('fs');
+
+      // Same resolution the other bundled scripts use: the app path in dev, the
+      // asarUnpack'd copy when packaged (a spawned bash cannot read app.asar).
+      let scriptDir = pathMod.join(app.getAppPath(), 'electron', 'scripts', 'higgs');
+      if (!fsMod.existsSync(scriptDir)) {
+        scriptDir = pathMod.join(__dirname, 'scripts', 'higgs');
+      }
+      const { toUnpackedPath } = await import('./e2a-paths.js');
+      const scriptWsl = windowsToWslPath(toUnpackedPath(scriptDir));
+
+      const distro = getWslDistro();
+      const conda = getWslCondaPath();
+      const envName = getWslHiggsCondaEnv();
+      const bash =
+        `bash ${JSON.stringify(`${scriptWsl}/install_higgs_env.sh`)} ` +
+        `--env-name ${JSON.stringify(envName)} --conda ${JSON.stringify(conda)}` +
+        (opts?.check ? ' --check' : '');
+      const args = distro ? ['-d', distro, 'bash', '-lc', bash] : ['bash', '-lc', bash];
+
+      return await new Promise((resolve) => {
+        const proc = spawn('wsl.exe', args, { windowsHide: true });
+        const lines: string[] = [];
+        const emit = (chunk: Buffer) => {
+          const text = chunk.toString('utf8');
+          lines.push(text);
+          event.sender.send('higgs:install-progress', text);
+        };
+        proc.stdout.on('data', emit);
+        proc.stderr.on('data', emit);
+        proc.on('error', (err) => resolve({ success: false, error: err.message }));
+        proc.on('close', (code) =>
+          resolve({ success: code === 0, code, output: lines.join('') }),
+        );
+      });
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The Higgs narration roster. Deliberately NOT the shape of the Orpheus handler
+  // above: there is no folder discovery and no \\wsl$ models dir to touch, so no
+  // WSL liveness probe is needed — the catalog is a repo file that reads even when
+  // the VM is wedged. Errors propagate; the renderer logs them rather than
+  // presenting an empty dropdown that would be indistinguishable from "no voices".
+  ipcMain.handle('higgs:list-models', async () => {
+    try {
+      const { higgsNarrationVoices } = await import('./higgs-models.js');
+      return { success: true, data: higgsNarrationVoices() };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  // The full Higgs catalog entries, for the Settings → Higgs voices panel (the
+  // narration picker only needs value/label, above).
+  ipcMain.handle('higgs:list-catalog', async () => {
+    try {
+      const { listHiggsModels } = await import('./higgs-models.js');
+      return { success: true, data: listHiggsModels() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
