@@ -652,9 +652,23 @@ class HiggsV3Engine:
         `convert` and `generate_batch_stream` do - so a book is not rendered at
         one seed from end to end.
         """
-        clean = (text or '').strip()
+        # THE MODEL BOUNDARY STRIPS THE MARKUP - here, once, for every caller.
+        # `[break]` / `[heading]` / `[item]` / `[pause:X]` are narrator's own
+        # markers: the packer writes them into the chunk text (677 of 1067
+        # chunks of Owen's first Higgs book began with `[break]`; every heading
+        # with `[break][heading]`), the assembler realizes them as gaps, and
+        # Orpheus's convert() strips them before its prompt. This path only
+        # trimmed whitespace, so Higgs READ THEM: "break" spoken at the head of
+        # most chunks, "[heading]" as 7-15 s of gibberish before "Dedication."
+        # (measured on the Mac, 2026-09-05; identical on the served arm). The
+        # serve worker cleans before it calls, which is why Listen never showed
+        # it; the render worker hands convert() the stored text, which is why
+        # every book did.
+        clean = self._clean_sentence_for_tts(text)
         if not clean:
-            raise ValueError('HiggsV3Engine.render_audio(): the chunk has no text')
+            raise ValueError(
+                'HiggsV3Engine.render_audio(): the chunk has no text once its '
+                f'markers are stripped ({(text or "").strip()!r}).')
         request = SpeechRequest(
             text=clean, voice=self.voice_ref,
             max_new_tokens=self._budget.cap_frames(clean),
