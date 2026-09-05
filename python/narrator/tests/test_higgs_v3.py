@@ -267,9 +267,9 @@ class V3TestCase(unittest.TestCase):
         return HiggsV3Config(**kwargs)
 
     def quiet_config(self, **kwargs):
-        """A config whose load runs no tail-trim probe - for the tests that are
-        counting requests or asserting seeds."""
-        kwargs.setdefault('probe_tail_trim', False)
+        """A config whose load runs no sentinel-filter probe - for the tests
+        that are counting requests or asserting seeds."""
+        kwargs.setdefault('probe_sentinel_filter', False)
         return self.config(**kwargs)
 
 
@@ -512,7 +512,7 @@ class CheckpointVoiceTest(V3TestCase):
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         with self.assertRaises(ValueError) as caught:
             engine.set_voice('another-voice')
@@ -530,7 +530,7 @@ class CheckpointVoiceTest(V3TestCase):
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.render_audio('It was a Saturday morning.')
         self.assertNotIn('references', self.server.requests[-1])
@@ -709,7 +709,7 @@ class ServedSamplingTest(V3TestCase):
         voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         kwargs.setdefault('base_url', self.server.base_url)
-        kwargs.setdefault('probe_tail_trim', False)
+        kwargs.setdefault('probe_sentinel_filter', False)
         return HiggsV3Config(voice=voice, **kwargs)
 
     def test_base_weights_state_the_sampling_in_extra_params(self):
@@ -981,9 +981,9 @@ class EngineTest(V3TestCase):
         self.assertIsNone(codec.streaming_decoder(lambda a, b: None))
 
     def test_the_codec_refuses_to_decode_because_the_server_did(self):
-        """The patched server already trimmed the sentinel tail BY CONTENT
-        (work/patch_tail_trim.py); a second client-side trim would eat speech,
-        and there are no tokens on this side anyway."""
+        """The patched server already dropped every sentinel frame BY TOKEN
+        IDENTITY (work/patch_sentinel_filter.py); a second client-side trim
+        would eat speech, and there are no tokens on this side anyway."""
         engine = HiggsV3Engine(self.config())
         self.addCleanup(engine.cleanup)
         with self.assertRaises(NotImplementedError) as caught:
@@ -1225,41 +1225,67 @@ class ServerIdentityTest(V3TestCase):
         self.assertIn('cannot be identified', str(caught.exception))
 
 
-class TailTrimProbeTest(V3TestCase):
-    """The patch that fails SILENTLY. See probe_tail_trim's docstring."""
+class SentinelFilterProbeTest(V3TestCase):
+    """A SENSOR, not a gate. See probe_sentinel_filter's docstring.
 
-    def test_a_patched_server_passes(self):
-        """Our smoke measured -62.4 dBFS over the last 300 ms; the fake's
-        silence-tailed wav is quieter still."""
+    The gate this replaces (-45 dBFS over the last 300 ms) was valid against the
+    retired band-aid and is invalid under patch_sentinel_filter.py: the filter
+    removes the sentinel frames rather than quieting them, so the window holds
+    the model's own audio and the certifying box read -35..-38 dBFS on BOTH
+    builds. These tests pin that the probe MEASURES and does not refuse on the
+    level - a re-introduced threshold fails here.
+    """
+
+    def test_the_probe_measures_and_returns_the_tail_level(self):
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        dbfs = backend.probe_tail_trim(self.voice())
-        self.assertLess(dbfs, v3_served.HiggsV3ServedBackend.TAIL_TRIM_MAX_DBFS)
+        dbfs = backend.probe_sentinel_filter(self.voice())
+        self.assertIsInstance(dbfs, float)
+        self.assertLess(dbfs, 0.0, 'dBFS is a level below full scale')
 
-    def test_an_unpatched_server_is_refused_by_name(self):
-        """Reproduce the defect's signature: ~250 ms of the ramp-down sentinels
-        decoded as real sound at about -30 dB on the end of the clip."""
+    def test_a_LOUD_tail_is_reported_and_NOT_refused(self):
+        """The old gate's failing case: ~250 ms at about -30 dB on the end.
+
+        Under the sentinel filter that level says nothing about the patch - the
+        certified server measures -35..-38 dBFS here, which is inside the same
+        neighbourhood - so refusing on it would fail correct servers. It is
+        reported instead.
+        """
         self.server.httpd.tail_burst_dbfs = -30.0
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        with self.assertRaises(HiggsV3ServerError) as caught:
-            backend.probe_tail_trim(self.voice())
-        message = str(caught.exception)
-        self.assertIn('tail-trim probe FAILED', message)
-        self.assertIn('patch_tail_trim.py', message)
+        dbfs = backend.probe_sentinel_filter(self.voice())
+        self.assertGreater(dbfs, -35.0, 'the fixture did not produce a loud tail')
 
-    def test_the_gate_sits_between_the_two_measured_states(self):
-        gate = v3_served.HiggsV3ServedBackend.TAIL_TRIM_MAX_DBFS
-        self.assertLess(-62.4, gate, 'a patched server must pass')
-        self.assertLess(gate, -31.0, 'an unpatched server must fail')
+    def test_a_200_with_no_audio_IS_refused(self):
+        """The one thing left that is decidable rather than a level."""
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+        real = v3_served.decode_response
+        v3_served.decode_response = lambda body, ctype=None: (np.zeros(0, dtype=np.float32), 24000)
+        try:
+            with self.assertRaises(HiggsV3ServerError) as caught:
+                backend.probe_sentinel_filter(self.voice())
+        finally:
+            v3_served.decode_response = real
+        self.assertIn('produced no audio', str(caught.exception))
+
+    def test_no_level_threshold_survives(self):
+        """The gate is gone by NAME, not merely unused: a constant called
+        MAX_DBFS is how one comes back."""
+        backend = v3_served.HiggsV3ServedBackend
+        self.assertFalse([n for n in dir(backend) if n.endswith('MAX_DBFS')])
+        low, high = backend.SENTINEL_TAIL_CERTIFIED_DBFS
+        self.assertLess(low, high)
+        self.assertEqual((low, high), (-38.0, -35.0),
+                         'the certified band is what the box measured on both builds')
 
     def test_the_engine_runs_the_probe_at_load(self):
         engine = HiggsV3Engine(self.config())
         self.addCleanup(engine.cleanup)
         bodies = [r for r in self.server.requests
-                  if r['input'] == v3_served.HiggsV3ServedBackend.TAIL_TRIM_PROBE_TEXT]
+                  if r['input'] == v3_served.HiggsV3ServedBackend.SENTINEL_PROBE_TEXT]
         self.assertEqual(len(bodies), 1, 'exactly one probe render per load')
 
     def test_the_probe_can_be_turned_off(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         self.assertEqual(self.server.requests, [])
 
@@ -1283,7 +1309,11 @@ class FailedLoadReleasesTheServerTest(V3TestCase):
         self.assertTrue(stopped, 'a failed load must stop the server it started')
 
     def test_a_failed_probe_also_stops_it(self):
-        self.server.httpd.tail_burst_dbfs = -30.0
+        # The probe no longer refuses on a LEVEL (see SentinelFilterProbeTest),
+        # so the failure driven here is the probe RENDER failing - which is what
+        # this test was always about: anything that raises after start() must
+        # stop the ~14 GB server rather than leak it.
+        self.server.httpd.error = (500, 'probe render exploded')
         stopped = []
         real_stop = HiggsV3ServedBackend.stop
         HiggsV3ServedBackend.stop = lambda self, *a, **k: stopped.append(True)
@@ -1413,7 +1443,7 @@ class SeedRuleTest(V3TestCase):
     def test_chunk_i_renders_with_seed_plus_i(self):
         """Rendering every sentence at a flat seed makes a whole book of
         identical draws for identical text."""
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.generate_batch_stream(['One.', 'Two.', 'Three.'], None, None, None,
                                      lambda i, pcm: None)
@@ -1421,7 +1451,7 @@ class SeedRuleTest(V3TestCase):
         self.assertEqual(seeds, [1234, 1235, 1236])
 
     def test_convert_seeds_by_sentence_number(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False,
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False,
                                            sentences_dir=self.dir))
         self.addCleanup(engine.cleanup)
         engine.convert(7, 'Hello.')
@@ -1562,7 +1592,7 @@ class PosixLaunchTest(_LaunchTestBase):
 class SetVoiceTest(V3TestCase):
 
     def test_a_second_load_for_another_voice_is_refused_by_name(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         with self.assertRaises(ValueError) as caught:
             engine.set_voice('someone_else')
@@ -1571,12 +1601,12 @@ class SetVoiceTest(V3TestCase):
         self.assertIn('needs a NEW server', message)
 
     def test_reloading_the_same_voice_is_a_no_op(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine.set_voice(engine.voice)
 
     def test_orpheus_caps_on_a_v3_load_are_refused(self):
-        engine = HiggsV3Engine(self.config(probe_tail_trim=False))
+        engine = HiggsV3Engine(self.config(probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         engine._apply_voice_caps('deathstalker', {})     # the pool's reset: a no-op
         with self.assertRaises(ValueError):
@@ -1864,7 +1894,7 @@ class VoiceDocumentShapesTest(V3TestCase):
         voice = self._load({'default': {'kind': 'default'}})['default']
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
                                              base_url=self.server.base_url,
-                                             probe_tail_trim=False))
+                                             probe_sentinel_filter=False))
         self.addCleanup(engine.cleanup)
         audio = engine.render_audio('It was a Saturday morning.')
         self.assertGreater(audio.size, 0)

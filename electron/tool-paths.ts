@@ -924,6 +924,19 @@ export const HIGGS_PATCHES: ReadonlyArray<{
   id: string;
   relPath: string;
   marker: string;
+  /**
+   * A string the patched file must NOT contain — the other half of the proof.
+   *
+   * A marker alone answers "did somebody apply something here". For the
+   * sentinel filter that is not enough: the retired `patch_tail_trim.py` wrote
+   * one of the same helpers, and the thing that actually has to be true is that
+   * upstream's ONE-FRAME TRIM is gone. `[:, :-1]` occurs twice in the pristine
+   * stage processor and zero times after the filter patch (measured on the
+   * certifying box, vllm-omni 0.28.0, 2026-09-05), so marker-present plus
+   * this-absent is exactly "the token-identity filter is in and no trim code
+   * remains".
+   */
+  absentMarker?: string;
   why: string;
 }> = [
   {
@@ -936,13 +949,19 @@ export const HIGGS_PATCHES: ReadonlyArray<{
       'default voice can serve.',
   },
   {
-    id: 'higgs-tail-trim',
+    id: 'higgs-sentinel-filter',
     relPath: 'vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py',
-    marker: '_trim_trailing_sentinel_frames',
+    // NOT `_trim_trailing_sentinel_frames`: the patch writes that helper too, and
+    // so did the retired patch_tail_trim.py — grepping for it would certify a
+    // band-aided file as patched.
+    marker: '_filter_sentinel_frames',
+    absentMarker: '[:, :-1]',
     why:
       'Without it every rendered chunk ends with ~240 ms of audible garbage — the ' +
-      'ramp-down sentinels decode as real sound because they are substituted with ' +
-      'codec code 0 and only one frame is trimmed.',
+      'ramp-down sentinels are substituted with codec code 0, which is a VALID code ' +
+      'that decodes to real sound, and only one of the seven frames they smear ' +
+      'across is trimmed. The patch keeps a frame only when all 8 codebooks are in ' +
+      '[0, 1023], so nothing out of range reaches the codec at all.',
   },
 ];
 
@@ -954,11 +973,20 @@ export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
  * async entry points so the two can never disagree about what "green" means.
  */
 function higgsProbeScript(envPrefix: string): string {
+  // `grep -qF`, fixed-string: `absentMarker` is `[:, :-1]`, which as a BASIC
+  // REGULAR EXPRESSION is a bracket expression matching one character out of a
+  // set — it would match almost every line of the file and report every env as
+  // broken. The markers have no metacharacters today, but they are greppd the
+  // same way so that adding one later cannot quietly change what is being asked.
   const patchProbe = HIGGS_PATCHES.map(
     (p) =>
       `f=$(ls ${envPrefix}/lib/python*/site-packages/${p.relPath} 2>/dev/null | head -1); ` +
-      `if [ -n "$f" ] && grep -q '${p.marker}' "$f"; then echo 'patch:${p.id}=ok'; ` +
-      `elif [ -n "$f" ]; then echo 'patch:${p.id}=unpatched'; else echo 'patch:${p.id}=absent'; fi`,
+      `if [ -z "$f" ]; then echo 'patch:${p.id}=absent'; ` +
+      `elif ! grep -qF '${p.marker}' "$f"; then echo 'patch:${p.id}=unpatched'; ` +
+      (p.absentMarker
+        ? `elif grep -qF '${p.absentMarker}' "$f"; then echo 'patch:${p.id}=trim-survived'; `
+        : '') +
+      `else echo 'patch:${p.id}=ok'; fi`,
   ).join('; ');
   return [
     `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
@@ -1023,7 +1051,12 @@ function higgsChecksFrom(
           ? undefined
           : state === 'unpatched'
             ? `${p.relPath} is present but NOT patched. ${p.why} Re-run the Higgs installer — a pip upgrade in this env reverts it.`
-            : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
+            : state === 'trim-survived'
+              ? `${p.relPath} carries the patch marker "${p.marker}" AND still contains ` +
+                `"${p.absentMarker}", which the patch removes. That is a half-applied or ` +
+                `stacked state, not a patched one. Restore the file (reinstall the package) and ` +
+                `re-run the Higgs installer.`
+              : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
     });
   }
 
@@ -1119,7 +1152,7 @@ export function checkWslHiggsSetupAsync(config: {
  * than another spawn.
  *
  * EVERY CHECK IS REPORTED, PASS OR FAIL — the probe never short-circuits. "The
- * env exists, vllm-omni imports, the tail-trim patch is missing" is a different
+ * env exists, vllm-omni imports, the sentinel-filter patch is missing" is a different
  * problem from "there is no env", and a doctor that stopped at the first failure
  * would make them look the same.
  */

@@ -685,8 +685,31 @@ check('the two patch tables name the same patches with the same markers', () => 
     const d = fromDoctor.find((x) => x.id === p.id);
     assert.ok(d, `the doctor does not know about patch "${p.id}"`);
     assert.strictEqual(d.marker, p.marker, `patch "${p.id}" has drifting markers`);
+    // The absent-marker travels with the marker or the two tables mean different
+    // things by "applied" — one would accept a file the other calls half-patched.
+    assert.strictEqual(d.absentMarker, p.absentMarker,
+      `patch "${p.id}" has drifting absent-markers`);
     assert.ok(d.relPath.endsWith(p.target) || p.target.endsWith(d.relPath),
       `patch "${p.id}" targets differ: ${d.relPath} vs ${p.target}`);
+  }
+});
+
+check('the sentinel-filter patch is the one the Higgs stack requires', () => {
+  // The rename is the point: patch_tail_trim.py was a band-aid that trimmed the
+  // trailing run by position and kept the 0-substitution everywhere else, and it
+  // is retired. Both tables must name the replacement, and the doctor must ask
+  // for the string only the replacement writes.
+  const fromCatalog = higgs.higgsServingSpec().patches.find(
+    (p) => p.id === 'higgs-sentinel-filter');
+  assert.ok(fromCatalog, 'the catalog does not require the sentinel filter');
+  assert.strictEqual(fromCatalog.script, 'patch_sentinel_filter.py');
+  assert.strictEqual(fromCatalog.marker, '_filter_sentinel_frames');
+  assert.strictEqual(fromCatalog.absentMarker, '[:, :-1]');
+  for (const table of [higgs.higgsServingSpec().patches, toolPaths.HIGGS_PATCHES]) {
+    assert.ok(!table.some((p) => p.id === 'higgs-tail-trim'),
+      'the retired tail-trim patch is still required somewhere');
+    assert.ok(!table.some((p) => p.marker === '_trim_trailing_sentinel_frames'),
+      'a table still greps for the helper BOTH patches write — that certifies the band-aid');
   }
 });
 
@@ -697,18 +720,40 @@ check('each patch marker is a string the PRISTINE file cannot contain', () => {
   }
 });
 
-check('the checked-in patch scripts actually introduce their markers', () => {
+check('the checked-in patch scripts introduce their markers AND remove the trim', () => {
   // The doctor greps site-packages for these; if the shipped script does not
-  // write them, an applied patch would report as missing forever.
+  // write them, an applied patch would report as missing forever. And the
+  // absent-marker is the other half of the sentinel filter's proof: the script
+  // must REFUSE to write a file that still carries upstream's one-frame trim,
+  // which is what `[:, :-1]` is.
   const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
   const byId = {
     'vllm-negative-token-id': 'patch_vllm.py',
-    'higgs-tail-trim': 'patch_tail_trim.py',
+    'higgs-sentinel-filter': 'patch_sentinel_filter.py',
   };
   for (const p of toolPaths.HIGGS_PATCHES) {
     const src = fs.readFileSync(path.join(dir, byId[p.id]), 'utf-8');
     assert.ok(src.includes(p.marker), `${byId[p.id]} never writes the marker "${p.marker}"`);
+    if (p.absentMarker) {
+      assert.ok(src.includes('ABSENT_MARKER'),
+        `${byId[p.id]} declares no ABSENT_MARKER, so nothing checks the trim is gone`);
+      assert.ok(src.includes(p.absentMarker),
+        `${byId[p.id]} does not name the absent-marker "${p.absentMarker}" the doctor greps for`);
+    }
   }
+});
+
+check('the RETIRED patch_tail_trim.py is gone from the shipped scripts', () => {
+  // It was superseded on 2026-09-05 and deleted rather than left beside its
+  // replacement. The two edit the same file and must never stack; a retired
+  // script sitting next to the live one is how a retirement gets undone by
+  // somebody tidying up — and patch_sentinel_filter.py has to REPAIR a file that
+  // carries the band-aid (it restores from .orig first), so the band-aid being
+  // reachable is a live hazard, not a cosmetic one.
+  const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
+  assert.ok(!fs.existsSync(path.join(dir, 'patch_tail_trim.py')),
+    'the retired patch_tail_trim.py is still shipped');
+  assert.ok(fs.existsSync(path.join(dir, 'patch_sentinel_filter.py')));
 });
 
 check('the WSL scripts are LF — a CRLF shebang is a bad interpreter', () => {

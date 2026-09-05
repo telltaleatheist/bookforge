@@ -847,7 +847,7 @@ a separate process reached over HTTP. This is what `BackendSpec.kind ==
 Sources, all measured 2026-09-04: `serve_v3.sh` (the launch line, invoked -
 narrator does NOT write its own: the CUDA_HOME / flashinfer workarounds live
 there), `work/render_final.py` + `work/confirm.py` (the request body),
-`work/patch_vllm.py` + `work/patch_tail_trim.py` (the two patches),
+`work/patch_vllm.py` + `work/patch_sentinel_filter.py` (the two patches),
 `HIGGS_V3_LEVERS.md` (the lever sweep), `work/added_vocab.json` (the control
 tokens), `work/refs/manifest.json` (the references), `work/serve_v3c.log` (the
 routes).
@@ -860,7 +860,7 @@ routes).
 | exactly ONE reference, capped at 30 s TOTAL (42 s -> HTTP 400) | `reference_for` refuses a multi-clip voice with the instruction (pre-join the clips, 0.35 s apart, transcripts in the same order); `check_reference_budget` refuses before a server is ever started |
 | `<= 600` chars is safe; 900 drops the tail REPRODUCIBLY and cloning does not fix it | `MAX_CHARS = 600` (placeholder until the catalog carries it; the delivered render used 300) |
 | a duration ratio of 0.99 hid 0.778 coverage with a 26 % insert rate | `StopPolicy.coverage_check = 'asr'` - a HOOK with a name; nothing implements the check yet |
-| the server ALREADY trims the sentinel tail by content (`patch_tail_trim.py`, read to confirm) | `HiggsV3Codec.decode()` REFUSES: there are no tokens on this side, and a second trim would eat speech. The codec reports geometry only |
+| the server ALREADY drops every sentinel frame by token identity (`patch_sentinel_filter.py`, read to confirm) | `HiggsV3Codec.decode()` REFUSES: there are no tokens on this side, and a second trim would eat speech. The codec reports geometry only |
 | a decoded chunk still ends on a hard sample boundary | `edge_fade = EdgeFade(10.0, 25.0)` - ASYMMETRIC, applied by the ASSEMBLER, never here (12.10) |
 | `--max-model-len 8192`; 27 s of reference is ~685 positions | `max_total_tokens` is that ceiling and refuses a prompt that fills it |
 | vllm-omni cannot load a LoRA at runtime - no adapter flags, and the talker does not implement `SupportsLoRA` | every fine-tuned voice is a MERGED CHECKPOINT the server runs on (`CHECKPOINT_STRATEGY`); `lora-modules` is refused by name. See 12.8c |
@@ -1008,7 +1008,7 @@ notes describe, reproduced from narrator's own client.
 - **The two Higgs v3 site-packages patches are a managed-env recipe.**
   `work/patch_vllm.py` (allow the -100 audio placeholder through vLLM 0.28's
   negative-id check - without it EVERY clone request is HTTP 400) and
-  `work/patch_tail_trim.py` (the sentinel content trim) edit files inside the
+  `work/patch_sentinel_filter.py` (the token-identity sentinel filter) edit files inside the
   `higgs3` env's `site-packages` and MUST BE RE-APPLIED AFTER ANY PIP UPGRADE
   THERE. They are not narrator's code and cannot be shipped as narrator's code;
   they belong in the component installer's recipe for that env, next to the
@@ -1171,14 +1171,40 @@ DIAGNOSTIC in its own docstring: kept working and tested because it is how a
 voice is auditioned before anyone trains it, and how a regression in the
 reference path is caught.
 
-**The chunk-tail sentinel trim is NOT baked into narrator.** It is a band-aid,
-and a token-level fix in vllm-omni's decode is queued on the training side.
-`HiggsV3Codec.decode()` therefore REFUSES - v3's tokens never reach this process
-and a client-side trim on top of the server's would eat real speech. What
-narrator does instead is DETECT a contaminated tail: `probe_tail_trim` renders
-one fixed-seed word at load and refuses a server whose last 300 ms is above
--45 dBFS. That gate is about the SERVER's output, so it keeps working unchanged
-when the upstream fix lands and the site-packages patch goes away.
+**The chunk-tail sentinel trim is NOT baked into narrator, and the band-aid it
+was is now retired.** `HiggsV3Codec.decode()` REFUSES - v3's tokens never reach
+this process and a client-side trim on top of the server's would eat real
+speech. The token-level fix that was "queued on the training side" LANDED on
+2026-09-05 as `work/patch_sentinel_filter.py`: a frame is kept iff all 8
+codebooks are in [0, 1023], so the sentinel->0 substitution and the positional
+trim are both gone from the stage processor (`[:, :-1]`: 2 occurrences pristine,
+0 after).
+
+**That retired the probe's gate, and the replacement is not a level.**
+`probe_tail_trim` rendered one fixed-seed word and refused a server whose last
+300 ms measured above -45 dBFS - valid while an unpatched tail was ~250 ms of
+decoded sentinels at about -30 dB. Under the filter those frames are REMOVED
+rather than quieted, so the window holds the model's own audio: the certifying
+box read **-35 to -38 dBFS on BOTH builds** (2026-09-05). No threshold separates
+them, so the method is renamed `probe_sentinel_filter` and REPORTS the level
+against that certified band instead of gating on it; the only refusal left is a
+200 carrying no audio. Inventing a looser number would have been defending a gate
+rather than proving a patch.
+
+What actually proves the patch, both halves from the fine-tuning session:
+
+| half | state |
+|---|---|
+| (a) **zero SYNC-path interior drops** - the filter logs `interior sentinel frame(s) dropped`; offline classification of every saved talker matrix puts interior frames at 0 on all real shapes and the detector has never fired | NOT IMPLEMENTED. It is the server's LOG, and `start()` sends the launcher's stdout/stderr to DEVNULL (in ATTACH mode the server is not even ours). **TODO(higgs-sentinel-proof)**: capture the launcher's log to a file the backend can name, then assert zero interior drops per render |
+| (b) **no trim code left in the stage processor** - `[:, :-1]` absent | ENFORCED TODAY, statically and before any server starts: BookForge's Higgs doctor greps site-packages for `_filter_sentinel_frames` AND for the ABSENCE of `[:, :-1]`, reporting `trim-survived` for a half-applied or stacked file (`electron/tool-paths.ts` HIGGS_PATCHES, `electron/scripts/higgs/install_higgs_env.sh`) |
+
+**The `higgs_audio_v3.py:403` warnings are NOT a defect in the audio.** The async
+count is taken BEFORE the trailing-run trim, so it counts the normal 2-frame EOC
+ramp and calls it "elsewhere" - an instrumentation bug in the patch, measured
+equally in sequential and concurrent renders. Expect exactly `2 frame(s)` per
+chunk: COUNT them and report the count, never read them as contamination. The
+one-line fix changes the stage processor's bytes and therefore lands as a NEW
+server build with its own certificate rather than under a published cap.
 
 ### 12.8d `generation_config.json` is a REQUIRED file of a merged checkpoint
 
@@ -1289,7 +1315,7 @@ not assume measurement.
 | 3 | **v3 `max_chars = 600`.** The measured safe zone; the delivered render used 300 and 900 fails reproducibly. A PLACEHOLDER until the catalog carries it per (engine, voice) | catalog rows per voice |
 | 4 | **The response is a WAV file body.** From the render scripts, and now observed in the smoke - but there is still no byte-level capture. `decode_response` refuses a non-WAV 200 by name, so a wrong guess is loud rather than silent | a capture in `<campaign>/higgs/captures/` |
 | 5 | **The env var names** (`NARRATOR_HIGGS_VOICES`, `NARRATOR_HIGGS3_URL`, `NARRATOR_HIGGS3_SERVE_SCRIPT`, `NARRATOR_HIGGS3_ADAPTER_STRATEGY`, `NARRATOR_ENGINE`). Invented here; clips cannot ride a command line and there was no existing channel | the electron cut-over picks the names it will pass |
-| 6 | **The tail-trim probe's -45 dBFS gate.** Derived from two points: our own smoke measured -62.4 dBFS patched, and the campaign's diagnosis puts an unpatched tail near -31 dBFS. Two samples, not a distribution | run the probe against an unpatched server once |
+| 6 | ~~**The tail-trim probe's -45 dBFS gate.**~~ RETIRED 2026-09-05, and not by measuring it: `patch_sentinel_filter.py` REMOVES the sentinel frames, so the window holds the model's own audio and the certifying box read -35..-38 dBFS on BOTH builds. No level separates them. `probe_sentinel_filter` now reports against that band and gates on nothing; the patch's real proof is (a) zero sync-path interior drops - **TODO(higgs-sentinel-proof)**, narrator does not capture the server log - and (b) `[:, :-1]` absent from the stage processor, which the BookForge doctor greps for today | (a) capture the launcher's log; (b) done |
 | 7 | ~~**The adapter strategy.**~~ SETTLED 2026-09-04: vllm-omni has no runtime LoRA (no adapter flags; the talker does not implement `SupportsLoRA`), so every voice is a merged checkpoint. See 12.8c | measured by the training side |
 | 8 | **`DefaultVoice` has four fields, not "kind/name".** See 12.8b - the review's wording would make a clip-less adapter entry unrepresentable | a ruling either way |
 | 9 | **`HiggsV3Engine.__init__` starts the server** (a constructor side effect). Reviewed and KEPT DELIBERATELY: `OrpheusEngine.__init__` loads its model, and both `serve/worker.py` and `render/worker.py` are written to that contract - deferring it for v3 alone would give those callers an engine that silently never started. Nothing needs an engine to ask a budget: `HiggsV3Budget(config)`, `higgs_v3_stop_policy(config)` and `HiggsV3Codec()` all answer with no server | a decision to change the contract for ALL engines at once |

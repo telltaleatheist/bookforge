@@ -138,11 +138,14 @@ class HiggsV3Config:
     max_chars_per_sec: float = HiggsV3Defaults.MAX_CHARS_PER_SEC
     context_tokens: int = HiggsV3Defaults.CONTEXT_TOKENS
     ready_timeout: float = HiggsV3Defaults.READY_TIMEOUT_SECONDS
-    #: Run the tail-trim readiness probe after /health (see
-    #: HiggsV3ServedBackend.probe_tail_trim). ON by default: an unpatched server
-    #: answers 200 and returns audible garbage on the end of every chunk, which
-    #: is the failure nothing else can see.
-    probe_tail_trim: bool = True
+    #: Run the sentinel-filter tail MEASUREMENT after /health (see
+    #: HiggsV3ServedBackend.probe_sentinel_filter). ON by default, and cheap -
+    #: one ~1 s render per server start. It reports the tail level against the
+    #: certified band and refuses only a 200 that carries no audio; it is NOT
+    #: the proof that the patch is applied, which is the doctor's static
+    #: marker/absent-marker grep of the stage processor. See that method for
+    #: what a real proof would be and the TODO that names it.
+    probe_sentinel_filter: bool = True
 
     def __post_init__(self):
         if not isinstance(self.voice, (ClipsVoice, DefaultVoice)):
@@ -254,10 +257,10 @@ class HiggsV3Codec:
     """`protocol.Codec` for v3 - geometry only.
 
     THE SERVER DECODES. v3's tokens never reach this process: the endpoint
-    returns a finished wav, and the patched server has already trimmed the
-    trailing sentinel run by content (work/patch_tail_trim.py, read to confirm
-    it replaces the one-frame cut and moves the sentinel->0 substitution below
-    the trim). So `decode()` refuses: a client-side trim on top would eat real
+    returns a finished wav, and the patched server has already dropped every
+    sentinel frame by token identity (work/patch_sentinel_filter.py, read to
+    confirm it removes both the sentinel->0 substitution and the one-frame
+    trim). So `decode()` refuses: a client-side trim on top would eat real
     speech, and there is nothing here to decode.
 
     The geometry is still reported, because the packer and the manifest need it:
@@ -417,8 +420,8 @@ class HiggsV3Engine:
     # ---- lifecycle ----------------------------------------------------------
 
     def load_engine(self):
-        """Start the server (or adopt one), wait for health, and prove the
-        tail-trim patch is in place.
+        """Start the server (or adopt one), wait for health, and take the
+        sentinel-filter tail measurement.
 
         A server that does not come up is a hard failure here rather than at the
         first sentence: the caller is holding a GPU lock and needs to know now.
@@ -442,8 +445,8 @@ class HiggsV3Engine:
                     'in the higgs3 env.')
             self.server.check_serves_expected_model(
                 checkpoint_dir=self.config.checkpoint_dir)
-            if self.config.probe_tail_trim:
-                self.server.probe_tail_trim()
+            if self.config.probe_sentinel_filter:
+                self.server.probe_sentinel_filter()
         except BaseException:
             self.server.stop()
             raise

@@ -11,7 +11,8 @@ implements.
 EVERY FACT BELOW IS MEASURED, from the campaign
 `E:\\training\\_campaigns\\2026-09-01-cod-full-rebuild\\higgs\\`: `serve_v3.sh`
 (the launch), `work/render_final.py` + `work/confirm.py` (the request),
-`work/patch_vllm.py` + `work/patch_tail_trim.py` (the two required patches),
+`work/patch_vllm.py` + `work/patch_sentinel_filter.py` (the two required
+patches),
 `HIGGS_V3_LEVERS.md` (the lever sweep, the delivered render, the control-token
 vocabulary), `work/refs/manifest.json` (the reference clips) and
 `work/serve_v3c.log` (the route table).
@@ -49,16 +50,30 @@ UPGRADE in that env:
                            request is HTTP 400 "Token id -100 is out of
                            vocabulary" - which is what made cloning look broken
                            in the first audition.
-  work/patch_tail_trim.py  trims the trailing sentinel run BY CONTENT instead of
-                           one frame, in both the sync collector and the async
-                           flush. THIS IS SERVER-SIDE. Read it: it replaces
-                           `codes_qt[:, :-1]` with `_trim_trailing_sentinel_frames`
-                           and moves the sentinel->0 substitution BELOW the trim.
-                           So a patched server returns audio whose tail is
-                           already clean and THE CLIENT MUST NOT TRIM AGAIN.
-                           What remains is a hard sample boundary, which is a
-                           click: `edge_fade` - EdgeFade(10 in, 25 out) - is the
-                           assembler's job.
+  work/patch_sentinel_filter.py
+                           filters frames by TOKEN IDENTITY: a frame is kept iff
+                           all 8 codebooks are in [0, 1023]. THIS IS
+                           SERVER-SIDE. Upstream substituted every out-of-range
+                           code with 0 - a VALID codec code that decodes to real
+                           sound, so the substitution CONVERTED the ramp-down
+                           BOC/EOC sentinels into audio - and then trimmed
+                           exactly one of the seven frames they smear across,
+                           leaving ~240 ms of garbage on every chunk. The patch
+                           removes the substitution and the positional trim
+                           entirely (`[:, :-1]` occurs twice in the pristine
+                           file and zero times after it). The streaming path
+                           gets the trailing run only, because Stage 1 trims
+                           left_context/right_holdback BY FRAME COUNT and
+                           dropping a leading or interior frame would desync
+                           those trims and cut real speech. So a patched server
+                           returns audio whose tail is already clean and THE
+                           CLIENT MUST NOT TRIM AGAIN. What remains is a hard
+                           sample boundary, which is a click: `edge_fade` -
+                           EdgeFade(10 in, 25 out) - is the assembler's job.
+                           SUPERSEDES work/patch_tail_trim.py (retired
+                           2026-09-05), which reasoned about WHERE sentinels
+                           usually sit and kept the 0-substitution for every one
+                           outside the trailing run.
 
 Both belong in a managed-env recipe at cut-over; see ../PORT_NOTES.md 12.7.
 
@@ -653,8 +668,8 @@ def decode_response(body: bytes, content_type: str = None):
     A 200 whose body is not a WAV is REFUSED by name (see below).
 
     Multi-channel is averaged down, as the scripts do. NO TRIM AND NO FADE is
-    applied: the patched server already trims the sentinel tail by content
-    (work/patch_tail_trim.py), and the fades belong to assembly
+    applied: the patched server already drops every sentinel frame by token
+    identity (work/patch_sentinel_filter.py), and the fades belong to assembly
     (`edge_fade`).
     """
     import soundfile as sf
@@ -730,7 +745,7 @@ class HiggsV3ServedBackend:
             kind='served', name='vllm-omni', version='0.28.0',
             base_url=self.base_url,
             notes=('higgs-audio-v3-tts-4b; requires patch_vllm.py and '
-                   'patch_tail_trim.py in the higgs3 env'))
+                   'patch_sentinel_filter.py in the higgs3 env'))
         # THE SERVER IS KEYED ON THIS. A fine-tuned Higgs voice is a merged
         # checkpoint the server runs ON, so "which voice is up" and "which
         # directory is up" are the same question - and a request for another one
@@ -897,61 +912,95 @@ class HiggsV3ServedBackend:
         discovered. See CHECKPOINT_ENV for why it cannot be discovered."""
         return self.checkpoint_dir
 
-    #: The tail-trim probe's gate, in dBFS of RMS over the last 300 ms of a
-    #: one-word render. MEASURED: narrator's own smoke against a PATCHED server
-    #: read -62.4 dB (its last 20 ms frames rising from -71 to -58 dB). An
-    #: UNPATCHED server leaves ~250 ms of ramp-down sentinels decoded as real
-    #: sound at about -30 dB, which puts the same window near -31 dB. -45 dB
-    #: sits between them with ~14 dB of margin on each side.
-    TAIL_TRIM_MAX_DBFS = -45.0
-    TAIL_TRIM_WINDOW_SECONDS = 0.3
-    TAIL_TRIM_PROBE_TEXT = 'Yes.'
-    TAIL_TRIM_PROBE_SEED = 4242
+    #: The sentinel-filter tail measurement: RMS in dBFS over the last 300 ms
+    #: of a one-word render.
+    #:
+    #: IT IS A SENSOR AND NOT A GATE, and that is a correction rather than a
+    #: relaxation. Until 2026-09-05 this window was gated at -45 dBFS, derived
+    #: from two points: our own smoke read -62.4 dBFS against a server carrying
+    #: the retired `patch_tail_trim.py`, and the campaign's diagnosis put an
+    #: UNPATCHED tail near -31 dBFS. `patch_sentinel_filter.py` invalidates the
+    #: gate: it drops the sentinel frames entirely, so what the window now holds
+    #: is THE MODEL'S OWN AUDIO, and the certifying box measured -35 to -38 dBFS
+    #: here on BOTH builds. A -45 dB gate would fail a correct server, and no
+    #: level distinguishes the two builds at all - the tail measurement cannot
+    #: decide this question, whichever number is chosen.
+    #:
+    #: So the band below is RECORDED, LOGGED AND COMPARED, and nothing is
+    #: refused on it. No threshold is invented to keep a gate alive.
+    SENTINEL_TAIL_WINDOW_SECONDS = 0.3
+    SENTINEL_TAIL_CERTIFIED_DBFS = (-38.0, -35.0)
+    SENTINEL_PROBE_TEXT = 'Yes.'
+    SENTINEL_PROBE_SEED = 4242
 
-    def probe_tail_trim(self, voice=None) -> float:
-        """Prove `work/patch_tail_trim.py` is applied. Returns the measured dBFS.
+    def probe_sentinel_filter(self, voice=None) -> float:
+        """Render one fixed-seed word and REPORT its tail level in dBFS.
 
-        WHY A RENDER AND NOT A VERSION CHECK. The patch edits a file inside the
-        higgs3 env's site-packages; it leaves no marker, no version bump and no
-        endpoint - it writes only `higgs_audio_v3.py.orig` beside the file it
-        rewrites, which is not visible over HTTP. An unpatched server is
-        therefore INDISTINGUISHABLE from a patched one until you listen: it
-        answers 200 and returns audio with ~240 ms of decoded sentinel garbage
-        on the end of EVERY chunk. Owen heard exactly that as "a stray syllable
-        or sound after each sentence", through a whole render.
+        WHAT THIS NO LONGER DOES: prove `work/patch_sentinel_filter.py` is
+        applied. It used to (as `probe_tail_trim`), because an unpatched server
+        left ~240 ms of decoded sentinel garbage on the end of every chunk at
+        about -30 dB and a quiet tail was therefore evidence. Under the sentinel
+        filter the trailing frames are GONE rather than quiet, so the window
+        holds ordinary speech decay: -35 to -38 dBFS on the certifying box, on
+        the patched and the band-aided build alike (measured 2026-09-05). A
+        level gate here would now fail correct servers and could never separate
+        the two builds. Keeping it would have been a number defended for its own
+        sake.
 
-        So the probe renders one short word at a fixed seed and measures the RMS
-        of its last 300 ms. Cost: one ~1 s generation, once per server start.
+        WHAT WOULD PROVE THE PATCH, both halves measured by the fine-tuning
+        session:
+
+          (a) ZERO SYNC-PATH INTERIOR DROPS. The filter logs
+              "interior sentinel frame(s) dropped" when a frame that is not at
+              an edge fails the token test; offline classification of every
+              saved talker matrix puts that at zero on all real shapes, and the
+              detector has never fired. It is the server's LOG, and narrator
+              does not have it: `start()` sends the launcher's stdout and
+              stderr to DEVNULL, and in ATTACH mode the server is not even ours.
+              TODO(higgs-sentinel-proof): capture the launcher's log to a file
+              the backend can name, then assert zero interior drops per render.
+          (b) NO TRIM CODE LEFT IN THE STAGE PROCESSOR. `[:, :-1]` occurs twice
+              in the pristine `higgs_audio_v3.py` and zero times after the
+              patch. This half IS enforced today, statically and before any
+              server starts: BookForge's Higgs doctor greps the file in
+              site-packages for `_filter_sentinel_frames` AND for the absence of
+              `[:, :-1]`, and reports `trim-survived` for a half-applied or
+              stacked file (electron/tool-paths.ts HIGGS_PATCHES,
+              electron/scripts/higgs/install_higgs_env.sh).
+
+        NOT A FAILURE: the async warning at higgs_audio_v3.py:403 ("frame(s)
+        carry a stream sentinel outside the trailing run") is an INSTRUMENTATION
+        BUG in the patch - the count is taken BEFORE the trailing-run trim, so it
+        counts the normal 2-frame EOC ramp. Expect exactly "2 frame(s)" per
+        chunk, in sequential renders as much as concurrent ones. COUNT them and
+        report the count; do not read them as contamination.
+
+        Cost: one ~1 s generation, once per server start. Returns the dBFS.
         """
         body = build_request_body(
-            self.TAIL_TRIM_PROBE_TEXT, voice,
-            cap_frames(self.TAIL_TRIM_PROBE_TEXT),
-            seed=self.TAIL_TRIM_PROBE_SEED)
+            self.SENTINEL_PROBE_TEXT, voice,
+            cap_frames(self.SENTINEL_PROBE_TEXT),
+            seed=self.SENTINEL_PROBE_SEED)
         payload, ctype = self.post_speech(body, timeout=600,
                                           with_content_type=True)
         audio, rate = decode_response(payload, ctype)
-        window = audio[-int(rate * self.TAIL_TRIM_WINDOW_SECONDS):]
+        window = audio[-int(rate * self.SENTINEL_TAIL_WINDOW_SECONDS):]
         if window.size == 0:
+            # The one thing this probe still REFUSES on, and it is decidable: a
+            # server that answers 200 with no audio at all is not a level
+            # question.
             raise HiggsV3ServerError(
-                'Higgs v3 tail-trim probe: the probe render produced no audio.')
+                'Higgs v3 sentinel-filter probe: the probe render produced no audio.')
         rms = float(np.sqrt(np.mean(np.square(window.astype(np.float64)))))
         dbfs = 20.0 * float(np.log10(max(rms, 1e-12)))
-        if dbfs > self.TAIL_TRIM_MAX_DBFS:
-            raise HiggsV3ServerError(
-                'Higgs v3 tail-trim probe FAILED: the last '
-                f'{self.TAIL_TRIM_WINDOW_SECONDS * 1000:.0f} ms of a one-word render '
-                f'measured {dbfs:.1f} dBFS, above the {self.TAIL_TRIM_MAX_DBFS:.0f} '
-                'dBFS gate. That is the signature of an UNPATCHED server: after the '
-                'delay pattern is reverted the trailing frames still hold the '
-                'ramp-down BOC/EOC sentinels, the shipped code maps them to codec '
-                'code 0 - which decodes to real sound - and trims one frame of the '
-                'seven. Every chunk would end in ~240 ms of audible garbage and '
-                'nothing downstream would notice. Apply work/patch_tail_trim.py in '
-                'the higgs3 env and restart the server. (A patched server measures '
-                'about -62 dBFS here.)')
-        log(f'[HIGGS3] tail-trim probe OK: {dbfs:.1f} dBFS over the last '
-              f'{self.TAIL_TRIM_WINDOW_SECONDS * 1000:.0f} ms '
-              f'(gate {self.TAIL_TRIM_MAX_DBFS:.0f})', flush=True)
+        low, high = self.SENTINEL_TAIL_CERTIFIED_DBFS
+        where = ('inside' if low <= dbfs <= high else 'OUTSIDE')
+        log(f'[HIGGS3] sentinel-filter probe: {dbfs:.1f} dBFS over the last '
+            f'{self.SENTINEL_TAIL_WINDOW_SECONDS * 1000:.0f} ms, {where} the '
+            f'certified band {low:.0f}..{high:.0f} dBFS. REPORTED, NOT GATED - the '
+            'tail level does not distinguish a filtered server from a band-aided '
+            'one; the patch is proved by the doctor\'s marker/absent-marker grep '
+            'of the stage processor.', flush=True)
         return dbfs
 
     def ping(self) -> bool:
