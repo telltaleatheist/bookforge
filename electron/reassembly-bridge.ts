@@ -1471,7 +1471,20 @@ export async function startReassembly(
       '--ebook', epubPath,
       '--output_dir', stagingDir,
       '--session', config.sessionId,
-      '--session_dir', config.sessionDir,
+    // THE PROCESS DIR, not the `ebook-<uuid>` dir. narrator's assembly route is
+      // the one place where the two are NOT interchangeable: `session_v1
+      // .build_manifest` calls `load_session_state(process_dir)` directly and opens
+      // `<dir>/session-state.json`, where the render routes go through
+      // `session_store.load_session_state`, which WALKS a session dir's
+      // subdirectories to find it. e2a resolved either shape, so this door sent the
+      // session dir for years and it worked.
+      //
+      // It refuses by name ("session-state.json not found: ..."), which is the good
+      // outcome; the bad one is that nothing in a snapshot can see it. Found by
+      // running the door against the kershaw golden session
+      // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
+      // right, and every book would have failed to assemble.
+      '--session_dir', config.processDir,
       '--device', 'CPU',
       '--language', language,
       // Read from the session's own provenance rather than the literal 'xtts'

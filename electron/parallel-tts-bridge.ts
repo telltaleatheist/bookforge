@@ -5267,9 +5267,20 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     ...(config.epubPath ? ['--ebook', config.epubPath] : []),
     '--output_dir', asmOutputDir,
     '--session', prepInfo.sessionId,
-    // Pass --session_dir when session may not be in default e2a tmp location
-    // (e.g., cached sessions in the project audiobook folder)
-    ...(prepInfo.sessionDir ? ['--session_dir', prepInfo.sessionDir] : []),
+    // THE PROCESS DIR, not the `ebook-<uuid>` dir. narrator's assembly route is
+    // the one place where the two are NOT interchangeable: `session_v1
+    // .build_manifest` calls `load_session_state(process_dir)` directly and opens
+    // `<dir>/session-state.json`, where the render routes go through
+    // `session_store.load_session_state`, which WALKS a session dir's
+    // subdirectories to find it. e2a resolved either shape, so this door sent the
+    // session dir for years and it worked.
+    //
+    // It refuses by name ("session-state.json not found: ..."), which is the good
+    // outcome; the bad one is that nothing in a snapshot can see it. Found by
+    // running the door against the kershaw golden session
+    // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
+    // right, and every book would have failed to assemble.
+    '--session_dir', prepInfo.processDir,
     // When an enhancement pass ran, assemble the ENHANCED sentence set (chapter
     // mapping / metadata / VTT still come from the session state). RVC output
     // wins when both passes ran — it was rendered FROM the denoised set.
@@ -8862,7 +8873,7 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
 }
 
 /**
- * THE LAST BRACE-BALANCED JSON VALUE IN A STDOUT BUFFER.
+ * THE LAST TOP-LEVEL JSON VALUE IN A STDOUT BUFFER.
  *
  * narrator's `app.py` door prints its result as `json.dumps(result, indent=2)` —
  * pretty-printed, so it spans lines — and e2a's `app.py:278` did the same. The
@@ -8872,10 +8883,23 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
  * resume check output" and `--list_sessions` was documented as "human-readable
  * (not JSON)" and hard-coded to return an empty list.
  *
- * Scanning for balance instead reads either shape, and reads the LAST value
- * rather than the first because a route may print warnings — `resume_session`
- * prints `Warning: <compat>` lines before its result — and a warning that happens
- * to contain a brace must not become the answer.
+ * ── TOP-LEVEL, and why that word is load-bearing ────────────────────────────
+ *
+ * The obvious repair — scan backwards from the last `{` for a balanced span — is
+ * wrong, and wrong in the way that passes a quick test. A pretty-printed result
+ * ENDS with its own nested objects: `resume_session`'s last brace opens
+ * `"metadata": { "title": ... }`, which is perfectly balanced and parses
+ * perfectly. The reader would return the metadata block, and every field the
+ * caller wanted would be `undefined` — `success`, `completed_sentences`,
+ * `session_id` — which reads downstream as "no session to resume", the same
+ * answer a genuinely fresh book gives. Caught by driving the real door
+ * (tools/smoke-narrator-tools-doors.js) rather than a fixture.
+ *
+ * So this makes ONE forward pass, records every span that opens and closes at
+ * depth zero, and returns the last of those that parses. Warnings printed before
+ * the result (`resume_session` emits `Warning: <compat>` lines) are skipped
+ * because they are not balanced JSON; nested objects are skipped because they
+ * never sit at depth zero.
  *
  * Strings are tracked so a `{` or `]` inside a title or a path cannot unbalance
  * the scan; escapes are honoured so a title ending in a backslash cannot swallow
@@ -8883,39 +8907,40 @@ export async function checkResumeStatusFromProcessDir(processDir: string): Promi
  */
 function lastJsonValue(stdout: string, open: '{' | '['): any {
   const close = open === '{' ? '}' : ']';
-  for (let start = stdout.lastIndexOf(open); start >= 0; start = stdout.lastIndexOf(open, start - 1)) {
-    let depth = 0;
-    let inString = false;
-    let escaped = false;
-    for (let i = start; i < stdout.length; i++) {
-      const ch = stdout[i];
-      if (inString) {
-        if (escaped) escaped = false;
-        else if (ch === '\\') escaped = true;
-        else if (ch === '"') inString = false;
-        continue;
-      }
-      if (ch === '"') { inString = true; continue; }
-      if (ch === open) depth++;
-      else if (ch === close) {
-        depth--;
-        if (depth === 0) {
-          try {
-            return JSON.parse(stdout.slice(start, i + 1));
-          } catch {
-            // A balanced span that is not JSON (a Python repr in a log line, say).
-            // Keep walking left rather than giving up on the whole buffer.
-          }
-          break;
+  let found: any = null;
+  let depth = 0;
+  let start = -1;
+  let inString = false;
+  let escaped = false;
+  for (let i = 0; i < stdout.length; i++) {
+    const ch = stdout[i];
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') inString = false;
+      continue;
+    }
+    if (ch === '"') { inString = true; continue; }
+    if (ch === open) {
+      if (depth === 0) start = i;
+      depth++;
+    } else if (ch === close && depth > 0) {
+      depth--;
+      if (depth === 0 && start >= 0) {
+        try {
+          found = JSON.parse(stdout.slice(start, i + 1));
+        } catch {
+          // A balanced span that is not JSON (a Python repr in a log line, say).
+          // Keep scanning; a later one may be the result.
         }
+        start = -1;
       }
     }
-    if (start === 0) break;
   }
-  return null;
+  return found;
 }
 
-/** The last complete JSON OBJECT printed on stdout, or null. */
+/** The last complete top-level JSON OBJECT printed on stdout, or null. */
 function lastJsonObject(stdout: string): any {
   return lastJsonValue(stdout, '{');
 }
