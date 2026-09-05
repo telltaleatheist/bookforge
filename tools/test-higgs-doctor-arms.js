@@ -210,15 +210,40 @@ const MLX_GREEN = {
   exit: 'close',
 };
 
-/** Every WSL row green. */
+/**
+ * Every WSL row green.
+ *
+ * The launcher's sha and the narrator-import answer are what a MATCHING env
+ * says: `higgsExpectations()` reads this build's own shipped files, so the
+ * fixture states the same sha rather than a literal — a hardcoded one would go
+ * stale the next time serve_higgs_v3.sh is edited and this file would start
+ * failing for a reason that is not about the doctor.
+ */
 const WSL_GREEN = {
   stdout: [
     'env=ok',
     'omni=ok',
     ...toolPaths.HIGGS_PATCHES.map((p) => `patch:${p.id}=ok`),
     'launcher=ok',
+    `launcher-sha=${toolPaths.shippedHiggsLauncherSha256()}`,
+    'narrator-deps=ok',
     '',
   ].join('\n'),
+  exit: 'close',
+};
+
+/** The same env, with a launcher from an older BookForge. */
+const WSL_STALE_LAUNCHER = {
+  stdout: WSL_GREEN.stdout.replace(
+    `launcher-sha=${toolPaths.shippedHiggsLauncherSha256()}`,
+    'launcher-sha=' + '0'.repeat(64),
+  ),
+  exit: 'close',
+};
+
+/** The same env, missing two of narrator's runtime imports. */
+const WSL_MISSING_DEPS = {
+  stdout: WSL_GREEN.stdout.replace('narrator-deps=ok', 'narrator-deps=bs4,regex'),
   exit: 'close',
 };
 
@@ -271,6 +296,95 @@ check('the "WSL2 for Higgs" toggle is a REPORTED ROW, not an early return', () =
     // panel can show what an install achieved before the toggle is flipped.
     assert.ok(res.checks.some((c) => c.id === 'vllm-omni'),
       'the toggle row replaced the environment rows instead of joining them');
+  },
+));
+
+check('the WSL probe asks for the launcher\'s SHA and narrator\'s imports', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  async () => {
+    await doctorMod.higgsDoctor();
+    const script = lastSpawn.args.join(' ');
+    // The launcher's IDENTITY, not just its presence: `test -x` reported ok on an
+    // env carrying the launcher from the week it was built, while every later fix
+    // to serve_higgs_v3.sh shipped in the repo and was read by nobody.
+    assert.match(script, /sha256sum/, 'the probe no longer hashes the deployed launcher');
+    assert.match(script, /tr -d/, 'the guest side no longer strips CR before hashing — a '
+      + 'Windows-built env would report stale against a Mac-built one');
+    // narrator is reached over PYTHONPATH and never pip-installed into this env,
+    // so nothing but the installer's explicit step puts its imports there.
+    assert.match(script, /find_spec/, 'the probe no longer asks which narrator imports are present');
+    for (const dep of toolPaths.narratorRuntimeDeps()) {
+      assert.ok(script.includes(` ${dep.module}`),
+        `the probe does not ask about ${dep.module} (${dep.requirement})`);
+    }
+    // WITHOUT `--exec` wsl.exe hands the line to the distro's default shell, which
+    // expands `$(...)` before bash -c sees it — the defect that blinded both patch
+    // rows (da3db4c9). The launcher probe is a `$(...)`, so it is the same trap.
+    assert.ok(lastSpawn.args.includes('--exec'),
+      'the probe lost --exec, and its $(...) will be eaten by the default shell');
+  },
+));
+
+check('a launcher from an older BookForge is launcher-stale, not ok', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_STALE_LAUNCHER },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    assert.strictEqual(res.valid, false, 'a stale launcher passed the doctor');
+    // TWO ROWS, ON PURPOSE: present-and-executable is a different question from
+    // is-it-ours, and they send a person to different places.
+    assert.strictEqual(res.checks.find((c) => c.id === 'launcher').ok, true,
+      'the presence row failed on a launcher that is present');
+    const sha = res.checks.find((c) => c.id === 'launcher-sha');
+    assert.ok(sha, 'no launcher-sha row at all');
+    assert.strictEqual(sha.ok, false);
+    assert.match(sha.detail, /launcher-stale/, 'the row does not name the condition');
+    assert.match(sha.detail, /re-run the Higgs installer/i, 'the row does not name the remedy');
+  },
+));
+
+check('a missing narrator import is reported BY NAME with its pip requirement', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_MISSING_DEPS },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    assert.strictEqual(res.valid, false, "an env that cannot import bs4 cannot prep");
+    const deps = res.checks.find((c) => c.id === 'narrator-deps');
+    assert.ok(deps, 'no narrator-deps row at all');
+    assert.strictEqual(deps.ok, false);
+    // The failure Owen actually hit, asked before the run instead of after it.
+    assert.match(deps.detail, /bs4/, 'the row does not name the missing module');
+    assert.match(deps.detail, /beautifulsoup4/,
+      'the row names the module but not the package that provides it — and they differ');
+    assert.match(deps.detail, /regex/, 'the row reports only the first missing module');
+  },
+));
+
+check('the doctor probes exactly the list the installer installs', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  async () => {
+    // ONE LIST, TWO READERS. install_higgs_env.sh pip-installs
+    // requirements-narrator-runtime.txt and the doctor builds its probe from the
+    // same rows; two lists would be two lists that disagree, and the first
+    // disagreement is a green doctor over an env that cannot prep.
+    const src = fs.readFileSync(
+      path.join(REPO, 'electron', 'scripts', 'higgs', 'install_higgs_env.sh'), 'utf-8');
+    assert.match(src, /requirements-narrator-runtime\.txt/,
+      'the installer no longer reads the requirements file the doctor probes');
+    assert.match(src, /pip install -r/, 'the installer no longer installs it');
+    // Every row must say what it imports — the parser refuses one that does not,
+    // so this is really asserting the file is well-formed on disk.
+    const deps = toolPaths.narratorRuntimeDeps();
+    assert.ok(deps.length >= 10, `only ${deps.length} runtime deps declared`);
+    for (const dep of deps) {
+      assert.ok(dep.module && dep.requirement, JSON.stringify(dep));
+    }
+    // The three whose pip name and import name differ — the reason the annotation
+    // exists at all.
+    const byModule = Object.fromEntries(deps.map((d) => [d.module, d.requirement]));
+    assert.match(byModule.bs4 || '', /^beautifulsoup4/);
+    assert.match(byModule.PIL || '', /^pillow/);
+    assert.match(byModule.iso639 || '', /^iso639-lang/,
+      'iso639 must come from iso639-lang: python-iso639 and iso-639 install the same module '
+      + 'name with a different API and no Lang');
   },
 ));
 

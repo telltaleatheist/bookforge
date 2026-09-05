@@ -7811,18 +7811,19 @@ function setupIpcHandlers(): void {
             + 'weights in place — Settings → Higgs lists exactly what is missing.',
         };
       }
-      const { getWslDistro, getWslCondaPath, getWslHiggsCondaEnv } = await import('./tool-paths.js');
+      const {
+        getWslDistro, getWslCondaPath, getWslHiggsCondaEnv, higgsScriptsDir,
+      } = await import('./tool-paths.js');
       const { windowsToWslPath } = await import('./e2a-paths.js');
       const { spawn } = await import('child_process');
-      const pathMod = await import('path');
-      const fsMod = await import('fs');
 
       // Same resolution the other bundled scripts use: the app path in dev, the
       // asarUnpack'd copy when packaged (a spawned bash cannot read app.asar).
-      let scriptDir = pathMod.join(app.getAppPath(), 'electron', 'scripts', 'higgs');
-      if (!fsMod.existsSync(scriptDir)) {
-        scriptDir = pathMod.join(__dirname, 'scripts', 'higgs');
-      }
+      // ASKED OF tool-paths.ts rather than repeated here — the doctor reads the
+      // launcher and the requirements list out of the SAME directory to build
+      // what it expects the env to hold, and two copies of "where do our scripts
+      // live" is how a doctor certifies a file the installer never deploys.
+      const scriptDir = higgsScriptsDir();
       const { toUnpackedPath } = await import('./e2a-paths.js');
       const scriptWsl = windowsToWslPath(toUnpackedPath(scriptDir));
 

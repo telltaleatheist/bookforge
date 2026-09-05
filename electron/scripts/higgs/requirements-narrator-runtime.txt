@@ -1,0 +1,86 @@
+# narrator's RUNTIME imports, for an engine env that does not pip-install it.
+#
+# ── Why this file exists ────────────────────────────────────────────────────
+#
+# Owen's first in-app Higgs prep died with `ModuleNotFoundError: No module named
+# 'bs4'` inside the `higgs3` env (2026-09-05). Not a subtle failure: the prep
+# door is `python -m narrator.compat.app --prep_only`, `narrator.text.chapters`
+# imports bs4 at module scope, and the WSL Higgs env was built by
+# install_higgs_env.sh, which installs vllm-omni and NOTHING ELSE — narrator
+# reaches it over PYTHONPATH (buildNarratorSpawn), never through pip, so nothing
+# ever resolved narrator's own dependency list into that env.
+#
+# ── The env installs this; the doctor probes it. ONE list ────────────────────
+#
+#   install_higgs_env.sh   `pip install -r` this file (step 4b)
+#   electron/tool-paths.ts `narratorRuntimeDeps()` parses it and builds the
+#                          doctor's import probe from the SAME rows
+#
+# So a dependency added here is installed and checked together. Two lists would
+# be two lists that disagree, and the disagreement would show up as a green
+# doctor over an env that cannot prep.
+#
+# ── The format, and why it is not a plain requirements.txt ──────────────────
+#
+#   <pip requirement>   # import: <module the code actually imports>
+#
+# The annotation is REQUIRED on every row and the parser refuses a row without
+# one, because the two names are not the same and three of them are traps:
+# `beautifulsoup4` imports as `bs4`, `pillow` as `PIL`, and `iso639-lang` as
+# `iso639` — and PyPI also carries `python-iso639` and `iso-639`, which install
+# a module of that same name with a DIFFERENT API and no `Lang`. A doctor that
+# probed the pip names would report every one of those missing on a working env;
+# a doctor that probed a guessed module name would report `iso-639` as fine.
+#
+# ── What is on the list, and how it was decided ─────────────────────────────
+#
+# MEASURED, not guessed: every `import X` / `from X import` under
+# python/narrator/ was parsed out of the AST (2026-09-05, tests excluded), split
+# into module-scope and function-scope, and every third-party name that the
+# prep / worker / assembly doors can reach is here. What is deliberately NOT
+# here:
+#
+#   torch, vllm, vllm-omni, transformers, snac      the ENGINE stacks. Each env
+#   mlx, mlx-lm, mlx-audio, torchaudio, whisperx    has exactly one, they are
+#                                                   mutually exclusive, and
+#                                                   installing this list must
+#                                                   never touch them.
+#   pypinyin, pykakasi, phonemizer                  reachable only for Chinese
+#                                                   and Japanese text.
+#                                                   narrator imports them lazily
+#                                                   and says so
+#                                                   (text/normalize.py); this is
+#                                                   an English-language product.
+#   lxml                                            narrator never imports it —
+#                                                   every BeautifulSoup call
+#                                                   passes 'html.parser'. It
+#                                                   arrives anyway as ebooklib's
+#                                                   own dependency, which is
+#                                                   where it belongs.
+#
+# `regex` IS here and is NOT in python/pyproject.toml's dependencies (checked
+# 2026-09-05). It is a module-scope import in six of narrator/text/*.py —
+# chapters, normalize, packer, paragraph_packer, prep, sml — i.e. the prep door
+# cannot import without it. That is the same undeclared-dependency shape as bs4,
+# found by the same measurement; the declaration in pyproject is owed
+# separately, and this file is what the higgs3 env actually installs.
+#
+# tools/test-higgs-engine.js holds the two halves together: every base
+# dependency in python/pyproject.toml must appear here, and every module named
+# here must really be imported under python/narrator/.
+#
+# THE FLOORS ARE pyproject's, verbatim, not new numbers. This file is the same
+# list reaching a different env, so inventing a pin here would mean the Higgs
+# env resolved a version narrator was never run against.
+
+numpy>=1.26.4,<3          # import: numpy
+soundfile>=0.12           # import: soundfile
+psutil>=5.9               # import: psutil
+regex>=2023.0             # import: regex
+beautifulsoup4>=4.12      # import: bs4
+pillow>=10                # import: PIL
+mutagen>=1.45             # import: mutagen
+ebooklib>=0.18            # import: ebooklib
+iso639-lang>=2.2          # import: iso639
+unidecode>=1.3            # import: unidecode
+num2words>=0.5.12         # import: num2words

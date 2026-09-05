@@ -42,6 +42,32 @@
  *   NARRATOR_HIGGS3_URL              attach to an already-running server
  *   NARRATOR_HIGGS3_SERVE_SCRIPT     the launch script, when narrator must start one
  *   NARRATOR_HIGGS3_WSL_DISTRO       the distro to launch in, on Windows
+ *   NARRATOR_HIGGS3_MLX_MODEL        the BASE weights, for the in-process Mac backend
+ *
+ * ── AND THE LAUNCH SCRIPT'S OWN SET, WHICH IS NOT NARRATOR'S ────────────────
+ *
+ * `serve_higgs_v3.sh` is an OPERATOR'S script that narrator runs rather than
+ * reimplements, and it is configured the only way a script can be: through the
+ * environment. Those variables are `HIGGS_*`, they are NOT narrator's, and the
+ * distinction is exactly the one the note above draws — an earlier draft
+ * invented a `HIGGS_*` set as a guess at narrator's names, and these are a real
+ * set belonging to a real reader:
+ *
+ *   HIGGS_ENV                 the conda prefix the server runs out of
+ *   HIGGS_HOST / HIGGS_PORT   where it binds — and where narrator polls
+ *   HIGGS_GPU_MEM_UTIL        stage 0 (talker) share of the card
+ *   HIGGS_CODEC_GPU_MEM_UTIL  stage 1 (codec) share of the card; they ADD
+ *   HIGGS_MAX_MODEL_LEN       stage 0 context length
+ *   HIGGS_MAX_NUM_SEQS        stage 0 batch width — AND narrator's own
+ *   HIGGS_DEPLOY_CONFIG       a vllm-omni deploy profile, when one is chosen
+ *
+ * Every one of them comes from the catalog's `serving` block (`higgsServingFor`)
+ * and NONE of them reached the script until 2026-09-05: the block declared a
+ * configuration and the server ran on the script's built-in defaults. The one
+ * that is set on EVERY arm and every phase is HIGGS_MAX_NUM_SEQS, because
+ * narrator reads it too (`serve_concurrency`, which refuses when it is unset).
+ * HIGGS_MODEL_DIR is the exception in the other direction: narrator exports it
+ * per voice from the voice document, so BookForge must not.
  *
  * The caps do NOT travel as environment variables at all. narrator's
  * `higgs_v3_config_from_worker_kwargs` REFUSES a `caps` payload by name — those
@@ -304,7 +330,23 @@ export interface HiggsBackendCaps {
   allowedControls?: string[];
 }
 
-/** The serving stack a model's `engineVersion` selects. */
+/**
+ * The serving stack a model's `engineVersion` selects.
+ *
+ * ── EVERY FIELD HERE REACHES THE LAUNCH SCRIPT ──────────────────────────────
+ *
+ * Until 2026-09-05 none of them did. The block declared a bind address, two
+ * memory fractions, a context length and a batch width, and `higgsSpawnEnv`
+ * emitted only the `NARRATOR_*` set — so `serve_higgs_v3.sh` ran on its own
+ * built-in defaults and the catalog's numbers were documentation of a
+ * configuration nothing applied. Editing `maxNumSeqs` here changed nothing at
+ * all, which is worse than having no field: it is a lever that reports success.
+ *
+ * They travel as the `HIGGS_*` variables the script reads (see
+ * `higgsSpawnEnv`), and narrator re-exports the three it also has an opinion
+ * about (HIGGS_HOST, HIGGS_PORT, HIGGS_MAX_NUM_SEQS) into the wrapper it
+ * launches, so the pair that binds and the pair that is polled cannot drift.
+ */
 export interface HiggsServingSpec {
   engineVersion: string;
   model: string;
@@ -315,9 +357,39 @@ export interface HiggsServingSpec {
   host: string;
   port: number;
   endpoint: string;
+  /**
+   * STAGE 0, THE TALKER — its fraction of the WHOLE CARD (`HIGGS_GPU_MEM_UTIL`).
+   *
+   * Weights plus KV cache. It is NOT the server's total: the codec decoder is a
+   * second stage with its own fraction, and the two ADD.
+   */
   gpuMemoryUtilization: number;
+  /**
+   * STAGE 1, THE CODEC DECODER — its own fraction of the whole card
+   * (`HIGGS_CODEC_GPU_MEM_UTIL`).
+   *
+   * SEPARATE BECAUSE vllm-omni APPLIES A GLOBAL FLAG TO EVERY STAGE. A single
+   * `--gpu-memory-utilization 0.60` reserved 0.60 TWICE — measured 24.2 GB of a
+   * 24.5 GB card on 2026-09-05 — which is why the launch script passes both
+   * through `--stage-overrides` instead. 0.25 is the codec's value in
+   * vllm-omni's own deploy profile (`higgs_multimodal_qwen3.yaml`).
+   */
+  codecGpuMemoryUtilization: number;
   maxModelLen: number;
   maxNumSeqs: number;
+  /**
+   * A vllm-omni DEPLOY PROFILE by name (`HIGGS_DEPLOY_CONFIG`), or `null`.
+   *
+   * `null` is a DECLARED ABSENCE, not a missing field: it means "let vllm-omni
+   * auto-discover `higgs_multimodal_qwen3.yaml`", which keeps stage 0 in
+   * enforce_eager — NO CUDA GRAPHS on the talker. The sibling
+   * `higgs_multimodal_qwen3_low_latency` profile turns them on. Which profile a
+   * voice is certified against is a MEASUREMENT the training side owes, and
+   * until it exists this stays null; the field is here so that making it needs
+   * no script edit. The key is REQUIRED — an absent key would make "nobody has
+   * decided" and "we chose the default" the same catalog.
+   */
+  deployConfig: string | null;
   attentionBackend: string;
   coldStartSeconds: number;
   patches: HiggsPatchSpec[];
@@ -1120,6 +1192,46 @@ export function higgsMlxBaseDir(userDataDir: string): string {
   return path.join(userDataDir, 'runtime', 'higgs-models', 'base');
 }
 
+/**
+ * A SERVING NUMBER, REFUSED BY NAME RATHER THAN DEFAULTED.
+ *
+ * These land on a vllm-omni command line inside a WSL guest, five minutes before
+ * anything can be heard. A missing `maxNumSeqs` substituted with a plausible 2
+ * is not a smaller failure than a crash — it is a server that comes up at the
+ * wrong width and renders a whole book that way, and the catalog says 16.
+ */
+function servingFraction(serving: HiggsServingSpec, field: 'gpuMemoryUtilization' | 'codecGpuMemoryUtilization'): number {
+  const value = serving[field];
+  if (typeof value !== 'number' || !Number.isFinite(value) || value <= 0 || value > 1) {
+    throw new Error(
+      `The Higgs serving block's ${field} is ${JSON.stringify(value)}, which is not a fraction in ` +
+        '(0, 1]. It is a share of the WHOLE CARD passed to vllm-omni through --stage-overrides ' +
+        '(talker + codec ADD, so the two together must leave the card headroom), and ' +
+        'serve_higgs_v3.sh refuses a non-number itself. Fix it in ' +
+        'electron/data/higgs-models.json — there is no default here, because a guessed ' +
+        'utilization is a server that either OOMs or leaves half the card idle.',
+    );
+  }
+  return value;
+}
+
+function servingCount(serving: HiggsServingSpec, field: 'maxModelLen' | 'maxNumSeqs' | 'port'): number {
+  const value = serving[field];
+  if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+    throw new Error(
+      `The Higgs serving block's ${field} is ${JSON.stringify(value)}, which is not a positive ` +
+        'integer. Fix it in electron/data/higgs-models.json — every one of these reaches ' +
+        'vllm-omni through serve_higgs_v3.sh, and narrator sizes its own batch from ' +
+        'maxNumSeqs (`serve_concurrency`), so a substituted value would make BookForge and the ' +
+        'server disagree about how wide the render is.',
+    );
+  }
+  if (field === 'port' && value > 65535) {
+    throw new Error(`The Higgs serving block's port is ${value}, which is not a port number.`);
+  }
+  return value;
+}
+
 export function higgsSpawnEnv(
   model: HiggsModel,
   opts: {
@@ -1139,6 +1251,18 @@ export function higgsSpawnEnv(
     mlxModelDir?: string;
     /** Path to the launch script, in the SPAWN's filesystem. */
     serveScriptPath?: string;
+    /**
+     * The conda env prefix the launch script runs out of (`HIGGS_ENV`), in the
+     * SPAWN's filesystem — `<conda base>/envs/<higgs env>` inside the guest.
+     *
+     * REQUIRED WHENEVER `serveScriptPath` IS GIVEN, and refused when it is not:
+     * the script derives CUDA_HOME, PATH, LD_LIBRARY_PATH and the `vllm-omni`
+     * binary itself from it. Its own default is a hardcoded
+     * `$HOME/anaconda3/envs/higgs3`, which is true on the machine the script was
+     * transcribed from and a guess everywhere else — that default exists so the
+     * script runs by hand, not so BookForge can leave it unsaid.
+     */
+    condaEnvPrefix?: string;
     /** Attach to an already-running server instead of launching one. */
     baseUrl?: string;
     /** The WSL distro to launch in, on Windows. */
@@ -1159,13 +1283,90 @@ export function higgsSpawnEnv(
   refuseOversizedReference(model, spawnArm);
   refuseUnmeasuredAdapter(model, spawnArm);
 
+  const serving = higgsServingFor(model);
+
   const env: Record<string, string> = {
     NARRATOR_HIGGS_VOICES: opts.voicesPath,
   };
+
+  // ── ON EVERY ARM AND EVERY PHASE ──────────────────────────────────────────
+  //
+  // `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS and REFUSES BY NAME when it is
+  // unset — it is both stage 0's `max_num_seqs` and the width of narrator's own
+  // batch, and narrator declines to guess it. So it is set on prep, worker,
+  // assembly, retake and serve alike: the doors that do not render read it for
+  // nothing, which costs nothing, while a door that DOES render and finds it
+  // missing dies after the session is already built.
+  env.HIGGS_MAX_NUM_SEQS = String(servingCount(serving, 'maxNumSeqs'));
+
   if (opts.mlxModelDir) env.NARRATOR_HIGGS3_MLX_MODEL = opts.mlxModelDir;
-  if (opts.serveScriptPath) env.NARRATOR_HIGGS3_SERVE_SCRIPT = opts.serveScriptPath;
   if (opts.baseUrl) env.NARRATOR_HIGGS3_URL = opts.baseUrl;
   if (opts.wslDistro) env.NARRATOR_HIGGS3_WSL_DISTRO = opts.wslDistro;
+
+  // ── THE LAUNCH SCRIPT'S OWN KNOBS ─────────────────────────────────────────
+  //
+  // Emitted with the script and never without it. They configure a vllm-omni
+  // server, and the only arm that starts one is the served (WSL) arm — on the
+  // Mac the engine samples in-process and there is no process for a bind
+  // address or a memory fraction to mean anything to. Setting them there would
+  // be five variables that look like levers and are read by nothing.
+  if (opts.serveScriptPath) {
+    env.NARRATOR_HIGGS3_SERVE_SCRIPT = opts.serveScriptPath;
+    const prefix = (opts.condaEnvPrefix ?? '').trim();
+    if (!prefix) {
+      throw new Error(
+        'A Higgs spawn that names the launch script must also name the conda env prefix it runs ' +
+          'out of (HIGGS_ENV). serve_higgs_v3.sh builds CUDA_HOME, PATH, LD_LIBRARY_PATH and the ' +
+          'path to the vllm-omni binary from it, and its own fallback is a hardcoded ' +
+          '$HOME/anaconda3/envs/higgs3 — right on one machine and a wrong-env server start ' +
+          'anywhere else. Pass condaEnvPrefix (see higgsEnvExtras).',
+      );
+    }
+    env.HIGGS_ENV = prefix;
+    const host = (serving.host || '').trim();
+    if (!host) {
+      throw new Error(
+        "The Higgs serving block names no host. It is where the server BINDS and where narrator " +
+          'polls /health and posts renders (narrator re-exports it into the wrapper), so it is ' +
+          'stated rather than inherited. Fix it in electron/data/higgs-models.json.',
+      );
+    }
+    env.HIGGS_HOST = host;
+    env.HIGGS_PORT = String(servingCount(serving, 'port'));
+    env.HIGGS_GPU_MEM_UTIL = String(servingFraction(serving, 'gpuMemoryUtilization'));
+    env.HIGGS_CODEC_GPU_MEM_UTIL = String(servingFraction(serving, 'codecGpuMemoryUtilization'));
+    env.HIGGS_MAX_MODEL_LEN = String(servingCount(serving, 'maxModelLen'));
+
+    // A DECLARED null MEANS "vllm-omni's auto-discovered profile" and emits
+    // nothing; an ABSENT key means the catalog never decided, and is refused.
+    if (serving.deployConfig === undefined) {
+      throw new Error(
+        "The Higgs serving block declares no deployConfig. It selects vllm-omni's deploy " +
+          'profile, and the choice is load-bearing: the auto-discovered ' +
+          'higgs_multimodal_qwen3.yaml keeps stage 0 in enforce_eager (no CUDA graphs on the ' +
+          'talker) while higgs_multimodal_qwen3_low_latency turns them on. Write `null` to mean ' +
+          'the auto-discovered one — a missing key would make "nobody decided" look like a ' +
+          'decision.',
+      );
+    }
+    if (serving.deployConfig !== null) {
+      const profile = serving.deployConfig.trim();
+      if (!profile) {
+        throw new Error(
+          'The Higgs serving block\'s deployConfig is an empty string. A profile that is not ' +
+            "chosen is `null` — an empty name says \"chosen, and it is called nothing\".",
+        );
+      }
+      env.HIGGS_DEPLOY_CONFIG = profile;
+    }
+  } else if (opts.condaEnvPrefix) {
+    throw new Error(
+      'A Higgs spawn named a conda env prefix (HIGGS_ENV) but no launch script. HIGGS_ENV is ' +
+        'read by serve_higgs_v3.sh and by nothing else, so on an arm that launches no server it ' +
+        'is a variable with no reader — which is how a Mac spawn ends up looking like a served ' +
+        'one.',
+    );
+  }
 
   return env;
 }

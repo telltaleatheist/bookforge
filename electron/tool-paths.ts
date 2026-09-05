@@ -14,6 +14,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawn } from 'child_process';
+import { createHash } from 'crypto';
 import { app } from 'electron';
 import { getActiveBundledEnvPath, getActiveBundledE2aPath, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { getManagedBinaryPath } from './update/managed-bins';
@@ -896,7 +897,8 @@ export interface HiggsCheck {
    * dispatcher that chooses between them.
    */
   id:
-    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher'
+    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha'
+    | 'narrator-deps'
     | 'toggle'
     | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
     | 'platform';
@@ -1015,6 +1017,127 @@ export const HIGGS_PATCHES: ReadonlyArray<{
 /** The launcher the installer deploys INTO the env, so the stack is self-contained. */
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
 
+/** narrator's runtime imports, as the installer and the doctor both read them. */
+export const HIGGS_NARRATOR_REQUIREMENTS = 'requirements-narrator-runtime.txt';
+
+/**
+ * WHERE THE HIGGS SCRIPTS SHIP — the dev checkout in development, the copied
+ * `dist/electron/scripts/higgs` (asarUnpack'd when packaged) otherwise.
+ *
+ * ONE RESOLUTION, THREE READERS: the installer spawn in main.ts hands this to a
+ * bash inside the guest, and the two functions below read the launcher and the
+ * requirements list out of it to build the doctor's expectations. main.ts had
+ * its own copy of this search until 2026-09-05; two copies of "where do our
+ * scripts live" is how a doctor certifies a file the installer never deploys.
+ */
+export function higgsScriptsDir(): string {
+  const fromAppPath = path.join(app.getAppPath(), 'electron', 'scripts', 'higgs');
+  if (fs.existsSync(fromAppPath)) return fromAppPath;
+  return path.join(__dirname, 'scripts', 'higgs');
+}
+
+/**
+ * THE SHA256 OF THE LAUNCHER THIS BUILD SHIPS, with CR stripped.
+ *
+ * ── Why the CR strip is not a fudge ─────────────────────────────────────────
+ *
+ * The repo has `core.autocrlf=true` on Windows, so the working copy of a shell
+ * script is CRLF while the copy the installer lands inside the guest is read and
+ * written by a Linux `cp`… of those same CRLF bytes. But the file is also edited
+ * on the Mac and in the WSL checkout, where it is LF. Hashing the raw bytes
+ * would therefore make "this env's launcher is current" depend on which machine
+ * built it, and the doctor would report `launcher-stale` on a byte-perfect
+ * install. Stripping CR from BOTH sides asks the question that actually matters
+ * — is this the same SCRIPT — and it is why the guest side hashes a stripped
+ * copy too (`tr -d '\r' | sha256sum`).
+ *
+ * Throws rather than returning null: a build whose own scripts are unreadable
+ * cannot report on an env, and a doctor that quietly skipped the check would
+ * pass every stale launcher there is.
+ */
+export function shippedHiggsLauncherSha256(): string {
+  const file = path.join(higgsScriptsDir(), HIGGS_LAUNCH_SCRIPT);
+  let raw: Buffer;
+  try {
+    raw = fs.readFileSync(file);
+  } catch (err) {
+    throw new Error(
+      `Could not read the shipped Higgs launcher at ${file}: `
+      + `${err instanceof Error ? err.message : String(err)}. It is what the installer copies `
+      + `into the env and what the doctor compares the env's copy against, so without it there `
+      + 'is no way to tell a current launcher from one built months ago.',
+    );
+  }
+  const lf = Buffer.from(raw.toString('binary').replace(/\r/g, ''), 'binary');
+  return createHash('sha256').update(lf).digest('hex');
+}
+
+/** One row of `requirements-narrator-runtime.txt`: what pip installs, what python imports. */
+export interface NarratorRuntimeDep {
+  /** The pip requirement, verbatim (`beautifulsoup4>=4.12`). */
+  requirement: string;
+  /** The name the code actually imports (`bs4`). */
+  module: string;
+}
+
+/**
+ * narrator's runtime imports, PARSED FROM THE FILE THE INSTALLER INSTALLS.
+ *
+ * The doctor builds its import probe from these rows and the installer runs
+ * `pip install -r` on the same file, so a dependency added there is installed
+ * and checked together — the alternative is two lists, and the first time they
+ * disagree the doctor reports green over an env that cannot prep.
+ *
+ * A REQUIREMENT ROW WITHOUT ITS `# import:` ANNOTATION IS REFUSED, not guessed
+ * at. The pip name and the module name differ for three of the eleven
+ * (`beautifulsoup4`→`bs4`, `pillow`→`PIL`, `iso639-lang`→`iso639`), and PyPI
+ * carries two other distributions that install a module called `iso639` with a
+ * different API — so a probe built from pip names would report a working env as
+ * broken, and one built from a guessed module name would report a WRONG package
+ * as fine.
+ */
+export function narratorRuntimeDeps(): NarratorRuntimeDep[] {
+  const file = path.join(higgsScriptsDir(), HIGGS_NARRATOR_REQUIREMENTS);
+  let text: string;
+  try {
+    text = fs.readFileSync(file, 'utf-8');
+  } catch (err) {
+    throw new Error(
+      `Could not read narrator's runtime requirements at ${file}: `
+      + `${err instanceof Error ? err.message : String(err)}. It is the ONE list the Higgs `
+      + 'installer installs and the doctor probes; without it the doctor cannot say whether '
+      + 'the env can run a prep at all.',
+    );
+  }
+  const deps: NarratorRuntimeDep[] = [];
+  text.split('\n').forEach((line, i) => {
+    // Whole-line comments go first — the file documents its own format in a
+    // comment containing the words `# import:`, and a parser that matched it
+    // would probe a module called "<module".
+    const row = line.trim();
+    if (!row || row.startsWith('#')) return;
+    const [requirement, ...rest] = row.split('#');
+    const annotation = rest.join('#').match(/import:\s*(\S+)/);
+    if (!annotation) {
+      throw new Error(
+        `${file} line ${i + 1} (${JSON.stringify(row)}) has no "# import:" annotation. Every `
+        + 'requirement must name the module it installs — the pip name and the import name '
+        + 'differ for three of them, and PyPI carries two other packages that install a module '
+        + 'called `iso639`. Refusing to guess.',
+      );
+    }
+    deps.push({ requirement: requirement.trim(), module: annotation[1] });
+  });
+  if (deps.length === 0) {
+    throw new Error(
+      `${file} declares no requirements. narrator's prep, worker and assembly doors import `
+      + 'bs4, ebooklib, regex and eight others at run time, so an empty list means the doctor '
+      + 'stopped asking the question that caught the first Higgs prep failure.',
+    );
+  }
+  return deps;
+}
+
 /**
  * THE ARGV FOR RUNNING A SHELL SCRIPT INSIDE WSL — and the `--exec` is the whole
  * point of this function existing.
@@ -1061,7 +1184,27 @@ export function wslScriptArgs(distro: string | undefined, script: string): strin
  * The Higgs doctor's probe script and its result parsing, shared by the sync and
  * async entry points so the two can never disagree about what "green" means.
  */
-function higgsProbeScript(envPrefix: string): string {
+/**
+ * WHAT THE DOCTOR EXPECTS TO FIND, computed on THIS side before it asks.
+ *
+ * Both halves come from the files this build ships (`higgsScriptsDir`), and both
+ * are computed by the CALLER rather than inside the probe so that a build whose
+ * own scripts are unreadable fails with that sentence instead of silently
+ * dropping two checks.
+ */
+export interface HiggsExpectations {
+  /** sha256 of the shipped launcher, CR-stripped. See `shippedHiggsLauncherSha256`. */
+  launcherSha: string;
+  /** The rows of `requirements-narrator-runtime.txt`. See `narratorRuntimeDeps`. */
+  deps: ReadonlyArray<NarratorRuntimeDep>;
+}
+
+/** The expectations, read off this build's own shipped files. */
+export function higgsExpectations(): HiggsExpectations {
+  return { launcherSha: shippedHiggsLauncherSha256(), deps: narratorRuntimeDeps() };
+}
+
+function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string {
   // `grep -qF`, fixed-string: `absentMarker` is `[:, :-1]`, which as a BASIC
   // REGULAR EXPRESSION is a bracket expression matching one character out of a
   // set — it would match almost every line of the file and report every env as
@@ -1077,18 +1220,52 @@ function higgsProbeScript(envPrefix: string): string {
         : '') +
       `else echo 'patch:${p.id}=ok'; fi`,
   ).join('; ');
+  // THE LAUNCHER'S IDENTITY, not just its presence. `test -x` answered "somebody
+  // deployed a launcher once" — and until 2026-09-05 the installer only copied
+  // the script when it was ABSENT, so an env built in the first week kept that
+  // week's script for ever while every later fix (the --stage-overrides split
+  // that stopped the codec stage reserving a second 0.60 of the card, the
+  // HIGGS_CODEC_GPU_MEM_UTIL and HIGGS_DEPLOY_CONFIG knobs) shipped in the repo
+  // and was read by nobody. The doctor reported ok throughout.
+  //
+  // CR IS STRIPPED ON BOTH SIDES. The Windows working copy is CRLF
+  // (core.autocrlf=true) and the Mac/WSL checkouts are LF, so raw bytes would
+  // make "current" depend on which machine built the env — see
+  // `shippedHiggsLauncherSha256`.
+  const launcherPath = `${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}`;
+  const launcherProbe =
+    `if [ ! -x ${launcherPath} ]; then echo 'launcher=absent'; ` +
+    `else echo 'launcher=ok'; ` +
+    `echo "launcher-sha=$(tr -d '\\r' < ${launcherPath} | sha256sum | cut -c1-64)"; fi`;
+
+  // NARRATOR'S OWN IMPORTS. narrator is NOT pip-installed into this env — it
+  // arrives over PYTHONPATH — so nothing ever resolved its dependency list here,
+  // and Owen's first in-app Higgs prep died on `No module named 'bs4'`.
+  // `find_spec` answers "is it importable" without paying the import, and the
+  // module names come from the same file the installer pip-installs.
+  //
+  // The names are single-quoted INSIDE a double-quoted python program so the
+  // sync entry point's `"` → `\"` escaping has nothing of its own to trip on.
+  const modules = expect.deps.map((d) => d.module).join(' ');
+  const depsProbe =
+    `${envPrefix}/bin/python -c ` +
+    `'import importlib.util as u,sys;print("narrator-deps=" + (",".join(` +
+    `[m for m in sys.argv[1:] if u.find_spec(m) is None]) or "ok"))' ` +
+    `${modules} 2>/dev/null || echo 'narrator-deps=probe-failed'`;
+
   return [
     `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
     `${envPrefix}/bin/python -c 'import vllm_omni' >/dev/null 2>&1 && echo 'omni=ok' || echo 'omni=absent'`,
     patchProbe,
-    `test -x ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} && echo 'launcher=ok' || echo 'launcher=absent'`,
+    launcherProbe,
+    depsProbe,
   ].join('; ');
 }
 
 /** Turn the probe's `key=value` lines into the reported check list. */
 function higgsChecksFrom(
   out: string, probeError: string | null, distro: string | undefined,
-  envName: string, envPrefix: string,
+  envName: string, envPrefix: string, expect: HiggsExpectations,
 ): HiggsCheck[] {
   const seen = new Map<string, string>();
   for (const line of out.split('\n')) {
@@ -1156,6 +1333,70 @@ function higgsChecksFrom(
     ok: launcherOk,
     detail: launcherOk ? undefined : `Not executable at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}.`,
   });
+
+  // ── IS IT THE LAUNCHER THIS BUILD SHIPS? ────────────────────────────────
+  //
+  // A SECOND ROW rather than a stricter version of the one above, because the
+  // two send a person to different places: "absent" means the env was never
+  // finished, "stale" means it was finished against an older BookForge and the
+  // fix is one button. The env's copy is where the whole serving configuration
+  // is realised (the --stage-overrides split, HIGGS_CODEC_GPU_MEM_UTIL,
+  // HIGGS_DEPLOY_CONFIG), so a stale one silently ignores every variable the
+  // spawn now sets — a wrong GPU split, not a crash.
+  const envSha = seen.get('launcher-sha');
+  const shaOk = !probeError && envSha === expect.launcherSha;
+  checks.push({
+    id: 'launcher-sha',
+    label: `${HIGGS_LAUNCH_SCRIPT} matches this build`,
+    ok: shaOk,
+    ...(shaOk ? {} : {
+      detail: probeError
+        ? `The probe did not run: ${probeError}`
+        : envSha === undefined
+          ? launcherOk
+            ? 'The probe printed no sha for the deployed launcher, which means sha256sum is not '
+              + `available in ${distro ? `"${distro}"` : 'the distro'} — the env's copy cannot be `
+              + 'told apart from the shipped one.'
+            : `There is no launcher at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} to compare.`
+          : `launcher-stale: ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} is sha256 ${envSha.slice(0, 16)}… `
+            + `while this build ships ${expect.launcherSha.slice(0, 16)}… (compared with CR stripped, `
+            + 'so line endings are not the difference). The deployed copy is where the serving '
+            + 'configuration is actually realised — the per-stage memory split, the codec '
+            + 'fraction, the deploy profile — so an old one ignores what BookForge now sets and '
+            + 'starts a differently-configured server. Re-run the Higgs installer, which now '
+            + 'copies the launcher EVERY time rather than only when it is missing.',
+    }),
+  });
+
+  // ── CAN THIS ENV RUN A PREP AT ALL? ────────────────────────────────────
+  //
+  // narrator is not pip-installed here (it arrives over PYTHONPATH), so nothing
+  // resolves its dependency list into this env but the installer's explicit
+  // step. Owen's first in-app Higgs prep died with `No module named 'bs4'`; this
+  // row is that failure asked BEFORE the run.
+  const depsAnswer = seen.get('narrator-deps');
+  const depsOk = !probeError && depsAnswer === 'ok';
+  const listed = expect.deps.map((d) => `${d.module} (${d.requirement})`).join(', ');
+  checks.push({
+    id: 'narrator-deps',
+    label: `narrator runtime imports (${expect.deps.length})`,
+    ok: depsOk,
+    ...(depsOk ? {} : {
+      detail: probeError
+        ? `The probe did not run: ${probeError}`
+        : depsAnswer === undefined || depsAnswer === 'probe-failed'
+          ? `${envPrefix}/bin/python could not answer which of narrator's runtime imports are `
+            + `present. The env's interpreter is not usable as it stands; the modules it needs `
+            + `are ${listed}.`
+          : `MISSING: ${depsAnswer.split(',').map((m) => {
+              const dep = expect.deps.find((d) => d.module === m);
+              return dep ? `${m} (pip install ${dep.requirement})` : m;
+            }).join(', ')}. narrator's prep, worker and assembly doors import these at run time `
+            + 'and narrator is not pip-installed into this env — it is reached over PYTHONPATH — '
+            + 'so only the Higgs installer puts them here. Re-run it (Settings → Higgs), which '
+            + 'pip-installs requirements-narrator-runtime.txt.',
+    }),
+  });
   return checks;
 }
 
@@ -1199,7 +1440,12 @@ export function checkWslHiggsSetupAsync(config: {
     });
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const args = wslScriptArgs(distro, higgsProbeScript(envPrefix));
+  // READ BEFORE THE PROBE, AND ALLOWED TO THROW. These come out of this build's
+  // own shipped files; if they cannot be read there is nothing to compare the
+  // env against, and the honest failure is that sentence rather than two checks
+  // quietly not being asked.
+  const expect = higgsExpectations();
+  const args = wslScriptArgs(distro, higgsProbeScript(envPrefix, expect));
 
   return new Promise((resolve) => {
     let out = '';
@@ -1207,7 +1453,7 @@ export function checkWslHiggsSetupAsync(config: {
     const finish = (probeError: string | null) => {
       if (done) return;
       done = true;
-      const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
+      const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix, expect);
       resolve({
         valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
       });
@@ -1264,10 +1510,11 @@ export function checkWslHiggsSetup(config: {
     };
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
+  const expect = higgsExpectations();
   // The SAME argv the async doctor builds, joined for execSync's command string.
   // Built from wslScriptArgs so the two forms cannot drift on the one flag that
   // decides whether the probe works at all — see that function.
-  const script = higgsProbeScript(envPrefix);
+  const script = higgsProbeScript(envPrefix, expect);
   const syncArgv = wslScriptArgs(distro, script)
     .slice(0, -1)
     .join(' ');
@@ -1284,7 +1531,7 @@ export function checkWslHiggsSetup(config: {
     probeError = err instanceof Error ? err.message : String(err);
   }
 
-  const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
+  const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix, expect);
   return {
     valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
   };
