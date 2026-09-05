@@ -27,7 +27,7 @@ import type { JobStageProgress } from './job-stages';
 // The model behind the number pass is INJECTED into the door below, so this is a
 // type-only import: nothing here ever dials Ollama.
 import type { NumberNormalizerRunner } from './tts-number-normalizer';
-import type { NarrationTextGate } from './narration-text-pass';
+import type { NarrationTextGate } from './narration-clean-text';
 import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
@@ -7407,8 +7407,8 @@ export async function prepareNarrationInput(
   // ── THE STAMP IS READ, AND IT IS NOT PERMISSION (2026-09-05) ───────────
   //
   // The punctuation and the numbers are a PASS the user runs on the book —
-  // `electron/narration-text-pass.ts`, recorded in the ledger, stamped into the
-  // OPF. This door does not run it: an hour of model time inside a render's prep
+  // `foundry clean-text` (electron/narration-clean-text.ts), recorded in the
+  // ledger, stamped into the OPF. This door does not run it: an hour of model time inside a render's prep
   // is exactly what the 2026-09-04 ruling moved out of here, and a door that
   // silently did the work again would make the persisted pass pointless.
   //
@@ -7499,8 +7499,8 @@ export async function prepareNarrationInput(
 
 /** The stamp check, imported here so the door has one line and one meaning. */
 async function narrationTextGate(bookPath: string): Promise<NarrationTextGate> {
-  const pass = await import('./narration-text-pass.js');
-  return pass.narrationTextGate(bookPath);
+  const gate = await import('./narration-clean-text.js');
+  return gate.narrationTextGate(bookPath);
 }
 
 /** The caption/footnote cut — the first half of the door. */

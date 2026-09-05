@@ -1128,7 +1128,8 @@ export type AppliedPassKind =
   | 'footnote-refs'
   // THE NARRATION TEXT CLEANUP: punctuation canonicalization, then the
   // deterministic number rules, then the model on whatever digits are left
-  // (electron/narration-text-pass.ts). It edits the BOOK, once, and stamps it,
+  // (`foundry clean-text`, electron/narration-clean-text.ts). It edits the BOOK,
+  // once, and stamps it,
   // the Narrate button offers it when the file it is about to read carries no
   // stamp — so this is the pass that stands between a finished book and a render
   // reading its digits as printed. Offered, never demanded (Owen, 2026-09-05).

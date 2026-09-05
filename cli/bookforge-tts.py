@@ -524,22 +524,32 @@ def cmd_prep(args):
 
 
 def cmd_narration_text(args):
-    """Run the NARRATION TEXT CLEANUP on a book, and write the cleaned book beside it.
+    """Run the NARRATION TEXT CLEANUP FAILSAFE on a book, replacing it in place.
 
-    Owen, 2026-09-04: "We should make this its own intentional step that the user
-    runs and persists, so we don't have to run it again. It runs the step on an
-    epub that foundry exported/completed and it creates an updated epub. This
-    should be a foundry step that's necessary before it goes to TTS."
+    Owen, 2026-09-05: "the cleaning step can be done on an epub because the user
+    might forget it should be done at all... it should replace the epub that's
+    currently there if one already exists. if the user deletes the epub and
+    re-exports, the cleaning job will be lost. that's the cost of doing it to an
+    epub... the bookforge clean text action outside of foundry is a failsafe in
+    case the user forgets and just wants to get it done immediately. it won't be
+    treated as the standard method."
 
-    Three stages, in this order: punctuation canonicalization (the canonical
-    ellipsis, the quote map, the invisibles), then the deterministic number
-    rules, then the model on whatever digits are left. It writes
+    The pass itself is the ENGINE's since 2026-09-05: this spawns
+    `foundry clean-text --epub <book> --out <staging>` and lands the staging on
+    the book with one rename. Three stages, in this order: punctuation
+    canonicalization (the canonical ellipsis, the quote map, the invisibles),
+    then the deterministic number rules, then the model on every block. It writes
 
-        <stem>.narration.epub                the cleaned, STAMPED book
-        <stem>.narration.narration-text.json the receipt
+        <book>.epub                  the same path, cleaned and STAMPED
+        <stem>.narration-text.json   the engine's receipt
 
-    and the STAMP is the point: --tts and --audiobook refuse a book that has not
-    been through this pass, by name, rather than narrating raw digits.
+    and the STAMP is the point: it is what every consumer downstream reads to
+    tell a cleaned book from an uncleaned one.
+
+    THE STANDARD METHOD IS THE HOSTED STEP — Clean text in the Foundry window,
+    where the cleanup is a position on the document chain and everything done
+    after it carries it along. This door produces a FILE, and a re-export from
+    the project loses it.
 
     NOT --prep, which is the render door (the caption/endnote cut and the copy a
     voice reads, made per render). This edits the book, once.
@@ -550,9 +560,9 @@ def cmd_narration_text(args):
              "--narration-text: --project and --input both name what to clean; pass one")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(NARRATION_TEXT.is_file(), f"missing adapter {NARRATION_TEXT}")
-    _require((REPO_ROOT / "dist" / "electron" / "narration-text-pass.js").is_file(),
+    _require((REPO_ROOT / "dist" / "electron" / "narration-clean-text.js").is_file(),
              "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
-             "(dist/electron/narration-text-pass.js missing)")
+             "(dist/electron/narration-clean-text.js missing)")
 
     cmd = ["node", "--require", str(NODE_STUB), str(NARRATION_TEXT)]
     if args.project:

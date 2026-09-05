@@ -44,6 +44,7 @@ import { removeEpubContainer, stagedContainerKindFor } from './epub-container';
 import { bookDigest } from './sidecar-binding';
 import { bookDigestHex } from '../shared/book-digest';
 import { narrationCarryRefusal, type NarrationDeletionsCarry } from '../shared/vlm/narration-deletions';
+import { NARRATION_TEXT_FAILSAFE_NOTICE } from '../shared/processing/narration-text-notice';
 import type { AppliedPass } from './manifest-types';
 import type {
   PassJobConfig,
@@ -863,16 +864,35 @@ async function recutNarrationCopy(
  *
  * So it is offered, planned, queued and recorded exactly as those are, and it
  * may be run at any point in the chain. What makes it different is the STAMP:
- * `electron/narration-text-pass.ts` writes it into the book's OPF, and
- * the Narrate button reads it off the file it is about to hand the voice and
- * OFFERS the pass when it is not there — which is what "everything after it is
- * finalized" means in code, since every cut exported after the pass carries the
- * stamp along. Declining is a real answer (Owen, 2026-09-05: *"make it so i dont
- * HAVE to run cleanup"*), and the render door then says in the log that the book
- * was read as printed. A later simplify or translate rewrites the cleaned text
- * and is recorded after this one in the ledger, which is what makes
- * `narrationTextReadiness` — the question THIS pass asks below — call it stale
- * and give a re-run something to do.
+ * the engine writes it into the book's OPF, and the Narrate button reads it off
+ * the file it is about to hand the voice and OFFERS the pass when it is not
+ * there — which is what "everything after it is finalized" means in code, since
+ * every cut exported after the pass carries the stamp along. Declining is a real
+ * answer (Owen, 2026-09-05: *"make it so i dont HAVE to run cleanup"*), and the
+ * render door then says in the log that the book was read as printed. A later
+ * simplify or translate rewrites the cleaned text and is recorded after this one
+ * in the ledger, which is what makes `narrationTextReadiness` — the question
+ * THIS pass asks below — call it stale and give a re-run something to do.
+ *
+ * ── THIS IS THE FAILSAFE, AND THE ENGINE DOES THE WORK ──────────────────────
+ *
+ * Owen, 2026-09-05: *"the bookforge clean text action outside of foundry is a
+ * failsafe in case the user forgets and just wants to get it done immediately.
+ * it won't be treated as the standard method."* The standard method is the
+ * **Clean text** step pressed in the hosted Foundry window, where a cleanup is a
+ * position on the document chain and everything done afterwards carries it.
+ *
+ * Either way there is ONE implementation of the pass and it is the engine's.
+ * This row spawns `foundry clean-text --epub … --out …`
+ * (electron/narration-clean-text.ts) over the book the ledger names and lands
+ * the result on it. BookForge's own copy of the three stages
+ * (`electron/narration-text-pass.ts`) is gone: it existed only because foundry
+ * could not clean an arbitrary EPUB in place, and 1.2.0 can.
+ *
+ * WHAT THAT COSTS, said out loud because the user is told it too
+ * (`NARRATION_TEXT_FAILSAFE_NOTICE`): this replaces a FILE. The project's chain
+ * records the row, so a re-export from the SAME chain is uncleaned — which is
+ * exactly the state `narrationTextGate` reports at the render door.
  *
  * ── Not a string replace, and it still belongs here ─────────────────────────
  *
@@ -890,12 +910,54 @@ async function recutNarrationCopy(
  * what unlocks the render — so a text-unchanged run over an UNSTAMPED book is a
  * real pass with a real row, and says so.
  */
+/**
+ * What the cleanup DID to the readings, counted off the engine's own receipt.
+ *
+ * The book route used to hand BookForge a `NumberNormalizationRecord` with these
+ * totals already summed. The EPUB route's receipt carries the units instead —
+ * every block, every proposed edit and the verdict it got — so the totals are
+ * derived here, from the one place that records them, rather than asked for a
+ * second time.
+ *
+ * THE THREE STATUSES ARE THE ENGINE'S OWN VOCABULARY (`NumberEditStatus`,
+ * electron/tts-number-normalizer.ts, which is the module both sides vendor):
+ * `APPLIED_RULE` is a reading the deterministic rules made, `APPLIED` is one the
+ * model made and the validators let through, `NOOP` and `SCRIPTURE_PROTECTED`
+ * are decisions to leave the text alone, and everything else is a refusal with
+ * its own name in the receipt.
+ */
+function countReadings(receipt: import('./narration-clean-text.js').CleanTextReceipt): {
+  applied: number; byRules: number; byModel: number; refused: number;
+  byClass: Record<string, number>;
+} {
+  const byClass: Record<string, number> = {};
+  let byRules = 0;
+  let byModel = 0;
+  let refused = 0;
+  for (const unit of receipt.units) {
+    for (const edit of unit.edits) {
+      if (edit.status === 'APPLIED_RULE') byRules += 1;
+      else if (edit.status === 'APPLIED') byModel += 1;
+      else if (edit.status !== 'NOOP' && edit.status !== 'SCRIPTURE_PROTECTED') {
+        refused += 1;
+        continue;
+      } else continue;
+      // Absent on a record the engine wrote without one; counted under the name
+      // the receipt gives rather than re-derived here, because classifying a
+      // span is the pass's judgement and this is a tally.
+      const klass = edit.editClass ?? 'unnamed';
+      byClass[klass] = (byClass[klass] ?? 0) + 1;
+    }
+  }
+  return { applied: byRules + byModel, byRules, byModel, refused, byClass };
+}
+
 async function runNarrationTextPass(
   jobId: string,
   config: PassJobConfig
 ): Promise<PassJobResult> {
   const bookPath = await requireBookEpub(config.projectDir, config.familyId);
-  const { runNarrationTextPass: runPass } = await import('./narration-text-pass.js');
+  const { cleanTextEpub } = await import('./narration-clean-text.js');
   const { narrationTextReadiness } = await import('./narration-text-readiness.js');
 
   // ── ALREADY DONE? Asked of the LEDGER, which is the authority the UI used ──
@@ -943,77 +1005,128 @@ async function runNarrationTextPass(
   // from, and the diff is computed against this.
   const before = await loadEpubForComparison(bookPath, false);
 
-  const { createOllamaNormalizerRunner, numberNormalizerModel } =
-    await import('./tts-number-normalizer-runner.js');
-  const { loadNarrationTextPrompt } = await import('./ai-bridge.js');
-  const { narrationCutsDir } = await import('./parallel-tts-bridge.js');
-  // Read ONCE and carried: the tag is part of the cache path AND of the stamp,
-  // so a run that read it twice could name the copy after one model and make it
-  // with another.
-  const model = numberNormalizerModel();
+  /*
+   * ── THE ENGINE READS AN EPUB FILE, AND A WORKING COPY MAY BE A TREE ────────
+   *
+   * `foundry clean-text --epub` takes an archive: it reads the container, walks
+   * the stamped blocks and writes a new zip. The book this ledger names may be
+   * an EXPLODED working copy — a folder of the book's parts — which is the shape
+   * every edit in the editor writes to.
+   *
+   * So a tree is packed BESIDE the stage, through the one copy in this app that
+   * proves its result entry by entry, and the engine reads that. Nothing about
+   * the landing changes: `replaceBookEpub` converts the produced archive back to
+   * the book's own kind and lands it with one rename, exactly as it does for the
+   * simplify pass, which has always produced an archive from a tree.
+   */
+  const bookKind = await stagedContainerKindFor(bookPath);
+  const readable = bookKind === 'zip'
+    ? bookPath
+    : path.join(stageDir, 'narration-text.source.epub');
+  if (readable !== bookPath) {
+    await removeEpubContainer(readable);
+    await manifestService.copyBookIntoContainer(
+      bookPath, readable, 'zip',
+      'the working copy this cleanup reads');
+  }
 
   const produced = path.join(stageDir, 'narration-text.epub');
-  const outcome = await runPass({
-    epubPath: bookPath,
-    outPath: produced,
-    // The SAME scratch the render door looks in, so the copies this pass makes
-    // are the copies a later render finds instead of paying for them again.
-    cacheDir: narrationCutsDir(),
-    systemPrompt: await loadNarrationTextPrompt(),
-    model,
-    runner: createOllamaNormalizerRunner(model),
-    onProgress: (done, total, label) => {
-      // The same `queue:progress` bridge event the row's step module is already
-      // listening on (electron/queue-steps/pass.ts), so the bar this draws is
-      // the bar every other pass draws.
-      publishBridgeEvent('queue:progress', {
-        jobId,
-        message: label,
-        progress: total > 0 ? Math.round((done / total) * 100) : 0,
-      });
-    },
-  });
+  let outcome;
+  try {
+    outcome = await cleanTextEpub({
+      epubPath: readable,
+      outPath: produced,
+      onProgress: (done, total, label) => {
+        // The same `queue:progress` bridge event the row's step module is already
+        // listening on (electron/queue-steps/pass.ts), so the bar this draws is
+        // the bar every other pass draws.
+        publishBridgeEvent('queue:progress', {
+          jobId,
+          message: label,
+          progress: total > 0 ? Math.round((done / total) * 100) : 0,
+        });
+      },
+    });
+  } finally {
+    // The packed copy has served its one purpose, and a REFUSED run must not
+    // leave it either: a second whole copy of the book, inside a stage directory
+    // the user can open, is a book somebody could take for the real one.
+    if (readable !== bookPath) await removeEpubContainer(readable);
+  }
+
+  // The model tag is the ENGINE'S, read back off the receipt rather than
+  // guessed at from settings: the settings say what was asked for, the receipt
+  // says what ran, and the ledger records what ran.
+  const model = outcome.receipt.model;
 
   const after = await loadEpubForComparison(produced, false);
   const diff = diffPaths(config);
   await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
 
-  // The full record beside the diff: per-rule punctuation counts, every model
-  // edit and the verdict the validator gave it, everything refused. The diff is
-  // what Review changes shows; this is what a disagreement is settled from.
+  // The full record beside the diff — THE ENGINE'S OWN, moved into the stage
+  // rather than recomposed: per-rule punctuation counts, every model edit and
+  // the verdict the validator gave it, everything refused, every block left as
+  // printed. The diff is what Review changes shows; this is what a disagreement
+  // is settled from, and rewriting it here would put a second author's summary
+  // where the run's own record belongs.
   const receiptRel = `${config.stageRelDir}/narration-text.receipt.json`;
   await fs.promises.writeFile(
     path.join(stageDir, 'narration-text.receipt.json'),
     `${JSON.stringify(outcome.receipt, null, 2)}\n`, 'utf8');
 
-  // The strikes, carried. This pass CANNOT move an element — it rewrites text
-  // nodes by offset and never adds, removes or reorders one — but that is
-  // asserted rather than trusted: the walk is compared anyway, so a future change
-  // that broke the claim refuses the carry instead of shifting a user's strikes
-  // by one paragraph.
+  // The strikes, carried. This pass CANNOT move an element — the engine rewrites
+  // text nodes inside their own source ranges and never adds, removes or
+  // reorders one — but that is asserted rather than trusted: the walk is compared
+  // anyway, so a future change that broke the claim refuses the carry instead of
+  // shifting a user's strikes by one paragraph.
   const { carry, bookAfter } = await carryNarrationAcrossPass(config, bookPath, produced);
 
+  /*
+   * THE LANDING IS THE BOOK THE LEDGER NAMES, AND IT IS CHECKED.
+   *
+   * `replaceBookEpub` re-resolves the recorded book rather than taking the path
+   * this function opened with, so in principle a manifest edited mid-run could
+   * land a cleaned book on a DIFFERENT file — one whose text nobody cleaned and
+   * whose stamp would then be a lie. Nothing does that today; it is asserted
+   * because the failsafe's whole act is replacing somebody's export in place,
+   * and "over which file" is the one question it must never get wrong.
+   */
+  if (path.resolve(bookAfter) !== path.resolve(bookPath)) {
+    throw new Error(
+      `The narration text cleanup read ${bookPath} and its result was landed on ${bookAfter}. `
+      + 'Those are two different books, so the stamp on the landed one describes text nobody '
+      + 'cleaned. The pass is recorded against nothing.');
+  }
+
   const punctuation = outcome.receipt.punctuation;
-  const numbers = outcome.receipt.numbers;
-  const byClass = numbers === null ? {} : numbers.appliedByClass;
-  const classSummary = Object.entries(byClass)
+  const readings = countReadings(outcome.receipt);
+  const classSummary = Object.entries(readings.byClass)
     .sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(', ');
   const applied: AppliedPass = {
     kind: 'narration-text',
     at: outcome.receipt.at,
     params: {
+      // READ BY `narrationTextReadiness`, which calls a cleanup stale when these
+      // are not the versions this build reads text by. They come off the
+      // engine's receipt, which is what actually ran.
       normalizerVersion: outcome.receipt.normalizerVersion,
       punctuationSpec: outcome.receipt.punctuationSpec,
       model,
+      endpoint: outcome.settings.endpoint,
       punctuationSpans: punctuation.spansApplied,
       punctuationRules: punctuation.counts,
       punctuationRefused: punctuation.refused.length,
-      numbersApplied: numbers === null ? 0 : numbers.appliedSpans,
-      numbersByRules: numbers === null ? 0 : numbers.appliedByRules,
-      numbersByModel: numbers === null ? 0 : numbers.appliedByModel,
+      blocks: outcome.receipt.units.length,
+      blocksAsked: outcome.receipt.unitsAsked,
+      blocksParseFailed: outcome.receipt.unitsParseFailed,
+      keptAsPrinted: outcome.receipt.keptAsPrinted.length,
+      readingsApplied: readings.applied,
+      readingsByRules: readings.byRules,
+      readingsByModel: readings.byModel,
+      readingsRefused: readings.refused,
       // What the pass actually DID, by kind of reading — the number a reviewer
       // looks at first now that the model is asked about more than digits.
-      appliedByClass: numbers === null ? {} : numbers.appliedByClass,
+      appliedByClass: readings.byClass,
       receipt: receiptRel,
     },
     diff: diff.rel,
@@ -1033,12 +1146,12 @@ async function runNarrationTextPass(
     outputPath: bookAfter,
     narrationInputPath,
     summary: `${punctuation.spansApplied} punctuation span(s) canonicalized and `
-      + `${numbers === null ? 0 : numbers.appliedSpans} number(s) read as words `
-      + `(${numbers === null ? 0 : numbers.appliedByRules} by rule, `
-      + `${numbers === null ? 0 : numbers.appliedByModel} by ${model}`
+      + `${readings.applied} reading(s) applied `
+      + `(${readings.byRules} by rule, ${readings.byModel} by ${model}`
       + `${classSummary === '' ? '' : `; ${classSummary}`}). The book is stamped `
       + `${outcome.receipt.normalizerVersion}/${outcome.receipt.punctuationSpec} and is ready to `
-      + 'narrate.'
+      + 'narrate. '
+      + NARRATION_TEXT_FAILSAFE_NOTICE
       + (recutNote === null ? '' : ` ${recutNote}`)
       + (punctuation.refused.length > 0
         ? ` ${punctuation.refused.length} span(s) were left as printed because canonicalizing them `

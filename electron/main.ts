@@ -1926,7 +1926,7 @@ async function sayWhatEachSideThinksAboutTheCleanup(
   nodeId: string,
   context: FoundryHostInvokeContext,
 ): Promise<void> {
-  const pass = await import('./narration-text-pass.js');
+  const pass = await import('./narration-clean-text.js');
   const gate = await pass.narrationTextGate(bookPath);
   const file = path.basename(bookPath);
   if (gate.ok) {
