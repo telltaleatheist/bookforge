@@ -77,6 +77,7 @@ const SUITES = [
   'test-stream-engine-availability',
   'test-session-engine-provenance',
   'test-assembly-after-wsl-normalize',
+  'test-extension-typecheck',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',

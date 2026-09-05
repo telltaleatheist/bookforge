@@ -19,6 +19,7 @@
 import {
   BYTES_PER_SECOND,
   CLOSE_AUTH,
+  EngineInfo,
   EngineState,
   ServerConfig,
   ServerEvent,

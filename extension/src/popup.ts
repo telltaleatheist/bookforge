@@ -12,6 +12,7 @@
  * surfaced — reading is driven from the page's own controls now.
  */
 
+import type { EngineInfo } from './protocol';
 import {
   IDLE_RECORDING,
   PlaybackStatus,
