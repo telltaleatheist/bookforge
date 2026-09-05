@@ -385,38 +385,49 @@ than the slow `/mnt/c` 9p mount. Catalog paths are WSL paths, like Orpheus's.
 
 ## 5. Routing a Higgs job
 
-`electron/higgs-spawn.ts`. The three phases go to three different places, and
-that is not a design choice:
+`electron/higgs-spawn.ts`. **All three phases go to narrator.**
 
-| phase | runs on | why |
+| phase | door | why |
 |---|---|---|
-| **prep** | ebook2audiobook | narrator **REFUSES `--prep_only`** by name — the packer is migration step 4 |
-| **worker** | narrator `compat.worker` | e2a has no Higgs engine |
-| **assembly** | narrator `compat.app --assemble_only` | Higgs needs the fades and the live `gapBefore/gapAfter`, which only narrator's assembler reads |
+| **prep** | `compat.app --prep_only` | its `paragraph_packer.py` *is* the Higgs chunking rule |
+| **worker** | `compat.worker` | e2a has no Higgs engine |
+| **assembly** | `compat.app --assemble_only` | a Higgs session is a narrator session |
 
-### Prep on e2a is sound, and it was checked
+### Prep moved off e2a (review finding 5)
 
-`lib/core.py:prep_ebook_info` parses the EPUB and packs sentences; **it loads no
-TTS model.** The packing cap is a plain string comparison —
-`elif tts_engine == 'orpheus': max_chars = int(os.environ['ORPHEUS_MAX_CHARS']) or 350`
-(`lib/core.py:1553` and `:2437`). So a Higgs prep is spawned with:
+The first draft routed prep to ebook2audiobook as `--tts_engine orpheus` in the
+bundled env, with `ORPHEUS_MAX_CHARS` carrying the Higgs cap. The mechanism was
+verified in e2a's source and did work; the **premise expired hours later**.
+`narrator/text/paragraph_packer.py` landed, `compat/app.py` now forces
+`chunking = 'paragraph'` for `higgs-v3`, and `text/prep.py` refuses `higgs-v3`
+with e2a chunking by name.
 
-- `--tts_engine orpheus` (`HIGGS_PREP_ENGINE_ALIAS`) — picks the PACKER;
-- the **generic bundled env** (`HIGGS_PREP_ENV_ENGINE = 'xtts'`) — picks the
-  interpreter, and keeps a text-only pass out of the WSL Orpheus spawn;
-- `ORPHEUS_MAX_CHARS` = the Higgs catalog's measured `maxChars`;
-- **no voice args** — a Higgs voice has no `--fine_tuned`/`--orpheus_*` form, and
-  prep does not need to know the voice to pack text.
+And the old route was wrong in three further ways, all silent — the session it
+wrote recorded:
 
-This is the same engine-agnostic-scaffolding move the codebase already makes in
-the other direction (assembly's `--tts_engine xtts`).
+| | e2a route wrote | narrator writes |
+|---|---|---|
+| `tts_engine` | `"orpheus"` | `"higgs-v3"` |
+| `higgs_voice` | *absent* | the catalog id |
+| `bookforge_chunking` | *absent* | the chunking record |
 
-> **Honest limitation.** This is e2a's SENTENCE packer. Owen's Higgs chunking rule
-> is PARAGRAPH-based (v3's 8,192-token window fits ~4,000 chars). That packer is
-> `narrator/text/paragraph_packer.py`, step 4, unwritten. Until it lands a Higgs
-> book packs to 600-char sentence groups — which is exactly what every v3
-> measurement was taken at, so it is the *measured* behaviour, not the *intended*
-> one.
+So any door that does not pass the voice explicitly — **resume, retake** — read
+that state back and either refused, or let `resolve_engine_id` fall through to
+`tts_engine == 'orpheus'` and build the **Orpheus** engine for a Higgs book.
+
+> **Owed to the training side.** Every v3 coverage measurement was taken at
+> 600-char sentence groups. Owen's rule is that the paragraph is the chunk (v3's
+> 8,192-token window fits ~4,000 chars), so **coverage must be re-measured at the
+> new chunk sizes** — by ASR alignment, never by duration ratio.
+
+### `--session_dir` is mandatory on every narrator spawn
+
+`session_store.sessions_root()` reads `$E2A_TMP_DIR`. e2a survived without the
+flag because `lib/conf.py` fell back to `<e2a_root>/tmp`, which happened to be the
+path the bridge had already computed; **narrator has no e2a root and refuses to
+guess.** Forwarding `E2A_TMP_DIR` is not an alternative — it holds a *Windows*
+path while a WSL prep derives its session dir from the WSL e2a root, and
+`spawnWithWslSupport` does not hand the Windows environment to the guest at all.
 
 ### The spawn
 
@@ -430,22 +441,36 @@ wsl.exe -d <distro> bash -c "export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
   && cd ~ \
   && '<wslCondaPath>' run --no-capture-output -n 'higgs3' \
        python -u -m narrator.compat.worker \
-         --session <id> --session_dir <dir> --sentences_dir <dir> \
+         --session <id> --session_dir /mnt/c/... --sentences_dir /mnt/c/... \
          --device CUDA --tts_engine higgs-v3 --higgs_voice <catalog id> \
          --sentence_start <n> --sentence_end <n>"
 ```
 
-Assembly is the same shape with `-m narrator.compat.app` and the argv from
-`--headless` onward.
+Prep is the same shape with `-m narrator.compat.app --prep_only --ebook …`;
+assembly with `--assemble_only` and **no `--tts_engine` at all** (see below).
 
 - **`PYTHONPATH`, not `pip install -e`** (PORT_NOTES §9.2 offers both): the
   install is a per-env step a user must have run and is invisible when they have
-  not. PYTHONPATH ships with the spawn, so the wiring and the thing it wires
-  arrive together.
+  not. PYTHONPATH ships with the spawn.
 - **`cd ~`** — narrator reads cwd for nothing (PORT_NOTES §9.3) but the directory
   must exist inside the guest.
 - **`EBOOK2AUDIOBOOK_PATH` is not set** — it was the sys.path bootstrap and
   narrator never reads it.
+- **No `ORPHEUS_*` variable rides along**, asserted by a keeper.
+
+### Path translation — the bug that made every spawn unusable
+
+The guard was `/^[A-Za-z]:[\/]/` — a character class holding an escaped
+**forward** slash and nothing else. It matched `C:/x` and **missed** `C:\x`, and
+`path.join` on win32 emits backslashes. So every `--session_dir` and
+`--sentences_dir` crossed into the guest as a literal Windows path, single-quoted
+so bash preserved it exactly, and narrator would have refused it as a directory
+that does not exist — **potentially after the 297 s cold start had been paid.**
+
+One `toGuestPath` helper now serves argv **and every environment value**. They
+used to be translated by different code, one correct and one not, which is
+exactly how the argv bug stayed invisible in a log that showed a correct-looking
+`NARRATOR_HIGGS_VOICES`.
 
 ### Why it does NOT go through `spawnWithWslSupport`
 
@@ -456,20 +481,47 @@ those rules is wrong here, and silently so — **a Higgs command through that
 function comes out an Orpheus command.** Leaving it untouched is also what makes
 the Orpheus argv provably unchanged.
 
-### Refusals before the job is queued
+### Assembly omits `--tts_engine`
 
-`higgsPreflight()` runs in the modal (`stageRefusal`) and again at spawn time.
-Twice on purpose: the first turns a doomed run into a sentence someone can read
-while the dialog is still open; the second catches an env that broke *after*
-queueing. Order is env → voice → narrator, because "there is no Higgs
-environment" explains "this voice cannot render" and not the reverse.
+`dispatch` routes `--assemble_only` **before** any engine resolution
+(`compat/app.py`), and `check_engine` never runs on it — so the flag names
+nothing. The value the argv would otherwise have carried is the literal `higgs`,
+which `compat/flags.py` lists under `ENGINE_NEAR_MISSES` ("names no registry id")
+and would refuse by name the moment assembly is ever gated. Omitting it is the
+one option that is correct both now and then.
 
-### Watchdog
+Assembly passes **no caps**, and the comment no longer claims narrator's
+assembler applies the edge fade — see §3 and §8.
 
-The ~55 s cold start needed **no change**: the only stall watchdog on this path is
-`PREP_STALL_TIMEOUT_MS` (10 minutes), and the worker path has none.
+### Refusals, and where each one fires
 
----
+| gate | where | catches |
+|---|---|---|
+| retired engine | `narrationInputRefusal` (main.ts), the queue boundary | a saved `xtts` job re-run from the queue page |
+| retired engine | `regenerateSentenceIndices` | a retake on an old XTTS book (reads `session_state.json`, no UI in between) |
+| retired engine | `stageRefusal` (modal) | a preset or pipeline default written before the retirement |
+| environment | `higgsEnvironmentRefusal`, awaited **once per job** in `prepareSession` | no WSL toggle, missing env, missing patch, missing launcher |
+| environment | the modal's `higgsBlocked` snapshot | the same, while the dialog is still open |
+| voice | `higgsPreflight` → `resolveHiggsModel`, at **every** spawn site | unknown / not-installed voice, bad clip, unmeasured adapter |
+
+The environment check is **async and once per job**. It used to be a synchronous
+`execSync` at prep, at every worker start, at assembly and at retake — a
+per-range health check on the thread the bookshelf server shares, for a resource
+that cannot change between the workers of one job. The voice check stays at every
+site because it is pure: a catalog lookup, no filesystem, no WSL.
+
+### Watchdogs
+
+The measured 297 s cold start clears all three, and **no change was needed**:
+
+| watchdog | value |
+|---|---|
+| `WORKER_STARTUP_TIMEOUT_MS` | 10 min |
+| `WORKER_PROGRESS_TIMEOUT_MS` | 12 min |
+| `PREP_STALL_TIMEOUT_MS` | 10 min |
+
+A keeper reads all three **out of the source** and fails if one is tightened
+below the recorded cold start.
 
 ## 6. What Higgs is NOT
 
@@ -516,22 +568,36 @@ What changed here:
 | several clips allowed | **exactly one**; multi = a pre-joined wav, joined at staging |
 | cold start ~55 s | **297 s**, against a 300 s `READY_TIMEOUT_SECONDS` |
 
-Still open:
+**Closed since, by the adversarial review (2026-09-05):**
 
-1. **`SentenceSink` reading `pads` / `edge_fade_ms`.** The engine reports both;
-   nothing consumes them yet. Higgs is the first engine with `pads = False`, so
-   the 10/25 ms fades and the live `gapBefore`/`gapAfter` need a consumer. Note
-   the tail trim is **server-side** (`patch_tail_trim.py`) — the client must
-   **not** trim again; what is left is a hard sample boundary, i.e. the fades.
-2. **`narrator/text/paragraph_packer.py`** (step 4) — see §5's limitation.
-3. **Packaging.** `python/` is not in electron-builder's `files`, so narrator is
-   not packaged. Whoever ships narrator owns that; `narratorPythonRoot()` already
-   resolves the dev and `asarUnpack` layouts.
-4. **Where the launch script should live.** narrator invokes the *operator's*
+- `paragraph_packer.py` landed, so **Higgs prep moved to narrator** (§5) and the
+  e2a scaffolding is deleted.
+- `python/**` is now in electron-builder's `files` (minus `__pycache__`, `*.pyc`,
+  `narrator/tests/**` and `**/golden/**`) and in `asarUnpack`.
+
+**MERGE ORDER (Owen's ruling): `feat/narrator` lands first, or with this.** The
+package is **not** vendored or copied here; it is resolved at `<repo>/python`,
+and the spawn refuses **by name** — naming the branch, not "a packaging bug" —
+when `python/narrator/__init__.py` is absent.
+
+Still open on narrator's side:
+
+1. **The edge fade.** Owen assigned it to **narrator's assembler**: the manifest
+   / engine metadata carries `pads=false` + `edge_fade_ms` and the assembler
+   applies the fade per chunk edge. Nothing applies it today, on either side, so
+   **every Higgs book currently joins at hard sample boundaries and clicks** —
+   the precise defect the −29.8→−46.2 dB measurement exists for. Note the tail
+   trim is **server-side** (`patch_tail_trim.py`): the client must **not** trim
+   again; what is left is the sample-boundary discontinuity, which is the fade's
+   job.
+2. **Where the launch script should live.** narrator invokes the *operator's*
    script rather than writing its own, and BookForge's installer deploys its copy
    to `<env>/bin/serve_higgs_v3.sh` — which is what `NARRATOR_HIGGS3_SERVE_SCRIPT`
    points at. If narrator would rather be handed the campaign path, that is a
    one-line change here.
+3. **Coverage at the new chunk sizes.** Every v3 measurement was taken at 600-char
+   sentence groups; prep now packs by paragraph. Re-measure by ASR alignment
+   (never by duration ratio) — training side, noted in §5.
 
 ### Waiting on the training session
 
@@ -557,8 +623,9 @@ Still open:
 ### Decisions to confirm with Owen
 
 8. **F5 and Voxtral left the picker** as a consequence of narrowing it (§2).
+   Confirmed by Owen at review; recorded here as the standing decision.
 9. **The XTTS streaming runtime was kept** (§2) — Listen still defaults to XTTS
-    on a machine with no configured engine.
+    on a machine with no configured engine. Confirmed; deferred to a follow-up.
 10. **`custom-voices.ts:190` `CUSTOM_ENGINE = 'xtts'`** ties the whole *"add your
     own voice"* feature (checkpoint upload, `--custom_model`) to the retired
     engine. It still works — XTTS was retired as a *narration choice*, not
@@ -566,6 +633,19 @@ Still open:
     Higgs's `clips` voice kind is architecturally the natural replacement
     (zero-shot reference-clip cloning) and would need a real design pass.
     **Untouched — out of scope for this brief.**
+11. **The bilingual cache panel was DELETED** (review finding 13, my call). It was
+    the last selectable XTTS picker in the app *and* unreachable from any template
+    or route: it hardcoded its own engine list, never imported `engine-caps`, and
+    fell back to `xtts`. Dead code that contradicts a retirement is how the
+    retirement gets undone by someone tidying up. Bilingual books stay on
+    ebook2audiobook regardless — narrator refuses `--bilingual` by name.
+12. **Higgs has `requiresComponent: null`** rather than a registered component.
+    The first draft named `'higgs-env'`, which did not exist, so `isInstalled()`
+    was false everywhere and **the engine never appeared in the picker at all**.
+    Registering one would not be honest either: on Windows the Higgs environment
+    is a WSL conda env, and a ComponentService entry describes a Windows install
+    with a download and a path. The doctor is the gate, and it re-runs at spawn
+    time where `isInstalled` would answer once from a manifest.
 
 ---
 
@@ -576,7 +656,7 @@ Still open:
 | `npx tsc -p tsconfig.electron.json --noEmit` | clean |
 | `npx tsc -p tsconfig.app.json --noEmit` | clean |
 | `npx ng build` | clean (the 672 kB budget warning is pre-existing) |
-| `node tools/run-keepers.js` | **ALL KEEPERS GREEN** — 54 suites |
+| `node tools/run-keepers.js` | **ALL KEEPERS GREEN**, twice — 53 suites |
 | `install_higgs_env.sh --check` against the live `higgs3` env | verified read-only; found `launcher=absent` correctly, exit 1. **Nothing installed or modified.** |
 
 New keepers:
