@@ -126,6 +126,10 @@ const SUITES = [
   'test-tts-number-rules',
   'test-tts-number-normalizer',
   'test-cli-narration-prep',
+  // The wire, per CLI command: the adapter requires the COMPILED bridge and
+  // calls the exact symbol the app's queue step calls. See
+  // docs/CLI_PARITY_AUDIT.md for the table it defends.
+  'test-cli-parity',
   'test-library-lock',
   'test-job-timing',
   'test-vlm-convert-plan',

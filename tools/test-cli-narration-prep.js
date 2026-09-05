@@ -639,12 +639,22 @@ test('--narration-text --project goes through the APP\'S PASS, so the ledger rec
   // in the app while its file carried a current stamp — which is the divergence
   // that made the re-run deadlock reachable. A project is cleaned through
   // `planProcessingChain` + `runProcessingPass`, the same pair the button uses.
+  //
+  // Since 2026-09-05 that pair lives in `cli/processing-pass-step.js`, shared
+  // with `--pass` (simplify / translate / footnote-refs) — so the assertion
+  // follows the step rather than pinning the pair inside this one adapter,
+  // which would have made the extraction look like a regression.
   const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text.js'), 'utf8');
-  assert.ok(source.includes("require('../dist/electron/processing-chain.js')"),
-    'it plans through the app\'s planner');
-  assert.ok(source.includes("require('../dist/electron/processing-passes.js')"),
+  assert.ok(source.includes("require('./processing-pass-step.js')"),
+    'it goes through the shared project-pass step');
+  assert.ok(/runProjectPass\(projectDir, \{ kind: 'narration-text' \}/.test(source),
+    'and asks it for the narration-text kind');
+  const step = fs.readFileSync(path.join(REPO, 'cli', 'processing-pass-step.js'), 'utf8');
+  assert.ok(step.includes("require('../dist/electron/processing-chain.js')"),
+    'the step plans through the app\'s planner');
+  assert.ok(step.includes("require('../dist/electron/processing-passes.js')"),
     'and runs through the app\'s pass, which records the ledger row');
-  assert.ok(source.includes('runProcessingPass('), 'by calling it');
+  assert.ok(step.includes('runProcessingPass('), 'by calling it');
   // And the bare-EPUB door is still the step, not a second implementation.
   assert.ok(source.includes("require('./narration-text-step.js')"),
     '--input still goes through the shared step');

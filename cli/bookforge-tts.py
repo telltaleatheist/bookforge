@@ -26,6 +26,19 @@ import subprocess
 import sys
 from pathlib import Path
 
+# THIS PROGRAM'S OUTPUT IS UTF-8, AND SAYS SO.
+#
+# Every help string and every progress line here is written with the punctuation
+# the rest of the repo uses — em dashes, arrows, "≤" in the packing-cap help. On
+# a default Windows console Python picks cp1252 for stdout, which cannot encode
+# any of them, so `--help` died with a UnicodeEncodeError before printing a
+# single command (measured 2026-09-05, and true of every build that had the ≤ in
+# it). Declaring the encoding is the fix; dropping the characters would be
+# rewriting the documentation to suit a codec.
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        _stream.reconfigure(encoding="utf-8")
+
 REPO_ROOT = Path(__file__).resolve().parent.parent          # cli/ -> bookforge root
 NODE_STUB = REPO_ROOT / "cli" / "electron-stub.js"
 ORPHEUS_STREAM = REPO_ROOT / "cli" / "orpheus-stream.js"        # streaming path (Listen/extension)
@@ -37,6 +50,20 @@ AI_CLEAN = REPO_ROOT / "cli" / "ai-clean.js"                    # AI cleanup / s
 GEN_SENTENCES = REPO_ROOT / "cli" / "generate-sentences.js"     # audio -> VTT (whisper / epub-align)
 RVC_CONVERT = REPO_ROOT / "cli" / "rvc-convert.js"              # whole-file RVC voice conversion
 GENERATE_EPUB = REPO_ROOT / "cli" / "generate-epub.js"          # PDF -> EPUB (foundry vlm-convert)
+FINAL_DENOISE = REPO_ROOT / "cli" / "final-denoise.js"          # the final-denoise STEP (denoise-job)
+RVC_ENHANCE = REPO_ROOT / "cli" / "rvc-enhance.js"              # the rvc-enhancement STEP (rvc-job)
+CORRECT_SENTENCES = REPO_ROOT / "cli" / "correct-sentences.js"  # retake / commit / revert one sentence
+PASS_ADAPTER = REPO_ROOT / "cli" / "pass.js"                    # simplify / translate / footnote-refs
+
+# Sibling adapters with argument grammars of their own — named in the epilog so
+# `--help` lists every action this CLI can reach, not only the ones argparse owns.
+SIBLING_ADAPTERS = {
+    "cli/library.js": "library + project verbs (import epub/audiobook, versions, "
+                      "set-primary, promote, delete) through library-actions",
+    "cli/clipforge-process.js": "ClipForge chains (recipe, speakers, narration, verify, "
+                                "merge/split, sentences) through clipforge-chain",
+    "cli/serve-bookshelf.js": "the Bookshelf server, standalone",
+}
 
 
 def _require(cond, msg):
@@ -266,26 +293,24 @@ def cmd_tts(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
-def cmd_audiobook(args):
-    """Build a FULL audiobook (M4B) through BookForge's REAL pipeline, headless.
+def _audiobook_spawn(args, assemble_only):
+    """The argv + env for cli/orpheus-audiobook-render.js, shared by --audiobook and
+    --assemble.
 
-    This is the app-faithful path: it chains the exact two high-level calls the app's
-    queue makes for a standard audiobook —
-        1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core
-        2. startReassembly()      (reassembly-bridge)   — the reassembly job
-    — producing <project>/output/audiobook.m4b (+ audiobook.vtt) with chapters, cover,
-    and metadata. Unlike `--tts` (which flat-concats to a bare WAV for quick voice
-    tests), this reproduces the shipped pipeline end to end, so it's a real headless
-    test of the audiobook path. Input EPUB is resolved from the project like the app's
-    "Latest" (translated > cleaned > exported > original); override with --input.
+    ONE ADAPTER, TWO DOORS. `--assemble` is not a second implementation of the
+    assembly: it is this same adapter with `--assemble-only`, which skips
+    generation and runs the project's CACHED sentences through the very calls the
+    full build makes — `denoise-job.runFinalDenoise` then
+    `reassembly-bridge.startReassembly`. That is what the app's own "Assemble"
+    does with a cached session, so a defect in either shows up from either door.
     """
     _require(args.engine == "orpheus",
              f"--engine '{args.engine}' not wired yet (only 'orpheus')")
-    _require(bool(args.project), "--project <projectDir> is required for --audiobook")
-    _require(bool(args.voice), "--voice <id> is required for --audiobook")
+    _require(bool(args.project), "--project <projectDir> is required")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(ORPHEUS_AUDIOBOOK.is_file(), f"missing engine adapter {ORPHEUS_AUDIOBOOK}")
-    for js in ("parallel-tts-bridge.js", "reassembly-bridge.js", "manifest-service.js"):
+    for js in ("parallel-tts-bridge.js", "reassembly-bridge.js", "manifest-service.js",
+               "denoise-job.js"):
         _require((REPO_ROOT / "dist" / "electron" / js).is_file(),
                  f"BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
                  f"(dist/electron/{js} missing)")
@@ -295,17 +320,43 @@ def cmd_audiobook(args):
              f"not a BookForge project (no manifest.json): {project_dir}")
 
     cmd = ["node", "--require", str(NODE_STUB), str(ORPHEUS_AUDIOBOOK),
-           "--project", project_dir, "--voice", args.voice]
-    if args.input:
-        cmd += ["--input", str(Path(args.input).resolve())]
+           "--project", project_dir]
+    if assemble_only:
+        # No generation happens, so a voice would decide nothing — refuse it by
+        # name rather than accepting a value that changes nothing about the run.
+        _require(not args.voice,
+                 "--assemble runs the CACHED sentences; the voice was decided when they "
+                 "were rendered. Drop --voice (or use --audiobook to render).")
+        _require(not args.input,
+                 "--assemble reads no book: --input names the EPUB a RENDER would read")
+        _require(not args.fresh, "--fresh is a render choice; --assemble renders nothing")
+        _require(not args.skip_text_cleanup,
+                 "--skip-text-cleanup is a render choice; --assemble narrates nothing")
+        cmd += ["--assemble-only"]
+    else:
+        _require(bool(args.voice), "--voice <id> is required for --audiobook")
+        cmd += ["--voice", args.voice]
+        if args.input:
+            cmd += ["--input", str(Path(args.input).resolve())]
+        if args.fresh:
+            cmd += ["--fresh"]
+        if args.skip_text_cleanup:
+            cmd += ["--skip-text-cleanup"]
     if args.language:
         cmd += ["--language", args.language]
-    if args.model_dir:
+    if args.model_dir and not assemble_only:
         cmd += ["--model-dir", args.model_dir]
     if args.keep_session:
         cmd += ["--keep-session"]
-    if args.fresh:
-        cmd += ["--fresh"]
+    if args.de_ring:
+        cmd += ["--de-ring"]
+    # The ASSEMBLY-time gap (the pass in front of assembly re-lays the silence
+    # between sentences). Deliberately NOT --sentence-gap, which is the gap the
+    # WORKER bakes into each FLAC at render time via ORPHEUS_SENTENCE_GAP: two
+    # different passes at two different times, and one flag for both would be a
+    # value that means something different depending on which command read it.
+    if args.assembly_gap is not None:
+        cmd += ["--sentence-gap", str(args.assembly_gap)]
 
     # Final-audio denoise (BookForge's block-based roformer pass over the rendered
     # sentences — its own step since 2026-08-29, run between generation and assembly;
@@ -352,8 +403,11 @@ def cmd_audiobook(args):
     # stack that on top (the assembly spawn env is built from process.env).
     env.pop("FINAL_DENOISE", None)
 
+    label = "assemble" if assemble_only else "audiobook"
     if args.dry_run:
-        print("[bookforge-tts] DRY RUN — audiobook (tts + reassembly), no GPU touched")
+        print(f"[bookforge-tts] DRY RUN — {label} "
+              f"({'denoise + reassembly over the cache' if assemble_only else 'tts + reassembly'}), "
+              "no GPU touched")
         print("  spawn:", " ".join(cmd))
         overrides = {k: env[k] for k in (
             "EBOOK2AUDIOBOOK_PATH", "BOOKFORGE_ORPHEUS_MODELS_DIR", "ORPHEUS_MEMORY_TIER",
@@ -363,8 +417,44 @@ def cmd_audiobook(args):
         print("  env overrides:", overrides or "(none)")
         return 0
 
-    print("[bookforge-tts] audiobook/orpheus ->", " ".join(cmd), flush=True)
+    print(f"[bookforge-tts] {label}/orpheus ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
+
+
+def cmd_audiobook(args):
+    """Build a FULL audiobook (M4B) through BookForge's REAL pipeline, headless.
+
+    This is the app-faithful path: it chains the exact high-level calls the app's
+    queue makes for a standard audiobook —
+        1. renderRangeHeadless()  (parallel-tts-bridge) — the tts-conversion core
+        1b. runFinalDenoise()     (denoise-job)         — the final-denoise step
+        2. startReassembly()      (reassembly-bridge)   — the reassembly job
+    — producing <project>/output/<Title>. <Author>.m4b with chapters, cover, and
+    metadata. Unlike `--tts` (which flat-concats to a bare WAV for quick voice
+    tests), this reproduces the shipped pipeline end to end. The input EPUB is
+    the project's RECORDED book (manifest-service.bookForAct, the door every act
+    in the app resolves through); override it with --input.
+    """
+    return _audiobook_spawn(args, assemble_only=False)
+
+
+def cmd_assemble(args):
+    """ASSEMBLE a project's already-rendered sentences into the M4B — no TTS.
+
+    The app's "Assemble" over a cached session, headless: the SAME
+    `denoise-job.runFinalDenoise` then `reassembly-bridge.startReassembly` the
+    full build calls, over the project's cached sentence set
+    (stages/03-tts/sessions). It is the door for reproducing an assembly defect
+    without paying for a nine-hour render first — and, because the denoised set
+    is durable, a second run over the same session reuses it and costs minutes.
+
+    NOTE for Higgs: narrator's assembly door takes a `--coverage_report` that its
+    coverage gate REQUIRES for an engine guarded by post-render forced alignment
+    (Higgs v3). Nothing in BookForge builds that flag yet — no TypeScript spawns
+    `narrator align` — so this command is Orpheus-only for the same reason the
+    app is. See docs/CLI_PARITY_AUDIT.md, row "align".
+    """
+    return _audiobook_spawn(args, assemble_only=True)
 
 
 def cmd_prep(args):
@@ -770,11 +860,269 @@ def cmd_rvc(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def _session_target_argv(args, flag_owner):
+    """`--project` or `--process-dir`, for the two enhancement passes. One of them
+    is required and both together are refused, exactly as the adapter refuses
+    them — stated here too so the error arrives before node is spawned."""
+    _require(bool(args.project) or bool(args.process_dir),
+             f"{flag_owner} needs --project <projectDir> or --process-dir <dir>")
+    _require(not (args.project and args.process_dir),
+             f"{flag_owner}: --project and --process-dir both name the session; pass one")
+    if args.project:
+        project_dir = str(Path(args.project).resolve())
+        _require((Path(project_dir) / "manifest.json").is_file(),
+                 f"not a BookForge project (no manifest.json): {project_dir}")
+        return ["--project", project_dir]
+    return ["--process-dir", str(Path(args.process_dir).resolve())]
+
+
+def cmd_denoise(args):
+    """Run the FINAL-DENOISE step on a rendered session — its own row in the app.
+
+    Drives `denoise-job.runFinalDenoise`, the one function
+    `electron/queue-steps/final-denoise.ts` calls, with the null window the queue
+    itself passes headlessly. Gap-normalize the raw cached sentences, then the
+    block-based roformer, into the session's DURABLE
+    chapters/sentences-denoised/. A second run over the same session reuses that
+    set and says so.
+
+    `--sentences-dir` is the denoise reading ANOTHER pass's output ("convert
+    first, then denoise"); the job refuses it alongside --sentence-gap rather
+    than ignoring one, because the gap can only be applied to raw audio.
+    """
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(FINAL_DENOISE.is_file(), f"missing adapter {FINAL_DENOISE}")
+    _require((REPO_ROOT / "dist" / "electron" / "denoise-job.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/denoise-job.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(FINAL_DENOISE)]
+    cmd += _session_target_argv(args, "--denoise")
+    if args.sentences_dir:
+        cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+    if args.sentence_gap is not None:
+        cmd += ["--sentence-gap", str(args.sentence_gap)]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — final denoise (gap + roformer), no GPU touched")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    print("[bookforge-tts] final denoise ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_rvc_enhance(args):
+    """Run the RVC-ENHANCEMENT step over a session's PER-SENTENCE cache.
+
+    Drives `rvc-job.runRvcEnhancement`, the one function
+    `electron/queue-steps/rvc-enhancement.ts` calls. It writes a durable derived
+    sentence set that assembly then reads via `--sentences_dir`.
+
+    NOT --rvc, which is `rvc-bridge.convertFileRvcChunked` over ONE FINISHED
+    AUDIO FILE (the memory-safe whole-book reconstruction). Two different jobs
+    with two different outputs; both are named rather than one standing in for
+    the other.
+    """
+    _require(bool(args.rvc_voice_id), "--rvc-voice-id <asset id> is required for --rvc-enhance")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(RVC_ENHANCE.is_file(), f"missing adapter {RVC_ENHANCE}")
+    _require((REPO_ROOT / "dist" / "electron" / "rvc-job.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/rvc-job.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(RVC_ENHANCE),
+           "--voice-id", args.rvc_voice_id]
+    cmd += _session_target_argv(args, "--rvc-enhance")
+    # These four are left ABSENT when unset so urvc's own defaults apply — which
+    # is what the app's step does. `--index-rate`/`--protect-rate` carry argparse
+    # defaults for the whole-file --rvc command, so this reads the enhance-only
+    # spellings instead of inheriting a value the user never chose.
+    if args.enhance_index_rate is not None:
+        cmd += ["--index-rate", str(args.enhance_index_rate)]
+    if args.enhance_protect_rate is not None:
+        cmd += ["--protect-rate", str(args.enhance_protect_rate)]
+    if args.n_semitones is not None:
+        cmd += ["--n-semitones", str(args.n_semitones)]
+    if args.hop_length is not None:
+        cmd += ["--hop-length", str(args.hop_length)]
+    if args.enhance_f0_method:
+        cmd += ["--f0-method", args.enhance_f0_method]
+    if args.sentences_dir:
+        cmd += ["--sentences-dir", str(Path(args.sentences_dir).resolve())]
+    if args.sentence_gap is not None:
+        cmd += ["--sentence-gap", str(args.sentence_gap)]
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — rvc enhancement over a session's sentences, no GPU touched")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    print("[bookforge-tts] rvc enhancement ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_retake(args):
+    """CORRECT SENTENCES — list, retake, approve, revert, headless.
+
+    The app's Correct Sentences panel is five exported functions in
+    `correct-sentences-bridge` behind five IPC handlers; this drives the same
+    five. `--retake-action` picks one:
+
+        list     what the cache holds, cue by cue (getCorrectSentencesSession)
+        retake   render fresh takes for --indices        (generateCandidates)
+        commit   approve one take by path                (commitSentence)
+        revert   restore the original from .orig-backup/ (revertSentence)
+        cleanup  drop the candidate scratch              (cleanupCandidates)
+    """
+    _require(bool(args.project), "--project <projectDir> is required for --retake")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(CORRECT_SENTENCES.is_file(), f"missing adapter {CORRECT_SENTENCES}")
+    _require((REPO_ROOT / "dist" / "electron" / "correct-sentences-bridge.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/correct-sentences-bridge.js missing)")
+    project_dir = str(Path(args.project).resolve())
+    _require((Path(project_dir) / "manifest.json").is_file(),
+             f"not a BookForge project (no manifest.json): {project_dir}")
+
+    action = args.retake_action
+    cmd = ["node", "--require", str(NODE_STUB), str(CORRECT_SENTENCES),
+           "--project", project_dir, f"--{action}"]
+    if action == "retake":
+        _require(bool(args.indices), "--retake-action retake needs --indices <n[,n...]>")
+        cmd += ["--indices", args.indices]
+        if args.takes is not None:
+            cmd += ["--takes", str(args.takes)]
+        if args.sentence_text:
+            cmd += ["--text", args.sentence_text]
+    elif action in ("commit", "revert"):
+        _require(args.index is not None, f"--retake-action {action} needs --index <n>")
+        cmd += ["--index", str(args.index)]
+        if action == "commit":
+            _require(bool(args.take), "--retake-action commit needs --take <path to the .flac>")
+            cmd += ["--take", str(Path(args.take).resolve())]
+            if args.sentence_text:
+                cmd += ["--text", args.sentence_text]
+    elif action == "list":
+        if args.index is not None:
+            cmd += ["--from", str(args.index)]
+        if args.count is not None:
+            cmd += ["--count", str(args.count)]
+
+    if args.dry_run:
+        print(f"[bookforge-tts] DRY RUN — correct-sentences {action}, no GPU touched")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    print(f"[bookforge-tts] correct-sentences {action} ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
+def cmd_pass(args):
+    """Run ONE of the app's PROCESSING PASSES on a project: simplify, translate,
+    footnote-refs.
+
+    These are queue rows in the app, and every one is `queue-steps/pass.ts`
+    calling `processing-passes.runProcessingPass` over a config
+    `processing-chain.planProcessingChain` laid out. This drives that pair, so
+    the run stages, records its ledger row and promotes a working copy exactly as
+    the button does.
+
+    NOT --ai-cleanup/--ai-simplify, which are `ai-bridge.cleanupEpub` over a
+    LOOSE epub (file in, file out, no project record). NOT Foundry's "Clean
+    text", which is ordered inside the hosted Foundry window — see
+    docs/CLI_PARITY_AUDIT.md. narration-text is the fourth kind and has its own
+    command, --narration-text.
+    """
+    _require(bool(args.project), "--project <projectDir> is required for --pass")
+    _require(args.kind in ("simplify", "translate", "footnote-refs"),
+             "--kind must be simplify|translate|footnote-refs "
+             "(narration-text has its own command: --narration-text)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(PASS_ADAPTER.is_file(), f"missing adapter {PASS_ADAPTER}")
+    for js in ("processing-chain.js", "processing-passes.js"):
+        _require((REPO_ROOT / "dist" / "electron" / js).is_file(),
+                 f"BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+                 f"(dist/electron/{js} missing)")
+    project_dir = str(Path(args.project).resolve())
+    _require((Path(project_dir) / "manifest.json").is_file(),
+             f"not a BookForge project (no manifest.json): {project_dir}")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(PASS_ADAPTER),
+           "--project", project_dir, "--kind", args.kind]
+    if args.family:
+        cmd += ["--family", args.family]
+
+    api_key = args.api_key
+    if args.kind in ("simplify", "translate"):
+        _require(bool(args.provider), f"--kind {args.kind} needs --provider")
+        _require(bool(args.model), f"--kind {args.kind} needs --model")
+        cmd += ["--provider", args.provider, "--model", args.model]
+        if args.ollama_url:
+            cmd += ["--ollama-url", args.ollama_url]
+        if args.custom_instructions:
+            cmd += ["--custom-instructions", args.custom_instructions]
+        if not api_key and args.provider == "claude":
+            api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key and args.provider == "openai":
+            api_key = os.environ.get("OPENAI_API_KEY")
+    if args.kind == "simplify":
+        _require(bool(args.simplify_mode),
+                 "--kind simplify needs --simplify-mode <dejargon|destiffen|learner>")
+        cmd += ["--mode", args.simplify_mode]
+        if args.test_mode:
+            cmd += ["--test-mode"]
+            if args.test_chunks:
+                cmd += ["--test-chunks", str(args.test_chunks)]
+    if args.kind == "translate":
+        _require(bool(args.source_lang), "--kind translate needs --source-lang <code>")
+        _require(bool(args.target_lang), "--kind translate needs --target-lang <code>")
+        cmd += ["--source-lang", args.source_lang, "--target-lang", args.target_lang]
+        if args.translation_prompt:
+            tp = Path(args.translation_prompt).resolve()
+            _require(tp.is_file(), f"--translation-prompt file not found: {args.translation_prompt}")
+            cmd += ["--translation-prompt", str(tp)]
+
+    # The key goes through the process env, never argv — same rule as --ai-cleanup.
+    env = os.environ.copy()
+    if api_key:
+        env["BOOKFORGE_AI_API_KEY"] = api_key
+
+    if args.dry_run:
+        print(f"[bookforge-tts] DRY RUN — {args.kind} pass, no job run")
+        print("  spawn:", " ".join(cmd))
+        # footnote-refs calls no model at all, so an api-key line there would be
+        # a fact about a thing this pass does not have.
+        if args.kind in ("simplify", "translate"):
+            print("  api key:", "set" if api_key
+                  else "(none — required for cloud; ok for ollama/local)")
+        return 0
+
+    if args.kind in ("simplify", "translate") and args.provider in ("claude", "openai"):
+        env_name = "ANTHROPIC_API_KEY" if args.provider == "claude" else "OPENAI_API_KEY"
+        _require(bool(api_key),
+                 f"provider '{args.provider}' needs an API key (--api-key or {env_name})")
+
+    print(f"[bookforge-tts] {args.kind} pass ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
+
+
 # Command registry — one entry per job. Flags are generated from the keys, so adding a
 # command is a single line here plus its cmd_* handler.
 COMMANDS = {
     "tts": cmd_tts,
     "audiobook": cmd_audiobook,
+    # The assembly on its own — the app's "Assemble" over a cached session. Same
+    # adapter as --audiobook, with --assemble-only, so there is one code path.
+    "assemble": cmd_assemble,
+    # The two enhancement passes the app runs as their own queue rows between
+    # generation and assembly.
+    "denoise": cmd_denoise,
+    "rvc-enhance": cmd_rvc_enhance,
+    # Correct Sentences: list / retake / commit / revert / cleanup.
+    "retake": cmd_retake,
+    # The project processing passes: simplify, translate, footnote-refs.
+    "pass": cmd_pass,
     # The narration door on its own. Distinct from --ai-cleanup below: that is the
     # OCR/model book-repair pass, this is what the narrator is handed.
     "prep": cmd_prep,
@@ -791,7 +1139,14 @@ COMMANDS = {
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="bookforge-tts", description=__doc__,
+    # The epilog names the sibling adapters, so `--help` lists every action this
+    # CLI can reach — not only the ones argparse owns. Their argument grammars
+    # are their own (verbs, repeated --file), which is why they are run directly
+    # rather than wrapped in a flat flag namespace that would have to invent a
+    # second spelling for each of their options.
+    epilog = "Sibling adapters (their own grammars — run them directly):\n" + "".join(
+        f"  node {name}\n      {what}\n" for name, what in SIBLING_ADAPTERS.items())
+    p = argparse.ArgumentParser(prog="bookforge-tts", description=__doc__, epilog=epilog,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--config", help="CLI settings file (aliases + defaults). "
                    "Default search: $BOOKFORGE_CLI_CONFIG, cli/bookforge-cli.json, ~/.bookforge-cli.json")
@@ -1004,6 +1359,74 @@ def build_parser():
     p.add_argument("--batch-size", dest="batch_size", type=int, default=4,
                    help="rvc: chunks per worker process before it's recycled to free memory "
                         "(default 4 — bounds peak unified-memory).")
+    # --- assembly (--audiobook, --assemble) ---
+    p.add_argument("--de-ring", dest="de_ring", action="store_true",
+                   help="--audiobook/--assemble: apply the voice's per-voice post-render "
+                        "notch/comb (the filter that strips SNAC tonal ringing) at the final "
+                        "encode. OPT-IN, same as the app's assemble step")
+    p.add_argument("--assembly-gap", dest="assembly_gap", type=float, default=None,
+                   help="--audiobook/--assemble: the inter-sentence gap in seconds re-laid by "
+                        "the pass in FRONT of assembly. Distinct from --sentence-gap, which is "
+                        "the gap the worker bakes into each FLAC at render time. Omit to let the "
+                        "voice's models.json value decide (or no gap step, if it declares none)")
+    p.add_argument("--skip-text-cleanup", dest="skip_text_cleanup", action="store_true",
+                   help="--audiobook: do NOT run the narration text cleanup, and tell the render "
+                        "door so — the book is read exactly as printed. The app's \"No, narrate "
+                        "as printed\" button, headless")
+    # --- the enhancement passes over a session (--denoise, --rvc-enhance) ---
+    p.add_argument("--process-dir", dest="process_dir",
+                   help="--denoise/--rvc-enhance: the session's process dir, named directly "
+                        "instead of resolved from --project's cached session")
+    p.add_argument("--sentences-dir", dest="sentences_dir",
+                   help="--denoise/--rvc-enhance: the set this pass reads, when an EARLIER pass "
+                        "produced it (the 'convert first, then denoise' order and its mirror). "
+                        "The job refuses it alongside --sentence-gap rather than ignoring one")
+    p.add_argument("--rvc-voice-id", dest="rvc_voice_id",
+                   help="--rvc-enhance: the RVC asset id (e.g. builtin:deathstalker-sigma). "
+                        "Not --rvc-model, which is the urvc FOLDER name the whole-file --rvc takes")
+    p.add_argument("--enhance-index-rate", dest="enhance_index_rate", type=float, default=None,
+                   help="--rvc-enhance: index influence 0-1. Omit to leave urvc on its own "
+                        "default, which is what the app's step does")
+    p.add_argument("--enhance-protect-rate", dest="enhance_protect_rate", type=float, default=None,
+                   help="--rvc-enhance: consonant/breath protection (INVERTED — lower protects "
+                        "more, 0.5 is off). Omit for urvc's own default")
+    p.add_argument("--n-semitones", dest="n_semitones", type=float, default=None,
+                   help="--rvc-enhance: pitch shift in semitones. Omit for urvc's own default")
+    p.add_argument("--hop-length", dest="hop_length", type=int, default=None,
+                   help="--rvc-enhance: f0 analysis hop (crepe-family only). Omit for urvc's own")
+    p.add_argument("--enhance-f0-method", dest="enhance_f0_method",
+                   choices=["rmvpe", "crepe", "crepe-tiny", "fcpe"],
+                   help="--rvc-enhance: pitch extraction. Omit for urvc's own default")
+    # --- correct sentences (--retake) ---
+    p.add_argument("--retake-action", dest="retake_action", default="list",
+                   choices=["list", "retake", "commit", "revert", "cleanup"],
+                   help="--retake: which of the panel's five doors to open (default list)")
+    p.add_argument("--indices", help="--retake-action retake: sentence indices, e.g. 12,40")
+    p.add_argument("--takes", type=int, default=None,
+                   help="--retake-action retake: how many fresh takes per sentence (default 3)")
+    p.add_argument("--index", type=int, default=None,
+                   help="--retake-action commit/revert: the sentence index. "
+                        "--retake-action list: the index to start listing from")
+    p.add_argument("--count", type=int, default=None,
+                   help="--retake-action list: how many cues to print (default 20)")
+    p.add_argument("--take", help="--retake-action commit: the approved take's .flac path")
+    p.add_argument("--sentence-text", dest="sentence_text",
+                   help="--retake: the DISPLAY text to render/commit instead of the book's "
+                        "words. Absent means the words did not change, which is a different act "
+                        "from changing them to the same string")
+    # --- processing passes (--pass) ---
+    p.add_argument("--kind", choices=["simplify", "translate", "footnote-refs"],
+                   help="--pass: which processing pass to run over the project's book")
+    p.add_argument("--family", help="--pass/--narration-text: which book chain, by id or by the "
+                                    "stem of the file it was minted from. Required only when the "
+                                    "project holds more than one")
+    p.add_argument("--source-lang", dest="source_lang",
+                   help="--pass --kind translate: the language the book is in")
+    p.add_argument("--target-lang", dest="target_lang",
+                   help="--pass --kind translate: the language to translate it into")
+    p.add_argument("--translation-prompt", dest="translation_prompt",
+                   help="--pass --kind translate: file whose contents REPLACE the default "
+                        "translation prompt")
     return p
 
 
