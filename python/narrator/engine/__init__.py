@@ -5,7 +5,8 @@
                     ServedBackend  (typing.Protocol + dataclasses; no torch)
       registry.py   engine id -> (engine class, config) factories
       orpheus/      the Orpheus port (registry id 'orpheus')
-      higgs/        Higgs v2 via transformers (registry id 'higgs-v2')
+      higgs/        Higgs v3, SERVED by vllm-omni (registry id 'higgs-v3'),
+                    plus the v2 scaffold ('higgs-v2-scaffold', NOT SHIPPED)
 
 Importing this package still costs no torch, no vLLM, no mlx and no
 transformers: every backend defers its heavy imports to the function that needs
@@ -13,7 +14,7 @@ them, and the registry's values are factories that import on demand.
 
     from narrator.engine import EngineConfig, OrpheusEngine
     from narrator.engine import registry
-    engine = registry.engine_class('higgs-v2')(registry.engine_config('higgs-v2', ...))
+    engine = registry.engine_class('higgs-v3')(registry.engine_config('higgs-v3', ...))
 
 WHY `OrpheusEngine` AND `EngineConfig` ARE STILL EXPORTED HERE. They were this
 package's public surface before the interface was extracted, and

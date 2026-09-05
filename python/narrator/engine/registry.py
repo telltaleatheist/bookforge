@@ -21,7 +21,7 @@ voice alone").
 
 WHY FACTORIES AND NOT A DICT OF CLASSES. Importing an engine class imports its
 backend module, and a backend module is where the heavy imports live. The
-registry must be readable - "which engines exist?", "is 'higgs-v2' known?" - on
+registry must be readable - "which engines exist?", "is 'higgs-v3' known?" - on
 an interpreter with neither torch nor transformers installed, which is the
 interpreter narrator's tests run on. So the values are zero-argument callables
 that import on demand, and `ids()` never imports anything.

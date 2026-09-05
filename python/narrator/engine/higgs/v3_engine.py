@@ -17,18 +17,22 @@ WHAT IS DIFFERENT FROM ORPHEUS
                 gpu-memory-utilization target and OWNS the GPU.
   pads          False. Higgs emits bare speech; the manifest's
                 gapBefore/gapAfter are live and the assembler realizes them.
-  edge_fade_ms  25.0 (out; 10 ms in - see v3_served.EDGE_FADE_IN_MS). Even with
-                the server's content trim applied, a decoded chunk ends on a
-                hard sample boundary, which is a click.
+  edge_fade     EdgeFade(10, 25) - ASYMMETRIC. Even with the server's
+                content trim applied, a decoded chunk ends on a hard sample
+                boundary, which is a click; a chunk also begins on one. The tail
+                needs more than twice the head's window. Agrees with
+                assemble.engine_profiles.PROFILES['higgs-v3'].
   no EOS levers there is no boost, no floor, no ratchet and no resplit ladder.
                 v3 stops on its own; what it does instead is DROP THE TAIL of a
                 long chunk, which no lever fixed. Hence max_chars 600 and
                 `coverage_check = 'asr'`: a duration ratio measured 0.99 on a
                 chunk that delivered 0.778 coverage with a 26 % insert rate.
-  voice         one reference clip (or a pre-joined one) with its book-exact
-                transcript, or a fine-tuned adapter - see
-                `v3_served.ADAPTER_STRATEGIES`, neither of which is exercised
-                yet.
+  voice         a MERGED CHECKPOINT the server runs on (production: Owen,
+                2026-09-04 - "fine-tuned voices only"), or one reference clip
+                with its book-exact transcript (DIAGNOSTIC: how a voice is
+                auditioned before anyone trains it). There is no runtime LoRA -
+                vllm-omni has no adapter flags and its talker does not implement
+                SupportsLoRA - so a voice change is a server restart.
   no streaming  the endpoint used is the buffered POST /v1/audio/speech, which
                 returns a finished wav. vllm-omni also exposes a WebSocket
                 `/v1/audio/speech/stream`, which narrator does NOT use: nothing
@@ -41,7 +45,8 @@ from typing import Optional
 
 import numpy as np
 
-from ..protocol import (BackendSpec, ClipsVoice, SpeechRequest, StopPolicy)
+from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
+                        SpeechRequest, StopPolicy)
 from . import v3_served
 from .prompt import clean_text
 from .v3_served import HiggsV3ServedBackend
@@ -60,7 +65,8 @@ class HiggsV3Defaults:
     # The measured render sat at ~16.5 chars/s against the narrator's 15.0;
     # 20.0 leaves headroom. ADVISORY - coverage_check is the real gate.
     MAX_CHARS_PER_SEC = 20.0
-    EDGE_FADE_MS = v3_served.EDGE_FADE_OUT_MS
+    EDGE_FADE = EdgeFade(v3_served.EDGE_FADE_IN_MS,
+                        v3_served.EDGE_FADE_OUT_MS)
     MAX_REFERENCE_SECONDS = v3_served.MAX_REFERENCE_SECONDS
     # v3's OWN control vocabulary (45 tokens). v2's default is empty, and a
     # voice loaded with v2's defaults would silently accept nothing - or, worse,
@@ -87,6 +93,10 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
     `<|prosody:long_pause|>` while the model understands it. A voice that
     already declared its own (from the document) is left alone.
     """
+    if not isinstance(voice, ClipsVoice):
+        # A DefaultVoice has no reference and no per-voice control allowlist -
+        # there is nothing on it for v3's rules to stamp.
+        return voice
     controls = (voice.allowed_controls
                 or tuple(sorted(v3_served.ALLOWED_CONTROL_TOKENS)))
     cap = (voice.max_reference_seconds
@@ -97,7 +107,7 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
         return voice
     return ClipsVoice(
         clips=voice.clips, name=voice.name, scene=voice.scene,
-        adapter_dir=voice.adapter_dir, allowed_controls=controls,
+        checkpoint_dir=voice.checkpoint_dir, allowed_controls=controls,
         max_reference_seconds=cap, max_chars=voice.max_chars,
         max_chars_source=voice.max_chars_source)
 
@@ -113,8 +123,7 @@ class HiggsV3Config:
     voice: ClipsVoice
     base_url: Optional[str] = None
     serve_script: Optional[str] = None
-    adapter_strategy: Optional[str] = None
-    adapter_dir: Optional[str] = None
+    checkpoint_dir: Optional[str] = None
     sampling: Optional[dict] = None
     seed: Optional[int] = 1234
     sentences_dir: Optional[str] = None
@@ -131,10 +140,11 @@ class HiggsV3Config:
     probe_tail_trim: bool = True
 
     def __post_init__(self):
-        if not isinstance(self.voice, ClipsVoice):
+        if not isinstance(self.voice, (ClipsVoice, DefaultVoice)):
             raise ValueError(
-                'HiggsV3Config(voice=...) takes a ClipsVoice - a reference clip with '
-                f'its book-exact transcript. Got {type(self.voice).__name__}.')
+                'HiggsV3Config(voice=...) takes a ClipsVoice (a reference clip with '
+                "its book-exact transcript) or a DefaultVoice (the model's own "
+                f'voice). Got {type(self.voice).__name__}.')
         if not (self.voice.name or '').strip():
             raise ValueError('HiggsV3Config needs a NAMED voice.')
         # A voice built by hand (or loaded with another engine's defaults) may
@@ -143,20 +153,21 @@ class HiggsV3Config:
         self.voice = apply_v3_voice_defaults(self.voice)
         # The 30 s cap and the one-reference rule, checked before a server is
         # ever started rather than after a 55 s launch and an HTTP 400.
-        v3_served.check_reference_budget(self.voice)
-        if self.adapter_dir and not self.adapter_strategy:
+        if isinstance(self.voice, ClipsVoice):
+            v3_served.check_reference_budget(self.voice)
+        # The voice may carry its own checkpoint; the config may name one
+        # explicitly. They must not disagree.
+        voice_checkpoint = getattr(self.voice, 'checkpoint_dir', None)
+        if voice_checkpoint and self.checkpoint_dir and (
+                voice_checkpoint != self.checkpoint_dir):
             raise ValueError(
-                f"Higgs v3 voice '{self.voice.name}' names an adapter "
-                f'({self.adapter_dir}) with no strategy. How vllm-omni takes a LoRA '
-                'for this model class is NOT yet exercised: it is either '
-                "'lora-modules' at launch or a 'merged-dir' served in place of the "
-                'base snapshot, and both restart the server. The catalog must say '
-                'which - guessing serves the BASE voice and renders a whole book in '
-                'it.')
-        if self.adapter_strategy:
-            # Validates the strategy name and yields the launch args it needs.
-            v3_served.adapter_launch_args(self.adapter_strategy,
-                                          self.voice.name, self.adapter_dir or '')
+                f"Higgs v3 voice '{self.voice.name}' names checkpoint "
+                f'{voice_checkpoint} but the config names {self.checkpoint_dir}. One '
+                'server runs on one checkpoint - refusing to pick.')
+        if voice_checkpoint and not self.checkpoint_dir:
+            self.checkpoint_dir = voice_checkpoint
+        if self.checkpoint_dir:
+            v3_served.checkpoint_serve_target(self.checkpoint_dir)
 
 
 class HiggsV3Codec:
@@ -233,10 +244,10 @@ class HiggsV3Budget:
         """
         ref = self._voice(voice)
         if ref.max_chars is None:
-            if ref.adapter_dir or ref.kind == 'adapter':
+            if ref.checkpoint_dir:
                 raise ValueError(
                     f"Higgs v3 voice '{ref.name}' is a fine-tune "
-                    f'({ref.adapter_dir}) and has no maxChars. Measure the safe chunk '
+                    f'({ref.checkpoint_dir}) and has no maxChars. Measure the safe chunk '
                     f'length for THAT model and declare it in the voice document - '
                     f"refusing to pack a book at the base model's "
                     f'{self._config.max_chars}-char placeholder.')
@@ -296,7 +307,7 @@ class HiggsV3Engine:
     ENGINE_ID = HiggsV3Defaults.ENGINE_ID
     SAMPLE_RATE = HiggsV3Defaults.SAMPLE_RATE
     pads = False
-    edge_fade_ms = HiggsV3Defaults.EDGE_FADE_MS
+    edge_fade = HiggsV3Defaults.EDGE_FADE
     SUPPORTS_BATCH = True
     BATCH_SIZE = 1
 
@@ -312,6 +323,11 @@ class HiggsV3Engine:
         self._codec = HiggsV3Codec()
         self._budget = HiggsV3Budget(config)
         self.params = {'samplerate': self.SAMPLE_RATE}
+        # NOT handed config.checkpoint_dir: the backend's own record is what the
+        # voice is CHECKED AGAINST, and a value compared with itself checks
+        # nothing. The backend learns which checkpoint is running from
+        # NARRATOR_HIGGS3_CHECKPOINT (or an explicit argument) - see
+        # v3_served.CHECKPOINT_ENV.
         self.server = HiggsV3ServedBackend(base_url=config.base_url,
                                            serve_script=config.serve_script)
         self.load_engine()
@@ -343,7 +359,7 @@ class HiggsV3Engine:
                     'Check its log, and that both site-packages patches are applied '
                     'in the higgs3 env.')
             self.server.check_serves_expected_model(
-                adapter=self.config.voice.adapter_dir)
+                checkpoint_dir=self.config.checkpoint_dir)
             if self.config.probe_tail_trim:
                 self.server.probe_tail_trim()
         except BaseException:
@@ -429,18 +445,20 @@ class HiggsV3Engine:
         """
         want = (voice or '').strip()
         if want == self.voice and (adapter_dir or None) == (
-                self.config.voice.adapter_dir or None):
+                self.config.checkpoint_dir or None):
             return
         raise ValueError(
-            f"HiggsV3Engine cannot switch voice in place: this server was started "
+            f'HiggsV3Engine cannot switch voice in place: this server was started '
             f"for '{self.voice}'"
-            + (f' (adapter {self.config.voice.adapter_dir})'
-               if self.config.voice.adapter_dir else '')
+            + (f' on checkpoint {self.config.checkpoint_dir}'
+               if self.config.checkpoint_dir else '')
             + f", and a load for '{want}'"
-            + (f' (adapter {adapter_dir})' if adapter_dir else '')
-            + ' needs a NEW server: the reference clip rides in every request and an '
-              'adapter is a launch argument. Quit this worker and start one for that '
-              'voice.')
+            + (f' (checkpoint {adapter_dir})' if adapter_dir else '')
+            + ' needs a NEW server. vllm-omni cannot load a voice into a running '
+              'one: it has no adapter flags and its talker does not implement '
+              'SupportsLoRA, so every fine-tuned voice is a whole merged checkpoint '
+              'the server runs ON. Quit this worker and start one for that voice '
+              '(~55 s warm, up to ~300 s cold).')
 
     def _apply_voice_caps(self, voice: str, caps: dict) -> None:
         """Orpheus's per-voice tuning registry has no v3 counterpart - v3's
@@ -516,7 +534,11 @@ class HiggsV3Engine:
         path = self._sentence_file(sentence_number)
         audio = self.render_audio(sentence, index=sentence_number)
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        sf.write(path, audio, self.SAMPLE_RATE)
+        # PCM_16, stated - the same writer contract every narrator chunk uses.
+        # See engine/orpheus/audio.py:write_chunk_file for why the bit depth is
+        # never left to a library default.
+        sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
+                 format=self.config.audio_format.upper())
         return True
 
     def convert_batch(self, items) -> list:
@@ -577,8 +599,10 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
     """Build a HiggsV3Config from the keywords `narrator.serve` hands an engine.
 
       voice       the voice NAME, looked up in the NARRATOR_HIGGS_VOICES document
-      adapter_dir a fine-tune; needs `NARRATOR_HIGGS3_ADAPTER_STRATEGY` to say
-                  HOW it is served (see v3_served.ADAPTER_STRATEGIES)
+      adapter_dir a MERGED CHECKPOINT directory (the pool's field name is still
+                  `adapterDir`; there is no adapter to load - see
+                  v3_served.CHECKPOINT_STRATEGY). Usually it comes from the
+                  voice document instead.
       model_dir   REFUSED - the model the server serves is the launch script's
                   argument, not a per-load field
       base_dir    REFUSED - v3 has no shared-base + adapter split of Orpheus's kind
@@ -593,8 +617,8 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
     if base_dir:
         raise ValueError(
             f'Higgs v3 load carried baseDir={base_dir!r}. v3 has no shared-base + '
-            'per-voice-adapter split; the voice is a reference clip, and a fine-tune '
-            'is a whole-server concern (see v3_served.ADAPTER_STRATEGIES).')
+            'per-voice-adapter split at all: a fine-tuned voice is a whole merged '
+            'checkpoint the server runs ON (v3_served.CHECKPOINT_STRATEGY).')
     if caps:
         raise ValueError(
             f'Higgs v3 load carried caps={sorted(caps)}. Those are ORPHEUS tuning '
@@ -609,13 +633,16 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
             'NARRATOR_HIGGS_VOICES document; there is no default, and the model\'s '
             'own voice sits at 12 % of the narrator ceiling.')
 
-    clips_voice = load_voice(
+    resolved = load_voice(
         voice.strip(),
         allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
         max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
         placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
     strategy = (os.environ.get('NARRATOR_HIGGS3_ADAPTER_STRATEGY') or '').strip()
+    if strategy:
+        # Retained as a refusal, not a switch: the only strategy is 'checkpoint'
+        # and the retired names say why in their own message.
+        v3_served.check_strategy(strategy)
     return HiggsV3Config(
-        voice=clips_voice,
-        adapter_dir=adapter_dir or clips_voice.adapter_dir,
-        adapter_strategy=strategy or None)
+        voice=resolved,
+        checkpoint_dir=adapter_dir or getattr(resolved, 'checkpoint_dir', None))

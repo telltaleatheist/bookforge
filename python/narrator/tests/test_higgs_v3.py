@@ -70,19 +70,26 @@ def wav_bytes(seconds=1.0, rate=24000, channels=1, tail_burst_dbfs=None):
     """A WAV FILE as bytes - what /v1/audio/speech returns with
     response_format 'wav'. Built by hand (PCM16 RIFF) so the fake server needs
     no soundfile of its own."""
-    frames = int(rate * seconds)
-    data = (np.sin(2 * np.pi * 220.0 * np.arange(frames) / rate) * 0.4 * 32767)
-    # A patched server's clip ends in near-silence (our smoke measured -62 dBFS
-    # over the last 300 ms). Fade the last 300 ms out so the fake matches.
-    fade = min(frames, int(rate * 0.3))
-    if fade:
-        data[-fade:] *= np.linspace(1.0, 0.0, fade) ** 4
+    # SPEECH, THEN THE SERVER'S OWN TRIMMED SILENCE - which is the shape a
+    # PATCHED server returns: our smoke's real clip measured -62 dBFS over its
+    # last 300 ms, i.e. the words had already ended. The probe reads exactly
+    # that window, so the fake has to have one.
+    tail_frames = int(rate * 0.32)
+    speech_frames = max(1, int(rate * seconds) - tail_frames)
+    speech = (np.sin(2 * np.pi * 220.0 * np.arange(speech_frames) / rate)
+              * 0.4 * 32767)
+    # A -70 dBFS floor, not digital zero: real decoded audio has one, and a
+    # probe that only passes on absolute silence would be untested against it.
+    floor_amp = (10 ** (-70.0 / 20.0)) * 32767 * np.sqrt(2)
+    tail = (np.sin(2 * np.pi * 60.0 * np.arange(tail_frames) / rate) * floor_amp)
+    data = np.concatenate([speech, tail])
     if tail_burst_dbfs is not None:
         # An UNPATCHED server: ~250 ms of ramp-down sentinels decoded as real
         # sound at about -30 dB, cut off at its peak.
-        burst = min(frames, int(rate * 0.25))
+        burst = min(data.size, int(rate * 0.25))
         amp = (10 ** (tail_burst_dbfs / 20.0)) * 32767 * np.sqrt(2)
         data[-burst:] = (np.sin(2 * np.pi * 90.0 * np.arange(burst) / rate) * amp)
+    frames = data.size
     pcm = data.astype('<i2').tobytes()
     if channels == 2:
         pcm = b''.join(pcm[i:i + 2] * 2 for i in range(0, len(pcm), 2))
@@ -346,36 +353,126 @@ class ReferenceTest(V3TestCase):
             ReferenceClip(self.clip, '')
 
 
-class AdapterStrategyTest(unittest.TestCase):
-    """How a fine-tuned v3 voice is served is NOT yet exercised - vllm-omni's
-    LoRA support for this model class is unknown, and the fallback is a merged
-    checkpoint. Both shapes are expressed so the answer is catalog data."""
+class CheckpointVoiceTest(V3TestCase):
+    """A fine-tuned Higgs voice is a MERGED CHECKPOINT, and one server serves
+    exactly one of them.
 
-    def test_lora_modules_is_a_launch_argument(self):
-        self.assertEqual(
-            v3_served.adapter_launch_args('lora-modules', 'ds', '/models/ds-lora'),
-            ['--enable-lora', '--lora-modules', 'ds=/models/ds-lora'])
+    Measured by the training side, 2026-09-04: vllm-omni exposes no adapter
+    flags and its higgs_audio_v3 talker does not implement `SupportsLoRA`, so a
+    LoRA cannot be loaded at runtime and there is no per-request adapter either.
+    The `lora-modules` strategy this module used to express is retired.
+    """
 
-    def test_a_merged_dir_replaces_the_serve_argument(self):
-        self.assertEqual(
-            v3_served.adapter_launch_args('merged-dir', 'ds', '/models/ds-merged'),
-            [])
+    def test_the_only_strategy_is_checkpoint(self):
+        self.assertEqual(v3_served.check_strategy('checkpoint'), 'checkpoint')
 
-    def test_an_unknown_strategy_is_refused_by_name(self):
+    def test_lora_modules_is_refused_and_says_why(self):
         with self.assertRaises(ValueError) as caught:
-            v3_served.adapter_launch_args('per-request', 'ds', '/models/x')
+            v3_served.check_strategy('lora-modules')
         message = str(caught.exception)
-        self.assertIn('per-request', message)
-        self.assertIn('lora-modules', message)
-        self.assertIn('merged-dir', message)
+        self.assertIn('SupportsLoRA', message)
+        self.assertIn('merged', message.lower())
+        self.assertIn('checkpoint', message)
 
-    def test_an_adapter_with_no_strategy_is_refused_at_config_time(self):
-        voice = ClipsVoice(clips=(ReferenceClip(__file__, 'A line.', seconds=14.0),),
-                           name='ds')
+    def test_the_old_merged_dir_name_is_refused_too(self):
         with self.assertRaises(ValueError) as caught:
-            HiggsV3Config(voice=voice, base_url='http://127.0.0.1:1',
-                          adapter_dir='/models/ds-lora')
-        self.assertIn('no strategy', str(caught.exception))
+            v3_served.check_strategy('merged-dir')
+        self.assertIn('checkpoint', str(caught.exception))
+
+    def test_an_unknown_strategy_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            v3_served.check_strategy('per-request')
+        self.assertIn('per-request', str(caught.exception))
+
+    def test_the_serve_target_is_the_checkpoint_itself(self):
+        """No extra launch arguments: there is no adapter to name."""
+        self.assertEqual(v3_served.checkpoint_serve_target('/models/ds-merged'),
+                         '/models/ds-merged')
+        with self.assertRaises(ValueError) as caught:
+            v3_served.checkpoint_serve_target('')
+        self.assertIn('checkpointDir', str(caught.exception))
+
+    def test_a_checkpoint_voice_carries_its_directory_into_the_config(self):
+        from narrator.engine.protocol import DefaultVoice
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+                             max_chars=500, max_chars_source='length-sweep')
+        config = HiggsV3Config(voice=voice, base_url=self.server.base_url)
+        self.assertEqual(config.checkpoint_dir, '/models/ds-merged')
+
+    def test_a_voice_and_a_config_that_disagree_are_refused(self):
+        from narrator.engine.protocol import DefaultVoice
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/a',
+                             max_chars=500, max_chars_source='catalog')
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Config(voice=voice, base_url=self.server.base_url,
+                          checkpoint_dir='/models/b')
+        self.assertIn('One server runs on one checkpoint', str(caught.exception))
+
+    def test_a_server_on_another_checkpoint_is_refused(self):
+        """The failure this prevents is silent: a leftover server for ANOTHER
+        voice answers /health and /v1/models identically."""
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       checkpoint_dir='/models/ours')
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.check_serves_expected_model(checkpoint_dir='/models/theirs')
+        message = str(caught.exception)
+        self.assertIn('/models/ours', message)
+        self.assertIn('/models/theirs', message)
+        self.assertIn('RESTARTING', message)
+
+    def test_a_matching_checkpoint_passes(self):
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       checkpoint_dir='/models/ours')
+        backend.check_serves_expected_model(checkpoint_dir='/models/ours')
+
+    def test_an_unstated_checkpoint_is_refused_naming_the_variable(self):
+        """It cannot be discovered - /v1/models reports the served NAME and
+        serve_v3.sh execs a hard-coded snapshot - so it has to be stated."""
+        previous = os.environ.pop(v3_served.CHECKPOINT_ENV, None)
+        if previous is not None:
+            self.addCleanup(os.environ.__setitem__,
+                            v3_served.CHECKPOINT_ENV, previous)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.check_serves_expected_model(checkpoint_dir='/models/ours')
+        self.assertIn(v3_served.CHECKPOINT_ENV, str(caught.exception))
+
+    def test_the_environment_can_state_it(self):
+        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ours'
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+        self.assertEqual(backend.running_checkpoint(), '/models/ours')
+        backend.check_serves_expected_model(checkpoint_dir='/models/ours')
+
+    def test_a_voice_change_on_a_live_engine_names_the_restart(self):
+        from narrator.engine.protocol import DefaultVoice
+        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ds-merged'
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+                             max_chars=500, max_chars_source='catalog')
+        engine = HiggsV3Engine(HiggsV3Config(voice=voice,
+                                             base_url=self.server.base_url,
+                                             probe_tail_trim=False))
+        self.addCleanup(engine.cleanup)
+        with self.assertRaises(ValueError) as caught:
+            engine.set_voice('another-voice')
+        message = str(caught.exception)
+        self.assertIn('SupportsLoRA', message)
+        self.assertIn('merged checkpoint', message)
+
+    def test_a_checkpoint_voice_renders_text_only(self):
+        """THE PRODUCTION PATH: no `references` key at all."""
+        from narrator.engine.protocol import DefaultVoice
+        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ds-merged'
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
+                             max_chars=500, max_chars_source='catalog')
+        engine = HiggsV3Engine(HiggsV3Config(voice=voice,
+                                             base_url=self.server.base_url,
+                                             probe_tail_trim=False))
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        self.assertNotIn('references', self.server.requests[-1])
 
 
 class LifecycleTest(V3TestCase):
@@ -437,6 +534,8 @@ class ResponseTest(V3TestCase):
         self.assertEqual(audio.dtype, np.float32)
         self.assertEqual(audio.ndim, 1)
         self.assertEqual(audio.size, 12000)
+        self.assertGreater(float(np.max(np.abs(audio[:4000]))), 0.1,
+                           'the fake must carry real signal, not just a floor')
 
     def test_stereo_is_averaged_down(self):
         audio, _ = v3_served.decode_response(wav_bytes(seconds=0.5, channels=2))
@@ -488,7 +587,8 @@ class EngineTest(V3TestCase):
         self.assertEqual(engine.ENGINE_ID, 'higgs-v3')
         self.assertEqual(engine.SAMPLE_RATE, 24000)
         self.assertFalse(engine.pads, 'v3 emits bare speech; assembly owns gaps')
-        self.assertEqual(engine.edge_fade_ms, 25.0)
+        self.assertEqual(engine.edge_fade.as_manifest(),
+                         {'in': 10.0, 'out': 25.0})
         self.assertEqual(engine.backend_spec().kind, 'served')
         codec = engine.codec()
         self.assertEqual((codec.tokens_per_frame, codec.samples_per_frame,
@@ -646,8 +746,16 @@ class ServeProtocolTest(V3TestCase):
         for _ in range(limit):
             line = proc.stdout.readline()
             if not line:
-                raise AssertionError(f'worker closed stdout before {types}: {out}'
-                                     f'\nstderr: {proc.stderr.read()}')
+                # readline() blocks, so EOF means the process ENDED - never a
+                # slow start. Its stderr is the only thing that says why.
+                try:
+                    proc.wait(timeout=60)
+                except Exception:
+                    pass
+                raise AssertionError(
+                    f'worker exited {proc.returncode} before {types}.\n'
+                    f'messages so far: {out}\n'
+                    f'--- stderr ---\n{(proc.stderr.read() or "").strip()}')
             message = json.loads(line)
             out.append(message)
             if message['type'] in types:
@@ -701,20 +809,11 @@ class ServerIdentityTest(V3TestCase):
         backend.start()                      # adopts, does not launch
         self.assertIsNone(backend._proc)
 
-    def test_a_configured_adapter_must_actually_be_served(self):
-        """An adapter is a LAUNCH argument; a running server cannot pick one
-        up, so a server without it renders the BASE voice."""
+    def test_a_base_voice_needs_no_checkpoint_check(self):
+        """No checkpoint configured = the base model; `/v1/models` naming
+        higgs-v3 is the whole check."""
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        with self.assertRaises(HiggsV3ServerError) as caught:
-            backend.check_serves_expected_model(adapter='/models/ds-lora')
-        message = str(caught.exception)
-        self.assertIn('ds-lora', message)
-        self.assertIn('--lora-modules', message)
-
-    def test_an_adapter_that_is_served_passes(self):
-        self.server.httpd.models = ['higgs-v3', 'ds-lora']
-        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
-        backend.check_serves_expected_model(adapter='/models/ds-lora')
+        backend.check_serves_expected_model()
 
     def test_a_port_that_answers_health_but_not_models_is_refused(self):
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
@@ -871,12 +970,12 @@ class VoiceTuningTest(V3TestCase):
         self.assertEqual(budget.max_chars(), 420)
         self.assertEqual(budget.max_chars_source(), 'catalog')
 
-    def test_an_adapter_voice_without_maxChars_is_refused_at_load(self):
+    def test_a_checkpoint_voice_without_maxChars_is_refused_at_load(self):
         """A fine-tune's safe chunk length is a measured property of THAT
         model; the base placeholder is not it."""
         from narrator.engine.higgs.config import load_voices
         path = self._voices_file({'ds-ft': {
-            'adapterDir': '/models/ds-lora',
+            'kind': 'checkpoint', 'checkpointDir': '/models/ds-merged',
             'clips': [{'path': self.clip, 'transcript': X2_TEXT,
                        'seconds': 27.42}]}})
         with self.assertRaises(ValueError) as caught:
@@ -885,23 +984,22 @@ class VoiceTuningTest(V3TestCase):
         self.assertIn('maxChars', message)
         self.assertIn('refusing to guess', message.lower())
 
-    def test_an_adapter_voice_with_maxChars_loads(self):
+    def test_a_checkpoint_voice_with_maxChars_loads(self):
         from narrator.engine.higgs.config import load_voice
         path = self._voices_file({'ds-ft': {
-            'adapterDir': '/models/ds-lora', 'maxChars': 500,
+            'kind': 'checkpoint', 'checkpointDir': '/models/ds-merged',
+            'maxChars': 500,
             'clips': [{'path': self.clip, 'transcript': X2_TEXT,
                        'seconds': 27.42}]}})
         voice = load_voice('ds-ft', path, placeholder_max_chars=600)
         self.assertEqual(voice.max_chars, 500)
-        self.assertEqual(voice.adapter_dir, '/models/ds-lora')
+        self.assertEqual(voice.checkpoint_dir, '/models/ds-merged')
 
-    def test_the_budget_refuses_an_adapter_voice_assembled_in_code(self):
+    def test_the_budget_refuses_a_checkpoint_voice_assembled_in_code(self):
         bare = ClipsVoice(clips=(ReferenceClip(self.clip, X2_TEXT, seconds=14.0),),
-                          name='ds-ft', adapter_dir='/models/ds-lora')
+                          name='ds-ft', checkpoint_dir='/models/ds-merged')
         budget = HiggsV3Budget(HiggsV3Config(voice=bare,
-                                             base_url=self.server.base_url,
-                                             adapter_strategy='merged-dir',
-                                             adapter_dir='/models/ds-lora'))
+                                             base_url=self.server.base_url))
         with self.assertRaises(ValueError) as caught:
             budget.max_chars()
         self.assertIn('maxChars', str(caught.exception))
@@ -936,50 +1034,51 @@ class SeedRuleTest(V3TestCase):
         self.assertIn('TOP-LEVEL', str(caught.exception))
 
 
-class WindowsLaunchTest(unittest.TestCase):
-    """The Windows arm is unexercised on this box's normal path - the smoke ran
-    the launcher from INSIDE WSL. These pin the two things that would go wrong
-    there: the command that gets built, and stop() giving up on a guest process
-    that outlives wsl.exe."""
+class _LaunchTestBase(unittest.TestCase):
+    """Shared fixture for the two platform arms of the launch/stop path."""
 
     def setUp(self):
         import shutil as _shutil
         import tempfile
-        self.dir = tempfile.mkdtemp(prefix='narrator-H-win-')
+        self.dir = tempfile.mkdtemp(prefix='narrator-H-launch-')
         self.addCleanup(_shutil.rmtree, self.dir, True)
-        # A fake wsl.exe, first on PATH, so shutil.which finds it.
         self.fake_wsl = os.path.join(self.dir, 'wsl.exe')
         with open(self.fake_wsl, 'w', encoding='utf-8') as handle:
             handle.write('')
+        os.chmod(self.fake_wsl, 0o755)       # shutil.which needs it on POSIX
         self._path = os.environ.get('PATH', '')
         os.environ['PATH'] = self.dir + os.pathsep + self._path
         self.addCleanup(os.environ.__setitem__, 'PATH', self._path)
 
-    def _as_windows(self):
-        from unittest import mock
-        patcher = mock.patch.object(v3_served.sys, 'platform', 'win32')
-        patcher.start()
-        self.addCleanup(patcher.stop)
-
-    def test_the_launch_command_goes_through_wsl_with_a_pid_wrapper(self):
-        self._as_windows()
-        backend = HiggsV3ServedBackend(
-            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
-        command = backend.launch_command()
-        self.assertEqual(command[:4],
-                         [self.fake_wsl, '-d', 'Ubuntu', 'bash'])
-        self.assertEqual(command[4], '-c')
-        wrapper = command[5]
-        self.assertIn('/mnt/c/campaign/serve_v3.sh', wrapper,
-                      'the Windows path must be translated for the guest')
+    def assert_wrapper(self, wrapper, backend, script_in_guest):
+        self.assertIn(script_in_guest, wrapper,
+                      'the script path must be the one the GUEST sees')
         self.assertIn('echo $!', wrapper,
                       "serve_v3.sh execs vllm-omni, so $! IS the server's pid")
         self.assertIn(backend.pid_file(), wrapper)
         self.assertIn('wait $!', wrapper,
                       'the launcher must live as long as the server')
 
+
+@unittest.skipUnless(sys.platform == 'win32', 'the Windows launch arm')
+class WindowsLaunchTest(_LaunchTestBase):
+    """The Windows arm: `wsl.exe -d <distro> bash -c <wrapper>`.
+
+    NOT monkeypatched onto another platform. `shutil.which`, path translation
+    and process termination all behave differently per OS, and a test that
+    pretends otherwise proves nothing about either. The POSIX arm has its own
+    twin below, so both are covered on the machine that can actually run them.
+    """
+
+    def test_the_launch_command_goes_through_wsl_with_a_pid_wrapper(self):
+        backend = HiggsV3ServedBackend(
+            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu')
+        command = backend.launch_command()
+        self.assertTrue(command[0].endswith('wsl.exe'), command)
+        self.assertEqual(command[1:5], ['-d', 'Ubuntu', 'bash', '-c'])
+        self.assert_wrapper(command[5], backend, '/mnt/c/campaign/serve_v3.sh')
+
     def test_a_script_inside_the_distro_is_not_mangled(self):
-        self._as_windows()
         backend = HiggsV3ServedBackend(
             serve_script=r'\\wsl$\Ubuntu\home\telltale\serve_v3.sh')
         self.assertIn('/home/telltale/serve_v3.sh', backend.launch_command()[5])
@@ -988,7 +1087,6 @@ class WindowsLaunchTest(unittest.TestCase):
         """Terminating wsl.exe kills the Windows-side relay; the guest process
         can keep running and holding ~14 GB, while proc.poll() reports a tidy
         exit."""
-        self._as_windows()
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url,
@@ -998,29 +1096,64 @@ class WindowsLaunchTest(unittest.TestCase):
         real_run = v3_served.subprocess.run
         v3_served.subprocess.run = lambda argv, **kw: calls.append(argv)
         try:
-            # The port keeps answering, so stop() must escalate to the guest.
             backend._verify_gone(timeout=2)
         finally:
             v3_served.subprocess.run = real_run
         self.assertTrue(calls, 'stop() must escalate to a guest-side signal')
-        self.assertEqual(calls[0][:3], [self.fake_wsl, '-d', 'Ubuntu'])
+        self.assertTrue(calls[0][0].endswith('wsl.exe'), calls[0])
+        self.assertEqual(calls[0][1:3], ['-d', 'Ubuntu'])
         self.assertIn('4242', calls[0])
         self.assertIn('kill', calls[0])
 
-    def test_it_never_kills_a_server_it_did_not_launch(self):
-        self._as_windows()
+
+@unittest.skipIf(sys.platform == 'win32', 'the POSIX launch arm')
+class PosixLaunchTest(_LaunchTestBase):
+    """The POSIX arm (Linux/WSL/macOS): `bash -c <wrapper>`, no wsl.exe.
+
+    The same two assertions as the Windows arm - the wrapper records the
+    server's own pid, and stop() escalates to that pid rather than to a pkill
+    pattern that would take another agent's server with it.
+    """
+
+    def test_the_launch_command_is_a_plain_bash_wrapper(self):
+        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        command = backend.launch_command()
+        self.assertEqual(command[:2], ['bash', '-c'])
+        self.assert_wrapper(command[2], backend, '/campaign/serve_v3.sh')
+
+    def test_a_posix_path_is_passed_through_untouched(self):
+        backend = HiggsV3ServedBackend(serve_script='/home/t/serve_v3.sh')
+        self.assertIn('/home/t/serve_v3.sh', backend.launch_command()[2])
+
+    def test_stop_signals_the_pid_directly(self):
         server = FakeV3Server()
         self.addCleanup(server.close)
-        backend = HiggsV3ServedBackend(base_url=server.base_url)
-        calls = []
-        real_run = v3_served.subprocess.run
-        v3_served.subprocess.run = lambda argv, **kw: calls.append(argv)
+        backend = HiggsV3ServedBackend(base_url=server.base_url,
+                                       serve_script='/campaign/serve_v3.sh')
+        backend._guest_pid = 4242
+        signalled = []
+        real_kill = v3_served.os.kill
+        v3_served.os.kill = lambda pid, sig: signalled.append((pid, sig))
         try:
             backend._verify_gone(timeout=2)
         finally:
-            v3_served.subprocess.run = real_run
-        self.assertEqual(calls, [],
-                         'no recorded guest pid means it is not ours to kill')
+            v3_served.os.kill = real_kill
+        self.assertTrue(signalled, 'stop() must escalate to the server pid')
+        self.assertEqual(signalled[0][0], 4242)
+
+    def test_it_never_kills_a_server_it_did_not_launch(self):
+        server = FakeV3Server()
+        self.addCleanup(server.close)
+        backend = HiggsV3ServedBackend(base_url=server.base_url)
+        signalled = []
+        real_kill = v3_served.os.kill
+        v3_served.os.kill = lambda pid, sig: signalled.append(pid)
+        try:
+            backend._verify_gone(timeout=2)
+        finally:
+            v3_served.os.kill = real_kill
+        self.assertEqual(signalled, [],
+                         'no recorded pid means it is not ours to kill')
 
 
 class SetVoiceTest(V3TestCase):
@@ -1045,6 +1178,333 @@ class SetVoiceTest(V3TestCase):
         engine._apply_voice_caps('deathstalker', {})     # the pool's reset: a no-op
         with self.assertRaises(ValueError):
             engine._apply_voice_caps('deathstalker', {'eosBoost': 8})
+
+
+class WorkerRefusalTest(unittest.TestCase):
+    """Things `python -m narrator.serve` must refuse rather than half-do."""
+
+    def _run(self, extra_env, argv=()):
+        import subprocess
+        env = dict(os.environ)
+        env.update({'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8'})
+        env.update(extra_env)
+        env.pop('NARRATOR_GOLDEN_LOCAL', None)
+        return subprocess.run(
+            [sys.executable, '-m', 'narrator.serve', *argv], cwd=_PYTHON_ROOT,
+            input='{"action": "quit"}\n', capture_output=True, text=True,
+            encoding='utf-8', env=env, timeout=180)
+
+    def test_the_not_shipped_scaffold_is_refused_without_a_handshake(self):
+        """`higgs-v2-scaffold` is interface scaffolding, not a rendering engine.
+        A spawn that selects it must not get a worker that looks alive."""
+        out = self._run({'NARRATOR_ENGINE': 'higgs-v2-scaffold'},
+                        argv=('--fake-engine',))
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('"type": "ready"', out.stdout)
+        self.assertIn('scaffold', out.stderr)
+        self.assertIn('higgs-v3', out.stderr)
+
+    def test_an_unknown_engine_is_refused_without_a_handshake(self):
+        out = self._run({'NARRATOR_ENGINE': 'llasa'}, argv=('--fake-engine',))
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('"type": "ready"', out.stdout)
+        self.assertIn('llasa', out.stderr)
+
+    def test_a_backend_that_cannot_be_detected_never_prints_ready(self):
+        """THE MAC FAILURE (2026-09-04). A swallowed ImportError printed
+        {"type":"ready","device":"mlx"} with no backend; the pool saw a healthy
+        handshake and every generate answered 'Model not loaded' forever. An
+        engine that cannot be imported is a dead worker, and it must say so with
+        an exit code."""
+        out = self._run({'NARRATOR_ENGINE': 'higgs-v3',
+                         'NARRATOR_HIGGS_VOICES': os.path.join(_HERE, 'nope.json'),
+                         'NARRATOR_HIGGS3_URL': 'http://127.0.0.1:1'})
+        # (higgs-v3 detects its backend without importing torch, so this asserts
+        # the shape that matters: a worker that DOES come up prints ready, and a
+        # worker that raises in run() exits non-zero with the reason - never
+        # both.)
+        if out.returncode == 0:
+            self.assertIn('"type": "ready"', out.stdout)
+        else:
+            self.assertNotIn('"type": "ready"', out.stdout)
+            self.assertIn('FATAL', out.stderr)
+
+    def test_a_fatal_startup_exits_three_and_explains(self):
+        out = self._run({'NARRATOR_ENGINE': 'higgs-v2-scaffold'})
+        self.assertEqual(out.returncode, 3)
+        self.assertIn('no engine can load in this process', out.stderr)
+
+
+class LoadedMessageTest(V3TestCase):
+    """The `loaded` line has to carry what an ASSEMBLER will need."""
+
+    def setUp(self):
+        super().setUp()
+        self.voices_path = os.path.join(self.dir, 'voices.json')
+        with open(self.voices_path, 'w', encoding='utf-8') as handle:
+            json.dump({'deathstalker': {'clips': [
+                {'path': self.clip, 'transcript': X2_TEXT, 'seconds': 27.42}]}},
+                handle)
+
+    def test_it_carries_engine_samplerate_pads_and_the_asymmetric_fade(self):
+        import subprocess
+        env = dict(os.environ)
+        env.update({
+            'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8',
+            'ORPHEUS_SKIP_WARMUP': '1',
+            'NARRATOR_ENGINE': 'higgs-v3',
+            'NARRATOR_HIGGS_VOICES': self.voices_path,
+            'NARRATOR_HIGGS3_URL': self.server.base_url,
+        })
+        env.pop('NARRATOR_GOLDEN_LOCAL', None)
+        proc = subprocess.Popen(
+            [sys.executable, '-m', 'narrator.serve'], cwd=_PYTHON_ROOT,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True, encoding='utf-8', env=env,
+            bufsize=1)
+        self.addCleanup(proc.kill)
+        try:
+            ready = proc.stdout.readline()
+            if not ready:
+                try:
+                    proc.wait(timeout=60)
+                except Exception:
+                    pass
+                self.fail(f'worker exited {proc.returncode} before its handshake.'
+                          f'\n--- stderr ---\n{(proc.stderr.read() or "").strip()}')
+            self.assertEqual(json.loads(ready)['type'], 'ready')
+            proc.stdin.write(json.dumps({'action': 'load',
+                                         'voice': 'deathstalker',
+                                         'warm': False}) + '\n')
+            proc.stdin.flush()
+            for _ in range(50):
+                line = proc.stdout.readline()
+                if not line:
+                    try:
+                        proc.wait(timeout=60)
+                    except Exception:
+                        pass
+                    self.fail(f'worker exited {proc.returncode} before its '
+                              f'`loaded` line.\n--- stderr ---\n'
+                              f'{(proc.stderr.read() or "").strip()}')
+                message = json.loads(line)
+                if message['type'] in ('loaded', 'error'):
+                    break
+            self.assertEqual(message['type'], 'loaded', message)
+            self.assertEqual(message['engine'], 'higgs-v3')
+            self.assertEqual(message['sampleRate'], 24000)
+            self.assertIs(message['pads'], False)
+            self.assertEqual(message['edgeFadeMs'], {'in': 10.0, 'out': 25.0})
+            # The pool's existing reads still work, unchanged.
+            self.assertEqual(message['voice'], 'deathstalker')
+            self.assertEqual(message['backend'], 'vllm-omni')
+        finally:
+            try:
+                proc.stdin.write('{"action": "quit"}\n')
+                proc.stdin.flush()
+                proc.wait(timeout=20)
+            except Exception:
+                pass
+
+
+class PadsOnTheWireTest(unittest.TestCase):
+    """finalize_audio's trim is ORPHEUS behaviour; the gap is a CLIENT contract."""
+
+    def setUp(self):
+        from narrator.serve import worker as W
+        self.W = W
+        self.addCleanup(W.set_active_engine_audio, W.DEFAULT_SAMPLERATE, True)
+
+    def test_a_pads_engine_is_trimmed(self):
+        W = self.W
+        W.set_active_engine_audio(24000, True)
+        quiet = np.concatenate([np.zeros(2400, dtype=np.float32),
+                                np.full(2400, 0.5, dtype=np.float32),
+                                np.zeros(24000, dtype=np.float32)])
+        out = W.finalize_audio(quiet)
+        gap = int(24000 * W.STREAM_GAP_SEC)
+        self.assertLess(out.size - gap, quiet.size,
+                        "Orpheus's long trailing pause is cut back")
+
+    def test_a_no_pads_engine_is_not_trimmed(self):
+        """Higgs emits bare speech: a quiet final consonant sits under the 0.01
+        threshold with no padding in front of it, so the same trim would cut
+        into the word."""
+        W = self.W
+        W.set_active_engine_audio(24000, False)
+        quiet = np.concatenate([np.zeros(2400, dtype=np.float32),
+                                np.full(2400, 0.5, dtype=np.float32),
+                                np.zeros(24000, dtype=np.float32)])
+        out = W.finalize_audio(quiet)
+        gap = int(24000 * W.STREAM_GAP_SEC)
+        self.assertEqual(out.size - gap, quiet.size,
+                         'nothing may be removed from a pads=False chunk')
+
+    def test_the_gap_is_appended_for_BOTH(self):
+        """DELIBERATE. `pads` says who owns the silence inside a chunk FILE for
+        assembly; this is the streaming wire, where the worker is the only thing
+        that can put a gap between two sentences - the player concatenates
+        chunks with none of its own."""
+        W = self.W
+        tone = np.full(2400, 0.5, dtype=np.float32)
+        gap = int(24000 * W.STREAM_GAP_SEC)
+        for pads in (True, False):
+            with self.subTest(pads=pads):
+                W.set_active_engine_audio(24000, pads)
+                self.assertEqual(W.finalize_audio(tone).size - gap, tone.size)
+
+    def test_the_wire_rate_follows_the_loaded_engine(self):
+        W = self.W
+        W.set_active_engine_audio(16000, True)
+        self.assertEqual(W.active_samplerate(), 16000)
+        W.set_active_engine_audio(24000, True)
+        self.assertEqual(W.active_samplerate(), 24000)
+
+
+class VoiceDocumentShapesTest(V3TestCase):
+    """THREE legitimate shapes, through the REAL loader and the REAL builder.
+
+    The app catalog ships a `default` v3 voice - the model's own, no reference -
+    and narrator used to refuse it, because it was written as a ClipsVoice with
+    zero clips and ClipsVoice requires at least one. That rule is right and
+    stays: a clone whose references went missing must be an error, never a
+    silent downgrade. So "no reference" is its own member of the union.
+    """
+
+    def _load(self, document):
+        from narrator.engine.higgs.config import load_voices
+        path = os.path.join(self.dir, 'voices.json')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump(document, handle)
+        return load_voices(
+            path, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+            max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+            placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+
+    def _clip_entry(self):
+        return {'path': self.clip, 'transcript': X2_TEXT, 'seconds': 27.42}
+
+    # ---- shape 1: a zero-shot reference clone ------------------------------
+
+    def test_a_clips_voice_sends_one_reference(self):
+        voice = self._load({'ds': {'clips': [self._clip_entry()]}})['ds']
+        self.assertIsInstance(voice, ClipsVoice)
+        body = v3_served.build_request_body('Hello.', voice, 200)
+        self.assertEqual(len(body['references']), 1)
+        self.assertEqual(body['references'][0]['text'], X2_TEXT)
+
+    # ---- shape 2: the model's own voice ------------------------------------
+
+    def test_a_default_voice_loads_and_sends_no_references(self):
+        from narrator.engine.protocol import DefaultVoice
+        voice = self._load({'default': {'kind': 'default'}})['default']
+        self.assertIsInstance(voice, DefaultVoice)
+        self.assertEqual(voice.kind, 'default')
+        self.assertEqual(voice.name, 'default')
+        body = v3_served.build_request_body('Hello.', voice, 200)
+        self.assertNotIn('references', body,
+                         "the model's own voice takes no reference at all")
+        self.assertEqual(body['input'], 'Hello.')
+
+    def test_a_default_voice_uses_the_zero_shot_placeholder(self):
+        voice = self._load({'default': {'kind': 'default'}})['default']
+        self.assertEqual(voice.max_chars, HiggsV3Defaults.MAX_CHARS)
+        self.assertEqual(voice.max_chars_source, 'placeholder')
+        budget = HiggsV3Budget(HiggsV3Config(voice=voice,
+                                             base_url=self.server.base_url))
+        self.assertEqual(budget.max_chars(), 600)
+        self.assertEqual(budget.max_chars_source(), 'placeholder')
+
+    def test_the_reference_rules_do_not_apply_to_it(self):
+        """No 30 s cap, no transcript - there is no reference to have either."""
+        voice = self._load({'default': {'kind': 'default'}})['default']
+        HiggsV3Config(voice=voice, base_url=self.server.base_url)   # no refusal
+
+    def test_it_renders_end_to_end(self):
+        voice = self._load({'default': {'kind': 'default'}})['default']
+        engine = HiggsV3Engine(HiggsV3Config(voice=voice,
+                                             base_url=self.server.base_url,
+                                             probe_tail_trim=False))
+        self.addCleanup(engine.cleanup)
+        audio = engine.render_audio('It was a Saturday morning.')
+        self.assertGreater(audio.size, 0)
+        self.assertNotIn('references', self.server.requests[-1])
+
+    # ---- shape 3: a fine-tune, whose weights ARE the voice -----------------
+
+    def test_a_checkpoint_entry_needs_no_clips(self):
+        from narrator.engine.protocol import DefaultVoice
+        voice = self._load({'ds-ft': {'kind': 'checkpoint',
+                                      'checkpointDir': '/models/ds-merged',
+                                      'maxChars': 500}})['ds-ft']
+        self.assertIsInstance(voice, DefaultVoice)
+        self.assertEqual(voice.checkpoint_dir, '/models/ds-merged')
+        self.assertEqual(voice.max_chars, 500)
+        body = v3_served.build_request_body('Hello.', voice, 200)
+        self.assertNotIn('references', body,
+                         'a fine-tune is prompted with text alone')
+
+    def test_a_checkpoint_still_needs_its_maxChars(self):
+        with self.assertRaises(ValueError) as caught:
+            self._load({'ds-ft': {'kind': 'checkpoint',
+                                  'checkpointDir': '/models/ds-merged'}})
+        self.assertIn('maxChars', str(caught.exception))
+
+    def test_a_checkpoint_kind_without_a_directory_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self._load({'ds-ft': {'kind': 'checkpoint', 'maxChars': 500}})
+        self.assertIn('checkpointDir', str(caught.exception))
+
+    def test_the_retired_adapterDir_key_is_refused_by_name(self):
+        """There is no runtime LoRA on this stack, so an adapter directory has
+        nothing to be loaded into. The refusal says what to write instead."""
+        with self.assertRaises(ValueError) as caught:
+            self._load({'ds-ft': {'kind': 'adapter',
+                                  'adapterDir': '/models/ds-lora',
+                                  'maxChars': 500}})
+        message = str(caught.exception)
+        self.assertIn('SupportsLoRA', message)
+        self.assertIn('checkpointDir', message)
+
+    # ---- the refusals that keep the shapes apart ---------------------------
+
+    def test_a_clips_entry_with_an_empty_list_is_refused(self):
+        """NOT quietly the default voice. ClipsVoice's >= 1 rule stands."""
+        with self.assertRaises(ValueError) as caught:
+            self._load({'ds': {'clips': []}})
+        message = str(caught.exception)
+        self.assertIn('no clips', message)
+        self.assertIn("kind 'default'", message)
+
+    def test_an_entry_that_says_nothing_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self._load({'mystery': {'scene': 'a quiet room'}})
+        message = str(caught.exception)
+        self.assertIn('12 %', message, 'the refusal must say what default costs')
+
+    def test_an_unknown_kind_is_refused(self):
+        with self.assertRaises(ValueError) as caught:
+            self._load({'x': {'kind': 'description'}})
+        self.assertIn('description', str(caught.exception))
+
+    def test_the_maxCharsSource_vocabulary_is_closed(self):
+        from narrator.engine.protocol import MAX_CHARS_SOURCES
+        self.assertEqual(MAX_CHARS_SOURCES,
+                         ('catalog', 'placeholder', 'length-sweep'))
+        voice = self._load({'ds': {'clips': [self._clip_entry()],
+                                   'maxChars': 450,
+                                   'maxCharsSource': 'length-sweep'}})['ds']
+        self.assertEqual(voice.max_chars_source, 'length-sweep')
+        with self.assertRaises(ValueError) as caught:
+            self._load({'ds': {'clips': [self._clip_entry()],
+                               'maxChars': 450, 'maxCharsSource': 'vibes'}})
+        self.assertIn('vibes', str(caught.exception))
+
+    def test_a_max_chars_without_a_source_cannot_be_built(self):
+        from narrator.engine.protocol import DefaultVoice
+        with self.assertRaises(ValueError) as caught:
+            DefaultVoice(name='x', max_chars=600)
+        self.assertIn('provenance', str(caught.exception))
 
 
 if __name__ == '__main__':

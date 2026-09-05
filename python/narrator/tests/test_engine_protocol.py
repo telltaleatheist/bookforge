@@ -50,9 +50,40 @@ from narrator.engine.protocol import (BackendSpec, Budget, ClipsVoice,  # noqa: 
 
 # The members `Engine` names. Kept as a literal so a member SILENTLY dropped
 # from the protocol is a failure here rather than an unnoticed relaxation.
-ENGINE_MEMBERS = ('ENGINE_ID', 'SAMPLE_RATE', 'pads', 'edge_fade_ms', 'backend',
+ENGINE_MEMBERS = ('ENGINE_ID', 'SAMPLE_RATE', 'pads', 'edge_fade', 'backend',
                   'voice', 'backend_spec', 'codec', 'budget', 'stop_policy',
-                  'convert', 'convert_batch', 'generate_batch_stream', 'cleanup')
+                  'resolve_load_voice', 'convert', 'convert_batch',
+                  'generate_batch_stream', 'cleanup')
+
+
+def _load_assembler_profiles():
+    """`narrator/assemble/engine_profiles.py`, loaded BY PATH.
+
+    NOT `from narrator.assemble import engine_profiles`: that runs the assemble
+    package's `__init__`, which pulls in ffmpeg discovery and the whole assembly
+    stack. This test is about one table of numbers and must not fail because an
+    unrelated module in another builder's column is mid-edit.
+    """
+    import importlib.util
+    path = os.path.join(_PYTHON_ROOT, 'narrator', 'assemble',
+                        'engine_profiles.py')
+    if not os.path.isfile(path):
+        raise AssertionError(
+            f'the assembler\'s engine-profile table is missing: {path}. The engine '
+            'and the assembler each hold a copy of the pads/fade facts, and this '
+            'test is the only thing keeping them equal.')
+    spec = importlib.util.spec_from_file_location('_assembler_profiles', path)
+    module = importlib.util.module_from_spec(spec)
+    # Registered before exec: @dataclass resolves its annotations through
+    # sys.modules[cls.__module__], so a module loaded outside sys.modules blows
+    # up inside dataclasses rather than in anything this test is about.
+    sys.modules[spec.name] = module
+    try:
+        spec.loader.exec_module(module)
+    except BaseException:
+        sys.modules.pop(spec.name, None)
+        raise
+    return module
 
 
 def _bare(cls, voice='deathstalker', backend='vllm'):
@@ -173,9 +204,20 @@ class RegistryTest(unittest.TestCase):
             self.assertIn('orpheus', message)
             self.assertIn('Refusing to substitute', message)
 
-    def test_the_registry_resolves_both_engines(self):
+    def test_the_registry_resolves_every_engine(self):
+        from narrator.engine.higgs import HiggsV3Engine
         self.assertIs(registry.engine_class('orpheus'), OrpheusEngine)
+        self.assertIs(registry.engine_class('higgs-v3'), HiggsV3Engine)
         self.assertIs(registry.engine_class('higgs-v2-scaffold'), HiggsEngine)
+
+    def test_every_engine_reports_the_id_that_selected_it(self):
+        """An engine whose ENGINE_ID disagrees with its registry key makes a
+        log line name the wrong engine at exactly the moment someone is trying
+        to tell two of them apart."""
+        for engine_id in registry.ids():
+            with self.subTest(engine=engine_id):
+                self.assertEqual(registry.engine_class(engine_id).ENGINE_ID,
+                                 engine_id)
 
     def test_orpheus_config_is_still_EngineConfig(self):
         from narrator.engine import EngineConfig
@@ -189,12 +231,39 @@ class TheTwoEnginesDisagreeTest(unittest.TestCase):
     packer or the scheduler has to read off the engine instead of assuming."""
 
     def test_pads_and_edge_fade(self):
+        from narrator.engine.higgs import HiggsV3Engine
         self.assertTrue(OrpheusEngine.pads,
                         'Orpheus bakes its gaps into each chunk FLAC')
-        self.assertFalse(HiggsEngine.pads,
+        self.assertFalse(HiggsV3Engine.pads,
                          'Higgs emits bare speech; the assembler owns the gaps')
-        self.assertEqual(OrpheusEngine.edge_fade_ms, 0.0)
-        self.assertEqual(HiggsEngine.edge_fade_ms, 10.0)
+        self.assertEqual(OrpheusEngine.edge_fade.as_manifest(),
+                         {'in': 0.0, 'out': 0.0})
+        self.assertEqual(HiggsV3Engine.edge_fade.as_manifest(),
+                         {'in': 10.0, 'out': 25.0})
+
+    def test_the_fade_is_asymmetric_and_that_is_the_point(self):
+        """One float cannot say this. A chunk begins on an attack the ear
+        expects and ends on a decay it does not, so the tail needs more than
+        twice the head's window."""
+        from narrator.engine.higgs import HiggsV3Engine
+        fade = HiggsV3Engine.edge_fade
+        self.assertGreater(fade.out_ms, 2 * fade.in_ms)
+        self.assertTrue(OrpheusEngine.edge_fade.is_none)
+        self.assertFalse(fade.is_none)
+
+    def test_the_engines_agree_with_the_assemblers_own_table(self):
+        """`assemble/engine_profiles.py` is assembly's COPY of these facts - it
+        exists because assembly runs on a machine with no engine to ask. Two
+        copies of one truth need a test, or an audiobook clicks at every join
+        and nobody knows which side was wrong."""
+        engine_profiles = _load_assembler_profiles()
+        from narrator.engine.higgs import HiggsV3Engine
+        for engine in (OrpheusEngine, HiggsV3Engine):
+            profile = engine_profiles.profile_for(engine.ENGINE_ID)
+            with self.subTest(engine=engine.ENGINE_ID):
+                self.assertEqual(profile.pads, engine.pads)
+                self.assertEqual(profile.fade_in_ms, engine.edge_fade.in_ms)
+                self.assertEqual(profile.fade_out_ms, engine.edge_fade.out_ms)
 
     def test_codec_geometry(self):
         orpheus = OrpheusCodec(_bare(OrpheusEngine))
@@ -309,6 +378,145 @@ class OrpheusBudgetTest(unittest.TestCase):
         budget = OrpheusBudget(_orpheus())
         self.assertEqual(budget.max_chars_per_sec(),
                          float(OrpheusEngine.DEFAULT_MAX_CHARS_PER_SEC))
+
+
+class StdoutIsTheProtocolTest(unittest.TestCase):
+    """No engine written for narrator may print to STDOUT.
+
+    `narrator.serve` writes one JSON object per line to stdout and
+    electron/orpheus-worker-pool.ts parses every one of them; a bare
+    `[HIGGS3] launching: ...` line there is a parse error that kills the
+    session. It is an easy mistake - a `print(..., flush=True)` looks like
+    logging - and it cost two protocol tests before this check existed.
+
+    SCOPED TO THE NEW ENGINES. `engine/orpheus/**` is a faithful port of
+    ebook2audiobook, whose prints go to stdout, and that behaviour is preserved
+    deliberately (PORT_NOTES section 5 lists the load-bearing ones). Its output
+    only appears during real model work, which the protocol tests never reach.
+    """
+
+    def _stdout_prints(self, path):
+        import ast
+        tree = ast.parse(open(path, encoding='utf-8').read())
+        return [node.lineno for node in ast.walk(tree)
+                if isinstance(node, ast.Call)
+                and getattr(node.func, 'id', None) == 'print'
+                and not any(kw.arg == 'file' for kw in node.keywords)]
+
+    def test_the_higgs_engines_log_to_stderr(self):
+        import narrator.engine.higgs as higgs
+        directory = os.path.dirname(higgs.__file__)
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith('.py'):
+                continue
+            path = os.path.join(directory, name)
+            with self.subTest(module=name):
+                self.assertEqual(
+                    self._stdout_prints(path), [],
+                    f'{name} prints to stdout, which is the JSON protocol')
+
+    def test_the_fake_engines_too(self):
+        from narrator.serve import fake_engine
+        self.assertEqual(self._stdout_prints(fake_engine.__file__), [])
+
+
+class ChunkWriterTest(unittest.TestCase):
+    """ONE writer, PCM_16, on every backend and every engine.
+
+    Ruled 2026-09-04 after the Mac MLX run. e2a wrote chunks with
+    `torchaudio.save(format='flac')`; on current wheels that routes through
+    TorchCodec and needs FFmpeg dylibs (every sentence failed with "TorchCodec
+    is required" until ffmpeg was installed), and it produced PCM_24 there
+    against PCM_16 under WSL/vLLM. Mixed bit depths in one session are what
+    ffmpeg's concat demuxer drops frames on - SILENTLY, which is how sentences
+    disappeared out of an assembled book before.
+    """
+
+    def _written(self, write):
+        import shutil
+        import tempfile
+        import soundfile as sf
+        directory = tempfile.mkdtemp(prefix='narrator-writer-')
+        self.addCleanup(shutil.rmtree, directory, True)
+        path = os.path.join(directory, 'chunk.flac')
+        write(path)
+        info = sf.info(path)
+        audio, rate = sf.read(path, dtype='float32')
+        return info, audio, rate
+
+    def test_orpheus_writes_24k_mono_pcm16_with_the_exact_sample_count(self):
+        import numpy as np
+        engine = _bare(OrpheusEngine)
+        engine.params = {'samplerate': 24000}
+        engine.config = type('C', (), {'audio_format': 'flac'})()
+        wave = (0.25 * np.sin(np.linspace(0, 40, 7200))).astype(np.float32)
+        info, audio, rate = self._written(
+            lambda path: engine.write_chunk_file(path, wave, 24000))
+        self.assertEqual(rate, 24000)
+        self.assertEqual(info.channels, 1)
+        self.assertEqual(info.subtype, 'PCM_16')
+        self.assertEqual(info.format, 'FLAC')
+        self.assertEqual(audio.size, 7200, 'not one sample added or lost')
+
+    def test_it_accepts_the_shape_the_engine_actually_hands_it(self):
+        """`_save_audio` builds a (1, N) tensor; the MLX path hands a 1-D numpy
+        array. Both are mono and both must land identically."""
+        import numpy as np
+        engine = _bare(OrpheusEngine)
+        engine.params = {'samplerate': 24000}
+        engine.config = type('C', (), {'audio_format': 'flac'})()
+        flat = np.zeros(2400, dtype=np.float32)
+        for shape, wave in (('1-D', flat), ('(1, N)', flat.reshape(1, -1))):
+            with self.subTest(shape=shape):
+                _info, audio, _rate = self._written(
+                    lambda path: engine.write_chunk_file(path, wave, 24000))
+                self.assertEqual(audio.size, 2400)
+
+    def test_stereo_is_refused_rather_than_downmixed(self):
+        import numpy as np
+        engine = _bare(OrpheusEngine)
+        engine.params = {'samplerate': 24000}
+        engine.config = type('C', (), {'audio_format': 'flac'})()
+        with self.assertRaises(ValueError) as caught:
+            engine.write_chunk_file('x.flac', np.zeros((2, 100), np.float32), 24000)
+        self.assertIn('MONO', str(caught.exception))
+
+    def test_the_silence_writer_uses_the_same_path(self):
+        import shutil
+        import tempfile
+        import soundfile as sf
+        directory = tempfile.mkdtemp(prefix='narrator-writer-')
+        self.addCleanup(shutil.rmtree, directory, True)
+        engine = _bare(OrpheusEngine)
+        engine.params = {'samplerate': 24000}
+        engine.config = type('C', (), {'audio_format': 'flac'})()
+        engine._sentence_file = lambda i: os.path.join(directory, f'{i}.flac')
+        engine._write_silence(3)
+        info = sf.info(os.path.join(directory, '3.flac'))
+        self.assertEqual(info.subtype, 'PCM_16')
+        self.assertEqual(info.samplerate, 24000)
+        self.assertEqual(info.channels, 1)
+
+    def test_nothing_in_the_engine_calls_torchaudio_save(self):
+        """torchaudio is gone from the WRITE path entirely - chunks AND the
+        post-mortem reject clips. Reading (resume, trim) is unchanged from the
+        port. Asserted over the AST, so the prose explaining the deviation does
+        not satisfy it."""
+        import ast
+        import narrator.engine.orpheus as orpheus_pkg
+        directory = os.path.dirname(orpheus_pkg.__file__)
+        for name in sorted(os.listdir(directory)):
+            if not name.endswith('.py'):
+                continue
+            tree = ast.parse(open(os.path.join(directory, name),
+                                  encoding='utf-8').read())
+            calls = [node.lineno for node in ast.walk(tree)
+                     if isinstance(node, ast.Call)
+                     and isinstance(node.func, ast.Attribute)
+                     and node.func.attr == 'save'
+                     and getattr(node.func.value, 'id', None) == 'torchaudio']
+            with self.subTest(module=name):
+                self.assertEqual(calls, [], f'{name} still writes with torchaudio')
 
 
 class BackendSpecTest(unittest.TestCase):

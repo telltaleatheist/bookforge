@@ -16,6 +16,11 @@ the truncation guard.
 
 torch/torchaudio are imported LAZILY inside each function, so this module is
 importable on an interpreter that has neither.
+
+WRITING GOES THROUGH `soundfile`, NOT torchaudio - one writer, PCM_16, on every
+backend. See `AudioMixin.write_chunk_file` for the two measured reasons (a
+wheel-dependent FFmpeg requirement, and PCM_24-vs-PCM_16 chunks that the concat
+demuxer drops frames on). Reading is unchanged from the port.
 """
 import os
 
@@ -83,13 +88,61 @@ class AudioMixin:
                 'methods instead of convert()/convert_batch().')
         return os.path.join(sentences_dir, f'{sentence_index}.{self.config.audio_format}')
 
+    def write_chunk_file(self, path: str, audio, samplerate: int) -> None:
+        """THE ONE WRITER for every chunk file narrator produces.
+
+        DELIBERATE DEVIATION FROM THE PORT (ruled 2026-09-04, after the Mac MLX
+        run). e2a wrote chunks with `torchaudio.save(..., format='flac')`. Two
+        things are wrong with that, and both are invisible until late:
+
+        1. IT IS WHEEL-DEPENDENT. On current wheels (torch 2.14 / torchaudio
+           2.11) `torchaudio.save` routes through TorchCodec and needs the
+           FFmpeg dylibs; without them every single sentence fails with
+           "TorchCodec is required", which on the Mac meant a per-sentence
+           failure until ffmpeg was conda-installed. A renderer's file writer
+           must not depend on a media stack that may or may not be in the env.
+        2. IT IS BIT-DEPTH-UNSTABLE. The same call produced PCM_24 there and
+           PCM_16 under WSL/vLLM. Mixed bit depths across one session's chunks
+           are exactly what ffmpeg's concat demuxer drops frames on, SILENTLY -
+           the failure mode that ate sentences out of an assembled book before.
+
+        So every backend - vLLM, MLX, transformers - writes through
+        `soundfile.write(..., subtype='PCM_16')`. soundfile is already a base
+        dependency (it has no FFmpeg dependency of its own), the subtype is
+        stated rather than inferred, and the result is identical on every
+        platform. torchaudio is no longer used to WRITE anything; the READ side
+        (resume, trim) is unchanged from the port.
+
+        `audio` is a float32 numpy array or a torch tensor of shape (1, N) or
+        (N,); mono is the only shape narrator produces.
+        """
+        import numpy as np
+        import soundfile as sf
+        if hasattr(audio, 'detach'):
+            audio = audio.detach().cpu().numpy()
+        audio = np.asarray(audio, dtype=np.float32)
+        if audio.ndim == 2:
+            if audio.shape[0] != 1:
+                raise ValueError(
+                    f'{path}: narrator writes MONO chunks; got shape '
+                    f'{audio.shape}.')
+            audio = audio[0]
+        if audio.ndim != 1:
+            raise ValueError(f'{path}: expected a 1-D waveform, got shape '
+                             f'{audio.shape}.')
+        # The container comes from the PATH's own extension, not from a config
+        # field: the reject-clip writer asks for .wav and the chunk writer for
+        # .flac, through this one function. Both are PCM_16.
+        container = os.path.splitext(path)[1].lstrip('.').upper() or 'FLAC'
+        sf.write(path, audio, int(samplerate), subtype='PCM_16',
+                 format=container)
+
     def _write_silence(self, sentence_index: int) -> bool:
         """Write a tiny silent clip for an empty sentence."""
-        import torch
-        import torchaudio
-        silence = torch.zeros(1, int(self.params['samplerate'] * 0.1))
-        torchaudio.save(self._sentence_file(sentence_index), silence,
-                        self.params['samplerate'], format=self.config.audio_format)
+        import numpy as np
+        rate = self.params['samplerate']
+        self.write_chunk_file(self._sentence_file(sentence_index),
+                              np.zeros(int(rate * 0.1), dtype=np.float32), rate)
         return True
 
     def _save_audio(self, sentence_index: int, audio_np, lead_gap: float = 0.0,
@@ -101,13 +154,17 @@ class AudioMixin:
         before it. Both can be non-zero - a chunk opened by a boundary token gets
         a long lead AND still gets its sentence-gap tail, so a chunk's tail is
         never bare (the invariant _classify_gap guarantees)."""
-        import torch
-        import torchaudio
+        import numpy as np
         if audio_np is None or len(audio_np) == 0:
             print(f"Orpheus returned no audio data for sentence {sentence_index}")
             return False
         final_sentence_file = self._sentence_file(sentence_index)
-        audio_tensor = torch.from_numpy(audio_np).float()
+        # NUMPY, NOT TORCH (2026-09-04, with the soundfile writer). The
+        # arithmetic below is a max, a scale and two concatenations - nothing
+        # that needed a tensor - and torch here was the last thing keeping the
+        # MLX render path dependent on a torch install for WRITING a file.
+        # Values, order and results are identical.
+        audio_tensor = np.asarray(audio_np, dtype=np.float32)
         # NO-FALLBACK (2026-07-11): the trailing-silence trim was REMOVED here. It
         # silently erased the runaway silence a mis-behaving model emits (a stop-token
         # failure), masking the bug and destroying data - a forbidden fallback. The
@@ -115,29 +172,33 @@ class AudioMixin:
         # must be trained to stop cleanly (trimmed-tail clips), not have its dead air
         # papered over at save time. If a clip has abnormal trailing silence, that must
         # be VISIBLE, not hidden.
-        if audio_tensor.dim() == 1:
-            audio_tensor = audio_tensor.unsqueeze(0)
+        if audio_tensor.ndim == 1:
+            audio_tensor = audio_tensor.reshape(1, -1)
         # Normalize to prevent clipping
-        max_val = audio_tensor.abs().max()
+        max_val = float(np.abs(audio_tensor).max())
         if max_val > 0:
             if max_val > 1.0:
                 audio_tensor = audio_tensor / max_val * 0.95
         else:
-            audio_tensor = torch.zeros(1, int(self.params['samplerate'] * 0.1))
+            audio_tensor = np.zeros((1, int(self.params['samplerate'] * 0.1)),
+                                    dtype=np.float32)
         # Inter-clip silence (tiers + durations decided by _classify_gap). The
         # leading pad is prepended (a boundary opening a new paragraph isn't placed
         # one sentence too late) and the trailing pad appended - BOTH can apply so
         # the tail is never bare.
         if (lead_gap and lead_gap > 0) or (trail_gap and trail_gap > 0):
-            audio_tensor = audio_tensor.cpu()
             if lead_gap and lead_gap > 0:
-                lead_pad = torch.zeros(1, int(self.params['samplerate'] * lead_gap))
-                audio_tensor = torch.cat([lead_pad, audio_tensor], dim=1)
+                lead_pad = np.zeros((1, int(self.params['samplerate'] * lead_gap)),
+                                    dtype=np.float32)
+                audio_tensor = np.concatenate([lead_pad, audio_tensor], axis=1)
             if trail_gap and trail_gap > 0:
-                trail_pad = torch.zeros(1, int(self.params['samplerate'] * trail_gap))
-                audio_tensor = torch.cat([audio_tensor, trail_pad], dim=1)
-        torchaudio.save(final_sentence_file, audio_tensor.cpu(),
-                        self.params['samplerate'], format=self.config.audio_format)
+                trail_pad = np.zeros((1, int(self.params['samplerate'] * trail_gap)),
+                                     dtype=np.float32)
+                audio_tensor = np.concatenate([audio_tensor, trail_pad], axis=1)
+        # ONE WRITER, PCM_16, every backend - see write_chunk_file for why this
+        # is not torchaudio.save any more.
+        self.write_chunk_file(final_sentence_file, audio_tensor,
+                              self.params['samplerate'])
         del audio_tensor
         if os.path.exists(final_sentence_file):
             return True

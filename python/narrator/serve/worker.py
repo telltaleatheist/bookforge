@@ -363,6 +363,17 @@ _ACTIVE_SAMPLERATE = DEFAULT_SAMPLERATE
 _ACTIVE_PADS = True
 
 
+def _edge_fade_of(engine):
+    """The engine's EdgeFade, as the manifest and the pool see it.
+
+    A shape, not a number: Higgs's fade is asymmetric (10 in / 25 out) because a
+    chunk ends on a decay the ear does not expect. Matches the manifest's
+    `edgeFadeMs: {in, out}` and assemble.engine_profiles.
+    """
+    from ..engine.protocol import EdgeFade
+    return getattr(engine, 'edge_fade', None) or EdgeFade(0.0, 0.0)
+
+
 def active_samplerate() -> int:
     return _ACTIVE_SAMPLERATE
 
@@ -452,19 +463,30 @@ def detect_backend():
     to drift.
 
     Costs an import of the engine module (torch), NOT a model load; detect_device()
-    above already pays the torch import. Failure returns None, which the pool reads
-    as "unknown" and treats as NOT per-request capable - armed, never waived - and
-    which then also suppresses the stock-from-local-base path, so an env whose
-    imports are broken degrades to exactly the pre-adapter behaviour instead of to a
-    wrong render.
+    above already pays the torch import.
+
+    IT RAISES. It used to swallow every exception and return None, "reporting
+    unknown", on the theory that an env with broken imports would degrade to
+    pre-adapter behaviour. That theory was wrong, and the Mac validation run
+    caught it: importing the engine is also how the engine's MODULE is loaded,
+    so an ImportError here means no engine will EVER load in this process. The
+    worker then printed `{"type":"ready","device":"mlx"}` with no `backend`, the
+    pool saw a healthy handshake, and every generate answered "Model not loaded"
+    - a worker that looks alive and can never render. A backend that cannot be
+    determined is a dead worker; `main()` exits non-zero with the reason on
+    stderr instead of handshaking.
+
+    A backend NAME this worker does not recognise is a different thing and still
+    returns None: the engine loaded and answered, we simply have no guard
+    calibrated for what it said.
     """
-    try:
-        backend = _engine_class().detect_backend()
-    except Exception as e:
-        print(f'[narrator.serve] backend detection failed ({e}); reporting unknown',
-              file=sys.stderr)
+    backend = _engine_class().detect_backend()
+    known = ('vllm', 'mlx', 'transformers', 'vllm-omni')
+    if backend not in known:
+        print(f'[narrator.serve] engine reported backend {backend!r}, which is not '
+              f'one of {known}; reporting unknown', file=sys.stderr)
         return None
-    return backend if backend in ('vllm', 'mlx', 'transformers') else None
+    return backend
 
 
 # -- Orpheus streaming server --------------------------------------------------
@@ -895,7 +917,7 @@ class OrpheusStreamServer:
             self._reject_per_request_voice(v)
         return v
 
-    def _generate_audio(self, text: str, voice: str = None):
+    def _generate_audio(self, text: str, voice: str = None, index: int = 0):
         """Generate one sentence to a float numpy waveform via the engine's
         backend-specific path (mirrors OrpheusEngine.convert(), but in-memory).
 
@@ -938,13 +960,17 @@ class OrpheusStreamServer:
             # waveform.
             self._reject_per_request_voice(v)   # one voice per server process
             render = getattr(orph, 'render_audio', None)
+            # `index` seeds the row (seed + i). The sequential fallback in
+            # _generate_audio_batch passes the row's own index, so a batch does
+            # not render every sentence from the same draw; a single 'generate'
+            # is index 0, which is the whole batch it is.
             if render is None:
                 raise RuntimeError(
                     f"engine '{getattr(orph, 'ENGINE_ID', '?')}' reports backend "
                     f"'{orph.backend}', which is neither one of Orpheus's three nor "
                     'an engine offering render_audio(text). This worker has no way '
                     'to render one sentence with it.')
-            audio = render(clean)
+            audio = render(clean, index=index)
         else:
             self._reject_per_request_voice(v)   # transformers: same one-voice limit
             audio = orph._tokens_to_audio(
@@ -1072,8 +1098,11 @@ class OrpheusStreamServer:
                     out.append(finalize_audio(a))
             return out
 
-        # transformers: no batched API - generate sequentially.
-        return [self._generate_audio(t, row_voices[i]) for i, t in enumerate(texts)]
+        # transformers and every SERVED engine: no batched API - sequentially.
+        # The row index goes with each call so a served engine seeds row i with
+        # `seed + i` (see HiggsV3Engine._seed_for); Orpheus ignores it.
+        return [self._generate_audio(t, row_voices[i], index=i)
+                for i, t in enumerate(texts)]
 
     @staticmethod
     def _emit_batch_item(it, audio):
@@ -1637,6 +1666,9 @@ class OrpheusStreamServer:
 
     def run(self):
         self.device = detect_device()
+        # NOT guarded: a failure here means no engine can ever load in this
+        # process, and `main()` turns it into a non-zero exit with the reason on
+        # stderr. A handshake would be a lie. (See detect_backend.)
         self.backend = detect_backend()
         # `backend` is what the pool gates its per-request-voice guard on, so it is
         # sent even when it could not be determined - as absent, which the pool reads
@@ -1692,7 +1724,7 @@ class OrpheusStreamServer:
                         'engine': getattr(self.orph, 'ENGINE_ID', None),
                         'sampleRate': active_samplerate(),
                         'pads': bool(getattr(self.orph, 'pads', True)),
-                        'edgeFadeMs': float(getattr(self.orph, 'edge_fade_ms', 0.0)),
+                        'edgeFadeMs': _edge_fade_of(self.orph).as_manifest(),
                     })
             elif action == 'generate':
                 text = request.get('text', '')
@@ -1732,6 +1764,9 @@ def main(argv=None):
     hard error: this worker takes no configuration on the command line (its
     interface is the protocol on stdin/stdout and the ORPHEUS_* spawn env), so
     anything else here is a mistake worth surfacing before a model loads.
+
+    Exit codes: 0 clean, 2 bad arguments, 3 the worker could not come up at all
+    (and printed no `ready`).
     """
     global _FAKE_ENGINE
     argv = sys.argv[1:] if argv is None else list(argv)
@@ -1744,7 +1779,20 @@ def main(argv=None):
     _FAKE_ENGINE = '--fake-engine' in argv
     if _FAKE_ENGINE:
         print(FAKE_ENGINE_BANNER, file=sys.stderr, flush=True)
-    OrpheusStreamServer().run()
+    try:
+        OrpheusStreamServer().run()
+    except Exception as e:
+        # A WORKER THAT CANNOT RENDER MUST NOT HANDSHAKE. The two ways to get
+        # here are an unservable NARRATOR_ENGINE and a backend detection that
+        # raised - both mean no engine will ever load in this process. Exiting
+        # non-zero with the reason on stderr is what the pool can act on; a
+        # `ready` line followed by "Model not loaded" on every generate is a
+        # worker that looks alive forever (found on the Mac, 2026-09-04).
+        print(f'[narrator.serve] FATAL: {type(e).__name__}: {e}',
+              file=sys.stderr, flush=True)
+        print('[narrator.serve] no engine can load in this process; exiting '
+              'without a handshake.', file=sys.stderr, flush=True)
+        return 3
     return 0
 
 

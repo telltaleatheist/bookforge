@@ -35,7 +35,6 @@ from narrator.engine.higgs import (HiggsBudget, HiggsConfig,           # noqa: E
                                    higgs_stop_policy, load_voice, load_voices)
 from narrator.engine.higgs.config import VOICES_ENV                    # noqa: E402
 from narrator.engine.protocol import ClipsVoice, ReferenceClip         # noqa: E402
-from narrator.tests.test_engine_serve_protocol import Worker           # noqa: E402
 
 
 def a_voice(**kwargs):
@@ -268,10 +267,12 @@ class LoadMessageTest(unittest.TestCase):
             higgs_config_from_worker_kwargs(voice='')
         self.assertIn('no default', str(caught.exception))
 
-    def test_an_adapter_dir_rides_on_the_voice(self):
+    def test_a_checkpoint_dir_rides_on_the_voice(self):
+        """The pool's field is still called `adapterDir`, but what it names is a
+        MERGED CHECKPOINT: there is no runtime LoRA on this stack."""
         config = higgs_config_from_worker_kwargs(voice='deathstalker',
-                                                 adapter_dir='/models/ds-lora')
-        self.assertEqual(config.voice.adapter_dir, '/models/ds-lora')
+                                                 adapter_dir='/models/ds-merged')
+        self.assertEqual(config.voice.checkpoint_dir, '/models/ds-merged')
 
     def test_the_engine_refuses_a_config_of_the_wrong_type(self):
         with self.assertRaises(ValueError) as caught:
@@ -279,111 +280,63 @@ class LoadMessageTest(unittest.TestCase):
         self.assertIn('HiggsConfig', str(caught.exception))
 
 
-class HiggsServeProtocolTest(unittest.TestCase):
-    """The wire, with NARRATOR_ENGINE=higgs-v2-scaffold and the Higgs fake.
+class TheScaffoldIsNotServableTest(unittest.TestCase):
+    """This engine cannot reach the wire at all, and that is the design.
 
-    The protocol itself is asserted exhaustively for Orpheus in
-    tests/test_engine_serve_protocol.py; what is new here is that the
-    ENVIRONMENT selects the engine, that an unknown one is refused, and that a
-    Higgs render reaches the pool with Higgs's own geometry.
+    There used to be a HiggsServeProtocolTest here driving `narrator.serve` with
+    NARRATOR_ENGINE=higgs-v2-scaffold. It was removed when the worker began
+    REFUSING that id: Higgs v2 was dropped as a rendering engine on 2026-09-04
+    and this package is kept only as a reference implementation of
+    `narrator.engine.protocol`. A protocol test that ran it would have been
+    testing that a not-shipped engine can render a book.
+
+    The wire is exercised for the SHIPPING engines instead - Orpheus in
+    tests/test_engine_serve_protocol.py, Higgs v3 in tests/test_higgs_v3.py
+    (which also asserts this refusal, from the worker's side).
     """
 
-    def setUp(self):
-        self.w = Worker(extra_env={'NARRATOR_ENGINE': 'higgs-v2-scaffold'})
-        self.addCleanup(self.w.close)
+    def test_the_worker_refuses_the_scaffold_by_name(self):
+        from narrator.serve import worker as W
+        self.assertIn('higgs-v2-scaffold', W.UNSERVABLE_ENGINES)
+        previous = os.environ.get('NARRATOR_ENGINE')
+        os.environ['NARRATOR_ENGINE'] = 'higgs-v2-scaffold'
+        try:
+            with self.assertRaises(ValueError) as caught:
+                W.engine_id()
+        finally:
+            if previous is None:
+                os.environ.pop('NARRATOR_ENGINE', None)
+            else:
+                os.environ['NARRATOR_ENGINE'] = previous
+        message = str(caught.exception)
+        self.assertIn('SCAFFOLDING', message)
+        self.assertIn('higgs-v3', message)
 
-    def _ready(self):
-        msg = self.w.read()
-        self.assertIsNotNone(msg, 'worker produced no output at all')
-        self.assertEqual(msg['type'], 'ready')
-        return msg
-
-    def test_the_environment_selects_the_engine(self):
-        self._ready()
-        self.w.send(action='load', voice='leah', warm=False)
-        msgs = self.w.read_until('loaded', 'error')
-        self.assertEqual(msgs[-1]['type'], 'loaded', msgs)
-        self.assertEqual(msgs[-1]['backend'], 'transformers')
-
-    def test_a_generate_carries_higgs_audio(self):
-        self._ready()
-        self.w.send(action='load', voice='leah', warm=False)
-        self.w.read_until('loaded', 'error')
-        self.w.send(action='generate', text='Hello there, listener.')
-        msgs = self.w.read_until('audio', 'error')
-        audio = msgs[-1]
-        self.assertEqual(audio['type'], 'audio', msgs)
-        self.assertEqual(audio['sampleRate'], 24000)
-        self.assertGreater(audio['duration'], 0)
-
-    def test_a_batch_still_closes(self):
-        self._ready()
-        self.w.send(action='load', voice='leah', warm=False)
-        self.w.read_until('loaded', 'error')
-        self.w.send(action='generate_batch',
-                    items=[{'i': 0, 'text': 'One.'}, {'i': 1, 'text': 'Two.'}])
-        msgs = self.w.read_until('batch_done')
-        self.assertEqual(msgs[-1]['type'], 'batch_done')
-        self.assertEqual(msgs[-1]['count'], 2)
-        answered = sorted(m['i'] for m in msgs if m['type'] == 'batch_item')
-        self.assertEqual(answered, [0, 1])
-
-
-class LazyImportTest(unittest.TestCase):
-    """`import narrator.engine.higgs` must not import transformers or torch.
-
-    The same structural contract tests/test_engine_lazy_imports.py holds Orpheus
-    to, for the same three reasons: the Windows test interpreter has neither and
-    must still exercise the prompt, codec and budget arithmetic; the serve
-    worker's 'ready' line goes out BEFORE any heavy import; and the two engines'
-    dependency sets are mutually exclusive, so importing the registry must never
-    drag one engine's torch into the other's environment.
-    """
-
-    FORBIDDEN = ('torch', 'torchaudio', 'transformers', 'vllm', 'mlx', 'snac',
-                 'soundfile')
-
-    def _pulled_in(self, module):
-        import subprocess
-        probe = (f'import sys, {module}\n'
-                 f'print(",".join(sorted(m for m in {self.FORBIDDEN!r} '
-                 'if m in sys.modules)))\n')
-        out = subprocess.run([sys.executable, '-c', probe], cwd=_PYTHON_ROOT,
-                             capture_output=True, text=True, timeout=180)
-        self.assertEqual(out.returncode, 0, out.stderr)
-        return [m for m in out.stdout.strip().split(',') if m]
-
-    def test_the_higgs_package_pulls_in_no_backend(self):
-        self.assertEqual(self._pulled_in('narrator.engine.higgs'), [])
-
-    def test_each_higgs_module_pulls_in_no_backend(self):
-        for module in ('narrator.engine.higgs.config',
-                       'narrator.engine.higgs.codec',
-                       'narrator.engine.higgs.prompt',
-                       'narrator.engine.higgs.engine',
-                       'narrator.engine.higgs.transformers_backend',
-                       'narrator.engine.higgs.v3_served'):
-            with self.subTest(module=module):
-                self.assertEqual(self._pulled_in(module), [])
-
-    def test_the_registry_pulls_in_no_backend(self):
-        self.assertEqual(self._pulled_in('narrator.engine.registry'), [])
+    def test_the_registry_still_resolves_it_for_the_tests_that_use_it(self):
+        """Refused on the WIRE, not deleted: this module exercises the engine
+        directly, which is the whole point of keeping it."""
+        self.assertIs(registry.engine_class('higgs-v2-scaffold'), HiggsEngine)
 
 
 class UnknownEngineTest(unittest.TestCase):
 
-    def test_an_unknown_NARRATOR_ENGINE_is_refused_by_name(self):
-        """Not defaulted to Orpheus: this worker is spawned with an environment
-        it does not author, and a book rendered by the wrong model is a silent
-        failure."""
-        worker = Worker(extra_env={'NARRATOR_ENGINE': 'llasa'})
-        self.addCleanup(worker.close)
-        ready = worker.read()
-        self.assertEqual(ready['type'], 'ready')
-        worker.send(action='load', voice='leah', warm=False)
-        msgs = worker.read_until('loaded', 'error')
-        self.assertEqual(msgs[-1]['type'], 'error', msgs)
-        self.assertIn('llasa', msgs[-1]['message'])
+    def test_an_unknown_NARRATOR_ENGINE_never_handshakes(self):
+        """Not defaulted to Orpheus, and not a worker that looks alive: this
+        spawn cannot render anything, so it exits non-zero with the reason on
+        stderr and prints no `ready` (the Mac's "healthy handshake, every
+        generate fails" failure, 2026-09-04)."""
+        import subprocess
+        env = dict(os.environ)
+        env.update({'PYTHONUNBUFFERED': '1', 'PYTHONIOENCODING': 'utf-8',
+                    'NARRATOR_ENGINE': 'llasa'})
+        env.pop('NARRATOR_GOLDEN_LOCAL', None)
+        out = subprocess.run(
+            [sys.executable, '-m', 'narrator.serve', '--fake-engine'],
+            cwd=_PYTHON_ROOT, input='{"action": "quit"}\n', capture_output=True,
+            text=True, encoding='utf-8', env=env, timeout=180)
+        self.assertNotEqual(out.returncode, 0)
+        self.assertNotIn('"type": "ready"', out.stdout)
+        self.assertIn('llasa', out.stderr)
 
 
 if __name__ == '__main__':

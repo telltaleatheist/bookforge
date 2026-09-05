@@ -39,7 +39,8 @@ import os
 from dataclasses import dataclass
 from typing import Mapping, Optional
 
-from ..protocol import ClipsVoice, ReferenceClip, StopPolicy
+from ..protocol import (ClipsVoice, DefaultVoice, ReferenceClip,
+                        StopPolicy)
 
 MODEL_ID = 'bosonai/higgs-audio-v2-generation-3B-base'
 TRANSFORMERS_CLASS = 'HiggsAudioV2ForConditionalGeneration'
@@ -56,7 +57,9 @@ class HiggsDefaults:
     a test reads and overrides them by name, and a post-mortem can print them.
     """
 
-    ENGINE_ID = 'higgs-v2'
+    # Matches its registry id. The suffix is the whole point: nothing should
+    # select this engine by accident (see narrator/engine/registry.py).
+    ENGINE_ID = 'higgs-v2-scaffold'
     MODEL_ID = MODEL_ID
     SAMPLE_RATE = 24000
     FRAMES_PER_SECOND = 25.0
@@ -101,8 +104,11 @@ class HiggsDefaults:
 
     # Milliseconds of fade the ASSEMBLER applies at each chunk edge. After the
     # codec's sentinel trim an edge still sits near -30 dB and clicks on a join;
-    # 10 ms takes it to -45..-48 dB.
-    EDGE_FADE_MS = 10.0
+    # 10 in / 25 out takes it to -45..-48 dB. Asymmetric: a chunk ends on a
+    # decay the ear does not expect, so the tail needs the wider window. Same
+    # codec family as v3, so the same numbers.
+    EDGE_FADE_IN_MS = 10.0
+    EDGE_FADE_OUT_MS = 25.0
 
     # Total reference audio the engine will accept, across all clips. None on v2
     # (28.5 s of reference was fine; the real limit there is context). Higgs v3
@@ -192,9 +198,9 @@ class HiggsBudget:
             raise ValueError(
                 f"HiggsBudget: this engine serves '{ref.name}', not '{voice}'.")
         if ref.max_chars is None:
-            if ref.adapter_dir:
+            if ref.checkpoint_dir:
                 raise ValueError(
-                    f"Higgs voice '{ref.name}' is a fine-tune ({ref.adapter_dir}) "
+                    f"Higgs voice '{ref.name}' is a fine-tune ({ref.checkpoint_dir}) "
                     'and has no maxChars. Declare it in the voice document - '
                     "refusing to pack a book at the base model's "
                     f'{self._config.max_chars}-char default.')
@@ -294,9 +300,40 @@ def load_voices(path: str = None, *, allowed_controls=None,
     carry, besides `clips`:
 
         scene                 v2 only (v3 has no scene-description mechanism)
-        adapterDir            a fine-tune; makes this an ADAPTER voice
-        kind                  'clips' (default) or 'adapter'; `adapterDir`
-                              implies 'adapter'
+        checkpointDir         a MERGED fine-tune directory; makes this a
+                              CHECKPOINT voice
+        kind                  'checkpoint' (implied by `checkpointDir`),
+                              'default', or 'clips' (implied by `clips`)
+        maxCharsSource        where maxChars came from: catalog | placeholder |
+                              length-sweep
+
+    THREE DOCUMENT SHAPES:
+
+        {"kind": "checkpoint",                 THE PRODUCTION SHAPE. A
+         "checkpointDir": ...,                 fine-tuned voice: its WEIGHTS are
+         "maxChars": N}                        the voice, the server runs ON
+                                               that directory, and the prompt is
+                                               text-only. Owen, 2026-09-04:
+                                               production is fine-tuned voices
+                                               only.
+        {"kind": "default"}                    the model's OWN voice, no
+                                               conditioning at all - a smoke
+                                               test or a demo. 12 % of the
+                                               narrator ceiling.
+        {"clips": [...]}                       DIAGNOSTIC: zero-shot cloning,
+                                               how a voice is auditioned before
+                                               anyone trains it. Kept working
+                                               and tested; no book ships on it.
+
+    THERE IS NO 'adapter' SHAPE, and `adapterDir` is refused by name. vllm-omni
+    cannot load a LoRA at runtime (no adapter flags; the talker does not
+    implement `SupportsLoRA`), so there is nothing for an adapter directory to
+    be loaded INTO. The LoRA is the archival artifact; what narrator serves is
+    the merged checkpoint.
+
+    A `clips` key that is present must hold at least one usable clip -
+    `ClipsVoice` enforces that - so a clone whose references went missing is
+    still an error and never a silent downgrade to the default voice.
         maxChars              THE PACKER'S CHUNK SIZE FOR THIS VOICE
         allowedControls       overrides the engine's control-token allowlist
         maxReferenceSeconds   overrides the engine's reference cap
@@ -327,12 +364,29 @@ def load_voices(path: str = None, *, allowed_controls=None,
             + ('' if isinstance(document, dict) else '') + '.')
     voices = {}
     for name, entry in document.items():
-        if not isinstance(entry, dict) or 'clips' not in entry:
+        if not isinstance(entry, dict):
             raise ValueError(
-                f"{path}: voice '{name}' has no 'clips'. A Higgs voice IS its "
-                'reference clips.')
+                f"{path}: voice '{name}' must be an object, got "
+                f'{type(entry).__name__}.')
+        if 'adapterDir' in entry:
+            raise ValueError(
+                f"{path}: voice '{name}' names 'adapterDir'. There is no runtime "
+                'LoRA on this stack - vllm-omni has no adapter flags and its talker '
+                'does not implement SupportsLoRA - so a fine-tuned voice is a MERGED '
+                "checkpoint the server runs on. Use \"kind\": \"checkpoint\" with "
+                '"checkpointDir".')
+        entry_kind = entry.get(
+            'kind', 'checkpoint' if entry.get('checkpointDir') else
+            ('clips' if 'clips' in entry else None))
+        if entry_kind is None:
+            raise ValueError(
+                f"{path}: voice '{name}' has no 'clips', no 'checkpointDir' and no "
+                "'kind'. Say what it is: a fine-tune ('checkpoint', the production "
+                "shape), the model's own voice ('default') - which sits at 12 % of "
+                "the narrator ceiling and is never what a book wants by accident - "
+                "or a diagnostic zero-shot clone ('clips').")
         clips = []
-        for row in entry['clips']:
+        for row in entry.get('clips', []):
             for key in ('path', 'transcript'):
                 if key not in row:
                     raise ValueError(
@@ -346,18 +400,30 @@ def load_voices(path: str = None, *, allowed_controls=None,
             clips.append(ReferenceClip(path=row['path'],
                                        transcript=row['transcript'],
                                        seconds=row.get('seconds')))
-        adapter_dir = entry.get('adapterDir')
-        kind = entry.get('kind', 'adapter' if adapter_dir else 'clips')
-        if kind not in ('clips', 'adapter'):
+        checkpoint_dir = entry.get('checkpointDir')
+        kind = entry_kind
+        if kind not in ('clips', 'checkpoint', 'default'):
             raise ValueError(
-                f"{path}: voice '{name}' has kind {kind!r}; expected 'clips' (a "
-                "zero-shot reference clone) or 'adapter' (a fine-tune).")
+                f"{path}: voice '{name}' has kind {kind!r}; expected 'checkpoint' (a "
+                "fine-tune, the production shape), 'default' (the model's own voice) "
+                "or 'clips' (a diagnostic zero-shot clone).")
+        if kind == 'checkpoint' and not checkpoint_dir:
+            raise ValueError(
+                f"{path}: voice '{name}' is kind 'checkpoint' with no "
+                "'checkpointDir'. The checkpoint IS the voice - there is nothing to "
+                'serve without it.')
+        if kind == 'clips' and not clips:
+            raise ValueError(
+                f"{path}: voice '{name}' is a reference clone with no clips. A "
+                "zero-shot clone with no reference is the model's own voice, which "
+                "is a different thing - say kind 'default' if that is what you "
+                'mean.')
         declared = entry.get('maxChars')
         if declared is None:
-            if kind == 'adapter':
+            if kind == 'checkpoint':
                 raise ValueError(
-                    f"{path}: voice '{name}' is a fine-tune (kind 'adapter'"
-                    + (f", adapterDir {adapter_dir}" if adapter_dir else '')
+                    f"{path}: voice '{name}' is a fine-tune (kind 'checkpoint'"
+                    + (f", checkpointDir {checkpoint_dir}" if checkpoint_dir else '')
                     + ") and carries no 'maxChars'. A fine-tune's safe chunk length "
                     'is a measured property of THAT model; packing it at the base '
                     "model's default is a whole book packed for a model that no "
@@ -366,11 +432,18 @@ def load_voices(path: str = None, *, allowed_controls=None,
             max_chars, source = placeholder_max_chars, 'placeholder'
         else:
             max_chars, source = int(declared), entry.get('maxCharsSource', 'catalog')
+        if not clips:
+            # No reference audio in the request at all: a fine-tune whose
+            # weights ARE the voice (the production shape), or the model's own.
+            voices[name] = DefaultVoice(
+                name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
+                max_chars_source=None if max_chars is None else source)
+            continue
         voices[name] = ClipsVoice(
             clips=tuple(clips),
             name=name,
             scene=entry.get('scene'),
-            adapter_dir=adapter_dir,
+            checkpoint_dir=checkpoint_dir,
             allowed_controls=tuple(entry.get('allowedControls', allowed_controls)),
             max_reference_seconds=entry.get('maxReferenceSeconds',
                                             max_reference_seconds),
@@ -438,7 +511,7 @@ def higgs_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,
     if adapter_dir:
         clips_voice = ClipsVoice(
             clips=clips_voice.clips, name=clips_voice.name, scene=clips_voice.scene,
-            adapter_dir=adapter_dir,
+            checkpoint_dir=adapter_dir,
             allowed_controls=clips_voice.allowed_controls,
             max_reference_seconds=clips_voice.max_reference_seconds,
             max_chars=clips_voice.max_chars,

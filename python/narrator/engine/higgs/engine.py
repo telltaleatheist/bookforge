@@ -12,8 +12,9 @@ WHAT IS DIFFERENT FROM ORPHEUS, AND WHY EACH DIFFERENCE IS HERE
                       either end (measured). Orpheus bakes its gaps into every
                       chunk FLAC. So the manifest's gapBefore/gapAfter become
                       LIVE for this engine and the assembler realizes them.
-  edge_fade_ms = 10   even after the codec's sentinel trim the edges sit near
+  edge_fade = 10/25   even after the codec's sentinel trim the edges sit near
                       -30 dB; the assembler's fade takes them to -45..-48 dB.
+                      Asymmetric: the tail needs more than twice the head.
   no EOS levers       EOS fired 9/9 across 132-898 char chunks with no boost, no
                       floor and no stop-string hack, and the cap was never
                       reached. There is no ratchet, no truncation ladder and no
@@ -38,7 +39,7 @@ import os
 
 import numpy as np
 
-from ..protocol import BackendSpec, ClipsVoice, StopPolicy
+from ..protocol import BackendSpec, ClipsVoice, EdgeFade, StopPolicy
 from .codec import HiggsCodec
 from .config import (HiggsBudget, HiggsConfig, HiggsDefaults, higgs_stop_policy)
 from .prompt import (DEFAULT_SCENE, DEFAULT_SYSTEM_PROMPT,
@@ -53,7 +54,8 @@ class HiggsEngine:
     SAMPLE_RATE = HiggsDefaults.SAMPLE_RATE
     # Higgs supplies NO silence of its own - see the module docstring.
     pads = False
-    edge_fade_ms = HiggsDefaults.EDGE_FADE_MS
+    edge_fade = EdgeFade(HiggsDefaults.EDGE_FADE_IN_MS,
+                         HiggsDefaults.EDGE_FADE_OUT_MS)
     # The audiobook worker's batch protocol (mirrors OrpheusEngine's surface).
     SUPPORTS_BATCH = True
     BATCH_SIZE = 1
@@ -199,7 +201,11 @@ class HiggsEngine:
         path = self._sentence_file(sentence_number)
         audio = self.render_audio(sentence, seed=self._seed_for(sentence_number))
         os.makedirs(os.path.dirname(path), exist_ok=True)
-        sf.write(path, audio, self.SAMPLE_RATE)
+        # PCM_16, stated - the same writer contract every narrator chunk uses.
+        # See engine/orpheus/audio.py:write_chunk_file for why the bit depth is
+        # never left to a library default.
+        sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
+                 format=self.config.audio_format.upper())
         return True
 
     def convert_batch(self, items) -> list:
