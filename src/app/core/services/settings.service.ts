@@ -11,7 +11,7 @@ import {
   DEFAULT_VLM_ENDPOINT_CONFIG,
   type VlmEndpointConfig,
 } from '@shared/vlm/conversion';
-import type { TTSEngine } from '@shared/tts/engine-caps';
+import { resolveSavedTtsEngine, type TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
@@ -853,10 +853,45 @@ export class SettingsService {
   // Pipeline Defaults
   // ─────────────────────────────────────────────────────────────────────────────
 
-  /** The pipeline's default selections, merged with built-in defaults. */
+  /**
+   * The pipeline's default selections, merged with built-in defaults.
+   *
+   * A STORED RETIRED ENGINE IS REPAIRED HERE, and this is the same shape
+   * `streaming-engine.ts`'s `getSelectedEngineName` uses for `tts-engine.json`.
+   * Nothing recorded means the built-in defaults, which is not a fallback. A
+   * stored `xtts` / `f5` / `voxtral` — every machine that used one has it — is
+   * migrated to Orpheus with a console.error naming it, and the settings are
+   * rewritten so the stale value stops being re-read. Anything else throws by
+   * name.
+   *
+   * Without the repair the value simply spread over the defaults: the engine
+   * button group (which renders `selectableEngines()`) showed NOTHING selected,
+   * and every run threw at `assertRunnableTtsEngine` from a page that offered no
+   * way to fix it. Migrating a stored DEFAULT is safe in the way migrating a
+   * queued run would not be — it is the seed for the next run, shown in a picker
+   * before anything is rendered.
+   *
+   * THE VOICE GOES WITH THE ENGINE. A voice saved beside `xtts` is an XTTS
+   * reference clip; carrying it onto Orpheus would produce exactly the
+   * unrenderable pair this repair exists to prevent, so it resets to the default
+   * voice too.
+   */
   getPipelineDefaults(): PipelineDefaults {
     const stored = this.values()['pipelineDefaults'] as Partial<PipelineDefaults> | undefined;
-    return { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+    const merged = { ...DEFAULT_PIPELINE_DEFAULTS, ...(stored || {}) };
+    if (stored?.ttsEngine === undefined) return merged;
+
+    const resolved = resolveSavedTtsEngine(merged.ttsEngine);
+    if (!resolved.migratedFrom) return merged;
+
+    console.error(`[SETTINGS] ${resolved.note}`);
+    const repaired: PipelineDefaults = {
+      ...merged,
+      ttsEngine: resolved.engine,
+      ttsVoice: DEFAULT_PIPELINE_DEFAULTS.ttsVoice,
+    };
+    this.setPipelineDefaults(repaired);
+    return repaired;
   }
 
   setPipelineDefaults(defaults: PipelineDefaults): void {

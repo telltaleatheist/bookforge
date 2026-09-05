@@ -3,7 +3,7 @@
  *
  * BookForge runs the same Angular app in several BrowserWindows. The main window
  * is the app; the others are single-purpose popups opened on a hash route
- * (`#/listen`, `#/editor`, `#/alignment`). They share every root-provided
+ * (`#/listen`, `#/editor`). They share every root-provided
  * service, so anything that must happen ONCE PER EVENT rather than once per
  * window has to ask which window it is running in — the queue broadcasts
  * `jobs:changed` and `jobs:step-finished` to every one of them.
@@ -14,10 +14,13 @@
  */
 
 /** The hash routes that open in a window of their own. */
-const STANDALONE_ROUTES = ['#/alignment', '#/editor', '#/listen'] as const;
+// `#/alignment` was here until 2026-09-05. It opened the sentence-alignment
+// popup, which only the bilingual translate pipeline ever raised; the route, its
+// component and the window that loaded it all went with that feature.
+const STANDALONE_ROUTES = ['#/editor', '#/listen'] as const;
 
 /**
- * True in a popup window (listen / editor / alignment), false in the main one.
+ * True in a popup window (listen / editor), false in the main one.
  *
  * The app uses hash routing, so the route is in the fragment and not the path.
  * Read at call time rather than cached: a window is opened AT its route and

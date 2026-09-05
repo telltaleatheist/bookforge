@@ -190,7 +190,52 @@ renaming `e2a-paths.ts`; and the `voices`/`languages` fields on the update manif
 
 ---
 
-## 6. Loose ends this branch did NOT close
+## 6. What the review round closed
+
+Six things the compiler could not see, found in review and fixed on this branch:
+
+- **`electron/sentence-alignment-window.ts` was fully orphaned but still wired at
+  startup.** Its one caller was the bilingual translate pipeline;
+  `validateAndAlignSentences` had none left, but `main.ts` still called
+  `setupAlignmentIpc()` (four handlers nothing invoked), preload still exposed an
+  `alignment` API nothing in `src/` called, and the module still `loadURL`'d
+  `#/alignment` — a route this branch had already deleted from `app.routes.ts` while
+  leaving it in `window-role.ts`'s `STANDALONE_ROUTES`. Module, import, setup call,
+  preload block and route constant all gone.
+- **The three `bilingual-*` job types are in `RETIRED_JOB_TYPES`** now, with the same
+  actionable sentence the other nine carry. They were safe before — the engine refuses a
+  type no module claims — but they hit the generic "nothing in this build knows how to run
+  it" instead of saying what happened and what to do instead.
+- **The `tts-model` component KIND is gone**, along with its `installTarget:
+  'e2a-hf-cache'` and `hf` download coordinates, the renderer's mirror of all three, the
+  Add-ons filter for a kind that cannot occur, and the vacuous `tts-model` /
+  `language-pack` rows in `test-component-upgrades.js`.
+- **`RetiredTtsEngine`'s doc block said two false things** — that XTTS's e2a path was "NOT
+  deleted … bilingual books still render through it", and that f5/voxtral's env wiring was
+  "untouched". Rewritten.
+- **`docs/TTS_API.md` described the server as fronting "a pool of XTTS worker processes
+  (default 4 on CPU)".** Rewritten for the one-process batching Orpheus engine, including
+  the field an extension author actually acts on: `deviceWorkers` is now the batch width
+  to keep in flight, not a process count.
+- **`cancelStreaming` had no caller** once the scheduler's streamed-opener branch went, so
+  it is off the `StreamingEngine` interface and out of the pool. Orpheus generation is not
+  interruptible mid-sentence anyway; the scheduler drops stale results and
+  `cancelPendingBatchIfStale` is what abandons a doomed batch.
+
+And one pre-existing bug on `main`, fixed here because this branch had already solved its
+twin: **`getPipelineDefaults` spread a stored `ttsEngine: 'xtts'` straight over the
+defaults.** The engine button group then showed nothing selected and every run threw at
+`assertRunnableTtsEngine`, from the one page that could have repaired it. It now mirrors
+`getSelectedEngineName` exactly, through a shared rule (`resolveSavedTtsEngine` in
+`engine-caps.ts`) so main and the renderer cannot drift: a retired id migrates to Orpheus
+with a `console.error` naming it and the settings rewritten, an unknown id throws by name,
+and the VOICE resets with the engine — an Orpheus engine beside a Scarlett clip is the
+unrenderable pair the repair exists to prevent. Pinned by
+`tools/test-retired-engine-settings.js`.
+
+---
+
+## 7. Loose ends this branch did NOT close
 
 Honest list, none of them load-bearing:
 
@@ -206,6 +251,6 @@ Honest list, none of them load-bearing:
   is live; the union keeps the value for legacy queue rows.
 - **`studio.types.ts`'s `bilingualOutputs` / `bilingualAudioPath` fields** and
   `MainTab: 'bilingual'` survive as legacy shape.
-- 152 mentions of "xtts" remain across `electron/ src/ shared/ cli/`. Every one is a comment,
-  a retired-id declaration, a record DTO, the migration, or the engine-agnostic
+- Every remaining mention of "xtts" across `electron/ src/ shared/ cli/` is a comment, a
+  retired-id declaration, a record DTO, the migration, or the engine-agnostic
   `--tts_engine xtts` assembly literal — no live XTTS code path.

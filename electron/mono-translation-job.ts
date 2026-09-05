@@ -174,7 +174,7 @@ export interface ProcessingProgress {
   message: string;
 }
 
-export interface LLJobResult {
+export interface TranslationJobResult {
   success: boolean;
   outputPath?: string;
   translatedEpubPath?: string;  // For mono translation - path to translated EPUB
@@ -564,7 +564,7 @@ export async function runMonoTranslation(
   jobId: string,
   config: MonoTranslationConfig,
   mainWindow: BrowserWindow | null
-): Promise<LLJobResult> {
+): Promise<TranslationJobResult> {
   console.log(`[MONO-TRANSLATION] Starting job ${jobId}`);
   console.log(`[MONO-TRANSLATION] Config:`, {
     cleanedEpubPath: config.cleanedEpubPath,

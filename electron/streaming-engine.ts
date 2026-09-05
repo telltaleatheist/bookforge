@@ -75,7 +75,6 @@ export interface StreamingEngine {
     onChunk: (chunk: StreamChunk) => void,
     isCancelled?: () => boolean
   ): Promise<StreamResult>;
-  cancelStreaming(): void;
   /** Optional. Abort the engine's in-flight BATCH, but only if every row still
    *  outstanding in it has been marked stale by its own isCancelled predicate.
    *  Called when a session ends, so a preempting play/voice switch does not have to

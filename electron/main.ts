@@ -20,7 +20,6 @@ import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
 import { importEpubProject } from './import-epub-project';
 import { initializeLoggers, getMainLogger, getTTSLogger, closeLoggers } from './rolling-logger';
-import { setupAlignmentIpc } from './sentence-alignment-window.js';
 import { Quire } from '../packages/quire/src';
 import {
   setupQuireViewerIpc, closeAllBooksForViewer, closeViewerDocumentsUnder,
@@ -2105,7 +2104,7 @@ async function actOnFoundryNode(
  * ── The MAIN window and no other ────────────────────────────────────────────
  *
  * `app:show-book-conversion`'s rule, for the same reason: a standalone
- * listen/editor/alignment popup has the shell but no nav rail and no route to
+ * listen/editor popup has the shell but no nav rail and no route to
  * /queue, and a broadcast would have every window that happens to be open race
  * to answer a click meant for one place. So this sends to `mainWindow` alone.
  *
@@ -11665,7 +11664,6 @@ app.whenReady().then(async () => {
   registerAudioProtocol();
 
   setupIpcHandlers();
-  setupAlignmentIpc();
   registerClipforgeIpc();
   registerDocumentIpc();
   // The queue, before any window exists. It is main's now: its state is loaded

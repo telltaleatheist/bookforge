@@ -1992,23 +1992,6 @@ export interface ElectronAPI {
       error?: string;
     }>;
   };
-  alignment: {
-    getData: () => Promise<{
-      pairs: Array<{ index: number; source: string; target: string }>;
-      sourceLang: string;
-      targetLang: string;
-      blocking: boolean;
-      projectId: string;
-      jobId: string;
-    } | null>;
-    userInteracted: () => Promise<{ success: boolean }>;
-    saveResult: (result: {
-      approved: boolean;
-      pairs: Array<{ index: number; source: string; target: string }>;
-      cancelled?: boolean;
-    }) => Promise<{ success: boolean }>;
-    cancel: () => Promise<{ success: boolean }>;
-  };
   manifest: {
     create: (
       projectType: 'book' | 'article',
@@ -3493,20 +3476,6 @@ const electronAPI: ElectronAPI = {
     finalizeContent: (projectId: string, finalizedHtml: string): Promise<{ success: boolean; epubPath?: string; error?: string }> =>
       ipcRenderer.invoke('language-learning:finalize-content', projectId, finalizedHtml),
   },
-
-  // Sentence Alignment Window
-  alignment: {
-    getData: () => ipcRenderer.invoke('alignment:get-data'),
-    userInteracted: () => ipcRenderer.invoke('alignment:user-interacted'),
-    saveResult: (result: {
-      approved: boolean;
-      pairs: Array<{ index: number; source: string; target: string }>;
-      cancelled?: boolean;
-    }) => ipcRenderer.invoke('alignment:save-result', result),
-    cancel: () => ipcRenderer.invoke('alignment:cancel'),
-  },
-
-  // Sentence Cache for Bilingual TTS
   manifest: {
     // Create a new project
     create: (

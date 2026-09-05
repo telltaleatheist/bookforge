@@ -665,8 +665,7 @@ export class AddOnsPanelComponent implements OnInit {
     }
     const excluded = new Set(this.exclude());
     return this.svc.components().filter(
-      s => s.component.kind !== 'tts-model' &&
-        s.component.kind !== 'stt-model' &&
+      s => s.component.kind !== 'stt-model' &&
         // RVC enhancement VOICES (kind 'rvc-model') + the RVC engine + its CUDA
         // overlay all live on the dedicated Voice Enhancement screen, not in this
         // general tools hub.

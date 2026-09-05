@@ -131,7 +131,7 @@ test('a voice is never upgraded, however far its catalog version has moved', () 
 });
 
 test('every content kind is present-or-absent, not upgraded', () => {
-  for (const kind of ['tts-model', 'rvc-model', 'language-pack', 'stt-model', 'blocks-model']) {
+  for (const kind of ['rvc-model', 'stt-model', 'blocks-model']) {
     const v = planUpgrade(candidate({ kind, installed: { source: 'managed', version: '1.0.0' } }));
     assert.strictEqual(v.verdict, 'keep', `${kind} was queued for upgrade`);
     assert.match(v.reason, /downloaded when it is missing/);

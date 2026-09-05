@@ -158,7 +158,6 @@ export type GpuKind = 'apple-silicon' | 'cuda' | 'any' | 'none';
 export type ComponentKind =
   | 'binary'
   | 'conda-env'
-  | 'tts-model'
   | 'rvc-model'
   | 'stt-model'
   | 'blocks-model'
@@ -214,8 +213,6 @@ export interface OptionalComponent {
   sizeBytes: number;
   requirements: ComponentRequirements;
   artifacts: ComponentArtifact[];
-  installTarget?: 'components' | 'e2a-hf-cache';
-  hf?: { repo: string; sub: string; files: string[] };
   detect?: DetectSpec;
   verify: VerifySpec;
   version: string;

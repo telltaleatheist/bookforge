@@ -1497,13 +1497,6 @@ function streamOnWorker(
   });
 }
 
-/** Orpheus generation isn't interruptible mid-sentence (vLLM/MLX generate whole);
- *  the scheduler drops stale results. We still send 'cancel' so the worker can
- *  acknowledge and stay in sync. */
-export function cancelStreaming(): void {
-  if (worker?.pendingRequest?.resolveStream) send({ action: 'cancel' });
-}
-
 export function stop(): void {
   if (worker?.isReady) send({ action: 'stop' });
 }
@@ -1855,7 +1848,6 @@ export const orpheusWorkerPool = {
   loadVoice,
   generateSentence,
   generateSentenceStream,
-  cancelStreaming,
   cancelPendingBatchIfStale,
   stop,
   endSession,

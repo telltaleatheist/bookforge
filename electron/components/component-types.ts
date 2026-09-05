@@ -31,7 +31,6 @@ export type GpuKind = 'apple-silicon' | 'cuda' | 'any' | 'none';
 export type ComponentKind =
   | 'binary'     // an executable (downloadable archive, or a user's own install)
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
-  | 'tts-model'  // a HuggingFace TTS voice/model fetched into e2a's HF cache
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
   | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
   | 'foundry-cli' // the standalone foundry binary, downloaded as a per-platform tarball
@@ -139,19 +138,13 @@ export interface OptionalComponent {
    *  external-only components. */
   sizeBytes: number;
   requirements: ComponentRequirements;
-  /** Managed-mode download targets. Empty for external-only components and for
-   *  'tts-model' components (which fetch via `hf` below, not a single archive). */
+  /** Managed-mode download targets. Empty for external-only components.
+   *
+   *  The `tts-model` KIND, its `installTarget: 'e2a-hf-cache'` and the `hf`
+   *  download coordinates that went with them were removed on 2026-09-05: their
+   *  only declarers were the XTTS voices, and a kind no component declares is a
+   *  branch in the installer that nothing can reach. */
   artifacts: ComponentArtifact[];
-  /** Where a MANAGED install lands. Default 'components' (= userData/components/<id>).
-   *  'e2a-hf-cache' routes the fetch into e2a's models/tts HF cache so the engine
-   *  finds it with no special-casing. Only meaningful for kind 'tts-model'. */
-  installTarget?: 'components' | 'e2a-hf-cache';
-  /** kind 'tts-model' only: the HuggingFace coordinates the download helper
-   *  resolves. `sub` is the repo sub-path ('xtts-v2/eng/<Voice>/'); `files` are
-   *  the checkpoint files to fetch (config.json, model.pth, vocab.json); `ref`
-   *  is the reference clip filename fetched alongside so the voice is
-   *  self-contained (no bundled clip needed). */
-  hf?: { repo: string; sub: string; files: string[]; ref?: string };
   /** External-mode auto-detection. Present when 'external' is supported. */
   detect?: DetectSpec;
   verify: VerifySpec;
