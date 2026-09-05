@@ -16,7 +16,7 @@
  *
  * ── THE TWO FILES HAVE DIVERGED, AND THIS IS THE LEDGER OF IT ───────────────
  *
- * As of 2026-09-04 this file holds **104** cases against their **53**, and until
+ * As of 2026-09-04 this file holds **122** cases against their **53**, and until
  * their `cases.json` is updated the corpora and the renders normalize
  * DIFFERENTLY — by design, from rulings they have not mirrored yet, not by
  * accident. What the training side owes:

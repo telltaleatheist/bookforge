@@ -501,6 +501,60 @@ test('NUMBER_DROPPED — every run of digits must come out as a number word', ()
   assert.strictEqual(only('In 1900 it began.', '1900', 'nineteen hundred'), 'APPLIED');
 });
 
+test('NUMBER_DROPPED — a comma is a separator INSIDE one number (Ask 2c)', () => {
+  // orpheus-finetune's NORMALIZATION_SPEC.md §F4, measured on tr_dn3. Counting
+  // bare runs of digits made "5,000" TWO numbers, so the floor demanded three
+  // number words and refused a correct reading that has two. `digitRuns` reads
+  // `\d{1,3}(?:,\d{3})+` as one run, comma stripped, so the LENGTH test that
+  // sets the floor counts digits and not characters.
+  //
+  // These live here as well as in test-text-normalization.js on purpose: this is
+  // the validator's own suite, and a regression in `digitRuns` must fail the
+  // suite that owns the disposition, not only the shared-fixture one.
+  assert.strictEqual(only('5,000 copies went out.', '5,000 copies', 'five thousand copies'),
+    'APPLIED');
+  assert.strictEqual(
+    only('It cost 1,250,000 marks.', '1,250,000 marks',
+      'one million two hundred fifty thousand marks'), 'APPLIED');
+  // The two shapes the training side measured still printing their digits. Both
+  // are numbers the GROUPED rule declined (each is glued to more text), which is
+  // why the validator is the only thing standing between them and a reading.
+  assert.strictEqual(only('An 18,000-strong crowd came.', '18,000-strong',
+    'eighteen thousand-strong'), 'APPLIED');
+  // The compound's own hyphen may be kept or spoken away: the prompt lets a
+  // replacement carry a hyphen, and the validator has no opinion on which of the
+  // two readings the model picks. Both must pass, or the model gets punished for
+  // a choice nothing asked it to make.
+  assert.strictEqual(only('An 18,000-strong crowd came.', '18,000-strong',
+    'eighteen thousand strong'), 'APPLIED');
+  assert.strictEqual(only('Some 20-30,000 of them died.', '20-30,000',
+    'twenty to thirty thousand'), 'APPLIED');
+
+  // ── And the floor it was protecting still fires, on both sides of the comma ──
+  // A comma-grouped number is ONE number, not NO number: three or more digits is
+  // still never one English word.
+  assert.strictEqual(only('Just 5,000 there.', '5,000', 'five'), 'NUMBER_DROPPED');
+  assert.strictEqual(only('Just 5,000 there.', '5,000', 'five thousand'), 'APPLIED');
+  // Two numbers, one read: the grouped one converted and the bare one silently
+  // gone, with every prose word of the find still in place and in order.
+  assert.strictEqual(
+    only('5,000 copies in 12 crates went out.', '5,000 copies in 12 crates',
+      'five thousand copies in crates'), 'NUMBER_DROPPED');
+  assert.strictEqual(
+    only('5,000 copies in 12 crates went out.', '5,000 copies in 12 crates',
+      'five thousand copies in twelve crates'), 'APPLIED');
+  // Half of a range whose second number is comma-grouped.
+  assert.strictEqual(only('Some 20-30,000 of them died.', '20-30,000', 'twenty thousand'),
+    'NUMBER_DROPPED');
+  // Dropping the second number by dropping its WORDS too is refused one check
+  // earlier, by name: `keepsEveryWord` runs ahead of the number floor, so "and"
+  // and "men" going missing is WORDS_DROPPED. Refused either way — the invariant
+  // is that it does not APPLY — but the record has to name the right reason.
+  assert.strictEqual(
+    only('5,000 copies and 12 men arrived.', '5,000 copies and 12 men',
+      'five thousand copies'), 'WORDS_DROPPED');
+});
+
 test('LIST_MARKER_PERIOD — a list marker keeps its period', () => {
   assert.strictEqual(only('1. Amulet', '1.', 'one'), 'LIST_MARKER_PERIOD');
   assert.strictEqual(only('1. Amulet', '1.', 'one.'), 'APPLIED');
