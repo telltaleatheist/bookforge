@@ -801,7 +801,13 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 if text:
                     # The period a heading needs so TTS stops there - the same
                     # one `filter_chapter` appends, for the same reason.
-                    if text[-1] not in '.!?…':
+                    # ENDS A THOUGHT, not "last char is .!?": a closing quote or bracket after
+                    # the period is still an ending. Measured 2026-09-05 (witches): the item
+                    # "(By the way, Muslims are not very tolerant to Christianity.)" got a
+                    # second period, whisperx split the trailing ")." into a word of its own,
+                    # and the aligner refused the chunk for a 22-vs-21 word count - eight
+                    # chunks of one book, every one an item ending in ." or .).
+                    if not ends_a_thought(text):
                         text += '.'
                     blocks.append(Block(text=text, kind=HEADING, doc=doc_name,
                                         index=counter))
@@ -812,7 +818,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 inner = [c for c in child.children
                          if isinstance(c, Tag) and c.name.lower() in ('ul', 'ol')]
                 if text:
-                    if text[-1] not in '.!?…':
+                    if not ends_a_thought(text):
                         text += '.'
                     blocks.append(Block(text=text, kind=ITEM, doc=doc_name,
                                         index=counter))
@@ -825,7 +831,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                     # The period a table row needs so TTS stops at the end of
                     # it - the same one a heading and an item get, for the same
                     # reason.
-                    if line[-1] not in '.!?…':
+                    if not ends_a_thought(line):
                         line += '.'
                     blocks.append(Block(text=line, kind=TABLE, doc=doc_name,
                                         index=counter))

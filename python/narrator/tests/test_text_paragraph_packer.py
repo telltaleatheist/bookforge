@@ -608,6 +608,23 @@ class ExtractBlocksTest(unittest.TestCase):
     def test_a_heading_gets_the_period_the_parity_packer_gives_it(self):
         self.assertEqual(self.blocks[0].text, 'Chapter One.')
 
+    def test_a_block_that_already_ends_a_thought_behind_a_closer_gets_no_second_period(self):
+        """Measured 2026-09-05 (witches): items ending in ." or .) were given a
+        second period, whisperx split the trailing ")." into a word of its own
+        and the aligner refused eight chunks on a 22-vs-21 word count."""
+        html = ('<h1>"Why Me?"</h1>'
+                '<ul><li>six. He is a Muslim. (By the way, Muslims are not very '
+                'tolerant to Christianity.)</li>'
+                '<li>ten. Dan Quayle wants to become a regular on the "Murphy Brown Show."</li>'
+                '<li>a bare item</li></ul>')
+        blocks = pp.extract_blocks(_FixtureDoc(html), 'text/c0002.xhtml')
+        self.assertEqual([b.text for b in blocks], [
+            '"Why Me?"',
+            'six. He is a Muslim. (By the way, Muslims are not very tolerant to Christianity.)',
+            'ten. Dan Quayle wants to become a regular on the "Murphy Brown Show."',
+            'a bare item.',
+        ])
+
     def test_a_decorative_paragraph_with_no_word_in_it_is_a_scene_break(self):
         self.assertEqual(self.blocks[9].kind, pp.SCENE_BREAK)
         self.assertEqual(self.blocks[9].text, '')

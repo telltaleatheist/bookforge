@@ -42,6 +42,7 @@ from .epub import UnsupportedInput
 from .normalize import (BOOK_EXACT_ENGINES, ORPHEUS, UnsupportedEngine,
                         _refuse_engine, normalize_text)
 from .packer import get_sentences, orpheus_max_chars
+from .paragraph_packer import ends_a_thought
 from .sml import (
     escape_sml,
     normalize_sml_tags,
@@ -543,7 +544,9 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                         print(f'[HEADING] Skipping duplicate heading: "{title}"')
                         prev_typ = typ
                         continue
-                    if title and title[-1] not in '.!?…':
+                    # `ends_a_thought`, not the last char: '"Why?"' has ended.
+                    # See paragraph_packer.extract_blocks for the measurement.
+                    if title and not ends_a_thought(title):
                         title += '.'
                     # ...and MARK it, so the period is not the only thing the
                     # splitter knows (2026-08-27). A period alone made this a
@@ -623,7 +626,7 @@ def filter_chapter(idx: int, doc, ctx: ChapterContext) -> list | None:
                         continue
                     last_heading_normalized = None
                     if text_check in toc_titles_normalized:
-                        if text[-1] not in '.!?…':
+                        if not ends_a_thought(text):
                             text += '.'
                         print(f'[HEADING] Detected chapter title from TOC match: '
                               f'"{text}"')
