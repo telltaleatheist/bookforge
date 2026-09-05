@@ -51,8 +51,8 @@ import * as fs from 'fs';
 import { app } from 'electron';
 
 import { getRvcEnvRoot, getRvcPython } from './rvc-bridge';
-import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
-import { toUnpackedPath } from './e2a-paths';
+import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootstrap';
+import { toUnpackedPath } from './narrator-paths';
 
 /** The proven denoise model (44.1 kHz native — see the rate note above). */
 const DENOISE_MODEL = 'denoise_mel_band_roformer_aufr33_sdr_27.9959.ckpt';

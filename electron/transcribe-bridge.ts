@@ -14,7 +14,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn, ChildProcess } from 'child_process';
 
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
+import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
 import { getFfmpegPath } from './tool-paths';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { getMainLogger } from './rolling-logger';
@@ -91,8 +91,8 @@ export async function transcribeAudiobook(opts: TranscribeOptions): Promise<Tran
   }
 
   const scriptPath = resolveScript();
-  const py = getPythonInvocation(getDefaultE2aPath());
-  const env = buildCondaSpawnEnv();
+  const py = getPythonInvocation();
+  const env = buildToolsSpawnEnv();
   tlog(`[transcribe] resolved script=${scriptPath} python=${py.command}`, { args: py.args });
 
   const gpuOwner = `whisper-transcribe:${path.basename(outPath)}`;

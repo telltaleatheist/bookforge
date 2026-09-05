@@ -7,7 +7,7 @@
  * It was written in the renderer, at
  * `src/app/features/language-learning/models/tts-engine-registry.ts`, and its own
  * header claimed the reason it held no Angular imports was so "the Electron main
- * process (bridge/e2a-paths) can import the same definitions and stay in lockstep
+ * process (bridge/narrator-paths) can import the same definitions and stay in lockstep
  * with the UI". That was never true of where it sat: `src/` is the Angular
  * program, main compiles against `tsconfig.electron.json`, and no main-process
  * file has ever been able to import it. Pure data in the wrong program is still

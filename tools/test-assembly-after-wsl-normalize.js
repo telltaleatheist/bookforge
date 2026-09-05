@@ -104,7 +104,7 @@ const normalize = eval(
      ${sessionDirSrc}
      const fs = { rm: async () => {} };
      const findE2aProcessDir = () => null;
-     const getDefaultE2aTmpPath = () => { throw new Error('the copy branch is not under test here'); };
+     const narratorScratchRoot = () => { throw new Error('the copy branch is not under test here'); };
      const copyDirOutOfWsl = async () => { throw new Error('the copy branch is not under test here'); };
      const rewriteSessionStatePaths = async () => {};
      ${normalizeSrc}

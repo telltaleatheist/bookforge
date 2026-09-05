@@ -1009,10 +1009,10 @@ that state back and either refused, or let `resolve_engine_id` fall through to
 
 ### `--session_dir` is mandatory on every narrator spawn
 
-`session_store.sessions_root()` reads `$E2A_TMP_DIR`. e2a survived without the
+`session_store.sessions_root()` reads `$NARRATOR_SESSIONS_ROOT`. e2a survived without the
 flag because `lib/conf.py` fell back to `<e2a_root>/tmp`, which happened to be the
 path the bridge had already computed; **narrator has no e2a root and refuses to
-guess.** Forwarding `E2A_TMP_DIR` is not an alternative — it holds a *Windows*
+guess.** Forwarding `NARRATOR_SESSIONS_ROOT` is not an alternative — it holds a *host*
 path while a WSL prep derives its session dir from the WSL e2a root, and
 `spawnWithWslSupport` does not hand the Windows environment to the guest at all.
 

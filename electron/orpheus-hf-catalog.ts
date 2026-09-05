@@ -20,16 +20,15 @@ import * as os from 'os';
 import * as path from 'path';
 import { getConfig, updateConfig } from './tool-paths';
 import {
-  getDefaultE2aPath,
   getPythonInvocation,
-  buildCondaSpawnEnv,
+  buildToolsSpawnEnv,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,
-  getWslE2aPath,
+  getWslSessionsRoot,
   getWslOrpheusCondaEnv,
   windowsToWslPath,
-} from './e2a-paths';
+} from './narrator-paths';
 import {
   getOrpheusModelsDir,
   upsertManifestEntry,
@@ -495,22 +494,24 @@ function runDownload(
     if (viaWsl) {
       const distro = getWslDistro();
       const wslConda = getWslCondaPath();
-      const wslE2a = getWslE2aPath();
       const orpheusEnv = getWslOrpheusCondaEnv();
       const scriptWsl = windowsToWslPath(scriptPath);
       const exportTok = token ? `export HF_TOKEN=${shellQuote(token)} && ` : '';
+      // The guest's home, as `narrator-spawn.ts` does: this download script reads
+      // cwd for nothing, and the directory it used to cd into was the guest's
+      // ebook2audiobook checkout — a path that need not exist any more.
       const bash =
-        `${exportTok}cd ${shellQuote(wslE2a)} && ` +
+        `${exportTok}cd ~ && ` +
         `${shellQuote(wslConda)} run --no-capture-output -n ${shellQuote(orpheusEnv)} ` +
         `python -u ${shellQuote(scriptWsl)} ${shellQuote(repoId)} ${shellQuote(destDir)} --kind ${shellQuote(kind)}`;
       command = 'wsl.exe';
       args = distro ? ['-d', distro, 'bash', '-c', bash] : ['bash', '-c', bash];
       env = process.env;
     } else {
-      const py = getPythonInvocation(getDefaultE2aPath(), 'orpheus');
+      const py = getPythonInvocation('orpheus');
       command = py.command;
       args = [...py.args, '-u', scriptPath, repoId, destDir, '--kind', kind];
-      env = buildCondaSpawnEnv(token ? { HF_TOKEN: token } : {});
+      env = buildToolsSpawnEnv(token ? { HF_TOKEN: token } : {});
     }
 
     const child = spawn(command, args, { env });
@@ -608,7 +609,7 @@ function runFuse(
   } catch (err) {
     return Promise.resolve({ ok: false, error: err instanceof Error ? err.message : String(err) });
   }
-  const py = getPythonInvocation(getDefaultE2aPath(), 'orpheus');
+  const py = getPythonInvocation('orpheus');
   const args = [
     ...py.args,
     '-u',
@@ -630,7 +631,7 @@ function runFuse(
     // PYTHONIOENCODING is not cosmetic here: the script's own output is ASCII, but any
     // library warning or traceback that isn't would raise UnicodeEncodeError on a stdout
     // that inherited a non-UTF-8 codepage, killing a merge that had already succeeded.
-    const child = spawn(py.command, args, { env: buildCondaSpawnEnv({ PYTHONIOENCODING: 'utf-8' }) });
+    const child = spawn(py.command, args, { env: buildToolsSpawnEnv({ PYTHONIOENCODING: 'utf-8' }) });
     let stdout = '';
     let stderr = '';
     let pending = '';

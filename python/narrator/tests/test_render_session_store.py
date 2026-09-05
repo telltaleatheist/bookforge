@@ -347,14 +347,14 @@ class ListAndResumeTest(unittest.TestCase):
         os.makedirs(self.session_dir)
         self.process_dir = synthetic.build_session(self.session_dir)
         self.sentences_dir = os.path.join(self.process_dir, 'chapters', 'sentences')
-        self._saved_root = os.environ.get('E2A_TMP_DIR')
-        os.environ['E2A_TMP_DIR'] = self.root
+        self._saved_root = os.environ.get('NARRATOR_SESSIONS_ROOT')
+        os.environ['NARRATOR_SESSIONS_ROOT'] = self.root
 
     def tearDown(self):
         if self._saved_root is None:
-            os.environ.pop('E2A_TMP_DIR', None)
+            os.environ.pop('NARRATOR_SESSIONS_ROOT', None)
         else:
-            os.environ['E2A_TMP_DIR'] = self._saved_root
+            os.environ['NARRATOR_SESSIONS_ROOT'] = self._saved_root
 
     def test_a_complete_session_is_not_resumable(self):
         self.assertEqual(session_store.list_resumable_sessions(self.root), [])
@@ -379,16 +379,53 @@ class ListAndResumeTest(unittest.TestCase):
 
     def test_the_sessions_root_env_is_the_whole_interface(self):
         """And the refusal must say what to do instead, because the variable is
-        genuinely absent inside WSL: `spawnWithWslSupport` re-exports only its
-        `forwardKeys` list (`parallel-tts-bridge.ts:1590-1601`) and E2A_TMP_DIR
-        is not in it. Every live render/retake spawn passes --session_dir."""
-        os.environ.pop('E2A_TMP_DIR', None)
+        genuinely absent inside WSL: the guest arm of `buildNarratorSpawn`
+        exports only the caller's `envExtras` plus four of its own, and this is
+        not one of them. Every live render/retake spawn passes --session_dir."""
+        os.environ.pop('NARRATOR_SESSIONS_ROOT', None)
         with self.assertRaises(SessionStateError) as caught:
             session_store.sessions_root()
         message = str(caught.exception)
-        self.assertIn('E2A_TMP_DIR is not set', message)
+        self.assertIn('NARRATOR_SESSIONS_ROOT is not set', message)
         self.assertIn('pass --session_dir', message)
         self.assertIn('will not guess', message)
+
+    def test_the_old_name_is_refused_by_name_not_accepted_as_an_alias(self):
+        """`E2A_TMP_DIR` named this variable until 2026-09-05.
+
+        Honouring it as an alias is the failure this refusal exists to prevent:
+        a machine with a stale export would keep rendering while every other name
+        in the system said narrator, and nothing would report the disagreement
+        until the two roots differed - at which point a book is written into a
+        directory nothing looks in, with a success exit code.
+
+        It fires EVEN WHEN the new variable is also set, because "both are set"
+        is precisely the half-migrated machine.
+        """
+        os.environ['E2A_TMP_DIR'] = self.root
+        self.addCleanup(os.environ.pop, 'E2A_TMP_DIR', None)
+        with self.assertRaises(SessionStateError) as caught:
+            session_store.sessions_root()
+        message = str(caught.exception)
+        self.assertIn('E2A_TMP_DIR is set', message)
+        self.assertIn('NARRATOR_SESSIONS_ROOT', message)
+
+    def test_the_old_name_is_refused_on_every_door_not_only_the_root_readers(self):
+        """A door carrying `--session_dir` never reaches `sessions_root()`, so
+        `compat.app.main` refuses BEFORE the flag parse - otherwise a render
+        would proceed happily on a machine still exporting the old name, which
+        is exactly "keeps working by accident"."""
+        import io
+        from contextlib import redirect_stdout
+        from ..compat import app as compat_app
+
+        os.environ['E2A_TMP_DIR'] = self.root
+        self.addCleanup(os.environ.pop, 'E2A_TMP_DIR', None)
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = compat_app.main(['--headless', '--list_sessions'])
+        self.assertEqual(code, 1)
+        self.assertIn('E2A_TMP_DIR is set', buf.getvalue())
 
     def test_the_listing_is_not_sorted_because_e2as_is_not(self):
         """`session.py:230` iterates raw `os.listdir`. Nothing reads the order -

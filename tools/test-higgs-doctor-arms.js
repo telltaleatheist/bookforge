@@ -129,7 +129,7 @@ childProcess.spawn = function (command, args, opts) {
 const doctorMod = require(path.join(DIST, 'higgs-doctor.js'));
 const spawnMod = require(path.join(DIST, 'higgs-spawn.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
-const e2aPaths = require(path.join(DIST, 'e2a-paths.js'));
+const narratorPathsModule = require(path.join(DIST, 'narrator-paths.js'));
 const narratorSpawn = require(path.join(DIST, 'narrator-spawn.js'));
 // The doctor reaches the catalog through this module object
 // (`(0, higgs_models_1.listHiggsModels)()` in the compiled output), so stubbing a
@@ -166,14 +166,14 @@ function onPlatform(opts, fn) {
     stub(toolPaths, 'getWslCondaPath', () => FAKE.wslConda),
     stub(toolPaths, 'getWslHiggsCondaEnv', () => FAKE.higgsEnv),
     stub(toolPaths, 'getWslDistro', () => FAKE.distro),
-    stub(e2aPaths, 'getCondaPath', () => FAKE.conda),
-    stub(e2aPaths, 'getNarratorMlxEnv', () => {
+    stub(narratorPathsModule, 'getCondaPath', () => FAKE.conda),
+    stub(narratorPathsModule, 'getNarratorMlxEnv', () => {
       if (opts.mlxEnvMissing) throw new Error("The 'narrator-mlx' environment is not installed.");
       return FAKE.mlxEnv;
     }),
     // Identity: what is under test is the PYTHONPATH the doctor sets, not this
     // machine's PATH or its ffmpeg.
-    stub(e2aPaths, 'buildCondaSpawnEnv', (extra) => ({ ...extra })),
+    stub(narratorPathsModule, 'buildToolsSpawnEnv', (extra) => ({ ...extra })),
   ];
   // `os.platform()` is what tool-paths reads (not `process.platform`), so the WSL
   // doctor's own guard has to see the fixture's platform too.

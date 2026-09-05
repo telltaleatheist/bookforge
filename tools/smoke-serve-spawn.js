@@ -103,7 +103,7 @@ if (REAL && !VOICE) {
   return;
 }
 
-const paths = require(path.join(DIST, 'e2a-paths.js'));
+const paths = require(path.join(DIST, 'narrator-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 
 // Native arm, tools env. Both overrides are the TEST's, and both are named above.
@@ -111,7 +111,7 @@ const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 // difference between this smoke and a proof.
 if (!REAL) {
   Object.defineProperty(toolPaths, 'shouldUseWsl2ForOrpheus', { value: () => false, configurable: true });
-  const toolsPython = paths.getPythonInvocation(paths.getDefaultE2aPath());
+  const toolsPython = paths.getPythonInvocation();
   paths.getPythonInvocation = () => toolsPython;
 }
 

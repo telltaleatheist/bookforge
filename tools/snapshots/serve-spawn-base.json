@@ -128,6 +128,8 @@
       "HIGGS_MAX_NUM_SEQS": "16",
       "NARRATOR_ENGINE": "higgs-v3",
       "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
+      "NARRATOR_HIGGS3_MLX_BATCH": "16",
+      "NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB": "24",
       "NARRATOR_HIGGS3_MLX_MODEL": "<REPO>/.fake-userdata/runtime/higgs-models/base",
       "PYTHONIOENCODING": "utf-8",
       "PYTHONPATH": "<REPO>/python",

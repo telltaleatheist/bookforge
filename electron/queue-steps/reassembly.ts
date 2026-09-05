@@ -36,7 +36,6 @@ interface ReassemblyStepConfig {
   sessionDir?: string;
   processDir?: string;
   outputDir: string;
-  e2aTmpPath?: string;
   totalChapters?: number;
   metadata: {
     title: string; author: string; year?: string; coverPath?: string;
@@ -150,7 +149,6 @@ export const reassemblyStep: StepModule = {
         sessionDir,
         processDir,
         outputDir: config.outputDir,
-        e2aTmpPath: config.e2aTmpPath,
         totalChapters,
         metadata: config.metadata,
         excludedChapters: config.excludedChapters ?? [],

@@ -38,7 +38,7 @@ import * as path from 'path';
 import { spawnSync } from 'child_process';
 
 import { downloadFile } from './downloader';
-import { getActiveBundledEnvPath } from '../e2a-env-bootstrap';
+import { getActiveToolsEnvPath } from '../tools-env-bootstrap';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
@@ -104,7 +104,7 @@ export function cudaTtsComponent(): OptionalComponent {
 
 /** The runtime env's python executable, or null if the env isn't unpacked. */
 function envPython(): string | null {
-  const envDir = getActiveBundledEnvPath();
+  const envDir = getActiveToolsEnvPath();
   if (!envDir) return null;
   const py = process.platform === 'win32'
     ? path.join(envDir, 'python.exe')
@@ -113,7 +113,7 @@ function envPython(): string | null {
 }
 
 export function cudaTtsMarkerPath(): string | null {
-  const envDir = getActiveBundledEnvPath();
+  const envDir = getActiveToolsEnvPath();
   return envDir ? path.join(envDir, MARKER) : null;
 }
 const markerPath = cudaTtsMarkerPath;

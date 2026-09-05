@@ -105,23 +105,23 @@ normalization: `--ebook` is made absolute (the process-dir md5 is taken over tha
 string), `--output_dir` becomes `audiobooks_dir`, and `--device` is mapped through
 `conf.devices`.
 
-**Where the session goes.** e2a put it at `$E2A_TMP_DIR/ebook-<session id>`,
+**Where the session goes.** e2a put it at `$NARRATOR_SESSIONS_ROOT/ebook-<session id>`,
 and `parallel-tts-bridge.ts:3196-3202` COMPUTES THE SAME PATH ITSELF and then
 reads `session-state.json` out of it. narrator honours `--session_dir` when a
 caller passes one and otherwise derives the identical path from
 `session_store.sessions_root()`.
 
 **AT CUT-OVER THE PREP SPAWN MUST PASS `--session_dir`, AND THAT IS THE ONLY
-FIX.** `sessions_root()` reads `$E2A_TMP_DIR`; e2a survived without it because
+FIX.** `sessions_root()` reads `$NARRATOR_SESSIONS_ROOT`; e2a survived without it because
 `lib/conf.py` fell back to `<e2a_root>/tmp`, which is exactly the path the bridge
 had computed. narrator has no e2a root and refuses to guess.
 
-Forwarding `E2A_TMP_DIR` into WSL is NOT an alternative, and an earlier draft of
+Forwarding `NARRATOR_SESSIONS_ROOT` into WSL is NOT an alternative, and an earlier draft of
 this file wrongly offered it as one. Two independent reasons:
 
 1. **The variable holds the wrong path.** For a WSL prep the bridge derives the
    session dir from the WSL e2a ROOT - ``sessionDir = `${wslE2aPath}/tmp/ebook-
-   ${sessionId}` `` (`parallel-tts-bridge.ts:3180`) - while `E2A_TMP_DIR` is
+   ${sessionId}` `` (`parallel-tts-bridge.ts:3180`) - while `NARRATOR_SESSIONS_ROOT` is
    resolved from `getDefaultE2aTmpPath()`, a WINDOWS path. Exporting it inside
    the guest would point prep at a directory that does not exist there, and the
    bridge would then read `session-state.json` from a place prep never wrote.

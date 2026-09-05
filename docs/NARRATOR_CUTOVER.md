@@ -47,7 +47,7 @@ Environment, by `(engine, platform)`:
 | `higgs` | WSL `higgs3` | refused by name | refused by name |
 | *(none)* | native tools env (`getPythonInvocation` with no engine) | same | same |
 
-`getNarratorMlxEnv()` (in `e2a-paths.ts`, the component seam) resolves a managed
+`getNarratorMlxEnv()` (in `narrator-paths.ts`, the component seam) resolves a managed
 `narrator-mlx` component first, then
 `/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx`, then **refuses by
 name**. No step-down to the ebook2audiobook Orpheus env: that env is below the
@@ -849,7 +849,12 @@ branch left for it:
   will ask — otherwise the Listen picker would report "Orpheus: available" on a
   Mac with no `narrator-mlx`.
 
-### Phase 6 is a RELOCATION, not a rename
+### Phase 6 is a RELOCATION, not a rename — DONE, 2026-09-05
+
+Everything below this heading down to "Not a phase, but owed" was written BEFORE
+the relocation and describes the state it removed. It is kept because it is the
+measurement that justified the work. What actually changed is in
+"Phase 6 — what moved" immediately after it.
 
 Measured on this machine, 2026-09-05:
 
@@ -880,6 +885,107 @@ checkout; `packaging/env/ebook2audiobook-*.yml` becomes `narrator-tools-*.yml` a
 gains `narrator-mlx.yml` plus its component installer.
 
 **Not a phase, but owed:** every GPU proof. See "NOT verified" above.
+
+## Phase 6 — what moved
+
+Owen's ruling, verbatim: *"we should fix that. create a new session scratch root
+for narrator. it should take over on behalf of e2a"*.
+
+### The two directories, per platform
+
+| | before | after |
+|---|---|---|
+| host sessions root | the stated `ttsScratchPath`, else `<e2a>/tmp` | the stated `narratorScratchPath`, else `<library>/tmp`, else a REFUSAL naming what is missing |
+| guest sessions root (Windows/WSL) | `<wslE2aPath>/tmp` — the `tmp/` of the guest's ebook2audiobook checkout | `<guest home>/bookforge-sessions`, derived from `wslCondaPath`, or the stated `wslSessionsRoot` |
+| tools env, packaged | `<userData>/runtime/e2a-env` | `<userData>/runtime/tools-env` (a RENAME of the same unpack) |
+| tools env, dev | `<e2a>/python_env`, or the conda env named `ebook2audiobook` | `<userData>/runtime/tools-env`, else a stated `toolsEnvPath` |
+| tools env, macOS | the named conda env `ebook2audiobook` (that Mac has no prefix env) | the same env, recorded ONCE as `toolsEnvPath` by its prefix |
+
+There is now ONE owner of each. `narratorScratchRoot()` and `toolsEnvPath()` in
+`electron/narrator-paths.ts`; `main.ts:applyNarratorScratchRoot()` and
+`cli/narrator-sessions-root.js` state the scratch root from the same two rules,
+in the same order.
+
+### What migrates on first start
+
+Three one-time moves, all idempotent, all before anything resolves a python:
+
+1. **`runtime/e2a-env` → `runtime/tools-env`**, a filesystem rename
+   (`migrateLegacyToolsEnvDir`). Not a re-download: the tarball's bytes are
+   unchanged and the ready-marker inside the directory is still true of them.
+   Deliberately NOT an `ENV_VERSION` bump, which would have forced every install
+   to fetch 1.8 GB to obtain the identical environment.
+2. **`<e2a>/python_env` (or the conda env `ebook2audiobook`) → `toolsEnvPath` in
+   tool-paths.json** (`adoptLegacyToolsEnv`), and only when there is nothing else
+   to use. It moves no bytes. What it changes is the KIND of fact the path is:
+   after it runs, the interpreter is a stated setting, and deleting the checkout
+   afterwards is a broken `toolsEnvPath` that names the missing directory instead
+   of a silent re-derivation onto some other machine's layout.
+3. **`ttsScratchPath` → `narratorScratchPath`** in tool-paths.json
+   (`migrateLegacyConfigKeys`), rewritten to disk on load — a value renamed only
+   in memory is a value the Settings panel saves back under the old name.
+
+`wslE2aPath` is deliberately NOT migrated. It named a checkout, not a sessions
+root, and carrying it forward would keep writing BookForge's scratch into
+somebody else's git repository.
+
+### Two refusals, because the alternative is working by accident
+
+- **`E2A_TMP_DIR`.** `session_store.sessions_root()` reads
+  `NARRATOR_SESSIONS_ROOT` now, and `refuse_legacy_sessions_root_env()` refuses
+  the old name whenever it is set — including when the new one is set too, since
+  "both" is exactly the half-migrated machine. It runs from `sessions_root()` AND
+  from the top of `compat.app.main`, before the flag parse: a door carrying
+  `--session_dir` never reaches the root reader, so refusing only there would let
+  a render proceed happily on a machine whose environment still said e2a.
+  `BOOKFORGE_E2A_ENV` is refused the same way in favour of `BOOKFORGE_TOOLS_ENV`.
+- **Sessions left in the old guest root.** `getSessionTmpDirs()` scans ONE guest
+  root. If `<wslE2aPath>/tmp` still holds `ebook-*` directories, the scan throws
+  and names the path (checked once per process — a UNC listing, and the answer
+  cannot change without a person moving files). Scanning both would be
+  try-A-then-B; scanning neither and saying nothing would restart a
+  half-rendered book at sentence 0 with no explanation.
+
+### What stopped shipping
+
+`resources/e2a` — a snapshot of the whole ebook2audiobook checkout, staged into
+every installer and copied to `<userData>/runtime/e2a` on first run. It could
+never have worked: `stage-resources.js` EXCLUDED `python_env` from the snapshot,
+and `python_env` was the only thing anything resolved out of the runtime copy, so
+`e2aIsReady()` gated on an interpreter that was never staged. Gone, along with
+the `stanza-en` runtime asset (it served e2a's `lib/core.py` pipeline; narrator
+records in `text/sentences.py` that stanza is never consulted, and
+`test_text_paragraph_packer.py` asserts the packer cannot even import it) and
+`package-win.js`'s hard failure on a missing checkout.
+
+**The hosted env payload is unchanged**: same release asset, same URL, same
+sha256, same bytes. The asset FILENAMES still say `e2a-env-<platform>.tar.gz`,
+which is history rather than a claim — renaming a published artifact would
+invalidate every installed copy's marker for no gain.
+
+### Verified
+
+- `npx tsc -p tsconfig.electron.json --noEmit`, `npx tsc -p tsconfig.app.json --noEmit`, `npx ng build --configuration development` — clean.
+- `tools/test-no-e2a-doors.js`, `tools/test-serve-spawn-env.js`,
+  `tools/test-narrator-argv-snapshot.js` — green, and **both argv baselines are
+  byte-identical**. The fixture's fake interpreter path is deliberately NOT
+  renamed: `serve-spawn-base.json` is a pre-cut-over capture and the keeper's
+  "the other two arms did NOT change interpreter" row compares against it.
+- `python -m pytest python/narrator/tests -x -q` (WSL, `orpheus_tts`):
+  **1117 passed, 69 skipped, 455 subtests** in 302 s. Two of those are new and
+  pin the `E2A_TMP_DIR` refusal — one at `sessions_root()`, one on a door that
+  never reads the root.
+
+### NOT verified — owed
+
+- **Nothing here has been RUN in the app.** The migrations are startup code and
+  no BookForge process has started since. In particular: the `runtime/e2a-env`
+  rename, the `toolsEnvPath` adoption, and the `ttsScratchPath` key rename have
+  each been reasoned about and typechecked, not watched.
+- **No render has used the new guest sessions root.** The first WSL render after
+  this change writes to `<guest home>/bookforge-sessions` for the first time, and
+  the directory does not exist yet on any machine.
+- The legacy-guest-root refusal has never fired against a real leftover session.
 
 ### The merge with `feat/xtts-removal`, which is owed
 

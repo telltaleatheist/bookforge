@@ -53,17 +53,20 @@
  * allowlist is a list of variables somebody remembered, and the ones that matter
  * are the ones nobody did.
  *
- * **Native**: the same four and `envExtras`, ON TOP OF `buildCondaSpawnEnv`,
+ * **Native**: the same four and `envExtras`, ON TOP OF `buildToolsSpawnEnv`,
  * which spreads `process.env` and then adds three things of its own:
  *
- *   `E2A_TMP_DIR`   the sessions root, always set (from the configured scratch,
- *                   else `<tools-env-root>/tmp`). `narrator.render.session_store
- *                   .sessions_root()` READS IT, and `--list_sessions` and a
- *                   `--resume_session` given a bare id have nothing else to go on
- *                   — every other door passes `--session_dir` explicitly and
- *                   never reaches it. So this is not inherited clutter; it is the
- *                   whole interface for two of the six doors.
- *   `CONDA_PREFIX`  set when the bundled relocatable env is in play, replicating
+ *   `NARRATOR_SESSIONS_ROOT`
+ *                   the sessions root, from the stated scratch — OMITTED, never
+ *                   substituted, when its volume is not mounted.
+ *                   `narrator.render.session_store.sessions_root()` READS IT, and
+ *                   `--list_sessions` and a `--resume_session` given a bare id
+ *                   have nothing else to go on — every other door passes
+ *                   `--session_dir` explicitly and never reaches it. So this is
+ *                   not inherited clutter; it is the whole interface for two of
+ *                   the six doors. (It was `E2A_TMP_DIR` until Phase 6, and
+ *                   narrator refuses that name BY NAME if anything still sets it.)
+ *   `CONDA_PREFIX`  set when the managed tools env is in play, replicating
  *                   what `conda activate` would have done.
  *   `PATH`          prepended with the resolved ffmpeg directory and the env's
  *                   own bin dirs, because a packaged app launched from Finder or
@@ -103,14 +106,13 @@ import {
 } from './tool-paths';
 import {
   getPythonInvocation,
-  getDefaultE2aPath,
   getCondaPath,
   getNarratorMlxEnv,
   windowsToWslPath,
   toUnpackedPath,
-  buildCondaSpawnEnv,
+  buildToolsSpawnEnv,
   type PythonInvocation,
-} from './e2a-paths';
+} from './narrator-paths';
 
 /** The engines narrator can actually RUN. `xtts` is retired and is not one. */
 export type NarratorEngineId = 'orpheus' | 'higgs';
@@ -441,7 +443,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
   return {
     command: py.command,
     args: nativeArgs,
-    env: buildCondaSpawnEnv({ ...baseEnv, PYTHONPATH: pythonRoot }),
+    env: buildToolsSpawnEnv({ ...baseEnv, PYTHONPATH: pythonRoot }),
     cwd: req.cwdHint ?? app.getPath('userData'),
     viaWsl: false,
     shell: false,
@@ -488,7 +490,7 @@ export function narratorNativePython(engine: NarratorEngineId | undefined): Pyth
   // Orpheus (managed env on Windows-without-WSL and on Linux), the Higgs seam
   // (which refuses on Windows without the WSL toggle, by name), and the bundled
   // env for the tools phases.
-  return getPythonInvocation(getDefaultE2aPath(), engine);
+  return getPythonInvocation(engine);
 }
 
 /**

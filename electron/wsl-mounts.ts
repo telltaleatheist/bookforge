@@ -52,7 +52,7 @@
 
 import { spawn } from 'child_process';
 import os from 'os';
-import { getWslDistro } from './e2a-paths';
+import { getWslDistro } from './narrator-paths';
 
 /** Drive letters WSL mounts by itself. Anything else has to be asked for. */
 const AUTO_MOUNTED = new Set(['c', 'e']);

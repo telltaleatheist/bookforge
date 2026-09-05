@@ -424,6 +424,59 @@ check('higgs: BookForge never sets HIGGS_MODEL_DIR', () => {
   }
 });
 
+// ── THE MLX BATCH BUDGET REACHES THE LISTEN SERVER ────────────────────────
+//
+// The darwin Higgs serve door batches its READ-AHEAD (the row being listened to
+// renders solo — a delay-pattern codec cannot token-stream, so width would land
+// straight on the listener's wait). narrator's backend renders ONE ROW unless
+// asked for more, so these two variables are the whole ask, and every wrong
+// place to put them is silent: absent on darwin the read-ahead quietly runs
+// single-row; present on the WSL arm they are read by nothing, because Higgs is
+// a vLLM-Omni server there.
+//
+// The ceiling is the POOL's `streamBatchCeiling()` — the same number Orpheus
+// gets as ORPHEUS_STREAM_BATCH — passed into `higgsEnvExtras` at the serve call
+// site, because higgs-spawn cannot import the pool back (the pool imports it).
+const MLX_BATCH_VARS = ['NARRATOR_HIGGS3_MLX_BATCH', 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'];
+
+check('higgs/native-mac: the serve door carries the batch ceiling and its budget', () => {
+  const e = envOf(higgsRows['native-mac']);
+  for (const name of MLX_BATCH_VARS) {
+    assert.ok(e[name], `the darwin Higgs serve door sets no ${name}`);
+    assert.ok(Number(e[name]) > 0, `${name} is not a positive number: ${e[name]}`);
+  }
+  // The fixture pins orpheusMemoryProfile to batchSize 16 / mlxMemBudgetGB 24,
+  // and streamBatchCeiling() floors the width at 16 — so this row states the
+  // POOL's ceiling, which is the number the Orpheus row states as
+  // ORPHEUS_STREAM_BATCH. Asserted against that row rather than against a
+  // literal, so a tier change moves both or fails here.
+  assert.strictEqual(e.NARRATOR_HIGGS3_MLX_BATCH,
+    envOf(now['native-mac']).ORPHEUS_STREAM_BATCH,
+    'the Higgs serve ceiling is not the pool ceiling Orpheus gets');
+  assert.strictEqual(e.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB,
+    envOf(now['native-mac']).ORPHEUS_MLX_MEM_BUDGET_GB,
+    'the two MLX engines are budgeting different amounts of ONE memory pool');
+});
+
+check('higgs/wsl: NO MLX batch variable reaches the served arm', () => {
+  const e = envOf(higgsRows.wsl);
+  for (const name of MLX_BATCH_VARS) {
+    assert.ok(!(name in e), `${name} reached the served arm, where nothing reads it`);
+  }
+});
+
+check('no ORPHEUS_* name rides in ANY Higgs serve row', () => {
+  // The Higgs spawn strips Orpheus's variables deliberately; a Higgs knob
+  // SPELLED ORPHEUS_ would be stripped with them and read by nothing. Asserted
+  // on every arm, not just the WSL one, now that the darwin row carries a
+  // width the POOL derived — the tempting place to spell it ORPHEUS_.
+  for (const arm of ARMS) {
+    if (higgsRows[arm].refused) continue;
+    assert.ok(!/ORPHEUS_/.test(JSON.stringify(higgsRows[arm])),
+      `an ORPHEUS_* variable leaked into the ${arm} Higgs spawn`);
+  }
+});
+
 check('the WSL Higgs arm sets NO MLX model var', () => {
   // It is the SERVED backend there: the weights are the launch script's argument.
   // Setting it would look like a lever and be read by nothing.

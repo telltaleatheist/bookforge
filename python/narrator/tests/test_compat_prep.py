@@ -59,15 +59,15 @@ class _PrepDoorTest(unittest.TestCase):
             os.path.join(self.root, f'staged-{self.session_id}.epub'))
         self.sessions_root = os.path.join(self.root, 'tmp')
         os.makedirs(self.sessions_root, exist_ok=True)
-        self._saved_env = os.environ.get('E2A_TMP_DIR')
-        os.environ['E2A_TMP_DIR'] = self.sessions_root
+        self._saved_env = os.environ.get('NARRATOR_SESSIONS_ROOT')
+        os.environ['NARRATOR_SESSIONS_ROOT'] = self.sessions_root
         self.addCleanup(self._restore_env)
 
     def _restore_env(self):
         if self._saved_env is None:
-            os.environ.pop('E2A_TMP_DIR', None)
+            os.environ.pop('NARRATOR_SESSIONS_ROOT', None)
         else:
-            os.environ['E2A_TMP_DIR'] = self._saved_env
+            os.environ['NARRATOR_SESSIONS_ROOT'] = self._saved_env
 
     def _bridge_argv(self, *, model_dir=None, adapter=None, base=None,
                      fine_tuned='deathstalker', extra=()):
@@ -701,21 +701,20 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertIn('voxtral', str(caught.exception))
         self.assertNotIn('Error extracting Table of Content', buf.getvalue())
 
-    def test_no_session_dir_and_no_E2A_TMP_DIR_is_a_result_not_a_traceback(self):
+    def test_no_session_dir_and_no_sessions_root_is_a_result_not_a_traceback(self):
         """THE CUT-OVER CASE, asserted rather than described.
 
-        `parallel-tts-bridge.ts:3210-3253` passes no `--session_dir` on the prep
-        spawn, and `spawnWithWslSupport` forwards no `E2A_TMP_DIR` into the
-        guest - and it could not usefully, because for a WSL prep the bridge
-        derives the session dir from the WSL e2a root (`:3180`) while
-        `E2A_TMP_DIR` holds a Windows path. So this is the shape a cut-over
-        without the one-argument fix produces, and it must be e2a's failure
-        result with a reason an operator can act on, NOT a bare traceback.
+        A prep spawn that passes no `--session_dir` has nothing but this variable
+        to go on, and the WSL arm never carries it - it could not usefully, since
+        it holds a HOST path while a guest render derives its session dir from
+        the guest sessions root. So this is the shape a cut-over without the
+        one-argument fix produces, and it must be e2a's failure result with a
+        reason an operator can act on, NOT a bare traceback.
 
-        The rest of this class sets `E2A_TMP_DIR` in `setUp`; this test unsets
+        The rest of this class sets `NARRATOR_SESSIONS_ROOT` in `setUp`; this test unsets
         it, which is the only place the bridge's argv is replayed truly verbatim.
         """
-        os.environ.pop('E2A_TMP_DIR', None)
+        os.environ.pop('NARRATOR_SESSIONS_ROOT', None)
         code, out = self._run(self._bridge_argv(fine_tuned='leah'))
         self.assertEqual(code, 1)
         line = next(l for l in out.splitlines()
@@ -723,7 +722,7 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(json.loads(line),
                          {'success': False, 'error': 'prep_ebook_info failed'})
         # ...and the reason names both the variable and the flag that fixes it.
-        self.assertIn('E2A_TMP_DIR', out)
+        self.assertIn('NARRATOR_SESSIONS_ROOT', out)
         self.assertIn('--session_dir', out)
 
     def test_a_non_english_book_fails_the_whole_prep_loudly(self):

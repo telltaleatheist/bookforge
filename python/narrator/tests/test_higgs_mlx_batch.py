@@ -13,6 +13,11 @@ Provable here, on any machine, with no model and no GPU:
     (prompt positions + that row's frame cap), and an over-deep slice split
     EVENLY rather than into [allowed, remainder];
   * that a ceiling of 1 still takes the serial path, chunk by chunk;
+  * the LISTEN ladder's shape: streamed rows solo and first, the read-ahead
+    batched behind them, on_chunk only where it was asked for, on_row exactly
+    once per completed row, and a failed group raising rather than retrying;
+  * that `on_retire` hands a row over the moment it retires, against a fake
+    sampler - the row bookkeeping, not the audio;
   * that none of the names this backend reads is an ORPHEUS_ one - the Higgs
     spawn strips those deliberately, and a keeper on the TypeScript side asserts
     none rides along.
@@ -25,6 +30,8 @@ nothing in this file loads a model. Owen measures it.
 import os
 import unittest
 from unittest import mock
+
+import numpy as np
 
 from narrator.engine.higgs.mlx_backend import (BATCH_ENV, CACHE_LIMIT_ENV,
                                                MEM_BUDGET_ENV,
@@ -263,6 +270,30 @@ class ConvertBatchRoutingTest(unittest.TestCase):
         engine.convert = lambda index, text: True
         self.assertEqual(engine.convert_batch([]), [])
 
+    def test_a_failed_slice_RAISES_naming_the_width_and_the_rows(self):
+        # No per-item retry. It was here until Owen struck it on 2026-09-05: a
+        # slice that failed because the WIDTH is wrong re-renders row by row,
+        # succeeds, and the run reports success while the fact worth learning is
+        # gone. `convert` raises when one row fails; a slice does the same.
+        engine = _engine(ceiling=4, budget=42.0)
+        engine._budget = mock.Mock(cap_frames=lambda text: 300)
+        engine._seed_for = lambda index: 0
+        engine._mlx_prompts_for = lambda texts: [(None, 700) for _t in texts]
+        engine._generate_delayed_rows_batch = mock.Mock(
+            side_effect=RuntimeError('Metal out of memory'))
+        engine.convert = mock.Mock(
+            side_effect=AssertionError('the slice was retried per item'))
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            with self.assertRaises(RuntimeError) as caught:
+                engine.convert_batch([(5, 'first'), (6, 'second')])
+
+        message = str(caught.exception)
+        self.assertIn('Metal out of memory', message)
+        self.assertIn('2 rows', message)
+        self.assertIn('[5, 6]', message)
+        engine.convert.assert_not_called()
+
     def test_convert_writes_through_the_one_shared_writer(self):
         # The batched path and the single-row path MUST land byte-identically,
         # which is only guaranteed while there is one `sf.write` call site.
@@ -272,6 +303,273 @@ class ConvertBatchRoutingTest(unittest.TestCase):
         engine._write_sentence = lambda number, audio: written.append((number, audio)) or True
         self.assertTrue(engine.convert(7, 'a chunk'))
         self.assertEqual(written, [(7, 'audio for a chunk @ 7')])
+
+
+# ---------------------------------------------------------------------------
+# The LISTEN ladder: generate_batch_stream
+# ---------------------------------------------------------------------------
+
+
+class _Pcm(str):
+    """A stand-in waveform: compares like the string it prints as, and answers
+    `.copy()` the way the streamed rung's `on_chunk(row, 0, audio.copy())`
+    requires. A real waveform is a numpy array; nothing here is about its
+    samples."""
+
+    def copy(self):
+        return self
+
+
+def _stream_engine(*, ceiling: int, budget: float = 42.0) -> HiggsV3MlxEngine:
+    """`_engine` plus the four collaborators `generate_batch_stream` reaches for.
+
+    Everything that would touch MLX is replaced: prompts are `(None, positions)`
+    pairs, the batcher answers with the row texts it was given, and the codec
+    "decodes" a row's codes into a string. What is under test is the ROW
+    BOOKKEEPING - which rows go solo, which go batched, and who is told what.
+    """
+    engine = _engine(ceiling=ceiling, budget=budget)
+    engine.voice = 'testvoice'
+    engine._budget = mock.Mock(cap_frames=lambda text: 300)
+    engine._seed_for = lambda index: 1000 + index
+    engine.codec = lambda: mock.Mock(decode=lambda codes: _Pcm(f'decoded:{codes}'))
+    engine._mlx_prompts_for = lambda texts: [(None, 700) for _t in texts]
+    return engine
+
+
+class StreamLadderTest(unittest.TestCase):
+    """Streamed rows solo and first; the read-ahead batched behind them."""
+
+    @staticmethod
+    def _recorder():
+        """(on_chunk, on_row, log) where `log` is one ordered event list."""
+        events = []
+        return (lambda row, seq, pcm: events.append(('chunk', row, seq, pcm)),
+                lambda row, pcm: events.append(('row', row, pcm)),
+                events)
+
+    def test_stream_rows_render_solo_first_in_ascending_order(self):
+        engine = _stream_engine(ceiling=8)
+        solo = []
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               solo.append(index) or _Pcm(f'solo:{index}'))
+        batched = []
+
+        def _batch(texts, caps, seed, should_stop=None, prompts=None,
+                   group_no=1, group_count=1, on_retire=None):
+            batched.append(list(texts))
+            for position, text in enumerate(texts):
+                on_retire(position, f'codes:{text}')
+            return [f'codes:{text}' for text in texts]
+
+        engine._generate_delayed_rows_batch = _batch
+        on_chunk, on_row, events = self._recorder()
+        engine.generate_batch_stream(
+            ['t0', 't1', 't2', 't3'], None, {2, 1}, on_chunk, on_row)
+
+        # SOLO FIRST, ascending - not batch order, not the order stream_rows
+        # happened to iterate in.
+        self.assertEqual(solo, [1, 2])
+        self.assertEqual(batched, [['t0', 't3']])
+        self.assertEqual(events, [
+            ('chunk', 1, 0, 'solo:1'),
+            ('row', 1, 'solo:1'),
+            ('chunk', 2, 0, 'solo:2'),
+            ('row', 2, 'solo:2'),
+            ('row', 0, 'decoded:codes:t0'),
+            ('row', 3, 'decoded:codes:t3'),
+        ])
+
+    def test_on_chunk_fires_only_for_stream_rows_and_on_row_exactly_once(self):
+        engine = _stream_engine(ceiling=8)
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               _Pcm(f'solo:{index}'))
+        engine._generate_delayed_rows_batch = (
+            lambda texts, caps, seed, should_stop=None, prompts=None,
+            group_no=1, group_count=1, on_retire=None:
+            [on_retire(p, p) for p in range(len(texts))] and None
+            or [p for p in range(len(texts))])
+        on_chunk, on_row, events = self._recorder()
+        engine.generate_batch_stream(
+            ['a', 'b', 'c', 'd', 'e'], None, {3}, on_chunk, on_row)
+
+        chunked = [e[1] for e in events if e[0] == 'chunk']
+        rowed = [e[1] for e in events if e[0] == 'row']
+        self.assertEqual(chunked, [3], 'on_chunk fired for a row nobody asked to stream')
+        self.assertEqual(sorted(rowed), [0, 1, 2, 3, 4])
+        self.assertEqual(len(rowed), len(set(rowed)), 'a row was answered twice')
+
+    def test_a_ceiling_of_one_renders_the_read_ahead_serially_in_order(self):
+        engine = _stream_engine(ceiling=1)
+        seen = []
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               seen.append(index) or _Pcm(f'solo:{index}'))
+        engine._generate_delayed_rows_batch = mock.Mock(
+            side_effect=AssertionError('an unconfigured process batched'))
+        on_chunk, on_row, events = self._recorder()
+        engine.generate_batch_stream(['a', 'b', 'c'], None, {1}, on_chunk, on_row)
+
+        # The streamed row first, then the rest IN ORDER, all through render_audio.
+        self.assertEqual(seen, [1, 0, 2])
+        self.assertEqual(events, [
+            ('chunk', 1, 0, 'solo:1'),
+            ('row', 1, 'solo:1'),
+            ('row', 0, 'solo:0'),
+            ('row', 2, 'solo:2'),
+        ])
+
+    def test_a_failed_group_RAISES_naming_the_width_and_the_rows(self):
+        # No fallback to serial: the caller (serve/worker.py) turns the raise into
+        # a failed batch_item for every row it has not already answered, which is
+        # exactly what a single-row failure does on the serial rung.
+        engine = _stream_engine(ceiling=2)
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               _Pcm(f'solo:{index}'))
+        calls = []
+
+        def _batch(texts, caps, seed, should_stop=None, prompts=None,
+                   group_no=1, group_count=1, on_retire=None):
+            calls.append(group_no)
+            if group_no == 1:
+                for position, text in enumerate(texts):
+                    on_retire(position, text)
+                return list(texts)
+            raise RuntimeError('Metal out of memory')
+
+        engine._generate_delayed_rows_batch = _batch
+        on_chunk, on_row, events = self._recorder()
+        with self.assertRaises(RuntimeError) as caught:
+            engine.generate_batch_stream(
+                ['a', 'b', 'c', 'd'], None, set(), on_chunk, on_row)
+
+        message = str(caught.exception)
+        self.assertIn('Metal out of memory', message)
+        self.assertIn('2 rows', message)          # the group's WIDTH
+        self.assertIn('[2, 3]', message)          # and its ROW INDICES
+        self.assertEqual(calls, [1, 2], 'the failed group was retried')
+        # Rows already handed over STAND; nothing re-renders them.
+        self.assertEqual([e[1] for e in events if e[0] == 'row'], [0, 1])
+
+    def test_a_stop_between_solo_rows_ends_the_call_with_no_further_answer(self):
+        engine = _stream_engine(ceiling=8)
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               _Pcm(f'solo:{index}'))
+        engine._generate_delayed_rows_batch = mock.Mock(
+            side_effect=AssertionError('the batch ran after a stop'))
+        on_chunk, on_row, events = self._recorder()
+        stops = iter([False, True])
+        engine.generate_batch_stream(['a', 'b', 'c'], None, {0, 1},
+                                     on_chunk, on_row,
+                                     should_stop=lambda: next(stops))
+        # Row 0 rendered; row 1's check stopped the call, so neither it nor the
+        # read-ahead behind it was ever touched.
+        self.assertEqual(events, [('chunk', 0, 0, 'solo:0'), ('row', 0, 'solo:0')])
+
+    def test_a_stopped_batch_keeps_the_rows_that_already_retired(self):
+        engine = _stream_engine(ceiling=4)
+        engine.render_audio = (lambda text, index=0, should_stop=None:
+                               _Pcm(f'solo:{index}'))
+
+        def _batch(texts, caps, seed, should_stop=None, prompts=None,
+                   group_no=1, group_count=1, on_retire=None):
+            on_retire(0, 'first')
+            return None            # should_stop went true mid-batch
+
+        engine._generate_delayed_rows_batch = _batch
+        on_chunk, on_row, events = self._recorder()
+        engine.generate_batch_stream(['a', 'b', 'c'], None, set(),
+                                     on_chunk, on_row,
+                                     should_stop=lambda: False)
+        self.assertEqual(events, [('row', 0, 'decoded:first')])
+
+    def test_the_seed_is_the_first_row_of_each_group(self):
+        engine = _stream_engine(ceiling=2)
+        engine.render_audio = lambda text, index=0, should_stop=None: 'x'
+        seeds = []
+
+        def _batch(texts, caps, seed, should_stop=None, prompts=None,
+                   group_no=1, group_count=1, on_retire=None):
+            seeds.append(seed)
+            return list(texts)
+
+        engine._generate_delayed_rows_batch = _batch
+        on_chunk, on_row, _events = self._recorder()
+        engine.generate_batch_stream(['a', 'b', 'c', 'd'], None, set(),
+                                     on_chunk, on_row)
+        # `_seed_for` is 1000 + index; groups are [0, 1] and [2, 3].
+        self.assertEqual(seeds, [1000, 1002])
+
+    def test_a_mixed_voice_batch_is_still_refused(self):
+        engine = _stream_engine(ceiling=8)
+        engine.render_audio = lambda text, index=0, should_stop=None: 'x'
+        with self.assertRaises(ValueError) as caught:
+            engine.generate_batch_stream(['a', 'b'], ['testvoice', 'other'],
+                                         set(), None, lambda r, p: None)
+        self.assertIn('other', str(caught.exception))
+
+
+class OnRetireTest(unittest.TestCase):
+    """`_generate_delayed_rows_batch(on_retire=...)`, against a fake sampler.
+
+    The real loop is mlx-audio's and needs a GPU. What is checkable here is the
+    BOOKKEEPING: which row is handed over, when, with what shape, and that the
+    returned list still holds every row exactly once.
+    """
+
+    def test_each_row_is_handed_over_at_ITS_OWN_retirement(self):
+        from narrator.tests.higgs_mlx_fake import fake_mlx_batch
+        engine = _engine(ceiling=4, budget=42.0)
+        # Row 0 finishes in 2 steps, row 1 in 5, row 2 in 3.
+        retired = []
+        with fake_mlx_batch(engine, done_at=[2, 5, 3]):
+            out = engine._generate_delayed_rows_batch(
+                ['a', 'b', 'c'], [10, 10, 10], None,
+                on_retire=lambda row, rows: retired.append((row, rows.shape)))
+
+        # RETIREMENT ORDER, not row order: that is the whole point.
+        self.assertEqual([row for row, _shape in retired], [0, 2, 1])
+        self.assertEqual([shape for _row, shape in retired], [(2, 8), (3, 8), (5, 8)])
+        self.assertEqual([m.shape for m in out], [(2, 8), (5, 8), (3, 8)])
+        for matrix in out:
+            self.assertEqual(matrix.dtype, np.int64)
+
+    def test_a_row_is_evaluated_once_and_the_full_list_still_comes_back(self):
+        from narrator.tests.higgs_mlx_fake import fake_mlx_batch
+        engine = _engine(ceiling=4, budget=42.0)
+        handed = {}
+        with fake_mlx_batch(engine, done_at=[1, 2]):
+            out = engine._generate_delayed_rows_batch(
+                ['a', 'b'], [10, 10], None,
+                on_retire=lambda row, rows: handed.__setitem__(row, rows))
+        self.assertEqual(sorted(handed), [0, 1])
+        # The SAME arrays: the tail must not re-stack a row it already evaluated.
+        for row, matrix in handed.items():
+            self.assertIs(out[row], matrix)
+
+    def test_without_on_retire_the_answer_is_unchanged(self):
+        from narrator.tests.higgs_mlx_fake import fake_mlx_batch
+        engine = _engine(ceiling=4, budget=42.0)
+        with fake_mlx_batch(engine, done_at=[2, 3]):
+            out = engine._generate_delayed_rows_batch(['a', 'b'], [10, 10], None)
+        self.assertEqual([m.shape for m in out], [(2, 8), (3, 8)])
+
+    def test_a_row_abandoned_by_should_stop_is_never_handed_over(self):
+        from narrator.tests.higgs_mlx_fake import fake_mlx_batch
+        engine = _engine(ceiling=4, budget=42.0)
+        retired = []
+        steps = {'n': 0}
+
+        def _stop():
+            steps['n'] += 1
+            return steps['n'] > 2
+
+        with fake_mlx_batch(engine, done_at=[9, 9]):
+            out = engine._generate_delayed_rows_batch(
+                ['a', 'b'], [10, 10], None, should_stop=_stop,
+                on_retire=lambda row, rows: retired.append(row))
+        self.assertIsNone(out)
+        self.assertEqual(retired, [])
+
 
 
 if __name__ == '__main__':

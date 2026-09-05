@@ -320,7 +320,7 @@ export interface IComponentManager {
 
   // ── Integration seam ──────────────────────────────────────────────────────
   /** Absolute entry path for an installed+verified component (managed OR
-   *  external), else null. e2a-paths / ebook-convert-bridge call this instead
+   *  external), else null. narrator-paths / ebook-convert-bridge call this instead
    *  of guessing or silently falling back. */
   resolveEntry(id: string): string | null;
 
