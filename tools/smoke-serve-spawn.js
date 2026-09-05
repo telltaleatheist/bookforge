@@ -115,6 +115,15 @@ if (!REAL) {
   paths.getPythonInvocation = () => toolsPython;
 }
 
+// The pool asks a registered probe which engine a spawn is for, and refuses to
+// answer with nothing registered (236558d0 — the old silent `'orpheus'` default
+// was wrong for Higgs). In the app `streaming-engine.ts` registers the probe at
+// module load, BEFORE the pool is ever asked; this tool loads that same module
+// rather than registering a probe of its own, so the engine it spawns for is the
+// one the app would choose from its saved setting, not a re-description.
+// (Found by the Mac agent at ffca9398: the tool died before any spawn, on every
+// host, fake mode included.)
+require(path.join(DIST, 'streaming-engine.js'));
 const pool = require(path.join(DIST, 'orpheus-worker-pool.js'));
 const plan = pool.buildSpawnPlan();
 

@@ -466,8 +466,8 @@ Every door, and what has actually been RUN through it rather than reasoned about
 | assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | **PROVEN** — exit 0, m4b 40.35 min, cover, tags, manifest registered, sidecars refreshed |
 | assembly (reassembly) | **PROVEN** — live render, m4b 2619.500 s, narrator's own VTT **133 cues (1 empty), one per FLAC** | **PROVEN** (same door, via `cli/orpheus-audiobook-render.js --assemble-only`) |
 | resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser; and live: **132/133 skipped in 0.2 s** | n/a (native both sides) |
-| serve (Listen, Orpheus) | **PROVEN for the PROTOCOL** — real mistborn in WSL, both stream modes, `ready -> loaded -> audio -> batch_item -> batch_done`, child closed cleanly. The smoke tool's OWN exit code is not evidence from these runs: its watchdog overwrote it (see below), so **a clean `--real` exit code is still owed**. | owed |
-| serve (Listen, Higgs) | argv/env snapshot only — **deferred** to the certified production checkpoint (Owen, 2026-09-05) | refuses by name — no MLX backend yet |
+| serve (Listen, Orpheus) | **PROVEN for the PROTOCOL** — real mistborn in WSL, both stream modes, `ready -> loaded -> audio -> batch_item -> batch_done`, child closed cleanly. The smoke tool's OWN exit code is not evidence from these runs: its watchdog overwrote it (see below), so **a clean `--real` exit code is still owed**. | **PROVEN** 2026-09-05 (Mac agent, 8db243b2, through the pool's own plan: `conda run -p narrator-mlx python -u -m narrator.serve`, `NARRATOR_ENGINE=orpheus`, deathstalker) — cold start 2.5 s, load 4.2 s, `ready -> status -> loaded -> audio -> batch_item -> batch_done`, **exit 0**, stdout JSON-only (engine logging on stderr). Single 2.15 s row at 0.64x realtime and a 2-row batch at 0.65x: the known MLX short-row physics, which fast-start exists for. The tool itself was dead on arrival on every host until the probe fix below; the Mac run went through an 8-line pre-load wrapper doing exactly what the fix now does. |
+| serve (Listen, Higgs) | argv/env snapshot only — **deferred** to the certified production checkpoint (Owen, 2026-09-05) | MLX backend merged (339cd668); **never started** — the Mac has no copy of the certified checkpoint, and the served proof is owed on the PC first |
 
 ### The Windows/WSL GPU window, 2026-09-05 (08:06-08:45 local, ~26 min of GPU)
 
@@ -640,6 +640,20 @@ wrote it can no longer be established. And the timer fix is verified on the fake
 path only: the GPU lock passed to the `higgs-v3-finetune` agent at 08:51:56, so the
 card was not taken back to re-run it. The fix is in the engine-agnostic `close`
 handler, which the fake path exercises identically.
+
+#### A fifth, found by the Mac agent: the tool died before any spawn, on every host
+
+The review fix round made the pool's engine probe REQUIRED (236558d0): a pool asked
+which engine a spawn is for, with nothing registered, now throws instead of
+answering `'orpheus'` silently. In the app `streaming-engine.ts` registers the
+probe at module load. `smoke-serve-spawn.js` required the pool and nothing else,
+so from that commit on it exited 1 in 0 s — "No streaming engine probe is
+registered" — fake mode included, before it could spawn anything. Nothing in the
+keepers ran the tool, so nothing noticed until the Mac agent ran it at ffca9398.
+Fixed 2026-09-05 by loading `dist/electron/streaming-engine.js` before the pool,
+exactly as the app does, rather than registering a probe of the tool's own; the
+Mac's SMOKE OK above came through an 8-line pre-load wrapper doing the same thing,
+and the fake path on Windows now runs to `SMOKE OK`, exit 0, in 3 s.
 
 **Rate against speech.** A single short row runs at 0.61-0.65x realtime — below
 speech — while a two-row batch runs at 1.38-1.45x. That is the shape the fast-start
