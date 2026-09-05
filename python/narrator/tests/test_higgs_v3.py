@@ -771,6 +771,91 @@ class ServedSamplingTest(V3TestCase):
                          'the seed is not a sampling lever')
 
 
+class GenerationConfigTypesTest(V3TestCase):
+    """Presence is not validation. A number that is wrong in a way nobody says
+    out loud is exactly what this file exists to stop."""
+
+    def _refuse(self, body):
+        merged = self.merged_checkpoint(name='typed-' + str(abs(hash(body))),
+                                        generation_config=body)
+        with self.assertRaises(ValueError) as caught:
+            v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('generation_config.json', message)
+        return message
+
+    def test_a_float_top_k_is_refused_rather_than_truncated(self):
+        """`int(50.7)` is 50 everywhere that touches it - a DIFFERENT sampling
+        than the file states, arrived at silently."""
+        message = self._refuse('{"temperature": 1.0, "top_p": 0.95, '
+                               '"top_k": 50.7}')
+        self.assertIn('top_k', message)
+        self.assertIn('whole number', message)
+
+    def test_a_null_value_is_refused_by_name(self):
+        for body, key in (
+                ('{"temperature": null, "top_p": 0.95, "top_k": 50}',
+                 'temperature'),
+                ('{"temperature": 1.0, "top_p": null, "top_k": 50}', 'top_p'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": null}',
+                 'top_k')):
+            with self.subTest(key=key):
+                self.assertIn(key, self._refuse(body))
+
+    def test_a_string_value_is_refused_rather_than_coerced(self):
+        self.assertIn('top_p', self._refuse(
+            '{"temperature": 1.0, "top_p": "0.95", "top_k": 50}'))
+
+    def test_a_boolean_is_not_a_number(self):
+        """`True` is an int in Python; it is not a top-k."""
+        self.assertIn('top_k', self._refuse(
+            '{"temperature": 1.0, "top_p": 0.95, "top_k": true}'))
+
+    def test_out_of_range_values_are_refused(self):
+        for body, word in (
+                ('{"temperature": -0.5, "top_p": 0.95, "top_k": 50}',
+                 'negative'),
+                ('{"temperature": 1.0, "top_p": 1.5, "top_k": 50}',
+                 'probability mass'),
+                ('{"temperature": 1.0, "top_p": 0.0, "top_k": 50}',
+                 'probability mass'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": -1}',
+                 'non-negative'),
+                ('{"temperature": 1.0, "top_p": 0.95, "top_k": 50, '
+                 '"repetition_penalty": 0.0}', 'positive')):
+            with self.subTest(body=body):
+                self.assertIn(word, self._refuse(body))
+
+    def test_the_values_a_checkpoint_may_legitimately_state_are_accepted(self):
+        """0.0 temperature is greedy, 1.0 top_p is the untruncated tail and 0
+        top_k disables top-k. A checkpoint that says so is saying it
+        deliberately, and narrator does not second-guess a model's own file."""
+        merged = self.merged_checkpoint(
+            name='edge',
+            generation_config='{"temperature": 0.0, "top_p": 1.0, "top_k": 0}')
+        document = v3_served.require_generation_config(merged, 'ds-ft')
+        self.assertEqual(document['top_k'], 0)
+
+    def test_an_unreadable_file_is_refused_by_name(self):
+        """Permissions, a broken symlink, a wedged mount. The file passes
+        `isfile` and then the read fails - and every OTHER state of this file
+        refuses with the voice, the path and why, so a bare OSError here would
+        be the one refusal in this feature that names neither. The failure is
+        injected rather than staged on disk because there is no portable way to
+        make a file unreadable on both Windows and Linux."""
+        from unittest import mock
+        merged = self.merged_checkpoint(name='unreadable')
+        with mock.patch('builtins.open',
+                        side_effect=OSError('Permission denied')):
+            with self.assertRaises(ValueError) as caught:
+                v3_served.require_generation_config(merged, 'ds-ft')
+        message = str(caught.exception)
+        self.assertIn('ds-ft', message)
+        self.assertIn('could not be read', message)
+        self.assertIn('Permission denied', message)
+
+
 class LifecycleTest(V3TestCase):
 
     def test_attach_mode_does_not_launch_or_kill(self):

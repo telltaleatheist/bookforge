@@ -451,8 +451,17 @@ def require_generation_config(checkpoint_dir: str, voice_name: str) -> dict:
             f'not carry {GENERATION_CONFIG_FILE}, which is a REQUIRED file of a '
             f'Higgs v3 checkpoint - {_WHY_GENERATION_CONFIG} Re-merge the '
             'checkpoint (the merge writes it) rather than dropping one in by hand.')
-    with open(path, 'r', encoding='utf-8') as handle:
-        text = handle.read()
+    try:
+        with open(path, 'r', encoding='utf-8') as handle:
+            text = handle.read()
+    except OSError as exc:
+        # Permissions, a DIRECTORY named generation_config.json, a broken
+        # symlink, an unreadable mount. Every other state of this file is
+        # refused with the voice, the path and why; a bare OSError from here
+        # would be the one refusal in this feature that names neither.
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} exists but could not be read "
+            f'({exc}). {_WHY_GENERATION_CONFIG}') from exc
     try:
         document = json.loads(text)
     except ValueError as exc:
@@ -475,7 +484,69 @@ def require_generation_config(checkpoint_dir: str, voice_name: str) -> dict:
             f'sampling and falls back exactly as if it were absent. '
             f'{_WHY_GENERATION_CONFIG} It should hold '
             f'{GENERATION_CONFIG_EXPECTED} for this model family.')
+    _check_sampling_types(document, path, name)
     return document
+
+
+def _check_sampling_types(document: dict, path: str, name: str) -> None:
+    """The three (four, with `repetition_penalty`) values must be NUMBERS OF THE
+    RIGHT KIND, refused by name exactly as absence is.
+
+    Presence without type is not validation. `"top_k": 50.7` truncates silently
+    to 50 the moment anything calls `int()` on it; `"temperature": null` raises a
+    bare TypeError from whichever caller touched it first, naming neither the
+    voice nor the file; and on the served arm nothing reads the values at all, so
+    a malformed one goes straight to vLLM. A number that is wrong in a way
+    nobody says out loud is the failure this whole file exists to stop.
+
+    `bool` is excluded deliberately: `True` is an `int` in Python and
+    `"top_k": true` is not a top-k.
+    """
+    for key in ('temperature', 'top_p', 'repetition_penalty'):
+        if key not in document:
+            # Only `repetition_penalty` can be absent here - the other two are
+            # required above - and an absent one is vLLM's own default, which
+            # narrator neither states nor checks.
+            continue
+        value = document[key]
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives {key} as "
+                f'{value!r} ({type(value).__name__}), which is not a number. '
+                f'{_WHY_GENERATION_CONFIG}')
+        value = float(value)
+        if value != value or value in (float('inf'), float('-inf')):
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives {key} as {value!r}, "
+                'which is not a finite number.')
+        if key == 'temperature' and value < 0.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives temperature {value!r}. "
+                'Temperature is a divisor of the logits and cannot be negative; '
+                '0.0 is greedy decoding.')
+        if key == 'top_p' and not 0.0 < value <= 1.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives top_p {value!r}. "
+                'top_p is a probability mass and must be in (0.0, 1.0]. (1.0 is '
+                'accepted and means the UNTRUNCATED tail - if a checkpoint '
+                'really wants that, it says so here and narrator does not '
+                'second-guess it.)')
+        if key == 'repetition_penalty' and value <= 0.0:
+            raise ValueError(
+                f"Higgs v3 voice '{name}': {path} gives repetition_penalty "
+                f'{value!r}, which must be positive (1.0 is no penalty).')
+    top_k = document['top_k']
+    if isinstance(top_k, bool) or not isinstance(top_k, int):
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} gives top_k as {top_k!r} "
+            f'({type(top_k).__name__}). top_k is a COUNT of candidate tokens and '
+            'must be a whole number - a float here is silently truncated by '
+            'every consumer, which is a different sampling than the file states.')
+    if top_k < 0:
+        raise ValueError(
+            f"Higgs v3 voice '{name}': {path} gives top_k {top_k!r}. It must be "
+            'a non-negative count. (0 is accepted and DISABLES top-k - a '
+            'checkpoint that states that is stating it deliberately.)')
 
 
 def checkpoint_serve_target(checkpoint_dir: str, voice_name: str) -> str:

@@ -341,6 +341,12 @@ class HiggsV3MlxConfig:
                 "defaults ('repetition_penalty', 'seed') are vllm-omni's and have no "
                 'counterpart here. Refusing a lever that would look applied and do '
                 'nothing.')
+        # VALIDATE NOW, at construction - the same moment `HiggsV3Config` does.
+        # Both real doors already validate before building a config, so this
+        # closes an asymmetry rather than a live hole: a caller that constructs
+        # the dataclass directly should not get an object whose first refusal
+        # arrives from inside the generation loop.
+        self.mlx_sampling()
 
     def mlx_sampling(self) -> dict:
         """The three levers actually handed to `step()` - FROM THE MODEL DIR.
@@ -374,14 +380,42 @@ class HiggsV3MlxConfig:
                              authority for base weights is therefore v3's
                              documented deploy default,
                              `v3_served.SERVER_DEFAULT_SAMPLING` - stated here,
-                             not guessed, and it is what the served arm's
-                             stage-0 config uses for the same weights.
+                             not guessed. The SERVED arm now states the same
+                             values for the same weights, explicitly, in
+                             `extra_params` (`HiggsV3Config.served_sampling`),
+                             so base weights render alike on both arms.
 
         `sampling` is a named per-config override on top and stays what it was.
+
+        A `repetition_penalty` OTHER THAN 1.0 in the file is REFUSED, not
+        dropped. mlx-audio's `higgs_audio_v3` has no repetition penalty at all -
+        `Model.generate` takes no such argument and the word appears nowhere in
+        the package (PORT_NOTES 13.11) - so a checkpoint whose file asks for one
+        would render on the Mac with no penalty while the SAME directory on the
+        served arm applies it: one voice, two samplings, silently. 1.0 is a
+        no-op and is accepted as the nothing it is. This is the same rule
+        `__post_init__` applies to a user-supplied `repetition_penalty`; a lever
+        the runtime cannot honour is a refusal at either door.
         """
         if self.voice.checkpoint_dir:
             document = v3_served.require_generation_config(
                 self.voice.checkpoint_dir, self.voice.name)
+            # Absence is a real state - the key is optional in the file and an
+            # absent penalty is no penalty - so it is tested for, not defaulted.
+            penalty = document['repetition_penalty'] if (
+                'repetition_penalty' in document) else 1.0
+            if float(penalty) != 1.0:
+                raise ValueError(
+                    f"Higgs v3 voice '{self.voice.name}': its "
+                    f'{v3_served.GENERATION_CONFIG_FILE} in '
+                    f'{self.voice.checkpoint_dir} asks for repetition_penalty '
+                    f'{penalty}, and mlx-audio has NO repetition penalty - '
+                    'higgs_audio_v3.Model.generate takes no such argument and the '
+                    'lever does not exist anywhere in the package. Rendering here '
+                    'anyway would give this checkpoint one sampling on the Mac and '
+                    'another on the vllm-omni server, from the same file. Render '
+                    'this voice on the served arm, or re-merge it with a '
+                    'repetition_penalty of 1.0.')
         else:
             document = v3_served.SERVER_DEFAULT_SAMPLING
         resolved = {k: document[k] for k in self.MLX_SAMPLING_KEYS}

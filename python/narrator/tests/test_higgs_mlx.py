@@ -561,6 +561,39 @@ class MlxConfigTest(unittest.TestCase):
         self.assertIn('generation_config.json', message)
         self.assertIn('ft', message)
 
+    def test_a_repetition_penalty_the_runtime_cannot_apply_is_REFUSED(self):
+        """mlx-audio has no repetition penalty at all - Model.generate takes no
+        such argument and the lever appears nowhere in the package. Dropping the
+        file's value silently would give one checkpoint two samplings: penalised
+        on the vllm-omni server, unpenalised on the Mac, from the same file."""
+        import json
+        with open(self.generation_config, 'w', encoding='utf-8') as handle:
+            json.dump({'temperature': 1.0, 'top_p': 0.95, 'top_k': 50,
+                       'repetition_penalty': 1.1}, handle)
+        with self.assertRaises(ValueError) as caught:
+            self._build('ft')
+        message = str(caught.exception)
+        self.assertIn('repetition_penalty', message)
+        self.assertIn('ft', message)
+        self.assertIn('mlx-audio', message)
+
+    def test_a_repetition_penalty_of_one_is_the_no_op_it_looks_like(self):
+        """1.0 is no penalty; refusing it would refuse every correctly merged
+        checkpoint, since the merge writes exactly that."""
+        self.assertEqual(self._build('ft').mlx_sampling()['top_k'], 50)
+
+    def test_the_config_validates_at_CONSTRUCTION_like_its_served_twin(self):
+        """`HiggsV3Config.__post_init__` validates the checkpoint; this one used
+        to wait until `mlx_sampling()` was first called, so a caller building the
+        dataclass directly got an object whose first refusal arrived from inside
+        the generation loop."""
+        from narrator.engine.higgs import HiggsV3MlxConfig
+        config = self._build('ft')
+        os.remove(self.generation_config)
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3MlxConfig(voice=config.voice, model_dir=config.model_dir)
+        self.assertIn('generation_config.json', str(caught.exception))
+
     def test_the_stop_policy_reports_the_checkpoints_own_levers(self):
         """`levers` is what WILL be applied; reporting the base default for a
         fine-tune would make a manifest that names sampling nobody used."""
