@@ -172,11 +172,23 @@ def run_jobs(python_exe: str, jobs: Sequence[dict],
     two refusals below are unchanged - this only stops the caller having to wait
     for the last chunk to learn about the first.
 
-    STDERR GOES TO A TEMPORARY FILE rather than a second pipe. Reading one pipe
-    while the child writes to another is the classic deadlock: the worker prints
-    a model-load line and a per-failure line to stderr, and a full stderr buffer
-    would stop it writing the stdout this loop is waiting on. A file has no such
-    limit, and it is read once at the end for the message.
+    ONLY STDOUT IS A PIPE. `subprocess.run(input=...)` fed stdin and drained
+    both output streams with `communicate()`, which juggles all three with
+    select/threads; a loop that reads ONE pipe while the child writes to the
+    other two deadlocks, and both other streams would reach the buffer:
+
+      stdin   a book's job list is ~500 bytes a chunk, so 1,400 chunks is ~700 kB
+              against a 64 kB pipe. Writing it inline would block this process
+              part-way, while the worker - having read the first 64 kB - fills
+              its own stdout buffer with alignments nobody is reading. Neither
+              side moves again.
+      stderr  the worker prints a model-load line and a line per failed chunk. A
+              full stderr buffer stops it writing the stdout this loop waits on.
+
+    So both are TEMPORARY FILES, which have no such limit: the payload is written
+    and rewound before the child starts (it reads to EOF and stops, exactly as it
+    did when `communicate()` closed the pipe), and stderr is read once at the end
+    for the message.
     """
     if not os.path.isfile(python_exe):
         raise FileNotFoundError(
@@ -185,19 +197,15 @@ def run_jobs(python_exe: str, jobs: Sequence[dict],
             f'(WhisperX)" from Settings -> Add-ons')
     payload = '\n'.join(json.dumps(job) for job in jobs) + '\n'
     results: list = []
-    with tempfile.TemporaryFile() as errfile:
+    with tempfile.TemporaryFile() as infile, tempfile.TemporaryFile() as errfile:
+        infile.write(payload.encode('utf-8'))
+        infile.seek(0)
         proc = subprocess.Popen(
             [python_exe, '-m', 'narrator.align.worker'],
-            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=errfile,
+            stdin=infile, stdout=subprocess.PIPE, stderr=errfile,
             env=worker_environment(),
         )
         try:
-            # The whole job list is written up front, as it always was: the
-            # worker reads stdin to EOF and a chunk of JSON lines is kilobytes,
-            # far inside the pipe buffer for any book. Closing stdin is what
-            # ends the worker's loop.
-            proc.stdin.write(payload.encode('utf-8'))
-            proc.stdin.close()
             for line in proc.stdout:
                 text = line.decode('utf-8', 'replace').strip()
                 if not text:

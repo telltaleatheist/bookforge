@@ -630,6 +630,69 @@ class ProgressLineTest(unittest.TestCase):
         self.assertIsNone(params['on_result'].default)
 
 
+class WorkerProtocolTest(unittest.TestCase):
+    """`run_jobs` drives a real child over a job list BIGGER THAN A PIPE.
+
+    THE BUG THIS EXISTS FOR. `run_jobs` used `subprocess.run(input=...)`, which
+    feeds stdin and drains stdout and stderr together. Streaming the results (so
+    the queue row can show progress) meant reading stdout in a loop - and an
+    inline `proc.stdin.write(payload)` beside that loop DEADLOCKS on any real
+    book: a job line is ~500 bytes, 1,400 chunks is ~700 kB, and a pipe holds
+    64 kB. The parent blocks writing, the worker fills its own stdout buffer with
+    results nobody is reading, and neither moves again. It would have looked like
+    a hung Align row on long books and worked perfectly on every short one.
+
+    NO MODEL, NO TORCH, NO AUDIO. The jobs name a backend that does not exist, so
+    `load_backend` refuses each one instantly and the worker still emits one
+    result line per job - which is the whole protocol, and exactly what a
+    deadlock would prevent. That makes this runnable on any interpreter that can
+    import narrator, which is every one the suite runs on.
+    """
+
+    #: A pipe is 64 kB on Linux and 4-64 kB on Windows. Sized well past both, so
+    #: the test fails on the write side if the payload is ever fed inline again.
+    JOBS = 400
+
+    def _jobs(self):
+        # Padded so the payload is unambiguously bigger than any pipe buffer.
+        text = 'the quick brown fox jumps over the lazy dog. ' * 6
+        return [{'index': i, 'audioPath': f'/nope/{i}.flac', 'text': text,
+                 'language': 'en', 'backend': 'no-such-backend', 'device': 'cpu'}
+                for i in range(self.JOBS)]
+
+    def test_a_payload_bigger_than_a_pipe_completes(self):
+        import sys
+        jobs = self._jobs()
+        payload = sum(len(json.dumps(j)) for j in jobs)
+        # Twice the 64 kB Linux pipe, and many times any Windows one. The fixture
+        # measures ~157 kB; the floor is what it must never quietly fall under,
+        # because a payload that fits in a pipe proves nothing.
+        self.assertGreater(payload, 131_072,
+                           'the fixture is no longer big enough to prove anything')
+
+        seen = []
+        results = E.run_jobs(sys.executable, jobs,
+                             timeout=300,
+                             on_result=lambda done, total: seen.append((done, total)))
+
+        self.assertEqual(len(results), self.JOBS)
+        # Order is the protocol: result k answers job k.
+        self.assertEqual([r['index'] for r in results], list(range(self.JOBS)))
+        # Every one failed, by name, because the backend does not exist - and a
+        # FAILED job is still a result line, which is what keeps the counts equal.
+        self.assertTrue(all(r['ok'] is False for r in results))
+        self.assertIn('no-such-backend', results[0]['error'])
+
+    def test_the_callback_fires_as_results_ARRIVE_not_at_the_end(self):
+        import sys
+        seen = []
+        E.run_jobs(sys.executable, self._jobs(), timeout=300,
+                   on_result=lambda done, total: seen.append((done, total)))
+        self.assertEqual(len(seen), self.JOBS)
+        self.assertEqual(seen[0], (1, self.JOBS))
+        self.assertEqual(seen[-1], (self.JOBS, self.JOBS))
+
+
 class CliTest(unittest.TestCase):
 
     def test_align_is_a_subcommand_with_the_documented_flags(self):
