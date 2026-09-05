@@ -1,6 +1,6 @@
 import { Injectable, computed, signal } from '@angular/core';
 
-import type { AnalyzeRequest, Job, JobRequest, TranslateRequest } from '@shared/types';
+import type { AnalyzeRequest, Job, JobRequest, TextPassRequest } from '@shared/types';
 
 import { api } from './foundry';
 
@@ -81,8 +81,13 @@ export class QueueService {
    * duplicate that was never created. A user who pressed Add twice deserves to
    * be told the second press changed nothing, which is exactly the reasoning
    * written above `enqueue`; only this method had been left out of it.
+   *
+   * ONE METHOD FOR THREE DIALOGS, matching the one door beneath it: Translate,
+   * Simplify and Clean text each build their own request and all three arrive
+   * here, because the dedupe answer and the sentence it earns are the same for
+   * all three (`enqueueTextPass`, electron/job-queue.ts).
    */
-  async enqueueTranslate(request: TranslateRequest): Promise<'added' | 'already'> {
+  async enqueueTextPass(request: TextPassRequest): Promise<'added' | 'already'> {
     const before = new Set(this.all().map((job) => job.id));
     const job = await api?.queue.enqueueTranslate(request);
     if (!job) return 'added';

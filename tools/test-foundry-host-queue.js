@@ -60,8 +60,33 @@ host.watchFoundryQueue();
 
 let passed = 0;
 const failures = [];
+const skipped = [];
 const tests = [];
 function test(name, fn) { tests.push({ name, fn }); }
+
+/**
+ * A real foundry binary on this machine, or null.
+ *
+ * `FOUNDRY_CLI_PATH` first — a developer's own build wins, which is the bridge's
+ * own rule — then the two places a dev checkout compiles one
+ * (`electron/foundry-dev-cli.ts`'s candidates, spelled the BUILD's way: the
+ * bun target is `windows` and Windows binaries carry `.exe`, while
+ * `process.platform` says `win32`).
+ */
+function realFoundry() {
+  const name = process.platform === 'win32'
+    ? `foundry-windows-${process.arch}.exe`
+    : `foundry-${process.platform}-${process.arch}`;
+  const candidates = [
+    process.env.FOUNDRY_CLI_PATH,
+    path.join('/Volumes/Callisto/Projects/foundry', 'dist', name),
+    path.join(os.homedir(), 'Projects', 'foundry', 'dist', name),
+  ];
+  for (const candidate of candidates) {
+    if (candidate && fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const settle = async (n = 12) => { for (let i = 0; i < n; i++) await wait(0); };
@@ -336,6 +361,146 @@ test('the dedupe folds the path — one Windows file spelled two ways is one row
   assert.strictEqual(b.id, a.id, 'a dedupe comparing spellings lets through the collision it exists to prevent');
 });
 
+// ── The three text passes (foundry 9f4ee4e) ─────────────────────────────────
+//
+// A simplify used to arrive as `kind: 'translate'` wearing a `rewrite`, and a
+// narration cleanup did not exist. Owen's ruling of 2026-09-05 split them into
+// three kinds on the wire, and their handoff calls the re-vendor REQUIRED rather
+// than recommended for exactly this: a simplify sends the new kind from the
+// moment the snapshot lands, whether or not this side learned the word.
+
+/** A text pass as the hosted window sends one. Its product is its RECORDS file. */
+const textPass = (kind, key = 't1', project = PROJ) => ({
+  kind,
+  inputPath: `${project}\\archive\\book.epub`,
+  bookPath: `${project}\\readings\\bank.book.jsonl`,
+  recordsPath: `${project}\\records\\${key}.records.jsonl`,
+  ...(kind === 'clean' ? { stampPath: `${project}\\records\\${key}.stamp.json` } : {}),
+  ...(kind === 'simplify' ? { rewrite: 'natural', to: 'en', from: 'en' } : {}),
+  ...(kind === 'translate' ? { to: 'de', from: 'en' } : {}),
+});
+
+test('a text pass is identified by its RECORDS file — a clean names no outputPath at all', async () => {
+  await fresh('textpass-product');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+
+  const first = host.foundryHostQueue.enqueue(textPass('clean', 'same'), null, PROJ);
+  const second = host.foundryHostQueue.enqueue(textPass('clean', 'same'), null, PROJ);
+  assert.strictEqual(
+    second.id, first.id,
+    'a clean has no outputPath, so reading one would give every clean an empty identity and '
+    + 'dedupe it against nothing: two rows writing one records file, which is the collision '
+    + 'the dedupe exists to prevent',
+  );
+  const other = host.foundryHostQueue.enqueue(textPass('clean', 'different'), null, PROJ);
+  assert.notStrictEqual(other.id, first.id, 'two different records files are two honest rows');
+});
+
+test('a simplify and a translate over one book are TWO rows — different records, different acts', async () => {
+  await fresh('textpass-siblings');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const simplify = host.foundryHostQueue.enqueue(textPass('simplify', 'plain'), null, PROJ);
+  const translate = host.foundryHostQueue.enqueue(textPass('translate', 'de'), null, PROJ);
+  assert.notStrictEqual(simplify.id, translate.id);
+});
+
+test('the row says which ACT it is, because three of them are about one book', async () => {
+  await fresh('textpass-label');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+
+  const titleOf = (kind, key) =>
+    host.foundryHostQueue.enqueue(textPass(kind, key), null, PROJ).title;
+
+  // "Clean text" is Owen's own word, said the same in all three places a person
+  // meets it (2026-09-05): Foundry's tile, its queue row, and — as "Cleaned for
+  // narration" — the step in the history. A fourth spelling here would be this
+  // side renaming an act it does not own.
+  assert.match(titleOf('clean', 'c'), /^Clean text — book\.epub$/);
+  assert.match(titleOf('simplify', 's'), /^Simplify — book\.epub$/);
+  assert.match(titleOf('translate', 't'), /^Translate — book\.epub$/);
+});
+
+test('a STORED translate row carrying a rewrite is still read as the simplify it is', async () => {
+  // A queue.json written before the split holds `kind: 'translate'` rows with a
+  // `rewrite` on them. Reading a stored row for what it says is not a fallback;
+  // calling every one of them a translation is what this sniff was added to end
+  // (Owen, 2026-08-29).
+  await fresh('textpass-legacy');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const legacy = { ...textPass('translate', 'legacy'), rewrite: 'natural' };
+  assert.match(
+    host.foundryHostQueue.enqueue(legacy, null, PROJ).title,
+    /^Simplify — book\.epub$/,
+  );
+});
+
+test('the engine that has no clean-text is refused BY NAME, and nothing runs', () => {
+  // The gate is checked in the step module, not at `enqueue`: that door is
+  // synchronous by contract ("pressing Add cannot leave a moment where nothing
+  // has appeared") and asking a binary its version is a spawn. So the row is
+  // minted and refuses the instant its turn comes — before Foundry is asked to
+  // spawn anything and before a model is loaded.
+  const { foundryVersionAtLeast } = require(path.join(DIST, '..', 'shared', 'vlm', 'readings-bank.js'));
+  assert.strictEqual(foundryVersionAtLeast('1.0.2', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), false);
+  assert.strictEqual(foundryVersionAtLeast('1.1.0', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), true);
+  assert.strictEqual(foundryVersionAtLeast('1.2.0', host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), true);
+
+  const said = host.foundryTooOldForCleanText('1.0.2');
+  assert.ok(said.includes('1.0.2'), 'the refusal must name what IS installed');
+  assert.ok(said.includes(host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), 'and the version the command arrived in');
+  assert.match(said, /Settings → Add-ons/, 'and where to fix it');
+  assert.match(said, /Nothing was cleaned/, 'and that nothing ran — the readings-flag refusal\'s shape');
+});
+
+test('a clean-text count reaches the row in THEIR shape, through the REAL step module', async () => {
+  /*
+   * A `clean` row asks the installed binary its version before it runs, so this
+   * case needs a real foundry — the gate above is what makes that true, and
+   * stubbing it out here would test a step module this app does not have.
+   * SKIPPED BY NAME on a machine without one rather than passed quietly.
+   */
+  const binary = realFoundry();
+  if (binary === null) {
+    skipped.push('a clean-text count reaches the row in THEIR shape — no foundry binary on this machine');
+    return;
+  }
+  process.env.FOUNDRY_CLI_PATH = binary;
+  await fresh('textpass-progress');
+  engine.clearStepModules();
+  engine.registerStepModule(require(path.join(DIST, 'queue-steps', 'foundry-job.js')).foundryJobStep);
+
+  let onProgress = null;
+  host.setFoundrySeam({
+    runJob: (_request, opts) => new Promise((resolve) => {
+      onProgress = opts.onProgress;
+      setTimeout(() => resolve({ state: 'done' }), 0);
+    }),
+    setQueueRows: null,
+    drained: null,
+  });
+  engine.start();
+  const row = host.foundryHostQueue.enqueue(textPass('clean', 'prog'), null, PROJ);
+  engine.start({ stepId: row.id });
+  // The gate SPAWNS the binary to ask its version, so this waits on a real child
+  // rather than on microtasks. A fixed `settle()` here read the step before the
+  // spawn had returned and reported "never reached the seam" for a step that was
+  // working — which is the version of this test that would have been committed.
+  for (let i = 0; i < 200 && onProgress === null; i++) await wait(25);
+  assert.ok(
+    onProgress !== null,
+    'the step never reached the seam — the ≥' + host.FOUNDRY_VERSION_FOR_CLEAN_TEXT
+    + ' gate refused ' + binary + ', or the spawn failed',
+  );
+  onProgress('clean-text: 412/2081');
+  await settle();
+  const [after] = host.foundryHostQueue.rows(PROJ);
+  assert.deepStrictEqual(
+    after.progress, { page: 412, total: 2081, phase: 'clean' },
+    'their shelf interpolates page and total off this object; a phase it does not carry is a bar '
+    + 'that changed units mid-run',
+  );
+});
+
 test('a FINISHED read does not block a fresh press — that is a person asking again', async () => {
   const mod = await fresh('dedupe-terminal');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
@@ -520,6 +685,7 @@ test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to 
   for (const f of failures) {
     console.error(`FAIL  ${f.name}\n      ${f.err && f.err.message}`);
   }
+  for (const s of skipped) console.log(`SKIP  ${s}`);
   console.log(`foundry-host-queue: ${passed}/${tests.length} passed`);
   process.exit(failures.length === 0 ? 1 - 1 : 1);
 })();

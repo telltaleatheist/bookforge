@@ -93,6 +93,58 @@ export class StepLedgerError extends Error {
   }
 }
 
+/**
+ * THE TEXT PASSES — the three actions that make new words for the same blocks.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-05, about the narration cleanup: *"it isnt a translate job. naming
+ * it translate is deceptive … it needs to be accurate. translate, simplify, and
+ * cleanup are all three similar steps."* Three ledger actions, each row saying what
+ * it is — and ONE body of machinery underneath, because the three genuinely are one
+ * mechanism: a model asked once per block, answers appended to a records file that
+ * is its own cost cache, a derived book materialised from that file when it lands,
+ * and every position beneath it reading the derived book rather than the source.
+ *
+ * ── WHY THE FAMILY IS A LIST AND NOT AN `if` AT EVERY SITE ──────────────────
+ *
+ * Because there were eleven such sites when this was written, spelled
+ * `action === 'translate'`, and each of them meant one of TWO different things:
+ * *"which words are in the blocks here"* (all three) and *"which language is this
+ * book in"* (two of them — a cleanup declares none). Widening them by hand would
+ * have meant deciding that question eleven times, and the way that goes wrong is
+ * silent: a cleanup treated as a translation renders a book claiming a language its
+ * step never recorded, and a cleanup treated as neither renders the UNCLEANED words
+ * under a row that says they were cleaned.
+ *
+ * So the two questions have two functions — `textPassInEffect` and
+ * `translationInEffect` — and both are built out of this list rather than out of
+ * literals. A fourth pass is a member here and a compile error in the tables.
+ */
+export const TEXT_PASS_ACTIONS = ['translate', 'simplify', 'clean'] as const;
+
+/**
+ * Is this action one of the three? A predicate rather than an `includes` at the
+ * call sites, for `TEXT_PASS_ACTIONS`' own reason and so callers narrow.
+ */
+export function isTextPass(action: StepAction): boolean {
+  return (TEXT_PASS_ACTIONS as readonly string[]).includes(action);
+}
+
+/**
+ * THE TWO PASSES THAT DECLARE A LANGUAGE — the family minus the cleanup.
+ *
+ * A translation says which language it went into and a rewrite says which language
+ * it happened in; both record it as `params.language`, both name a book after it
+ * (`translationFileFor`), and both are what `dc:language` is set from. A CLEANUP
+ * SAYS NOTHING ABOUT LANGUAGE at all: it says the same book again in the same
+ * language with narratable punctuation, so asking it which language the book is in
+ * would get an empty string — and an empty string reaching a rendering is a book
+ * refused for "not saying which language it was made into" one row after somebody
+ * cleaned it.
+ */
+const DECLARES_A_LANGUAGE = ['translate', 'simplify'] as const;
+
 /*
  * `STEP_ACTIONS` now lives beside `StepAction` in shared/types.ts, which
  * DERIVES the union from it — see the argument there. It was declared here and
@@ -130,6 +182,27 @@ function isRewriteMode(said: string): said is RewriteMode {
 }
 
 /**
+ * Does this stored params bag carry a rewrite at all — the whole of the test the
+ * heal in `readStep` turns on.
+ *
+ * THE KEY AND NOT THE VALUE, deliberately. A `translate` row wearing ANY rewrite
+ * is a simplify written by a build that predates the split, whatever the mode says
+ * — and a mode this build cannot name is a refusal `readParams` already gives, by
+ * name, one function down. Testing the value here would mean a row carrying a
+ * fourth mode healed into nothing, parsed cleanly as a translation, and labelled
+ * "Translated (de)" over a book somebody asked to be said plainly: a silent wrong
+ * answer where the file already had a loud one available.
+ *
+ * `undefined` IS ABSENT, on `identityOf`'s rule: a bag written `{rewrite:
+ * undefined}` said nothing, and a heal that read it as a simplify would move a
+ * row on the strength of a key JSON does not even round-trip.
+ */
+function carriesRewrite(params: unknown): boolean {
+  if (typeof params !== 'object' || params === null || Array.isArray(params)) return false;
+  return (params as Record<string, unknown>)['rewrite'] !== undefined;
+}
+
+/**
  * WHAT IT WOULD COST TO GET THIS PAYLOAD BACK, per action — the retention rule
  * as one table.
  *
@@ -156,6 +229,11 @@ export const RETENTION_OF: Readonly<Record<StepAction, LedgerStep['retention']>>
   read: 'expensive',
   curate: 'irreplaceable',
   translate: 'expensive',
+  // THE TRANSLATE CLAUSE, TWICE MORE. A rewrite and a narration cleanup are the
+  // same model pass over the same book asked a different question, and a machine
+  // will pay the same hours to make either of them again.
+  simplify: 'expensive',
+  clean: 'expensive',
   // A person read the title off the book in their hands and typed it. The write
   // took milliseconds and that is not the question this table asks — see the
   // sentence above about machine cost, and `StepAction` for why a metadata edit
@@ -228,7 +306,62 @@ export const PARAMS_OF: Readonly<Record<StepAction, readonly (keyof LedgerParams
   capture: [],
   read: ['skipPages', 'language', 'generation', 'pages', 'completedAt'],
   curate: ['generation', 'amendments'],
-  translate: ['language', 'bank', 'from', 'rewrite'],
+  /*
+   * `rewrite` IS NO LONGER ONE OF THESE, and its absence is the whole of the heal.
+   *
+   * A translation is described by where it went and — for a chain — where it came
+   * from. A rewrite is a `simplify` row now (`STEP_ACTIONS`, shared/types.ts), so a
+   * `translate` carrying a mode is a step written by a build that predates the
+   * split, and `readStep` reads it back AS a simplify before this table is ever
+   * consulted. Leaving `rewrite` admitted here would make the heal optional: a row
+   * that slipped past it would parse cleanly as a translation and go on labelling
+   * itself "Translated (de)" over a book somebody asked to be said plainly.
+   */
+  translate: ['language', 'bank', 'from'],
+  /*
+   * A SIMPLIFY IS THE TRANSLATION'S FOUR, and it is the only action here whose
+   * list is another action's unchanged. That is not laziness — it is the shape of
+   * the act: a rewrite happens IN a language (so `language`), it can be made under
+   * a translation whose words it consumes (so `from`), every one made before this
+   * split is on a disk with `bank` absent and the field admitted for the reason
+   * `translate`'s own note gives, and the mode is the whole of what makes one
+   * rewrite different from another.
+   *
+   * `rewrite` IS THE QUESTION AND NOT THE ANSWER — see `MINTED_BY_THE_RUN`, which
+   * leaves it out, so asking for easy language beside a plain-terms rewrite of the
+   * same step branches rather than destroying it.
+   */
+  simplify: ['language', 'bank', 'from', 'rewrite'],
+  /*
+   * A CLEANUP IS DESCRIBED BY NOTHING AT ALL, and that is a ruling rather than an
+   * oversight.
+   *
+   * NO `language`: a cleanup does not move the book between languages and does not
+   * declare one. What language the cleaned book is in is whatever the book at the
+   * position was in, which is the derived book's header and is not this row's to
+   * restate — two copies of one fact with no rule about which wins.
+   *
+   * NO `model`, ON `PARAMS_OF.translate`'s OWN ARGUMENT, which that table makes by
+   * having no model in it either. Re-cleaning the same book with a better model is
+   * the same person refining THIS cleanup rather than ordering a second one: they
+   * get the row they already have, with better answers in it, and the records
+   * file's question-keyed cache means only the blocks the new model has never
+   * answered are paid for. A `model` in the question pile would branch instead —
+   * two cleaned records files of one book, one of them stale, and a narration
+   * consuming whichever the pointer happened to be over.
+   *
+   * SO THE IDENTITY OF A CLEANUP IS ITS PARENT, and `identityOf` says exactly that:
+   * `clean` with nothing after it. A second clean from the same step replaces, as
+   * a re-simplify in the same mode does — which is the answer Owen asked for.
+   *
+   * WHAT THE RUN DID IS ON THE STAMP AND NOT IN HERE. `normalizerVersion`, the
+   * punctuation spec, the model and the hour are written into
+   * `<records>.stamp.json` by the engine and read into the EPUB's OPF by
+   * `vlm-compile --narration-stamp`. That is a receipt travelling with the file,
+   * which is what a narrator needs; a params bag repeating it would be this app
+   * copying the engine's own record in order to have an opinion about it.
+   */
+  clean: [],
   /*
    * A METADATA EDIT IS DESCRIBED BY WHICH FIELDS IT SET, and by nothing else. The
    * values are in the payload, where the thing an export replays belongs
@@ -314,6 +447,12 @@ export const RETAINED_BESIDE_YOU: Readonly<Record<StepAction, boolean>> = {
   read: false,
   curate: true,
   translate: false,
+  // A NEW STATE OF THE TEXT, so the pointer follows onto it — `translate`'s answer
+  // for `translate`'s reason. Owen's own sentence about the cleanup is this rule
+  // stated from the chair: *"everything they do after that carries the cleanup
+  // along"*, which is only true if standing there is where the press leaves you.
+  simplify: false,
+  clean: false,
   /*
    * A METADATA EDIT IS THE SAME SHAPE OF GESTURE AS A SAVE, and the argument
    * above transfers word for word. It makes no new state of the book to go and
@@ -461,6 +600,15 @@ const MINTED_BY_THE_RUN: Readonly<Record<StepAction, readonly (keyof LedgerParam
   read: ['generation', 'pages', 'completedAt'],
   curate: [],
   translate: ['bank', 'from'],
+  // THE TRANSLATION'S SPLIT, VERBATIM, AND `rewrite` STAYS IN THE QUESTION PILE.
+  // The paragraph above that predicted the field predicted it here: two modes
+  // sharing a row would mean asking for easy language destroyed the plain-terms
+  // rewrite made from the same step.
+  simplify: ['bank', 'from'],
+  // NOTHING TO MINT AND NOTHING TO COMPARE. `PARAMS_OF.clean` is empty on purpose
+  // — see it for why the model is not a question — so this entry exists to keep
+  // the table exhaustive rather than because any comparison depends on it.
+  clean: [],
   // Everything a metadata edit records was typed by a person into a box. There
   // is no run to mint anything, and `reRunTarget` cannot reach an irreplaceable
   // step in any case — this entry exists so the table stays exhaustive rather
@@ -781,17 +929,37 @@ export function labelFor(action: StepAction, params?: LedgerParams): string {
      * language, so both ends of it are the same tag, and "Translated (de → de)"
      * would be a row describing a run nobody would ever order. What a person is
      * looking for on this row is which of the three they picked, so that is what
-     * it leads with, and the tag stays in the parentheses where every other
-     * translate row keeps it: a project can hold a German rewrite and an English
-     * one, and they are told apart there.
+     * it leads with, and the tag stays in the parentheses where every other text
+     * pass keeps it: a project can hold a German rewrite and an English one, and
+     * they are told apart there.
+     *
+     * THE WORDS ARE UNCHANGED BY THE SPLIT, deliberately. Every simplify row on
+     * every disk was stamped with exactly this sentence while it was still stored
+     * as a translation, and labels are display-only (see this function's header) —
+     * so a healed row goes on reading as the row it always was, and the only thing
+     * that moved is what the ledger CALLS it.
      */
-    default: {
+    case 'simplify': {
       const into = params?.language ?? '';
       const rewrite = params?.rewrite;
-      if (rewrite !== undefined) {
-        const said = `Simplified — ${REWRITE_LABELS[rewrite]}`;
-        return into.length === 0 ? said : `${said} (${into})`;
-      }
+      // A row that recorded no mode says the plain word, on `read`'s rule: a
+      // migrated or hand-edited simplify is not a reason to print `undefined`.
+      const said = rewrite === undefined ? 'Simplified' : `Simplified — ${REWRITE_LABELS[rewrite]}`;
+      return into.length === 0 ? said : `${said} (${into})`;
+    }
+    /*
+     * A CLEANUP SAYS WHAT IT WAS FOR AND NOTHING ELSE, which is the whole of what
+     * there is to say about it: there is no language it went into, no mode it was
+     * asked in and no count worth a person's eye. Owen named the words himself
+     * (2026-09-05) — the tile says "Clean text", the queue row says "Clean text",
+     * and the row in the history says "Cleaned for narration", because a step in a
+     * history is read months later by somebody working out why this book's
+     * paragraphs are punctuated the way they are.
+     */
+    case 'clean':
+      return 'Cleaned for narration';
+    default: {
+      const into = params?.language ?? '';
       if (into.length === 0) return 'Translated';
       const outOf = params?.from ?? '';
       return outOf.length === 0 ? `Translated (${into})` : `Translated (${outOf} → ${into})`;
@@ -960,13 +1128,44 @@ function readStep(entry: unknown, index: number): LedgerStep {
       + 'step are different claims',
     );
   }
-  const action = record['action'];
-  if (typeof action !== 'string' || !(STEP_ACTIONS as readonly string[]).includes(action)) {
+  const said = record['action'];
+  if (typeof said !== 'string' || !(STEP_ACTIONS as readonly string[]).includes(said)) {
     throw new StepLedgerError(
-      `Step "${id}" says "action": ${JSON.stringify(action)}, which is not something this app does. `
+      `Step "${id}" says "action": ${JSON.stringify(said)}, which is not something this app does. `
       + `The actions are: ${STEP_ACTIONS.join(', ')}`,
     );
   }
+  /*
+   * ── THE ONE HEAL THIS READER PERFORMS: A REWRITE IS A `simplify` ────────────
+   *
+   * Every simplify made before 2026-09-05 is on somebody's disk as
+   * `{action: "translate", params: {rewrite: "destiffen", …}}`, because a rewrite
+   * was the translate pipeline with one flag changed and the step borrowed the
+   * pipeline's name. Owen ended that: *"it isnt a translate job. naming it
+   * translate is deceptive … it needs to be accurate."*
+   *
+   * SO IT IS READ AS WHAT IT IS, AND PERSISTED AS THAT ON THE NEXT WRITE. The
+   * ledger is written whole every time anything appends to it, so the first act
+   * after this build lands rewrites those rows for good and nothing ever writes
+   * the old shape again.
+   *
+   * WHY A HEAL RATHER THAN A REFUSAL, when this file refuses nearly everything
+   * else: because the row is not WRONG. It is a complete, well-formed record of an
+   * act this app performed, written by this app, in the only spelling that existed
+   * at the time — the same case `RETENTION_OF`'s unknown-retention entry and
+   * `translationBankOf`'s composed fallback are about, and the opposite of a step
+   * some other program wrote. Refusing would take a person's whole project offline
+   * over this app's own change of vocabulary.
+   *
+   * A MALFORMED ONE STILL REFUSES, and that is what keeps the heal narrow: this
+   * only moves the ACTION, so a `rewrite` that is not one of the three modes falls
+   * through to `readParams` below and is refused there by name, exactly as it
+   * always was. The test is the presence of the key rather than its value.
+   *
+   * THE RETENTION CHECK BELOW IS UNTROUBLED because both actions are `expensive`;
+   * a healed row's stored `"expensive"` is still what `RETENTION_OF` says.
+   */
+  const action = said === 'translate' && carriesRewrite(record['params']) ? 'simplify' : said;
   const payload = record['payload'];
   if (typeof payload !== 'string' || payload.length === 0) {
     throw new StepLedgerError(
@@ -1697,6 +1896,36 @@ export function translationRecordsFileFor(
 }
 
 /**
+ * A CLEANUP'S RECORDS: the project's key, the word `clean`, and what it is —
+ * `<key>.clean[.<id8>].records.jsonl`.
+ *
+ * ── Why `clean` sits where a language tag sits ──────────────────────────────
+ *
+ * Because it answers the same question the tag answers: WHICH PASS ARE THESE THE
+ * ANSWERS OF. A translation's records are told from a rewrite's by the tag and the
+ * mode; a cleanup has neither, so the segment names the act instead. It cannot
+ * collide with a language: `languageTagFor` strips a tag to `[A-Za-z0-9-]`, and a
+ * book translated into the language tagged `clean` is not a thing — but the honest
+ * defence is not that, it is that nothing in this app ever tells these files apart
+ * by name. It asks the step (`translationRecordsOf`), exactly as the two above it
+ * are asked.
+ *
+ * THE SAME BRANCH SUFFIX FOR THE SAME REASON. Clean the reading, strike some
+ * blocks, apply, then clean THAT — two rows, two files, and the second mints
+ * `<id8>` from its own uuid so the first goes on naming the answers it is about.
+ *
+ * A SEPARATE FUNCTION RATHER THAN `translationRecordsFileFor` WITH AN EMPTY
+ * LANGUAGE, which is what a shared namer would have forced. That function's
+ * fallback for an unusable tag is the word `translated` (`languageTagFor`), so a
+ * cleanup asked of it would compose `<key>.translated.records.jsonl` — a file
+ * claiming to be a translation of a book nobody translated, in the one folder
+ * where a wrong name means somebody else's hours of GPU.
+ */
+export function cleanRecordsFileFor(key: string, branch?: string): string {
+  return `${key}.clean${branch === undefined ? '' : `.${branch}`}.records.jsonl`;
+}
+
+/**
  * THE RECORDS A TRANSLATE STEP MEANS — its own payload — or null for one made
  * before translations were records.
  *
@@ -1726,7 +1955,21 @@ export function translationRecordsFileFor(
  * it (`translationBankOf`).
  */
 export function translationRecordsOf(step: LedgerStep): string | null {
-  if (step.action !== 'translate') return null;
+  /*
+   * ── ANY TEXT PASS, AND THE WIDENING IS THE WHOLE OF WHAT THE SPLIT COST ─────
+   *
+   * This said `translate` when a rewrite WAS one. Left as it was, every simplify
+   * on every disk would have healed into a row this function answered null for —
+   * and null here means "made before Foundry kept a translation as records", which
+   * is the sentence four separate refusals print. A person's rewrites would have
+   * become unrenderable, uncorrectable and unsweepable overnight, each with a
+   * message telling them to translate again from the step it was made from.
+   *
+   * A CLEANUP JOINS ON THE SAME CLAUSE AND HAS NO LEGACY ARM: it writes records or
+   * it writes nothing, so the layer test below is a formality for it and the load-
+   * bearing test for its two siblings.
+   */
+  if (!isTextPass(step.action)) return null;
   return step.payload.startsWith('readings/') ? step.payload : null;
 }
 
@@ -1752,6 +1995,15 @@ export function translationRecordsOf(step: LedgerStep): string | null {
  * file to destroy.
  */
 export function translationBankOf(step: LedgerStep, key: string): string | null {
+  /*
+   * `translate` ALONE, AND NOT THE FAMILY, which is the one place in this file the
+   * widening was refused. What this composes for a step that recorded no bank is
+   * `readings/<key>.<tag>.bank.jsonl` — the name a PRE-RECORDS TRANSLATION wrote,
+   * and the only name that has ever existed. A rewrite has never run outside
+   * records mode and a cleanup was born inside it, so neither can have such a file;
+   * admitting them here would compose the TRANSLATION's bank path for them and
+   * offer it to the sweep as a file their delete may destroy.
+   */
   if (step.action !== 'translate') return null;
   /*
    * A RECORDS-MODE TRANSLATION HAS NO BANK AT ALL, and saying so here is what
@@ -1770,12 +2022,29 @@ export function translationBankOf(step: LedgerStep, key: string): string | null 
   return `readings/${translationBankFileFor(key, language)}`;
 }
 
-/** What a translation is about to be, before it has run: the whole of the ask. */
+/** What a text pass is about to be, before it has run: the whole of the ask. */
 export interface TranslationAsk {
+  /**
+   * WHICH OF THE THREE THIS IS — `translate`, `simplify` or `clean`.
+   *
+   * It was implied, and the implication was `rewrite === undefined`. That was true
+   * of the two passes that existed and is a silent falsehood about the third: a
+   * cleanup carries no rewrite, so the old reading would have filed one as a
+   * translation — a `translate` row into no language, matched by `reRunTarget`
+   * against every other language-less translation of the same book.
+   *
+   * IT IS ALSO WHAT `reRunTarget` COMPARES FIRST, which is what makes cleaning a
+   * book somebody has already translated an append rather than a collision.
+   */
+  action: 'translate' | 'simplify' | 'clean';
   /** The position at the moment the button was pressed. See `LandedRun.parent`. */
   parent: string | null;
-  /** `--to`, as the dialog named it. The whole of what makes this translation this one. */
-  language: string;
+  /**
+   * `--to`, as the dialog named it. The whole of what makes this translation this
+   * one — and ABSENT FOR A CLEANUP, which goes into no language at all
+   * (`PARAMS_OF.clean` argues it in full).
+   */
+  language?: string;
   /**
    * The project key, which the records file is named after.
    *
@@ -1870,9 +2139,17 @@ export function translationTarget(
   /** Spent only on a branch. See `LandedRun.id` for the same arrangement. */
   minted: string,
 ): TranslationTarget {
-  const plain = `readings/${translationRecordsFileFor(ask.key, ask.language, undefined, ask.rewrite)}`;
+  /*
+   * WHICH NAMER, DECIDED BY THE ACT AND NOT BY WHAT THE ASK HAPPENS TO CARRY. A
+   * cleanup composes `<key>.clean…` and the other two compose
+   * `<key>.<tag>[.<mode>]…` — see both namers for why they are two functions.
+   */
+  const named = (branch?: string): string => (ask.action === 'clean'
+    ? cleanRecordsFileFor(ask.key, branch)
+    : translationRecordsFileFor(ask.key, ask.language ?? '', branch, ask.rewrite));
+  const plain = `readings/${named()}`;
   const target = reRunTarget(ledger, {
-    action: 'translate',
+    action: ask.action,
     parent: ask.parent,
     params: translatedInto(ask.language, ask.rewrite),
   });
@@ -1893,7 +2170,7 @@ export function translationTarget(
   if (!taken) return { stepId: minted, records: plain, replaces: null };
   return {
     stepId: minted,
-    records: `readings/${translationRecordsFileFor(ask.key, ask.language, id8(minted), ask.rewrite)}`,
+    records: `readings/${named(id8(minted))}`,
     replaces: null,
   };
 }
@@ -1967,7 +2244,7 @@ export interface AnalysisTarget {
  * and every verdict in there is already answered under the question that
  * produced it. A branch takes the minted id and a file of its own.
  *
- * THE PARENT IS THE POSITION, FULL STOP, exactly as `recordsForTranslation` has
+ * THE PARENT IS THE POSITION, FULL STOP, exactly as `recordsForTextPass` has
  * it: the dialog asks for an analysis OF what is on screen, and where the person
  * is standing is what that means.
  */
@@ -2672,6 +2949,10 @@ const AN_ARRIVAL: Readonly<Record<StepAction, boolean>> = {
   read: false,
   curate: false,
   translate: false,
+  /* Neither is the book arriving: both are made OUT of a row that was already
+     here, which is `translate`'s answer for `translate`'s reason. */
+  simplify: false,
+  clean: false,
   metadata: false,
   edit: false,
   /* A report is not the book arriving — it is a document about a book that was
@@ -2689,6 +2970,14 @@ const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
   read: true,
   curate: false,
   translate: false,
+  /*
+   * TRANSPARENT, LIKE THE TRANSLATION THEY ARE SIBLINGS OF. This walk answers
+   * "which bank" and "which curation", and a text pass says nothing about either
+   * — a rewrite or a cleanup of a reading is still about that reading's pages,
+   * and standing under one must still find the bank and the save beneath it.
+   */
+  simplify: false,
+  clean: false,
   /*
    * A METADATA ROW IS TRANSPARENT TO THIS WALK. The questions it answers are
    * "which bank" and "which curation", and a row that recorded a title says
@@ -2740,7 +3029,21 @@ const BOUNDS_THE_WALK: Readonly<Record<StepAction, boolean>> = {
  */
 function nearestUpward(
   ledger: ProjectLedger,
-  wanted: StepAction,
+  /**
+   * THE ACTIONS THIS WALK IS LOOKING FOR — one, or a family.
+   *
+   * It took a single action while every question in this file had a single
+   * answer. The text passes ended that (`TEXT_PASS_ACTIONS`): *"which words are in
+   * the blocks here"* is answered by the nearest of THREE actions, and a caller
+   * that asked three times and compared the depths would be re-deriving this
+   * walk's own ordering outside it — which is exactly how a cleanup made under a
+   * translation ends up rendering the translation's uncleaned words.
+   *
+   * The membership test is over a list rather than a Set because these lists are
+   * one and three long, and a Set here would be a data structure defending a
+   * comparison that is already free.
+   */
+  wanted: readonly StepAction[],
   /**
    * WHERE THE WALK STARTS, when it starts somewhere other than the position.
    *
@@ -2761,7 +3064,7 @@ function nearestUpward(
   const chain = ancestry(ledger, standing.id);
   for (let at = chain.length - 1; at >= 0; at -= 1) {
     const step = chain[at]!;
-    if (step.action === wanted) return step;
+    if (wanted.includes(step.action)) return step;
     if (BOUNDS_THE_WALK[step.action]) return null;
   }
   return null;
@@ -2797,7 +3100,7 @@ export function readingInEffect(
   /** The step to walk up from, or null for the position. See `nearestUpward`. */
   at: LedgerStep | null = null,
 ): LedgerStep | null {
-  return nearestUpward(ledger, 'read', at);
+  return nearestUpward(ledger, ['read'], at);
 }
 
 /**
@@ -2845,7 +3148,7 @@ export function curationInEffect(
   // `readingInEffect` rather than spelled twice: both questions are "the nearest
   // one of these on the way up", and both stop at the reading whose blocks the
   // answer would be about. See `BOUNDS_THE_WALK`.
-  return nearestUpward(ledger, 'curate', at);
+  return nearestUpward(ledger, ['curate'], at);
 }
 
 /**
@@ -2916,6 +3219,14 @@ const DISPLAYS_ITSELF: Readonly<Record<StepAction, boolean>> = {
   read: false,
   curate: true,
   translate: false,
+  /*
+   * NEITHER FROZE ANYBODY'S CORRECTIONS — `translate`'s answer, for `translate`'s
+   * reason. What a rewrite or a cleanup retained is a file of words, not a copy of
+   * somebody's strikes, so the pane goes on drawing the live ones and a person
+   * standing there can still work.
+   */
+  simplify: false,
+  clean: false,
   /*
    * A METADATA ROW FROZE NOBODY'S CORRECTIONS, so there is nothing of that kind
    * to show and nothing to lock. It is the `translate` answer for the `translate`
@@ -2990,13 +3301,96 @@ export function displayedCuration(ledger: ProjectLedger): LedgerStep | null {
  * The refusal for a translation OF a translation is not here: this answers what
  * the ledger says, and what this app will and will not run from it is
  * `renderPipeline`'s to say (shared/pipeline.ts).
+ *
+ * ── AND WHY A CLEANUP IS NOT ONE OF THE ANSWERS ─────────────────────────────
+ *
+ * This asks the LANGUAGE question, so it walks `DECLARES_A_LANGUAGE` and not the
+ * whole family: a `clean` row records no `params.language`, so finding one here
+ * would hand every caller an empty tag — a book refused for "not saying which
+ * language it was made into" the moment somebody cleaned it, and an export filed
+ * as `<book> ().epub` if the refusal were ever relaxed.
+ *
+ * IT WALKS PAST A CLEANUP RATHER THAN STOPPING AT ONE, which is the other half and
+ * the correct one: cleaning a Hungarian translation leaves a Hungarian book, so a
+ * position under the cleanup finds the translation above it and the rendering is
+ * still declared `hu`. Which WORDS that rendering carries is the other question,
+ * one function down.
  */
 export function translationInEffect(
   ledger: ProjectLedger,
   /** The step to walk up from, or null for the position. See `nearestUpward`. */
   at: LedgerStep | null = null,
 ): LedgerStep | null {
-  return nearestUpward(ledger, 'translate', at);
+  return nearestUpward(ledger, DECLARES_A_LANGUAGE, at);
+}
+
+/**
+ * THE TEXT PASS WHOSE WORDS ARE IN THE BLOCKS HERE — the nearest translate,
+ * simplify or clean on the way up, or null for a position reading the book's own
+ * text.
+ *
+ * ── The question its neighbour above does not answer ────────────────────────
+ *
+ * `translationInEffect` asks which LANGUAGE this position is in. This asks WHICH
+ * FILE OF ANSWERS the words came out of, and the two part company at exactly one
+ * row: a cleanup. Cleaning a Hungarian translation leaves the book in Hungarian —
+ * so the language is still the translation's — and leaves the WORDS in the
+ * cleanup's records file, because that is the newest thing anybody said about
+ * these paragraphs.
+ *
+ * THIS IS THE ONE EVERY READER OF A BOOK ASKS. `openBookAtPosition`
+ * (electron/book.ts) opens the derived book of whatever this answers, and
+ * `editsSinceTransform` stops replaying at it, because a derived book has the ops
+ * above it already baked in. Both were spelled `translate` and both were wrong the
+ * moment a second pass existed: a rewrite drawn as its parent's book is a page of
+ * the prose somebody paid to have replaced.
+ *
+ * NEAREST WINS AND THERE IS NO MERGING, exactly as it does for a chain of
+ * translations (see `RenderPipeline.translate`): each pass reads the derived book
+ * of the one below it, so its records already hold the accumulated answer for
+ * every block it was asked about. Clean a translation and the cleaned records are
+ * cleaned HUNGARIAN, because the book the cleaner read was Hungarian.
+ */
+export function textPassInEffect(
+  ledger: ProjectLedger,
+  /** The step to walk up from, or null for the position. See `nearestUpward`. */
+  at: LedgerStep | null = null,
+): LedgerStep | null {
+  return nearestUpward(ledger, TEXT_PASS_ACTIONS, at);
+}
+
+/**
+ * IS THE NARRATION CLEANUP IN EFFECT HERE — the one fact BookForge asks Foundry
+ * about a position, and the reason the cleanup is a step at all.
+ *
+ * ── It is DERIVED and it is never stored ────────────────────────────────────
+ *
+ * Owen ruled the behaviour and the shape falls out of it: *"everything they do
+ * after that carries the cleanup along … they can delete blocks or whatever after
+ * that."* A stored flag would have had to be maintained by every act that appends
+ * a step — copied onto a strike, onto a save, onto a metadata edit — and forgotten
+ * by exactly one of them, at which point a book would be narrated from uncleaned
+ * words under a project that believed it was clean. Read off the ancestry there is
+ * nothing to maintain: the fact is wherever the rows put it.
+ *
+ * ── THE NEAREST PASS AND NOT "IS THERE A CLEAN ANYWHERE ABOVE" ──────────────
+ *
+ * Which is the whole of the rule, and the half that is easy to get wrong. Clean a
+ * book and then translate it, and the cleanup is NOT in effect at the translation:
+ * the translator was handed the cleaned German and wrote fresh Hungarian, which
+ * has whatever punctuation the model chose. The same is true of a simplify. So the
+ * question is what the NEWEST pass was, and a `clean` under a `translate` answers
+ * false rather than "well, it was cleaned once".
+ *
+ * A position with no pass above it is false, which is every ordinary book: nobody
+ * cleaned it, and the narration gets the text as the reading left it.
+ */
+export function cleanupInEffect(
+  ledger: ProjectLedger,
+  /** The step to ask about, or null for the position. See `nearestUpward`. */
+  at: LedgerStep | null = null,
+): boolean {
+  return textPassInEffect(ledger, at)?.action === 'clean';
 }
 
 /**
@@ -3082,7 +3476,19 @@ export function editsInEffect(
  */
 const BOUNDS_THE_REPLAY: Readonly<Record<StepAction, boolean>> = {
   ...BOUNDS_THE_WALK,
+  /*
+   * ALL THREE TEXT PASSES, because all three MATERIALISE. The line used to be
+   * `translate` alone and the argument above is written entirely about "when a
+   * translate lands" — but what the argument is really about is a DERIVED BOOK
+   * FILE, and a simplify and a cleanup each write one exactly as a translation
+   * does (`materializeTextPass`, electron/book.ts). Every op above such a row is
+   * already in that file; replaying them again would strike rows that are gone and
+   * retype paragraphs the derived file already carries in the words the pass just
+   * paid for.
+   */
   translate: true,
+  simplify: true,
+  clean: true,
 };
 
 /**
@@ -3362,6 +3768,27 @@ export const A_BOOK_OF_ITS_OWN: Readonly<Record<StepAction, boolean>> = {
   curate: false,
   translate: true,
   /*
+   * A REWRITE AND A CLEANUP ARE BOOKS OF THEIR OWN, on the translation's clause and
+   * not on a new one — and it is worth arguing, because neither changes the
+   * language and the table's own examples are all about a book that did.
+   *
+   * The question this table asks is whether the row is A BOOK OF ITS OWN or another
+   * state of the project's one flowing book, and what makes a translation the first
+   * is that its paper says something no other row's paper says. That is exactly as
+   * true of a rewrite — the whole point is that the paragraphs are different — and
+   * of a cleanup, whose punctuation is what a narrator will read. `positionPicture`
+   * asks this to decide whether the ROW belongs in the repaint key, so `false` here
+   * would mean clicking between a book and its cleaned copy left the same page on
+   * screen: two different books, one picture, and nothing on screen admitting it.
+   *
+   * `documentAtPosition` IS UNTROUBLED because it asks the records question next
+   * (`documentOfStep`, electron/projects.ts): every one of these rows retains a
+   * records file, so all three answer null and are drawn on the proof sheet out of
+   * the derived book their landing wrote, which is where a text pass is seen.
+   */
+  simplify: true,
+  clean: true,
+  /*
    * A METADATA ROW'S PAYLOAD IS A PATCH, which is no more a thing a person reads
    * than a curation snapshot is. What it shows is what the row beneath it shows —
    * the book this project is working on, which is resolved by asking the project
@@ -3504,7 +3931,11 @@ export function positionView(ledger: ProjectLedger): PositionView {
       step.action === 'read'
       || step.action === 'edit'
       || step.action === 'curate'
-      || step.action === 'translate'
+      // EVERY TEXT PASS, and asked of the family rather than named one at a time:
+      // all three are drawn from the derived book their landing wrote, and a
+      // `simplify` row left off this list would have shown a person the book they
+      // asked to have rewritten (`TEXT_PASS_ACTIONS`).
+      || isTextPass(step.action)
       || (step.action === 'import' && importedAsEpub(ledger))
     ),
     /*

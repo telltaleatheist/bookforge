@@ -162,6 +162,7 @@ import {
   documentOriginOf,
   healReadParents,
   originOf,
+  isTextPass,
   originStep,
   parseLedger,
   pendingBeside,
@@ -1512,7 +1513,7 @@ export function analysisDir(dir: string): string {
  * WHICH REPORT AN ANALYSIS ORDERED FROM HERE WOULD WRITE, and which step it
  * belongs to — the plan's half of the question the landing will ask again.
  *
- * `recordsForTranslation`'s shape and its whole argument: the engine is handed a
+ * `recordsForTextPass`'s shape and its whole argument: the engine is handed a
  * path and writes into it for an hour, so "is this the report that already
  * exists, or a new one beside it?" has to be settled before the job is enqueued
  * or the file and the row would describe different analyses. `analysisTarget`
@@ -3280,6 +3281,46 @@ export function translationBookFileFor(records: string): string {
 }
 
 /**
+ * WHERE A CLEANUP'S STAMP LIVES — `<key>.clean[.<id8>].stamp.json`, beside the
+ * answers it is a receipt for.
+ *
+ * ── Named FROM the records rather than composed beside them ─────────────────
+ *
+ * `translationBookFileFor`'s arrangement one file over, and its whole argument
+ * transfers: three parties need this path and must not compose it three ways. The
+ * PLAN puts it on the command line as `--stamp` (`planCleanup`,
+ * electron/workspace.ts), the RENDER puts it on as `--narration-stamp`
+ * (`planRendering`), and the sweep will one day remove it — and the only thing all
+ * three certainly hold is the step, whose payload IS the records file. Composing
+ * from the project key and a branch id instead would mean re-deriving the branch
+ * from the step's uuid at two of the three sites, which is a guess about which
+ * name a run happened to take.
+ *
+ * IT REFUSES ANY OTHER SPELLING, on `translationBookFileFor`'s rule and for its
+ * reason: appending a suffix to whatever it was handed would put a stamp beside a
+ * file that is not a records file, named after nothing, that no sweep would ever
+ * find again.
+ *
+ * IT SAYS NOTHING ABOUT WHETHER THE FILE IS THERE. A cleanup that landed before
+ * the engine wrote stamps has none, and the caller's job is to look
+ * (`planRendering` omits the flag rather than pointing the compile at a file that
+ * is not there) — a book compiled with no narration meta is a book saying nothing
+ * about narration, which is honest, where a flag on a missing path fails the
+ * export outright.
+ */
+export function narrationStampFileFor(records: string): string {
+  const suffix = '.records.jsonl';
+  if (!records.toLowerCase().endsWith(suffix)) {
+    throw new ProjectError(
+      `${records} is not a text pass's records file — those are the .records.jsonl files the engine `
+      + 'writes, and a narration stamp is named after one. Refusing to guess at where the stamp '
+      + 'would live.',
+    );
+  }
+  return `${records.slice(0, -suffix.length)}.stamp.json`;
+}
+
+/**
  * WHERE THE BOOK'S CUT FIGURES ARE — the bank's own path with `.images` in place
  * of its extension, and the whole of the app's knowledge of that spelling.
  *
@@ -3638,7 +3679,25 @@ async function documentOfStep(
      * sheet out of the derived book its landing wrote, so there is no document at
      * this position for a viewer to be pointed at (docs/RENDERER.md §7).
      */
-    if (view.step.action === 'translate') {
+    /*
+     * ── EVERY TEXT PASS, AND WIDENING IT WAS NOT OPTIONAL ─────────────────────
+     *
+     * This asked `action === 'translate'` while a rewrite was one. The 2026-09-05
+     * split made `simplify` and `clean` their own actions, and `A_BOOK_OF_ITS_OWN`
+     * answers true for all three — so left as it was, a rewrite row would have
+     * fallen past this test into the import arm below and been resolved as a
+     * DOCUMENT: `onDisk` would have found the `.jsonl` sitting there, agreed it
+     * exists, and handed a pane a file of sentences to open as a book.
+     *
+     * The answer for all three is null, for the reason the paragraph above gives:
+     * their rows are drawn on the proof sheet out of the derived book their
+     * landing wrote, so there is no document at this position for a viewer to be
+     * pointed at. The payload fallback survives for the one row that can still
+     * take it — a translation made by the old EPUB→EPUB translator, which
+     * `translationRecordsOf` answers null for and which no simplify or cleanup can
+     * ever be (neither has existed outside records mode).
+     */
+    if (isTextPass(view.step.action)) {
       return translationRecordsOf(view.step) === null
         ? await onDisk(resolved, view.step.payload)
         : null;
@@ -4233,7 +4292,7 @@ export async function bankForReading(dir: string, asked: ReadAsk): Promise<Plann
   return { readingsPath: path.join(dir, READINGS, file), stepId: minted };
 }
 
-/** A translation's file, and the step it belongs to. See `recordsForTranslation`. */
+/** A translation's file, and the step it belongs to. See `recordsForTextPass`. */
 export interface PlannedTranslation {
   /** Absolute. What the engine is handed as `--records`, and the run's whole product. */
   recordsPath: string;
@@ -4279,17 +4338,26 @@ export interface PlannedTranslation {
  * alternative — trusting the renderer to hand back the parent this plan used — is a
  * fact about a person's history taken from outside main.
  */
-export async function recordsForTranslation(
+export async function recordsForTextPass(
   dir: string,
+  /**
+   * WHICH OF THE THREE THIS IS. It decides two things and both of them are the
+   * file's identity: which namer composes the path (`cleanRecordsFileFor` for a
+   * cleanup, `translationRecordsFileFor` for the other two) and which action
+   * `reRunTarget` compares — so a cleanup of a book that has been translated
+   * appends beside the translation rather than colliding with it.
+   */
+  action: 'translate' | 'simplify' | 'clean',
+  /** `--to`, as the dialog named it. Empty for a cleanup, which goes nowhere. */
   language: string,
   /**
-   * The rewrite, when the button pressed was Simplify — absent for a translation.
+   * The rewrite, when the button pressed was Simplify — absent for the other two.
    *
    * A PARAMETER RATHER THAN A SECOND FUNCTION BESIDE THIS ONE, because everything
-   * this decides is decided the same way for both: the parent is still the
-   * position, the answer is still `translationTarget`'s, and the mode is simply
-   * part of the ask it is given. A `recordsForSimplification` would be this
-   * function with one field spread in, and the day the parent rule changed it
+   * this decides is decided the same way for all three: the parent is still the
+   * position, the answer is still `translationTarget`'s, and the act and the mode
+   * are simply part of the ask it is given. A `recordsForSimplification` would be
+   * this function with one field spread in, and the day the parent rule changed it
    * would change in one of the two.
    */
   rewrite?: RewriteMode,
@@ -4312,8 +4380,13 @@ export async function recordsForTranslation(
   const target = translationTarget(
     ledger,
     {
+      action,
       parent: positionOf(ledger)?.id ?? null,
-      language,
+      // NOT SAID AT ALL FOR A CLEANUP, rather than said as an empty string: the ask
+      // is what `translatedInto` composes the params from, and `{language: ''}`
+      // would be a step claiming to have gone into a language spelled with no
+      // characters. `translationTarget` never asks a cleanup for one.
+      ...(action === 'clean' ? {} : { language }),
       key: manifest.key,
       ...(rewrite !== undefined ? { rewrite } : {}),
     },
@@ -4828,7 +4901,7 @@ async function bankShaOfBookAt(
  *
  * Owen's ruling, verbatim: *"the analysis can probably live as another step under
  * the step it was run against, just like the regular workflow."* So it is
- * `recordTranslation`'s shape below, with everything a translation owes a book
+ * `recordTextPass`'s shape below, with everything a translation owes a book
  * taken out of it: no bank to displace, no derived book to materialise, no
  * language to record, and no chain to work out. A report is measured, filed and
  * finished.
@@ -4838,7 +4911,7 @@ async function bankShaOfBookAt(
  * is standing when it lands is nobody's decision, and moving them off the step
  * they were editing would be the punishment that table exists to stop.
  *
- * A FAILURE HERE IS LOGGED AND NEVER THROWN, `recordTranslation`'s rule and its
+ * A FAILURE HERE IS LOGGED AND NEVER THROWN, `recordTextPass`'s rule and its
  * reason: the report is on the disk, complete and question-keyed, and losing a
  * row in a catalogue is not a reason to report an hour of verified passages as a
  * failed job. The line names what went unrecorded and why.
@@ -4967,16 +5040,39 @@ export async function recordAnalysis(
  * be written is not a reason to report those hours as a failure, and the records
  * are on disk either way.
  */
-export async function recordTranslation(
+export async function recordTextPass(
   recordsPath: string,
   landed: {
+    /**
+     * WHICH OF THE THREE PASSES THIS WAS — the action the step lands as.
+     *
+     * IT IS THE JOB'S OWN KIND, HANDED OVER, and it is the whole of what the
+     * 2026-09-05 split changed at this landing. A rewrite used to land as
+     * `translate` carrying `params.rewrite`, and the row therefore called itself a
+     * translation of a book nobody translated; Owen: *"it isnt a translate job.
+     * naming it translate is deceptive."*
+     *
+     * IT CANNOT BE DERIVED HERE. The presence of a `rewrite` would tell a simplify
+     * from a translation and would tell neither of them from a cleanup, which
+     * carries no distinguishing param at all — `PARAMS_OF.clean` is empty on
+     * purpose. So the run that was ordered says which act it was, exactly as it
+     * says which language it asked for.
+     *
+     * OPTIONAL, DEFAULTING TO `translate`, because every caller before this wave
+     * meant a translation and this parameter bag is the shape a landing hands over
+     * — the same courtesy every other field here gets.
+     */
+    action?: 'translate' | 'simplify' | 'clean';
     /** The position when the job was ENQUEUED. See `Job.parentStep`. */
     parentStep?: string | null;
-    /** `TranslateRequest.to`, as the dialog named it. */
+    /**
+     * `TranslateRequest.to`, as the dialog named it — and ABSENT FOR A CLEANUP,
+     * which goes into no language (`PARAMS_OF.clean`, shared/ledger.ts).
+     */
     language?: string;
     /**
      * `TranslateRequest.stepId` — the step the records file was named after,
-     * minted at the plan (`recordsForTranslation`).
+     * minted at the plan (`recordsForTextPass`).
      *
      * A branching translation writes `readings/<key>.<tag>.<id8>.records.jsonl`,
      * and the `id8` is the front of this uuid. Landing under a freshly minted id
@@ -5029,9 +5125,21 @@ export async function recordTranslation(
        */
       const under = before.steps.find((step) => step.id === landed.parentStep)
         ?? positionOf(before);
-      const from = under?.action === 'translate' ? under.params?.language?.trim() ?? '' : '';
+      /*
+       * A CHAIN IS A PASS UNDER A ROW THAT DECLARES A LANGUAGE, which is a
+       * translation or a rewrite and never a cleanup: a cleaned book is in
+       * whatever language it was already in, and `params.language` on a `clean`
+       * row does not exist to be read. So the test is the two-member family
+       * (`translationInEffect`'s own list) rather than `translate` alone — without
+       * the widening, translating a book somebody had SIMPLIFIED would record no
+       * `from` and the row would drop the arrow it earned.
+       */
+      const from = under !== null && (under.action === 'translate' || under.action === 'simplify')
+        ? under.params?.language?.trim() ?? ''
+        : '';
+      const action = landed.action ?? 'translate';
       const landing = await landStep(manifest, {
-        action: 'translate',
+        action,
         parent: landed.parentStep ?? null,
         /*
          * WHERE THE ENGINE ACTUALLY WROTE, spelled project-relative with forward
@@ -5039,7 +5147,16 @@ export async function recordTranslation(
          * splits again to reach the file, so nothing here ever matches by basename.
          */
         payload: path.relative(dir, resolved).split(path.sep).join('/'),
-        params: {
+        /*
+         * A CLEANUP CARRIES NO PARAMS AT ALL, and the empty bag is not written
+         * (`landStep`/`mint` drop one). `translatedInto` would compose `{}` for it
+         * anyway — no language, no mode — but the `from` beside it would not: a
+         * cleanup made under a translation would have recorded the parent's
+         * language as `params.from`, which `readParams` refuses by name because
+         * `PARAMS_OF.clean` declares nothing. The refusal would arrive on the next
+         * open of the project, about a step this app had just written itself.
+         */
+        params: action === 'clean' ? {} : {
           ...translatedInto(landed.language, landed.rewrite),
           ...(from.length > 0 ? { from } : {}),
         },
@@ -5075,7 +5192,7 @@ export async function recordTranslation(
     announceProjects();
   } catch (err) {
     console.error(
-      `[projects] ${path.basename(dir)} could not record its translation (${(err as Error).message}). `
+      `[projects] ${path.basename(dir)} could not record its text pass (${(err as Error).message}). `
       + 'The records are on disk, so casting the book from them is free whenever it is asked for.',
     );
   }
@@ -5168,7 +5285,7 @@ export async function recordGenerated(
        * not. That rule is unchanged — what changed is that a translation is no longer
        * a rendering this function ever sees. `translate --records` writes per-block
        * answers into `readings/` and no document at all, so the step lands where the
-       * answers land (`recordTranslation`, above), and what eventually arrives HERE
+       * answers land (`recordTextPass`, above), and what eventually arrives HERE
        * from a translated position is the BOOK CAST FROM those records: free, remade
        * on demand, and carrying `forStep`, which makes the queue file it nowhere at
        * all (`GenerateRequest.forStep`).

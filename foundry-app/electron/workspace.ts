@@ -73,7 +73,7 @@
  * about (src/vlm/readings.ts), and this app reads it under that name
  * (`readingState`).
  */
-import { promises as fsp } from 'node:fs';
+import { existsSync, promises as fsp } from 'node:fs';
 import * as os from 'node:os';
 import * as path from 'node:path';
 
@@ -89,9 +89,10 @@ import {
   importDocument,
   ledgerOf,
   readManifest,
+  narrationStampFileFor,
   readingBank,
   readingIsComplete,
-  recordsForTranslation,
+  recordsForTextPass,
   reportForAnalysis,
 } from './projects';
 import {
@@ -99,6 +100,7 @@ import {
   facsimileFile,
   languageTagFor,
   readingInEffect,
+  textPassInEffect,
   translationInEffect,
   translationRecordsOf,
 } from '../shared/ledger';
@@ -686,6 +688,15 @@ async function planRendering(
     ? null
     : { step: pipeline.translate, ...translatedWords(dir, pipeline.translate, kind) };
   /*
+   * AND WHETHER THESE WORDS WERE CLEANED FOR A NARRATOR — a separate question from
+   * the one above it, asked of a separate walk, and the separation is the point.
+   * `pipeline.translate` answers WHICH LANGUAGE (a cleanup declares none, so the
+   * walk goes past it); this answers WHAT WAS DONE TO THE WORDS LAST. A book
+   * translated into Hungarian and then cleaned is both — declared `hu`, and
+   * stamped. See `narrationStampFor` below.
+   */
+  const narrationStamp = narrationStampFor(ledger, dir, forStep);
+  /*
    * THE NAME IS THE BOOK'S EITHER WAY, and what this plan is FOR is the whole of
    * what changes about it.
    *
@@ -805,8 +816,54 @@ async function planRendering(
     ...(translated === null
       ? {}
       : { records: translated.records, language: translated.language }),
+    ...(narrationStamp === null ? {} : { narrationStamp }),
     },
   };
+}
+
+/**
+ * THE NARRATION STAMP THIS RENDERING SHOULD CARRY, or null when it should carry
+ * none.
+ *
+ * ── The one question, asked once, for every EPUB this app writes ────────────
+ *
+ * `cleanupInEffect` at the step the rendering is about — the position for a press,
+ * the named row for a host's export — so the flag is on the command line exactly
+ * when the nearest text pass above those words is a cleanup, and absent when a
+ * translation or a rewrite has been made since. Every EPUB in this app comes out
+ * of `planRendering` (the export dialog, the mint-metadata dialog and
+ * `exportEpubFromStep` all build their request from a plan it composed), so
+ * deciding it here is deciding it for all of them.
+ *
+ * ── ASKED OF THE STEP AND NEVER OF THE POINTER ──────────────────────────────
+ *
+ * `forStep`, on the rule the whole of `planRendering` obeys: an export ordered by
+ * a host names its own row, and a person may be standing three branches away. A
+ * stamp resolved from the position would put "this text was cleaned" into a book
+ * made from a row where it was not.
+ *
+ * ── AND A MISSING FILE IS AN ABSENT FLAG, NOT A REFUSAL ─────────────────────
+ *
+ * A cleanup that landed before the engine wrote stamps has none, and a person who
+ * tidied `readings/` by hand has one fewer. Both are answered by leaving the flag
+ * off: what comes out is a book whose OPF says nothing about narration, which is
+ * the honest thing for it to say — where a flag pointing at a file that is not
+ * there would fail an export outright over a receipt, after the words themselves
+ * are already correct in the file. This is the only existence test in this plan
+ * and it is here rather than in `argsFor` because this is the side that knows the
+ * flag was ever going to be composed.
+ */
+function narrationStampFor(
+  ledger: ProjectLedger,
+  dir: string,
+  forStep: LedgerStep | null,
+): string | null {
+  const cleaned = textPassInEffect(ledger, forStep);
+  if (cleaned === null || cleaned.action !== 'clean') return null;
+  const records = translationRecordsOf(cleaned);
+  if (records === null) return null;
+  const stamp = narrationStampFileFor(path.join(dir, ...records.split('/')));
+  return existsSync(stamp) ? stamp : null;
 }
 
 /**
@@ -936,7 +993,7 @@ export async function planTranslation(
    * the reading, strike some blocks, commit, translate the curation. Two steps,
    * two sets of answers, and one filename holding whichever ran last.
    *
-   * So the plan asks the ledger instead (`recordsForTranslation` →
+   * So the plan asks the ledger instead (`recordsForTextPass` →
    * `translationTarget`, shared/ledger.ts): a re-translation from the same step
    * aims at that step's own records — which is what makes it nearly free, every
    * unchanged block already answered in there — and a translation from a DIFFERENT
@@ -962,7 +1019,7 @@ export async function planTranslation(
    * (`translate --book`). Nothing about a strike, an overlay or a curation
    * crosses the boundary; what crosses is a document.
    */
-  const planned = await recordsForTranslation(dir, targetLanguage);
+  const planned = await recordsForTextPass(dir, 'translate', targetLanguage);
   /*
    * ── WHAT THIS RUN IS ASKED OF, WHICH IS TWO SEPARATE FACTS ────────────────
    *
@@ -1220,7 +1277,7 @@ export async function planSimplification(
     );
   }
 
-  const planned = await recordsForTranslation(dir, language, mode);
+  const planned = await recordsForTextPass(dir, 'simplify', language, mode);
   /*
    * ── THE SEED, WHICH A REWRITE SPENDS WHERE A CHAIN WOULD NOT ───────────────
    *
@@ -1256,6 +1313,84 @@ export async function planSimplification(
      * a guess about a fact the ledger recorded.
      */
     from: language,
+    ...(seed !== null ? { seedRecords: path.join(dir, ...seed.split('/')) } : {}),
+    ...(generation !== null ? { generation } : {}),
+  };
+}
+
+/**
+ * Where this book's NARRATION CLEANUP goes — the third text pass, and the one
+ * with no language in it at all.
+ *
+ * ── What it borrows, which is nearly everything ─────────────────────────────
+ *
+ * "Say this book again, in the same words, with the punctuation and typography a
+ * narrator can read aloud." So: the same materialised book at the same position,
+ * the same records file that is its own resume cache, the same seeding rule, the
+ * same step minted at the plan. `planSimplification`'s whole argument for
+ * borrowing `planTranslation`'s body applies again, one act further along — and
+ * everything downstream of this (the queue, the landing, the derived book, the
+ * sweep) is the family's rather than any one member's.
+ *
+ * ── AND THE THREE THINGS IT DOES NOT DO ─────────────────────────────────────
+ *
+ * IT ASKS NO LANGUAGE AND REFUSES OVER NONE. `planSimplification` has to resolve
+ * one — a rewrite happens IN a language and the engine is told which — and refuses
+ * in words for a book that never declared one. A cleanup is told nothing about
+ * language: the book is whatever it was, the model is shown the paragraphs in
+ * front of it, and a book with no declared language cleans exactly as well as one
+ * with. So the refusal is not relaxed here, it is inapplicable — and a book Owen
+ * could not narrate because nobody had declared its language would have been a
+ * refusal about a fact the act never consults.
+ *
+ * IT COMPOSES A STAMP, which no other plan does. `<key>.clean[.<id8>].stamp.json`,
+ * named from the records file so the compile that later reads it
+ * (`--narration-stamp`, `planRendering`) and the plan that writes it cannot come
+ * to two answers (`narrationStampFileFor`, electron/projects.ts).
+ *
+ * IT IS NEVER REACHED STANDALONE, and that is a fact about the DOOR rather than
+ * about this function. Owen: *"cleanup will only ever be done on behalf of
+ * bookforge and wont be available in foundry."* The tile and the dialog are drawn
+ * only in a hosted window; the plan, the step, the queue and the render path exist
+ * here regardless, because a feature half-built in two repositories is worse than
+ * one built in the repository that owns the ledger.
+ *
+ * ── THE SEED, WHICH IT SPENDS ON `planSimplification`'s ARGUMENT ────────────
+ *
+ * A cleanup is never a chain: it reads the book at the position and asks about the
+ * paragraphs in front of it, so a sibling cleanup's answers are true answers about
+ * the same paragraphs and are worth every block they save. The keys hash the source
+ * paragraph, so a cleanup made of a GERMAN book seeded into a cleanup of the
+ * HUNGARIAN translation of it would simply miss on every block — which is why the
+ * seed is looked for among cleanups of the same book and nowhere wider
+ * (`newestCleanRecords`).
+ */
+export async function planCleanup(inputPath: string): Promise<TranslationPlan> {
+  const { dir, key } = await importDocument(inputPath, 'epub');
+  const manifest = await readManifest(dir);
+  const ledger = ledgerOf(manifest);
+
+  /*
+   * The position's own book file with every op on the way to it replayed in,
+   * materialised AT PLAN TIME so a pointer moved while the job waits cannot change
+   * which book was meant, into the OS temp directory and swept by the hand that
+   * settles the job. `planTranslation`'s rule, verbatim and for its reasons.
+   */
+  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'));
+  if (!derived.ok) throw new ProjectError(derived.reason);
+
+  const planned = await recordsForTextPass(dir, 'clean', '');
+  const seed = newestCleanRecords(ledger, planned.records);
+  const generation = readingGenerationOf(ledger, manifest);
+  await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+
+  return {
+    key,
+    sourcePath: inputPath,
+    bookPath: derived.path,
+    recordsPath: planned.recordsPath,
+    stampPath: narrationStampFileFor(planned.recordsPath),
+    stepId: planned.stepId,
     ...(seed !== null ? { seedRecords: path.join(dir, ...seed.split('/')) } : {}),
     ...(generation !== null ? { generation } : {}),
   };
@@ -1421,10 +1556,65 @@ function newestRecordsInto(
   rewrite?: RewriteMode,
 ): string | null {
   let found: string | null = null;
+  const wanted = rewrite === undefined ? 'translate' : 'simplify';
   for (const step of ledger.steps) {
+    /*
+     * THE ACTION IS TESTED FIRST, and it is not redundant with the mode test below
+     * it. `PARAMS_OF` keeps `rewrite` off a translation and every simplify carries
+     * one, so today the two tests agree — but a row that predates the heal, or a
+     * `clean` step that carries no params at all, would reach the language test and
+     * be judged on a field it does not have. Asking what the row IS is the honest
+     * question, and it is the one the split made available.
+     */
+    if (step.action !== wanted) continue;
     const said = step.params?.language ?? '';
     if (said.length === 0 || !sameTag(said, language)) continue;
     if (step.params?.rewrite !== rewrite) continue;
+    const records = translationRecordsOf(step);
+    if (records === null || records === writing) continue;
+    found = records;
+  }
+  return found;
+}
+
+/**
+ * THE NEWEST OTHER CLEANUP OF THIS BOOK, or null — what a second one starts life
+ * holding.
+ *
+ * ── Why it is a function beside `newestRecordsInto` and not that one ────────
+ *
+ * Because the whole of that function's search is a LANGUAGE and a MODE, and a
+ * cleanup has neither. Passed through it, every candidate would fail the first
+ * test — `params.language` is absent on a `clean` row by design — and a cleanup
+ * would have seeded from nothing forever: the second one paying full model price
+ * for a book whose cleaned paragraphs were sitting one row away. Threading an
+ * "and if there is no language, match on the action instead" clause into that body
+ * would have made one search answer two questions with a branch in the middle,
+ * which is exactly the shape the two namers next door were split to avoid.
+ *
+ * ── WHAT MAKES A SIBLING'S ANSWERS TRUE HERE ────────────────────────────────
+ *
+ * `planTranslation`'s seed argument, unchanged: a records row is keyed by the
+ * block's own text and remembered by the block's own position, so a sibling
+ * cleanup's answer about a paragraph is the same true answer about the same
+ * paragraph. Struck blocks are simply never looked up, and a paragraph somebody
+ * edited since asks a new question and gets a new key.
+ *
+ * AND WHAT MAKES IT SAFE ACROSS LANGUAGES WITHOUT ASKING ABOUT THEM. A cleanup of
+ * a Hungarian translation and a cleanup of the German original are two `clean`
+ * rows in one project, and this would offer either as a seed for the other — which
+ * costs nothing and is not wrong: the keys hash the SOURCE PARAGRAPH, so every
+ * block of the German file misses against every question the Hungarian run asks,
+ * and the run pays for the book it was going to pay for anyway. What it must never
+ * do is HIT wrongly, and it cannot: two different paragraphs never hash alike.
+ *
+ * NEWEST WINS by array order, which is append order — `orphanedBanks`' own
+ * reliance and this file's throughout.
+ */
+function newestCleanRecords(ledger: ProjectLedger, writing: string): string | null {
+  let found: string | null = null;
+  for (const step of ledger.steps) {
+    if (step.action !== 'clean') continue;
     const records = translationRecordsOf(step);
     if (records === null || records === writing) continue;
     found = records;

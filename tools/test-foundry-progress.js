@@ -120,6 +120,52 @@ test('translate: blocks are counted, and say so — they are not pages', () => {
   assert.strictEqual(got.phase, 'translate', 'a bar that called blocks pages changed units mid-run');
 });
 
+// ── The narration cleanup (foundry 9f4ee4e) ─────────────────────────────────
+//
+// The one pattern in the set with no noun to match on. Every other line names
+// what it counts — block, rank, verify, page — and the naming is what stops a
+// bar reading a retry or a survivor count as progress. `clean-text` says
+// "blocks" only in its FINAL line, so the discipline is spelled the other way
+// round: the fraction is ANCHORED TO THE END.
+
+test('clean-text: the bare fraction is a count of blocks', () => {
+  const got = parseFoundryProgressLine('clean-text: 412/2081');
+  assert.deepStrictEqual(got, { phase: 'clean', page: 412, total: 2081 });
+  assert.strictEqual(got.phase, 'clean', 'a cleanup counted as a translation is the wrong bar');
+});
+
+test('clean-text: the SUMMARY line is not a count — this is what the $ anchor buys', () => {
+  // `\b` instead of `$` reads "412 blocks, 87 changed" as 412 of 87 and drives
+  // the bar past its own end at the exact moment the run finishes. Their own
+  // docblock names this; it is the reason the pattern is anchored.
+  assert.strictEqual(
+    parseFoundryProgressLine('clean-text: 412 blocks, 87 changed, 3 edits refused in 91s'),
+    null,
+  );
+});
+
+test('clean-text: a named refusal is a NOTE, not a count', () => {
+  // Every refusal is said on stderr by its disposition's own name. They carry no
+  // fraction and must fall through so the caller makes them the note.
+  assert.strictEqual(
+    parseFoundryProgressLine('clean-text: REFUSED NOT_A_READING in b12-3 — "Dr." → "Drive"'),
+    null,
+  );
+  assert.strictEqual(
+    parseFoundryProgressLine('clean-text: punctuation (s1) rewrote 12 span(s) across 4 block(s); 0 refused.'),
+    null,
+  );
+});
+
+test('clean-text: leading whitespace does not hide the count, and nothing else does either', () => {
+  assert.deepStrictEqual(
+    parseFoundryProgressLine('   clean-text: 1/17   '),
+    { phase: 'clean', page: 1, total: 17 },
+  );
+  // A trailing anything is not this line. The engine writes the fraction alone.
+  assert.strictEqual(parseFoundryProgressLine('clean-text: 1/17 (b2-3)'), null);
+});
+
 // ── What must NOT parse ─────────────────────────────────────────────────────
 
 test('a retry is not progress — the whole reason the gate exists', () => {

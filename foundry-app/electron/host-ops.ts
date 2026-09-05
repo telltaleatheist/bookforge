@@ -35,7 +35,9 @@
  * of the arrangement rather than a flag anybody has to remember to check.
  */
 import type { HostNode, HostOperationKind, NodeOutput } from '../shared/types';
-import type { HostNodeAction, HostOffers, HostOperationOffer, HostStatus } from '../shared/host-ops';
+import type {
+  HostInvokeContext, HostNodeAction, HostOffers, HostOperationOffer, HostStatus,
+} from '../shared/host-ops';
 import { fold } from '../shared/original';
 import { broadcast } from './window';
 
@@ -85,12 +87,27 @@ import { broadcast } from './window';
  * user just pressed, and a button that silently does nothing is the worst
  * outcome available. So the rejection travels back over the invoke channel and
  * the tree says what the host said.
+ *
+ * ── AND `context` IS THE FOURTH, ON THE THIRD ONE'S PRECEDENT EXACTLY ───────
+ *
+ * `HostInvokeContext` (shared/host-ops.ts, where the whole argument lives) — what
+ * Foundry knows about the PLACE the act was ordered from rather than about the
+ * press. It carries one field today, `cleaned`, because Owen's narration cleanup
+ * is a fact a narrator wants before the EPUB exists (2026-09-05).
+ *
+ * IT IS A FOURTH ARGUMENT AND NOT A KEY IN `settings`, deliberately: `settings` is
+ * the host's own vocabulary going out exactly as it came in, and Foundry putting a
+ * key of its own in there would be this app answering a question the host's form
+ * did not ask. And it is compatible in the same words the paragraph above uses —
+ * a host written against the three-argument signature keeps working untouched,
+ * because JavaScript ignores an argument nobody named.
  */
 export interface HostOperation extends HostOperationOffer {
   invoke(
     projectDir: string,
     nodeId: string,
     settings: Record<string, unknown>,
+    context: HostInvokeContext,
   ): void | Promise<void>;
 }
 
@@ -215,12 +232,22 @@ export async function invokeHostOperation(
    * always handed an object.
    */
   settings: Record<string, unknown> = {},
+  /**
+   * WHAT FOUNDRY KNOWS ABOUT THE POSITION — see `HostInvokeContext`.
+   *
+   * DEFAULTED HERE for `settings`' reason one line up: a caller inside main that
+   * has no ledger in hand should not have to compose a shape to say so, and
+   * `cleaned: false` is the literal truth for a position with no cleanup on it.
+   * The door itself (`host-ops:invoke`, electron/ipc.ts) always composes a real
+   * one, because that is where the ledger is.
+   */
+  context: HostInvokeContext = { cleaned: false },
 ): Promise<void> {
   const operation = operations.find((one) => one.id === operationId);
   if (operation === undefined) {
     throw new Error(`No operation called ${operationId} is registered by this app's host.`);
   }
-  await operation.invoke(projectDir, nodeId, settings);
+  await operation.invoke(projectDir, nodeId, settings, context);
 }
 
 /**
@@ -451,3 +478,9 @@ export type { HostNodeAction } from '../shared/host-ops';
 export type { HostOpField } from '../shared/host-ops';
 export type { HostStatus } from '../shared/host-ops';
 export type { HostOffers } from '../shared/host-ops';
+/*
+ * AND THE INVOKE CONTEXT, re-exported beside the shapes a host already imports
+ * through this module — it is the fourth argument to `HostOperation.invoke`, so a
+ * host typing that method has one import for the whole signature.
+ */
+export type { HostInvokeContext } from '../shared/host-ops';

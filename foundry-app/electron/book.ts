@@ -92,8 +92,9 @@ import {
 } from '../shared/book';
 import {
   editsSinceTransform,
+  isTextPass,
   positionOf,
-  translationInEffect,
+  textPassInEffect,
   translationRecordsOf,
 } from '../shared/ledger';
 import { materialize, translated } from '../shared/materialize';
@@ -262,10 +263,19 @@ async function openBookAtPosition(
    * With no translation on the path the nearest ancestor is the reading's own
    * reflow, which is what this has always opened.
    */
-  const transform = translationInEffect(ledger, from);
+  /*
+   * THE NEAREST TEXT PASS AND NOT THE NEAREST TRANSLATION. This asked
+   * `translationInEffect`, which is now the LANGUAGE question and walks past a
+   * cleanup by design — so left as it was, standing under a narration cleanup
+   * would have opened the derived book of the translation ABOVE it and drawn the
+   * uncleaned words under a row that says they were cleaned. `textPassInEffect`
+   * asks the question this line has always meant: which file of answers are the
+   * words in the blocks here out of (shared/ledger.ts argues both).
+   */
+  const transform = textPassInEffect(ledger, from);
   const source = transform === null
     ? await ensureReadingBook(at)
-    : await ensureTranslationBook(at, ledger, transform);
+    : await ensureTextPassBook(at, ledger, transform);
   if (!source.ok) return source;
 
   let text: string;
@@ -725,7 +735,7 @@ async function ensureReadingBook(
  * ── The ensure posture, and why a translation gets it too ───────────────────
  *
  * A derived book file is written by the LANDING — the moment the records file
- * exists, main materialises the book beside it (`materializeTranslation`, and the
+ * exists, main materialises the book beside it (`materializeTextPass`, and the
  * translate arm of electron/job-queue.ts) — so in the ordinary course this finds
  * the file and returns. What it is here for is every translation recorded BEFORE
  * that was true: the records are on disk, the book that would have been made from
@@ -743,7 +753,7 @@ async function ensureReadingBook(
  * its own book and the EPUB pane still opens it; what this surface cannot do is
  * draw it.
  */
-async function ensureTranslationBook(
+async function ensureTextPassBook(
   at: Awaited<ReturnType<typeof bookAtPosition>>,
   ledger: LedgerView['ledger'],
   transform: LedgerStep,
@@ -915,19 +925,41 @@ async function writeTranslationBook(
   }
 
   /*
-   * THE LANGUAGE IS THE STEP'S, and a step that does not say is a book that
-   * cannot be declared. `params.language` is recorded by the landing from what
-   * the person asked for; nothing reads a language out of a file of sentences
-   * (`translatedWords`, electron/workspace.ts, refuses the same thing in the same
-   * words for the same reason).
+   * ── WHICH LANGUAGE TO DECLARE THE DERIVED BOOK AS ──────────────────────────
+   *
+   * THE STEP'S, FOR A PASS THAT WENT INTO ONE, and a step that ought to say and
+   * does not is a book that cannot be declared. `params.language` is recorded by
+   * the landing from what the person asked for; nothing reads a language out of a
+   * file of sentences (`translatedWords`, electron/workspace.ts, refuses the same
+   * thing in the same words for the same reason).
+   *
+   * THE PARENT'S, FOR A CLEANUP, and this is a case rather than a fallback. A
+   * cleanup does not move the book between languages — it says the same sentences
+   * with punctuation a narrator can read — so `PARAMS_OF.clean` records no
+   * language at all, on purpose, and the honest answer is the one the book already
+   * carried. `made.book.header.language` IS that answer: the parent's header,
+   * materialised, which for a cleanup made under a translation is the language
+   * that translation declared and for one made over the reading is the language
+   * the reading was read in.
+   *
+   * WITHOUT THE CASE, EVERY CLEANUP WOULD REFUSE. The step correctly says nothing,
+   * the test above reads that as "made before Foundry kept a language", and the
+   * pane tells somebody to translate again from the step it was made from — about
+   * a run that has just written a perfectly good file of answers.
    */
-  const language = transform.params?.language?.trim() ?? '';
+  const language = transform.action === 'clean'
+    ? made.book.header.language
+    : transform.params?.language?.trim() ?? '';
   if (language.length === 0) {
     return {
       ok: false,
-      reason: `“${transform.label}” does not say which language it was made into, so there is `
-        + 'nothing to declare its book as. It was recorded before Foundry kept that, and the way to '
-        + 'get one is to translate again from the step it was made from.',
+      reason: transform.action === 'clean'
+        ? `The book under “${transform.label}” has never said what language it is in, so there is `
+          + 'nothing to declare the cleaned book as. Read the pages again with the language '
+          + 'declared, and the cleanup already on disk is put back for nothing.'
+        : `“${transform.label}” does not say which language it was made into, so there is `
+          + 'nothing to declare its book as. It was recorded before Foundry kept that, and the way '
+          + 'to get one is to translate again from the step it was made from.',
     };
   }
 
@@ -1005,7 +1037,7 @@ async function writeTranslationBook(
  * ── Named by the file the run wrote, exactly as `ensureTranslateCast` is ────
  *
  * The settle holds the records path and nothing else: the step was minted by
- * `recordTranslation` a moment earlier, inside a manifest write the queue
+ * `recordTextPass` a moment earlier, inside a manifest write the queue
  * deliberately does not reach into. So the row is looked up by the payload it
  * names — the same whole-project-relative-path rule every other lookup in this
  * app obeys, and emphatically not by reading anything back out of a filename.
@@ -1013,10 +1045,10 @@ async function writeTranslationBook(
  * IT IS NOT FATAL TO THE LANDING. A translation that landed is hours of GPU
  * safely on disk in its records file, and the derived book is a pure function of
  * that file and the ledger — regenerable retention in the strongest sense, and
- * remade by the next open (`ensureTranslationBook`) if this could not write it
+ * remade by the next open (`ensureTextPassBook`) if this could not write it
  * now. So a failure here is a console line and not a job reported as failed.
  */
-export async function materializeTranslation(recordsPath: string): Promise<void> {
+export async function materializeTextPass(recordsPath: string): Promise<void> {
   const dir = projectDirOf(recordsPath);
   if (dir === null) {
     console.error(
@@ -1027,8 +1059,12 @@ export async function materializeTranslation(recordsPath: string): Promise<void>
   try {
     const view = await readStepLedger(dir);
     const relative = path.relative(dir, path.resolve(recordsPath)).split(path.sep).join('/');
+    // ANY TEXT PASS THAT NAMES THESE ANSWERS, by the whole project-relative path
+    // — the family rather than the translation alone, or a rewrite's and a
+    // cleanup's landing would each find no step and make no book, leaving the
+    // pane to make it again on the first open (`ensureTextPassBook`).
     const step = view?.ledger.steps.find(
-      (row) => row.action === 'translate' && row.payload === relative,
+      (row) => isTextPass(row.action) && row.payload === relative,
     );
     if (step === undefined) {
       console.warn(
@@ -1197,16 +1233,17 @@ async function bookFrom(projectDir: string, from: LedgerStep | null): Promise<Bo
       ? null
       : {
         // The step's own param, which is where a translation's language has lived
-        // since `recordTranslation` began writing it: nothing reads a language out
+        // since `recordTextPass` began writing it: nothing reads a language out
         // of a file of sentences. `parsed.header.language` says the same thing —
         // `translated` declares it from this very field — and this is the side of
         // the pair that is a fact about the STEP rather than about a file.
         language: transform.params?.language?.trim() ?? parsed.header.language,
-        // AND WHICH REWRITE, WHERE THERE WAS ONE. A simplify is a translate step
-        // carrying a mode, so this is the only thing on the step that says which
-        // of the two acts the person actually ordered — and the pane has sentences
-        // that name it. Absent is a translation, which is what `readParams`
-        // guarantees: a `rewrite` that survived parsing is one this build can name.
+        // AND WHICH REWRITE, WHERE THERE WAS ONE. The step's own ACTION says which
+        // of the three passes this is now (2026-09-05), and the mode says which of
+        // the three rewrites a simplify was — which is what the pane's sentences
+        // name. Absent for a translation and for a cleanup, neither of which has
+        // one; `readParams` guarantees that a `rewrite` which survived parsing is
+        // a mode this build can name.
         ...(transform.params?.rewrite !== undefined ? { rewrite: transform.params.rewrite } : {}),
         source: await sourceOfTranslation(at.dir, ledgerOf(at.manifest), transform),
       },
@@ -1358,7 +1395,7 @@ export async function correctBookBlock(
     );
   }
   const records = await recordCorrection(at.dir, transform, id, text, busy);
-  await materializeTranslation(records);
+  await materializeTextPass(records);
   return loadBook(projectDir);
 }
 

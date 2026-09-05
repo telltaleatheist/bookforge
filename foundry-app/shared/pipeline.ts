@@ -57,12 +57,29 @@
  */
 
 import {
+  cleanupInEffect,
   curationInEffect,
   positionOf,
   readingInEffect,
+  textPassInEffect,
   translationInEffect,
 } from './ledger';
 import type { LedgerStep, ProjectLedger } from './types';
+
+/*
+ * ── THE CLEANUP QUESTION, ANSWERED NEXT DOOR AND ASKED FROM HERE ────────────
+ *
+ * `cleanupInEffect(ledger, at)` and `textPassInEffect(ledger, at)` are declared in
+ * shared/ledger.ts beside `translationInEffect`, because all three are the SAME
+ * WALK asked a different question and a walk split across two modules is a walk
+ * with two stopping rules (`BOUNDS_THE_WALK` is the thing that would drift). They
+ * are re-exported here because this is the module a reader comes to when they want
+ * to know what a rendering at a position MEANS, and "is the narration cleanup in
+ * effect" is exactly that kind of question — it decides one flag on one command
+ * line (`--narration-stamp`, `argsFor`) and one field on the host's invoke
+ * (`cleaned`, shared/host-ops.ts).
+ */
+export { cleanupInEffect, textPassInEffect };
 
 /**
  * The model a translation is asked of when nobody chose one — the engine's own

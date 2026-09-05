@@ -19,7 +19,7 @@
  * writes it and that sits at the top of everything.
  */
 import type {
-  ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TranslateRequest,
+  ExportLanding, FoundryJobRow, ImportLanding, JobRequest, TextPassRequest,
 } from '../shared/types';
 // A TYPE, and it has to stay one: `host-ops.ts` pushes at windows and therefore
 // imports `window.ts`, which is exactly the weight this leaf exists to keep out
@@ -89,7 +89,26 @@ export interface FoundryHostQueue {
    * THE ROW IS THE HOST'S OWN. Its `id` is the host's — it is what `cancel` and
    * `remove` will name — and Foundry mints nothing for it until `runJob` runs it.
    */
-  enqueue(request: JobRequest | TranslateRequest, parentStep: string | null): FoundryJobRow;
+  /*
+   * ── THE REQUEST SHAPE WIDENED ON 2026-09-05, AND WHAT THAT COSTS A HOST ────
+   *
+   * It read `JobRequest | TranslateRequest`, because a rewrite was a translation
+   * wearing a mode and those were the only two shapes this app could send. Owen
+   * split the text passes into three (`TEXT_PASS_ACTIONS`, shared/ledger.ts) — a
+   * translation, a rewrite and a narration cleanup, each a job kind and a ledger
+   * action of its own — so what may arrive here is `JobRequest | TextPassRequest`.
+   *
+   * A HOST READING A `kind` IT HAS NEVER HEARD OF IS THE REAL COST, and it is
+   * stated rather than defended against. BookForge holds `app/` as a SEALED
+   * VENDORED SNAPSHOT (docs/BOOKFORGE-HANDOFF.md §8), so its copy of these types
+   * arrives with the re-vendor and not before — a window running an older host
+   * against a newer Foundry would file a `simplify` row its lane table cannot name.
+   * The mitigation is the ordinary one for this seam: the two doors that can send
+   * the new kinds are gated on the host asking for them (the Clean text tile is
+   * drawn only hosted, and only a host that wanted the feature ships it), and the
+   * handoff doc carries the note so the re-vendor is deliberate.
+   */
+  enqueue(request: JobRequest | TextPassRequest, parentStep: string | null): FoundryJobRow;
   /**
    * The gestures the shelf makes, forwarded by id — the host's id, off the host's
    * own row.

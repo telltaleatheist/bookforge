@@ -349,6 +349,8 @@ import { hosted } from '../../core/foundry';
                     @if (job.kind === 'env-install') { Installed }
                     @else if (job.kind === 'read') { Read · the book follows }
                     @else if (job.kind === 'translate') { Translated · the book follows }
+                    @else if (job.kind === 'simplify') { Simplified · the book follows }
+                    @else if (job.kind === 'clean') { Cleaned · the book follows }
                     @else { Done · {{ view.made(job) }} }
                   </span>
                 }

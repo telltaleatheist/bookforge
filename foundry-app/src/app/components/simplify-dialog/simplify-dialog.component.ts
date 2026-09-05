@@ -7,7 +7,7 @@ import {
   DEFAULT_OLLAMA_ENDPOINT as DEFAULT_OLLAMA,
   DEFAULT_TRANSLATE_MODEL as DEFAULT_MODEL,
 } from '@shared/pipeline';
-import type { RewriteMode, TranslateRequest } from '@shared/types';
+import type { RewriteMode, SimplifyRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
 import { seedLlmDefaults } from '../../core/llm-defaults';
@@ -459,8 +459,16 @@ export class SimplifyDialogComponent {
         );
         return;
       }
-      const request: TranslateRequest = {
-        kind: 'translate',
+      const request: SimplifyRequest = {
+        /*
+         * A KIND OF ITS OWN, where this said `translate` and let `rewrite` carry
+         * the difference. Owen, 2026-09-05: *"it isnt a translate job. naming it
+         * translate is deceptive."* The row in the shelf, the step in the history
+         * and the job on the wire all say `simplify` now, and the mode is required
+         * rather than optional — a rewrite without one is not a shape this window
+         * can build (`SimplifyRequest`, shared/types.ts).
+         */
+        kind: 'simplify',
         inputPath: plan.inputPath,
         // The position's own book file with every applied change replayed into it,
         // written by main when the plan was made. This window has no opinion about it.
@@ -486,7 +494,7 @@ export class SimplifyDialogComponent {
       // A refusal is not a success: the queue dedupes on the records path and
       // answers with the row that already exists, so a second press has queued
       // nothing and this card stays put and says so.
-      if (await this.queue.enqueueTranslate(request) === 'already') {
+      if (await this.queue.enqueueTextPass(request) === 'already') {
         this.problem.set(
           'This rewrite is already queued for this book — nothing was added. It is in the queue.',
         );

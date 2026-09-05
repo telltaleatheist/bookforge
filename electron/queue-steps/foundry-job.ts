@@ -37,8 +37,21 @@
 import { noteStepStopped } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef, StepResource } from '../../shared/queue/engine-types';
-import { foundryRunner, parseFoundryProgressLine } from '../foundry-host-queue';
+import {
+  FOUNDRY_VERSION_FOR_CLEAN_TEXT, foundryRunner, foundryTooOldForCleanText,
+  parseFoundryProgressLine,
+} from '../foundry-host-queue';
 import type { FoundryJobStepConfig } from '../foundry-host-queue';
+import { foundryVersion } from '../foundry-bridge';
+/*
+ * `foundryVersionAtLeast` lives beside the readings-bank flags because that is
+ * where the first version gate was written. It is the ONE comparator — numeric
+ * dot-separated, and a version that is not that shape is never quietly treated as
+ * new enough — and a second copy here would be a second answer to "is this
+ * engine new enough", which is exactly the question a gate exists to have one
+ * answer to.
+ */
+import { foundryVersionAtLeast } from '../../shared/vlm/readings-bank';
 
 /**
  * Which pool a Foundry job contends for.
@@ -46,9 +59,18 @@ import type { FoundryJobStepConfig } from '../foundry-host-queue';
  * READ IS THE GPU. It hands every page to a vision model; it is the expensive
  * thing the hold exists for and the reason this centralization matters.
  *
- * A TRANSLATE IS ALSO THE GPU, because its model is Ollama's and Ollama is on the
- * same card. This engine already says exactly that about its own translate pass
- * ("the same pass against Ollama is the GPU", engine-types StepResource).
+ * EVERY TEXT PASS IS ALSO THE GPU, because its model is Ollama's and Ollama is on
+ * the same card. This engine already says exactly that about its own translate
+ * pass ("the same pass against Ollama is the GPU", engine-types StepResource),
+ * and Foundry files all three on the `gpu` lane in `JOB_RESOURCE`.
+ *
+ * A CLEANUP IS NOT THE CHEAP ONE OF THE THREE, which is worth saying because its
+ * name sounds like it might be: it asks the model about EVERY block of the book,
+ * one call each, temperature 0 — Owen's ruling of 2026-09-04, *"send every single
+ * block through to be sure"* — so it holds a 17 GB model for as long as a
+ * translation does. Filing it on `cpu` would let it run beside a narration and
+ * put two models on one card, which on this hardware is an out-of-memory failure
+ * hours in.
  *
  * A RENDERING IS NOT. Foundry's own words for it: arithmetic over a bank already
  * on disk — no model, no socket, seconds — and that is as true of a TRANSLATED
@@ -59,7 +81,9 @@ import type { FoundryJobStepConfig } from '../foundry-host-queue';
 function resourceFor(config: Record<string, unknown>): StepResource {
   const request = (config as unknown as FoundryJobStepConfig).request;
   const kind = request?.kind;
-  return kind === 'read' || kind === 'translate' ? 'gpu' : 'cpu';
+  return kind === 'read' || kind === 'translate' || kind === 'simplify' || kind === 'clean'
+    ? 'gpu'
+    : 'cpu';
 }
 
 export const foundryJobStep: StepModule = {
@@ -97,6 +121,23 @@ export const foundryJobStep: StepModule = {
         'This Foundry row carries no request, so there is nothing to run. The row was composed '
         + 'wrongly rather than the work failing.',
       );
+    }
+    /*
+     * A CLEAN TEXT ROW NEEDS AN ENGINE THAT HAS THE COMMAND, and this is the last
+     * moment anything on this side can say so.
+     *
+     * The check is HERE and not at `enqueue`, which is where a refusal would
+     * ideally live: that door is SYNCHRONOUS by contract — "pressing Add cannot
+     * leave a moment where nothing has appeared" — and asking the binary its
+     * version is a spawn. So the row is minted, and it refuses the instant its
+     * turn comes, before Foundry is asked to spawn anything and before a model is
+     * loaded. Nothing is substituted and no other command is tried.
+     */
+    if (config.request.kind === 'clean') {
+      const installed = await foundryVersion();
+      if (!foundryVersionAtLeast(installed.version, FOUNDRY_VERSION_FOR_CLEAN_TEXT)) {
+        throw new Error(foundryTooOldForCleanText(installed.version));
+      }
     }
     /*
      * SAID, NOT SUBSTITUTED. `runJob` arrives with the Foundry seam; a subtree
