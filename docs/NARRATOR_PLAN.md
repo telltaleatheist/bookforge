@@ -369,7 +369,7 @@ plans against a paragraph that has not been built. Full detail:
   factories; an unknown id raises rather than defaulting.
 - `engine/orpheus/**` - every Orpheus module, MOVED, bodies unchanged, plus
   `interface.py` (`OrpheusCodec`, `OrpheusBudget`, the `stop_policy` view). The
-  engine test suite is 137 tests, unchanged, OK on both interpreters.
+  engine test suite is 147 tests, unchanged, OK on both interpreters.
 - `engine/higgs/v3_served.py` + `v3_engine.py` - the SERVED second engine:
   launch (invoking their `serve_v3.sh`), `/health` polling, stop, the request
   builder (sampling in `extra_params` and nowhere else), the response decoder,
@@ -377,13 +377,36 @@ plans against a paragraph that has not been built. Full detail:
   adapter strategies, `pads=False`, `edge_fade_ms=25`, `max_chars=600`,
   `coverage_check='asr'`. **Rendered a sentence end to end on the GPU** - see
   PORT_NOTES 12.7.
-- `engine/higgs/{config,codec,prompt,transformers_backend,engine}.py` - the v2
-  scaffold, 70 tests, none of which needs a model.
+- `engine/higgs/**` - 163 tests across the v3 backend and the v2 scaffold, none
+  of which needs a model or a GPU (the v3 client is driven against a real
+  stdlib HTTP server standing in for vllm-omni).
 - `serve/worker.py` selects its engine from `NARRATOR_ENGINE` (default
   `orpheus`) and gained ONE branch for a served backend
   (`engine.render_audio(text)`). `--fake-engine` has a fake per engine.
 - `pyproject.toml` gains three mutually exclusive extras, pinned to what the
   three WSL envs actually have.
+
+**Hardened after adversarial review + the Mac and app-side runs (2026-09-04):**
+
+- voice validation is the ENGINE's (`resolve_load_voice` on the protocol) - the
+  worker was checking Higgs loads against Orpheus's stock allowlist;
+- a failed load STOPS the server it started (no orphaned 14 GB vllm-omni), and
+  the ready timeout is 900 s against measured cold starts of 55 / 146 / 297 s;
+- server adoption checks `/v1/models` for `higgs-v3` and for the configured
+  adapter, instead of trusting whatever answers the port;
+- a tail-trim readiness probe (one fixed-seed word, trailing 300 ms RMS below
+  -45 dBFS) catches an unpatched server, which otherwise answers 200 and returns
+  audible garbage on every chunk;
+- `maxChars` is per VOICE, and a FINE-TUNE without one is refused by name;
+- a non-WAV 200 and the `-100` HTTP 400 are refused with what to do about them;
+- `edge_fade` is an `EdgeFade(in_ms, out_ms)` - asymmetric 10/25 - and a test
+  asserts it equals `assemble/engine_profiles.py`;
+- a worker that cannot render NEVER handshakes (exit 3, reason on stderr);
+- ONE chunk writer, `soundfile` PCM_16, on every backend (torchaudio's FLAC
+  writing is wheel-dependent and produced PCM_24 on the Mac against PCM_16 in
+  WSL - a bit-depth mix the concat demuxer drops frames on);
+- `DefaultVoice` - the model's own voice, and a fine-tune's text-only prompt -
+  as its own member of the union, with `ClipsVoice`'s >= 1 clip rule intact.
 
 **Designed, not built:**
 
@@ -417,3 +440,17 @@ provenance, and an adapter voice without a measured cap is REFUSED by name. The 
 zero-shot placeholder applies only to `{kind:'clips'}` voices. Also measured: one reference
 clip per request under the 30 s cap (multi-clip = one pre-joined wav + one transcript);
 cold start 297 s to /health (55 s only on a warm restart).
+
+### Higgs v3 facts from the trainer work (orpheus-training session, 2026-09-05, HIGH confidence)
+
+1. vllm-omni cannot load a LoRA at runtime (no adapter flags; the talker class does not
+   implement SupportsLoRA). Every Higgs voice ships as a MERGED checkpoint directory
+   (~8.5 GB) and the server is started on that directory; switching voice = restarting
+   the server on a different path (~55 s warm, ~300 s cold). The LoRA (~200 MB) is the
+   archival artifact; merging is a CPU step outside narrator. Catalog and VoiceRef
+   kind: `checkpoint` (checkpointDir); the `adapter` strategy switch is gone.
+2. Owen: production is fine-tuned voices ONLY. Zero-shot cloning (reference audio in
+   the request) is diagnostic, not a product feature; the text-only request to a merged
+   model is the primary path.
+3. The chunk-tail sentinel trim is a band-aid on the server side; a token-level fix in
+   vllm-omni's decode is queued there. narrator never trims client-side.
