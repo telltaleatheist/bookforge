@@ -63,6 +63,7 @@ const SUITES = [
   'test-higgs-engine',
   'test-orpheus-argv-snapshot',
   'test-serve-spawn-env',
+  'test-narrator-log-strings',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',
