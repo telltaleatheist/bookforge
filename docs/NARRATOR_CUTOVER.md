@@ -172,29 +172,180 @@ byte-identical either way because `normalize()` already collapses all whitespace
 
 ---
 
-## What Phase 3 still owns
+## Phase 3 — the Orpheus batch cut-over
 
-Everything in `parallel-tts-bridge.ts` and `reassembly-bridge.ts`, untouched here:
+Branch `feat/narrator-cutover`. Six doors moved off ebook2audiobook. Nothing in
+`parallel-tts-bridge.ts` or `reassembly-bridge.ts` spawns `app.py` or `worker.py`
+any more, and the WSL argv rewriter is deleted.
 
-- the prep, worker, retake, assembly, resume and list spawns (all six still call
-  `app.py` / `worker.py` in the e2a checkout);
-- `buildWslBashCommand` and its pattern rewriting, `rewriteUnderE2aRoot`, the
-  `forwardKeys` allowlist, `-p python_env`;
-- `wslSessionPattern()` and the batch half of the orphan reapers, which still name
-  `worker.py` / `app.py` / `ebook2audiobook.*\.py`;
-- `assembleOrpheusNative` / `asmRoutingEngine` / `asmInvocation` and the
-  `--tts_engine xtts` literal on the assembly door;
-- `GENERATION_ACTIVITY_RE` and `REPAIR_START_RE`, which must be pinned against
-  narrator's REAL stderr before the batch doors move — a miss there is a watchdog
-  that TERMs a working worker;
-- `cli/bookforge-tts.py`, `cli/orpheus-audiobook-render.js`, `cli/e2a-scratch.js`
-  and `cli/narration-prep*.js`. (`cli/orpheus-stream.js` needed no change: it
-  drives the pool through the TTS API server, so it followed the pool's door for
-  free.)
+### The six doors, before and after
 
-Phase 5 (`feat/xtts-removal`, another branch) owns `streaming-engine.ts`'s xtts
-arm, `xtts-worker-pool.ts`, `xtts-voices.ts` and `custom-voices.ts`. The only edit
-made to `streaming-engine.ts` here is its Orpheus availability probe, which now
-asks `narrator-spawn` the same question the spawn will ask — otherwise the Listen
-picker would report "Orpheus: available" on a Mac with no `narrator-mlx`. On the
-Mac Studio that env is present, so the probe passes there for the right reason.
+| door | before | after |
+|---|---|---|
+| prep | `<py> <e2a>/app.py --headless --ebook … --prep_only` (+ 6 XTTS sampling flags) | `<py> -u -m narrator.compat.app --headless --ebook … **--session_dir** … --prep_only` |
+| worker | `<py> <e2a>/worker.py …` OR `<py> <e2a>/app.py --worker_mode --skip_deps …`, chosen by `useLightweightWorker` | `<py> -u -m narrator.compat.worker …` — ONE arm |
+| retake | `<py> <e2a>/worker.py … --sentence_indices` (+ `--speed`) | `<py> -u -m narrator.compat.worker … --sentence_indices` |
+| assembly (render) | `app.py --assemble_only`, one of THREE routes, `--tts_engine xtts` on the native one | `-m narrator.compat.app --assemble_only`, native tools env, always |
+| assembly (reassembly) | `app.py --assemble_only`, WSL arm when the session was on ext4, `--tts_engine xtts` always | same one native door |
+| resume / list | `<py> <e2a>/app.py --headless --resume_session\|--list_sessions` | `-m narrator.compat.app`, tools env |
+
+Every `--tts_engine` value now comes from `narratorEngineId()`. BookForge says
+`higgs`; narrator lists `higgs` under ENGINE_NEAR_MISSES beside `higgs-v2`,
+`higgs-v2-scaffold` and `higgs_v3`, and refuses all four BY NAME — guessing which
+Higgs a caller meant is how a whole book gets rendered by the wrong model.
+
+### Flags that stopped being sent, and why
+
+`--speed`, `--enable_text_splitting`, `--temperature`, `--top_p`, `--top_k`,
+`--repetition_penalty`, `--skip_deps`. narrator parses all seven and honours none
+(compat/FLAGS.md, IGNORE — six are "XTTS only", and narrator installs nothing).
+Orpheus's equivalents arrive as `ORPHEUS_TEMPERATURE` / `ORPHEUS_TOP_P` /
+`ORPHEUS_REP_PENALTY` or as registered per-voice caps. Passing a flag nothing
+reads is a claim that a setting was honoured.
+
+`--bilingual` / `--bilingual_pause` / `--bilingual_gap` are STILL SENT on the
+render assembly door, deliberately. narrator REFUSES them by name, which is Phase
+4's business; leaving them is what makes that refusal reachable from the app
+instead of theoretical.
+
+### The environment diff, per door
+
+`buildNarratorSpawn` supplies `PYTHONUNBUFFERED`, `PYTHONIOENCODING`,
+`PYTHONPATH`, and `NARRATOR_ENGINE` when an engine is named. Beyond that:
+
+| door | added | removed |
+|---|---|---|
+| prep | `PYTHONPATH`, `NARRATOR_ENGINE`; `ORPHEUS_DISABLE_EAGER` on the WSL arm (was hard-coded inside `buildWslBashCommand`) | `EBOOK2AUDIOBOOK_PATH`; `VLLM_DISABLE_CUDA_GRAPH`/`VLLM_NO_CUDA_GRAPH` on the WSL arm only |
+| worker / retake | same, plus **every** `ORPHEUS_*` value now crosses into WSL | the `forwardKeys` allowlist |
+| assembly | `PYTHONPATH` | `EBOOK2AUDIOBOOK_PATH`, and every `ORPHEUS_*` — nothing here loads vLLM or MLX |
+| resume / list | `PYTHONPATH` | `EBOOK2AUDIOBOOK_PATH`, the CUDA-graph pins |
+
+Two of those are behaviour changes rather than renames:
+
+- **`ORPHEUS_DISABLE_EAGER` is now arm-aware.** It turns CUDA graphs ON in Linux
+  and is the entire reason Orpheus runs in WSL. `buildWslBashCommand` hard-coded
+  it into its export line while the native arms set
+  `VLLM_DISABLE_CUDA_GRAPH`/`VLLM_NO_CUDA_GRAPH` instead. Sending both sets into
+  the guest would have them fight, so the arm decides, in the open.
+- **The allowlist is gone.** `forwardKeys` was fourteen `ORPHEUS_*` names plus the
+  two owner-pid vars — a list of variables somebody remembered. Forwarding is now
+  every value in `envExtras`, which is the door's own declaration.
+
+### `normalizeWslSessionToWindows` stays, and it is load-bearing
+
+Orpheus prep and render still run in WSL, so the session is written to ext4.
+That function copies it onto a Windows path after generation — the copy runs
+INSIDE the guest, so it is fast — and repoints `prepInfo`. Native assembly is only
+possible because of it: without it the assembler would be reading the `\\wsl$` 9p
+mount, which is slow enough to dominate the job, or nothing at all when WSL is
+down. Phase 3 made assembly native for BOTH engines and on every platform; it did
+not make the copy unnecessary.
+
+### The kill patterns, which fail silently in both directions
+
+`(worker|app)\.py`, `ebook2audiobook.*\.py` and `app\.py.*<sid>` match nothing in
+`python -u -m narrator.compat.worker`. A kill pattern that matches nothing does
+not fail — the sweep reports success and leaves a vLLM process holding ~6 GB of
+VRAM, which is the shape that wedges the WSL VM and the shape that makes the next
+job refuse to start. All three now come from `narrator-spawn.ts`
+(`NARRATOR_WORKER_RE`, `NARRATOR_APP_RE`, `NARRATOR_BATCH_RE`) beside
+`SERVE_PROCESS_RE`, which the same sweeps must never touch.
+
+### `shouldUseWslForSpawn` → `jobRunsInWsl`, and the lie it was telling
+
+It returned false for Higgs on purpose: every caller was also the gate in front of
+`spawnWithWslSupport`, and a Higgs command through that function came out an
+Orpheus command. So each site that needed the truth had to write
+`|| (isHiggsJob(...) && higgsRunsInWsl())` and remember to. Three did not:
+
+- a Higgs job's guest workers were never session-torn-down,
+- its retake never staged session state into the guest,
+- a wedged VM never stopped it retrying.
+
+`spawnWithWslSupport` is deleted, so the lie has no beneficiary. It now delegates
+to `narratorRunsInWsl`, which is what the spawn itself asks.
+
+### Three bugs the live proofs caught that no snapshot could
+
+1. **Assembly needs the PROCESS dir.** Both doors passed the `ebook-<uuid>`
+   session dir. `session_v1.build_manifest` opens `<dir>/session-state.json`
+   directly; only the RENDER routes go through `session_store`, which walks a
+   session dir's subdirectories for it. e2a resolved either, so this door sent the
+   session dir for years. narrator refuses by name — and every book would have
+   failed to assemble, with perfect flags and a perfect plan.
+2. **`lastJsonValue` returned the last NESTED object.** Scanning backwards from
+   the final `{` finds `"metadata": { … }`, which parses perfectly, so every field
+   the caller wanted came back `undefined` — which reads downstream as "no session
+   to resume", the same answer a fresh book gives. It now makes one forward pass
+   and keeps the last span that opens and closes at depth ZERO.
+3. **`--resume_session` and `--list_sessions` had been broken all along.** Both
+   readers scanned stdout line by line calling `JSON.parse`; narrator and e2a both
+   print `json.dumps(result, indent=2)`, where no line is valid JSON on its own.
+   `checkResumeStatus` always returned "Failed to parse resume check output" and
+   `listResumableSessions` had a comment claiming the output was "human-readable
+   (not JSON)" and returned `[]`.
+
+### Verified
+
+- `npx tsc -p tsconfig.electron.json --noEmit`, `npx tsc -p tsconfig.app.json --noEmit`, `npx ng build` — clean.
+- `node tools/run-keepers.js` twice — ALL KEEPERS GREEN.
+- No `require("@shared/` in `dist/electron`.
+- `tools/test-narrator-argv-snapshot.js`: six doors' flags, three arms' plans, plus
+  the contract assertions (required flags present; no IGNORE-only flag sent; no
+  ENGINE_NEAR_MISS; tools doors never WSL and never engine-named; every door
+  reaches a module and no `.py`; PYTHONPATH set and guest-shaped in the guest;
+  no `EBOOK2AUDIOBOOK_PATH`; no `--fake-engine`; argv AND env values translated).
+- `tools/test-narrator-log-strings.js`: eight of narrator's real emitted lines
+  through the four watchdog matchers, and narrator's source checked to still
+  contain each one.
+- `tools/smoke-narrator-tools-doors.js`: `--list_sessions` and `--resume_session`
+  run through the real plan against a fixture session; the bridge's own compiled
+  reader parses both.
+- `tools/smoke-narrator-assembly.js`: the kershaw golden session assembled through
+  the bridge's real plan — exit 0 in 67.6 s, native, no `NARRATOR_ENGINE`,
+  **2615.4 s** (reference 2615.400), **133 cues** (reference 133, one per sentence
+  FLAC), VTT byte-identical to `reference.vtt` modulo line endings (sha
+  `a3789b4d…`).
+
+### NOT verified — owed to the GPU window
+
+- **The prep and worker doors have never been RUN.** They are GPU-bound; the
+  training session holds `external-gpu-job.lock`. Owed: a WSL prep + render of a
+  short book, and the kershaw golden resumed end to end.
+- The `GENERATION_ACTIVITY_RE` / `REPAIR_START_RE` matchers are pinned against
+  narrator's SOURCE strings, not against a live worker's stderr. A live render is
+  what turns that from "the strings agree" into "the watchdog fires".
+- The Mac has run nothing of Phase 3.
+
+---
+
+## What is left after Phase 3
+
+**Phase 4 — bilingual assembly.** `parallel-tts-bridge.ts` still appends
+`--bilingual` / `--bilingual_pause` / `--bilingual_gap` when a job asks for it,
+and narrator REFUSES all three by name. That is deliberate: leaving them is what
+makes the refusal reachable from the app rather than theoretical. Owen's ruling is
+Branch A — the whole language-learning feature goes.
+
+**Phase 5 — XTTS / F5 / Voxtral out of the root** (`feat/xtts-removal`, landing on
+main BEFORE this branch). `xtts-worker-pool.ts`, `xtts-voices.ts`,
+`custom-voices.ts`, the DeepSpeed probe, the component installers. Two things this
+branch left for it:
+
+- `pythonInvocation(ttsEngine)` survives with exactly ONE caller —
+  `xttsDeepspeedAvailable`, the DeepSpeed probe Phase 5 deletes. Nothing else in
+  the bridge resolves a python any more.
+- `streaming-engine.ts` keeps its xtts arm. The only edit made here is the Orpheus
+  availability probe, which now asks `narrator-spawn` the same question the spawn
+  will ask — otherwise the Listen picker would report "Orpheus: available" on a
+  Mac with no `narrator-mlx`.
+
+**Phase 6 — assets, packaging, names.** `E2A_TMP_DIR` is still the variable
+`narrator.render.session_store.sessions_root()` reads, and `EBOOK2AUDIOBOOK_PATH`
+still names the tools-env root in `tool-paths.ts` and in `packaging/`. Both are
+renames, not behaviour, and both are Phase 6's. `e2a-paths.ts` becomes
+`tools-paths-python.ts`; `packaging/stage-resources.js` stops copying an e2a
+checkout; `packaging/env/ebook2audiobook-*.yml` becomes `narrator-tools-*.yml` and
+gains `narrator-mlx.yml` plus its component installer.
+
+**Not a phase, but owed:** every GPU proof. See "NOT verified" above.
