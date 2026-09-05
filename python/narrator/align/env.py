@@ -1,0 +1,179 @@
+"""Finding the interpreter that can align, and driving it from one that cannot.
+
+The aligner needs torch and whisperx. narrator's own interpreters do not have
+them and must not grow them: `assemble` runs on a CPU env the reassembly bridge
+spawns with `--tts_engine xtts`, and the Orpheus envs are pinned to torch 2.5.1
+/ vLLM 0.7.3, which whisperx's torch 2.8 stack cannot coexist with. BookForge
+already ships the right interpreter as a managed component -
+`electron/components/whisperx-env.ts`, "Ebook Alignment (WhisperX)", CPU-only by
+design - and `electron/scripts/align_audiobook.py` is spawned with it today.
+
+So there are two ways to run an alignment and they are the SAME CODE:
+
+  IN PROCESS   `narrator align` under the whisperx interpreter imports whisperx
+               directly. This is what the CLI does when nothing says otherwise.
+  OUT OF PROCESS  `--python <that interpreter>` spawns
+               `python -m narrator.align.worker` there, over a JSON-lines
+               protocol, with `PYTHONPATH` pointed at THIS checkout so the same
+               narrator code runs on both sides. Nothing is installed; nothing
+               is copied.
+
+NO SILENT ROUTING. An interpreter that cannot import the backend and was given
+no `--python` REFUSES, and the refusal names the interpreter it found on disk so
+the operator can paste it back. Guessing which interpreter to spawn would make a
+CPU-only add-on a hidden dependency of a command that appeared to run locally.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import subprocess
+import sys
+from typing import Optional, Sequence
+
+#: An explicit "align with this interpreter", for a machine whose component
+#: lives somewhere unusual.
+ALIGN_PYTHON_ENV = 'NARRATOR_ALIGN_PYTHON'
+#: The whisperx component's own "point at an existing env" variable
+#: (`whisperx-env.ts`, `detect.envVar`).
+WHISPERX_ENV_PATH = 'WHISPERX_ENV_PATH'
+#: Where torch keeps the wav2vec2 align checkpoint (~378 MB). BookForge manages
+#: one at `<userData>/runtime/whisperx-cache` and points TORCH_HOME at it
+#: (`electron/whisperx-align-bridge.ts`); reusing it means the aligner downloads
+#: nothing that BookForge has already fetched.
+TORCH_HOME_ENV = 'TORCH_HOME'
+
+
+def package_root() -> str:
+    """The directory that must be on `PYTHONPATH` for `import narrator` to work
+    - this checkout's `python/`, derived from this file, never guessed."""
+    return os.path.dirname(os.path.dirname(os.path.dirname(
+        os.path.abspath(__file__))))
+
+
+def _python_in(env_root: str) -> str:
+    if sys.platform == 'win32':
+        return os.path.join(env_root, 'python.exe')
+    return os.path.join(env_root, 'bin', 'python')
+
+
+def managed_whisperx_root() -> Optional[str]:
+    """BookForge's installed whisperx-env component directory, if it is there.
+
+    The same path `electron/components/component-manager` installs into:
+    `<userData>/components/whisperx-env`. userData is `%APPDATA%/BookForge` on
+    Windows and `~/Library/Application Support/BookForge` on macOS.
+    """
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA')
+        if not base:
+            return None
+        root = os.path.join(base, 'BookForge', 'components', 'whisperx-env')
+    elif sys.platform == 'darwin':
+        root = os.path.expanduser(
+            '~/Library/Application Support/BookForge/components/whisperx-env')
+    else:
+        return None
+    return root if os.path.isdir(root) else None
+
+
+def managed_torch_home() -> Optional[str]:
+    """BookForge's managed torch cache, if it is there."""
+    if sys.platform == 'win32':
+        base = os.environ.get('APPDATA')
+        if not base:
+            return None
+        home = os.path.join(base, 'BookForge', 'runtime', 'whisperx-cache')
+    elif sys.platform == 'darwin':
+        home = os.path.expanduser(
+            '~/Library/Application Support/BookForge/runtime/whisperx-cache')
+    else:
+        return None
+    return home if os.path.isdir(home) else None
+
+
+def discover_align_python() -> Optional[str]:
+    """An interpreter that probably has whisperx, or None. Never spawned by
+    accident: the CLI only uses this to NAME one in a refusal."""
+    explicit = (os.environ.get(ALIGN_PYTHON_ENV) or '').strip()
+    if explicit:
+        return explicit
+    pointed = (os.environ.get(WHISPERX_ENV_PATH) or '').strip()
+    if pointed:
+        return _python_in(pointed)
+    root = managed_whisperx_root()
+    if root:
+        candidate = _python_in(root)
+        if os.path.isfile(candidate):
+            return candidate
+    return None
+
+
+def backend_importable(backend: str) -> bool:
+    """True when THIS interpreter can run `backend` without spawning anything."""
+    if backend == 'whisperx':
+        module = 'whisperx'
+    elif backend == 'torchaudio':
+        module = 'torchaudio'
+    else:
+        return False
+    try:
+        __import__(module)
+    except Exception:
+        return False
+    return True
+
+
+def worker_environment(base: Optional[dict] = None) -> dict:
+    """The environment a spawned worker needs: this checkout on `PYTHONPATH`,
+    and BookForge's torch cache when there is one."""
+    env = dict(os.environ if base is None else base)
+    root = package_root()
+    existing = env.get('PYTHONPATH')
+    env['PYTHONPATH'] = (root + os.pathsep + existing) if existing else root
+    env.setdefault('PYTHONIOENCODING', 'utf-8')
+    # `TOKENIZERS_PARALLELISM` off for the same reason the align bridge sets it:
+    # a forked tokenizer pool warns on every chunk and buys nothing here.
+    env.setdefault('TOKENIZERS_PARALLELISM', 'false')
+    if TORCH_HOME_ENV not in env:
+        home = managed_torch_home()
+        if home:
+            env[TORCH_HOME_ENV] = home
+    return env
+
+
+def run_jobs(python_exe: str, jobs: Sequence[dict],
+             timeout: Optional[float] = None) -> list:
+    """Align `jobs` in `python_exe` and return one result document each.
+
+    One process for the whole list, because loading the align model costs
+    ~5.6 s warm and a book is hundreds of chunks. The protocol is
+    `align/worker.py`'s: one JSON job per line in, one JSON result per line out,
+    in order.
+    """
+    if not os.path.isfile(python_exe):
+        raise FileNotFoundError(
+            f'align interpreter {python_exe} does not exist; pass --python with '
+            f'the whisperx env\'s python, or install "Ebook Alignment '
+            f'(WhisperX)" from Settings -> Add-ons')
+    payload = '\n'.join(json.dumps(job) for job in jobs) + '\n'
+    proc = subprocess.run(
+        [python_exe, '-m', 'narrator.align.worker'],
+        input=payload.encode('utf-8'),
+        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        env=worker_environment(), timeout=timeout,
+    )
+    out = proc.stdout.decode('utf-8', 'replace')
+    results = [json.loads(line) for line in out.splitlines() if line.strip()]
+    if proc.returncode != 0 and len(results) != len(jobs):
+        raise RuntimeError(
+            f'the align worker in {python_exe} exited {proc.returncode} after '
+            f'{len(results)} of {len(jobs)} job(s): '
+            f'{proc.stderr.decode("utf-8", "replace").strip()[-800:]}')
+    if len(results) != len(jobs):
+        raise RuntimeError(
+            f'the align worker in {python_exe} returned {len(results)} result(s) '
+            f'for {len(jobs)} job(s); stderr: '
+            f'{proc.stderr.decode("utf-8", "replace").strip()[-800:]}')
+    return results
