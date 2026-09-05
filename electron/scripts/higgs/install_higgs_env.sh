@@ -67,6 +67,14 @@ PIN_VLLM="vllm==0.28.0"
 PIN_TORCH="torch==2.13.0"
 HF_MODEL="bosonai/higgs-audio-v3-tts-4b"
 
+# Where a VOICE lives: one MERGED checkpoint directory per voice, mirroring the
+# Orpheus models dir. ~8.5 GB each, because vllm-omni has no runtime LoRA path —
+# a fine-tune is merged into a full checkpoint before it can serve, and the
+# server is started ON that directory. This script does not populate it (a voice
+# arrives from a training run, not from an installer); it is stated here because
+# it is the convention the catalog's checkpointDir paths follow.
+HIGGS_MODELS_DIR="${HIGGS_MODELS_DIR:-$HOME/higgs-models}"
+
 fail=0
 say() { echo "$1"; }
 bad() { echo "$1"; fail=1; }
@@ -184,5 +192,19 @@ else
   fi
 fi
 
+# ── 7. the voices directory ─────────────────────────────────────────────────
+# Reported, never fatal: a machine can legitimately have the serving stack and no
+# voices yet. The catalog refuses a voice whose checkpoint is absent by name, so
+# that failure belongs there and not here.
+if [ -d "$HIGGS_MODELS_DIR" ]; then
+  say "models-dir=ok"
+else
+  say "models-dir=absent"
+  if [ "$CHECK_ONLY" = "0" ]; then
+    mkdir -p "$HIGGS_MODELS_DIR" && say "models-dir=created"
+  fi
+fi
+
 if [ "$CHECK_ONLY" = "1" ]; then exit $fail; fi
 echo "HIGGS_ENV_OK $ENV_PREFIX"
+echo "HIGGS_MODELS_DIR $HIGGS_MODELS_DIR"

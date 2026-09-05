@@ -822,16 +822,17 @@ export interface HiggsModelDto {
   engineVersion: string;
   /**
    * THREE shapes, not two — see electron/higgs-models.ts. 'default' is the served
-   * model's own speaker and carries NEITHER clips nor an adapter; it is not an
-   * empty clone, which narrator refuses by name.
+   * model's own speaker and carries NEITHER clips nor a checkpoint; it is not an
+   * empty clone, which narrator refuses by name. 'checkpoint' is a MERGED
+   * fine-tune directory (vllm-omni has no runtime LoRA path), and it is the only
+   * kind besides 'default' the narration dropdown offers.
    */
-  kind: 'default' | 'clips' | 'adapter';
+  kind: 'default' | 'clips' | 'checkpoint';
   voice: {
     clips?: Array<{ path: string; transcript: string; seconds: number }>;
-    adapterDir?: string;
+    checkpointDir?: string;
     scene?: string;
   };
-  adapterStrategy?: 'lora-modules' | 'merged-dir';
   license: string;
   commercialUse: boolean;
   sampleRate: number;

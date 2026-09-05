@@ -114,7 +114,6 @@ roster, and a voice not in it is refused by name.
     "gpuMemoryUtilization": 0.6, "maxModelLen": 8192, "maxNumSeqs": 2,
     "attentionBackend": "FLASH_ATTN",
     "coldStartSeconds": 297, "readyTimeoutSeconds": 300,   // MEASURED
-    "adapterStrategies": ["lora-modules", "merged-dir"],
     "patches": [ { "id", "script", "target", "marker", "why" } ]
   },
   "models": [{
@@ -124,16 +123,15 @@ roster, and a voice not in it is refused by name.
     "engineVersion": "v3",
     "voice": {                    // narrator'''s shape: always clips
       "clips": [],                //   [{path, transcript, seconds}] - ONE at most
-      "adapterDir": "..."         //   present => it is a fine-tune
+      "checkpointDir": "..."      //   a MERGED fine-tune dir (~8.5 GB)
     },
-    "adapterStrategy": "...",     // absent until one has actually been loaded
     "license": "boson-higgs-tts-3-research-noncommercial",
     "commercialUse": false,
     "sampleRate": 24000,
     "addedAt": "2026-09-04",
     "_pendingNote": "...",        // present => artifact not installed => REFUSED
     "backends": { "served": {
-      "maxChars": 600,            // null on an unmeasured adapter => REFUSED
+      "maxChars": 600,            // null on an unmeasured fine-tune => REFUSED
       "maxCharsSource": "zero-shot placeholder",
       "edgeFadeMs": { "in": 10, "out": 25 },
       "sampling": { "temperature": 1.0, "topP": 0.95, "topK": 50 },
@@ -181,17 +179,34 @@ narrator reads a **voice document** whose path arrives in `NARRATOR_HIGGS_VOICES
 (`python/narrator/engine/higgs/config.py:load_voices`):
 
 ```jsonc
-{ "<voiceId>": { "clips": [{ "path", "transcript", "seconds" }],
-                 "scene"?, "adapterDir"?, "allowedControls"?, "maxReferenceSeconds"? } }
+{ "<voiceId>": { "kind": "default" | "checkpoint" | "clips",
+                 "clips"?: [{ "path", "transcript", "seconds" }],   // kind 'clips' only
+                 "checkpointDir"?,                                   // kind 'checkpoint' only
+                 "maxChars", "maxCharsSource",
+                 "scene"?, "allowedControls"?, "maxReferenceSeconds"? } }
 ```
 
-In **that** format a Higgs voice is **always clips**, and a fine-tune is an
-`adapterDir` riding on the same object — there is no adapter kind on that side.
+That format has **three shapes**, and only one of them carries clips:
+
+| kind | carries | what it is |
+|---|---|---|
+| `default` | nothing | the served model's own speaker |
+| `checkpoint` | `checkpointDir` | a **merged** fine-tune directory (~8.5 GB) |
+| `clips` | `clips: [1]` | a zero-shot clone — **diagnostic only** |
+
+**Why `checkpoint` and not `adapter`.** It was `adapter`/`adapterDir` until
+2026-09-04, which named the artifact we *train* rather than the artifact that
+*serves*. **vllm-omni cannot load a LoRA at run time** — `vllm-omni serve` has no
+adapter flags and the `higgs_audio_v3` talker class does not implement
+`SupportsLoRA` — so a LoRA is an archival input to a merge and never a thing the
+catalog points at. The server is started **on** the merged directory, which makes
+a voice switch a **server restart** (~55 s warm / ~300 s cold), not a message.
 
 This catalog keeps an explicit `kind` anyway, because `kind` selects
-**BookForge's own rules** (above all: `maxChars` is required-and-measured for an
-adapter, and may be the engine placeholder for a zero-shot voice) and because a
-picker has to tell a person which of the two they are choosing.
+**BookForge's own rules** (above all: `maxChars` is required-and-measured for a
+fine-tune, and may be the engine placeholder for the default voice) and because a
+picker has to tell a person which of them they are choosing — and because
+production offers only two of the three (see Decisions, item 13).
 `higgsVoicesDocument()` translates one into the other and is the only place the
 two shapes meet.
 
@@ -214,7 +229,6 @@ with different names. **Every invented name is gone**; these are the real ones:
 | `NARRATOR_HIGGS3_SERVE_SCRIPT` | `<env>/bin/serve_higgs_v3.sh`, when narrator must launch |
 | `NARRATOR_HIGGS3_URL` | attach to an already-running server instead |
 | `NARRATOR_HIGGS3_WSL_DISTRO` | the distro to launch in, on Windows |
-| `NARRATOR_HIGGS3_ADAPTER_STRATEGY` | `lora-modules` \| `merged-dir` — **emitted only when a voice declares one** |
 
 And on the command line: `--tts_engine higgs-v3` plus **`--higgs_voice <catalog
 id>`**. Not `--fine_tuned`: narrator's `compat/flags.py` accepts both and they are
@@ -258,21 +272,21 @@ a fallback is an hour of audio in the wrong voice.
 
 The single most dangerous number in this catalog.
 
-**A fine-tuned Higgs adapter's stop length tracks its TRAINING CLIP LENGTH, not
-the text it is given.** The training side measured a 30-minute adapter trained on
+**A fine-tuned Higgs checkpoint's stop length tracks its TRAINING CLIP LENGTH,
+not the text it is given.** The training side measured a 30-minute fine-tune trained on
 8–22 s clips stopping after **~6–10 s of audio on any prompt over ~150
-characters**. So the zero-shot 600 is not merely imprecise for an adapter — it is
+characters**. So the zero-shot 600 is not merely imprecise for a fine-tune — it is
 wrong by roughly a factor of four, *in the direction that loses text*, and it
 loses it while every duration check still looks plausible.
 
 Therefore:
 
-- `backends.served.maxChars` is **REQUIRED** on every `kind: 'adapter'` voice and
+- `backends.served.maxChars` is **REQUIRED** on every `kind: 'checkpoint'` voice and
   must come from **that model's own length sweep**;
 - `maxCharsSource` is required beside it — the number without its method is not
   evidence, and a duration ratio in particular is not a coverage proxy on this
   family (a v3 render measured ratio 0.99 while dropping 22 % of its text);
-- the loader **refuses** an adapter without both. A `maxChars: 600` with no
+- the loader **refuses** a fine-tune without both. A `maxChars: 600` with no
   source is still refused;
 - a zero-shot `kind: 'clips'` voice may carry the engine placeholder 600 with
   `maxCharsSource: "zero-shot placeholder"`.
@@ -505,7 +519,7 @@ those read; `session_v1` refuses a `pads=false` session without it.
 | retired engine | `stageRefusal` (modal) | a preset or pipeline default written before the retirement |
 | environment | `higgsEnvironmentRefusal`, awaited **once per job** in `prepareSession` | no WSL toggle, missing env, missing patch, missing launcher |
 | environment | the modal's `higgsBlocked` snapshot | the same, while the dialog is still open |
-| voice | `higgsPreflight` → `resolveHiggsModel`, at **every** spawn site | unknown / not-installed voice, bad clip, unmeasured adapter |
+| voice | `higgsPreflight` → `resolveHiggsModel`, at **every** spawn site | unknown / not-installed voice, bad clip, unmeasured fine-tune |
 
 The environment check is **async and once per job**. It used to be a synchronous
 `execSync` at prep, at every worker start, at assembly and at retake — a
@@ -563,10 +577,10 @@ What changed here:
 
 | was (BookForge's guess) | is (narrator's contract) |
 |---|---|
-| an invented `HIGGS_*` env set | `NARRATOR_HIGGS_VOICES` (a **path**), `NARRATOR_HIGGS3_{URL,SERVE_SCRIPT,ADAPTER_STRATEGY,WSL_DISTRO}` |
+| an invented `HIGGS_*` env set | `NARRATOR_HIGGS_VOICES` (a **path**), `NARRATOR_HIGGS3_{URL,SERVE_SCRIPT,WSL_DISTRO}` |
 | caps passed as env vars | caps do **not** travel — narrator *raises* on a `caps` payload |
 | the voice named by `--fine_tuned` | `--higgs_voice <catalog id>` (the two are not interchangeable) |
-| `voice: {kind:'adapter', path}` \| `{kind:'clips', clips}` | always `clips`, with `adapterDir` on the same object |
+| `voice: {kind:'adapter', path}` \| `{kind:'clips', clips}` | three kinds: `default` / `clips` / `checkpoint` |
 | clips as `{path, transcript}` | `{path, transcript, **seconds**}` — a clip without a declared duration is refused |
 | several clips allowed | **exactly one**; multi = a pre-joined wav, joined at staging |
 | cold start ~55 s | **297 s**, against a 300 s `READY_TIMEOUT_SECONDS` |
@@ -605,24 +619,32 @@ Still open on narrator's side:
 
 ### Waiting on the training session
 
-5. **The deathstalker adapter.** What exists is a **quick 300-step r32 LoRA** at
-   `…/higgs/v3_ft/runs/quick30_r32/final`; the full 12.4 h ds_ad4 corpus run has
-   not been started. It must be staged at
-   `/home/<user>/higgs-models/deathstalker` and the `_pendingNote` removed.
-6. **Its `maxChars` must be MEASURED by a length sweep on that adapter**, and
-   recorded with a `maxCharsSource`. This is the one the loader hard-refuses on:
-   an adapter's stop length follows its **training clip length**, so the
-   zero-shot 600 would silently lose most of every chunk. Verify by ASR
-   alignment, never by duration ratio.
-7. **`NARRATOR_HIGGS3_ADAPTER_STRATEGY` is UNKNOWN.** The fine-tune was rendered
-   through the trainer's own `generate_audio`, never through the served stack, so
-   whether vllm-omni takes `--lora-modules` for `higgs_multimodal_qwen3` — or
-   whether a merged checkpoint served as its own model dir is the only route —
-   has never been exercised. **Both strategies require a server restart.** No
-   voice declares one, and nothing guesses: the wrong strategy is a server that
-   comes up serving the **base** voice and renders an entire book in it while
-   reporting success. `serve_higgs_v3.sh` already accepts `HIGGS_MODEL_DIR` for
-   the `merged-dir` case.
+**RESOLVED 2026-09-04: there is no LoRA serving path, so a voice IS a merged
+checkpoint.** vllm-omni cannot load an adapter at run time — `vllm-omni serve`
+has no adapter flags, and the `higgs_audio_v3` talker class does not implement
+`SupportsLoRA`. So the old "which adapter strategy?" question has no answer of
+that shape: every voice ships as a **merged checkpoint directory (~8.5 GB)** at
+`/home/<user>/higgs-models/<voice>/`, the server is started **on** that
+directory, and `NARRATOR_HIGGS3_ADAPTER_STRATEGY` is deleted rather than left
+open. A LoRA is an archival input to the merge and never a catalog field.
+
+**A voice switch is therefore a server restart** — ~55 s warm, up to ~300 s cold
+against the 300 s ready timeout. A book renders in one voice, so it is paid once
+per job and never per chunk; but nothing can be built here that assumed mixing
+voices within a render, or a cheap per-request voice cast.
+
+Still owed:
+
+3. **The deathstalker checkpoint.** What exists is a **quick 300-step r32 LoRA**
+   at `…/higgs/v3_ft/runs/quick30_r32/final`; the full 12.4 h ds_ad4 corpus run
+   has not been started, and the LoRA must be **merged into a full checkpoint**
+   before it can serve at all. Stage the merged result at
+   `/home/<user>/higgs-models/deathstalker/` and remove the `_pendingNote`.
+4. **Its `maxChars` must be MEASURED by a length sweep on the merged
+   checkpoint**, recorded with a `maxCharsSource`. This is the one the loader
+   hard-refuses on: a fine-tune's stop length follows its **training clip
+   length**, so the zero-shot 600 would silently lose most of every chunk.
+   Verify by ASR alignment, never by duration ratio.
 
 ### Decisions to confirm with Owen
 
@@ -630,6 +652,15 @@ Still open on narrator's side:
    Confirmed by Owen at review; recorded here as the standing decision.
 9. **The XTTS streaming runtime was kept** (§2) — Listen still defaults to XTTS
     on a machine with no configured engine. Confirmed; deferred to a follow-up.
+13. **Production is FINE-TUNED VOICES ONLY** (Owen, 2026-09-04). The narration
+    dropdown lists `checkpoint` voices and the served `default`; a `clips` clone
+    is never offered. A clone recovers 92 % of the narrator's speaker identity
+    and **none of his phrasing** — 2.01 pauses per 100 chars against his 1.39,
+    pitch std 5.17 st against 4.36 — which is precisely the gap a fine-tune
+    exists to close, so listing one beside a fine-tune invites picking it for a
+    book. The `clips` SHAPE stays fully supported below the picker (the loader
+    validates it, the document emits it, the narrator cross-check drives it): it
+    is a diagnostic, not a dead branch.
 10. **`custom-voices.ts:190` `CUSTOM_ENGINE = 'xtts'`** ties the whole *"add your
     own voice"* feature (checkpoint upload, `--custom_model`) to the retired
     engine. It still works — XTTS was retired as a *narration choice*, not

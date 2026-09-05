@@ -197,27 +197,39 @@ check('the default voice is kind DEFAULT — not an empty clone', () => {
   assert.ok(!m.voice.adapterDir);
 });
 
-check('deathstalker is kind ADAPTER, text-only, and marked pending', () => {
+check('deathstalker is kind CHECKPOINT, text-only, and marked pending', () => {
+  // Renamed from 'adapter' on 2026-09-04: vllm-omni cannot load a LoRA at
+  // runtime (no adapter flags; the talker class lacks SupportsLoRA), so what a
+  // voice IS, as far as this catalog is concerned, is a merged ~8.5 GB
+  // checkpoint directory the server is started on. The LoRA is an archival
+  // input to that merge and never a catalog field.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.strictEqual(m.kind, 'adapter');
-  assert.ok(m.voice.adapterDir, 'the adapter dir is missing');
+  assert.strictEqual(m.kind, 'checkpoint');
+  assert.ok(m.voice.checkpointDir, 'the checkpoint dir is missing');
+  assert.ok(!('adapterDir' in m.voice), 'the old adapterDir field survived the rename');
   assert.ok(!('clips' in m.voice), 'a fine-tune is prompted TEXT-ONLY — no clips key');
-  assert.ok(m._pendingNote, 'the placeholder adapter path is not marked pending');
+  assert.ok(m._pendingNote, 'the placeholder checkpoint path is not marked pending');
+});
+
+check('the checkpoint convention is /home/<user>/higgs-models/<voice>', () => {
+  // The same shape the Orpheus models dir uses, and what the installer creates.
+  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  assert.match(m.voice.checkpointDir, /\/higgs-models\/deathstalker$/);
 });
 
 check('the shape must match the kind — all six malformed pairings refused', () => {
   const cases = [
     ['default with clips', { kind: 'default',
       voice: { clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }] } }],
-    ['default with adapterDir', { kind: 'default', voice: { adapterDir: '/x' } }],
-    ['adapter with no adapterDir', { kind: 'adapter', voice: {},
+    ['default with checkpointDir', { kind: 'default', voice: { checkpointDir: '/x' } }],
+    ['checkpoint with no checkpointDir', { kind: 'checkpoint', voice: {},
       backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } } }],
-    ['adapter with clips', { kind: 'adapter',
-      voice: { adapterDir: '/x', clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }] },
+    ['checkpoint with clips', { kind: 'checkpoint',
+      voice: { checkpointDir: '/x', clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }] },
       backends: { served: { maxChars: 900, maxCharsSource: 'length-sweep' } } }],
     ['clips with none', { kind: 'clips', voice: { clips: [] } }],
-    ['clips with an adapterDir', { kind: 'clips',
-      voice: { clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }], adapterDir: '/x' } }],
+    ['clips with a checkpointDir', { kind: 'clips',
+      voice: { clips: [{ path: '/a.wav', transcript: 't', seconds: 5 }], checkpointDir: '/x' } }],
   ];
   for (const [why, overrides] of cases) {
     const m = probeVoice(overrides);
@@ -357,33 +369,33 @@ check('a 27 s single joined reference PASSES', () => {
   assert.strictEqual(e.NARRATOR_HIGGS_VOICES, DOC_PATH);
 });
 
-check('an adapter with NO measured maxChars is REFUSED, and the message says why', () => {
+check('a checkpoint with NO measured maxChars is REFUSED, and the message says why', () => {
   const m = probeVoice({
-    kind: 'adapter',
-    voice: { adapterDir: '/home/x/higgs-models/probe' },
+    kind: 'checkpoint',
+    voice: { checkpointDir: '/home/x/higgs-models/probe' },
     backends: { served: { maxChars: null, maxCharsSource: null } },
   });
   let threw = null;
   try { higgs.higgsSpawnEnv(m, envOpts); } catch (err) { threw = err; }
-  assert.ok(threw, 'an unmeasured adapter was accepted');
+  assert.ok(threw, 'an unmeasured fine-tune was accepted');
   assert.match(threw.message, /TRAINING CLIP LENGTH/);
   assert.match(threw.message, /length sweep/);
 });
 
-check('an adapter inheriting the zero-shot 600 with no source is still REFUSED', () => {
+check('a checkpoint inheriting the zero-shot 600 with no source is still REFUSED', () => {
   // The number alone is not evidence; maxCharsSource is what makes it one.
   const m = probeVoice({
-    kind: 'adapter',
-    voice: { adapterDir: '/home/x/higgs-models/probe' },
+    kind: 'checkpoint',
+    voice: { checkpointDir: '/home/x/higgs-models/probe' },
     backends: { served: { maxChars: 600 } },
   });
   assert.throws(() => higgs.higgsSpawnEnv(m, envOpts), /MEASURED maxChars/);
 });
 
-check('an adapter WITH a measured cap and its source passes', () => {
+check('a checkpoint WITH a measured cap and its source passes', () => {
   const m = probeVoice({
-    kind: 'adapter',
-    voice: { adapterDir: '/home/x/higgs-models/probe' },
+    kind: 'checkpoint',
+    voice: { checkpointDir: '/home/x/higgs-models/probe' },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   assert.ok(higgs.higgsSpawnEnv(m, envOpts));
@@ -433,22 +445,23 @@ check('a clone voice document carries path, transcript AND seconds', () => {
   ]);
 });
 
-check('an adapter document carries adapterDir AND its measured cap AND kind', () => {
-  // THE CAP MUST TRAVEL. narrator's load_voices raises for an adapter entry with
+check('a checkpoint document carries checkpointDir AND its measured cap AND kind', () => {
+  // THE CAP MUST TRAVEL. narrator's load_voices raises for a fine-tune entry with
   // no `maxChars` — so `refuseUnmeasuredAdapter` was guarding a number that never
   // reached the engine, and the day deathstalker is promoted with its length
   // sweep the render would have been refused while the measurement sat in a JSON
   // file nobody read. `kind` is stated rather than left to narrator's derivation
-  // (absent + adapterDir => 'adapter'), so the refusal path has nothing to infer.
+  // (absent + checkpointDir => 'checkpoint'), so the refusal path infers nothing.
   const m = probeVoice({
-    id: 'ft', kind: 'adapter',
-    voice: { adapterDir: '/home/x/higgs-models/ft' },
+    id: 'ft', kind: 'checkpoint',
+    voice: { checkpointDir: '/home/x/higgs-models/ft' },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
   const doc = higgs.higgsVoicesDocument(m);
-  assert.strictEqual(doc.ft.adapterDir, '/home/x/higgs-models/ft');
+  assert.strictEqual(doc.ft.checkpointDir, '/home/x/higgs-models/ft');
   assert.ok(!('clips' in doc.ft), 'a fine-tune is TEXT-ONLY — no clips key');
-  assert.strictEqual(doc.ft.kind, 'adapter');
+  assert.ok(!('adapterDir' in doc.ft), 'the old adapterDir key is still emitted');
+  assert.strictEqual(doc.ft.kind, 'checkpoint');
   assert.strictEqual(doc.ft.maxChars, 1350);
   assert.strictEqual(doc.ft.maxCharsSource, 'length-sweep');
 });
@@ -504,26 +517,24 @@ check('NARRATOR_HIGGS3_URL is emitted only when a server is already up', () => {
   assert.strictEqual(attached.NARRATOR_HIGGS3_URL, 'http://127.0.0.1:8095');
 });
 
-check('NO adapter strategy is emitted while none has been established', () => {
-  // Both strategies require a server restart and neither has been exercised on
-  // higgs_multimodal_qwen3. narrator refuses an unknown one rather than guessing,
-  // and the wrong guess is a server serving the BASE voice for a whole book.
+check('NO adapter-strategy variable is emitted, ever — there is no LoRA path', () => {
+  // Deleted 2026-09-04. NARRATOR_HIGGS3_ADAPTER_STRATEGY existed to choose
+  // between 'lora-modules' and 'merged-dir' once someone established which
+  // vllm-omni accepted. The answer is NEITHER-as-a-choice: vllm-omni cannot load
+  // a LoRA at runtime at all (no adapter flags on `vllm-omni serve`; the
+  // higgs_audio_v3 talker class does not implement SupportsLoRA), so a voice is
+  // always a merged checkpoint and there is nothing to select between.
   const m = probeVoice({
-    kind: 'adapter',
-    voice: { adapterDir: '/home/x/ft' },
+    kind: 'checkpoint',
+    voice: { checkpointDir: '/home/x/ft' },
     backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
   });
-  assert.ok(!('NARRATOR_HIGGS3_ADAPTER_STRATEGY' in higgs.higgsSpawnEnv(m, envOpts)));
-});
-
-check('a declared adapter strategy IS emitted', () => {
-  const m = probeVoice({
-    kind: 'adapter', adapterStrategy: 'merged-dir',
-    voice: { adapterDir: '/home/x/ft' },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
-  });
-  assert.strictEqual(
-    higgs.higgsSpawnEnv(m, envOpts).NARRATOR_HIGGS3_ADAPTER_STRATEGY, 'merged-dir');
+  const e = higgs.higgsSpawnEnv(m, envOpts);
+  assert.ok(!('NARRATOR_HIGGS3_ADAPTER_STRATEGY' in e));
+  assert.deepStrictEqual(
+    Object.keys(e).filter((k) => /ADAPTER|LORA/i.test(k)), [],
+    'an adapter/LoRA variable survives in the spawn env',
+  );
 });
 
 check('a voice on a serving stack it does not match is REFUSED', () => {
@@ -840,8 +851,8 @@ process.on('exit', () => {
     // Handling only drive letters would translate a session dir correctly and
     // leave this one unusable.
     const m = probeVoice({
-      id: 'uncft', kind: 'adapter',
-      voice: { adapterDir: B+B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'higgs-models' + B + 'ds' },
+      id: 'uncft', kind: 'checkpoint',
+      voice: { checkpointDir: B+B + 'wsl$' + B + 'Ubuntu' + B + 'home' + B + 't' + B + 'higgs-models' + B + 'ds' },
       backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
     });
     const p3 = spawnMod.buildHiggsSpawn('worker', {
@@ -851,16 +862,16 @@ process.on('exit', () => {
       .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
     const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
     const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
-    assert.strictEqual(doc.uncft.adapterDir, '/home/t/higgs-models/ds',
-      'the UNC adapter path was not translated');
+    assert.strictEqual(doc.uncft.checkpointDir, '/home/t/higgs-models/ds',
+      'the UNC checkpoint path was not translated');
   });
 
   check('an already-guest-form path passes through unchanged', () => {
     // What makes the translation safe to apply to argv, to env values and to
     // catalog paths without tracking which were already translated.
     const m = probeVoice({
-      id: 'guestft', kind: 'adapter',
-      voice: { adapterDir: '/home/t/higgs-models/ds' },
+      id: 'guestft', kind: 'checkpoint',
+      voice: { checkpointDir: '/home/t/higgs-models/ds' },
       backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
     });
     const p4 = spawnMod.buildHiggsSpawn('worker', {
@@ -870,7 +881,7 @@ process.on('exit', () => {
       .match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
     const hostDoc = docPath[1].replace(/^\/mnt\/([a-z])\//, (_m, d) => d.toUpperCase() + ':/');
     const doc = JSON.parse(fs.readFileSync(hostDoc, 'utf-8'));
-    assert.strictEqual(doc.guestft.adapterDir, '/home/t/higgs-models/ds');
+    assert.strictEqual(doc.guestft.checkpointDir, '/home/t/higgs-models/ds');
   });
 
   check('the NATIVE arm writes catalog paths through UNCHANGED', () => {
@@ -1011,6 +1022,32 @@ check('the CLI accepts higgs for --mode tts and refuses it for streaming', () =>
     'the batch adapter still hardcodes the engine');
 });
 
+check('the dropdown offers FINE-TUNES and the default — never a clone', () => {
+  // Owen, 2026-09-04: production is fine-tuned voices only. A clone recovers 92 %
+  // of the narrator's speaker identity and none of his phrasing (2.01 pauses per
+  // 100 chars against his 1.39; pitch std 5.17 st against 4.36) — which is the
+  // gap a fine-tune exists to close — so listing one beside a fine-tune invites
+  // picking it for a book.
+  //
+  // The `clips` SHAPE stays fully supported below the picker: the loader
+  // validates it, the document emits it, and the narrator cross-check drives
+  // narrator's real loader with one. It is simply never offered.
+  const offered = higgs.higgsNarrationVoices().map((v) => v.value);
+  const byId = new Map(higgs.listHiggsModels().map((m) => [m.id, m]));
+  for (const id of offered) {
+    const kind = byId.get(id).kind;
+    assert.ok(kind === 'checkpoint' || kind === 'default',
+      `the dropdown offers "${id}", which is kind '${kind}'`);
+  }
+  // And the catalog is still ABLE to hold a clone — this is a policy about the
+  // picker, not a hole in the shape support.
+  assert.doesNotThrow(() => higgs.higgsVoicesDocument(probeVoice({
+    id: 'diag', kind: 'clips',
+    voice: { clips: [{ path: '/a.wav', transcript: 'a line', seconds: 12 }] },
+    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
+  })));
+});
+
 check('a pending voice is offered DISABLED, with its note as the reason', () => {
   // Finding 11: it was label-only and fully selectable, so the one voice the
   // catalog ships pending queued a run that died at preflight — defeating the
@@ -1045,13 +1082,19 @@ function crossCheckSkipReason() {
   if (!fs.existsSync(CONFIG_PY)) {
     return 'narrator is not checked out beside this worktree (' + CONFIG_PY + ')';
   }
-  // Self-clearing gate: narrator's three-shape support is landing alongside this.
-  // Until its `kind` validation knows 'default', running the new document through
-  // it would fail on a contract that has not shipped rather than on a real
-  // disagreement. The moment it lands, this check starts running for real.
+  // SELF-CLEARING GATE. narrator is renaming adapter -> checkpoint alongside
+  // this change; until its loader knows the new name, running the new document
+  // through it would fail on a contract that has not shipped rather than on a
+  // real disagreement. The moment the rename lands, this starts running for
+  // real — which is the point of gating on the CONTRACT rather than on a version
+  // number somebody has to remember to bump.
   const src = fs.readFileSync(CONFIG_PY, 'utf-8');
-  if (!/['"]default['"]/.test(src.slice(src.indexOf('def load_voices')))) {
+  const loader = src.slice(src.indexOf('def load_voices'));
+  if (!/['"]default['"]/.test(loader)) {
     return "narrator's load_voices does not know kind 'default' yet (three-shape support landing)";
+  }
+  if (!/checkpointDir/.test(loader)) {
+    return "narrator's load_voices still expects 'adapterDir' (checkpoint rename landing)";
   }
   const py = process.platform === 'win32' ? 'python' : 'python3';
   const probe = spawnSync(py, ['-c', 'import sys; print(sys.version_info[0])'], { encoding: 'utf-8' });
@@ -1088,7 +1131,8 @@ if (skipWhy) {
       // just the field values.
       'print(json.dumps({"name": name, "cls": type(one).__name__,',
       '                  "clips": len(getattr(one, "clips", ()) or ()),',
-      '                  "adapter": one.adapter_dir, "max_chars": one.max_chars,',
+      '                  "checkpoint": getattr(one, "checkpoint_dir", None),',
+      '                  "max_chars": one.max_chars,',
       '                  "source": one.max_chars_source}))',
     ].join('\n');
     const py = process.platform === 'win32' ? 'python' : 'python3';
@@ -1123,25 +1167,25 @@ if (skipWhy) {
     assert.strictEqual(got.source, 'catalog');
   });
 
-  check('narrator ACCEPTS an adapter voice WITH a measured cap', () => {
+  check('narrator ACCEPTS a checkpoint voice WITH a measured cap', () => {
     const m = probeVoice({
-      id: 'ft', kind: 'adapter',
-      voice: { adapterDir: CROSS },
+      id: 'ft', kind: 'checkpoint',
+      voice: { checkpointDir: CROSS },
       backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep', referenceSecondsCap: 30, allowedControls: [] } },
     });
     const r = runLoad(higgs.higgsVoicesDocument(m));
     assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
-    assert.strictEqual(got.adapter, CROSS);
+    assert.strictEqual(got.checkpoint, CROSS);
     assert.strictEqual(got.max_chars, 1350);
     assert.strictEqual(got.source, 'length-sweep');
   });
 
-  check('narrator REFUSES an adapter with no cap — the refusal we mirror', () => {
+  check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {
     // BookForge refuses this first (refuseUnmeasuredAdapter), so the document can
     // only be built by going round it. Doing so proves the two refusals are the
     // same rule rather than two rules that happen to agree today.
-    const doc = { ft: { kind: 'adapter', adapterDir: CROSS } };
+    const doc = { ft: { kind: 'checkpoint', checkpointDir: CROSS } };
     const r = runLoad(doc);
     assert.notStrictEqual(r.status, 0, 'narrator accepted an unmeasured fine-tune');
     assert.match(r.stderr, /maxChars/, 'refused for the wrong reason:\n' + r.stderr);

@@ -23,10 +23,10 @@ interface HiggsCatalogVoice {
   id: string;
   label: string;
   engineVersion: string;
-  kind: 'default' | 'clips' | 'adapter';
+  kind: 'default' | 'clips' | 'checkpoint';
   voice: {
     clips?: Array<{ path: string; transcript: string; seconds: number }>;
-    adapterDir?: string;
+    checkpointDir?: string;
   };
   license: string;
   commercialUse: boolean;
@@ -301,12 +301,15 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   }
 
   kindLabel(v: HiggsCatalogVoice): string {
-    if (v.kind === 'adapter') return 'fine-tune';
+    // 'clips' is labelled as the diagnostic it is: the panel LISTS every catalog
+    // entry (it is the page you go to to find out what exists), while the
+    // narration dropdown offers only fine-tunes and the served default.
+    if (v.kind === 'checkpoint') return 'fine-tune (merged checkpoint)';
     if (v.kind === 'default') return "the model's own voice (no reference)";
     const secs = v.voice.clips?.[0]?.seconds;
     return secs === undefined
-      ? 'zero-shot clone'
-      : `zero-shot clone · ${secs.toFixed(1)} s reference`;
+      ? 'zero-shot clone · diagnostic only'
+      : `zero-shot clone · ${secs.toFixed(1)} s reference · diagnostic only`;
   }
 
   /**

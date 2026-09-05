@@ -44,11 +44,19 @@ export VLLM_DISABLE_FLASHINFER_PREFILL=1
 export VLLM_LOGGING_LEVEL="${VLLM_LOGGING_LEVEL:-INFO}"
 export TORCH_CUDA_ARCH_LIST="${TORCH_CUDA_ARCH_LIST:-8.6}"
 
-# A fine-tune (merged checkpoint dir) wins; otherwise serve the base snapshot out
-# of the HF cache. NO FALLBACK ON A SET-BUT-MISSING DIR: if the caller named a
-# model dir and it is not there, that is a wrong render waiting to happen —
-# serving the base instead would produce a completely different narrator and
-# report success.
+# A fine-tune wins; otherwise serve the base snapshot out of the HF cache.
+#
+# HIGGS_MODEL_DIR IS A MERGED CHECKPOINT DIRECTORY (~8.5 GB), by convention at
+# /home/<user>/higgs-models/<voice>/. It is not a LoRA and there is no flag here
+# that would take one: vllm-omni cannot load an adapter at runtime — `vllm-omni
+# serve` has no adapter options and the higgs_audio_v3 talker class does not
+# implement SupportsLoRA — so a LoRA is merged into a full checkpoint before it
+# can serve at all. That is also why changing voice means restarting this script
+# (~55 s warm / ~300 s cold) rather than sending the server a message.
+#
+# NO FALLBACK ON A SET-BUT-MISSING DIR: if the caller named a model dir and it is
+# not there, that is a wrong render waiting to happen — serving the base instead
+# would produce a completely different narrator and report success.
 if [ -n "${HIGGS_MODEL_DIR:-}" ]; then
   if [ ! -d "$HIGGS_MODEL_DIR" ]; then
     echo "HIGGS_MODEL_DIR is set to '$HIGGS_MODEL_DIR' but that directory does not exist." >&2

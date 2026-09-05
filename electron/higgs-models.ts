@@ -40,7 +40,6 @@
  *   NARRATOR_HIGGS_VOICES            a PATH to a JSON voice document
  *   NARRATOR_HIGGS3_URL              attach to an already-running server
  *   NARRATOR_HIGGS3_SERVE_SCRIPT     the launch script, when narrator must start one
- *   NARRATOR_HIGGS3_ADAPTER_STRATEGY 'lora-modules' | 'merged-dir'
  *   NARRATOR_HIGGS3_WSL_DISTRO       the distro to launch in, on Windows
  *
  * The caps do NOT travel as environment variables at all. narrator's
@@ -85,19 +84,44 @@ import * as fs from 'fs';
  * how "render in the narrator's voice" and "render in whoever the base model is"
  * become indistinguishable.
  *
- *   'default'  the served model's built-in speaker. NO clips key, no adapter.
- *              Measures at 12 % of the deathstalker narrator's ECAPA ceiling —
- *              a different person, which is why it is named rather than implied.
- *   'clips'    a zero-shot clone. AT LEAST ONE clip, at most one (vllm-omni
- *              takes exactly one reference), each with a book-exact transcript
- *              and a declared duration.
- *   'adapter'  a fine-tune, prompted TEXT-ONLY. `adapterDir`, no clips key, and
- *              a MEASURED `maxChars` — see `refuseUnmeasuredAdapter`.
+ *   'default'     the served model's built-in speaker. NO clips, no checkpoint.
+ *                 Measures at 12 % of the deathstalker narrator's ECAPA ceiling
+ *                 — a different person, which is why it is named not implied.
+ *   'checkpoint'  a MERGED fine-tune directory, prompted TEXT-ONLY. The
+ *                 production shape (see `higgsNarrationVoices`).
+ *   'clips'       a zero-shot clone. AT LEAST ONE clip, at most one (vllm-omni
+ *                 takes exactly one reference), each with a book-exact
+ *                 transcript and a declared duration. DIAGNOSTIC ONLY — kept
+ *                 because the document shape is real and worth being able to
+ *                 hand narrator, never offered in the narration dropdown.
  *
- * narrator derives 'adapter' from the presence of `adapterDir` when `kind` is
- * absent; BookForge states it, so nothing is inferred on a refusal path.
+ * WHY 'checkpoint' AND NOT 'adapter'. It was `adapter`/`adapterDir` until
+ * 2026-09-04, which named the artifact we TRAIN rather than the artifact that
+ * SERVES. vllm-omni cannot load a LoRA at runtime — `vllm-omni serve` has no
+ * adapter flags and the `higgs_audio_v3` talker class does not implement
+ * `SupportsLoRA` — so a LoRA is an archival input to a merge and never a thing
+ * the catalog points at. What serves is a merged ~8.5 GB checkpoint directory,
+ * and the server is started ON it, which is why a voice switch is a server
+ * restart (~55 s warm / ~300 s cold) rather than a message.
  */
-export type HiggsVoiceKind = 'default' | 'clips' | 'adapter';
+export type HiggsVoiceKind = 'default' | 'clips' | 'checkpoint';
+
+/**
+ * The kinds the narration dropdown offers.
+ *
+ * Owen, 2026-09-04: **production is fine-tuned voices only.** A clone is a
+ * diagnostic — it recovers 92 % of the narrator's speaker identity and none of
+ * his phrasing (2.01 pauses/100 chars against his 1.39; pitch std 5.17 st
+ * against 4.36), which is the gap a fine-tune exists to close. Offering one in
+ * the same list as a fine-tune invites picking it for a book.
+ *
+ * `default` stays because it is the one voice that needs nothing staged, so it
+ * is what a machine auditions the serving stack with before any checkpoint
+ * exists. The `clips` shape stays fully supported everywhere BELOW this line —
+ * the loader validates it, the document emits it, the keeper drives narrator's
+ * real loader with it — it is simply never offered.
+ */
+const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> = new Set(['default', 'checkpoint']);
 
 /**
  * One reference clip, in narrator's document spelling.
@@ -144,8 +168,12 @@ export interface HiggsReferenceClip {
 export interface HiggsVoiceRef {
   /** kind 'clips' only: exactly one, with a transcript and a duration. */
   clips?: HiggsReferenceClip[];
-  /** kind 'adapter' only. HOST-NATIVE, like a clip path. */
-  adapterDir?: string;
+  /**
+   * kind 'checkpoint' only: the MERGED fine-tune directory the server is started
+   * on (~8.5 GB). HOST-NATIVE, like a clip path — translated per arm at
+   * document-write time.
+   */
+  checkpointDir?: string;
   /** v2-only chat role. Present for shape parity; v3 has no scene mechanism. */
   scene?: string;
 }
@@ -249,19 +277,6 @@ export interface HiggsModel {
   sampleRate: number;
   addedAt: string;
   backends?: { served?: HiggsServedCaps };
-  /**
-   * How a fine-tune is served: 'lora-modules' or 'merged-dir'.
-   *
-   * ABSENT UNTIL SOMEONE HAS ACTUALLY LOADED ONE. How vllm-omni takes a LoRA for
-   * `higgs_multimodal_qwen3` has never been exercised — the deathstalker
-   * fine-tune was rendered through the trainer's own `generate_audio`, never
-   * through the served stack — and BOTH strategies require a server restart, so
-   * there is no cheap way to find out at run time. narrator refuses an unknown
-   * strategy rather than guessing, and the reason is worth repeating: the wrong
-   * one is a server that comes up serving the BASE voice and renders an entire
-   * book in it while reporting success.
-   */
-  adapterStrategy?: 'lora-modules' | 'merged-dir';
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
   note?: string;
@@ -389,14 +404,14 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
  * the wire format.
  */
 function refuseMalformedVoice(model: HiggsModel): void {
-  const { clips, adapterDir } = model.voice;
+  const { clips, checkpointDir } = model.voice;
   const has = (n: number | undefined) => n !== undefined && n > 0;
 
   if (model.kind === 'default') {
-    if (has(clips?.length) || adapterDir) {
+    if (has(clips?.length) || checkpointDir) {
       throw new Error(
         `Higgs voice "${model.id}" is kind 'default' — the served model's own speaker — but ` +
-          `also declares ${has(clips?.length) ? 'reference clips' : 'an adapterDir'}. ` +
+          `also declares ${has(clips?.length) ? 'reference clips' : 'a checkpointDir'}. ` +
           `A default voice has neither; if it is meant to be a clone or a fine-tune, say so ` +
           `in its kind.`,
       );
@@ -404,16 +419,16 @@ function refuseMalformedVoice(model: HiggsModel): void {
     return;
   }
 
-  if (model.kind === 'adapter') {
-    if (!adapterDir || !adapterDir.trim()) {
+  if (model.kind === 'checkpoint') {
+    if (!checkpointDir || !checkpointDir.trim()) {
       throw new Error(
-        `Higgs voice "${model.id}" is kind 'adapter' but names no adapterDir — there is no ` +
-          `fine-tune to load.`,
+        `Higgs voice "${model.id}" is kind 'checkpoint' but names no checkpointDir — there is ` +
+          `no merged fine-tune for the server to start on.`,
       );
     }
     if (has(clips?.length)) {
       throw new Error(
-        `Higgs voice "${model.id}" is kind 'adapter' and also declares reference clips. A ` +
+        `Higgs voice "${model.id}" is kind 'checkpoint' and also declares reference clips. A ` +
           `fine-tune is prompted TEXT-ONLY: the voice is in the weights. Sending a reference ` +
           `alongside it conditions the render on two different voices.`,
       );
@@ -429,10 +444,10 @@ function refuseMalformedVoice(model: HiggsModel): void {
         `'default' and a different voice entirely (12 % of the narrator's ECAPA ceiling).`,
     );
   }
-  if (adapterDir) {
+  if (checkpointDir) {
     throw new Error(
-      `Higgs voice "${model.id}" is kind 'clips' but also names an adapterDir. Pick one: a ` +
-        `reference clone or a fine-tune.`,
+      `Higgs voice "${model.id}" is kind 'clips' but also names a checkpointDir. Pick one: a ` +
+        `reference clone or a merged fine-tune.`,
     );
   }
 }
@@ -510,7 +525,7 @@ function refuseOversizedReference(model: HiggsModel): void {
  * A FINE-TUNE MUST CARRY ITS OWN MEASURED `maxChars`. No default, and nothing
  * inherited from the zero-shot figure.
  *
- * This is not tidiness. A fine-tuned Higgs adapter's stop length tracks its
+ * This is not tidiness. A fine-tuned Higgs checkpoint's stop length tracks its
  * TRAINING CLIP LENGTH rather than the length of the text it is given: the
  * training side measured a 30-minute adapter trained on 8-22 s clips stopping
  * after ~6-10 s of audio on ANY prompt over ~150 characters. So the zero-shot
@@ -524,13 +539,13 @@ function refuseOversizedReference(model: HiggsModel): void {
  * render measured ratio 0.99 while dropping 22 % of its text.
  */
 function refuseUnmeasuredAdapter(model: HiggsModel): void {
-  if (model.kind !== 'adapter') return;
+  if (model.kind !== 'checkpoint') return;
   const caps = higgsVoiceCapsForModel(model);
   if (typeof caps.maxChars === 'number' && caps.maxChars > 0 && caps.maxCharsSource) return;
   throw new Error(
     `Higgs fine-tune "${model.id}" has no MEASURED maxChars (got ` +
       `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}). ` +
-      `An adapter's stop length follows its TRAINING CLIP LENGTH, not the text — one trained ` +
+      `A fine-tune's stop length follows its TRAINING CLIP LENGTH, not the text — one trained ` +
       `on 8-22 s clips stops after ~6-10 s on any prompt over ~150 chars — so the zero-shot ` +
       `600 would silently lose most of every chunk. Run a length sweep on this model, verify ` +
       `it by ASR alignment (never by duration ratio), and record the number with its ` +
@@ -623,8 +638,8 @@ export function higgsVoicesDocument(
       seconds: c.seconds,
     }));
   }
-  if (model.kind === 'adapter' && model.voice.adapterDir) {
-    entry.adapterDir = translatePath(model.voice.adapterDir);
+  if (model.kind === 'checkpoint' && model.voice.checkpointDir) {
+    entry.checkpointDir = translatePath(model.voice.checkpointDir);
   }
   if (model.voice.scene) entry.scene = model.voice.scene;
 
@@ -717,17 +732,6 @@ export function higgsSpawnEnv(
   if (opts.baseUrl) env.NARRATOR_HIGGS3_URL = opts.baseUrl;
   if (opts.wslDistro) env.NARRATOR_HIGGS3_WSL_DISTRO = opts.wslDistro;
 
-  // The adapter strategy is only meaningful for a fine-tune, and there is NO
-  // default: narrator refuses an unknown strategy rather than guessing, and it is
-  // right to — the wrong one is a server that comes up serving the BASE voice and
-  // renders an entire book in it while reporting success. A voice that has not
-  // established its strategy is already refused by refuseUnmeasuredAdapter above,
-  // so reaching here without one means the catalog gained a strategy field it did
-  // not have; emitting nothing lets narrator produce that refusal.
-  const strategy = model.adapterStrategy;
-  if (model.voice.adapterDir && strategy) {
-    env.NARRATOR_HIGGS3_ADAPTER_STRATEGY = strategy;
-  }
   return env;
 }
 
@@ -741,7 +745,14 @@ export function higgsSpawnEnv(
 export function higgsNarrationVoices(): {
   value: string; label: string; unavailable?: string;
 }[] {
-  return listHiggsModels().map((m) => (
+  // FINE-TUNED VOICES ONLY (plus the served default). Owen, 2026-09-04: a clone
+  // is a diagnostic, and listing one beside a fine-tune invites picking it for a
+  // book. The `clips` shape stays supported everywhere else — the loader
+  // validates it, the document emits it, the narrator cross-check drives it —
+  // it is simply not on offer here.
+  return listHiggsModels()
+    .filter((m) => SELECTABLE_VOICE_KINDS.has(m.kind))
+    .map((m) => (
     m._pendingNote
       ? {
           value: m.id,
