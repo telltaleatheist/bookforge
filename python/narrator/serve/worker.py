@@ -294,10 +294,63 @@ def _year_to_words(y, lang):
         raise _number_refusal(y, lang, exc) from exc
 
 
-def normalize_for_tts(text, language='en'):
+#: Languages num2words has already been asked about, so `check_language` costs
+#: one call per language per process rather than one per sentence.
+_LANGUAGE_VERDICTS = {}
+
+
+def resolve_language(language) -> str:
+    """The bare language subtag, or a refusal naming what arrived.
+
+    `(language or 'en')` used to sit inside `normalize_for_tts` - a second
+    default underneath the protocol's own `request.get('language', 'en')`, and a
+    `x or default` on a value the caller is supposed to supply. The wire field
+    is optional and its default is documented at the top of this module; a
+    request that reaches here with a BLANK one is a caller bug, and narrating an
+    unknown language as English is the silent substitution this file spent a
+    commit removing.
+    """
+    lang = (language or '').split('-')[0].strip().lower()
+    if not lang:
+        raise ValueError(
+            f'normalize_for_tts got language={language!r}. The protocol field is '
+            "optional and defaults to 'en' at the request boundary; a blank one "
+            'arriving here is a caller bug, and reading an unknown language as '
+            'English is a silent substitution.')
+    return lang
+
+
+def check_language(language) -> str:
+    """Ask num2words ONCE whether it can speak this language. Refuse by name.
+
+    THE REASON THIS IS NOT PER SENTENCE. num2words raises `NotImplementedError`
+    for a language it has no module for, and that is a property of the SESSION,
+    not of the sentence: without this, every sentence containing a digit failed
+    one at a time with the same message for a whole book. One refusal, before
+    any audio is rendered, at the point where the language is actually known -
+    the `generate` / `generate_batch` request that carries it.
+    """
+    lang = resolve_language(language)
+    if lang not in _LANGUAGE_VERDICTS:
+        try:
+            _num2words(0, lang=lang)
+            _LANGUAGE_VERDICTS[lang] = None
+        except Exception as exc:
+            _LANGUAGE_VERDICTS[lang] = (
+                f'num2words cannot speak {lang!r} ({exc}). The listen path '
+                'normalizes numbers before the model sees them, so this whole '
+                'request is refused rather than every sentence with a digit in '
+                'it failing separately for the same reason.')
+    verdict = _LANGUAGE_VERDICTS[lang]
+    if verdict:
+        raise ValueError(verdict)
+    return lang
+
+
+def normalize_for_tts(text, language):
     if not text:
         return text
-    lang = (language or 'en').split('-')[0].lower()
+    lang = resolve_language(language)
     s = text
 
     def _money(m):
@@ -1588,6 +1641,20 @@ class OrpheusStreamServer:
             send_response('batch_done', {'count': len(items)})
             return
 
+        # ONE language check for the whole batch, before any audio. Without it a
+        # language num2words cannot speak fails every digit-bearing row of the
+        # batch separately with the same message - N refusals for one cause.
+        # Reported per item, because that is this method's contract: the caller
+        # gets a batch_item for every i it sent, then batch_done.
+        try:
+            check_language(language)
+        except ValueError as exc:
+            for it in items:
+                send_response('batch_item',
+                              {'i': it.get('i'), 'message': str(exc)})
+            send_response('batch_done', {'count': len(items)})
+            return
+
         if any(it.get('stream') is True for it in items):
             self._generate_batch_streaming(items, language)
             return
@@ -1664,6 +1731,7 @@ class OrpheusStreamServer:
             send_response('error', {'message': 'Model not loaded'})
             return
         try:
+            check_language(language)
             text = normalize_for_tts(text, language)
             audio = self._generate_audio(text, voice)
             if audio is None or len(audio) == 0:

@@ -155,8 +155,8 @@ class LogStreamTest(unittest.TestCase):
     """The helper itself."""
 
     def setUp(self):
-        from narrator.engine.log import set_log_stream
-        self.addCleanup(set_log_stream, None)
+        from narrator.engine.log import current_log_stream, set_log_stream
+        self.addCleanup(set_log_stream, current_log_stream())
 
     def test_the_default_is_stderr(self):
         """A host that forgets to choose gets the SAFE answer: logs on the log

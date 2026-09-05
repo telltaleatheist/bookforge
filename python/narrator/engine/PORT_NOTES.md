@@ -1393,26 +1393,74 @@ progress UI, which is a different bug in a place nobody would look.
 The default is stderr so a host that forgets to choose gets the safe answer; the
 host that genuinely needs stdout is the one that has to say so.
 
-**NO STRING CHANGED.** All 111 sites were rewritten mechanically by an AST pass
-keyed on call position, and the diff was verified to contain nothing but 111
-call-name swaps plus ten import lines - zero unexplained added or removed lines.
-The 17 that already named `file=sys.stderr` went through `log()` too (reviewer's
-list: engine.py:750; mlx_backend.py:703, 747, 767, 780, 889, 993;
-vllm_backend.py:677, 690, 725, 750, 763, 770, 793, 820, 831, 844). That is safe
-by construction, checked two ways: all 17 are `[ORPHEUS][STREAM]` diagnostics
-emitted only from `generate_batch_stream`, which is unreachable from `compat/`
-and `render/`; and of the 17 strings exactly one matches any bridge pattern
-(`GENERATION_ACTIVITY_RE`, which the bridge already runs on BOTH streams).
+**NO STRING CHANGED - BUT 31 CALLS CHANGED DESTINATION, AND THE FIRST WRITE-UP
+DID NOT SAY SO.** It claimed "nothing but call-name swaps plus ten imports".
+That is not what happened. Exactly:
 
-`tests/test_engine_log_stream.py` pins all of it: no bare `print` survives in the
-engine layer (an AST walk, because these docstrings discuss printing at length);
-the default is stderr and resolves at CALL time; the real
+|  n  | what it was | what changed |
+|---|---|---|
+| 94 | bare `print(...)` in `engine/orpheus/` | the call name only |
+| 17 | `print(..., file=sys.stderr)` in `engine/orpheus/` | **the kwarg was DELETED** |
+| 14 | `print(..., file=sys.stderr)` in `engine/higgs/` | **the kwarg was DELETED** |
+| 1 | `engine/higgs/mlx_backend.py::_log` | authored as `log()` |
+| **126** | | |
+
+Deleting `file=sys.stderr` is not cosmetic: `log()` does
+`kwargs.setdefault('file', log_stream())`, so KEEPING the kwarg would have
+pinned those calls to stderr for ever, and removing it hands them to the host's
+stream - i.e. STDOUT under `compat.worker`. That was the intent (a call that
+names its own stream cannot be routed, which is the whole point of this module),
+but "call-name swaps" does not describe it.
+
+It was checked before it was made, two ways, and re-checked in review. All 31
+are `[ORPHEUS][STREAM]` / `[HIGGS3]` / `[HIGGS]` diagnostics: the Orpheus 17 are
+emitted only from `generate_batch_stream`, whose sole non-test caller is
+`serve/worker.py` (`compat/` and `render/` never call it, so under
+`compat.worker` they cannot be emitted at all); and across all 31 strings
+exactly ONE matches any bridge pattern - `GENERATION_ACTIVITY_RE`, which the
+bridge already runs on BOTH streams. No match for `MODEL_LOAD_START_RE`,
+`MODEL_LOAD_DONE_RE`, `REPAIR_START_RE`, `parseOrpheusGuardEvent` or
+`parseMlxHeartbeat`.
+
+The Orpheus 17: engine.py:750; mlx_backend.py:703, 747, 767, 780, 889, 993;
+vllm_backend.py:677, 690, 725, 750, 763, 770, 793, 820, 831, 844. The Higgs 14:
+v3_served.py:589, 596, 618, 622, 684, 745, 818, 839, 843, 851, 862, 870;
+transformers_backend.py:65, 77.
+
+`tests/test_engine_log_stream.py` pins all of it: NOTHING under `engine/**`
+calls `print` at all - not even with `file=`, which is the shape those 31 had
+and which bypasses `set_log_stream` so the host cannot route it (`engine/log.py`
+is the single exemption, held to exactly one print). It is an AST walk over the
+tree RECURSIVELY, because the first version walked one directory
+non-recursively plus one named file while claiming to cover the engine layer.
+
+THE FIVE BRIDGE PINS ARE THE BRIDGE'S OWN REGEXES, COPIED VERBATIM with the .ts
+line each came from - and that matters, because the first version paraphrased
+two of them into weaker substrings. Measured in review: against the REAL
+`REPAIR_START_RE` and `HEARTBEAT_RE`, the reconstructed literals matched ZERO,
+because `_literals()` flattened f-strings by dropping every `{...}` - so
+`f'sentence {idx} hit the ... cap'` became `'sentence  hit the ... cap'`.
+Deleting that `sentence {idx} ` prefix, or renaming the heartbeat's `rows`
+field, PASSED the test and froze the progress bar. Interpolations are now
+replaced by `'0'`, and both mutations were confirmed to fail the test.
+Docstrings are excluded too (the earlier claim that the AST did so was simply
+false - `ast.walk` yields them), which matters because `mlx_backend.py`'s module
+docstring quotes the heartbeat verbatim and would otherwise satisfy the most
+important pin with a comment ABOUT the message.
+
+Other things it pins: the default is stderr and resolves at CALL time; the real
 `python -m narrator.serve` keeps stdout JSON-only for both engine ids; a real
 engine log line lands on stderr and never on stdout (`FakeEngine` logs at load,
 as a real engine does, so the proof is not vacuous); `compat.worker` really does
-point the channel at stdout; and each of the five stdout-only patterns still has
-a literal to match, so "tidying" one of those messages fails a test instead of
-silently freezing a progress bar.
+point the channel at stdout; and the SWEEP'S SIZE, which is counted by AST and
+asserted against one constant (`LOG_CALLS_BY_PACKAGE`) - the first write-up
+carried four disagreeing numbers for it (116, 116, 94, 94; the measurement is
+126), which a change whose whole argument is "measured, not assumed" cannot do.
+
+The num2words work grew a home of its own too,
+`tests/test_serve_number_normalization.py`: the blank-language refusal, the
+one-refusal-per-request language check, and that each of the five helpers raises
+rather than returning the raw digits.
 
 Two smaller things went with it. `serve/worker.py`'s load failure said "Failed to
 load Orpheus" for every engine - it now names `engine_id()`, because that message
@@ -1422,6 +1470,16 @@ And `num2words` lost its `_HAS_NUM2WORDS` guard and its five
 dependency, and a missing or failing one used to make the listen path read
 "$5.50" as punctuation for a whole session without saying anything. It now
 refuses by name (`_number_refusal`).
+
+Two follow-ups from review on that. The refusal was PER SENTENCE for a cause
+that is per SESSION - num2words raises for a language it has no module for, so
+every digit-bearing sentence failed separately with the same message. Now
+`check_language()` asks it ONCE per language per process, at the top of
+`generate` / `generate_batch`, and refuses the whole request. And
+`(language or 'en')` inside `normalize_for_tts` was a second default underneath
+the protocol's own documented one - a `x or default` on a required value, two
+lines from the five being removed. `resolve_language()` refuses a blank one by
+name: reading an unknown language as English is the same silent substitution.
 
 ### 13.6 What was measured, end to end (Mac, 2026-09-05)
 

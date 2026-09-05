@@ -336,12 +336,13 @@ def run(continuous):
     # therefore no longer captures it - point the engine's own channel at the
     # Tee. Both are swapped so a line that somehow still went to stdout is
     # caught here rather than in production.
-    from narrator.engine.log import set_log_stream
+    from narrator.engine.log import current_log_stream, set_log_stream
+    previous_log_stream = current_log_stream()
     set_log_stream(tee)
     try:
         out = build_engine(continuous, events)._convert_mlx_batch(ITEMS)
     finally:
-        set_log_stream(None)
+        set_log_stream(previous_log_stream)   # restore, not reset
         sys.stdout = real_stdout
         time.time = stock_time
         mlx_lm_generate.BatchGenerator = stock_gen

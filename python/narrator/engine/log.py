@@ -77,6 +77,18 @@ def log_stream():
     return sys.stderr if _STREAM is None else _STREAM
 
 
+def current_log_stream():
+    """What `set_log_stream` was last given - `None` meaning "the default".
+
+    Distinct from `log_stream()`, which resolves `None` to stderr. A caller that
+    wants to put the setting BACK (a test, a nested scope) needs the setting,
+    not the resolution: restoring `log_stream()`'s answer would pin the stream
+    to whatever `sys.stderr` happened to be, turning a temporary override into a
+    permanent one.
+    """
+    return _STREAM
+
+
 def log(*args, **kwargs) -> None:
     """`print`, to the host's chosen stream, flushed.
 

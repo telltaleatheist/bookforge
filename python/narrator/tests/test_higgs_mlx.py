@@ -92,8 +92,22 @@ class BackendSelectionTest(unittest.TestCase):
         `LazyImportTest` below, and `tests/test_engine_lazy_imports.py`.
         """
         from narrator.engine import registry
-        self.assertIn('higgs-v3', registry.ids())
-        self.assertEqual(registry.ids(), sorted(registry.ids()))
+        tripped = []
+        saved = dict(registry.ENGINES)
+        registry.ENGINES.update({
+            engine_id: (lambda _i=engine_id: tripped.append(_i),
+                        lambda **_kw: None)
+            for engine_id in saved})
+        try:
+            ids = registry.ids()
+        finally:
+            registry.ENGINES.clear()
+            registry.ENGINES.update(saved)
+        self.assertIn('higgs-v3', ids)
+        self.assertEqual(tripped, [],
+                         'ids() must not call an engine factory: importing one '
+                         'imports its backend, and the registry has to stay '
+                         'readable on an interpreter with no torch and no mlx.')
 
     @unittest.skipUnless(sys.platform == 'darwin', 'the MLX arm is Mac only')
     def test_on_this_mac_the_registry_hands_back_the_mlx_engine(self):

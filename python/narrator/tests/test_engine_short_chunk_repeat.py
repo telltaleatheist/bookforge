@@ -74,13 +74,17 @@ def captured_engine_log():
     redirecting stdout was: it captures the engine's own lines and nothing
     else's.
     """
-    from narrator.engine.log import set_log_stream
+    from narrator.engine.log import current_log_stream, set_log_stream
+    previous = current_log_stream()
     sink = io.StringIO()
     set_log_stream(sink)
     try:
         yield sink
     finally:
-        set_log_stream(None)
+        # RESTORE, not reset. `set_log_stream(None)` is a clobber that happens
+        # to be right only while nothing else has set the stream in this
+        # process - true today, and not a property a test should depend on.
+        set_log_stream(previous)
 
 
 
