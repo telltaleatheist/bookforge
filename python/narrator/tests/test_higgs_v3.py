@@ -682,7 +682,17 @@ class EngineTest(V3TestCase):
 class RegistrySelectionTest(unittest.TestCase):
 
     def test_higgs_v3_is_the_second_engine(self):
-        self.assertIs(registry.engine_class('higgs-v3'), HiggsV3Engine)
+        """One id, TWO backends, chosen by platform (PORT_NOTES 13).
+
+        On darwin `higgs-v3` is the IN-PROCESS MLX engine - mlx-audio runs the
+        whole model natively on Apple Silicon, so there is no server. Everywhere
+        else it is this served one. Both carry ENGINE_ID 'higgs-v3' and the same
+        geometry, budget and stop policy; only where the weights run differs.
+        """
+        from narrator.engine.higgs import HiggsV3MlxEngine
+        expected = (HiggsV3MlxEngine if sys.platform.startswith('darwin')
+                    else HiggsV3Engine)
+        self.assertIs(registry.engine_class('higgs-v3'), expected)
 
     def test_v2_is_scaffolding_and_says_so(self):
         self.assertIn('higgs-v2-scaffold', registry.ids())
@@ -778,6 +788,13 @@ class ServeProtocolTest(V3TestCase):
                 return out
         raise AssertionError(f'no {types} in {limit} messages: {out}')
 
+    @unittest.skipIf(
+        sys.platform.startswith('darwin'),
+        'this drives the SERVED v3 engine through the worker, and on '
+        "darwin 'higgs-v3' resolves to the in-process MLX engine instead "
+        '(there is no server to fake). The Mac equivalents are '
+        'tests/test_higgs_mlx.py and the live `python -m narrator.serve` '
+        'smoke recorded in PORT_NOTES 13.6.')
     def test_the_environment_selects_the_served_engine_and_it_renders(self):
         proc = self._worker()
         ready = self._read_until(proc, 'ready')[-1]
@@ -1292,6 +1309,13 @@ class LoadedMessageTest(V3TestCase):
                 {'path': self.clip, 'transcript': X2_TEXT, 'seconds': 27.42}]}},
                 handle)
 
+    @unittest.skipIf(
+        sys.platform.startswith('darwin'),
+        'this drives the SERVED v3 engine through the worker, and on '
+        "darwin 'higgs-v3' resolves to the in-process MLX engine instead "
+        '(there is no server to fake). The Mac equivalents are '
+        'tests/test_higgs_mlx.py and the live `python -m narrator.serve` '
+        'smoke recorded in PORT_NOTES 13.6.')
     def test_it_carries_engine_samplerate_pads_and_the_asymmetric_fade(self):
         import subprocess
         env = dict(os.environ)
