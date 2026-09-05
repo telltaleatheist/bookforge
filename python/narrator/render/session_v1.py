@@ -716,6 +716,16 @@ def build_manifest(
             year = published[:4]
     year = str(year) if year else None
 
+    # e2a stamped these two into the m4b as well (lib/core.py:4165-4168), and
+    # they have no `bookforge_metadata` twin: BookForge's EPUB export writes
+    # `dc:description`/`dc:publisher` (epub-processor.ts:11374, :11377), prep
+    # reads them into `metadata` with every other DC key, and nothing else in the
+    # pipeline re-stamps a rendered m4b. Empty strings are dropped rather than
+    # written as empty tags, which is what `if session['metadata'].get(...)`
+    # did in e2a.
+    description = metadata.get("description") or None
+    publisher = metadata.get("publisher") or None
+
     epub_path = None
     filename_noext = state.get("filename_noext")
     if filename_noext:
@@ -738,6 +748,8 @@ def build_manifest(
             language=_required_str(state, "language_iso1", process_dir),
             language3=_required_str(state, "language", process_dir),
             cover=_resolve_cover(process_dir, state),
+            description=description,
+            publisher=publisher,
         ),
         engine=_engine_block(engine_id),
         voice=Voice(
