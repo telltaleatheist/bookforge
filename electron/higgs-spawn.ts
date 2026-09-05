@@ -254,6 +254,7 @@ export function higgsEnvExtras(
   model: HiggsModel,
   jobId: string,
   kind: HiggsSpawnKind,
+  streamBatchCeiling?: number,
 ): Record<string, string> {
   const serving = higgsServingFor(model);
   // Asked of narrator-spawn rather than recomputed, so the arm the voice document
@@ -284,7 +285,7 @@ export function higgsEnvExtras(
     `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}`;
   const serveScriptGuestPath = `${higgsEnvGuestPrefix}/bin/${serving.launchScript}`;
 
-  return { ...higgsMlxBatchEnv(kind), ...higgsSpawnEnv(model, {
+  return { ...higgsMlxBatchEnv(kind, streamBatchCeiling), ...higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
     condaEnvPrefix: viaWsl ? higgsEnvGuestPrefix : undefined,
@@ -301,35 +302,78 @@ export function higgsEnvExtras(
 }
 
 /**
- * THE BATCH WIDTH A HIGGS MLX WORKER MAY USE — darwin, and the WORKER only.
+ * THE BATCH WIDTH A HIGGS MLX PROCESS MAY USE — darwin, on the two doors that
+ * actually generate: the audiobook WORKER and the Listen SERVER.
  *
  * narrator's Higgs MLX backend renders ONE ROW AT A TIME unless it is asked for
  * more (`NARRATOR_HIGGS3_MLX_BATCH`, default 1), so an unasked process is byte
- * for byte what shipped. This is the ask, and it is deliberately the SAME NUMBER
- * the Orpheus MLX arm gets: both engines batch on the one Metal device out of
- * the one unified memory pool, so two different budgets on one machine would be
- * two different answers to the same question. `orpheusMemoryProfile` owns the
- * tier table; nothing here re-derives a width.
+ * for byte what shipped. This is the ask.
  *
- * WORKER-ONLY, and that is not tidiness. `serve` is the Listen path — one
- * sentence at a time through `generate_batch_stream`, which this backend
- * deliberately runs row by row — and `prep`/`assembly` load no model at all. A
- * batch budget on those doors would be a lever read by nothing, which is how a
- * knob comes to look configured when it is inert.
+ * ── The worker's number, and why serve does not share it ────────────────────
+ *
+ * The WORKER gets the SAME NUMBER the Orpheus MLX arm gets: both engines batch
+ * on the one Metal device out of the one unified memory pool, so two different
+ * budgets on one machine would be two different answers to the same question.
+ * `orpheusMemoryProfile` owns the tier table; nothing here re-derives a width.
+ *
+ * SERVE gets the POOL's ceiling instead, passed in as `streamBatchCeiling`.
+ * That is `orpheus-worker-pool.ts`'s own `streamBatchCeiling()` — the number it
+ * already hands Orpheus as `ORPHEUS_STREAM_BATCH` and already reports to the
+ * extension as `deviceWorkers` — and it is a floor-16 version of the tier's
+ * width, so it is not the same number as the worker's and must not be
+ * re-derived from the tier here. It is PASSED rather than imported because
+ * `orpheus-worker-pool.ts` imports this module: importing back would be a
+ * require cycle, and the pool's serve call site is the one place that already
+ * knows the ceiling.
+ *
+ * ── Serve is no longer exempt ───────────────────────────────────────────────
+ *
+ * Until 2026-09-05 this function argued that `serve` should get nothing,
+ * because `generate_batch_stream` ran row by row. Owen retired that argument:
+ * the Listen path now runs the LADDER — the row being listened to solo (its
+ * time-to-first-audio is its whole generation, so width lands straight on the
+ * listener's wait), the read-ahead behind it batched, each row emitted at
+ * retirement. The read-ahead is exactly the thing a batch width buys, so the
+ * door that serves it gets one.
+ *
+ * `prep`/`assembly` still get nothing: they load no model, and a batch budget
+ * there would be a lever read by nothing — which is how a knob comes to look
+ * configured when it is inert.
  *
  * NOT ON THE WSL/served arm at any phase: there Higgs is a vLLM-Omni server and
  * these are the in-process MLX backend's variables.
  *
  * Explicit environment still wins, exactly as it does for the Orpheus pair.
  */
-export function higgsMlxBatchEnv(kind: HiggsSpawnKind): Record<string, string> {
-  if (process.platform !== 'darwin' || kind !== 'worker') return {};
+export function higgsMlxBatchEnv(
+  kind: HiggsSpawnKind,
+  streamBatchCeiling?: number,
+): Record<string, string> {
+  if (process.platform !== 'darwin') return {};
+  if (kind !== 'worker' && kind !== 'serve') return {};
   const profile = orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null));
+  // REFUSED BY NAME rather than defaulted to the worker's width. A Listen server
+  // built without the pool's ceiling would render a read-ahead one row at a time
+  // while every variable looked configured — the inert-knob failure this
+  // function's own comment warns about, in its quietest form.
+  if (kind === 'serve'
+      && !(typeof streamBatchCeiling === 'number' && Number.isFinite(streamBatchCeiling)
+           && streamBatchCeiling >= 1)) {
+    throw new Error(
+      'higgsMlxBatchEnv(\'serve\'): the Listen server\'s batch ceiling is the '
+      + "pool's `streamBatchCeiling()` and has to be passed in (higgs-spawn does not "
+      + 'import orpheus-worker-pool — that would be a require cycle). Got '
+      + `${JSON.stringify(streamBatchCeiling)}.`);
+  }
+  const ceiling = kind === 'serve'
+    ? Math.floor(streamBatchCeiling as number)
+    : profile.batchSize;
   return {
     NARRATOR_HIGGS3_MLX_BATCH:
-      process.env.NARRATOR_HIGGS3_MLX_BATCH?.trim() || String(profile.batchSize),
+      process.env.NARRATOR_HIGGS3_MLX_BATCH?.trim() || String(ceiling),
     // Total unified memory one batch may occupy, weights and the pinned buffer
     // cache included; narrator narrows a deep batch's WIDTH to stay inside it.
+    // The tier's, on BOTH doors: it is one pool of memory either way.
     NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB:
       process.env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB?.trim()
       || String(profile.mlxMemBudgetGB),

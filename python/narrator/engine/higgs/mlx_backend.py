@@ -94,6 +94,13 @@ mid-row window cannot tell a ramp-down from speech. `codec().streaming_decoder()
 returns None for the same reason. `should_stop` is checked EVERY generation
 step, so a cancel lands in milliseconds even though audio does not.
 
+That is also why the Listen path's batch is a LADDER rather than one batch: the
+row being listened to renders SOLO (its time-to-first-audio is its whole
+generation, so width would be added straight onto the listener's wait), and only
+the read-ahead behind it is batched - each of those rows decoded and delivered
+the moment it retires (`_generate_delayed_rows_batch(on_retire=...)`) instead of
+when its group finishes. See `generate_batch_stream`.
+
 NO MLX AT IMPORT. Every mlx / mlx_lm / mlx_audio import is inside a function,
 exactly as `engine/orpheus/mlx_backend.py` does it, so this module imports on a
 machine with no MLX at all (`tests/test_engine_lazy_imports.py`).
@@ -1277,7 +1284,8 @@ class HiggsV3MlxEngine:
 
     def _generate_delayed_rows_batch(self, texts: list, caps: list, seed,
                                      should_stop=None, prompts=None,
-                                     group_no: int = 1, group_count: int = 1):
+                                     group_no: int = 1, group_count: int = 1,
+                                     on_retire=None):
         """Generate a whole batch and return one `(steps, 8)` int64 matrix per
         row, in row order - or None if `should_stop` went true mid-batch.
 
@@ -1300,6 +1308,23 @@ class HiggsV3MlxEngine:
         has. Retirement filters the cache by POSITION IN THE CURRENT ACTIVE LIST
         (`keep`), never by original row index, because `filter` re-slices the
         live batch dimension.
+
+        `on_retire(row, rows_np)` - OPTIONAL, and the whole reason the Listen
+        path can batch its read-ahead. A batch is otherwise ATOMIC to its
+        caller: nothing leaves until the deepest row in it has finished, which
+        on a 64-row batch is minutes after the shallowest row was ready. Called
+        the moment a row retires, with that row's own `(steps, 8)` matrix
+        already stacked and EVALUATED, so the caller can decode and emit it
+        while the remaining rows keep generating. The return value is unchanged
+        either way: the full list in row order, or None if `should_stop` went
+        true - and a row abandoned that way never retired, so it gets no
+        `on_retire`.
+
+        WHAT `on_retire` COSTS IS NOT MEASURED. It puts a codec decode on the
+        same GPU the batch is still generating on, at a moment chosen by the
+        batch rather than by the caller. Owen measures that on the Mac; this
+        side guarantees only that each row is evaluated exactly once and handed
+        over exactly once.
         """
         import mlx.core as mx
         from mlx_audio.tts.models.higgs_audio_v3.generation import HiggsSamplerState
@@ -1350,6 +1375,16 @@ class HiggsV3MlxEngine:
         retired = 0
         heartbeat_seconds = 2.0
         last_beat = _time.time()
+        # Rows stacked and evaluated AT RETIREMENT (when `on_retire` is
+        # watching), remembered so the tail below never evaluates one twice.
+        finished = {}
+
+        def _finish(row):
+            stacked = mx.stack(delayed_rows[row], axis=0)
+            mx.eval(stacked)
+            matrix = np.asarray(stacked).astype(np.int64)
+            finished[row] = matrix
+            return matrix
 
         for stepno in range(1, limit + 1):
             if not active:
@@ -1370,6 +1405,11 @@ class HiggsV3MlxEngine:
                 # reached its own frame cap.
                 if samplers[row].generation_done or len(delayed_rows[row]) >= int(caps[row]):
                     retired += 1
+                    # THE ROW IS FINISHED HERE, not when the batch is. Handing
+                    # it over now is what lets the Listen path play a read-ahead
+                    # sentence while its batch-mates are still generating.
+                    if on_retire is not None:
+                        on_retire(row, _finish(row))
                     continue
                 keep_positions.append(position)
                 next_active.append(row)
@@ -1409,9 +1449,7 @@ class HiggsV3MlxEngine:
                     f'Higgs v3 MLX: the sampler emitted no rows at all for row {row} of '
                     f'a {batch_size}-row batch ({len(texts[row])} chars, cap '
                     f'{caps[row]} frames).')
-            stacked = mx.stack(rows, axis=0)
-            mx.eval(stacked)
-            out.append(np.asarray(stacked).astype(np.int64))
+            out.append(finished[row] if row in finished else _finish(row))
         return out
 
     def _references_for(self):
@@ -1484,10 +1522,16 @@ class HiggsV3MlxEngine:
         memory-budgeted slices (`_mlx_batch_groups`), each generated in one
         left-padded batch and then decoded and written per row.
 
-        A generation failure in ONE slice must not drop the others' chunks: the
-        slice is retried per item through `convert`, exactly as the Orpheus MLX
-        batcher does at bucket granularity. A row that fails again fails loudly,
-        which is the single-row behaviour.
+        A GENERATION FAILURE IS LOUD. It raises, naming the slice's width and
+        its row indices on top of the original error, exactly as `convert`
+        raises when one row fails - there is no per-item retry. A retry was
+        here until Owen struck it on 2026-09-05: it is a silent fallback in the
+        shape the repo forbids. A batch that failed for a reason a single row
+        would also fail for (a poisoned Metal context, a prompt over the window)
+        re-renders the whole slice one row at a time to arrive at the same
+        error N times, and a batch that failed for a reason batching CAUSED is
+        precisely the fact the retry hides - the run reports success and nobody
+        learns the width is wrong.
 
         There is no `should_stop` here: the worker owns the stop for the
         audiobook path and drops a flush's in-flight indices itself.
@@ -1527,16 +1571,26 @@ class HiggsV3MlxEngine:
                     texts, caps, self._seed_for(bucket[0][0]),
                     prompts=[prompt_by_index[e[0]] for e in bucket],
                     group_no=group_no, group_count=len(groups))
-                for entry, rows in zip(bucket, rows_per_row):
-                    results[entry[0]] = self._write_sentence(
-                        entry[0], self.codec().decode(rows))
             except Exception as bucket_err:
-                _log(f'MLX batch of {len(bucket)} rows (depth {depth}) failed: '
-                     f'{bucket_err} - retrying those rows one at a time')
-                for entry in bucket:
-                    if entry[0] not in results:
-                        results[entry[0]] = self.convert(entry[0], entry[1])
+                raise self._batch_failure(bucket, depth, bucket_err) from bucket_err
+            for entry, rows in zip(bucket, rows_per_row):
+                results[entry[0]] = self._write_sentence(
+                    entry[0], self.codec().decode(rows))
         return [results.get(index, False) for index, _text in items]
+
+    @staticmethod
+    def _batch_failure(bucket, depth, err) -> RuntimeError:
+        """The ONE sentence a failed slice fails with, for both batch paths.
+
+        It names the WIDTH and the ROW INDICES on top of the original error,
+        because those are the two facts a single-row failure cannot carry and
+        the two a reader needs to tell "this chunk is bad" from "this width is
+        too wide". Raised, never swallowed - see `convert_batch`.
+        """
+        rows = [entry[0] for entry in bucket]
+        return RuntimeError(
+            f'Higgs v3 MLX: a batch of {len(bucket)} rows (depth {depth} positions, '
+            f'rows {rows}) failed: {err}')
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:
@@ -1549,6 +1603,42 @@ class HiggsV3MlxEngine:
 
         A row abandoned because `should_stop` went true gets NO `on_row`, so a
         caller can never mistake an abandoned row for a finished one.
+
+        THE LADDER: STREAM ROWS SOLO FIRST, THEN THE READ-AHEAD BATCHED
+        --------------------------------------------------------------
+        The Listen path sends ONE batch carrying the block being listened to
+        (`stream_rows`) and the read-ahead behind it. Those two halves want
+        opposite things, so they are rendered by different rungs:
+
+          1. Every streamed row renders SOLO, in ascending row order, through
+             `render_audio` - byte for byte the call the single-row path makes.
+             This backend cannot token-stream (a delay-pattern codec has no
+             windowed decode; see STREAMING in the module docstring), so a
+             "streamed" row is a whole sentence delivered as one chunk, and its
+             time-to-first-audio is its WHOLE generation. Batching it would add
+             every other row's generation to the listener's wait for a word.
+             Solo is the narrowest and fastest thing this backend has.
+          2. Everything else - nobody is waiting on it yet - goes through the
+             memory-budgeted batcher, and each row is decoded and handed over
+             THE MOMENT IT RETIRES (`on_retire`), so a read-ahead sentence is
+             not held hostage by the deepest row in its group.
+
+        At the shipped default (`NARRATOR_HIGGS3_MLX_BATCH` = 1) rung 2 is a
+        serial `render_audio` loop, which is byte for byte what this method did
+        before batching existed. Nothing widens on its own.
+
+        A non-streamed row gets `on_row` and NO `on_chunk`, on both rungs: the
+        chunk channel is the streamed rows', and a chunk for a row the caller
+        never asked to stream is an emission it has nowhere to put.
+
+        A GROUP THAT RAISES IS NOT RETRIED. The exception propagates, carrying
+        the group's width and row indices - which is exactly what a single-row
+        failure does on the serial rung, and what the caller
+        (`serve/worker.py::_generate_batch_streaming`) turns into a failed
+        `batch_item` for every row it has not already answered. Rows already
+        handed over stand. Narrowing and re-rendering here would be a silent
+        fallback that hides the one thing worth learning: that this width does
+        not work on this machine.
         """
         if not texts:
             return
@@ -1579,15 +1669,85 @@ class HiggsV3MlxEngine:
                 f'HiggsV3MlxEngine.generate_batch_stream: row(s) {blank} have no text '
                 'after cleaning.')
 
-        for i, text in enumerate(texts):
+        # ---- rung 1: the streamed rows, solo, in ascending order ----------
+        for row in sorted(stream_rows):
             if should_stop is not None and should_stop():
                 return
-            audio = self.render_audio(text, index=i, should_stop=should_stop)
+            audio = self.render_audio(texts[row], index=row,
+                                      should_stop=should_stop)
             if audio is None:      # should_stop went true mid-row
                 return
-            if i in stream_rows:
-                on_chunk(i, 0, audio.copy())
-            on_row(i, audio)
+            on_chunk(row, 0, audio.copy())
+            on_row(row, audio)
+
+        read_ahead = [i for i in range(len(texts)) if i not in stream_rows]
+        if not read_ahead:
+            return
+        if should_stop is not None and should_stop():
+            # Before the prompts, not after: building them is a prefill's worth
+            # of embedding work on rows nobody is waiting for any more.
+            return
+
+        # ---- rung 2: everything else ---------------------------------------
+        width = max(1, int(self.BATCH_SIZE or 1))
+        if width <= 1:
+            # The unconfigured process, unchanged: one row at a time, in order.
+            for row in read_ahead:
+                if should_stop is not None and should_stop():
+                    return
+                audio = self.render_audio(texts[row], index=row,
+                                          should_stop=should_stop)
+                if audio is None:
+                    return
+                on_row(row, audio)
+            return
+
+        # The control-token allowlist, per row, BEFORE any prefill - the refusal
+        # `render_audio` makes on the serial rung, made here where it does not
+        # take a batch down mid-prefill.
+        cleaned = {}
+        for row in read_ahead:
+            clean = texts[row].strip()
+            v3_served.validate_control_tokens(clean)
+            cleaned[row] = clean
+
+        # Built ONCE, because the SLICING needs the prompt POSITIONS: how deep a
+        # batch can get is its prompt plus its frame cap.
+        prompts = self._mlx_prompts_for([cleaned[row] for row in read_ahead])
+        prompt_by_row = dict(zip(read_ahead, prompts))
+        entries = [(row, cleaned[row], positions,
+                    self._budget.cap_frames(cleaned[row]))
+                   for row, (_embeds, positions) in zip(read_ahead, prompts)]
+        groups = self._mlx_batch_groups(entries)
+        _log(f'stream batch: {len(stream_rows)} row(s) solo, {len(read_ahead)} '
+             f'read-ahead in {len(groups)} group(s) of '
+             f'{[len(bucket) for bucket, _d in groups]}')
+
+        for group_no, (bucket, depth) in enumerate(groups, 1):
+            rows = [entry[0] for entry in bucket]
+
+            def _retire(position, codes, _rows=rows):
+                """One read-ahead row, decoded and delivered AT RETIREMENT.
+                `position` indexes this group; `_rows` maps it back to the
+                caller's row index."""
+                on_row(_rows[position], self.codec().decode(codes))
+
+            try:
+                out = self._generate_delayed_rows_batch(
+                    [entry[1] for entry in bucket],
+                    [entry[3] for entry in bucket],
+                    self._seed_for(rows[0]),
+                    should_stop=should_stop,
+                    prompts=[prompt_by_row[row] for row in rows],
+                    group_no=group_no, group_count=len(groups),
+                    on_retire=_retire)
+            except Exception as bucket_err:
+                raise self._batch_failure(bucket, depth, bucket_err) from bucket_err
+            if out is None:
+                # should_stop went true mid-batch. Rows that had already retired
+                # were handed over by `_retire`; the abandoned ones get nothing,
+                # which is the contract this method has always kept.
+                return
 
 
 # ---------------------------------------------------------------------------
