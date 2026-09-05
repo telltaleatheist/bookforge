@@ -1698,13 +1698,24 @@ function cleanupWslOrphanedProcesses(sessionId?: string | null): void {
 
   // `|vllm` stays: a vLLM child that outlived its parent is exactly what this
   // sweep is for, and it is named by its own process rather than by the module
-  // that started it. `narrator.serve`'s vLLM is the one thing that must survive —
-  // the pool owns its teardown — so the guest-side helper excludes it.
+  // that started it.
+  //
+  // Which is also why `excludeRe` is not optional here. `narrator.serve` hosts the
+  // resident Listen server's vLLM, and that vLLM matches `|vllm` like any other. The
+  // pool owns the server's teardown; a batch job ending and taking the engine out from
+  // under a listener is a playback that stops for no reason anyone can see. The
+  // exclusion covers `narrator.serve` AND its descendants, because vLLM's engine-core
+  // children are separate processes that do not carry `narrator.serve` in their own
+  // command lines.
   const pattern = scoped ? wslSessionPattern(sessionId) : `${NARRATOR_BATCH_RE}|vllm`;
   console.log(`[PARALLEL-TTS] Cleaning up orphaned WSL processes (${scoped ? `session ${sessionId}` : 'global'})...`);
   // Fire-and-forget async SIGTERM: best-effort reap of zombies from a crashed worker.
   // Verification that the guest/VRAM is actually clear happens in the spawn preflight.
-  void wslPkillGraceful(pattern, { graceMs: 8000, label: scoped ? `orphan-cleanup ${sessionId}` : 'orphan-cleanup global' })
+  void wslPkillGraceful(pattern, {
+    graceMs: 8000,
+    label: scoped ? `orphan-cleanup ${sessionId}` : 'orphan-cleanup global',
+    excludeRe: SERVE_PROCESS_RE,
+  })
     .catch((err) => console.warn('[PARALLEL-TTS] WSL orphan cleanup failed:', err));
 }
 
