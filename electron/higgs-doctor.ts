@@ -442,8 +442,10 @@ export async function higgsDoctor(): Promise<HiggsSetupResult> {
   return {
     valid: false,
     arm: 'none',
+    // NO "or pick Orpheus" here: the narration modal appends that itself, and the
+    // remedy is quoted verbatim into it.
     remedy: 'Render Higgs on a Mac (the in-process MLX backend) or on Windows with the '
-      + '"WSL2 for Higgs" environment, or pick Orpheus.',
+      + '"WSL2 for Higgs" environment.',
     checks: [{
       id: 'platform',
       label: `Higgs backend for ${process.platform}`,
