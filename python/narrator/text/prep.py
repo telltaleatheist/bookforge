@@ -300,8 +300,24 @@ def _chunking(options: PrepOptions, epub_book) -> tuple:
             f"chunking must be {CHUNKING_E2A!r} or {CHUNKING_PARAGRAPH!r}, got "
             f"{options.chunking!r}")
 
-    budget = options.budget if options.budget is not None \
-        else orpheus_budget_from_env()
+    if options.budget is not None:
+        budget = options.budget
+    elif options.tts_engine == HIGGS_V3:
+        # It used to fall through to the Orpheus env budget, and ORPHEUS_MAX_CHARS
+        # is a variable a Higgs spawn deliberately never carries - so e2a's 350
+        # default packed every Higgs book in ~220-char chunks against a voice
+        # document saying 900/1200 (measured 2026-09-05, both arms). The route
+        # builds the Higgs budget from the voice document
+        # (`engine.higgs.v3_engine.higgs_v3_prep_budget`); a caller that did not
+        # is refused here, by name, rather than answered with another engine's
+        # number.
+        raise PrepError(
+            'A Higgs v3 prep was given no Budget. The chunk cap is the VOICE\'s '
+            'measured maxChars from NARRATOR_HIGGS_VOICES (route_prep builds it via '
+            'higgs_v3_prep_budget); refusing to pack the book at Orpheus\'s '
+            'ORPHEUS_MAX_CHARS / 350-char default.')
+    else:
+        budget = orpheus_budget_from_env()
     source_kind = options.source_kind or resolve_source_kind(epub_book)
     # The Budget is keyed on (engine, voice), and the two engines name a voice
     # differently: Orpheus by token, Higgs by catalog id.
