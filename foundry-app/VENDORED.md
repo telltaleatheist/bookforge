@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **9f4ee4e** — *feat(app): three text passes, and the cleanup a narrator can hear — clean is a step, hosted-only* |
+| Source sha | **c93004f** — *fix(app): every export carries the plan through one function, and a cleanup's card says so* |
 | Copied on | 2026-09-05 |
-| Copied by | `git -C <foundry> archive 9f4ee4e app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive c93004f app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -819,6 +819,8 @@ Verified: **139/139** blobs against `9f4ee4e:app/` plus `IPC-CHANNELS.md`, and
 zero strays; `package.json`/`package-lock.json` unmoved, so `npm ci` was skipped;
 subtree build clean (pre-existing 500 kB budget WARNING only, ~925 kB);
 `dist/electron/mount.js` fresh.
+
+**c93004f (2026-09-05, evening) — every export carries the plan through one function, and a cleanup's card says so.** Two defects Owen hit on the hosted window after his first `Clean text` run (witches, 863 blocks, qwen3.8:27b): the EPUB he exported from the clean position carried no `bookforge:narration-text` meta, so BookForge's narrate gate reported it uncleaned and offered the failsafe over a book that WAS cleaned (862 of 863 cleaned records verbatim in the file); and the clean step's document card was titled "Translated". Cause of the first: the plan composed `narrationStamp` correctly, but only `exportEpubFromStep` (mount.ts) spread it into the job request — the Export dialog and the mint-metadata dialog copied records/language/bookPath off the plan by hand and stopped one field short. Foundry fixed it at the source: `carriedFromPlan(plan)` in `shared/pipeline.ts` is now the ONE function that carries a `WorkspacePlan` into a `JobRequest`, and all three builders spread it. Cause of the second: `titleForStep` had no `case 'clean'` and fell to the translate sentence; it now says "Cleaned for narration". App-only — the engine stays 1.2.0 (d6509e7); BookForge's `electron/main.ts` seam is untouched (mount exports unchanged, verified in `dist/electron/mount.js`). Verification: 139 blobs matched, 0 problems; no dependency movement; `npm run build` green with the one pre-existing budget warning; keepers `test-ipc-collision`, `test-foundry-narration-stamp` (6), `test-foundry-host`, `test-foundry-landing`, `test-foundry-narrate-target` (33) all green. End-to-end proof still owed: one export from the witches clean step (9198be16) after an app restart must show the OPF meta with `blocks` 863.
 
 `IPC-CHANNELS.md` beside this file is `docs/IPC-CHANNELS.md` from the same sha —
 it is not part of `app/`, it is carried along because it is the authority the

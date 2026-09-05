@@ -2,6 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal } 
 
 import { qualify } from '@shared/documents';
 import { translationInEffect } from '@shared/ledger';
+import { carriedFromPlan } from '@shared/pipeline';
 import type { ConversionKind, JobRequest } from '@shared/types';
 
 import { LedgerService } from '../../core/ledger.service';
@@ -757,30 +758,21 @@ export class ExportDialogComponent {
          */
         export: true,
         /*
-         * AND THE TRANSLATION'S OWN WORDS, WHEN MAIN PUT THEM IN THE PLAN —
-         * carried, never composed. Which translation this position is about is
-         * read off the ledger, and the ledger main holds is the truth; this
-         * window holds a mirror of it that is a repaint behind at worst. Copying
-         * what the plan says is the same rule `readingsPath` has always obeyed one
-         * line up.
+         * AND THE TRANSLATION'S WORDS, THE LANGUAGE, THE EDITED BOOK AND THE
+         * NARRATION RECEIPT, WHEN MAIN PUT THEM IN THE PLAN — carried, never
+         * composed, through the one function every builder spreads
+         * (`carriedFromPlan`, shared/pipeline.ts). Which translation, which
+         * book and which cleanup this position is about is read off the ledger
+         * main holds; this window's mirror is a repaint behind at worst, which
+         * is the same rule `readingsPath` obeys one line up.
          *
-         * This used to be a whole second STAGE — a translate run after the
-         * rendering, with a language, a bank and a row to land in. A translation
-         * is a records file now, so what the plan hands over is that file and the
-         * language to declare the book as, and one engine run makes the edition.
+         * THIS USED TO BE THREE HAND-WRITTEN SPREADS, and the day the plan grew
+         * a fourth field this builder did not learn it: an export from a
+         * cleaned position came out with no narration meta, and BookForge asked
+         * Owen to clean a book he had just cleaned (2026-09-05). A spread of a
+         * function cannot fall a field behind.
          */
-        ...(plan.records !== undefined ? { records: plan.records } : {}),
-        ...(plan.language !== undefined ? { language: plan.language } : {}),
-        /*
-         * AND THE BOOK ITSELF, WHEN THIS EXPORT IS OF A BOOK SOMEBODY EDITED —
-         * carried, never composed, for `records`' reason exactly. Main replayed
-         * the changes on the way to this position into a book file of its own the
-         * moment the plan was made, and the engine compiles that instead of
-         * rebuilding the book from the pages it was read from
-         * (docs/RENDERER.md §6). Absent for a book nobody has edited and for a
-         * facsimile, both of which are made from the reading as they always were.
-         */
-        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+        ...carriedFromPlan(plan),
       };
 
       const job = await this.queue.run(request);

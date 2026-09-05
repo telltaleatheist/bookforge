@@ -64,7 +64,7 @@ import {
   textPassInEffect,
   translationInEffect,
 } from './ledger';
-import type { LedgerStep, ProjectLedger } from './types';
+import type { GenerateRequest, LedgerStep, ProjectLedger, WorkspacePlan } from './types';
 
 /*
  * ── THE CLEANUP QUESTION, ANSWERED NEXT DOOR AND ASKED FROM HERE ────────────
@@ -215,3 +215,45 @@ export function renderPipeline(
  * before a Generate could run the translator, and where the flags have always been
  * spelled exactly once.
  */
+
+/**
+ * WHAT A RENDERING CARRIES FROM ITS PLAN — the words, the language, the book and
+ * the narration receipt — spelled ONCE, for every builder that turns a
+ * `WorkspacePlan` into a `GenerateRequest`.
+ *
+ * ── The defect this closes (Owen, 2026-09-05) ──────────────────────────────
+ *
+ * Three builders composed a request off a plan by hand: the export dialog, the
+ * mint-metadata dialog and the host's own door (`exportEpubFromStep`,
+ * electron/mount.ts). When the plan grew `narrationStamp`, ONE of the three was
+ * taught to carry it and the other two went on copying `records`, `language` and
+ * `bookPath` and stopping there. Nothing failed: `GenerateRequest.narrationStamp`
+ * says presence is "the whole of the decision", so an export made from a cleaned
+ * position through either dialog came out as a book saying nothing about
+ * narration, and BookForge's gate — correctly — asked Owen whether he wanted to
+ * clean a book he had just cleaned. The engine was blameless; run by hand with
+ * the same stamp it recomputed all 863 blocks and wrote the meta.
+ *
+ * THE TRAP WAS THE HAND-COPY. A plan is main's answer to "what is this position",
+ * and a request that copies it field by field is a request that will be a field
+ * behind the day the plan learns a new one — silently, because every field it
+ * carries is optional. So the carry is a function, and a builder spreads its
+ * answer; a fourth builder cannot repeat the mistake because there is nothing
+ * left for it to copy by hand.
+ *
+ * CARRIED, NEVER COMPOSED, exactly as each of the three used to say of each
+ * field: which translation, which book and which cleanup a position is about
+ * are read off the ledger main holds, and a window's mirror of it is a repaint
+ * behind at worst. Absent fields stay absent — an export of an unedited,
+ * untranslated, uncleaned reading is exactly the request it always was.
+ */
+export function carriedFromPlan(
+  plan: Pick<WorkspacePlan, 'records' | 'language' | 'bookPath' | 'narrationStamp'>,
+): Pick<GenerateRequest, 'records' | 'language' | 'bookPath' | 'narrationStamp'> {
+  return {
+    ...(plan.records !== undefined ? { records: plan.records } : {}),
+    ...(plan.language !== undefined ? { language: plan.language } : {}),
+    ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+    ...(plan.narrationStamp !== undefined ? { narrationStamp: plan.narrationStamp } : {}),
+  };
+}

@@ -4355,6 +4355,16 @@ function titleForStep(step: LedgerStep): string {
      */
     case 'analysis':
       return 'The analysis';
+    /*
+     * THE FOURTH ACTION TO FALL INTO THE TRAP THE `capture` COMMENT WARNS ABOUT,
+     * and the third to actually fall in. Wave 55 split the text passes into
+     * three actions and taught the ledger's own label ("Cleaned for narration")
+     * but not this card, so a cleanup drew as "Translated" — Owen, 2026-09-05:
+     * *"is an error, and its deceptive."* A simplify still reaches the default
+     * on purpose: it carries `rewrite`, and `translateSentence` says which one.
+     */
+    case 'clean':
+      return 'Cleaned for narration';
     default:
       return translateSentence(step.params);
   }

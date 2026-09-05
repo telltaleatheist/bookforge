@@ -108,6 +108,7 @@ import * as vllm from './vllm-server';
 import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
+import { carriedFromPlan } from '../shared/pipeline';
 import { fold, originalOf } from '../shared/original';
 import type { ExportLanding, Job, JobRequest } from '../shared/types';
 
@@ -752,25 +753,17 @@ export async function exportEpubFromStep(
     // project — a documents row, a live file something later could be built on —
     // which is precisely what an export is not.
     export: true,
-    // The translation's words, the language to declare the book as, and the book
-    // with this step's changes already replayed into it: carried from the plan,
-    // never composed, exactly as the dialog carries them.
-    ...(plan.records !== undefined ? { records: plan.records } : {}),
-    ...(plan.language !== undefined ? { language: plan.language } : {}),
-    ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
     /*
-     * AND THE NARRATION RECEIPT, WHICH MATTERS MOST ON EXACTLY THIS ROUTE.
-     *
-     * `planExport` composed it off `cleanupInEffect` at the step this call named
-     * (`narrationStampFor`, electron/workspace.ts), so the flag is here precisely
-     * when the nearest text pass above those words is a cleanup — and this is the
-     * EPUB BookForge narrates. A stamp carried by the dialogs and dropped here
-     * would mean the one file made for a narrator was the one file that did not
-     * say it had been prepared for one.
-     *
-     * Carried from the plan, never composed, exactly as the three lines above it.
+     * THE WORDS, THE LANGUAGE, THE BOOK AND THE NARRATION RECEIPT — carried from
+     * the plan, never composed, through the ONE function every builder spreads
+     * (`carriedFromPlan`, shared/pipeline.ts). This door used to spell the four
+     * spreads by hand and was the only one of three that carried the stamp; the
+     * two dialogs stopped a line short and exported unstamped books from cleaned
+     * positions (Owen, 2026-09-05). The argument for the stamp mattering MOST on
+     * this route still stands — this is the EPUB BookForge narrates — and it is
+     * exactly why the carry is no longer a thing a builder can get wrong.
      */
-    ...(plan.narrationStamp !== undefined ? { narrationStamp: plan.narrationStamp } : {}),
+    ...carriedFromPlan(plan),
   };
 
   return new Promise<ExportLanding>((resolve, reject) => {

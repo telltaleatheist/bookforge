@@ -5,6 +5,7 @@ import {
   asciiFilename, contributorsFromString, generatedFilename, MINT_LANGUAGES,
 } from '@shared/mint-meta';
 import type { MintContributor, MintMeta } from '@shared/mint-meta';
+import { carriedFromPlan } from '@shared/pipeline';
 import type { JobRequest, WorkspacePlan } from '@shared/types';
 
 import { NoticeService } from '../../core/notice.service';
@@ -509,9 +510,12 @@ export class MintMetaDialogComponent {
         readingsPath: plan.readingsPath,
         export: true,
         mintMeta: meta,
-        ...(plan.records !== undefined ? { records: plan.records } : {}),
-        ...(plan.language !== undefined ? { language: plan.language } : {}),
-        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
+        // The words, the language, the book and the narration receipt, carried
+        // from the plan through the one function every builder spreads
+        // (`carriedFromPlan`, shared/pipeline.ts) — this dialog copied three of
+        // the four by hand and minted an unstamped EPUB from a cleaned position
+        // (Owen, 2026-09-05).
+        ...carriedFromPlan(plan),
       };
       const job = await this.queue.run(request);
       if (job === null) return;
