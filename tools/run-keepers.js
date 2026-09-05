@@ -135,6 +135,14 @@ const SUITES = [
   'test-foundry-host-status',
   'test-foundry-host-queue',
   'test-foundry-progress',
+  // The narration text pass left this repository for the Foundry engine (Owen,
+  // 2026-09-05). These two hold the two halves of what that leaves behind: that
+  // what was handed over is what arrived and has not drifted since, and that the
+  // stamp the engine WRITES is still readable by the reader BookForge KEPT — a
+  // writer and a reader of one JSON object in two repositories, neither of which
+  // compiles against the other. Both skip by name on a machine with no Foundry.
+  'test-foundry-clean-text-vendor',
+  'test-foundry-narration-stamp',
   // 'test-foundry-narrate-form' was here until 2026-08-26. It kept
   // electron/foundry-narrate-form.ts — the static field description Foundry drew
   // Narrate's dialog from — and both went together when the dialog came back to
