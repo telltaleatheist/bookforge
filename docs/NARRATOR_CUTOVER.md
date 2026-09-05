@@ -52,8 +52,15 @@ Environment, by `(engine, platform)`:
 `/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx`, then **refuses by
 name**. No step-down to the ebook2audiobook Orpheus env: that env is below the
 mlx 0.32.0 and mlx-lm 0.31.3 pins, so it would not fail — it would decline to
-overlap decoding and read as "the Mac is just slower" (PORT_NOTES 7a). A proper
-component installer is Phase 6.
+overlap decoding and read as "the Mac is just slower" (PORT_NOTES 7a).
+
+**THE ENV EXISTS.** It was built by hand on the Mac Studio on 2026-09-04 (python
+3.11, mlx 0.32.0, mlx-lm 0.31.3, mlx-audio 0.4.8, numpy, soundfile, mutagen,
+psutil, beautifulsoup4, pillow) and rendered kershaw end to end at **5.14x
+realtime**, so the macOS arm resolves today and the second lookup above is the one
+that answers. What Phase 6 adds is not the environment but its REPRODUCIBILITY:
+`packaging/env/narrator-mlx.yml` plus a component installer, so the next Mac does
+not depend on somebody remembering the pins.
 
 `higgs-spawn.ts` is now a thin caller. It keeps the voice document, the served
 model's launch script and the catalog refusals — the things that are about Higgs —
@@ -156,10 +163,11 @@ byte-identical either way because `normalize()` already collapses all whitespace
 - **The WSL arm has never been run.** The GPU is held by the training session's
   `external-gpu-job.lock`, so no vLLM model was loaded and PORT_NOTES 9.5 steps
   2-5 against a real model are outstanding on Windows/WSL.
-- **The Mac has never been run.** `narrator-mlx` does not exist on any machine
-  yet — Phase 6 ships the installer — so the macOS arm is a refusal by name until
-  someone creates it. Nothing on a Mac can start Listen through Orpheus until
-  then, and that is a deliberate, loud failure rather than a silent slow one.
+- **The macOS arm has not been run FROM THE POOL.** The `narrator-mlx` env is
+  real and proven (a full kershaw render at 5.14x realtime, 2026-09-04), so the
+  environment half is verified; what is outstanding is BookForge's own spawn
+  reaching it — Listen on the Mac, start to sound. Corrected 2026-09-04: an
+  earlier draft of this file said the env did not exist anywhere.
 - Listen playback in the app, on either machine.
 
 ---
@@ -188,4 +196,5 @@ Phase 5 (`feat/xtts-removal`, another branch) owns `streaming-engine.ts`'s xtts
 arm, `xtts-worker-pool.ts`, `xtts-voices.ts` and `custom-voices.ts`. The only edit
 made to `streaming-engine.ts` here is its Orpheus availability probe, which now
 asks `narrator-spawn` the same question the spawn will ask — otherwise the Listen
-picker would report "Orpheus: available" on a Mac with no `narrator-mlx`.
+picker would report "Orpheus: available" on a Mac with no `narrator-mlx`. On the
+Mac Studio that env is present, so the probe passes there for the right reason.
