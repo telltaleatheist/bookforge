@@ -203,7 +203,7 @@ check('the default voice is kind DEFAULT — not an empty clone', () => {
   assert.ok(!m.voice.adapterDir);
 });
 
-check('deathstalker is kind CHECKPOINT, text-only, and marked pending', () => {
+check('deathstalker is kind CHECKPOINT, text-only, and PROMOTED', () => {
   // Renamed from 'adapter' on 2026-09-04: vllm-omni cannot load a LoRA at
   // runtime (no adapter flags; the talker class lacks SupportsLoRA), so what a
   // voice IS, as far as this catalog is concerned, is a merged ~8.5 GB
@@ -214,13 +214,23 @@ check('deathstalker is kind CHECKPOINT, text-only, and marked pending', () => {
   assert.ok(m.voice.checkpointDir, 'the checkpoint dir is missing');
   assert.ok(!('adapterDir' in m.voice), 'the old adapterDir field survived the rename');
   assert.ok(!('clips' in m.voice), 'a fine-tune is prompted TEXT-ONLY — no clips key');
-  assert.ok(m._pendingNote, 'the placeholder checkpoint path is not marked pending');
+  // Promoted 2026-09-05. The _pendingNote was the loader's refusal; it is gone
+  // because the merged checkpoint landed AND its cap was measured, and the
+  // _promotedNote records both plus what is still owed.
+  assert.ok(!m._pendingNote, 'the promoted voice still carries a _pendingNote');
+  assert.ok(m._promotedNote, 'the promotion is not recorded anywhere in the entry');
 });
 
-check('the checkpoint convention is /home/<user>/higgs-models/<voice>', () => {
-  // The same shape the Orpheus models dir uses, and what the installer creates.
+check('the checkpoint dir is the CERTIFIED one, not the staging convention', () => {
+  // NOT /home/<user>/higgs-models/<voice>. The cap below was measured by
+  // rendering against a vllm-omni started on THIS directory, and that
+  // directory's own generation_config.json answered every request in the sweep,
+  // so the number and the path are one fact. A copy elsewhere is a different
+  // directory that inherits the number without the measurement — and this one
+  // is frozen: a re-merge writes a new name and is re-certified.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.match(m.voice.checkpointDir, /\/higgs-models\/deathstalker$/);
+  assert.strictEqual(m.voice.checkpointDir, '/home/telltale/higgs_v3_merged/ds_ad4lm_prod');
+  assert.ok(m._checkpointDirNote, 'nothing says why this is not the higgs-models convention');
 });
 
 check('the shape must match the kind — all six malformed pairings refused', () => {
@@ -244,25 +254,84 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   }
 });
 
-check('the seeded adapter carries NO measured cap — that is the point of it', () => {
-  // The training side measured that an adapter stops at its TRAINING CLIP
-  // LENGTH, not at the text: one trained on 8-22 s clips stops after ~6-10 s on
-  // any prompt over ~150 chars. So inheriting the zero-shot 600 would lose most
-  // of every chunk while every duration check still looked fine.
+check('deathstalker carries its MEASURED cap, 1200, from a length sweep', () => {
+  // The number and its method, both. A fine-tune stops at its TRAINING CLIP
+  // LENGTH rather than at the text — one trained on 8-22 s clips stopped after
+  // ~6-10 s on any prompt over ~150 chars — so the zero-shot 600 would have lost
+  // most of every chunk while every duration check still looked fine. 1200 is
+  // the largest length with zero babble across 4 seeds AND >= 90 % ASR coverage
+  // on every seed, contiguous from the shortest: worst-seed coverage 98.5 / 97.7
+  // / 95.5 / 87.2 % at 600 / 900 / 1200 / 1500 (measured 2026-09-05).
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.strictEqual(m.backends.served.maxChars, null);
-  assert.strictEqual(m.backends.served.maxCharsSource, null);
+  assert.strictEqual(m.backends.served.maxChars, 1200);
+  assert.strictEqual(m.backends.served.maxCharsSource, 'length-sweep');
+  // The provenance is in _maxCharsNote and NOT in maxCharsSource, because
+  // maxCharsSource travels into narrator's document where
+  // protocol.MAX_CHARS_SOURCES is a closed vocabulary. Both halves must exist.
+  assert.match(m.backends.served._maxCharsNote, /95\.5/,
+    'the note does not carry the measured coverage at the certified length');
+  assert.match(m.backends.served._maxCharsNote, /87\.2/,
+    'the note does not say what stopped the ladder');
 });
 
-check('a pending voice is EXCLUDED from the renderable set but LISTED for a picker', () => {
-  // Offering-and-refusing is the honest pair; hiding-and-forgetting is not.
-  assert.ok(!higgs.listRenderableHiggsModels().some((m) => m.id === 'deathstalker'));
-  assert.ok(higgs.higgsNarrationVoices().some((v) => v.value === 'deathstalker'));
+check("EVERY kind:'checkpoint' voice has a positive integer cap AND a source", () => {
+  // The catalog-wide rule the loader refuses on, asserted over the shipped file
+  // rather than over a synthesised entry — so a voice added later cannot ship
+  // without its own sweep.
+  const KNOWN_SOURCES = ['catalog', 'placeholder', 'length-sweep'];
+  const fineTunes = higgs.listHiggsModels().filter((m) => m.kind === 'checkpoint');
+  assert.ok(fineTunes.length > 0, 'no fine-tune in the catalog to check');
+  for (const m of fineTunes) {
+    const served = m.backends.served;
+    assert.ok(Number.isInteger(served.maxChars) && served.maxChars > 0,
+      `${m.id}: maxChars is ${JSON.stringify(served.maxChars)}, not a positive integer`);
+    assert.ok(typeof served.maxCharsSource === 'string' && served.maxCharsSource.trim(),
+      `${m.id}: maxChars ${served.maxChars} with no maxCharsSource`);
+    // narrator VALIDATES this vocabulary (protocol.MAX_CHARS_SOURCES) and the
+    // value travels in the voice document, so a prose provenance string here is
+    // a render refused at load_voices. The prose belongs in _maxCharsNote.
+    assert.ok(KNOWN_SOURCES.includes(served.maxCharsSource),
+      `${m.id}: maxCharsSource ${JSON.stringify(served.maxCharsSource)} is not one of ` +
+      KNOWN_SOURCES.join(' | ') + " — narrator's load_voices refuses it by name");
+  }
 });
 
-check('a pending voice is labelled as not installed', () => {
-  const row = higgs.higgsNarrationVoices().find((v) => v.value === 'deathstalker');
-  assert.match(row.label, /not installed yet/);
+check("deathstalker's sampling MIRRORS its checkpoint dir's generation_config.json", () => {
+  // The directory is the authority: vllm-omni resolves sampling from the model
+  // directory and OpenAICreateSpeechRequest carries no sampling fields, so
+  // nothing per-request can correct it. This block is a mirror kept so a reader
+  // can see what the voice samples at without opening a directory inside WSL —
+  // and a mirror nobody checks is how two copies of a number diverge. These are
+  // the values read out of
+  // /home/telltale/higgs_v3_merged/ds_ad4lm_prod/generation_config.json on
+  // 2026-09-05 and recorded in docs/HIGGS_ENGINE.md.
+  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  assert.deepStrictEqual(m.backends.served.sampling,
+    { temperature: 1, topP: 0.95, topK: 50 });
+  assert.ok(m.backends.served._samplingNote,
+    'nothing records that the directory, not this block, is the authority');
+});
+
+check('the pending rule still holds over whatever the catalog ships', () => {
+  // Offering-and-refusing is the honest pair; hiding-and-forgetting is not. No
+  // voice ships pending today (deathstalker was promoted 2026-09-05), so this
+  // asserts the RULE over every row rather than over one row that happens to be
+  // in one of the two states.
+  const renderable = new Set(higgs.listRenderableHiggsModels().map((m) => m.id));
+  const offered = new Map(higgs.higgsNarrationVoices().map((v) => [v.value, v]));
+  for (const m of higgs.listHiggsModels()) {
+    if (m._pendingNote) {
+      assert.ok(!renderable.has(m.id), `${m.id} is pending but in the renderable set`);
+      const row = offered.get(m.id);
+      assert.ok(row, `${m.id} is pending and not listed at all`);
+      assert.match(row.label, /not installed yet/);
+      assert.ok(row.unavailable, `${m.id} is offered pending with no reason`);
+    } else {
+      assert.ok(renderable.has(m.id), `${m.id} is not pending but not renderable`);
+      const row = offered.get(m.id);
+      if (row) assert.ok(!row.unavailable, `${m.id} is renderable but offered as unavailable`);
+    }
+  }
 });
 
 check('resolveHiggsModel REFUSES an unknown voice and lists the known ones', () => {
@@ -273,11 +342,37 @@ check('resolveHiggsModel REFUSES an unknown voice and lists the known ones', () 
   assert.match(threw.message, /default/, 'the refusal does not say what IS available');
 });
 
-check('resolveHiggsModel REFUSES a voice whose artifact has not landed', () => {
+// The spawn-env probe options, declared here because the two checks below need
+// them and `PROMOTED_ENV_OPTS` in section 4 has not been initialised yet at this point.
+const PROMOTED_ENV_OPTS = { voicesPath: '/mnt/c/tmp/higgs-probe-voices.json' };
+
+check('resolveHiggsModel RESOLVES the promoted deathstalker — no refusal left', () => {
+  // The whole point of the promotion: the four refusals this voice used to trip
+  // (pending, malformed, unmeasured cap, oversized reference) must all pass now.
+  const m = higgs.resolveHiggsModel('deathstalker');
+  assert.strictEqual(m.id, 'deathstalker');
+  assert.strictEqual(m.kind, 'checkpoint');
+  assert.ok(higgs.higgsSpawnEnv(m, PROMOTED_ENV_OPTS).NARRATOR_HIGGS_VOICES,
+    'the promoted voice cannot build a spawn env');
+});
+
+check('MUTATION: null the promoted cap and the loader refuses it again', () => {
+  // The guard is only real if removing the measurement brings the refusal back.
+  // Driven on a CLONE of the shipped entry, so this asserts the rule against the
+  // catalog's own row rather than against a synthesised one.
+  const shipped = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  const mutated = JSON.parse(JSON.stringify(shipped));
+  mutated.backends.served.maxChars = null;
+  mutated.backends.served.maxCharsSource = null;
   let threw = null;
-  try { higgs.resolveHiggsModel('deathstalker'); } catch (err) { threw = err; }
-  assert.ok(threw, 'a pending voice resolved — it would serve the default speaker');
-  assert.match(threw.message, /not installed yet/);
+  try { higgs.higgsSpawnEnv(mutated, PROMOTED_ENV_OPTS); } catch (err) { threw = err; }
+  assert.ok(threw, 'a fine-tune with a nulled cap was accepted');
+  assert.match(threw.message, /MEASURED maxChars/);
+  assert.match(threw.message, /length sweep/);
+  // And the number alone is not evidence either.
+  const noSource = JSON.parse(JSON.stringify(shipped));
+  delete noSource.backends.served.maxCharsSource;
+  assert.throws(() => higgs.higgsSpawnEnv(noSource, PROMOTED_ENV_OPTS), /MEASURED maxChars/);
 });
 
 check('resolveHiggsModel REFUSES an empty voice rather than picking one', () => {
@@ -1060,14 +1155,16 @@ check('the dropdown offers FINE-TUNES and the default — never a clone', () => 
   })));
 });
 
-check('a pending voice is offered DISABLED, with its note as the reason', () => {
-  // Finding 11: it was label-only and fully selectable, so the one voice the
-  // catalog ships pending queued a run that died at preflight — defeating the
-  // stated point of the double preflight.
+check('the promoted voice is offered SELECTABLE, with no warning attached', () => {
+  // Finding 11 was the opposite state: a pending voice offered label-only and
+  // fully selectable, so it queued a run that died at preflight. Now that
+  // deathstalker renders, the row must carry no `unavailable` at all — a voice
+  // marked unavailable is rendered DISABLED by the picker, which would hide the
+  // one production fine-tune behind a stale note.
   const row = higgs.higgsNarrationVoices().find((v) => v.value === 'deathstalker');
-  assert.ok(row, 'the pending voice is not listed at all');
-  assert.match(row.label, /not installed yet/);
-  assert.ok(row.unavailable, 'the pending voice carries no reason');
+  assert.ok(row, 'the production fine-tune is not listed at all');
+  assert.ok(!row.unavailable, 'the promoted voice is still offered as unavailable');
+  assert.ok(!/not installed/.test(row.label), 'the label still says not installed');
   const ok = higgs.higgsNarrationVoices().find((v) => v.value === 'default');
   assert.ok(!ok.unavailable, 'a renderable voice was marked unavailable');
 });
@@ -1192,6 +1289,21 @@ if (skipWhy) {
     const got = JSON.parse(r.stdout.trim().split('\n').pop());
     assert.strictEqual(got.checkpoint, CROSS);
     assert.strictEqual(got.max_chars, 1350);
+    assert.strictEqual(got.source, 'length-sweep');
+  });
+
+  check("narrator ACCEPTS the SHIPPED deathstalker document, cap and all", () => {
+    // The promotion, driven through narrator's own loader rather than described
+    // from this side. load_voices does not touch the checkpoint DIRECTORY (that
+    // is require_generation_config's job, inside WSL), so the real document
+    // loads here and proves the two sides agree about the promoted row.
+    const r = runLoad(higgs.higgsVoicesDocument(higgs.resolveHiggsModel('deathstalker')));
+    assert.strictEqual(r.status, 0, 'narrator refused it:\n' + (r.stderr || '').trim());
+    const got = JSON.parse(r.stdout.trim().split('\n').pop());
+    assert.strictEqual(got.name, 'deathstalker');
+    assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
+    assert.strictEqual(got.checkpoint, '/home/telltale/higgs_v3_merged/ds_ad4lm_prod');
+    assert.strictEqual(got.max_chars, 1200);
     assert.strictEqual(got.source, 'length-sweep');
   });
 
