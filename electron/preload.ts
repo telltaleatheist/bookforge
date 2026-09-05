@@ -640,7 +640,7 @@ export interface TtsResumeInfo {
 // Reassembly Types
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface E2aSession {
+export interface NarratorSession {
   sessionId: string;
   sessionDir: string;
   processDir: string;
@@ -694,8 +694,8 @@ export interface ReassemblyProgress {
   error?: string;
 }
 
-export interface E2aSessionScanResult {
-  sessions: E2aSession[];
+export interface NarratorSessionScanResult {
+  sessions: NarratorSession[];
   tmpPath: string;
 }
 
@@ -1221,8 +1221,8 @@ export interface ElectronAPI {
     stop: () => Promise<{ success: boolean; error?: string }>;
     getStatus: () => Promise<{ success: boolean; data?: BookshelfStatus; error?: string }>;
   };
-  e2a: {
-    configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
+  narrator: {
+    configurePaths: (config: { condaPath?: string; narratorScratchPath?: string }) => Promise<{ success: boolean; error?: string }>;
   };
   orpheus: {
     getBatchConfig: () => Promise<OrpheusBatchConfig>;
@@ -1306,9 +1306,9 @@ export interface ElectronAPI {
   };
   wsl: {
     detect: () => Promise<{ success: boolean; data?: { available: boolean; version?: number; distros: string[]; defaultDistro?: string; error?: string }; error?: string }>;
-    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; e2aPath?: string }) => Promise<{
+    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; sessionsRoot?: string }) => Promise<{
       success: boolean;
-      data?: { valid: boolean; condaFound: boolean; e2aFound: boolean; orpheusEnvFound: boolean; errors: string[] };
+      data?: { valid: boolean; condaFound: boolean; sessionsRootFound: boolean; orpheusEnvFound: boolean; errors: string[] };
       error?: string;
     }>;
   };
@@ -1841,8 +1841,8 @@ export interface ElectronAPI {
     onComplete: (callback: (data: { jobId: string; success: boolean; outputPath?: string; error?: string }) => void) => () => void;
   };
   reassembly: {
-    scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSessionScanResult; error?: string }>;
-    getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: E2aSession; error?: string }>;
+    scanSessions: (customTmpPath?: string) => Promise<{ success: boolean; data?: NarratorSessionScanResult; error?: string }>;
+    getSession: (sessionId: string, customTmpPath?: string) => Promise<{ success: boolean; data?: NarratorSession; error?: string }>;
     resolveSentenceGap: (processDir: string) => Promise<{ success: boolean; data?: { isOrpheus: boolean; voice?: string; gap: number; hasModelValue: boolean }; error?: string }>;
     startReassembly: (jobId: string, config: ReassemblyConfig) => Promise<{ success: boolean; data?: { outputPath?: string }; error?: string }>;
     stopReassembly: (jobId: string) => Promise<{ success: boolean; error?: string }>;
@@ -1867,7 +1867,7 @@ export interface ElectronAPI {
       }
     ) => Promise<{ success: boolean; error?: string; coverPath?: string }>;
     isAvailable: () => Promise<{ success: boolean; data?: { available: boolean }; error?: string }>;
-    getBfpSession: (projectDir: string) => Promise<{ success: boolean; data?: E2aSession | null; error?: string }>;
+    getBfpSession: (projectDir: string) => Promise<{ success: boolean; data?: NarratorSession | null; error?: string }>;
     onProgress: (callback: (data: { jobId: string; progress: ReassemblyProgress }) => void) => () => void;
   };
   correctSentences: {
@@ -2617,9 +2617,9 @@ const electronAPI: ElectronAPI = {
     getStatus: () =>
       ipcRenderer.invoke('bookshelf:status'),
   },
-  e2a: {
-    configurePaths: (config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) =>
-      ipcRenderer.invoke('e2a:configure-paths', config),
+  narrator: {
+    configurePaths: (config: { condaPath?: string; narratorScratchPath?: string }) =>
+      ipcRenderer.invoke('narrator:configure-paths', config),
   },
   orpheus: {
     getBatchConfig: () => ipcRenderer.invoke('orpheus-batch:get'),
@@ -2707,7 +2707,7 @@ const electronAPI: ElectronAPI = {
   wsl: {
     detect: () =>
       ipcRenderer.invoke('wsl:detect'),
-    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; e2aPath?: string }) =>
+    checkOrpheusSetup: (config: { distro?: string; condaPath?: string; sessionsRoot?: string }) =>
       ipcRenderer.invoke('wsl:check-orpheus-setup', config),
   },
   foundry: {

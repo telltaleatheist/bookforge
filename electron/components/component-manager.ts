@@ -26,7 +26,7 @@ import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhis
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
+import { getPythonInvocation, buildToolsSpawnEnv } from '../narrator-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
 import type {
   IComponentManager,
@@ -1418,7 +1418,7 @@ export async function runInstaller(
 const DIAGNOSTIC_ENGINES = new Set(['orpheus']);
 
 /** asar → asar.unpacked rewrite (a spawned python can't read inside the archive).
- *  Inlined rather than importing e2a-paths, which imports this module (cycle). */
+ *  Inlined rather than importing narrator-paths, which imports this module (cycle). */
 function unpackedScriptPath(p: string): string {
   return p.includes('app.asar') && !p.includes('app.asar.unpacked')
     ? p.replace('app.asar', 'app.asar.unpacked')

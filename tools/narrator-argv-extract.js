@@ -153,11 +153,14 @@ if (require.main === module) {
   const DIST = path.join(REPO, 'dist', 'electron');
 
   const FAKE = {
-    e2a: 'C:\\FAKE\\e2a',
-    wslConda: '/home/fake/anaconda3/bin/conda',
+      wslConda: '/home/fake/anaconda3/bin/conda',
     orpheusEnv: 'orpheus_tts',
     higgsEnv: 'higgs3',
     distro: 'Ubuntu',
+    // NOT RENAMED BY PHASE 6 — see the same note in serve-spawn-extract.js.
+    // `getPythonInvocation` is stubbed to return this, so the literal decides
+    // nothing; keeping it keeps `narrator-argv-base.json` comparable across the
+    // change.
     python: 'C:\\FAKE\\e2a\\python_env\\python.exe',
     conda: '/fake/miniconda/bin/conda',
     mlxEnv: '/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx',
@@ -197,7 +200,7 @@ if (require.main === module) {
     configurable: true,
   });
 
-  const paths = require(path.join(DIST, 'e2a-paths.js'));
+  const paths = require(path.join(DIST, 'narrator-paths.js'));
   const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 
   function stub(mod, name, fn) {
@@ -217,9 +220,8 @@ if (require.main === module) {
   stub(toolPaths, 'getWslOrpheusCondaEnv', () => FAKE.orpheusEnv);
   stub(toolPaths, 'getWslHiggsCondaEnv', () => FAKE.higgsEnv);
   stub(toolPaths, 'getWslDistro', () => FAKE.distro);
-  stub(paths, 'getDefaultE2aPath', () => FAKE.e2a);
-  stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
-  stub(paths, 'buildCondaSpawnEnv', (extra) => ({ ...extra }));
+    stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
+  stub(paths, 'buildToolsSpawnEnv', (extra) => ({ ...extra }));
   stub(paths, 'getNarratorMlxEnv', () => FAKE.mlxEnv);
   stub(paths, 'getCondaPath', () => FAKE.conda);
 

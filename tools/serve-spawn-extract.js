@@ -28,7 +28,7 @@
  * ── Why the environment is stubbed ──────────────────────────────────────────
  *
  * Every machine-specific input (the e2a root, the WSL conda path, the resolved
- * python) is replaced with a fixed constant, and `buildCondaSpawnEnv` — which
+ * python) is replaced with a fixed constant, and `buildToolsSpawnEnv` — which
  * spreads `process.env` and prepends PATH entries — is replaced by identity. What
  * survives is exactly what the POOL contributes to the spawn, which is the thing
  * under test. The machine's own PATH is not.
@@ -92,11 +92,17 @@ const FAKE = {
   //
   // A fixture's shape is not supposed to be the host's. Windows-shaped throughout
   // (canon() normalises the separators), so every machine captures the same bytes.
-  e2a: 'C:\\FAKE\\e2a',
-  wslE2a: '/home/fake/ebook2audiobook',
+  wslSessionsRoot: '/home/fake/bookforge-sessions',
   wslConda: '/home/fake/anaconda3/bin/conda',
   orpheusEnv: 'orpheus_tts',
   distro: 'Ubuntu',
+  // NOT RENAMED BY PHASE 6, on purpose. `getPythonInvocation` is stubbed to
+  // return this constant on both native arms, so its literal decides nothing
+  // about behaviour — but `serve-spawn-base.json` is a capture of the code as it
+  // stood BEFORE the cut-over, and the keeper's "the other two arms did NOT
+  // change interpreter" row compares against it. Renaming the fixture to match
+  // the new directory name would break a real historical comparison to make a
+  // string prettier.
   python: 'C:\\FAKE\\e2a\\python_env\\python.exe',
   // The macOS arm resolves its own env rather than going through
   // getPythonInvocation, so it needs its own two fakes. Their APPEARANCE in a
@@ -147,7 +153,7 @@ if (process.platform === 'win32') {
   process.env.TMP = HOST_TMP;
 }
 
-const paths = require(path.join(DIST, 'e2a-paths.js'));
+const paths = require(path.join(DIST, 'narrator-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 const memory = require(path.join(DIST, 'orpheus-memory.js'));
 
@@ -167,16 +173,15 @@ function stub(mod, name, fn) {
   else mod[name] = fn;
 }
 
-// Owned by tool-paths, re-exported (sealed) by e2a-paths.
+// Owned by tool-paths, re-exported (sealed) by narrator-paths.
 stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => ARM === 'wsl');
 stub(toolPaths, 'shouldUseWsl2ForHiggs', () => ARM === 'wsl');
-stub(toolPaths, 'getWslE2aPath', () => FAKE.wslE2a);
+stub(toolPaths, 'getWslSessionsRoot', () => FAKE.wslSessionsRoot);
 stub(toolPaths, 'getWslCondaPath', () => FAKE.wslConda);
 stub(toolPaths, 'getWslOrpheusCondaEnv', () => FAKE.orpheusEnv);
 stub(toolPaths, 'getWslDistro', () => FAKE.distro);
 
-// Owned by e2a-paths.
-stub(paths, 'getDefaultE2aPath', () => FAKE.e2a);
+// Owned by narrator-paths.
 // ORPHEUS ONLY. The Orpheus component env is not installed on every dev machine,
 // so its native arms need a stand-in interpreter to have anything to capture.
 // HIGGS MUST NOT BE STUBBED: its native arms are supposed to REFUSE (no Windows
@@ -186,7 +191,7 @@ if (ENGINE === 'orpheus') {
   stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
 }
 // Identity: the capture is the pool's OWN contribution, not the machine's env.
-stub(paths, 'buildCondaSpawnEnv', (extra) => ({ ...extra }));
+stub(paths, 'buildToolsSpawnEnv', (extra) => ({ ...extra }));
 // Only reached on the macOS arm, and only AFTER the cut-over — the pre-cut-over
 // code has no narrator-mlx concept at all. Stubbing them is what lets a Windows
 // machine capture the mac row; on a real Mac these resolve or refuse by name.

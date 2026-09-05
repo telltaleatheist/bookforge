@@ -394,14 +394,6 @@ export class SettingsService {
             placeholder: '/Volumes/Callisto/books/audiobooks',
           },
           {
-            key: 'e2aPath',
-            type: 'path',
-            label: 'ebook2audiobook Path',
-            description: 'Path to ebook2audiobook installation folder',
-            default: '',
-            placeholder: 'Auto-detect',
-          },
-          {
             key: 'condaPath',
             type: 'path',
             label: 'Conda Executable',
@@ -410,20 +402,12 @@ export class SettingsService {
             placeholder: 'Auto-detect',
           },
           {
-            key: 'e2aTmpPath',
+            key: 'narratorScratchPath',
             type: 'path',
-            label: 'ebook2audiobook Tmp Path',
-            description: 'Path to the ebook2audiobook tmp folder containing incomplete sessions. Used by the Reassembly feature.',
+            label: 'Narrator scratch folder',
+            description: 'Where in-progress narration sessions are written before being cached into the project. The Reassembly browser reads the same folder. Leave empty for a "tmp" folder inside your library.',
             default: '',
-            placeholder: 'Default: ~/Projects/ebook2audiobook/tmp',
-          },
-          {
-            key: 'ttsScratchPath',
-            type: 'path',
-            label: 'TTS Scratch Folder',
-            description: 'Where in-progress TTS sessions are written before being cached into the project. Leave empty for the default: a "<library>-scratch" folder next to your library.',
-            default: '',
-            placeholder: 'Default: next to library folder',
+            placeholder: 'Default: <library>/tmp',
           },
         ],
       },
@@ -552,7 +536,7 @@ export class SettingsService {
       }
 
       // Configure e2a paths in main process
-      await this.applyE2aPaths();
+      await this.applyNarratorPaths();
     } catch {
       this.initializeDefaults();
     } finally {
@@ -564,14 +548,13 @@ export class SettingsService {
    * Apply e2a path settings to the main process
    * Called after loading settings and when paths are changed
    */
-  private async applyE2aPaths(): Promise<void> {
+  private async applyNarratorPaths(): Promise<void> {
     try {
-      const e2aPath = this.get<string>('e2aPath') || '';
       const condaPath = this.get<string>('condaPath') || '';
-      const ttsScratchPath = this.get<string>('ttsScratchPath') || '';
-      await this.electron.configureE2aPaths({ e2aPath, condaPath, ttsScratchPath });
+      const narratorScratchPath = this.get<string>('narratorScratchPath') || '';
+      await this.electron.configureNarratorPaths({ condaPath, narratorScratchPath });
     } catch (err) {
-      console.error('[SettingsService] Failed to apply e2a paths:', err);
+      console.error('[SettingsService] Failed to apply narrator paths:', err);
     }
   }
 
@@ -643,9 +626,9 @@ export class SettingsService {
     // Persist to storage
     await this.saveSettings();
 
-    // Apply e2a path changes if relevant
-    if ('e2aPath' in pending || 'condaPath' in pending || 'ttsScratchPath' in pending) {
-      this.applyE2aPaths();
+    // Apply narrator path changes if relevant
+    if ('condaPath' in pending || 'narratorScratchPath' in pending) {
+      this.applyNarratorPaths();
     }
 
     console.log('[SETTINGS] Saved pending changes:', Object.keys(pending));
@@ -671,9 +654,9 @@ export class SettingsService {
     });
     this.saveSettings();
 
-    // Apply e2a path changes immediately
-    if (key === 'e2aPath' || key === 'condaPath' || key === 'ttsScratchPath') {
-      this.applyE2aPaths();
+    // Apply narrator path changes immediately
+    if (key === 'condaPath' || key === 'narratorScratchPath') {
+      this.applyNarratorPaths();
     }
   }
 

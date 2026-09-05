@@ -664,17 +664,17 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   </div>
                 </div>
 
-                <!-- E2A Path -->
+                <!-- Tools Python environment -->
                 <div class="tool-row">
                   <div class="tool-info">
-                    <h4>ebook2audiobook</h4>
-                    <p class="tool-description">TTS conversion engine installation folder</p>
-                    @if (getToolStatus('e2a'); as status) {
+                    <h4>Tools Python environment</h4>
+                    <p class="tool-description">Runs audiobook assembly, session resume, whisper and the metadata tools. BookForge installs its own; point at another only to avoid a second copy.</p>
+                    @if (getToolStatus('toolsEnv'); as status) {
                       <div class="tool-status" [class.detected]="status.detected" [class.not-detected]="!status.detected">
                         @if (status.configured) {
                           <span class="status-badge configured">Configured</span>
                         } @else if (status.detected) {
-                          <span class="status-badge detected">Auto-detected</span>
+                          <span class="status-badge detected">Installed</span>
                         } @else {
                           <span class="status-badge not-found">Not found</span>
                         }
@@ -687,11 +687,11 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                       <input
                         type="text"
                         class="text-input path-input"
-                        [value]="getToolPathValue('e2aPath')"
-                        placeholder="Auto-detect"
-                        (change)="updateToolPath('e2aPath', $any($event.target).value)"
+                        [value]="getToolPathValue('toolsEnvPath')"
+                        placeholder="BookForge's own runtime/tools-env"
+                        (change)="updateToolPath('toolsEnvPath', $any($event.target).value)"
                       />
-                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('e2aPath')">
+                      <desktop-button variant="ghost" size="sm" (click)="browseForToolPath('toolsEnvPath')">
                         Browse...
                       </desktop-button>
                     </div>
@@ -897,19 +897,19 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                           </div>
                         </div>
 
-                        <!-- WSL E2A Path -->
+                        <!-- WSL sessions root -->
                         <div class="tool-row">
                           <div class="tool-info">
-                            <h4>WSL ebook2audiobook Path</h4>
-                            <p class="tool-description">Path to ebook2audiobook inside WSL</p>
+                            <h4>WSL Sessions Root</h4>
+                            <p class="tool-description">Where a WSL render writes its session inside the guest. Leave empty for &lt;guest home&gt;/bookforge-sessions, derived from the conda path above.</p>
                           </div>
                           <div class="tool-control">
                             <input
                               type="text"
                               class="text-input"
-                              [value]="getToolPathValue('wslE2aPath')"
-                              placeholder="/home/$USER/ebook2audiobook"
-                              (change)="updateToolPath('wslE2aPath', $any($event.target).value)"
+                              [value]="getToolPathValue('wslSessionsRoot')"
+                              placeholder="&lt;guest home&gt;/bookforge-sessions"
+                              (change)="updateToolPath('wslSessionsRoot', $any($event.target).value)"
                             />
                           </div>
                         </div>
@@ -1002,8 +1002,8 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                                   <div [class.found]="setup.condaFound" [class.not-found]="!setup.condaFound">
                                     {{ setup.condaFound ? '✓' : '✗' }} Conda
                                   </div>
-                                  <div [class.found]="setup.e2aFound" [class.not-found]="!setup.e2aFound">
-                                    {{ setup.e2aFound ? '✓' : '✗' }} ebook2audiobook
+                                  <div [class.found]="setup.sessionsRootFound" [class.not-found]="!setup.sessionsRootFound">
+                                    {{ setup.sessionsRootFound ? '✓' : '✗' }} sessions root
                                   </div>
                                   <div [class.found]="setup.orpheusEnvFound" [class.not-found]="!setup.orpheusEnvFound">
                                     {{ setup.orpheusEnvFound ? '✓' : '✗' }} orpheus_tts conda env
@@ -2335,7 +2335,7 @@ export class SettingsComponent implements OnInit {
   readonly wslSetupStatus = signal<{
     valid: boolean;
     condaFound: boolean;
-    e2aFound: boolean;
+    sessionsRootFound: boolean;
     orpheusEnvFound: boolean;
     errors: string[];
   } | null>(null);
@@ -2967,7 +2967,7 @@ export class SettingsComponent implements OnInit {
       const result = await this.electronService.wslCheckOrpheusSetup({
         distro: this.getToolPathValue('wslDistro') || undefined,
         condaPath: this.getToolPathValue('wslCondaPath') || undefined,
-        e2aPath: this.getToolPathValue('wslE2aPath') || undefined,
+        sessionsRoot: this.getToolPathValue('wslSessionsRoot') || undefined,
       });
 
       if (result.success && result.data) {
@@ -2978,7 +2978,7 @@ export class SettingsComponent implements OnInit {
       this.wslSetupStatus.set({
         valid: false,
         condaFound: false,
-        e2aFound: false,
+        sessionsRootFound: false,
         orpheusEnvFound: false,
         errors: [err instanceof Error ? err.message : 'Unknown error'],
       });

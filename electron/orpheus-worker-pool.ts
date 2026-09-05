@@ -31,7 +31,7 @@ import * as readline from 'readline';
 import {
   shouldUseWsl2ForOrpheus,
   windowsToWslPath,
-} from './e2a-paths';
+} from './narrator-paths';
 import {
   buildNarratorSpawn,
   narratorRunsInWsl,

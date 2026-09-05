@@ -68,8 +68,8 @@ import * as path from 'path';
 
 import { ensureFoundryPath, foundryVersion, runFoundry } from './foundry-bridge';
 import { ensureVlmPageServer, recentServerLog, wslVlmRefusal } from './vlm-page-server';
-import { getActiveBundledEnvPath, relocatablePythonPath } from './e2a-env-bootstrap';
-import { getDefaultE2aPath } from './e2a-paths';
+import { getActiveToolsEnvPath, relocatablePythonPath } from './tools-env-bootstrap';
+import { toolsEnvPathIfInstalled } from './narrator-paths';
 import { resolveDocumentProject } from './document-project';
 import { primaryAbsPath, workingAbsPath, type DocumentProject } from './document-stages';
 import { readWorkingDocumentState } from './working-document';
@@ -119,7 +119,7 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  *
  * ── Why the candidate is VERIFIED rather than assumed ───────────────────────
  *
- * The first version of this asked `getActiveBundledEnvPath()` and passed nothing
+ * The first version of this asked `getActiveToolsEnvPath()` and passed nothing
  * when it answered null. That function returns null in DEV on purpose — dev is
  * meant to use the live conda env, not the packaged relocatable copy — so under
  * `electron:dev` the flag was silently dropped and foundry fell back to hunting
@@ -134,16 +134,18 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  */
 function renderPythonCandidates(): string[] {
   const userData = app.getPath('userData');
-  const bundled = getActiveBundledEnvPath();
+  const bundled = getActiveToolsEnvPath();
+  const statedToolsEnv = toolsEnvPathIfInstalled();
   return [
     // Packaged: the relocatable env this app installed.
     ...(bundled ? [relocatablePythonPath(bundled)] : []),
     // The same env by path, which exists in DEV too — it is where the packaged
     // build unpacks, and a dev machine that has ever run one still has it. This
     // is the entry that makes Convert to EPUB work under `electron:dev`.
-    relocatablePythonPath(path.join(userData, 'runtime', 'e2a-env')),
-    // e2a's own env, for a checkout-driven dev machine that has no unpacked copy.
-    relocatablePythonPath(path.join(getDefaultE2aPath(), 'python_env')),
+    relocatablePythonPath(path.join(userData, 'runtime', 'tools-env')),
+    // A tools env stated in tool-paths.json (the machine that points at its own
+    // rather than taking a second 1.8 GB copy).
+    ...(statedToolsEnv ? [relocatablePythonPath(statedToolsEnv)] : []),
   ];
 }
 

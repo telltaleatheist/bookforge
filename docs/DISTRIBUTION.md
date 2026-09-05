@@ -28,8 +28,7 @@ and the code that decides whether the bytes that arrived are the right bytes.
 | **Foundry stage models** (`foundry-4b-f16.gguf`, `foundry-blocks-v1-4b.gguf`, `foundry-ocr-v1-4b.gguf`, `foundry-footnotes-v1-4b.gguf`) | Hugging Face · `owenmorgan/foundry-models` | per-entry `sha256`/`bytes` in `FOUNDRY_MODELS` — foundry `src/models/catalog.ts` | `downloadVerified` — foundry `src/models/download.ts` |
 | **Foundry's vendored Tesseract** | GitHub Releases · `telltaleatheist/foundry` · tag `assets` | `artifact{}` per platform in `vendor/tesseract/manifest.json` (foundry) | `ensureVendorTesseract` — foundry `src/models/vendor-tesseract.ts`; every binary, DLL and tessdata file hash-checked before the first page |
 | **Page-layout ("blocks") GGUF, as used by BookForge Detect** | Hugging Face · `owenmorgan/foundry-models` | `BLOCKS_MODELS` — `electron/blocks-models.ts` | **byte count only** — `downloadBlocksModel` in the same file. See Known gaps §9.1 |
-| **Bundled Python env** (`e2a-env-<platform>.tar.gz`) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | `ENV_VERSION` + per-platform `sha256` in `ENV_RELEASES` — `electron/e2a-env-bootstrap.ts` | `ensureTarballDownloaded` (hashes before *and* after download), then a ready-marker recording version + sha |
-| **First-run runtime assets** (default voice, `stanza-en`, library voices) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | per-asset `version` + `sha256` in `RUNTIME_ASSETS` — `electron/e2a-env-bootstrap.ts` | `doEnsureRuntimeAsset` in the same file |
+| **Tools Python env** (`e2a-env-<platform>.tar.gz` — the asset filename is history) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | `ENV_VERSION` + per-platform `sha256` in `ENV_RELEASES` — `electron/tools-env-bootstrap.ts` | `ensureTarballDownloaded` (hashes before *and* after download), then a ready-marker recording version + sha |
 | **RVC engine env** (`urvc-env-*`) | GitHub Releases · `telltaleatheist/bookforge` · tag `assets` | `RVC_ENV_VERSION` — `electron/components/rvc-env.ts` | `downloadAndExtract` (sha256 of the reassembled whole) |
 | **F5-TTS env** | same | `F5_ENV_VERSION` — `electron/components/f5-env.ts` | same |
 | **Resemble Enhance env** | same | `RESEMBLE_ENV_VERSION` — `electron/components/resemble-env.ts` | same |
@@ -386,11 +385,23 @@ catch a prefix-rewrite failure before it is a download.
 You cannot cross-build these. Mac tarballs are packed on the Mac, Windows on the
 PC — which is why `packaging/env/MAC-TTS-ENVS.md` exists at all.
 
-### 3.2 The e2a Python environment
+### 3.2 The tools Python environment
 
-`electron/e2a-env-bootstrap.ts` is a separate, older mechanism from the component
-system — it predates it and bootstraps the environment *everything else* runs in,
-so it cannot depend on components being installed.
+`electron/tools-env-bootstrap.ts` is a separate, older mechanism from the
+component system — it predates it and bootstraps the environment *everything else*
+runs in, so it cannot depend on components being installed. It runs narrator's
+engine-agnostic doors (assembly, session resume/list), whisper and whisperx, the
+metadata tools, and the ffmpeg/ffprobe/sox binaries beside them.
+
+**Phase 6 renamed the DIRECTORY, not the artifact.** The env unpacks into
+`<userData>/runtime/tools-env`; it was `runtime/e2a-env`, and
+`migrateLegacyToolsEnvDir()` renames an existing one in place on startup. The
+release assets keep their `e2a-env-<platform>.tar.gz` filenames and their
+recorded sha256s, because they are published artifacts with fixed URLs and
+renaming them would invalidate every installed copy's marker for no gain.
+`ENV_VERSION` was deliberately NOT bumped: the bytes did not change, and a bump
+would have forced every install to re-download 1.8 GB to obtain the identical
+environment.
 
 ```ts
 const ENV_VERSION = '2026.06.16';
@@ -411,22 +422,47 @@ with no entry in `ENV_RELEASES` has no managed env, and callers fall back to
 conda-based resolution.
 
 On first run the tarball is downloaded to a cache under `userData`, verified,
-extracted to `<userData>/runtime/e2a-env`, and `conda-unpack` is run to rewrite
-the prefixes baked in at pack time. The cached tarball survives retries and is
-deleted once a build succeeds, to reclaim its ~1.8 GB. From then on every e2a
-spawn invokes the env's python directly — there is no conda on the target machine.
+extracted to `<userData>/runtime/tools-env`, and `conda-unpack` is run to
+rewrite the prefixes baked in at pack time. The cached tarball survives retries
+and is deleted once a build succeeds, to reclaim its ~1.8 GB. From then on every
+tools spawn invokes the env's python directly — there is no conda on the target
+machine.
 
-`BOOKFORGE_E2A_ENV` overrides the whole thing with an already-unpacked env, for
-dev builds exercising the relocatable code path without packaging. Set but
-invalid throws: a configured override must not be silently ignored.
+`BOOKFORGE_TOOLS_ENV` overrides the whole thing with an already-unpacked env.
+Set but invalid throws: a configured override must not be silently ignored. Its
+old spelling `BOOKFORGE_E2A_ENV` is REFUSED by name rather than accepted as an
+alias — a machine that still exports it would keep working by accident while
+every other name in the app said tools-env.
 
-Three further assets ride the same bootstrap as `RUNTIME_ASSETS` — the default
-Scarlett Johansson voice (1.74 GB), the English Stanza pack (197 MB) and the
-voice-library reference clips (43 MB). Each carries its own `version` and
-`sha256`, each gets a per-asset ready-marker inside the e2a runtime dir, and each
-is platform-independent (model weights, JSON and audio), so one archive serves
-Windows and macOS. Bump an asset's `version` *with* a new archive to force a
-re-download.
+A **DEV** run now resolves `runtime/tools-env` too, where before it refused the
+directory outright and fell back to `<ebook2audiobook>/python_env`. Dev still
+never downloads; `adoptLegacyToolsEnv()` records an existing
+`<e2a>/python_env` (or the conda env named `ebook2audiobook`) into
+`tool-paths.json` as `toolsEnvPath` once, so a dev machine that never ran a
+packaged build keeps working — as a **stated setting**, not as a derivation from
+where a checkout happens to live.
+
+**`RUNTIME_ASSETS` is gone.** Three assets used to ride the same bootstrap — the
+default Scarlett Johansson voice (1.74 GB), the English Stanza pack (197 MB) and
+the voice-library reference clips (43 MB) — each with its own `version` and
+`sha256` and a ready-marker inside the e2a runtime dir. The two voice assets left
+with XTTS on 2026-09-05 (nothing in the build can load an XTTS checkpoint). The
+Stanza pack left with Phase 6: it served e2a's `lib/core.py` pipeline, and
+narrator records in `text/sentences.py` that stanza is never consulted on the
+render path — `test_text_paragraph_packer.py` asserts the packer cannot even
+import it.
+
+All three archives are still published under the `assets` release tag and should
+be retired there. Nothing downloads them, and first-run setup is now a single
+step: the tools env.
+
+**The installer also stopped shipping `resources/e2a`** — a snapshot of the whole
+ebook2audiobook checkout, copied on first run to `<userData>/runtime/e2a`. It
+could never have worked: `stage-resources.js` EXCLUDED `python_env` from the
+snapshot, and `python_env` was the only thing anything resolved out of the
+runtime copy, so `e2aIsReady()` gated on an interpreter that was never staged.
+`packaging/stage-resources.js` now stages nothing, and the two `resources/e2a`
+`extraResources` entries are out of `package.json`.
 
 ---
 

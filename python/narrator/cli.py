@@ -214,7 +214,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_prep.add_argument(
         "--session-dir", metavar="DIR",
         help="the ebook-<uuid> directory to prepare into. Default: "
-             "$E2A_TMP_DIR/ebook-<session id>, which is where "
+             "$NARRATOR_SESSIONS_ROOT/ebook-<session id>, which is where "
              "parallel-tts-bridge.ts looks for it.",
     )
     p_prep.add_argument("--session", metavar="ID",
@@ -255,7 +255,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_sessions.add_argument(
         "--root", metavar="DIR",
-        help="the sessions root to walk (default: $E2A_TMP_DIR)",
+        help="the sessions root to walk (default: $NARRATOR_SESSIONS_ROOT)",
     )
     p_sessions.add_argument(
         "--session-dir", metavar="DIR",

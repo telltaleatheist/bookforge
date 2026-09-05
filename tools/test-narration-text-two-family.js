@@ -91,14 +91,14 @@ manifestService.setLibraryBasePath(ROOT);
  * run of this keeper could be a replay of another branch's output rather than a
  * run of the code under test. That is a test that proves nothing.
  *
- * `narrationCutsDir()` derives from `getDefaultE2aTmpPath()`, whose fallback is
+ * `narrationCutsDir()` derives from `narratorScratchRoot()`, whose fallback is
  * `<e2a checkout>/tmp` because only `main.ts` ever calls `applyE2aScratchDir`,
  * and a keeper has no main process. `tools/test-cli-narration-prep.js` already
  * plugs the same hole the same way. The RIGHT fix is upstream and is owed to
  * Phase 6 — see docs/NARRATION_TEXT_PASS.md, "Where the narration cuts go".
  */
 const SCRATCH = path.join(ROOT, 'scratch');
-require(path.join(DIST, 'electron', 'e2a-paths.js')).setE2aScratchDir(SCRATCH);
+require(path.join(DIST, 'electron', 'narrator-paths.js')).setNarratorScratchRoot(SCRATCH);
 const projectsDir = path.join(ROOT, 'projects');
 
 let passed = 0;

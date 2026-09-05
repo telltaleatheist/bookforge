@@ -10,8 +10,8 @@
 import * as os from 'os';
 import * as path from 'path';
 
-import { getE2aPath } from '../tool-paths';
-import { getActiveBundledEnvPath, getBundledEnvDir } from '../e2a-env-bootstrap';
+import { getConfiguredToolsEnvPath } from '../tool-paths';
+import { getActiveToolsEnvPath, getToolsEnvDir } from '../tools-env-bootstrap';
 import { rvcVoiceComponents } from './rvc-voice-components';
 import { whisperModelComponents } from './whisper-model-components';
 import { foundryCliComponent } from './foundry-cli-components';
@@ -145,22 +145,24 @@ function getOrpheusEnvCandidates(): { platform: Platform; path: string }[] {
     'C:\\ProgramData\\Anaconda3',
   ];
 
-  // On Apple Silicon, Orpheus has NO env of its own — it rides the e2a env,
+  // On Apple Silicon, Orpheus has NO env of its own — it rides the TOOLS env,
   // whose MLX stack (mlx-audio + snac) renders Orpheus directly (the model
-  // weights pull from HuggingFace into the e2a model dir on first use). Detecting
-  // Orpheus AT the e2a env makes resolveEntry('orpheus') return that path, so
-  // getEnvPathForEngine('orpheus') runs Orpheus from e2a (mirrors XTTS). Tried
-  // FIRST on darwin; Windows/Linux keep the vLLM orpheus_tts env candidates below.
-  const e2aEnvRoots: string[] = [];
-  const e2aOverride = process.env.BOOKFORGE_E2A_ENV?.trim();
-  if (e2aOverride) e2aEnvRoots.push(e2aOverride);
-  const activeBundledE2a = getActiveBundledEnvPath();
-  if (activeBundledE2a) e2aEnvRoots.push(activeBundledE2a);
-  e2aEnvRoots.push(getBundledEnvDir());
-  for (const root of unixCondaRoots) {
-    e2aEnvRoots.push(path.join(root, 'envs', 'ebook2audiobook'));
-  }
-  for (const r of e2aEnvRoots) {
+  // weights pull from HuggingFace on first use). Detecting Orpheus AT the tools
+  // env makes resolveEntry('orpheus') return that path. Tried FIRST on darwin;
+  // Windows/Linux keep the vLLM orpheus_tts env candidates below.
+  //
+  // The `<e2aParent>/orpheus_env` and `<e2a>/orpheus_env` rows that used to
+  // follow are GONE with Phase 6: they made the component catalog — the thing
+  // that decides which python renders a book — depend on where an ebook2audiobook
+  // checkout happened to be, and on a machine with two checkouts they resolved by
+  // whichever directory the search reached first.
+  const toolsEnvRoots: string[] = [];
+  const activeToolsEnv = getActiveToolsEnvPath();
+  if (activeToolsEnv) toolsEnvRoots.push(activeToolsEnv);
+  const statedToolsEnv = getConfiguredToolsEnvPath();
+  if (statedToolsEnv) toolsEnvRoots.push(statedToolsEnv);
+  toolsEnvRoots.push(getToolsEnvDir());
+  for (const r of toolsEnvRoots) {
     candidates.push({ platform: 'darwin', path: r });
   }
 
@@ -175,24 +177,6 @@ function getOrpheusEnvCandidates(): { platform: Platform; path: string }[] {
     for (const name of envNames) {
       candidates.push({ platform: 'win32', path: path.join(root, 'envs', name) });
     }
-  }
-
-  // Prefix env beside the e2a install (e.g. <e2a>/orpheus_env).
-  try {
-    const e2aPath = getE2aPath();
-    const e2aParent = path.dirname(e2aPath);
-    for (const name of envNames) {
-      const besideE2a = path.join(e2aParent, name);
-      const insideE2a = path.join(e2aPath, name);
-      candidates.push({ platform: 'darwin', path: besideE2a });
-      candidates.push({ platform: 'linux', path: besideE2a });
-      candidates.push({ platform: 'win32', path: besideE2a });
-      candidates.push({ platform: 'darwin', path: insideE2a });
-      candidates.push({ platform: 'linux', path: insideE2a });
-      candidates.push({ platform: 'win32', path: insideE2a });
-    }
-  } catch {
-    // getE2aPath should not throw, but never let catalog construction fail.
   }
 
   return candidates;

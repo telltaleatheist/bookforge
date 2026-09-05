@@ -41,7 +41,7 @@ manually there). Click Install — this downloads and upserts `models.json` for 
 **Manual/CLI (e.g. scripting a batch of deploys, or the app isn't running):**
 
 ```bash
-ENV_PY="$HOME/Library/Application Support/BookForge/runtime/e2a-env/bin/python"
+ENV_PY="$HOME/Library/Application Support/BookForge/runtime/tools-env/bin/python"
 DEST="$HOME/Library/Application Support/BookForge/runtime/orpheus-models/<token>"
 export HF_TOKEN=$(cat ~/.config/bookforge/hf-owenmorgan.token)
 "$ENV_PY" -u electron/scripts/orpheus_download.py "owenmorgan/<token>-orpheus-3b" "$DEST"
@@ -84,7 +84,7 @@ call. Just pick the voice in the TTS settings and generate a test line.
 
 - The Python env used for the download is whatever `getPythonInvocation(e2aPath, 'orpheus')`
   resolves to (Settings → Add-ons → Orpheus component) — currently a conda
-  *prefix* env at `runtime/e2a-env` on this Mac, not the separate
+  *prefix* env at `runtime/tools-env` on this Mac, not the separate
   `ebook2audiobook-orpheus` named conda env. Check `~/Library/Application
   Support/BookForge/components/installed.json` (`"orpheus"` entry) if unsure
   which env is wired up.
