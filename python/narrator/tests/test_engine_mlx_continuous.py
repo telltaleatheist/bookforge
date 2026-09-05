@@ -330,9 +330,18 @@ def run(continuous):
     time.time = fake_time
     real_stdout = sys.stdout
     sys.stdout = tee
+    # The heartbeat is an ENGINE log line, and the engine's log stream is the
+    # HOST's to choose (narrator/engine/log.py): it defaults to stderr, because
+    # narrator.serve's stdout is the JSON protocol. Swapping sys.stdout alone
+    # therefore no longer captures it - point the engine's own channel at the
+    # Tee. Both are swapped so a line that somehow still went to stdout is
+    # caught here rather than in production.
+    from narrator.engine.log import set_log_stream
+    set_log_stream(tee)
     try:
         out = build_engine(continuous, events)._convert_mlx_batch(ITEMS)
     finally:
+        set_log_stream(None)
         sys.stdout = real_stdout
         time.time = stock_time
         mlx_lm_generate.BatchGenerator = stock_gen

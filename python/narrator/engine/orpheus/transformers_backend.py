@@ -12,6 +12,7 @@ torch is imported LAZILY inside the functions, so importing this module costs
 nothing on a machine without it.
 """
 from . import cuda_env
+from ..log import log
 
 cuda_env.apply()
 
@@ -23,7 +24,7 @@ class TransformersBackendMixin:
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
-        print(f"Loading Orpheus model with transformers: {self.TRANSFORMERS_MODEL}")
+        log(f"Loading Orpheus model with transformers: {self.TRANSFORMERS_MODEL}")
 
         # Determine device and dtype
         if torch.cuda.is_available():
@@ -39,7 +40,7 @@ class TransformersBackendMixin:
         self.tokenizer = AutoTokenizer.from_pretrained(self.TRANSFORMERS_MODEL)
 
         # Load on CPU first (more reliable), then move to device
-        print("Loading model weights on CPU...")
+        log("Loading model weights on CPU...")
         model = AutoModelForCausalLM.from_pretrained(
             self.TRANSFORMERS_MODEL,
             torch_dtype=dtype,
@@ -47,11 +48,11 @@ class TransformersBackendMixin:
         )
 
         if self._device != 'cpu':
-            print(f"Moving model to {self._device}...")
+            log(f"Moving model to {self._device}...")
             model = model.to(self._device)
 
         model.eval()
-        print(f"Model ready on {self._device}")
+        log(f"Model ready on {self._device}")
         return model
 
     def _generate_tokens_transformers(self, prompt: str, max_tokens: int = None) -> list:

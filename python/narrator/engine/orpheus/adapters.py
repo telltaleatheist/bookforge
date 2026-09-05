@@ -22,6 +22,7 @@ import math
 import os
 
 from .registry import LOADED
+from ..log import log
 
 _MLX_LORA_LINEAR = None
 
@@ -332,7 +333,7 @@ class AdaptersMixin:
         if registered is not None:
             what = ('different weights at the same path' if registered == adapter_dir
                     else f'adapter {registered}')
-            print(f"[ORPHEUS] Voice '{voice}' re-pointed ({what}) to {adapter_dir}; "
+            log(f"[ORPHEUS] Voice '{voice}' re-pointed ({what}) to {adapter_dir}; "
                   f'issuing a fresh lora id {next_id} (was {ids.get(voice)}) '
                   'so the live engine cannot serve the old cached weights.')
         ids[voice] = next_id
@@ -653,7 +654,7 @@ class AdaptersMixin:
         # sentence of a switched voice pays a 0.4 GB read inside the generation loop -
         # which is exactly the latency the resident base was supposed to remove.
         mx.eval(model.parameters())
-        print(f'[ORPHEUS] MLX adapter applied: {adapter_dir} '
+        log(f'[ORPHEUS] MLX adapter applied: {adapter_dir} '
               f'({len(sites)} projections, scale {self._mlx_lora_scale(config):g})')
 
     def _clear_mlx_adapter(self, model) -> None:
@@ -668,7 +669,7 @@ class AdaptersMixin:
         for _path, parent, attr, original in state.sites:
             setattr(parent, attr, original)
         model._orpheus_mlx_lora = None
-        print(f'[ORPHEUS] MLX adapter cleared: {state.adapter_dir}')
+        log(f'[ORPHEUS] MLX adapter cleared: {state.adapter_dir}')
 
     def _sync_mlx_adapter(self, model, adapter_dir: str) -> None:
         """Make the resident MLX model serve exactly `adapter_dir` (None = bare base).
@@ -688,6 +689,6 @@ class AdaptersMixin:
         if state is not None and state.adapter_dir == adapter_dir and state.fingerprint == fingerprint:
             return
         if state is not None and state.adapter_dir == adapter_dir:
-            print(f"[ORPHEUS] MLX adapter at {adapter_dir} changed on disk; re-applying "
+            log(f"[ORPHEUS] MLX adapter at {adapter_dir} changed on disk; re-applying "
                   'so the live model cannot keep serving the previous training run.')
         self._apply_mlx_adapter(model, adapter_dir, fingerprint)

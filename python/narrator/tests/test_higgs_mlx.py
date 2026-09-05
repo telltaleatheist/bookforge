@@ -80,12 +80,20 @@ class BackendSelectionTest(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     higgs_v3_backend_for_platform(bad)
 
-    def test_the_registry_selects_by_platform_and_imports_nothing_heavy(self):
-        """`ids()` and the platform function answer without importing mlx or a
-        server client - the registry must stay readable on a bare interpreter."""
+    def test_the_registry_answers_without_building_anything(self):
+        """`ids()` and the platform function answer with no engine constructed.
+
+        NOTE WHAT THIS DOES NOT ASSERT. It used to add
+        `assertNotIn('mlx', sys.modules)`, which passed alone and FAILED in a
+        full-suite run on the Mac: by then another test module has legitimately
+        imported mlx into the same interpreter, so the assertion was about the
+        order the suite happened to run in rather than about this module. The
+        no-heavy-imports contract is a SUBPROCESS question and is proved as one -
+        `LazyImportTest` below, and `tests/test_engine_lazy_imports.py`.
+        """
         from narrator.engine import registry
         self.assertIn('higgs-v3', registry.ids())
-        self.assertNotIn('mlx', sys.modules)
+        self.assertEqual(registry.ids(), sorted(registry.ids()))
 
     @unittest.skipUnless(sys.platform == 'darwin', 'the MLX arm is Mac only')
     def test_on_this_mac_the_registry_hands_back_the_mlx_engine(self):

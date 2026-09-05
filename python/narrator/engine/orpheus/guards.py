@@ -22,6 +22,7 @@ it.
 """
 import os
 import threading
+from ..log import log
 
 
 class GuardsMixin:
@@ -133,7 +134,7 @@ class GuardsMixin:
             with self._reject_lock:
                 self._keep_reject_locked(sentence_index, clean, audio_np, reason, detail)
         except Exception as err:
-            print(f'Orpheus: could not keep the rejected render for sentence {sentence_index} ({err})')
+            log(f'Orpheus: could not keep the rejected render for sentence {sentence_index} ({err})')
 
     def _keep_reject_locked(self, sentence_index: int, clean: str, audio_np,
                             reason: str, detail: dict = None):
@@ -208,7 +209,7 @@ class GuardsMixin:
             if len(text) > 120:
                 compact['text'] = text[:120]
                 compact['text_truncated'] = True
-            print(f'[ORPHEUS][{self.GUARD_EVENT_TAG}] '
+            log(f'[ORPHEUS][{self.GUARD_EVENT_TAG}] '
                   + _json.dumps(compact, ensure_ascii=False, separators=(',', ':')))
         except Exception:
             pass
@@ -300,13 +301,13 @@ class GuardsMixin:
                           {'risk': risk, 'ratio': verdict['ratio'],
                            'drop_run': verdict['drop_run'],
                            'heard': verdict['heard'][:300]})
-        print(f"Orpheus: sentence {sentence_index} failed the ASR gate "
+        log(f"Orpheus: sentence {sentence_index} failed the ASR gate "
               f"(risk={risk}, drop_run={verdict['drop_run']}, ratio={verdict['ratio']}); "
               f"re-rendering once")
         try:
             retry_np = rerender(clean)
         except Exception as retry_err:
-            print(f'Orpheus: ASR-gate re-render failed for sentence {sentence_index} '
+            log(f'Orpheus: ASR-gate re-render failed for sentence {sentence_index} '
                   f'({retry_err}); keeping the first take')
             return audio_np
         retry_verdict = asr_gate.check(retry_np, self.SAMPLE_RATE, clean)
@@ -395,7 +396,7 @@ class GuardsMixin:
         property of the fine-tune, not of the process.
         """
         if (audio_np is None or len(audio_np) == 0) and clean and clean.strip():
-            print(f"Orpheus: sentence {sentence_index} produced no audio - re-rendering split at sentence boundaries")
+            log(f"Orpheus: sentence {sentence_index} produced no audio - re-rendering split at sentence boundaries")
             self._keep_reject(sentence_index, clean, audio_np, 'empty')
             return 'empty'
         env_rate = self._max_chars_per_sec(voice)
@@ -407,7 +408,7 @@ class GuardsMixin:
         rate = self._speech_rate(clean, audio_np)
         if rate is None or rate <= max_rate:
             return None
-        print(f"Orpheus: sentence {sentence_index} audio too short for text "
+        log(f"Orpheus: sentence {sentence_index} audio too short for text "
               f"({rate:.1f} ch/s > {max_rate:.1f}) - re-rendering split at sentence boundaries")
         self._keep_reject(sentence_index, clean, audio_np, 'short',
                           {'measured_chars_per_second': round(rate, 2),
@@ -445,7 +446,7 @@ class GuardsMixin:
             return False
         # ONE line, one tag, everything needed to count and to find the clip.
         # The text is last because it is the only unbounded field.
-        print(f"[ORPHEUS][{self.SHORT_CHUNK_OVERRUN_TAG}] sentence={sentence_index} "
+        log(f"[ORPHEUS][{self.SHORT_CHUNK_OVERRUN_TAG}] sentence={sentence_index} "
               f"chars={n_chars} seconds={seconds:.3f} allowed={allowed:.3f} "
               f"ratio={seconds / allowed:.2f} text={clean!r}")
         # Also report through the structured channel, so one collector sees every
@@ -476,5 +477,5 @@ class GuardsMixin:
         if rate2 is not None and rate2 > max_rate:
             new_ceiling = rate2 + 0.5
             self._rate_ceilings[voice] = new_ceiling
-            print(f"Orpheus: voice '{voice}' measured natural rate {rate2:.1f} ch/s exceeds guard "
+            log(f"Orpheus: voice '{voice}' measured natural rate {rate2:.1f} ch/s exceeds guard "
                   f"threshold {max_rate:.1f} - recalibrating threshold to {new_ceiling:.1f} for this session")

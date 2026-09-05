@@ -22,7 +22,6 @@ mlx / mlx_lm / mlx_audio are imported LAZILY inside the functions, exactly as
 e2a did, so this module imports on a machine with no MLX at all.
 """
 import os
-import sys
 
 import numpy as np
 
@@ -30,6 +29,7 @@ from . import cuda_env
 from .snac import (PAYLOAD_FRAMES, RIGHT_CONTEXT_FRAMES, SAMPLES_PER_FRAME,
                    TOKENS_PER_FRAME, StreamDecodeMisaligned,
                    WindowedFrameEmitter)
+from ..log import log
 
 # lib/conf.py's block ran for every engine; on a Mac it is nearly a no-op but it
 # is applied here for the same reason it is applied in vllm_backend: at import,
@@ -57,14 +57,14 @@ class MlxBackendMixin:
         # Measured at batch 96: 8 GB limit = 28.1 sent/min vs 27.2 flush-per-chunk.
         cache_gb = float(os.environ.get('ORPHEUS_MLX_CACHE_LIMIT_GB', '8'))
         mx.set_cache_limit(int(cache_gb * 1e9))
-        print(f"Orpheus MLX buffer cache limited to {cache_gb:g} GB")
+        log(f"Orpheus MLX buffer cache limited to {cache_gb:g} GB")
         # Fail fast on an impossible memory budget, before any audio is rendered.
         headroom = self._mlx_kv_headroom_gb()
-        print(f"Orpheus MLX batch budget {self.MLX_MEM_BUDGET_GB:g} GB "
+        log(f"Orpheus MLX batch budget {self.MLX_MEM_BUDGET_GB:g} GB "
               f"({headroom:.1f} GB for KV -> max {self._mlx_width_for_depth(self.MLX_MAX_TOKENS)} "
               f"rows at the {self.MLX_MAX_TOKENS}-token cap)")
 
-        print(f"Loading Orpheus model with MLX: {self.MLX_MODEL}")
+        log(f"Loading Orpheus model with MLX: {self.MLX_MODEL}")
         model = load_model(self.MLX_MODEL)
         # Fine-tuned Orpheus voices were TRAINED with the prompt ending in
         # [128261, 128257] (START_OF_AI, START_OF_SPEECH) immediately before the audio
@@ -96,13 +96,13 @@ class MlxBackendMixin:
         # about the render is unchanged.
         if os.environ.get('ORPHEUS_MLX_FASTPATH', '1') != '0':
             from .mlx_fastpath import install as _install_fastpath
-            print(_install_fastpath(model, rep_window=self.MLX_REP_WINDOW,
+            log(_install_fastpath(model, rep_window=self.MLX_REP_WINDOW,
                                     max_tokens=self.MLX_MAX_TOKENS))
         else:
-            print('Orpheus MLX fast path disabled (ORPHEUS_MLX_FASTPATH=0); '
+            log('Orpheus MLX fast path disabled (ORPHEUS_MLX_FASTPATH=0); '
                   'using mlx-lm\'s stock per-row decode step')
         self._device = 'mlx'  # MLX manages its own device
-        print("Orpheus MLX model loaded!")
+        log("Orpheus MLX model loaded!")
         return model
 
     def _patch_mlx_prompt_framing(self, model):
@@ -129,7 +129,7 @@ class MlxBackendMixin:
             return ids
 
         model.prepare_input_ids = prepare_input_ids
-        print("Orpheus MLX prompt framing patched for fine-tuned voices (SOA+SOS suffix)")
+        log("Orpheus MLX prompt framing patched for fine-tuned voices (SOA+SOS suffix)")
 
     # ---- solo generation ----------------------------------------------------
 
@@ -156,7 +156,7 @@ class MlxBackendMixin:
         effective_max = min(max_tokens, budget)
         # Match vLLM/transformers sampling params - repetition_penalty prevents
         # repeated audio patterns that can sound like echo/reverb
-        print(f"[ORPHEUS] Generating with voice='{self.voice}' for: {text[:50]}...")
+        log(f"[ORPHEUS] Generating with voice='{self.voice}' for: {text[:50]}...")
         # mlx_audio's generate() splits its input on newlines and yields ONE
         # GenerationResult per segment - accumulate them ALL; keeping only the
         # last silently dropped every segment before the final one.
@@ -190,7 +190,7 @@ class MlxBackendMixin:
             est_tokens = self._mlx_est_tokens(audio)
             if est_tokens >= effective_max * 0.95:
                 idx_str = '' if sentence_index is None else f'sentence {sentence_index}: '
-                print(f"[ORPHEUS] {idx_str}MLX per-chunk token budget truncated generation "
+                log(f"[ORPHEUS] {idx_str}MLX per-chunk token budget truncated generation "
                       f"(len={len(text)}, budget={effective_max}, ~{int(est_tokens)} tokens emitted)")
 
         return audio
@@ -356,7 +356,7 @@ class MlxBackendMixin:
                 continue
             parts = -(-take // allowed)  # ceil: fewest equal parts that all fit
             base, extra = divmod(take, parts)
-            print(f"[ORPHEUS] MLX batch narrowed {take} rows -> {parts} x ~{base} "
+            log(f"[ORPHEUS] MLX batch narrowed {take} rows -> {parts} x ~{base} "
                   f"(depth {depth} tok, cap {allowed}, budget {self.MLX_MEM_BUDGET_GB:g} GB)",
                   flush=True)
             pos = 0
@@ -448,7 +448,7 @@ class MlxBackendMixin:
             if len(tokens) >= depth:
                 # Cap hit without finishing - re-render split so the played audio is
                 # never clipped mid-sentence.
-                print(f"Orpheus: stream sentence [{i}] hit the MLX audio-token cap; re-rendering split")
+                log(f"Orpheus: stream sentence [{i}] hit the MLX audio-token cap; re-rendering split")
                 return self._generate_mlx_safe(clean, force_split=True)
             ids = mx.array([ptoks + tokens])
             code_lists = self.mlx_model.parse_output(ids)
@@ -456,7 +456,7 @@ class MlxBackendMixin:
                 return np.array(decode_audio_from_codes(code_lists[0])[0], dtype=np.float32)
             return None
         except Exception as decode_err:
-            print(f"Orpheus _generate_mlx_batch_audio decode error [{i}]: {decode_err}")
+            log(f"Orpheus _generate_mlx_batch_audio decode error [{i}]: {decode_err}")
             return None
 
     def _mlx_frame_decoder(self, out: dict, uid, decode_stream):
@@ -699,11 +699,10 @@ class MlxBackendMixin:
                         # _mlx_decode_stream refuses, so run inline instead and
                         # say so: generation pauses for each ~0.34 s window, which
                         # is slower than it should be but still starts fast.
-                        print('[ORPHEUS][STREAM] mlx.core.new_thread_unsafe_stream '
+                        log('[ORPHEUS][STREAM] mlx.core.new_thread_unsafe_stream '
                               'is missing, so windowed decodes cannot be moved off '
                               'the generation thread; decoding INLINE (callbacks '
-                              'arrive on the calling thread)',
-                              file=sys.stderr, flush=True)
+                              'arrive on the calling thread)', flush=True)
                     else:
                         # Imported HERE, not at the top of the method: the
                         # switch-ON path must not pay so much as an import it
@@ -743,10 +742,9 @@ class MlxBackendMixin:
                                  else _emitters[uid].push(n_tokens))
                     except Exception as emit_err:
                         _failed.add(uid)
-                        print(f'[ORPHEUS][STREAM] row {i} windowed decode failed '
+                        log(f'[ORPHEUS][STREAM] row {i} windowed decode failed '
                               f'({emit_err}); the row is reported as a failure and '
-                              f'its chunks are discarded',
-                              file=sys.stderr, flush=True)
+                              f'its chunks are discarded', flush=True)
                         if kind == 'flush':
                             _results[i] = None
                             if on_row is not None:
@@ -763,10 +761,9 @@ class MlxBackendMixin:
                         # The cap ladder in _resolve_mlx_row would re-render this
                         # split. A streamed row cannot: the clipped audio has
                         # already been heard. Say so and keep it.
-                        print(f'[ORPHEUS][STREAM] row {i} hit the MLX audio-token '
+                        log(f'[ORPHEUS][STREAM] row {i} hit the MLX audio-token '
                               f'cap ({_depth}); the streamed audio stands - nothing '
-                              f'can retract audio that has already been played',
-                              file=sys.stderr, flush=True)
+                              f'can retract audio that has already been played', flush=True)
                     if full is not None:
                         # Verdict only: _needs_resplit still logs the detection and
                         # keeps the reject, so a fast or empty streamed read is
@@ -776,9 +773,8 @@ class MlxBackendMixin:
                         # is judging a non-streamed row.)
                         verdict = self._needs_resplit(i, clean, full)
                         if verdict is not None:
-                            print(f'[ORPHEUS][STREAM] row {i} truncation verdict '
-                                  f'{verdict!r}: kept as streamed, no re-render',
-                                  file=sys.stderr, flush=True)
+                            log(f'[ORPHEUS][STREAM] row {i} truncation verdict '
+                                  f'{verdict!r}: kept as streamed, no re-render', flush=True)
                     _results[i] = full
                     if on_row is not None:
                         on_row(i, full)
@@ -885,9 +881,8 @@ class MlxBackendMixin:
                     owed = [uid for uid in _flushed if _streams[uid] not in _results]
                     for uid in sorted(owed, key=lambda u: _streams[u]):
                         i = _streams[uid]
-                        print(f'[ORPHEUS][STREAM] row {i} was never finished by the '
-                              f'decode thread; reporting it as a failure',
-                              file=sys.stderr, flush=True)
+                        log(f'[ORPHEUS][STREAM] row {i} was never finished by the '
+                              f'decode thread; reporting it as a failure', flush=True)
                         _results[i] = None
                         if on_row is not None:
                             on_row(i, None)
@@ -989,9 +984,8 @@ class MlxBackendMixin:
                     _stream_shutdown(False)
                     # stderr, not stdout: the streaming worker's stdout IS the
                     # JSON-lines protocol, and this line lands mid-batch.
-                    print(f"[ORPHEUS] MLX batch abandoned on request "
-                          f"({len(pending)} of {len(bucket)} rows unrendered)",
-                          file=sys.stderr, flush=True)
+                    log(f"[ORPHEUS] MLX batch abandoned on request "
+                          f"({len(pending)} of {len(bucket)} rows unrendered)", flush=True)
                     break
                 # Anything that never reported a finish_reason (shouldn't happen)
                 # still gets resolved - and emitted - exactly once.
@@ -1007,7 +1001,7 @@ class MlxBackendMixin:
                         on_row(i, results[i])
                 _stream_shutdown(False)
             except Exception as e:
-                print(f"Orpheus._generate_mlx_batch_audio() bucket error: {e}")
+                log(f"Orpheus._generate_mlx_batch_audio() bucket error: {e}")
                 import traceback
                 traceback.print_exc()
                 if _stream_shutdown is not None:
@@ -1017,7 +1011,7 @@ class MlxBackendMixin:
                         # would decode from is not trustworthy, so abandon.
                         _stream_shutdown(True)
                     except Exception as shutdown_err:
-                        print('Orpheus._generate_mlx_batch_audio() stream shutdown '
+                        log('Orpheus._generate_mlx_batch_audio() stream shutdown '
                               f'also failed: {shutdown_err}')
                 if stream_fatal:
                     # TWO conditions end the whole call rather than this bucket:
@@ -1053,7 +1047,7 @@ class MlxBackendMixin:
         force_split: the cap hit is PROVEN, so skip the whole re-render
         _generate_mlx_safe would otherwise try first.
         """
-        print(f"Orpheus: sentence {idx} hit the MLX audio-token cap; re-rendering split at sentence boundaries")
+        log(f"Orpheus: sentence {idx} hit the MLX audio-token cap; re-rendering split at sentence boundaries")
         try:
             capped = self._mlx_row_audio(ptoks, tokens)
             if capped is not None and len(capped) == 0:
@@ -1181,13 +1175,13 @@ class MlxBackendMixin:
             # No cross-thread stream on this mlx: decoding on the
             # generation stream would just serialize behind it, which
             # is the thing being fixed. Say so and stay serial.
-            print('[ORPHEUS] MLX decode overlap unavailable '
+            log('[ORPHEUS] MLX decode overlap unavailable '
                   '(mlx.core.new_thread_unsafe_stream missing); '
                   'decoding serially after the batch', flush=True)
             overlap = False
         if not getattr(self, '_mlx_overlap_announced', False):
             self._mlx_overlap_announced = True
-            print('[ORPHEUS] MLX decode overlap '
+            log('[ORPHEUS] MLX decode overlap '
                   + ('ON: retired rows are decoded and written while the '
                      'batch keeps generating (ORPHEUS_MLX_DECODE_OVERLAP=0 '
                      'to disable)'
@@ -1219,7 +1213,7 @@ class MlxBackendMixin:
                 )
                 results[idx] = self._save_audio(idx, audio, gap[0], gap[1])
             except Exception as decode_err:
-                print(f"Orpheus MLX batch decode error for sentence {idx}: {decode_err}")
+                log(f"Orpheus MLX batch decode error for sentence {idx}: {decode_err}")
                 results[idx] = False
 
         def _decode_retired_row(idx, ptoks, clean, gap, tokens, cap):
@@ -1348,7 +1342,7 @@ class MlxBackendMixin:
                          f"batch {group_no}/{group_count}")
                 if continuous:
                     _line += f" live {len(_started) - _retired}"
-                print(_line, flush=True)
+                log(_line, flush=True)
                 _last_hb = _now
         bg.close()
         if not overlap:
@@ -1387,7 +1381,7 @@ class MlxBackendMixin:
                 # The thread died on its own machinery rather than on a
                 # row. Whatever it never dequeued is still queued -
                 # finish it here rather than lose it.
-                print(f'Orpheus: MLX decode thread failed ({worker_error[0]}); '
+                log(f'Orpheus: MLX decode thread failed ({worker_error[0]}); '
                       f'finishing {row_q.qsize()} remaining row(s) on the main thread')
                 while True:
                     try:
@@ -1410,13 +1404,13 @@ class MlxBackendMixin:
                     results[_idx] = self._mlx_rerender_capped(
                         _idx, _clean, _ptoks, _tokens, _cap, _gap)
                 elif _kind == 'error':
-                    print(f"Orpheus MLX batch decode error for sentence {_idx}: {_err}")
+                    log(f"Orpheus MLX batch decode error for sentence {_idx}: {_err}")
                     results[_idx] = False
                 else:
                     results[_idx] = self._mlx_resplit_deferred(
                         _idx, _clean, _gap, _kind)
             except Exception as deferred_err:
-                print(f"Orpheus MLX batch decode error for sentence {_idx}: {deferred_err}")
+                log(f"Orpheus MLX batch decode error for sentence {_idx}: {deferred_err}")
                 results[_idx] = False
         return _step
 
@@ -1504,7 +1498,7 @@ class MlxBackendMixin:
                     steady_gb = (self.MLX_WEIGHTS_GB
                                  + float(os.environ.get('ORPHEUS_MLX_CACHE_LIMIT_GB', '8'))
                                  + width * depth * self.MLX_KV_MB_PER_TOKEN_ROW_STEADY / 1024.0)
-                    print(f'[ORPHEUS] MLX continuous batching ON: width {width}, '
+                    log(f'[ORPHEUS] MLX continuous batching ON: width {width}, '
                           f'prefill {prefill}, {len(gen)} rows queued, projected '
                           f'steady state {steady_gb:.1f} GB of the '
                           f'{self.MLX_MEM_BUDGET_GB:g} GB budget '
@@ -1517,14 +1511,14 @@ class MlxBackendMixin:
                     # per-call figure, and it is deliberately not reset: the
                     # question this experiment has to answer is whether continuous
                     # batching ever exceeded the 45 GB budget over the whole book.
-                    print(f'[ORPHEUS] MLX continuous batch done: {len(gen)} rows, '
+                    log(f'[ORPHEUS] MLX continuous batch done: {len(gen)} rows, '
                           f'{steps} steps, peak {mx.get_peak_memory() / 1e9:.1f} GB',
                           flush=True)
                 except Exception as bucket_err:
                     # A generation-phase failure (BatchGenerator/insert/next) must
                     # not drop the call's rows: retry per item via convert(),
                     # exactly as the group path does for one bucket.
-                    print(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
+                    log(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
                     import traceback
                     traceback.print_exc()
                     for idx, _ptoks, _payload, _budget in gen:
@@ -1533,7 +1527,7 @@ class MlxBackendMixin:
             else:
                 if not getattr(self, '_mlx_continuous_announced', False):
                     self._mlx_continuous_announced = True
-                    print('[ORPHEUS] MLX continuous batching OFF: fresh groups',
+                    log('[ORPHEUS] MLX continuous batching OFF: fresh groups',
                           flush=True)
                 groups = self._mlx_batch_groups(gen)
                 for group_no, (bucket, depth) in enumerate(groups, 1):
@@ -1551,7 +1545,7 @@ class MlxBackendMixin:
                         # batch-level recovery at bucket granularity: retry this
                         # bucket's rows per item via convert() rather than dropping
                         # them.
-                        print(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
+                        log(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
                         import traceback
                         traceback.print_exc()
                         for idx, _ptoks, _payload, _budget in bucket:
@@ -1566,7 +1560,7 @@ class MlxBackendMixin:
             # ~46 GB DURING each chunk, between the flushes).
             return [results.get(idx, False) for idx, _ in items]
         except Exception as e:
-            print(f'Orpheus._convert_mlx_batch() error: {e}')
+            log(f'Orpheus._convert_mlx_batch() error: {e}')
             import traceback
             traceback.print_exc()
             # A batch-level failure shouldn't lose the whole chunk - retry per item.

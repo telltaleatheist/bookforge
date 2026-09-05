@@ -99,12 +99,12 @@ exactly as `engine/orpheus/mlx_backend.py` does it, so this module imports on a
 machine with no MLX at all (`tests/test_engine_lazy_imports.py`).
 """
 import os
-import sys
 from dataclasses import dataclass
 from typing import Optional
 
 import numpy as np
 
+from ..log import log
 from ..protocol import BackendSpec, ClipsVoice, DefaultVoice, StopPolicy
 from . import v3_served
 from .prompt import clean_text
@@ -134,15 +134,23 @@ MLX_AUDIO_ARCH = 'higgs_audio_v3'
 
 
 def _log(message: str) -> None:
-    """One ASCII log line, on STDERR.
+    """One ASCII log line, to the HOST's log stream.
 
-    NOT stdout: `narrator.serve`'s stdout IS the JSON-lines protocol, and a bare
-    `print` from the engine layer lands between two protocol messages and breaks
-    the client's parse. Found the first time this backend was driven through the
-    real worker (2026-09-05): the load banner arrived where a `loaded` message
-    was expected.
+    NOT stdout-by-default: `narrator.serve`'s stdout IS the JSON-lines protocol,
+    and a bare `print` from the engine layer lands between two protocol messages
+    and breaks the client's parse. Found the first time this backend was driven
+    through the real worker (2026-09-05): the load banner arrived where a
+    `loaded` message was expected.
+
+    Routed through `narrator.engine.log` so there is ONE mechanism for the whole
+    engine layer rather than two. The default is stderr; the only host that
+    redirects it to stdout is `narrator.compat.worker`, whose stdout
+    parallel-tts-bridge.ts parses - and none of these strings match any of that
+    bridge's five stdout-only patterns (checked: "loading Higgs v3 from ..." has
+    no "model" token for MODEL_LOAD_START_RE, and "model loaded in 2.8s" lacks
+    the "!" MODEL_LOAD_DONE_RE requires), so they are inert there.
     """
-    print(f'[HIGGS-MLX] {message}', file=sys.stderr, flush=True)
+    log(f'[HIGGS-MLX] {message}')
 
 
 # ---------------------------------------------------------------------------

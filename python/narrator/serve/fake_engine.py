@@ -36,6 +36,7 @@ import time
 
 import numpy as np
 
+from ..engine.log import log
 from ..engine.orpheus.prompt import PromptMixin
 from ..engine.protocol import EdgeFade
 from ..engine.orpheus.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
@@ -57,6 +58,12 @@ MIN_FRAMES = 6          # enough for exactly one streamed payload plus its conte
 # any timeout in the protocol and only the streaming path pays it (the classic
 # path has no should_stop to honour, exactly as on vLLM).
 STREAM_ROW_SECONDS = 0.08
+
+
+#: What FakeEngine.__init__ logs. Named so a test can assert on it without
+#: copying the string, and neutral enough that none of parallel-tts-bridge.ts's
+#: stdout patterns can match it.
+FAKE_LOAD_MARKER = '[FAKE-ENGINE] loaded voice'
 
 
 class FakeEngineConfig:
@@ -104,6 +111,17 @@ class FakeEngine(PromptMixin):
         # payload is the RESET that drops a previous load's catalog tuning off a
         # class-level registry which outlives the engine. See that call site.
         self.register_voice_caps(self.voice, config.caps or {})
+        # A REAL engine announces its load, and that announcement is exactly the
+        # thing that used to corrupt narrator.serve's JSON stdout. The fake makes
+        # the same call through the same helper, so
+        # tests/test_engine_log_stream.py's end-to-end proof exercises the real
+        # routing instead of hoping this stand-in happens to be chatty.
+        #
+        # The string is deliberately UNLIKE any engine's: parallel-tts-bridge.ts
+        # greps worker stdout for model-load and batch markers, and a fake must
+        # never be able to satisfy one. (`--fake-engine` must never reach a
+        # production spawn either - PORT_NOTES 9.6.)
+        log(f'{FAKE_LOAD_MARKER} {self.voice}')
 
     # ---- lifecycle ----------------------------------------------------------
 

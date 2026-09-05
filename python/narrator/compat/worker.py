@@ -20,11 +20,23 @@ from __future__ import annotations
 
 import sys
 
+from ..engine.log import set_log_stream
 from . import app as compat_app
 from .flags import FlagRefused
 
 
 def main(argv: list[str] | None = None, engine_factory=None) -> int:
+    # THIS HOST'S STDOUT IS A PARSED CHANNEL, so the engine's log lines belong
+    # on it. `electron/parallel-tts-bridge.ts` spawns exactly this module and
+    # its worker `stdout` handler runs FIVE parsers its `stderr` handler does
+    # not - MODEL_LOAD_START_RE, MODEL_LOAD_DONE_RE, REPAIR_START_RE,
+    # parseMlxHeartbeat() and parseOrpheusGuardEvent() - every one of which
+    # matches a string printed by `engine/orpheus/`. The engine defaults to
+    # stderr (safe for a host with a structured stdout, e.g. narrator.serve);
+    # this is the host that has to say otherwise, and saying it here keeps the
+    # bridge's model-load bar, batch bar, repair bar and guard-event index
+    # working byte for byte. See narrator/engine/log.py.
+    set_log_stream(sys.stdout)
     argv = list(sys.argv[1:] if argv is None else argv)
     # `--worker_mode` is app.py's flag, not worker.py's. Implying it here is what
     # makes this door "the worker", and it is invisible to the caller: passing it

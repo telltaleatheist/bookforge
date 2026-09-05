@@ -35,6 +35,7 @@ the precondition for any return to default-on.
 import difflib
 import os
 import re
+from ..log import log
 
 _BUNDLE = None          # (model, labels, sample_rate) once loaded
 _UNAVAILABLE = False    # import or load failed - gate passes everything
@@ -59,7 +60,7 @@ def _load():
         model.to('cpu')
         _BUNDLE = (model, bundle.get_labels(), bundle.sample_rate)
     except Exception as e:  # noqa: BLE001 - any failure means "no gate", never "no render"
-        print(f'[ASR-GATE] unavailable, checks pass open: {e}')
+        log(f'[ASR-GATE] unavailable, checks pass open: {e}')
         _UNAVAILABLE = True
         _BUNDLE = None
     return _BUNDLE

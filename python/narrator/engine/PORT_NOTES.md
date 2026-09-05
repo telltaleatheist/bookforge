@@ -1358,19 +1358,70 @@ an engine offering neither is a named error.
 - it reported `backend='transformers'` and was therefore driven through
 Orpheus's transformers arm, testing a code path no Higgs engine has ever used.
 
-### 13.5 Engine logs go to STDERR
+### 13.5 Engine logs are the HOST's to route (and Orpheus had the bug too)
 
 Found the first time this backend was driven through the real worker: a bare
 `print` from the engine layer lands on **stdout, which IS the JSON-lines
 protocol**, between two protocol messages. `mlx_backend._log()` writes to stderr.
 
-**PRE-EXISTING, NOT FIXED HERE, in Orpheus's column:** `serve/worker.py` does no
-stdout redirection, and `engine/orpheus/mlx_backend.py` prints its load banner,
-its cache limit and its batch budget with a bare `print` - so a real (non-fake)
-Orpheus worker emits non-JSON lines on the protocol stream. The protocol tests
-never see it because they run `--fake-engine`. A strict client (the smoke script
-here, and `tests/test_engine_serve_protocol.py`'s reader) treats a non-JSON line
-as a hard failure.
+**THE SAME BUG WAS LIVE FOR ORPHEUS, and is now fixed** (2026-09-05, at the
+reviewer's direction) - so this was a Listen-on-the-Mac defect for BOTH engines.
+`serve/worker.py` does no stdout redirection and `engine/orpheus/` held 111
+`print` calls, so a real (non-fake) Orpheus worker emitted non-JSON on the
+protocol stream. The protocol tests never saw it because they run
+`--fake-engine`.
+
+`narrator/engine/log.py` now owns the destination, and **the destination is the
+HOST's choice, not the engine's** - because the two hosts' stdout contracts are
+incompatible and the second one PARSES the very lines that break the first.
+Measured in `electron/parallel-tts-bridge.ts`: its worker `stdout` handler runs
+five parsers its `stderr` handler does not -
+
+    MODEL_LOAD_START_RE   /Loading Orpheus model with/   the load bar starting
+    MODEL_LOAD_DONE_RE    /model loaded!/                the load bar finishing
+    REPAIR_START_RE       /sentence N hit the ... cap/   the repair-ladder bar
+    parseMlxHeartbeat()   "[ORPHEUS] MLX batch generating: ..."    the batch bar
+    parseOrpheusGuardEvent()  "[ORPHEUS][ORPHEUS_GUARD_EVENT]"     the guard index
+
+- every one of those strings printed by `engine/orpheus/`. A blanket move to
+stderr would have fixed the serve protocol and silently broken the audiobook
+progress UI, which is a different bug in a place nobody would look.
+
+    narrator.serve            stdout is JSON   -> engine logs to STDERR (default)
+    narrator.compat.worker    stdout is PARSED -> set_log_stream(sys.stdout)
+
+The default is stderr so a host that forgets to choose gets the safe answer; the
+host that genuinely needs stdout is the one that has to say so.
+
+**NO STRING CHANGED.** All 111 sites were rewritten mechanically by an AST pass
+keyed on call position, and the diff was verified to contain nothing but 111
+call-name swaps plus ten import lines - zero unexplained added or removed lines.
+The 17 that already named `file=sys.stderr` went through `log()` too (reviewer's
+list: engine.py:750; mlx_backend.py:703, 747, 767, 780, 889, 993;
+vllm_backend.py:677, 690, 725, 750, 763, 770, 793, 820, 831, 844). That is safe
+by construction, checked two ways: all 17 are `[ORPHEUS][STREAM]` diagnostics
+emitted only from `generate_batch_stream`, which is unreachable from `compat/`
+and `render/`; and of the 17 strings exactly one matches any bridge pattern
+(`GENERATION_ACTIVITY_RE`, which the bridge already runs on BOTH streams).
+
+`tests/test_engine_log_stream.py` pins all of it: no bare `print` survives in the
+engine layer (an AST walk, because these docstrings discuss printing at length);
+the default is stderr and resolves at CALL time; the real
+`python -m narrator.serve` keeps stdout JSON-only for both engine ids; a real
+engine log line lands on stderr and never on stdout (`FakeEngine` logs at load,
+as a real engine does, so the proof is not vacuous); `compat.worker` really does
+point the channel at stdout; and each of the five stdout-only patterns still has
+a literal to match, so "tidying" one of those messages fails a test instead of
+silently freezing a progress bar.
+
+Two smaller things went with it. `serve/worker.py`'s load failure said "Failed to
+load Orpheus" for every engine - it now names `engine_id()`, because that message
+is read at exactly the moment someone is working out WHICH of two engines broke.
+And `num2words` lost its `_HAS_NUM2WORDS` guard and its five
+`except Exception: return <the digits>` fallbacks: it is a declared base
+dependency, and a missing or failing one used to make the listen path read
+"$5.50" as punctuation for a whole session without saying anything. It now
+refuses by name (`_number_refusal`).
 
 ### 13.6 What was measured, end to end (Mac, 2026-09-05)
 
@@ -1389,15 +1440,44 @@ with one row streamed. **ALL PASS.**
 | peak memory, one row | 8.89 GB (10.32 GB across the two-seed probe) |
 | single `generate` | 5.90 s of audio in 3.37 s wall - **RTF 0.571** |
 | speech rate | 15.9 chars/s (probe: 18.2-18.5) |
-| batch of 2, one streamed | `batch_chunk` x2, `batch_item` x2, `batch_done` |
+| batch of 2, one streamed | `batch_chunk` x2 (audio + the worker's gap chunk - see 13.7), `batch_item` x2, `batch_done` |
 
 Wav: `~/narrator-smoke/higgs3-mlx-one.wav`, copied to
 `C:\tmp\narrator-smoke\mac\`. **NOT EAR-CHECKED** - no one has listened to it.
 
+**PROVENANCE OF THE NUMBERS ABOVE.** They were taken on a tree STAGED to the Mac
+at `~/narrator-higgs-mlx`, which differed from what was ultimately committed:
+`mlx_backend.py` gained the `model_type`/architecture assertion and the stderr
+log routing after some of them were measured. They are therefore indicative, not
+the record.
+
+**THE MEASUREMENT OF RECORD is the reviewer's re-run of the COMMITTED tree**
+(2026-09-05): **RTF 0.507**, cold load **4.5 s**, peak **8.89 GB**, stdout
+JSON-only. Where the two disagree, the committed-tree figures are the ones to
+quote. Both agree on the only number anything depends on - 8.89 GB peak - and
+both are comfortably faster than realtime.
+
+Re-run once more after the engine-wide print sweep (13.5), on the final tree:
+**RTF 0.500**, load 2.9 s, peak 8.89 GB, ALL PASS, and the two `[HIGGS-MLX]`
+lines now appear on STDERR where the smoke script prints its stderr tail - which
+is the sweep working, visible.
+
 ### 13.7 Streaming is PER ROW, and that is the honest cadence
 
 `generate_batch_stream` emits a streamed row as one `on_chunk(row, 0, pcm)` at
-retirement, then `on_row`. `codec().streaming_decoder()` returns None. A
+retirement, then `on_row`.
+
+TWO LAYERS, AND AN EARLIER DRAFT OF THIS NOTE CONFLATED THEM (caught in review:
+13.6's smoke logged TWO `batch_chunk` messages for one streamed row while this
+section said one). Both are right about their own layer. The ENGINE emits ONE
+`on_chunk` per streamed row. The WORKER then appends the inter-sentence gap as
+that row's LAST chunk - `serve/worker.py`'s `on_row` does
+`on_chunk(row, sent, gap)` when `STREAM_GAP_SEC > 0`, because a 0.3 s gap is the
+only part of `finalize_audio` that can still be applied to audio already in
+flight (PORT_NOTES 12.10). So the WIRE carries `audio, gap, batch_item` for a
+streamed row, and the engine's contract is unchanged.
+
+`codec().streaming_decoder()` returns None. A
 delay-pattern codec's window is incomplete in its last 7 frames by construction,
 and the ragged-ending filter can only run once generation has finished, so a
 mid-row window cannot tell a ramp-down from speech. `should_stop` IS checked
@@ -1448,3 +1528,25 @@ is not yours to remove:**
 
 If it exists, READ IT, name the holder in the log, and WAIT (poll 30-60 s, up to
 90 min). Never overwrite.
+
+### 13.10 OWED AT CUT-OVER: the Mac spawn must set NARRATOR_HIGGS3_MLX_MODEL
+
+`engine/higgs/mlx_backend.py` refuses to load without it, by name and with no
+search - guessing where a model directory is is how a book ends up rendered in
+a different model's voice. Nothing in `electron/` sets it today, so **a Mac
+Higgs spawn from the app will fail at load until it does.** Routed to the
+cut-over builder (coordinator, 2026-09-05).
+
+    NARRATOR_HIGGS3_MLX_MODEL = <userData>/runtime/higgs-models/base
+
+which on this Mac resolves to
+`~/Library/Application Support/BookForge/runtime/higgs-models/base` - the
+`bosonai/higgs-audio-v3-tts-4b` snapshot, 8.7 GiB, downloaded with
+`huggingface_hub.snapshot_download`. It is the 35th spawn variable (section 9.4
+lists 33; `NARRATOR_ENGINE` was the 34th) and it belongs beside the other
+`NARRATOR_HIGGS3_*` names, which are equally invented here and equally the
+cut-over's to confirm (12.9 guess 5, 13.8 guess 5).
+
+TWO THINGS THAT DO NOT NEED IT. A `checkpoint` voice names its own merged
+directory in the voice document and loads that instead - the variable is only
+the BASE. And the served (Windows/WSL) arm never reads it at all.

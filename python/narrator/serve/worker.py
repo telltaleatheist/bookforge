@@ -222,29 +222,39 @@ def _engine_config(**kwargs):
 # The listen path hands raw page text straight to the model; the audiobook path
 # normalizes upstream (BookForge's own model pass over the narration copy).
 # Mirror the common cases here so "$5.50", "1995", "50%" read naturally.
-# Guarded: if num2words isn't importable, pass through. That guard is the
-# behaviour this file has always had - it is not a new one.
+# num2words is a DECLARED BASE DEPENDENCY (python/pyproject.toml), imported
+# plainly. It used to sit behind `try/except -> _HAS_NUM2WORDS`, and that guard
+# was a FALLBACK of the worst kind: with it, a machine missing the module read
+# every "$5.50" out as punctuation and every "1995" digit by digit for a whole
+# listening session, and said nothing. This path is NOT dead - `normalize_for_tts`
+# runs on every `generate` and every streamed batch row, which is the browser
+# extension's listen path. (The audiobook path normalizes upstream in BookForge
+# and never arrives here.)
 #
-# BUT num2words IS NOW A DECLARED BASE DEPENDENCY of narrator (2026-09-05), and
-# this path is NOT dead: `normalize_for_tts` runs on every `generate` and every
-# streamed batch row, which is the browser extension's listen path. The
-# audiobook path normalizes upstream in BookForge and never arrives here. The
-# guard therefore covers a MISCONFIGURED env, not a supported one - so it
-# catches ImportError ONLY. A bare `except Exception` would swallow a broken
-# install, a version incompatibility or a circular import and silently read
-# "$5.50" out as punctuation for a whole session.
-try:
-    from num2words import num2words as _num2words
-    _HAS_NUM2WORDS = True
-except ImportError:
-    _HAS_NUM2WORDS = False
+# A missing module is now an ImportError at worker start: loud, immediate, and
+# fixed by installing the dependency the project already declares.
+from num2words import num2words as _num2words
+
+
+def _number_refusal(value, lang, exc):
+    """Every num2words failure, refused by name.
+
+    These four helpers each used to end in `except Exception: return str(n)` -
+    the same silent passthrough as the import guard, one layer down. A number
+    this function cannot say is a defect in the caller's regex or in the
+    language, and the listener must not be the one to discover it.
+    """
+    return ValueError(
+        f'num2words could not render {value!r} in {lang!r}: {exc}. The listen '
+        'path normalizes numbers before the model sees them; handing the raw '
+        'digits on would have the model read them as punctuation.')
 
 
 def _to_words(n, lang):
     try:
         return _num2words(int(n), lang=lang)
-    except Exception:
-        return str(n)
+    except Exception as exc:
+        raise _number_refusal(n, lang, exc) from exc
 
 
 def _num_phrase(token, lang):
@@ -256,15 +266,15 @@ def _num_phrase(token, lang):
             digits = ' '.join(_num2words(int(d), lang=lang) for d in frac)
             return f"{words} point {digits}"
         return _num2words(int(token), lang=lang)
-    except Exception:
-        return token
+    except Exception as exc:
+        raise _number_refusal(token, lang, exc) from exc
 
 
 def _ordinal(n, lang):
     try:
         return _num2words(int(n), lang=lang, to='ordinal')
-    except Exception:
-        return str(n)
+    except Exception as exc:
+        raise _number_refusal(n, lang, exc) from exc
 
 
 def _year_to_words(y, lang):
@@ -280,12 +290,12 @@ def _year_to_words(y, lang):
             lo_words = _to_words(lo, lang) if lo >= 10 else f"oh {_to_words(lo, lang)}"
             return f"{_to_words(hi, lang)} {lo_words}"
         return _to_words(y, lang)
-    except Exception:
-        return str(y)
+    except Exception as exc:
+        raise _number_refusal(y, lang, exc) from exc
 
 
 def normalize_for_tts(text, language='en'):
-    if not _HAS_NUM2WORDS or not text:
+    if not text:
         return text
     lang = (language or 'en').split('-')[0].lower()
     s = text
@@ -301,8 +311,11 @@ def normalize_for_tts(text, language='en'):
                 if c:
                     out += f" and {_to_words(c, lang)} cent" + ('' if c == 1 else 's')
             return out
-        except Exception:
-            return m.group(0)
+        except Exception as exc:
+            # The FIFTH site of the same defect the reviewer named three of.
+            # `return m.group(0)` hands "$5.50" back verbatim for the model to
+            # read as punctuation - silently, for every price in the book.
+            raise _number_refusal(m.group(0), lang, exc) from exc
     s = re.sub(r'\$\s?(\d{1,3}(?:,\d{3})+|\d+)(?:\.(\d{1,2}))?', _money, s)
     s = re.sub(r'(\d{1,3}(?:,\d{3})+(?:\.\d+)?|\d+(?:\.\d+)?)\s?%',
                lambda m: f"{_num_phrase(m.group(1), lang)} percent", s)
@@ -869,7 +882,14 @@ class OrpheusStreamServer:
             return self._ensure_engine(voice, model_dir, caps, adapter_dir, base_dir,
                                        voice_id, warm)
         except Exception as e:
-            send_response('error', {'message': f'Failed to load Orpheus: {e}'})
+            # NAME THE ENGINE THAT ACTUALLY FAILED. This said "Failed to load
+            # Orpheus" for every engine, so a Higgs load failure on the Mac
+            # reported the wrong model by name - which is precisely the moment
+            # someone is trying to work out WHICH of two engines is broken.
+            # engine_id() cannot raise here: an unservable NARRATOR_ENGINE is
+            # refused in main() before any load is accepted.
+            send_response('error',
+                          {'message': f'Failed to load {engine_id()}: {e}'})
             return False
 
     def _row_voice(self, voice) -> str:
@@ -1821,6 +1841,17 @@ def main(argv=None):
     (and printed no `ready`).
     """
     global _FAKE_ENGINE
+    # THIS WORKER'S STDOUT IS THE PROTOCOL. Engine log lines must never land on
+    # it: one bare `print` between two JSON messages breaks the client's parse
+    # (measured 2026-09-05 - a Higgs load banner arrived where a `loaded` line
+    # was expected). stderr is `narrator.engine.log`'s default, and the pool
+    # reads it (orpheus-worker-pool.ts logs `[Orpheus Pool stderr]`); this says
+    # so explicitly rather than depending on a default staying put.
+    # Imported HERE, not at module scope: `narrator.serve` sends its `ready`
+    # line before any heavy import, and engine.log costs only `sys` but the
+    # rule is worth keeping unbroken.
+    from ..engine.log import set_log_stream
+    set_log_stream(sys.stderr)
     argv = sys.argv[1:] if argv is None else list(argv)
     unknown = [a for a in argv if a != '--fake-engine']
     if unknown:
