@@ -413,7 +413,72 @@ runs natively on Windows and merely runs badly (no CUDA graphs); vLLM-Omni has
 the toggle **throws** rather than falling through to the bundled env, which has no
 `vllm_omni` and would fail as an ImportError deep in a worker.
 
-### The doctor — `checkWslHiggsSetup()`
+### The two doctors — `higgsDoctor()` (2026-09-05)
+
+Higgs v3 is **one engine with two backends** (PORT_NOTES 13), so "is Higgs ready"
+has two different answers and, since this branch, two different doctors.
+`electron/higgs-doctor.ts` holds the dispatcher and the macOS one; the WSL one
+stays in `tool-paths.ts` where it was.
+
+| `process.platform` | doctor | `arm` |
+|---|---|---|
+| `win32` | the WSL doctor below, with the **"WSL2 for Higgs" toggle as its own row in front of it** | `wsl` |
+| `darwin` | `checkDarwinHiggsSetupAsync()` — one `conda run --no-capture-output -p <narrator-mlx prefix> python -c` | `mlx` |
+| anything else | a refusal that **names the platform** (BookForge builds neither backend on Linux) | `none` |
+
+**Why this exists.** Until 2026-09-05 there was one doctor and it answered
+everywhere, so on the Mac the narration modal said *"The Higgs environment is not
+ready … : WSL distribution. Set it up in Settings → Higgs, or pick Orpheus on the
+Reading tab"* — on a machine that renders Higgs fine. That string was the WSL
+doctor's non-Windows early return, displayed as a diagnosis. The mirror-image bug
+sat in `higgsEnvironmentRefusal()`, which returned `null` on darwin having checked
+**nothing**: an unchecked pass, which lets a job start and fail an hour in.
+
+**The remedy travels with the result.** `HiggsSetupResult` carries `arm` and a
+one-sentence `remedy`, and the modal and the Settings panel quote it rather than
+appending their own. "Set it up in Settings → Higgs" is wrong advice on a Mac,
+where that panel's only button builds a WSL environment — and the renderer is not
+the place to work out which arm it is looking at.
+
+**The toggle is a row, not an early return.** On Windows with `useWsl2ForHiggs`
+off, the doctor still reports the five WSL rows *plus* a failing `toggle` row.
+The environment can be perfectly installed with the toggle off, and the Settings
+panel has to be able to show that.
+
+#### The macOS doctor's checks
+
+**ONE `conda run` round trip** — by PREFIX (`-p`), never by name (`-n`), because that
+is what `narratorNativePython('higgs')` builds and the whole point is to probe the
+environment the render will use — same one-round-trip rule as the WSL one, and it **imports, it
+does not load** — the backend module imports mlx lazily by design, so the whole
+probe is about a second rather than 8.5 GB.
+
+| check | how |
+|---|---|
+| `env` | `narratorNativePython('higgs')` — **the spawn's own resolution**, so a green doctor cannot be about a different env from the render's |
+| `python` | the interpreter in that env answered at all |
+| `mlx` | `import mlx.core` |
+| `mlx-audio` | installed **and** exactly `0.4.8` (`HIGGS_MLX_AUDIO_VERSION`, mirrored from `mlx_backend.MLX_AUDIO_VERSION`; a keeper asserts they agree) |
+| `narrator` | `import narrator.engine.higgs.mlx_backend`, with `PYTHONPATH` = `narratorPythonRoot()` as the spawn sets it |
+| `weights` | `NARRATOR_HIGGS3_MLX_MODEL`'s directory (`<userData>/runtime/higgs-models/base`) holds `config.json`, `tokenizer.json` and at least one `*.safetensors` |
+| *(notes)* | which catalog voices this arm could load — **informational, never part of `valid`** |
+
+The required files are read out of mlx-audio 0.4.8, not guessed: `load_model`
+reads `config.json`, `post_load_hook` opens `tokenizer.json`, and the codec comes
+out of the same shards (`from_higgs_tts_checkpoint`). `tokenizer_config.json` and
+`chat_template.jinja` ship with the repo and are **not** read on this path;
+`generation_config.json` is a *checkpoint voice's* sampling and is absent from the
+base weights by design.
+
+`env` and `weights` are answered on the HOST rather than inside the probe — on
+darwin there is no guest, so it is the same filesystem, and answering them here
+means they still report when the probe itself could not run.
+
+There is **no macOS installer**. The `narrator-mlx` env is built by hand from
+`packaging/env/narrator-mlx.yml`, so Settings → Higgs offers Install/Repair on the
+WSL arm only and shows the remedy line instead.
+
+### The WSL doctor — `checkWslHiggsSetup()`
 
 **ONE `wsl.exe` round trip** (each spawn costs most of a second on a cold VM, and
 a five-second doctor is a doctor nobody runs). The probe emits one `key=value` per

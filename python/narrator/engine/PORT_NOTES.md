@@ -1787,3 +1787,26 @@ compared a Mac render against a WSL one at the same seed - and the seeds are not
 comparable either (`mx.random.seed` vs vLLM's). That is a listening test, not an
 assertion this code makes.
 
+
+### 13.12 BookForge has TWO Higgs doctors now, one per arm (2026-09-05)
+
+The host side of this arm, recorded here because the *reason* is narrator's: one
+engine with two backends means "is Higgs ready" has two different answers.
+`electron/higgs-doctor.ts` dispatches on `process.platform` - win32 to the WSL
+doctor (vllm-omni, the two site-packages patches, the launch script), darwin to a
+new one that probes THIS arm's requirements in one `conda run --no-capture-output
+-p <narrator-mlx prefix> python -c` (by PREFIX, as `narratorNativePython('higgs')`
+builds it, not by name): `mlx`, `mlx_audio` at the pinned `MLX_AUDIO_VERSION`,
+`narrator.engine.higgs.mlx_backend` importable with `PYTHONPATH` set as the spawn
+sets it, and the `NARRATOR_HIGGS3_MLX_MODEL` directory holding the files
+`load_model`/`post_load_hook` open (`config.json`, `tokenizer.json`,
+`*.safetensors`). Anything else is refused by platform name.
+
+Until this landed the WSL doctor answered everywhere, so a Mac was told its
+problem was a missing "WSL distribution", and `higgsEnvironmentRefusal()`
+returned `null` on darwin having checked nothing at all.
+
+**If this module's pin or its required files change, the doctor is the second
+place to fix.** `HIGGS_MLX_AUDIO_VERSION` in `electron/higgs-doctor.ts` mirrors
+`MLX_AUDIO_VERSION` here and `tools/test-higgs-doctor-arms.js` asserts they agree,
+so the drift is caught rather than shipped.
