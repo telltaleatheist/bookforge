@@ -1435,7 +1435,16 @@ export class NarrationModalComponent {
    */
   readonly higgsBlocked = signal<string | null>(null);
 
-  /** Ask main whether the Higgs stack is usable. Fire-and-forget from ngOnInit. */
+  /**
+   * Ask main whether the Higgs stack is usable. Fire-and-forget from ngOnInit.
+   *
+   * THE REMEDY COMES FROM THE DOCTOR, and this method must not invent one. Higgs
+   * has two backends — the WSL vLLM-Omni server on Windows, the in-process MLX
+   * one on macOS — and until 2026-09-05 this line ended "Set it up in Settings →
+   * Higgs", which on a Mac points at a panel whose only button builds a WSL
+   * environment. Main knows which arm it examined; this dialog does not, and the
+   * moment it tried to it would be a second place to keep in step.
+   */
   private async checkHiggsReady(): Promise<void> {
     const api = (window as any).electron?.higgsModels;
     if (!api?.doctor) return;
@@ -1447,7 +1456,7 @@ export class NarrationModalComponent {
         ? null
         : 'The Higgs environment is not ready, so this run would fail as soon as it started: '
           + failed.map((c: { label: string }) => c.label).join(', ')
-          + '. Set it up in Settings → Higgs, or pick Orpheus on the Reading tab.',
+          + `. ${res.data.remedy} Or pick Orpheus on the Reading tab.`,
     );
   }
 

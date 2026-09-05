@@ -6,15 +6,28 @@ import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 
 /** One check from the Higgs doctor. Mirrors preload's HiggsDoctorResult rows. */
 interface HiggsCheck {
-  id: 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher';
+  id:
+    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher'
+    | 'toggle'
+    | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
+    | 'platform';
   label: string;
   ok: boolean;
   detail?: string;
 }
 
+/**
+ * TWO ARMS, ONE SHAPE — see electron/higgs-doctor.ts. `arm` says which backend
+ * was examined ('wsl' = the vLLM-Omni server reached through WSL, 'mlx' = the
+ * in-process macOS backend, 'none' = a platform with neither), and `remedy` is
+ * what to do about a failure on that arm.
+ */
 interface HiggsDoctorResult {
   valid: boolean;
+  arm: 'wsl' | 'mlx' | 'none';
+  remedy: string;
   checks: HiggsCheck[];
+  notes?: string[];
   envPrefix?: string;
 }
 
@@ -53,6 +66,15 @@ interface HiggsCatalogVoice {
  * A green tick that hides which of the five it is would be worse than no page:
  * "the sentinel-filter patch is missing" and "there is no WSL distro" are both
  * `valid: false` and have nothing else in common.
+ *
+ * ── The rows are the DOCTOR'S, whichever arm ran ────────────────────────────
+ *
+ * This page renders whatever checks come back rather than a fixed list, which is
+ * what let the macOS arm land here for free: on a Mac the doctor is the MLX one
+ * (env, python, mlx, mlx-audio, the narrator backend module, the base weights)
+ * and its rows display exactly like the WSL ones. Only three things are
+ * arm-aware — the heading, the explainer sentence, and the Install/Repair button,
+ * which builds the WSL environment and is therefore offered on the WSL arm alone.
  */
 @Component({
   selector: 'app-higgs-voices-panel',
@@ -63,9 +85,14 @@ interface HiggsCatalogVoice {
     <div class="higgs-panel">
       <div class="explainer">
         <p>
-          <strong>Higgs Audio v3</strong> narrates through a served vLLM-Omni endpoint.
-          It clones a narrator from up to 30&nbsp;seconds of reference audio, or renders
-          from a fine-tuned adapter.
+          <strong>Higgs Audio v3</strong> clones a narrator from up to 30&nbsp;seconds of
+          reference audio, or renders from a fine-tuned checkpoint.
+          @if (hostArm() === 'mlx') {
+            On this Mac it runs <strong>in-process on mlx-audio</strong>, in the
+            <code>narrator-mlx</code> environment — there is no server and no WSL.
+          } @else {
+            On Windows it narrates through a served vLLM-Omni endpoint inside WSL.
+          }
         </p>
         <p class="licence-warning">
           <strong>Licence:</strong> Higgs&nbsp;v3 is <em>research and non-commercial</em>,
@@ -77,18 +104,41 @@ interface HiggsCatalogVoice {
       <!-- ── The environment ─────────────────────────────────────────────── -->
       <div class="section">
         <div class="section-head">
-          <h4>Serving environment</h4>
+          <h4>{{ hostArm() === 'mlx' ? 'Rendering environment' : 'Serving environment' }}</h4>
           <div class="head-actions">
             <desktop-button size="sm" variant="secondary"
                             [disabled]="busy()" (clicked)="runDoctor()">
               {{ checking() ? 'Checking…' : 'Re-check' }}
             </desktop-button>
-            <desktop-button size="sm" variant="primary"
-                            [disabled]="busy()" (clicked)="install()">
-              {{ installing() ? 'Installing…' : (doctor()?.valid ? 'Repair' : 'Install') }}
-            </desktop-button>
+            <!--
+              THE INSTALLER IS THE WSL ONE, so it is offered on the WSL arm and
+              nowhere else. There is no macOS installer: the narrator-mlx env is
+              built from packaging/env/narrator-mlx.yml by hand, and a button that
+              spawned wsl.exe on a Mac would look like a broken app rather than a
+              button that does not apply. The remedy line below says what to do
+              instead — it comes from the doctor, which knows which arm it ran.
+
+              KEYED ON THE HOST, NOT ON THE DOCTOR'S ANSWER. The doctor's reply
+              is null while the first check is in flight AND after a check that
+              FAILED — and a Windows machine whose doctor cannot answer is exactly
+              the one whose owner needs Install/Repair. Gating the button on the
+              reply would take the repair door away at the moment it is wanted.
+            -->
+            @if (hostArm() === 'wsl') {
+              <desktop-button size="sm" variant="primary"
+                              [disabled]="busy()" (clicked)="install()">
+                {{ installing() ? 'Installing…' : (doctor()?.valid ? 'Repair' : 'Install') }}
+              </desktop-button>
+            }
           </div>
         </div>
+
+        @if (hostArm() === null) {
+          <p class="check-fail">
+            This build did not report which platform it is running on, so this page cannot say
+            which Higgs backend applies. The check rows below are still the doctor's own.
+          </p>
+        }
 
         @if (doctorError(); as err) {
           <p class="check-fail">Could not run the check: {{ err }}</p>
@@ -105,6 +155,12 @@ interface HiggsCatalogVoice {
             }
           </ul>
           @if (d.envPrefix) { <p class="env-prefix">{{ d.envPrefix }}</p> }
+          @if (!d.valid) { <p class="remedy">{{ d.remedy }}</p> }
+          @if (d.notes?.length) {
+            <ul class="notes">
+              @for (n of d.notes; track n) { <li>{{ n }}</li> }
+            </ul>
+          }
         } @else if (!doctorError()) {
           <p class="muted">Checking the Higgs environment…</p>
         }
@@ -170,6 +226,25 @@ interface HiggsCatalogVoice {
     .check-label { color: var(--text-primary); white-space: nowrap; }
     .check-detail { color: var(--text-secondary); }
     .check-fail { font-size: 0.75rem; color: var(--error); margin: 0; }
+    .remedy {
+      margin: 0.375rem 0 0;
+      padding: 0.4375rem 0.5rem;
+      font-size: 0.75rem;
+      color: var(--text-primary);
+      background: var(--bg-sunken);
+      border-left: 3px solid var(--warning);
+      border-radius: 3px;
+    }
+    .notes {
+      list-style: none;
+      margin: 0.375rem 0 0;
+      padding: 0;
+      display: flex;
+      flex-direction: column;
+      gap: 0.125rem;
+      font-size: 0.6875rem;
+      color: var(--text-tertiary);
+    }
     .env-prefix { font-size: 0.6875rem; color: var(--text-tertiary); margin: 0.25rem 0 0; font-family: monospace; }
     .muted { font-size: 0.75rem; color: var(--text-tertiary); margin: 0; }
 
@@ -225,6 +300,29 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   readonly log = signal<string | null>(null);
 
   readonly busy = computed(() => this.checking() || this.installing());
+
+  /**
+   * WHICH ARM THIS MACHINE IS — from the host, not from the doctor's reply.
+   *
+   * The two are the same answer (`higgsDoctor()` dispatches on the same
+   * `process.platform`), but they are not available at the same times: the
+   * doctor's reply is absent while the first check runs and absent again after a
+   * check that FAILED, and a Windows machine whose doctor cannot answer is
+   * precisely the one whose owner wants Install/Repair. So the page's own
+   * layout — heading, explainer, which buttons exist — keys on the host, and only
+   * the CHECK ROWS come from the doctor.
+   *
+   * `null` when this build did not report a platform at all. That is not a
+   * platform to guess at, and the template says so instead of quietly deciding
+   * this is not Windows.
+   */
+  readonly hostArm = computed<'wsl' | 'mlx' | 'none' | null>(() => {
+    const platform = (window as any).electron?.platform;
+    if (typeof platform !== 'string' || !platform) return null;
+    if (platform === 'win32') return 'wsl';
+    if (platform === 'darwin') return 'mlx';
+    return 'none';
+  });
 
   private unsubscribe: (() => void) | null = null;
 

@@ -718,11 +718,39 @@ export function writeHiggsVoicesDocument(
  * for a WSL spawn, the Windows path for a native one. Computing it here would
  * mean this module deciding where a process it does not spawn is going to run.
  */
+/**
+ * THE MAC'S BASE HIGGS WEIGHTS, as `NARRATOR_HIGGS3_MLX_MODEL` must name them.
+ *
+ * `mlx_backend.model_dir_from_env()` reads that variable and REFUSES when it is
+ * unset — "no default and no search", because an engine that guesses where its
+ * weights are is one that can render a whole book in the wrong model and report
+ * success. So BookForge names it, and this is the directory narrator's own
+ * refusal message points at.
+ *
+ * `userData` IS `~/Library/Application Support/BookForge` on macOS, so this is
+ * exactly the path in that message rather than a second convention.
+ */
+export function higgsMlxBaseDir(userDataDir: string): string {
+  return path.join(userDataDir, 'runtime', 'higgs-models', 'base');
+}
+
 export function higgsSpawnEnv(
   model: HiggsModel,
   opts: {
     /** Path to the voice document, in the SPAWN's filesystem. */
     voicesPath: string;
+    /**
+     * The BASE weights directory, for the darwin in-process backend
+     * (`NARRATOR_HIGGS3_MLX_MODEL`). Host-native: there is no guest on a Mac.
+     *
+     * ALWAYS THE BASE, never a voice's own checkpoint. narrator resolves
+     * `model_dir = checkpoint or model_dir_from_env()`: a `checkpoint` voice's
+     * weights come from `checkpointDir` in the VOICE DOCUMENT and this variable is
+     * not read at all, while a `default` or `clips` voice loads the base from it.
+     * Setting it per-voice would therefore be ignored where it looked meaningful
+     * and load a fine-tune as "the base" where it was not.
+     */
+    mlxModelDir?: string;
     /** Path to the launch script, in the SPAWN's filesystem. */
     serveScriptPath?: string;
     /** Attach to an already-running server instead of launching one. */
@@ -741,6 +769,7 @@ export function higgsSpawnEnv(
   const env: Record<string, string> = {
     NARRATOR_HIGGS_VOICES: opts.voicesPath,
   };
+  if (opts.mlxModelDir) env.NARRATOR_HIGGS3_MLX_MODEL = opts.mlxModelDir;
   if (opts.serveScriptPath) env.NARRATOR_HIGGS3_SERVE_SCRIPT = opts.serveScriptPath;
   if (opts.baseUrl) env.NARRATOR_HIGGS3_URL = opts.baseUrl;
   if (opts.wslDistro) env.NARRATOR_HIGGS3_WSL_DISTRO = opts.wslDistro;

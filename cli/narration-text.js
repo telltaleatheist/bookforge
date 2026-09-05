@@ -25,7 +25,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
-const { applyE2aScratchDir } = require('./e2a-scratch.js');
+const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
 
 function parseArgs(argv) {
@@ -141,7 +141,7 @@ async function main() {
     // The intermediates go where the app's render door looks for them, so a
     // later render reuses this run's model answers instead of paying again.
     const libraryRoot = path.dirname(path.dirname(projectDir));
-    console.log(`[narration-text] scratch: ${applyE2aScratchDir(libraryRoot)}`);
+    console.log(`[narration-text] scratch: ${applyNarratorSessionsRoot(libraryRoot)}`);
     await cleanProject(
       projectDir,
       typeof args.model === 'string' ? args.model : null,

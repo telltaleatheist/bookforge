@@ -72,76 +72,361 @@ function untouched(text) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Scripture — every one of these is a span the 9b model read WRONG
+// Scripture — DETECTED and protected, never read here
 // ─────────────────────────────────────────────────────────────────────────────
 
-test('scripture: the chapter and verse, in the training corpora\'s cardinal', () => {
-  // 9b said "four fourteen seventeen to nineteen" — it read 44 as two numbers.
-  reads('Jeremiah 44:17-19', 'Jeremiah forty four seventeen through nineteen');
-  // 9b said "two twenty-three one".
-  reads('Luke 22:31', 'Luke twenty two thirty one');
-  // 9b said "four three three".
-  reads('Daniel 4:33', 'Daniel four thirty three');
-  // 9b said "nine twenty-one" — the 20 of the range simply vanished.
-  reads('Revelation 9:20–21', 'Revelation nine twenty through twenty one');
-  reads('Isaiah 5:20', 'Isaiah five twenty');
-  reads('Exodus 22:18', 'Exodus twenty two eighteen');
+/**
+ * THE CONTRACT THESE TESTS DEFEND, and how it changed on 2026-09-05.
+ *
+ * Until n6 the rules READ a reference: "2 Cor. 10:4" came out "Second
+ * Corinthians ten four", from a table of book abbreviations. Owen ended that
+ * after a Higgs A/B render narrated "(1 Pet. 3:7)" as *"one pet three seven"*:
+ * "I don't want to do it deterministically. An AI takes over. There are a
+ * billion ways Bible verses are abbreviated."
+ *
+ * So the assertion changed shape. What is pinned now is:
+ *
+ *   DETECTION — the span is recognized, and recognized WHOLE. Half a reference
+ *   protected is worse than none, because the unprotected half is what the
+ *   integer rule reads, and "one pet three seven" is what that sounds like.
+ *
+ *   PROTECTION — the text comes back byte for byte. Every digit is still there
+ *   when the model is asked, which is the only reason the model can read it.
+ *
+ *   THE MUST-NOT LIST — Owen's own, 2026-09-05, plus everything the adversarial
+ *   review measured firing that day, one test per case. A detector is a claim
+ *   about text the app does not own, and the cases it must NOT claim are the ones
+ *   that say whether the claim is honest.
+ *
+ *   AND WHAT A MISS COSTS. A false positive is NOT free, which is the finding
+ *   that produced the evidence test: inside a detected span the validator asks
+ *   for a chapter-and-verse pause, so a detection on "Widescreen 16:9" made the
+ *   correct reading unrepresentable — and the book-less rule, which read "Score
+ *   21:19" correctly on main, never got the chance. So every must-NOT case below
+ *   pins BOTH halves: nothing detected, and the reading main gave it, byte for
+ *   byte.
+ *
+ * The READING lives in `electron/prompts/tts-number-normalize.txt` and is
+ * measured against `tools/fixtures/scripture-readings.json` — sixty-six books
+ * and the deuterocanon — by the Ollama-gated probe in
+ * tools/test-tts-number-normalizer.js.
+ */
+
+/** The references the detector found, in order, exactly as printed. */
+const detected = (text) => rules.scriptureSpans(text).map((s) => s.find);
+
+/** Assert a text is detected as exactly these references, and left untouched. */
+function protects(text, references) {
+  assert.deepStrictEqual(detected(text), references, text);
+  const out = read(text);
+  assert.strictEqual(out.text, text, `a rule rewrote a protected reference: ${text}`);
+  for (const rewrite of out.rewrites) {
+    for (const span of out.scripture) {
+      assert.ok(rewrite.at >= span.end || rewrite.at + rewrite.find.length <= span.at,
+        `the ${rewrite.rule} rule reached into ${JSON.stringify(span.find)}`);
+    }
+  }
+}
+
+test('scripture: the reference Owen heard mangled is detected whole and left alone', () => {
+  // The defect, verbatim from the render: "(1 Pet. 3:7)" narrated "one pet three
+  // seven". Under n6 the whole reference — leading volume number included — is
+  // one protected span, so the integer rule never sees the "1", the "3" or the
+  // "7", and the model is asked for "First Peter three, seven".
+  protects('to dwell with each other according to knowledge (1 Pet. 3:7).', ['1 Pet. 3:7']);
+  protects('as it says in John 3:16 and 2 Cor. 5:17.', ['John 3:16', '2 Cor. 5:17']);
 });
 
-test('scripture: an en dash is a range, exactly as a hyphen is', () => {
-  reads('Deuteronomy 18:10–11', 'Deuteronomy eighteen ten through eleven');
-  reads('Deuteronomy 18:10-11', 'Deuteronomy eighteen ten through eleven');
-  // A book printed in capitals keeps its capitals: the name is not rewritten.
-  reads('DEUTERONOMY 18:10–11', 'DEUTERONOMY eighteen ten through eleven');
+test('scripture: an abbreviation the app has never seen is detected on its shape', () => {
+  // The point of dropping the table: detection asks nothing of the book but that
+  // it be capitalized, so a house style nobody catalogued still gets protected.
+  protects('see Zeph. 3:17 there', ['Zeph. 3:17']);
+  protects('see Pt. 3:7 there', ['Pt. 3:7']);
+  protects('see Qoheleth 3:1 there', ['Qoheleth 3:1']);
+  protects('see Sirach 44:1 there', ['Sirach 44:1']);
 });
 
-test('scripture: a trailing verse letter is read as the letter', () => {
-  reads('Revelation 18:23b', 'Revelation eighteen twenty three b');
-  reads('Genesis 1:1a-2b', 'Genesis one one a through two b');
+test('scripture: ranges, letters, "ff." and chapter-crossing all belong to the span', () => {
+  protects('Jeremiah 44:17-19 is the passage.', ['Jeremiah 44:17-19']);
+  protects('Deuteronomy 18:10–11 says so', ['Deuteronomy 18:10–11']);
+  protects('Revelation 18:23b says so', ['Revelation 18:23b']);
+  protects('Genesis 1:1a-2b says so', ['Genesis 1:1a-2b']);
+  protects('Matthew 5:16ff. said so', ['Matthew 5:16ff.']);
+  protects('(Col. 3:19-4:1 and parallels)', ['Col. 3:19-4:1']);
 });
 
-test('scripture: a numeric book prefix is an ORDINAL, not a count', () => {
-  reads('1 John 4:1', 'First John four one');
-  reads('1 John 1:9', 'First John one nine');
-  reads('2 Cor. 10:4', 'Second Corinthians ten four');
-  reads('2 Tim. 1:7', 'Second Timothy one seven');
-  reads('1 Sam. 3:1', 'First Samuel three one');
-  reads('Read 2 Chron. 7:14 aloud', 'Read Second Chronicles seven fourteen aloud');
+test('scripture: a LIST of references is ONE span, bare verses included', () => {
+  // The n2 acceptance run (2026-09-02) proved why: left outside the span, the
+  // "20:6" of "Leviticus 19:31; 20:6" reached the model alone and came back
+  // "twenty" — the verse gone. A bare "13" outside the span is worse still: the
+  // integer rule reads it as a count while the model reads the rest as a verse.
+  protects('(Leviticus 19:31; 20:6)', ['Leviticus 19:31; 20:6']);
+  protects('Genesis 6:11, 13 and 7:1 say so', ['Genesis 6:11, 13 and 7:1']);
+  protects('see Isa. 5:20, 6:3', ['Isa. 5:20, 6:3']);
+  protects('Job 41:1–2, 14–34 there', ['Job 41:1–2, 14–34']);
+  // Any other word between them breaks the chain, and the time is a time again.
+  assert.deepStrictEqual(detected('Lev. 19:31 and then 7:02'), ['Lev. 19:31']);
+  assert.strictEqual(spoken('Lev. 19:31 and then 7:02'), 'Lev. 19:31 and then 7:02');
 });
 
-test('scripture: a numbered book with NO reference still gets its ordinal', () => {
-  // Owen's own example. "2 Corinthians" is a book in every context there is.
-  reads('2 Corinthians teaches otherwise', 'Second Corinthians teaches otherwise');
-  reads('1 Peter was written later', 'First Peter was written later');
-  // JOHN is the exception, and deliberately: "1 John" with no reference after it
-  // is as likely to be a person, so the SCRIPTURE rule declines it. (The generic
-  // integer rule then reads the bare "1" as "one", which is what it reads every
-  // other bare digit as — the point is that no ordinal was invented.)
-  assert.ok(!claims('1 John was there').some(([rule]) => rule === 'scripture'),
-    'no ordinal prefix without a reference to settle it');
+test('scripture: a leading volume number makes a CHAPTER-ONLY reference detectable', () => {
+  // THE DECISION, 2026-09-05: "1 Pet. 3" is detected and a bare "Gen. 3" is not.
+  // Telling "Gen. 3" from "Fig. 3" needs a table of books, which is the very
+  // thing Owen's ruling removed; a leading 1-3 is evidence that survives without
+  // one, because English prints "1 Pet. 3" and never "1 Fig. 3".
+  protects('1 Pet. 3 alone', ['1 Pet. 3']);
+  protects('read 2 Chron. 7 aloud', ['2 Chron. 7']);
+  assert.deepStrictEqual(detected('see Gen. 3 for that'), []);
+  assert.strictEqual(spoken('see Gen. 3 for that'), 'see Gen. three for that');
 });
 
-test('scripture: the standard abbreviations expand to the book name', () => {
-  // The 57 WORDS_DROPPED refusals of the 2026-09-02 run were exactly this: the
-  // model expanding an abbreviation and the validator throwing it away.
-  reads('Ps. 27:1', 'Psalm twenty seven one');
-  reads('Eph. 6:12', 'Ephesians six twelve');
-  reads('Rom. 1:22', 'Romans one twenty two');
-  reads('Isa. 14:12-14', 'Isaiah fourteen twelve through fourteen');
-  reads('Jam. 4:7', 'James four seven');
-  reads('Lev. 20:27', 'Leviticus twenty twenty seven');
-  reads('Matt. 7:22', 'Matthew seven twenty two');
-  reads('Deut. 18:9–12', 'Deuteronomy eighteen nine through twelve');
-  reads('Heb. 2:14-15', 'Hebrews two fourteen through fifteen');
-  reads('Rev. 12:7-10', 'Revelation twelve seven through ten');
+test('scripture: a numbered book with no reference is protected, not read', () => {
+  // "2 Corinthians" would otherwise be read "two Corinthians" by the integer
+  // rule. It is protected so the model can say "Second"; the app no longer
+  // claims to know that itself.
+  protects('quoting 2 Corinthians at length', ['2 Corinthians']);
+  protects('1 Peter was written later', ['1 Peter']);
+  // JOHN is the exception, deliberately: "1 John" with no reference behind it is
+  // as likely to be a person, so it is not detected and its "1" is read by the
+  // integer rule exactly as every other bare digit is.
+  assert.deepStrictEqual(detected('1 John was there'), []);
+  assert.strictEqual(spoken('1 John was there'), 'one John was there');
 });
 
-test('scripture: a BARE reference converts only when the two readings coincide', () => {
-  // No book name, so it is scripture or a clock time. At a verse of ten or more
-  // they read the same and it is safe: "6:59" is "six fifty nine" either way.
-  reads('It was 6:59 p.m. exactly', 'It was six fifty nine p.m. exactly');
+// ─────────────────────────────────────────────────────────────────────────────
+// Owen's MUST-NOT list, 2026-09-05 — one test per case
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** Assert nothing is detected, and say what the deterministic pass does instead. */
+function detectsNothing(text, expected) {
+  assert.deepStrictEqual(detected(text), [], `wrongly detected: ${text}`);
+  assert.strictEqual(spoken(text), expected, text);
+}
+
+test('must-NOT: a month is not a book', () => {
+  detectsNothing('Jan. 3:7 was the date', 'Jan. 3:7 was the date');
+  detectsNothing('Sept. 4:9 was the date', 'Sept. 4:9 was the date');
+  // And with the verse past the coincidence point the book-LESS rule reads it —
+  // "three seventeen" is what those digits say whether they turn out to be a
+  // date, a time or something else, which is the whole licence that rule has.
+  detectsNothing('Jan. 3:17 was the date', 'Jan. three seventeen was the date');
+});
+
+test('must-NOT: a title with no reference behind it', () => {
+  detectsNothing('Gen. Patton arrived', 'Gen. Patton arrived');
+  detectsNothing('Col. Nicholson agreed', 'Col. Nicholson agreed');
+});
+
+test('must-NOT: "vs." is not a book, and neither is a lowercase abbreviation', () => {
+  detectsNothing('vs. 3:7 there', 'vs. 3:7 there');
+  // "Ex." is Exodus and "ex." is not: a book name is capitalized, and the
+  // capital is the only thing separating the two.
+  assert.deepStrictEqual(detected('Ex. 3:7 vs ex. 3:7'), ['Ex. 3:7']);
+  assert.strictEqual(spoken('Ex. 3:7 vs ex. 3:7'), 'Ex. 3:7 vs ex. 3:7');
+});
+
+test('must-NOT: an abbreviation with no period is not a chapter-only reference', () => {
+  // Owen's case. Without the period the token is just a capitalized word, and
+  // the detector has no evidence left; the integer rule reads the digits as it
+  // reads every other bare digit, which is what it did before n6 too.
+  detectsNothing('1 Pet 3 without period', 'one Pet three without period');
+  // WITH a colon behind it the period is not needed — the reference shape is
+  // its own evidence.
+  protects('1 Pet 3:7 with a colon', ['1 Pet 3:7']);
+});
+
+test('must-NOT: an ordinary noun in front of a colon-number', () => {
+  // No period, no volume number, not a canonical book name — no evidence, so no
+  // claim. There is no list of these words any more: the first cut tried one and
+  // the review walked straight through it with "Lakers", "Widescreen", "Flight",
+  // "Docket", "BWV", every weekday and a sentence-initial "Then".
+  detectsNothing('Chapter 3:7 begins', 'Chapter 3:7 begins');
+  detectsNothing('Room 3:15 was locked', 'Room three fifteen was locked');
+  detectsNothing('Table 4:2 shows it', 'Table 4:2 shows it');
+  // "Acts" is a book and is NOT the "Act" of a play — but "Act" is THREE
+  // LETTERS, so evidence (d) claims it anyway, exactly as it claims "Map" and
+  // "Bus". The text still comes out as main printed it; the reading is the
+  // model's, and the prompt names "Act 3:2" of a play among the shapes that get
+  // no reference reading.
+  protects('Acts 3:2 says so', ['Acts 3:2']);
+  protects('Act 3:2 of the play', ['Act 3:2']);
+});
+
+test('must-NOT: an ordinary word capitalized by the sentence it starts', () => {
+  // MEASURED against this suite, 2026-09-05: "See 20:6 there." put an ordinary
+  // verb in the book's position — every word is capitalized at the start of a
+  // sentence — and the reference was detected. It is the evidence test that
+  // refuses it now, not a list of verbs.
+  // Under ten the book-less rule declines the verse too, so the line stands as
+  // printed and the model is asked about it — which is what it was before n6.
+  detectsNothing('See 20:6 there.', 'See 20:6 there.');
+  detectsNothing('Read 20:6 aloud', 'Read 20:6 aloud');
+  // Past the coincidence point it reads them as the plain numbers they are.
+  detectsNothing('Compare 20:16 with it', 'Compare twenty sixteen with it');
+  detectsNothing('In 20:16 he says', 'In twenty sixteen he says');
+});
+
+test('must-NOT: a book citing its own last reference — "Verses 28:7-8"', () => {
+  // "Verses" and "Chapters" have no evidence; "Acts", "Numbers", "Judges" and
+  // "Lamentations" are canonical book names and have shape (c).
+  assert.deepStrictEqual(detected('Verses 28:7-8 say so.'), []);
+  assert.deepStrictEqual(detected('Chapters 3:1-4:2 cover it'), []);
+  protects('Numbers 6:24 says so', ['Numbers 6:24']);
+  protects('Judges 6:12 says so', ['Judges 6:12']);
+  protects('Lamentations 3:22 says so', ['Lamentations 3:22']);
+});
+
+/**
+ * THE FALSE-POSITIVE TABLE, from the adversarial review of 2026-09-05.
+ *
+ * Every one of these fired under the first cut of the detector. The expected
+ * output of each is what `main` produces — measured, not guessed, by running
+ * main's own compiled rules over the same strings — because the whole point of
+ * the evidence test is that a shape with no evidence must keep the behaviour it
+ * had before this branch existed.
+ *
+ * The three-letter ones from that table — "Map 2:1", "Bus 47:15", "BWV 3:7" —
+ * are NOT here: evidence (d) claims them, deliberately, and they are asserted in
+ * the (d) test above along with what that costs.
+ */
+test('must-NOT: none of the shapes the review measured firing', () => {
+  // A capitalized word with no period, no volume number and no canonical name.
+  detectsNothing('Widescreen 16:9 is standard.', 'Widescreen 16:9 is standard.');
+  detectsNothing('Aspect 16:9 is standard.', 'Aspect 16:9 is standard.');
+  detectsNothing('Lakers 3:1 in the series.', 'Lakers 3:1 in the series.');
+  detectsNothing('Route 66:1 was renumbered.', 'Route 66:1 was renumbered.');
+  detectsNothing('Ratios 3:7 and 4:8 measured.', 'Ratios 3:7 and 4:8 measured.');
+  detectsNothing('Hebrews Street 3:7 nonsense.', 'Hebrews Street 3:7 nonsense.');
+  // …and the ones main READ, which is the half a false positive was taking away.
+  detectsNothing('Score 21:19 in the final set.', 'Score twenty one nineteen in the final set.');
+  detectsNothing('Flight 12:30 boards now.', 'Flight twelve thirty boards now.');
+  detectsNothing('Windows 3:11 was an OS.', 'Windows three eleven was an OS.');
+  detectsNothing('Docket 5:12 was entered.', 'Docket five twelve was entered.');
+  detectsNothing('Recording 12:34 shows the fault.', 'Recording twelve thirty four shows the fault.');
+  detectsNothing('Dilution 1:100 of the reagent.', 'Dilution one one hundred of the reagent.');
+  // Every weekday, which no list of nouns was ever going to hold.
+  detectsNothing('Meeting Tuesday 14:30 tomorrow.', 'Meeting Tuesday fourteen thirty tomorrow.');
+  detectsNothing('Wednesday 9:45 he arrived.', 'Wednesday nine forty five he arrived.');
+  detectsNothing('Then 9:45 he arrived.', 'Then nine forty five he arrived.');
+});
+
+test('scripture: the four kinds of evidence, and nothing else', () => {
+  // (a) an ABBREVIATION — it carries its own period.
+  protects('see Zeph. 3:17 there', ['Zeph. 3:17']);
+  protects('see Pt. 3:7 there', ['Pt. 3:7']);
+  // (b) a VOLUME NUMBER — arabic, roman or ordinal.
+  protects('read 2 Kgs. 2:11 aloud', ['2 Kgs. 2:11']);
+  protects('See II Cor. 5:17 there.', ['II Cor. 5:17']);
+  protects('See III John 1:4 there.', ['III John 1:4']);
+  protects('See 1st John 1:9 there.', ['1st John 1:9']);
+  // (c) a FULL CANONICAL BOOK NAME.
+  protects('Genesis 3:15 is quoted.', ['Genesis 3:15']);
+  protects('Revelation 21:4 says so.', ['Revelation 21:4']);
+  protects('Qoheleth 3:1 says so.', ['Qoheleth 3:1']);
+  // (d) TWO OR THREE LETTERS with no period at all — weak evidence, admitted
+  // because refusing it left every dotless abbreviation unreadable.
+  protects('Ps 23:1 without a period.', ['Ps 23:1']);
+  protects('Jn 3:16 is the famous one.', ['Jn 3:16']);
+  protects('Rev 21:4 says so.', ['Rev 21:4']);
+  protects('Mt 5:3 is the sermon.', ['Mt 5:3']);
+  // …and FOUR letters is where it stops. Every longer dotless word keeps main's
+  // own reading, which the table below pins one by one.
+  assert.deepStrictEqual(detected('Then 9:45 he arrived.'), []);
+  assert.deepStrictEqual(detected('Odds 5:2 against.'), []);
+  assert.deepStrictEqual(detected('Case 5:12 was filed.'), []);
+});
+
+/**
+ * EVIDENCE (d), and the two things that make it affordable.
+ *
+ * A dotless "Ps 23:1" is the same shape as "Map 2:1", so on its own it proves
+ * nothing. It is admitted because refusing it left every dotless abbreviation
+ * UNREADABLE: the model's "Psalm twenty three, verse one" was refused
+ * WORDS_DROPPED, since that relaxation is scoped to detected spans, and the
+ * digits reached the narrator — a regression from this app's own behaviour in
+ * exactly the domain the branch exists for.
+ *
+ * What pays for it is the validator's claim test, which is asserted in
+ * tools/test-tts-number-normalizer.js: a reading that names a canonical book is
+ * held to the chapter-and-verse pause, and one that does not is accepted as the
+ * prose it is. So the SAME detection serves "Jn 3:16" → "John three, verse
+ * sixteen" and "Map 2:1" → "Map two one".
+ *
+ * THE COST, asserted here rather than described: a 2-3 letter token in front of
+ * a c:v is protected, so the book-less rule no longer reads it and the reading
+ * depends on the model. "Bus 47:15" is the measured example.
+ */
+test('scripture: (d) admits the dotless abbreviation, and what that costs', () => {
+  // The four the abbreviation table used to read, back inside the pass.
+  protects('Ps 23:1 without a period.', ['Ps 23:1']);
+  protects('Jn 3:16 is the famous one.', ['Jn 3:16']);
+  protects('Rev 21:4 says so.', ['Rev 21:4']);
+  protects('Mt 5:3 is the sermon.', ['Mt 5:3']);
+  // The same shape that is NOT a book comes with them. `protects` already
+  // asserts the text is unchanged, which IS the cost: main read "Bus 47:15" as
+  // "Bus forty seven fifteen" by rule, and now the model reads it instead.
+  protects('Map 2:1 scale.', ['Map 2:1']);
+  protects('Bus 47:15 leaves hourly.', ['Bus 47:15']);
+  protects('Bach BWV 3:7 hmm.', ['BWV 3:7']);
+  // A MONTH is still refused whether or not it prints its period — Owen's
+  // must-NOT list, and the one word-level exception the detector keeps.
+  assert.deepStrictEqual(detected('Jan 3:7 was the date.'), []);
+  assert.deepStrictEqual(detected('Sep 4:9 was the date.'), []);
+  // …and so is the other grammatical slot: a short word that POINTS at a number
+  // instead of naming a thing. These keep main's reading exactly.
+  detectsNothing('See 20:6 there.', 'See 20:6 there.');
+  detectsNothing('In 20:16 he says', 'In twenty sixteen he says');
+});
+
+test('scripture: the list tail is bounded by what a verse could be', () => {
+  // MEASURED, adversarial review 2026-09-05: the swallow loop had one guard and
+  // took an ordinary number with it, and a swallowed number is a number no rule
+  // can read any more.
+  assert.deepStrictEqual(detected('Quoting Rom. 8:28, 250 members left.'), ['Rom. 8:28']);
+  assert.strictEqual(spoken('Quoting Rom. 8:28, 250 members left.'),
+    'Quoting Rom. 8:28, two hundred fifty members left.');
+  assert.deepStrictEqual(detected('Isa. 5:20 and 1,000 copies went out.'), ['Isa. 5:20']);
+  assert.strictEqual(spoken('Isa. 5:20 and 1,000 copies went out.'),
+    'Isa. 5:20 and one thousand copies went out.');
+  // A 4-digit tail was already refused, and still is.
+  assert.deepStrictEqual(detected('See Ps. 23:1; 1914 was the year.'), ['Ps. 23:1']);
+  // The bound is the highest verse there is — Psalm 119:176 — so a real list of
+  // verses is untouched by it.
+  protects('Ps. 119:97, 101, 176 are cited.', ['Ps. 119:97, 101, 176']);
+});
+
+test('must-NOT: a book name AFTER the digits is no evidence at all', () => {
+  // "at 3:16 John left" must not become a reference. It keeps the book-LESS
+  // reading — plain numbers, no scripture pause — which is what it read before
+  // n6 and what a clock would read too.
+  detectsNothing('at 3:16 John left', 'at three sixteen John left');
+});
+
+test('must-NOT: a reference carrying a meridiem is a clock', () => {
+  detectsNothing('meet at 2:00 p.m. sharp', 'meet at two p.m. sharp');
+  // Even with a capitalized word in front of it: a verse is never followed by a
+  // meridiem, whatever stands before the digits. The clock rule takes the first
+  // (hours one to twelve); the second is past the hours it knows, so the
+  // book-less rule reads it — "fifteen thirty", which is what a twenty-four-hour
+  // time says. Neither is DETECTED, which is the assertion.
+  detectsNothing('Luke 2:30 p.m. oddity', 'Luke two thirty p.m. oddity');
+  detectsNothing('Luke 15:30 p.m. oddity', 'Luke fifteen thirty p.m. oddity');
+});
+
+test('must-NOT: a multi-word book keeps its extra words outside the span', () => {
+  // "Song of Songs 2:1" is detected on its last token, which is all detection
+  // needs — nothing rewrites "Song of", and the model is shown the whole block.
+  protects('Song of Songs 2:1 says', ['Songs 2:1']);
+  protects('Philemon 1:4 says', ['Philemon 1:4']);
+});
+
+test('scripture: a BOOK-LESS reference is read only where the two readings coincide', () => {
+  // No book, so the pass does not know whether these are verses or a clock. At a
+  // verse of ten or more it does not need to — "6:59" is "six fifty nine" either
+  // way — and under ten it does, so those are left for the model. UNCHANGED from
+  // n5, and deliberately not given the scripture comma.
   reads('The meeting ran to 5:45', 'The meeting ran to five forty five');
-  // Under ten they do NOT: "10:05" could be "ten oh five". Left for the model.
+  reads('It was 6:59 p.m. exactly', 'It was six fifty nine p.m. exactly');
   untouched('The train left at 10:05 sharp');
   untouched('at 7:02 that morning');
 });
@@ -153,49 +438,41 @@ test('clock: a meridiem or an on-the-hour time is a clock, never chapter and ver
   reads('at 10:05 am the bell rang', 'at ten oh five am the bell rang');
   reads('by 7:30 P.M.', 'by seven thirty P.M.');
   reads('The service was at 6:00', "The service was at six o'clock");
-  assert.deepStrictEqual(claims('at 2:00 p.m. and again at 3:15 p.m.').map((c) => c[0]), ['clock', 'clock']);
-  // Scripture still wins its own shapes: a verse of zero does not exist, and a
-  // meridiem never follows a reference.
-  reads('John 3:16 says so', 'John three sixteen says so');
-  reads('(Leviticus 19:31; 20:6)', '(Leviticus nineteen thirty one; twenty six)');
+  assert.deepStrictEqual(claims('at 2:00 p.m. and again at 3:15 p.m.').map((c) => c[0]),
+    ['clock', 'clock']);
   // A clock range stays whole for the model.
   untouched('open 9:00-5:00 daily');
 });
 
-test('scripture: a bare reference CONTINUING a book-anchored list is scripture', () => {
-  // The n2 acceptance run (2026-09-02) left "20:6" to the model, which read it
-  // "twenty". A reference joined to a named one by ; , or "and" is a verse of
-  // that book, never a clock time — whatever the verse number.
-  reads('(Leviticus 19:31; 20:6)', '(Leviticus nineteen thirty one; twenty six)');
-  reads('Genesis 6:11, 13 and 7:1 say so', 'Genesis six eleven, thirteen and seven one say so');
-  reads('see Isa. 5:20, 6:3', 'see Isaiah five twenty, six three');
-  // Any other word between them breaks the chain: this is a time again.
-  assert.deepStrictEqual(claims('Lev. 19:31 and then 7:02'), [['scripture', 'Lev. 19:31']]);
-  assert.deepStrictEqual(claims('Lev. 19:31. At 7:02 he left'), [['scripture', 'Lev. 19:31']]);
+/**
+ * THE BOOK TABLE, WHERE IT NOW LIVES — as evidence, never as a rule.
+ *
+ * `tools/fixtures/scripture-readings.json` is ninety-nine references: the
+ * sixty-six books in the abbreviations a publisher prints, the deuterocanon, the
+ * shapes (ranges, lists, "ff.", chapter-only), and the readings measured off the
+ * deathstalker corpus. The model is judged against the READINGS by the
+ * Ollama-gated probe in tools/test-tts-number-normalizer.js.
+ *
+ * What is answerable HERE, offline, is the half that is this file's: every one
+ * of those references must be DETECTED, and detected whole. A book the detector
+ * misses is a book the model is never asked about, and its digits are narrated.
+ */
+test('scripture: every reference in the evidence set is detected, whole', () => {
+  const evidence = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'scripture-readings.json'), 'utf8'));
+  assert.ok(evidence.cases.length >= 90, `${evidence.cases.length} cases`);
+  for (const c of evidence.cases) {
+    assert.deepStrictEqual(detected(c.in), [c.find], c.id);
+    assert.strictEqual(spoken(c.in), c.in, `${c.id}: a rule rewrote a protected reference`);
+    assert.ok(Array.isArray(c.accept) && c.accept.length > 0, `${c.id}: no reading declared`);
+  }
 });
 
 test('scripture: a clock RANGE is left whole, never half-read', () => {
-  // "6:00" is a verse under ten and would be declined on its own, which would
-  // leave "five thirty-6:00" — half a range, in two notations. The whole shape
-  // is blocked instead.
   untouched('from 5:30-6:00 today');
   // Two separate times, both past the coincidence point, are just two times.
   reads('between 9:15 and 10:45 he waited',
     'between nine fifteen and ten forty five he waited');
-});
-
-test('scripture: "ff." is read "and following", never dropped', () => {
-  reads('Matthew 5:16ff. said so', 'Matthew five sixteen and following said so');
-});
-
-test('scripture: only the REFERENCE is claimed, never what trails it', () => {
-  // Owen's two cases. The scripture rule takes the reference and stops.
-  assert.deepStrictEqual(claims('Genesis 6:11, 13')[0], ['scripture', '6:11']);
-  assert.deepStrictEqual(claims('Job 41:1–2, 14–34')[0], ['scripture', '41:1–2']);
-  // A verse range trailing a reference is a dash between digits, which no rule
-  // touches — so "14–34" reaches the model exactly as printed.
-  assert.strictEqual(spoken('Job 41:1–2, 14–34'),
-    'Job forty one one through two, 14–34');
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -436,7 +713,10 @@ test('running the rules on their own output changes nothing', () => {
 });
 
 test('every offset is against the ORIGINAL text, exactly', () => {
-  const text = 'On 23 March 1933 he read 2 Cor. 10:4 and paid $5.50 for it.';
+  // No scripture reference in this line on purpose: a reference is PROTECTED
+  // under n6, so it produces no rewrite to have an offset. The offsets under
+  // test are the ones rules actually make.
+  const text = 'On 23 March 1933 he read 250 pages and paid $5.50 for it.';
   const out = read(text);
   assert.ok(out.rewrites.length >= 3, `three shapes at least: ${JSON.stringify(out.rewrites)}`);
   for (const edit of out.rewrites) {

@@ -8723,9 +8723,9 @@ export const NARRATION_TEXT_STAMP_NAME = 'bookforge:narration-text';
  * 1 -> 2 (2026-09-04): `punctuationRefused` became a required field, and the
  * validator learned to check that a reading is a reading. Neither is a change to
  * the PUNCTUATION spec, so bumping `PUNCTUATION_SPEC_VERSION` would have told
- * the training side a rule moved when none did; and `NORMALIZER_VERSION` is n5
- * either way because n5 has never shipped. What did change is what a stamp
- * MEANS, so books stamped by an earlier build of this branch must read stale —
+ * the training side a rule moved when none did; and `NORMALIZER_VERSION` moved on
+ * its own account (n5 -> n6, the scripture ruling of 2026-09-05). What did change
+ * here is what a stamp MEANS, so books stamped by an earlier build of this branch must read stale —
  * by rule, from this number, rather than by accident.
  */
 export const NARRATION_TEXT_STAMP_VERSION = 2;

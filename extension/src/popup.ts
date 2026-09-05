@@ -12,6 +12,7 @@
  * surfaced — reading is driven from the page's own controls now.
  */
 
+import type { EngineInfo } from './protocol';
 import {
   IDLE_RECORDING,
   PlaybackStatus,
@@ -44,6 +45,7 @@ const idleEl = $('idle') as HTMLSelectElement;
 const bufferEl = $('bufferBeforePlaying') as HTMLInputElement;
 const bufferNote = $('bufferNote') as HTMLDivElement;
 const workersEl = $('workers') as HTMLInputElement;
+const engineEl = $('engine') as HTMLSelectElement;
 const applyEngineBtn = $('applyEngine') as HTMLButtonElement;
 const engineNote = $('engineNote') as HTMLDivElement;
 const recStartBtn = $('recStart') as HTMLButtonElement;
@@ -299,6 +301,26 @@ let voicesSig: string | null = null;
 // progress instead of the restimed live topology.
 let restarting = false;
 
+// The engine list, rebuilt only when it actually changes — same reason the voice
+// list is: a 300 ms snapshot tick must not reset a dropdown mid-interaction.
+let enginesSig: string | null = null;
+
+function buildEngineOptions(engines: EngineInfo[], current: string | null): void {
+  engineEl.textContent = '';
+  for (const e of engines) {
+    const o = document.createElement('option');
+    o.value = e.id;
+    // The reason rides in the label as well as the tooltip. A popup is 300px wide
+    // and a title attribute is invisible on a touchpad; "Higgs (unavailable)" at
+    // least says why the click did nothing.
+    o.textContent = e.available ? e.name : `${e.name} (unavailable)`;
+    o.disabled = !e.available;
+    if (e.reason) o.title = e.reason;
+    engineEl.appendChild(o);
+  }
+  if (current) engineEl.value = current;
+}
+
 function buildVoiceOptions(voices: string[]): void {
   // Keep the saved voice selectable even if the engine hasn't reported voices yet.
   const list = selectedVoice && !voices.includes(selectedVoice) ? [selectedVoice, ...voices] : voices;
@@ -320,6 +342,22 @@ function renderEngine(): void {
   const voices = s?.voices ?? [];
   const config = s?.config ?? null;
   const connected = !!s?.connected;
+
+  // The engine chooser is only drawn when the server advertises one — an older
+  // server sends no `engines`, and a chooser with nothing in it is worse than none.
+  const engines = s?.engines ?? [];
+  // `classList.toggle('hidden', ...)`, like every other row in this file. This line
+  // used `toggleAttribute('hidden')` — a second mechanism for one job, three lines
+  // from `workersEl.closest('.field')?.classList.toggle('hidden', ...)`.
+  //
+  // Both work TODAY only because `.field` declares no `display` of its own, so the
+  // attribute's UA default is not overridden. The popup styles `.field.hidden`
+  // explicitly; the day someone gives `.field` a `display: flex`, the attribute
+  // silently stops hiding anything and the class keeps working.
+  engineEl.parentElement?.classList.toggle('hidden', engines.length === 0);
+  const eSig = engines.map((e) => `${e.id}:${e.available}`).join('|') + `|${s?.engine ?? ''}`;
+  if (eSig !== enginesSig) { enginesSig = eSig; buildEngineOptions(engines, s?.engine ?? null); }
+  engineEl.disabled = !connected || restarting;
 
   const sig = voices.join('|');
   if (sig !== voicesSig) { voicesSig = sig; buildVoiceOptions(voices); }
@@ -442,6 +480,26 @@ voiceEl.addEventListener('change', () => {
   void chrome.storage.local.set({ voice: selectedVoice });
   send({ target: 'background', cmd: 'set-voice', voice: selectedVoice });
   if (!restarting) setNote(`Loading ${selectedVoice}…`, '');
+});
+
+engineEl.addEventListener('change', () => {
+  // AN ENGINE SWITCH IS A RESTART, always. The two engines are one resident
+  // process whose engine was fixed by NARRATOR_ENGINE when it was spawned, so a
+  // selection that did not restart would leave the old engine answering while
+  // every picker showed the new one — audio that is fine, in the wrong voice, with
+  // nothing saying so.
+  //
+  // The voice is deliberately NOT sent along: it belongs to the OUTGOING engine's
+  // catalog and means nothing in the incoming one. The server picks that engine's
+  // own default and reports it back, and the voice list redraws from the `config`
+  // reply.
+  const engine = engineEl.value;
+  if (!engine || engine === snapshot?.engine) return;
+  restarting = true;
+  engineEl.disabled = true;
+  applyEngineBtn.disabled = true;
+  setNote(`Switching to ${engine}\u2026 (can take ~a minute)`, '');
+  send({ target: 'background', cmd: 'restart-engine', engine });
 });
 
 applyEngineBtn.addEventListener('click', () => {

@@ -10,9 +10,9 @@
  *     {action:'status'}
  *     {action:'engine.start', voice?}
  *     {action:'engine.stop'}
- *     {action:'engine.restart', voice?, cpuWorkers?}   // apply a new worker count / voice
+ *     {action:'engine.restart', engine?, voice?, cpuWorkers?}  // switch engine / voice / workers and restart
  *     {action:'config.get'}                            // read engine topology
- *     {action:'config.set', cpuWorkers?, voice?, idleMinutes?}  // persist worker count; warm voice; idle window
+ *     {action:'config.set', engine?, cpuWorkers?, voice?, idleMinutes?}  // select engine; persist worker count; warm voice; idle window
  *     {action:'speak',  requestId, text, settings?:{voice?, speed?, temperature?, topP?, repetitionPenalty?}, preempt?, background?, startSentence?, fastStart?}
  *     {action:'playhead', requestId, sentenceIndex}   // advances the lookahead window; promotes a background block to playing
  *     {action:'cancel', requestId}
@@ -101,6 +101,7 @@ import {
   getStreamConfigPayload,
   getDefaultStreamVoice,
   setDefaultStreamVoice,
+  setStreamConfig,
   onActiveEngineState,
   onStreamConfigChanged,
 } from './streaming-engine';
@@ -844,6 +845,55 @@ export class TtsApiServer {
    * resized live), so this is the "save settings" path; engine.restart applies it.
    */
   private async handleConfigSet(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
+    // WHICH ENGINE. Applied FIRST, because everything after it — the voice, the
+    // worker count — is per-engine: a voice is a name in one engine's catalog and
+    // means nothing in the other's, so setting it against the outgoing engine and
+    // then switching would persist it in the wrong place.
+    //
+    // It does not restart a running engine. `setSelectedEngineName` stops the
+    // previously-active pool and the choice takes effect on the next start, which
+    // is what `engine.restart` is for — a client that wants the switch NOW sends
+    // both, exactly as it already does for cpuWorkers.
+    //
+    // An unknown or unavailable name is REFUSED by setStreamConfig, by name, and
+    // the refusal is reported rather than swallowed: a client told "ok" while the
+    // old engine kept rendering is the failure this whole message exists to avoid.
+    // A PRESENT but unusable `engine` is refused, not skipped. `{"engine": 123}` or
+    // `{"engine": ""}` used to fall through to a plain `config` reply with the old
+    // engine still selected — the client is told the message succeeded and goes on
+    // believing it switched. Absent is a different thing and stays a no-op.
+    if ('engine' in msg && (typeof msg.engine !== 'string' || !msg.engine)) {
+      this.send(ws, {
+        type: 'error',
+        message: `engine must be a non-empty string; got ${JSON.stringify(msg.engine)}`,
+      });
+      this.send(ws, { type: 'config', ...this.configPayload() });
+      return;
+    }
+    if ('engine' in msg && (typeof msg.engine !== 'string' || !msg.engine)) {
+      this.send(ws, {
+        type: 'error',
+        message: `engine must be a non-empty string; got ${JSON.stringify(msg.engine)}`,
+      });
+      this.send(ws, { type: 'status', ...this.statusPayload() });
+      return;
+    }
+    if (typeof msg.engine === 'string' && msg.engine) {
+      try {
+        await setStreamConfig({ engine: msg.engine });
+      } catch (err) {
+        this.send(ws, {
+          type: 'error',
+          message: err instanceof Error ? err.message : `failed to select engine '${msg.engine}'`,
+        });
+        this.send(ws, { type: 'config', ...this.configPayload() });
+        return;
+      }
+    }
+    // Worker count, AFTER the switch — `applyClientWorkerCount` reads
+    // `getActiveEngine()`, so running it first would write the user's setting onto
+    // the engine they are leaving and the switch would discard it. That is what the
+    // comment above has always claimed and what the code did not do.
     this.applyClientWorkerCount(msg);
     // Idle-shutdown window (minutes; 0 = never). Takes effect on the running
     // engine's next sweep, so there's nothing to restart.
@@ -874,9 +924,38 @@ export class TtsApiServer {
    * clears it) so a resident server stays resident after the restart.
    */
   private async handleRestart(ws: WebSocket, msg: Record<string, unknown>): Promise<void> {
-    this.applyClientWorkerCount(msg);
-    const wasService = getActiveEngine().isServiceMode();
     const voice = typeof msg.voice === 'string' && msg.voice ? msg.voice : undefined;
+
+    // Residency is captured BEFORE the switch, deliberately, and it is the one thing
+    // here that is not per-engine. "Is a client holding this server resident" is a
+    // property of the session, not of whichever pool is loaded: a user who switches
+    // engine and restarts wants the server still resident afterwards. Reading it
+    // after the switch would ask a pool that has not been started yet, get `false`,
+    // and quietly drop residency on every engine change.
+    const wasService = getActiveEngine().isServiceMode();
+
+    // The engine switch happens BEFORE the teardown below, so `getActiveEngine()`
+    // from here on is the engine being restarted INTO. Selecting one already stops
+    // the outgoing pool, which is why this is safe to do first and why the
+    // endSession below is not redundant — it covers the no-switch case.
+    if (typeof msg.engine === 'string' && msg.engine) {
+      try {
+        await setStreamConfig({ engine: msg.engine });
+      } catch (err) {
+        this.send(ws, {
+          type: 'error',
+          message: err instanceof Error ? err.message : `failed to select engine '${msg.engine}'`,
+        });
+        this.send(ws, { type: 'status', ...this.statusPayload() });
+        return;
+      }
+    }
+
+    // The worker count, on the other hand, IS per-engine, and it goes after the
+    // switch. Before it, `applyClientWorkerCount` read `getActiveEngine()` and wrote
+    // the user's setting onto the pool they were leaving, where the switch discarded
+    // it — a silently ignored setting rather than a visible failure.
+    this.applyClientWorkerCount(msg);
 
     await getActiveEngine().endSession();
     // A restart is a settings action, not a play action — no audio is pending, so

@@ -1,0 +1,1030 @@
+{
+  "note": "THE READING of a scripture reference is the MODEL's, not a rule's (Owen, 2026-09-05). This file is the evidence that judges it: every case is a reference the deterministic pass DETECTS and protects, with the readings a narrator is measured to produce. THE DEFAULT IS MEASURED, NOT CHOSEN: whisper over the 23 scripture references with numbers in the deathstalker corpus (E:\\training\\deathstalker\\build\\ds_ad4s\\scripture_spoken_forms_report.txt, 2026-09-05) found 22 of 23 saying \"verse\"/\"verses\", one bare, NONE saying \"chapter\", and \"Psalm\" singular before a number 4 times out of 4. So the default reading is \"<Book> <chapter>, verse <n>\" and the bare comma form is accepted beside it. `accept` lists the default first. Comparison ignores hyphens. A VOLUME NUMBER may be arabic, roman or ordinal — \"1 John\", \"II Cor.\", \"1st John\" — and all three are read the same way. Run offline (tools/test-tts-number-rules.js) this file proves the DETECTOR sees every shape; run with a model (tools/test-tts-number-normalizer.js --scripture <model>) it proves the model READS them.",
+  "cases": [
+    {
+      "id": "corpus-first-john-one-nine",
+      "in": "He turned to 1 John 1:9 and read it out.",
+      "find": "1 John 1:9",
+      "accept": [
+        "First John one, verse nine",
+        "First John one verse nine",
+        "First John one, nine"
+      ],
+      "measured": "clip cd_cd_00000065 — the narrator SPEAKS \"1 John 1.9\" as \"First John one nine\": the ONE bare reading of the twenty-three, and the reason the bare form is accepted."
+    },
+    {
+      "id": "corpus-romans-five-seventeen",
+      "in": "He turned to Rom. 5:17 and read it out.",
+      "find": "Rom. 5:17",
+      "accept": [
+        "Romans five, verse seventeen",
+        "Romans five verse seventeen",
+        "Romans five, seventeen"
+      ],
+      "measured": "clip cd_cd_00000159 — \"Romans 5 verse 17\", the word \"verse\" with no comma."
+    },
+    {
+      "id": "corpus-james-one-seventeen",
+      "in": "He turned to Jas. 1:17 and read it out.",
+      "find": "Jas. 1:17",
+      "accept": [
+        "James one, verse seventeen",
+        "James one verse seventeen",
+        "James one, seventeen"
+      ],
+      "measured": "clip cd_cd_00000137 — \"James 1, verse 17\": the DEFAULT form, comma then \"verse\"."
+    },
+    {
+      "id": "corpus-psalm-forty-two-verses",
+      "in": "He turned to Ps. 42:1-2 and read it out.",
+      "find": "Ps. 42:1-2",
+      "accept": [
+        "Psalm forty two, verses one and two",
+        "Psalm forty two, verses one to two",
+        "Psalm forty two, verse one to two",
+        "Psalm forty two, one to two"
+      ],
+      "measured": "clip cd_cd_00000119 — \"Psalm 42, verses 1 and 2\". SINGULAR \"Psalm\" before a number (4/4 in the corpus), and a RANGE takes the plural \"verses\"."
+    },
+    {
+      "id": "corpus-matthew-twelve-range",
+      "in": "He turned to Matt. 12:34-36 and read it out.",
+      "find": "Matt. 12:34-36",
+      "accept": [
+        "Matthew twelve, verses thirty four to thirty six",
+        "Matthew twelve, verses thirty four through thirty six",
+        "Matthew twelve, thirty four to thirty six"
+      ],
+      "measured": "clip cd_cd_00000152 — \"Matthew 12, verses 34-36\", the measured RANGE form."
+    },
+    {
+      "id": "corpus-psalm-one-nineteen-list",
+      "in": "He turned to Ps. 119:97, 101, 102 and read it out.",
+      "find": "Ps. 119:97, 101, 102",
+      "accept": [
+        "Psalm one hundred nineteen, verse ninety seven, one hundred one, and one hundred two",
+        "Psalm one hundred nineteen, verses ninety seven, one hundred one, and one hundred two"
+      ],
+      "measured": "the measured LIST form — one \"verse\", then the verses, with \"and\" before the last."
+    },
+    {
+      "id": "corpus-isaiah-fifty-seven",
+      "in": "He turned to Isa. 57:20 and read it out.",
+      "find": "Isa. 57:20",
+      "accept": [
+        "Isaiah fifty seven, verse twenty",
+        "Isaiah fifty seven verse twenty",
+        "Isaiah fifty seven, twenty"
+      ],
+      "measured": "clip cd_cd_00000141 — \"Isaiah 57 verse 20\"."
+    },
+    {
+      "id": "roman-volume-second",
+      "in": "See II Cor. 5:17 there.",
+      "find": "II Cor. 5:17",
+      "accept": [
+        "Second Corinthians five, verse seventeen",
+        "Second Corinthians five verse seventeen",
+        "Second Corinthians five, seventeen"
+      ],
+      "measured": "A ROMAN volume numeral is ordinary in older Anglo-American religious typography, which is the corpus this branch exists for. With the numeral standing OUTSIDE the detected span both readings the model could offer were refused — one WORDS_DROPPED, one CITATION_CODE — and the reference was narrated as digits (adversarial review, 2026-09-05)."
+    },
+    {
+      "id": "roman-volume-third",
+      "in": "See III John 1:4 there.",
+      "find": "III John 1:4",
+      "accept": [
+        "Third John one, verse four",
+        "Third John one verse four",
+        "Third John one, four"
+      ]
+    },
+    {
+      "id": "ordinal-volume-first",
+      "in": "See 1st John 1:9 there.",
+      "find": "1st John 1:9",
+      "accept": [
+        "First John one, verse nine",
+        "First John one verse nine",
+        "First John one, nine"
+      ],
+      "measured": "The printed ordinal form. Before the volume group admitted it, the span was \"John 1:9\" and the stranded \"1st\" was read by the ordinal rule as a lowercase \"first\"."
+    },
+    {
+      "id": "shape-cross-chapter-range",
+      "in": "He cited Col. 3:19-4:1 and the parallels.",
+      "find": "Col. 3:19-4:1",
+      "accept": [
+        "Colossians three, verse nineteen to four, verse one",
+        "Colossians three, nineteen to four, one",
+        "Colossians three verse nineteen to four verse one"
+      ]
+    },
+    {
+      "id": "shape-list-two-chapters",
+      "in": "Both Lev. 19:31; 20:6 forbid it.",
+      "find": "Lev. 19:31; 20:6",
+      "accept": [
+        "Leviticus nineteen, verse thirty one; twenty, verse six",
+        "Leviticus nineteen, thirty one; twenty, six",
+        "Leviticus nineteen verse thirty one; twenty verse six"
+      ]
+    },
+    {
+      "id": "shape-following",
+      "in": "Read Matt. 5:16ff. tonight.",
+      "find": "Matt. 5:16ff.",
+      "accept": [
+        "Matthew five, verse sixteen and following",
+        "Matthew five verse sixteen and following",
+        "Matthew five, sixteen and following"
+      ]
+    },
+    {
+      "id": "shape-chapter-only",
+      "in": "He read all of 1 Pet. 3 aloud.",
+      "find": "1 Pet. 3",
+      "accept": [
+        "First Peter three"
+      ]
+    },
+    {
+      "id": "shape-numbered-book-alone",
+      "in": "He was quoting 2 Corinthians at length.",
+      "find": "2 Corinthians",
+      "accept": [
+        "Second Corinthians"
+      ]
+    },
+    {
+      "id": "book-gen",
+      "in": "He read Gen. 1:1 aloud.",
+      "find": "Gen. 1:1",
+      "accept": [
+        "Genesis one, verse one",
+        "Genesis one verse one",
+        "Genesis one, one"
+      ]
+    },
+    {
+      "id": "book-genesis",
+      "in": "He read Genesis 3:15 aloud.",
+      "find": "Genesis 3:15",
+      "accept": [
+        "Genesis three, verse fifteen",
+        "Genesis three verse fifteen",
+        "Genesis three, fifteen"
+      ]
+    },
+    {
+      "id": "book-ex",
+      "in": "He read Ex. 3:14 aloud.",
+      "find": "Ex. 3:14",
+      "accept": [
+        "Exodus three, verse fourteen",
+        "Exodus three verse fourteen",
+        "Exodus three, fourteen"
+      ]
+    },
+    {
+      "id": "book-exod",
+      "in": "He read Exod. 20:3 aloud.",
+      "find": "Exod. 20:3",
+      "accept": [
+        "Exodus twenty, verse three",
+        "Exodus twenty verse three",
+        "Exodus twenty, three"
+      ]
+    },
+    {
+      "id": "book-lev",
+      "in": "He read Lev. 19:18 aloud.",
+      "find": "Lev. 19:18",
+      "accept": [
+        "Leviticus nineteen, verse eighteen",
+        "Leviticus nineteen verse eighteen",
+        "Leviticus nineteen, eighteen"
+      ]
+    },
+    {
+      "id": "book-num",
+      "in": "He read Num. 6:24 aloud.",
+      "find": "Num. 6:24",
+      "accept": [
+        "Numbers six, verse twenty four",
+        "Numbers six verse twenty four",
+        "Numbers six, twenty four"
+      ]
+    },
+    {
+      "id": "book-deut",
+      "in": "He read Deut. 6:4 aloud.",
+      "find": "Deut. 6:4",
+      "accept": [
+        "Deuteronomy six, verse four",
+        "Deuteronomy six verse four",
+        "Deuteronomy six, four"
+      ]
+    },
+    {
+      "id": "book-josh",
+      "in": "He read Josh. 1:9 aloud.",
+      "find": "Josh. 1:9",
+      "accept": [
+        "Joshua one, verse nine",
+        "Joshua one verse nine",
+        "Joshua one, nine"
+      ]
+    },
+    {
+      "id": "book-judg",
+      "in": "He read Judg. 6:12 aloud.",
+      "find": "Judg. 6:12",
+      "accept": [
+        "Judges six, verse twelve",
+        "Judges six verse twelve",
+        "Judges six, twelve"
+      ]
+    },
+    {
+      "id": "book-ruth",
+      "in": "He read Ruth 1:16 aloud.",
+      "find": "Ruth 1:16",
+      "accept": [
+        "Ruth one, verse sixteen",
+        "Ruth one verse sixteen",
+        "Ruth one, sixteen"
+      ]
+    },
+    {
+      "id": "book-1-sam",
+      "in": "He read 1 Sam. 3:10 aloud.",
+      "find": "1 Sam. 3:10",
+      "accept": [
+        "First Samuel three, verse ten",
+        "First Samuel three verse ten",
+        "First Samuel three, ten"
+      ]
+    },
+    {
+      "id": "book-2-sam",
+      "in": "He read 2 Sam. 7:12 aloud.",
+      "find": "2 Sam. 7:12",
+      "accept": [
+        "Second Samuel seven, verse twelve",
+        "Second Samuel seven verse twelve",
+        "Second Samuel seven, twelve"
+      ]
+    },
+    {
+      "id": "book-1-kgs",
+      "in": "He read 1 Kgs. 19:12 aloud.",
+      "find": "1 Kgs. 19:12",
+      "accept": [
+        "First Kings nineteen, verse twelve",
+        "First Kings nineteen verse twelve",
+        "First Kings nineteen, twelve"
+      ]
+    },
+    {
+      "id": "book-2-kings",
+      "in": "He read 2 Kings 2:11 aloud.",
+      "find": "2 Kings 2:11",
+      "accept": [
+        "Second Kings two, verse eleven",
+        "Second Kings two verse eleven",
+        "Second Kings two, eleven"
+      ]
+    },
+    {
+      "id": "book-1-chr",
+      "in": "He read 1 Chr. 16:34 aloud.",
+      "find": "1 Chr. 16:34",
+      "accept": [
+        "First Chronicles sixteen, verse thirty four",
+        "First Chronicles sixteen verse thirty four",
+        "First Chronicles sixteen, thirty four"
+      ]
+    },
+    {
+      "id": "book-2-chron",
+      "in": "He read 2 Chron. 7:14 aloud.",
+      "find": "2 Chron. 7:14",
+      "accept": [
+        "Second Chronicles seven, verse fourteen",
+        "Second Chronicles seven verse fourteen",
+        "Second Chronicles seven, fourteen"
+      ]
+    },
+    {
+      "id": "book-ezra",
+      "in": "He read Ezra 7:10 aloud.",
+      "find": "Ezra 7:10",
+      "accept": [
+        "Ezra seven, verse ten",
+        "Ezra seven verse ten",
+        "Ezra seven, ten"
+      ]
+    },
+    {
+      "id": "book-neh",
+      "in": "He read Neh. 8:10 aloud.",
+      "find": "Neh. 8:10",
+      "accept": [
+        "Nehemiah eight, verse ten",
+        "Nehemiah eight verse ten",
+        "Nehemiah eight, ten"
+      ]
+    },
+    {
+      "id": "book-esth",
+      "in": "He read Esth. 4:14 aloud.",
+      "find": "Esth. 4:14",
+      "accept": [
+        "Esther four, verse fourteen",
+        "Esther four verse fourteen",
+        "Esther four, fourteen"
+      ]
+    },
+    {
+      "id": "book-job",
+      "in": "He read Job 19:25 aloud.",
+      "find": "Job 19:25",
+      "accept": [
+        "Job nineteen, verse twenty five",
+        "Job nineteen verse twenty five",
+        "Job nineteen, twenty five"
+      ]
+    },
+    {
+      "id": "book-ps",
+      "in": "He read Ps. 23:1 aloud.",
+      "find": "Ps. 23:1",
+      "accept": [
+        "Psalm twenty three, verse one",
+        "Psalm twenty three verse one",
+        "Psalm twenty three, one"
+      ]
+    },
+    {
+      "id": "book-psa",
+      "in": "He read Psa. 63:6 aloud.",
+      "find": "Psa. 63:6",
+      "accept": [
+        "Psalm sixty three, verse six",
+        "Psalm sixty three verse six",
+        "Psalm sixty three, six"
+      ]
+    },
+    {
+      "id": "book-pss",
+      "in": "He read Pss. 42:11 aloud.",
+      "find": "Pss. 42:11",
+      "accept": [
+        "Psalms forty two, verse eleven",
+        "Psalms forty two verse eleven",
+        "Psalms forty two, eleven"
+      ]
+    },
+    {
+      "id": "book-prov",
+      "in": "He read Prov. 3:5 aloud.",
+      "find": "Prov. 3:5",
+      "accept": [
+        "Proverbs three, verse five",
+        "Proverbs three verse five",
+        "Proverbs three, five"
+      ]
+    },
+    {
+      "id": "book-eccl",
+      "in": "He read Eccl. 3:1 aloud.",
+      "find": "Eccl. 3:1",
+      "accept": [
+        "Ecclesiastes three, verse one",
+        "Ecclesiastes three verse one",
+        "Ecclesiastes three, one"
+      ]
+    },
+    {
+      "id": "book-eccles",
+      "in": "He read Eccles. 12:13 aloud.",
+      "find": "Eccles. 12:13",
+      "accept": [
+        "Ecclesiastes twelve, verse thirteen",
+        "Ecclesiastes twelve verse thirteen",
+        "Ecclesiastes twelve, thirteen"
+      ]
+    },
+    {
+      "id": "book-song",
+      "in": "He read Song 2:1 aloud.",
+      "find": "Song 2:1",
+      "accept": [
+        "Song of Songs two, verse one",
+        "Song of Songs two verse one",
+        "Song of Songs two, one"
+      ]
+    },
+    {
+      "id": "book-cant",
+      "in": "He read Cant. 8:6 aloud.",
+      "find": "Cant. 8:6",
+      "accept": [
+        "Song of Songs eight, verse six",
+        "Song of Songs eight verse six",
+        "Song of Songs eight, six"
+      ]
+    },
+    {
+      "id": "book-isa",
+      "in": "He read Isa. 57:20 aloud.",
+      "find": "Isa. 57:20",
+      "accept": [
+        "Isaiah fifty seven, verse twenty",
+        "Isaiah fifty seven verse twenty",
+        "Isaiah fifty seven, twenty"
+      ]
+    },
+    {
+      "id": "book-jer",
+      "in": "He read Jer. 29:11 aloud.",
+      "find": "Jer. 29:11",
+      "accept": [
+        "Jeremiah twenty nine, verse eleven",
+        "Jeremiah twenty nine verse eleven",
+        "Jeremiah twenty nine, eleven"
+      ]
+    },
+    {
+      "id": "book-lam",
+      "in": "He read Lam. 3:22 aloud.",
+      "find": "Lam. 3:22",
+      "accept": [
+        "Lamentations three, verse twenty two",
+        "Lamentations three verse twenty two",
+        "Lamentations three, twenty two"
+      ]
+    },
+    {
+      "id": "book-ezek",
+      "in": "He read Ezek. 36:26 aloud.",
+      "find": "Ezek. 36:26",
+      "accept": [
+        "Ezekiel thirty six, verse twenty six",
+        "Ezekiel thirty six verse twenty six",
+        "Ezekiel thirty six, twenty six"
+      ]
+    },
+    {
+      "id": "book-dan",
+      "in": "He read Dan. 3:17 aloud.",
+      "find": "Dan. 3:17",
+      "accept": [
+        "Daniel three, verse seventeen",
+        "Daniel three verse seventeen",
+        "Daniel three, seventeen"
+      ]
+    },
+    {
+      "id": "book-hos",
+      "in": "He read Hos. 6:6 aloud.",
+      "find": "Hos. 6:6",
+      "accept": [
+        "Hosea six, verse six",
+        "Hosea six verse six",
+        "Hosea six, six"
+      ]
+    },
+    {
+      "id": "book-joel",
+      "in": "He read Joel 2:28 aloud.",
+      "find": "Joel 2:28",
+      "accept": [
+        "Joel two, verse twenty eight",
+        "Joel two verse twenty eight",
+        "Joel two, twenty eight"
+      ]
+    },
+    {
+      "id": "book-amos",
+      "in": "He read Amos 5:24 aloud.",
+      "find": "Amos 5:24",
+      "accept": [
+        "Amos five, verse twenty four",
+        "Amos five verse twenty four",
+        "Amos five, twenty four"
+      ]
+    },
+    {
+      "id": "book-obad",
+      "in": "He read Obad. 1:15 aloud.",
+      "find": "Obad. 1:15",
+      "accept": [
+        "Obadiah one, verse fifteen",
+        "Obadiah one verse fifteen",
+        "Obadiah one, fifteen"
+      ]
+    },
+    {
+      "id": "book-jon",
+      "in": "He read Jon. 3:4 aloud.",
+      "find": "Jon. 3:4",
+      "accept": [
+        "Jonah three, verse four",
+        "Jonah three verse four",
+        "Jonah three, four"
+      ]
+    },
+    {
+      "id": "book-jonah",
+      "in": "He read Jonah 2:9 aloud.",
+      "find": "Jonah 2:9",
+      "accept": [
+        "Jonah two, verse nine",
+        "Jonah two verse nine",
+        "Jonah two, nine"
+      ]
+    },
+    {
+      "id": "book-mic",
+      "in": "He read Mic. 6:8 aloud.",
+      "find": "Mic. 6:8",
+      "accept": [
+        "Micah six, verse eight",
+        "Micah six verse eight",
+        "Micah six, eight"
+      ]
+    },
+    {
+      "id": "book-nah",
+      "in": "He read Nah. 1:7 aloud.",
+      "find": "Nah. 1:7",
+      "accept": [
+        "Nahum one, verse seven",
+        "Nahum one verse seven",
+        "Nahum one, seven"
+      ]
+    },
+    {
+      "id": "book-hab",
+      "in": "He read Hab. 2:4 aloud.",
+      "find": "Hab. 2:4",
+      "accept": [
+        "Habakkuk two, verse four",
+        "Habakkuk two verse four",
+        "Habakkuk two, four"
+      ]
+    },
+    {
+      "id": "book-zeph",
+      "in": "He read Zeph. 3:17 aloud.",
+      "find": "Zeph. 3:17",
+      "accept": [
+        "Zephaniah three, verse seventeen",
+        "Zephaniah three verse seventeen",
+        "Zephaniah three, seventeen"
+      ]
+    },
+    {
+      "id": "book-hag",
+      "in": "He read Hag. 2:9 aloud.",
+      "find": "Hag. 2:9",
+      "accept": [
+        "Haggai two, verse nine",
+        "Haggai two verse nine",
+        "Haggai two, nine"
+      ]
+    },
+    {
+      "id": "book-zech",
+      "in": "He read Zech. 4:6 aloud.",
+      "find": "Zech. 4:6",
+      "accept": [
+        "Zechariah four, verse six",
+        "Zechariah four verse six",
+        "Zechariah four, six"
+      ]
+    },
+    {
+      "id": "book-mal",
+      "in": "He read Mal. 3:10 aloud.",
+      "find": "Mal. 3:10",
+      "accept": [
+        "Malachi three, verse ten",
+        "Malachi three verse ten",
+        "Malachi three, ten"
+      ]
+    },
+    {
+      "id": "book-matt",
+      "in": "He read Matt. 5:16 aloud.",
+      "find": "Matt. 5:16",
+      "accept": [
+        "Matthew five, verse sixteen",
+        "Matthew five verse sixteen",
+        "Matthew five, sixteen"
+      ]
+    },
+    {
+      "id": "book-mt",
+      "in": "He read Mt. 28:19 aloud.",
+      "find": "Mt. 28:19",
+      "accept": [
+        "Matthew twenty eight, verse nineteen",
+        "Matthew twenty eight verse nineteen",
+        "Matthew twenty eight, nineteen"
+      ]
+    },
+    {
+      "id": "book-mark",
+      "in": "He read Mark 10:45 aloud.",
+      "find": "Mark 10:45",
+      "accept": [
+        "Mark ten, verse forty five",
+        "Mark ten verse forty five",
+        "Mark ten, forty five"
+      ]
+    },
+    {
+      "id": "book-mk",
+      "in": "He read Mk. 16:15 aloud.",
+      "find": "Mk. 16:15",
+      "accept": [
+        "Mark sixteen, verse fifteen",
+        "Mark sixteen verse fifteen",
+        "Mark sixteen, fifteen"
+      ]
+    },
+    {
+      "id": "book-luke",
+      "in": "He read Luke 15:20 aloud.",
+      "find": "Luke 15:20",
+      "accept": [
+        "Luke fifteen, verse twenty",
+        "Luke fifteen verse twenty",
+        "Luke fifteen, twenty"
+      ]
+    },
+    {
+      "id": "book-lk",
+      "in": "He read Lk. 6:31 aloud.",
+      "find": "Lk. 6:31",
+      "accept": [
+        "Luke six, verse thirty one",
+        "Luke six verse thirty one",
+        "Luke six, thirty one"
+      ]
+    },
+    {
+      "id": "book-john",
+      "in": "He read John 3:16 aloud.",
+      "find": "John 3:16",
+      "accept": [
+        "John three, verse sixteen",
+        "John three verse sixteen",
+        "John three, sixteen"
+      ]
+    },
+    {
+      "id": "book-jn",
+      "in": "He read Jn. 14:6 aloud.",
+      "find": "Jn. 14:6",
+      "accept": [
+        "John fourteen, verse six",
+        "John fourteen verse six",
+        "John fourteen, six"
+      ]
+    },
+    {
+      "id": "book-acts",
+      "in": "He read Acts 2:38 aloud.",
+      "find": "Acts 2:38",
+      "accept": [
+        "Acts two, verse thirty eight",
+        "Acts two verse thirty eight",
+        "Acts two, thirty eight"
+      ]
+    },
+    {
+      "id": "book-rom",
+      "in": "He read Rom. 5:17 aloud.",
+      "find": "Rom. 5:17",
+      "accept": [
+        "Romans five, verse seventeen",
+        "Romans five verse seventeen",
+        "Romans five, seventeen"
+      ]
+    },
+    {
+      "id": "book-1-cor",
+      "in": "He read 1 Cor. 13:4 aloud.",
+      "find": "1 Cor. 13:4",
+      "accept": [
+        "First Corinthians thirteen, verse four",
+        "First Corinthians thirteen verse four",
+        "First Corinthians thirteen, four"
+      ]
+    },
+    {
+      "id": "book-2-cor",
+      "in": "He read 2 Cor. 5:17 aloud.",
+      "find": "2 Cor. 5:17",
+      "accept": [
+        "Second Corinthians five, verse seventeen",
+        "Second Corinthians five verse seventeen",
+        "Second Corinthians five, seventeen"
+      ]
+    },
+    {
+      "id": "book-gal",
+      "in": "He read Gal. 5:22 aloud.",
+      "find": "Gal. 5:22",
+      "accept": [
+        "Galatians five, verse twenty two",
+        "Galatians five verse twenty two",
+        "Galatians five, twenty two"
+      ]
+    },
+    {
+      "id": "book-eph",
+      "in": "He read Eph. 6:12 aloud.",
+      "find": "Eph. 6:12",
+      "accept": [
+        "Ephesians six, verse twelve",
+        "Ephesians six verse twelve",
+        "Ephesians six, twelve"
+      ]
+    },
+    {
+      "id": "book-phil",
+      "in": "He read Phil. 4:13 aloud.",
+      "find": "Phil. 4:13",
+      "accept": [
+        "Philippians four, verse thirteen",
+        "Philippians four verse thirteen",
+        "Philippians four, thirteen"
+      ]
+    },
+    {
+      "id": "book-col",
+      "in": "He read Col. 3:19 aloud.",
+      "find": "Col. 3:19",
+      "accept": [
+        "Colossians three, verse nineteen",
+        "Colossians three verse nineteen",
+        "Colossians three, nineteen"
+      ]
+    },
+    {
+      "id": "book-1-thess",
+      "in": "He read 1 Thess. 5:18 aloud.",
+      "find": "1 Thess. 5:18",
+      "accept": [
+        "First Thessalonians five, verse eighteen",
+        "First Thessalonians five verse eighteen",
+        "First Thessalonians five, eighteen"
+      ]
+    },
+    {
+      "id": "book-2-thess",
+      "in": "He read 2 Thess. 3:3 aloud.",
+      "find": "2 Thess. 3:3",
+      "accept": [
+        "Second Thessalonians three, verse three",
+        "Second Thessalonians three verse three",
+        "Second Thessalonians three, three"
+      ]
+    },
+    {
+      "id": "book-1-tim",
+      "in": "He read 1 Tim. 6:12 aloud.",
+      "find": "1 Tim. 6:12",
+      "accept": [
+        "First Timothy six, verse twelve",
+        "First Timothy six verse twelve",
+        "First Timothy six, twelve"
+      ]
+    },
+    {
+      "id": "book-2-tim",
+      "in": "He read 2 Tim. 1:7 aloud.",
+      "find": "2 Tim. 1:7",
+      "accept": [
+        "Second Timothy one, verse seven",
+        "Second Timothy one verse seven",
+        "Second Timothy one, seven"
+      ]
+    },
+    {
+      "id": "book-titus",
+      "in": "He read Titus 2:11 aloud.",
+      "find": "Titus 2:11",
+      "accept": [
+        "Titus two, verse eleven",
+        "Titus two verse eleven",
+        "Titus two, eleven"
+      ]
+    },
+    {
+      "id": "book-phlm",
+      "in": "He read Phlm. 1:6 aloud.",
+      "find": "Phlm. 1:6",
+      "accept": [
+        "Philemon one, verse six",
+        "Philemon one verse six",
+        "Philemon one, six"
+      ]
+    },
+    {
+      "id": "book-philem",
+      "in": "He read Philem. 1:4 aloud.",
+      "find": "Philem. 1:4",
+      "accept": [
+        "Philemon one, verse four",
+        "Philemon one verse four",
+        "Philemon one, four"
+      ]
+    },
+    {
+      "id": "book-heb",
+      "in": "He read Heb. 11:1 aloud.",
+      "find": "Heb. 11:1",
+      "accept": [
+        "Hebrews eleven, verse one",
+        "Hebrews eleven verse one",
+        "Hebrews eleven, one"
+      ]
+    },
+    {
+      "id": "book-jas",
+      "in": "He read Jas. 1:17 aloud.",
+      "find": "Jas. 1:17",
+      "accept": [
+        "James one, verse seventeen",
+        "James one verse seventeen",
+        "James one, seventeen"
+      ]
+    },
+    {
+      "id": "book-james",
+      "in": "He read James 4:7 aloud.",
+      "find": "James 4:7",
+      "accept": [
+        "James four, verse seven",
+        "James four verse seven",
+        "James four, seven"
+      ]
+    },
+    {
+      "id": "book-1-pet",
+      "in": "He read 1 Pet. 3:7 aloud.",
+      "find": "1 Pet. 3:7",
+      "accept": [
+        "First Peter three, verse seven",
+        "First Peter three verse seven",
+        "First Peter three, seven"
+      ]
+    },
+    {
+      "id": "book-2-pet",
+      "in": "He read 2 Pet. 3:9 aloud.",
+      "find": "2 Pet. 3:9",
+      "accept": [
+        "Second Peter three, verse nine",
+        "Second Peter three verse nine",
+        "Second Peter three, nine"
+      ]
+    },
+    {
+      "id": "book-1-john",
+      "in": "He read 1 John 1:9 aloud.",
+      "find": "1 John 1:9",
+      "accept": [
+        "First John one, verse nine",
+        "First John one verse nine",
+        "First John one, nine"
+      ]
+    },
+    {
+      "id": "book-2-john",
+      "in": "He read 2 John 1:6 aloud.",
+      "find": "2 John 1:6",
+      "accept": [
+        "Second John one, verse six",
+        "Second John one verse six",
+        "Second John one, six"
+      ]
+    },
+    {
+      "id": "book-3-john",
+      "in": "He read 3 John 1:4 aloud.",
+      "find": "3 John 1:4",
+      "accept": [
+        "Third John one, verse four",
+        "Third John one verse four",
+        "Third John one, four"
+      ]
+    },
+    {
+      "id": "book-jude",
+      "in": "He read Jude 1:24 aloud.",
+      "find": "Jude 1:24",
+      "accept": [
+        "Jude one, verse twenty four",
+        "Jude one verse twenty four",
+        "Jude one, twenty four"
+      ]
+    },
+    {
+      "id": "book-rev",
+      "in": "He read Rev. 21:4 aloud.",
+      "find": "Rev. 21:4",
+      "accept": [
+        "Revelation twenty one, verse four",
+        "Revelation twenty one verse four",
+        "Revelation twenty one, four"
+      ]
+    },
+    {
+      "id": "book-tob",
+      "in": "He read Tob. 4:15 aloud.",
+      "find": "Tob. 4:15",
+      "accept": [
+        "Tobit four, verse fifteen",
+        "Tobit four verse fifteen",
+        "Tobit four, fifteen"
+      ]
+    },
+    {
+      "id": "book-jdt",
+      "in": "He read Jdt. 8:25 aloud.",
+      "find": "Jdt. 8:25",
+      "accept": [
+        "Judith eight, verse twenty five",
+        "Judith eight verse twenty five",
+        "Judith eight, twenty five"
+      ]
+    },
+    {
+      "id": "book-wis",
+      "in": "He read Wis. 3:1 aloud.",
+      "find": "Wis. 3:1",
+      "accept": [
+        "Wisdom of Solomon three, verse one",
+        "Wisdom of Solomon three verse one",
+        "Wisdom of Solomon three, one"
+      ]
+    },
+    {
+      "id": "book-sir",
+      "in": "He read Sir. 6:14 aloud.",
+      "find": "Sir. 6:14",
+      "accept": [
+        "Sirach six, verse fourteen",
+        "Sirach six verse fourteen",
+        "Sirach six, fourteen"
+      ]
+    },
+    {
+      "id": "book-bar",
+      "in": "He read Bar. 3:9 aloud.",
+      "find": "Bar. 3:9",
+      "accept": [
+        "Baruch three, verse nine",
+        "Baruch three verse nine",
+        "Baruch three, nine"
+      ]
+    },
+    {
+      "id": "book-1-macc",
+      "in": "He read 1 Macc. 4:36 aloud.",
+      "find": "1 Macc. 4:36",
+      "accept": [
+        "First Maccabees four, verse thirty six",
+        "First Maccabees four verse thirty six",
+        "First Maccabees four, thirty six"
+      ]
+    },
+    {
+      "id": "book-2-macc",
+      "in": "He read 2 Macc. 7:9 aloud.",
+      "find": "2 Macc. 7:9",
+      "accept": [
+        "Second Maccabees seven, verse nine",
+        "Second Maccabees seven verse nine",
+        "Second Maccabees seven, nine"
+      ]
+    },
+    {
+      "id": "book-sus",
+      "in": "He read Sus. 1:42 aloud.",
+      "find": "Sus. 1:42",
+      "accept": [
+        "Susanna one, verse forty two",
+        "Susanna one verse forty two",
+        "Susanna one, forty two"
+      ]
+    }
+  ]
+}

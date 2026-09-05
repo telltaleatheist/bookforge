@@ -70,7 +70,8 @@ import * as path from 'path';
 
 import { hasLetter } from './ai-cleanup-prepass.js';
 import {
-  applyNumberRules, bareWord, cardinalWords, sitsInCitation, stillHasDigits,
+  applyNumberRules, bareWord, CANONICAL_BOOK_NAMES, cardinalWords, scriptureSpans,
+  sitsInCitation, stillHasDigits,
 } from './tts-number-rules.js';
 import { ordinalToWords } from './number-expansion.js';
 import {
@@ -111,11 +112,19 @@ export { sitsInCitation, bareWord };
  * (`isArchiveSigil`), and a chapter-crossing scripture range no longer orphans
  * its second colon (`SCRIPTURE_REF`).
  *
+ * n5 → n6 (2026-09-05, Owen's scripture ruling): the deterministic scripture
+ * READING is gone. A reference is now DETECTED and protected
+ * (`scriptureSpans`), the model reads it in the form Owen settled the same day
+ * ("First Peter three, seven"), and the validator's `keepsEveryWord` invariant
+ * is relaxed to the one-token law inside a detected span so an abbreviation may
+ * become a name. Every book-anchored reference in a book reads differently than
+ * it did under n5, and a bare `c:v` reads exactly as it did.
+ *
  * A BUMP HERE IS A CROSS-REPO EVENT. These rules are vendored byte-for-byte into
  * orpheus-finetune's `pipeline/normalization/vendor/` and drift-checked on every
  * training build — see docs/NARRATION_TEXT_PASS.md.
  */
-export const NORMALIZER_VERSION = 'n5';
+export const NORMALIZER_VERSION = 'n6';
 
 /**
  * The model this pass uses when the setting is absent.
@@ -185,6 +194,14 @@ export type NumberEditStatus =
   | 'WORDS_DROPPED'
   /** `find` has more groups of digits than `replace` has number words: a number was lost. */
   | 'NUMBER_DROPPED'
+  /** A detected scripture reference came back half-read — see `scriptureReadingRefusal`. */
+  | 'SCRIPTURE_UNREAD'
+  /**
+   * NOT A VERDICT ON AN EDIT — a note that the rules found a scripture reference
+   * here and protected it, so the model was asked and no rule was allowed to
+   * read it. It is what lets the receipt say why a block still held digits.
+   */
+  | 'SCRIPTURE_PROTECTED'
   /** The span sits in citation apparatus and is unspeakable in any form. */
   | 'CITATION_CODE'
   /** The span crosses a text-node boundary — an `<em>`, a `<sup>`, a link. */
@@ -362,6 +379,16 @@ export interface NumberNormalizationRecord {
   appliedSpans: number;
   /** Of `appliedSpans`, how many a deterministic rule read. */
   appliedByRules: number;
+  /**
+   * How many scripture references the rules DETECTED and protected across the
+   * book — the spans no rule was allowed to read and the model was asked about.
+   *
+   * Reported because it is the number that says whether this book has scripture
+   * in it at all, which is the first thing to know when a reference comes out
+   * wrong: a zero here means the detector never saw it, and a large number with
+   * few APPLIED means the model is declining them.
+   */
+  scriptureReferences: number;
   /** And how many the model read. The two sum to `appliedSpans`. */
   appliedByModel: number;
   dispositions: Record<string, number>;
@@ -1010,6 +1037,191 @@ export function keepsEveryWord(find: string, replace: string): boolean {
 }
 
 /**
+ * The scripture form of `keepsEveryWord`: one prose word may CHANGE, and a word
+ * must arrive where it went.
+ *
+ * Reading "1 Pet. 3:7" aloud means saying "Peter" where the page prints "Pet.",
+ * so the strict subsequence test cannot apply; what applies instead is the same
+ * one-token law the text classes are held to. Two things are proved:
+ *
+ *   AT MOST ONE prose word of the find is missing from the reading. "See Gen.
+ *   1:1 and be glad" → "See one, one and be glad" loses two and is refused.
+ *
+ *   AND A WORD ARRIVED. The reading must carry a prose word that is neither one
+ *   of the find's own nor a number word — the book NAME. Without this, dropping
+ *   the abbreviation outright ("1 Pet. 3:7" → "First three, seven") would pass
+ *   the first test, and the book would be gone from the narration.
+ *
+ * Every other number invariant still applies on top of this one; this is a
+ * relaxation of ONE test over ONE class of span, not a licence.
+ */
+/**
+ * Does this reading CLAIM to be a scripture reference?
+ *
+ * A canonical book name, or an ordinal volume word in front of a capitalized
+ * word ("Second Corinthians") — the two things a reference's reading says that
+ * no other reading of a `c:v` does. Used only to decide whether the
+ * chapter-and-verse pause is required of a reading; never to decide a reading.
+ */
+function claimsToBeScripture(replace: string): boolean {
+  const printed = replace.split(/[\s-]+/);
+  const words = printed.map((w) => bareWord(w).toLowerCase());
+  if (words.some((w) => CANONICAL_BOOK_NAMES.has(w))) return true;
+  return words.some((w, i) =>
+    ORDINAL_VOLUME_WORDS.has(w) && /^[A-Z]/.test(printed[i + 1] ?? ''));
+}
+
+/** The words a leading volume number is read as. */
+const ORDINAL_VOLUME_WORDS: ReadonlySet<string> = new Set(['first', 'second', 'third']);
+
+/** A volume numeral written in letters — the roman and ordinal forms. */
+const ROMAN_VOLUME = /^(?:i{1,3}|1st|2nd|3rd)$/i;
+
+/**
+ * Could `word` be what `token` is an abbreviation OF?
+ *
+ * Longer, and carrying the token's letters in order. That is the whole of what
+ * an English abbreviation is, contractions included, and it is checkable without
+ * a dictionary of either books or words.
+ */
+function expandsToken(token: string, word: string): boolean {
+  if (word.length <= token.length) return false;
+  let at = 0;
+  for (const letter of token) {
+    at = word.indexOf(letter, at);
+    if (at < 0) return false;
+    at += 1;
+  }
+  return true;
+}
+
+/**
+ * The words a reference's READING is built out of, which are therefore not
+ * evidence that a book name arrived.
+ */
+const READING_STRUCTURE: ReadonlySet<string> = new Set([
+  'verse', 'verses', 'chapter', 'chapters', 'to', 'through', 'and', 'following',
+]);
+
+export function scriptureWordsSurvive(find: string, replace: string): boolean {
+  const prose = (text: string): string[] => text.split(/\s+/)
+    .filter((t) => hasLetter(t) && !DIGIT.test(t))
+    .map((t) => bareWord(t).toLowerCase())
+    .filter((t) => t.length > 0);
+
+  const required = prose(find);
+  // A ROMAN VOLUME NUMERAL IS A NUMBER, and the one-token allowance is for the
+  // book NAME. "1 Pet." loses its "1" from `required` because the digit test
+  // above drops it; "II Cor." has to lose its "II" for the same reason, or
+  // reading it costs two words and every reading is WORDS_DROPPED — measured on
+  // the adversarial review of 2026-09-05, which found "II Cor. 5:17" narrated as
+  // digits because no edit the model could make was acceptable.
+  if (required.length > 1 && ROMAN_VOLUME.test(required[0])) required.shift();
+  const got = prose(replace);
+  let missing = 0;
+  let dropped: string | undefined;
+  let at = 0;
+  for (const want of required) {
+    const found = got.indexOf(want, at);
+    if (found < 0) { missing += 1; dropped = want; continue; }
+    at = found + 1;
+  }
+  if (missing > 1) return false;
+  if (missing === 0) return true;
+  // A word went; the NAME IT WAS SHORT FOR has to have come. Not merely "some
+  // new word": "1 Pet. 3:7" → "First three, verse seven" arrives with the book
+  // gone and the structural word "verse" standing in for it, and an earlier cut
+  // of this accepted it.
+  //
+  // So the arriving word must be longer than the token that went and must
+  // contain that token's letters IN ORDER — which is what an abbreviation is.
+  // That admits every contraction a publisher prints ("Jas." → James, "Phlm." →
+  // Philemon, "Mk." → Mark, "Pss." → Psalms) and, because detection now admits
+  // any dotted abbreviation, the ordinary words that are not scripture at all
+  // ("Sec." → Section, "Ch." → Chapter, "Mr." → Mister). It refuses "chapter"
+  // standing in for "Pet.".
+  //
+  // OR a canonical book name, for the one case an expansion is not a
+  // lengthening: "Cant. 8:6" is read "Song of Songs", which is the book's other
+  // NAME rather than the abbreviation's spelling-out.
+  const fromFind = new Set(required);
+  const gone = dropped;
+  return got.some((word) => {
+    if (fromFind.has(word) || NUMBER_WORDS.has(word)) return false;
+    if (CANONICAL_BOOK_NAMES.has(word)) return true;
+    return gone !== undefined && expandsToken(gone, word);
+  });
+}
+
+/**
+ * Is a reference READ, or only half-read? The refusal, or null.
+ *
+ * ── The residue this exists for ─────────────────────────────────────────────
+ *
+ * Measured by the orpheus-finetune session on the deathstalker corpus,
+ * 2026-09-05: a row served as **"(Ps. sixty three six)"**. Something upstream
+ * had spelled the digits out and left everything else — the abbreviation still
+ * abbreviated, and the boundary between chapter and verse simply gone, so the
+ * narrator says "sixty three six" as one number. Every invariant above passed
+ * it: the digits were words, no word was dropped, no punctuation was named.
+ *
+ * Protect-then-model is what prevents that shape being produced; this is what
+ * refuses it if the model produces it anyway. Three refusals:
+ *
+ *   THE ABBREVIATION SURVIVED. A token ending in a period, anywhere but at the
+ *   very end of the reading, is "Ps." or "Cor." left as printed. (The last token
+ *   may end in one: a reference at the end of a sentence keeps its period.)
+ *
+ *   THE BOUNDARY IS GONE — but only when the reading CLAIMS to be a reference.
+ *   Owen's ear on the corpus clips, 2026-09-05: the narrator says either "First
+ *   John one nine" (a PAUSE between the numbers, which in text is a comma) or
+ *   "Romans five verse seventeen". Both are accepted; what is refused is
+ *   neither, which is the "sixty three six" fusion. One separator per printed
+ *   `chapter:verse`.
+ *
+ *   THE CLAIM TEST is what keeps this from refusing correct readings of things
+ *   that are NOT scripture. Detection admits any abbreviation carrying its own
+ *   period, so "Sec. 3:7" of a statute is a detected span, and its correct
+ *   reading — "Section three seven" — has no pause in it and must pass. The
+ *   first cut of this refused exactly that, and refused "Widescreen sixteen
+ *   nine" as well, which is how the adversarial review of 2026-09-05 measured
+ *   that a false-positive detection is not free. So the pause is demanded only
+ *   of a reading that names a canonical book or an ordinal volume: "Psalm sixty
+ *   three six" is claiming to be a reference and is refused; "Section three
+ *   seven" claims nothing and is not.
+ *
+ *   THE WORD "CHAPTER" WAS SPOKEN. None of the measured readings says it, and
+ *   Owen ruled it out by name: the pause is what says it.
+ *
+ * A REMAINING DIGIT is the fourth thing a half-read reference can do, and it is
+ * not asked here: DIGIT_IN_REPLACE has already refused it, for every class.
+ */
+export function scriptureReadingRefusal(find: string, replace: string): string | null {
+  // Only of a reading that is CLAIMING to be a reference — for the same reason
+  // the pause is. "Ch. 3:7" of a manual is a detected span whose correct reading
+  // is "Chapter three seven", and the word is the abbreviation's own expansion
+  // there, not a narrator explaining a verse.
+  if (/\bchapters?\b/i.test(replace) && claimsToBeScripture(replace)) {
+    return 'a reference is never read with the word "chapter" — the pause says it';
+  }
+  const tokens = replace.trim().split(/\s+/);
+  const abbreviation = tokens.slice(0, -1).find((token) => /^[A-Za-z]{1,6}\.$/.test(token));
+  if (abbreviation !== undefined) {
+    return `"${abbreviation}" is still abbreviated; a reference is read with the book's full name`;
+  }
+  const references = (find.match(/\d{1,3}\s*:\s*\d{1,3}/g) ?? []).length;
+  if (references > 0 && claimsToBeScripture(replace)) {
+    const separators = (replace.match(/,/g) ?? []).length
+      + (replace.match(/\bverses?\b/gi) ?? []).length;
+    if (separators < references) {
+      return `${references} chapter-and-verse reference(s) need ${references} pause(s) between `
+        + `chapter and verse — a comma or the word "verse"; the reading has ${separators}`;
+    }
+  }
+  return null;
+}
+
+/**
  * Where `find` occurs in `target`, counting only occurrences a NUMBER could
  * mean.
  *
@@ -1173,6 +1385,12 @@ export function validateNumberEdits(
   const withinOneNode = (at: number, end: number): boolean =>
     starts.some((start, i) => at >= start && end <= start + segments[i]);
 
+  // The scripture references in this block, recomputed from the target the model
+  // was actually shown. They are protected spans, so they read the same here as
+  // they did in the rules — no offset mapping, and no chance of the two halves
+  // disagreeing about where a reference is.
+  const scripture = scriptureSpans(target);
+
   const accepted: NarrationTextRewrite[] = [];
   const records: NumberEditRecord[] = [];
   const reject = (find: string, replace: string, status: NumberEditStatus, detail?: string): void => {
@@ -1217,6 +1435,9 @@ export function validateNumberEdits(
     if (occurrences.length === 0) { reject(find, replace, 'NOT_FOUND'); continue; }
     if (occurrences.length > 1) { reject(find, replace, 'AMBIGUOUS_FIND'); continue; }
     const at = occurrences[0];
+    // Does this edit reach into a reference the rules detected and protected?
+    // Asked once, here, because three checks below turn on the answer.
+    const inScripture = scripture.some((s) => at < s.end && s.at < at + find.length);
     if (!isNumber && !policy.allowTextEdits) {
       reject(find, replace, 'NO_DIGIT_IN_FIND');
       continue;
@@ -1307,7 +1528,23 @@ export function validateNumberEdits(
 
     if (isNumber) {
       // ── The number invariants, unchanged, and they apply to nothing else ──
-      if (!keepsEveryWord(find, replace)) { reject(find, replace, 'WORDS_DROPPED'); continue; }
+      //
+      // WITH ONE RELAXATION, and its boundary is exactly one detected scripture
+      // span. `keepsEveryWord` requires every prose word of the find to survive,
+      // which is right for "12 June 1933" and impossible for "1 Pet. 3:7":
+      // reading it means REPLACING "Pet." with "Peter". That refusal is measured
+      // — 57 correct expansions were thrown away as WORDS_DROPPED on the
+      // 2026-09-02 run — and it is why the reading was done by rule instead,
+      // which is the arrangement Owen reversed on 2026-09-05.
+      //
+      // Inside a detected span the invariant becomes the ONE-TOKEN LAW the text
+      // branch below already uses: at most one prose word may go, and a name
+      // must arrive in its place. Every other number invariant is untouched, and
+      // NUMBER_DROPPED still proves the chapter and the verse both came out as
+      // words — "1 Pet. 3:7" → "First Peter three" is still refused.
+      const wordsSurvive = inScripture
+        ? scriptureWordsSurvive(find, replace) : keepsEveryWord(find, replace);
+      if (!wordsSurvive) { reject(find, replace, 'WORDS_DROPPED'); continue; }
       // Every run of digits has to come out as at least one number word. Measured
       // on the n2 acceptance run, 2026-09-02: "20:6" came back as "twenty" — the
       // verse silently gone, and nothing above could see it because the answer was
@@ -1334,6 +1571,18 @@ export function validateNumberEdits(
           + `${wordTokens(find).length}; a conversion may add its number words and `
           + `${NUMBER_WORD_SLACK} joining word(s), not a clause`);
         continue;
+      }
+      // LAST, so every invariant above keeps its own name: what the relaxation
+      // opened, this closes. Inside a detected span the reading must actually BE
+      // a reading — the book named in full, and a pause between the chapter and
+      // the verse. ("20:6" → "twenty" is still NUMBER_DROPPED above; what
+      // reaches here is a reading with all its numbers and no reference in it.)
+      if (inScripture) {
+        const halfRead = scriptureReadingRefusal(find, replace);
+        if (halfRead !== null) {
+          reject(find, replace, 'SCRIPTURE_UNREAD', halfRead);
+          continue;
+        }
       }
     } else {
       // ── THE ONE-TOKEN LAW, and the READING law on top of it ─────────────
@@ -1498,7 +1747,16 @@ export function validateNumberEdits(
       }
     }
 
-    if (sitsInCitation(target, find, at)) { reject(find, replace, 'CITATION_CODE'); continue; }
+    // A DETECTED REFERENCE IS EXEMPT FROM THE CITATION GUARD. The guard reads a
+    // leading roman numeral as apparatus ("Document II 9/34"), which is right
+    // everywhere except the one place a roman numeral means a VOLUME: "II Cor.
+    // 5:17" was refused CITATION_CODE and narrated as digits (measured,
+    // adversarial review 2026-09-05). The span was recognized as a reference by
+    // shape before the model was asked, and that evidence is the stronger one.
+    if (!inScripture && sitsInCitation(target, find, at)) {
+      reject(find, replace, 'CITATION_CODE');
+      continue;
+    }
 
     const end = at + find.length;
     if (!withinOneNode(at, end)) { reject(find, replace, 'SPANS_MARKUP'); continue; }
@@ -1707,6 +1965,23 @@ function ruleRecords(ruled: NumberRuleOutcome): NumberEditRecord[] {
       find: refusal.find, replace: refusal.replace, status: 'SPANS_MARKUP',
       editClass: classifyEdit(refusal.find),
       detail: `the ${refusal.rule} rule: ${refusal.reason}`,
+    });
+  }
+  // AND EVERY SCRIPTURE REFERENCE THE RULES PROTECTED, by name.
+  //
+  // A block that still holds digits after the rules ran is a block the model is
+  // asked about, and the record has to be able to say WHY. Without this line a
+  // protected reference is invisible: no rule read it, so no APPLIED_RULE names
+  // it, and if the model then declines it the receipt shows a block that was
+  // asked about and changed nothing, with nothing to say what was in it.
+  //
+  // `replace` is the reference as printed, because a rule proposed no reading of
+  // it — that is the whole point of the disposition.
+  for (const span of ruled.scripture) {
+    out.push({
+      find: span.find, replace: span.find, status: 'SCRIPTURE_PROTECTED',
+      editClass: 'number',
+      detail: 'a scripture reference: no rule may read it, and the model was asked',
     });
   }
   return out;
@@ -2234,6 +2509,7 @@ export async function normalizeNarrationNumbers(
     // by then and in neither.
     appliedByRules: dispositions.APPLIED_RULE ?? 0,
     appliedByModel: dispositions.APPLIED ?? 0,
+    scriptureReferences: dispositions.SCRIPTURE_PROTECTED ?? 0,
     dispositions,
     appliedByClass,
     units,
@@ -2245,7 +2521,8 @@ export async function normalizeNarrationNumbers(
   console.log(
     `[TTS-NUMBERS] ${written.rewrittenSpans} number(s) read as words over `
     + `${selected.length} of ${targets.length} passage(s) — ${record.appliedByRules} by rules, `
-    + `${record.appliedByModel} by ${runner.model} (asked about ${targetsAsked}); dispositions `
+    + `${record.appliedByModel} by ${runner.model} (asked about ${targetsAsked}); `
+    + `${record.scriptureReferences} scripture reference(s) protected; dispositions `
     + `${JSON.stringify(dispositions)}; the copy is ${epubPath}`);
 
   return { epubPath, recordPath, reused: false, record };
@@ -2425,6 +2702,7 @@ export async function normalizeTextBlocks(
     appliedSpans,
     appliedByRules: dispositions.APPLIED_RULE ?? 0,
     appliedByModel: dispositions.APPLIED ?? 0,
+    scriptureReferences: dispositions.SCRIPTURE_PROTECTED ?? 0,
     dispositions,
     appliedByClass,
     units,

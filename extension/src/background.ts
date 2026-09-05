@@ -180,7 +180,7 @@ chrome.runtime.onMessage.addListener((raw: RuntimeMessage, sender, sendResponse)
       return;
     case 'restart-engine': {
       const c = raw as RestartEngineCmd;
-      void sendToOffscreen({ target: 'offscreen', cmd: 'restart-engine', cpuWorkers: c.cpuWorkers, voice: c.voice });
+      void sendToOffscreen({ target: 'offscreen', cmd: 'restart-engine', engine: c.engine, cpuWorkers: c.cpuWorkers, voice: c.voice });
       return;
     }
     case 'queue': {

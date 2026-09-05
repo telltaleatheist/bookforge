@@ -140,21 +140,28 @@ export function setMainWindow(window: BrowserWindow | null): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Check if ebook2audiobook is available
+ * CAN THIS MACHINE RENDER? Answers `tts:check-available` (main.ts -> preload ->
+ * audiobook.service.ts).
+ *
+ * It used to answer "does `<e2a>/app.py` exist", which stopped being a question
+ * about anything at the cut-over: nothing spawns app.py, and after Phase 6 there
+ * is no e2a checkout for the file to be in — so a working machine would report
+ * itself unavailable, and a machine with the file and a broken environment would
+ * report itself fine.
+ *
+ * `narratorReady()` asks the two things that decide it: the narrator package is in
+ * this checkout, and the tools env's python can import `narrator.assemble`. It
+ * caches, so this stays cheap to call from a status poll.
  */
 export async function checkAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
-  try {
-    // Check if the app.py exists
-    const appPath = path.join(getDefaultE2aPath(), 'app.py');
-    await fs.access(appPath);
-
-    // Try to get version by running with --help or checking requirements
-    // For now, just check existence
-    return { available: true, version: '1.0.0' };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { available: false, error: `ebook2audiobook not found at ${getDefaultE2aPath()}: ${message}` };
-  }
+  const { narratorReady } = await import('./reassembly-bridge.js');
+  if (narratorReady()) return { available: true, version: '1.0.0' };
+  return {
+    available: false,
+    error: 'narrator is not ready on this machine: either python/narrator is missing from '
+      + 'this checkout, or the tools environment cannot import narrator.assemble. '
+      + 'The main-process log names which.',
+  };
 }
 
 /**
@@ -293,315 +300,25 @@ export async function initializeLogger(libraryPath: string): Promise<void> {
   await logger.initializeLogger(libraryPath);
 }
 
-/**
- * Start TTS conversion
- */
-export async function startConversion(
-  epubPath: string,
-  outputDir: string,
-  settings: TTSSettings,
-  onProgress?: (progress: TTSProgress) => void,
-  desiredFilename?: string
-): Promise<ConversionResult> {
-  // Check availability first
-  const available = await checkAvailable();
-  if (!available.available) {
-    return { success: false, error: available.error };
-  }
-
-  // Build command arguments - matching BookForge's _build_tts_command
-  const appPath = path.join(getDefaultE2aPath(), 'app.py');
-
-  // Map UI device names to e2a CLI device names. 'auto' resolves to the best
-  // device present (CUDA when the GPU pack is installed, MPS on Apple Silicon,
-  // else CPU); explicit choices are honored exactly.
-  let deviceArg: string;
-  if (settings.device === 'auto') {
-    deviceArg = isCudaTtsInstalled()
-      ? 'CUDA'
-      : process.platform === 'darwin' && process.arch === 'arm64'
-        ? 'MPS'
-        : 'CPU';
-  } else {
-    deviceArg = ({ gpu: 'CUDA', mps: 'MPS', cpu: 'CPU' } as Record<string, string>)[settings.device]
-      || settings.device.toUpperCase();
-  }
-
-  const args = [
-    appPath,
-    '--headless',
-    '--ebook', epubPath,
-    '--output_dir', outputDir,
-    '--device', deviceArg,
-    '--language', settings.language,
-    '--tts_engine', settings.ttsEngine || 'xtts',
-    '--fine_tuned', settings.fineTuned || 'ScarlettJohansson',
-    '--temperature', settings.temperature.toString(),
-    '--top_p', settings.topP.toString(),
-    '--top_k', settings.topK.toString(),
-    '--repetition_penalty', settings.repetitionPenalty.toString(),
-    '--speed', settings.speed.toString(),
-    '--skip_deps'  // Skip dependency checks - already installed
-  ];
-
-  if (settings.enableTextSplitting) {
-    args.push('--enable_text_splitting');
-  }
-
-  startTime = Date.now();
-
-  // Generate a unique job ID
-  const jobId = `e2a-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-
-  // Extract book metadata from EPUB filename or path
-  const bookName = path.basename(epubPath, '.epub').replace(/_/g, ' ');
-  const [title, author] = bookName.includes(' - ')
-    ? bookName.split(' - ').map(s => s.trim())
-    : [bookName, 'Unknown Author'];
-
-  // Log job start
-  await logger.startJob(jobId, title, author, settings);
-
-  return new Promise((resolve) => {
-    let progress: TTSProgress = {
-      phase: 'preparing',
-      currentChapter: 0,
-      totalChapters: 0,
-      percentage: 0,
-      estimatedRemaining: 0,
-      message: 'Starting conversion...'
-    };
-
-    let stderr = '';
-    let outputFile = '';
-
-    // getPythonInvocation() picks the env layout: bundled relocatable python,
-    // conda run -p (prefix env), or conda run -n (named env).
-    // For Orpheus: uses WSL with orpheus_tts conda env for CUDA graph performance on Windows
-    const currentE2aPath = getDefaultE2aPath();
-    const py = getPythonInvocation(currentE2aPath, settings.ttsEngine);
-    const fullArgs = [...py.args, ...args];
-    console.log('[TTS] Starting ebook2audiobook with command:');
-    console.log('[TTS]  ', py.command, fullArgs.join(' '));
-    console.log('[TTS]   cwd:', currentE2aPath);
-
-    currentProcess = spawn(py.command, fullArgs, {
-      cwd: currentE2aPath,
-      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
-    });
-
-    console.log('[TTS] Process spawned with PID:', currentProcess.pid);
-
-    currentProcess.stdout?.on('data', (data: Buffer) => {
-      const lines = data.toString().split('\n');
-      for (const line of lines) {
-        if (line.trim()) {
-          console.log('[TTS stdout]', line.trim());
-          progress = parseProgressLine(line, progress);
-          progress.estimatedRemaining = estimateRemaining(progress);
-
-          // Look for output file path - must be an actual file path, not part of ffmpeg command
-          // Match patterns like "Output: /path/to/file.m4b" or "Saved to /path/to/file.m4b"
-          // The path must start with / (absolute) or a drive letter
-          const outputMatch = line.match(/(?:output|saved to|created|wrote)[:\s]+(['"]?)([\/~][\w\s\-\/.,'()]+\.m4b)\1/i) ||
-                              line.match(/(?:output|saved to|created|wrote)[:\s]+(['"]?)([A-Z]:[\\\/][\w\s\-\\.,'()]+\.m4b)\1/i);
-          if (outputMatch) {
-            outputFile = outputMatch[2].trim();
-            console.log('[TTS] Detected output file from log:', outputFile);
-          }
-
-          // Send progress update
-          if (mainWindow) {
-            mainWindow.webContents.send('tts:progress', progress);
-          }
-          // Also call the progress callback if provided
-          if (onProgress) {
-            onProgress(progress);
-          }
-        }
-      }
-    });
-
-    currentProcess.stderr?.on('data', (data: Buffer) => {
-      stderr = appendCapped(stderr, data.toString());
-      // Also parse stderr for progress (some tools output there)
-      const lines = data.toString().split('\n');
-      for (const line of lines) {
-        if (line.trim()) {
-          console.log('[TTS stderr]', line.trim());
-          progress = parseProgressLine(line, progress);
-          progress.estimatedRemaining = estimateRemaining(progress);
-
-          if (mainWindow) {
-            mainWindow.webContents.send('tts:progress', progress);
-          }
-          // Also call the progress callback if provided
-          if (onProgress) {
-            onProgress(progress);
-          }
-        }
-      }
-    });
-
-    currentProcess.on('close', async (code) => {
-      console.log('[TTS] Process closed with code:', code);
-      currentProcess = null;
-      const duration = Math.round((Date.now() - startTime) / 1000);
-
-      // Log progress updates
-      await logger.updateJobProgress(jobId, {
-        totalChapters: progress.totalChapters,
-        totalSentences: progress.currentChapter // Approximation
-      });
-
-      if (code === 0) {
-        // Send completion progress
-        if (mainWindow) {
-          mainWindow.webContents.send('tts:progress', {
-            phase: 'complete',
-            currentChapter: progress.totalChapters,
-            totalChapters: progress.totalChapters,
-            percentage: 100,
-            estimatedRemaining: 0,
-            message: 'Conversion complete!'
-          });
-        }
-
-        // Find the actual output file
-        // First verify if detected path exists, otherwise search the output directory
-        let finalOutputPath = '';
-
-        // Check if detected output file actually exists
-        if (outputFile) {
-          try {
-            await fs.access(outputFile);
-            finalOutputPath = outputFile;
-            console.log('[TTS] Verified detected output file exists:', finalOutputPath);
-          } catch {
-            console.log('[TTS] Detected output path does not exist, will search directory');
-          }
-        }
-
-        // If no valid path found, search the output directory for the most recent .m4b file
-        if (!finalOutputPath) {
-          try {
-            const files = await fs.readdir(outputDir);
-            // Filter for .m4b files, excluding macOS resource forks (._* files)
-            const m4bFiles = files.filter(f => f.endsWith('.m4b') && !f.startsWith('._'));
-
-            if (m4bFiles.length > 0) {
-              // If multiple files, find the most recently modified one
-              let mostRecent = { file: m4bFiles[0], mtime: 0 };
-              for (const file of m4bFiles) {
-                const filePath = path.join(outputDir, file);
-                const stat = await fs.stat(filePath);
-                if (stat.mtimeMs > mostRecent.mtime) {
-                  mostRecent = { file, mtime: stat.mtimeMs };
-                }
-              }
-              finalOutputPath = path.join(outputDir, mostRecent.file);
-              console.log('[TTS] Found most recent output file:', finalOutputPath);
-            }
-          } catch (err) {
-            console.error('[TTS] Error finding output file:', err);
-          }
-        }
-
-        // Rename to desired filename if provided
-        if (finalOutputPath && desiredFilename) {
-          try {
-            const desiredPath = path.join(outputDir, desiredFilename);
-            if (finalOutputPath !== desiredPath) {
-              // Verify source file exists before renaming
-              await fs.access(finalOutputPath);
-              await fs.rename(finalOutputPath, desiredPath);
-              console.log('[TTS] Renamed output file to:', desiredPath);
-              finalOutputPath = desiredPath;
-            }
-          } catch (err) {
-            console.error('[TTS] Error renaming output file:', err);
-            console.error('[TTS] Source path was:', finalOutputPath);
-            console.error('[TTS] Desired path was:', path.join(outputDir, desiredFilename));
-            // Continue with original filename if rename fails
-          }
-        }
-
-        // Log successful completion
-        await logger.completeJob(jobId, finalOutputPath || path.join(outputDir, 'audiobook.m4b'));
-
-        resolve({
-          success: true,
-          outputPath: finalOutputPath || path.join(outputDir, 'audiobook.m4b'),
-          duration
-        });
-      } else {
-        // Log failure
-        const errorMessage = stderr || `Process exited with code ${code}`;
-        await logger.failJob(jobId, errorMessage);
-
-        // Send error progress
-        if (mainWindow) {
-          mainWindow.webContents.send('tts:progress', {
-            phase: 'error',
-            currentChapter: progress.currentChapter,
-            totalChapters: progress.totalChapters,
-            percentage: progress.percentage,
-            estimatedRemaining: 0,
-            error: errorMessage
-          });
-        }
-
-        resolve({
-          success: false,
-          error: errorMessage,
-          duration
-        });
-      }
-    });
-
-    currentProcess.on('error', async (error) => {
-      currentProcess = null;
-
-      // Log error
-      await logger.logError(jobId, 'Process spawn error', error);
-
-      if (mainWindow) {
-        mainWindow.webContents.send('tts:progress', {
-          phase: 'error',
-          currentChapter: 0,
-          totalChapters: 0,
-          percentage: 0,
-          estimatedRemaining: 0,
-          error: error.message
-        });
-      }
-
-      resolve({
-        success: false,
-        error: error.message
-      });
-    });
-  });
-}
-
-/**
- * Stop the current conversion
- */
-export function stopConversion(): boolean {
-  if (currentProcess) {
-    killProcessTree(currentProcess, 'TTS conversion');
-    currentProcess = null;
-    return true;
-  }
-  return false;
-}
-
-/**
- * Check if a conversion is in progress
- */
-export function isConverting(): boolean {
-  return currentProcess !== null;
-}
+// startConversion / stopConversion / isConverting stood here until 2026-09-05.
+//
+// THEY WERE THE LAST LIVE e2a DOOR. `startConversion` built
+// `<e2a>/app.py --headless --tts_engine xtts --fine_tuned ScarlettJohansson`
+// with the six XTTS sampling flags and `--skip_deps`, and it was reachable:
+// `tts:start-conversion` -> preload -> `AudiobookService.startConversion`.
+//
+// What kept it from ever firing was an accident. `checkAvailable()` guarded it by
+// asking "does <e2a>/app.py exist", so on a machine without the checkout the door
+// refused itself. Re-pointing that guard at `narratorReady()` — the right fix for
+// the guard — made it answer TRUE, which turned a dead door into a one-call path
+// to spawning a file that is not there.
+//
+// The door is deleted rather than re-guarded, because `AudiobookService` had ZERO
+// injectors in `src/app`: the whole `electron.tts.*` surface, its five IPC
+// channels and its preload types were orphan wiring. Every real render goes
+// through `parallel-tts:*` and `parallel-tts-bridge.ts`.
+//
+// `tools/test-no-e2a-doors.js` fails if any of it comes back.
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Output Naming
@@ -689,11 +406,7 @@ export const ttsBridge = {
   setE2aPath,
   getE2aPath,
   setMainWindow,
-  checkAvailable,
   getVoices,
-  startConversion,
-  stopConversion,
-  isConverting,
   generateOutputFilename,
   initializeLogger
 };

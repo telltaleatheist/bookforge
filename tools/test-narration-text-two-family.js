@@ -55,11 +55,20 @@ const { ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
 const RUNNER_MODULE = require.resolve(path.join(DIST, 'electron', 'tts-number-normalizer-runner.js'));
 require(RUNNER_MODULE);
 const modelCalls = [];
+/** Every block the model was actually handed, so a REPLAY cannot pass for a run. */
+const modelTargets = () => modelCalls.map((input) => input);
 require.cache[RUNNER_MODULE].exports.numberNormalizerModel = () => 'fake:1b';
 require.cache[RUNNER_MODULE].exports.createOllamaNormalizerRunner = () => ({
   model: 'fake:1b',
   pinContextTo() { /* no window to size */ },
-  async generate(input) { modelCalls.push(input); return '{"edits": []}'; },
+  async generate(input) {
+    modelCalls.push(input);
+    // n6: a scripture reference is protected by the rules and READ here.
+    return input.includes('Col. 3:19-4:1')
+      ? '{"edits": [{"find": "Col. 3:19-4:1", '
+        + '"replace": "Colossians three, verse nineteen to four, verse one"}]}'
+      : '{"edits": []}';
+  },
   async release() { /* nothing resident */ },
 });
 
@@ -70,6 +79,26 @@ const queueEngine = require(path.join(DIST, 'electron', 'queue-engine.js'));
 const { narrationTextStep } = require(path.join(DIST, 'electron', 'queue-steps', 'pass.js'));
 
 manifestService.setLibraryBasePath(ROOT);
+
+/**
+ * THE SCRATCH THIS KEEPER WRITES INTO — and why it has to be said out loud.
+ *
+ * MEASURED (adversarial review, 2026-09-05): without this line the pass wrote its
+ * content-addressed copies into `C:\Users\...\Projects\ebook2audiobook\tmp\
+ * narration-cuts\` — the REAL e2a checkout — and on a second run reused them.
+ * The punctuation stage was reusing a file written by a DIFFERENT BRANCH the day
+ * before (its key is `s1`, which does not move when the rules do), so a green
+ * run of this keeper could be a replay of another branch's output rather than a
+ * run of the code under test. That is a test that proves nothing.
+ *
+ * `narrationCutsDir()` derives from `getDefaultE2aTmpPath()`, whose fallback is
+ * `<e2a checkout>/tmp` because only `main.ts` ever calls `applyE2aScratchDir`,
+ * and a keeper has no main process. `tools/test-cli-narration-prep.js` already
+ * plugs the same hole the same way. The RIGHT fix is upstream and is owed to
+ * Phase 6 — see docs/NARRATION_TEXT_PASS.md, "Where the narration cuts go".
+ */
+const SCRATCH = path.join(ROOT, 'scratch');
+require(path.join(DIST, 'electron', 'e2a-paths.js')).setE2aScratchDir(SCRATCH);
 const projectsDir = path.join(ROOT, 'projects');
 
 let passed = 0;
@@ -197,11 +226,17 @@ test('the pass runs on THAT chain, end to end, and leaves the other alone', asyn
   const result = await processingPasses.runProcessingPass('test-2fam', plan.jobs[0].config, null);
   assert.ok(result.success, result.error);
 
+  // THE MODEL WAS ACTUALLY ASKED. Without this the assertions below pass on a
+  // cached copy from an earlier run — which is exactly what was happening before
+  // the scratch was pointed at this run's temp root.
+  assert.ok(modelTargets().some((input) => input.includes('Col. 3:19-4:1')),
+    `the pass never asked the model about the reference: ${modelCalls.length} call(s)`);
+
   // 1. The pressed chain's book is cleaned: curly quotes canonical, the
   //    scripture reference read, and it is stamped.
   const cleaned = await chapterText(result.outputPath);
   assert.ok(cleaned.startsWith('"the second edition"'), cleaned);
-  assert.ok(cleaned.includes('Colossians three nineteen through four one'), cleaned);
+  assert.ok(cleaned.includes('Colossians three, verse nineteen to four, verse one'), cleaned);
   const gate = await narrationTextPass.narrationTextGate(result.outputPath);
   assert.strictEqual(gate.ok, true, JSON.stringify(gate));
 
@@ -521,6 +556,7 @@ let second;
     }
   }
   console.log(`\n${passed}/${tests.length} passed`);
+  // ROOT holds the scratch too, so this is the whole of what the keeper wrote.
   try { fs.rmSync(ROOT, { recursive: true, force: true }); } catch { /* temp */ }
   process.exit(failures.length === 0 ? 0 : 1);
 })();

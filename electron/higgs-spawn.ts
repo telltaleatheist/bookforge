@@ -57,24 +57,26 @@
  * docs/HIGGS_ENGINE.md for the reconciliation.
  */
 
-import { app } from 'electron';
-import * as path from 'path';
-import * as fs from 'fs';
 import {
-  getWslDistro,
   getWslCondaPath,
+  getWslDistro,
   getWslHiggsCondaEnv,
   shouldUseWsl2ForHiggs,
-  checkWslHiggsSetupAsync,
 } from './tool-paths';
+import { higgsDoctor } from './higgs-doctor';
+import { windowsToWslPath } from './e2a-paths';
 import {
-  getPythonInvocation,
-  getDefaultE2aPath,
-  windowsToWslPath,
-  toUnpackedPath,
-  buildCondaSpawnEnv,
-} from './e2a-paths';
+  buildNarratorSpawn,
+  narratorEngineEnvId,
+  narratorPythonRoot,
+  narratorRunsInWsl,
+  toGuestPath,
+  type NarratorPhase,
+  type NarratorSpawnPlan,
+} from './narrator-spawn';
+import { app } from 'electron';
 import {
+  higgsMlxBaseDir,
   resolveHiggsModel,
   higgsSpawnEnv,
   higgsVoiceCapsForModel,
@@ -96,6 +98,13 @@ export function higgsRunsInWsl(): boolean {
   return process.platform === 'win32' && shouldUseWsl2ForHiggs();
 }
 
+/**
+ * Re-exported so the ONE narrator-package refusal has one caller-visible name.
+ * `tools/test-higgs-engine.js` asserts its wording; it now lives in
+ * `narrator-spawn.ts` because every engine's spawn needs it, not just Higgs.
+ */
+export { narratorPythonRoot };
+
 /** `--tts_engine` on narrator's prep, worker and retake routes. */
 export const HIGGS_NARRATOR_ENGINE = 'higgs-v3';
 
@@ -111,63 +120,18 @@ export const HIGGS_NARRATOR_ENGINE = 'higgs-v3';
 export const HIGGS_VOICE_FLAG = '--higgs_voice';
 
 /** `NARRATOR_ENGINE`, which selects the backend inside `serve/worker.py`. */
-export const HIGGS_NARRATOR_ENGINE_ENV = 'higgs-v3';
-
-export type HiggsSpawnKind = 'prep' | 'worker' | 'assembly' | 'serve';
-
-export interface HiggsSpawnPlan {
-  command: string;
-  args: string[];
-  env: NodeJS.ProcessEnv;
-  cwd: string;
-  viaWsl: boolean;
-  /** A single line for a log, so a failed spawn is reproducible by hand. */
-  describe(): string;
-}
+export const HIGGS_NARRATOR_ENGINE_ENV = narratorEngineEnvId('higgs');
 
 /**
- * Where the `narrator` package lives, as a Windows path.
- *
- * `python -m narrator.compat.worker` cannot bootstrap its own `sys.path` the way
- * `orpheus_stream.py` did with `sys.path.insert(0, EBOOK2AUDIOBOOK_PATH)` — `-m`
- * resolves the module BEFORE any of its code runs. PORT_NOTES section 9.2 gives
- * two ways to supply it and this takes the second: `PYTHONPATH=<repo>/python`.
- *
- * WHY PYTHONPATH AND NOT `pip install -e`. The install is cleaner and works from
- * any cwd, but it is a step per environment that a user has to have run, and it
- * is invisible when it has not been — a machine that skipped it fails with
- * `No module named narrator` and no hint about which env. PYTHONPATH is
- * zero-install and carried by the spawn itself, so the wiring and the thing it
- * wires arrive together. The note in PORT_NOTES stands: it loses to a `.pth`
- * already on the path, which is only a problem for someone who ALSO pip-installed
- * narrator, and then the two are the same package anyway.
- *
- * The three candidates mirror `resolveScriptPath()` in orpheus-worker-pool.ts —
- * app path (dev + packaged), the dist-relative walk-up, and the co-located copy —
- * and `toUnpackedPath` handles the packaged case, where a spawned Python cannot
- * read inside app.asar.
+ * Every phase a Higgs job can reach. WIDENED to narrator's own phase union at the
+ * Phase 3 cut-over: `resume` and `list` are engine-agnostic tools-env doors that
+ * a Higgs session reaches like any other, and a separate narrower union here
+ * would have had to be kept in step by hand.
  */
-export function narratorPythonRoot(): string {
-  const candidates = [
-    path.join(app.getAppPath(), 'python'),
-    path.join(__dirname, '..', '..', 'python'),
-    path.join(__dirname, 'python'),
-  ];
-  for (const c of candidates) {
-    if (fs.existsSync(path.join(c, 'narrator', '__init__.py'))) return toUnpackedPath(c);
-  }
-  // NOT "a packaging bug". On a dev machine nothing is packaged, and the real
-  // reason is almost always the same one: `python/narrator` lives on the
-  // `feat/narrator` branch, which lands FIRST (Owen's merge-order ruling). Say
-  // that, because "packaging bug" sends the reader to electron-builder config
-  // for a checkout problem.
-  throw new Error(
-    'The narrator package is not in this checkout. Higgs renders through narrator ' +
-      '(python/narrator), which lands with or before this branch — it is NOT vendored ' +
-      'or copied here. Looked for narrator/__init__.py under: ' + candidates.join(', ') +
-      '. Merge feat/narrator, or render on Orpheus until it lands.',
-  );
-}
+export type HiggsSpawnKind = NarratorPhase;
+
+/** The plan every narrator spawn produces; Higgs adds nothing to its shape. */
+export type HiggsSpawnPlan = NarratorSpawnPlan;
 
 /**
  * Is the Higgs ENVIRONMENT usable? Asked ONCE PER JOB, asynchronously.
@@ -189,18 +153,18 @@ export function narratorPythonRoot(): string {
  * the honest place for it, since no amount of pre-checking closes that window.
  */
 export async function higgsEnvironmentRefusal(): Promise<string | null> {
-  if (process.platform === 'win32' && !shouldUseWsl2ForHiggs()) {
-    return 'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" in '
-      + 'Settings → Higgs and install the environment there.';
-  }
-  if (process.platform !== 'win32') return null;
-
-  const doctor = await checkWslHiggsSetupAsync();
+  // EVERY PLATFORM GOES THROUGH THE DOCTOR. Until 2026-09-05 this returned `null`
+  // on anything that was not Windows — an UNCHECKED PASS, and the exact mirror of
+  // the modal's "WSL distribution" defect on the Mac: one arm refused a working
+  // machine, the other waved a broken one through to fail an hour later inside a
+  // worker. `higgsDoctor()` knows which arm this machine is and reports its
+  // checks; the toggle refusal is one of the rows it returns on Windows.
+  const doctor = await higgsDoctor();
   if (doctor.valid) return null;
   const failed = doctor.checks.filter((c) => !c.ok);
   return `The Higgs environment is not ready (${failed.length} of ${doctor.checks.length} checks failed):\n`
     + failed.map((c) => `  • ${c.label}: ${c.detail ?? 'failed'}`).join('\n')
-    + '\nRun Install/Repair on Settings → Higgs.';
+    + `\n${doctor.remedy}`;
 }
 
 /**
@@ -221,18 +185,37 @@ export function higgsPreflight(voiceId: string | undefined | null): HiggsModel {
 /**
  * Build the spawn for one phase of a Higgs job.
  *
- * The WSL arm is written out rather than reusing `spawnWithWslSupport`'s
- * `buildWslBashCommand`, and that is worth saying plainly: that function rewrites
- * argv by PATTERN — any arg containing `orpheus` becomes `-n <orpheusEnv>`, any
- * path under the e2a root is remapped onto the WSL e2a checkout, and it exports a
- * fixed `forwardKeys` list of `ORPHEUS_*` variables. Every one of those rules is
- * wrong for a narrator spawn: there is no e2a root involved, the env is chosen by
- * name not by string-matching, and the variables that must cross are `NARRATOR_*`.
- * Passing a Higgs command through it would silently produce an Orpheus command.
+ * ── What is left here, now that narrator-spawn.ts owns the command line ─────
  *
- * So this arm builds its own `bash -c`, and — the point of the whole design —
- * `buildWslBashCommand` is left untouched, which is what makes the Orpheus argv
- * provably identical before and after (see tools/test-orpheus-argv-snapshot.js).
+ * Everything ABOUT HIGGS, and nothing about spawning:
+ *
+ *  - the voice document, written on the Windows side and named in whichever
+ *    filesystem the spawn will read it from;
+ *  - the launch script the Higgs installer deployed INTO the WSL env (narrator
+ *    invokes the operator's script rather than writing its own — the CUDA_HOME
+ *    and FlashInfer workarounds live there and a second copy would drift), which
+ *    has to be named as a GUEST path;
+ *  - the catalog's own refusals, via `higgsSpawnEnv`.
+ *
+ * All three produce environment VALUES, which is why this function's whole job
+ * is now to compute `envExtras` and hand them over. `buildNarratorSpawn` decides
+ * the env, the module, the translation and the guest boundary — the same
+ * decisions, for every engine, in one place.
+ *
+ * The one thing that has to be decided HERE is `viaWsl`, because the voice
+ * document's CONTENTS are translated before the document is written: guest
+ * translation under WSL, identity on macOS/Linux where there is no guest for a
+ * path to be native to. An earlier draft stored WSL-native paths in the catalog
+ * and handed them to every arm untranslated — right on the WSL arm by accident,
+ * meaningless everywhere else.
+ *
+ * ── Why it takes `envExtras` now ────────────────────────────────────────────
+ *
+ * At the Phase 3 cut-over the batch bridge builds ONE argv per door for both
+ * engines and one env per door, and passes the env through. The Higgs voice
+ * variables are MERGED UNDER it, not over it: a caller may not override
+ * NARRATOR_HIGGS_VOICES by accident, because the document this function just
+ * wrote is the only one that describes this run's voice.
  */
 export function buildHiggsSpawn(
   kind: HiggsSpawnKind,
@@ -243,146 +226,62 @@ export function buildHiggsSpawn(
     cwd: string;
     /** Names the voice document written for this run. */
     jobId: string;
+    /** The door's own environment. Never overrides the Higgs voice variables. */
+    envExtras?: Record<string, string>;
   },
 ): HiggsSpawnPlan {
-  // prep and assembly are both `compat.app` doors (--prep_only / --assemble_only);
-  // the worker is `compat.worker`, which is the same routing with --worker_mode
-  // implied. See narrator's compat/FLAGS.md, "The two doors".
-  const module =
-    kind === 'worker' ? 'narrator.compat.worker'
-      : kind === 'serve' ? 'narrator.serve'
-        : 'narrator.compat.app';
+  return buildNarratorSpawn({
+    engine: 'higgs',
+    phase: kind,
+    args: opts.args,
+    envExtras: { ...opts.envExtras, ...higgsEnvExtras(opts.model, opts.jobId, kind) },
+    cwdHint: opts.cwd,
+  });
+}
 
-  const pythonRoot = narratorPythonRoot();
-  const serving = higgsServingFor(opts.model);
-  const viaWsl = process.platform === 'win32' && shouldUseWsl2ForHiggs();
+/**
+ * The environment a Higgs spawn needs, and the catalog refusals that produce it.
+ *
+ * Split out of `buildHiggsSpawn` at the Phase 3 cut-over so the batch bridge can
+ * build ONE plan per door for both engines and still hand the Higgs half its
+ * voice. Writing the voice document is a SIDE EFFECT of calling this — it lands
+ * on the Windows filesystem, named for `jobId`, with its contents translated for
+ * the arm `kind` will take.
+ */
+export function higgsEnvExtras(
+  model: HiggsModel,
+  jobId: string,
+  kind: HiggsSpawnKind,
+): Record<string, string> {
+  const serving = higgsServingFor(model);
+  // Asked of narrator-spawn rather than recomputed, so the arm the voice document
+  // is written FOR is provably the arm the spawn will take.
+  const viaWsl = narratorRunsInWsl('higgs', kind);
 
-  // The voice document is written on the WINDOWS side (that is the filesystem
-  // this process can write) and NAMED in whichever filesystem the spawn will read
-  // it from. Under WSL that is /mnt/c — the 9p mount is slow, and it does not
-  // matter here: this is a few hundred bytes read once at load, not the model
-  // weights, which is exactly why the models dir is WSL-native and this is not.
-  // The document is written on the WINDOWS side (that is the filesystem this
-  // process can write) and its CONTENTS are translated for the arm that will read
-  // them: guest translation under WSL, identity on macOS/Linux where there is no
-  // guest for a path to be native to. An earlier draft stored WSL-native paths in
-  // the catalog and handed them to every arm untranslated — right on the WSL arm
-  // by accident, meaningless everywhere else.
+  // Under WSL the document is read over /mnt/c. The 9p mount is slow and it does
+  // not matter here: this is a few hundred bytes read once at load, not the model
+  // weights — which is exactly why the models dir is WSL-native and this is not.
   const translate = viaWsl ? toGuestPath : (p: string) => p;
-  const voicesHostPath = writeHiggsVoicesDocument(opts.model, opts.jobId, translate);
-  const distro = getWslDistro();
+  const voicesHostPath = writeHiggsVoicesDocument(model, jobId, translate);
+  const serveScriptGuestPath =
+    `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
 
-  // The launch script the installer deployed INTO the env. narrator invokes the
-  // operator's script rather than writing its own — the CUDA_HOME and FlashInfer
-  // workarounds live there and a second copy would drift — so what it needs is
-  // the path, in the guest's filesystem.
-  const serveScriptGuestPath = `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
-
-  const voiceEnv = higgsSpawnEnv(opts.model, {
+  return higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
-    wslDistro: viaWsl ? distro : undefined,
+    wslDistro: viaWsl ? getWslDistro() : undefined,
+    // darwin ONLY: the in-process MLX backend loads its weights from a directory
+    // this variable names, and refuses BY NAME when it is unset ("no default and
+    // no search"). Host-native — there is no guest on a Mac, so nothing is
+    // translated. The served arm (Windows/WSL) never reads it: there the weights
+    // are the launch script's argument.
+    mlxModelDir: process.platform === 'darwin'
+      ? higgsMlxBaseDir(app.getPath('userData'))
+      : undefined,
   });
-
-  const baseEnv: Record<string, string> = {
-    PYTHONUNBUFFERED: '1',
-    PYTHONIOENCODING: 'utf-8',
-    // Selects the backend inside narrator's engine registry.
-    NARRATOR_ENGINE: HIGGS_NARRATOR_ENGINE_ENV,
-    ...voiceEnv,
-  };
-
-  if (viaWsl) {
-    const conda = getWslCondaPath();
-    const envName = getWslHiggsCondaEnv();
-    const wslPythonRoot = windowsToWslPath(pythonRoot);
-
-    // Paths in argv are translated here, explicitly and only where they are
-    // paths — the opposite of buildWslBashCommand's pattern matching. An arg that
-    // is not a drive-letter path crosses verbatim.
-    //
-    // THE GUARD USED TO BE a character class holding ONLY an escaped forward
-    // slash — so it matched
-    // 'C:/x' and MISSED 'C:\\x', and path.join on win32 emits backslashes. Every
-    // --session_dir and --sentences_dir therefore crossed into the guest as a
-    // literal Windows path, single-quoted so bash preserved it exactly, and
-    // narrator refused it as a directory that does not exist — potentially after
-    // the 297 s cold start had already been paid.
-    const wslArgs = opts.args.map(toGuestPath);
-
-    // EVERY env value goes through the same translation as argv. A Windows path
-    // is exactly as unusable to the guest inside NARRATOR_HIGGS_VOICES as it is
-    // inside --session_dir, and the two used to be translated by different code
-    // (one correct, one not) — which is how the argv guard's bug stayed
-    // invisible while the voices path looked right in a log.
-    const exports = Object.entries({ ...baseEnv, PYTHONPATH: wslPythonRoot })
-      .map(([k, v]) => `${k}=${shellQuote(toGuestPath(v))}`)
-      .join(' ');
-    const run =
-      `${shellQuote(conda)} run --no-capture-output -n ${shellQuote(envName)} ` +
-      `python -u -m ${module} ${wslArgs.map(shellQuote).join(' ')}`;
-    // cwd is NOT load-bearing for narrator (PORT_NOTES s9.3: it reads cwd for
-    // nothing), but it must EXIST inside the guest, so it is the WSL home rather
-    // than a translated Windows path that may not be mounted.
-    const bash = `export ${exports} && cd ~ && ${run}`;
-    const wslArgv = distro ? ['-d', distro, 'bash', '-c', bash] : ['bash', '-c', bash];
-    return {
-      command: 'wsl.exe',
-      args: wslArgv,
-      env: process.env,
-      cwd: process.cwd(),
-      viaWsl: true,
-      describe: () => `wsl.exe ${wslArgv.slice(0, -1).join(' ')} '${bash}'`,
-    };
-  }
-
-  // Native (macOS / Linux): the Higgs env resolved through the component seam.
-  const py = getPythonInvocation(getDefaultE2aPath(), 'higgs');
-  const args = [...py.args, '-u', '-m', module, ...opts.args];
-  return {
-    command: py.command,
-    args,
-    env: buildCondaSpawnEnv({ ...baseEnv, PYTHONPATH: pythonRoot }),
-    cwd: opts.cwd,
-    viaWsl: false,
-    describe: () => `${py.command} ${args.join(' ')}`,
-  };
 }
 
 /** `<base>/bin/conda` -> `<base>`. The same derivation the doctor makes. */
 function wslCondaBase(condaPath: string): string {
   return condaPath.replace(/\/bin\/conda$/, '');
-}
-
-/**
- * A HOST-NATIVE path, as the WSL guest must see it. Anything else verbatim.
- *
- * THREE INPUT FORMS, because a Windows host has three ways of naming a file the
- * guest can open:
- *
- *   C:\\x  /  C:/x         a drive path      -> /mnt/c/x
- *   \\\\wsl$\\Ubuntu\\home\\x     the UNC form of a  -> /home/x
- *   \\\\wsl.localhost\\...   guest-resident path
- *   /home/x  /  /mnt/c/x    already guest form -> unchanged
- *
- * The UNC form is not hypothetical: it is what `tool-paths.ts` documents for
- * `orpheusModelsDir` on a Windows+WSL machine, so a models directory that lives
- * on ext4 is NAMED on the Windows side as `\\\\wsl$\\<distro>\\...`. Handling
- * only drive letters would translate a session dir correctly and leave a models
- * path as a UNC string the guest cannot open.
- *
- * Passing an already-guest-form path through unchanged is what makes this safe to
- * apply to argv, to every environment value, and to catalog paths, without
- * knowing which of them were already translated.
- */
-function toGuestPath(value: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(value)) return windowsToWslPath(value);
-  const unc = value.replace(/\\/g, '/')
-    .match(/^\/\/wsl[$.](?:localhost)?\/[^/]+(\/.*)?$/i);
-  if (unc) return unc[1] || '/';
-  return value;
-}
-
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
 }

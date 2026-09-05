@@ -1140,25 +1140,16 @@ function takeThermalSummary(stepId: string): GpuThermalSummary | null {
 // ────────────────────────────────────────────────────────────────────────────
 
 /**
- * The external-GPU-job lock, read exactly as parallel-tts-bridge reads it.
+ * The external-GPU-job lock — THE reader, shared with the sweeps.
  *
- * Any process outside this app may create `%APPDATA%\BookForge\external-gpu-job.lock`
- * (content = free-text description) to say it is using the card. The sweeps
- * already honour it; now the SCHEDULER does too — it holds, politely, and says
- * what it is holding for.
+ * This used to be a second, byte-identical copy of the one in
+ * `parallel-tts-bridge.ts`. Two copies of a safety interlock is one copy that can
+ * be fixed while the other is not, and the stale one fails silently: a lock it
+ * does not notice simply means the sweep proceeds. Re-exported rather than
+ * inlined so the scheduler's callers keep their import.
  */
-export function externalGpuJobLock(): string | null {
-  if (os.platform() !== 'win32') return null;
-  const appData = process.env['APPDATA'];
-  if (!appData) return null;
-  const p = path.join(appData, 'BookForge', 'external-gpu-job.lock');
-  if (!fsSync.existsSync(p)) return null;
-  try {
-    return fsSync.readFileSync(p, 'utf-8').trim() || '(empty lock file)';
-  } catch {
-    return '(unreadable lock file)';
-  }
-}
+export { externalGpuJobLock } from '../shared/gpu/external-job-lock';
+import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
 
 /**
  * Who else holds the GPU. Injected rather than imported so the engine keeps its
