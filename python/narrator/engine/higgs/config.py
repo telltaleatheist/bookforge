@@ -316,6 +316,18 @@ def load_voices(path: str = None, *, allowed_controls=None,
                                                text-only. Owen, 2026-09-04:
                                                production is fine-tuned voices
                                                only.
+
+    THE REQUIRED FILES OF A `checkpointDir`, checked by the v3 engines rather
+    than here (this module is shared with the v2 scaffold, and the check belongs
+    where the directory is resolved - `v3_served.checkpoint_serve_target`):
+    the weights, `config.json`, `tokenizer.json`, `tokenizer_config.json`,
+    `chat_template.jinja` AND **`generation_config.json`**. That last one is the
+    SAMPLING the model is served at - `vllm-omni serve` resolves sampling from
+    the model directory (`--generation-config auto`), and a dir without it falls
+    back to a bare SamplingParams (top_p 1.0, top_k disabled) which derails long
+    chunks into babble. `v3_served.require_generation_config` refuses a
+    checkpoint voice without it BY NAME; on the Mac the MLX backend reads the
+    same file for its own sampler, because mlx-audio does not.
         {"kind": "default"}                    the model's OWN voice, no
                                                conditioning at all - a smoke
                                                test or a demo. 12 % of the

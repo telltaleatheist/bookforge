@@ -168,7 +168,11 @@ class HiggsV3Config:
         if voice_checkpoint and not self.checkpoint_dir:
             self.checkpoint_dir = voice_checkpoint
         if self.checkpoint_dir:
-            v3_served.checkpoint_serve_target(self.checkpoint_dir)
+            # Also proves the directory carries the generation_config.json the
+            # server will read its sampling out of - see
+            # v3_served.require_generation_config.
+            v3_served.checkpoint_serve_target(self.checkpoint_dir,
+                                              self.voice.name)
 
 
 class HiggsV3Codec:
@@ -406,9 +410,16 @@ class HiggsV3Engine:
                 "NARRATOR_HIGGS_VOICES document; there is no default, and the model's "
                 'own voice sits at 12 % of the narrator ceiling.')
         from .config import load_voice
-        load_voice(name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
-                   max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
-                   placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        resolved = load_voice(
+            name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+            max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+            placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        checkpoint = getattr(resolved, 'checkpoint_dir', None)
+        if checkpoint:
+            # A checkpoint voice's REQUIRED FILES are checked here, at the load
+            # message, for the same reason `maxChars` is: the refusal belongs
+            # before a 55-297 s server start and before anything holds a GPU.
+            v3_served.checkpoint_serve_target(checkpoint, resolved.name)
         return name
 
     def backend_spec(self) -> BackendSpec:
