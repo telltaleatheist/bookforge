@@ -47,16 +47,18 @@ it stands. So:
 
 ## Table-like fragments (2026-09-05)
 
-A table is not prose and must never be packed with it: "1933 - Chancellor" (an em dash in the real text)
+A table is not prose and must never be packed with it: "1933 - Chancellor"
 followed by "1934 - Fuhrer" read as one paragraph is a run-on the ear cannot
-parse, and a table row welded onto the sentence before it is worse. Two
-independent detectors, because tables reach this module by two roads:
+parse, and a table row welded onto the sentence before it is worse. (The real
+separator is an em dash - `TABLE_CELL_JOIN` - written as an escape so this
+module is ASCII on disk. The text it produces is not.) Two independent
+detectors, because tables reach this module by two roads:
 
   MARKUP LINEAGE (authoritative, `extract_blocks`). A `<table>` becomes one
   TABLE block per `<tr>`, built with ebook2audiobook's own cell recipe
   (core.py:1461-1481 at 9daab0ba): the first row supplies the headers, each
-  later row becomes `header: cell (em dash) header: cell`, or the cells joined by the
-  same dash when the widths disagree. narrator's only change is that each ROW is
+  later row becomes `header: cell` pairs joined by `TABLE_CELL_JOIN`, or the
+  cells joined by it when the widths disagree. narrator's only change is that each ROW is
   its own block - e2a appended the same lines into the running text and the
   character-window packer then packed several of them into one generation, which
   is precisely what point 2 forbids.
