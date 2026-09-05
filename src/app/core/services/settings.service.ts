@@ -464,23 +464,6 @@ export class SettingsService {
         fields: [], // Custom UI (app-higgs-voices-panel + app-add-ons-panel)
       },
       {
-        // ── AN ENGINE'S PAGE THAT OUTLIVED ITS ENGINE ────────────────────────
-        // XTTS stopped being a narration CHOICE on 2026-09-04 and left the root
-        // entirely on 2026-09-05 — the pool, the voice catalog, the "add your
-        // own voice" feature and the DeepSpeed pack all went with it. What is
-        // left under this key is the one thing here that was never XTTS's: the
-        // Stanza LANGUAGE PACKS, which every engine's prep uses to split
-        // sentences.
-        // The section id stays 'xtts' because it is a ROUTE KEY: the translation
-        // panel deep-links `?section=xtts` for "download more language packs",
-        // and renaming it would break that link to fix a word.
-        id: 'xtts',
-        name: 'Language packs',
-        description: 'Stanza sentence-segmentation models, used by every narration engine',
-        icon: '🗣️',
-        fields: [], // Custom UI (app-languages-panel)
-      },
-      {
         // Dedicated screen for the optional RVC voice-enhancement engine + its
         // voice models. Custom UI (app-rvc-enhancement-panel).
         id: 'enhancement',

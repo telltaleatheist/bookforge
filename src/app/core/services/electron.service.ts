@@ -160,7 +160,6 @@ export type ComponentKind =
   | 'conda-env'
   | 'tts-model'
   | 'rvc-model'
-  | 'language-pack'
   | 'stt-model'
   | 'blocks-model'
   | 'system';

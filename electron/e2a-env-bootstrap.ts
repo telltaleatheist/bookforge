@@ -567,6 +567,17 @@ interface RuntimeAsset {
 // are still published under the `assets` release tag and should be retired there
 // — see docs/XTTS_REMOVAL.md.
 const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
+  // ENGLISH ONLY, AND IT STAYS — for now.
+  //
+  // Owen ruled BookForge English-only for TTS on 2026-09-05 ("non-English books
+  // will be translated to English"), and the downloadable per-language Stanza
+  // packs went with that ruling. THIS one did not, and the reason is measured
+  // rather than assumed: ebook2audiobook's prep still loads a Stanza pipeline
+  // for English — `lib/core.py`'s `stanza.Pipeline(...)` inside
+  // `year_to_decades_languages`, which `return []`s the whole chapter list if it
+  // raises. Until prep moves to narrator (E2A_REMOVAL_PLAN phase 3), removing
+  // this download breaks every render on a packaged install. Phase 6 retires it
+  // with the rest of the e2a runtime.
   'stanza-en': {
     id: 'stanza-en',
     label: 'English language pack',

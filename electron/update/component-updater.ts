@@ -2,7 +2,8 @@
  * component-updater — keeps OUR server-hosted binaries current (ffmpeg, yt-dlp, …).
  *
  * Scope: ONLY manifest.components[] — the binaries WE build/host and watch. Third-party models
- * (HuggingFace voices, whisper, Stanza language packs) live in manifest.voices/languages and are
+ * (whisper models and, historically, HuggingFace voices + Stanza language packs)
+ * live in manifest.voices/languages and are
  * downloaded on demand from upstream; they are NOT our code and are deliberately OUTSIDE update
  * logic. This module never looks at them.
  *

@@ -33,7 +33,6 @@ export type ComponentKind =
   | 'conda-env'  // a conda env (conda-pack tarball, or a user's own `conda create`)
   | 'tts-model'  // a HuggingFace TTS voice/model fetched into e2a's HF cache
   | 'rvc-model'  // an RVC enhancement voice tarball extracted into the rvc-models dir
-  | 'language-pack' // a Stanza sentence-segmentation model fetched into e2a's models/stanza
   | 'stt-model'  // a faster-whisper (CTranslate2) model dir fetched into runtime/whisper-models
   | 'foundry-cli' // the standalone foundry binary, downloaded as a per-platform tarball
   | 'system';    // provided by the OS (e.g. Apple Vision); nothing to download
@@ -153,10 +152,6 @@ export interface OptionalComponent {
    *  is the reference clip filename fetched alongside so the voice is
    *  self-contained (no bundled clip needed). */
   hf?: { repo: string; sub: string; files: string[]; ref?: string };
-  /** kind 'language-pack' only: the Stanza language to fetch. `code` is the
-   *  ISO 639-1 code stanza.download() expects ('en', 'de', 'ko'); it lands in
-   *  e2a's models/stanza/<code>/ where the segmentation pipeline reads it. */
-  stanza?: { code: string };
   /** External-mode auto-detection. Present when 'external' is supported. */
   detect?: DetectSpec;
   verify: VerifySpec;

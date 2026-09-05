@@ -9,7 +9,6 @@ import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
 import { WhisperModelsPanelComponent } from './components/whisper-models-panel.component';
-import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { WorkerConfigService } from '../../core/services/worker-config.service';
@@ -23,7 +22,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -728,16 +727,6 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     <strong>Tip:</strong> Leave paths empty to use auto-detection.
                     The app will search common installation locations for each tool.
                   </p>
-                </div>
-              </div>
-            } @else if (section.id === 'xtts') {
-              <!-- The route key is historical (see settings.service.ts); what
-                   lives here is the Stanza language packs. -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Language packs</h3>
-                  <p class="addons-group-sub">Stanza sentence-segmentation models used to split text for narration, cleanup &amp; translation.</p>
-                  <app-languages-panel></app-languages-panel>
                 </div>
               </div>
             } @else if (section.id === 'orpheus') {

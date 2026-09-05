@@ -3,7 +3,6 @@ import { CommonModule } from '@angular/common';
 import { Router } from '@angular/router';
 
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
-import { LanguagesPanelComponent } from '../settings/components/languages-panel.component';
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
@@ -18,7 +17,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -35,7 +34,6 @@ interface SetupStep {
   imports: [
     CommonModule,
     AiSetupWizardComponent,
-    LanguagesPanelComponent,
     AddOnsPanelComponent,
     RvcEnhancementPanelComponent,
     OrpheusVoicesPanelComponent,
@@ -160,9 +158,6 @@ interface SetupStep {
             }
             @case ('ai') {
               <app-ai-setup-wizard [embedded]="true" />
-            }
-            @case ('xtts') {
-              <app-languages-panel [selectionMode]="true" />
             }
             @case ('orpheus') {
               <app-orpheus-voices-panel />
@@ -693,17 +688,6 @@ export class FirstRunSetupComponent {
       title: 'Higgs (optional)',
       subtitle:
         'A second narration engine, served from WSL. Research/non-commercial licence — personal use. Check the environment here and install it if you want it.'
-    },
-    {
-      // The step id stays 'xtts' because it is also the Settings SECTION key that
-      // `@case ('xtts')` renders and that the translation panel deep-links to.
-      // Nothing XTTS is left under it: the engine left the root on 2026-09-05
-      // and took its voices panel with it. What remains is the Stanza language
-      // packs, which every engine's prep uses to split sentences.
-      id: 'xtts',
-      title: 'Language packs',
-      subtitle:
-        'Sentence-splitting language packs, used by every narration engine. Common languages are bundled — pick extras now or anytime from Settings.'
     },
     {
       id: 'rvc',
