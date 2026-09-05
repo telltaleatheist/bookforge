@@ -204,9 +204,9 @@ async function main() {
             console.log('[audiobook] cached partial progress — a re-run will resume from here');
           } catch (e) { console.warn('[audiobook] partial cache failed:', e && e.message); }
         }
-        process.exit(130);
+        process.exit(130);  // abort-path: SIGINT/SIGTERM teardown
       })
-      .catch((e) => { console.error('[audiobook] teardown error:', e && e.message); process.exit(130); });
+      .catch((e) => { console.error('[audiobook] teardown error:', e && e.message); process.exit(130); });  // abort-path: SIGINT/SIGTERM teardown
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -401,10 +401,10 @@ async function main() {
   }
 
   console.log(`[audiobook] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${outPath}`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[audiobook] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

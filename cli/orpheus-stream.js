@@ -82,7 +82,7 @@ function writeWav(pcm, rate, out) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args.help || args.h) { console.log(USAGE); process.exit(0); }
+  if (args.help || args.h) { console.log(USAGE); process.exitCode = 0; return; }
   if (!args.voice) throw new Error('--voice <id> is required (speak settings bind the voice)');
 
   let raw = args.text;
@@ -128,7 +128,7 @@ async function main() {
     if (stopping) return;
     stopping = true;
     console.log(`\n[stream] ${sig} — tearing down...`);
-    teardown().then(() => process.exit(130)).catch(() => process.exit(130));
+    teardown().then(() => process.exit(130)).catch(() => process.exit(130));  // abort-path: SIGINT/SIGTERM teardown
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -213,10 +213,10 @@ async function main() {
 
   console.log('[stream] tearing down...');
   await teardown();
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[stream] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

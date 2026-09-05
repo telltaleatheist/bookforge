@@ -167,8 +167,8 @@ async function main() {
     console.log(`\n[ai] ${sig} — cancelling job ${jobId}...`);
     Promise.resolve(bridge.cancelCleanupJob ? bridge.cancelCleanupJob(jobId) : undefined)
       .then(() => stopLocalLlama())
-      .then(() => process.exit(130))
-      .catch(() => process.exit(130));
+      .then(() => process.exit(130))  // abort-path: SIGINT/SIGTERM teardown
+      .catch(() => process.exit(130));  // abort-path: SIGINT/SIGTERM teardown
   };
   const stopLocalLlama = async () => {
     if (args.provider !== 'local') return;
@@ -201,10 +201,10 @@ async function main() {
     `contentSkips=${r.contentSkipsAffected || 0} truncated=${r.truncatedAffected || 0} ` +
     `copyright=${r.copyrightChunksAffected || 0} markerMismatch=${r.markerMismatchAffected || 0}`);
   if (r.skippedChunksPath) console.log(`[ai] skipped-chunks report: ${r.skippedChunksPath}`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[ai] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

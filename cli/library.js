@@ -270,5 +270,5 @@ function progressDone() { if (process.stderr.isTTY) process.stderr.write('\r' + 
   console.log(fs.readFileSync(__filename, 'utf8').split('\n').slice(11, 22).map(l => l.replace(/^ \* ?/, '')).join('\n'));
 })().catch((err) => {
   console.error(`[library] ${err.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

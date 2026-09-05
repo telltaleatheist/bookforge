@@ -29,7 +29,8 @@ const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist');
 if (!fs.existsSync(path.join(DIST, 'electron', 'pdf-analyzer.js'))) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 
 // quire paginates an EPUB in a real browser, and PDFAnalyzer now goes through
@@ -39,11 +40,13 @@ require('./electron-relaunch').relaunchUnderElectron(__filename);
 const BOOK = process.argv[2];
 if (!BOOK || !fs.existsSync(BOOK)) {
   console.error('Usage: node tools/measure-killing-america-strikes.js <copy of the book.epub>');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 if (/^[Ee]:/.test(path.resolve(BOOK))) {
   console.error('Refusing to run against E:\\ — copy the book somewhere else first.');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 
 if (!process.env.BOOKFORGE_USERDATA_DIR) {
