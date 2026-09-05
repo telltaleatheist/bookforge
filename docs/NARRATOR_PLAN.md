@@ -457,3 +457,27 @@ cold start 297 s to /health (55 s only on a warm restart).
    model is the primary path.
 3. The chunk-tail sentinel trim is a band-aid on the server side; a token-level fix in
    vllm-omni's decode is queued there. narrator never trims client-side.
+
+## Higgs v3 path design points (Owen, approved 2026-09-05 night, relayed by the orpheus-training session)
+
+Orpheus keeps its 44 s sentence split. For Higgs v3:
+1. **Chunk = whole paragraphs packed** until the next would exceed a MEASURED per-voice cap
+   (placeholder ~2,000 chars ~ one page ~ 140 s; the served sweep of the 100 s-clip model gives
+   the real number); never split a paragraph unless it alone exceeds the cap. Evidence: the
+   matched-checkpoint sweep - training clip length sets the stop wall (98 s clips read 1,500
+   chars at 84-98 %, 8-22 s clips at 9-25 %), so the cap is a property of the voice's training
+   corpus and must come from its sweep (the catalog's `maxChars` + `maxCharsSource:
+   'length-sweep'` per checkpoint voice).
+2. **Headings, list items and table-like fragments render as their own chunks**, never packed
+   into prose (the paragraph packer's walls; already the rule for `[heading]`/`[item]`).
+3. **Sentence-level VTT comes from POST-RENDER FORCED ALIGNMENT** of each chunk's audio
+   against its known text (a CTC aligner: wav2vec2 via torchaudio, or WhisperX align mode;
+   CPU, seconds per chunk) - the model exposes no text-to-time mapping. narrator's VTT
+   contract (cue text = chunk text, times from sample counts) stays the CHUNK-level truth;
+   the sentence-level cues are derived from the alignment inside each chunk's span.
+4. **The same alignment is the coverage guard**: text with no aligned audio = dropped /
+   truncated; audio with no text = insertion. It replaces the duration-ratio guard, which
+   cannot see a measured 22 % text loss. This is the `coverage_check: 'asr'` hook already on
+   the Higgs StopPolicy, made concrete: an ALIGNMENT check, not a transcription diff.
+Design-note level; no code yet. The existing `electron/scripts/align_audiobook.py` (WhisperX,
+paragraph-aware, silence-snapped) is the natural home for the aligner.
