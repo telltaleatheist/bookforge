@@ -93,9 +93,18 @@ function untouched(text) {
  *   PROTECTION — the text comes back byte for byte. Every digit is still there
  *   when the model is asked, which is the only reason the model can read it.
  *
- *   THE MUST-NOT LIST — Owen's own, 2026-09-05, one test per case. A detector is
- *   a claim about text the app does not own, and the cases it must NOT claim are
- *   the ones that say whether the claim is honest.
+ *   THE MUST-NOT LIST — Owen's own, 2026-09-05, plus everything the adversarial
+ *   review measured firing that day, one test per case. A detector is a claim
+ *   about text the app does not own, and the cases it must NOT claim are the ones
+ *   that say whether the claim is honest.
+ *
+ *   AND WHAT A MISS COSTS. A false positive is NOT free, which is the finding
+ *   that produced the evidence test: inside a detected span the validator asks
+ *   for a chapter-and-verse pause, so a detection on "Widescreen 16:9" made the
+ *   correct reading unrepresentable — and the book-less rule, which read "Score
+ *   21:19" correctly on main, never got the chance. So every must-NOT case below
+ *   pins BOTH halves: nothing detected, and the reading main gave it, byte for
+ *   byte.
  *
  * The READING lives in `electron/prompts/tts-number-normalize.txt` and is
  * measured against `tools/fixtures/scripture-readings.json` — sixty-six books
@@ -227,9 +236,10 @@ test('must-NOT: an abbreviation with no period is not a chapter-only reference',
 });
 
 test('must-NOT: an ordinary noun in front of a colon-number', () => {
-  // DECIDED 2026-09-05: "Chapter", "Room", "Act", "Table" and the rest are a
-  // CLOSED set of English nouns, and a closed set may be listed where an open
-  // set of book abbreviations may not.
+  // No period, no volume number, not a canonical book name — no evidence, so no
+  // claim. There is no list of these words any more: the first cut tried one and
+  // the review walked straight through it with "Lakers", "Widescreen", "Flight",
+  // "Docket", "BWV", every weekday and a sentence-initial "Then".
   detectsNothing('Chapter 3:7 begins', 'Chapter 3:7 begins');
   detectsNothing('Room 3:15 was locked', 'Room three fifteen was locked');
   detectsNothing('Act 3:2 of the play', 'Act 3:2 of the play');
@@ -241,11 +251,8 @@ test('must-NOT: an ordinary noun in front of a colon-number', () => {
 test('must-NOT: an ordinary word capitalized by the sentence it starts', () => {
   // MEASURED against this suite, 2026-09-05: "See 20:6 there." put an ordinary
   // verb in the book's position — every word is capitalized at the start of a
-  // sentence — and the reference was detected. The cost of that false positive
-  // is not nothing: the span is protected, the book-less rule can no longer read
-  // it, and the model is asked for a reading of something that is not a
-  // reference. So the closed set of ordinary words carries the sentence-initial
-  // verbs, prepositions and pronouns too.
+  // sentence — and the reference was detected. It is the evidence test that
+  // refuses it now, not a list of verbs.
   // Under ten the book-less rule declines the verse too, so the line stands as
   // printed and the model is asked about it — which is what it was before n6.
   detectsNothing('See 20:6 there.', 'See 20:6 there.');
@@ -256,14 +263,87 @@ test('must-NOT: an ordinary word capitalized by the sentence it starts', () => {
 });
 
 test('must-NOT: a book citing its own last reference — "Verses 28:7-8"', () => {
-  // The plural of an ordinary noun is an ordinary noun. "Verses", "Chapters" and
-  // "Pages" are here; "Acts", "Numbers", "Judges", "Kings", "Songs" and
-  // "Lamentations" are plurals that ARE books and are deliberately not.
+  // "Verses" and "Chapters" have no evidence; "Acts", "Numbers", "Judges" and
+  // "Lamentations" are canonical book names and have shape (c).
   assert.deepStrictEqual(detected('Verses 28:7-8 say so.'), []);
   assert.deepStrictEqual(detected('Chapters 3:1-4:2 cover it'), []);
   protects('Numbers 6:24 says so', ['Numbers 6:24']);
   protects('Judges 6:12 says so', ['Judges 6:12']);
   protects('Lamentations 3:22 says so', ['Lamentations 3:22']);
+});
+
+/**
+ * THE FALSE-POSITIVE TABLE, from the adversarial review of 2026-09-05.
+ *
+ * Every one of these fired under the first cut of the detector. The expected
+ * output of each is what `main` produces — measured, not guessed, by running
+ * main's own compiled rules over the same strings — because the whole point of
+ * the evidence test is that a shape with no evidence must keep the behaviour it
+ * had before this branch existed.
+ */
+test('must-NOT: none of the shapes the review measured firing', () => {
+  // A capitalized word with no period, no volume number and no canonical name.
+  detectsNothing('Widescreen 16:9 is standard.', 'Widescreen 16:9 is standard.');
+  detectsNothing('Aspect 16:9 is standard.', 'Aspect 16:9 is standard.');
+  detectsNothing('Lakers 3:1 in the series.', 'Lakers 3:1 in the series.');
+  detectsNothing('Route 66:1 was renumbered.', 'Route 66:1 was renumbered.');
+  detectsNothing('Map 2:1 scale.', 'Map 2:1 scale.');
+  detectsNothing('Bach BWV 3:7 hmm.', 'Bach BWV 3:7 hmm.');
+  detectsNothing('Ratios 3:7 and 4:8 measured.', 'Ratios 3:7 and 4:8 measured.');
+  detectsNothing('Hebrews Street 3:7 nonsense.', 'Hebrews Street 3:7 nonsense.');
+  // …and the ones main READ, which is the half a false positive was taking away.
+  detectsNothing('Score 21:19 in the final set.', 'Score twenty one nineteen in the final set.');
+  detectsNothing('Bus 47:15 leaves hourly.', 'Bus forty seven fifteen leaves hourly.');
+  detectsNothing('Flight 12:30 boards now.', 'Flight twelve thirty boards now.');
+  detectsNothing('Windows 3:11 was an OS.', 'Windows three eleven was an OS.');
+  detectsNothing('Docket 5:12 was entered.', 'Docket five twelve was entered.');
+  detectsNothing('Recording 12:34 shows the fault.', 'Recording twelve thirty four shows the fault.');
+  detectsNothing('Dilution 1:100 of the reagent.', 'Dilution one one hundred of the reagent.');
+  // Every weekday, which no list of nouns was ever going to hold.
+  detectsNothing('Meeting Tuesday 14:30 tomorrow.', 'Meeting Tuesday fourteen thirty tomorrow.');
+  detectsNothing('Wednesday 9:45 he arrived.', 'Wednesday nine forty five he arrived.');
+  detectsNothing('Then 9:45 he arrived.', 'Then nine forty five he arrived.');
+});
+
+test('scripture: the three kinds of evidence, and nothing else', () => {
+  // (a) an ABBREVIATION — it carries its own period.
+  protects('see Zeph. 3:17 there', ['Zeph. 3:17']);
+  protects('see Pt. 3:7 there', ['Pt. 3:7']);
+  // (b) a VOLUME NUMBER — arabic, roman or ordinal.
+  protects('read 2 Kgs. 2:11 aloud', ['2 Kgs. 2:11']);
+  protects('See II Cor. 5:17 there.', ['II Cor. 5:17']);
+  protects('See III John 1:4 there.', ['III John 1:4']);
+  protects('See 1st John 1:9 there.', ['1st John 1:9']);
+  // (c) a FULL CANONICAL BOOK NAME.
+  protects('Genesis 3:15 is quoted.', ['Genesis 3:15']);
+  protects('Revelation 21:4 says so.', ['Revelation 21:4']);
+  protects('Qoheleth 3:1 says so.', ['Qoheleth 3:1']);
+  // …and a dotless abbreviation has NONE of the three. Stated so the gap is a
+  // decision and not a surprise: "Ps 23:1" read correctly on main from the
+  // abbreviation table, and now the digits stand unless the model is right AND
+  // its edit survives the ordinary WORDS_DROPPED invariant, which it will not.
+  // A short capitalized token with no period is the shape of "Map 2:1" and
+  // "Bus 47:15", and no evidence separates them.
+  assert.deepStrictEqual(detected('Ps 23:1 without a period.'), []);
+  assert.deepStrictEqual(detected('Rev 21:4 says so.'), []);
+  assert.deepStrictEqual(detected('Jn 3:16 is the famous one.'), []);
+});
+
+test('scripture: the list tail is bounded by what a verse could be', () => {
+  // MEASURED, adversarial review 2026-09-05: the swallow loop had one guard and
+  // took an ordinary number with it, and a swallowed number is a number no rule
+  // can read any more.
+  assert.deepStrictEqual(detected('Quoting Rom. 8:28, 250 members left.'), ['Rom. 8:28']);
+  assert.strictEqual(spoken('Quoting Rom. 8:28, 250 members left.'),
+    'Quoting Rom. 8:28, two hundred fifty members left.');
+  assert.deepStrictEqual(detected('Isa. 5:20 and 1,000 copies went out.'), ['Isa. 5:20']);
+  assert.strictEqual(spoken('Isa. 5:20 and 1,000 copies went out.'),
+    'Isa. 5:20 and one thousand copies went out.');
+  // A 4-digit tail was already refused, and still is.
+  assert.deepStrictEqual(detected('See Ps. 23:1; 1914 was the year.'), ['Ps. 23:1']);
+  // The bound is the highest verse there is — Psalm 119:176 — so a real list of
+  // verses is untouched by it.
+  protects('Ps. 119:97, 101, 176 are cited.', ['Ps. 119:97, 101, 176']);
 });
 
 test('must-NOT: a book name AFTER the digits is no evidence at all', () => {
