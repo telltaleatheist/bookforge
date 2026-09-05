@@ -1760,8 +1760,36 @@ process.on('exit', () => {
     assert.strictEqual(env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB, String(profile.mlxMemBudgetGB));
   });
 
-  check('darwin: serve, prep and assembly carry NO batch variables', () => {
-    for (const door of ['serve', 'prep', 'assembly']) {
+  check('darwin: SERVE carries the ceiling the POOL passed, not the tier width', () => {
+    // The Listen path batches its read-ahead (the row being listened to renders
+    // solo), and the width it may use is the pool's `streamBatchCeiling()` —
+    // floor-16 over the tier's width, so NOT the worker's number. Passed in
+    // because higgs-spawn cannot import the pool back (require cycle).
+    const { env, profile } = onArm('darwin', () => ({
+      env: spawnMod.higgsMlxBatchEnv('serve', 40),
+      profile: memoryMod.orpheusMemoryProfile(
+        memoryMod.resolveConcreteOrpheusTier(null, null)),
+    }));
+    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_BATCH, '40');
+    // The BUDGET is still the tier's on both doors: one unified memory pool.
+    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB, String(profile.mlxMemBudgetGB));
+  });
+
+  check('darwin: a serve door with NO ceiling is REFUSED BY NAME', () => {
+    // Never defaulted to the worker's width: a Listen server that quietly
+    // rendered its read-ahead one row at a time while every variable looked
+    // configured is the inert-knob failure in its quietest form.
+    for (const bad of [undefined, 0, -1, Number.NaN, '16']) {
+      assert.throws(
+        () => onArm('darwin', () => spawnMod.higgsMlxBatchEnv('serve', bad)),
+        /streamBatchCeiling|ceiling/,
+        `higgsMlxBatchEnv('serve', ${JSON.stringify(bad)}) did not refuse`);
+    }
+  });
+
+  check('darwin: prep and assembly carry NO batch variables', () => {
+    // They load no model. A budget there is a lever read by nothing.
+    for (const door of ['prep', 'assembly']) {
       const env = onArm('darwin', () => spawnMod.higgsMlxBatchEnv(door));
       assert.deepStrictEqual(env, {}, `the ${door} door carries a batch budget`);
     }

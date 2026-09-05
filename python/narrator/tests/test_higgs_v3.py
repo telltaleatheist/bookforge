@@ -1119,12 +1119,15 @@ class EngineTest(V3TestCase):
 
     def test_both_higgs_engines_strip_at_the_model_boundary(self):
         """Static: every Higgs render entry (served render_audio, MLX
-        render_audio and convert_batch) calls the shared strip. A path that
-        only `.strip()`s whitespace is the bug above."""
+        render_audio, convert_batch and generate_batch_stream - whose batched
+        read-ahead rung builds prompts without going through render_audio)
+        calls the shared strip. A path that only `.strip()`s whitespace is
+        the bug above."""
         import ast
         here = os.path.dirname(v3_served.__file__)
         wanted = {'v3_engine.py': {'render_audio'},
-                  'mlx_backend.py': {'render_audio', 'convert_batch'}}
+                  'mlx_backend.py': {'render_audio', 'convert_batch',
+                                     'generate_batch_stream'}}
         for filename, methods in wanted.items():
             with open(os.path.join(here, filename), encoding='utf-8') as handle:
                 tree = ast.parse(handle.read())
