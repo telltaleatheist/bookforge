@@ -858,6 +858,26 @@ export class TtsApiServer {
     // An unknown or unavailable name is REFUSED by setStreamConfig, by name, and
     // the refusal is reported rather than swallowed: a client told "ok" while the
     // old engine kept rendering is the failure this whole message exists to avoid.
+    // A PRESENT but unusable `engine` is refused, not skipped. `{"engine": 123}` or
+    // `{"engine": ""}` used to fall through to a plain `config` reply with the old
+    // engine still selected — the client is told the message succeeded and goes on
+    // believing it switched. Absent is a different thing and stays a no-op.
+    if ('engine' in msg && (typeof msg.engine !== 'string' || !msg.engine)) {
+      this.send(ws, {
+        type: 'error',
+        message: `engine must be a non-empty string; got ${JSON.stringify(msg.engine)}`,
+      });
+      this.send(ws, { type: 'config', ...this.configPayload() });
+      return;
+    }
+    if ('engine' in msg && (typeof msg.engine !== 'string' || !msg.engine)) {
+      this.send(ws, {
+        type: 'error',
+        message: `engine must be a non-empty string; got ${JSON.stringify(msg.engine)}`,
+      });
+      this.send(ws, { type: 'status', ...this.statusPayload() });
+      return;
+    }
     if (typeof msg.engine === 'string' && msg.engine) {
       try {
         await setStreamConfig({ engine: msg.engine });

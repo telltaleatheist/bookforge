@@ -497,12 +497,16 @@ async function narratorEngineForSession(processDir: string): Promise<string> {
 
   // The sidecar, when there is one. Absent is the NORMAL case for a headless
   // render and is not an error; only a contradiction is.
-  const sidecar = normalise((await parseSessionProvenance(processDir))?.ttsEngine);
+  // Read ONCE. The disagreement path used to re-read the sidecar to build its own
+  // error message, so the value being reported was a second read of a file that had
+  // already been read — and on a race could name something the comparison never saw.
+  const provenance = await parseSessionProvenance(processDir);
+  const sidecar = normalise(provenance?.ttsEngine);
   if (sidecar && sidecar !== engine) {
     throw new Error(
       `This session disagrees with itself about what rendered it: session-state.json says `
       + `'${recorded}' and BookForge's session_state.json sidecar says `
-      + `'${(await parseSessionProvenance(processDir))?.ttsEngine}'. One of them describes a `
+      + `'${provenance?.ttsEngine}'. One of them describes a `
       + 'different render (a reused session directory, or a sidecar left by an earlier pass). '
       + 'Refusing to guess which.',
     );
@@ -2732,10 +2736,25 @@ export function narratorReady(_customTmpPath?: string): boolean {
   // `-c import narrator.assemble` rather than `-m narrator.compat.app --help`:
   // the import is what fails when the env is short a package, and --help would
   // pass on an env that cannot assemble anything.
+  // `-u` is the interpreter flag every plan carries, and everything before it is the
+  // launcher prefix (conda run -p <env> python). An `indexOf` of -1 would slice the
+  // whole argv and silently probe with the last argument dropped, so it is checked.
+  const dashU = plan.args.indexOf('-u');
+  if (dashU < 0) {
+    throw new Error(
+      'The narrator spawn plan carries no `-u`, so the launcher prefix cannot be '
+      + `separated from the module invocation: ${plan.args.join(' ')}`,
+    );
+  }
   const probe = spawnSync(
     plan.command,
-    [...plan.args.slice(0, plan.args.indexOf('-u')), '-c', 'import narrator.assemble'],
-    { env: plan.env, cwd: plan.cwd, timeout: 60000, stdio: 'ignore' },
+    [...plan.args.slice(0, dashU), '-c', 'import narrator.assemble'],
+    // 15 s, not 60. This runs SYNCHRONOUSLY on the main process thread, which the
+    // bookshelf server shares, so the window is a UI freeze on any machine whose env
+    // is sick — and a Python that has not imported one module in 15 s is not going to
+    // assemble a book. Still owed: an async variant, so the answer costs no freeze at
+    // all (the result is cached after the first call).
+    { env: plan.env, cwd: plan.cwd, timeout: 15000, stdio: 'ignore' },
   );
   narratorReadyCache = probe.status === 0;
   if (!narratorReadyCache) {

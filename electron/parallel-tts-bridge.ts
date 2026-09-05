@@ -4184,8 +4184,7 @@ function startWorker(
               .map((k) => [k, process.env[k]!.trim()])
           )
         : {}),
-      // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
-        },
+    },
   });
 
   {
@@ -5141,10 +5140,14 @@ function findE2aProcessDir(sessionDir: string): string | null {
  * Orpheus generates inside WSL (vLLM CUDA graphs only capture on Linux), but RVC
  * and assembly run on Windows. Two problems if they reach into WSL: (1) a native
  * Windows process crawling thousands of FLACs over the \\wsl$ 9p bridge is slow,
- * and (2) assembly would run on the WSL e2a, which is a stale manual mirror that
- * lacks --sentences_dir (so RVC-enhanced assembly fails there). Copying the
- * session onto a Windows-native path lets RVC + assembly run on the up-to-date
- * Windows e2a, leaving Orpheus generation as the ONLY thing that touches WSL.
+ * and (2) path lengths past 260 characters, where mediainfo answers a too-long
+ * path with a SILENT 0.0 duration and the book assembles wrong instead of failing.
+ * Copying the session onto a Windows-native path leaves Orpheus GENERATION as the
+ * only thing that touches WSL.
+ *
+ * (Historic reason, no longer the mechanism: assembly used to run e2a, and the WSL
+ * checkout of it was a stale mirror lacking --sentences_dir. narrator is one
+ * package on both sides now, so staleness is not the argument — path length is.)
  *
  * The copy is fast: it runs INSIDE WSL (ext4 → /mnt), not Node over 9p. When the
  * caller already produced a Windows copy (the project cache, which also rewrote

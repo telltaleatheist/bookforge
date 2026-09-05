@@ -1876,11 +1876,13 @@ export function getAvailableVoices(): string[] {
   // serve the model's own default speaker, which measures at 12% of the
   // narrator's ECAPA ceiling: a DIFFERENT person, not a bad clone.
   if (serveEngine() === 'higgs') {
-    try {
-      return listRenderableHiggsModels().map((m) => m.id);
-    } catch {
-      return [];
-    }
+    // NOT caught. A catalog that cannot be read is not a catalog with no voices in
+    // it: swallowing the error gave the picker a blank dropdown, and `getDefaultVoice`
+    // then reported "No Higgs voice is installed" — a wrong diagnosis that sends the
+    // user to install something they already have. `streaming-engine.ts` catches this
+    // same call and surfaces the message as the engine's `reason`, which is where an
+    // unreadable catalog belongs.
+    return listRenderableHiggsModels().map((m) => m.id);
   }
   // Built-ins + folder-discovered custom voices (each custom id is its folder name;
   // selecting one routes through resolveOrpheusModel in loadVoice). Failures in

@@ -12367,8 +12367,7 @@ app.on('before-quit', async (event) => {
 // Synchronous backup cleanup on process exit (catches force-quit scenarios)
 process.on('exit', () => {
   if (process.platform === 'win32') {
-    try {
-      // THE LAST-DITCH PYTHON SWEEP THAT STOOD HERE IS GONE, and it was never a
+    // THE LAST-DITCH PYTHON SWEEP THAT STOOD HERE IS GONE, and it was never a
       // sweep. `taskkill /FI "WINDOWTITLE eq *ebook2audiobook*"` filters on a
       // window title, and a python.exe started by `spawn()` has NO window title —
       // so the filter could not match a worker even when ebook2audiobook was the
@@ -12378,10 +12377,11 @@ process.on('exit', () => {
       // What actually kills orphans runs above, in `before-quit`:
       // `killAllWorkers` (tracked handles), `forceKillAllNarratorBatchProcesses`
       // (a WMIC command-line match, scoped to this app's own spawns) and
-      // `gracefulWslShutdown` (the guest ladder). `process.on('exit')` cannot await
-      // anything, so a real sweep does not belong here anyway.
-    } catch {
-      // Best effort, may fail
-    }
+    // `gracefulWslShutdown` (the guest ladder). `process.on('exit')` cannot await
+    // anything, so a real sweep does not belong here anyway.
+    //
+    // The `try { } catch { }` that wrapped this prose is gone too: a bare catch
+    // around zero statements in a shutdown path reads as though something risky is
+    // being attempted here. Nothing is.
   }
 });

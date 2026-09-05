@@ -346,7 +346,15 @@ function renderEngine(): void {
   // The engine chooser is only drawn when the server advertises one — an older
   // server sends no `engines`, and a chooser with nothing in it is worse than none.
   const engines = s?.engines ?? [];
-  engineEl.parentElement?.toggleAttribute('hidden', engines.length === 0);
+  // `classList.toggle('hidden', ...)`, like every other row in this file. This line
+  // used `toggleAttribute('hidden')` — a second mechanism for one job, three lines
+  // from `workersEl.closest('.field')?.classList.toggle('hidden', ...)`.
+  //
+  // Both work TODAY only because `.field` declares no `display` of its own, so the
+  // attribute's UA default is not overridden. The popup styles `.field.hidden`
+  // explicitly; the day someone gives `.field` a `display: flex`, the attribute
+  // silently stops hiding anything and the class keeps working.
+  engineEl.parentElement?.classList.toggle('hidden', engines.length === 0);
   const eSig = engines.map((e) => `${e.id}:${e.available}`).join('|') + `|${s?.engine ?? ''}`;
   if (eSig !== enginesSig) { enginesSig = eSig; buildEngineOptions(engines, s?.engine ?? null); }
   engineEl.disabled = !connected || restarting;
