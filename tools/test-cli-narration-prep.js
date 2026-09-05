@@ -441,7 +441,7 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
     'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
   });
   const prep = await bridge.prepareNarrationInput(input, 'test-txt', {
-    skipAssembly: true, numberRunner: runner,
+    skipAssembly: true, textCleanup: 'required', numberRunner: runner,
   });
 
   assert.ok(prep.inputPath.endsWith('.norm.tts.txt'), `a text copy: ${prep.inputPath}`);
@@ -461,22 +461,41 @@ test('the door routes a .txt to the block pass — no cut, a .txt out', async ()
  *
  * `prepareNarrationInput` used to run the numbers here, per render, on a scratch
  * copy. Owen moved that onto the document chain (2026-09-04), so what the door
- * does now is CHECK: it reads the narration-text stamp on the book and refuses a
- * book that has not been through the pass. The caption/endnote cut stays exactly
- * where it was — that is about the second file, not about the text.
+ * does now is READ: it reads the narration-text stamp on the book and files the
+ * run under one of the named cases (stamped / unstamped / skipped-by-user); since
+ * 2026-09-05 it refuses none of them — the question is asked at the Narrate
+ * button. The caption/endnote cut stays exactly where it was — that is about the
+ * second file, not about the text.
  */
-test('an UNSTAMPED book is refused by name — the door never narrates raw digits', async () => {
+test('an UNSTAMPED book is NOT refused — the door says so, by case, and reads it as printed', async () => {
+  // Owen, 2026-09-05: "make it so i dont HAVE to run cleanup". The question is
+  // asked at the Narrate button (yes/no/cancel); down here the stamp is read for
+  // what it SAYS and the run's own `textCleanup` names the case. Nothing throws.
   const book = await buildBook('door-unstamped.epub', CHAPTER(
     SHARED_PARAGRAPH, '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
   const runner = scriptedRunner({});
-  await assert.rejects(
-    () => bridge.prepareNarrationInput(book, 'test-epub-unstamped', {
-      skipAssembly: true, numberRunner: runner,
-    }),
-    (err) => /has not been through the narration text cleanup/.test(err.message)
-      && /Clean text/.test(err.message)
-      && /nothing was rendered/.test(err.message));
+  const prep = await bridge.prepareNarrationInput(book, 'test-epub-unstamped', {
+    skipAssembly: true, numberRunner: runner, textCleanup: 'required',
+  });
+  assert.strictEqual(prep.cleanup, 'unstamped', 'the case is named');
+  assert.strictEqual(prep.recordPath, null, 'no number pass ran in the door');
+  assert.ok(prep.inputPath.endsWith('.epub'), `the cut book is what renders: ${prep.inputPath}`);
   assert.strictEqual(runner.calls.length, 0, 'and no model was asked anything');
+
+  const skipped = await bridge.prepareNarrationInput(book, 'test-epub-skipped', {
+    skipAssembly: true, numberRunner: runner, textCleanup: 'skipped',
+  });
+  assert.strictEqual(skipped.cleanup, 'skipped-by-user', 'the other case, named differently');
+  assert.strictEqual(skipped.recordPath, null);
+  assert.strictEqual(runner.calls.length, 0);
+});
+
+test('a door call that does not say whether cleanup is required is refused by name', async () => {
+  const input = path.join(ROOT, 'door-unsaid.txt');
+  fs.writeFileSync(input, 'Nothing numeric here.\n', 'utf8');
+  await assert.rejects(
+    bridge.prepareNarrationInput(input, 'test-unsaid', { skipAssembly: true }),
+    (err) => /textCleanup/.test(err.message) && /'required' or\s+'skipped'/.test(err.message));
 });
 
 test('a STAMPED book goes through the cut, and the door reads the stamp', async () => {
@@ -497,7 +516,7 @@ test('a STAMPED book goes through the cut, and the door reads the stamp', async 
 
   const runner = scriptedRunner({});
   const prep = await bridge.prepareNarrationInput(cleaned, 'test-epub', {
-    skipAssembly: true, numberRunner: runner,
+    skipAssembly: true, textCleanup: 'required', numberRunner: runner,
   });
 
   assert.strictEqual(path.dirname(prep.inputPath), CUTS, `a cut of the book: ${prep.inputPath}`);
@@ -517,11 +536,11 @@ test('the door reuses a copy on a second run, and says so', async () => {
   };
   const first = scriptedRunner(answers);
   const one = await bridge.prepareNarrationInput(input, 'test-reuse-1', {
-    skipAssembly: true, numberRunner: first,
+    skipAssembly: true, textCleanup: 'required', numberRunner: first,
   });
   const second = scriptedRunner(answers);
   const two = await bridge.prepareNarrationInput(input, 'test-reuse-2', {
-    skipAssembly: true, numberRunner: second,
+    skipAssembly: true, textCleanup: 'required', numberRunner: second,
   });
 
   assert.strictEqual(two.inputPath, one.inputPath, 'the render reads the identical file');
@@ -534,7 +553,7 @@ test('a digit-free input passes through untouched, with nothing written', async 
   fs.writeFileSync(input, 'Nothing here but words.\n\nAnd more of them.\n', 'utf8');
   const runner = scriptedRunner({});
   const prep = await bridge.prepareNarrationInput(input, 'test-plain', {
-    skipAssembly: true, numberRunner: runner,
+    skipAssembly: true, textCleanup: 'required', numberRunner: runner,
   });
   assert.strictEqual(prep.inputPath, input, 'the same file, same bytes');
   assert.strictEqual(prep.recordPath, null, 'which is what the one line reports as a pass-through');
@@ -547,7 +566,7 @@ test('a format the door cannot read is REFUSED by name, never skipped', async ()
   const input = path.join(ROOT, 'door-unknown.pdf');
   fs.writeFileSync(input, '%PDF-1.4\n', 'utf8');
   await assert.rejects(
-    bridge.prepareNarrationInput(input, 'test-unknown', { skipAssembly: true }),
+    bridge.prepareNarrationInput(input, 'test-unknown', { skipAssembly: true, textCleanup: 'required' }),
     (err) => {
       assert.ok(err.message.includes('.pdf'), `names the format: ${err.message}`);
       assert.ok(err.message.includes('.epub') && err.message.includes('.txt'),
@@ -568,7 +587,7 @@ test('an unreachable model fails the DOOR too — no falling back to raw digits'
   const runner = scriptedRunner({}, { throws: 'connect ECONNREFUSED 127.0.0.1:11434' });
   await assert.rejects(
     bridge.prepareNarrationInput(input, 'test-door-down', {
-      skipAssembly: true, numberRunner: runner,
+      skipAssembly: true, textCleanup: 'required', numberRunner: runner,
     }),
     (err) => {
       assert.ok(err.message.includes('fake:1b'), `names the model: ${err.message}`);
@@ -585,7 +604,7 @@ test('the render adapters call the door before renderRangeHeadless, not instead 
     const source = fs.readFileSync(path.join(REPO, 'cli', adapter), 'utf8');
     assert.ok(source.includes("require('./narration-prep-step.js')"),
       `${adapter} calls the shared prep step`);
-    assert.ok(source.includes('runNarrationPrep(bridge,'), `${adapter} runs it`);
+    assert.ok(/runNarrationPrep\(\s*bridge,/.test(source), `${adapter} runs it`);
     assert.ok(source.includes('renderRangeHeadless(prepared.inputPath'),
       `${adapter} hands the PREPARED path to the renderer`);
     assert.ok(!source.includes('normalizeNarrationNumbers') && !source.includes('normalizeTextBlocks'),
