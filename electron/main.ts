@@ -4716,10 +4716,8 @@ function setupIpcHandlers(): void {
   // The OS can't let an app delete itself, so the renderer then tells the user
   // to drag the app to the Trash (mac) / run the uninstaller (win).
   ipcMain.handle('app:remove-all-data', async () => {
-    // Stop the streaming engines first so the bundled env isn't locked.
+    // Stop the streaming engine first so the bundled env isn't locked.
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      await xttsWorkerPool.endSession();
       const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
       await orpheusWorkerPool.endSession();
     } catch { /* engine wasn't running */ }
@@ -7697,18 +7695,13 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('tts-stream:set-worker-config', async (
     _event,
-    updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }
+    // `engine` stays a bare string: it crosses IPC as untyped JSON and
+    // setStreamConfig refuses an engine this build does not have BY NAME.
+    updates: { engine?: string; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }
   ) => {
     try {
-      const { setStreamConfig, getSelectedEngineName } = await import('./streaming-engine.js');
-      const before = getSelectedEngineName();
+      const { setStreamConfig } = await import('./streaming-engine.js');
       const data = await setStreamConfig(updates);
-      // Switching engines changes the available voice set (XTTS library vs
-      // Orpheus's built-in voices); refresh so connected extension clients see it.
-      if (data.engine !== before) {
-        const { ttsApiServer } = await import('./tts-api-server.js');
-        await ttsApiServer.refreshInstalledVoices();
-      }
       return { success: true, data };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -8127,23 +8120,20 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('play:get-voices', async () => {
     try {
-      const { getSelectedEngineName, getActiveEngine } = await import('./streaming-engine.js');
+      const { getActiveEngine } = await import('./streaming-engine.js');
       // Full catalog (id, name, group) so the dropdown can label and group
       // voices; available before the engine starts. Orpheus's voices are built
-      // into the model — synthesize catalog entries from its voice list.
-      if (getSelectedEngineName() === 'orpheus') {
-        const voices = getActiveEngine().getAvailableVoices().map((id) => ({
-          id,
-          name: id.charAt(0).toUpperCase() + id.slice(1),
-          group: 'Orpheus',
-          repo: '',
-          sub: '',
-          refPath: '',
-        }));
-        return { success: true, data: { voices } };
-      }
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      const voices = xttsWorkerPool.getVoiceCatalog();
+      // into the model — synthesize catalog entries from its voice list. (The
+      // other arm of this used to read the XTTS pool's downloaded-clip catalog;
+      // that pool is gone, and Orpheus is the only streaming engine.)
+      const voices = getActiveEngine().getAvailableVoices().map((id) => ({
+        id,
+        name: id.charAt(0).toUpperCase() + id.slice(1),
+        group: 'Orpheus',
+        repo: '',
+        sub: '',
+        refPath: '',
+      }));
       return { success: true, data: { voices } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
@@ -13353,14 +13343,10 @@ app.on('before-quit', async (event) => {
     }
   });
 
-  // Kill the streaming worker pools (XTTS and Orpheus) so no Python — or the WSL
-  // vLLM process behind Orpheus — outlives the app.
+  // Kill the streaming worker pool so no Python — or the WSL vLLM process behind
+  // Orpheus — outlives the app.
   await quitStepWithDeadline('end streaming TTS sessions', 20_000, async () => {
     try {
-      const { xttsWorkerPool } = await import('./xtts-worker-pool.js');
-      if (xttsWorkerPool.isSessionActive()) {
-        await xttsWorkerPool.endSession();
-      }
       const { orpheusWorkerPool } = await import('./orpheus-worker-pool.js');
       if (orpheusWorkerPool.isSessionActive()) {
         await orpheusWorkerPool.endSession();

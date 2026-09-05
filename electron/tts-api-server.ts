@@ -92,7 +92,7 @@ import * as http from 'http';
 import * as os from 'os';
 import * as path from 'path';
 import { WebSocketServer, WebSocket } from 'ws';
-import { PlaySettings } from './xtts-worker-pool';
+import { PlaySettings } from './orpheus-worker-pool';
 import { streamScheduler } from './stream-scheduler';
 import {
   getActiveEngine,
@@ -745,8 +745,8 @@ export class TtsApiServer {
     // default for requests that name none. Applying the guard to those would make
     // concurrent clients on different voices reject each other for no reason — each
     // one's load would break the other's session. So the guard now covers exactly the
-    // voices that really are exclusive (a merged Orpheus fine-tune, and every XTTS
-    // voice, whose pool does not implement the capability at all).
+    // voices that really are exclusive (a merged Orpheus fine-tune, and any future
+    // pool that does not implement the capability at all).
     const loaded = engine.getCurrentVoice();
     const perRequest = requested.voice
       ? engine.canServeVoicePerRequest?.(requested.voice) === true
@@ -762,11 +762,8 @@ export class TtsApiServer {
 
     const { splitForTts } = await import('./bilingual-processor.js');
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
-    // audiobook path reads for ORPHEUS_MAX_CHARS. Every other engine keeps
-    // splitForTts's XTTS default, which is the only engine that number describes.
-    const maxChars = getSelectedEngineName() === 'orpheus'
-      ? (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice)
-      : undefined;
+    // audiobook path reads for ORPHEUS_MAX_CHARS.
+    const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
     const sentences = splitForTts(text, 'en', maxChars);
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
@@ -931,15 +928,11 @@ export class TtsApiServer {
   async refreshInstalledVoices(): Promise<void> {
     try {
       // Orpheus voices are built into the model (no per-voice download), so the
-      // "installed" list is simply the engine's voice set. XTTS lists only voices
-      // whose checkpoint is actually present.
-      let next: string[];
-      if (getSelectedEngineName() === 'orpheus') {
-        next = getActiveEngine().getAvailableVoices();
-      } else {
-        const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
-        next = await getInstalledVoiceIds();
-      }
+      // "installed" list is simply the engine's voice set. It used to branch here
+      // for XTTS, whose voices each needed their own checkpoint on disk; that pool
+      // is gone, and with it the only engine whose voice list was a subset of its
+      // catalog.
+      const next: string[] = getActiveEngine().getAvailableVoices();
       const changed =
         next.length !== this.installedVoices.length ||
         next.some((v, i) => v !== this.installedVoices[i]);

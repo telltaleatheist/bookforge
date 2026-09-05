@@ -413,21 +413,10 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                   <p class="field-description">
                     The TTS engine used for streaming playback. <strong>Orpheus</strong>
                     has the most natural prosody and runs a single GPU worker. Applies the
-                    next time the engine starts — switching stops the current engine first.
-                    <strong>XTTS</strong> was retired on 2026-09-04: a machine already
-                    streaming on it keeps working, but it can no longer be selected.
+                    next time the engine starts. It is the only streaming engine this
+                    build has — XTTS was removed on 2026-09-05.
                   </p>
                   <div class="worker-options">
-                    <!-- Shown, disabled, and labelled retired rather than deleted: a
-                         machine whose persisted engine is still XTTS would otherwise
-                         show NOTHING selected, which reads as a broken setting rather
-                         than as the true "you are on the retired engine". -->
-                    <button
-                      class="worker-btn"
-                      [class.selected]="workerCfg.engine() === 'xtts'"
-                      [disabled]="true"
-                      [title]="streamEngineInfo('xtts')?.reason || 'Retired'"
-                    >XTTS (retired)</button>
                     <button
                       class="worker-btn"
                       [class.selected]="workerCfg.engine() === 'orpheus'"
@@ -440,7 +429,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     <span class="hint">Orpheus isn't set up yet — install/locate it in Settings → Add-ons (or enable WSL2 for Orpheus on Windows).</span>
                   }
                   @if (workerCfg.isOrpheus()) {
-                    <span class="hint">Orpheus runs one worker on the GPU — the device and worker-count options below apply to XTTS.</span>
+                    <span class="hint">Orpheus runs one worker on the GPU, so the device and worker-count options below have nothing to act on.</span>
                   }
                 </div>
 
@@ -2272,10 +2261,9 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Choose which TTS engine backs the Listen feature (applies on next start).
-   *  Only 'orpheus' is reachable from the UI now — the XTTS button is disabled
-   *  (see the template) — but the parameter keeps the wider type because the
-   *  worker config it forwards to still round-trips a persisted 'xtts'. */
-  setStreamEngine(engine: 'xtts' | 'orpheus'): void {
+   *  One engine, one button — the parameter stays because main still refuses an
+   *  engine name it does not have, and this is where a second one would arrive. */
+  setStreamEngine(engine: 'orpheus'): void {
     void this.workerCfg.setEngine(engine);
   }
 
@@ -2293,7 +2281,7 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Availability of a given streaming engine on this machine (for the chooser). */
-  streamEngineInfo(id: 'xtts' | 'orpheus'): { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
+  streamEngineInfo(id: 'orpheus'): { id: 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
     return this.workerCfg.engines().find((e) => e.id === id);
   }
 
@@ -2393,7 +2381,7 @@ export class SettingsComponent implements OnInit {
   readonly wslVerifying = signal(false);
   readonly wslSaving = signal(false);
   readonly isWindows = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('win'));
-  // Parallel XTTS workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
+  // Parallel streaming workers only help on macOS (CPU/MPS). On CUDA/NVIDIA the engine
   // serializes to 1 worker — extra workers just contend for the GPU — so the
   // setting is hidden off-Mac.
   readonly isMac = signal(typeof navigator !== 'undefined' && navigator.platform.toLowerCase().includes('mac'));

@@ -40,7 +40,7 @@ import * as http from 'http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { streamScheduler } from './stream-scheduler';
 import { readerAudioStore } from './reader-audio-store';
-import { PlaySettings } from './xtts-worker-pool';
+import { PlaySettings } from './orpheus-worker-pool';
 import {
   getActiveEngine,
   getSelectedEngineName,
@@ -230,11 +230,8 @@ export class ReaderStreamBridge {
 
     const { splitForTts } = await import('./bilingual-processor.js');
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
-    // audiobook path reads for ORPHEUS_MAX_CHARS. Every other engine keeps
-    // splitForTts's XTTS default, which is the only engine that number describes.
-    const maxChars = getSelectedEngineName() === 'orpheus'
-      ? (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice)
-      : undefined;
+    // audiobook path reads for ORPHEUS_MAX_CHARS.
+    const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);
     const sentences = splitForTts(text, 'en', maxChars);
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });

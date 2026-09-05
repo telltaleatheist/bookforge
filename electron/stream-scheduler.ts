@@ -26,12 +26,11 @@
  *   {kind:'chunk',    requestId, sentenceIndex, seq, data(pcm16 b64), duration, sampleRate}
  *   {kind:'done',     requestId, sentenceIndex, duration}   // sentence fully generated
  *
- * A sentence normally emits ONE chunk (seq 0) and then its 'done'. Two paths emit
- * several: XTTS's streamed opener, and any sentence of a fastStart session (see
- * StartOptions.fastStart, added for Owen's 2026-09-04 ruling), which delivers 4 SNAC
- * frames at a time while it generates and then a 'done' with NO further chunk. The
- * shape is the same either way, so a client that assembles by (sentenceIndex, seq)
- * needs to know nothing about which it is getting.
+ * A sentence normally emits ONE chunk (seq 0) and then its 'done'. A fastStart
+ * session emits several (see StartOptions.fastStart, added for Owen's 2026-09-04
+ * ruling): 4 SNAC frames at a time while it generates, then a 'done' with NO
+ * further chunk. The shape is the same either way, so a client that assembles by
+ * (sentenceIndex, seq) needs to know nothing about which it is getting.
  *   {kind:'failed',   requestId, sentenceIndex, error}
  *   {kind:'complete', requestId}                            // nothing left to generate
  *   {kind:'cancelled',requestId}                            // stopped or preempted by a new start
@@ -40,9 +39,9 @@
 import { BrowserWindow } from 'electron';
 import {
   PlaySettings,
-  StreamChunk
-} from './xtts-worker-pool';
-import { STREAM_RAMP_WIDTH } from './orpheus-worker-pool';
+  StreamChunk,
+  STREAM_RAMP_WIDTH,
+} from './orpheus-worker-pool';
 import { getActiveEngine } from './streaming-engine';
 
 /** Where a session's events go. Defaults to broadcasting to all windows. */
@@ -127,10 +126,16 @@ const DEFAULT_LOOKAHEAD_SECONDS = 2000;
 // while a stray intermediate width (a block's short tail group) still compiles
 // lazily behind a buffer that is by then many sentences deep.
 //
-// XTTS is the opposite physics and keeps its ONE streamed opener (see
-// shouldStreamSentence): true token streaming gives sub-3s first audio, and its
-// multi-worker pool already runs faster than realtime, so nothing downstream waits.
-// It is not a batching engine, so the ramp never applies to it.
+// THE OPPOSITE PHYSICS IS GONE WITH ITS ENGINE. Until 2026-09-05 this scheduler
+// carried a second dispatch path for XTTS — a solo, genuinely token-streamed
+// OPENER (`shouldStreamSentence`), which was right for it: sub-3s first audio,
+// with a multi-worker pool rendering the rest above realtime behind it. XTTS was
+// removed from the root, and every remaining engine is a batching one, so the
+// predicate could only ever answer false. It is deleted rather than left as an
+// always-false branch: an unreachable dispatch arm is a second answer to "how
+// does a sentence get generated" that nothing tests. Fast start (below) is how a
+// listener gets early audio now, and it rides the batch path rather than
+// competing with it.
 
 interface SchedulerSession {
   requestId: string | number;
@@ -149,13 +154,6 @@ interface SchedulerSession {
    *  priority and whether the opening sentences stream. Flips to true when a
    *  playhead is reported (the client started playing this block). */
   priority: boolean;
-  /** How many of this session's sentences are dispatched-but-not-resolved on the
-   *  streaming path — so cancelling it knows to call cancelStreaming (only
-   *  priority sessions on a NON-batching engine ever stream). A COUNT, not a flag:
-   *  it survived the era of multiple streamed openers, and it stays a count because
-   *  a boolean cleared by the first resolver would leak an uncancelled stream if the
-   *  opener policy ever widens again. */
-  streamingCount: number;
   /** Generate-ahead window for this session (seconds ahead of the playhead). */
   lookaheadSeconds: number;
   /** FAST START — see StartOptions.fastStart. */
@@ -267,7 +265,6 @@ export function start(
     completeSent: false,
     sink,
     priority,
-    streamingCount: 0,
     lookaheadSeconds: opts.lookaheadSeconds ?? DEFAULT_LOOKAHEAD_SECONDS,
     fastStart: opts.fastStart === true
   };
@@ -329,10 +326,6 @@ function endSession(s: SchedulerSession | undefined): void {
   console.log(`[StreamScheduler] Stop req=${s.requestId}`);
   s.stopped = true;
   sessions.delete(s.requestId);
-  // Only the playing session ever streams, so cancel streaming only when this
-  // session has one of its openers mid-stream — otherwise we'd abort an unrelated
-  // session's sentence (cancelStreaming hits every streaming worker).
-  if (s.streamingCount > 0) getActiveEngine().cancelStreaming();
   // This session's rows may be the last live ones in the engine's in-flight batch —
   // and on a serial batching engine (Orpheus) that batch is 30-43s of work whose
   // results are now discarded on arrival, with the next voice load and the next
@@ -359,10 +352,10 @@ function pump(s: SchedulerSession): void {
   const engine = getActiveEngine();
 
   // In-flight cap: a batching engine (Orpheus) reports its streaming batch width
-  // here (16 — see orpheus-worker-pool.ts STREAM_BATCH_WIDTH); XTTS reports its
-  // worker count. We dispatch a whole batch's worth at once so the engine's batch
-  // goes out FULL — a partly-filled MLX batch costs the same wall clock as a full
-  // one, so anything less is throughput thrown away.
+  // here (16 — see orpheus-worker-pool.ts STREAM_BATCH_WIDTH); an engine that does
+  // not batch reports its worker count. We dispatch a whole batch's worth at once
+  // so the engine's batch goes out FULL — a partly-filled MLX batch costs the same
+  // wall clock as a full one, so anything less is throughput thrown away.
   const batching = typeof engine.getMaxConcurrentSentences === 'function';
   const fullCap = engine.getMaxConcurrentSentences?.() ?? engine.getWorkerCount();
   // …except the FIRST wave of the session actually being listened to, which goes out
@@ -394,69 +387,18 @@ function pump(s: SchedulerSession): void {
   }
 }
 
-/** Whether to generate this sentence via the low-latency streaming path (vs the
- *  batched path). Only the playing session's FIRST sentence ever streams, and only
- *  on an engine whose streaming is genuinely faster than its batch: XTTS emits
- *  sub-sentence chunks, so audio starts in ~2-3s, and its multi-worker pool renders
- *  the rest above realtime behind it. Streaming costs ~37% more compute, so every
- *  later sentence — and all background read-ahead — uses batch inference.
- *
- *  A BATCHING engine (Orpheus — it reports getMaxConcurrentSentences) streams
- *  NOTHING. Its "stream" is a whole-sentence solo render at 0.73x realtime, so
- *  pulling openers out of the batch delays the first batch by ~10s each for ~7.5s of
- *  audio; with the client gating playback on a real cushion, batching everything
- *  gets the block ready ~15-20s sooner. See the batching block at the top. */
-function shouldStreamSentence(s: SchedulerSession, sentenceIndex: number): boolean {
-  const engine = getActiveEngine();
-  if (!s.priority || typeof engine.generateSentenceStream !== 'function') return false;
-  if (typeof engine.getMaxConcurrentSentences === 'function') return false; // batching engine
-  return sentenceIndex < s.startIndex + 1;
-}
-
 function dispatch(s: SchedulerSession, sentenceIndex: number): void {
   const requestId = s.requestId;
   const text = s.sentences[sentenceIndex];
   const isStale = () => sessions.get(requestId) !== s || s.stopped;
   s.inFlight.add(sentenceIndex);
 
-  // XTTS only: the opening sentence streams so audio starts in ~2-3s.
-  if (shouldStreamSentence(s, sentenceIndex)) {
-    s.streamingCount++;
-    void getActiveEngine()
-      .generateSentenceStream(text, s.settings, (chunk: StreamChunk) => {
-        if (isStale()) return;
-        s.sink({
-          kind: 'chunk',
-          requestId,
-          sentenceIndex,
-          seq: chunk.seq,
-          data: chunk.data,
-          duration: chunk.duration,
-          sampleRate: chunk.sampleRate
-        });
-      }, isStale)
-      .then((result) => {
-        s.streamingCount--;
-        if (isStale()) return;
-        s.inFlight.delete(sentenceIndex);
-        if (result.success && !result.cancelled) {
-          s.durations.set(sentenceIndex, result.duration || 0);
-          s.sink({ kind: 'done', requestId, sentenceIndex, duration: result.duration || 0 });
-        } else if (!result.success) {
-          console.error(`[StreamScheduler] Stream sentence ${sentenceIndex} failed:`, result.error);
-          s.sink({ kind: 'failed', requestId, sentenceIndex, error: result.error });
-        }
-        pump(s);
-      });
-    return;
-  }
-
   // FAST START (see StartOptions.fastStart): sink this sentence's audio in
   // sub-sentence chunks as it generates, instead of one chunk when it lands. The
   // sink shape is IDENTICAL to the one the batch path emits below — same 'chunk'
   // event, same fields — so the client needs no new event type: it simply receives
   // several per sentence, earlier, and assembles them by (sentenceIndex, seq)
-  // exactly as it already does for the XTTS opener.
+  // exactly as it always has.
   //
   // Only the playing session, and only when the client asked. A background
   // read-ahead session never streams: nobody is waiting on its first second.

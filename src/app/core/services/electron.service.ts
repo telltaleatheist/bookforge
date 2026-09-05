@@ -81,10 +81,10 @@ export interface StreamWorkerConfig {
   activeWorkers: number;
   /** The streaming engine backing the Listen feature. Persisted; applies on the
    *  next engine start. */
-  engine?: 'xtts' | 'orpheus';
-  /** Which engines are usable on this machine (XTTS always; Orpheus when its env
+  engine?: 'orpheus';
+  /** Which engines are usable on this machine (Orpheus when its env
    *  / WSL is set up). Drives the engine chooser's availability. */
-  engines?: { id: 'xtts' | 'orpheus'; name: string; available: boolean; reason?: string }[];
+  engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[];
   /** Voices the active engine can use (for the voice picker). */
   voices?: string[];
   /** The persisted default voice the server warms on start. */
@@ -2910,7 +2910,7 @@ export class ElectronService {
   }
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // Play Tab operations (XTTS Streaming)
+  // Play Tab operations (streaming TTS)
   // ─────────────────────────────────────────────────────────────────────────────
 
   async playStartSession(): Promise<{
@@ -3132,7 +3132,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { engine?: 'xtts' | 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }

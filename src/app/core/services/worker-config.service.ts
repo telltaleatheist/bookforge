@@ -24,7 +24,7 @@ export interface WorkerAdvice {
  * a 1–4 count that becomes the per-machine default for every worker control —
  * the TTS server, the processing pipeline, and the browser extension.
  *
- * The main process (xtts-worker-pool / tts-stream.json) is the source of truth;
+ * The main process (orpheus-worker-pool / tts-stream.json) is the source of truth;
  * this service mirrors it for the renderer and writes back through IPC.
  */
 @Injectable({ providedIn: 'root' })
@@ -164,24 +164,24 @@ export class WorkerConfigService {
     }
   }
 
-  /** The streaming engine backing the Listen feature ('xtts' | 'orpheus'). The
-   *  seed is what main persists as its own default when nothing is configured,
-   *  so the two agree during the moment before the first config arrives. XTTS is
-   *  retired as a CHOICE but is still the bundled streaming runtime, which is
-   *  why this seed did not move with the retirement — see
-   *  `streaming-engine.ts:getSelectedEngineName`. */
-  readonly engine = computed(() => this.config()?.engine ?? 'xtts');
+  /** The streaming engine backing the Listen feature. The seed is what main
+   *  answers when nothing is configured, so the two agree during the moment
+   *  before the first config arrives — see `streaming-engine.ts`, which since
+   *  2026-09-05 has exactly one engine to answer with. */
+  readonly engine = computed(() => this.config()?.engine ?? 'orpheus');
   /**
    * Engines usable on this machine (for the chooser's availability).
    *
-   * SEEDED EMPTY. It used to seed `[{ id: 'xtts', available: true }]`, which is
-   * now a false statement — main reports XTTS as unavailable-because-retired —
-   * and a picker that renders one wrong row for a beat before main answers is
-   * worse than one that renders none.
+   * SEEDED EMPTY. It used to seed `[{ id: 'xtts', available: true }]`; whether
+   * the one engine this build has is usable on THIS machine is a question only
+   * main can answer (Orpheus needs a resolvable env), and a picker that renders
+   * one optimistic row for a beat before main answers is worse than one that
+   * renders none.
    */
   readonly engines = computed(() => this.config()?.engines ?? []);
-  /** True when Orpheus is the active engine — worker-count/device controls are
-   *  XTTS concepts and don't apply. */
+  /** True when Orpheus is the active engine — i.e. always, since 2026-09-05. The
+   *  worker-count/device controls it gates were a multi-worker-pool concept and
+   *  do not apply to it. */
   readonly isOrpheus = computed(() => this.engine() === 'orpheus');
 
   /**
@@ -189,7 +189,7 @@ export class WorkerConfigService {
    * the main process stops the previously-active engine so the next play warms
    * the newly-chosen one.
    */
-  async setEngine(engine: 'xtts' | 'orpheus'): Promise<void> {
+  async setEngine(engine: 'orpheus'): Promise<void> {
     const result = await this.electron.ttsStreamSetWorkerConfig({ engine });
     if (result.success && result.data) {
       this.config.set(result.data);
@@ -221,7 +221,7 @@ export class WorkerConfigService {
   /**
    * Pick the voice for the active streaming engine. Persists as the default and,
    * when a session is live, the main process warms it immediately (a voice switch
-   * needs no engine restart — Orpheus swaps the prompt prefix, XTTS the speaker).
+   * needs no engine restart — Orpheus swaps the prompt prefix).
    *
    * On Orpheus the voice IS a model, so the load can fail; the payload then carries
    * `voiceError` and `currentVoice` still names what is really in memory. Both feed
