@@ -466,7 +466,7 @@ Every door, and what has actually been RUN through it rather than reasoned about
 | assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | **PROVEN** — exit 0, m4b 40.35 min, cover, tags, manifest registered, sidecars refreshed |
 | assembly (reassembly) | **PROVEN** — live render, m4b 2619.500 s, narrator's own VTT **133 cues (1 empty), one per FLAC** | **PROVEN** (same door, via `cli/orpheus-audiobook-render.js --assemble-only`) |
 | resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser; and live: **132/133 skipped in 0.2 s** | n/a (native both sides) |
-| serve (Listen, Orpheus) | **PROVEN** — real mistborn in WSL, both stream modes, `ready -> loaded -> audio -> batch_* -> exit 0` | owed |
+| serve (Listen, Orpheus) | **PROVEN for the PROTOCOL** — real mistborn in WSL, both stream modes, `ready -> loaded -> audio -> batch_item -> batch_done`, child closed cleanly. The smoke tool's OWN exit code is not evidence from these runs: its watchdog overwrote it (see below), so **a clean `--real` exit code is still owed**. | owed |
 | serve (Listen, Higgs) | argv/env snapshot only — **deferred** to the certified production checkpoint (Owen, 2026-09-05) | refuses by name — no MLX backend yet |
 
 ### The Windows/WSL GPU window, 2026-09-05 (08:06-08:45 local, ~26 min of GPU)
@@ -606,7 +606,14 @@ wsl.exe -d Ubuntu bash -c 'export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
 `loaded` carried `backend: "vllm"`, `engine: "orpheus"`, `sampleRate: 24000`,
 `pads: true`, `edgeFadeMs: {in: 0, out: 0}`, `voice: "mistborn"` — so
 `activeSampleRate()` is reading a real engine's answer, not a default. CUDA graphs
-captured here too (13 s, 0.16 GiB). Exit 0 both runs.
+captured here too (13 s, 0.16 GiB).
+
+Both runs completed the protocol — every message the pool waits for arrived, in
+order, and the child process closed on its own. **What was NOT established is the
+smoke tool's exit code.** Its watchdog overwrote it in both runs, for the reason
+in the next section, so the runs that printed `SMOKE OK` also exited 1. The
+protocol evidence stands on the message sequence, not on `$?`; a clean `--real`
+exit code is owed and is listed as such in the ledger.
 
 #### A fourth bug, found after the window closed, in the smoke tool itself
 

@@ -243,6 +243,12 @@ child.on('close', (code) => {
   // which turned a latent 3-minute stall into a quarter-hour one and made a
   // chained second run start long after its output directory was gone.
   clearTimeout(watchdog);
+  // And the escalation timer the watchdog arms. It is hoisted rather than left
+  // inline for exactly the reason above: if the worker answers `quit` cleanly after
+  // the watchdog fired, `close` runs while a 30 s timer is still pending, which
+  // holds the event loop open and then calls `process.exit(1)` on a run that had
+  // already decided its own exit code. Same stall, one level down.
+  clearTimeout(escalation);
   const uniq = seen.filter((t, i) => seen.indexOf(t) === i);
   console.log('EXIT ' + code + '  sequence: ' + uniq.join(' -> ') + `  (${seen.length} messages)`);
   const need = ['ready', 'loaded', 'audio', 'batch_item', 'batch_done'];
@@ -257,8 +263,9 @@ child.on('close', (code) => {
 // lose. `quit` first, and only then the signal: under --real the child holds GPU
 // memory in a WSL guest, where SIGKILLing a process mid-CUDA is what wedges the VM
 // (memory: wsl-wedge-proofing). Cooperative shutdown, then a grace period.
+let escalation = null;
 const watchdog = setTimeout(() => {
   console.log('TIMEOUT — asking the worker to quit');
   try { send({ action: 'quit' }); } catch { /* stdin already gone */ }
-  setTimeout(() => { console.log('TIMEOUT — worker did not exit; terminating'); child.kill('SIGTERM'); process.exit(1); /* abort-path */ }, 30000);
+  escalation = setTimeout(() => { console.log('TIMEOUT — worker did not exit; terminating'); child.kill('SIGTERM'); process.exit(1); /* abort-path */ }, 30000);
 }, TIMEOUT_MS);
