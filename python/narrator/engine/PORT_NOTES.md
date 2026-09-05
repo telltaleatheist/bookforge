@@ -711,7 +711,8 @@ import line inside the moved files changed either.
 ### 12.2 The one addition to the Orpheus port: `engine/orpheus/interface.py`
 
 `OrpheusEngine` gained ONE base class, `OrpheusInterfaceMixin`, and with it
-`ENGINE_ID`, `pads`, `edge_fade_ms`, `backend_spec()`, `codec()`, `budget()` and
+`ENGINE_ID`, `pads`, `edge_fade`, `resolve_load_voice()`, `backend_spec()`,
+`codec()`, `budget()` and
 `stop_policy()`. All of them read constants and lookups the engine already had:
 
 - `OrpheusCodec` wraps `SnacMixin._tokens_to_audio` and `WindowedFrameEmitter`
@@ -809,7 +810,7 @@ Measured facts the code encodes, each with its consequence:
   because doing it the other way round looks identical and is a no-op.
 - **NO pads and NO fades at either end.** `HiggsEngine.pads = False`, so the
   manifest's `gapBefore`/`gapAfter` are LIVE for this engine and the assembler
-  realizes them. `edge_fade_ms = 10.0`: even content-trimmed, an edge sits near
+  realizes them. `edge_fade = EdgeFade(10, 25)`: even content-trimmed, an edge sits near
   -30 dB and clicks on a join; the fade takes it to -45..-48 dB.
 - **EOS fires unaided** - 9/9 chunks of 132-898 chars, zero runaways, zero cap
   hits. So `eos_reliable=True`, `resplit_on_cap=False`, and there is no boost,
@@ -860,9 +861,9 @@ routes).
 | `<= 600` chars is safe; 900 drops the tail REPRODUCIBLY and cloning does not fix it | `MAX_CHARS = 600` (placeholder until the catalog carries it; the delivered render used 300) |
 | a duration ratio of 0.99 hid 0.778 coverage with a 26 % insert rate | `StopPolicy.coverage_check = 'asr'` - a HOOK with a name; nothing implements the check yet |
 | the server ALREADY trims the sentinel tail by content (`patch_tail_trim.py`, read to confirm) | `HiggsV3Codec.decode()` REFUSES: there are no tokens on this side, and a second trim would eat speech. The codec reports geometry only |
-| a decoded chunk still ends on a hard sample boundary | `edge_fade_ms = 25.0` (10 ms in - `EDGE_FADE_IN_MS`), applied by the ASSEMBLER, never here |
+| a decoded chunk still ends on a hard sample boundary | `edge_fade = EdgeFade(10.0, 25.0)` - ASYMMETRIC, applied by the ASSEMBLER, never here (12.10) |
 | `--max-model-len 8192`; 27 s of reference is ~685 positions | `max_total_tokens` is that ceiling and refuses a prompt that fills it |
-| how vllm-omni takes a v3 LoRA is NOT exercised | `ADAPTER_STRATEGIES = ('lora-modules', 'merged-dir')`, each with its explicit launch args; BOTH restart the server; an adapter with no strategy, or an unknown strategy, is refused BY NAME |
+| vllm-omni cannot load a LoRA at runtime - no adapter flags, and the talker does not implement `SupportsLoRA` | every fine-tuned voice is a MERGED CHECKPOINT the server runs on (`CHECKPOINT_STRATEGY`); `lora-modules` is refused by name. See 12.8c |
 | the endpoint used is the buffered POST /v1/audio/speech | `generate_batch_stream` emits whole rows at retirement and `streaming_decoder()` returns None. vllm-omni also exposes a WebSocket `/v1/audio/speech/stream`; nothing here has measured it |
 
 `ATTACH` vs `LAUNCH`: `NARRATOR_HIGGS3_URL` attaches to a server somebody else
@@ -974,7 +975,7 @@ reference: work/refs/refs x2, 27.42 s, one pre-joined clip
 READY_SEC 297.0
 backend_spec: BackendSpec(kind='served', name='vllm-omni', version='0.28.0',
               base_url='http://127.0.0.1:8095', ...)
-pads False   edge_fade_ms 25.0
+pads False   edge_fade EdgeFade(in_ms=10.0, out_ms=25.0)
 stop_policy: max_new_tokens=2150 eos_reliable=True resplit_on_cap=False
              max_chars_per_sec=20.0 coverage_check='asr'
              levers={temperature 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0, seed 42}
@@ -988,8 +989,10 @@ Two numbers to read carefully:
 
 - **READY_SEC 297, not the documented ~55 s.** That is a COLD start of a server
   whose weights were not in the page cache, on a box that had just been idle;
-  55 s was measured on a warm repeat. `HiggsV3Defaults.READY_TIMEOUT_SECONDS`
-  is 300 for exactly this, and the smoke used 420.
+  55 s was measured on a warm repeat and a third run took 146 s.
+  `HiggsV3Defaults.READY_TIMEOUT_SECONDS` is **900** for exactly this spread; it
+  was 300 when this smoke ran, which the smoke overrode to 420 - a value that
+  would have been a coin flip on the slowest of the three.
 - **RTF 9.29 is not a throughput measurement.** It is ONE 78-character sentence:
   the per-request prefill of a 27 s reference and the first CUDA graph are
   amortised over 4.6 s of audio. The campaign's own RTF caveat applies too

@@ -761,13 +761,24 @@ export class TtsApiServer {
     }
 
     const { splitForTts } = await import('./bilingual-processor.js');
+    // PUNCTUATION ONLY, and nothing else, on the streaming path.
+    //
+    // The book path runs three stages (electron/narration-text-pass.ts):
+    // punctuation, the number rules, then a model on the residue. Only the first
+    // belongs here — it is pure, instant and has no opinion to get wrong, so the
+    // reader's text reaches the voice with the same canonical ellipsis and the
+    // same quotes an audiobook does. The other two are minutes of model time over
+    // a book and are a PASS the user runs, not something to do to a paragraph
+    // somebody is waiting to hear.
+    const { canonicalizePunctuationText } = await import('./tts-punctuation.js');
+    const speakable = canonicalizePunctuationText(text);
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
     // audiobook path reads for ORPHEUS_MAX_CHARS. Every other engine keeps
     // splitForTts's XTTS default, which is the only engine that number describes.
     const maxChars = getSelectedEngineName() === 'orpheus'
       ? (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice)
       : undefined;
-    const sentences = splitForTts(text, 'en', maxChars);
+    const sentences = splitForTts(speakable, 'en', maxChars);
     if (sentences.length === 0) {
       this.send(ws, { type: 'error', requestId, message: 'no sentences found in text' });
       return;

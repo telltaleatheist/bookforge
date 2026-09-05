@@ -465,9 +465,10 @@ class Codec(Protocol):
     `_filter_real_code_frames()` and never calls it.
 
     What content-trimming leaves is a chunk edge around -30 dB, which still
-    clicks on a join; the ENGINE declares `edge_fade_ms` and the assembler
-    applies that fade (10-25 ms takes the edges to -45..-48 dB). Orpheus
-    declares 0 - it bakes its own padded, trimmed edges.
+    clicks on a join; the ENGINE declares `edge_fade` and the assembler applies
+    it (Higgs `EdgeFade(10, 25)` takes the edges to -45..-48 dB - asymmetric,
+    because a chunk ends on a decay the ear does not expect). Orpheus declares
+    `EdgeFade(0, 0)` - it bakes its own padded, trimmed edges.
     """
 
     #: Output sample rate in Hz. Mono, float32, always.

@@ -27,6 +27,7 @@ import type { JobStageProgress } from './job-stages';
 // The model behind the number pass is INJECTED into the door below, so this is a
 // type-only import: nothing here ever dials Ollama.
 import type { NumberNormalizerRunner } from './tts-number-normalizer';
+import type { NarrationTextGate } from './narration-text-pass';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -7074,8 +7075,53 @@ export async function prepareNarrationInput(
       `The narration prep has no reader for '${ext || path.basename(inputPath)}' `
       + `(${inputPath}). It reads .epub and .txt.`);
   }
+  // ── The CHECK that replaced the transform (2026-09-04) ────────────────────
+  //
+  // The punctuation and the numbers are now a PASS the user runs on the book —
+  // `electron/narration-text-pass.ts`, recorded in the ledger, stamped into the
+  // OPF. This door reads that stamp and REFUSES a book that has not been through
+  // it. It does not run the pass itself: an hour of model time inside a render's
+  // prep is exactly what Owen's ruling moved out of here, and a door that
+  // silently did the work again would make the persisted pass pointless.
+  //
+  // Refused by NAME, never skipped. e2a has no number transform of its own any
+  // more (permanently disabled, 2026-09-02), so a book that reached the voice
+  // unstamped would be narrated as printed digits with nothing to say so.
+  const gate = await narrationTextGate(inputPath);
+  if (!gate.ok) {
+    throw new Error(
+      `${gate.reason} (Narration was asked to read ${path.basename(inputPath)}; nothing was `
+      + 'rendered.)');
+  }
   const cut = await cutCaptionsAndNotes(inputPath, jobId);
-  return normalizeNumbersFor(cut, inputPath, jobId, opts);
+  console.log(
+    `[PARALLEL-TTS] ${path.basename(inputPath)} carries a current narration-text stamp `
+    + `(${gate.stamp.normalizerVersion}/${gate.stamp.punctuationSpec}, ${gate.stamp.model}) — `
+    + 'its punctuation is canonical and its numbers are already words.');
+  await logger.log('INFO', jobId,
+    'the book carries a current narration-text stamp; the render reads it as cleaned', {
+      normalizerVersion: gate.stamp.normalizerVersion,
+      punctuationSpec: gate.stamp.punctuationSpec,
+      model: gate.stamp.model,
+    });
+  return {
+    inputPath: cut,
+    // The record is the PASS's, not this door's: it sits beside the cleaned book
+    // (`<stem>.narration.narration-text.json`) and in the project's ledger.
+    recordPath: null,
+    model: gate.stamp.model,
+    appliedSpans: 0,
+    appliedByRules: 0,
+    appliedByModel: 0,
+    reused: true,
+    dispositions: {},
+  };
+}
+
+/** The stamp check, imported here so the door has one line and one meaning. */
+async function narrationTextGate(bookPath: string): Promise<NarrationTextGate> {
+  const pass = await import('./narration-text-pass.js');
+  return pass.narrationTextGate(bookPath);
 }
 
 /** The caption/footnote cut — the first half of the door. */
@@ -7132,69 +7178,6 @@ async function cutCaptionsAndNotes(epubPath: string, jobId: string): Promise<str
 }
 
 /**
- * The numbers, read as words — the second half of the door.
- *
- * Runs on whatever the cut produced (or on the source, when there was nothing to
- * cut), so the model sees the text the narrator will actually be given: no
- * captions, no note apparatus, no reference markers. See
- * electron/tts-number-normalizer.ts for the rules and the record.
- *
- * A book that prints no digits anywhere a narrator reads comes back untouched,
- * with no model loaded and no file written — the cut's own precedent for a file
- * that carries no evidence.
- *
- * A FAILURE HERE FAILS THE JOB, in the caller's own sentence, exactly as a
- * failed cut does. Falling back to the un-normalized copy would narrate the
- * digits this pass exists to convert while the log said a normalization ran.
- * e2a has no number transform of its own any more (permanently disabled,
- * 2026-09-02), so what leaves this door is exactly what the voice reads.
- */
-async function normalizeNumbersFor(
-  inputPath: string,
-  bookPath: string,
-  jobId: string,
-  opts: NarrationPrepOptions,
-): Promise<NarrationPrepResult> {
-  const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
-  const { normalizeNarrationNumbers } = await import('./tts-number-normalizer.js');
-
-  const runner = await narrationNumberRunner(opts);
-  const outcome = await normalizeNarrationNumbers(inputPath, runner, {
-    systemPrompt: await loadNumberNormalizePrompt(),
-    outDir: narrationCutsDir(),
-    onProgress: prepProgressSink(jobId, opts.skipAssembly),
-  });
-
-  if (outcome === null) {
-    console.log(
-      `[PARALLEL-TTS] ${path.basename(bookPath)} prints no digits a narrator would read — `
-      + 'no number normalization was needed.');
-    return {
-      inputPath, recordPath: null, model: runner.model,
-      appliedSpans: 0, appliedByRules: 0, appliedByModel: 0, reused: false, dispositions: {},
-    };
-  }
-
-  await logger.log('INFO', jobId,
-    `${outcome.record.appliedByRules} number(s) read as words by rule and `
-    + `${outcome.record.appliedByModel} by ${runner.model}, across `
-    + `${outcome.record.targetsSelected} passage(s)`, {
-      copy: outcome.epubPath, record: outcome.recordPath, reused: outcome.reused,
-      dispositions: outcome.record.dispositions,
-    });
-  return {
-    inputPath: outcome.epubPath,
-    recordPath: outcome.recordPath,
-    model: runner.model,
-    appliedSpans: outcome.record.appliedSpans,
-    appliedByRules: outcome.record.appliedByRules,
-    appliedByModel: outcome.record.appliedByModel,
-    reused: outcome.reused,
-    dispositions: outcome.record.dispositions,
-  };
-}
-
-/**
  * The numbers of a PLAIN-TEXT input, read as words — the whole door for a `.txt`.
  *
  * There is no caption cut here and there is nothing missing: a text file has no
@@ -7209,9 +7192,16 @@ async function normalizeTextNumbersFor(
 ): Promise<NarrationPrepResult> {
   const { loadNumberNormalizePrompt } = await import('./ai-bridge.js');
   const { normalizeTextBlocks, splitTextBlocks } = await import('./tts-number-normalizer.js');
+  const { canonicalizePunctuationText } = await import('./tts-punctuation.js');
 
   const runner = await narrationNumberRunner(opts);
-  const blocks = splitTextBlocks(await fs.readFile(inputPath, 'utf8'));
+  // Punctuation FIRST, exactly as the book pass runs it — a `.txt` has no
+  // document chain to carry a stamp, so this door is where the audition's text
+  // gets the same canonical ellipsis and the same quotes the shipped audiobook
+  // has. An audition that measured a different pipeline than it claims to is the
+  // whole reason this path exists.
+  const blocks = splitTextBlocks(await fs.readFile(inputPath, 'utf8'))
+    .map((block) => canonicalizePunctuationText(block));
   const outcome = await normalizeTextBlocks(blocks, runner, {
     systemPrompt: await loadNumberNormalizePrompt(),
     outDir: narrationCutsDir(),
@@ -7248,8 +7238,14 @@ async function normalizeTextNumbersFor(
   };
 }
 
-/** Where every narration copy this door makes lives — cut and normalized alike. */
-function narrationCutsDir(): string {
+/**
+ * Where every narration copy this door makes lives — cut and normalized alike.
+ *
+ * EXPORTED so the narration text pass and its CLI stage put their intermediates
+ * in the SAME place the render door looks. Two scratch directories would mean a
+ * pass paying for a model call the door had already paid for.
+ */
+export function narrationCutsDir(): string {
   return path.join(getDefaultE2aTmpPath(), 'narration-cuts');
 }
 

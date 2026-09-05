@@ -57,7 +57,7 @@ UPGRADE in that env:
                            So a patched server returns audio whose tail is
                            already clean and THE CLIENT MUST NOT TRIM AGAIN.
                            What remains is a hard sample boundary, which is a
-                           click: `edge_fade_ms` (10 in / 25 out) is the
+                           click: `edge_fade` - EdgeFade(10 in, 25 out) - is the
                            assembler's job.
 
 Both belong in a managed-env recipe at cut-over; see ../PORT_NOTES.md 12.7.
@@ -447,7 +447,7 @@ def decode_response(body: bytes, content_type: str = None):
     Multi-channel is averaged down, as the scripts do. NO TRIM AND NO FADE is
     applied: the patched server already trims the sentinel tail by content
     (work/patch_tail_trim.py), and the fades belong to assembly
-    (`edge_fade_ms`).
+    (`edge_fade`).
     """
     import soundfile as sf
     if not body:

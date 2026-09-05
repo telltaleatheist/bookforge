@@ -173,14 +173,25 @@ refusals (unpadded-without-file, padded-with-file) are in
 `render/SESSION_READERS.md` section 0b. Assembly itself never reads it - by the
 time a manifest reaches this package the gaps are already on the chunks.
 
-**One shape mismatch to reconcile.** `engine/protocol.py` declares `pads: bool`
-and `edge_fade_ms: float` on the engine object itself, which is the right home
-for them. But `edge_fade_ms` is a single float and cannot express Higgs'
-asymmetric 10-in / 25-out, which its own docstring writes as "10-25". The
-manifest uses `{in, out}`. When the two meet, the engine side needs the pair.
-(Assembly cannot read the engine object anyway - it must run on a machine with
-no torch, and the reassembly bridge passes `--tts_engine xtts` - which is why
-the table exists at all.)
+**Why this table exists when the engine already knows.**
+`engine/protocol.py` declares `pads: bool` and `edge_fade: EdgeFade(in_ms,
+out_ms)` on the engine object itself, which is the right home for them - and
+that type expresses Higgs' asymmetric 10-in / 25-out exactly, matching the
+manifest's `{in, out}`. (An earlier draft had a single float, which could not;
+that mismatch is gone.)
+
+The duplicate here is DELIBERATE and stays: **assembly must not import
+`engine/`.** It has to run on a machine with no torch, no transformers and no
+engine environment at all - the reassembly bridge spawns it with
+`--tts_engine xtts` against a bundled CPU env - so it cannot ask an engine
+object what its edges need, and importing one to read two numbers would drag a
+GPU stack into the one part of the pipeline deliberately free of it.
+
+What keeps the copies equal is a test, not a convention:
+`tests/test_engine_protocol.py::test_the_engines_agree_with_the_assemblers_own_table`
+loads `engine_profiles.py` by path and asserts every field against each engine's
+own. A divergence is an audiobook that clicks at every join, so it fails the
+suite instead of shipping.
 
 ---
 

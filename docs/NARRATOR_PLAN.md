@@ -374,7 +374,7 @@ plans against a paragraph that has not been built. Full detail:
   launch (invoking their `serve_v3.sh`), `/health` polling, stop, the request
   builder (sampling in `extra_params` and nowhere else), the response decoder,
   the 45-token control-token allowlist, the one-reference / 30 s rules, the two
-  adapter strategies, `pads=False`, `edge_fade_ms=25`, `max_chars=600`,
+  the checkpoint rules, `pads=False`, `edge_fade` 10/25, `max_chars=600`,
   `coverage_check='asr'`. **Rendered a sentence end to end on the GPU** - see
   PORT_NOTES 12.7.
 - `engine/higgs/**` - 163 tests across the v3 backend and the v2 scaffold, none
@@ -413,13 +413,16 @@ plans against a paragraph that has not been built. Full detail:
 - **The ASR coverage gate.** `StopPolicy.coverage_check == 'asr'` is a hook with
   a name. It matters more on v3 than anywhere: a chunk measured a duration ratio
   of 0.99 while dropping 22 % of its text and inserting filler.
-- **A v3 fine-tune.** `ADAPTER_STRATEGIES` expresses both possible shapes
-  (`lora-modules` at launch, `merged-dir` as a model swap - both a server
-  restart); which one vllm-omni actually supports for this model class is NOT
-  yet exercised, and an adapter with no strategy is refused by name.
+- **Serving a v3 fine-tune end to end.** The SHAPE is settled - a merged
+  checkpoint the server runs on, `kind: 'checkpoint'` - but narrator cannot
+  launch a chosen one: `serve_v3.sh` `exec`s a hard-coded snapshot path and
+  takes no arguments, so the operator starts the server and states which
+  checkpoint through `NARRATOR_HIGGS3_CHECKPOINT`. A checkpoint voice with
+  nothing stated is refused by name. Making narrator own that launch is the
+  next served-backend step.
 - **v3 streaming and batching.** The buffered POST endpoint is what is wired;
   `/v1/audio/speech/stream` and `/v1/audio/speech/batch` are unmeasured.
-- **`SentenceSink` reading `pads` / `edge_fade_ms`.** There is no SentenceSink
+- **`SentenceSink` reading `pads` / `edge_fade`.** There is no SentenceSink
   yet; the engines report both and the assembler must consume them - for v3 that
   means realizing the manifest's gaps AND fading 10 ms in / 25 ms out.
 - **The catalog keyed on (engine, voice).** `orpheus-models.json` is still

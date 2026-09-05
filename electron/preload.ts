@@ -1479,6 +1479,23 @@ export interface ElectronAPI {
    * anything which can fail while building it fails with nothing queued.
    * Nothing else may build pass jobs by hand.
    */
+  narration: {
+    textReadiness: (projectDir: string, askedPath?: string, familyId?: string) =>
+      Promise<{
+      success: boolean;
+      readiness?: { ok: true; at: string; model: string }
+        | { ok: false; state: 'missing' | 'stale'; reason: string }
+        | null;
+      fileState?: { ok: true; stamp: { normalizerVersion: string; punctuationSpec: string;
+        model: string } }
+        | { ok: false; state: 'missing' | 'stale'; reason: string }
+        | null;
+      familyId?: string | null;
+      bookPath?: string | null;
+      familyNote?: string;
+      error?: string;
+    }>;
+  };
   processing: {
     planChain: (request: ProcessingChainRequest) =>
       Promise<{ success: boolean; plan?: ProcessingChainPlan; error?: string }>;
@@ -3293,6 +3310,10 @@ const electronAPI: ElectronAPI = {
     // Pre-compute diff cache for an arbitrary EPUB pair (background)
     precomputePair: (originalPath: string, targetPath: string) =>
       ipcRenderer.invoke('diff:precompute-pair', originalPath, targetPath),
+  },
+  narration: {
+    textReadiness: (projectDir: string, askedPath?: string, familyId?: string) =>
+      ipcRenderer.invoke('narration:text-readiness', projectDir, askedPath, familyId),
   },
   processing: {
     planChain: (request: ProcessingChainRequest) =>

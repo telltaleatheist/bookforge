@@ -135,11 +135,53 @@ function decimalPhrase(token: string): string | null {
 // The citation guard — shared with the validator, defined once, here
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** The abbreviations that make what follows them a page or volume reference. */
-const CITATION_LEAD = /(?:^|[\s(\[“"])(?:pp?|vols?|nos?|ibid|cf|fol)\.\s*$/i;
+/**
+ * The abbreviations that make what follows them an UNSPEAKABLE reference.
+ *
+ * `p.` AND `pp.` WERE HERE UNTIL 2026-09-04, and Owen's ruling took them out: a
+ * page reference is read out loud — "p. 23" is "page twenty three" — so it is a
+ * shape with exactly one reading and belongs to the `page` rule below, not to
+ * the guard. What is left is the apparatus that has no reading: a volume, a
+ * number, "ibid.", "cf.", "fol.".
+ */
+const CITATION_LEAD = /(?:^|[\s(\[“"])(?:vols?|nos?|ibid|cf|fol)\.\s*$/i;
 
 /** A roman-numeral token of two or more characters — "II", "XIV", never "I". */
 const ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
+
+/**
+ * AN ARCHIVE SIGIL: the two-to-four letter code a records citation prints in
+ * front of a file number — "HSG 11 Js. Sond. 298/38", "GnH 3659/42", "AfW HH R
+ * 231191".
+ *
+ * Two shapes, and the shape is the whole guarantee: a token that is ENTIRELY
+ * uppercase ("HSG", "HH"), or one that carries an uppercase letter somewhere
+ * after its first character ("GnH", "AfW"). Ordinary prose has neither — "The",
+ * "In", "One" capitalize position 0 and nothing else, so they do not match, and
+ * "the 11 men" is still read.
+ *
+ * Reported by the orpheus-finetune side (BOOKFORGE_HANDOFF.md, "Ask 2") against
+ * the very line this app's own prompt already lists as leave-as-printed:
+ * `sitsInCitation` knew p./pp./vol./no./ibid./cf./fol., a slash between digits,
+ * a roman-numeral neighbour and half a phone number, and did NOT know the sigil,
+ * so the bare-integer rule read the "11" out of an archive reference.
+ *
+ * THE OTHER HALF OF THAT ASK IS DELIBERATELY NOT ADOPTED. The handoff also notes
+ * that an abbreviation token AFTER the span ("Js.", "Sond.") marks a citation.
+ * It does — and so do "U.S.", "Dr.", "Mr.", "St." and every other abbreviation
+ * ordinary prose prints after a number ("the 11 U.S. soldiers"). This guard is
+ * shared with the model validator (`CITATION_CODE`), so a false positive here
+ * means the digits reach the narrator with nothing downstream able to convert
+ * them. The sigil is a shape; "a period on the next word" is not.
+ */
+const ARCHIVE_SIGIL = /^[A-Za-z]{2,4}$/;
+
+/** Does this token look like the archive sigil in front of a file number? */
+function isArchiveSigil(token: string): boolean {
+  const word = bareWord(token);
+  if (!ARCHIVE_SIGIL.test(word)) return false;
+  return word === word.toUpperCase() || /[A-Z]/.test(word.slice(1));
+}
 
 /**
  * Half a phone number, as a whole token: a parenthesized area code — "(405)" —
@@ -153,6 +195,62 @@ const ROMAN_TOKEN = /^[IVXLCDM]{2,}$/;
  * one the model reads correctly.
  */
 const PHONE_PART = /^(?:\(\d{3}\)|[^\w\s]*\d{1,4}[-‐-―]\d{2,4}[^\w\s]*)$/;
+
+/**
+ * A roman numeral and a period, immediately in front of a number.
+ *
+ * Lower case as well as upper: a citation prints "iii. 1281-2" far more often
+ * than "III. 1281-2", and `ROMAN_TOKEN` is upper-case only because it exists to
+ * recognise "Document II" without refusing the pronoun "I".
+ *
+ * THE NUMERAL GRAMMAR IS STRICT — thousands, then hundreds, then tens, then
+ * units — because a loose [ivxlcdm]+ also spells ordinary English. "he did. 45
+ * men", "it was mild. 12 degrees" and "the civil. 90 percent" all matched the
+ * loose form and would have had their numbers refused as apparatus.
+ */
+const ROMAN_CITATION_LEAD =
+  /(?:^|[\s(\[])(?=[ivxlcdm])m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3})\.\s*(?=\d)/i;
+
+/**
+ * The words that make the numbers after them PAGES.
+ *
+ * Roman numerals are deliberately absent: `ROMAN_CITATION_LEAD` already claims
+ * "iii. 1281-2", and putting [ivxlcdm] in a lead list would also claim the
+ * ordinary words made only of those letters — "mild", "civil", "did".
+ */
+const PAGE_RANGE_LEAD = /(?:\bpp?|\bpages?|\bnos?|\bfols?|\bff|\blines?|\bll)\.?\s*$/i;
+
+/**
+ * An abbreviated page range BEHIND A PAGE LEAD: "pp. 51-2", "fol. 128-9".
+ *
+ * The second number is shorter than the first because it drops the shared
+ * leading digits, so "51-2" is pages fifty-one to fifty-two, not fifty-one to
+ * two — and the LIVE model run of 2026-09-04 made exactly that misread on
+ * "iii. 1281-2".
+ *
+ * THE PAGE LEAD IS REQUIRED, and that is a narrowing of Owen's ruling made
+ * because the wider form contradicts the shipped number prompt, which teaches
+ * '"112–14" is "one hundred twelve to one hundred fourteen"' — the keeper
+ * `test-prompt-examples` refused the wider form on exactly that line. A bare
+ * prose range keeps the prompt's reading, which is the correct one; an
+ * apparatus range is left as printed. A YEAR range abbreviates identically
+ * ("1935-36") and reads differently again, so a first number that could be a
+ * year is never claimed here — that judgement is the model's, and the live run
+ * measured it making it correctly.
+ */
+function isAbbreviatedPageRange(target: string, find: string, at: number): boolean {
+  const before = target.slice(0, at);
+  for (const m of find.matchAll(/(\d{2,})\s*[\u2010-\u2015\u002D]\s*(\d+)/g)) {
+    const first = m[1]!;
+    const second = m[2]!;
+    const value = Number(first);
+    if (value >= 1100 && value <= 2099) continue;  // a year range is the model's
+    if (second.length >= first.length) continue;
+    if (!PAGE_RANGE_LEAD.test(before + find.slice(0, m.index))) continue;
+    return true;
+  }
+  return false;
+}
 
 /** Strip the punctuation a word wears at a sentence edge, for word comparison. */
 export function bareWord(token: string): string {
@@ -177,6 +275,13 @@ export function bareWord(token: string): string {
  *  4. HALF A PHONE NUMBER as the token directly before or after it — an area
  *     code in parentheses, or a hyphenated digit group — which makes the span
  *     the other half of it.
+ *  5. AN ARCHIVE SIGIL immediately before a bare integer — "HSG 11" — see
+ *     `isArchiveSigil`.
+ *  6. A ROMAN NUMERAL AND A PERIOD in front of a number — "iii. 1281-2" — a
+ *     volume or a part, and the number after it a page.
+ *  7. AN ABBREVIATED PAGE RANGE BEHIND A PAGE LEAD — "pp. 51-2" — where the
+ *     second number is shorter than the first. A bare prose range keeps the
+ *     number prompt's reading, and a year range is left to the model.
  *
 
  * It lives in this file rather than beside the validator because BOTH halves of
@@ -186,6 +291,18 @@ export function bareWord(token: string): string {
  */
 export function sitsInCitation(target: string, find: string, at: number): boolean {
   if (/\d\s*\/\s*\d/.test(find)) return true;
+  // 6. A ROMAN NUMERAL AND A PERIOD immediately before a number — "iii. 1281-2",
+  //    "II. 45". That is a volume or a part and the number after it is a page,
+  //    and the LIVE model run of 2026-09-04 read one as a quantity: "iii. 1281-2"
+  //    shipped as "iii. one thousand two hundred eighty-one to two". Checked
+  //    INSIDE the span as well as before it, because the model sends the lead
+  //    and the number together.
+  if (ROMAN_CITATION_LEAD.test(find)) return true;
+  if (ROMAN_CITATION_LEAD.test(target.slice(0, at) + find.slice(0, 1))) return true;
+  // 7. AN ABBREVIATED PAGE RANGE BEHIND A PAGE LEAD — "pp. 51-2", "fol. 128-9":
+  //    the second number is shorter than the first because it drops the shared
+  //    leading digits, which is the page-range convention.
+  if (isAbbreviatedPageRange(target, find, at)) return true;
   const before = target.slice(0, at);
   const after = target.slice(at + find.length);
   if (/\d\s*$/.test(before) && /^\s*\//.test(after)) return true;
@@ -198,6 +315,11 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
   const priorToken = priorTokens.length > 0 ? priorTokens[priorTokens.length - 1] : '';
   const nextToken = nextTokens.length > 0 ? nextTokens[0] : '';
   if (PHONE_PART.test(priorToken) || PHONE_PART.test(nextToken)) return true;
+  // 5. AN ARCHIVE SIGIL immediately before a BARE INTEGER — "HSG 11", "GnH 3659".
+  //    The bare-integer condition is what keeps this off a date or a scripture
+  //    reference standing after an acronym; a sigil in front of a whole phrase
+  //    says nothing about that phrase.
+  if (/^\d+$/.test(bareWord(find)) && isArchiveSigil(priorToken)) return true;
   return ROMAN_TOKEN.test(bareWord(priorToken)) || ROMAN_TOKEN.test(bareWord(nextToken));
 }
 
@@ -457,19 +579,36 @@ function clockCandidates(text: string): Candidate[] {
 /**
  * A chapter:verse reference, with everything that legitimately hangs off it.
  *
- * `[<1|2|3> ][Book ]c:v[a][–v2[b]][ff.]`. The book token and the numeric prefix
- * are optional and are only PART of the rewritten span when they have to change
- * — "Jeremiah 44:17-19" rewrites "44:17-19" and leaves the name alone, while
- * "2 Cor. 10:4" rewrites the lot because both the prefix and the abbreviation
- * are read differently than they are printed.
+ * `[<1|2|3> ][Book ]c:v[a][–[c2:]v2[b]][ff.]`. The book token and the numeric
+ * prefix are optional and are only PART of the rewritten span when they have to
+ * change — "Jeremiah 44:17-19" rewrites "44:17-19" and leaves the name alone,
+ * while "2 Cor. 10:4" rewrites the lot because both the prefix and the
+ * abbreviation are read differently than they are printed.
+ *
+ * THE RANGE MAY CROSS A CHAPTER, and that production is not optional garnish.
+ * Reported by the orpheus-finetune side (BOOKFORGE_HANDOFF.md, "Ask 2b"), found
+ * by running this pass over a real corpus: modelling the second number as a
+ * VERSE only, "(Col. 3:19-4:1 and parallels)" took the `4` as the verse, emitted
+ * "Colossians three nineteen through four", and LEFT ":1" standing in the text.
+ * A raw colon reached the narrator — worse than an unconverted number, because
+ * `stillHasDigits` then sent the wreckage to the model, which correctly declined
+ * to touch a fragment it could not parse, and `NUMBER_DROPPED` could not see it
+ * because a rule and not the model had produced it.
+ *
+ * `Col. 3:19-4:1` now reads "Colossians three nineteen through four one" —
+ * "through" is already the verse-range word and a chapter-crossing range has no
+ * separate spoken convention worth inventing. A plain verse range ("3:19-21")
+ * and a lone reference ("3:19") are untouched by this production.
  */
 const SCRIPTURE_REF = new RegExp(
   '(?:(?<![\\w:.\\-])([123])\\s+)?'          // 1 an optional volume number
   + '(?:([A-Z][A-Za-z]{1,13})(\\.?)\\s+)?'   // 2 the book token, 3 its period
   + '(?<![\\d:.])(\\d{1,3}):(\\d{1,3})'      // 4 chapter, 5 verse
   + '(?:(?!ff\\.)([a-z])(?![a-z\\d]))?'      // 6 an optional verse letter
-  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?'  // 7 v2, 8 letter
-  + '(ff\\.)?'                               // 9 "and following"
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*'
+  + '(?:(\\d{1,3}):)?'                       // 7 the range's own chapter, if any
+  + '(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?'  // 8 v2, 9 its letter
+  + '(ff\\.)?'                               // 10 "and following"
   + '(?![A-Za-z\\d])',                       // and nothing else glued to it
   'gd');
 
@@ -498,7 +637,8 @@ function scriptureCandidates(text: string): Candidate[] {
   // reference right after it inherits.
   let anchoredEnd = -1;
   for (const m of matches(SCRIPTURE_REF, text)) {
-    const [whole, prefix, bookToken, , chapter, verse, verseLetter, verse2, verse2Letter, ff] = m;
+    const [whole, prefix, bookToken, , chapter, verse, verseLetter,
+      chapter2, verse2, verse2Letter, ff] = m;
     const spans = m.indices!;
     const book = bookToken === undefined ? null : bibleBook(bookToken);
     const end = m.index + whole.length;
@@ -529,7 +669,15 @@ function scriptureCandidates(text: string): Candidate[] {
     if (verse2 !== undefined) {
       const verse2Words = cardinalWords(Number(verse2));
       if (verse2Words === null) continue;
-      spoken += ` through ${verse2Words}`;
+      spoken += ' through';
+      // A chapter-crossing range names its chapter first, exactly as the printed
+      // form does: "3:19-4:1" is "three nineteen through four one".
+      if (chapter2 !== undefined) {
+        const chapter2Words = cardinalWords(Number(chapter2));
+        if (chapter2Words === null) continue;
+        spoken += ` ${chapter2Words}`;
+      }
+      spoken += ` ${verse2Words}`;
       if (verse2Letter !== undefined) spoken += ` ${verse2Letter}`;
     }
     // "ff." is READ, not dropped. e2a's port swallows it, but this pass refuses
@@ -595,6 +743,51 @@ const DATE_DAY_FIRST = new RegExp(
   `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)`
   + ',?\\s+(1[1-9]\\d{2}|20\\d{2})(?![\\w\\-])', 'g');
 
+/**
+ * "4 September" — a day-first date with NO YEAR.
+ *
+ * `DATE_DAY_FIRST` requires one, so a yearless day-first date fell through to
+ * the bare-integer rule and read "four September". The LIVE model run of
+ * 2026-09-04 measured it in Kershaw: "…his last detailed report, which was on 4
+ * September." shipped as "on four September", and the model's own correct repair
+ * ("September fourth") was refused because a mangled date is not one of the
+ * classes a reading may be about. Owen's ruling: read it the American spoken
+ * way, which is the with-year rule minus the year.
+ *
+ * THE PERIOD IS THE ABBREVIATION'S, OR THE SENTENCE'S, AND THEY ARE DIFFERENT.
+ * "on 4 September." is a full month and a sentence ending; "on 4 Sept. and
+ * later" is an abbreviation mid-sentence; "on 4 Sept. The next day" is both. So
+ * the period is only swallowed when the month is ABBREVIATED, and even then it
+ * is written back when what follows could be a new sentence — the same rule the
+ * reading law applies to "Oxford St. The rain".
+ *
+ * The year lookahead is what keeps this off "4 September 1939", which the
+ * with-year rule reads; the lead guard is what keeps it off "Chapter 4
+ * September" and "p. 4 September", where the digit is not a day.
+ */
+const DATE_DAY_FIRST_NO_YEAR = new RegExp(
+  `(?<![\\w:.\\-])(\\d{1,2})(?:st|nd|rd|th)?\\s+(${MONTH_ALTERNATION})(\\.?)(?![A-Za-z])`
+  + '(?!,?\\s*(?:1[1-9]\\d{2}|20\\d{2}))', 'g');
+
+/**
+ * Could a period here be the end of a SENTENCE?
+ *
+ * Nothing after it, or a capital, a quote or a bracket. Written out rather than
+ * imported because this module is a leaf the training side vendors on its own.
+ */
+function periodCouldEndSentence(after: string): boolean {
+  const next = after.replace(/^[\s\u00a0]+/, '');
+  return next === '' || /^["'\u201c\u2018([]/.test(next) || /^[A-Z\u00c0-\u00de]/.test(next);
+}
+
+/**
+ * The words that make the number after them a NUMBERED THING and not a day.
+ *
+ * "Chapter 4 September" is a chapter and a month, not the fourth of September.
+ */
+const DATE_LEAD_BLOCK =
+  /(?:chapter|part|section|volume|vol|book|figure|fig|table|act|no|nos|pp?|line|item|note)\.?\s+$/i;
+
 /** "June 12, 1933", "June 12th", "Dec. 19, 1991" — and "December 19" alone. */
 const DATE_MONTH_FIRST = new RegExp(
   `(?<![\\w\\-])(${MONTH_ALTERNATION})(\\.?)\\s+(\\d{1,2})(?:st|nd|rd|th)?`
@@ -623,6 +816,24 @@ function dateCandidates(text: string): Candidate[] {
     const spoken = dateWords(month, Number(m[3]), m[4]);
     if (spoken === null) continue;
     out.push({ at: m.index, find: m[0], replace: spoken, rule: 'date' });
+  }
+  // LAST, so a with-year match at the same offset is the one that wins: the
+  // engine takes candidates left to right and closes what it takes.
+  for (const m of matches(DATE_DAY_FIRST_NO_YEAR, text)) {
+    const month = monthName(m[2]);
+    if (month === null) continue;
+    if (DATE_LEAD_BLOCK.test(text.slice(0, m.index))) continue;
+    const spoken = dateWords(month, Number(m[1]), undefined);
+    if (spoken === null) continue;
+    // The period goes with the month only when the month is ABBREVIATED. After a
+    // full name it is the sentence's and stays exactly where the book put it.
+    const abbreviated = m[2].toLowerCase() !== month.toLowerCase();
+    const period = m[3] === '.' && abbreviated;
+    const find = period ? m[0] : m[0].slice(0, m[0].length - m[3].length);
+    if (sitsInCitation(text, find, m.index)) continue;
+    const after = text.slice(m.index + find.length);
+    const replace = period && periodCouldEndSentence(after) ? `${spoken}.` : spoken;
+    out.push({ at: m.index, find, replace, rule: 'date' });
   }
   return out;
 }
@@ -753,6 +964,196 @@ function markerCandidates(text: string): Candidate[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Rule: a page reference — READ, since 2026-09-04
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * "p. 23", "pp. 65-71" — a page reference, which a narrator reads out loud.
+ *
+ * Owen's ruling of 2026-09-04 revised the leave-as-printed list: a page
+ * reference has exactly one spoken reading, so it is a RULE and not a refusal.
+ * The abbreviation the book printed decides the word — `p.` is "page", `pp.` is
+ * "pages" — and a range is joined with "to", not the verse range's "through",
+ * because "pages sixty five through seventy one" is not how anyone says it.
+ *
+ * Its capital is kept: a sentence that opens "P. 23 has the figure" reads "Page
+ * twenty three", and lower-casing it mid-book would be a change to the prose.
+ *
+ * WHAT IT DOES NOT TAKE: "vol. 2", "no. 5", "ibid.", "fol." — those are still
+ * `CITATION_LEAD`'s, because a volume number is apparatus rather than something
+ * a narrator says. And a leading zero ("p. 007") is a code, not a page.
+ */
+const PAGE_REF = new RegExp(
+  '(?<![\\w.\\-])(pp?)\\.\\s*(\\d{1,4})'
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(\\d{1,4}))?(?![\\w\\-])', 'gi');
+
+function pageCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(PAGE_REF, text)) {
+    const [whole, abbrev, first, second] = m;
+    if (first.length > 1 && first.startsWith('0')) continue;
+    if (second !== undefined && second.length > 1 && second.startsWith('0')) continue;
+    // AN ABBREVIATED RANGE IS LEFT. "pp. 51-2" drops the shared leading digit and
+    // means pages fifty-one to fifty-two; read literally it becomes "pages fifty
+    // one to two", which is what this rule shipped until 2026-09-04. Owen's ruling
+    // is that the shape is apparatus and stays as printed, so the span is left
+    // whole here and `sitsInCitation` clause 7 keeps the model off it as well.
+    if (second !== undefined && second.length < first.length) continue;
+    const firstWords = cardinalWords(Number(first));
+    if (firstWords === null) continue;
+    let spoken = abbrev.toLowerCase() === 'pp' ? 'pages' : 'page';
+    if (abbrev[0] === abbrev[0].toUpperCase()) spoken = spoken[0].toUpperCase() + spoken.slice(1);
+    spoken += ` ${firstWords}`;
+    if (second !== undefined) {
+      const secondWords = cardinalWords(Number(second));
+      if (secondWords === null) continue;
+      spoken += ` to ${secondWords}`;
+    }
+    out.push({ at: m.index, find: whole, replace: spoken, rule: 'page' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Rule: digits glued to letters — READ, since 2026-09-04
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A token of letters, digits and hyphens — "COVID-19", "B-17", "I-95", "R2D2",
+ * "7-Eleven", "MP3".
+ *
+ * Owen's ruling of 2026-09-04 moved this out of the leave-as-printed list too:
+ * *"COVID-nineteen is actually correct, that's how it's pronounced in real
+ * life."* Every one of these is said with the number as a word, so the printed
+ * form has one reading and code can give it.
+ *
+ * The lookarounds exclude a `/` on either side, which is what keeps this off
+ * every archive and catalogue code the guard exists for — "9/34" and "298/38"
+ * are not tokens this rule can even see. A trailing `.` is allowed (a sentence
+ * ends), but a `.` followed by a DIGIT is not: "v1.2" is a version number, and
+ * reading half of it would print "v one.2".
+ */
+const GLUED_ALNUM = /(?<![\w/.\-])[A-Za-z0-9]+(?:-[A-Za-z0-9]+)*(?![\w/\-])/g;
+
+/**
+ * The longest digit run this rule will read.
+ *
+ * THREE, not four, and the fourth digit is where the corpus contract lives. A
+ * four-digit run inside a hyphenated token is a YEAR — "pre-1914", "post-1945",
+ * "Kennedy-1963", "Louis XIV-1715" — and a year is the model's judgement, never
+ * a rule's (`BARE_INT` stops at three digits for exactly this reason). Reading
+ * one here would say "pre-one thousand nine hundred fourteen", which is not what
+ * anybody says and not what the four served fine-tunes were trained on.
+ *
+ * Found by the adversarial review of 2026-09-04, which measured the first cut of
+ * this rule against an n4 build over the same corpus.
+ */
+const GLUED_MAX_DIGITS = 3;
+/** And the most runs. "A1B2C3D4" is a part number, not a word with a number in it. */
+const GLUED_MAX_RUNS = 3;
+
+/**
+ * A token that OPENS with digits pressed straight against letters — "105mm",
+ * "9mm", "20km", "5kg", "12V", "8GB", "6ft", "4a".
+ *
+ * That shape is a MEASUREMENT or a designation, and its letters are a unit
+ * abbreviation the narrator says as a word ("millimetre", "kilograms") or as
+ * letters ("G B") — never as the printed letters glued to a number. This rule
+ * has no table of units and no way to tell "4a" (a Sonderkommando) from "4A" (a
+ * seat), so it read "one hundred five mm" and destroyed the digits on the way
+ * (the second adversarial review, 2026-09-04). Left for the model, which can see
+ * the sentence.
+ *
+ * The LETTER-PREFIX forms are untouched and are what this rule is for: "B-17",
+ * "COVID-19", "R2D2", "F8F", "C18", "V-2", "MP3". So are the hyphenated ones
+ * that open with digits, where the hyphen says the number is its own word:
+ * "7-Eleven", "24-hour", "30-year-old".
+ */
+const DIGITS_THEN_UNIT = /^\d+[A-Za-z]/;
+
+/**
+ * A digit run whose shape belongs to an EARLIER rule, and which this catch-all
+ * must therefore not read.
+ *
+ * `FULL_DECADE`, the year rule and `ORDINAL` each carry a `(?<![\w.\-])`
+ * lookbehind that excludes a preceding hyphen, so every one of these was left as
+ * printed before this rule existed — and this rule runs LAST, which is exactly
+ * why it would otherwise claim them all:
+ *
+ *   mid-1920s   -> "mid-one thousand nine hundred twenty s"   (decade, hyphenated)
+ *   mid-19th    -> "mid-nineteen th"                          (ordinal, hyphenated)
+ *
+ * Both are MALFORMED, and they carry no digit afterwards, so `stillHasDigits`
+ * never sends them to the model and no downstream guard can see them — the same
+ * failure class as the orphaned colon this version's scripture fix removed.
+ *
+ * A run followed by "s" is a decade or a plural; a run followed by an ordinal
+ * suffix is an ordinal. Either way the reading is not a bare cardinal, and a
+ * rule that cannot tell which reading it is has no business guessing.
+ *
+ * NO TRAILING LOOKAHEAD, and its absence is the fix. `(?![A-Za-z])` said "only
+ * when the suffix ENDS the run", which `<br/>` fusion defeats: the walk joins
+ * the words either side of a line break with nothing between them, so a book
+ * printing "the 3rd<br/>day" hands this rule "the 3rdday" and the lookahead
+ * failed — the token was read "three rdday" (the second adversarial review,
+ * 2026-09-04). n4 left those digits for the model, which is the right answer,
+ * and dropping the lookahead restores it. The reviewer probed every intended
+ * reading: none regresses, because no shape this rule is FOR has a digit run
+ * followed by "s" or by an ordinal suffix at all.
+ */
+const CLAIMED_BY_ANOTHER_RULE = /^(?:s|st|nd|rd|th)/i;
+
+function gluedCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(GLUED_ALNUM, text)) {
+    const token = m[0];
+    if (token.length > 24) continue;
+    if (!/[A-Za-z]/.test(token) || !/\d/.test(token)) continue;
+    const runs = token.match(/\d+/g)!;
+    if (runs.length > GLUED_MAX_RUNS) continue;
+    // A serial, a leading zero, or a number no cardinal covers: left as printed.
+    if (runs.some((run) => run.length > GLUED_MAX_DIGITS)) continue;
+    if (runs.some((run) => run.length > 1 && run.startsWith('0'))) continue;
+    // A measurement or a designation: digits pressed straight against letters.
+    if (DIGITS_THEN_UNIT.test(token)) continue;
+    // A run whose shape another rule owns — a decade's "s", an ordinal's suffix.
+    // Checked per run, against what FOLLOWS it inside the token.
+    let claimed = false;
+    for (const runMatch of token.matchAll(/\d+/g)) {
+      if (CLAIMED_BY_ANOTHER_RULE.test(token.slice(runMatch.index! + runMatch[0].length))) {
+        claimed = true;
+        break;
+      }
+    }
+    if (claimed) continue;
+    // "v1.2" — a version, not a word with a number in it.
+    if (/^\.\d/.test(text.slice(m.index + token.length))) continue;
+    if (sitsInCitation(text, token, m.index)) continue;
+
+    // Every digit run becomes its cardinal, IN PLACE. A hyphen the book printed
+    // stays a hyphen ("B-seventeen"); a digit run pressed straight against a
+    // letter gains a space, because "Rtwo" is not a word ("R2D2" reads "R two D
+    // two").
+    let replace = '';
+    let refused = false;
+    for (let i = 0; i < token.length;) {
+      if (!/\d/.test(token[i])) { replace += token[i]; i++; continue; }
+      let end = i;
+      while (end < token.length && /\d/.test(token[end])) end++;
+      const words = cardinalWords(Number(token.slice(i, end)));
+      if (words === null) { refused = true; break; }
+      if (i > 0 && /[A-Za-z]/.test(token[i - 1])) replace += ' ';
+      replace += words;
+      if (end < token.length && /[A-Za-z]/.test(token[end])) replace += ' ';
+      i = end;
+    }
+    if (refused || replace === token) continue;
+    out.push({ at: m.index, find: token, replace, rule: 'glued' });
+  }
+  return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Rule: comma-grouped integer, and the standalone integer
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -821,6 +1222,9 @@ const RULES: readonly Rule[] = [
   // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
   { name: 'clock', scan: clockCandidates },
   { name: 'scripture', scan: (t) => [...scriptureCandidates(t), ...numberedBookCandidates(t)] },
+  // Before the date and the integer, because "p. 12" is a page and not a day,
+  // and because the whole "pp. 65-71" is one reading its halves are not.
+  { name: 'page', scan: pageCandidates },
   { name: 'date', scan: dateCandidates },
   { name: 'money', scan: moneyCandidates },
   { name: 'percent', scan: percentCandidates },
@@ -829,6 +1233,10 @@ const RULES: readonly Rule[] = [
   { name: 'marker', scan: markerCandidates },
   { name: 'grouped', scan: groupedIntCandidates },
   { name: 'integer', scan: bareIntCandidates },
+  // LAST, because it is the widest net: every earlier rule that knows a shape
+  // ("1940s-era" is a decade before it is a glued token) has already taken it,
+  // and what reaches here is a token no other rule recognized.
+  { name: 'glued', scan: gluedCandidates },
 ];
 
 /**

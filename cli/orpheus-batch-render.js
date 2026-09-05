@@ -34,6 +34,7 @@ const crypto = require('crypto');
 const { spawnSync } = require('child_process');
 const { USER_DATA } = require('./electron-stub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
+const { runNarrationTextStep } = require('./narration-text-step.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -168,7 +169,16 @@ async function main() {
   // different pipeline than it claims to: e2a reads text exactly as printed
   // (its own number transform was permanently disabled, 2026-09-02), so the
   // words the voice gets are decided here or nowhere.
-  const prepared = await runNarrationPrep(bridge, inputPath, jobId, { skipAssembly: true });
+  // ── The NARRATION TEXT CLEANUP first, and automatically ──────────────────
+  //
+  // This chain is unattended, and `prepareNarrationInput` now REFUSES a book
+  // that has not been through the persisted text pass rather than narrating
+  // raw digits. A batch run has nobody to ask, so it runs the pass itself and
+  // renders the book it produced. A book that already carries a current stamp
+  // costs one hash and no model call.
+  const cleaned = await runNarrationTextStep(inputPath, {});
+
+  const prepared = await runNarrationPrep(bridge, cleaned.inputPath, jobId, { skipAssembly: true });
 
   console.log(`[batch] renderRangeHeadless — prep packs chunks, VRAM-tier sizing, WSL-safe worker...`);
   const { sentencesDir, totalSentences, scratchSessionDir, normalizedSessionDir } =

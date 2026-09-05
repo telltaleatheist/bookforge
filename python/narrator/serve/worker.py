@@ -369,9 +369,23 @@ def _edge_fade_of(engine):
     A shape, not a number: Higgs's fade is asymmetric (10 in / 25 out) because a
     chunk ends on a decay the ear does not expect. Matches the manifest's
     `edgeFadeMs: {in, out}` and assemble.engine_profiles.
+
+    NO FALLBACK. An engine with no `edge_fade` used to become EdgeFade(0, 0)
+    here, which is Orpheus's answer - so a `pads = False` engine that forgot to
+    declare one would report "no fade needed" and the assembler would join its
+    chunks bare. That is a book that CLICKS AT EVERY JOIN, shipped as a success.
+    `edge_fade` is a member of the Engine protocol; an object without it is not
+    an engine.
     """
-    from ..engine.protocol import EdgeFade
-    return getattr(engine, 'edge_fade', None) or EdgeFade(0.0, 0.0)
+    fade = getattr(engine, 'edge_fade', None)
+    if fade is None:
+        raise RuntimeError(
+            f"engine '{getattr(engine, 'ENGINE_ID', type(engine).__name__)}' "
+            'declares no edge_fade. It is a required member of '
+            'narrator.engine.protocol.Engine, and guessing it is EdgeFade(0, 0) '
+            "would silently drop a pads=False engine's chunk-edge fades - every "
+            'join in the book would click.')
+    return fade
 
 
 def active_samplerate() -> int:
@@ -398,7 +412,7 @@ def finalize_audio(audio_np, pads=None):
        TRIM WOULD CUT INTO THE WORD. A quiet final consonant sits under 0.01,
        and there is no padding in front of it to absorb the cut. So it is
        skipped, and the audio goes out exactly as decoded, which is also what
-       `Engine.edge_fade_ms` assumes (the fades are the assembler's).
+       `Engine.edge_fade` assumes (the fades are the assembler's).
     2. Peak-normalize if it clipped. Engine-independent.
     3. APPEND THE INTER-SENTENCE GAP, FOR EVERY ENGINE. This is a CLIENT
        contract, not an engine property: the player concatenates streamed

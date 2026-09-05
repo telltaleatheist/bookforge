@@ -392,6 +392,22 @@ class CheckpointVoiceTest(V3TestCase):
             v3_served.checkpoint_serve_target('')
         self.assertIn('checkpointDir', str(caught.exception))
 
+    def test_a_load_message_adapterDir_is_refused_at_that_boundary_too(self):
+        """The pool's field is called `adapterDir`, and a LoRA directory can
+        arrive on it. Taking it as a merged checkpoint would hand
+        `vllm-omni serve` a directory it cannot load - the server would come up
+        on garbage or on the base model. `load_voices` refuses the same key at
+        the document boundary; this is the other end.
+        """
+        from narrator.engine.higgs import higgs_v3_config_from_worker_kwargs
+        with self.assertRaises(ValueError) as caught:
+            higgs_v3_config_from_worker_kwargs(voice='deathstalker',
+                                               adapter_dir='/models/ds-lora')
+        message = str(caught.exception)
+        self.assertIn('adapterDir', message)
+        self.assertIn('checkpointDir', message)
+        self.assertIn('no runtime LoRA', message)
+
     def test_a_checkpoint_voice_carries_its_directory_into_the_config(self):
         from narrator.engine.protocol import DefaultVoice
         voice = DefaultVoice(name='ds-ft', checkpoint_dir='/models/ds-merged',
@@ -1211,23 +1227,53 @@ class WorkerRefusalTest(unittest.TestCase):
         self.assertIn('llasa', out.stderr)
 
     def test_a_backend_that_cannot_be_detected_never_prints_ready(self):
-        """THE MAC FAILURE (2026-09-04). A swallowed ImportError printed
-        {"type":"ready","device":"mlx"} with no backend; the pool saw a healthy
-        handshake and every generate answered 'Model not loaded' forever. An
-        engine that cannot be imported is a dead worker, and it must say so with
-        an exit code."""
-        out = self._run({'NARRATOR_ENGINE': 'higgs-v3',
-                         'NARRATOR_HIGGS_VOICES': os.path.join(_HERE, 'nope.json'),
-                         'NARRATOR_HIGGS3_URL': 'http://127.0.0.1:1'})
-        # (higgs-v3 detects its backend without importing torch, so this asserts
-        # the shape that matters: a worker that DOES come up prints ready, and a
-        # worker that raises in run() exits non-zero with the reason - never
-        # both.)
-        if out.returncode == 0:
-            self.assertIn('"type": "ready"', out.stdout)
-        else:
-            self.assertNotIn('"type": "ready"', out.stdout)
-            self.assertIn('FATAL', out.stderr)
+        """THE MAC FAILURE (2026-09-04), forced IN PROCESS.
+
+        A swallowed ImportError printed {"type":"ready","device":"mlx"} with no
+        backend; the pool saw a healthy handshake and every generate answered
+        'Model not loaded' forever. An engine that cannot be IMPORTED is a dead
+        worker and must say so with an exit code.
+
+        Driven by patching `worker._engine_class` to raise the ImportError a
+        broken env raises - which is exactly what the reviewer did by hand.
+        NOT through an env hook: production code carries no test switches, and a
+        subprocess arm could only assert "whatever happened, happened", which is
+        what this test used to do.
+        """
+        import contextlib
+        import io as _io
+        from narrator.serve import worker as W
+
+        real = W._engine_class
+
+        def broken():
+            raise ImportError("No module named 'torch'", name='torch')
+
+        W._engine_class = broken
+        stdout, stderr = _io.StringIO(), _io.StringIO()
+        try:
+            with contextlib.redirect_stdout(stdout), \
+                    contextlib.redirect_stderr(stderr):
+                code = W.main([])
+        finally:
+            W._engine_class = real
+
+        self.assertEqual(code, 3, 'a worker that cannot render must exit 3')
+        self.assertEqual(stdout.getvalue(), '',
+                         'NOTHING on stdout - not even a ready line; stdout is '
+                         'the protocol and the pool would read a handshake')
+        self.assertIn('FATAL', stderr.getvalue())
+        self.assertIn('torch', stderr.getvalue(),
+                      'the reason has to reach the operator')
+        self.assertIn('no engine can load in this process', stderr.getvalue())
+
+    def test_the_unservable_arm_also_exits_without_a_handshake(self):
+        """The same guarantee through a REAL subprocess, on the arm that can be
+        triggered from outside: an engine id the worker refuses to serve."""
+        out = self._run({'NARRATOR_ENGINE': 'higgs-v2-scaffold'})
+        self.assertEqual(out.returncode, 3)
+        self.assertEqual(out.stdout.strip(), '')
+        self.assertIn('FATAL', out.stderr)
 
     def test_a_fatal_startup_exits_three_and_explains(self):
         out = self._run({'NARRATOR_ENGINE': 'higgs-v2-scaffold'})

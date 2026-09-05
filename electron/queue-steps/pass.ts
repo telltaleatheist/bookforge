@@ -88,7 +88,18 @@ function passModule(type: JobType): StepModule {
         const notes = passResultNotes(result);
         if (notes.length > 0) ctx.step.completionNotes = notes;
         broadcastToAllWindows('project:files-changed', config.projectDir);
-        return { kind: 'epub', path: result.outputPath ?? config.projectDir };
+        // WHAT A CHAINED STEP READS. A pass that named a narration input meant
+        // it: the queue resolves a chained step's input from its parent's
+        // artifact and from nothing else, so this is the only place the file a
+        // follow-on narration reads can be chosen (the adversarial review,
+        // 2026-09-04). Everything else reads the book the pass wrote.
+        const produced = result.narrationInputPath ?? result.outputPath;
+        if (produced === undefined) {
+          throw new Error(
+            `${ctx.step.label} finished without saying which file it wrote, so anything queued `
+            + 'behind it would have nothing to read.');
+        }
+        return { kind: 'epub', path: produced };
       } finally {
         unsubscribe();
       }
@@ -108,3 +119,13 @@ function passModule(type: JobType): StepModule {
 export const simplifyStep = passModule('simplify');
 export const translatePassStep = passModule('translate-pass');
 export const footnoteRefsStep = passModule('footnote-refs');
+/**
+ * The narration text cleanup, on the same module for the same reason.
+ *
+ * It is not a string replace like footnote-refs — it loads a model and reads the
+ * residue — but nothing about the ROW differs: it takes the planned
+ * `PassJobConfig`, ends in `runProcessingPass`, reports through the same bridge
+ * events, and `resourceForProvider` puts it on the same pool a simplify uses so
+ * it cannot run beside a render that wants the card.
+ */
+export const narrationTextStep = passModule('narration-text');
