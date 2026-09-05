@@ -26,8 +26,8 @@ transformers, torch and the model are imported INSIDE the functions that need
 them, exactly as the Orpheus backends do, so importing this module costs
 nothing on an interpreter with neither.
 """
-import sys
 import time
+from ..log import log
 
 _DTYPES = ('bfloat16', 'float16', 'float32')
 
@@ -62,8 +62,8 @@ class HiggsTransformersBackend:
                 f'env `higgs`). Import failed: {exc}') from exc
 
         started = time.time()
-        print(f'[HIGGS] loading {self.config.model_id} '
-              f'({self.config.dtype}, {self.config.device})', file=sys.stderr, flush=True)
+        log(f'[HIGGS] loading {self.config.model_id} '
+              f'({self.config.dtype}, {self.config.device})', flush=True)
         self.processor = AutoProcessor.from_pretrained(self.config.model_id)
         self.model = HiggsAudioV2ForConditionalGeneration.from_pretrained(
             self.config.model_id,
@@ -74,7 +74,7 @@ class HiggsTransformersBackend:
         # device_map says - see the module docstring.
         self.processor.audio_tokenizer.to(self.config.device)
         self.device = self.model.device
-        print(f'[HIGGS] loaded in {time.time() - started:.1f}s', file=sys.stderr, flush=True)
+        log(f'[HIGGS] loaded in {time.time() - started:.1f}s', flush=True)
 
     def unload(self):
         self.model = None

@@ -7,7 +7,10 @@ THE BUG THIS EXISTS FOR (found 2026-09-05, driving Higgs v3 through
 
 `narrator.serve`'s **stdout IS the JSON-lines protocol**. Any bare `print` from
 the engine layer lands between two protocol messages and breaks the client's
-parse. The engine had 116 of them.
+parse. The engine had 126 of them (111 under `orpheus/`, 15 under
+`higgs/`) - counted by AST in
+`tests/test_engine_log_stream.py::LogCallCountTest`, which is where that
+number lives so it cannot drift apart across four docstrings again.
 
 WHY THIS IS NOT "MOVE THEM ALL TO STDERR". One engine serves hosts with
 INCOMPATIBLE stdout contracts, and the other host parses the very lines that
@@ -77,10 +80,28 @@ def log_stream():
 def log(*args, **kwargs) -> None:
     """`print`, to the host's chosen stream, flushed.
 
-    Signature-compatible with the builtin on purpose: the 116 call sites were
-    rewritten mechanically from `print(...)` to `log(...)` with the arguments
-    and every string untouched, so `sep` / `end` still work and a diff of that
-    change shows nothing but the call name.
+    Signature-compatible with the builtin on purpose: all 126 call sites were
+    rewritten mechanically from `print(...)` to `log(...)` with every string
+    untouched, so `sep` / `end` still work.
+
+    NOT AN IDENTICAL DIFF, THOUGH, AND THE FIRST WRITE-UP SAID SO TOO LOOSELY.
+    Exactly:
+
+        94  bare `print(...)` in engine/orpheus/  -> call name only
+        17  `print(..., file=sys.stderr)` in engine/orpheus/   } the kwarg was
+        14  `print(..., file=sys.stderr)` in engine/higgs/     } DELETED
+         1  engine/higgs/mlx_backend.py::_log, authored as log()
+       ---
+       126
+
+    The 31 that named `file=sys.stderr` therefore CHANGED DESTINATION - from
+    stderr always, to whatever the host chose (stdout under
+    `narrator.compat.worker`). Calling that "nothing but call-name swaps" was
+    wrong. It was deliberate - a call that names its own stream cannot be
+    routed, which is the whole point of this module - and it was checked before
+    it was made, twice: none of the 31 is reachable from `compat.worker`, and
+    only one of their strings matches any bridge pattern (one the bridge already
+    runs on both streams). See PORT_NOTES 13.5.
     """
     kwargs.setdefault('file', log_stream())
     kwargs.setdefault('flush', True)

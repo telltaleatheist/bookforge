@@ -39,44 +39,116 @@ import unittest
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _PYTHON_ROOT = os.path.dirname(os.path.dirname(_HERE))
-_ORPHEUS = os.path.join(os.path.dirname(_HERE), 'engine', 'orpheus')
+_ENGINE = os.path.join(os.path.dirname(_HERE), 'engine')
+_ORPHEUS = os.path.join(_ENGINE, 'orpheus')
+
+#: `engine/log.py` holds the ONE legitimate `print` in the package - `log()`'s
+#: own, which names its stream. Everything else in `engine/**` must go through
+#: it, INCLUDING calls that name `file=sys.stderr` themselves: that is exactly
+#: the shape the 17 orpheus stream-diagnostic sites had before this work, and it
+#: bypasses `set_log_stream` so the host cannot route it.
+_LOG_HELPER = os.path.join(_ENGINE, 'log.py')
+
+#: MEASURED, 2026-09-05, by the AST walk in
+#: `LogCallCountTest.test_the_count_is_what_the_prose_says`. ONE constant, so
+#: the number cannot drift apart across four docstrings again (it did: 116 / 116
+#: / 94 / 94 were all stated for one sweep, and 126 is the measurement).
+#:
+#:   engine/orpheus/  111  adapters 4, asr_gate 1, audio 2, engine 30, guards 8,
+#:                         mlx_backend 34, sampling 1, snac 3,
+#:                         transformers_backend 4, vllm_backend 24
+#:   engine/higgs/     15  mlx_backend 1 (_log), transformers_backend 2,
+#:                         v3_served 12
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 15}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 126
+
+
+def _engine_modules():
+    """Every .py under `engine/`, RECURSIVELY.
+
+    The earlier version walked `engine/orpheus/` with a non-recursive `listdir`
+    plus one named Higgs file, while its docstring claimed "the engine layer
+    owns no bare print". A new bare `print` in `higgs/v3_served.py`,
+    `higgs/engine.py`, `higgs/v3_engine.py` or `engine/protocol.py` would not
+    have been caught - and that is the original bug.
+    """
+    for root, _dirs, files in os.walk(_ENGINE):
+        if '__pycache__' in root:
+            continue
+        for name in sorted(files):
+            if name.endswith('.py'):
+                yield os.path.join(root, name)
+
+
+def _print_calls(path):
+    with io.open(path, encoding='utf-8') as handle:
+        tree = ast.parse(handle.read())
+    return [n for n in ast.walk(tree)
+            if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
+            and n.func.id == 'print']
 
 
 class NoBarePrintsTest(unittest.TestCase):
-    """Structural: the engine layer owns no bare `print`.
+    """Structural: NOTHING under `engine/` calls `print`, at all.
 
     An AST walk, not a grep: a grep cannot tell a call from the word `print` in
     a docstring, and this package's docstrings talk about printing a great deal.
+
+    AND `file=` DOES NOT EXCUSE IT. The earlier version accepted any
+    `print(..., file=...)`, which is precisely the shape the 17 orpheus
+    stream-diagnostic sites had before this work - correct-looking, and
+    unroutable, because it bypasses `set_log_stream` and so pins a line to one
+    stream whatever the host needs. `engine/log.py` is the single exemption.
     """
 
-    def _print_calls(self, path):
-        with io.open(path, encoding='utf-8') as handle:
-            tree = ast.parse(handle.read())
-        return [n for n in ast.walk(tree)
-                if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)
-                and n.func.id == 'print']
-
-    def test_no_orpheus_module_prints_without_naming_a_stream(self):
+    def test_nothing_under_engine_calls_print(self):
         offenders = []
-        for name in sorted(os.listdir(_ORPHEUS)):
-            if not name.endswith('.py'):
+        for path in _engine_modules():
+            if os.path.abspath(path) == os.path.abspath(_LOG_HELPER):
                 continue
-            path = os.path.join(_ORPHEUS, name)
-            for call in self._print_calls(path):
-                if not any(kw.arg == 'file' for kw in call.keywords):
-                    offenders.append(f'{name}:{call.func.lineno}')
-        self.assertEqual(offenders, [],
-                         'these print() calls name no stream, so they go to '
-                         "stdout - which is narrator.serve's JSON protocol. Use "
-                         'narrator.engine.log.log() instead.')
+            rel = os.path.relpath(path, _ENGINE).replace(os.sep, '/')
+            offenders += [f'{rel}:{c.func.lineno}' for c in _print_calls(path)]
+        self.assertEqual(
+            offenders, [],
+            'every one of these must go through narrator.engine.log.log(). A '
+            'bare print goes to stdout, which is the JSON protocol of '
+            'narrator.serve; a print naming file= cannot be routed by the host '
+            'at all, and narrator.compat.worker needs these lines on STDOUT for '
+            'parallel-tts-bridge.ts to parse.')
 
-    def test_the_higgs_mlx_backend_has_none_either(self):
-        path = os.path.join(os.path.dirname(_HERE), 'engine', 'higgs',
-                            'mlx_backend.py')
-        offenders = [str(c.func.lineno) for c in self._print_calls(path)
-                     if not any(kw.arg == 'file' for kw in c.keywords)]
-        # log() itself is the ONE print, and it names its stream.
-        self.assertEqual(offenders, [])
+    def test_the_log_helper_is_the_one_exemption(self):
+        """It must still hold exactly one print, or the rule above is guarding
+        a helper that no longer writes anything."""
+        self.assertEqual(len(_print_calls(_LOG_HELPER)), 1)
+
+
+class LogCallCountTest(unittest.TestCase):
+    """The sweep's size is MEASURED here, not asserted in prose four times.
+
+    L2 in review: `engine/log.py` said 116 twice and this file said 94 twice,
+    for a sweep that is 126. A commit whose whole argument is "measured, not
+    assumed" cannot carry four disagreeing numbers, so the number now has one
+    home and a test that counts it.
+    """
+
+    @staticmethod
+    def _count(package):
+        total = 0
+        for path in _engine_modules():
+            parts = os.path.relpath(path, _ENGINE).replace(os.sep, '/').split('/')
+            if parts[0] != package:
+                continue
+            with io.open(path, encoding='utf-8') as handle:
+                tree = ast.parse(handle.read())
+            total += sum(1 for n in ast.walk(tree)
+                         if isinstance(n, ast.Call)
+                         and isinstance(n.func, ast.Name) and n.func.id == 'log')
+        return total
+
+    def test_the_count_is_what_the_prose_says(self):
+        measured = {p: self._count(p) for p in LOG_CALLS_BY_PACKAGE}
+        self.assertEqual(measured, LOG_CALLS_BY_PACKAGE)
+        self.assertEqual(sum(measured.values()), LOG_CALLS_TOTAL)
 
 
 class LogStreamTest(unittest.TestCase):
@@ -127,55 +199,129 @@ class LogStreamTest(unittest.TestCase):
 
 
 class BridgePatternsTest(unittest.TestCase):
-    """The five stdout-only patterns still have something to match.
+    """The five stdout-only bridge patterns still have a real message to match.
 
-    This is the guard on the OTHER half of the fix: if someone later "tidies"
-    one of these strings, the audiobook progress bars stop moving and nothing
-    fails. The patterns are transcribed from
-    `electron/parallel-tts-bridge.ts` (MODEL_LOAD_START_RE, MODEL_LOAD_DONE_RE,
-    REPAIR_START_RE, GENERATION_ACTIVITY_RE) and `electron/mlx-batch-progress.ts`.
+    This is the guard on the OTHER half of the fix: those five parsers exist
+    ONLY on `parallel-tts-bridge.ts`'s worker-stdout handler, so if someone
+    later "tidies" one of these strings the audiobook progress bars stop moving
+    and nothing fails.
+
+    THE PATTERNS BELOW ARE THE BRIDGE'S OWN, COPIED VERBATIM, each with the .ts
+    file and line it came from. The earlier version paraphrased two of them into
+    weaker substrings and so pinned less than the bridge requires - measured in
+    review: with the real `REPAIR_START_RE` and `HEARTBEAT_RE`, the reconstructed
+    literals matched ZERO. Deleting the `sentence {i} ` prefix, or renaming the
+    heartbeat's `rows`/`tokens` fields, passed the test and froze the bar. A
+    paraphrase is not a pin; if the bridge's regex changes, this list must be
+    re-copied from it.
     """
 
-    #: (name, pattern, a file that must still contain a literal matching it)
+    #: (name, VERBATIM regex, where it lives in electron/, module that must
+    #: still carry a matching message literal)
     PATTERNS = (
         ('MODEL_LOAD_START_RE',
-         r'Loading .*TTS with voice|Loading Orpheus model with|Loading .* model\b',
-         'mlx_backend.py'),
-        ('MODEL_LOAD_DONE_RE', r'TTS Loaded!|model loaded!', 'mlx_backend.py'),
+         r'Loading .*TTS with voice|Loading Orpheus model with|Loading .* model',
+         'parallel-tts-bridge.ts:2441', 'mlx_backend.py'),
+        ('MODEL_LOAD_DONE_RE',
+         r'TTS Loaded!|model loaded!',
+         'parallel-tts-bridge.ts:2442', 'mlx_backend.py'),
         ('REPAIR_START_RE',
-         r'hit the MLX audio-token cap|produced no audio|audio too short for text',
-         'mlx_backend.py'),
+         r'sentence (\d+) (?:hit the MLX audio-token cap|produced no audio|'
+         r'audio too short for text)',
+         'parallel-tts-bridge.ts:2449', 'mlx_backend.py'),
         ('GENERATION_ACTIVITY_RE',
-         r'audio-token cap|re-rendering split|MLX batch generating',
-         'mlx_backend.py'),
-        ('parseMlxHeartbeat', r'MLX batch generating', 'mlx_backend.py'),
+         r'audio-token cap|re-rendering split|Processed prompts|Adding requests|'
+         r'MLX batch generating',
+         'parallel-tts-bridge.ts:2428', 'mlx_backend.py'),
+        ('HEARTBEAT_RE (parseMlxHeartbeat)',
+         r'MLX batch generating:\s*(\d+) rows,\s*~(\d+) tokens'
+         r'(?:\s*\(step (\d+)(?:\/(\d+))?\))?(?:,\s*(\d+)\/(\d+) rows done)?'
+         r'(?:,\s*batch (\d+)\/(\d+))?',
+         'mlx-batch-progress.ts:93', 'mlx_backend.py'),
     )
 
+    @staticmethod
+    def _docstring_nodes(tree):
+        """The id() of every node that IS a docstring, so they can be excluded."""
+        out = set()
+        for node in ast.walk(tree):
+            if isinstance(node, (ast.Module, ast.ClassDef, ast.FunctionDef,
+                                 ast.AsyncFunctionDef)):
+                if (node.body and isinstance(node.body[0], ast.Expr)
+                        and isinstance(node.body[0].value, ast.Constant)
+                        and isinstance(node.body[0].value.value, str)):
+                    out.add(id(node.body[0].value))
+        return out
+
     def _literals(self, filename):
-        """Every string constant in the module - the AST's, so a docstring's
-        prose cannot satisfy a pattern that a real message must."""
+        """Every MESSAGE literal in the module, f-strings reconstructed.
+
+        TWO THINGS THE EARLIER VERSION GOT WRONG.
+
+        1. It flattened an f-string by keeping only the `ast.Constant` parts and
+           DROPPING every `{...}`, so `f'sentence {i} hit the ... cap'` became
+           `'sentence  hit the ... cap'` - which the bridge's
+           `sentence (\d+) ` can never match. Each interpolation is now
+           replaced by `'0'`, which is what the field actually carries (an
+           index, a count, a token total), so the reconstruction is something
+           the bridge would really see.
+        2. Its docstring claimed the AST "so a docstring's prose cannot satisfy
+           a pattern that a real message must" - FALSE, `ast.walk` yields
+           docstrings as `ast.Constant`. They are now genuinely excluded, so the
+           claim and the code agree and prose in THIS package (which discusses
+           these very strings at length) cannot satisfy a pin.
+        """
         path = os.path.join(_ORPHEUS, filename)
         with io.open(path, encoding='utf-8') as handle:
             tree = ast.parse(handle.read())
+        docstrings = self._docstring_nodes(tree)
         out = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Constant) and isinstance(node.value, str):
-                out.append(node.value)
+                if id(node) not in docstrings:
+                    out.append(node.value)
             elif isinstance(node, ast.JoinedStr):
-                out.append(''.join(v.value for v in node.values
-                                   if isinstance(v, ast.Constant)
-                                   and isinstance(v.value, str)))
+                out.append(''.join(
+                    v.value if isinstance(v, ast.Constant)
+                    and isinstance(v.value, str) else '0'
+                    for v in node.values))
         return out
 
     def test_the_bridges_stdout_only_patterns_still_match(self):
-        for name, pattern, filename in self.PATTERNS:
+        for name, pattern, source, filename in self.PATTERNS:
             with self.subTest(pattern=name):
                 rx = re.compile(pattern, re.I)
+                hits = [s for s in self._literals(filename) if rx.search(s)]
                 self.assertTrue(
-                    any(rx.search(s) for s in self._literals(filename)),
-                    f'{name} has nothing left to match in {filename}. The '
-                    'audiobook progress bar reads these off the compat worker\'s '
-                    'stdout; changing the wording silently stops it moving.')
+                    hits,
+                    f'{name} ({source}) has nothing left to match in '
+                    f'{filename}. The audiobook progress bar reads these off '
+                    f"the compat worker's stdout; changing the wording "
+                    f'silently stops it moving.')
+
+    def test_a_docstring_cannot_satisfy_a_pin(self):
+        """The correction to the claim above, asserted rather than stated.
+
+        `engine/orpheus/mlx_backend.py`'s module docstring quotes the heartbeat
+        line verbatim (it is a load-bearing string and the docstring says so),
+        so if docstrings were included this file's most important pin would be
+        satisfied by a COMMENT ABOUT the message rather than the message.
+        """
+        path = os.path.join(_ORPHEUS, 'mlx_backend.py')
+        with io.open(path, encoding='utf-8') as handle:
+            tree = ast.parse(handle.read())
+        docstrings = self._docstring_nodes(tree)
+        self.assertTrue(docstrings, 'the module has docstrings to exclude')
+        quoted = [n.value for n in ast.walk(tree)
+                  if isinstance(n, ast.Constant) and isinstance(n.value, str)
+                  and id(n) in docstrings
+                  and 'MLX batch generating' in n.value]
+        self.assertTrue(
+            quoted,
+            'this test is only meaningful while a docstring quotes the '
+            'heartbeat - it does today, deliberately')
+        self.assertNotIn(quoted[0], self._literals('mlx_backend.py'),
+                         'docstrings must be excluded from the literal set')
 
 
 class ServeWorkerStdoutTest(unittest.TestCase):
