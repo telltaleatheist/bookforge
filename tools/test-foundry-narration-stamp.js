@@ -12,7 +12,7 @@
  * prompts, the validators, `NORMALIZER_VERSION` and `PUNCTUATION_SPEC_VERSION`.
  * What stayed is everything that READS the result: the stamp parser
  * (`readNarrationTextStamp`, electron/epub-processor.ts), the file gate
- * (`narrationTextGate`, electron/narration-text-pass.ts) and the project gate
+ * (`narrationTextGate`, electron/narration-clean-text.ts) and the project gate
  * (`narrationTextReadiness`, electron/narration-text-readiness.ts) — the engine
  * has no applied-passes model, so the ledger side could not have gone with it.
  *
@@ -259,7 +259,7 @@ async function main() {
   }
 
   const epub = require(path.join(DIST, 'epub-processor.js'));
-  const pass = require(path.join(DIST, 'narration-text-pass.js'));
+  const pass = require(path.join(DIST, 'narration-clean-text.js'));
   const normalizer = require(path.join(DIST, 'tts-number-normalizer.js'));
   const punctuation = require(path.join(DIST, 'tts-punctuation.js'));
 
@@ -357,6 +357,30 @@ async function main() {
         'vlm-compile grew a --records flag. It can now apply a cleanup itself, which changes the '
         + 'division of labour docs/NARRATION_TEXT_PASS.md describes — read it and update both.',
       );
+    });
+
+    /*
+     * THE FAILSAFE DOOR EXISTS ON THIS ENGINE — the flag pair BookForge's own
+     * "Clean text" action spawns (electron/narration-clean-text.ts). Asserted
+     * here because this is the keeper that already holds the engine's surface,
+     * and because the gap it closed is written down in
+     * docs/NARRATION_TEXT_PASS.md: until foundry 1.2.0 nothing on the CLI could
+     * clean an arbitrary EPUB in place, which is why this app carried its own
+     * copy of the pass at all.
+     *
+     * What the DOOR does with it — the version floor, the argv, the receipt, the
+     * stamp read back through this app's parser after a real cleanup — is
+     * `tools/test-narration-clean-text-door.js`, which drives the same binary.
+     */
+    check('clean-text carries the --epub failsafe door the app\'s Clean text action spawns', () => {
+      const help = execFileSync(binary, ['clean-text', '--help'], { encoding: 'utf8' });
+      assert.ok(/--epub/.test(help),
+        'the --epub failsafe is gone from clean-text. BookForge\'s Clean text action spawns it; '
+        + 'without it there is no way to clean a finished EPUB and the ruling of 2026-09-05 has '
+        + 'no implementation.');
+      assert.ok(/--out/.test(help), 'and --out, which is where the cleaned book is written');
+      assert.ok(/--book/.test(help) && /--records/.test(help),
+        'the BOOK route is still there — it is the standard method, and the failsafe is not it');
     });
   } finally {
     fs.rmSync(scratch, { recursive: true, force: true });

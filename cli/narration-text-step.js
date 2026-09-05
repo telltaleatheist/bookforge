@@ -1,123 +1,64 @@
 /**
  * narration-text-step.js — the ONE door every CLI path takes to the narration
- * text cleanup.
+ * text cleanup FAILSAFE.
  *
  * `cli/narration-prep-step.js`'s rule, for its reason: a CLI running its own
  * version of a pass could not catch the app's bugs, which is the whole point of
- * there being a CLI. So this file calls `runNarrationTextPass` out of the
- * compiled dist — the same function the queue's `narration-text` job runs — and
- * every adapter (`--narration-text`, `orpheus-batch-render`,
- * `orpheus-audiobook-render`) calls this.
+ * there being a CLI. So this file calls `cleanTextEpub` out of the compiled dist
+ * — the same function the queue's `narration-text` job runs — and every adapter
+ * (`--narration-text`, `orpheus-batch-render`, `orpheus-audiobook-render`) calls
+ * this.
+ *
+ * ── The engine does the work ────────────────────────────────────────────────
+ *
+ * Owen ruled on 2026-09-05 that the pass lives in the Foundry engine. This runs
+ * `foundry clean-text --epub <book> --out <staging>` and lands the staging on
+ * the book. BookForge's own copy of the three stages is gone.
+ *
+ * ── IT REPLACES THE BOOK, and that is the ruling ────────────────────────────
+ *
+ * Owen, 2026-09-05: *"the cleaning step can be done on an epub… it should
+ * replace the epub that's currently there if one already exists. if the user
+ * deletes the epub and re-exports, the cleaning job will be lost. that's the
+ * cost of doing it to an epub."*
+ *
+ * So this no longer mints `<stem>.narration.epub` beside the input and hand the
+ * next stage a second file. It cleans the book the caller named, in place, with
+ * one rename — which is also what makes the reuse machinery unnecessary: a book
+ * that has already been cleaned SAYS SO, in its own OPF, and the gate below is
+ * the whole of the check.
  *
  * ── What it produces ────────────────────────────────────────────────────────
  *
- *   <stem>.narration.epub                the cleaned, STAMPED book
- *   <stem>.narration.narration-text.json the receipt: per-rule counts, every
- *                                        model edit and its verdict, versions
+ *   <book>.epub                  the same path, cleaned and STAMPED
+ *   <stem>.narration-text.json   the engine's receipt: per-rule punctuation
+ *                                counts, every model edit and its verdict
  *
  * ── When it does nothing, and says so ───────────────────────────────────────
  *
  *  - the input already carries a CURRENT stamp: it has been through this pass,
  *    and running it again would cost a model pass to produce the same bytes;
- *  - a `<stem>.narration.epub` already sits beside the input whose receipt names
- *    THIS source and THIS version: the same reuse, one run later;
  *  - the input is a `.txt`: a plain-text audition has no book and no chain, and
  *    `prepareNarrationInput` still cleans those inline.
  *
- * Anything else is a real run. A file that exists but describes a DIFFERENT book
- * is never overwritten — `uniqueOutputPath` gives the new one its " (2)".
+ * Anything else is a real run.
  */
 'use strict';
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 
 /** The receipt that sits beside a cleaned book. */
-function receiptPathFor(outPath) {
-  return `${outPath.slice(0, -path.extname(outPath).length)}.narration-text.json`;
-}
-
-/**
- * Is this cleaned book beside the input the SAME work this run would do?
- *
- * Three things have to agree: the source's content address, the number rules'
- * version and the punctuation spec's. Any disagreement means the file describes
- * a different book or a different pass, and it is left exactly where it is.
- */
-function reusable(receipt, inputSha16, normalizerVersion, punctuationSpec, model) {
-  return receipt !== null
-    && receipt.inputSha16 === inputSha16
-    && receipt.normalizerVersion === normalizerVersion
-    && receipt.punctuationSpec === punctuationSpec
-    // AND THE SAME MODEL. `ask: 'every-block'` means a book read by a 3B and a
-    // book read by a 14B are materially different work; reusing one for the
-    // other is a cache that lies about which model wrote the text (the second
-    // adversarial review, 2026-09-04).
-    && receipt.model === model;
-}
-
-/**
- * The cleaned books already sitting beside the input, newest name last.
- *
- * `<stem>.narration.epub` and every `<stem>.narration (n).epub` that the
- * collision rule has minted. Enumerated rather than guessed at, because the (n)
- * are exactly the copies a reuse check that stats one name can never see.
- */
-/**
- * Which cleaned-book sibling this filename is, or null when it is not one.
- *
- * A plain string comparison rather than a regex over the stem: a book's filename
- * carries periods, parentheses and commas ("Working Towards The Fuhrer. Kershaw,
- * Ian. (1993)"), and every one of them is a metacharacter. Nothing is escaped
- * here because nothing is compiled.
- */
-function siblingIndex(name, base) {
-  if (!name.startsWith(base) || !name.endsWith('.epub')) return null;
-  const middle = name.slice(base.length, name.length - '.epub'.length);
-  if (middle === '') return 0;
-  const m = /^ \((\d+)\)$/.exec(middle);
-  return m === null ? null : Number(m[1]);
-}
-
-/**
- * The cleaned books already sitting beside the input, in minting order.
- *
- * `<stem>.narration.epub` and every `<stem>.narration (n).epub` the collision
- * rule has minted. Enumerated rather than guessed at, because the (n) are
- * exactly the copies a reuse check that stats one name can never see: runs 2-5
- * minted (2), (3), (4), (5) while four correctly-cleaned copies with matching
- * receipts sat unread, each costing a full model pass over the whole book (the
- * adversarial review, 2026-09-04).
- */
-function cleanedSiblings(wanted) {
-  const dir = path.dirname(wanted);
-  const base = path.basename(wanted, '.epub');
-  let entries;
-  try {
-    entries = fs.readdirSync(dir);
-  } catch {
-    return fs.existsSync(wanted) ? [wanted] : [];
-  }
-  return entries
-    .map((name) => ({ name, index: siblingIndex(name, base) }))
-    .filter((e) => e.index !== null)
-    .sort((a, b) => a.index - b.index)
-    .map((e) => path.join(dir, e.name));
-}
-
-function readReceipt(receiptPath) {
-  try {
-    return JSON.parse(fs.readFileSync(receiptPath, 'utf8'));
-  } catch {
-    return null;
-  }
+function receiptPathFor(bookPath) {
+  return `${bookPath.slice(0, -path.extname(bookPath).length)}.narration-text.json`;
 }
 
 /**
  * Run the narration text cleanup on one file, and say what happened.
  *
  * Returns `{ inputPath, receiptPath, receipt, ran }` — `inputPath` is what the
- * next stage must read, which is the cleaned book when one was made and the
- * original when there was nothing to do.
+ * next stage must read, which since the in-place ruling is always the file the
+ * caller named.
  */
 async function runNarrationTextStep(inputPath, opts) {
   const resolved = path.resolve(inputPath);
@@ -130,15 +71,10 @@ async function runNarrationTextStep(inputPath, opts) {
     return { inputPath: resolved, receiptPath: null, receipt: null, ran: false };
   }
 
-  const bridge = require('../dist/electron/parallel-tts-bridge.js');
-  const pass = require('../dist/electron/narration-text-pass.js');
-  const naming = require('../dist/electron/output-naming.js');
-  const normalizer = require('../dist/electron/tts-number-normalizer.js');
-  const punctuation = require('../dist/electron/tts-punctuation.js');
-  const sidecar = require('../dist/electron/sidecar-binding.js');
+  const door = require('../dist/electron/narration-clean-text.js');
 
   // Already clean? Then this stage is a no-op by the book's own account.
-  const gate = await pass.narrationTextGate(resolved);
+  const gate = await door.narrationTextGate(resolved);
   if (gate.ok) {
     console.log(
       `[narration-text] ${path.basename(resolved)} already carries a current stamp `
@@ -147,70 +83,86 @@ async function runNarrationTextStep(inputPath, opts) {
     return { inputPath: resolved, receiptPath: null, receipt: null, ran: false };
   }
 
-  const inputSha16 = (await sidecar.bookDigest(resolved)).hex.slice(0, 16);
-  const { numberNormalizerModel } = require('../dist/electron/tts-number-normalizer-runner.js');
-  // Read ONCE and carried: the tag is part of the cache path, of the stamp AND
-  // of what makes a cleaned copy reusable, so a run that read it twice could
-  // reuse a copy one model made while claiming another.
-  const model = opts && opts.model ? opts.model : numberNormalizerModel();
-  const stem = path.basename(resolved, path.extname(resolved));
-  const wanted = path.join(path.dirname(resolved), `${stem}.narration.epub`);
-
-  // EVERY candidate, not just the unsuffixed one. `uniqueOutputPath` mints
-  // "<stem>.narration (2).epub" on a collision, and a reuse check that only ever
-  // stats the bare name never finds one again: runs 2-5 minted (2), (3), (4),
-  // (5) while four correctly-cleaned copies with matching receipts sat unread —
-  // a full model pass over the whole book, every time (the adversarial review,
-  // 2026-09-04). Triggered by a corrupt receipt, and by any book edited once.
-  for (const candidate of cleanedSiblings(wanted)) {
-    const existing = readReceipt(receiptPathFor(candidate));
-    if (reusable(existing, inputSha16, normalizer.NORMALIZER_VERSION,
-      punctuation.PUNCTUATION_SPEC_VERSION, model)) {
-      console.log(`[narration-text] reusing the cleaned book beside the input: ${candidate}`);
-      return {
-        inputPath: candidate, receiptPath: receiptPathFor(candidate), receipt: existing,
-        ran: false,
-      };
-    }
+  if (opts && opts.model) {
+    // The model is the ENGINE's setting now — the same `app-settings.json` the
+    // hosted Clean text press reads — so a tag passed here would run a cleanup
+    // the app's own settings say nothing about. Said rather than silently
+    // dropped, and rather than honoured behind the app's back.
+    console.log(
+      '[narration-text] note: --model is ignored. The cleanup runs `foundry clean-text`, which '
+      + 'takes its model and its Ollama endpoint from the same settings the hosted Clean text '
+      + 'press uses, so the two doors cannot run different models.');
   }
 
-  const outPath = naming.uniqueOutputPath(wanted);
-  const { createOllamaNormalizerRunner } =
-    require('../dist/electron/tts-number-normalizer-runner.js');
-  const { loadNarrationTextPrompt } = require('../dist/electron/ai-bridge.js');
+  /*
+   * STAGED BESIDE THE BOOK, then renamed onto it. Beside, so the rename is
+   * within one filesystem and is therefore atomic — a reader (or Syncthing) sees
+   * the old book or the new one and never a half-written one. A crash mid-run
+   * leaves a `.bookforge-clean-*` file and the book exactly as it was.
+   */
+  const staging = path.join(
+    path.dirname(resolved),
+    `${path.basename(resolved, '.epub')}.bookforge-clean-${crypto.randomUUID()}.epub`);
+
   const t0 = Date.now();
-  const result = await pass.runNarrationTextPass({
-    epubPath: resolved,
-    outPath,
-    cacheDir: bridge.narrationCutsDir(),
-    systemPrompt: await loadNarrationTextPrompt(),
-    model,
-    runner: createOllamaNormalizerRunner(model),
-    ...(opts && opts.onProgress ? { onProgress: opts.onProgress } : {}),
-  });
+  let outcome;
+  try {
+    outcome = await door.cleanTextEpub({
+      epubPath: resolved,
+      outPath: staging,
+      ...(opts && opts.onProgress ? { onProgress: opts.onProgress } : {}),
+    });
+  } catch (err) {
+    // Nothing of a refused run may be left standing where somebody could adopt
+    // it as a cleaned book.
+    fs.rmSync(staging, { force: true });
+    fs.rmSync(door.cleanTextStampSidecar(staging), { force: true });
+    fs.rmSync(door.cleanTextReceiptPath(staging), { force: true });
+    throw err;
+  }
 
-  const receiptPath = receiptPathFor(outPath);
-  fs.writeFileSync(receiptPath, `${JSON.stringify(result.receipt, null, 2)}\n`, 'utf8');
+  // THE TARGET IS THE FILE THIS RUN READ, and it is checked. The failsafe's
+  // whole act is replacing somebody's export in place, and "over which file" is
+  // the one question it must never get wrong.
+  if (!fs.existsSync(resolved)) {
+    fs.rmSync(staging, { force: true });
+    throw new Error(
+      `${resolved} is gone since this cleanup started reading it. The cleaned book was written `
+      + 'and has been removed rather than landed on a path that is no longer the book that was '
+      + 'cleaned.');
+  }
 
-  const p = result.receipt.punctuation;
-  const n = result.receipt.numbers;
-  console.log(`[narration-text] book:    ${result.outPath}`);
+  const receiptPath = receiptPathFor(resolved);
+  fs.writeFileSync(receiptPath, `${JSON.stringify(outcome.receipt, null, 2)}\n`, 'utf8');
+  fs.renameSync(staging, resolved);
+  // The engine's sidecars are named off the STAGING path and describe a file
+  // that no longer exists under that name. The receipt is kept beside the book
+  // above; these two are removed rather than left as orphans.
+  fs.rmSync(door.cleanTextStampSidecar(staging), { force: true });
+  fs.rmSync(door.cleanTextReceiptPath(staging), { force: true });
+
+  const p = outcome.receipt.punctuation;
+  console.log(`[narration-text] book:    ${resolved} (replaced in place)`);
   console.log(`[narration-text] receipt: ${receiptPath}`);
   console.log(
     `[narration-text] punctuation: ${p.spansApplied} span(s) over ${p.targetsChanged} passage(s) `
     + `— ${Object.entries(p.counts).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`
     + `${p.refused.length > 0 ? `; ${p.refused.length} refused (crosses markup)` : ''}`);
   console.log(
-    `[narration-text] readings: ${n === null ? 0 : n.appliedSpans} applied `
-    + `(${n === null ? 0 : n.appliedByRules} by rule, ${n === null ? 0 : n.appliedByModel} by `
-    + `${model}) over ${n === null ? 0 : n.targetsSelected} block(s), `
-    + `${n === null ? 0 : n.targetsAsked} asked`);
+    `[narration-text] blocks: ${outcome.receipt.units.length} cleaned, `
+    + `${outcome.receipt.unitsAsked} asked of ${outcome.settings.model}, `
+    + `${outcome.receipt.unitsParseFailed} unanswerable, `
+    + `${outcome.receipt.keptAsPrinted.length} left exactly as printed`);
   console.log(
-    `[narration-text] by class: ${n === null ? '(none)'
-      : Object.entries(n.appliedByClass).map(([k, v]) => `${k}=${v}`).join(' ') || '(none)'}`);
+    `[narration-text] stamped ${outcome.stamp.normalizerVersion}/`
+    + `${outcome.stamp.punctuationSpec} by ${outcome.stamp.model}`);
+  console.log(
+    '[narration-text] this is the FAILSAFE: the cleanup lives in this FILE. Re-export this book '
+    + 'from its project and the cleanup is lost — the standard method is the Clean text step in '
+    + 'the Foundry window.');
   console.log(`[narration-text] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
-  return { inputPath: result.outPath, receiptPath, receipt: result.receipt, ran: true };
+  return { inputPath: resolved, receiptPath, receipt: outcome.receipt, ran: true };
 }
 
 module.exports = { runNarrationTextStep, receiptPathFor };

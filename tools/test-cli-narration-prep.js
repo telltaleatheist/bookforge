@@ -499,19 +499,36 @@ test('a door call that does not say whether cleanup is required is refused by na
 });
 
 test('a STAMPED book goes through the cut, and the door reads the stamp', async () => {
-  const book = await buildBook('door.epub', CHAPTER(
-    SHARED_PARAGRAPH, '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
-  const pass = require(path.join(DIST, 'electron', 'narration-text-pass.js'));
+  /*
+   * THE BOOK IS BUILT ALREADY CLEANED, AND THEN STAMPED. Until 2026-09-05 this
+   * ran BookForge's own pass over a printed book to produce one; the pass is the
+   * engine's now (`foundry clean-text`, electron/narration-clean-text.ts), and
+   * running the real binary here would need a real model for a question that is
+   * not about the cleanup: what this proves is that the RENDER DOOR reads the
+   * stamp, asks no model, and still cuts the captions.
+   *
+   * So the chapter prints what a cleanup would have left, and the stamp is
+   * written by `writeNarrationTextStamp` — the same function the engine's stamp
+   * is read back through, and the one `tools/test-foundry-narration-stamp.js`
+   * proves the engine agrees with field for field.
+   */
+  const {
+    writeNarrationTextStamp, NARRATION_TEXT_STAMP_VERSION,
+  } = require(path.join(DIST, 'electron', 'epub-processor.js'));
+  const punctuation = require(path.join(DIST, 'electron', 'tts-punctuation.js'));
+
+  const printed = await buildBook('door.epub', CHAPTER(
+    'On March twenty-third, nineteen thirty-three the Reichstag met and twelve hundred '
+    + 'members voted.',
+    '<p data-bf-cat="caption">Figure 7. The plate above.</p>'));
   const cleaned = path.join(ROOT, 'door.cleaned.epub');
-  await pass.runNarrationTextPass({
-    epubPath: book,
-    outPath: cleaned,
-    cacheDir: path.join(ROOT, 'door-cache'),
-    systemPrompt: PROMPT,
+  await writeNarrationTextStamp(printed, cleaned, {
+    stampVersion: NARRATION_TEXT_STAMP_VERSION,
+    normalizerVersion: norm.NORMALIZER_VERSION,
+    punctuationSpec: punctuation.PUNCTUATION_SPEC_VERSION,
     model: 'fake:1b',
-    runner: scriptedRunner({
-      'the Reichstag met': editsJson(['1200 members', 'twelve hundred members']),
-    }),
+    at: new Date().toISOString(),
+    punctuationRefused: 0,
   });
 
   const runner = scriptedRunner({});
@@ -519,12 +536,13 @@ test('a STAMPED book goes through the cut, and the door reads the stamp', async 
     skipAssembly: true, textCleanup: 'required', numberRunner: runner,
   });
 
+  assert.strictEqual(prep.cleanup, 'stamped', 'the door names the case by the stamp');
   assert.strictEqual(path.dirname(prep.inputPath), CUTS, `a cut of the book: ${prep.inputPath}`);
   assert.strictEqual(prep.model, 'fake:1b', 'the model named on the stamp');
   assert.strictEqual(runner.calls.length, 0, 'the door asks no model anything any more');
   const chapter = await entryText(prep.inputPath, 'OEBPS/chapter-01.xhtml');
   assert.ok(chapter.includes('March twenty-third, nineteen thirty-three'),
-    'the numbers were read by the PASS, and the cut carried them across');
+    'the cleaned text came across into the cut');
   assert.ok(!chapter.includes('Figure 7'), 'and the caption was cut — which a .txt has none of');
 });
 
@@ -655,28 +673,33 @@ test('--narration-text --project goes through the APP\'S PASS, so the ledger rec
   assert.ok(step.includes("require('../dist/electron/processing-passes.js')"),
     'and runs through the app\'s pass, which records the ledger row');
   assert.ok(step.includes('runProcessingPass('), 'by calling it');
-  // And the bare-EPUB door is still the step, not a second implementation.
+  // And the bare-EPUB failsafe is still the step, not a second implementation.
   assert.ok(source.includes("require('./narration-text-step.js')"),
     '--input still goes through the shared step');
 });
 
-test('the CLI reuse check sees every " (n)" sibling, not just the bare name', () => {
+test('the CLI failsafe spawns the ENGINE and lands it on the book it read', () => {
+  /*
+   * Owen, 2026-09-05: *"it should replace the epub that's currently there if one
+   * already exists. if the user deletes the epub and re-exports, the cleaning
+   * job will be lost."* So the `<stem>.narration.epub` sibling — and the whole
+   * " (n)" reuse ladder that went with it — is gone: the cleaned book IS the
+   * book, and what makes a second run cheap is the stamp the first one wrote.
+   */
   const source = fs.readFileSync(path.join(REPO, 'cli', 'narration-text-step.js'), 'utf8');
-  assert.ok(source.includes('function cleanedSiblings('), 'the siblings are enumerated');
-  assert.ok(source.includes('for (const candidate of cleanedSiblings('),
-    'and the reuse check walks them');
-  // Exercised, not merely present: a book filename is full of regex
-  // metacharacters, so the matcher is string comparison and this proves it.
-  const fn = source.slice(source.indexOf('function siblingIndex('),
-    source.indexOf('function cleanedSiblings('));
-  // eslint-disable-next-line no-eval
-  const siblingIndex = eval(`(${fn.slice(fn.indexOf('function siblingIndex'))})`);
-  const base = 'Working Towards The Fuhrer. Kershaw, Ian. (1993).narration';
-  assert.strictEqual(siblingIndex(`${base}.epub`, base), 0);
-  assert.strictEqual(siblingIndex(`${base} (2).epub`, base), 2);
-  assert.strictEqual(siblingIndex(`${base} (17).epub`, base), 17);
-  assert.strictEqual(siblingIndex(`${base}.narration-text.json`, base), null);
-  assert.strictEqual(siblingIndex('Another Book.narration.epub', base), null);
+  assert.ok(source.includes("require('../dist/electron/narration-clean-text.js')"),
+    'it goes through the app\'s own engine door, not a second implementation');
+  assert.ok(/door\.cleanTextEpub\(/.test(source), 'by calling cleanTextEpub');
+  assert.ok(/door\.narrationTextGate\(/.test(source),
+    'and asks the FILE first, so an already-clean book costs nothing');
+  assert.ok(source.includes('fs.renameSync(staging, resolved)'),
+    'the cleaned book lands on the input with ONE rename, which is what makes it atomic');
+  assert.ok(!/cleanedSiblings|siblingIndex|uniqueOutputPath/.test(source),
+    'and no sibling is minted beside the book any more');
+  // The staging name is NOT the input: `cleanTextEpub` refuses --out === --epub,
+  // and so does the engine.
+  assert.ok(/bookforge-clean-\$\{crypto\.randomUUID\(\)\}/.test(source),
+    'the staging file is unique and beside the book, so the rename stays within one filesystem');
 });
 
 test('both --prep and --audiobook resolve a project book through the app\'s RECORD, not a filename', async () => {

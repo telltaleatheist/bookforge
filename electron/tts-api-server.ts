@@ -764,7 +764,7 @@ export class TtsApiServer {
     const { splitForTts } = await import('./text-ai.js');
     // PUNCTUATION ONLY, and nothing else, on the streaming path.
     //
-    // The book path runs three stages (electron/narration-text-pass.ts):
+    // The book path runs three stages (`foundry clean-text`):
     // punctuation, the number rules, then a model on the residue. Only the first
     // belongs here — it is pure, instant and has no opinion to get wrong, so the
     // reader's text reaches the voice with the same canonical ellipsis and the

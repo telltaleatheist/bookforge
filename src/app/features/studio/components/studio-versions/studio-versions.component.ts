@@ -19,6 +19,7 @@ import { StudioAnalysisTarget, studioManifestProjectId } from '../../analysis-ta
 import type { PassDiffEntry } from '@shared/processing/pass-types';
 import type { BookResetSummary } from '@shared/processing/reset-book';
 import { samePath } from '@shared/document/same-path';
+import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
 import { latestPassByKind } from '@shared/document/version-family';
 import { StudioConvertModalComponent } from '../studio-convert-modal/studio-convert-modal.component';
 import { BookConversionService, type ConversionSource } from '../../services/book-conversion.service';
@@ -1532,6 +1533,24 @@ export class StudioVersionsComponent {
       });
       return;
     }
+    /*
+     * THE COST IS STATED BEFORE IT RUNS, not after (Owen, 2026-09-05: *"the
+     * user can be informed of it"*). This act cleans a FILE, and a file
+     * remembers nothing about how it was made — so a re-export from the project
+     * loses it. Cancelling here is a real answer: the standard method is the
+     * Clean text step in the Foundry window, and somebody who reads this
+     * sentence may well decide to do it there instead.
+     */
+    const go = await this.electron.showConfirmDialog({
+      title: 'Clean this version\'s text',
+      message: 'The punctuation and the numbers of this book will be read into the form a '
+        + 'narrator says.',
+      detail: NARRATION_TEXT_FAILSAFE_NOTICE,
+      confirmLabel: 'Clean text',
+      cancelLabel: 'Cancel',
+      type: 'question',
+    });
+    if (!go.confirmed) return;
     // The FILE is what names the chain: a project can hold two, and the planner
     // resolves which one from the version the button was pressed on.
     const run = await this.queue.submitProcessingRun({
@@ -1545,6 +1564,7 @@ export class StudioVersionsComponent {
         message: 'The punctuation and the numbers of this book are being read into the form a '
           + 'narrator says. It runs in the queue; the book\'s versions page will show the pass '
           + 'in its history when it finishes.',
+        detail: NARRATION_TEXT_FAILSAFE_NOTICE,
         type: 'info',
       }
       : {

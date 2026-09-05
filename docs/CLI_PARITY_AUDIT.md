@@ -188,7 +188,7 @@ in 6.1.
 | # | Action | App entry | CLI | Same function? | Verdict |
 |---|---|---|---|---|---|
 | 7.1 | Narration text cleanup (queue row `narration-text`) | `queue-steps/pass.ts:80` → `processing-passes.ts:1117 runProcessingPass` | `--narration-text --project` | **Yes** | **PARITY** |
-| 7.2 | Narration text cleanup on a LOOSE epub | `narration-text-pass.ts:434 runNarrationTextPass` | `--narration-text --input` | **Yes** | **PARITY** |
+| 7.2 | Narration text cleanup on a LOOSE epub | `narration-clean-text.ts cleanTextEpub` (spawns `foundry clean-text --epub`) | `--narration-text --input` | **Yes** | **PARITY** |
 | 7.3 | Simplify (queue row `simplify`) | same `runProcessingPass`, kind `simplify` | **`--pass --kind simplify` (new)** | **Yes** | **PARITY** *(was MISSING as a project act)* |
 | 7.4 | Translate (queue row `translate-pass`) | same `runProcessingPass`, kind `translate` → `mono-translation-job.ts:563 runMonoTranslation` | **`--pass --kind translate` (new)** | **Yes** | **PARITY** *(was MISSING)* |
 | 7.5 | Footnote refs (queue row `footnote-refs`) | same `runProcessingPass`, kind `footnote-refs` | **`--pass --kind footnote-refs` (new)** | **Yes** | **PARITY** *(was MISSING)* |
