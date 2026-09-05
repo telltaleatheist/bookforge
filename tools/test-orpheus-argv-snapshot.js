@@ -13,6 +13,13 @@
  * from 01a3799b, is the last written record of exactly what BookForge sent
  * ebook2audiobook, and the Phase 3 write-up quotes it door by door.
  *
+ * ITS BASELINE IS NO LONGER "01a3799b, byte for byte". `feat/xtts-removal`
+ * regenerated the assembly row on 2026-09-05 when it deleted the bilingual arm
+ * (`--bilingual` / `--bilingual_pause` / `--bilingual_gap`), licensed in this
+ * header at the time. Every other row is still the pre-Higgs original. Said here
+ * because a baseline that claims to be a fixed commit and is not is worse than no
+ * baseline at all.
+ *
  * It is out of `tools/run-keepers.js`. Running it by hand is expected to fail.
  *
  * The job it did is now done by `test-narrator-argv-snapshot.js`, which pins six

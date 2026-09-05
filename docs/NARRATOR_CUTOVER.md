@@ -349,3 +349,40 @@ checkout; `packaging/env/ebook2audiobook-*.yml` becomes `narrator-tools-*.yml` a
 gains `narrator-mlx.yml` plus its component installer.
 
 **Not a phase, but owed:** every GPU proof. See "NOT verified" above.
+
+### The merge with `feat/xtts-removal`, which is owed
+
+That branch (Phase 5 + Phase 4) lands on main BEFORE this one. As of this writing
+main is `aa8648a1` and does not contain it, so this branch is merged up to date
+with main but NOT with it. Three collisions are known, and the resolution is
+recorded here so it is mechanical rather than a judgement call at merge time:
+
+1. **`streaming-engine.ts`** — take THEIRS. The streaming contract types move to
+   `orpheus-worker-pool.ts` (`xtts-worker-pool.ts` is deleted), `StreamEngineName`
+   becomes a one-member union, and their `getSelectedEngineName` migration
+   (persisted `'xtts'` → orpheus, logged; an unknown id throws) is the behaviour
+   that ships. The only edit this branch made to the file is the Orpheus
+   availability probe — keep that.
+2. **`parallel-tts-bridge.ts`** — take THEIRS for the deletions, MINE for the
+   rewrites. Do NOT restore `xttsDeepspeedAvailable`, `probeDeepspeedCompat`, the
+   two `XTTS_USE_DEEPSPEED` env spreads (this branch preserved all of them
+   verbatim because Phase 3's rule was to change nothing it did not have to), or
+   the `config.bilingual?.enabled` tail on the assembly argv (kept here so
+   narrator's refusal stayed reachable — Phase 4 is what removes it, and their
+   branch IS Phase 4). Keep this branch's door rewrites and its `--tts_engine`
+   literal drop. `pythonInvocation` loses its last caller with the DeepSpeed probe
+   and can go.
+3. **`tools/test-orpheus-argv-snapshot.js` + `orpheus-argv-base.json`** — keep
+   this branch's retirement header, and keep their regenerated assembly row. The
+   header now says so.
+
+Renames on their side that any surviving import must follow:
+`bilingual-processor.ts` → `text-ai.ts` (`splitForTts`), `ll-jobs.ts` →
+`mono-translation-job.ts`. Deleted outright: `xtts-voices.ts`,
+`custom-voices.ts`, `voice-components.ts`, `installed-voices.ts`,
+`deepspeed-xtts.ts`, `f5-env.ts`, `voxtral-env.ts`,
+`language-pack-components.ts`, the catalog service, `sentence-alignment-window.ts`.
+
+**After the merge, regenerate `tools/snapshots/narrator-argv-base.json`**: the
+assembly row must carry no bilingual arm, because the bridge will no longer build
+one.
