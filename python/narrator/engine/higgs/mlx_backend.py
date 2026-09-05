@@ -665,6 +665,19 @@ class HiggsV3MlxEngine:
         from mlx_audio.tts.utils import load_model
 
         target = self.config.model_dir
+        # Bound the MLX buffer cache, exactly as the Orpheus MLX backend does at
+        # load. Without a limit the allocator keeps every freed buffer, and a
+        # single long Higgs render (per-step generation buffers in many distinct
+        # sizes, then the codec decode) grew one process to ~50 GB resident on
+        # the M1 Ultra before `cleanup()`'s `mx.clear_cache()` ever ran (Owen,
+        # 2026-09-05, watching the MLX cap sweep). A bounded cache keeps the
+        # footprint flat for the whole run and still reuses buffers, which a
+        # per-chunk flush does not. The knob is the same shape as Orpheus's:
+        # HIGGS_MLX_CACHE_LIMIT_GB, a documented tunable with a measured default,
+        # not a fallback for a value that should have been set.
+        cache_gb = float(os.environ.get('HIGGS_MLX_CACHE_LIMIT_GB', '8'))
+        mx.set_cache_limit(int(cache_gb * 1e9))
+        _log(f'Higgs MLX buffer cache limited to {cache_gb:g} GB')
         _log(f'loading Higgs v3 from {target}')
         started = time.perf_counter()
         model = load_model(target, model_type=MLX_AUDIO_ARCH)
