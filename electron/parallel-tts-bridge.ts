@@ -1778,6 +1778,9 @@ export interface WorkerState {
   // Diagnostics — NOT serialized to the renderer (see serializeWorkers); only
   // appended to worker.error on non-zero exit. Capped at MAX_WORKER_STDERR_TAIL_BYTES.
   stderrTail?: string;         // Tail of non-progress stderr lines for crash diagnosis
+  /** Tail of non-progress STDOUT. narrator prints its refusals and its result dict
+   *  there, so a worker that exits 1 on a bad flag says why here and nowhere else. */
+  stdoutTail?: string;
   // Timestamp of last HuggingFace model-download activity. Used by the startup
   // watchdog so an actively-downloading worker isn't killed at the startup timeout.
   lastDownloadActivityAt?: number;
@@ -2412,6 +2415,37 @@ const MODEL_LOAD_DONE_RE = /TTS Loaded!|model loaded!/i;
  * the other (render/PORT_NOTES.md section 6).
  */
 const PROGRESS_LINE_RE = /Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i;
+
+/**
+ * WHY A FAILED SPAWN DIED, in the words it actually used.
+ *
+ * NARRATOR REFUSES ON STDOUT. `compat/app.py` prints `Error: <message>` and the
+ * `FlagRefused` text with `print(..., flush=True)`, and the result dict — the one
+ * carrying `"success": false, "error": ...` — goes to stdout too. Only tracebacks
+ * and library chatter reach stderr. Every error path in this file read `stderr`
+ * alone, so a user who passed an unusable flag, named a retired engine or pointed
+ * at a session narrator would not touch saw:
+ *
+ *     Prep failed with code 1:
+ *
+ * with the reason sitting unread in a buffer. `reassembly-bridge.ts` already
+ * preferred whichever tail it had; this is that, shared, so the four remaining
+ * doors cannot drift apart again.
+ *
+ * STDOUT IS PREFERRED over stderr, which is the opposite of the usual instinct and
+ * is right here: on this pipeline stdout carries the DIAGNOSIS and stderr carries
+ * the noise a Python process makes on its way out. When only stderr has anything,
+ * that is still better than an empty message.
+ */
+function spawnFailureDetail(stdoutTail: string, stderrTail: string, limit = 1200): string {
+  const out = (stdoutTail || '').trim();
+  const err = (stderrTail || '').trim();
+  const detail = out || err;
+  if (!detail) return '';
+  // Collapsed to one line: these land in a job-log line and a toast, and a Python
+  // traceback's newlines turn both into something nobody reads to the end of.
+  return detail.slice(-limit).replace(/\s*\n+\s*/g, ' | ').trim();
+}
 
 /**
  * A sentence whose render is being REPAIRED — re-rendered split at sentence
@@ -3309,7 +3343,11 @@ export async function prepareSession(
       if (code === 0) {
         resolve();
       } else {
-        reject(new Error(`Prep failed with code ${code}: ${stderr}`));
+        const detail = spawnFailureDetail(lastStdoutTail, stderr);
+        reject(new Error(
+          `Prep failed with code ${code}`
+          + (detail ? `: ${detail}` : ' (no output captured — see the worker log)'),
+        ));
       }
     });
 
@@ -3679,6 +3717,9 @@ export async function regenerateSentenceIndices(
     let converted = 0;
     let resultJson: any = null;
     let stderrTail = '';
+    // narrator prints `Error: ...` / FlagRefused / the result dict on STDOUT, so a
+    // retake that is refused says why here.
+    let stdoutTail = '';
 
     // ONE RETAKE DOOR: `narrator.compat.worker` with the discrete-index flags.
     // narrator's worker route accepts --sentence_indices / --num_takes /
@@ -3712,6 +3753,7 @@ export async function regenerateSentenceIndices(
         const t = line.trim();
         if (!t) continue;
         writeWorkerLog(`[REGEN] ${t}`);
+        if (!PROGRESS_LINE_RE.test(t)) stdoutTail = (stdoutTail + t + '\n').slice(-2000);
         // Progress: count our own converted lines against the batch total (the
         // worker's printed "/N" is the BOOK total, not our subset).
         if (PROGRESS_LINE_RE.test(t)) {
@@ -3744,7 +3786,9 @@ export async function regenerateSentenceIndices(
           success: code === 0,
           converted,
           failedIndices: code === 0 ? [] : indices,
-          error: code === 0 ? undefined : (stderrTail || `worker exited with code ${code}`),
+          error: code === 0
+            ? undefined
+            : (spawnFailureDetail(stdoutTail, stderrTail, 2000) || `worker exited with code ${code}`),
         });
       }
     });
@@ -4155,6 +4199,15 @@ function startWorker(
       if (!isKvPreemptionNote(line)) console.log(logLine);
       writeWorkerLog(logLine);
 
+      // Kept for the exit path. Progress lines are the bulk of this stream and say
+      // nothing about a failure, so they are left out — what survives is narrator's
+      // refusals (printed to STDOUT), its result dict, and whatever the engine
+      // printed on its way down.
+      if (!PROGRESS_LINE_RE.test(line)) {
+        worker.stdoutTail = appendCapped(worker.stdoutTail ?? '', line.trim() + '\n',
+          MAX_WORKER_STDERR_TAIL_BYTES);
+      }
+
       // Guard fires are why this job log gets read after the fact. The audio and
       // the full record live in ORPHEUS_REJECT_DIR; this is the index into them,
       // and unlike worker-output.log it is not truncated on the next run.
@@ -4369,12 +4422,12 @@ function startWorker(
     } else {
       worker.status = 'error';
       worker.error = `Worker exited with code ${code}`;
-      // Append the tail of recent stderr so "All workers failed: ..." is actually
-      // diagnosable (AF_UNIX crashes, Python tracebacks, etc.).
-      if (worker.stderrTail && worker.stderrTail.trim()) {
-        const tail = worker.stderrTail.trim().slice(-500).replace(/\s*\n+\s*/g, ' | ').trim();
-        if (tail) worker.error += `. Last output: ${tail}`;
-      }
+      // Append the tail of recent output so "All workers failed: ..." is actually
+      // diagnosable (AF_UNIX crashes, Python tracebacks) — and, since the
+      // cut-over, so narrator's own refusals arrive at all: it prints them to
+      // STDOUT, which this used to ignore entirely.
+      const tail = spawnFailureDetail(worker.stdoutTail ?? '', worker.stderrTail ?? '', 500);
+      if (tail) worker.error += `. Last output: ${tail}`;
       logger.logError(session.jobId, `Worker ${workerId} failed`, new Error(`Exit code ${code}`), {
         duration,
         hadProgress: worker.hasShownProgress,
@@ -5254,6 +5307,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
 
   return new Promise((resolve, reject) => {
     let stderr = '';
+    // narrator's assembly reports its failures on STDOUT — `assemble_audiobook()
+    // Exception: ...` and the `{"success": false, "error": ...}` result — while the
+    // traceback goes to stderr. Reading stderr alone gave the stack without the
+    // sentence that explains it.
+    let asmStdoutTail = '';
     let outputPath = '';
 
     // Freshness watermark: only an m4b modified at/after this instant counts as
@@ -5369,6 +5427,14 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     session.assemblyProcess.stdout?.on('data', (data: Buffer) => {
       const output = data.toString();
       writeWorkerLog(`[ASSEMBLY] ${output.trim()}`);
+      // The progress bars ("Export - 97.7%") are almost all of this stream and say
+      // nothing about a failure; what is kept is narrator's own reporting.
+      for (const line of output.split('\n')) {
+        const t = line.trim();
+        if (t && !/^(Export|Combining|Concatenat|Encoding)\b/.test(t) && !/\d+\.\d%$/.test(t)) {
+          asmStdoutTail = (asmStdoutTail + t + '\n').slice(-4000);
+        }
+      }
 
       // Parse chapter number: "[ASSEMBLE] Chapter N: sentences X-Y"
       const chapterMatch = output.match(/\[ASSEMBLE\] Chapter (\d+):/);
@@ -5522,11 +5588,15 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         // most-recently-modified file there is very likely a PREVIOUS run's
         // audiobook, and resolving with it silently reports success on a failed
         // assembly. Fail loudly with the captured stderr tail instead.
-        const stderrTail = stderr.trim().slice(-4000);
-        console.error(`[PARALLEL-TTS] Assembly failed with code ${code}. Stderr tail:\n${stderrTail}`);
+        // BOTH TAILS. narrator's assembly prints `assemble_audiobook() Exception: ...`
+        // and its `{"success": false, "error": ...}` result to STDOUT; the traceback
+        // goes to stderr. Reading stderr alone gave a Python stack with the sentence
+        // that explains it missing.
+        const detail = spawnFailureDetail(asmStdoutTail, stderr, 4000);
+        console.error(`[PARALLEL-TTS] Assembly failed with code ${code}. Output tail:\n${detail}`);
         reject(new Error(
-          `Assembly failed with exit code ${code}.` +
-          (stderrTail ? ` Stderr tail:\n${stderrTail}` : ' (no stderr captured — see the worker log)')
+          `Assembly failed with exit code ${code}.`
+          + (detail ? ` Output tail:\n${detail}` : ' (no output captured — see the worker log)')
         ));
       }
     });
