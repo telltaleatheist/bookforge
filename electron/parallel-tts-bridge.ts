@@ -198,6 +198,8 @@ import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, g
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
+import { externalGpuJobLock } from '../shared/gpu/external-job-lock';
+import { ownBatchPids, parseWmicProcessCsv } from '../shared/gpu/own-batch-processes';
 import {
   HIGGS_VOICE_FLAG,
   buildHiggsSpawn,
@@ -407,28 +409,6 @@ function killProcessTree(process: ChildProcess, label: string): void {
 }
 
 /**
- * External-GPU-job guard. Training chains, CLI renders, and other processes
- * OUTSIDE this Electron instance share the same WSL VM and process patterns
- * as our workers — a "global orphan sweep" cannot tell them apart and has
- * nearly killed an active training chain (2026-07-20). Any external job may
- * create %APPDATA%\BookForge\external-gpu-job.lock (content = free-text
- * description); while it exists, ALL global pattern-based sweeps are skipped
- * loudly. Session-scoped kills (our own tracked workers) are unaffected.
- */
-function externalGpuJobLock(): string | null {
-  if (os.platform() !== 'win32') return null;
-  const appData = process.env.APPDATA;
-  if (!appData) return null;
-  const p = path.join(appData, 'BookForge', 'external-gpu-job.lock');
-  if (!fsSync.existsSync(p)) return null;
-  try {
-    return fsSync.readFileSync(p, 'utf-8').trim() || '(empty lock file)';
-  } catch {
-    return '(unreadable lock file)';
-  }
-}
-
-/**
  * Clean up orphaned vLLM processes on Windows
  * vLLM uses ZMQ sockets for inter-process communication on ports 29500-29600
  * These processes can escape the normal process tree kill, so we find and kill them by port
@@ -481,8 +461,21 @@ function cleanupOrphanedVllmProcesses(): void {
 }
 
 /**
- * Kill every narrator BATCH process still running, natively. The nuclear option,
- * used on app exit to ensure no orphans.
+ * Kill THIS APP'S narrator batch processes still running, natively. The nuclear
+ * option, used on app exit to ensure no orphans.
+ *
+ * ── "This app's", and why that word had to be added ────────────────────────
+ *
+ * It matched `narrator.compat.*` on any process on the machine, which is also:
+ * the headless CLI's render (people run it over ssh precisely so it OUTLIVES the
+ * desktop app), a second window's `--list_sessions`, another checkout on a shared
+ * box. Quitting BookForge would have force-killed a render nobody asked it to
+ * touch. Ownership is decided by the PARENT CHAIN (`shared/gpu/own-batch-
+ * processes.ts`): a process this app started is a descendant of it, directly or
+ * through a `conda run` shim.
+ *
+ * The external-GPU-job lock covers the case where somebody REMEMBERED to take it.
+ * This covers the case where nobody did, which is the normal case.
  *
  * THIS IS THE ONLY NATIVE-WINDOWS ORPHAN SWEEP THERE IS, and until now it matched
  * `commandline like '%app.py%'` — which appears nowhere in
@@ -507,31 +500,27 @@ export function forceKillAllNarratorBatchProcesses(): void {
 
   if (os.platform() === 'win32') {
     try {
-      // WMIC's `like` is SQL-ish, not a regex: `%` is the wildcard and there is no
-      // alternation, so the two batch doors need two clauses. The command line is
-      // fetched alongside the pid because the serve process must be excluded and
-      // WMIC cannot express "not like" and "like" in one readable filter here.
+      // THE WHOLE PROCESS TABLE, filtered in JS.
+      //
+      // Not a `wmic ... where "commandline like '%narrator.compat%'"` filter, which
+      // is what stood here: the parent chain is needed to decide OWNERSHIP, and a
+      // filtered query returns only the matches, not the ancestors they hang from.
+      // One call, all the rows, and the rule lives in `shared/gpu/own-batch-
+      // processes.ts` where it can be tested against a fabricated table.
       const wmicOutput = execSync(
-        'wmic process where "(commandline like \'%narrator.compat.worker%\' '
-          + 'or commandline like \'%narrator.compat.app%\') and name like \'%python%\'" '
-          + 'get processid,commandline /format:csv',
-        { encoding: 'utf8', timeout: 10000 }
+        'wmic process get commandline,parentprocessid,processid /format:csv',
+        { encoding: 'utf8', timeout: 15000, maxBuffer: 16 * 1024 * 1024 }
       );
 
-      // /format:csv gives `Node,CommandLine,ProcessId`; the command line may itself
-      // contain commas, so the PID is taken from the LAST field and the rest is the
-      // command.
-      const serveRe = new RegExp(SERVE_PROCESS_RE);
-      const pids = wmicOutput
-        .split('\n')
-        .map(line => line.trim())
-        .filter(line => /,\d+$/.test(line))
-        .filter(line => !serveRe.test(line))
-        .map(line => line.slice(line.lastIndexOf(',') + 1));
+      const pids = ownBatchPids(parseWmicProcessCsv(wmicOutput), {
+        selfPid: process.pid,
+        batchRe: new RegExp(NARRATOR_BATCH_RE),
+        serveRe: new RegExp(SERVE_PROCESS_RE),
+      });
 
       for (const pid of pids) {
         try {
-          console.log(`[PARALLEL-TTS] Force killing Python process (PID: ${pid})`);
+          console.log(`[PARALLEL-TTS] Force killing our narrator batch process (PID: ${pid})`);
           execSync(`taskkill /F /T /PID ${pid}`, { stdio: 'ignore', timeout: 5000 });
         } catch {
           // Process may have already exited
