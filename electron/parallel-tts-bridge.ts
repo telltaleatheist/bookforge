@@ -2368,7 +2368,19 @@ const MODEL_ACTIVITY_RE = /downloading|\.safetensors|\.bin(?:\s|:|$)|huggingface
 // minutes between "Converting sentence" lines. Counting these as a watchdog heartbeat —
 // exactly as MODEL_ACTIVITY_RE does for model loading — stops the hang-detector from
 // TERMing a working worker mid-batch (the false-kill that broke long-book renders).
-const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|Processed prompts|Adding requests|MLX batch generating/i;
+//
+// `Processed prompts` and `Adding requests` ARE GONE. They were vLLM's own tqdm, and
+// every generate() call passes `use_tqdm=False` (vllm_backend.py:284, 324, 413 — e2a's
+// orpheus.py did the same), so they can never appear. The GPU smoke of 2026-09-04
+// measured it: a clean 5-chunk vLLM flush emitted ZERO lines matching this regex.
+//
+// That measurement is the point, and it is uncomfortable: on the vLLM path this
+// heartbeat only fires when a GUARD trips. A healthy long batch gets no heartbeat at
+// all, and what actually keeps the watchdog off it is WORKER_PROGRESS_TIMEOUT_MS being
+// longer than a flush. Two dead alternatives in the pattern made it look like there
+// was more cover here than there is. `tools/test-narrator-log-strings.js` pins both
+// facts — what fires, and that a healthy vLLM batch fires nothing.
+const GENERATION_ACTIVITY_RE = /audio-token cap|re-rendering split|MLX batch generating/i;
 // GENUINE network download only — NOT a cache hit or disk load. huggingface_hub's tqdm
 // shows a byte-rate ("124MB/s") only while actually transferring bytes; a cache hit shows
 // "it/s" and shard-loading from disk shows "s/it". So require a byte-rate (or the explicit
@@ -2401,7 +2413,21 @@ const MODEL_LOAD_DONE_RE = /TTS Loaded!|model loaded!/i;
  */
 const PROGRESS_LINE_RE = /Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i;
 
-const REPAIR_START_RE = /sentence (\d+) (?:hit the MLX audio-token cap|produced no audio|audio too short for text)/i;
+/**
+ * A sentence whose render is being REPAIRED — re-rendered split at sentence
+ * boundaries after a guard rejected the first attempt. Drives the "repairing
+ * sentence N" detail in the UI.
+ *
+ * `MLX ` IS OPTIONAL, and it was not. The MLX backend prints "hit the MLX
+ * audio-token cap" (mlx_backend.py:1056) while vLLM prints "hit the audio-token
+ * cap" (vllm_backend.py:445) — so this matched only the Mac, and the primary
+ * Windows/WSL path never raised a repair note at all. Its sibling
+ * GENERATION_ACTIVITY_RE matched both, which is why the watchdog behaved and only
+ * the reporting was missing: a cap-hit on vLLM refreshed the clock and said
+ * nothing, so a book that spent minutes repairing looked like a book that had
+ * stalled.
+ */
+const REPAIR_START_RE = /sentence (\d+) (?:hit the (?:MLX )?audio-token cap|produced no audio|audio too short for text)/i;
 
 /**
  * How often the rendered-file poller re-reads the sentences dir (Mac/MLX only —

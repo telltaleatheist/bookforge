@@ -118,13 +118,14 @@ const LINES = [
     emits: 'Orpheus: sentence 812 hit the audio-token cap; re-rendering split at sentence boundaries',
     source: 'engine/orpheus/vllm_backend.py',
     fragment: 'hit the audio-token cap; re-rendering split at sentence boundaries',
-    match: [GENERATION_ACTIVITY_RE],
-    // NOT REPAIR_START_RE, and this is the asymmetry worth knowing about: that
-    // matcher requires "hit the MLX audio-token cap", with the MLX. So on vLLM a
-    // cap-hit refreshes the watchdog but never raises the "repairing sentence N"
-    // detail — only the MLX backend does. Inherited from e2a unchanged; pinned
-    // here so that changing it is a decision rather than an accident.
-    noMatch: [REPAIR_START_RE, PROGRESS_LINE_RE],
+    // BOTH, since 2026-09-05. REPAIR_START_RE required "hit the MLX audio-token
+    // cap" — with the MLX — while vLLM prints "hit the audio-token cap", so the
+    // primary Windows/WSL path never raised a "repairing sentence N" detail. The
+    // watchdog was fine (GENERATION_ACTIVITY_RE matched both), which is exactly why
+    // nobody noticed: a book spending minutes on repairs looked like a book that
+    // had stalled.
+    match: [GENERATION_ACTIVITY_RE, REPAIR_START_RE],
+    noMatch: [PROGRESS_LINE_RE],
   },
   {
     what: 'the MLX audio-token-cap runaway',
@@ -215,6 +216,31 @@ check('[ORPHEUS][ORPHEUS_GUARD_EVENT] is a literal both repos agree on', () => {
   const guards = fs.readFileSync(path.join(PY, 'engine/orpheus/guards.py'), 'utf-8');
   assert.ok(guards.includes('ORPHEUS_GUARD_EVENT'),
     'narrator no longer tags guard events — the bridge indexes rejects by this line');
+});
+
+console.log('the vLLM heartbeat is thinner than the pattern suggested');
+check('a healthy vLLM batch emits NOTHING that GENERATION_ACTIVITY_RE matches', () => {
+  // MEASURED in the GPU smoke of 2026-09-04: a clean 5-chunk vLLM flush produced
+  // zero matching lines. `Processed prompts` and `Adding requests` were vLLM's own
+  // tqdm and every generate() call passes use_tqdm=False, so they cannot appear;
+  // `MLX batch generating` is MLX-only. What is left fires only when a GUARD trips.
+  //
+  // So on the vLLM path this "heartbeat" is not one, and what actually keeps the
+  // watchdog off a long flush is WORKER_PROGRESS_TIMEOUT_MS exceeding it. Pinned
+  // because two dead alternatives in the pattern made it look like there was more
+  // cover here than there is — and because if somebody re-adds them, that is a
+  // decision about a false sense of liveness, not a tidy-up.
+  for (const line of [
+    'Adding requests: 100%|##########| 5/5',
+    'Processed prompts: 100%|##########| 5/5 [00:12<00:00]',
+  ]) {
+    assert.ok(!GENERATION_ACTIVITY_RE.test(line),
+      'a vLLM tqdm line matched — the dead alternatives are back in the pattern');
+  }
+  const vllm = fs.readFileSync(path.join(PY, 'engine/orpheus/vllm_backend.py'), 'utf-8');
+  assert.ok(vllm.includes('use_tqdm=False'),
+    'vllm_backend no longer passes use_tqdm=False — the tqdm lines may be real again, '
+    + 'and the alternatives removed from GENERATION_ACTIVITY_RE would have to come back');
 });
 
 console.log("the worker's own bookkeeping does not falsely trip anything");
