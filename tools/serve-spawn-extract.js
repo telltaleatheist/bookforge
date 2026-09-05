@@ -43,7 +43,9 @@ const DIST = path.join(REPO, 'dist', 'electron');
 const ARM = process.argv[2];
 if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
   console.error('usage: serve-spawn-extract.js wsl|native-win|native-mac [orpheus|higgs]');
-  process.exit(64);
+  // The whole capture goes to a pipe; see narrator-argv-extract.js.
+  process.exitCode = 64;
+  return;
 }
 
 /**
@@ -57,7 +59,8 @@ if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
 const ENGINE = process.argv[3] || 'orpheus';
 if (!['orpheus', 'higgs'].includes(ENGINE)) {
   console.error('usage: serve-spawn-extract.js <arm> [orpheus|higgs]');
-  process.exit(64);
+  process.exitCode = 64;
+  return;
 }
 
 // stdout is the capture and nothing else. The modules under test log their path
@@ -207,30 +210,19 @@ function captureRefusal(err) {
   process.stdout.write(JSON.stringify({
     arm: ARM, engine: ENGINE, refused: canon(err instanceof Error ? err.message : String(err)),
   }, null, 2) + '\n');
-  process.exit(0);
+  // NOT a hard exit call: the whole capture has just gone to a PIPE, and an
+  // undrained tail here is a refusal message the keeper reads as truncated JSON.
+  // The caller returns instead, so the event loop drains it. (tools/test-cli-exit-
+  // drain.js enforces this across cli/ and tools/.)
+  process.exitCode = 0;
 }
 
-// The signature is the detector for which side of the cut-over this is:
-// `resolveScriptPath` exists only while a script file is being spawned.
-let plan;
-try {
-  plan = pool.resolveScriptPath
-    ? pool.buildSpawnPlan(pool.resolveScriptPath(), GPU_UTIL)
-    : pool.buildSpawnPlan(GPU_UTIL);
-} catch (err) {
-  captureRefusal(err);
-}
-
-/** Replace this checkout's location with a stable token, in both filesystems. */
 /**
- * This checkout's location → one token, separators normalised.
+ * The whole capture, so an early return is possible.
  *
- * HOST-INDEPENDENT ON PURPOSE, and the reason is that `path.join` uses the HOST's
- * separator: faking `process.platform` does not change it, because the path module
- * binds win32/posix at load. So `narratorPythonRoot()` yields `<REPO>\python` on
- * Windows and `<REPO>/python` on a Mac, and an un-normalised capture can never
- * agree across the two. `<REPO-WSL>` collapses into `<REPO>` for the same reason:
- * on a Mac host the repo has no drive letter to translate.
+ * Module top level has no `return`, and the refusal path must stop the rest of the
+ * file from running — it used to do that with a hard exit call, which is exactly
+ * what loses a piped tail.
  */
 function canon(s) {
   if (typeof s !== 'string') return s;
@@ -278,6 +270,31 @@ function splitBash(bash) {
 
 // `command` is canon'd like everything else — it is a host path (a conda exe, a
 // relocatable python) and an un-normalised one is the separator difference again.
+
+function main() {
+  // The signature is the detector for which side of the cut-over this is:
+  // `resolveScriptPath` exists only while a script file is being spawned.
+  let plan;
+  try {
+    plan = pool.resolveScriptPath
+      ? pool.buildSpawnPlan(pool.resolveScriptPath(), GPU_UTIL)
+      : pool.buildSpawnPlan(GPU_UTIL);
+  } catch (err) {
+    captureRefusal(err);
+    return;
+  }
+
+/** Replace this checkout's location with a stable token, in both filesystems. */
+/**
+ * This checkout's location → one token, separators normalised.
+ *
+ * HOST-INDEPENDENT ON PURPOSE, and the reason is that `path.join` uses the HOST's
+ * separator: faking `process.platform` does not change it, because the path module
+ * binds win32/posix at load. So `narratorPythonRoot()` yields `<REPO>\python` on
+ * Windows and `<REPO>/python` on a Mac, and an un-normalised capture can never
+ * agree across the two. `<REPO-WSL>` collapses into `<REPO>` for the same reason:
+ * on a Mac host the repo has no drive letter to translate.
+ */
 const out = { arm: ARM, engine: ENGINE, command: canon(plan.command), viaWsl: !!plan.viaWsl };
 if (plan.viaWsl) {
   const bash = plan.args[plan.args.length - 1];
@@ -296,3 +313,6 @@ if (plan.viaWsl) {
 }
 
 process.stdout.write(JSON.stringify(out, null, 2) + '\n');
+}
+
+main();

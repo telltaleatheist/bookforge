@@ -612,6 +612,11 @@ let connectionError: string | null = null; // why we're not connected (for the p
 let voices: string[] = [];
 let serverVoice: string | null = null; // what the engine reports it has loaded
 let serverConfig: ServerConfig | null = null;
+// The engine selection, mirrored the same way the voice list is. The extension
+// never DECIDES availability — Higgs needs a platform backend, an environment and
+// an installed voice, and the server is the only side that can see all three.
+let serverEngine: string | null = null;
+let serverEngines: EngineInfo[] = [];
 
 // ─── The chosen voice ─────────────────────────────────────────────────────────
 //
@@ -750,6 +755,8 @@ async function connectOnce(): Promise<void> {
           serverVoice = msg.currentVoice;
           adoptServerVoice();
           serverConfig = msg.config;
+          serverEngine = msg.engine ?? null;
+          serverEngines = msg.engines ?? [];
           connectionError = null;
           clearTimeout(timeout);
           console.log('[BFR] connected; engine', msg.state, '| voices', msg.voices.length);
@@ -844,6 +851,8 @@ function handleServerEvent(msg: ServerEvent): void {
       serverVoice = msg.currentVoice;
       adoptServerVoice();
       serverConfig = msg.config;
+      serverEngine = msg.engine ?? serverEngine;
+      serverEngines = msg.engines ?? serverEngines;
       noteVoiceConfirmation();
       broadcast();
       return;
@@ -852,6 +861,8 @@ function handleServerEvent(msg: ServerEvent): void {
       serverVoice = msg.currentVoice;
       adoptServerVoice();
       serverConfig = msg.config;
+      serverEngine = msg.engine ?? serverEngine;
+      serverEngines = msg.engines ?? serverEngines;
       noteVoiceConfirmation();
       broadcast();
       return;
@@ -2017,13 +2028,13 @@ async function handleSetIdle(minutes: number): Promise<void> {
 
 /** Restart the engine to apply a worker count and/or warm a voice. The server
  *  replies with 'state' pushes then a final 'status', refreshing the snapshot. */
-async function handleRestart(cpuWorkers?: number, voice?: string): Promise<void> {
+async function handleRestart(cpuWorkers?: number, voice?: string, engine?: string): Promise<void> {
   try { await ensureConnected(); } catch (err) {
     connectionError = connectErrorMessage((err as Error).message);
     broadcast();
     return;
   }
-  send({ action: 'engine.restart', voice: voice || undefined, cpuWorkers });
+  send({ action: 'engine.restart', engine: engine || undefined, voice: voice || undefined, cpuWorkers });
   broadcast();
 }
 
@@ -2572,6 +2583,8 @@ function broadcast(): void {
     currentVoice: voiceForSpeak(),
     switchingVoice,
     config: serverConfig,
+    engine: serverEngine ?? undefined,
+    engines: serverEngines.length ? serverEngines : undefined,
     renderedItemIds: rendered,
     recording
   };
@@ -2602,7 +2615,7 @@ chrome.runtime.onMessage.addListener((raw: unknown) => {
     case 'engine': void handleEngine(msg.op); break;
     case 'set-voice': void handleSetVoice(msg.voice); break;
     case 'set-idle': void handleSetIdle(msg.minutes); break;
-    case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice); break;
+    case 'restart-engine': void handleRestart(msg.cpuWorkers, msg.voice, msg.engine); break;
     case 'queue':
       if (msg.op === 'remove' && msg.id) removeFromQueue(msg.id);
       else if (msg.op === 'clear') clearUpcoming();

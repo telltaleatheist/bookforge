@@ -136,4 +136,4 @@ if (parsed) {
 
 fs.rmSync(ROOT, { recursive: true, force: true });
 console.log(bad === 0 ? '\nTOOLS DOORS OK' : `\n${bad} check(s) FAILED`);
-process.exit(bad === 0 ? 0 : 1);
+process.exitCode = bad === 0 ? 0 : 1;

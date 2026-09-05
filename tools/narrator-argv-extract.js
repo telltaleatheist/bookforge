@@ -127,17 +127,23 @@ if (require.main === module) {
 
   if (mode === 'flags') {
     console.log(JSON.stringify(extractFlags(REPO), null, 2));
-    process.exit(0);
+    // exitCode + return, never a hard exit call: this writes the whole flags
+    // snapshot to a PIPE, and an undrained tail is a capture that parses as
+    // something else. See tools/test-cli-exit-drain.js.
+    process.exitCode = 0;
+    return;
   }
   if (mode !== 'plan') {
     console.error('usage: narrator-argv-extract.js flags | plan <wsl|native-win|native-mac>');
-    process.exit(64);
+    process.exitCode = 64;
+    return;
   }
 
   const ARM = process.argv[3];
   if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
     console.error('usage: narrator-argv-extract.js plan <wsl|native-win|native-mac>');
-    process.exit(64);
+    process.exitCode = 64;
+    return;
   }
 
   // stdout is the capture and nothing else; module chatter goes to stderr.

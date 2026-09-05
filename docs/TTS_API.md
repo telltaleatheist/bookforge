@@ -71,15 +71,26 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 // the engine cold starts it WITHOUT them: someone is already waiting, and the first
 // real batch absorbs the same compile (~10s, once) instead of queueing behind them.
 {"action": "engine.stop"}                          // shut the engine down (frees ~20 GB RAM)
-{"action": "engine.restart", "voice": "leah"}
-// Bounce the engine and/or warm a voice. `cpuWorkers` is still accepted and is now a
-// NO-OP: Orpheus is one process on one GPU, so there is no topology to change.
-// Service mode (resident server) is preserved.
+{"action": "engine.restart", "engine": "higgs", "voice": "leah"}
+// Bounce the engine, optionally SWITCHING engine and/or warming a voice.
+// `cpuWorkers` is still accepted and is now a NO-OP: one process on one GPU, so
+// there is no topology to change. Service mode (resident server) is preserved.
+//
+// `engine` must be one the server advertised as available (see `engines` below).
+// An unknown or unavailable id answers with an `{"type":"error"}` naming the
+// reason, and the selection is left alone.
+//
+// SEND NO `voice` WITH AN ENGINE SWITCH. A voice belongs to one engine's catalog
+// and means nothing in the other's; the server picks the incoming engine's own
+// default and reports it in the reply.
 
 {"action": "config.get"}                           // read engine topology (workers/device)
-{"action": "config.set", "voice": "leah", "idleMinutes": 15}
+{"action": "config.set", "engine": "orpheus", "voice": "leah", "idleMinutes": 15}
 // `cpuWorkers` is accepted and ignored, as above. A voice given while the engine is
 // RUNNING is warmed immediately.
+// `engine` SELECTS without restarting: it stops the running engine (they are one
+// resident process, so the old one must not go on answering) and the choice takes
+// effect on the next start. Send `engine.restart` to bring it back up now.
 // idleMinutes sets how long the engine may sit unused before shutting itself down
 // (0 = never); it takes effect on the running engine's next sweep. The current
 // value and the choices to offer come back as config.idleMinutes / config.idleChoices.
@@ -108,8 +119,22 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 {"type": "hello", "version": 1, "state": "stopped|starting|running",
  "serviceMode": false, "voices": ["leah", "..."], "currentVoice": null,
  "config": {"cpuWorkers": 1, "defaultCpuWorkers": 1, "minWorkers": 1, "maxWorkers": 1,
-            "device": "cuda", "deviceWorkers": 16, "activeWorkers": 1}}
+            "device": "cuda", "deviceWorkers": 16, "activeWorkers": 1},
+ "engine": "orpheus",
+ "engines": [{"id": "orpheus", "name": "Orpheus", "available": true},
+             {"id": "higgs",   "name": "Higgs",   "available": false,
+              "reason": "Higgs runs on vLLM-Omni, which has no Windows build. ..."}]}
 // Reply to hello. voices is [] while the engine is cold (it's discovered on engine start).
+//
+// `engines` LISTS EVERY ENGINE, available or not, with a `reason` when not — so a
+// chooser can show a disabled row that explains itself rather than hiding an option
+// the user has heard of. Availability is per MACHINE and the server is the only side
+// that can judge it: Higgs needs a platform backend (its v3 backend is a served
+// vLLM-Omni endpoint, so Windows/WSL today), its environment, and an installed
+// voice. Never infer it client-side.
+//
+// Both fields are absent from an older server. A client that does not find them
+// should show no chooser rather than assuming one engine.
 // config.device is null until the engine first probes its runtime; activeWorkers is 0
 // while stopped, 1 once running.
 //
@@ -122,8 +147,10 @@ All frames are JSON objects. Client messages carry an `action`; server messages 
 
 {"type": "status", ...same fields as hello minus version}   // reply to status / engine.start / engine.restart
 
-{"type": "config", "config": {...}, "voices": [...], "currentVoice": "RayPorter"}
-// Reply to config.get / config.set.
+{"type": "config", "config": {...}, "voices": [...], "currentVoice": "RayPorter",
+ "engine": "orpheus", "engines": [...]}
+// Reply to config.get / config.set / engine.restart's config half.
+// `voices` is the SELECTED engine's catalog — it changes when the engine does.
 
 {"type": "state", "state": "stopped|starting|running", "serviceMode": bool}
 // PUSHED to all connected clients whenever engine state changes. Use it to drive

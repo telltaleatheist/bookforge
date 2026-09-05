@@ -45,7 +45,8 @@ const SECONDS_TOLERANCE = 0.25;
 
 if (!fs.existsSync(GOLDEN)) {
   console.error(`No golden session at ${GOLDEN}. Set NARRATOR_GOLDEN to point at it.`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const orig = Module._resolveFilename;
@@ -71,7 +72,7 @@ function expect(what, cond, detail) {
 // ── copy the session out of the read-only golden tree ────────────────────────
 const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-asm-'));
 const sessionName = fs.readdirSync(GOLDEN).find((n) => n.startsWith('ebook-'));
-if (!sessionName) { console.error('no ebook-* session under ' + GOLDEN); process.exit(2); }
+if (!sessionName) { console.error('no ebook-* session under ' + GOLDEN); process.exitCode = 2; return; }
 const SESSION_DIR = path.join(SCRATCH, sessionName);
 const OUT_DIR = path.join(SCRATCH, 'out');
 fs.cpSync(path.join(GOLDEN, sessionName), SESSION_DIR, { recursive: true });
@@ -161,4 +162,4 @@ if (produced.length === 1) {
 
 console.log(`\nscratch kept for inspection: ${SCRATCH}`);
 console.log(bad === 0 ? '\nASSEMBLY DOOR OK' : `\n${bad} check(s) FAILED`);
-process.exit(bad === 0 ? 0 : 1);
+process.exitCode = bad === 0 ? 0 : 1;

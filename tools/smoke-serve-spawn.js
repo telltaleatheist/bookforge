@@ -114,7 +114,9 @@ child.on('close', (code) => {
   const need = ['ready', 'loaded', 'audio', 'batch_item', 'batch_done'];
   const missing = need.filter((t) => !seen.includes(t));
   console.log(missing.length ? 'MISSING: ' + missing.join(', ') : 'SMOKE OK — every message the pool waits for arrived');
-  process.exit(missing.length || code ? 1 : 0);
+  process.exitCode = missing.length || code ? 1 : 0;
 });
 
+// abort-path: a hung worker has to be abandoned immediately, and there is
+// nothing buffered to lose — everything above is already written.
 setTimeout(() => { console.log('TIMEOUT'); child.kill(); process.exit(1); }, 180000);
