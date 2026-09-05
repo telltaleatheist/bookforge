@@ -116,7 +116,8 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         raise AlignerError('every selected chunk is marker-only; there is '
                            'nothing to align')
 
-    results = _run(jobs, python_exe, backend, log)
+    results = _run(jobs, python_exe, backend, log,
+                   continue_on_error=continue_on_error)
 
     cues = []
     coverages = []
@@ -164,8 +165,16 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     return {'document': document, 'cues': cues}
 
 
-def _run(jobs, python_exe, backend, log):
-    """Align every job, here or in another interpreter."""
+def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
+    """Align every job, here or in another interpreter.
+
+    IN PROCESS, a failure stops the loop AT THAT CHUNK when the caller is not
+    sweeping (review finding 10): the contract already held - `align_session`
+    raised afterwards and nothing was written - but a chunk-3 failure on a
+    1,400-chunk book still cost the whole pass first. The out-of-process worker
+    is a batch protocol and finishes its list either way; `align_session` still
+    raises on the first bad result there.
+    """
     if python_exe:
         log(f'[align] running the aligner in {python_exe}')
         return align_env.run_jobs(python_exe, jobs)
@@ -196,6 +205,8 @@ def _run(jobs, python_exe, backend, log):
         except AlignerError as refused:
             out.append({'ok': False, 'index': job['index'],
                         'error': str(refused)})
+            if not continue_on_error:
+                return out
     return out
 
 

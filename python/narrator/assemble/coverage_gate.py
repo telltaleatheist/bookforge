@@ -41,6 +41,14 @@ DEFAULT_REPORT_NAME = 'coverage.json'
 #: than assumed compatible.
 SUPPORTED_REPORT_VERSION = 1
 
+#: Blocks a report must carry before this reader will judge anything on it.
+#: A document with no `summary` is a MALFORMED REPORT, not a report of zero
+#: aligned chunks (review finding 7): the old `document.get('summary') or {}`
+#: still refused - 0 + 0 != N - but blamed the RENDER ("align again after the
+#: render changed") for a broken document, which sends the operator to
+#: re-render a book that is fine.
+REQUIRED_REPORT_KEYS = ('engine', 'summary', 'chunks', 'enforced')
+
 
 class CoverageRefusal(RuntimeError):
     """One or more chunks did not say their text, and the engine's policy says
@@ -77,6 +85,16 @@ def load_report(path: str) -> dict:
             f'coverage report {path} is version {version!r}; this assembler '
             f'understands version {SUPPORTED_REPORT_VERSION}. Re-run '
             f'`narrator align --report {path}`.')
+    for key in REQUIRED_REPORT_KEYS:
+        if key not in document:
+            raise CoverageRefusal(
+                f'coverage report {path} has no {key!r} block, so it is a '
+                f'malformed report - not a report of zero aligned chunks. '
+                f'Re-run `narrator align --report {path}`.')
+    if not isinstance(document['summary'], dict):
+        raise CoverageRefusal(
+            f'coverage report {path}: "summary" is a '
+            f'{type(document["summary"]).__name__}, not an object')
     return document
 
 
@@ -98,18 +116,39 @@ def verify_report(document: dict, manifest: Manifest, path: str) -> None:
             f'coverage report {path} was written for a manifest of '
             f'{document.get("chunksInManifest")!r} chunk(s); this one has '
             f'{chunks}. Align again after the render changed.')
-    summary = document.get('summary') or {}
-    aligned = summary.get('chunksAligned') or 0
+    # `load_report` has already refused a document with no summary, so
+    # these are reads, not rescues. A count that is absent from a report
+    # that HAS a summary is still the document's bug, not a zero.
+    summary = document['summary']
+    aligned = _count(summary, 'chunksAligned', path)
     # A marker-only chunk (`[break]`) speaks nothing, so there is nothing to
     # align in it; it is SKIPPED and counted. Everything else must have been
     # measured - a chunk nobody looked at never passes for one that was.
-    skipped = summary.get('chunksSkipped') or 0
+    skipped = _count(summary, 'chunksSkipped', path)
     if aligned + skipped != chunks:
         raise CoverageRefusal(
             f'coverage report {path} accounts for {aligned} aligned + '
             f'{skipped} marker-only of {chunks} chunk(s); an enforced engine '
             f'needs every chunk measured or explicitly skipped. The rest are in '
             f'the report\'s "errors".')
+
+
+def _count(summary: dict, key: str, path: str) -> int:
+    """One of the summary's chunk counts, or a refusal naming the document.
+
+    NOT `summary.get(key) or 0`. The gate DECIDES on these numbers, and a
+    missing count read as zero turns "this report does not say" into "this
+    report says none", which then produces a refusal blaming the render.
+    """
+    if key not in summary:
+        raise CoverageRefusal(
+            f'coverage report {path}: summary has no {key!r}. The document is '
+            f'malformed; re-run `narrator align --report {path}`.')
+    value = summary[key]
+    if not isinstance(value, int) or isinstance(value, bool):
+        raise CoverageRefusal(
+            f'coverage report {path}: summary.{key} is {value!r}, not a count')
+    return value
 
 
 def refuse_on_failures(document: dict, *, where: str) -> None:
@@ -154,7 +193,7 @@ def check(manifest: Manifest, report_path: Optional[str], log) -> Optional[dict]
         if not report_path:
             return None
         document = load_report(report_path)
-        summary = document.get('summary') or {}
+        summary = document['summary']
         log(f'[coverage] {report_path}: {summary.get("chunksFailed")} of '
             f'{summary.get("chunksAligned")} chunk(s) below the alignment '
             f'thresholds (informational for this engine)')
@@ -171,7 +210,7 @@ def check(manifest: Manifest, report_path: Optional[str], log) -> Optional[dict]
     document = load_report(path)
     verify_report(document, manifest, path)
     refuse_on_failures(document, where=path)
-    summary = document.get('summary') or {}
+    summary = document['summary']
     log(f'[coverage] {path}: {summary.get("chunksAligned")} chunk(s) aligned, '
         f'none failed; median ratio {summary.get("alignedRatioMedian")}')
     return document

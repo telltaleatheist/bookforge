@@ -30,6 +30,23 @@ import sys
 
 from .aligner import AlignerError, align_chunk, load_backend
 
+#: Every field a job MUST carry. Not defaulted (review finding 5): `run.py`
+#: always sends all of them and the docstring above calls them the protocol, so
+#: a producer that stopped sending `device` would have aligned on CPU while the
+#: operator believed otherwise, and one that stopped sending `backend` would
+#: have run the wrong aligner AND cached the model under the wrong key. A
+#: missing field is the producer's bug and it says so.
+REQUIRED_JOB_FIELDS = ('audioPath', 'text', 'language', 'backend', 'device')
+
+
+def _require(job: dict, fields) -> None:
+    missing = [f for f in fields if f not in job]
+    if missing:
+        raise AlignerError(
+            f'job {job.get("index")!r} is missing required protocol field(s) '
+            f'{", ".join(missing)}; narrator.align.worker does not default '
+            f'them (see REQUIRED_JOB_FIELDS)')
+
 
 def main(argv=None) -> int:
     del argv
@@ -42,10 +59,10 @@ def main(argv=None) -> int:
         job = json.loads(line)
         index = job.get('index')
         try:
+            _require(job, REQUIRED_JOB_FIELDS)
             # Load the model BEFORE the first alignment is timed, so a chunk's
             # `elapsedSeconds` is alignment and not a 5-20 s one-off.
-            key = (job.get('backend', 'whisperx'), job.get('language', 'en'),
-                   job.get('device', 'cpu'))
+            key = (job['backend'], job['language'], job['device'])
             if loaded != key:
                 seconds = load_backend(*key)
                 print(f'[align-worker] loaded {key[0]} ({key[1]}, {key[2]}) in '
@@ -53,9 +70,12 @@ def main(argv=None) -> int:
                 loaded = key
             alignment = align_chunk(
                 job['audioPath'], job['text'],
-                language=job.get('language', 'en'),
-                backend=job.get('backend', 'whisperx'),
-                device=job.get('device', 'cpu'),
+                language=job['language'],
+                backend=job['backend'],
+                device=job['device'],
+                # `ffmpeg` is the one genuinely optional field: absent means
+                # "resolve it from PATH", which `resolve_ffmpeg` does and
+                # refuses by name when it cannot.
                 ffmpeg=job.get('ffmpeg'),
             )
             result = {'ok': True, 'index': index,

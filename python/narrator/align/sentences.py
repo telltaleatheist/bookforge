@@ -117,8 +117,16 @@ def _snap(raw: float, low: float, high: float,
     seam to the window edge, not to its own distant centre), and the nearest
     candidate wins.
     """
-    if high <= low:
-        return min(max(raw, low), high) if high >= low else raw
+    if high < low:
+        # Unreachable: `sentence_cues` refuses a chunk too short for its
+        # sentence count before it gets here, precisely so this function never
+        # has to invent a seam (review finding 9 - it used to return `raw`
+        # unbounded, which could land past the chunk and left the refusal to
+        # `build_sentence_vtt`, blaming the cue instead of the geometry).
+        raise AlignerError(
+            f'_snap: no room for a seam between {low:.3f}s and {high:.3f}s')
+    if high == low:
+        return low
     window_lo = max(low, raw - SNAP_WINDOW_S)
     window_hi = min(high, raw + SNAP_WINDOW_S)
     if window_hi <= window_lo:
@@ -165,6 +173,19 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
 
     sentences = split_chunk_sentences(text if text is not None else alignment.text)
     ranges = sentence_word_ranges(sentences, len(alignment.words))
+
+    # THE GEOMETRY HAS TO FIT BEFORE ANY OF IT IS COMPUTED. n sentences need
+    # n-1 seams and every cue needs `MIN_CUE_S`, so a chunk shorter than that
+    # has no honest arrangement - and refusing HERE names the chunk and the
+    # arithmetic, where refusing later (in `build_sentence_vtt`, on an inverted
+    # cue) named the symptom.
+    needed = MIN_CUE_S * len(sentences)
+    if span < needed:
+        raise AlignerError(
+            f'chunk {chunk_index} is {span:.3f}s and splits into '
+            f'{len(sentences)} sentence(s); at a {MIN_CUE_S}s floor per cue '
+            f'that needs {needed:.3f}s. The chunk and its text do not match: '
+            f'check the render before trusting either.')
 
     # Each sentence's own first and last PLACED word, in the chunk's timeline.
     bounds = []

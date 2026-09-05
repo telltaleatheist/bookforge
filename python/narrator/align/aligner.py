@@ -504,8 +504,15 @@ def _spans(words: Sequence[AlignedWord],
     seconds as "audio with no text" would report ONE defect twice - once as
     dropped text and once as an insertion - and a run of two weak words in a
     40-word chunk would fail a chunk that has no insertion in it at all
-    (measured while writing the tests). The two lists answer different
-    questions and must not overlap.
+    (measured while writing the tests).
+
+    THE ONE CASE THAT DOES APPEAR TWICE is an UNTIMED word (review finding 11).
+    It lands in a text span AND leaves a hole that can become an audio span,
+    because it claims no audio at all. That is rare - it takes a whole-segment
+    alignment failure - and it is arguably two real facts about the chunk
+    ("this text was not placed" and "this audio explains nothing"), so it is
+    reported rather than suppressed. What must never happen, and does not, is
+    the WEAK-BUT-TIMED word being counted twice.
     """
     text_spans = []
     run: list = []
@@ -610,9 +617,9 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
 
     words = []
     for index, ((word, start, end, score), mine) in enumerate(zip(raw, expected)):
-        start = None if start is None or _nan(start) else float(start)
-        end = None if end is None or _nan(end) else float(end)
-        score = None if score is None or _nan(score) else float(score)
+        start = _number(start, 'start', index, word, audio_path, backend)
+        end = _number(end, 'end', index, word, audio_path, backend)
+        score = _number(score, 'score', index, word, audio_path, backend)
         if start is not None and end is not None and end < start:
             raise AlignerError(
                 f'{audio_path}: backend {backend!r} placed word {index} '
@@ -631,8 +638,30 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
     )
 
 
-def _nan(value) -> bool:
-    try:
-        return math.isnan(float(value))
-    except (TypeError, ValueError):
-        return True
+def _number(value, field: str, index: int, word: str, audio_path: str,
+            backend: str) -> Optional[float]:
+    """One of a word's three numbers: a float, or None, or a refusal.
+
+    NOT a blanket "anything unconvertible becomes None" (review finding 8). NaN
+    IS meaningful - WhisperX interpolates missing word times and leaves NaN
+    where it cannot, so NaN means "the backend placed nothing here" and maps to
+    None. A STRING, a list or an object does not mean that: it means the
+    backend returned something this code does not understand, and silently
+    calling it None would turn a backend bug into a coverage FAILURE on a chunk
+    that is probably fine.
+    """
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise AlignerError(
+            f'{audio_path}: backend {backend!r} returned {field}={value!r} '
+            f'({type(value).__name__}) for word {index} ({word!r}); a word time '
+            f'or score is a number or nothing')
+    value = float(value)
+    if math.isnan(value):
+        return None
+    if math.isinf(value):
+        raise AlignerError(
+            f'{audio_path}: backend {backend!r} returned {field}={value} for '
+            f'word {index} ({word!r})')
+    return value

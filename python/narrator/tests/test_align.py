@@ -36,7 +36,29 @@ from narrator.assemble import coverage_gate
 from narrator.assemble.engine_profiles import (HIGGS_V3_COVERAGE,
                                                ORPHEUS_COVERAGE, profile_for)
 
-GOLDEN_ROOT = os.environ.get('NARRATOR_GOLDEN_LOCAL', r'C:\tmp\narrator-golden')
+
+def _default_golden_local() -> str:
+    """`C:\\tmp\\narrator-golden` - AS THIS INTERPRETER CAN REACH IT.
+
+    The same three lines as `test_text_prep_golden._default_golden_local`, and
+    copied rather than imported ON PURPOSE: that module imports
+    `narrator.text.prep`, which needs ebooklib, and this one is deliberately
+    free of every heavy dependency so it runs on any interpreter. Importing it
+    for five lines of stdlib would make the aligner's tests unrunnable wherever
+    ebooklib is missing - which is exactly the interpreter the review ran on.
+
+    Why it exists at all (review nit 13): hard-coding the Windows path made the
+    prep parity suite silently SKIP under WSL, which sees the same bytes at
+    `/mnt/c/tmp/narrator-golden`.
+    """
+    if os.name == 'nt':
+        return r'C:\tmp\narrator-golden'
+    if os.path.isdir('/mnt/c'):
+        return '/mnt/c/tmp/narrator-golden'
+    return r'C:\tmp\narrator-golden'
+
+
+GOLDEN_ROOT = os.environ.get('NARRATOR_GOLDEN_LOCAL') or _default_golden_local()
 KERSHAW = os.path.join(
     GOLDEN_ROOT, 'kershaw',
     'ebook-ccd14111-da29-4fb0-a489-a19a0f126bac',
@@ -480,7 +502,11 @@ class GateTest(unittest.TestCase):
             with self.assertRaises(coverage_gate.CoverageRefusal) as caught:
                 coverage_gate.check(self._manifest('higgs-v3', chunks=2),
                                     path, lambda line: None)
-            self.assertIn('9', str(caught.exception))
+            message = str(caught.exception)
+            # Not assertIn('9') - '9' appears in almost any message
+            # (review nit 12). Name both counts and the reason.
+            self.assertIn('written for a manifest of 9 chunk(s)', message)
+            self.assertIn('this one has 2', message)
 
     def test_a_chunk_nobody_aligned_is_refused_for_an_enforced_engine(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -544,8 +570,20 @@ class EnvTest(unittest.TestCase):
         self.assertTrue(os.path.isdir(os.path.join(root, 'narrator')))
 
     def test_the_worker_environment_puts_this_checkout_on_pythonpath(self):
+        """Asserted against THIS FILE's own location, not against a second call
+        to the function under test (review nit 12): the worker has to be able
+        to `import narrator`, and what proves that is the directory this test
+        module itself lives two levels under."""
+        here = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        expected = os.path.dirname(here)
         env = E.worker_environment({})
-        self.assertEqual(env['PYTHONPATH'], E.package_root())
+        self.assertEqual(env['PYTHONPATH'], expected)
+        self.assertTrue(os.path.isfile(
+            os.path.join(env['PYTHONPATH'], 'narrator', 'align', 'worker.py')))
+
+    def test_an_existing_pythonpath_is_prepended_to_not_replaced(self):
+        env = E.worker_environment({'PYTHONPATH': 'X'})
+        self.assertTrue(env['PYTHONPATH'].endswith(os.pathsep + 'X'))
 
 
 class CliTest(unittest.TestCase):
