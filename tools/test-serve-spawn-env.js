@@ -69,7 +69,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const BASE = path.join(__dirname, 'snapshots', 'serve-spawn-base.json');
@@ -121,11 +121,20 @@ const base = hostNeutral(JSON.parse(fs.readFileSync(BASE, 'utf-8')));
 
 /** One arm's capture, PARSED but not yet host-neutralised. */
 function capture(arm, engine) {
-  return JSON.parse(execFileSync(
+  // STDERR IS KEPT — see the note in test-narrator-argv-snapshot.js. An extractor
+  // that fails because a door moved has a diagnostic worth reading; `stdio: 'ignore'`
+  // replaced it with `Command failed`.
+  const r = spawnSync(
     process.execPath,
     [path.join(__dirname, 'serve-spawn-extract.js'), arm, ...(engine ? [engine] : [])],
-    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-  ));
+    { encoding: 'utf-8' },
+  );
+  if (r.status !== 0) {
+    throw new Error(
+      `serve-spawn-extract.js ${arm}${engine ? ` ${engine}` : ''} exited ${r.status}:\n`
+      + `${(r.stderr || '(no stderr)').trim()}`);
+  }
+  return JSON.parse(r.stdout);
 }
 
 // RAW and neutralised are kept apart, and it matters. `hostNeutral` deletes every

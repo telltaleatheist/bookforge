@@ -99,11 +99,21 @@ if (!settings) {
     process.exitCode = 2;
     return;
   }
+  if (!st.language_iso1) {
+    console.error(`${procDir}/session-state.json names no language_iso1. It used to fall `
+      + "back to 'en', which is a retake rendered in a language the book may not be in — "
+      + 'a take that succeeds and is wrong.');
+    process.exitCode = 2;
+    return;
+  }
   settings = {
     ttsEngine: st.tts_engine,
     fineTuned: st.fine_tuned,
     orpheusModelDir: st.orpheus_model_dir || undefined,
-    language: st.language_iso1 || 'en',
+    // NOT `|| 'en'`. This file's own header argues that a silent fallback is the
+    // failure it exists to prevent, and a retake rendered in the wrong language is
+    // precisely that: it succeeds, and the audio is wrong.
+    language: st.language_iso1,
     device: 'CUDA',
   };
   console.log('[retake] settings rebuilt from narrator session-state.json (no BookForge sidecar)');

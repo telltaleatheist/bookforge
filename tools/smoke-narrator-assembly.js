@@ -37,7 +37,17 @@ const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
-const GOLDEN = process.env.NARRATOR_GOLDEN || 'C:\\tmp\\narrator-golden\\kershaw';
+// REQUIRED, not defaulted. The old `|| 'C:\tmp\narrator-golden\kershaw'` was a
+// host-shaped path standing in for a missing answer: it refuses cleanly on a Mac,
+// so it could not falsely pass, but "where is the golden" is a question this tool
+// must be told rather than assume.
+const GOLDEN = process.env.NARRATOR_GOLDEN;
+if (!GOLDEN) {
+  console.error('Set NARRATOR_GOLDEN to the golden session directory '
+    + '(on this Windows box: C:\tmp\narrator-golden\kershaw).');
+  process.exitCode = 1;
+  return;
+}
 
 const EXPECT_CUES = 133;
 const EXPECT_SECONDS = 2615.400;

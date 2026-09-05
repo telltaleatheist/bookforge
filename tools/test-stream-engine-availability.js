@@ -222,10 +222,21 @@ for (const [platform, opts] of [['win32', { wslHiggs: true }], ['darwin', {}]]) 
       }
       if (h.available) {
         assert.ok(built, `Higgs is advertised available on ${platform} but the spawn refused: ${refusal}`);
-      } else {
-        assert.ok(refusal || built,
-          'the spawn neither built nor refused — that is not an answer');
+        return;
       }
+      // THE UNAVAILABLE HALF. It used to assert `refusal || built`, which the
+      // try/catch above makes true by construction — one of the two is always set,
+      // so half this file's stated rule was a no-op, and on a Windows host the
+      // darwin row is the branch that takes it.
+      //
+      // The real rule: an engine the app refuses to OFFER must refuse to SPAWN, and
+      // for a reason a user can act on. A plan that builds anyway is availability and
+      // the launcher disagreeing, which is exactly what this file exists to catch.
+      assert.ok(!built,
+        `${platform} advertises Higgs as unavailable (${h.reason}) and yet builds a `
+        + 'spawn plan for it — the two answers disagree');
+      assert.ok(refusal && refusal.length > 20,
+        `the spawn refused with nothing usable: ${JSON.stringify(refusal)}`);
     });
   });
 }

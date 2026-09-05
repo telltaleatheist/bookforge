@@ -1041,8 +1041,12 @@ check('an Orpheus render with NO voice is refused, not defaulted', () => {
     'pushVoiceArgs no longer refuses an absent Orpheus voice — narrator would '
     + "render the whole book in 'leah' and report success");
   // And the refusal has to NAME the consequence, or it reads as a validation nit.
+  // COMMENT-STRIPPED `body`, not raw `bridgeSrc`. Scanning the raw source meant the
+  // guard could be satisfied by prose: a comment mentioning leah anywhere in those
+  // 700 characters passed the check while the thrown message said nothing about it.
+  // The retake door a few rows down already strips comments; this now matches.
   const at2 = body.indexOf('if (!requested)');
-  assert.match(bridgeSrc.slice(bridgeSrc.indexOf('if (!requested)'), bridgeSrc.indexOf('if (!requested)') + 700),
+  assert.match(body.slice(at2, at2 + 700),
     /leah/, 'the refusal does not name the voice the book would have been rendered in');
   assert.ok(at2 < body.indexOf('ORPHEUS_STOCK_VOICES.includes(requested)'),
     'the absent-voice refusal must come BEFORE the not-installed one, or an absent '

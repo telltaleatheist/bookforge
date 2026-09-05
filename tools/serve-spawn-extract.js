@@ -347,3 +347,15 @@ process.stdout.write(JSON.stringify(out, null, 2) + '\n');
 }
 
 main();
+
+// CLEAN UP AFTER YOURSELF. `<REPO>/.fake-userdata` is a real directory because the
+// darwin Higgs row reports whether the weights dir BookForge names exists, and the
+// captured path is `<REPO>`-relative in the committed baseline — so it cannot simply
+// move to the temp dir without regenerating a snapshot, which is not something this
+// suite does casually. It is removed on the way out instead.
+//
+// It stayed invisible only because git does not track empty directories; the keeper
+// suite was leaving a directory in the checkout on every run.
+try {
+  fs.rmSync(FAKE_USER_DATA, { recursive: true, force: true });
+} catch { /* a parallel arm may have removed it first; nothing here depends on it */ }

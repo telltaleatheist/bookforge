@@ -123,7 +123,15 @@ check('no SPAWN hard-codes the ScarlettJohansson default voice', () => {
 console.log('and no kill pattern hunts a process that cannot exist');
 for (const pattern of ['ebook2audiobook.*\\\\.py', 'app\\\\.py', 'worker\\\\.py']) {
   check(`no sweep matches /${pattern.replace(/\\\\/g, '\\')}/`, () => {
-    const hits = FILES.filter(({ code }) => code.includes(pattern));
+    // BOTH spellings. `code.includes('worker\\\\.py')` finds the pattern written as
+    // a quoted STRING, which is how every current sweep writes it — and misses the
+    // same pattern written as a TS REGEX LITERAL, `/worker\\.py/`, where the source
+    // carries one backslash where a string carries two. A stale sweep in the form the
+    // check cannot see is the entire hazard: it matches nothing, reports success, and
+    // leaves a python holding the GPU.
+    const asRegexLiteral = pattern.replace(/\\\\/g, '\\');
+    const hits = FILES.filter(({ code }) =>
+      code.includes(pattern) || code.includes(asRegexLiteral));
     assert.strictEqual(hits.length, 0,
       `a stale kill pattern survives in: ${hits.map((h) => h.file).join(', ')}. `
       + 'A pattern that matches nothing reports success and leaves a python on the GPU.');

@@ -51,7 +51,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
-const { execFileSync } = require('child_process');
+const { spawnSync } = require('child_process');
 
 const REPO = path.resolve(__dirname, '..');
 const BASE = path.join(__dirname, 'snapshots', 'narrator-argv-base.json');
@@ -90,9 +90,21 @@ require.cache['electron-stub'] = {
 const spawnMod = require(path.join(REPO, 'dist', 'electron', 'narrator-spawn.js'));
 
 const base = JSON.parse(fs.readFileSync(BASE, 'utf-8'));
-const extract = (...args) => JSON.parse(execFileSync(
-  process.execPath, [path.join(__dirname, 'narrator-argv-extract.js'), ...args],
-  { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] }));
+// STDERR IS KEPT. It used to be 'ignore', which threw away the one diagnostic that
+// matters: the likeliest real failure here is an argv anchor that stopped matching
+// after a door was rewritten, and `narrator-argv-extract.js` says exactly which
+// anchor and where. Discarding it turned that into a bare `Command failed`.
+const extract = (...args) => {
+  const r = spawnSync(
+    process.execPath, [path.join(__dirname, 'narrator-argv-extract.js'), ...args],
+    { encoding: 'utf-8' });
+  if (r.status !== 0) {
+    throw new Error(
+      `narrator-argv-extract.js ${args.join(' ')} exited ${r.status}:\n`
+      + `${(r.stderr || '(no stderr)').trim()}`);
+  }
+  return JSON.parse(r.stdout);
+};
 
 const flags = extract('flags');
 const plans = Object.fromEntries(ARMS.map((a) => [a, extract('plan', a)]));
@@ -155,7 +167,11 @@ check('no door names an ENGINE_NEAR_MISS', () => {
   // narratorEngineId(), which is the only place the mapping lives.
   for (const [door, argv] of Object.entries(flags)) {
     const at = argv.indexOf("'--tts_engine',");
-    if (at < 0) continue;
+    // NOT `continue`. A door with no --tts_engine at all would have skipped this
+    // check silently — the "passes when the thing it tests is absent" shape. The
+    // REQUIRED table above already demands the flag on four of the five doors, so
+    // this only fires for a door that lost it; when it does, it must say so.
+    assert.ok(at >= 0, `${door} sends no --tts_engine, so nothing here checked its source`);
     const value = argv.slice(at + "'--tts_engine',".length).trim().split(/[,\s]/)[0];
     assert.ok(/narratorEngineId|asmEngine/.test(value),
       `${door} sends --tts_engine ${value} — it must come from narratorEngineId()`);
