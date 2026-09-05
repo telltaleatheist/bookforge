@@ -234,10 +234,30 @@ export const TTS_ENGINES: Record<TTSEngine, TtsEngineCaps> = {
     id: 'higgs',
     displayName: 'Higgs',
     statusText: 'Higgs Audio v3 · zero-shot clone or fine-tune',
-    // The v3 stack is vLLM-Omni, which has no Windows build at all — the same
-    // reason the page-reader VLM is WSL-only, and a stronger one than Orpheus's
-    // (Orpheus runs natively and merely runs badly). See docs/HIGGS_ENGINE.md.
-    requiresComponent: 'higgs-env',
+    /**
+     * NULL, and this is load-bearing rather than a shrug.
+     *
+     * An earlier draft said `'higgs-env'`, which named a component that does not
+     * exist: `electron/components/` has no such module, so
+     * `ComponentService.isInstalled('higgs-env')` was false on EVERY machine and
+     * `selectableEngines()` filtered Higgs out of the picker entirely. The
+     * feature was invisible from the UI and nothing errored — the row simply was
+     * not there.
+     *
+     * It cannot be fixed by registering one either, not honestly: on Windows the
+     * Higgs environment is a WSL conda env built by the `higgs:install-env` IPC,
+     * and a ComponentService entry describes a WINDOWS install with a download,
+     * a size and a path. There is nothing for it to point at.
+     *
+     * So the gate is the doctor, which is a better gate anyway: it checks the
+     * distro, the env, `vllm-omni`, BOTH site-packages patches and the launcher,
+     * and it is re-run at spawn time — where `isInstalled` would have answered
+     * once from a manifest. Higgs is therefore always OFFERED and refused by name
+     * when it cannot run (`higgsPreflight`, and `stageRefusal` before the job is
+     * queued). Offering-and-refusing is the same honest pair the catalog uses for
+     * a voice whose artifact has not landed.
+     */
+    requiresComponent: null,
     runtime: 'wsl',
     device: { cpuCapable: false, gpuRequired: true },
     // One resident vllm-omni server per GPU; the server batches internally, and

@@ -26,7 +26,10 @@
     "readyTimeoutSeconds": 300,
     "_coldStartNote": "297 s from launch to /health answering, MEASURED on narrator's own GPU smoke (2026-09-04) — not the ~55 s the first audition reported, which was a warm cache. narrator's READY_TIMEOUT_SECONDS is 300, i.e. the measurement sits three seconds under the limit. Anything in BookForge that decides a Higgs job is dead must therefore allow AT LEAST five minutes before the first audio. Checked against the two that could: WORKER_STARTUP_TIMEOUT_MS is 10 minutes and WORKER_PROGRESS_TIMEOUT_MS is 12 (parallel-tts-bridge.ts), so both already clear it — but they clear it by minutes, not by an order of magnitude, and anyone tightening them must re-read this line. The server also preallocates to its utilization target (0.60 of 24 GB), so it OWNS the GPU while it is up.",
     "_flashInferNote": "FlashInfer is unavailable on sm_86 with torch 2.13+cu130 — it JIT-builds its attention kernels with nvcc and its bundled CCCL headers reject the CUDA 13 nvcc from the pip wheel — so the launch pins VLLM_USE_FLASHINFER_SAMPLER=0, VLLM_DISABLE_FLASHINFER_PREFILL=1 and --attention-backend FLASH_ATTN. Speed only; the flashinfer-jit-cache cu130/sm_86 wheel from https://flashinfer.ai/whl/cu130/torch2.13/ is the route if v3 speed ever matters.",
-    "adapterStrategies": ["lora-modules", "merged-dir"],
+    "adapterStrategies": [
+      "lora-modules",
+      "merged-dir"
+    ],
     "_adapterStrategyNote": "NARRATOR_HIGGS3_ADAPTER_STRATEGY, and BOTH STRATEGIES REQUIRE A SERVER RESTART — there is no per-request adapter path on this stack. 'lora-modules' adds `--enable-lora --lora-modules <name>=<path>` to the launch; 'merged-dir' makes the path REPLACE the served model argument. WHICH ONE vllm-omni ACTUALLY ACCEPTS FOR higgs_multimodal_qwen3 HAS NOT BEEN EXERCISED, which is why no voice here declares one yet: narrator refuses to guess, and it is right to — the wrong strategy is a server that comes up serving the BASE voice and renders an entire book in it while reporting success.",
     "patches": [
       {
@@ -67,9 +70,9 @@
             "in": 10,
             "out": 25
           },
-          "_edgeFadeNote": "Applied at ASSEMBLY, never baked into the per-chunk wav (chunks are written exactly as decoded so the raw model output stays inspectable). Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms cosine out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. This is also why the manifest's gapBefore/gapAfter become LIVE for Higgs where they are inert for Orpheus.",
+          "_edgeFadeNote": "WHO APPLIES THIS: narrator's assembler, and as of 2026-09-05 NOBODY DOES YET — Owen assigned it there (the manifest carries pads=false plus edge_fade_ms and the assembler fades each chunk edge), and until that lands a Higgs book joins at hard sample boundaries and clicks. The number is recorded here because it is MEASURED and because the catalog is where per-voice tuning lives, not because this side applies it: an earlier draft of parallel-tts-bridge.ts justified routing Higgs assembly to narrator by claiming narrator already read this field, which was false on both sides. WHY THE FADE IS NEEDED AT ALL: Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms cosine out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. It is applied at ASSEMBLY and never baked into the per-chunk wav, so the raw model output stays inspectable. This is also why the manifest gapBefore/gapAfter become LIVE for Higgs where they are inert for Orpheus.",
           "sampling": {
-            "temperature": 1.0,
+            "temperature": 1,
             "topP": 0.95,
             "topK": 50
           },
@@ -105,7 +108,7 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1.0,
+            "temperature": 1,
             "topP": 0.95,
             "topK": 50
           },

@@ -61,34 +61,22 @@ function check(name, fn) {
 console.log('orpheus argv snapshot (baseline: 01a3799b, pre-Higgs)');
 
 /**
- * The ONE textual change the Higgs work made to a shared argv, and the licence
- * for treating it as no change at all.
+ * NO SUBSTITUTIONS. The current source must match the pre-Higgs baseline
+ * EXACTLY, in all five doors.
  *
- * The prep spawn now reads `prepEngine.envEngine` / `prepEngine.cliEngine` where
- * it read `settings.ttsEngine`. Those expressions are EQUAL for every engine but
- * Higgs — that is not an assumption, it is the "prepEngineFor is the IDENTITY"
- * assertion at the bottom of this file, which fails loudly if it ever stops being
- * true. So the substitution is applied to the current source before the
- * comparison, and the baseline stays the genuine pre-change text rather than
- * being regenerated to make a red test green.
+ * There used to be one licensed substitution here: the prep spawn read
+ * `prepEngine.envEngine` / `prepEngine.cliEngine` where it had read
+ * `settings.ttsEngine`, because a Higgs prep was being routed to ebook2audiobook
+ * as `--tts_engine orpheus` scaffolding. That whole mechanism is gone — Higgs
+ * prep goes to narrator now (review finding 5) — so the prep argv is byte-for-byte
+ * what it was at `01a3799b` again and the escape hatch is not needed.
  *
- * Anything NOT on this list is a real diff and must fail. Adding to it means
- * writing down, here, why the new expression is provably the old one — and
- * backing that with an assertion, not a sentence.
+ * If a substitution is ever needed again, it must be named here AND backed by an
+ * assertion, never by regenerating the baseline to make a red test green.
  */
-const LICENSED_SUBSTITUTIONS = [
-  { from: /\bprepEngine\.envEngine\b/g, to: 'settings.ttsEngine' },
-  { from: /\bprepEngine\.cliEngine\b/g, to: 'settings.ttsEngine' },
-];
 
 const baseline = JSON.parse(fs.readFileSync(BASELINE, 'utf-8'));
-const rawCurrent = extract(fs.readFileSync(SOURCE, 'utf-8'));
-const current = Object.fromEntries(
-  Object.entries(rawCurrent).map(([door, text]) => [
-    door,
-    LICENSED_SUBSTITUTIONS.reduce((acc, s) => acc.replace(s.from, s.to), text),
-  ]),
-);
+const current = extract(fs.readFileSync(SOURCE, 'utf-8'));
 
 check('every door in the baseline is still present', () => {
   for (const door of Object.keys(baseline)) {
@@ -152,23 +140,13 @@ check('isHiggsJob is true only for higgs', () => {
   assert.strictEqual(bridge.isHiggsJob({ ttsEngine: 'higgs' }), true);
 });
 
-check('prepEngineFor is the IDENTITY for every non-Higgs engine', () => {
-  // This is what makes the prep spawn byte-identical: both the `--tts_engine`
-  // value and the interpreter/WSL-routing engine are still `settings.ttsEngine`.
-  for (const id of ['orpheus', 'xtts', 'f5', 'voxtral']) {
-    assert.deepStrictEqual(
-      bridge.prepEngineFor({ ttsEngine: id }),
-      { cliEngine: id, envEngine: id },
-      `prepEngineFor changed the prep spawn for ${id}`,
-    );
-  }
-});
-
-check('prepEngineFor splits the two answers ONLY for higgs', () => {
-  assert.deepStrictEqual(
-    bridge.prepEngineFor({ ttsEngine: 'higgs' }),
-    { cliEngine: 'orpheus', envEngine: 'xtts' },
-  );
+check('the prep spawn no longer has a Higgs seam in it at all', () => {
+  // `prepEngineFor` existed only to tell e2a's packer `orpheus` while running in
+  // the bundled env. Higgs prep goes to narrator now, so the function is gone and
+  // the prep argv is the untouched pre-Higgs one — which the door comparison
+  // above proves without any licensed substitution.
+  assert.strictEqual(bridge.prepEngineFor, undefined,
+    'prepEngineFor is back; if that is deliberate, the snapshot needs its substitution again');
 });
 
 console.log(failures === 0 ? '\nALL OK' : `\n${failures} FAILED`);

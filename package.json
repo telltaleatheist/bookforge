@@ -154,6 +154,11 @@
     "files": [
       "dist/**/*",
       "foundry-app/dist/**/*",
+      "python/**/*",
+      "!python/**/__pycache__/**",
+      "!python/**/*.pyc",
+      "!python/narrator/tests/**",
+      "!python/**/golden/**",
       "bookforge-icon.png"
     ],
     "asarUnpack": [
@@ -161,7 +166,8 @@
       "dist/electron/python/**",
       "dist/electron/bookshelf-ui/**",
       "dist/electron/clipforge-ui/**",
-      "node_modules/**"
+      "node_modules/**",
+      "python/**"
     ],
     "icon": "bookforge-icon.png",
     "compression": "store",

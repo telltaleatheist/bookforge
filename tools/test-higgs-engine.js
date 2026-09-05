@@ -31,6 +31,7 @@
 const assert = require('assert');
 const fs = require('fs');
 const path = require('path');
+const os = require('os');
 const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
@@ -51,11 +52,17 @@ Module._resolveFilename = function (request, ...rest) {
   if (request === 'electron') return 'electron-stub';
   return originalResolve.call(this, request, ...rest);
 };
+/**
+ * `app.getAppPath()` is a VARIABLE, not a constant, so the buildHiggsSpawn suite
+ * can point it at a scratch root that contains a narrator package. See that
+ * section for why a stub package is the right fixture here.
+ */
+let APP_PATH = REPO;
 require.cache['electron-stub'] = {
   id: 'electron-stub',
   filename: 'electron-stub',
   loaded: true,
-  exports: { app: { getAppPath: () => REPO, isPackaged: false, getPath: () => REPO } },
+  exports: { app: { getAppPath: () => APP_PATH, isPackaged: false, getPath: () => REPO } },
 };
 
 let failures = 0;
@@ -386,18 +393,34 @@ check('a clone voice document carries path, transcript AND seconds', () => {
   ]);
 });
 
-check('an adapter voice document carries adapterDir, not a separate kind', () => {
-  // narrator's document has no adapter kind: a fine-tune is adapterDir ON the
-  // clips object. higgsVoicesDocument is the one place the two shapes meet.
+check('an adapter document carries adapterDir AND its measured cap AND kind', () => {
+  // THE CAP MUST TRAVEL. narrator's load_voices raises for an adapter entry with
+  // no `maxChars` — so `refuseUnmeasuredAdapter` was guarding a number that never
+  // reached the engine, and the day deathstalker is promoted with its length
+  // sweep the render would have been refused while the measurement sat in a JSON
+  // file nobody read. `kind` is stated rather than left to narrator's derivation
+  // (absent + adapterDir => 'adapter'), so the refusal path has nothing to infer.
   const m = probeVoice({
     id: 'ft', kind: 'adapter',
     voice: { clips: [], adapterDir: '/home/x/higgs-models/ft' },
-    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep' } },
+    backends: { served: { maxChars: 1350, maxCharsSource: 'length-sweep 2026-09-05' } },
   });
   const doc = higgs.higgsVoicesDocument(m);
   assert.strictEqual(doc.ft.adapterDir, '/home/x/higgs-models/ft');
   assert.deepStrictEqual(doc.ft.clips, []);
-  assert.ok(!('kind' in doc.ft), 'the rule discriminator leaked into the wire format');
+  assert.strictEqual(doc.ft.kind, 'adapter');
+  assert.strictEqual(doc.ft.maxChars, 1350);
+  assert.strictEqual(doc.ft.maxCharsSource, 'length-sweep 2026-09-05');
+});
+
+check('a zero-shot document carries its cap too, so nothing is inferred', () => {
+  // narrator would otherwise fall back to HiggsV3Defaults.MAX_CHARS — also 600,
+  // and labelled a placeholder on that side. The two agreeing today is a
+  // coincidence, not a contract.
+  const doc = higgs.higgsVoicesDocument(defaultVoice);
+  assert.strictEqual(doc.default.kind, 'clips');
+  assert.strictEqual(doc.default.maxChars, 600);
+  assert.strictEqual(doc.default.maxCharsSource, 'zero-shot placeholder');
 });
 
 const env = higgs.higgsSpawnEnv(defaultVoice, {
@@ -549,20 +572,205 @@ console.log('narrator contract');
 
 const spawnMod = require(path.join(DIST, 'higgs-spawn.js'));
 
-check('prep is told orpheus but runs in the bundled env — the two differ', () => {
-  // If these ever become the same value, one of the two reasons in
-  // higgs-spawn.ts has been forgotten: the flag picks e2a's PACKER (which reads
-  // ORPHEUS_MAX_CHARS) and the env picks the interpreter (which must not be the
-  // WSL Orpheus one for a text-only pass).
-  assert.strictEqual(spawnMod.HIGGS_PREP_ENGINE_ALIAS, 'orpheus');
-  assert.strictEqual(spawnMod.HIGGS_PREP_ENV_ENGINE, 'xtts');
-  assert.notStrictEqual(spawnMod.HIGGS_PREP_ENGINE_ALIAS, spawnMod.HIGGS_PREP_ENV_ENGINE);
+check('the e2a prep scaffolding is GONE — Higgs preps on narrator', () => {
+  // HIGGS_PREP_ENGINE_ALIAS/-ENV_ENGINE existed to tell e2a's packer `orpheus`
+  // while running in the bundled env. narrator's paragraph packer IS the Higgs
+  // chunking rule now, and the e2a route also wrote a session recording the
+  // WRONG engine with no higgs_voice — which resume and retake read back.
+  assert.strictEqual(spawnMod.HIGGS_PREP_ENGINE_ALIAS, undefined);
+  assert.strictEqual(spawnMod.HIGGS_PREP_ENV_ENGINE, undefined);
+  assert.strictEqual(spawnMod.higgsPrepMaxChars, undefined);
 });
 
 check('the worker names higgs-v3, which is what narrator must accept', () => {
   assert.strictEqual(spawnMod.HIGGS_NARRATOR_ENGINE, 'higgs-v3');
   assert.strictEqual(spawnMod.HIGGS_NARRATOR_ENGINE_ENV, 'higgs-v3');
 });
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 8. buildHiggsSpawn — the function that produces the actual command line
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// This section exists because the review found THREE defects inside
+// buildHiggsSpawn and nothing tested it: the narrator package was resolved with a
+// message that blamed packaging, Windows paths were never translated for the
+// guest (the guard's character class held an escaped FORWARD slash and nothing
+// else), and the worker argv carried a spurious --fine_tuned beside
+// --higgs_voice. All three are argv/env facts, all three are testable without a
+// GPU, and none of them was covered.
+console.log('buildHiggsSpawn');
+
+const B = String.fromCharCode(92); // backslash, built so no editor eats it
+
+check('the drive-path guard matches BOTH separators', () => {
+  // The exact regression: /^[A-Za-z]:[\/]/ is a class containing an escaped
+  // forward slash only, so it matched 'C:/x' and missed 'C:\x' — and path.join
+  // on win32 emits backslashes, so every --session_dir crossed into the guest
+  // as a literal Windows path that narrator then refused.
+  const guard = /^[A-Za-z]:[\\/]/;
+  assert.strictEqual(guard.test('C:' + B + 'Users' + B + 'x'), true, 'backslash path missed');
+  assert.strictEqual(guard.test('C:/Users/x'), true);
+  assert.strictEqual(guard.test('E:' + B + 'training' + B + 'x'), true);
+  assert.strictEqual(guard.test('/mnt/c/x'), false);
+  assert.strictEqual(guard.test('--session_dir'), false);
+  assert.strictEqual(guard.test('higgs-v3'), false);
+});
+
+check('narratorPythonRoot refuses by NAME when the package is not checked out', () => {
+  // It used to say "this is a packaging bug", which sends a reader to
+  // electron-builder config for a checkout problem. python/narrator lives on
+  // feat/narrator, which lands first.
+  let threw = null;
+  try { spawnMod.narratorPythonRoot(); } catch (err) { threw = err; }
+  if (!threw) return; // the package IS present (feat/narrator merged) — fine
+  assert.match(threw.message, /narrator package is not in this checkout/);
+  assert.match(threw.message, /feat\/narrator/, 'the refusal does not name the branch');
+  assert.ok(!/packaging bug/i.test(threw.message), 'still blames packaging');
+});
+
+// A SCRATCH narrator package, so these run on this branch as well as after
+// feat/narrator lands.
+//
+// This is not testing a fake: `narratorPythonRoot` only asks whether
+// `narrator/__init__.py` exists, and everything under test — argv order, path
+// translation, which flags are present — is BookForge's own construction, none of
+// which reads a line of narrator's source. Skipping instead would have left the
+// three defects the review found in exactly the state that let them ship.
+const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-higgs-spawn-'));
+fs.mkdirSync(path.join(SCRATCH, 'python', 'narrator'), { recursive: true });
+fs.writeFileSync(path.join(SCRATCH, 'python', 'narrator', '__init__.py'), '');
+APP_PATH = SCRATCH;
+process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: true }); } catch {} });
+
+// FORCE THE WSL ARM. Without a tool-paths.json the toggle is off, so on Windows
+// buildHiggsSpawn takes the native arm and correctly refuses ("vLLM-Omni has no
+// Windows build") — which is right behaviour and the wrong thing to test here.
+// The compiled bridge calls `(0, tool_paths_1.shouldUseWsl2ForHiggs)()` through
+// the module object, so overriding it is a real seam and not a rewrite. Writing
+// a tool-paths.json instead would edit the developer's own configuration.
+const wslWasOn = toolPaths.shouldUseWsl2ForHiggs();
+toolPaths.shouldUseWsl2ForHiggs = () => true;
+const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+if (process.platform !== 'win32') {
+  Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+}
+process.on('exit', () => {
+  toolPaths.shouldUseWsl2ForHiggs = () => wslWasOn;
+  if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+});
+
+{
+  const model = higgs.resolveHiggsModel('default');
+  const WIN_SESSION = 'C:' + B + 'Users' + B + 't' + B + 'proj' + B + 'tmp' + B + 'ebook-abc';
+  const WIN_SENTENCES = 'C:' + B + 'Users' + B + 't' + B + 'proj' + B + 'sentences';
+  const workerArgs = [
+    '--session', 'abc-123',
+    '--session_dir', WIN_SESSION,
+    '--sentences_dir', WIN_SENTENCES,
+    '--device', 'CUDA',
+    '--tts_engine', 'higgs-v3',
+    '--sentence_start', '0', '--sentence_end', '99',
+    '--higgs_voice', 'default',
+  ];
+  const plan = spawnMod.buildHiggsSpawn('worker', {
+    model, args: workerArgs, cwd: REPO, jobId: 'job1',
+  });
+  const line = plan.viaWsl ? plan.args[plan.args.length - 1] : plan.args.join(' ');
+
+  check('the worker spawns narrator.compat.worker, never an e2a script', () => {
+    assert.match(line, /-m narrator\.compat\.worker/);
+    assert.ok(!/worker\.py/.test(line), 'an e2a script path reached a Higgs spawn');
+  });
+
+  check('NO Windows path survives into the command line', () => {
+    // The whole of finding 3, asserted on the real output rather than the regex.
+    const leaked = line.match(/[A-Za-z]:[\\\\/][^' ]*/g);
+    assert.strictEqual(leaked, null, 'untranslated Windows path(s): ' + leaked);
+  });
+
+  check('the session and sentences dirs arrive as /mnt/<drive>/… paths', () => {
+    if (!plan.viaWsl) return; // native arm: Windows paths are correct there
+    assert.match(line, /\/mnt\/c\/Users\/t\/proj\/tmp\/ebook-abc/);
+    assert.match(line, /\/mnt\/c\/Users\/t\/proj\/sentences/);
+  });
+
+  check('every ENV value is translated too, not just argv', () => {
+    if (!plan.viaWsl) return;
+    // NARRATOR_HIGGS_VOICES is written to the Windows temp dir and must be named
+    // in the guest's filesystem. It used to be translated by its own call, which
+    // is how the argv guard's bug stayed invisible in a log.
+    const m = line.match(/NARRATOR_HIGGS_VOICES='([^']+)'/);
+    assert.ok(m, 'NARRATOR_HIGGS_VOICES is not exported');
+    assert.match(m[1], /^\/mnt\/[a-z]\//, 'voices path is not a guest path: ' + m[1]);
+  });
+
+  check('the worker carries --higgs_voice and NOT --fine_tuned', () => {
+    // Finding 10: pushVoiceArgs falls through to --fine_tuned for any engine it
+    // does not recognise, so a Higgs worker carried both. They are a prompt TOKEN
+    // and a CATALOG ID; one handed where the other belongs renders a whole book
+    // in the wrong voice.
+    assert.match(line, /--higgs_voice/);
+    assert.ok(!/--fine_tuned/.test(line), '--fine_tuned reached a Higgs worker');
+  });
+
+  check('the engine is higgs-v3 in BOTH the flag and NARRATOR_ENGINE', () => {
+    assert.match(line, /--tts_engine' 'higgs-v3'|--tts_engine higgs-v3/);
+    assert.match(line, /NARRATOR_ENGINE='higgs-v3'|NARRATOR_ENGINE=higgs-v3/);
+  });
+
+  check('PYTHONPATH points at the narrator package, in the guest filesystem', () => {
+    const m = line.match(/PYTHONPATH='([^']+)'/);
+    assert.ok(m, 'PYTHONPATH is not exported');
+    if (plan.viaWsl) assert.match(m[1], /^\/mnt\/[a-z]\//);
+  });
+
+  check('no ORPHEUS_* variable rides along', () => {
+    assert.ok(!/ORPHEUS_/.test(line), 'an Orpheus variable leaked into a Higgs spawn');
+  });
+
+  const prep = spawnMod.buildHiggsSpawn('prep', {
+    model,
+    args: ['--headless', '--prep_only', '--ebook', 'C:' + B + 'books' + B + 'a.epub',
+           '--session', 'abc', '--session_dir', WIN_SESSION,
+           '--tts_engine', 'higgs-v3', '--higgs_voice', 'default'],
+    cwd: REPO, jobId: 'job1',
+  });
+  const prepLine = prep.viaWsl ? prep.args[prep.args.length - 1] : prep.args.join(' ');
+
+  check('prep goes to compat.app --prep_only, never to e2a', () => {
+    assert.match(prepLine, /-m narrator\.compat\.app/);
+    assert.match(prepLine, /--prep_only/);
+    assert.ok(!/app\.py/.test(prepLine), 'e2a app.py reached a Higgs prep');
+  });
+
+  check('prep ALWAYS carries --session_dir', () => {
+    // narrator has no e2a root to fall back to and refuses to guess; forwarding
+    // E2A_TMP_DIR is not an alternative because it holds a Windows path.
+    assert.match(prepLine, /--session_dir/);
+  });
+
+  const asm = spawnMod.buildHiggsSpawn('assembly', {
+    model,
+    args: ['--headless', '--output_dir', 'C:' + B + 'out', '--session', 'abc',
+           '--session_dir', WIN_SESSION, '--assemble_only', '--no_split'],
+    cwd: REPO, jobId: 'job1',
+  });
+  const asmLine = asm.viaWsl ? asm.args[asm.args.length - 1] : asm.args.join(' ');
+
+  check('assembly goes to compat.app and omits --tts_engine', () => {
+    // dispatch routes --assemble_only before any engine resolution, and the value
+    // the argv would otherwise carry is the literal 'higgs' — a documented
+    // ENGINE_NEAR_MISS that would be refused by name the moment assembly is gated.
+    assert.match(asmLine, /-m narrator\.compat\.app/);
+    assert.match(asmLine, /--assemble_only/);
+    assert.ok(!/--tts_engine/.test(asmLine), 'assembly still sends --tts_engine');
+  });
+
+  check('assembly translates its paths too', () => {
+    const leaked = asmLine.match(/[A-Za-z]:[\\\\/][^' ]*/g);
+    assert.strictEqual(leaked, null, 'untranslated Windows path(s) in assembly: ' + leaked);
+  });
+}
 
 console.log(failures === 0 ? '\nALL OK' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

@@ -535,6 +535,12 @@ export function higgsVoiceCapsForModel(model: HiggsModel): HiggsServedCaps {
  */
 export function higgsVoicesDocument(model: HiggsModel): Record<string, unknown> {
   const entry: Record<string, unknown> = {
+    // `kind` IS part of the document. narrator's `load_voices` reads it and,
+    // when it is absent, DERIVES it as 'adapter' from the presence of
+    // `adapterDir` — then refuses an adapter that carries no `maxChars`. An
+    // earlier draft omitted `kind` on the theory that it was BookForge-only;
+    // stating it removes the derivation from the middle of a refusal path.
+    kind: model.kind,
     clips: model.voice.clips.map((c) => ({
       path: c.path,
       transcript: c.transcript,
@@ -544,6 +550,20 @@ export function higgsVoicesDocument(model: HiggsModel): Record<string, unknown> 
   if (model.voice.adapterDir) entry.adapterDir = model.voice.adapterDir;
   if (model.voice.scene) entry.scene = model.voice.scene;
   const caps = higgsVoiceCapsForModel(model);
+  // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
+  // near-miss. `refuseUnmeasuredAdapter` guards a number that, until now, never
+  // reached the engine: narrator's `load_voices` raises for an adapter whose
+  // entry has no `maxChars`, with its own message about a fine-tune's safe chunk
+  // length being a measured property of THAT model. So the day deathstalker is
+  // promoted with its length sweep — the exact event the `_pendingNote` waits
+  // for — narrator would have refused the render while the measured number sat
+  // in a JSON file nobody read.
+  //
+  // This is per-voice DOCUMENT tuning, not an env `caps` payload, so it does not
+  // trip `higgs_v3_config_from_worker_kwargs`'s refusal — that one is about
+  // Orpheus knobs arriving through the load message.
+  if (caps.maxChars !== undefined && caps.maxChars !== null) entry.maxChars = caps.maxChars;
+  if (caps.maxCharsSource) entry.maxCharsSource = caps.maxCharsSource;
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;
   return { [model.id]: entry };

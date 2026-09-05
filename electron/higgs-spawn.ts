@@ -7,33 +7,42 @@
  * and it exists as its own module precisely so that the parting is ONE import in
  * `parallel-tts-bridge.ts` rather than a fifth `if` inside four spawn sites.
  *
- * ── The three phases go to three different places, and that is not a design
- *    choice ───────────────────────────────────────────────────────────────────
+ * ── All three phases go to narrator ────────────────────────────────────────
  *
- * | phase    | runs on   | why                                                  |
- * |----------|-----------|------------------------------------------------------|
- * | prep     | e2a       | narrator REFUSES `--prep_only` by name — the packer   |
- * |          |           | is migration step 4 and is not written yet.           |
- * | worker   | narrator  | this is the whole point; e2a has no Higgs engine.     |
- * | assembly | narrator  | `--assemble_only` is engine-agnostic and already ports|
+ * | phase    | door                                | why                      |
+ * |----------|-------------------------------------|--------------------------|
+ * | prep     | `compat.app --prep_only`            | its paragraph packer IS  |
+ * |          |                                     | the Higgs chunking rule  |
+ * | worker   | `compat.worker`                     | e2a has no Higgs engine  |
+ * | assembly | `compat.app --assemble_only`        | engine-agnostic door     |
  *
- * PREP ON e2a IS SOUND, AND IT WAS CHECKED RATHER THAN ASSUMED. e2a's prep phase
- * (`lib/core.py:prep_ebook_info`) parses the EPUB and packs sentences; it loads
- * NO TTS model. Its packing cap is chosen by a plain string comparison —
- * `elif tts_engine == 'orpheus': max_chars = int(os.environ['ORPHEUS_MAX_CHARS'])
- * or 350` (`lib/core.py:1553` and `:2437`) — so telling it `orpheus` and handing
- * it Higgs's measured cap packs to Higgs's cap. That is the SAME
- * engine-agnostic-scaffolding move the codebase already makes in the other
- * direction, where assembly is told `--tts_engine xtts` on every book including
- * Orpheus ones because assembly combines audio and never consults the name.
+ * PREP MOVED HERE FROM e2a (2026-09-05, review finding 5). The first draft
+ * routed it to ebook2audiobook as `--tts_engine orpheus` in the bundled env, with
+ * `ORPHEUS_MAX_CHARS` carrying the Higgs cap — a mechanism that was verified in
+ * e2a's source and did work, on a PREMISE that expired hours later: narrator's
+ * `text/paragraph_packer.py` landed, `compat/app.py` now forces
+ * `chunking = 'paragraph'` for `higgs-v3`, and `text/prep.py` refuses `higgs-v3`
+ * with e2a chunking by name.
  *
- * The honest limitation: this is e2a's SENTENCE packer, and the chunking rule
- * Owen set for Higgs is PARAGRAPH-based (a chunk ends only at a paragraph end;
- * v3's 8,192-token window makes ~4,000 characters fit). That packer is
- * `narrator/text/paragraph_packer.py`, step 4, unwritten. Until it lands, a Higgs
- * book is packed to 600-char sentence groups, which is what every v3 measurement
- * was actually taken at — so it is the measured behaviour, not a guess, but it is
- * not yet the intended one. Recorded in docs/HIGGS_ENGINE.md.
+ * The old route was wrong in three ways beyond the chunk shape, and all three
+ * are silent: the session it wrote recorded `tts_engine: "orpheus"`, carried no
+ * `higgs_voice`, and carried no `bookforge_chunking`. So any door that does not
+ * pass the voice explicitly — resume, retake — would read the state back, find
+ * `higgs_voice` absent, and either refuse or (worse) let `resolve_engine_id` fall
+ * through to `tts_engine == 'orpheus'` and build the ORPHEUS engine for a Higgs
+ * book.
+ *
+ * Owen's rule is that the paragraph is the chunk (v3's 8,192-token window fits
+ * ~4,000 characters). Coverage was measured at 600-char sentence groups, so
+ * re-measuring at the new chunk sizes is owed — that is the training side's job
+ * and it is recorded in docs/HIGGS_ENGINE.md, not papered over here.
+ *
+ * `--session_dir` IS MANDATORY ON EVERY NARRATOR SPAWN, prep included.
+ * `session_store.sessions_root()` reads `$E2A_TMP_DIR`; e2a survived without the
+ * flag because `lib/conf.py` fell back to `<e2a_root>/tmp`, which happened to be
+ * the path the bridge had computed. narrator has no e2a root and refuses to
+ * guess. Forwarding `E2A_TMP_DIR` is NOT an alternative: it holds a WINDOWS path
+ * while a WSL prep derives its session dir from the WSL e2a root.
  *
  * ── Reconciled against narrator's real contract ─────────────────────────────
  *
@@ -75,27 +84,17 @@ import {
 } from './higgs-models';
 
 /**
- * The engine name e2a's PREP is told for a Higgs job.
+ * Does this Higgs job run inside WSL?
  *
- * `orpheus`, and the reason is in this module's header: e2a's packer branches on
- * this exact string to reach the `ORPHEUS_MAX_CHARS` cap, which is the knob Higgs
- * needs. Prep loads no model, so nothing else about the name is consulted.
- *
- * A CONSTANT WITH A NAME rather than a bare `'orpheus'` at the call site, because
- * a reader who finds `--tts_engine orpheus` in a Higgs code path deserves to be
- * able to click through to why.
+ * Exported because `prepareSession` needs it for a decision that is NOT about
+ * the spawn: where the session directory lives and whether the EPUB has to be
+ * staged. `shouldUseWslForSpawn` cannot answer it — that function is keyed to
+ * Orpheus and deliberately returns false for Higgs, because a Higgs command must
+ * never go through `spawnWithWslSupport` (see buildHiggsSpawn).
  */
-export const HIGGS_PREP_ENGINE_ALIAS = 'orpheus';
-
-/**
- * The env e2a's PREP for a Higgs job runs in: the generic bundled one.
- *
- * NOT the Orpheus env, even though the flag above says `orpheus`. Prep imports no
- * TTS backend, and routing it into the Orpheus env would drag it through the WSL
- * Orpheus spawn (`shouldUseWslForSpawn` keys on this name) for a text-parsing
- * pass — the exact mistake `asmEngineArg` exists to avoid on the assembly side.
- */
-export const HIGGS_PREP_ENV_ENGINE = 'xtts';
+export function higgsRunsInWsl(): boolean {
+  return process.platform === 'win32' && shouldUseWsl2ForHiggs();
+}
 
 /** `--tts_engine` on narrator's prep, worker and retake routes. */
 export const HIGGS_NARRATOR_ENGINE = 'higgs-v3';
@@ -114,7 +113,7 @@ export const HIGGS_VOICE_FLAG = '--higgs_voice';
 /** `NARRATOR_ENGINE`, which selects the backend inside `serve/worker.py`. */
 export const HIGGS_NARRATOR_ENGINE_ENV = 'higgs-v3';
 
-export type HiggsSpawnKind = 'worker' | 'assembly' | 'serve';
+export type HiggsSpawnKind = 'prep' | 'worker' | 'assembly' | 'serve';
 
 export interface HiggsSpawnPlan {
   command: string;
@@ -157,10 +156,16 @@ export function narratorPythonRoot(): string {
   for (const c of candidates) {
     if (fs.existsSync(path.join(c, 'narrator', '__init__.py'))) return toUnpackedPath(c);
   }
+  // NOT "a packaging bug". On a dev machine nothing is packaged, and the real
+  // reason is almost always the same one: `python/narrator` lives on the
+  // `feat/narrator` branch, which lands FIRST (Owen's merge-order ruling). Say
+  // that, because "packaging bug" sends the reader to electron-builder config
+  // for a checkout problem.
   throw new Error(
-    'The narrator package could not be found. Looked for narrator/__init__.py under: ' +
-      candidates.join(', ') +
-      '. Higgs renders through narrator, so this is a packaging bug, not a setting.',
+    'The narrator package is not in this checkout. Higgs renders through narrator ' +
+      '(python/narrator), which lands with or before this branch — it is NOT vendored ' +
+      'or copied here. Looked for narrator/__init__.py under: ' + candidates.join(', ') +
+      '. Merge feat/narrator, or render on Orpheus until it lands.',
   );
 }
 
@@ -231,10 +236,13 @@ export function buildHiggsSpawn(
     jobId: string;
   },
 ): HiggsSpawnPlan {
+  // prep and assembly are both `compat.app` doors (--prep_only / --assemble_only);
+  // the worker is `compat.worker`, which is the same routing with --worker_mode
+  // implied. See narrator's compat/FLAGS.md, "The two doors".
   const module =
     kind === 'worker' ? 'narrator.compat.worker'
-      : kind === 'assembly' ? 'narrator.compat.app'
-        : 'narrator.serve';
+      : kind === 'serve' ? 'narrator.serve'
+        : 'narrator.compat.app';
 
   const pythonRoot = narratorPythonRoot();
   const serving = higgsServingFor(opts.model);
@@ -276,10 +284,23 @@ export function buildHiggsSpawn(
     // Paths in argv are translated here, explicitly and only where they are
     // paths — the opposite of buildWslBashCommand's pattern matching. An arg that
     // is not a drive-letter path crosses verbatim.
-    const wslArgs = opts.args.map((a) => (/^[A-Za-z]:[\/]/.test(a) ? windowsToWslPath(a) : a));
+    //
+    // THE GUARD USED TO BE a character class holding ONLY an escaped forward
+    // slash — so it matched
+    // 'C:/x' and MISSED 'C:\\x', and path.join on win32 emits backslashes. Every
+    // --session_dir and --sentences_dir therefore crossed into the guest as a
+    // literal Windows path, single-quoted so bash preserved it exactly, and
+    // narrator refused it as a directory that does not exist — potentially after
+    // the 297 s cold start had already been paid.
+    const wslArgs = opts.args.map(toGuestPath);
 
+    // EVERY env value goes through the same translation as argv. A Windows path
+    // is exactly as unusable to the guest inside NARRATOR_HIGGS_VOICES as it is
+    // inside --session_dir, and the two used to be translated by different code
+    // (one correct, one not) — which is how the argv guard's bug stayed
+    // invisible while the voices path looked right in a log.
     const exports = Object.entries({ ...baseEnv, PYTHONPATH: wslPythonRoot })
-      .map(([k, v]) => `${k}=${shellQuote(v)}`)
+      .map(([k, v]) => `${k}=${shellQuote(toGuestPath(v))}`)
       .join(' ');
     const run =
       `${shellQuote(conda)} run --no-capture-output -n ${shellQuote(envName)} ` +
@@ -318,26 +339,15 @@ function wslCondaBase(condaPath: string): string {
 }
 
 /**
- * The packing cap e2a's prep must use for this Higgs voice.
+ * A Windows drive path, as the WSL guest must see it; anything else verbatim.
  *
- * NOT OPTIONAL, and not `| undefined`. Every voice that can reach prep has
- * already been through `higgsPreflight` -> `resolveHiggsModel`, which refuses a
- * fine-tune with no measured cap outright; a zero-shot voice carries the engine
- * placeholder. So a missing number here is not "let the default apply" — e2a's
- * default is 350, an Orpheus number with no bearing on Higgs — it is a bug in
- * the chain above, and it throws rather than packing a book to a cap nobody
- * chose.
+ * BOTH SEPARATORS. `windowsToWslPath` itself normalises the separators correctly
+ * (e2a-paths.ts) — it was only ever the guard that was wrong. Used for argv AND
+ * for every environment value, because a path is just as unusable to the guest
+ * inside `NARRATOR_HIGGS_VOICES` as it is inside `--session_dir`.
  */
-export function higgsPrepMaxChars(model: HiggsModel): number {
-  const cap = higgsVoiceCapsForModel(model).maxChars;
-  if (typeof cap !== 'number' || !(cap > 0)) {
-    throw new Error(
-      `Higgs voice "${model.id}" reached prep with no packing cap (${JSON.stringify(cap ?? null)}). ` +
-        `e2a's own default is 350, an Orpheus number that has no bearing on Higgs — refusing ` +
-        `to pack a book to a cap nobody chose.`,
-    );
-  }
-  return cap;
+function toGuestPath(value: string): string {
+  return /^[A-Za-z]:[\\/]/.test(value) ? windowsToWslPath(value) : value;
 }
 
 function shellQuote(s: string): string {
