@@ -44,18 +44,30 @@ chunks, 2026-09-05. Both candidates drive the SAME wav2vec2 checkpoint
 | | WhisperX align | torchaudio `forced_align` |
 |---|---|---|
 | word start agreement (529 words) | median 0.000 s, p95 0.020 s, max 0.98 s | (same pair) |
-| CPU per chunk (5-30 s chunks) | 0.30-2.83 s | 0.26-2.58 s |
+| CPU per chunk (4.9-29.6 s chunks) | 0.30-2.59 s | 0.26-2.58 s |
 | model load | 5.6 s warm / 19.5 s cold | 0.6 s |
 | localizes text inside longer audio | **yes** | **no** |
 | dropped-text detection | yes (tail score 0.11 median vs 0.86 control) | yes (0.000 vs 0.99) |
 | API status | maintained | **deprecated in 2.8, REMOVED in 2.9** |
 
 **The deciding measurement.** Given one chunk's text against that chunk plus the
-next one concatenated, WhisperX ended the last word 0.42-0.94 s past the true
-text end in 6 pairs out of 6; torchaudio smeared it to within about a second of
-the AUDIO end every time (overshoot 8.9-20.9 s). Point 4's "audio with no text"
-is undetectable with the second behaviour. That, plus the deprecation, is why
-WhisperX ships.
+next one concatenated (6 pairs), WhisperX ended the last word 0.42-0.94 s BEFORE
+the true text end every time - the right answer, since a chunk's last word ends
+before its trailing silence. torchaudio smeared the same word to 1.0-3.3 s short
+of the AUDIO end every time, overshooting the true text end by 9.0-20.9 s:
+
+| pair | audio | true text end | WhisperX | torchaudio |
+|---|---|---|---|---|
+| 5 | 52.74 s | 29.61 s | 28.85 s | 50.46 s |
+| 10 | 45.48 s | 26.71 s | 26.07 s | 44.38 s |
+| 30 | 38.14 s | 16.81 s | 16.39 s | 37.12 s |
+| 40 | 42.15 s | 25.00 s | 24.09 s | 38.89 s |
+| 50 | 27.14 s | 15.53 s | 14.59 s | 24.49 s |
+| 70 | 29.35 s | 17.58 s | 16.69 s | 27.55 s |
+
+Point 4's "audio with no text" is undetectable with the second behaviour - it
+reports no insertion because it has claimed the insertion as text. That, plus
+the deprecation, is why WhisperX ships.
 
 **No automatic switching, and a failure stops the run** (Owen's ruling,
 2026-09-05). There is no "try A then B" path anywhere: `align_chunk` raises
