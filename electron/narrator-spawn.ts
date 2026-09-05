@@ -315,6 +315,44 @@ export function narratorPythonRoot(): string {
   );
 }
 
+/**
+ * HAS narrator's MLX HIGGS BACKEND LANDED IN THIS CHECKOUT?
+ *
+ * Higgs v3 ships ONE backend today: `engine/higgs/v3_served.py`, a vLLM-Omni
+ * server. vLLM-Omni has no macOS build, so on a Mac `NARRATOR_ENGINE=higgs-v3`
+ * resolves to an engine that cannot start — which is why the Listen picker must
+ * not offer Higgs there, however present the `narrator-mlx` environment is.
+ *
+ * An in-process MLX backend for darwin is being written on
+ * `feat/narrator-higgs-mlx`. This detects it by CONTENT rather than by filename,
+ * because the filename is the other builder's to choose: any module under
+ * `engine/higgs/` that mentions mlx means the backend is here.
+ *
+ * IT IS A LANDING DETECTOR, NOT A CAPABILITY QUERY, and the difference matters
+ * enough to say: it answers "is the code present", not "will it load on this
+ * machine". When the branch lands, the honest replacement is to ask narrator
+ * itself — a `--probe` on the registry, or an engine attribute the serve worker
+ * reports — and this function goes. Until then it is what keeps the picker from
+ * promising a Mac feature that does not exist yet, without hard-coding `false`
+ * that somebody then has to remember to flip.
+ */
+let higgsMlxBackendCache: boolean | null = null;
+
+export function higgsMlxBackendPresent(): boolean {
+  if (higgsMlxBackendCache !== null) return higgsMlxBackendCache;
+  try {
+    const dir = path.join(narratorPythonRoot(), 'narrator', 'engine', 'higgs');
+    higgsMlxBackendCache = fs.readdirSync(dir)
+      .filter((f) => f.endsWith('.py'))
+      .some((f) => /\bmlx\b/i.test(fs.readFileSync(path.join(dir, f), 'utf-8')));
+  } catch {
+    // No narrator package, or no higgs engine directory. Either way the backend
+    // is not here, which is the same answer.
+    higgsMlxBackendCache = false;
+  }
+  return higgsMlxBackendCache;
+}
+
 /** Does a spawn for this engine cross into WSL on this machine? */
 export function narratorRunsInWsl(engine: NarratorEngineId | undefined, phase: NarratorPhase): boolean {
   if (process.platform !== 'win32') return false;

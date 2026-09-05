@@ -2,13 +2,22 @@
  * Streaming Engine selector — chooses which TTS engine backs the Listen feature
  * (the in-app Play tab, the TTS API server, and the browser extension).
  *
- * ONE ENGINE, AND THE SELECTOR STAYS. Since XTTS was pulled out of the root
- * (2026-09-05) Orpheus is the only pool that implements {@link StreamingEngine},
- * so `StreamEngineName` is a one-member union. The indirection is kept rather
- * than inlined because it is what makes the selection OBSERVABLE (see
- * `observable()` below) and what the TTS Server settings payload, the browser
- * extension's `config` message and the persisted `tts-engine.json` are all
- * written against. Higgs is deliberately not here — see `getAvailableEngines`.
+ * TWO ENGINES. Orpheus everywhere; Higgs where its platform arm exists. The
+ * one-member union that stood here between the XTTS removal and 2026-09-05 was
+ * interim — the selector was always the thing the TTS Server settings payload,
+ * the browser extension's `config` message and the persisted `tts-engine.json`
+ * are written against, and it is what makes the selection OBSERVABLE (see
+ * `observable()` below).
+ *
+ * WHICH ENGINE A MACHINE CAN ACTUALLY OFFER IS NOT A CONSTANT — see
+ * `getAvailableEngines()`. Higgs v3's only shipping backend is a vLLM-Omni
+ * server, so it is a Windows/WSL feature today; the in-process MLX backend that
+ * would make it a Mac one is being written on `feat/narrator-higgs-mlx`.
+ *
+ * ONE MORE THING THE POOL MUST HONOUR FOR HIGGS: a v3 voice change is a SERVER
+ * RESTART. `HiggsV3Engine.set_voice` refuses in place by name — a fine-tuned
+ * voice IS the merged checkpoint the server was started on, and vLLM-Omni has no
+ * adapter flags. Orpheus switches voices for free; Higgs does not.
  *
  * The choice persists in `tts-engine.json` (userData) and takes effect on the
  * next engine start.
@@ -18,7 +27,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { orpheusWorkerPool } from './orpheus-worker-pool';
+import { orpheusWorkerPool, setServeEngineProbe } from './orpheus-worker-pool';
 import {
   PlaySettings,
   AudioChunk,
@@ -29,10 +38,12 @@ import {
   LoadVoiceOptions,
 } from './orpheus-worker-pool';
 import { shouldUseWsl2ForOrpheus } from './e2a-paths';
-import { narratorNativePython } from './narrator-spawn';
+import { higgsMlxBackendPresent, narratorNativePython } from './narrator-spawn';
+import { listRenderableHiggsModels } from './higgs-models';
+import { shouldUseWsl2ForHiggs } from './tool-paths';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 
-export type StreamEngineName = 'orpheus';
+export type StreamEngineName = 'orpheus' | 'higgs';
 
 /** The methods the scheduler + API server invoke on an engine pool. */
 export interface StreamingEngine {
@@ -113,9 +124,24 @@ export interface StreamingEngine {
   }): StreamWorkerConfig;
 }
 
+// THE POOL LEARNS THE SELECTION FROM HERE, at module load, and never the other
+// way round: this module owns `tts-engine.json` and the pool must not read it (the
+// import would be a cycle). Registered before anything can spawn, because
+// `buildSpawnPlan` asks the probe for the engine AND, for Higgs, for the voice
+// whose document it is about to write.
+setServeEngineProbe(() => getSelectedEngineName());
+
 // Compile-time proof the pool satisfies the contract.
+//
+// ONE POOL, TWO ENTRIES, and that is not a placeholder. The pool is not
+// Orpheus-shaped machinery with a Higgs mode bolted on: it speaks narrator's
+// JSON-lines protocol to `python -m narrator.serve`, and WHICH engine is on the
+// other end is `NARRATOR_ENGINE` in the spawn. So the same object serves both,
+// and the difference lives where it belongs — in `buildSpawnPlan`, which asks
+// `getSelectedEngineName()` for the engine to start.
 const ENGINES: Record<StreamEngineName, StreamingEngine> = {
   orpheus: orpheusWorkerPool,
+  higgs: orpheusWorkerPool,
 };
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -194,8 +220,9 @@ const RETIRED_ENGINE_NAMES = new Set(['xtts']);
  * THERE IS NO DEFAULTING HERE, and the three cases are deliberately different:
  *
  *  - NOTHING RECORDED (a fresh install, or a file written before the engine was
- *    ever a choice) → Orpheus. Not a fallback: `StreamEngineName` has one member,
- *    so "no choice recorded" and "the only choice" are the same statement.
+ *    ever a choice) → Orpheus. A real default now that there are two engines, and
+ *    the reason is that Orpheus is the one EVERY supported machine can run:
+ *    Windows/WSL, Linux and the Mac. Higgs is opt-in because it is not.
  *  - A RETIRED NAME (`xtts`) → migrated, loudly, and the file is rewritten so the
  *    stale preference stops being re-read. This is the same shape as
  *    `loadWorkerCfg`'s legacy `cpuWorkers` migration. It is safe in a way a
@@ -227,7 +254,7 @@ export function getSelectedEngineName(): StreamEngineName {
   }
   console.error(
     `[StreamingEngine] tts-engine.json selects "${cfg.engine}", which was retired on 2026-09-05. ` +
-    'Migrating the saved selection to Orpheus, the only streaming engine this build has.',
+    'Migrating the saved selection to Orpheus.',
   );
   selected = 'orpheus';
   writePersisted({ ...cfg, engine: selected });
@@ -261,6 +288,7 @@ function observable(pool: StreamingEngine): StreamingEngine {
 
 const OBSERVABLE: Record<StreamEngineName, StreamingEngine> = {
   orpheus: observable(ENGINES.orpheus),
+  higgs: observable(ENGINES.higgs),
 };
 
 export function getActiveEngine(): StreamingEngine {
@@ -373,23 +401,91 @@ function orpheusAvailability(): EngineInfo {
 }
 
 /**
+ * IS HIGGS STREAMABLE ON THIS MACHINE?
+ *
+ * Three things have to be true, and each is false somewhere real:
+ *
+ *  1. A BACKEND FOR THIS PLATFORM. Higgs v3 ships one: a vLLM-Omni SERVER, which
+ *     has no macOS build. So Windows/WSL yes, Mac not yet — the in-process MLX
+ *     backend that would change that is being written on
+ *     `feat/narrator-higgs-mlx`, and `higgsMlxBackendPresent()` detects it landing
+ *     rather than hard-coding a `false` somebody has to remember to flip.
+ *  2. THE ENVIRONMENT. On Windows that is the WSL `higgs3` env behind the
+ *     "WSL2 for Higgs" toggle; on a Mac it will be `narrator-mlx`, the same env
+ *     the Orpheus MLX arm uses.
+ *  3. A VOICE. Higgs has no built-in voices the way Orpheus has prompt tokens —
+ *     every voice is a catalog entry whose artifact is installed or is not, and a
+ *     voice whose artifact is missing would serve the model's own default speaker:
+ *     measured at 12% of the narrator's ECAPA ceiling, a DIFFERENT person rather
+ *     than a bad clone. So "no voice installed" is "not available".
+ *
+ * WHAT IS *NOT* A REASON TO REFUSE: the absence of sub-sentence streaming. Higgs's
+ * codec has no sound windowed decode (`HiggsCodec.streaming_decoder()` returns
+ * None, deliberately — its delay pattern leaves a window's last frames incomplete
+ * by construction), so it cannot emit audio mid-sentence. But
+ * `generate_batch_stream` emits WHOLE ROWS at retirement, which is the pool's
+ * `batch_chunk`/`batch_item` path unchanged — a sentence simply arrives all at
+ * once instead of in slices. That is a latency difference, not a missing feature,
+ * and an earlier version of this file refused the engine outright over it.
+ */
+function higgsAvailability(): EngineInfo {
+  const unavailable = (reason: string): EngineInfo =>
+    ({ id: 'higgs', name: 'Higgs', available: false, reason });
+
+  let voices: string[];
+  try {
+    voices = listRenderableHiggsModels().map((m) => m.id);
+  } catch (err) {
+    return unavailable(err instanceof Error ? err.message : 'Higgs voice catalog unreadable');
+  }
+  if (voices.length === 0) {
+    return unavailable(
+      'No Higgs voice is installed. Install one in Settings → Higgs — a voice whose '
+      + 'artifact is missing would render in the model\'s own speaker, not the one chosen.',
+    );
+  }
+
+  if (process.platform === 'win32') {
+    // Same trust as Orpheus's WSL arm and as the batch pipeline: the toggle being
+    // on means the user set this up, and a misconfigured WSL surfaces at start
+    // with the doctor's own message. The doctor itself is a ~1 s WSL round trip
+    // and this function is called from every `hello` and every status payload, so
+    // it is NOT run here.
+    if (!shouldUseWsl2ForHiggs()) {
+      return unavailable(
+        'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" '
+        + 'in Settings → Higgs and install the environment there.',
+      );
+    }
+    return { id: 'higgs', name: 'Higgs', available: true };
+  }
+
+  if (!higgsMlxBackendPresent()) {
+    return unavailable(
+      'Higgs has no backend for this platform yet. Its only shipping backend is a '
+      + 'vLLM-Omni server, which is Windows/WSL-only; the in-process MLX backend for '
+      + 'macOS is not in this build.',
+    );
+  }
+  try {
+    narratorNativePython('higgs');
+    return { id: 'higgs', name: 'Higgs', available: true };
+  } catch (err) {
+    return unavailable(err instanceof Error ? err.message : 'Higgs environment not found');
+  }
+}
+
+/**
  * The streaming engines the Listen pickers offer.
  *
- * ONE ROW. XTTS was listed-and-disabled for a day (2026-09-04) so a machine still
- * running it would not have the engine torn out from under it; its pool and its
- * Python worker were then removed from the root entirely (2026-09-05), so there
- * is nothing left to list — a disabled row for code that no longer exists is a
- * promise the build cannot keep.
- *
- * Higgs is deliberately ABSENT rather than listed-and-unavailable. It is not a
- * streaming engine at all: the v3 backend is a served vllm-omni endpoint and its
- * codec is a delay-pattern one with no sound windowed decode, so there is no
- * partial support to report — narrator's `HiggsCodec.streaming_decoder()`
- * returns None on purpose. Listing it would promise a Listen feature that does
- * not exist.
+ * BOTH ROWS ALWAYS, with `available` and a `reason` carrying the truth — the
+ * pickers disable an unavailable engine and show its reason on hover. That is the
+ * opposite of the XTTS treatment (delisted once its pool was gone, because a row
+ * for code that does not exist is a promise the build cannot keep): Higgs's code
+ * IS here, and "not on this machine, because X" is something a user can act on.
  */
 export function getAvailableEngines(): EngineInfo[] {
-  return [orpheusAvailability()];
+  return [orpheusAvailability(), higgsAvailability()];
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

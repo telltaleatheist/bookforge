@@ -47,6 +47,8 @@ import {
   resolveOrpheusStockBase,
 } from './orpheus-models';
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
+import { higgsEnvExtras, higgsPreflight } from './higgs-spawn';
+import { higgsNarrationVoices, listRenderableHiggsModels } from './higgs-models';
 import { getIdleTimeoutMs } from './stream-idle';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -668,6 +670,38 @@ export function setMainWindow(window: BrowserWindow | null): void {
 // Spawn (native or WSL) — mirrors batch Orpheus exactly
 // ─────────────────────────────────────────────────────────────────────────────
 
+/**
+ * WHICH ENGINE THIS POOL IS CURRENTLY SERVING.
+ *
+ * The pool is not Orpheus machinery with a Higgs mode bolted on: it speaks
+ * narrator's JSON-lines protocol to `python -m narrator.serve`, and which engine
+ * is on the other end is `NARRATOR_ENGINE` in the spawn. So one pool serves both
+ * and this says which.
+ *
+ * INJECTED, not imported. `streaming-engine.ts` owns the selection and already
+ * imports this module; importing it back would be a cycle. Same shape as
+ * `queue-engine.ts`'s `gpuHolderProbe`, and it means the keeper suite can drive a
+ * Higgs pool without a persisted selection on disk.
+ *
+ * Defaulted to Orpheus rather than left null because a pool asked to spawn before
+ * anything has selected an engine is a fresh install, and Orpheus is the engine
+ * every supported machine can run.
+ */
+let serveEngineProbe: () => StreamEngineId = () => 'orpheus';
+
+/** BookForge's streaming engine ids. Mirrors `StreamEngineName` without the
+ *  import that would make a cycle; the keeper asserts they agree. */
+export type StreamEngineId = 'orpheus' | 'higgs';
+
+export function setServeEngineProbe(probe: () => StreamEngineId): void {
+  serveEngineProbe = probe;
+}
+
+/** The engine a spawn/load is FOR. */
+function serveEngine(): StreamEngineId {
+  return serveEngineProbe();
+}
+
 /** The plan every narrator spawn produces; the Listen server adds nothing. */
 export type SpawnPlan = NarratorSpawnPlan;
 
@@ -709,6 +743,32 @@ export type SpawnPlan = NarratorSpawnPlan;
  * server needs, which is the part that is actually about Listen.
  */
 export function buildSpawnPlan(gpuUtil?: number): SpawnPlan {
+  const engine = serveEngine();
+
+  // ── HIGGS ────────────────────────────────────────────────────────────────
+  //
+  // A different engine, and almost nothing above carries over. None of the
+  // ORPHEUS_* batch/warmup contract applies (those names are read by the Orpheus
+  // backend), VLLM_USE_V1 and ORPHEUS_DISABLE_EAGER are vLLM levers Higgs does
+  // not have, and there is no gpu_memory_utilization to size because v3 is a
+  // SERVED model: the server owns its own memory and BookForge only talks to it.
+  //
+  // What Higgs needs instead is its VOICE, before the spawn rather than in a load
+  // message: `NARRATOR_HIGGS_VOICES` names a document written for this run, and
+  // `higgsEnvExtras` writes it (host-native on Mac/Linux, guest-translated under
+  // WSL) and returns the environment that points at it. The voice is chosen at
+  // spawn time because a v3 server is STARTED ON its voice — see loadVoice.
+  if (engine === 'higgs') {
+    const voice = getDefaultVoice();
+    return buildNarratorSpawn({
+      engine: 'higgs',
+      phase: 'serve',
+      args: [],
+      envExtras: higgsEnvExtras(higgsPreflight(voice), `listen-${voice}`, 'serve'),
+      cwdHint: app.getPath('userData'),
+    });
+  }
+
   // Asked of narrator-spawn rather than recomputed, so the arm this env is built
   // FOR is provably the arm the spawn will take.
   const viaWsl = narratorRunsInWsl('orpheus', 'serve');
@@ -795,6 +855,25 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
     // at start. If the wanted level doesn't fit, step DOWN to the highest one the free
     // VRAM can manage rather than refusing — the reservation is always ≤ free, so it
     // can't over-commit and freeze the machine.
+    // THE MEMORY TIER IS ORPHEUS'S. All of it — the tier, the step-down, the
+    // reservation — exists to size vLLM's `gpu_memory_utilization`, which is a
+    // knob Higgs does not have: v3 is a SERVED model and the server owns its own
+    // memory. Running it anyway would spend a GPU probe on nothing and log a
+    // "Memory level" line about an engine that has no levels.
+    if (serveEngine() === 'higgs') {
+      const result = await startWorker(undefined);
+      if (!result.success) {
+        startingSession = false;
+        await endSession();
+        return { success: false, error: result.error };
+      }
+      startIdleWatch();
+      startingSession = false;
+      broadcast('play:session-started');
+      broadcastServiceState();
+      return { success: true, voices: getAvailableVoices() };
+    }
+
     const mem = await getGpuMemMB();
     const wanted = resolveConcreteOrpheusTier(mem?.freeMB ?? null, mem?.totalMB ?? null);
     // Step down to the highest level the free VRAM can manage instead of refusing.
@@ -1008,6 +1087,28 @@ interface LoadPlan {
  * and the disagreement would be silent.
  */
 function resolveLoadPlan(voice: string): LoadPlan {
+  // ── HIGGS: the load carries the VOICE NAME AND NOTHING ELSE ──────────────
+  //
+  // narrator refuses the rest BY NAME, field by field
+  // (`higgs_v3_config_from_worker_kwargs`): `modelDir` because the served model is
+  // the launch script's argument rather than a per-load field, `baseDir` because
+  // v3 has no shared-base + adapter split, `adapterDir` because there is no
+  // runtime LoRA on this stack and an adapter dir is NOT a merged checkpoint, and
+  // `caps` because the Orpheus cap names mean nothing here. An empty caps object
+  // IS accepted — it is the pool's "no catalog tuning" signal and narrator reads
+  // it as the no-op it is.
+  //
+  // The name is looked up in the NARRATOR_HIGGS_VOICES document the spawn wrote.
+  // `higgsPreflight` resolves it against the same catalog, here, so an unknown or
+  // not-yet-installed voice is refused before a worker is asked to load it.
+  //
+  // engineKey IS THE VOICE, which is what makes a Higgs voice change cold: a v3
+  // server is started ON its voice and cannot swap one in place.
+  if (serveEngine() === 'higgs') {
+    const id = higgsPreflight(voice || getDefaultVoice()).id;
+    return { id, token: id, caps: {}, engineKey: `higgs|${id}` };
+  }
+
   const v = (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
   // A folder-discovered custom voice loads its OWN weights — a merged model dir, or
   // an adapter dir over the shared base dir — and uses its verbatim prompt token;
@@ -1137,7 +1238,40 @@ export async function loadVoice(
   if (!worker || !worker.isReady) return { success: false, error: 'No Orpheus worker' };
   touchActivity();
 
-  const v = (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
+  // ── A HIGGS VOICE CHANGE IS A NEW WORKER ─────────────────────────────────
+  //
+  // Not an optimisation: `HiggsV3Engine.set_voice` REFUSES in place, by name. A
+  // fine-tuned v3 voice IS the merged checkpoint the server was started on, and
+  // vLLM-Omni has no adapter flags — its talker does not implement SupportsLoRA —
+  // so there is nothing a running server could load a voice into. Sending the load
+  // anyway gets an error back, and the pool would sit reporting the OLD voice while
+  // the user waits for a switch that cannot happen.
+  //
+  // So the session is torn down and started again, which re-runs `buildSpawnPlan`
+  // and writes a voice document for the new voice. It costs a cold start (~55 s
+  // warm, up to ~300 s cold) and that cost is the engine's, not something this
+  // pool can spend its way out of.
+  //
+  // Orpheus is untouched by this: it encodes the voice as a prompt prefix (or a
+  // per-request LoRA over a shared base), so its switches stay free.
+  if (serveEngine() === 'higgs') {
+    const wantHiggs = higgsPreflight(voice || getDefaultVoice()).id;
+    if (currentVoice === wantHiggs) return { success: true };
+    console.log(
+      `[Orpheus Pool] Higgs voice change '${currentVoice ?? '(none)'}' → '${wantHiggs}': `
+      + 'restarting the worker (a v3 server is started ON its voice and cannot swap one in place)',
+    );
+    // Set BEFORE the restart: buildSpawnPlan reads getDefaultVoice() to decide
+    // which voice document to write, and currentVoice is about to be cleared.
+    lastVoice = wantHiggs;
+    await endSession({ keepServiceArmed: true });
+    const restarted = await startSession();
+    if (!restarted.success) return { success: false, error: restarted.error };
+  }
+
+  const v = serveEngine() === 'higgs'
+    ? higgsPreflight(voice || getDefaultVoice()).id
+    : (voice || ORPHEUS_DEFAULT_VOICE).toLowerCase();
   if (currentVoice === v) return { success: true };
   // Already loading this exact voice — wait on THAT load rather than sending a second
   // one. See inFlightLoad.
@@ -1726,6 +1860,17 @@ export function isSessionActive(): boolean {
 }
 
 export function getAvailableVoices(): string[] {
+  // HIGGS: the catalog's RENDERABLE voices only. `listRenderableHiggsModels`
+  // drops a voice whose artifact has not been installed — offering one would
+  // serve the model's own default speaker, which measures at 12% of the
+  // narrator's ECAPA ceiling: a DIFFERENT person, not a bad clone.
+  if (serveEngine() === 'higgs') {
+    try {
+      return listRenderableHiggsModels().map((m) => m.id);
+    } catch {
+      return [];
+    }
+  }
   // Built-ins + folder-discovered custom voices (each custom id is its folder name;
   // selecting one routes through resolveOrpheusModel in loadVoice). Failures in
   // discovery (e.g. WSL down for a \\wsl$ dir) just yield the built-ins.
@@ -1770,6 +1915,13 @@ export function getCurrentVoice(): string | null {
  *     nothing can vouch for.
  */
 export function canServeVoicePerRequest(voice: string): boolean {
+  // HIGGS: never. A v3 server is started ON one voice, and
+  // `generate_batch_stream` refuses a batch whose rows ask for any other — "a v3
+  // voice change is a server restart, so a mixed-voice batch is impossible". The
+  // `workerBackend !== 'vllm'` line below would already return false (Higgs
+  // reports no vLLM backend), but relying on that would make this correct by
+  // accident, and a backend rename would quietly arm a guard that must stay off.
+  if (serveEngine() === 'higgs') return false;
   if (workerBackend !== 'vllm') return false;
   const v = (voice || '').toLowerCase();
   if (ORPHEUS_VOICES.includes(v)) return true;
@@ -1791,7 +1943,23 @@ export function getLastVoice(): string | null {
 }
 
 export function getDefaultVoice(): string {
-  return currentVoice || lastVoice || ORPHEUS_DEFAULT_VOICE;
+  if (currentVoice) return currentVoice;
+  if (lastVoice) return lastVoice;
+  if (serveEngine() === 'higgs') {
+    // The catalog's first renderable voice. NOT a hard-coded id: which Higgs
+    // voices exist is a per-machine fact (an artifact is installed or it is not),
+    // and naming one that is not there would be refused at the spawn — after the
+    // picker had already offered it.
+    const first = getAvailableVoices()[0];
+    if (!first) {
+      throw new Error(
+        'No Higgs voice is installed on this machine, so there is nothing to stream. '
+        + 'Install one in Settings → Higgs, or switch the streaming engine to Orpheus.',
+      );
+    }
+    return first;
+  }
+  return ORPHEUS_DEFAULT_VOICE;
 }
 
 export function getWorkerCount(): number {
