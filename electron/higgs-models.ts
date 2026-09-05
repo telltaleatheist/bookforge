@@ -311,6 +311,23 @@ export interface HiggsBackendCaps {
    */
   maxCharsSource?: string | null;
   /**
+   * THE CHUNK SIZE THE CODE PACKS TO on this arm, in characters. Owen,
+   * 2026-09-05: "maxChars is what the model was trained to do, and targetChars
+   * can be what the system actually uses. maxChars is informative, targetChars
+   * is used by the code directly." The prep's cap and merge floor in one
+   * number. PER ARM, beside the arm's `maxChars`, because a certificate is per
+   * (directory, backend) and the served and MLX arms of one checkpoint have
+   * measured different safe lengths (1200 vs 900 for deathstalker) — one
+   * model-level number would have to be the lower arm's on both. Set by the
+   * trainer after training, from the training clips' text lengths; until the
+   * retrain states it, Owen's interim rule (2026-09-05): each arm's certified
+   * maximum. `null` on a fine-tune = the prep refuses by name. Never above this
+   * arm's `maxChars` — refused by name on both sides.
+   */
+  targetChars?: number | null;
+  /** Provenance of `targetChars`, in the style of `maxCharsSource`. */
+  targetCharsSource?: string | null;
+  /**
    * Assembly-time fades on every chunk. Higgs emits no pads of its own, so the
    * decoded chunk ends at a hard sample boundary and joins click without these.
    */
@@ -443,19 +460,6 @@ export interface HiggsModel {
    * render through different samplers. The loader picks the block by ARM.
    */
   backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
-  /**
-   * THE CHUNK SIZE THE CODE PACKS TO, in characters — set by whoever trained
-   * the voice, after training, from the training clips' text lengths. Owen,
-   * 2026-09-05: "maxChars is what the model was trained to do, and targetChars
-   * can be what the system actually uses. maxChars is informative, targetChars
-   * is used by the code directly." The prep's cap and merge floor in one
-   * number. `null` on a fine-tune = the prep refuses by name (the trainer has
-   * not set it). A target above an arm's `maxChars` is refused by name on both
-   * sides — the arm's certified limit is a ceiling on it.
-   */
-  targetChars?: number | null;
-  /** Provenance of `targetChars`, in the style of `maxCharsSource`. */
-  targetCharsSource?: string | null;
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
   note?: string;
@@ -1048,6 +1052,8 @@ export function higgsVoiceCapsForModel(
   const caps: HiggsBackendCaps = {};
   if (served.maxChars !== undefined) caps.maxChars = served.maxChars;
   if (served.maxCharsSource !== undefined) caps.maxCharsSource = served.maxCharsSource;
+  if (served.targetChars !== undefined) caps.targetChars = served.targetChars;
+  if (served.targetCharsSource !== undefined) caps.targetCharsSource = served.targetCharsSource;
   if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
   if (served.sampling !== undefined) caps.sampling = served.sampling;
   if (served.referenceSecondsCap !== undefined) caps.referenceSecondsCap = served.referenceSecondsCap;
@@ -1143,22 +1149,22 @@ export function higgsVoicesDocument(
   // THE TRAINER'S TARGET travels beside the cap. Refused here, before the
   // spawn, when it contradicts this arm's cap; narrator's loader refuses the
   // same thing by name, so the two never disagree about what a target may be.
-  if (model.targetChars !== undefined && model.targetChars !== null) {
-    if (!Number.isInteger(model.targetChars) || model.targetChars <= 0) {
+  if (caps.targetChars !== undefined && caps.targetChars !== null) {
+    if (!Number.isInteger(caps.targetChars) || caps.targetChars <= 0) {
       throw new Error(
-        `Higgs voice '${model.id}' declares targetChars ${JSON.stringify(model.targetChars)}, `
+        `Higgs voice '${model.id}' (${target.arm}) declares targetChars ${JSON.stringify(caps.targetChars)}, `
         + 'which is not a positive whole number of characters.',
       );
     }
-    if (typeof caps.maxChars === 'number' && model.targetChars > caps.maxChars) {
+    if (typeof caps.maxChars === 'number' && caps.targetChars > caps.maxChars) {
       throw new Error(
-        `Higgs voice '${model.id}' declares targetChars ${model.targetChars} above its `
+        `Higgs voice '${model.id}' declares targetChars ${caps.targetChars} above its `
         + `${target.arm} cap of ${caps.maxChars}. The cap is the measured safe chunk length; `
         + 'lower the target or re-certify the cap.',
       );
     }
-    entry.targetChars = model.targetChars;
-    if (model.targetCharsSource) entry.targetCharsSource = model.targetCharsSource;
+    entry.targetChars = caps.targetChars;
+    if (caps.targetCharsSource) entry.targetCharsSource = caps.targetCharsSource;
   }
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;
