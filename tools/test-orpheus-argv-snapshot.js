@@ -1,5 +1,28 @@
 #!/usr/bin/env node
 /**
+ * RETIRED 2026-09-04. Kept for the record; superseded by
+ * `tools/test-narrator-argv-snapshot.js`.
+ *
+ * ── Why it is retired rather than deleted ───────────────────────────────────
+ *
+ * It compared `parallel-tts-bridge.ts` against five ebook2audiobook command
+ * lines. Phase 3 of the e2a removal replaced all five: there is no `app.py`, no
+ * `worker.py`, and no `--worker_mode` door left for its anchors to find, so it
+ * now dies on the first one rather than reporting anything. Its BASELINE is the
+ * artefact worth keeping — `tools/snapshots/orpheus-argv-base.json`, generated
+ * from 01a3799b, is the last written record of exactly what BookForge sent
+ * ebook2audiobook, and the Phase 3 write-up quotes it door by door.
+ *
+ * It is out of `tools/run-keepers.js`. Running it by hand is expected to fail.
+ *
+ * The job it did is now done by `test-narrator-argv-snapshot.js`, which pins six
+ * doors instead of five (the reassembly door lives in a different FILE and was
+ * missing here — which is exactly why it kept its `--tts_engine xtts` literal for
+ * a year after the render path stopped needing one) and also pins the PLAN each
+ * door produces on each arm, which literals cannot see.
+ *
+ * Original header follows.
+ *
  * THE ORPHEUS ARGV DID NOT MOVE.
  *
  *   node tools/test-orpheus-argv-snapshot.js
