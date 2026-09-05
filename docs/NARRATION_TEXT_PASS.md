@@ -694,6 +694,7 @@ evidence:
 | (a) | an **abbreviation** — the token carries its own period | `Pet. 3:7`, `Ps. 63:6`, `Zeph. 3:17` |
 | (b) | a **volume number** in front of it — arabic `1-3`, roman `I/II/III`, or the ordinal forms | `1 John 3:16`, `II Cor. 5:17`, `1st John 1:9` |
 | (c) | the token is one of the **73 full canonical book names** | `Genesis 3:15`, `Revelation 21:4`, `Qoheleth 3:1` |
+| (d) | the token is **two or three letters** with no period at all | `Ps 23:1`, `Jn 3:16`, `Rev 21:4`, `Mt 5:3` |
 
 and the rest of the reference comes with it:
 
@@ -706,23 +707,54 @@ and the rest of the reference comes with it:
 | a numbered book with no reference | yes (nine full names, John excluded) | `2 Corinthians`, `II Corinthians` |
 | a book-LESS `c:v` | **no** — it is not known to be scripture | `3:16`, `5:45` |
 
-**The reading of Owen's ruling that (c) rests on — he may veto it.** His
+**(d) is WEAK evidence, admitted on purpose, and it is cheap because of the claim
+test.** A dotless `Ps 23:1` is the same shape as `Map 2:1` and `Bus 47:15`, so on
+its own it proves nothing. It is admitted because (a)–(c) alone left every
+dotless abbreviation *unreadable*: the model's `Psalm twenty three, verse one` was
+refused `WORDS_DROPPED` — that relaxation is scoped to detected spans — and the
+digits reached the narrator. Losing `Ps`, `Jn`, `Rev` and `Mt` is a regression
+from this app's own behaviour in exactly the domain the branch exists for.
+
+What pays for it is the **claim test** below, the same thing that makes a detected
+`Sec. 3:7` affordable: the chapter-and-verse pause is asked only of a reading that
+names a canonical book or an ordinal volume. So one detection serves both —
+`Jn 3:16` → *"John three, verse sixteen"* is accepted as a reference, and
+`Map 2:1` → *"Map two one"*, `Bus 47:15` → *"Bus forty seven fifteen"* are accepted
+as the prose they are. The model decides which it is looking at, which is the
+arrangement Owen ruled for.
+
+**What (d) costs, stated rather than discovered later:** a 2–3 letter token in
+front of a `c:v` is now *protected*, so the book-less rule no longer reads it and
+its reading depends on the model where it used to be deterministic. The surface is
+small — exactly two or three letters, no period, verse of ten or more
+(`Bus 47:15`). **Four letters and up stay out**: `Then 9:45`, `Score 21:19`,
+`Case 5:12`, `Odds 5:2`, `Route 66:1` and every longer word keep `main`'s
+deterministic reading. Months are refused whether or not they print the period
+(`Jan 3:7`), and so is the other grammatical slot — a short word that *points* at
+a number instead of naming a thing (`See 20:6`, `In 20:16`). That exclusion list
+is closed in a way the old deny-list of capitalised nouns never was, and the
+reason is the length: the English function words of two or three letters are a
+fixed, countable set; the capitalised nouns that can precede a colon-number are
+not.
+
+**The reading of Owen's ruling that (c) and (d) rest on — he may veto either.** His
 objection was to enumerating *abbreviations*: "there are a billion ways Bible
 verses are abbreviated", and that set really is open. The set of full canonical
 names is neither open nor invented — 73 fixed words, closed since the canon was —
 and it is used as a **shape**, never as a reading. If Owen reads the ruling as
 forbidding this list too, delete `CANONICAL_BOOK_NAMES`; shapes (a) and (b) still
 stand, and the cost is that a fully spelled book with no volume number
-(`Genesis 3:15`) stops being protected.
+(`Genesis 3:15`) stops being protected. (d) asks the token's *length*, not its
+identity, so it is not a table either — but it is the loosest of the four and the
+one to remove first if he wants the detector tighter; deleting it restores
+(a)–(c) exactly and costs the dotless abbreviations again.
 
-**What is deliberately NOT detected.** A **dotless abbreviation** — `Ps 23:1`,
-`Rev 21:4`, `Jn 3:16` — has none of the three, and a short capitalised token with
-no period is exactly the shape of `Map 2:1`, `Bus 47:15` and `BWV 3:7`. Before
-this branch the abbreviation table read these correctly; now the model's expansion
-is refused `WORDS_DROPPED` (the relaxation is scoped to detected spans) and the
-digits stand — a refusal recorded by name, not a wrong reading. A
-**single-letter** abbreviation (`S. of S. 2:1`) is invisible for the same reason
-a one-letter token is also every initial in a name.
+**What is deliberately NOT detected.** A **single-letter** abbreviation
+(`S. of S. 2:1`) — the token pattern needs two letters, because a one-letter
+abbreviation is also every initial in a name. And a **longer dotless word**:
+`Widescreen 16:9`, `Score 21:19`, `Wednesday 9:45`, `Then 9:45`. Four letters and
+up with no period is the shape of every capitalised noun in English, and (d) stops
+short of it deliberately.
 
 **The list tail is bounded.** A tail carrying its own `c:v` is a reference
 whatever its size; a **bare** tail number is admitted only when it could be a
@@ -775,8 +807,9 @@ Owen's, 2026-09-05, one keeper each in `tools/test-tts-number-rules.js`:
 | `Verses 28:7-8`, `Chapters 3:1-4:2` | the plural of an ordinary noun | as above |
 | `See 20:6`, `Read 20:6`, `Compare 20:16`, `In 20:16` | the sentence capitalized an ordinary word | as above |
 | `at 3:16 John left` | a book name AFTER the digits is no evidence | the book-less reading, *"three sixteen"*, with no scripture pause |
-| `Widescreen 16:9`, `Lakers 3:1`, `Route 66:1`, `Map 2:1`, `BWV 3:7` | no period, no volume number, no canonical name | left as printed, as on `main` |
-| `Score 21:19`, `Bus 47:15`, `Flight 12:30`, `Windows 3:11`, `Docket 5:12`, `Recording 12:34` | same | the **book-less** reading — *"twenty one nineteen"* — which is what `main` read |
+| `Widescreen 16:9`, `Lakers 3:1`, `Route 66:1`, `Ratios 3:7` | four letters or more, no period, no volume number, no canonical name | left as printed, as on `main` |
+| `Score 21:19`, `Flight 12:30`, `Windows 3:11`, `Docket 5:12`, `Recording 12:34` | same | the **book-less** reading — *"twenty one nineteen"* — which is what `main` read |
+| `Map 2:1`, `Bus 47:15`, `BWV 3:7`, `Act 3:2` | three letters — evidence **(d) claims these** | detected, and the model reads them as the prose they are (`Map two one`); the claim test is what lets it |
 | `Wednesday 9:45`, `Meeting Tuesday 14:30`, `Then 9:45` | a weekday or an adverb the sentence capitalised | the book-less reading, as on `main` |
 | `2:00 p.m.`, `Luke 2:30 p.m.` | a meridiem says it was never a reference | the clock rule |
 | `5:30-6:00` | a clock range is not a verse range | left whole |

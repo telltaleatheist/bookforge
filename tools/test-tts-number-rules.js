@@ -242,10 +242,14 @@ test('must-NOT: an ordinary noun in front of a colon-number', () => {
   // "Docket", "BWV", every weekday and a sentence-initial "Then".
   detectsNothing('Chapter 3:7 begins', 'Chapter 3:7 begins');
   detectsNothing('Room 3:15 was locked', 'Room three fifteen was locked');
-  detectsNothing('Act 3:2 of the play', 'Act 3:2 of the play');
   detectsNothing('Table 4:2 shows it', 'Table 4:2 shows it');
-  // "Acts" is a book and is NOT the "Act" of a play.
+  // "Acts" is a book and is NOT the "Act" of a play — but "Act" is THREE
+  // LETTERS, so evidence (d) claims it anyway, exactly as it claims "Map" and
+  // "Bus". The text still comes out as main printed it; the reading is the
+  // model's, and the prompt names "Act 3:2" of a play among the shapes that get
+  // no reference reading.
   protects('Acts 3:2 says so', ['Acts 3:2']);
+  protects('Act 3:2 of the play', ['Act 3:2']);
 });
 
 test('must-NOT: an ordinary word capitalized by the sentence it starts', () => {
@@ -280,6 +284,10 @@ test('must-NOT: a book citing its own last reference — "Verses 28:7-8"', () =>
  * main's own compiled rules over the same strings — because the whole point of
  * the evidence test is that a shape with no evidence must keep the behaviour it
  * had before this branch existed.
+ *
+ * The three-letter ones from that table — "Map 2:1", "Bus 47:15", "BWV 3:7" —
+ * are NOT here: evidence (d) claims them, deliberately, and they are asserted in
+ * the (d) test above along with what that costs.
  */
 test('must-NOT: none of the shapes the review measured firing', () => {
   // A capitalized word with no period, no volume number and no canonical name.
@@ -287,13 +295,10 @@ test('must-NOT: none of the shapes the review measured firing', () => {
   detectsNothing('Aspect 16:9 is standard.', 'Aspect 16:9 is standard.');
   detectsNothing('Lakers 3:1 in the series.', 'Lakers 3:1 in the series.');
   detectsNothing('Route 66:1 was renumbered.', 'Route 66:1 was renumbered.');
-  detectsNothing('Map 2:1 scale.', 'Map 2:1 scale.');
-  detectsNothing('Bach BWV 3:7 hmm.', 'Bach BWV 3:7 hmm.');
   detectsNothing('Ratios 3:7 and 4:8 measured.', 'Ratios 3:7 and 4:8 measured.');
   detectsNothing('Hebrews Street 3:7 nonsense.', 'Hebrews Street 3:7 nonsense.');
   // …and the ones main READ, which is the half a false positive was taking away.
   detectsNothing('Score 21:19 in the final set.', 'Score twenty one nineteen in the final set.');
-  detectsNothing('Bus 47:15 leaves hourly.', 'Bus forty seven fifteen leaves hourly.');
   detectsNothing('Flight 12:30 boards now.', 'Flight twelve thirty boards now.');
   detectsNothing('Windows 3:11 was an OS.', 'Windows three eleven was an OS.');
   detectsNothing('Docket 5:12 was entered.', 'Docket five twelve was entered.');
@@ -305,7 +310,7 @@ test('must-NOT: none of the shapes the review measured firing', () => {
   detectsNothing('Then 9:45 he arrived.', 'Then nine forty five he arrived.');
 });
 
-test('scripture: the three kinds of evidence, and nothing else', () => {
+test('scripture: the four kinds of evidence, and nothing else', () => {
   // (a) an ABBREVIATION — it carries its own period.
   protects('see Zeph. 3:17 there', ['Zeph. 3:17']);
   protects('see Pt. 3:7 there', ['Pt. 3:7']);
@@ -318,15 +323,59 @@ test('scripture: the three kinds of evidence, and nothing else', () => {
   protects('Genesis 3:15 is quoted.', ['Genesis 3:15']);
   protects('Revelation 21:4 says so.', ['Revelation 21:4']);
   protects('Qoheleth 3:1 says so.', ['Qoheleth 3:1']);
-  // …and a dotless abbreviation has NONE of the three. Stated so the gap is a
-  // decision and not a surprise: "Ps 23:1" read correctly on main from the
-  // abbreviation table, and now the digits stand unless the model is right AND
-  // its edit survives the ordinary WORDS_DROPPED invariant, which it will not.
-  // A short capitalized token with no period is the shape of "Map 2:1" and
-  // "Bus 47:15", and no evidence separates them.
-  assert.deepStrictEqual(detected('Ps 23:1 without a period.'), []);
-  assert.deepStrictEqual(detected('Rev 21:4 says so.'), []);
-  assert.deepStrictEqual(detected('Jn 3:16 is the famous one.'), []);
+  // (d) TWO OR THREE LETTERS with no period at all — weak evidence, admitted
+  // because refusing it left every dotless abbreviation unreadable.
+  protects('Ps 23:1 without a period.', ['Ps 23:1']);
+  protects('Jn 3:16 is the famous one.', ['Jn 3:16']);
+  protects('Rev 21:4 says so.', ['Rev 21:4']);
+  protects('Mt 5:3 is the sermon.', ['Mt 5:3']);
+  // …and FOUR letters is where it stops. Every longer dotless word keeps main's
+  // own reading, which the table below pins one by one.
+  assert.deepStrictEqual(detected('Then 9:45 he arrived.'), []);
+  assert.deepStrictEqual(detected('Odds 5:2 against.'), []);
+  assert.deepStrictEqual(detected('Case 5:12 was filed.'), []);
+});
+
+/**
+ * EVIDENCE (d), and the two things that make it affordable.
+ *
+ * A dotless "Ps 23:1" is the same shape as "Map 2:1", so on its own it proves
+ * nothing. It is admitted because refusing it left every dotless abbreviation
+ * UNREADABLE: the model's "Psalm twenty three, verse one" was refused
+ * WORDS_DROPPED, since that relaxation is scoped to detected spans, and the
+ * digits reached the narrator — a regression from this app's own behaviour in
+ * exactly the domain the branch exists for.
+ *
+ * What pays for it is the validator's claim test, which is asserted in
+ * tools/test-tts-number-normalizer.js: a reading that names a canonical book is
+ * held to the chapter-and-verse pause, and one that does not is accepted as the
+ * prose it is. So the SAME detection serves "Jn 3:16" → "John three, verse
+ * sixteen" and "Map 2:1" → "Map two one".
+ *
+ * THE COST, asserted here rather than described: a 2-3 letter token in front of
+ * a c:v is protected, so the book-less rule no longer reads it and the reading
+ * depends on the model. "Bus 47:15" is the measured example.
+ */
+test('scripture: (d) admits the dotless abbreviation, and what that costs', () => {
+  // The four the abbreviation table used to read, back inside the pass.
+  protects('Ps 23:1 without a period.', ['Ps 23:1']);
+  protects('Jn 3:16 is the famous one.', ['Jn 3:16']);
+  protects('Rev 21:4 says so.', ['Rev 21:4']);
+  protects('Mt 5:3 is the sermon.', ['Mt 5:3']);
+  // The same shape that is NOT a book comes with them. `protects` already
+  // asserts the text is unchanged, which IS the cost: main read "Bus 47:15" as
+  // "Bus forty seven fifteen" by rule, and now the model reads it instead.
+  protects('Map 2:1 scale.', ['Map 2:1']);
+  protects('Bus 47:15 leaves hourly.', ['Bus 47:15']);
+  protects('Bach BWV 3:7 hmm.', ['BWV 3:7']);
+  // A MONTH is still refused whether or not it prints its period — Owen's
+  // must-NOT list, and the one word-level exception the detector keeps.
+  assert.deepStrictEqual(detected('Jan 3:7 was the date.'), []);
+  assert.deepStrictEqual(detected('Sep 4:9 was the date.'), []);
+  // …and so is the other grammatical slot: a short word that POINTS at a number
+  // instead of naming a thing. These keep main's reading exactly.
+  detectsNothing('See 20:6 there.', 'See 20:6 there.');
+  detectsNothing('In 20:16 he says', 'In twenty sixteen he says');
 });
 
 test('scripture: the list tail is bounded by what a verse could be', () => {

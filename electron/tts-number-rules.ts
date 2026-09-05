@@ -360,15 +360,51 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
  * closed set and never could be: `Lakers`, `Widescreen`, `Flight`, `Route`,
  * `Docket`, `BWV`, every weekday and a sentence-initial `Then` all fired.
  *
- * So detection now requires STRONG evidence, and there are exactly three kinds.
- * A reference is detected when the token in front of the `c:v` is:
+ * So detection now requires EVIDENCE, and there are exactly four kinds — three
+ * strong, one weak and paid for below. A reference is detected when the token in
+ * front of the `c:v` is:
  *
  *   (a) an ABBREVIATION — it carries its own period: "Pet. 3:7", "Ps. 63:6";
  *   (b) preceded by a VOLUME NUMBER — arabic 1-3, roman I/II/III, or the
  *       ordinal forms: "1 John 3:16", "II Cor. 5:17", "1st John 1:9";
- *   (c) one of the FULL CANONICAL BOOK NAMES below.
+ *   (c) one of the FULL CANONICAL BOOK NAMES below;
+ *   (d) TWO OR THREE LETTERS with no period at all: "Ps 23:1", "Jn 3:16",
+ *       "Rev 21:4", "Mt 5:3".
  *
  * Everything else keeps exactly the behaviour it had before this branch.
+ *
+ * ── (d) IS WEAK EVIDENCE, ON PURPOSE, AND IT IS CHEAP BECAUSE OF THE CLAIM TEST
+ *
+ * A dotless "Ps 23:1" is the same shape as "Map 2:1" and "Bus 47:15", so on its
+ * own it proves nothing. It is admitted anyway because the FIRST cut of (a)-(c)
+ * left every dotless abbreviation unreadable — the model's "Psalm twenty three,
+ * verse one" was refused WORDS_DROPPED, because that relaxation is scoped to
+ * detected spans, and the digits reached the narrator. Losing "Ps", "Jn", "Rev"
+ * and "Mt" is a regression from this app's own behaviour in exactly the domain
+ * the branch exists for.
+ *
+ * What makes it affordable is the validator's CLAIM TEST, which is the same
+ * thing that makes a detected "Sec. 3:7" affordable: the chapter-and-verse pause
+ * is asked only of a reading that NAMES a canonical book or an ordinal volume.
+ * So "Map 2:1" → "Map two one" and "Bus 47:15" → "Bus forty seven fifteen" are
+ * accepted exactly as printed prose, while "Jn 3:16" → "John three, verse
+ * sixteen" is accepted as a reference. The model decides which it is looking at,
+ * which is the arrangement Owen ruled for.
+ *
+ * THE COST, stated so it is not a surprise: a 2-3 letter token in front of a
+ * c:v is now PROTECTED, so the book-less rule no longer reads it, and its
+ * reading depends on the model where before it was deterministic. Measured, the
+ * surface is small — a token of exactly two or three letters, no period, with a
+ * verse of ten or more ("Bus 47:15"). Four letters and up are deliberately out:
+ * "Then", "Score", "Case", "Odds", "Route" and every longer word keep the
+ * deterministic reading they have on main.
+ *
+ * ── THE SAME VETO NOTE AS (c) ───────────────────────────────────────────────
+ *
+ * (d) is not a table of abbreviations either — it asks the token's LENGTH, not
+ * its identity — but it is the loosest of the four, and it is the one to remove
+ * first if Owen wants the detector tighter. Deleting it restores (a)-(c) exactly
+ * and costs the dotless abbreviations again.
  *
  * ── THE READING OF OWEN'S RULING THAT (c) RESTS ON — HE MAY VETO IT ─────────
  *
@@ -383,15 +419,12 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
  *
  * ── WHAT IS NOT DETECTED, stated so it is not mistaken for an oversight ─────
  *
- * A DOTLESS ABBREVIATION: "Ps 23:1", "Rev 21:4", "Jn 3:16". It has none of the
- * three kinds of evidence, and a short capitalized token with no period is
- * exactly the shape of "Map 2:1", "Bus 47:15" and "BWV 3:7". Before this branch
- * the abbreviation table read these correctly; now the model's expansion is
- * refused WORDS_DROPPED (the relaxation below is scoped to detected spans) and
- * the digits stand. A refusal, recorded by name — not a wrong reading.
- *
  * A SINGLE-LETTER ABBREVIATION: "S. of S. 2:1". The token pattern needs two
  * letters, because a one-letter abbreviation is also every initial in a name.
+ *
+ * A LONGER DOTLESS WORD: "Widescreen 16:9", "Score 21:19", "Wednesday 9:45",
+ * "Then 9:45". Four letters and up with no period is the shape of every
+ * capitalized noun in English, and (d) stops short of it deliberately.
  *
  * The book table itself survives as TEST EVIDENCE for the model —
  * `tools/fixtures/scripture-readings.json`.
@@ -454,6 +487,31 @@ const VOLUME_NUMBER = '[123]|III|II|I|1st|2nd|3rd';
 
 /** The same set as a test, for the one place that reads a token on its own. */
 const VOLUME_TOKEN = /^(?:[123]|i{1,3}|1st|2nd|3rd)$/i;
+
+/**
+ * The two- and three-letter words that stand in front of a number and are NOT
+ * naming a thing — which is what evidence (d) has to step around.
+ *
+ * NOT "ordinary English words": "Map", "Bus" and "Odds" are ordinary English
+ * words, they DO name a thing that carries a number, and (d) is meant to admit
+ * them (the model then reads them as the prose they are). What is here is the
+ * other grammatical slot — the function words and the pointing verbs, which
+ * cannot be the name of anything. "See 20:6 there" and "In 20:16 he says" are
+ * the measured cases.
+ *
+ * This list is CLOSED in a way the old deny-list of capitalized nouns never was,
+ * and the reason is the length: the English function words of two or three
+ * letters are a fixed, countable set, while the capitalized nouns that can
+ * precede a colon-number are not.
+ */
+const SHORT_NOT_A_BOOK: ReadonlySet<string> = new Set([
+  'an', 'as', 'at', 'be', 'by', 'do', 'go', 'he', 'if', 'in', 'is', 'it', 'its',
+  'me', 'my', 'no', 'of', 'on', 'or', 'our', 'see', 'she', 'so', 'the', 'to',
+  'up', 'us', 'we', 'you', 'and', 'but', 'for', 'her', 'his', 'not', 'now',
+  'per', 'via', 'was', 'yet',
+  // …and the citation markers, which point at a number without naming one.
+  'cf', 'cp', 'eg', 'ie', 'ib', 'id', 'nos', 'pp', 'vs',
+]);
 
 /**
  * Is this token a MONTH? Owen's must-NOT list, and the one word-level exception
@@ -625,9 +683,9 @@ function clockCandidates(text: string): Candidate[] {
  * A chapter:verse reference, with everything that legitimately hangs off it.
  *
  * `[<volume> ]Book[.] c:v[a][–[c2:]v2[b]][ff.]`. The pattern MATCHES on shape
- * alone; `scriptureSpans` then requires one of the three kinds of evidence
- * above — the book token's own period, a volume number, or a canonical name —
- * before it will call the match a reference. Matching widely and admitting
+ * alone; `scriptureSpans` then requires one of the four kinds of evidence
+ * above — the book token's own period, a volume number, a canonical name, or a
+ * two-or-three-letter token — before it will call the match a reference. Matching widely and admitting
  * narrowly keeps the evidence test in one readable place instead of in three
  * regexes.
  *
@@ -763,9 +821,11 @@ export function scriptureSpans(text: string): ScriptureSpan[] {
     // THE EVIDENCE TEST — the whole of it, in one place. A capitalized word in
     // front of a c:v is "Widescreen" as often as it is "Genesis"; one of these
     // three has to be true before the pass will claim it.
+    const bare = bookToken.toLowerCase();
     const evidence = period === '.'                                  // (a)
       || volume !== undefined                                        // (b)
-      || CANONICAL_BOOK_NAMES.has(bookToken.toLowerCase());          // (c)
+      || CANONICAL_BOOK_NAMES.has(bare)                              // (c)
+      || (bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare));     // (d)
     if (!evidence) continue;
     let end = m.index + m[0].length;
     if (TRAILING_MERIDIEM.test(text.slice(end))) continue;

@@ -638,6 +638,30 @@ test('scripture: a detected span that is NOT scripture is read as what it is', (
     'SCRIPTURE_UNREAD');
 });
 
+test('scripture: a DOTLESS abbreviation is read, and its lookalike is left prose', () => {
+  // Evidence (d): two or three letters and no period at all. It is weak on
+  // purpose — "Ps 23:1" and "Map 2:1" are one shape — and the claim test is what
+  // makes the same detection serve both. The model decides which it is looking
+  // at, which is the arrangement Owen ruled for.
+  assert.strictEqual(
+    only('Ps 23:1 without a period.', 'Ps 23:1', 'Psalm twenty three, verse one'), 'APPLIED');
+  assert.strictEqual(
+    only('Jn 3:16 is the famous one.', 'Jn 3:16', 'John three, verse sixteen'), 'APPLIED');
+  assert.strictEqual(
+    only('Rev 21:4 says so.', 'Rev 21:4', 'Revelation twenty one, verse four'), 'APPLIED');
+  assert.strictEqual(
+    only('Mt 5:3 is the sermon.', 'Mt 5:3', 'Matthew five, verse three'), 'APPLIED');
+  // The lookalikes, read as the prose they are — and these are MAIN's own words
+  // for them, which the rules used to produce and the model now has to.
+  assert.strictEqual(only('Map 2:1 scale.', 'Map 2:1', 'Map two one'), 'APPLIED');
+  assert.strictEqual(
+    only('Bus 47:15 leaves hourly.', 'Bus 47:15', 'Bus forty seven fifteen'), 'APPLIED');
+  assert.strictEqual(only('Bach BWV 3:7 hmm.', 'BWV 3:7', 'BWV three seven'), 'APPLIED');
+  // And a reading that DOES name a book still owes the pause, dotless or not.
+  assert.strictEqual(
+    only('Ps 23:1 without a period.', 'Ps 23:1', 'Psalm twenty three one'), 'SCRIPTURE_UNREAD');
+});
+
 test('scripture: the word that arrives must be one the abbreviation was short FOR', () => {
   // The one-token allowance is for the book NAME. An earlier cut accepted any new
   // word that was not a number or a structural word, so "First three, verse
