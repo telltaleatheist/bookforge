@@ -11,9 +11,16 @@
  *
  * Before generation it calls the app's own narration door
  * (`prepareNarrationInput`) so the numbers in the input are read as words, exactly
- * as they are for a queued audiobook. A `.txt` is prepped block by block; an
- * `.epub` gets the caption/footnote cut too. The record beside the copy names every
- * proposed edit and its disposition.
+ * as they are for a queued audiobook, and the caption/footnote cut runs. The
+ * record beside the copy names every proposed edit and its disposition.
+ *
+ * THE INPUT IS AN EPUB. Owen, 2026-09-05: "we will never use anything but epub
+ * for renders. we dont need to build anything out to run anything other than
+ * that." narrator's prep reads an EPUB and refuses anything else by name; this
+ * door refuses earlier, with the same answer, instead of wrapping a text file
+ * into a book nobody asked for. Raw text belongs to the STREAMING adapter
+ * (orpheus-stream.js / `--mode streaming`), which is the Listen path and takes
+ * blocks, not books.
  *
  * The inter-clip gap (default 0.6s) is already baked into each {i}.flac by orpheus.py
  * _save_audio, so concatenating them in numeric order is byte-faithful to what e2a's
@@ -21,7 +28,7 @@
  *
  * Run via the electron shim preload:
  *   node --require ./cli/electron-stub.js cli/orpheus-batch-render.js \
- *        --voice rohan --input passage.txt --out sample.wav
+ *        --voice rohan --input book.epub --out sample.wav
  *
  * No fallbacks: a missing arg, an unbuilt bridge, an incomplete sentence set, or a
  * failed concat all throw with a naming message.
@@ -97,15 +104,19 @@ async function main() {
   if (!voice) throw new Error('--voice <id> is required (a voice in BookForge models.json)');
   if (!args.out) throw new Error('--out <file.wav> is required');
 
-  // Resolve the input to a file path — prep reads it via `--ebook`. A literal --text is
-  // written to a temp .txt (e2a's convert2epub accepts a plain text file).
-  let inputPath = args.input;
-  let tempInput = null;
-  if (!inputPath) {
-    if (!args.text) throw new Error('--input <file> or --text <string> is required');
-    tempInput = path.join(os.tmpdir(), `bf-tts-${crypto.randomUUID()}.txt`);
-    fs.writeFileSync(tempInput, String(args.text), 'utf8');
-    inputPath = tempInput;
+  // The input is an EPUB, resolved to a path prep reads via `--ebook`. There is
+  // no --text here and no temp .txt: renders are EPUB-only (see the header).
+  if (args.text) {
+    throw new Error(
+      '--text is not a render input. Renders are EPUB-only (Owen, 2026-09-05); raw '
+      + 'text is the streaming adapter\'s (--mode streaming, the Listen path).');
+  }
+  const inputPath = args.input;
+  if (!inputPath) throw new Error('--input <book.epub> is required');
+  if (path.extname(inputPath).toLowerCase() !== '.epub') {
+    throw new Error(
+      `--input ${inputPath}: renders read an EPUB and nothing else. A .txt is not `
+      + 'wrapped into a book here - narrator\'s prep refuses it by name too.');
   }
   if (!fs.existsSync(inputPath)) throw new Error(`input file not found: ${inputPath}`);
 
@@ -226,7 +237,6 @@ async function main() {
   }
   console.log(`[batch] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
-  if (tempInput) { try { fs.unlinkSync(tempInput); } catch { /* temp text — best-effort */ } }
   process.exitCode = 0;
 }
 

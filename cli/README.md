@@ -58,10 +58,10 @@ audiobook** the app actually ships (`.m4b` with chapters/cover/metadata), use
 
 ```
 # Default (audiobook/batch) — the path you actually use:
-python cli/bookforge-tts.py --tts --voice rohan --input passage.txt --out sample.wav
+python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out sample.wav
 
 # Force a memory tier and a custom gap:
-python cli/bookforge-tts.py --tts --voice rohan --input passage.txt --out sample.wav \
+python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out sample.wav \
     --tier fast --sentence-gap 0.75 --keep-sentences
 
 # Streaming path instead (BLOCKS: paragraphs separated by blank lines — block 1 is
@@ -72,7 +72,7 @@ python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input 
 python cli/bookforge-tts.py --tts --mode streaming --voice deathstalker --input article.txt --read-ahead 2
 
 # See exactly what would run, touch no GPU:
-python cli/bookforge-tts.py --tts --voice rohan --text "Hi." --out s.wav --dry-run
+python cli/bookforge-tts.py --tts --voice rohan --input book.epub --out s.wav --dry-run
 ```
 
 ## Full audiobook (M4B) — `--audiobook`
