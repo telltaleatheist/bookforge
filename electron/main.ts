@@ -10016,7 +10016,7 @@ ipcMain.handle('narration:text-readiness', async (
 
   ipcMain.handle('correct-sentences:commit', async (
     _event,
-    params: { projectDir: string; index: number; sourceFlacPath: string }
+    params: { projectDir: string; index: number; sourceFlacPath: string; text?: string }
   ) => {
     try {
       const { commitSentence } = await import('./correct-sentences-bridge.js');

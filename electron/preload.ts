@@ -1876,7 +1876,7 @@ export interface ElectronAPI {
       params: { projectDir: string; indices: number[]; takes?: number; overrides?: Record<number, string> }
     ) => Promise<{ success: boolean; data?: GenerateCandidatesResult; error?: string }>;
     cancel: (jobId: string) => Promise<{ success: boolean }>;
-    commit: (params: { projectDir: string; index: number; sourceFlacPath: string }) => Promise<{ success: boolean; error?: string }>;
+    commit: (params: { projectDir: string; index: number; sourceFlacPath: string; text?: string }) => Promise<{ success: boolean; error?: string }>;
     revert: (params: { projectDir: string; index: number }) => Promise<{ success: boolean; error?: string }>;
     cleanup: (sessionId: string) => Promise<{ success: boolean; error?: string }>;
     onProgress: (callback: (data: { jobId: string; done: number; total: number }) => void) => () => void;
@@ -3332,7 +3332,7 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('correct-sentences:generate-candidates', jobId, params),
     cancel: (jobId: string) =>
       ipcRenderer.invoke('correct-sentences:cancel', jobId),
-    commit: (params: { projectDir: string; index: number; sourceFlacPath: string }) =>
+    commit: (params: { projectDir: string; index: number; sourceFlacPath: string; text?: string }) =>
       ipcRenderer.invoke('correct-sentences:commit', params),
     revert: (params: { projectDir: string; index: number }) =>
       ipcRenderer.invoke('correct-sentences:revert', params),

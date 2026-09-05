@@ -222,9 +222,17 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
   // {i}.flac. NOT the narrator VTT: that gets embedded into the M4B at assembly time and
   // moved out of processDir, so it's not a reliable sidecar. We still pick up a VTT if
   // one happens to be present (unused for now).
-  const cues = await buildCuesFromSessionState(processDir);
-  if (!cues || !cues.length) {
-    return unavailable('This book’s sentence text wasn’t found in the session, so it can’t be shown for correction.');
+  //
+  // narrator's prep writes this file, once, at prep (`text/prep.py:521` →
+  // `render/session_store.save_session_state`), exactly where and when e2a's prep wrote
+  // it (`bookforge_ext/parallel/session.py:553`). So a session that reaches here without
+  // one is not "a book we cannot show" — it is a DAMAGED session, and the message has to
+  // say which file is missing rather than describing the symptom.
+  let cues: SentenceCue[];
+  try {
+    cues = await readSessionCues(processDir);
+  } catch (err) {
+    return unavailable((err as Error).message);
   }
   let vttPath: string | undefined;
   try {
@@ -279,33 +287,148 @@ const SML_RE = /\[\/?(?:break|pause|heading|item|music|sfx|silence)(?::[^\]]+)?\
 /** The marker that says the row was a section header — read before SML_RE eats it. */
 const SML_HEADING_RE = /\[\/?heading\]/i;
 
+/** The run of SML markers a stored row OPENS with, e.g. `[break][heading]`. */
+const SML_LEAD_RUN_RE = /^(?:\s*\[\/?(?:break|pause|heading|item|music|sfx|silence)(?::[^\]]+)?\])+/i;
+/** The run of SML markers a stored row ENDS with. */
+const SML_TAIL_RUN_RE = /(?:\[\/?(?:break|pause|heading|item|music|sfx|silence)(?::[^\]]+)?\]\s*)+$/i;
+
+/** The display form of a stored chunk: the words, with every marker removed. */
+export function displayTextForStoredChunk(stored: string): string {
+  return stored.replace(SML_RE, ' ').replace(/\s+/g, ' ').trim();
+}
+
 /**
- * Build index-keyed cues from the session's own sentence list (session-state.json →
- * chapter_sentences, flattened in chapter order). Cue N corresponds to {N}.flac. No
- * timings (Phase 1 sequences the FLACs directly, so it doesn't need them).
+ * A corrected sentence, put back into the STORED form of its chunk.
+ *
+ * The QA list shows a chunk's words with its SML markers stripped, so the text a
+ * user edits carries none. The markers are not decoration: `[heading]` is what
+ * makes the row a chapter marker and bolds its VTT cue, `[item]` is a list-item
+ * run boundary, and `[pause:X]`/`[break]` are the chunk's realized silence
+ * (`python/narrator/engine/orpheus/prompt.py:_classify_gap`, and `gaps.json` for
+ * an engine that does not pad). They belong to the chunk, not to the words, so a
+ * correction keeps the row's opening and closing marker runs and replaces only
+ * what lies between them.
+ *
+ * This is what makes an edit ROUND-TRIP: the same string is handed to the worker
+ * as the `--sentence_overrides` value AND written back into `chapter_sentences`
+ * on commit, so a later resume, retake or reassembly of that index renders and
+ * transcribes exactly what was approved.
  */
-async function buildCuesFromSessionState(processDir: string): Promise<SentenceCue[] | null> {
+export function storedTextForCorrection(stored: string, edited: string): string {
+  const lead = stored.match(SML_LEAD_RUN_RE)?.[0].trim() ?? '';
+  const afterLead = stored.slice(stored.match(SML_LEAD_RUN_RE)?.[0].length ?? 0);
+  const tail = afterLead.match(SML_TAIL_RUN_RE)?.[0].trim() ?? '';
+  return `${lead}${edited.trim()}${tail}`;
+}
+
+/**
+ * Every chunk's text, in {i}.flac order, out of the session's own record.
+ *
+ * `<processDir>/session-state.json` → `chapter_sentences`, flattened in chapter
+ * order: the exact list `render/worker.py:flatten_sentences` indexes, so cue N is
+ * {N}.flac. No timings (Phase 1 sequences the FLACs directly).
+ *
+ * THROWS, naming the file. Every failure here used to collapse into `null` and
+ * then into one sentence about the book, which is the same answer for "no such
+ * file", "not JSON" and "a session with no chapters" — three different repairs.
+ */
+async function readSessionCues(processDir: string): Promise<SentenceCue[]> {
+  const stored = await readStoredChunks(processDir);
+  return stored.map((s, index) => ({
+    index,
+    text: displayTextForStoredChunk(s),
+    heading: SML_HEADING_RE.test(s),
+    startMs: 0,
+    endMs: 0,
+  }));
+}
+
+/** Where a session's chunk text lives. Named once so every message says the same path. */
+function sessionStatePath(processDir: string): string {
+  return path.join(processDir, 'session-state.json');
+}
+
+/**
+ * The STORED form of every chunk (markers and all), flattened in {i}.flac order.
+ *
+ * This is the record narrator's prep writes and every text consumer reads: the
+ * VTT builder, `render/session_v1.py`'s manifest, `render/worker.py`'s
+ * `flatten_sentences`, and this door. Failures name the file.
+ */
+async function readStoredChunks(processDir: string): Promise<string[]> {
+  const statePath = sessionStatePath(processDir);
+  let raw: string;
   try {
-    const raw = await fs.promises.readFile(path.join(processDir, 'session-state.json'), 'utf-8');
-    const state = JSON.parse(raw);
-    const chapters = state?.chapter_sentences;
-    if (!Array.isArray(chapters)) return null;
-    const cues: SentenceCue[] = [];
-    let index = 0;
-    for (const chapter of chapters) {
-      if (!Array.isArray(chapter)) continue;
-      for (const s of chapter) {
-        const stored = String(s ?? '');
-        const heading = SML_HEADING_RE.test(stored);
-        const text = stored.replace(SML_RE, ' ').replace(/\s+/g, ' ').trim();
-        cues.push({ index, text, heading, startMs: 0, endMs: 0 });
-        index += 1;
-      }
+    raw = await fs.promises.readFile(statePath, 'utf-8');
+  } catch (err: any) {
+    if (err?.code === 'ENOENT') {
+      throw new Error(
+        `This session has audio but no text: ${statePath} is missing. Prep writes that `
+        + `file when the render starts, so the cache was published without it — re-render `
+        + `the book (or re-run its narration) to rebuild the session.`
+      );
     }
-    return cues;
-  } catch {
-    return null;
+    throw new Error(`${statePath} could not be read: ${err?.message || err}`);
   }
+  let state: any;
+  try {
+    state = JSON.parse(raw);
+  } catch (err: any) {
+    throw new Error(`${statePath} is not valid JSON: ${err?.message || err}`);
+  }
+  const chapters = state?.chapter_sentences;
+  if (!Array.isArray(chapters)) {
+    throw new Error(`${statePath} has no chapter_sentences, so this book has no sentence text to correct.`);
+  }
+  const stored: string[] = [];
+  for (let ci = 0; ci < chapters.length; ci++) {
+    const chapter = chapters[ci];
+    if (!Array.isArray(chapter)) {
+      throw new Error(`${statePath}: chapter_sentences[${ci}] is not a list of chunks.`);
+    }
+    for (const s of chapter) stored.push(String(s ?? ''));
+  }
+  if (!stored.length) {
+    throw new Error(`${statePath} holds no chunks: there is nothing to correct.`);
+  }
+  return stored;
+}
+
+/**
+ * Replace ONE chunk's text in `session-state.json`, in place, keeping the
+ * chapter shape. The flat index is walked back into (chapter, position) exactly
+ * as `flatten_sentences` walks the other way.
+ *
+ * Written atomically (temp file beside it, then rename) for the same reason
+ * `render/session_store.save_session_state` is: a truncated state file is
+ * refused by every reader, permanently, and this write happens while a user is
+ * clicking through a correction pass.
+ */
+async function writeStoredChunk(processDir: string, index: number, storedText: string): Promise<void> {
+  const statePath = sessionStatePath(processDir);
+  const raw = await fs.promises.readFile(statePath, 'utf-8');
+  const state = JSON.parse(raw);
+  const chapters = state?.chapter_sentences;
+  if (!Array.isArray(chapters)) {
+    throw new Error(`${statePath} has no chapter_sentences to correct.`);
+  }
+  let offset = 0;
+  for (const chapter of chapters) {
+    if (!Array.isArray(chapter)) {
+      throw new Error(`${statePath}: chapter_sentences holds a non-list chapter.`);
+    }
+    if (index < offset + chapter.length) {
+      chapter[index - offset] = storedText;
+      const tmp = `${statePath}.correct.tmp`;
+      await fs.promises.writeFile(tmp, JSON.stringify(state, null, 2), 'utf-8');
+      await fs.promises.rename(tmp, statePath);
+      return;
+    }
+    offset += chapter.length;
+  }
+  throw new Error(
+    `Sentence ${index} is past the end of ${statePath}, which holds ${offset} chunks.`
+  );
 }
 
 /** Read the FULL ParallelTtsSettings persisted with the cache (session_state.json). */
@@ -401,9 +524,28 @@ export async function generateCandidates(params: GenerateCandidatesParams): Prom
   await fs.promises.mkdir(base, { recursive: true });
 
   // Write edited-text overrides (if any) to a JSON file the worker reads.
+  //
+  // The edit arrives as DISPLAY text (markers stripped by the QA list), and the
+  // worker substitutes an override verbatim for the stored row
+  // (`render/worker.py:_text_for`). Handing it the bare words would render this
+  // one take under different rules than the row itself — no `[heading]` gap, no
+  // `[pause:X]` — so the take would not match what a resume or a reassembly of
+  // the same index produces. The row's own marker runs are restored first, and
+  // the SAME string is what `commitSentence` writes back into
+  // `chapter_sentences`, which is what closes the loop.
+  const storedChunks = await readStoredChunks(session.processDir!);
   const overrideMap: Record<number, string> = {};
   for (const [k, v] of Object.entries(params.overrides ?? {})) {
-    if (v && v.trim()) overrideMap[Number(k)] = v;
+    if (!v || !v.trim()) continue;
+    const i = Number(k);
+    if (!(i >= 0 && i < storedChunks.length)) {
+      return {
+        success: false,
+        candidates: [],
+        error: `Sentence ${i} is outside this book's 0..${storedChunks.length - 1}.`,
+      };
+    }
+    overrideMap[i] = storedTextForCorrection(storedChunks[i], v);
   }
   let overridesPath: string | undefined;
   if (Object.keys(overrideMap).length) {
@@ -483,18 +625,38 @@ function backupDir(sentencesDir: string): string {
   return path.join(sentencesDir, '.orig-backup');
 }
 
+/** Where a corrected chunk's ORIGINAL stored text is kept, beside its original audio. */
+function storedTextBackupPath(sentencesDir: string, index: number): string {
+  return path.join(backupDir(sentencesDir), `${index}.txt`);
+}
+
 export interface CommitParams {
   projectDir: string;
   index: number;
   /** The chosen candidate FLAC (already matched to the book's sample_fmt). If this is
    *  the original cache path, the commit is a no-op (user kept the original). */
   sourceFlacPath: string;
+  /** The DISPLAY text the take was rendered from, when the user edited the words.
+   *  Absent when the take is a plain re-roll of the stored sentence. */
+  text?: string;
 }
 
 /**
  * Replace the cached {index}.flac with the approved candidate. The original is backed up
  * once to .orig-backup/ (so a later revert is possible), and the candidate is re-matched
  * to the book's sample_fmt defensively before the atomic swap.
+ *
+ * WHEN THE WORDS CHANGED, THE SESSION'S TEXT CHANGES WITH THEM. `chapter_sentences` is
+ * the single record of what a chunk says — the VTT builder, the assembler's manifest,
+ * the worker's own resume, and this door all read it — so committing new audio without
+ * it left the audio saying one thing and the transcript another, permanently, and a
+ * later re-render of that index silently restored the OLD reading. e2a had this hole
+ * too (`python/narrator/render/retake.py`, "AN EDITED SENTENCE'S TEXT IS NOT WRITTEN
+ * BACK ANYWHERE"); it is closed here, at the one moment a take becomes the book.
+ *
+ * The audio is swapped FIRST and the text second: a failed text write leaves a
+ * correction that is audible but not yet transcribed, and says so, where the reverse
+ * order would leave a transcript describing audio that was never committed.
  */
 export async function commitSentence(params: CommitParams): Promise<{ success: boolean; error?: string }> {
   const { projectDir, index, sourceFlacPath } = params;
@@ -527,13 +689,48 @@ export async function commitSentence(params: CommitParams): Promise<{ success: b
     await fs.promises.copyFile(sourceFlacPath, staged);
     await matchSampleFmtInPlace(staged, session.sampleFmt || 's16');
     await fs.promises.rename(staged, dest);
-    return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
   }
+
+  if (params.text !== undefined) {
+    const edited = params.text.trim();
+    if (!edited) {
+      return {
+        success: false,
+        error: `Sentence ${index}: the corrected text is empty. The audio was committed; `
+          + `re-open the correction and give the sentence its words.`,
+      };
+    }
+    try {
+      const storedChunks = await readStoredChunks(session.processDir!);
+      if (!(index >= 0 && index < storedChunks.length)) {
+        throw new Error(`Sentence ${index} is outside this book's 0..${storedChunks.length - 1}.`);
+      }
+      const next = storedTextForCorrection(storedChunks[index], edited);
+      if (next !== storedChunks[index]) {
+        // The text backup is the twin of the FLAC backup two blocks up: written
+        // ONCE, never clobbered by a second correction, so revert puts the book
+        // back to what prep produced rather than to an intermediate edit.
+        const textBackup = storedTextBackupPath(session.sentencesDir!, index);
+        if (!fs.existsSync(textBackup)) {
+          await fs.promises.writeFile(textBackup, storedChunks[index], 'utf-8');
+        }
+        await writeStoredChunk(session.processDir!, index, next);
+      }
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Sentence ${index}: the new audio was committed but its text could not be `
+          + `written back (${err?.message || err}). The book's transcript still says the old words.`,
+      };
+    }
+  }
+
+  return { success: true };
 }
 
-/** Restore a sentence's original audio from the backup (undo a commit). */
+/** Restore a sentence's original audio — AND its original text — from the backup. */
 export async function revertSentence(projectDir: string, index: number): Promise<{ success: boolean; error?: string }> {
   const session = await getCorrectSentencesSession(projectDir);
   if (!session.available || !session.sentencesDir) {
@@ -550,10 +747,28 @@ export async function revertSentence(projectDir: string, index: number): Promise
     const staged = `${dest}.revert.tmp.flac`;
     await fs.promises.copyFile(backupPath, staged);
     await fs.promises.rename(staged, dest);
-    return { success: true };
   } catch (err: any) {
     return { success: false, error: err?.message || String(err) };
   }
+
+  // A commit that changed the words left the pre-edit row here. Undoing the audio
+  // without undoing the text would leave the same audio/transcript split the
+  // write-back exists to prevent.
+  const textBackup = storedTextBackupPath(session.sentencesDir, index);
+  if (fs.existsSync(textBackup)) {
+    try {
+      const original = await fs.promises.readFile(textBackup, 'utf-8');
+      await writeStoredChunk(session.processDir!, index, original);
+      await fs.promises.rm(textBackup, { force: true });
+    } catch (err: any) {
+      return {
+        success: false,
+        error: `Sentence ${index}: the original audio was restored but its original text `
+          + `could not be (${err?.message || err}).`,
+      };
+    }
+  }
+  return { success: true };
 }
 
 /** Remove the scratch candidate dirs for a session (call when the flow ends). */
