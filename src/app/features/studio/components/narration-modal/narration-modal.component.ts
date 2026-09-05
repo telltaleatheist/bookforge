@@ -1247,8 +1247,21 @@ export class NarrationModalComponent {
     return !!(s.temperature || s.topP || s.repetitionPenalty);
   });
 
+  /**
+   * The voices this engine can be asked for.
+   *
+   * A voice carrying `unavailable` is rendered DISABLED with the reason as its
+   * tooltip rather than dropped: a Higgs catalog entry whose artifact has not
+   * landed is a voice everyone is waiting for, and silently omitting it leaves
+   * nothing anywhere saying it exists. `stageRefusal` refuses it as well, for
+   * the case where it arrives from a saved preset rather than a click.
+   */
   readonly voiceOptions = computed<DesktopSelectItems>(() =>
-    this.voices.voicesFor(this.engine()).map((v) => ({ value: v.value, label: v.label })));
+    this.voices.voicesFor(this.engine()).map((v) => ({
+      value: v.value,
+      label: v.label,
+      ...(v.unavailable ? { disabled: true, title: v.unavailable } : {}),
+    })));
 
   readonly rvcInstalled = computed(() => this.components.isInstalled('rvc-env'));
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
@@ -1439,6 +1452,16 @@ export class NarrationModalComponent {
     if (this.narrate() && this.engine() === 'higgs') {
       const why = this.higgsBlocked();
       if (why) return why;
+    }
+    // A voice the catalog lists but cannot render — an artifact that has not
+    // landed. The picker disables it, so reaching here means it arrived from a
+    // saved preset or from pipeline defaults, which the picker never touched.
+    if (this.narrate()) {
+      const chosen = this.voices.voicesFor(this.engine()).find((v) => v.value === this.voice());
+      if (chosen?.unavailable) {
+        return `The voice "${chosen.label.replace(/ — not installed yet$/, '')}" cannot render yet: `
+          + `${chosen.unavailable.split('.')[0]}. Pick another voice on the Reading tab.`;
+      }
     }
     return null;
   });

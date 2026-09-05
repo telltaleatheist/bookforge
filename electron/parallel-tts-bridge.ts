@@ -197,6 +197,7 @@ import { ensureWslDrivesFor } from './wsl-mounts';
 import { acquireGpu, releaseGpu, waitForFreeVram, getGpuMemMB, gpuOwnerForTts, gpuHolder, GPU_OWNER_LLAMA, computeSafeGpuUtil, ORPHEUS_MIN_VRAM_MB, orpheusMinFreeVramMB, DESKTOP_VRAM_MARGIN_MB, unloadOllamaModels, type OrpheusServeArtifact } from './gpu-arbiter';
 import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
+import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import {
   HIGGS_NARRATOR_ENGINE,
   HIGGS_VOICE_FLAG,
@@ -3252,9 +3253,9 @@ export async function prepareSession(
     '--prep_only'
   ];
 
-  // Unreachable for Higgs — that branch returned above — but left guarded so the
-  // e2a argv below cannot acquire an Orpheus voice arg for a Higgs job if the
-  // early return is ever moved.
+  // A Higgs prep spawns the narrator plan below and never runs this e2a argv,
+  // but the array is still BUILT for it, so the guard is what keeps an
+  // Orpheus-shaped voice arg out of a Higgs job if the two are ever untangled.
   if (!isHiggsJob(settings)) {
     pushVoiceArgs(args, settings);
   }
@@ -3700,6 +3701,25 @@ export async function regenerateSentenceIndices(
     }
   }
 
+  // ── The retake door routes by ENGINE, like every other door ───────────────
+  //
+  // This is the Studio sentence-retake / take-picker path, and it was the one
+  // spawn site the Higgs work missed — visible at the time, because the argv
+  // snapshot deliberately pins it as one of five doors. Left alone, a Higgs
+  // retake called `pythonInvocation('higgs')`, which returns the MARKER path
+  // `<e2a>/higgs_wsl_env` (a string the spawn layer resolves by name, not a
+  // directory), and handed it e2a's worker.py — which has no Higgs engine
+  // regardless. Every retake on a Higgs book failed with a path error.
+  //
+  // A retired engine is refused BY NAME here for the same reason it is at the
+  // queue boundary: this door reads `settings.ttsEngine` straight out of
+  // `session_state.json`, so an old XTTS book reaches it with no UI in between.
+  try {
+    assertRunnableTtsEngine(settings.ttsEngine);
+  } catch (err: any) {
+    return { success: false, converted: 0, failedIndices: indices, error: err?.message || String(err) };
+  }
+
   // Build args mirroring startWorker's lightweight (worker.py) branch, but for a
   // discrete index list writing into a scratch sentences dir.
   let args: string[];
@@ -3716,8 +3736,12 @@ export async function regenerateSentenceIndices(
       '--tts_engine', settings.ttsEngine,
     ];
     // Same voice/model resolution the original render used (may throw on an
-    // uninstalled Orpheus voice — surfaced as an error below, not a silent fallback).
-    pushVoiceArgs(args, settings);
+    // uninstalled Orpheus voice — surfaced as an error below, not a silent
+    // fallback). Not for Higgs: `--fine_tuned` is a prompt TOKEN and the Higgs
+    // voice is a CATALOG ID, appended as `--higgs_voice` in the Higgs branch.
+    if (!isHiggsJob(settings)) {
+      pushVoiceArgs(args, settings);
+    }
     if (settings.speed !== undefined && settings.speed !== 1.0) {
       args.push('--speed', settings.speed.toString());
     }
@@ -3800,7 +3824,37 @@ export async function regenerateSentenceIndices(
     let resultJson: any = null;
     let stderrTail = '';
 
-    const proc = spawnWithWslSupport(
+    // A Higgs retake is `compat.worker` with the same discrete-index flags —
+    // narrator's worker route accepts --sentence_indices / --num_takes /
+    // --take_temperatures / --sentence_overrides exactly as e2a's worker.py does
+    // (compat/FLAGS.md lists all four under ACCEPT), so the only substitutions
+    // are the interpreter, the engine name and the voice flag.
+    const higgsRetakePlan = isHiggsJob(settings)
+      ? (() => {
+          const model = higgsPreflight(settings.fineTuned);
+          const hArgs = args.slice(args.indexOf('--session'));
+          const at = hArgs.indexOf('--tts_engine');
+          if (at < 0) {
+            throw new Error('Higgs retake argv is missing --tts_engine — refusing to spawn.');
+          }
+          hArgs[at + 1] = HIGGS_NARRATOR_ENGINE;
+          hArgs.push(HIGGS_VOICE_FLAG, model.id);
+          return buildHiggsSpawn('worker', {
+            model, args: hArgs, cwd: getDefaultE2aPath(), jobId: sessionId,
+          });
+        })()
+      : null;
+    if (higgsRetakePlan) {
+      console.log('[PARALLEL-TTS] Retake → narrator (Higgs):', higgsRetakePlan.describe());
+    }
+
+    const proc = higgsRetakePlan
+      ? spawn(higgsRetakePlan.command, higgsRetakePlan.args, {
+          cwd: higgsRetakePlan.cwd,
+          env: higgsRetakePlan.env,
+          shell: false,
+        })
+      : spawnWithWslSupport(
       pythonInvocation(settings.ttsEngine).command,
       args,
       { cwd: getDefaultE2aPath(), env, shell: false },
@@ -4037,7 +4091,13 @@ function startWorker(
     ];
 
     // Always pass the voice so the current UI selection wins over session-state.json.
-    pushVoiceArgs(args, settings);
+    // Guarded for Higgs like the lightweight branch above: this door is only
+    // reached with `useLightweightWorker` off, and the Higgs plan slices THIS
+    // argv, so an unguarded call would put `--fine_tuned` beside `--higgs_voice`
+    // on exactly the path nobody exercises. A keeper asserts every call site.
+    if (!isHiggsJob(settings)) {
+      pushVoiceArgs(args, settings);
+    }
 
     // Add range args based on mode
     if (isChapterMode && range.chapterStart !== undefined && range.chapterEnd !== undefined) {

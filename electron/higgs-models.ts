@@ -652,9 +652,22 @@ export function higgsSpawnEnv(
  * Mirrors `mergeOrpheusVoices`' output shape so the modal's dropdown code is the
  * same for both engines.
  */
-export function higgsNarrationVoices(): { value: string; label: string }[] {
-  return listHiggsModels().map((m) => ({
-    value: m.id,
-    label: m._pendingNote ? `${m.label} — not installed yet` : m.label,
-  }));
+export function higgsNarrationVoices(): {
+  value: string; label: string; unavailable?: string;
+}[] {
+  return listHiggsModels().map((m) => (
+    m._pendingNote
+      ? {
+          value: m.id,
+          label: `${m.label} — not installed yet`,
+          // The picker renders this as a DISABLED option with the note as its
+          // tooltip. It used to be label-only, which meant the one voice the
+          // catalog ships pending was fully selectable and the run died later at
+          // `resolveHiggsModel` — defeating the whole stated point of the double
+          // preflight ("turn a doomed run into a sentence someone can read while
+          // the dialog is still open").
+          unavailable: m._pendingNote,
+        }
+      : { value: m.id, label: m.label }
+  ));
 }

@@ -6,6 +6,15 @@ import * as crypto from 'crypto';
 import * as os from 'os';
 import * as pdfWorkerProxy from './pdf-worker-proxy.js';
 import { getPluginRegistry } from './plugins/plugin-registry';
+// The engine table is in shared/ precisely so MAIN can read it — see its header.
+// Until now no main-process file imported it, which is why the retired-engine
+// refusal every comment promised did not exist.
+//
+// RELATIVE, not the `@shared/*` alias. tsconfig.electron.json defines that alias
+// for TYPE resolution and tsc emits the specifier VERBATIM, so an aliased import
+// compiles clean and then throws MODULE_NOT_FOUND in Node at run time. Every
+// other electron/ file reaches shared/ by relative path for this reason.
+import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import { loadBuiltinPlugins } from './plugins/plugin-loader';
 import { bookshelfServer } from './bookshelf-server';
 import * as ebookLibrary from './ebook-library';
@@ -7202,6 +7211,28 @@ function setupIpcHandlers(): void {
    * the wrong thing and arrives after the queue has already reported "running".
    */
   const narrationInputRefusal = (config: any): string | null => {
+    // THE ENGINE, REFUSED BY NAME AT THE QUEUE BOUNDARY.
+    //
+    // This is the main-process door every narration run goes through, and until
+    // now the ONLY run-time gate on a retired engine was the narration modal's
+    // `stageRefusal` — a renderer computed feeding a disabled button. Four source
+    // comments and the design doc claimed "the bridge calls
+    // `assertRunnableTtsEngine` before it queues anything"; nothing did, and no
+    // main-process file imported the module at all. A saved job whose ttsEngine
+    // is `xtts`, re-run from the queue page, went straight to a spawn.
+    //
+    // HERE rather than deeper in the bridge because this is where the job is
+    // CREATED: the refusal arrives before the queue says "running", and it names
+    // the engine and the date instead of failing somewhere inside a worker.
+    const engine = config?.settings?.ttsEngine;
+    if (typeof engine === 'string' && engine.length > 0) {
+      try {
+        assertRunnableTtsEngine(engine);
+      } catch (err) {
+        return (err as Error).message;
+      }
+    }
+
     const epubPath = config?.epubPath;
     if (typeof epubPath !== 'string' || epubPath.length === 0) {
       return 'This narration run was queued without a book to read. Start it from the version you '

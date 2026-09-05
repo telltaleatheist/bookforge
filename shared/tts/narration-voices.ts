@@ -31,6 +31,19 @@
 export interface NarrationVoice {
   readonly value: string;
   readonly label: string;
+  /**
+   * Why this voice cannot be chosen, or absent when it can.
+   *
+   * A voice that is LISTED but not RENDERABLE is a real state — a Higgs catalog
+   * entry whose artifact has not landed is the case this exists for. Omitting it
+   * from the list would leave nothing anywhere saying the voice exists; offering
+   * it as though it worked queues a run that dies at preflight. So it is listed,
+   * disabled, and carries the reason as its tooltip.
+   *
+   * Present on the option means the picker must render it `disabled`; a caller
+   * that ignores this is offering a voice it will then refuse.
+   */
+  readonly unavailable?: string;
 }
 
 /**

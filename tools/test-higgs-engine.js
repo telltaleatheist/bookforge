@@ -772,5 +772,125 @@ process.on('exit', () => {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 9. The refusal is WIRED, not merely defined
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The review's finding 7 was not "assertRunnableTtsEngine has no call site" but
+// something sharper: no main-process file imported `engine-caps` AT ALL, so the
+// refusal four source comments and the design doc promised could not exist. A
+// legacy `xtts` job re-run from the queue page went straight to a spawn.
+//
+// These assert the wiring by reading the SOURCE, because the alternative is
+// booting Electron's IPC layer to prove an import exists.
+console.log('the retired-engine refusal is wired');
+
+const mainSrc = fs.readFileSync(path.join(REPO, 'electron', 'main.ts'), 'utf-8');
+const bridgeSrc = fs.readFileSync(path.join(REPO, 'electron', 'parallel-tts-bridge.ts'), 'utf-8');
+
+check('main imports the engine table — it is in shared/ so that main CAN', () => {
+  assert.match(mainSrc, /import \{[^}]*assertRunnableTtsEngine[^}]*\} from '\.\.\/shared\/tts\/engine-caps'/);
+});
+
+check('no COMPILED main-process module requires an @shared alias', () => {
+  // Caught for real on 2026-09-05: tsconfig.electron.json defines `@shared/*`
+  // for TYPE resolution and tsc emits the specifier VERBATIM, so
+  // `import ... from '@shared/tts/engine-caps'` compiled clean, passed both tsc
+  // configs and ng build, and then threw MODULE_NOT_FOUND the instant Node
+  // loaded parallel-tts-bridge.js — which main requires, so the whole main
+  // process was broken. Every other electron/ file reaches shared/ relatively.
+  const dir = path.join(REPO, 'dist', 'electron');
+  const offenders = [];
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const full = path.join(d, e.name);
+      if (e.isDirectory()) { walk(full); continue; }
+      if (!e.name.endsWith('.js')) continue;
+      if (/require\("@shared\//.test(fs.readFileSync(full, 'utf-8'))) {
+        offenders.push(path.relative(REPO, full));
+      }
+    }
+  };
+  walk(dir);
+  assert.deepStrictEqual(offenders, [],
+    'these compiled modules require an unresolvable alias: ' + offenders.join(', '));
+});
+
+check('the queue boundary refuses a retired engine before anything spawns', () => {
+  // narrationInputRefusal is the main-process door every narration run goes
+  // through, and it runs BEFORE the queue reports "running".
+  const at = mainSrc.indexOf('const narrationInputRefusal');
+  assert.ok(at > 0, 'narrationInputRefusal is gone — the gate moved');
+  const body = mainSrc.slice(at, at + 2500);
+  assert.match(body, /assertRunnableTtsEngine/,
+    'the queue boundary does not check the engine');
+  assert.match(body, /settings\?\.ttsEngine/,
+    'the check does not read the engine off the job config');
+});
+
+check('the retake door refuses a retired engine too', () => {
+  // It reads settings.ttsEngine straight out of session_state.json, so an old
+  // XTTS book reaches it with no UI in between.
+  const at = bridgeSrc.indexOf('export async function regenerateSentenceIndices');
+  assert.ok(at > 0, 'regenerateSentenceIndices is gone');
+  const body = bridgeSrc.slice(at, at + 4000);
+  assert.match(body, /assertRunnableTtsEngine/, 'the retake door is ungated');
+});
+
+check('the retake door routes Higgs to narrator instead of e2a worker.py', () => {
+  // Finding 8: it built pythonInvocation('higgs'), which returns the MARKER path
+  // <e2a>/higgs_wsl_env — not a directory — and handed it e2a's worker.py.
+  const at = bridgeSrc.indexOf('export async function regenerateSentenceIndices');
+  const body = bridgeSrc.slice(at, at + 12000);
+  assert.match(body, /higgsRetakePlan/, 'the retake door has no Higgs branch');
+  assert.match(body, /buildHiggsSpawn\('worker'/, 'the Higgs retake does not build a narrator spawn');
+  assert.match(body, /HIGGS_VOICE_FLAG/, 'the Higgs retake does not pass --higgs_voice');
+});
+
+check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () => {
+  // Every pushVoiceArgs call must sit behind `if (!isHiggsJob(settings))`.
+  // Finding 10 was one that did not.
+  let from = 0;
+  let guarded = 0;
+  let total = 0;
+  for (;;) {
+    const at = bridgeSrc.indexOf('pushVoiceArgs(args, settings)', from);
+    if (at < 0) break;
+    total++;
+    // Look back a short way for the guard that must precede it.
+    const before = bridgeSrc.slice(Math.max(0, at - 400), at);
+    if (/!isHiggsJob\(settings\)/.test(before)) guarded++;
+    from = at + 1;
+  }
+  assert.ok(total >= 3, 'expected at least 3 pushVoiceArgs call sites, saw ' + total);
+  assert.strictEqual(guarded, total,
+    (total - guarded) + ' of ' + total + ' pushVoiceArgs call sites are not guarded against Higgs');
+});
+
+check('the CLI accepts higgs for --mode tts and refuses it for streaming', () => {
+  // The standing rule is that the CLI mirrors the app's code path; the branch
+  // had added an engine the headless door could not run.
+  const cli = fs.readFileSync(path.join(REPO, 'cli', 'bookforge-tts.py'), 'utf-8');
+  assert.match(cli, /args\.engine in \("orpheus", "higgs"\)/,
+    'the CLI still refuses --engine higgs');
+  assert.match(cli, /has no streaming path/,
+    'the CLI does not refuse Higgs streaming by name');
+  const adapter = fs.readFileSync(path.join(REPO, 'cli', 'orpheus-batch-render.js'), 'utf-8');
+  assert.match(adapter, /ttsEngine: engine/,
+    'the batch adapter still hardcodes the engine');
+});
+
+check('a pending voice is offered DISABLED, with its note as the reason', () => {
+  // Finding 11: it was label-only and fully selectable, so the one voice the
+  // catalog ships pending queued a run that died at preflight — defeating the
+  // stated point of the double preflight.
+  const row = higgs.higgsNarrationVoices().find((v) => v.value === 'deathstalker');
+  assert.ok(row, 'the pending voice is not listed at all');
+  assert.match(row.label, /not installed yet/);
+  assert.ok(row.unavailable, 'the pending voice carries no reason');
+  const ok = higgs.higgsNarrationVoices().find((v) => v.value === 'default');
+  assert.ok(!ok.unavailable, 'a renderable voice was marked unavailable');
+});
+
 console.log(failures === 0 ? '\nALL OK' : `\n${failures} FAILED`);
 process.exit(failures === 0 ? 0 : 1);

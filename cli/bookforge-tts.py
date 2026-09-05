@@ -135,10 +135,23 @@ def cmd_tts(args):
     and the rest are read ahead. (was: orpheus-worker-pool, one sentence per vLLM
         sequence, no packing).
     """
-    _require(args.engine == "orpheus",
-             f"--engine '{args.engine}' not wired yet (only 'orpheus')")
+    # HIGGS IS WIRED FOR --mode tts. The batch adapter hands `ttsEngine` to the
+    # SAME `renderRangeHeadless` the app calls, and the bridge routes a Higgs job
+    # to narrator (prep -> compat.app --prep_only, worker -> compat.worker,
+    # assembly -> compat.app --assemble_only) — so the CLI mirrors the app's code
+    # path rather than carrying a second copy of the routing.
+    _require(args.engine in ("orpheus", "higgs"),
+             f"--engine '{args.engine}' not wired (use 'orpheus' or 'higgs')")
     _require(args.mode in ("tts", "streaming"),
              f"--mode '{args.mode}' invalid (use 'tts' or 'streaming')")
+    # Streaming stays Orpheus-only, and not as an omission: Higgs v3 is a SERVED
+    # endpoint whose codec is a delay-pattern one with no sound windowed decode
+    # (narrator's HiggsCodec.streaming_decoder() returns None on purpose), so
+    # there is no Listen path to drive. Refused by name rather than silently
+    # rendering something else.
+    _require(not (args.engine == "higgs" and args.mode == "streaming"),
+             "--engine higgs has no streaming path: v3 is a served endpoint with no "
+             "windowed decode. Use --mode tts.")
     _require(bool(args.voice), "--voice <id> is required for --tts")
     _require(bool(args.out), "--out <file.wav> is required for --tts")
     _require(bool(args.input or args.text), "--input <file> or --text <str> is required")
@@ -181,6 +194,10 @@ def cmd_tts(args):
 
     cmd = ["node", "--require", str(NODE_STUB), str(adapter),
            "--voice", args.voice, "--out", out_path]
+    # The batch adapter defaults to orpheus; naming it is what lets --engine higgs
+    # reach the bridge. (The streaming adapter takes no engine — see above.)
+    if args.mode == "tts":
+        cmd += ["--engine", args.engine]
     if input_path:
         cmd += ["--input", input_path]
     if args.text:
@@ -713,7 +730,8 @@ def build_parser():
     for name in COMMANDS:                         # command selector flags
         p.add_argument(f"--{name}", action="store_true",
                        help=f"run the '{name}' command")
-    p.add_argument("--engine", default="orpheus", help="TTS engine (default orpheus)")
+    p.add_argument("--engine", default="orpheus",
+                   help="TTS engine: orpheus or higgs (default orpheus). higgs is --mode tts only.")
     p.add_argument("--mode", default="tts", choices=["tts", "streaming"],
                    help="render path: 'tts' = audiobook/batch (default, the shipped path), "
                         "'streaming' = Listen (one sentence per vLLM sequence)")
