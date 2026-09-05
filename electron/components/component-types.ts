@@ -1,7 +1,7 @@
 /**
  * Optional Component System — shared contract
  *
- * BookForge ships a small XTTS-only core. Heavy or platform-specific pieces
+ * BookForge ships a small core. Heavy or platform-specific pieces
  * (Calibre, Orpheus, Tesseract) are OPTIONAL COMPONENTS that
  * the app detects-compatibility-for, downloads, installs, verifies, and removes
  * at runtime.

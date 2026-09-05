@@ -295,7 +295,7 @@ export async function ensureBundledEnv(onProgress?: (message: string) => void): 
 // ─────────────────────────────────────────────────────────────────────────────
 // First-run download progress → setup ETA
 //
-// The mandatory download is a known size (env + default voice + English pack),
+// The mandatory download is a known size (env + English pack),
 // so a live speed measurement (bytes ÷ elapsed) gives a usable "about N min
 // left". Phases run sequentially: each download feeds dlReport(); dlComplete()
 // banks a phase's bytes when its download finishes. Download-only accounting —
@@ -311,7 +311,7 @@ let dlStartMs = 0;
 export function beginSetupDownload(): void {
   const env = envReleaseForThisPlatform();
   const envBytes = env ? env.bytes : 0;
-  dlTotalBytes = envBytes + RUNTIME_ASSETS['default-voice'].bytes + RUNTIME_ASSETS['stanza-en'].bytes;
+  dlTotalBytes = envBytes + RUNTIME_ASSETS['stanza-en'].bytes;
   dlCompletedBytes = 0;
   dlCurrentBytes = 0;
   dlStartMs = Date.now();
@@ -540,7 +540,7 @@ export function hasBundledE2aSnapshot(): boolean {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// First-run runtime assets (default voice + English language pack)
+// First-run runtime assets (the English language pack)
 //
 // These are NOT bundled in the installer. They're published as GitHub release
 // archives whose internal layout mirrors the e2a runtime's models/ tree, so they
@@ -560,15 +560,13 @@ interface RuntimeAsset {
   version: string;  // bump (with a new archive) to force a re-download + re-extract
 }
 
+// The 'default-voice' (Scarlett Johansson, 1.7 GB) and 'library-voices' (the
+// reference clips every base-model clone needed, 43 MB) entries were removed on
+// 2026-09-05 with XTTS itself: both were XTTS checkpoints, and nothing in the
+// build can load one. `default-voice-johansson.tar.gz` and `library-voices.tar.gz`
+// are still published under the `assets` release tag and should be retired there
+// — see docs/XTTS_REMOVAL.md.
 const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
-  'default-voice': {
-    id: 'default-voice',
-    label: 'Scarlett Johansson voice',
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/default-voice-johansson.tar.gz',
-    sha256: 'dc300f068b62442c95f0ccab3f84224983a402b2c7bbb178b0de4f05f860c959',
-    bytes: 1738859112,
-    version: '2026.06.16',
-  },
   'stanza-en': {
     id: 'stanza-en',
     label: 'English language pack',
@@ -576,21 +574,6 @@ const RUNTIME_ASSETS: Record<string, RuntimeAsset> = {
     sha256: 'cf3a83493d8c0b426524bb5d000c77d2b52ed2261e8f8dfcb5021ec8bd00825f',
     bytes: 197028208,
     version: '2026.06.16',
-  },
-  // The "Voice Library" reference clips (the generic clips that clone via the base
-  // model — they have no downloadable checkpoint, so unlike catalog voices they
-  // can't ride along with a model download). Pulled instead of bundled so the
-  // installer doesn't carry ~120 MB of clips. NON-mandatory: downloaded in the
-  // background after setup; until it lands the picker just shows fewer library
-  // voices (the default voice + any downloaded catalog voices still work).
-  // Extracts to voices/… in the e2a runtime root.
-  'library-voices': {
-    id: 'library-voices',
-    label: 'voice library',
-    url: 'https://github.com/telltaleatheist/bookforge/releases/download/assets/library-voices.tar.gz',
-    sha256: '1832172a92355c7be3d150f275d694d47cb26242e9aeca38f0c0f2e8edbd6e93',
-    bytes: 42618128,
-    version: '2026.06.22',
   },
 };
 
@@ -685,46 +668,22 @@ function ensureRuntimeAsset(
   return p;
 }
 
-/** Download + install the default Scarlett Johansson voice (+ XTTS base) if missing. */
-export function ensureDefaultVoice(onProgress?: (message: string) => void): Promise<void> {
-  return ensureRuntimeAsset(RUNTIME_ASSETS['default-voice'], onProgress);
-}
-
 /** Download + install the English Stanza language pack if missing. */
 export function ensureEnglishStanza(onProgress?: (message: string) => void): Promise<void> {
   return ensureRuntimeAsset(RUNTIME_ASSETS['stanza-en'], onProgress);
 }
 
-/**
- * Download + install the Voice Library reference clips if missing. NON-mandatory:
- * call it fire-and-forget in the background after setup — never block startup or
- * gate readiness on it (a failure just means fewer library voices until a retry).
- */
-export function ensureLibraryVoices(onProgress?: (message: string) => void): Promise<void> {
-  return ensureRuntimeAsset(RUNTIME_ASSETS['library-voices'], onProgress);
-}
-
-/** Whether the Voice Library clips are present (always true in dev). */
-export function libraryVoicesReady(): boolean {
-  if (!app.isPackaged) return true;
-  return runtimeAssetReady(RUNTIME_ASSETS['library-voices']);
-}
-
-/** Whether the mandatory first-run runtime assets are installed (true in dev).
- *  The voice library is intentionally NOT here — it's an optional background pull. */
+/** Whether the mandatory first-run runtime assets are installed (true in dev). */
 export function defaultRuntimeAssetsReady(): boolean {
   if (!app.isPackaged) return true;
-  return (
-    runtimeAssetReady(RUNTIME_ASSETS['default-voice']) &&
-    runtimeAssetReady(RUNTIME_ASSETS['stanza-en'])
-  );
+  return runtimeAssetReady(RUNTIME_ASSETS['stanza-en']);
 }
 
 /**
  * Whether the bundled runtime needs no further setup — i.e. there's nothing for
- * the first-run "update" (ensureBundledEnv/ensureBundledE2a/ensureDefaultVoice/
- * ensureEnglishStanza) to do. True in dev (nothing ships/downloads) and on a
- * packaged install whose env + e2a + default voice + English pack are all current.
+ * the first-run "update" (ensureBundledEnv/ensureBundledE2a/ensureEnglishStanza)
+ * to do. True in dev (nothing ships/downloads) and on a packaged install whose
+ * env + e2a + English pack are all current.
  * Used to decide up front whether to show the first-run setup overlay.
  */
 export function bundledRuntimeReady(): boolean {

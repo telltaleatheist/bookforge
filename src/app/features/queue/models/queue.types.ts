@@ -333,10 +333,6 @@ export interface TtsConversionConfig {
   language: string;
   ttsEngine: string;        // e.g., 'xtts'
   fineTuned: string;        // voice model e.g., 'ScarlettJohansson'
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
   outputFilename?: string;
@@ -728,10 +724,6 @@ export interface ResumeRenderSettings {
   device?: string;
   language?: string;
   speed?: number;
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  repetitionPenalty?: number;
   enableTextSplitting?: boolean;
 }
 

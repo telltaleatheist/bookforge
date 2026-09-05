@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
+import { NarrationVoicesService } from '../../queue/jobs/narration-voices.service';
 import { selectableEngines, type TtsEngineCaps } from '../../language-learning/models/tts-engine-registry';
 import {
   AIProvider,
@@ -18,7 +19,7 @@ interface Opt { value: string; label: string; }
 /**
  * Settings → Pipeline Defaults. Edits the default selections the processing
  * pipeline (LL wizard) seeds itself from: AI per role, TTS engine/device/voice/
- * speed/temperature/topP, and the assembly output format. Every change persists
+ * speed, and the assembly output format. Every change persists
  * immediately via SettingsService; the wizard reads them on open.
  */
 @Component({
@@ -88,7 +89,7 @@ interface Opt { value: string; label: string; }
         <div class="pd-row">
           <label class="pd-label">Voice</label>
           <div class="pd-controls">
-            <desktop-select class="pd-select" [options]="xttsVoiceOptions()"
+            <desktop-select class="pd-select" [options]="voiceOptions()"
               [ngModel]="d().ttsVoice" (ngModelChange)="set({ ttsVoice: $event })"></desktop-select>
           </div>
         </div>
@@ -125,15 +126,6 @@ interface Opt { value: string; label: string; }
           <input type="range" min="0.5" max="2" step="0.05" [value]="d().ttsSpeed" (input)="set({ ttsSpeed: +$any($event.target).value })" />
         </div>
 
-        <div class="pd-row">
-          <label class="pd-label">Temperature: {{ d().ttsTemperature.toFixed(2) }}</label>
-          <input type="range" min="0.1" max="1" step="0.05" [value]="d().ttsTemperature" (input)="set({ ttsTemperature: +$any($event.target).value })" />
-        </div>
-
-        <div class="pd-row">
-          <label class="pd-label">Top P: {{ d().ttsTopP.toFixed(2) }}</label>
-          <input type="range" min="0.1" max="1" step="0.05" [value]="d().ttsTopP" (input)="set({ ttsTopP: +$any($event.target).value })" />
-        </div>
       </section>
 
       <!-- Output -->
@@ -197,6 +189,7 @@ interface Opt { value: string; label: string; }
 export class PipelineDefaultsPanelComponent {
   private readonly settings = inject(SettingsService);
   private readonly components = inject(ComponentService);
+  private readonly voices = inject(NarrationVoicesService);
 
   /** TTS engines selectable as a default — bundled ones always, optional-env ones
    *  (Orpheus/Voxtral/F5) only once their component is installed. */
@@ -242,7 +235,7 @@ export class PipelineDefaultsPanelComponent {
   });
 
   constructor() {
-    void this.loadXttsVoices();
+    void this.voices.load();
     void this.loadOllamaModels();
     void this.components.ensureLoaded();
   }
@@ -274,20 +267,6 @@ export class PipelineDefaultsPanelComponent {
     } catch {
       this.ollamaModels.set([]);
       this.ollamaProbe.set('unreachable');
-    }
-  }
-
-  /** Load installed audiobook voices into the default-voice picker. */
-  private async loadXttsVoices(): Promise<void> {
-    try {
-      const api = (window as any).electron?.customVoices;
-      if (!api?.listAudiobook) return;
-      const res = await api.listAudiobook();
-      if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
-        this.xttsVoices.set(res.data);
-      }
-    } catch {
-      /* keep the seeded default options */
     }
   }
 
@@ -325,17 +304,19 @@ export class PipelineDefaultsPanelComponent {
     { key: 'translate', label: 'Translation' },
   ];
 
-  // Installed audiobook voices, loaded from the main process so the default-voice
-  // picker only offers voices that actually work. Seeded with the always-present
-  // bundled voice so the select is never empty before the async load resolves.
-  readonly xttsVoices = signal<Opt[]>([
-    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-    { value: 'internal', label: 'Default XTTS' },
-  ]);
-
-  /** XTTS voice options for the desktop-select. */
-  readonly xttsVoiceOptions = computed<DesktopSelectItems>(() =>
-    this.xttsVoices().map((v) => ({ value: v.value, label: v.label })),
+  /**
+   * The voices the DEFAULT ENGINE can be asked for.
+   *
+   * This used to be its own list — the installed XTTS checkpoints, fetched over
+   * `voices:list-audiobook` and seeded with the bundled Scarlett. Both the list
+   * and the IPC went with XTTS on 2026-09-05, and replacing them with a second
+   * hardcoded roster would be the drift `NarrationVoicesService` exists to
+   * prevent. So it reads that service, for whichever engine this panel currently
+   * has selected — which is also what keeps the saved default a PAIR that can
+   * render, rather than an Orpheus engine beside a voice from another one.
+   */
+  readonly voiceOptions = computed<DesktopSelectItems>(() =>
+    this.voices.voicesFor(this.d().ttsEngine).map((v) => ({ value: v.value, label: v.label })),
   );
 
   /** Installed RVC enhancement voice options for the desktop-select. */

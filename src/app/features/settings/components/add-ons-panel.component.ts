@@ -684,11 +684,11 @@ export class AddOnsPanelComponent implements OnInit {
       .map(c => c.component.id)),
   );
 
-  /** The CUDA download-on-demand packs (llama LLM + XTTS PyTorch + RVC). Treated
+  /** The CUDA download-on-demand packs (llama LLM + PyTorch + RVC). Treated
    *  as one "GPU acceleration" group — co-selected at first run and grouped in
    *  the GPU-only view, so the user makes a single GPU choice for every phase. */
   isCudaPack(id: string): boolean {
-    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc' || id === 'deepspeed-xtts';
+    return id === 'llama-cuda' || id === 'cuda-tts' || id === 'cuda-rvc';
   }
 
   // First run: pre-check GPU acceleration when the machine qualifies — the user
@@ -769,7 +769,7 @@ export class AddOnsPanelComponent implements OnInit {
 
   /** Engine components whose env we can diagnose (id is a diagnostic engine). */
   protected canTestEnv(c: OptionalComponent): boolean {
-    return ['orpheus', 'voxtral-env', 'f5-env'].includes(c.id);
+    return c.id === 'orpheus';
   }
   protected envTesting(id: string): boolean {
     return this.envTestingIds().has(id);

@@ -22,14 +22,12 @@ import { getExternalInstaller, installableExternalIds, ExternalInstaller } from 
 import { LLAMA_CUDA_ID, downloadLlamaCudaInto } from './llama-cuda';
 import { CUDA_TTS_ID, installCudaTts, isCudaTtsInstalled, uninstallCudaTts, cudaTtsMarkerPath } from './cuda-tts';
 import { CUDA_RVC_ID, installCudaRvc, isCudaRvcInstalled, uninstallCudaRvc, cudaRvcMarkerPath } from './cuda-rvc';
-import { DEEPSPEED_XTTS_ID, installDeepspeedXtts, isDeepspeedXttsInstalled, uninstallDeepspeedXtts, deepspeedXttsMarkerPath } from './deepspeed-xtts';
 import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhisperEnv, whisperEnvMarkerPath } from './whisper-env';
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
 import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
-import { registerDownloadedVoice, removeCustomVoice, isDownloadedVoiceId } from '../custom-voices';
 import type {
   IComponentManager,
   OptionalComponent,
@@ -539,50 +537,6 @@ function chmodEntry(entryPath: string): void {
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// TTS-model fetch (kind 'tts-model') — download a HF voice into e2a's HF cache
-// ─────────────────────────────────────────────────────────────────────────────
-
-/** The HF-cache repo dir name for a repo id ('a/b' → 'models--a--b'). */
-function hfRepoDir(repo: string): string {
-  return `models--${repo.replace(/\//g, '--')}`;
-}
-
-/** The checkpoint file within a voice's `files` (the .pth, or the last entry). */
-function modelFileOf(files: string[]): string {
-  return files.find((f) => f.endsWith('.pth')) || files[files.length - 1];
-}
-
-/**
- * Glob e2a's HF cache for a tts-model's checkpoint across snapshot revisions.
- * Returns the absolute model.pth path if present (so bundled + already-downloaded
- * voices surface as Installed), else null.
- */
-function findTtsModelEntry(component: OptionalComponent): string | null {
-  if (!component.hf) return null;
-  const { repo, sub, files } = component.hf;
-  const snapshotsRoot = path.join(
-    getDefaultE2aPath(), 'models', 'tts', hfRepoDir(repo), 'snapshots'
-  );
-  let snaps: string[];
-  try {
-    snaps = fs.readdirSync(snapshotsRoot);
-  } catch {
-    return null;
-  }
-  const subParts = sub.split('/').filter(Boolean);
-  const modelFile = modelFileOf(files);
-  for (const snap of snaps) {
-    const candidate = path.join(snapshotsRoot, snap, ...subParts, modelFile);
-    try {
-      if (fs.existsSync(candidate)) return candidate;
-    } catch {
-      /* ignore */
-    }
-  }
-  return null;
-}
-
 /**
  * Probe e2a's models/stanza for a language pack's dir. Returns the absolute
  * stanza/<code> path if it exists and is non-empty (so bundled + already-
@@ -599,156 +553,6 @@ function findLanguagePackEntry(component: OptionalComponent): string | null {
     return null;
   }
   return null;
-}
-
-/**
- * Download a tts-model by spawning the bundled-python helper, which fetches the
- * voice into the same HF cache the XTTS engine reads — so the result is
- * byte-identical to a bundled voice. Progress comes from BF_PROGRESS lines the
- * helper prints; the final stdout line is a JSON result.
- */
-async function fetchTtsModel(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  if (!component.hf) {
-    return { id, ok: false, error: `${component.name} has no HuggingFace coordinates.` };
-  }
-
-  emit({ id, phase: 'resolve', pct: 0, message: 'Preparing download…' });
-
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-
-  // Drive the helper from the component's HF coordinates (repo/sub/files) rather
-  // than a preset name, so it works uniformly for fine-tuned voices AND the base
-  // model (whose preset 'sub' doesn't match its actual repo layout).
-  const { command, args: pyArgs } = getPythonInvocation(getDefaultE2aPath(), 'xtts');
-  const helperArgs = [
-    ...pyArgs,
-    '-m', 'bookforge_ext.download_model',
-    '--engine', 'xtts',
-    '--repo', component.hf.repo,
-    '--sub', component.hf.sub,
-    '--files', ...component.hf.files,
-    // Catalog voices carry a reference clip fetched alongside the checkpoint so
-    // the downloaded voice is self-contained (the base model has none).
-    ...(component.hf.ref ? ['--ref', component.hf.ref] : []),
-    '--bf-progress',
-  ];
-
-  return await new Promise<InstallResult>((resolve) => {
-    let finalJson = '';
-    let stderrTail = '';
-    let stdoutBuf = '';
-    let settled = false;
-    // Track each HF progress bar by description; the largest-total bar is the
-    // checkpoint, which we surface as the headline percentage.
-    const totalByDesc = new Map<string, number>();
-    const recvByDesc = new Map<string, number>();
-
-    const child = spawn(command, helperArgs, {
-      cwd: getDefaultE2aPath(),
-      env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
-    });
-
-    controller.signal.addEventListener('abort', () => {
-      try { child.kill('SIGKILL'); } catch { /* already gone */ }
-    });
-
-    child.stdout?.on('data', (d: Buffer) => {
-      stdoutBuf += d.toString();
-      let nl: number;
-      while ((nl = stdoutBuf.indexOf('\n')) >= 0) {
-        const line = stdoutBuf.slice(0, nl).trim();
-        stdoutBuf = stdoutBuf.slice(nl + 1);
-        if (!line) continue;
-        if (line.startsWith('BF_PROGRESS ')) {
-          const m = line.match(/^BF_PROGRESS\s+(\d+)\s+(\d+)\s+(.*)$/);
-          if (!m) continue;
-          const recv = parseInt(m[1], 10);
-          const total = parseInt(m[2], 10);
-          const desc = m[3] || 'model';
-          if (total > 0) {
-            totalByDesc.set(desc, total);
-            recvByDesc.set(desc, recv);
-          }
-          let bigDesc = '';
-          let bigTotal = 0;
-          for (const [k, v] of totalByDesc) if (v > bigTotal) { bigTotal = v; bigDesc = k; }
-          const r = recvByDesc.get(bigDesc) || 0;
-          const pct = bigTotal > 0 ? Math.min(100, Math.round((r / bigTotal) * 100)) : 0;
-          emit({ id, phase: 'download', pct, receivedBytes: r, totalBytes: bigTotal,
-                 message: `Downloading ${component.name}…` });
-        } else if (line.startsWith('{')) {
-          finalJson = line;
-        }
-      }
-    });
-
-    child.stderr?.on('data', (d: Buffer) => {
-      stderrTail = (stderrTail + d.toString()).slice(-2000);
-    });
-
-    const finish = (result: InstallResult) => {
-      if (settled) return;
-      settled = true;
-      inFlight.delete(id);
-      resolve(result);
-    };
-
-    child.on('error', (err) => {
-      emit({ id, phase: 'error', pct: 0, message: err.message });
-      finish({ id, ok: false, error: err.message });
-    });
-
-    child.on('close', (code) => {
-      if (controller.signal.aborted) {
-        const msg = 'Download cancelled';
-        emit({ id, phase: 'error', pct: 0, message: msg });
-        return finish({ id, ok: false, error: msg });
-      }
-      let parsed: { ok?: boolean; error?: string; files?: Record<string, string>;
-                    subDir?: string; snapshotDir?: string; ref?: string } | null = null;
-      try { parsed = finalJson ? JSON.parse(finalJson) : null; } catch { /* keep null */ }
-
-      if (code === 0 && parsed?.ok && parsed.files) {
-        const entryPath = parsed.files[modelFileOf(component.hf!.files)]
-          || Object.values(parsed.files).find((p) => p.endsWith('.pth'))
-          || Object.values(parsed.files)[0];
-        const subDir = parsed.subDir || parsed.snapshotDir || path.dirname(entryPath);
-        const record: InstalledRecord = {
-          id,
-          version: component.version,
-          source: 'managed',
-          path: subDir,
-          entryPath,
-          bytes: component.sizeBytes || undefined,
-          installedAt: new Date().toISOString(),
-        };
-        putRecord(record);
-        // A downloaded catalog voice (checkpoint + ref clip now on disk) is
-        // registered so the player and full-audiobook generation use it via the
-        // same rails as a user voice — no bundled clip or e2a preset needed.
-        if (component.hf!.ref && parsed.ref) {
-          try {
-            registerDownloadedVoice({
-              id, name: component.name, checkpointDir: subDir, refPath: parsed.ref,
-            });
-          } catch (err) {
-            cwarn(`[COMPONENTS] ${id}: voice registration failed:`, err);
-          }
-        }
-        emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-        return finish({ id, ok: true, record });
-      }
-
-      const error = parsed?.error || stderrTail.trim() || `Download failed (exit ${code}).`;
-      emit({ id, phase: 'error', pct: 0, message: error });
-      finish({ id, ok: false, error });
-    });
-  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -957,45 +761,6 @@ async function fetchCudaRvc(
   }
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// DeepSpeed XTTS (kind 'binary', id 'deepspeed-xtts') — overlay DeepSpeed into the
-// runtime env so XTTS narration runs ~1.5x faster on a compatible NVIDIA GPU.
-// ─────────────────────────────────────────────────────────────────────────────
-
-async function fetchDeepspeedXtts(
-  component: OptionalComponent,
-  emit: (p: InstallProgress) => void
-): Promise<InstallResult> {
-  const id = component.id;
-  const controller = new AbortController();
-  inFlight.set(id, { controller, tempDir: null });
-  try {
-    await installDeepspeedXtts(emit, controller.signal);
-    const marker = deepspeedXttsMarkerPath() || '';
-    const record: InstalledRecord = {
-      id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker,
-      bytes: component.sizeBytes || undefined,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    emit({ id, phase: 'done', pct: 100, message: `${component.name} installed.` });
-    return { id, ok: true, record };
-  } catch (err) {
-    const message = controller.signal.aborted
-      ? 'Install cancelled'
-      : (err instanceof Error ? err.message : String(err));
-    emit({ id, phase: 'error', pct: 0, message });
-    return { id, ok: false, error: message };
-  } finally {
-    inFlight.delete(id);
-  }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
 // Whisper speech-to-text (kind 'binary', id 'whisper') — overlay faster-whisper +
 // av into the runtime env so "Generate sentences" can transcribe an audiobook.
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1176,14 +941,8 @@ async function install(
     return { id, ok: false, error: `${component.name} does not support managed install.` };
   }
 
-  // TTS voices fetch into e2a's HF cache via the python helper, not a single
-  // archive download — different mechanism, same install()/progress contract.
-  if (component.kind === 'tts-model') {
-    return fetchTtsModel(component, emit);
-  }
-
-  // Language packs fetch into e2a's models/stanza dir via the python helper,
-  // same mechanism as tts-model — different helper branch, same contract.
+  // Language packs fetch into e2a's models/stanza dir via the python helper —
+  // its own helper branch, the same install()/progress contract.
   if (component.kind === 'language-pack') {
     return fetchLanguagePack(component, emit);
   }
@@ -1212,14 +971,8 @@ async function install(
     return fetchCudaRvc(component, emit);
   }
 
-  // DeepSpeed XTTS overlays the DeepSpeed package (with a prebuilt kernel) into the
-  // runtime env via pip — same overlay model as cuda-tts.
-  if (component.id === DEEPSPEED_XTTS_ID) {
-    return fetchDeepspeedXtts(component, emit);
-  }
-
-  // Whisper overlays faster-whisper + av into the runtime env via pip — same
-  // overlay model as deepspeed-xtts.
+  // Whisper overlays faster-whisper + av into the runtime env via pip — the same
+  // overlay model as cuda-tts.
   if (component.id === WHISPER_ENV_ID) {
     return fetchWhisperEnv(component, emit);
   }
@@ -1465,18 +1218,6 @@ async function uninstall(id: string): Promise<void> {
     return;
   }
 
-  // DeepSpeed XTTS overlay: pip-uninstall deepspeed from the runtime env + clear marker.
-  if (id === DEEPSPEED_XTTS_ID) {
-    try {
-      uninstallDeepspeedXtts();
-    } catch (err) {
-      cerror(`[COMPONENTS] ${id}: remove DeepSpeed overlay failed:`, err);
-    }
-    dropRecord(id);
-    clog(`[COMPONENTS] ${id}: removed DeepSpeed XTTS overlay`);
-    return;
-  }
-
   // Whisper overlay: pip-uninstall faster-whisper + av from the runtime env + clear marker.
   if (id === WHISPER_ENV_ID) {
     try {
@@ -1513,12 +1254,6 @@ async function uninstall(id: string): Promise<void> {
     dropRecord(id);
     clog(`[COMPONENTS] ${id}: removed Whisper model`);
     return;
-  }
-
-  // A downloaded catalog voice is also registered as a voice — forget that
-  // registration (and its staged e2a layout) so it stops appearing in pickers.
-  if (isDownloadedVoiceId(id)) {
-    try { removeCustomVoice(id); } catch { /* best-effort */ }
   }
 
   if (record.source === 'managed') {
@@ -1670,26 +1405,6 @@ async function buildStatus(
     record = undefined;
   }
 
-  // For tts-model voices without a (valid) record, glob the HF cache: bundled and
-  // already-downloaded voices surface as Installed for free, and a snapshot path
-  // that changed across an app update is re-detected here.
-  if (!record && component.kind === 'tts-model') {
-    const found = findTtsModelEntry(component);
-    if (found) {
-      record = {
-        id: component.id,
-        version: component.version,
-        source: 'managed',
-        path: path.dirname(found),
-        entryPath: found,
-        bytes: component.sizeBytes || undefined,
-        installedAt: new Date().toISOString(),
-      };
-      putRecord(record);
-      clog(`[COMPONENTS] ${component.id}: detected TTS model in HF cache at ${found}`);
-    }
-  }
-
   // Same for language packs: bundled and already-downloaded Stanza models in
   // e2a's models/stanza dir surface as Installed for free.
   if (!record && component.kind === 'language-pack') {
@@ -1776,21 +1491,6 @@ async function buildStatus(
     };
     putRecord(record);
     clog(`[COMPONENTS] ${component.id}: detected CUDA PyTorch overlay in RVC env`);
-  }
-
-  // DeepSpeed XTTS: marker-in-env detection (auto-clears if the env re-unpacks).
-  if (!record && component.id === DEEPSPEED_XTTS_ID && isDeepspeedXttsInstalled()) {
-    const marker = deepspeedXttsMarkerPath() || '';
-    record = {
-      id: component.id,
-      version: component.version,
-      source: 'managed',
-      path: marker,
-      entryPath: marker,
-      installedAt: new Date().toISOString(),
-    };
-    putRecord(record);
-    clog(`[COMPONENTS] ${component.id}: detected DeepSpeed overlay in runtime env`);
   }
 
   // Whisper: marker-in-env detection (auto-clears if the env re-unpacks).
@@ -1888,7 +1588,9 @@ export async function runInstaller(
 // ─────────────────────────────────────────────────────────────────────────────
 
 // Components whose id is also a diagnostic engine name (env_diagnostics.py ENGINES).
-const DIAGNOSTIC_ENGINES = new Set(['orpheus', 'voxtral', 'f5', 'xtts']);
+// Down to one: xtts, voxtral and f5 left the build on 2026-09-05 along with the
+// components whose envs this diagnostic ran inside.
+const DIAGNOSTIC_ENGINES = new Set(['orpheus']);
 
 /** asar → asar.unpacked rewrite (a spawned python can't read inside the archive).
  *  Inlined rather than importing e2a-paths, which imports this module (cycle). */

@@ -17,12 +17,10 @@
  *
  * ── The seeds are not fallbacks ─────────────────────────────────────────────
  *
- * They are what BookForge ships with. `load()` REPLACES the XTTS list when main
- * answers with installed voices, and appends discovered Orpheus models to the
- * built-ins; an unanswered call leaves the shipped list, which is a true
- * statement about a build whose extra voices have not been downloaded. What it
- * must never do is offer a voice that is not there, and that is why the XTTS
- * list is replaced rather than merged.
+ * They are what BookForge ships with. `load()` appends the custom Orpheus models
+ * it discovers to the built-in roster; an unanswered call leaves the shipped
+ * list, which is a true statement about a build whose extra voices have not been
+ * downloaded. What it must never do is offer a voice that is not there.
  */
 import { Injectable, computed, inject, signal } from '@angular/core';
 import { ComponentService } from '../../../core/services/component.service';
@@ -46,15 +44,6 @@ export class NarrationVoicesService {
   private readonly components = inject(ComponentService);
 
   /**
-   * The XTTS-family voices. Seeded with what the app ships and replaced by the
-   * installed set the moment main answers.
-   */
-  private readonly xtts = signal<readonly NarrationVoice[]>([
-    { value: 'internal', label: 'Default XTTS' },
-    { value: 'ScarlettJohansson', label: 'Scarlett Johansson' },
-  ]);
-
-  /**
    * Orpheus voices, ordered best → worst prosody (user-ranked), accent in the
    * label. Custom models discovered in the models folder are appended by
    * `load()` and marked so they are distinguishable from the built-ins.
@@ -64,8 +53,8 @@ export class NarrationVoicesService {
   /**
    * Higgs voices. UNSEEDED, and that is the difference from the two lists above.
    *
-   * Orpheus and XTTS both ship voices — a roster the engine genuinely has, which
-   * is why stating it is not a fallback. Higgs ships none: every Higgs voice,
+   * Orpheus ships voices — a roster the engine genuinely has, which is why
+   * stating it is not a fallback. Higgs ships none: every Higgs voice,
    * including the served model's own zero-shot default, is a row in
    * `electron/data/higgs-models.json`, so there is nothing true to say here
    * before main answers. An empty list until `load()` returns is the honest
@@ -77,14 +66,12 @@ export class NarrationVoicesService {
   /** Done once per app: the machine does not grow voices while a modal is open. */
   private loaded = false;
 
-  readonly xttsVoices = computed(() => this.xtts());
   readonly orpheusVoices = computed(() => this.orpheus());
   readonly higgsVoices = computed(() => this.higgs());
 
   /** The voices THIS engine can be asked for. The shared rule, over live lists. */
   voicesFor(engine: string): readonly NarrationVoice[] {
     return narrationVoicesFor(engine, {
-      xtts: this.xtts(),
       orpheus: this.orpheus(),
       higgs: this.higgs(),
     });
@@ -113,7 +100,7 @@ export class NarrationVoicesService {
   async load(): Promise<void> {
     if (this.loaded) return;
     this.loaded = true;
-    await Promise.all([this.loadXtts(), this.loadOrpheus(), this.loadHiggs()]);
+    await Promise.all([this.loadOrpheus(), this.loadHiggs()]);
   }
 
   /**
@@ -138,19 +125,6 @@ export class NarrationVoicesService {
       return;
     }
     this.higgs.set(res.data as NarrationVoice[]);
-  }
-
-  private async loadXtts(): Promise<void> {
-    try {
-      const api = (window as any).electron?.customVoices;
-      if (!api?.listAudiobook) return;
-      const res = await api.listAudiobook();
-      if (res?.success && Array.isArray(res.data) && res.data.length > 0) {
-        this.xtts.set(res.data as NarrationVoice[]);
-      }
-    } catch {
-      /* keep the shipped options — see the header */
-    }
   }
 
   private async loadOrpheus(): Promise<void> {

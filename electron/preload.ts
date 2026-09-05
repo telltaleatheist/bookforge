@@ -588,10 +588,6 @@ export interface ParallelTtsSettings {
   language: string;
   ttsEngine: string;
   fineTuned: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
 }
@@ -1239,13 +1235,6 @@ export interface ElectronAPI {
     onStatus: (callback: (status: { state: 'preparing' | 'ready' | 'error'; message: string; error?: string }) => void) => () => void;
     usingBundledEnv: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
     isFreshInstall: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
-  };
-  customVoices: {
-    list: () => Promise<{ success: boolean; data?: Array<{ id: string; name: string; checkpointDir: string; refPath: string }>; error?: string }>;
-    add: () => Promise<{ success: boolean; voice?: { id: string; name: string; checkpointDir: string; refPath: string }; canceled?: boolean; error?: string }>;
-    remove: (id: string) => Promise<{ success: boolean; error?: string }>;
-    /** Installed voices selectable for full-audiobook generation (value/label). */
-    listAudiobook: () => Promise<{ success: boolean; data?: Array<{ value: string; label: string }>; error?: string }>;
   };
   higgsModels: {
     /** The Higgs narration roster as a picker wants it. A voice whose artifact has
@@ -2982,16 +2971,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('runtime:using-bundled-env'),
     isFreshInstall: () =>
       ipcRenderer.invoke('runtime:is-fresh-install'),
-  },
-  customVoices: {
-    list: () =>
-      ipcRenderer.invoke('custom-voices:list'),
-    add: () =>
-      ipcRenderer.invoke('custom-voices:add'),
-    remove: (id: string) =>
-      ipcRenderer.invoke('custom-voices:remove', id),
-    listAudiobook: () =>
-      ipcRenderer.invoke('voices:list-audiobook'),
   },
   higgsModels: {
     list: () =>

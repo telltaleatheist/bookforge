@@ -311,13 +311,12 @@ export class ReaderStreamBridge {
     };
   }
 
-  /** The voices the active engine can actually use (mirrors tts-api-server). */
+  /** The voices the active engine can actually use (mirrors tts-api-server).
+   *  Orpheus's voices are built into the model, so its whole set is usable —
+   *  the branch that filtered a catalog down to the checkpoints actually on disk
+   *  went with XTTS. */
   private async installedVoices(): Promise<string[]> {
-    if (getSelectedEngineName() === 'orpheus') {
-      return getActiveEngine().getAvailableVoices();
-    }
-    const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
-    return getInstalledVoiceIds();
+    return getActiveEngine().getAvailableVoices();
   }
 
   private send(ws: WebSocket, data: Record<string, unknown>): void {

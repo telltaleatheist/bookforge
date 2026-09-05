@@ -15,7 +15,7 @@ import type { TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * Default selections the processing pipeline (LL wizard) seeds itself from, so a
- * user who always wants e.g. Claude for cleanup + XTTS + a particular voice
+ * user who always wants e.g. Claude for cleanup + a particular voice
  * doesn't re-pick every time. Edited in Settings → Pipeline Defaults; the wizard
  * applies them on open (a restored in-progress session still overrides them).
  */
@@ -41,12 +41,8 @@ export interface PipelineDefaults {
   ttsDevice: 'auto' | 'cpu' | 'mps' | 'gpu';
   ttsVoice: string;
   ttsSpeed: number;
-  ttsTemperature: number;
-  ttsTopP: number;
   /** Assembly output: false = audiobook (M4B), true = video. */
   generateVideo: boolean;
-  /** XTTS repetition penalty (≥1; 1 = no penalty). Higher curbs looping/hallucination. */
-  ttsRepetitionPenalty: number;
   /** RVC voice enhancement: re-render finished narration through an RVC model. */
   rvcEnhancementEnabled: boolean;
   /** Selected enhancement voice id (rvc-model component id), '' = none chosen. */
@@ -101,10 +97,7 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
   ttsDevice: 'auto',
   ttsVoice: 'leah',
   ttsSpeed: 1.0,
-  ttsTemperature: 0.7,
-  ttsTopP: 0.9,
   generateVideo: false,
-  ttsRepetitionPenalty: 2.0,
   rvcEnhancementEnabled: false,
   rvcEnhancementVoiceId: '',
   rvcEnhancementIndexRate: 0.5,
@@ -133,10 +126,16 @@ export const DEFAULT_PIPELINE_DEFAULTS: PipelineDefaults = {
 
 /**
  * A named, saved bundle of TTS + RVC pipeline settings the user can apply with a
- * single pick from the wizard's preset dropdown — e.g. "Owen on F5 → Sigma RVC" or
- * "Scarlett on XTTS → Owen RVC". Captures only the engine/voice/sampling +
- * enhancement slice of {@link PipelineDefaults}; the AI-role and output choices are
- * left to the per-book flow. Picking a preset overwrites those fields in the wizard.
+ * single pick from the wizard's preset dropdown — e.g. "Leah → Sigma RVC".
+ * Captures only the engine/voice/speed + enhancement slice of
+ * {@link PipelineDefaults}; the AI-role and output choices are left to the
+ * per-book flow. Picking a preset overwrites those fields in the wizard.
+ *
+ * It carried three more fields until 2026-09-05 — ttsTemperature, ttsTopP and
+ * ttsRepetitionPenalty. They were XTTS's controls: the ONLY code that ever read
+ * them was the prep spawn's `if (settings.ttsEngine === 'xtts')` flag block, and
+ * both engines this build renders in declare `sampling: {}`. A preset saved
+ * before this still has the keys on disk; nothing reads them.
  */
 export interface PipelinePreset {
   /** Stable id (generated at save time; `builtin:*` for shipped presets). */
@@ -149,9 +148,6 @@ export interface PipelinePreset {
   ttsDevice: PipelineDefaults['ttsDevice'];
   ttsVoice: string;
   ttsSpeed: number;
-  ttsTemperature: number;
-  ttsTopP: number;
-  ttsRepetitionPenalty: number;
   rvcEnhancementEnabled: boolean;
   rvcEnhancementVoiceId: string;
   rvcEnhancementIndexRate: number;
@@ -185,9 +181,6 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsDevice: 'auto',
     ttsVoice: 'leah',
     ttsSpeed: 1.0,
-    ttsTemperature: 0.6,
-    ttsTopP: 0.9,
-    ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
     rvcEnhancementIndexRate: 0.7,
@@ -239,18 +232,13 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
     ttsVoice: 'deathstalker',
     ttsSpeed: 1.0,
     /*
-     * INERT FOR THIS ENGINE, and copied rather than chosen. Orpheus declares
-     * `sampling: {}` (shared/tts/engine-caps.ts) — it fixes its sampling inside
-     * the engine class, so none of these three reaches the render. The
-     * repetition penalty is deathstalker's own recorded value
-     * (`backends.vllm.repPenalty`, electron/data/orpheus-models.json); the other
-     * two are what the Leah preset beside it already carries for the same
-     * engine. Nothing here was invented, because a number invented for a control
-     * that does not exist would look like a tuning decision to the next reader.
+     * The three sampling fields this preset used to carry (temperature 0.6,
+     * top-p 0.9, repetition penalty 1.1) are gone with the field itself — they
+     * were XTTS's controls, INERT for Orpheus, which fixes its sampling inside
+     * the engine class. deathstalker's real repetition penalty lives where the
+     * engine reads it: `backends.vllm.repPenalty` in
+     * electron/data/orpheus-models.json.
      */
-    ttsTemperature: 0.6,
-    ttsTopP: 0.9,
-    ttsRepetitionPenalty: 1.1,
     rvcEnhancementEnabled: true,
     rvcEnhancementVoiceId: 'rvc-voice-sigma',
     rvcEnhancementIndexRate: 0.3,
@@ -261,15 +249,15 @@ export const BUILTIN_PIPELINE_PRESETS: PipelinePreset[] = [
 ];
 
 /**
- * The factory ("stock") XTTS sampling values that ship with the app. The user's
- * saved Pipeline Defaults drift as they adjust the sliders; "Reset to stock"
- * restores these. Single source of truth for both the initial defaults above and
- * the reset action, so the two never diverge.
+ * The factory ("stock") TTS values that ship with the app. The user's saved
+ * Pipeline Defaults drift as they adjust the controls; "Reset to stock" restores
+ * these. Single source of truth for both the initial defaults above and the reset
+ * action, so the two never diverge.
+ *
+ * Down to ONE field: temperature/top-p/repetition-penalty were XTTS's, and left
+ * with it on 2026-09-05.
  */
 export const STOCK_TTS_SAMPLING = {
-  temperature: DEFAULT_PIPELINE_DEFAULTS.ttsTemperature,
-  topP: DEFAULT_PIPELINE_DEFAULTS.ttsTopP,
-  repetitionPenalty: DEFAULT_PIPELINE_DEFAULTS.ttsRepetitionPenalty,
   speed: DEFAULT_PIPELINE_DEFAULTS.ttsSpeed,
 } as const;
 
@@ -476,21 +464,21 @@ export class SettingsService {
         fields: [], // Custom UI (app-higgs-voices-panel + app-add-ons-panel)
       },
       {
-        // ── RETIRED ENGINE, LIVE PAGE ────────────────────────────────────────
-        // XTTS stopped being a narration CHOICE on 2026-09-04, and this page did
-        // NOT go with it. Two things still live here that nothing else owns:
-        // the Stanza LANGUAGE PACKS (sentence segmentation — engine-agnostic,
-        // used by every render) and the user's own uploaded XTTS voices
-        // (electron/custom-voices.ts ties the whole "add your own voice" feature
-        // to this engine — see docs/HIGGS_ENGINE.md, "What XTTS still owns").
+        // ── AN ENGINE'S PAGE THAT OUTLIVED ITS ENGINE ────────────────────────
+        // XTTS stopped being a narration CHOICE on 2026-09-04 and left the root
+        // entirely on 2026-09-05 — the pool, the voice catalog, the "add your
+        // own voice" feature and the DeepSpeed pack all went with it. What is
+        // left under this key is the one thing here that was never XTTS's: the
+        // Stanza LANGUAGE PACKS, which every engine's prep uses to split
+        // sentences.
         // The section id stays 'xtts' because it is a ROUTE KEY: the translation
         // panel deep-links `?section=xtts` for "download more language packs",
         // and renaming it would break that link to fix a word.
         id: 'xtts',
-        name: 'XTTS (retired)',
-        description: 'Retired as a narration engine. Language packs and your own uploaded voices still live here.',
+        name: 'Language packs',
+        description: 'Stanza sentence-segmentation models, used by every narration engine',
         icon: '🗣️',
-        fields: [], // Custom UI (app-voices-panel + app-languages-panel + app-add-ons-panel)
+        fields: [], // Custom UI (app-languages-panel)
       },
       {
         // Dedicated screen for the optional RVC voice-enhancement engine + its
@@ -500,20 +488,6 @@ export class SettingsService {
         description: 'Optional RVC engine + voice models that re-render finished narration to smooth synthetic artifacts',
         icon: '✨',
         fields: [],
-      },
-      {
-        id: 'f5',
-        name: 'F5-TTS',
-        description: 'F5-TTS engine environment',
-        icon: '🎤',
-        fields: [], // Custom UI (app-add-ons-panel filtered to f5-env)
-      },
-      {
-        id: 'voxtral',
-        name: 'Voxtral',
-        description: 'Voxtral TTS engine environment',
-        icon: '🎵',
-        fields: [], // Custom UI (app-add-ons-panel filtered to voxtral-env)
       },
       {
         // The transcription runtime (Whisper under the hood — never named in the

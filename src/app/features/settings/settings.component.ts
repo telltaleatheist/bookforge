@@ -8,7 +8,6 @@ import { ElectronService, OrpheusBatchConfig } from '../../core/services/electro
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
-import { VoicesPanelComponent } from './components/voices-panel.component';
 import { WhisperModelsPanelComponent } from './components/whisper-models-panel.component';
 import { LanguagesPanelComponent } from './components/languages-panel.component';
 import { AiSetupWizardComponent } from '../ai-setup/ai-setup-wizard.component';
@@ -24,7 +23,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
 @Component({
   selector: 'app-settings',
   standalone: true,
-  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, VoicesPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
+  imports: [CommonModule, FormsModule, DesktopButtonComponent, DesktopSelectComponent, AddOnsPanelComponent, WhisperModelsPanelComponent, LanguagesPanelComponent, AiSetupWizardComponent, MultiWorkerToggleComponent, PipelineDefaultsPanelComponent, RvcEnhancementPanelComponent, OrpheusVoicesPanelComponent, HiggsVoicesPanelComponent, RemoveAllDataComponent],
   changeDetection: ChangeDetectionStrategy.OnPush,
   template: `
     <div class="settings-container">
@@ -732,22 +731,13 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 </div>
               </div>
             } @else if (section.id === 'xtts') {
-              <!-- XTTS: voices + language packs + its GPU acceleration packs. -->
+              <!-- The route key is historical (see settings.service.ts); what
+                   lives here is the Stanza language packs. -->
               <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Voices</h3>
-                  <p class="addons-group-sub">Download premium narration voices, or add your own.</p>
-                  <app-voices-panel></app-voices-panel>
-                </div>
                 <div class="addons-group">
                   <h3 class="addons-group-title">Language packs</h3>
                   <p class="addons-group-sub">Stanza sentence-segmentation models used to split text for narration, cleanup &amp; translation.</p>
                   <app-languages-panel></app-languages-panel>
-                </div>
-                <div class="addons-group">
-                  <h3 class="addons-group-title">GPU acceleration</h3>
-                  <p class="addons-group-sub">CUDA PyTorch + DeepSpeed packs that speed up XTTS narration.</p>
-                  <app-add-ons-panel [only]="xttsAddOnIds"></app-add-ons-panel>
                 </div>
               </div>
             } @else if (section.id === 'orpheus') {
@@ -1136,24 +1126,6 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
             } @else if (section.id === 'enhancement') {
               <!-- Dedicated RVC voice-enhancement screen: engine + voice models. -->
               <app-rvc-enhancement-panel></app-rvc-enhancement-panel>
-            } @else if (section.id === 'f5') {
-              <!-- F5-TTS: the engine environment (download, or point at your own). -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The F5-TTS engine environment.</p>
-                  <app-add-ons-panel [only]="f5AddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
-            } @else if (section.id === 'voxtral') {
-              <!-- Voxtral: the engine environment (download, or point at your own). -->
-              <div class="addons-hub">
-                <div class="addons-group">
-                  <h3 class="addons-group-title">Engine</h3>
-                  <p class="addons-group-sub">The Voxtral TTS engine environment.</p>
-                  <app-add-ons-panel [only]="voxtralAddOnIds"></app-add-ons-panel>
-                </div>
-              </div>
             } @else if (section.id === 'speech-to-text') {
               <!-- Speech to Text: the transcription runtime + downloadable
                    models behind "Generate sentences". -->
@@ -2462,12 +2434,9 @@ export class SettingsComponent implements OnInit {
   }
 
   // Component-id filters for the per-engine pages' embedded add-ons panels.
-  readonly xttsAddOnIds = ['cuda-tts', 'deepspeed-xtts'];
   readonly orpheusAddOnIds = ['orpheus'];
   readonly whisperAddOnIds = ['whisper'];
   readonly alignAddOnIds = ['whisperx-env'];
-  readonly f5AddOnIds = ['f5-env'];
-  readonly voxtralAddOnIds = ['voxtral-env'];
   /**
    * The cross-cutting tools, plus every downloadable task model that has no
    * picker panel of its own — today that is the page-layout model. Those are

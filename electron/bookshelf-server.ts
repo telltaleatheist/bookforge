@@ -2033,15 +2033,8 @@ export class BookshelfServer {
     try {
       const { getActiveEngine, getSelectedEngineName, getDefaultStreamVoice } = await import('./streaming-engine.js');
       const engine = getActiveEngine();
-      let voices: string[];
-      if (getSelectedEngineName() === 'orpheus') {
-        voices = engine.getAvailableVoices();
-      } else {
-        const { getInstalledVoiceIds } = await import('./components/installed-voices.js');
-        voices = await getInstalledVoiceIds();
-      }
       res.json({
-        voices,
+        voices: engine.getAvailableVoices(),
         current: engine.getCurrentVoice(),
         defaultVoice: getDefaultStreamVoice(),
         engine: getSelectedEngineName(),

@@ -50,31 +50,14 @@ ENGINES = {
         # MLX (rides the e2a env): mlx-audio loads orpheus-3b, snac decodes.
         "mac": {"packages": ["mlx", "mlx_audio", "snac"]},
     },
-    "voxtral": {
-        "py": (3, 11),
-        "needs_cuda": True,
-        "vllm": (lambda v: _ge(v, "0.18.0"), ">= 0.18.0"),
-        "packages": ["vllm_omni"],
-        # MLX (own env): mlx-audio>=0.4.4 has the voxtral_tts model; the tekken
-        # tokenizer needs mistral-common[audio]. No torch/vLLM on this path.
-        "mac": {"packages": ["mlx", "mlx_audio", "mistral_common"]},
-    },
-    "xtts": {
-        "py": (3, 11),
-        "needs_cuda": False,  # XTTS runs on CPU too; CUDA is a speed bonus
-        "vllm": None,
-        "packages": ["TTS"],
-        "mac": {"packages": ["TTS"]},  # coqui XTTS runs on CPU/MPS on Mac
-    },
-    "f5": {
-        "py": (3, 11),
-        "needs_cuda": False,
-        "vllm": None,
-        "packages": ["f5_tts"],  # CUDA wheel on Windows/Linux
-        # MLX (own env): the Apple-Silicon build is a different package.
-        "mac": {"packages": ["mlx", "f5_tts_mlx"]},
-    },
 }
+
+# There were three more entries here — "xtts", "voxtral" and "f5". They described
+# the expected packages inside envs BookForge no longer has components for: all
+# three engines left the root on 2026-09-05 when the narration picker became
+# Orpheus and Higgs. A diagnostic for an env nothing can resolve has nowhere to
+# run. (Higgs is deliberately absent too, and always was: its environment lives
+# in WSL and is checked by its own doctor, `electron/scripts/higgs/`.)
 
 
 def check_mlx():

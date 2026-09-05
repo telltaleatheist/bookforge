@@ -2032,10 +2032,6 @@ export class StudioComponent implements OnInit, OnDestroy {
     language: 'en',
     ttsEngine: 'orpheus',
     fineTuned: 'tara',
-    temperature: 0.75,
-    topP: 0.85,
-    topK: 50,
-    repetitionPenalty: 5.0,
     speed: 1.0,
     enableTextSplitting: true
   });

@@ -190,7 +190,6 @@ function assertDeviceUsable(uiDevice: string, resolved: string): void {
     );
   }
 }
-import { ensureCustomVoiceStaged, isCustomVoiceId } from './custom-voices';
 import { resolveOrpheusModel, orpheusVoiceCapsForModel, OrpheusVoiceCaps, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { startChapterCloser, stopChapterCloser } from './chapter-closer';
 import { ensureWslDrivesFor } from './wsl-mounts';
@@ -231,8 +230,13 @@ import {
  *       e2a loads the shared base and serves the LoRA per request; it hard-errors on
  *       a missing base, a malformed adapter, or a missing/'internal' voice, so the
  *       three flags always travel together.
- *  2. User-added XTTS custom voice → pre-stage its checkpoint, pass --custom_model*.
- *  3. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
+ *  2. Catalog fine-tune / built-in voice → pass --fine_tuned verbatim.
+ *
+ * A third case sat between these until 2026-09-05: a user-added XTTS checkpoint,
+ * pre-staged into e2a's layout and passed as --custom_model/--custom_model_dir/
+ * --voice with `--fine_tuned internal`. "Add your own voice" was an XTTS feature
+ * end to end (the folder held an XTTS config.json + model.pth), and it went with
+ * the engine — a voice is a fine-tune produced outside the app now.
  *
  * PATHS ARE PUSHED IN THEIR NATIVE WINDOWS FORM. Every arg later passes through
  * buildWslBashCommand, which rewrites `\\wsl$\…` and `C:\…` args to WSL-native paths
@@ -288,16 +292,6 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
         `Reinstall it from Settings → Orpheus Voices or pick another voice — ` +
         `refusing to silently fall back to the default voice.`
       );
-    }
-  }
-  if (isCustomVoiceId(settings.fineTuned)) {
-    const staged = ensureCustomVoiceStaged(settings.fineTuned!);
-    if (staged) {
-      args.push('--custom_model', staged.customModel);
-      args.push('--custom_model_dir', staged.customModelDir);
-      args.push('--voice', staged.voicePath);
-      args.push('--fine_tuned', 'internal');
-      return;
     }
   }
   if (settings.fineTuned) {
@@ -2113,10 +2107,6 @@ export interface ParallelTtsSettings {
   language: string;
   ttsEngine: string;
   fineTuned: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
   // For language learning: treat each <p> as a sentence, skip e2a's sentence splitting
@@ -2265,105 +2255,6 @@ export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
 }
 
-
-// DeepSpeed accelerates XTTS's GPT decoder ~1.5x, but it must be installed (with a
-// GPU-arch-matched, prebuilt transformer_inference op) in the XTTS env — which it
-// is NOT on a stock install (the prebuilt kernel is machine-specific). So we
-// auto-enable e2a's XTTS_USE_DEEPSPEED gate ONLY when the package is actually
-// present in the resolved XTTS env. Everywhere else the gate stays off and XTTS
-// runs exactly as before (e2a's _load_checkpoint also try/excepts the import). The
-// check derives the env from the interpreter path, so it's correct wherever the
-// env lives; result is cached (the env doesn't change mid-run). win32-only for now
-// (the only platform we've built/verified the op on).
-// The prebuilt transformer_inference op ships cubins for these compute capabilities
-// (+PTX for forward-compat to newer cards). The GPU must be >= the lowest. Keep in
-// sync with TORCH_CUDA_ARCH_LIST used to build the shipped op (packaging).
-const DEEPSPEED_MIN_CC = 75; // sm_75 (Turing). Built: 7.5;8.0;8.6;8.9;9.0+PTX.
-
-/**
- * Decide whether to auto-enable DeepSpeed for an XTTS render. True only when ALL of:
- *  - Windows + engine is XTTS,
- *  - deepspeed is installed in the resolved XTTS env, AND
- *  - the GPU is actually compatible (CUDA present + compute capability in range).
- * The GPU probe (a one-shot `python -c`) is cached in a marker beside the env and
- * keyed on the deepspeed install's mtime, so it runs once per env build. This is the
- * "only use DeepSpeed if the system is compatible" gate; e2a's _load_checkpoint also
- * falls back to standard XTTS if the op fails at load, as a final safety net.
- */
-let _xttsDeepspeedAvail: boolean | null = null;
-function xttsDeepspeedAvailable(ttsEngine?: string): boolean {
-  if (process.platform !== 'win32') return false;
-  if (ttsEngine?.toLowerCase() !== 'xtts') return false;
-  if (_xttsDeepspeedAvail !== null) return _xttsDeepspeedAvail;
-  _xttsDeepspeedAvail = false;
-  try {
-    const inv = pythonInvocation('xtts');
-    const envRoot = path.dirname(inv.command);
-    const dsInit = path.join(envRoot, 'Lib', 'site-packages', 'deepspeed', '__init__.py');
-    if (!fsSync.existsSync(dsInit)) {
-      console.log(`[PARALLEL-TTS] XTTS DeepSpeed not installed — using standard XTTS (${envRoot})`);
-      return false;
-    }
-    _xttsDeepspeedAvail = probeDeepspeedCompat(inv, envRoot, dsInit);
-  } catch (e) {
-    console.warn(`[PARALLEL-TTS] DeepSpeed compatibility probe errored; using standard XTTS: ${e instanceof Error ? e.message : String(e)}`);
-    _xttsDeepspeedAvail = false;
-  }
-  return _xttsDeepspeedAvail;
-}
-
-/** One-shot GPU compatibility probe for DeepSpeed, cached beside the env. */
-function probeDeepspeedCompat(inv: PythonInvocation, envRoot: string, dsInit: string): boolean {
-  const marker = path.join(envRoot, '.bookforge-deepspeed-compat.json');
-  let dsMtime = '';
-  try { dsMtime = String(fsSync.statSync(dsInit).mtimeMs); } catch { /* ignore */ }
-
-  // Reuse a cached verdict for this exact deepspeed install.
-  try {
-    const cached = JSON.parse(fsSync.readFileSync(marker, 'utf8'));
-    if (cached && cached.dsMtime === dsMtime && typeof cached.compatible === 'boolean') {
-      console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${cached.compatible ? 'compatible (cached) — auto-enabling' : 'incompatible (cached) — standard XTTS'}: ${cached.detail || ''}`);
-      return cached.compatible;
-    }
-  } catch { /* no/stale marker — probe */ }
-
-  // Probe: CUDA present? deepspeed imports? GPU compute capability in range?
-  const py =
-    'import sys\n' +
-    'try:\n' +
-    ' import torch\n' +
-    ' if not torch.cuda.is_available():\n' +
-    "  print('RESULT NOCUDA'); sys.exit(0)\n" +
-    ' import deepspeed  # noqa\n' +
-    ' cc = torch.cuda.get_device_capability(0)\n' +
-    " print('RESULT CC %d%d %s' % (cc[0], cc[1], torch.cuda.get_device_name(0)))\n" +
-    'except Exception as e:\n' +
-    " print('RESULT ERR %s' % e)\n";
-  const res = spawnSync(inv.command, [...inv.args, '-c', py], {
-    encoding: 'utf8', timeout: 120000, windowsHide: true, cwd: envRoot,
-  });
-  const out = `${res.stdout || ''}`;
-  const line = out.split('\n').map(s => s.trim()).find(s => s.startsWith('RESULT ')) || 'RESULT ERR no-output';
-  const payload = line.slice('RESULT '.length).trim();
-
-  let compatible = false;
-  let detail = payload;
-  const ccMatch = payload.match(/^CC\s+(\d+)\s*(.*)$/);
-  if (ccMatch) {
-    const ccNum = parseInt(ccMatch[1], 10);
-    compatible = ccNum >= DEEPSPEED_MIN_CC;
-    detail = `${ccMatch[2]} cc=${ccMatch[1]}${compatible ? '' : ` (< ${DEEPSPEED_MIN_CC}, unsupported)`}`;
-  } else {
-    detail = `not compatible: ${payload}`;
-  }
-
-  try {
-    fsSync.writeFileSync(marker, JSON.stringify({ dsMtime, compatible, detail, ts: new Date().toISOString() }, null, 2));
-  } catch { /* best-effort cache */ }
-
-  console.log(`[PARALLEL-TTS] XTTS DeepSpeed ${compatible ? 'compatible — auto-enabling' : 'incompatible — standard XTTS'}: ${detail}`);
-  return compatible;
-}
 
 /**
  * Convert a path to Windows-accessible format for reading files
@@ -3271,28 +3162,6 @@ export async function prepareSession(
     pushVoiceArgs(args, settings);
   }
 
-  // Pass XTTS settings explicitly (stored in session-state.json for workers)
-  if (settings.ttsEngine === 'xtts') {
-    if (settings.temperature !== undefined) {
-      args.push('--temperature', settings.temperature.toString());
-    }
-    if (settings.topP !== undefined) {
-      args.push('--top_p', settings.topP.toString());
-    }
-    if (settings.topK !== undefined) {
-      args.push('--top_k', settings.topK.toString());
-    }
-    if (settings.repetitionPenalty !== undefined) {
-      args.push('--repetition_penalty', settings.repetitionPenalty.toString());
-    }
-    if (settings.speed !== undefined) {
-      args.push('--speed', settings.speed.toString());
-    }
-    if (settings.enableTextSplitting) {
-      args.push('--enable_text_splitting');
-    }
-  }
-
   // Language learning mode: preserve paragraph boundaries as sentences
   if (settings.sentencePerParagraph) {
     args.push('--sentence_per_paragraph');
@@ -3827,7 +3696,6 @@ export async function regenerateSentenceIndices(
             .map((k) => [k, process.env[k]!.trim()])
         )
       : {}),
-    ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
   });
 
   const runWorker = () => new Promise<RegenerateIndicesResult>((resolve) => {
@@ -4364,8 +4232,6 @@ function startWorker(
                 .map((k) => [k, process.env[k]!.trim()])
             )
           : {}),
-        // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
-        ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
       }),
       shell: false
     },
@@ -5158,7 +5024,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
     : { sentenceStart: worker.sentenceStart, sentenceEnd: worker.sentenceEnd };
 
   const engine = config.settings.ttsEngine;
-  const gpuEngine = engine === 'orpheus' || engine === 'xtts';
+  const gpuEngine = engine === 'orpheus';
   if (failedWithOom && gpuEngine) {
     // Wait for the dead worker's VRAM to actually come back before respawning —
     // blind immediate respawns were the 3-attempt OOM cascade. Async on purpose:
@@ -5170,7 +5036,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
     // waiting on the merged number would respawn ~1.8 GiB short of what acquireGpuForJob
     // demanded — i.e. straight back into the OOM cascade this wait exists to break.
     // A job with no recorded artifact never went through the Orpheus GPU preflight
-    // (XTTS, or Orpheus pinned to CPU) and keeps the floor it has always waited on.
+    // (Orpheus pinned to CPU) and keeps the floor it has always waited on.
     const retryFloorMB = engine === 'orpheus' && session.orpheusServeArtifact
       ? orpheusMinFreeVramMB(session.orpheusServeArtifact)
       : ORPHEUS_MIN_VRAM_MB;
@@ -8389,10 +8255,6 @@ export interface ResumeRenderSettings {
   device?: string;
   language?: string;
   speed?: number;
-  temperature?: number;
-  topP?: number;
-  topK?: number;
-  repetitionPenalty?: number;
   enableTextSplitting?: boolean;
 }
 
@@ -8448,10 +8310,6 @@ function readResumeRenderSettings(
           device: s.device || undefined,
           language: s.language || undefined,
           speed: s.speed,
-          temperature: s.temperature,
-          topP: s.topP,
-          topK: s.topK,
-          repetitionPenalty: s.repetitionPenalty,
           enableTextSplitting: s.enableTextSplitting,
         }
       : undefined;

@@ -806,8 +806,8 @@ async function startTtsApiServerOnce(): Promise<void> {
 
 async function doRuntimeSetup(): Promise<boolean> {
   const {
-    ensureBundledEnv, ensureBundledE2a, ensureDefaultVoice, ensureEnglishStanza,
-    ensureLibraryVoices, beginSetupDownload, setupDownloadProgress,
+    ensureBundledEnv, ensureBundledE2a, ensureEnglishStanza,
+    beginSetupDownload, setupDownloadProgress,
   } = await import('./e2a-env-bootstrap.js');
 
   const logger = getMainLogger();
@@ -835,7 +835,6 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   await step('Bundled e2a code setup', () => ensureBundledE2a(emit));
   await step('Python env setup', () => ensureBundledEnv(emit));
-  await step('Default voice setup', () => ensureDefaultVoice(emit));
   await step('English language pack setup', () => ensureEnglishStanza(emit));
 
   if (firstError) {
@@ -845,22 +844,6 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   setRuntimeStatus({ state: 'ready', message: 'Ready' });
   await startTtsApiServerOnce();
-
-  // The Voice Library clips are an OPTIONAL background pull — not bundled in the
-  // installer and not gating readiness. Fire-and-forget after the app is ready;
-  // the library voices appear in the pickers once it lands. A failure is logged
-  // and retried on the next launch (the ready-marker isn't written on failure).
-  void ensureLibraryVoices((message) => logger.info(message))
-    .then(async () => {
-      // New clips on disk — drop the scan cache so they show in the pickers now,
-      // and refresh the TTS API server's exposed voice list.
-      const { invalidateVoiceScanCache } = await import('./xtts-voices.js');
-      invalidateVoiceScanCache();
-      void refreshTtsApiVoices();
-    })
-    .catch((err) => {
-      logger.warn('Voice library download failed (will retry next launch)', { error: (err as Error).message });
-    });
 
   return true;
 }
@@ -7829,19 +7812,6 @@ function setupIpcHandlers(): void {
   // download, status, and removal are handled there (see rvc-voice-components.ts
   // + component-manager's fetchRvcVoice). No dedicated RVC-voice IPC remains.
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // Custom (user-added) XTTS voices — Play tab + browser extension
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('custom-voices:list', async () => {
-    try {
-      const { listCustomVoices } = await import('./custom-voices.js');
-      return { success: true, data: listCustomVoices() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
   // Folder-discovered custom Orpheus models (runtime/orpheus-models/<voice>/) —
   // surfaced as extra Orpheus voices in the TTS dropdowns.
   ipcMain.handle('orpheus:list-models', async () => {
@@ -7948,55 +7918,6 @@ function setupIpcHandlers(): void {
     try {
       const { listHiggsModels } = await import('./higgs-models.js');
       return { success: true, data: listHiggsModels() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Voices selectable for full-audiobook generation — installed voices only, so
-  // every option works even though BookForge no longer bundles every clip.
-  ipcMain.handle('voices:list-audiobook', async () => {
-    try {
-      const { getAudiobookVoiceOptions } = await import('./components/installed-voices.js');
-      return { success: true, data: await getAudiobookVoiceOptions() };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  // Pick a checkpoint folder, validate it, and register it as a custom voice.
-  ipcMain.handle('custom-voices:add', async () => {
-    try {
-      if (!mainWindow) return { success: false, error: 'No window' };
-      const picked = await dialog.showOpenDialog(mainWindow, {
-        title: 'Select a fine-tuned XTTS voice folder',
-        message: 'Pick the folder containing config.json, model.pth, vocab.json and a reference .wav',
-        properties: ['openDirectory'],
-      });
-      if (picked.canceled || picked.filePaths.length === 0) {
-        return { success: false, canceled: true };
-      }
-
-      const [{ addCustomVoiceFromFolder }, { getStreamVoices }] = await Promise.all([
-        import('./custom-voices.js'),
-        import('./xtts-voices.js'),
-      ]);
-      // Reserve existing catalog ids so a custom voice can't shadow a built-in one.
-      const reserved = new Set(getStreamVoices().map((v) => v.id));
-      const result = addCustomVoiceFromFolder(picked.filePaths[0], reserved);
-      if (result.success) void refreshTtsApiVoices();
-      return result;
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('custom-voices:remove', async (_event, id: string) => {
-    try {
-      const { removeCustomVoice } = await import('./custom-voices.js');
-      const result = removeCustomVoice(id);
-      void refreshTtsApiVoices();
-      return result;
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

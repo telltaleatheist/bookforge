@@ -124,10 +124,6 @@ interface TtsConfig {
   language: string;
   ttsEngine: string;
   fineTuned: string;
-  temperature: number;
-  topP: number;
-  topK: number;
-  repetitionPenalty: number;
   speed: number;
   enableTextSplitting: boolean;
   outputFilename?: string;
@@ -209,10 +205,6 @@ export const ttsConversionStep: StepModule = {
         language: config.language,
         ttsEngine: config.ttsEngine,
         fineTuned: config.fineTuned,
-        temperature: config.temperature,
-        topP: config.topP,
-        topK: config.topK,
-        repetitionPenalty: config.repetitionPenalty,
         speed: config.speed,
         enableTextSplitting: config.enableTextSplitting,
         sentencePerParagraph: config.sentencePerParagraph,
