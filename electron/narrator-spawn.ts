@@ -206,6 +206,25 @@ const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> =
 };
 
 /**
+ * How the resident Listen/extension server is recognised in a process list, as a
+ * regex SOURCE string (it goes into `pgrep -f` inside the WSL guest and into a
+ * PowerShell `-match` on Windows).
+ *
+ * It lives HERE, with the thing that builds the command line, because two files
+ * have to agree about it and they agree in OPPOSITE directions:
+ * `orpheus-worker-pool.ts` matches it to tear its own worker down, and
+ * `parallel-tts-bridge.ts`'s orphan reaper EXCLUDES it so a batch sweep can never
+ * kill the server a user is listening to. A stale copy on the exclusion side does
+ * not fail loudly — it silently stops excluding anything, and the first sweep
+ * during playback kills playback.
+ *
+ * The dot is the module separator: `narrator\.serve` matches
+ * `python -u -m narrator.serve` and nothing else narrator runs, because the batch
+ * doors are `narrator.compat.worker` and `narrator.compat.app`.
+ */
+export const SERVE_PROCESS_RE = 'narrator\\.serve';
+
+/**
  * Where the `narrator` package lives, as a HOST path.
  *
  * The three candidates are the app path (dev and packaged), the dist-relative
@@ -317,7 +336,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
     };
   }
 
-  const py = resolveNativePython(engine);
+  const py = narratorNativePython(engine);
   const nativeArgs = [...py.args, '-u', '-m', module, ...args];
   return {
     command: py.command,
@@ -334,6 +353,18 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
  * The python that runs a native narrator spawn, and the refusal when there isn't
  * one.
  *
+ * Exported because `streaming-engine.ts` asks the same question for a different
+ * purpose: whether to offer Orpheus in the Listen picker at all. Asking it here
+ * rather than re-deriving it there is what stops the picker from reporting
+ * "Orpheus: available" on a Mac with no narrator-mlx environment — a promise
+ * every spawn would then break, one refusal at a time.
+ *
+ * Exported because  asks the same question for a different
+ * purpose: whether to offer Orpheus in the Listen picker at all. Asking it here
+ * rather than re-deriving it there is what stops the picker from saying "Orpheus:
+ * available" on a Mac with no narrator-mlx env, which is a promise every spawn
+ * would then break.
+ *
  * `undefined` — the tools phases — resolves the GENERIC bundled environment, the
  * same one `parallel-tts-bridge.ts` already uses for a native Orpheus assembly
  * (`pythonInvocation(undefined)`): `getPythonInvocation` with no engine returns
@@ -342,7 +373,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
  * numpy/soundfile/mutagen `narrator.assemble` needs — and Phase 6 renames it to
  * say so.
  */
-function resolveNativePython(engine: NarratorEngineId | undefined): PythonInvocation {
+export function narratorNativePython(engine: NarratorEngineId | undefined): PythonInvocation {
   if (engine === 'orpheus' && process.platform === 'darwin') {
     // Mac Orpheus is MLX, and MLX is not in the bundled env or in any vLLM env.
     // Phase 6 ships a component installer for this; until then it is resolved

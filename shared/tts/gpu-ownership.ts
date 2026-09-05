@@ -30,7 +30,7 @@
  *   bookforge-tts.py          the CLI front end that drives the above.
  *
  * WHAT DOES NOT
- *   orpheus_stream.py         the resident Listen/extension server. It has always
+ *   narrator.serve            the resident Listen/extension server. It has always
  *                             coexisted with audiobook renders — it holds one
  *                             model and yields between requests — and calling it
  *                             a fault would refuse every render on a machine
@@ -43,6 +43,16 @@
  *                             because its own parent exists is a guard that
  *                             never lets the CLI run at all.
  */
+
+/**
+ * The resident Listen/extension server, as it appears in `ps`.
+ *
+ * `shared/` cannot import from `electron/`, so this is spelled out rather than
+ * taken from `narrator-spawn.ts`'s `SERVE_PROCESS_RE` — and it is a LITERAL, not
+ * a regex, because `mentionsScript` escapes what it is given and anchors it to
+ * whole whitespace-delimited components.
+ */
+const SERVE_MODULE = 'narrator.serve';
 
 /** One row of `ps -Ao pid,ppid,etime,command`. */
 export interface PsRow {
@@ -133,8 +143,13 @@ function carriesSession(command: string, sessionId: string): boolean {
 
 function classify(command: string): { kind: ForeignRenderKind; script: string } | null {
   // The resident streaming server is not a fault — check it first so nothing
-  // below can claim it.
-  if (mentionsScript(command, 'orpheus_stream.py')) return null;
+  // below can claim it. Its command line became `python -u -m narrator.serve`
+  // with the phase-2 cut-over; `mentionsScript` matches the module token exactly
+  // as it matched a script name, because both are whole whitespace-delimited
+  // components. Leaving the old literal here would not throw — the server would
+  // simply stop being recognised, and every render on a machine with the reader
+  // switched on would be refused as a foreign job.
+  if (mentionsScript(command, SERVE_MODULE)) return null;
   if (mentionsScript(command, 'worker.py')) return { kind: 'e2a-worker', script: 'worker.py' };
   if (mentionsScript(command, 'orpheus-batch-render.js')) {
     return { kind: 'cli-batch-render', script: 'orpheus-batch-render.js' };

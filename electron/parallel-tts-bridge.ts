@@ -206,6 +206,7 @@ import {
   higgsPreflight,
   higgsRunsInWsl,
 } from './higgs-spawn';
+import { SERVE_PROCESS_RE } from './narrator-spawn';
 import {
   findForeignRenders,
   gpuOwnershipRefusal,
@@ -1733,10 +1734,17 @@ export async function gracefulWslShutdown(): Promise<WslPkillOutcome> {
  * which the handle-based kill can no longer reach.
  *
  * Scoped to the per-job e2a session id (a UUID present ONLY in batch worker argv, as
- * `--session <id>`). The persistent Listen/extension server (orpheus_stream.py, managed
- * by orpheus-worker-pool.ts) carries NO session id, and the match additionally requires
- * worker.py/app.py and explicitly excludes orpheus_stream.py — so the streaming server
- * can never be reaped here. Best-effort and non-fatal.
+ * `--session <id>`). The persistent Listen/extension server (`python -m narrator.serve`,
+ * managed by orpheus-worker-pool.ts) carries NO session id, and the match additionally
+ * requires worker.py/app.py and explicitly excludes the serve process — so the streaming
+ * server can never be reaped here. Best-effort and non-fatal.
+ *
+ * THE EXCLUSION IS `SERVE_PROCESS_RE`, imported from the pool, because the pool
+ * changed what the server's command line looks like (phase 2 of the e2a removal:
+ * `orpheus_stream.py` → `-m narrator.serve`). A stale literal here would not fail
+ * loudly; it would silently stop excluding anything, and the first batch sweep
+ * during playback would kill the server the user is listening to. The batch half
+ * of these patterns still names worker.py/app.py — phase 3 moves those.
  */
 function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void {
   // Guard: only a clean UUID-ish token may reach the shell (prevents injection and an
@@ -1745,13 +1753,13 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
   try {
     if (os.platform() === 'win32') {
       // Native Windows python workers: match worker.py/app.py + this session id,
-      // never orpheus_stream.py.
+      // never the resident Listen server.
       try {
         execSync(
           `powershell -NoProfile -Command "Get-CimInstance Win32_Process | ` +
           `Where-Object { $_.CommandLine -match '${sessionId}' -and ` +
           `($_.CommandLine -match 'worker\\.py' -or $_.CommandLine -match 'app\\.py') -and ` +
-          `$_.CommandLine -notmatch 'orpheus_stream\\.py' } | ` +
+          `$_.CommandLine -notmatch '${SERVE_PROCESS_RE}' } | ` +
           `ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"`,
           { stdio: 'ignore', timeout: 8000 }
         );
@@ -1771,7 +1779,7 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
     for (const pid of pids) {
       try {
         const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8', timeout: 5000 });
-        if (/orpheus_stream\.py/.test(cmd)) continue;     // never the persistent Listen/extension server
+        if (new RegExp(SERVE_PROCESS_RE).test(cmd)) continue;  // never the persistent Listen/extension server
         if (!/\b(worker|app)\.py\b/.test(cmd)) continue;  // only batch audiobook workers
         process.kill(Number(pid), 'SIGKILL');
         console.log(`[PARALLEL-TTS] Reaped orphaned worker PID ${pid} (session ${sessionId})`);

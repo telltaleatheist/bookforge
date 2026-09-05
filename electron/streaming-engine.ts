@@ -28,11 +28,8 @@ import {
   EngineState,
   LoadVoiceOptions,
 } from './xtts-worker-pool';
-import {
-  getDefaultE2aPath,
-  getPythonInvocation,
-  shouldUseWsl2ForOrpheus,
-} from './e2a-paths';
+import { shouldUseWsl2ForOrpheus } from './e2a-paths';
+import { narratorNativePython } from './narrator-spawn';
 import { IDLE_CHOICES, getIdleMinutes, setIdleMinutes } from './stream-idle';
 
 export type StreamEngineName = 'xtts' | 'orpheus';
@@ -310,10 +307,12 @@ function orpheusAvailability(): EngineInfo {
   if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
     return { id: 'orpheus', name: 'Orpheus', available: true };
   }
-  // Otherwise it needs a resolvable native Orpheus env (Mac e2a/MLX, or a managed/
-  // external env on Windows/Linux). getPythonInvocation throws if it can't be found.
+  // Otherwise it needs a resolvable native Orpheus env (Mac narrator-mlx, or a
+  // managed/external env on Windows/Linux). Asked of narrator-spawn, which is what
+  // the spawn itself will ask — a probe that resolves differently from the launcher
+  // is a picker that promises an engine every render then refuses.
   try {
-    getPythonInvocation(getDefaultE2aPath(), 'orpheus');
+    narratorNativePython('orpheus');
     return { id: 'orpheus', name: 'Orpheus', available: true };
   } catch (err) {
     return {

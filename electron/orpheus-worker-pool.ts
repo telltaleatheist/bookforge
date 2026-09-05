@@ -28,17 +28,15 @@ import * as path from 'path';
 import * as fs from 'fs';
 import * as readline from 'readline';
 import {
-  getDefaultE2aPath,
-  getPythonInvocation,
-  buildCondaSpawnEnv,
-  toUnpackedPath,
   shouldUseWsl2ForOrpheus,
-  getWslDistro,
-  getWslCondaPath,
-  getWslE2aPath,
-  getWslOrpheusCondaEnv,
   windowsToWslPath,
 } from './e2a-paths';
+import {
+  buildNarratorSpawn,
+  narratorRunsInWsl,
+  SERVE_PROCESS_RE,
+  type NarratorSpawnPlan,
+} from './narrator-spawn';
 import { computeSafeGpuUtil, getGpuMemMB } from './gpu-arbiter';
 import { orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier } from './orpheus-memory';
 import {
@@ -58,8 +56,6 @@ import {
 } from './orpheus-models';
 import { destroyWslGuestProcesses, waitForGuestExit, isWslWedged, wslWedgedMessage } from './wsl-lifecycle';
 import { getIdleTimeoutMs } from './stream-idle';
-
-const E2A_PATH = getDefaultE2aPath();
 
 // Orpheus's built-in voices (the model is voice-conditioned by a prompt prefix).
 // leah has the best quality; tara has echo artifacts. Mirrors VALID_VOICES in
@@ -204,8 +200,17 @@ interface OrpheusResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped'
       | 'batch_item' | 'batch_chunk' | 'batch_done';
   device?: string;
-  /** e2a's detected backend, on 'ready' (probe) and 'loaded' (the built engine). */
+  /** The detected backend, on 'ready' (probe) and 'loaded' (the built engine). */
   backend?: string;
+  /** 'loaded': which engine actually built (narrator's ENGINE_ID, e.g. 'orpheus'). */
+  engine?: string;
+  /** 'loaded': whether this engine BAKES its own lead/trail silence into a clip.
+   *  Orpheus true, Higgs false. An assembler that joins `pads:false` chunks
+   *  without its own fade gets a click at every edge. */
+  pads?: boolean;
+  /** 'loaded': the fade in milliseconds an assembler must apply at each chunk edge
+   *  before joining (Higgs 25 — a decoded edge sits near -30 dB). */
+  edgeFadeMs?: number;
   voice?: string;
   message?: string;
   data?: string;
@@ -305,6 +310,76 @@ function noteBackend(reported: string | undefined): void {
     if (workerBackend !== reported) console.log(`[Orpheus Pool] Backend: ${reported}`);
     workerBackend = reported;
   }
+}
+
+// ── The loaded engine's AUDIO FACTS ──────────────────────────────────────────
+//
+// narrator's `loaded` message now describes the engine that actually built,
+// rather than leaving the client to assume Orpheus forever:
+//
+//   engine      the engine id that loaded
+//   sampleRate  the rate it renders at
+//   pads        whether a chunk already contains its own lead/trail silence
+//   edgeFadeMs  the fade an assembler must apply at each chunk edge
+//
+// Both shipping engines are 24 kHz, so nothing on any path changes today. What
+// this prevents is the NEXT engine mis-timing a session: every duration this pool
+// hands out is `bytes / (rate * 2)`, so a 44.1 kHz engine read as 24 kHz would
+// make every sentence report ~1.8x its real length and the scheduler would run
+// the buffer dry while insisting it was ahead.
+//
+// null until a voice loads. A per-message `sampleRate` still wins where one is
+// sent — the message is about THAT clip — and this is what fills in when it is
+// absent, in place of the hardcoded 24000 that used to sit there.
+const FALLBACK_SAMPLE_RATE = 24000;
+let loadedEngineId: string | null = null;
+let loadedSampleRate: number | null = null;
+let loadedPads: boolean | null = null;
+let loadedEdgeFadeMs: number | null = null;
+
+/** The rate the LOADED engine renders at, before any per-message override. */
+function activeSampleRate(): number {
+  return loadedSampleRate ?? FALLBACK_SAMPLE_RATE;
+}
+
+/**
+ * What the loaded engine says about its own audio. Null fields mean no voice has
+ * loaded yet (or an older worker that does not send them).
+ */
+export function getLoadedEngineAudio(): {
+  engine: string | null;
+  sampleRate: number | null;
+  pads: boolean | null;
+  edgeFadeMs: number | null;
+} {
+  return {
+    engine: loadedEngineId,
+    sampleRate: loadedSampleRate,
+    pads: loadedPads,
+    edgeFadeMs: loadedEdgeFadeMs,
+  };
+}
+
+/** Adopt the `loaded` message's audio facts. Called once per successful load. */
+function noteLoadedEngine(response: OrpheusResponse): void {
+  if (typeof response.engine === 'string') loadedEngineId = response.engine;
+  if (typeof response.sampleRate === 'number' && response.sampleRate > 0) {
+    if (loadedSampleRate !== response.sampleRate) {
+      console.log(`[Orpheus Pool] Engine audio: ${response.engine ?? 'unknown'} @ ${response.sampleRate} Hz`
+        + `, pads=${response.pads}, edgeFadeMs=${response.edgeFadeMs}`);
+    }
+    loadedSampleRate = response.sampleRate;
+  }
+  if (typeof response.pads === 'boolean') loadedPads = response.pads;
+  if (typeof response.edgeFadeMs === 'number') loadedEdgeFadeMs = response.edgeFadeMs;
+}
+
+/** The loaded engine died with its process; the next load re-reports all of it. */
+function forgetLoadedEngine(): void {
+  loadedEngineId = null;
+  loadedSampleRate = null;
+  loadedPads = null;
+  loadedEdgeFadeMs = null;
 }
 
 // ── Per-request voices ───────────────────────────────────────────────────────
@@ -500,115 +575,101 @@ export function setMainWindow(window: BrowserWindow | null): void {
 // Spawn (native or WSL) — mirrors batch Orpheus exactly
 // ─────────────────────────────────────────────────────────────────────────────
 
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
+/** The plan every narrator spawn produces; the Listen server adds nothing. */
+export type SpawnPlan = NarratorSpawnPlan;
+
 
 /**
- * EXPORTED FOR ONE REASON: `tools/test-serve-spawn-env.js`.
+ * The plan for the resident Listen/extension worker.
  *
- * The cut-over from `orpheus_stream.py` to `python -m narrator.serve` has to
- * change FOUR things about this spawn and nothing else — 33 environment
- * variables keep their names, values and precedence (PORT_NOTES section 9.4).
- * The only way to prove "nothing else" is to capture the plan this function
- * builds, for a fixed configuration, on both sides of the change. That capture
- * needs to CALL it, so it is exported; nothing in the app imports it.
+ * ── The cut-over, 2026-09-05 (E2A_REMOVAL_PLAN phase 2) ─────────────────────
+ *
+ * This used to resolve `electron/scripts/orpheus_stream.py` — three `existsSync`
+ * candidates and a `toUnpackedPath` for the packaged case — and hand the path to
+ * a python that had ebook2audiobook on its `sys.path`. It now spawns
+ * `python -u -m narrator.serve`, which is the SAME WORKER: `serve/worker.py` is a
+ * faithful port of that script (PORT_NOTES sections 1-8), same JSON-lines
+ * protocol, same 33 environment variables, same names, same defaults, same
+ * precedence.
+ *
+ * Exactly four things changed, and `tools/test-serve-spawn-env.js` holds the
+ * before/after captures that say so:
+ *
+ *   1. the script path became `-m narrator.serve`;
+ *   2. `EBOOK2AUDIOBOOK_PATH` is gone — it was the sys.path bootstrap and
+ *      narrator never reads it;
+ *   3. `PYTHONPATH` arrived, because `-m` resolves the module BEFORE any of its
+ *      code runs and so cannot bootstrap itself;
+ *   4. `NARRATOR_ENGINE` arrived, naming which engine this worker serves.
+ *
+ * `cd`/`cwd` also moved, and it is deliberately not on that list because it is
+ * not load-bearing: both arms used to enter the e2a root because
+ * `orpheus_stream.py:get_e2a_path()` read cwd as a fallback bootstrap.
+ * `narrator.serve` reads cwd for NOTHING (PORT_NOTES 9.3), so the native arm
+ * takes userData and the guest takes `~` — two directories that always exist.
+ *
+ * ── Where the command line is built ─────────────────────────────────────────
+ *
+ * Not here. `narrator-spawn.ts` owns the argv, the environment resolution, the
+ * WSL boundary and the guest-path translation for every narrator spawn in the
+ * app. This function's whole remaining job is to say which variables the Listen
+ * server needs, which is the part that is actually about Listen.
  */
-export function resolveScriptPath(): string {
-  const appPath = app.getAppPath();
-  let scriptPath = path.join(appPath, 'electron', 'scripts', 'orpheus_stream.py');
-  if (!fs.existsSync(scriptPath)) {
-    scriptPath = path.join(__dirname, '..', '..', 'electron', 'scripts', 'orpheus_stream.py');
-  }
-  if (!fs.existsSync(scriptPath)) {
-    scriptPath = path.join(__dirname, 'scripts', 'orpheus_stream.py');
-  }
-  // Packaged: redirect from inside app.asar to the asarUnpack'd real file.
-  return toUnpackedPath(scriptPath);
-}
+export function buildSpawnPlan(gpuUtil?: number): SpawnPlan {
+  // Asked of narrator-spawn rather than recomputed, so the arm this env is built
+  // FOR is provably the arm the spawn will take.
+  const viaWsl = narratorRunsInWsl('orpheus', 'serve');
 
-export interface SpawnPlan {
-  command: string;
-  args: string[];
-  env: NodeJS.ProcessEnv;
-  cwd: string;
-  viaWsl: boolean;
-}
-
-/** Build the spawn for the persistent Orpheus worker. `gpuUtil`, when set, is the
- *  free-VRAM-sized vLLM gpu_memory_utilization (see doStartSession) — forwarded so the
- *  Listen server can't over-commit a shared desktop GPU into a WDDM spill / freeze. */
-export function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
-  const utilExport = gpuUtil ? ` ORPHEUS_GPU_MEM_UTIL=${shellQuote(String(gpuUtil))}` : '';
-  if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
-    // WSL: run orpheus_stream.py inside the WSL orpheus_tts conda env. The script
-    // lives in the BookForge app on the Windows side, so it's reached via /mnt/c;
-    // its heavy imports come from the WSL env + WSL-native e2a (set via
-    // EBOOK2AUDIOBOOK_PATH). ORPHEUS_DISABLE_EAGER=1 turns vLLM CUDA graphs ON in
-    // Linux — the whole reason Orpheus uses WSL. (Mirrors parallel-tts-bridge.)
-    const distro = getWslDistro();
-    const wslConda = getWslCondaPath();
-    const wslE2a = getWslE2aPath();
-    const orpheusEnv = getWslOrpheusCondaEnv();
-    const scriptWsl = windowsToWslPath(scriptPath);
-    // VLLM_USE_V1=0: streaming now applies per-request logits processors (the
-    // EOS boost), a V0-only feature — every other Orpheus spawn already pins
-    // this; without it a future vLLM bump (V1 default-on) breaks only streaming.
-    const exportCmd =
-      `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1 VLLM_USE_V1=0${utilExport} ` +
-      `ORPHEUS_STREAM_BATCH=${streamBatchCeiling()} ORPHEUS_STREAM_RAMP=${STREAM_RAMP_WIDTH} ` +
-      `ORPHEUS_STREAM_WARM_MAX=${STREAM_BATCH_CEILING_DEFAULT} ` +
-      `EBOOK2AUDIOBOOK_PATH=${shellQuote(wslE2a)}`;
-    const cd = `cd ${shellQuote(wslE2a)}`;
-    const run =
-      `${shellQuote(wslConda)} run --no-capture-output -n ${shellQuote(orpheusEnv)} ` +
-      `python -u ${shellQuote(scriptWsl)}`;
-    const bash = `${exportCmd} && ${cd} && ${run}`;
-    const wslArgs = distro ? ['-d', distro, 'bash', '-c', bash] : ['bash', '-c', bash];
-    return { command: 'wsl.exe', args: wslArgs, env: process.env, cwd: process.cwd(), viaWsl: true };
-  }
-
-  // Native: resolve the Orpheus conda env (Mac → e2a/MLX; Windows-no-WSL/Linux →
-  // the managed/external Orpheus env). Throws with a clear message if not installed.
-  const py = getPythonInvocation(E2A_PATH, 'orpheus');
-  return {
-    command: py.command,
-    args: [...py.args, '-u', scriptPath],
-    env: buildCondaSpawnEnv({
-      PYTHONUNBUFFERED: '1',
-      PYTHONIOENCODING: 'utf-8',
-      // Same V0 pin as the WSL arm — streaming's EOS boost is a V0-only feature.
-      VLLM_USE_V1: '0',
-      EBOOK2AUDIOBOOK_PATH: E2A_PATH,
-      ORPHEUS_STREAM_BATCH: String(streamBatchCeiling()),
-      // Warm the narrow rungs only. Warming every width measured 176s of a 184s load,
-      // and load time is visible on EVERY server start; the ladder's wide rungs are
-      // reached behind a buffer many sentences deep, where a one-off ~10s lazy compile
-      // is invisible. The ramp width is warmed for the opposite reason — its compile
-      // would land in front of the first sentence.
-      ORPHEUS_STREAM_WARM_MAX: String(STREAM_BATCH_CEILING_DEFAULT),
-      // The scheduler's first-wave width for a playing session — warmed alongside
-      // the full width so the ramp doesn't pay a lazy compile it exists to avoid.
-      ORPHEUS_STREAM_RAMP: String(STREAM_RAMP_WIDTH),
-      // Mac/MLX: bound the MLX freed-buffer cache for the resident stream server
-      // (unbounded it balloons to tens of GB and STAYS — worse for a pinned
-      // long-lived process than for a batch worker). orpheus.py reads this at
-      // engine load → mx.set_cache_limit.
-      ...(process.platform === 'darwin'
-        ? {
-            ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
-              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
-            // Total unified-memory budget a read-ahead batch may occupy; orpheus.py
-            // narrows batch WIDTH from the batch's token depth to stay inside it.
-            ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
-              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
-          }
-        : {}),
-      ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
-    }),
-    cwd: E2A_PATH,
-    viaWsl: false,
+  const envExtras: Record<string, string> = {
+    // VLLM_USE_V1=0: streaming applies per-request logits processors (the EOS
+    // boost), a V0-only feature — every other Orpheus spawn already pins this;
+    // without it a future vLLM bump (V1 default-on) breaks only streaming.
+    VLLM_USE_V1: '0',
+    ORPHEUS_STREAM_BATCH: String(streamBatchCeiling()),
+    // Warm the narrow rungs only. Warming every width measured 176s of a 184s load,
+    // and load time is visible on EVERY server start; the ladder's wide rungs are
+    // reached behind a buffer many sentences deep, where a one-off ~10s lazy compile
+    // is invisible. The ramp width is warmed for the opposite reason — its compile
+    // would land in front of the first sentence.
+    ORPHEUS_STREAM_WARM_MAX: String(STREAM_BATCH_CEILING_DEFAULT),
+    // The scheduler's first-wave width for a playing session — warmed alongside
+    // the full width so the ramp doesn't pay a lazy compile it exists to avoid.
+    ORPHEUS_STREAM_RAMP: String(STREAM_RAMP_WIDTH),
+    // ORPHEUS_DISABLE_EAGER=1 turns vLLM CUDA graphs ON in Linux — the whole
+    // reason Orpheus uses WSL, and meaningless on the native arms.
+    ...(viaWsl ? { ORPHEUS_DISABLE_EAGER: '1' } : {}),
+    // Mac/MLX: bound the MLX freed-buffer cache for the resident stream server
+    // (unbounded it balloons to tens of GB and STAYS — worse for a pinned
+    // long-lived process than for a batch worker). The engine reads this at
+    // load → mx.set_cache_limit.
+    ...(process.platform === 'darwin'
+      ? {
+          ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
+            || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+          // Total unified-memory budget a read-ahead batch may occupy; the engine
+          // narrows batch WIDTH from the batch's token depth to stay inside it.
+          ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
+            || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
+        }
+      : {}),
+    // The free-VRAM-sized vLLM gpu_memory_utilization (see doStartSession) —
+    // forwarded so the Listen server can't over-commit a shared desktop GPU into
+    // a WDDM spill / freeze.
+    ...(gpuUtil ? { ORPHEUS_GPU_MEM_UTIL: String(gpuUtil) } : {}),
   };
+
+  return buildNarratorSpawn({
+    engine: 'orpheus',
+    phase: 'serve',
+    // NEVER `--fake-engine`. It is an argv flag rather than an env var precisely
+    // so that a spawn cannot enable the sine-tone stand-in by forwarding
+    // process.env (PORT_NOTES 9.6); the protocol tests pass it, the app does not.
+    args: [],
+    envExtras,
+    // narrator reads cwd for nothing; userData is simply a directory that always
+    // exists and is always writable on every platform.
+    cwdHint: app.getPath('userData'),
+  });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -676,7 +737,7 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
   return new Promise((resolve) => {
     let plan: SpawnPlan;
     try {
-      plan = buildSpawnPlan(resolveScriptPath(), gpuUtil);
+      plan = buildSpawnPlan(gpuUtil);
     } catch (err) {
       resolve({ success: false, error: err instanceof Error ? err.message : 'Failed to resolve Orpheus env' });
       return;
@@ -748,6 +809,7 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
         currentVoice = null;
         forgetEngineVoices();
         workerBackend = null;
+        forgetLoadedEngine();
       }
       drainWaiters();
       failBatchQueue('Worker died');
@@ -1472,8 +1534,10 @@ export async function endSession(opts?: { keepServiceArmed?: boolean }): Promise
   forgetEngineVoices();
   // The backend is a fact about the PROCESS that just died; the next spawn re-reports
   // it on 'ready'. Keeping a stale 'vllm' would waive the per-request-voice guard for
-  // a worker that hasn't said what it is yet.
+  // a worker that hasn't said what it is yet. The engine's audio facts die with it
+  // for the same reason — a stale 24 kHz would mis-time every clip of a new engine.
   workerBackend = null;
+  forgetLoadedEngine();
   if (!opts?.keepServiceArmed) serviceMode = false;
   if (hadWorker) broadcast('play:session-ended', { code: 0 });
   broadcastServiceState();
@@ -1491,12 +1555,18 @@ async function killWorkerTree(w: Worker): Promise<void> {
   if (!child || child.killed) return;
   if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
     // Give the stdin 'quit' a moment to land before signalling.
-    const quitLanded = await waitForGuestExit('orpheus_stream\\.py', 5000, 'orpheus-pool quit');
+    //
+    // THE PATTERN IS THE PROCESS'S IDENTITY IN THE GUEST, and it changed with the
+    // cut-over: the command line is now `python -u -m narrator.serve`, so there is
+    // no `orpheus_stream.py` in it to match. Missing that would make every
+    // teardown fall straight through to the wsl.exe taskkill with a live vLLM
+    // still holding ~6 GB of VRAM — the exact shape that wedges the VM.
+    const quitLanded = await waitForGuestExit(SERVE_PROCESS_RE, 5000, 'orpheus-pool quit');
     if (!quitLanded) {
-      // SIGTERM (orpheus_stream.py installs a handler → SystemExit → atexit CUDA
+      // SIGTERM (the worker installs a handler → SystemExit → atexit CUDA
       // cleanup) → verified wait → VM terminate if it refuses. No global "pkill vllm"
       // — that pattern used to hit BATCH workers' vLLM too.
-      await destroyWslGuestProcesses('orpheus_stream\\.py', { graceMs: 20000, label: 'orpheus-pool' });
+      await destroyWslGuestProcesses(SERVE_PROCESS_RE, { graceMs: 20000, label: 'orpheus-pool' });
     }
   }
   // Guest confirmed gone (or VM terminated) — closing the wrapper is now harmless.
@@ -1678,7 +1748,7 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
       seq: response.seq ?? 0,
       data: response.data,
       duration: response.duration || 0,
-      sampleRate: response.sampleRate || 24000,
+      sampleRate: response.sampleRate || activeSampleRate(),
     });
     return;
   }
@@ -1705,7 +1775,7 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
         // other batch_item: it resolves the row and nothing else.
         r({ success: true, streamed: true, duration: response.duration || 0 });
       } else if (response.data) {
-        r({ success: true, audio: { data: response.data, duration: response.duration || 0, sampleRate: response.sampleRate || 24000 } });
+        r({ success: true, audio: { data: response.data, duration: response.duration || 0, sampleRate: response.sampleRate || activeSampleRate() } });
       } else {
         r({ success: false, error: response.message || 'No audio generated' });
       }
@@ -1732,9 +1802,13 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
   }
 
   // Ground truth from the engine the worker just built — corrects a startup probe
-  // that couldn't import e2a. Recorded before the dispatch below so it lands even
-  // when the 'loaded' is stale (a timed-out load).
-  if (response.type === 'loaded') noteBackend(response.backend);
+  // that couldn't import the engine. Recorded before the dispatch below so it lands
+  // even when the 'loaded' is stale (a timed-out load), and alongside it the audio
+  // facts the same message now carries (engine id, sampleRate, pads, edgeFadeMs).
+  if (response.type === 'loaded') {
+    noteBackend(response.backend);
+    noteLoadedEngine(response);
+  }
 
   if (response.type === 'loaded' && w.pendingRequest?.sentenceIndex === -1) {
     w.pendingRequest.resolve({ success: true });
@@ -1743,7 +1817,7 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
       seq: response.seq ?? 0,
       data: response.data,
       duration: response.duration || 0,
-      sampleRate: response.sampleRate || 24000,
+      sampleRate: response.sampleRate || activeSampleRate(),
     });
   } else if (response.type === 'done' && w.pendingRequest?.resolveStream) {
     w.pendingRequest.resolveStream({
@@ -1757,7 +1831,7 @@ function handleWorkerResponse(w: Worker, response: OrpheusResponse): void {
       audio: {
         data: response.data,
         duration: response.duration || 0,
-        sampleRate: response.sampleRate || 24000,
+        sampleRate: response.sampleRate || activeSampleRate(),
       },
     });
   } else if ((response.type === 'audio' || response.type === 'chunk' || response.type === 'done'

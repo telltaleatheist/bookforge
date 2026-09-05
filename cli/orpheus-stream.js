@@ -6,7 +6,8 @@
  * it (docs/TTS_API.md), exactly as the BookForge Reader extension does. So a CLI run
  * exercises handleSpeak's voice binding, splitForTts + the voice's packing cap,
  * stream-scheduler's sessions/priority/read-ahead, the pool's batch-width ladder, and
- * orpheus_stream.py — the same code, in the same order, as pressing play in a browser.
+ * narrator's serve worker (`python -m narrator.serve`) — the same code, in the same
+ * order, as pressing play in a browser.
  *
  * That fidelity is the whole point. The older `orpheus-render.js` calls the pool's
  * per-sentence API directly, which skips the scheduler and the batch ladder entirely —

@@ -30,7 +30,7 @@ python scripts), or copy `electron/data` into `dist/electron/` by hand.
 | `--mode`      | Path | What it exercises |
 |---------------|------|-------------------|
 | `tts` (default) | audiobook / batch — `parallel-tts-bridge → renderRangeHeadless → e2a prep packs ~300-char chunks → worker.py` | **the path shipped in the app** |
-| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → orpheus_stream.py` | **the path shipped in the app** |
+| `streaming`   | Listen / browser extension — the app's own `tts-api-server`, driven over its documented WebSocket protocol: `handleSpeak → splitForTts → stream-scheduler → orpheus-worker-pool → `narrator.serve`` | **the path shipped in the app** |
 
 **The narration prep runs first, automatically.** Both render paths call
 `prepareNarrationInput` (see `--prep` below) before `renderRangeHeadless` and hand it

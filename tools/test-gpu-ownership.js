@@ -9,7 +9,7 @@
  * TOO EAGER and the app refuses to render at all — the CLI's own parent chain
  * (`bookforge-tts.py` -> `node orpheus-batch-render.js` -> this process) matches
  * the very patterns we search for, our own workers carry `--session`, and the
- * resident Listen server (`orpheus_stream.py`) has coexisted with audiobook
+ * resident Listen server (`python -m narrator.serve`) has coexisted with audiobook
  * renders since it shipped. Any of those counted as a stranger and nobody can
  * start a book.
  *
@@ -64,7 +64,7 @@ function check(cond, label) {
 //   910    app.py --worker_mode --session other                 <- foreign full worker
 //   920    python cli/bookforge-tts.py (another machine's run)   <- foreign CLI
 //   930    node cli/orpheus-batch-render.js (its child)          <- foreign CLI render
-//   700    orpheus_stream.py (the resident Listen server)        <- never a fault
+//   700    python -m narrator.serve (the resident Listen server) <- never a fault
 //   710    separator_worker.py (audio separation)                <- NOT worker.py
 //   720    python app.py (someone's Flask app)                   <- NOT e2a
 const E2A = '/Users/telltale/Projects/ebook2audiobook-latest';
@@ -78,7 +78,7 @@ const PS = [
   `  410   400    01:40:11 ${PY} ${E2A}/../BookForgeApp/cli/bookforge-tts.py --voice=thirdreich --input book.epub`,
   `  420   410    01:40:09 node --require ./cli/electron-stub.js cli/orpheus-batch-render.js --voice thirdreich --input passage.txt`,
   `  430   420    01:39:02 ${PY} ${E2A}/worker.py --session ${OUR_SESSION} --sentence_start 0 --sentence_end 5312`,
-  `  700     1    09:12:44 ${PY} electron/scripts/orpheus_stream.py --voice zac --port 8766`,
+  `  700     1    09:12:44 ${PY} -u -m narrator.serve`,
   `  710     1       04:31 ${PY} electron/scripts/separator_worker.py --model htdemucs`,
   '  720     1     1:02:00 /usr/bin/python3 /Users/telltale/dashboards/app.py --port 5000',
   `  900     1    01:31:07 ${PY} ${E2A}/worker.py --session orphan-9999 --sentences_dir /Volumes/iO/bookforge/projects/Kershaw/stages/03-tts --sentence_start 0 --sentence_end 4210`,
@@ -128,7 +128,7 @@ console.log('selection — the CLI (pid 420) asking, with its own session alread
   check(!pids.includes(410) && !pids.includes(420),
     'the CLI\'s own chain (bookforge-tts.py 410, orpheus-batch-render.js 420) is the CALLER, not a stranger');
   check(!pids.includes(430), 'our own worker.py is excluded by --session ' + OUR_SESSION);
-  check(!pids.includes(700), 'the resident Listen server (orpheus_stream.py) is not a fault');
+  check(!pids.includes(700), 'the resident Listen server (-m narrator.serve) is not a fault');
   check(!pids.includes(710), 'separator_worker.py is not worker.py (name boundary, not substring)');
   check(!pids.includes(720), 'a bare app.py is somebody\'s Flask app, not an e2a batch worker');
 
@@ -218,7 +218,7 @@ console.log('a clear machine');
   const clean = [
     '  PID  PPID     ELAPSED COMMAND',
     '    1     0 24-03:25:14 /sbin/launchd',
-    `  700     1    09:12:44 ${PY} electron/scripts/orpheus_stream.py --voice zac`,
+    `  700     1    09:12:44 ${PY} -u -m narrator.serve`,
   ].join('\n');
   check(findForeignRenders(clean, { selfPid: 42, sessionId: 'x' }).length === 0,
     'nothing but launchd and the Listen server: the GPU is ours');

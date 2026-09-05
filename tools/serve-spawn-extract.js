@@ -69,6 +69,12 @@ const FAKE = {
   python: process.platform === 'win32'
     ? 'C:\\FAKE\\e2a\\python_env\\python.exe'
     : '/fake/e2a/python_env/bin/python',
+  // The macOS arm resolves its own env rather than going through
+  // getPythonInvocation, so it needs its own two fakes. Their APPEARANCE in a
+  // capture is the point: it is how the mac row shows that Orpheus moved off the
+  // ebook2audiobook env and onto narrator-mlx.
+  conda: '/fake/miniconda/bin/conda',
+  mlxEnv: '/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx',
 };
 
 // `electron` is not require-able here. `app.getAppPath()` must answer the repo,
@@ -124,6 +130,13 @@ stub(paths, 'getDefaultE2aPath', () => FAKE.e2a);
 stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
 // Identity: the capture is the pool's OWN contribution, not the machine's env.
 stub(paths, 'buildCondaSpawnEnv', (extra) => ({ ...extra }));
+// Only reached on the macOS arm, and only AFTER the cut-over — the pre-cut-over
+// code has no narrator-mlx concept at all. Stubbing them is what lets a Windows
+// machine capture the mac row; on a real Mac these resolve or refuse by name.
+if (typeof paths.getNarratorMlxEnv === 'function') {
+  stub(paths, 'getNarratorMlxEnv', () => FAKE.mlxEnv);
+  stub(paths, 'getCondaPath', () => FAKE.conda);
+}
 
 // Fixed memory profile so the darwin arm's MLX exports and the batch ceiling are
 // the same on every machine that runs this.
