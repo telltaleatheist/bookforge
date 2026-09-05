@@ -11,7 +11,12 @@ NO FALLBACKS: `load` and `validate` raise on anything malformed, naming the fiel
 and the path. A required key is read with `d[k]`, never `d.get(k, default)` -- a
 manifest missing `sampleRate` is a bug to surface, not a 24000 to assume. The one
 place `None` is legal is a value the schema declares nullable (`samples` for a
-chunk not rendered yet, `cover`, `epubPath`, `year`, and the three voice dirs).
+chunk not rendered yet, `cover`, `epubPath`, `year`, `description`, `publisher`,
+and the three voice dirs).
+
+THE TWO OPTIONAL BOOK TAGS, `description` and `publisher`: additive, absent from
+every manifest written before them, and emitted only when the book carries one.
+See `Book`.
 
 THE OPTIONAL `engine` BLOCK:
 
@@ -78,6 +83,17 @@ class Source:
 
 @dataclass
 class Book:
+    """The book's own tags, as they reach the m4b.
+
+    `description` and `publisher` are the two DC fields e2a stamped into the
+    container that nothing else in BookForge re-stamps
+    (`lib/core.py:generate_ffmpeg_metadata:4165-4168`, MP4 family). Both are
+    OPTIONAL and ADDITIVE: they were absent from every manifest written before
+    they existed, so `from_dict` reads them with `.get` rather than requiring the
+    key, and `to_dict` emits them only when a book HAS one - an untagged book's
+    document is byte-identical to what this wrote before.
+    """
+
     title: str
     author: str
     language: str
@@ -85,6 +101,8 @@ class Book:
     epubPath: str | None = None
     year: str | None = None
     cover: str | None = None
+    description: str | None = None
+    publisher: str | None = None
 
 
 @dataclass
@@ -221,6 +239,11 @@ def from_dict(data: dict[str, Any]) -> Manifest:
         epubPath=_require(b, "epubPath", "book"),
         year=_require(b, "year", "book"),
         cover=_require(b, "cover", "book"),
+        # `.get`, not `_require`: see Book's docstring. Every manifest written
+        # before these fields existed omits the keys entirely, and refusing one
+        # would make a schema addition break documents already on disk.
+        description=b.get("description"),
+        publisher=b.get("publisher"),
     )
 
     v = _require(data, "voice", "manifest")
@@ -318,6 +341,13 @@ def to_dict(manifest: Manifest) -> dict[str, Any]:
             "language": manifest.book.language,
             "language3": manifest.book.language3,
             "cover": manifest.book.cover,
+            # Emitted only when the book HAS one, so a manifest for an untagged
+            # book is byte-identical to what this wrote before the fields
+            # existed. Same additive rule as the `engine` block below.
+            **({"description": manifest.book.description}
+               if manifest.book.description is not None else {}),
+            **({"publisher": manifest.book.publisher}
+               if manifest.book.publisher is not None else {}),
         },
         "voice": {
             "engine": manifest.voice.engine,

@@ -156,6 +156,31 @@ def _escape_meta_value(value: str, where: str) -> str:
     )
 
 
+def _escape_meta_text_value(value: str, where: str) -> str:
+    """The ffmetadata escape for a FREE-TEXT book tag, which a chapter title's
+    escape cannot be used for.
+
+    `_escape_meta_value` REFUSES a newline or a ';'. That is right for a chapter
+    title - one there means the source is malformed and every chapter after it
+    would be garbage - and wrong for `description`, where a publisher's blurb
+    routinely carries both and refusing would fail a whole audiobook over a tag.
+
+    ffmpeg's ffmetadata spec names exactly five characters that must be escaped
+    with a backslash: '=', ';', '#', '\\' and a newline. This escapes all five, so
+    a multi-line blurb survives as ONE value and the [CHAPTER] blocks after it are
+    read as chapters.
+
+    A DECLARED DEVIATION from ebook2audiobook@9daab0ba, which applied its chapter
+    -title regex here too (lib/core.py:4160-4168 writes the value RAW - no escape
+    at all) and therefore wrote a file whose records ended at the blurb's first
+    newline. Nothing was refused there and nothing is refused here; what changes
+    is that the tag now survives instead of corrupting the rest of the document.
+    """
+    if "\x00" in value:
+        raise ValueError(f"{where} contains a NUL byte: {value!r}")
+    return re.sub(r"[=;#\\\n\r]", lambda m: "\\" + m.group(0), value)
+
+
 def generate_ffmpeg_metadata(
     manifest: Manifest,
     chapter_durations_ms: list[int],
@@ -183,6 +208,21 @@ def generate_ffmpeg_metadata(
         lines.append(f"artist={_escape_meta_value(manifest.book.author, 'book author')}")
     if manifest.book.language:
         lines.append(f"language={_escape_meta_value(manifest.book.language, 'language')}")
+    # `description` and `publisher` sit BETWEEN language and year, which is the
+    # order e2a wrote them in (lib/core.py:4165-4168) - `publisher` there is
+    # gated on `is_mp4_like or is_mp3` and m4b is mp4-like, so both are written
+    # for every container this assembler targets. A book with neither produces
+    # the same bytes it always did.
+    if manifest.book.description:
+        lines.append(
+            "description="
+            + _escape_meta_text_value(manifest.book.description, "book description")
+        )
+    if manifest.book.publisher:
+        lines.append(
+            "publisher="
+            + _escape_meta_text_value(manifest.book.publisher, "book publisher")
+        )
     if manifest.book.year:
         lines.append(f"year={_escape_meta_value(str(manifest.book.year), 'year')}")
 

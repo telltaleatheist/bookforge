@@ -9684,10 +9684,14 @@ ipcMain.handle('narration:text-readiness', async (
       const libraryPath = getLibraryRoot();
       await logger.initializeLogger(libraryPath);
 
-      // Also initialize the TTS bridge logger
-      const { ttsBridge } = await import('./tts-bridge.js');
-      await ttsBridge.initializeLogger(libraryPath);
-
+      // There is no SECOND logger to initialize. `tts-bridge.ts` was deleted on
+      // 2026-09-05: its `initializeLogger` was a one-line delegation to the call
+      // above, so this handler initialized the same logger twice and wrote
+      // "Audiobook logger initialized" into the day's log twice on every start.
+      // It was also the file's ONLY remaining live call - everything else in it
+      // (the e2a/XTTS progress parser, the process-tree killer, `getVoices`'s
+      // six XTTS voice ids, `checkAvailable` for a `tts:check-available` channel
+      // that no longer exists) had no caller anywhere in electron/ or src/.
       return { success: true };
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Unknown error';
