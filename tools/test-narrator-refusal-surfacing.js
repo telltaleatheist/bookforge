@@ -163,14 +163,19 @@ for (const { r, mustSay } of CASES) {
       `stdout did not carry the refusal.\n  stdout: ${r.stdout.trim().slice(-400)}`
       + `\n  stderr: ${r.stderr.trim().slice(-400)}`);
   });
-  check(`${r.what}: reading stderr ALONE would have shown nothing useful`, () => {
-    // The regression, stated as a test. If this ever starts failing because the
-    // reason IS on stderr too, that is fine — delete the check, do not "fix" the
-    // bridge back to stderr-only.
-    if (mustSay.test(r.stderr)) {
-      console.log(`        (note: ${r.what} now also reports on stderr)`);
-    }
-    assert.ok(true);
+  check(`${r.what}: a stderr-ONLY reader gets nothing usable`, () => {
+    // The regression, stated as a test: the bridge used to build its job-log detail
+    // from stderr alone, and a refusal printed on stdout reached the user as a bare
+    // exit code. So this asks the shipped helper what a stderr-only reader would
+    // have produced, and requires that it does NOT name the problem.
+    //
+    // This row spent the branch as `assert.ok(true)` — it printed `ok` for three
+    // cases whatever narrator did. If it ever fails because the reason genuinely
+    // appears on stderr too, DELETE it; do not restore the stderr-only read.
+    const stderrOnly = spawnFailureDetail('', r.stderr, 1200);
+    assert.doesNotMatch(stderrOnly || '', mustSay,
+      `stderr alone already names the problem, so this row no longer pins anything:`
+      + `\n  ${(stderrOnly || '(empty)').slice(0, 300)}`);
   });
 }
 
