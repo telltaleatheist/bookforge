@@ -1073,9 +1073,11 @@ check('a pending voice is offered DISABLED, with its note as the reason', () => 
 // are written to a scratch dir this test owns.
 console.log('cross-check against narrator load_voices');
 
-const NARRATOR_PY = path.join(
-  REPO, '..', 'narrator', 'python',
-);
+// narrator lives IN this repo (python/narrator) since feat/narrator merged; the
+// sibling-worktree path is kept only for a checkout that predates the merge.
+const NARRATOR_PY = fs.existsSync(path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'config.py'))
+  ? path.join(REPO, 'python')
+  : path.join(REPO, '..', 'narrator', 'python');
 const CONFIG_PY = path.join(NARRATOR_PY, 'narrator', 'engine', 'higgs', 'config.py');
 
 function crossCheckSkipReason() {
