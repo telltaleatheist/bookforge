@@ -324,112 +324,207 @@ export function sitsInCitation(target: string, find: string, at: number): boolea
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// The Bible books
+// Recognizing a scripture reference — DETECTION ONLY, never a reading
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * The standard abbreviations for the books of the Bible, and the full names they
- * stand for.
+ * THE RULING THIS SECTION EXISTS FOR, and what it replaced.
  *
- * SOURCE: the SBL Handbook of Style §8.3.1 general-purpose abbreviation list
- * (the form nearly every English-language religious publisher follows), extended
- * with the four older Anglo-American short forms a book of this kind also
- * prints — "Ex." for Exodus beside SBL's "Exod.", and "Mt./Mk./Lk./Jn." beside
- * SBL's "Matt./Mark/Luke/John" — plus "Jam." for James, which is what the book
- * measured on 2026-09-02 actually printed.
+ * Owen, 2026-09-05, after a Higgs A/B render of the deathstalker book narrated
+ * "(1 Pet. 3:7)" as *"one pet three seven"*: **"I don't want to do it
+ * deterministically. An AI takes over. There are a billion ways Bible verses are
+ * abbreviated."**
  *
- * The full names are here too, as their own keys, so a reference that already
- * spells the book out is RECOGNIZED (which is what tells a chapter:verse from a
- * clock time) without being rewritten.
+ * Until n6 this file carried a table of ABBREVIATIONS and READ the reference
+ * itself — "2 Cor. 10:4" → "Second Corinthians ten four". An abbreviation table
+ * is the wrong instrument for an open set: "Pet.", "1 Pt.", "I Pet." and a
+ * hundred house styles are one book, and a table that is 95% complete does not
+ * read the last 5% as printed — it hands them to the generic integer rule, which
+ * narrates "one pet three seven". That is the defect Owen heard.
+ *
+ * So the deterministic layer does the one thing it can GUARANTEE: it recognizes
+ * the SHAPE of a reference and PROTECTS it. Nothing rewrites a detected span.
+ * The span keeps its digits, which is what routes its block to the model, and
+ * the model reads it (`electron/prompts/tts-number-normalize.txt`).
+ *
+ * ── WHAT COUNTS AS EVIDENCE, and why a false positive is not free ───────────
+ *
+ * The first cut of this detector fired on ANY capitalized token in front of a
+ * `c:v`, on the theory that "a span detected in error is merely sent to the
+ * model". THAT WAS MEASURED FALSE (adversarial review, 2026-09-05): inside a
+ * detected span the validator demands a pause between chapter and verse, so the
+ * model's CORRECT reading of "Widescreen 16:9" → *"sixteen nine"* was refused
+ * and the digits reached the narrator — and the book-less rule, which read
+ * "Score 21:19" correctly before this branch, no longer got the chance. The
+ * deny-list that was supposed to hold the line ("Chapter", "Room", …) is not a
+ * closed set and never could be: `Lakers`, `Widescreen`, `Flight`, `Route`,
+ * `Docket`, `BWV`, every weekday and a sentence-initial `Then` all fired.
+ *
+ * So detection now requires EVIDENCE, and there are exactly four kinds — three
+ * strong, one weak and paid for below. A reference is detected when the token in
+ * front of the `c:v` is:
+ *
+ *   (a) an ABBREVIATION — it carries its own period: "Pet. 3:7", "Ps. 63:6";
+ *   (b) preceded by a VOLUME NUMBER — arabic 1-3, roman I/II/III, or the
+ *       ordinal forms: "1 John 3:16", "II Cor. 5:17", "1st John 1:9";
+ *   (c) one of the FULL CANONICAL BOOK NAMES below;
+ *   (d) TWO OR THREE LETTERS with no period at all: "Ps 23:1", "Jn 3:16",
+ *       "Rev 21:4", "Mt 5:3".
+ *
+ * Everything else keeps exactly the behaviour it had before this branch.
+ *
+ * ── (d) IS WEAK EVIDENCE, ON PURPOSE, AND IT IS CHEAP BECAUSE OF THE CLAIM TEST
+ *
+ * A dotless "Ps 23:1" is the same shape as "Map 2:1" and "Bus 47:15", so on its
+ * own it proves nothing. It is admitted anyway because the FIRST cut of (a)-(c)
+ * left every dotless abbreviation unreadable — the model's "Psalm twenty three,
+ * verse one" was refused WORDS_DROPPED, because that relaxation is scoped to
+ * detected spans, and the digits reached the narrator. Losing "Ps", "Jn", "Rev"
+ * and "Mt" is a regression from this app's own behaviour in exactly the domain
+ * the branch exists for.
+ *
+ * What makes it affordable is the validator's CLAIM TEST, which is the same
+ * thing that makes a detected "Sec. 3:7" affordable: the chapter-and-verse pause
+ * is asked only of a reading that NAMES a canonical book or an ordinal volume.
+ * So "Map 2:1" → "Map two one" and "Bus 47:15" → "Bus forty seven fifteen" are
+ * accepted exactly as printed prose, while "Jn 3:16" → "John three, verse
+ * sixteen" is accepted as a reference. The model decides which it is looking at,
+ * which is the arrangement Owen ruled for.
+ *
+ * THE COST, stated so it is not a surprise: a 2-3 letter token in front of a
+ * c:v is now PROTECTED, so the book-less rule no longer reads it, and its
+ * reading depends on the model where before it was deterministic. Measured, the
+ * surface is small — a token of exactly two or three letters, no period, with a
+ * verse of ten or more ("Bus 47:15"). Four letters and up are deliberately out:
+ * "Then", "Score", "Case", "Odds", "Route" and every longer word keep the
+ * deterministic reading they have on main.
+ *
+ * ── THE SAME VETO NOTE AS (c) ───────────────────────────────────────────────
+ *
+ * (d) is not a table of abbreviations either — it asks the token's LENGTH, not
+ * its identity — but it is the loosest of the four, and it is the one to remove
+ * first if Owen wants the detector tighter. Deleting it restores (a)-(c) exactly
+ * and costs the dotless abbreviations again.
+ *
+ * ── THE READING OF OWEN'S RULING THAT (c) RESTS ON — HE MAY VETO IT ─────────
+ *
+ * Owen's objection was to enumerating ABBREVIATIONS ("there are a billion ways
+ * Bible verses are abbreviated"), and it is unanswerable: that set is open, and
+ * every house style invents another. The set of full canonical book names is
+ * neither open nor invented — it is 73 fixed words, closed since the canon was,
+ * and it is used here as a SHAPE, never as a reading. If Owen reads his ruling
+ * as forbidding this list too, delete `CANONICAL_BOOK_NAMES` and shapes (a) and
+ * (b) still stand; the cost is that "Genesis 3:15" and "Revelation 21:4" — a
+ * fully spelled book with no volume number — stop being protected.
+ *
+ * ── WHAT IS NOT DETECTED, stated so it is not mistaken for an oversight ─────
+ *
+ * A SINGLE-LETTER ABBREVIATION: "S. of S. 2:1". The token pattern needs two
+ * letters, because a one-letter abbreviation is also every initial in a name.
+ *
+ * A LONGER DOTLESS WORD: "Widescreen 16:9", "Score 21:19", "Wednesday 9:45",
+ * "Then 9:45". Four letters and up with no period is the shape of every
+ * capitalized noun in English, and (d) stops short of it deliberately.
+ *
+ * The book table itself survives as TEST EVIDENCE for the model —
+ * `tools/fixtures/scripture-readings.json`.
  */
-const BIBLE_BOOKS: ReadonlyMap<string, string> = new Map(Object.entries({
-  // Torah / history
-  gen: 'Genesis', genesis: 'Genesis',
-  ex: 'Exodus', exod: 'Exodus', exodus: 'Exodus',
-  lev: 'Leviticus', leviticus: 'Leviticus',
-  num: 'Numbers', numbers: 'Numbers',
-  deut: 'Deuteronomy', deuteronomy: 'Deuteronomy',
-  josh: 'Joshua', joshua: 'Joshua',
-  judg: 'Judges', judges: 'Judges',
-  ruth: 'Ruth',
-  sam: 'Samuel', samuel: 'Samuel',
-  kgs: 'Kings', kings: 'Kings',
-  chr: 'Chronicles', chron: 'Chronicles', chronicles: 'Chronicles',
-  ezra: 'Ezra',
-  neh: 'Nehemiah', nehemiah: 'Nehemiah',
-  esth: 'Esther', esther: 'Esther',
-  // Wisdom / poetry
-  job: 'Job',
-  ps: 'Psalm', psalm: 'Psalm', pss: 'Psalms', psalms: 'Psalms',
-  prov: 'Proverbs', proverbs: 'Proverbs',
-  eccl: 'Ecclesiastes', ecclesiastes: 'Ecclesiastes',
-  // Prophets
-  isa: 'Isaiah', isaiah: 'Isaiah',
-  jer: 'Jeremiah', jeremiah: 'Jeremiah',
-  lam: 'Lamentations', lamentations: 'Lamentations',
-  ezek: 'Ezekiel', ezekiel: 'Ezekiel',
-  dan: 'Daniel', daniel: 'Daniel',
-  hos: 'Hosea', hosea: 'Hosea',
-  joel: 'Joel', amos: 'Amos',
-  obad: 'Obadiah', obadiah: 'Obadiah',
-  jonah: 'Jonah',
-  mic: 'Micah', micah: 'Micah',
-  nah: 'Nahum', nahum: 'Nahum',
-  hab: 'Habakkuk', habakkuk: 'Habakkuk',
-  zeph: 'Zephaniah', zephaniah: 'Zephaniah',
-  hag: 'Haggai', haggai: 'Haggai',
-  zech: 'Zechariah', zechariah: 'Zechariah',
-  mal: 'Malachi', malachi: 'Malachi',
-  // Gospels / Acts
-  matt: 'Matthew', mt: 'Matthew', matthew: 'Matthew',
-  mk: 'Mark', mark: 'Mark',
-  lk: 'Luke', luke: 'Luke',
-  jn: 'John', john: 'John',
-  acts: 'Acts',
-  // Epistles
-  rom: 'Romans', romans: 'Romans',
-  cor: 'Corinthians', corinthians: 'Corinthians',
-  gal: 'Galatians', galatians: 'Galatians',
-  eph: 'Ephesians', ephesians: 'Ephesians',
-  phil: 'Philippians', philippians: 'Philippians',
-  col: 'Colossians', colossians: 'Colossians',
-  thess: 'Thessalonians', thessalonians: 'Thessalonians',
-  tim: 'Timothy', timothy: 'Timothy',
-  tit: 'Titus', titus: 'Titus',
-  philem: 'Philemon', philemon: 'Philemon',
-  heb: 'Hebrews', hebrews: 'Hebrews',
-  jas: 'James', jam: 'James', james: 'James',
-  pet: 'Peter', peter: 'Peter',
-  jude: 'Jude',
-  rev: 'Revelation', revelation: 'Revelation',
-}));
 
 /**
- * The books that come in numbered volumes — the only ones a leading 1/2/3 turns
- * into "First"/"Second"/"Third".
+ * THE FULL CANONICAL BOOK NAMES — a closed set of 73 words, used as SHAPE.
  *
- * JOHN IS DELIBERATELY ABSENT. "1 John" is an epistle in a scripture reference
- * and a person everywhere else, so it earns its ordinal only from rule A, where
- * a chapter:verse follows and settles it. The rest are never personal names in
- * the "<digit> <Name>" position.
+ * Every book of the Protestant canon and of the deuterocanon, as the LAST word
+ * of the name a book prints ("Song of Songs" ends in "Songs", "Wisdom of
+ * Solomon" in "Solomon"), because the reference pattern takes the one token
+ * standing immediately in front of the numbers. A volume number is not part of
+ * a name here: "Samuel", not "1 Samuel".
+ *
+ * Read twice, and never as a reading: shape (c) of the detector, and — in the
+ * model validator — the test of whether a replacement is CLAIMING to be a
+ * scripture reading, which is what decides whether the chapter-and-verse pause
+ * is required of it ("Psalm sixty three six" is refused; "Section three seven",
+ * for a "Sec. 3:7" that was never scripture, is not).
  */
-const NUMBERED_BOOKS: ReadonlySet<string> = new Set([
-  'Samuel', 'Kings', 'Chronicles', 'Corinthians', 'Thessalonians', 'Timothy', 'Peter', 'John',
+export const CANONICAL_BOOK_NAMES: ReadonlySet<string> = new Set([
+  'genesis', 'exodus', 'leviticus', 'numbers', 'deuteronomy', 'joshua', 'judges', 'ruth',
+  'samuel', 'kings', 'chronicles', 'ezra', 'nehemiah', 'esther', 'job', 'psalm', 'psalms',
+  'proverbs', 'ecclesiastes', 'qoheleth', 'song', 'songs', 'solomon', 'canticles',
+  'isaiah', 'jeremiah', 'lamentations', 'ezekiel', 'daniel', 'hosea', 'joel', 'amos',
+  'obadiah', 'jonah', 'micah', 'nahum', 'habakkuk', 'zephaniah', 'haggai', 'zechariah',
+  'malachi', 'matthew', 'mark', 'luke', 'john', 'acts', 'apostles', 'romans',
+  'corinthians', 'galatians', 'ephesians', 'philippians', 'colossians', 'thessalonians',
+  'timothy', 'titus', 'philemon', 'hebrews', 'james', 'peter', 'jude', 'revelation',
+  'tobit', 'judith', 'wisdom', 'sirach', 'ecclesiasticus', 'baruch', 'maccabees',
+  'esdras', 'susanna', 'manasseh', 'dragon',
 ]);
 
 /**
- * The same list WITHOUT John, for the rule that has no chapter:verse to lean on.
+ * The books that come in numbered volumes, for the shape that has no `c:v`
+ * behind it at all — "2 Corinthians".
  *
- * "1 John 1:9" is settled by the reference that follows it; a bare "1 John" is
- * not, so it stays with the model.
+ * JOHN IS DELIBERATELY ABSENT. "1 John" is an epistle in a reference and a
+ * person everywhere else, and with no reference to settle it the pass has no
+ * business claiming either — so a bare "1 John" is not protected, and its "1" is
+ * read by the integer rule exactly as every other bare digit is.
  */
-const NUMBERED_BOOKS_BARE = [...NUMBERED_BOOKS].filter((b) => b !== 'John').join('|');
+const NUMBERED_BOOK_NAMES: readonly string[] = [
+  'Samuel', 'Kings', 'Chronicles', 'Corinthians', 'Thessalonians', 'Timothy', 'Peter',
+  'Maccabees', 'Esdras',
+];
 
-const ORDINAL_PREFIX: Record<string, string> = { 1: 'First', 2: 'Second', 3: 'Third' };
+/**
+ * A VOLUME NUMBER in front of a book — arabic, roman, or ordinal.
+ *
+ * Roman numerals are not decoration: "II Cor. 5:17" is ordinary in older
+ * Anglo-American religious typography, which is the deathstalker corpus this
+ * branch exists for, and with the numeral standing OUTSIDE the span it was
+ * narrated as digits — both readings the model could offer were refused, one
+ * WORDS_DROPPED and one CITATION_CODE (measured, adversarial review 2026-09-05).
+ *
+ * Longest first, so "III" is preferred over "II" over "I".
+ */
+const VOLUME_NUMBER = '[123]|III|II|I|1st|2nd|3rd';
 
-/** The full name a printed book token stands for, or null when it names no book. */
-function bibleBook(token: string): string | null {
-  return BIBLE_BOOKS.get(token.toLowerCase().replace(/\.$/, '')) ?? null;
+/** The same set as a test, for the one place that reads a token on its own. */
+const VOLUME_TOKEN = /^(?:[123]|i{1,3}|1st|2nd|3rd)$/i;
+
+/**
+ * The two- and three-letter words that stand in front of a number and are NOT
+ * naming a thing — which is what evidence (d) has to step around.
+ *
+ * NOT "ordinary English words": "Map", "Bus" and "Odds" are ordinary English
+ * words, they DO name a thing that carries a number, and (d) is meant to admit
+ * them (the model then reads them as the prose they are). What is here is the
+ * other grammatical slot — the function words and the pointing verbs, which
+ * cannot be the name of anything. "See 20:6 there" and "In 20:16 he says" are
+ * the measured cases.
+ *
+ * This list is CLOSED in a way the old deny-list of capitalized nouns never was,
+ * and the reason is the length: the English function words of two or three
+ * letters are a fixed, countable set, while the capitalized nouns that can
+ * precede a colon-number are not.
+ */
+const SHORT_NOT_A_BOOK: ReadonlySet<string> = new Set([
+  'an', 'as', 'at', 'be', 'by', 'do', 'go', 'he', 'if', 'in', 'is', 'it', 'its',
+  'me', 'my', 'no', 'of', 'on', 'or', 'our', 'see', 'she', 'so', 'the', 'to',
+  'up', 'us', 'we', 'you', 'and', 'but', 'for', 'her', 'his', 'not', 'now',
+  'per', 'via', 'was', 'yet',
+  // …and the citation markers, which point at a number without naming one.
+  'cf', 'cp', 'eg', 'ie', 'ib', 'id', 'nos', 'pp', 'vs',
+]);
+
+/**
+ * Is this token a MONTH? Owen's must-NOT list, and the one word-level exception
+ * the detector still needs.
+ *
+ * "Jan. 3:7" and "Sept. 4:9" have shape (a) — an abbreviation with its period —
+ * and are not references. Months are the only ordinary abbreviation this pass
+ * refuses by name; every other one ("Sec. 3:7", "Ch. 3:7", "Mr. 3:7") is
+ * detected, sent to the model, and read as whatever it actually is, which the
+ * validator now allows.
+ */
+function namesNoBook(token: string): boolean {
+  return monthName(token.toLowerCase().replace(/\.$/, '')) !== null;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -497,6 +592,14 @@ export interface NumberRuleOutcome {
   text: string;
   /** The text-node lengths of that text — `segments` shifted by the rewrites. */
   segments: number[];
+  /**
+   * The scripture references found in the text and PROTECTED from every rule.
+   *
+   * Offsets are the ORIGINAL text's, like `rewrites`. They are here so the pass
+   * above can say why a block still holds digits after the rules ran: because a
+   * reference is waiting for the model, not because a rule failed.
+   */
+  scripture: ScriptureSpan[];
 }
 
 /** A candidate before the overlap and text-node checks have run. */
@@ -573,36 +676,27 @@ function clockCandidates(text: string): Candidate[] {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Rule: scripture
+// The scripture DETECTOR, and the one reading it leaves behind
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
  * A chapter:verse reference, with everything that legitimately hangs off it.
  *
- * `[<1|2|3> ][Book ]c:v[a][–[c2:]v2[b]][ff.]`. The book token and the numeric
- * prefix are optional and are only PART of the rewritten span when they have to
- * change — "Jeremiah 44:17-19" rewrites "44:17-19" and leaves the name alone,
- * while "2 Cor. 10:4" rewrites the lot because both the prefix and the
- * abbreviation are read differently than they are printed.
+ * `[<volume> ]Book[.] c:v[a][–[c2:]v2[b]][ff.]`. The pattern MATCHES on shape
+ * alone; `scriptureSpans` then requires one of the four kinds of evidence
+ * above — the book token's own period, a volume number, a canonical name, or a
+ * two-or-three-letter token — before it will call the match a reference. Matching widely and admitting
+ * narrowly keeps the evidence test in one readable place instead of in three
+ * regexes.
  *
- * THE RANGE MAY CROSS A CHAPTER, and that production is not optional garnish.
- * Reported by the orpheus-finetune side (BOOKFORGE_HANDOFF.md, "Ask 2b"), found
- * by running this pass over a real corpus: modelling the second number as a
- * VERSE only, "(Col. 3:19-4:1 and parallels)" took the `4` as the verse, emitted
- * "Colossians three nineteen through four", and LEFT ":1" standing in the text.
- * A raw colon reached the narrator — worse than an unconverted number, because
- * `stillHasDigits` then sent the wreckage to the model, which correctly declined
- * to touch a fragment it could not parse, and `NUMBER_DROPPED` could not see it
- * because a rule and not the model had produced it.
- *
- * `Col. 3:19-4:1` now reads "Colossians three nineteen through four one" —
- * "through" is already the verse-range word and a chapter-crossing range has no
- * separate spoken convention worth inventing. A plain verse range ("3:19-21")
- * and a lone reference ("3:19") are untouched by this production.
+ * THE RANGE MAY CROSS A CHAPTER. Reported by the orpheus-finetune side
+ * (BOOKFORGE_HANDOFF.md, "Ask 2b") and found by running this pass over a real
+ * corpus: "(Col. 3:19-4:1 and parallels)" must be recognized whole, or half of
+ * it is protected and the other half is read by some other rule.
  */
 const SCRIPTURE_REF = new RegExp(
-  '(?:(?<![\\w:.\\-])([123])\\s+)?'          // 1 an optional volume number
-  + '(?:([A-Z][A-Za-z]{1,13})(\\.?)\\s+)?'   // 2 the book token, 3 its period
+  `(?:(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+)?`  // 1 an optional volume number
+  + '([A-Z][A-Za-z]{1,13})(\\.?)\\s+'        // 2 the book token, 3 its period
   + '(?<![\\d:.])(\\d{1,3}):(\\d{1,3})'      // 4 chapter, 5 verse
   + '(?:(?!ff\\.)([a-z])(?![a-z\\d]))?'      // 6 an optional verse letter
   + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*'
@@ -613,6 +707,36 @@ const SCRIPTURE_REF = new RegExp(
   'gd');
 
 /**
+ * A CHAPTER-ONLY reference — but only "1 Pet. 3", never a bare "Gen. 3".
+ *
+ * THE DECISION, 2026-09-05, stated rather than guessed. A chapter-only
+ * reference has no colon in it, so the only thing separating "Gen. 3" from
+ * "Fig. 3" is knowing that Genesis is a book and a figure is not — and knowing
+ * that is precisely the table Owen's ruling removed. A LEADING VOLUME NUMBER is
+ * evidence that survives without one: English prints "1 Pet. 3" and never
+ * "1 Fig. 3", so the numbered form is detected and the bare form is not. (Shape
+ * (c) does not help here either: "Kings 3" and "Job 3" would take a chapter that
+ * "Room 3" and "Track 3" print the same way, and only the colon tells them
+ * apart.)
+ *
+ * A bare "Gen. 3" therefore reaches the model with its digit intact and is read
+ * there — the same place every other unprotected digit is read. Nothing is lost;
+ * what is refused is the app claiming to know a book by its shape alone.
+ */
+const SCRIPTURE_CHAPTER_ONLY = new RegExp(
+  `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+`  // 1 the volume number, REQUIRED
+  + '([A-Z][A-Za-z]{1,12})\\.'          // 2 the book token, its period REQUIRED
+  + '\\s+(\\d{1,3})'                    // 3 the chapter
+  // …and nothing that makes it some other shape: a verse colon, a decimal, a
+  // longer number, or a range dash.
+  + '(?![\\d:]|\\.\\d|\\s*[\\u2010-\\u2015\\u002D]\\s*\\d)',
+  'gd');
+
+/** "2 Corinthians" — a numbered book with no reference behind it. */
+const BARE_NUMBERED_BOOK = new RegExp(
+  `(?<![\\w:.\\-])(${VOLUME_NUMBER})\\s+(${NUMBERED_BOOK_NAMES.join('|')})\\b`, 'g');
+
+/**
  * A CLOCK RANGE — "5:30-6:00" — is not a verse range and is left whole.
  *
  * Blocked as a region rather than merely skipped, so the rule cannot come back
@@ -621,44 +745,142 @@ const SCRIPTURE_REF = new RegExp(
 const CLOCK_RANGE = /\d{1,2}:\d{2}\s*[‐-―-]\s*\d{1,2}:\d{2}/g;
 
 /**
- * What may stand between one reference and the next in a LIST of them —
- * "Leviticus 19:31; 20:6", "Genesis 6:11, 13 and 7:1". A joiner (a semicolon, a
- * comma, or the word "and"), then any number of bare verses or verse ranges
- * each followed by a joiner of its own, and nothing else. The bare verses are
- * the integer rule's, and they are still part of the same list.
+ * ONE MORE REFERENCE IN A LIST, measured from the end of the last one —
+ * "Leviticus 19:31; 20:6", "Genesis 6:11, 13 and 7:1", "Job 41:1–2, 14–34".
+ *
+ * A joiner (a semicolon, a comma, or "and"), then a verse or a chapter:verse,
+ * with an optional range and an optional letter. Applied repeatedly, so a list
+ * of any length is ONE detected span: a bare "13" that belongs to a reference
+ * must be protected with it, or the integer rule reads it as a count while the
+ * model reads the rest as a verse.
+ *
+ * BOUNDED, because the swallow is greedy and the numbers it swallows stop being
+ * readable by any rule. Measured (adversarial review, 2026-09-05): "Quoting
+ * Rom. 8:28, 250 members left" took the 250, and "Isa. 5:20 and 1,000 copies"
+ * took the head of the grouped number. A BARE tail number is admitted only when
+ * it could be a verse — no verse is above Psalm 119:176, so 176 is the ceiling —
+ * and never when it is the head of a comma-grouped number. A tail carrying its
+ * own `c:v` is a reference whatever its size and is not bounded.
+ *
+ * What this does NOT settle: "Gen. 1:1, 12 of them agreed". 12 is a possible
+ * verse and the shape says nothing more, so it is still swallowed. The model
+ * recovers it (an edit covering the words passes both scripture checks), and no
+ * bound short of a dictionary would tell that 12 from the 13 of "Genesis 6:11,
+ * 13 and 7:1".
  */
-const REF_LIST_JOIN = new RegExp(
-  '^\\s*(?:[;,]\\s*(?:and\\s+)?|and\\s+)'
-  + '(?:\\d{1,3}(?:\\s*[\\u2010-\\u2015\\u002D]\\s*\\d{1,3})?\\s*(?:[;,]\\s*(?:and\\s+)?|and\\s+))*$');
+const HIGHEST_VERSE = 176;
+const REF_LIST_TAIL = new RegExp(
+  '^(?:\\s*[;,]\\s*(?:and\\s+)?|\\s+and\\s+)'
+  + '(?:\\d{1,3}:)?\\d{1,3}(?:(?!ff\\.)[a-z](?![a-z\\d]))?'
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*(?:\\d{1,3}:)?\\d{1,3}'
+  + '(?:(?!ff\\.)[a-z](?![a-z\\d]))?)?'
+  + '(?:ff\\.)?'
+  + '(?![A-Za-z\\d])');
 
-function scriptureCandidates(text: string): Candidate[] {
-  const out: Candidate[] = [];
-  // Where the last reference that named its book ended — the anchor a bare
-  // reference right after it inherits.
-  let anchoredEnd = -1;
+/**
+ * A time-of-day word standing immediately after the numbers.
+ *
+ * The clock rule takes every shape it is sure of before this one runs, but it
+ * only knows hours one to twelve; "15:30 p.m." is not a clock it recognizes, and
+ * a meridiem is not something a verse is ever followed by. So a meridiem is a
+ * refusal here as well as a claim there — Owen's must-NOT list, 2026-09-05.
+ */
+const TRAILING_MERIDIEM = /^\s*(?:[ap]\.?\s?m\.?(?![A-Za-z])|o'clock\b)/i;
+
+/** One span of text this pass recognized as a scripture reference. */
+export interface ScriptureSpan {
+  /** Its offset in the text it was found in. */
+  at: number;
+  /** One past its last character. */
+  end: number;
+  /** The text of it, exactly as printed. */
+  find: string;
+}
+
+/**
+ * Every scripture reference in `text`, as spans to be PROTECTED and read by the
+ * model — never as readings.
+ *
+ * Exported because three places need the same answer and must not each have
+ * their own: `applyNumberRules` closes these spans to every rule; the model
+ * pass's validator relaxes one invariant inside them (an abbreviation may become
+ * a name); and the tests pin the must-NOT list against them.
+ */
+export function scriptureSpans(text: string): ScriptureSpan[] {
+  const found: ScriptureSpan[] = [];
+  const add = (at: number, end: number) => {
+    // A list tail can carry the span past a reference the scan finds later; the
+    // overlap check keeps one span rather than two that share characters.
+    if (found.some((s) => at < s.end && s.at < end)) return;
+    found.push({ at, end, find: text.slice(at, end) });
+  };
+
   for (const m of matches(SCRIPTURE_REF, text)) {
-    const [whole, prefix, bookToken, , chapter, verse, verseLetter,
-      chapter2, verse2, verse2Letter, ff] = m;
-    const spans = m.indices!;
-    const book = bookToken === undefined ? null : bibleBook(bookToken);
-    const end = m.index + whole.length;
+    const [, volume, bookToken, period] = m;
+    if (namesNoBook(bookToken)) continue;
+    // THE EVIDENCE TEST — the whole of it, in one place. A capitalized word in
+    // front of a c:v is "Widescreen" as often as it is "Genesis"; one of these
+    // three has to be true before the pass will claim it.
+    const bare = bookToken.toLowerCase();
+    const evidence = period === '.'                                  // (a)
+      || volume !== undefined                                        // (b)
+      || CANONICAL_BOOK_NAMES.has(bare)                              // (c)
+      || (bookToken.length <= 3 && !SHORT_NOT_A_BOOK.has(bare));     // (d)
+    if (!evidence) continue;
+    let end = m.index + m[0].length;
+    if (TRAILING_MERIDIEM.test(text.slice(end))) continue;
+    // Swallow the rest of the list, one reference at a time.
+    for (;;) {
+      const tail = REF_LIST_TAIL.exec(text.slice(end));
+      if (tail === null) break;
+      // "John 3:16 and 2 Cor. 5:17" — the "2" after "and" is not a verse of
+      // John, it is the volume number of the NEXT book, and swallowing it left
+      // "Cor. 5:17" outside the span for the integer rule to read as "Cor. five
+      // seventeen". A bare number with a capitalized word behind it belongs to
+      // what follows; a number with its own colon is a reference either way.
+      if (!tail[0].includes(':')) {
+        if (/^\s+[A-Z]/.test(text.slice(end + tail[0].length))) break;
+        // …and it has to be a number a verse could be, and not the head of a
+        // comma-grouped one.
+        const numbers = tail[0].match(/\d{1,3}/g) ?? [];
+        if (numbers.some((n) => Number(n) > HIGHEST_VERSE)) break;
+        if (/^,\d{3}(?!\d)/.test(text.slice(end + tail[0].length))) break;
+      }
+      end += tail[0].length;
+    }
+    add(m.index, end);
+  }
+  for (const m of matches(SCRIPTURE_CHAPTER_ONLY, text)) {
+    if (namesNoBook(m[2])) continue;
+    add(m.index, m.index + m[0].length);
+  }
+  for (const m of matches(BARE_NUMBERED_BOOK, text)) {
+    add(m.index, m.index + m[0].length);
+  }
+  found.sort((a, b) => a.at - b.at);
+  return found;
+}
 
-    // A BARE chapter:verse — no book named — is scripture OR a clock time. The
-    // two readings coincide once the verse reaches ten ("6:59" is "six fifty
-    // nine" either way), so only those are converted; "10:05" could be "ten oh
-    // five" and is left for the model. A capitalized word that names no book —
-    // "Room 3:15", "Chapter 4:2" — counts as no book, and the numbers still
-    // read the same way whichever it turns out to be.
-    //
-    // THE ONE EXCEPTION is a bare reference that CONTINUES a list the book was
-    // named at the head of: "Leviticus 19:31; 20:6" is two verses of Leviticus,
-    // never a clock time. Measured 2026-09-02 (the n2 acceptance run): left to
-    // the model, that "20:6" came back as "twenty" — the verse dropped. The
-    // anchor carries down the list only through a list joiner; any other word
-    // between them breaks the chain.
-    const continuesList = anchoredEnd >= 0 && REF_LIST_JOIN.test(text.slice(anchoredEnd, m.index));
-    if (book === null && !continuesList && Number(verse) < 10) continue;
-    if (book !== null || continuesList) anchoredEnd = end;
+/**
+ * A BOOK-LESS `c:v`, which is a verse or a clock time and is read only where
+ * the two readings COINCIDE.
+ *
+ * This is what is left of the old scripture rule, and it is not scripture: no
+ * book stands in front of these digits, so the pass does not know what they are.
+ * At a verse of ten or more it does not need to — "6:59" is "six fifty nine"
+ * whichever it is — and under ten it does ("10:05" could be "ten oh five"), so
+ * those are left for the model.
+ *
+ * Owen's must-NOT list names the case this rule must NOT grow into: "at 3:16
+ * John left" is a book name AFTER the digits, which is no evidence at all, and
+ * it must keep reading "three sixteen" with no scripture pause in it. A detected
+ * reference never reaches here — `applyNumberRules` has already closed it.
+ */
+function verseOrClockCandidates(text: string): Candidate[] {
+  const out: Candidate[] = [];
+  for (const m of matches(BOOKLESS_REF, text)) {
+    const [whole, chapter, verse, verseLetter, chapter2, verse2, verse2Letter, ff] = m;
+    if (Number(verse) < 10) continue;
 
     const chapterWords = cardinalWords(Number(chapter));
     const verseWords = cardinalWords(Number(verse));
@@ -670,8 +892,6 @@ function scriptureCandidates(text: string): Candidate[] {
       const verse2Words = cardinalWords(Number(verse2));
       if (verse2Words === null) continue;
       spoken += ' through';
-      // A chapter-crossing range names its chapter first, exactly as the printed
-      // form does: "3:19-4:1" is "three nineteen through four one".
       if (chapter2 !== undefined) {
         const chapter2Words = cardinalWords(Number(chapter2));
         if (chapter2Words === null) continue;
@@ -680,59 +900,25 @@ function scriptureCandidates(text: string): Candidate[] {
       spoken += ` ${verse2Words}`;
       if (verse2Letter !== undefined) spoken += ` ${verse2Letter}`;
     }
-    // "ff." is READ, not dropped. e2a's port swallows it, but this pass refuses
-    // a MODEL edit that loses a word of the book, and it must not do by rule
-    // what it refuses by hand — "and following" is the standard reading of it.
+    // "ff." is READ, not dropped: the pass refuses a MODEL edit that loses a
+    // word of the book and must not do by rule what it refuses by hand.
     if (ff !== undefined) spoken += ' and following';
 
-    // Which of the leading words this rewrite has to swallow, and therefore
-    // where the span starts. Nothing that reads as printed is dragged in.
-    const expandsBook = book !== null && bookToken !== undefined
-      && bookToken.toLowerCase() !== book.toLowerCase();
-    const expandsPrefix = prefix !== undefined && book !== null && NUMBERED_BOOKS.has(book);
-
-    if (expandsPrefix) {
-      const at = spans[1]![0];
-      out.push({
-        at, find: text.slice(at, end),
-        replace: `${ORDINAL_PREFIX[prefix!]} ${book} ${spoken}`, rule: 'scripture',
-      });
-    } else if (expandsBook) {
-      const at = spans[2]![0];
-      out.push({ at, find: text.slice(at, end), replace: `${book} ${spoken}`, rule: 'scripture' });
-    } else {
-      const at = spans[4]![0];
-      out.push({ at, find: text.slice(at, end), replace: spoken, rule: 'scripture' });
-    }
+    out.push({ at: m.index, find: whole, replace: spoken, rule: 'verse-or-clock' });
   }
   return out;
 }
 
-/**
- * A numbered book with NO chapter:verse — "2 Corinthians" → "Second
- * Corinthians".
- *
- * e2a's port required a chapter:verse before it would touch a leading digit,
- * because it had no book table and "Chapter 3 The Journey" would otherwise have
- * become "Third The Journey". This one has the table, which is the direct
- * evidence e2a was using the chapter:verse as a proxy for, so the guarantee
- * holds without it.
- */
-const BARE_NUMBERED_BOOK = new RegExp(
-  `(?<![\\w:.\\-])([123])\\s+(${NUMBERED_BOOKS_BARE})\\b`, 'g');
-
-function numberedBookCandidates(text: string): Candidate[] {
-  const out: Candidate[] = [];
-  for (const m of matches(BARE_NUMBERED_BOOK, text)) {
-    out.push({
-      at: m.index,
-      find: m[0],
-      replace: `${ORDINAL_PREFIX[m[1]]} ${m[2]}`,
-      rule: 'scripture',
-    });
-  }
-  return out;
-}
+/** The same shape as `SCRIPTURE_REF` with no book token in front of it. */
+const BOOKLESS_REF = new RegExp(
+  '(?<![\\d:.])(\\d{1,3}):(\\d{1,3})'
+  + '(?:(?!ff\\.)([a-z])(?![a-z\\d]))?'
+  + '(?:\\s*[\\u2010-\\u2015\\u002D]\\s*'
+  + '(?:(\\d{1,3}):)?'
+  + '(\\d{1,3})(?:(?!ff\\.)([a-z])(?![a-z\\d]))?)?'
+  + '(ff\\.)?'
+  + '(?![A-Za-z\\d])',
+  'g');
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Rule: date
@@ -1221,7 +1407,10 @@ const RULES: readonly Rule[] = [
   // A clock with a meridiem, or on the hour, is settled before scripture can
   // read "2:00 p.m." as a chapter and a verse (the Mac's live finding).
   { name: 'clock', scan: clockCandidates },
-  { name: 'scripture', scan: (t) => [...scriptureCandidates(t), ...numberedBookCandidates(t)] },
+  // What is left of scripture in this file: a book-LESS chapter:verse, read only
+  // where the verse and the clock readings coincide. Every reference with a book
+  // in front of it was closed before this list ran and belongs to the model.
+  { name: 'verse-or-clock', scan: verseOrClockCandidates },
   // Before the date and the integer, because "p. 12" is a page and not a day,
   // and because the whole "pp. 65-71" is one reading its halves are not.
   { name: 'page', scan: pageCandidates },
@@ -1274,6 +1463,13 @@ export function applyNumberRules(
   for (const m of matches(CLOCK_RANGE, text)) {
     closed.push({ at: m.index, end: m.index + m[0].length });
   }
+  // AND EVERY SCRIPTURE REFERENCE, closed before any rule runs. Owen's ruling of
+  // 2026-09-05: the reading of a reference is the model's, and a rule that read
+  // half of one ("1 Pet. 3:7" → "one pet three seven") is the defect that ruling
+  // came from. Protection is what makes the model's job possible — the digits
+  // have to still be there when it is asked.
+  const scripture = scriptureSpans(text);
+  for (const span of scripture) closed.push({ at: span.at, end: span.end });
   const isClosed = (at: number, end: number): boolean =>
     closed.some((c) => at < c.end && c.at < end);
 
@@ -1319,7 +1515,7 @@ export function applyNumberRules(
   }
   out += text.slice(cursor);
 
-  return { rewrites, refused, text: out, segments: grown };
+  return { rewrites, refused, text: out, segments: grown, scripture };
 }
 
 /** Does this text still hold a digit the model has to be asked about? */

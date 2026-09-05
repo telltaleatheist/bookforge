@@ -225,5 +225,82 @@ for (const pair of PAIRS) {
   });
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// The scripture reading the prompt ASKS FOR is the one that was measured
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE DEFECT THIS EXISTS FOR, and why the loop above cannot see it.
+ *
+ * Every reading the prompt states is run through the validator above — and the
+ * validator accepts BOTH scripture forms, the comma alone and the word "verse",
+ * because a narrator uses both. So a prompt that asks for the minority form
+ * passes every check on this branch and the `--scripture` probe too (it scores
+ * `accept.some(...)`, and the comma form is in every `accept` list). The
+ * adversarial review of 2026-09-05 found exactly that: the docs, the fixtures
+ * and the tests all said "verse" and the prompt said "PREFER the comma", so a
+ * real render would have shipped the 1-of-23 reading with everything green.
+ *
+ * What is asserted here is therefore not whether a reading is ACCEPTABLE but
+ * which one the prompt PREFERS — which is the only thing that decides what the
+ * narrator actually says.
+ *
+ * THE MEASUREMENT: whisper over the 23 scripture references carrying numbers in
+ * the deathstalker corpus (E:\training\deathstalker\build\ds_ad4s\
+ * scripture_spoken_forms_report.txt, 2026-09-05) — 22 of 23 say "verse" or
+ * "verses", 1 is bare, 0 say "chapter", and "Psalm" is singular 4 times of 4.
+ */
+console.log('\n── the scripture reading the prompt asks for ──');
+
+/**
+ * A quoted pair whose find is a chapter-and-verse reference WITH A BOOK.
+ *
+ * A book-less "20:6" belongs to the general digits-to-words rule, not to
+ * scripture, and it has no verse to name.
+ */
+const isReference = (find) => /[A-Za-z]\.?\s+\d{1,3}:\d{1,3}/.test(find);
+
+const NUMBER_PROMPT = 'tts-number-normalize.txt';
+const referencePairs = PAIRS.filter(
+  (p) => path.basename(p.file) === NUMBER_PROMPT && isReference(p.find));
+
+test('the prompt states enough scripture readings to be judged', () => {
+  assert.ok(referencePairs.length >= 6,
+    `${referencePairs.length} chapter-and-verse readings stated in ${NUMBER_PROMPT}`);
+});
+
+for (const pair of referencePairs) {
+  test(`${NUMBER_PROMPT} asks for the MEASURED form — "${pair.find}"`, () => {
+    assert.ok(/\bverses?\b/.test(pair.replace),
+      `the prompt reads "${pair.find}" as "${pair.replace}", which is the bare comma form; `
+      + '22 of the 23 measured clips say "verse". A reading may be ACCEPTED without it '
+      + '(the validator takes either), but the prompt must ASK for the measured one.');
+    assert.ok(!/\bchapters?\b/i.test(pair.replace),
+      `the prompt reads "${pair.find}" with the word "chapter"; 0 of 23 clips say it`);
+  });
+}
+
+test('a RANGE is read with the plural, and a chapter-only reference with neither', () => {
+  const text = fs.readFileSync(path.join(REPO, 'electron', 'prompts', NUMBER_PROMPT), 'utf8');
+  // The measured range clip: "Matthew 12, verses 34-36".
+  assert.ok(text.includes('"Matthew twelve, verses thirty four to thirty six"'),
+    'the prompt must state the measured RANGE form, with the plural "verses"');
+  // The measured list clip: one "verse", then the verses, "and" before the last.
+  assert.ok(/verse ninety seven, one hundred one, and one hundred two/.test(text),
+    'the prompt must state the measured LIST form');
+  // A chapter with no verse has no verse to name.
+  assert.ok(text.includes('"1 Pet. 3" is "First Peter three"'),
+    'a chapter-only reference reads as the chapter alone');
+});
+
+test('the prompt does not tell the model to PREFER the bare comma form', () => {
+  const text = fs.readFileSync(path.join(REPO, 'electron', 'prompts', NUMBER_PROMPT), 'utf8');
+  const preference = /PREFER the first/i.test(text)
+    && /A COMMA: /.test(text.slice(0, text.search(/Or the word VERSE/i) + 1));
+  assert.ok(!preference,
+    'the prompt lists the comma form first and says PREFER the first — the measured default '
+    + 'is the "verse" form');
+});
+
 console.log(`\n${passed}/${passed + failures.length} passed`);
 process.exit(failures.length === 0 ? 0 : 1);

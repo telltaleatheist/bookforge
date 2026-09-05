@@ -41,6 +41,15 @@
  *
  *   node tools/test-tts-number-normalizer.js --live qwen3.5:9b
  *
+ *    --scripture <model>
+
+ * runs the same real path over `tools/fixtures/scripture-readings.json` — the
+ * sixty-six books, the deuterocanon and the readings measured off the
+ * deathstalker corpus — and reports how many the model READ correctly. Also
+ * Ollama-gated, also never in the keeper sweep. The offline half of scripture
+ * (every reference DETECTED and left as printed) is in
+ * tools/test-tts-number-rules.js and does run there.
+ *
  * Everything is written to a temp directory; nothing here touches the library.
  */
 'use strict';
@@ -501,6 +510,217 @@ test('NUMBER_DROPPED — every run of digits must come out as a number word', ()
   assert.strictEqual(only('In 1900 it began.', '1900', 'nineteen hundred'), 'APPLIED');
 });
 
+// ───────────────────────────────────────────────────────────────────────────
+// Scripture — the one relaxed invariant, and the refusal that bounds it
+// ───────────────────────────────────────────────────────────────────────────
+
+/**
+ * THE ARRANGEMENT UNDER TEST, from Owen's ruling of 2026-09-05.
+ *
+ * A scripture reference is DETECTED by the deterministic pass and protected
+ * from every rule, and the MODEL reads it. That is only possible if the
+ * validator will accept the one thing every other number edit is refused for:
+ * a word of the find being REPLACED — "Pet." coming back as "Peter". The
+ * relaxation is scoped to a detected span and is bounded on both sides:
+ *
+ *   BELOW — `scriptureWordsSurvive`: at most one prose word may go, and a name
+ *   must arrive where it went.
+ *
+ *   ABOVE — `scriptureReadingRefusal`: the reading must BE a reading. No
+ *   abbreviation left standing, a pause between chapter and verse, and never
+ *   the word "chapter".
+ *
+ * The measured residue that made the second one a test: the deathstalker corpus
+ * served "(Ps. sixty three six)" — digits spelled, abbreviation intact, the
+ * boundary between chapter and verse simply gone.
+ */
+test('scripture: an abbreviation may become a NAME, which no other edit may do', () => {
+  // Owen's own defect, read correctly. Fifty-seven of these were thrown away as
+  // WORDS_DROPPED on the 2026-09-02 run, which is why the reading was done by
+  // rule until n6.
+  assert.strictEqual(
+    only('We are to dwell with knowledge (1 Pet. 3:7).', '1 Pet. 3:7',
+      'First Peter three, verse seven'), 'APPLIED');
+  assert.strictEqual(
+    only('See 2 Cor. 5:17 for that.', '2 Cor. 5:17',
+      'Second Corinthians five, verse seventeen'), 'APPLIED');
+  // A book already printed in full needs no relaxation and never did.
+  assert.strictEqual(
+    only('As John 3:16 says.', 'John 3:16', 'John three, verse sixteen'), 'APPLIED');
+});
+
+test('scripture: the relaxation is bounded — the book may not simply VANISH', () => {
+  // One word may change. Nothing says a word may be deleted, so a reading that
+  // drops the book and keeps the numbers is still WORDS_DROPPED.
+  assert.strictEqual(
+    only('We are to dwell with knowledge (1 Pet. 3:7).', '1 Pet. 3:7', 'First three, verse seven'),
+    'WORDS_DROPPED');
+  // And two prose words may not go at once.
+  assert.strictEqual(
+    only('See Song of Songs 2:1 there.', 'Song of Songs 2:1', 'Solomon two, verse one'),
+    'WORDS_DROPPED');
+});
+
+test('scripture: the relaxation is SCOPED — an ordinary number edit is unchanged', () => {
+  // The same shape of edit outside a detected span is refused exactly as before:
+  // "workers" is prose and a reading may not swap it for "men".
+  assert.strictEqual(
+    only('By spring 1200 workers arrived.', '1200 workers', 'twelve hundred men'),
+    'WORDS_DROPPED');
+});
+
+test('SCRIPTURE_UNREAD — the abbreviation survived the reading', () => {
+  // The measured residue, verbatim: "(Ps. sixty three six)".
+  const target = 'He quoted (Ps. 63:6) at length.';
+  assert.strictEqual(only(target, 'Ps. 63:6', 'Ps. sixty three six'), 'SCRIPTURE_UNREAD');
+  assert.strictEqual(only(target, 'Ps. 63:6', 'Ps. sixty three, verse six'), 'SCRIPTURE_UNREAD');
+  // A period on the LAST token is the sentence's, not the abbreviation's.
+  assert.strictEqual(only('He quoted Ps. 63:6.', 'Ps. 63:6', 'Psalm sixty three, verse six'),
+    'APPLIED');
+});
+
+test('SCRIPTURE_UNREAD — the chapter and the verse ran together', () => {
+  // The other half of the same residue: no pause at all between the numbers, so
+  // the narrator says "sixty three six" as one number.
+  const target = 'He quoted (Ps. 63:6) at length.';
+  assert.strictEqual(only(target, 'Ps. 63:6', 'Psalm sixty three six'), 'SCRIPTURE_UNREAD');
+  // Every reference in a LIST needs its own pause, not one between them all.
+  assert.strictEqual(
+    only('Both Lev. 19:31; 20:6 forbid it.', 'Lev. 19:31; 20:6',
+      'Leviticus nineteen, thirty one; twenty six'), 'SCRIPTURE_UNREAD');
+});
+
+test('SCRIPTURE_UNREAD — the word "chapter" is never spoken', () => {
+  // Measured: 0 of the 23 scripture references in the deathstalker corpus say
+  // it (E:\training\deathstalker\build\ds_ad4s\scripture_spoken_forms_report.txt,
+  // 2026-09-05). Owen ruled it out by name.
+  assert.strictEqual(
+    only('He quoted Ps. 63:6 at length.', 'Ps. 63:6', 'Psalm chapter sixty three, verse six'),
+    'SCRIPTURE_UNREAD');
+});
+
+test('scripture: BOTH measured shapes are accepted, and neither is forced', () => {
+  // 22 of the 23 measured references say "verse"; one is bare. The prompt ASKS
+  // for the comma and the word — that preference is pinned in
+  // tools/test-prompt-examples.js, where it belongs, because a validator that
+  // accepted only one form would refuse a narrator the corpus records.
+  const target = 'He turned to 1 John 1:9 there.';
+  assert.strictEqual(only(target, '1 John 1:9', 'First John one, verse nine'), 'APPLIED');
+  assert.strictEqual(only(target, '1 John 1:9', 'First John one verse nine'), 'APPLIED');
+  assert.strictEqual(only(target, '1 John 1:9', 'First John one, nine'), 'APPLIED');
+  // What is refused is NEITHER — the fusion that has no pause in it at all.
+  assert.strictEqual(only(target, '1 John 1:9', 'First John one nine'), 'SCRIPTURE_UNREAD');
+});
+
+test('scripture: a detected span that is NOT scripture is read as what it is', () => {
+  // THE FINDING THIS ANSWERS (adversarial review, 2026-09-05): the design said a
+  // false-positive detection was harmless because the span "is merely sent to the
+  // model". It was not — the chapter-and-verse pause was demanded of EVERY
+  // reading of a detected span, so the model's correct reading of a thing that is
+  // not scripture was refused and the digits reached the narrator.
+  //
+  // Detection is much narrower now, but an abbreviation carrying its own period
+  // is evidence enough on its own, and plenty of those are not books. Their
+  // readings must pass: the pause is asked only of a reading that is CLAIMING to
+  // be a reference — one that names a canonical book or an ordinal volume.
+  assert.strictEqual(
+    only('Sec. 3:7 of the statute.', 'Sec. 3:7', 'Section three seven'), 'APPLIED');
+  assert.strictEqual(
+    only('Ch. 3:7 of the manual.', 'Ch. 3:7', 'Chapter three seven'), 'APPLIED');
+  assert.strictEqual(
+    only('Mr. 3:7 is nonsense.', 'Mr. 3:7', 'Mister three seven'), 'APPLIED');
+  // And the claim test is not a hole: a reading that DOES name a book still owes
+  // the pause, and still may not say "chapter".
+  assert.strictEqual(
+    only('He quoted Ps. 63:6 there.', 'Ps. 63:6', 'Psalm sixty three six'), 'SCRIPTURE_UNREAD');
+  assert.strictEqual(
+    only('He quoted Ps. 63:6 there.', 'Ps. 63:6', 'Psalm chapter sixty three, verse six'),
+    'SCRIPTURE_UNREAD');
+});
+
+test('scripture: a DOTLESS abbreviation is read, and its lookalike is left prose', () => {
+  // Evidence (d): two or three letters and no period at all. It is weak on
+  // purpose — "Ps 23:1" and "Map 2:1" are one shape — and the claim test is what
+  // makes the same detection serve both. The model decides which it is looking
+  // at, which is the arrangement Owen ruled for.
+  assert.strictEqual(
+    only('Ps 23:1 without a period.', 'Ps 23:1', 'Psalm twenty three, verse one'), 'APPLIED');
+  assert.strictEqual(
+    only('Jn 3:16 is the famous one.', 'Jn 3:16', 'John three, verse sixteen'), 'APPLIED');
+  assert.strictEqual(
+    only('Rev 21:4 says so.', 'Rev 21:4', 'Revelation twenty one, verse four'), 'APPLIED');
+  assert.strictEqual(
+    only('Mt 5:3 is the sermon.', 'Mt 5:3', 'Matthew five, verse three'), 'APPLIED');
+  // The lookalikes, read as the prose they are — and these are MAIN's own words
+  // for them, which the rules used to produce and the model now has to.
+  assert.strictEqual(only('Map 2:1 scale.', 'Map 2:1', 'Map two one'), 'APPLIED');
+  assert.strictEqual(
+    only('Bus 47:15 leaves hourly.', 'Bus 47:15', 'Bus forty seven fifteen'), 'APPLIED');
+  assert.strictEqual(only('Bach BWV 3:7 hmm.', 'BWV 3:7', 'BWV three seven'), 'APPLIED');
+  // And a reading that DOES name a book still owes the pause, dotless or not.
+  assert.strictEqual(
+    only('Ps 23:1 without a period.', 'Ps 23:1', 'Psalm twenty three one'), 'SCRIPTURE_UNREAD');
+});
+
+test('scripture: the word that arrives must be one the abbreviation was short FOR', () => {
+  // The one-token allowance is for the book NAME. An earlier cut accepted any new
+  // word that was not a number or a structural word, so "First three, verse
+  // seven" passed with the book gone and "verse" standing in for it.
+  assert.strictEqual(
+    only('We are to dwell (1 Pet. 3:7).', '1 Pet. 3:7', 'First chapter, verse seven'),
+    'WORDS_DROPPED');
+  assert.strictEqual(
+    only('We are to dwell (1 Pet. 3:7).', '1 Pet. 3:7', 'First three, verse seven'),
+    'WORDS_DROPPED');
+  // Every contraction a publisher actually prints still reads: the token's
+  // letters have only to appear in order in a longer word.
+  assert.strictEqual(
+    only('Read Jas. 1:17 there.', 'Jas. 1:17', 'James one, verse seventeen'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Phlm. 1:6 there.', 'Phlm. 1:6', 'Philemon one, verse six'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Mk. 16:15 there.', 'Mk. 16:15', 'Mark sixteen, verse fifteen'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Pss. 42:11 there.', 'Pss. 42:11', 'Psalms forty two, verse eleven'), 'APPLIED');
+  // …or be a canonical book name outright, for the abbreviation whose reading is
+  // the book's OTHER name rather than its spelling-out.
+  assert.strictEqual(
+    only('Read Cant. 8:6 there.', 'Cant. 8:6', 'Song of Songs eight, verse six'), 'APPLIED');
+});
+
+test('scripture: a ROMAN volume numeral is readable, which it was not', () => {
+  // MEASURED (adversarial review, 2026-09-05): "II Cor. 5:17" detected as
+  // "Cor. 5:17" with the numeral stranded outside the span, and BOTH readings the
+  // model could offer were refused — the whole reference WORDS_DROPPED (two prose
+  // words gone, "ii" and "cor"), and the bare "Cor. 5:17" CITATION_CODE (the
+  // roman-lead citation guard). The reference was narrated as digits.
+  assert.strictEqual(
+    only('See II Cor. 5:17 there.', 'II Cor. 5:17', 'Second Corinthians five, verse seventeen'),
+    'APPLIED');
+  assert.strictEqual(
+    only('See III John 1:4 there.', 'III John 1:4', 'Third John one, verse four'), 'APPLIED');
+  assert.strictEqual(
+    only('See 1st John 1:9 there.', '1st John 1:9', 'First John one, verse nine'), 'APPLIED');
+  // The citation guard is exempted INSIDE a detected span and nowhere else: a
+  // roman numeral in front of an ordinary number is still apparatus.
+  assert.strictEqual(
+    only('Wurm, Document II 9 34 there.', '9 34', 'nine thirty four'), 'CITATION_CODE');
+});
+
+test('scripture: every reading in the evidence set passes the validator', () => {
+  // The file the model is judged against must itself be judgeable: a reading the
+  // validator would refuse is not a target anyone can hit.
+  const evidence = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'scripture-readings.json'), 'utf8'));
+  for (const c of evidence.cases) {
+    for (const reading of c.accept) {
+      assert.strictEqual(norm.scriptureReadingRefusal(c.find, reading), null,
+        `${c.id}: ${JSON.stringify(reading)}`);
+      assert.strictEqual(only(c.in, c.find, reading), 'APPLIED', `${c.id}: ${reading}`);
+    }
+  }
+});
+
 test('NUMBER_DROPPED — a comma is a separator INSIDE one number (Ask 2c)', () => {
   // orpheus-finetune's NORMALIZATION_SPEC.md §F4, measured on tr_dn3. Counting
   // bare runs of digits made "5,000" TWO numbers, so the floor demanded three
@@ -750,6 +970,40 @@ test('the pass VERIFIES the rewrite landed, against the written file', async () 
   assert.strictEqual(record.appliedByRules, 2);
   assert.strictEqual(record.appliedByModel, 1);
   assert.strictEqual(record.appliedByRules + record.appliedByModel, record.appliedSpans);
+});
+
+test('the record NAMES every scripture reference the rules protected', async () => {
+  // THE CLAIM THIS PROVES. `NumberRuleOutcome.scripture` says it exists "so the
+  // pass above can say why a block still holds digits after the rules ran"; the
+  // adversarial review of 2026-09-05 found the field had no consumer at all, and
+  // a documented field nobody reads is a lie in vendored public surface.
+  //
+  // Now every protected reference is a SCRIPTURE_PROTECTED line in the receipt
+  // and a count on the record. Without it a reference the model declines leaves
+  // a block that was asked about, changed nothing, and says nothing about why.
+  const chapter = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body>'
+    + '<p>We are to dwell with knowledge (1 Pet. 3:7), and see 2 Cor. 5:17 besides.</p>'
+    + '</body></html>';
+  const book = await buildBook('protected.epub', chapter);
+  // The model declines, which is the case the record has to be able to explain.
+  const runner = scriptedRunner({});
+  const out = await bookPass(book, runner);
+
+  assert.strictEqual(out.record.scriptureReferences, 2,
+    JSON.stringify(out.record.dispositions));
+  const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
+  assert.strictEqual(record.scriptureReferences, 2);
+  const protectedLines = record.units
+    .flatMap((u) => u.edits)
+    .filter((e) => e.status === 'SCRIPTURE_PROTECTED');
+  assert.deepStrictEqual(protectedLines.map((e) => e.find), ['1 Pet. 3:7', '2 Cor. 5:17']);
+  // The reference is reported AS PRINTED, because no rule proposed a reading of
+  // it — that is the whole point of the disposition.
+  assert.deepStrictEqual(protectedLines.map((e) => e.replace), ['1 Pet. 3:7', '2 Cor. 5:17']);
+  // And a book with no scripture in it reports none.
+  const plain = await bookPass(await buildBook('unprotected.epub'), scriptedRunner({}));
+  assert.strictEqual(plain.record.scriptureReferences, 0);
 });
 
 test('a span across an <em> is refused and RECORDED, never flattened', async () => {
@@ -1112,9 +1366,74 @@ async function live(model) {
   console.log(`\nDispositions: ${JSON.stringify(tally)}\n`);
 }
 
+/**
+ * THE READING PROBE — the model measured against the evidence set.
+ *
+ * The deterministic side of scripture is tested offline in
+ * tools/test-tts-number-rules.js (every reference is detected, whole, and left
+ * as printed). THIS is the other half, and it needs a model: the reading is the
+ * model's, so only a model can be judged for it.
+ *
+ * Ollama-gated on purpose. Without `--scripture <model>` nothing here runs and
+ * nothing pretends to have run — the suite above says so by name.
+ */
+async function scriptureProbe(model) {
+  const evidence = JSON.parse(fs.readFileSync(
+    path.join(__dirname, 'fixtures', 'scripture-readings.json'), 'utf8'));
+  const { loadNumberNormalizePrompt } = require(path.join(DIST, 'electron', 'ai-bridge.js'));
+  const { createOllamaNormalizerRunner } =
+    require(path.join(DIST, 'electron', 'tts-number-normalizer-runner.js'));
+  const { firstJsonObject } = require(path.join(DIST, 'electron', 'ai-cleanup-prepass.js'));
+  const prompt = await loadNumberNormalizePrompt();
+  const runner = createOllamaNormalizerRunner(model);
+  const longest = evidence.cases.map((c) => norm.buildNormalizerInput(c.in, null, null))
+    .reduce((a, b) => (b.length > a.length ? b : a), '');
+  runner.pinContextTo(prompt, longest);
+
+  /** Hyphens are a spelling of the same words: "sixty-three" is "sixty three". */
+  const flat = (text) => text.toLowerCase().replace(/[-\u2010-\u2015]/g, ' ')
+    .replace(/\s+/g, ' ').trim();
+
+  console.log(`\nSCRIPTURE: ${model} over ${evidence.cases.length} references\n`);
+  let right = 0;
+  const wrong = [];
+  try {
+    for (const c of evidence.cases) {
+      const answer = await runner.generate(norm.buildNormalizerInput(c.in, null, null), prompt);
+      const objText = firstJsonObject(answer);
+      const edits = objText === null ? [] : (JSON.parse(objText).edits ?? []);
+      const mine = edits.find((e) => typeof e?.find === 'string' && e.find.includes(':'))
+        ?? edits[0];
+      const got = typeof mine?.replace === 'string' ? mine.replace : '(no edit)';
+      const ok = c.accept.some((want) => flat(want) === flat(got));
+      if (ok) { right += 1; } else { wrong.push({ id: c.id, got, want: c.accept[0] }); }
+      console.log(`${ok ? '  ok' : 'MISS'}  ${c.id.padEnd(28)} ${got}`);
+    }
+  } finally {
+    await runner.release();
+  }
+  console.log(`\n${right}/${evidence.cases.length} read correctly\n`);
+  for (const miss of wrong) {
+    console.log(`  ${miss.id.padEnd(28)} got ${JSON.stringify(miss.got)}, `
+      + `wanted ${JSON.stringify(miss.want)}`);
+  }
+  if (wrong.length > 0) process.exitCode = 1;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 (async () => {
+  const scriptureAt = process.argv.indexOf('--scripture');
+  if (scriptureAt >= 0) {
+    const model = process.argv[scriptureAt + 1];
+    if (!model) {
+      console.error('--scripture needs a model tag, e.g. --scripture qwen3.5:9b-q8_0');
+      process.exit(1);
+    }
+    await scriptureProbe(model);
+    return;
+  }
+
   const liveAt = process.argv.indexOf('--live');
   if (liveAt >= 0) {
     const model = process.argv[liveAt + 1];
