@@ -52,6 +52,21 @@ export interface ServerConfig {
   idleChoices?: number[];
 }
 
+/**
+ * One streaming engine the server knows about.
+ *
+ * BOTH ENGINES ARE ALWAYS LISTED; `available` and `reason` carry whether this
+ * machine can actually run one. The extension does not decide that and must not
+ * guess at it — Higgs needs a platform backend, its environment and an installed
+ * voice, and the server is the only side that can see all three.
+ */
+export interface EngineInfo {
+  id: string;
+  name: string;
+  available: boolean;
+  reason?: string;
+}
+
 // ─── Client → server ────────────────────────────────────────────────────────
 
 export type ClientAction =
@@ -61,12 +76,12 @@ export type ClientAction =
   | { action: 'engine.stop' }
   // Restart the pool to apply a new worker count and/or warm a voice. When
   // `cpuWorkers` is present the server persists it before bringing the pool back.
-  | { action: 'engine.restart'; voice?: string; cpuWorkers?: number }
+  | { action: 'engine.restart'; engine?: string; voice?: string; cpuWorkers?: number }
   // Read or persist engine config without restarting. A voice given while the
   // engine is running is warmed immediately; cpuWorkers only takes effect on the
   // next start (use engine.restart to apply now).
   | { action: 'config.get' }
-  | { action: 'config.set'; cpuWorkers?: number; voice?: string; idleMinutes?: number }
+  | { action: 'config.set'; engine?: string; cpuWorkers?: number; voice?: string; idleMinutes?: number }
   // preempt (default true) cancels OTHER CLIENTS' sessions so this block takes
   // over the audio output — our own read-ahead survives, so pressing play never
   // discards audio we already rendered. background (default false) generates a
@@ -133,6 +148,11 @@ export interface HelloEvent {
   voices: string[];
   currentVoice: string | null;
   config: ServerConfig;
+  /** The selected engine, and every engine the server knows about. Optional
+   *  because an older server does not send them; a client that finds them absent
+   *  simply shows no chooser. */
+  engine?: string;
+  engines?: EngineInfo[];
 }
 
 export interface StatusEvent {
@@ -142,6 +162,8 @@ export interface StatusEvent {
   voices: string[];
   currentVoice: string | null;
   config: ServerConfig;
+  engine?: string;
+  engines?: EngineInfo[];
 }
 
 /** Reply to config.get / config.set / engine.restart. */
@@ -150,6 +172,8 @@ export interface ConfigEvent {
   config: ServerConfig;
   voices: string[];
   currentVoice: string | null;
+  engine?: string;
+  engines?: EngineInfo[];
 }
 
 export interface StateEvent {

@@ -1,0 +1,461 @@
+{
+  "flags": {
+    "prep": "[ '--headless', '--ebook', ebookArgPath, '--session', sessionId, '--session_dir', sessionDir, '--language', settings.language, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), '--device', deviceArg, '--prep_only' ]",
+    "retake": "[ '--session', sessionId, '--session_dir', sessionDirArg, '--sentences_dir', targetSentencesDir, '--device', deviceArg, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), ]",
+    "worker": "[ '--session', prepInfo.sessionId, '--session_dir', prepInfo.sessionDir, '--sentences_dir', prepInfo.chaptersDirSentences, '--device', deviceArg, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), ]",
+    "assembly-render": "[ '--headless', ...(config.epubPath ? ['--ebook', config.epubPath] : []), '--output_dir', asmOutputDir, '--session', prepInfo.sessionId, '--session_dir', prepInfo.processDir, ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : session.denoisedSentencesDir ? ['--sentences_dir', session.denoisedSentencesDir] : []), '--device', asmDeviceArg, '--language', settings.language, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), '--assemble_only', '--no_split', ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]",
+    "assembly-reassembly": "[ '--headless', '--ebook', epubPath, '--output_dir', stagingDir, '--session', config.sessionId, '--session_dir', config.processDir, '--device', 'CPU', '--language', language, '--tts_engine', asmEngine, '--assemble_only', '--no_split', ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []), ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []), ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]"
+  },
+  "plans": {
+    "wsl": {
+      "arm": "wsl",
+      "doors": {
+        "prep": {
+          "command": "wsl.exe",
+          "viaWsl": true,
+          "args": [
+            "-d",
+            "Ubuntu",
+            "bash",
+            "-c"
+          ],
+          "bash": {
+            "exports": {
+              "PYTHONUNBUFFERED": "1",
+              "PYTHONIOENCODING": "utf-8",
+              "NARRATOR_ENGINE": "orpheus",
+              "PROBE_PLAIN": "x",
+              "PROBE_PATH": "/mnt/c/lib/rejects",
+              "PYTHONPATH": "<REPO>/python"
+            },
+            "cd": "cd ~",
+            "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'orpheus_tts' python -u -m narrator.compat.app '--headless' '--ebook' '/mnt/c/books/b.epub' '--session' 'abc' '--session_dir' '/mnt/c/lib/tmp/ebook-abc' '--prep_only'"
+          },
+          "cwd": "(process.cwd — wsl.exe is a normal Windows child)"
+        },
+        "worker": {
+          "command": "wsl.exe",
+          "viaWsl": true,
+          "args": [
+            "-d",
+            "Ubuntu",
+            "bash",
+            "-c"
+          ],
+          "bash": {
+            "exports": {
+              "PYTHONUNBUFFERED": "1",
+              "PYTHONIOENCODING": "utf-8",
+              "NARRATOR_ENGINE": "orpheus",
+              "PROBE_PLAIN": "x",
+              "PROBE_PATH": "/mnt/c/lib/rejects",
+              "PYTHONPATH": "<REPO>/python"
+            },
+            "cd": "cd ~",
+            "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'orpheus_tts' python -u -m narrator.compat.worker '--session' 'abc' '--session_dir' '/mnt/c/lib/tmp/ebook-abc' '--sentences_dir' '/mnt/c/lib/sent' '--device' 'CUDA'"
+          },
+          "cwd": "(process.cwd — wsl.exe is a normal Windows child)"
+        },
+        "retake": {
+          "command": "wsl.exe",
+          "viaWsl": true,
+          "args": [
+            "-d",
+            "Ubuntu",
+            "bash",
+            "-c"
+          ],
+          "bash": {
+            "exports": {
+              "PYTHONUNBUFFERED": "1",
+              "PYTHONIOENCODING": "utf-8",
+              "NARRATOR_ENGINE": "orpheus",
+              "PROBE_PLAIN": "x",
+              "PROBE_PATH": "/mnt/c/lib/rejects",
+              "PYTHONPATH": "<REPO>/python"
+            },
+            "cd": "cd ~",
+            "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'orpheus_tts' python -u -m narrator.compat.worker '--session' 'abc' '--session_dir' '/mnt/c/lib/tmp/ebook-abc' '--sentences_dir' '/mnt/c/lib/sent' '--device' 'CUDA'"
+          },
+          "cwd": "(process.cwd — wsl.exe is a normal Windows child)"
+        },
+        "assembly": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--output_dir",
+            "C:/out",
+            "--assemble_only",
+            "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "resume": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--resume_session",
+            "C:/lib/tmp/ebook-abc"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "list": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--list_sessions"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        }
+      }
+    },
+    "native-win": {
+      "arm": "native-win",
+      "doors": {
+        "prep": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--ebook",
+            "C:/books/b.epub",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--prep_only"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "worker": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.worker",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--sentences_dir",
+            "C:/lib/sent",
+            "--device",
+            "CUDA"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "retake": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.worker",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--sentences_dir",
+            "C:/lib/sent",
+            "--device",
+            "CUDA"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "assembly": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--output_dir",
+            "C:/out",
+            "--assemble_only",
+            "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "resume": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--resume_session",
+            "C:/lib/tmp/ebook-abc"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "list": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--list_sessions"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        }
+      }
+    },
+    "native-mac": {
+      "arm": "native-mac",
+      "doors": {
+        "prep": {
+          "command": "/fake/miniconda/bin/conda",
+          "viaWsl": false,
+          "args": [
+            "run",
+            "--no-capture-output",
+            "-p",
+            "/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx",
+            "python",
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--ebook",
+            "C:/books/b.epub",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--prep_only"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "worker": {
+          "command": "/fake/miniconda/bin/conda",
+          "viaWsl": false,
+          "args": [
+            "run",
+            "--no-capture-output",
+            "-p",
+            "/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx",
+            "python",
+            "-u",
+            "-m",
+            "narrator.compat.worker",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--sentences_dir",
+            "C:/lib/sent",
+            "--device",
+            "CUDA"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "retake": {
+          "command": "/fake/miniconda/bin/conda",
+          "viaWsl": false,
+          "args": [
+            "run",
+            "--no-capture-output",
+            "-p",
+            "/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx",
+            "python",
+            "-u",
+            "-m",
+            "narrator.compat.worker",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--sentences_dir",
+            "C:/lib/sent",
+            "--device",
+            "CUDA"
+          ],
+          "env": {
+            "NARRATOR_ENGINE": "orpheus",
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "assembly": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--session",
+            "abc",
+            "--session_dir",
+            "C:/lib/tmp/ebook-abc",
+            "--output_dir",
+            "C:/out",
+            "--assemble_only",
+            "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "resume": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--resume_session",
+            "C:/lib/tmp/ebook-abc"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "list": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.compat.app",
+            "--headless",
+            "--list_sessions"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        }
+      }
+    }
+  }
+}

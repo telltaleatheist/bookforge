@@ -12,7 +12,7 @@
  * down to the content script.
  */
 
-import { EngineState, ServerConfig } from './protocol';
+import { EngineInfo, EngineState, ServerConfig } from './protocol';
 import { DEFAULT_RECORDINGS_DIR, RECORDER } from '../../shared/audio/tab-recording';
 
 export type MessageTarget = 'background' | 'offscreen' | 'content' | 'popup';
@@ -161,6 +161,11 @@ export interface QueueSnapshot {
   switchingVoice: string | null;
   /** engine topology (CPU worker count, device); null before the first connect */
   config: ServerConfig | null;
+  /** the selected streaming engine, and every engine the server knows about with
+   *  whether THIS machine can run it. Optional: an older server sends neither, and
+   *  a client that finds them absent simply shows no chooser. */
+  engine?: string;
+  engines?: EngineInfo[];
   /** ids of every queue item whose audio is fully rendered and replayable */
   renderedItemIds: string[];
   /** the tab recording, when there is (or was) one. Optional so every existing
@@ -314,6 +319,9 @@ export interface SetIdleCmd {
 export interface RestartEngineCmd {
   target: 'background';
   cmd: 'restart-engine';
+  /** switch the streaming engine as part of the restart. A switch sends no voice:
+   *  a voice belongs to one engine's catalog and means nothing in the other's. */
+  engine?: string;
   cpuWorkers?: number;
   voice?: string;
 }
@@ -338,7 +346,7 @@ export interface QueueOffscreenCmd { target: 'offscreen'; cmd: 'queue'; op: 'rem
 export interface SyncOffscreenCmd { target: 'offscreen'; cmd: 'sync'; }
 export interface SetVoiceOffscreenCmd { target: 'offscreen'; cmd: 'set-voice'; voice: string; }
 export interface SetIdleOffscreenCmd { target: 'offscreen'; cmd: 'set-idle'; minutes: number; }
-export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; cpuWorkers?: number; voice?: string; }
+export interface RestartEngineOffscreenCmd { target: 'offscreen'; cmd: 'restart-engine'; engine?: string; cpuWorkers?: number; voice?: string; }
 
 // ─── offscreen → background ───────────────────────────────────────────────────
 

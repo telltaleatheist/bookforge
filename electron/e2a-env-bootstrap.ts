@@ -509,9 +509,26 @@ function readStamp(file: string): E2aSnapshotStamp | null {
   }
 }
 
+/**
+ * Is the unpacked runtime usable?
+ *
+ * IT NO LONGER ASKS ABOUT `app.py`. That file was the proof that the e2a code
+ * snapshot had been unpacked, and nothing spawns it: the runtime's job now is to
+ * be the TOOLS ENVIRONMENT — the python that runs `narrator.compat.app` for
+ * assembly, resume and list, plus ffmpeg/ffprobe/sox for enhance and denoise. So
+ * the gate asks for the interpreter, which is the thing every remaining caller
+ * actually needs and the thing whose absence they would otherwise discover deep
+ * inside a spawn.
+ *
+ * (Phase 6 moves this env out from under the e2a checkout entirely and renames
+ * the marker with it. Until then the LOCATION is e2a's and the CONTENTS are ours,
+ * which is exactly why gating on a file from the old contents was wrong.)
+ */
 function e2aIsReady(runtimeDir: string): boolean {
   const marker = readStamp(path.join(runtimeDir, E2A_READY_MARKER));
-  if (!marker || !fs.existsSync(path.join(runtimeDir, 'app.py'))) return false;
+  if (!marker || !fs.existsSync(relocatablePythonPath(path.join(runtimeDir, 'python_env')))) {
+    return false;
+  }
   const shipped = readStamp(path.join(getBundledE2aSnapshotDir(), E2A_SNAPSHOT_STAMP));
   // No snapshot to compare against (dev) — an unpacked runtime with a marker
   // is trusted as-is. A shipped snapshot with a different stamp forces re-copy.

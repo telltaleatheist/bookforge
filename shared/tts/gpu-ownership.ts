@@ -21,16 +21,22 @@
  * `electron/parallel-tts-bridge.ts` supplies the snapshot and throws.
  *
  * WHAT COUNTS AS A FOREIGN RENDER
- *   worker.py                 e2a's lightweight batch worker — the process that
- *                             actually holds the model. Every route to the GPU
- *                             ends in one of these, which is why the guard
- *                             cannot be fooled by a caller it doesn't know.
- *   app.py --worker_mode      e2a's full batch worker (useLightweightWorker=false).
+ *   narrator.compat.worker    the batch worker — the process that actually holds
+ *                             the model. Every route to the GPU ends in one of
+ *                             these, which is why the guard cannot be fooled by a
+ *                             caller it doesn't know.
+ *   narrator.compat.app       prep / assembly / resume / list, but ONLY when it
+ *     --session <id>          carries a session: a bare `--list_sessions` reads
+ *                             the filesystem and touches no GPU.
+ *   worker.py                 e2a's batch workers. Nothing spawns these any more,
+ *   app.py --worker_mode      and they are kept precisely for that reason: this
+ *                             guard exists for an ORPHAN, and an orphan outlives
+ *                             the build that made it.
  *   orpheus-batch-render.js   the CLI's headless render (renderRangeHeadless).
  *   bookforge-tts.py          the CLI front end that drives the above.
  *
  * WHAT DOES NOT
- *   orpheus_stream.py         the resident Listen/extension server. It has always
+ *   narrator.serve            the resident Listen/extension server. It has always
  *                             coexisted with audiobook renders — it holds one
  *                             model and yields between requests — and calling it
  *                             a fault would refuse every render on a machine
@@ -44,6 +50,26 @@
  *                             never lets the CLI run at all.
  */
 
+/**
+ * The resident Listen/extension server, as it appears in `ps`.
+ *
+ * `shared/` cannot import from `electron/`, so this is spelled out rather than
+ * taken from `narrator-spawn.ts`'s `SERVE_PROCESS_RE` — and it is a LITERAL, not
+ * a regex, because `mentionsScript` escapes what it is given and anchors it to
+ * whole whitespace-delimited components.
+ */
+const SERVE_MODULE = 'narrator.serve';
+
+/**
+ * The two batch doors, as `ps` shows them.
+ *
+ * Spelled out rather than imported from `narrator-spawn.ts`'s `NARRATOR_WORKER_RE`
+ * / `NARRATOR_APP_RE`: `shared/` may not reach into `electron/`, and those are
+ * REGEX sources while `mentionsScript` takes a literal it escapes itself.
+ */
+const NARRATOR_WORKER_MODULE = 'narrator.compat.worker';
+const NARRATOR_APP_MODULE = 'narrator.compat.app';
+
 /** One row of `ps -Ao pid,ppid,etime,command`. */
 export interface PsRow {
   pid: number;
@@ -54,8 +80,10 @@ export interface PsRow {
 }
 
 export type ForeignRenderKind =
-  | 'e2a-worker'        // worker.py
-  | 'e2a-app-worker'    // app.py --worker_mode
+  | 'narrator-worker'   // python -m narrator.compat.worker   (THE render process)
+  | 'narrator-app'      // python -m narrator.compat.app --session ...
+  | 'e2a-worker'        // worker.py                          (pre-cut-over orphan)
+  | 'e2a-app-worker'    // app.py --worker_mode               (pre-cut-over orphan)
   | 'cli-batch-render'  // orpheus-batch-render.js
   | 'cli-tts';          // bookforge-tts.py
 
@@ -133,8 +161,35 @@ function carriesSession(command: string, sessionId: string): boolean {
 
 function classify(command: string): { kind: ForeignRenderKind; script: string } | null {
   // The resident streaming server is not a fault — check it first so nothing
-  // below can claim it.
-  if (mentionsScript(command, 'orpheus_stream.py')) return null;
+  // below can claim it. Its command line became `python -u -m narrator.serve`
+  // with the phase-2 cut-over; `mentionsScript` matches the module token exactly
+  // as it matched a script name, because both are whole whitespace-delimited
+  // components. Leaving the old literal here would not throw — the server would
+  // simply stop being recognised, and every render on a machine with the reader
+  // switched on would be refused as a foreign job.
+  if (mentionsScript(command, SERVE_MODULE)) return null;
+
+  // THE PROCESS THAT ACTUALLY HOLDS THE MODEL, since the cut-over. Every render
+  // route now ends in `python -u -m narrator.compat.worker`; nothing on any machine
+  // spawns `worker.py` any more.
+  //
+  // The e2a literals below it are KEPT, and not out of caution: this guard exists
+  // for the Sep 1 2026 incident, which was an ORPHAN — a worker whose parent
+  // Electron had been Ctrl-C'd, so no wrapper survived to be detected instead. An
+  // orphan from before the cut-over is exactly the process that outlives the build
+  // that made it, so both shapes stay recognised.
+  if (mentionsScript(command, NARRATOR_WORKER_MODULE)) {
+    return { kind: 'narrator-worker', script: NARRATOR_WORKER_MODULE };
+  }
+  // `narrator.compat.app` is prep, assembly, resume and list. Only a SESSION-scoped
+  // one is a render-pipeline job worth refusing over — a bare `--list_sessions`
+  // reads the filesystem and touches no GPU. Same reasoning the `app.py` line below
+  // applies, for the same door.
+  if (mentionsScript(command, NARRATOR_APP_MODULE)
+    && /(?:^|\s)--session(?=$|[\s=])/.test(command)) {
+    return { kind: 'narrator-app', script: NARRATOR_APP_MODULE };
+  }
+
   if (mentionsScript(command, 'worker.py')) return { kind: 'e2a-worker', script: 'worker.py' };
   if (mentionsScript(command, 'orpheus-batch-render.js')) {
     return { kind: 'cli-batch-render', script: 'orpheus-batch-render.js' };

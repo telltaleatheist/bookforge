@@ -9,7 +9,7 @@
  * sampling is unseeded, each take is a genuinely different reading of the same sentence —
  * which is the whole point.
  *
- * Gate: only books that went through e2a have a per-sentence FLAC cache AND an e2a VTT
+ * Gate: only books that went through e2a have a per-sentence FLAC cache AND an narrator VTT
  * (exact 1:1 cue↔sentence-index mapping). Both are required; no cache/VTT → no feature.
  *
  * Drop-in caveat handled here (validated 2026-07-14): older books were rendered at 16-bit
@@ -41,7 +41,7 @@ const execFileAsync = promisify(execFile);
 export interface SentenceCue {
   /** 0-based sentence index — same ordinal as {index}.flac. */
   index: number;
-  /** Spoken text (the e2a VTT cue payload), inline tags removed. */
+  /** Spoken text (the narrator VTT cue payload), inline tags removed. */
   text: string;
   /** True when e2a bold-wrapped the payload, i.e. this sentence is a heading. */
   heading: boolean;
@@ -101,10 +101,16 @@ function parseTimestamp(ts: string): number {
 }
 
 /**
- * Parse an e2a VTT into cues in file order. Cue N (0-based) corresponds to {N}.flac —
- * the e2a builder emits exactly one cue per sentence FLAC, in index order.
+ * Parse a narrator VTT into cues in file order. Cue N (0-based) corresponds to
+ * {N}.flac — the builder emits exactly one cue per sentence FLAC, in index order.
+ *
+ * RENAMED, NOT REWRITTEN. narrator's assembler writes the same bytes e2a's did
+ * (`assemble/` ports the builder cue-for-cue), so this function is unchanged; the
+ * name is the only thing that was still claiming an e2a session. A VTT written by
+ * either side parses here identically, which matters because every cached session
+ * on Owen's machines today was written by e2a.
  */
-export function parseE2aVtt(content: string): SentenceCue[] {
+export function parseNarratorVtt(content: string): SentenceCue[] {
   const cues: SentenceCue[] = [];
   // Normalize newlines, drop the WEBVTT header, split into blocks on blank lines.
   const body = content.replace(/\r\n/g, '\n').replace(/^﻿/, '');
@@ -184,7 +190,7 @@ function unavailable(reason: string): CorrectSentencesSession {
 /**
  * Locate the cached e2a session for a project and assemble everything the Correct
  * Sentences UI needs. Returns { available: false, reason } when the book didn't go
- * through e2a (no cache), lacks the e2a VTT, uses the legacy sentence_{i} naming, or
+ * through e2a (no cache), lacks the narrator VTT, uses the legacy sentence_{i} naming, or
  * is missing render settings.
  */
 export async function getCorrectSentencesSession(projectDir: string): Promise<CorrectSentencesSession> {
@@ -197,7 +203,7 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
   const sentencesDir = path.join(processDir, 'chapters', 'sentences');
 
   // Gate: the sentence cache must exist and use the NEW numeric {i}.flac naming — the
-  // e2a VTT rebuild (int(stem) glob sort) can't handle legacy sentence_{i}.flac.
+  // narrator VTT rebuild (int(stem) glob sort) can't handle legacy sentence_{i}.flac.
   let files: string[];
   try {
     files = await fs.promises.readdir(sentencesDir);
@@ -213,7 +219,7 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
 
   // Sentence text comes from the session's own chapter_sentences (session-state.json,
   // hyphen) — the exact list the worker flattens to all_sentences, same ordinal as
-  // {i}.flac. NOT the e2a VTT: that gets embedded into the M4B at assembly time and
+  // {i}.flac. NOT the narrator VTT: that gets embedded into the M4B at assembly time and
   // moved out of processDir, so it's not a reliable sidecar. We still pick up a VTT if
   // one happens to be present (unused for now).
   const cues = await buildCuesFromSessionState(processDir);

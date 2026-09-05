@@ -7089,83 +7089,21 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // ─────────────────────────────────────────────────────────────────────────────
-  // TTS Bridge handlers (ebook2audiobook)
-  // ─────────────────────────────────────────────────────────────────────────────
-
-  ipcMain.handle('tts:check-available', async () => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      const result = await ttsBridge.checkAvailable();
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('tts:get-voices', async () => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      const voices = await ttsBridge.getVoices();
-      return { success: true, data: voices };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('tts:start-conversion', async (
-    _event,
-    epubPath: string,
-    outputDir: string,
-    settings: {
-      device: 'gpu' | 'mps' | 'cpu';
-      language: string;
-      ttsEngine: string;
-      fineTuned: string;
-      temperature: number;
-      topP: number;
-      topK: number;
-      repetitionPenalty: number;
-      speed: number;
-      enableTextSplitting: boolean;
-    }
-  ) => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      ttsBridge.setMainWindow(mainWindow);
-      const result = await ttsBridge.startConversion(epubPath, outputDir, settings);
-      return { success: true, data: result };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('tts:stop-conversion', async () => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      const stopped = ttsBridge.stopConversion();
-      return { success: true, data: { stopped } };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
-
-  ipcMain.handle('tts:generate-filename', async (
-    _event,
-    title: string,
-    subtitle?: string,
-    author?: string,
-    authorFileAs?: string,
-    year?: string
-  ) => {
-    try {
-      const { ttsBridge } = await import('./tts-bridge.js');
-      const filename = ttsBridge.generateOutputFilename(title, subtitle, author, authorFileAs, year);
-      return { success: true, data: filename };
-    } catch (err) {
-      return { success: false, error: (err as Error).message };
-    }
-  });
+  // The five `tts:*` channels that stood here are GONE (2026-09-05).
+  //
+  // They were the last live door onto ebook2audiobook: `tts:start-conversion`
+  // spawned `<e2a>/app.py --tts_engine xtts --fine_tuned ScarlettJohansson` with
+  // the whole XTTS sampling set, none of which exists any more. It survived this
+  // long because nothing called it — `AudiobookService`, the only consumer of the
+  // entire `electron.tts.*` surface, had ZERO injectors in `src/app`.
+  //
+  // Orphan wiring is not harmless wiring. `tts:check-available` used to answer
+  // "does <e2a>/app.py exist", so the door refused itself by accident; pointing it
+  // at `narratorReady()` made it answer TRUE and left a one-call path to spawning
+  // a file that is not there. The fix for that is not a better guard, it is the
+  // door.
+  //
+  // Every real render goes through `parallel-tts:*` below.
 
   // ─────────────────────────────────────────────────────────────────────────────
   // Parallel TTS handlers (multi-worker audiobook conversion)
@@ -9988,8 +9926,8 @@ ipcMain.handle('narration:text-readiness', async (
 
   ipcMain.handle('reassembly:is-available', async () => {
     try {
-      const { isE2aAvailable } = await import('./reassembly-bridge.js');
-      return { success: true, data: { available: isE2aAvailable() } };
+      const { narratorReady } = await import('./reassembly-bridge.js');
+      return { success: true, data: { available: narratorReady() } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -12326,7 +12264,7 @@ app.on('before-quit', async (event) => {
   // process, so it is the last to be cut short and the loudest when it is.
   await quitStepWithDeadline('kill and flush TTS workers (incl. WSL)', 60_000, async () => {
     try {
-      const { killAllWorkers, forceKillAllE2aProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
+      const { killAllWorkers, forceKillAllNarratorBatchProcesses, flushActiveSessionsToCache, gracefulWslShutdown } = await import('./parallel-tts-bridge.js');
       // Kill the worker PROCESSES but KEEP the session map — the flush below reads it to
       // promote the sentences rendered so far. (killAllWorkers used to clear the map here,
       // so the flush found nothing and quitting mid-job lost the checkpoint.)
@@ -12334,7 +12272,7 @@ app.on('before-quit', async (event) => {
       // survivor (never SIGKILL — the WSL wedge trigger).
       await killAllWorkers(false);
       // Also run aggressive cleanup to catch any orphans
-      forceKillAllE2aProcesses();
+      forceKillAllNarratorBatchProcesses();
       // Global sweep for anything the session-scoped teardowns missed. Quitting without
       // this strands vLLM mid-CUDA-work inside the guest — the very thing that
       // kernel-wedges the WSL VM until a reboot. An 'unresponsive' outcome is logged
@@ -12429,16 +12367,21 @@ app.on('before-quit', async (event) => {
 // Synchronous backup cleanup on process exit (catches force-quit scenarios)
 process.on('exit', () => {
   if (process.platform === 'win32') {
-    try {
-      // Synchronous last-ditch effort to kill any orphaned Python processes
-      // This runs even on force-quit but has limited time
-      const { execSync } = require('child_process');
-      execSync('taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq *ebook2audiobook*"', {
-        stdio: 'ignore',
-        timeout: 2000,
-      });
-    } catch {
-      // Best effort, may fail
-    }
+    // THE LAST-DITCH PYTHON SWEEP THAT STOOD HERE IS GONE, and it was never a
+      // sweep. `taskkill /FI "WINDOWTITLE eq *ebook2audiobook*"` filters on a
+      // window title, and a python.exe started by `spawn()` has NO window title —
+      // so the filter could not match a worker even when ebook2audiobook was the
+      // thing being spawned. It has been a no-op for as long as it has existed,
+      // reading in a shutdown path as though something were being cleaned up.
+      //
+      // What actually kills orphans runs above, in `before-quit`:
+      // `killAllWorkers` (tracked handles), `forceKillAllNarratorBatchProcesses`
+      // (a WMIC command-line match, scoped to this app's own spawns) and
+    // `gracefulWslShutdown` (the guest ladder). `process.on('exit')` cannot await
+    // anything, so a real sweep does not belong here anyway.
+    //
+    // The `try { } catch { }` that wrapped this prose is gone too: a bare catch
+    // around zero statements in a shutdown path reads as though something risky is
+    // being attempted here. Nothing is.
   }
 });

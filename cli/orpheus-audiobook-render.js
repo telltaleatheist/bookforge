@@ -45,7 +45,7 @@ const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
-const { applyE2aScratchDir } = require('./e2a-scratch.js');
+const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -92,7 +92,7 @@ async function main() {
   manifestSvc.setLibraryBasePath(libraryRoot);
   // The same scratch the app would use for this library, so the narration copy
   // a `--prep` wrote (or the app's own run wrote) is found and reused here.
-  console.log(`[audiobook] scratch: ${applyE2aScratchDir(libraryRoot)}`);
+  console.log(`[audiobook] scratch: ${applyNarratorSessionsRoot(libraryRoot)}`);
 
   // Input EPUB: explicit --input override, else the project's RECORDED book
   // through the app's own door (manifest-service.bookForAct — see

@@ -780,7 +780,8 @@ New keepers:
   `NARRATOR_*` env, the voice document, doctor↔catalog patch-table agreement, and that the WSL scripts
   are LF. *It found a real bug during authoring:* `higgsSpawnEnv` shipped an
   untranscribed clip because the refusal lived only in `resolveHiggsModel`.
-- **`tools/test-orpheus-argv-snapshot.js`** — the baseline in
+- **`tools/test-narrator-argv-snapshot.js`** (was `test-orpheus-argv-snapshot.js`,
+  deleted 2026-09-05 when Phase 3 replaced every door it anchored on) — the baseline in
   `tools/snapshots/orpheus-argv-base.json` was extracted from **`01a3799b`, before
   any of this work**, and covers all five e2a doors (prep, retake, lightweight
   worker, app.py worker, assembly). The one licensed substitution

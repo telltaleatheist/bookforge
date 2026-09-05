@@ -105,6 +105,16 @@
       <span class="text" id="statusText">Checking…</span>
     </div>
 
+    <!-- Engine above voice, because a voice belongs to an engine: the list below
+         is whatever the SELECTED engine offers, and switching engines replaces it.
+         An engine this machine cannot run is shown disabled with the server's own
+         reason as its title, never hidden — "Higgs (needs WSL2)" is something you
+         can act on; a missing row is not. -->
+    <div class="field">
+      <label for="engine">Engine</label>
+      <select id="engine"></select>
+    </div>
+
     <!-- Voice sits directly above the start button: starting the server loads a
          model, so you should be able to see WHICH one before you press it. -->
     <div class="field">

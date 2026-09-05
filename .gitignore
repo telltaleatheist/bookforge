@@ -101,3 +101,6 @@ packaging/env/*.tar.gz
 
 # drift_check.py scratch slice, written to cwd when run from the repo root
 _dc.wav
+
+# serve-spawn-extract.js's fixture userData; removed on exit, ignored as a belt
+.fake-userdata/

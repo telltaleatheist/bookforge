@@ -5,9 +5,10 @@
 import { publishBridgeEvent } from './bridge-events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, wslToWindowsPath, buildCondaSpawnEnv } from './e2a-paths';
+import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
 import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry';
@@ -54,64 +55,6 @@ function appendCapped(buf: string, chunk: string): string {
 function isWslPath(p: string): boolean {
   const normalized = p.replace(/\\/g, '/');
   return /^\/\/wsl[\$.](?:localhost)?\//.test(normalized);
-}
-
-/**
- * Convert UNC WSL paths back to native WSL paths.
- * Handles any distro name and both \\wsl$ and \\wsl.localhost forms.
- */
-function uncToWslPath(p: string): string {
-  const uncMatch = p.replace(/\\/g, '/').match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
-  if (uncMatch) {
-    return '/' + uncMatch[1];
-  }
-  if (/^[A-Za-z]:[\\/]/.test(p)) {
-    return windowsToWslPath(p);
-  }
-  return p;
-}
-
-/** Shell-quote a string for safe use in a bash -c command */
-function shellQuoteArg(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Build WSL bash command for assembly
- * First argument in appArgs is the Windows app.py path - we skip it and use WSL native path
- */
-function buildWslAssemblyCommand(
-  appArgs: string[],
-  outputDir: string
-): string {
-  const wslCondaPath = getWslCondaPath();
-  const wslE2aPath = getWslE2aPath();
-
-  // Skip the first argument (Windows app.py path) - we'll use WSL native path
-  const argsWithoutAppPath = appArgs.slice(1);
-
-  // Convert remaining args - replace Windows paths with WSL paths
-  const wslArgs = argsWithoutAppPath.map(arg => {
-    // Convert Windows drive paths (C:\...) to WSL paths (/mnt/c/...)
-    if (arg.match(/^[A-Za-z]:\\/)) {
-      return windowsToWslPath(arg);
-    }
-    // Convert UNC WSL paths (\\wsl$\..., \\wsl.localhost\...) to native WSL paths
-    if (isWslPath(arg)) {
-      return uncToWslPath(arg);
-    }
-    // Already a WSL path or flag - pass through
-    return arg;
-  });
-
-  const q = shellQuoteArg;
-  const cdCommand = `cd ${q(wslE2aPath)}`;
-  // Use WSL native app.py path
-  const wslAppPath = `${wslE2aPath}/app.py`;
-  const quotedArgs = wslArgs.map(a => q(a)).join(' ');
-  const condaCommand = `${q(wslCondaPath)} run --no-capture-output -p ${q(`${wslE2aPath}/python_env`)} python ${q(wslAppPath)} ${quotedArgs}`;
-
-  return `${cdCommand} && ${condaCommand}`;
 }
 
 // The e2a app path (uses cross-platform detection)
@@ -477,25 +420,98 @@ const activeRvcDirs = new Map<string, string>();
 const activeClosedDirs = new Map<string, string>();
 
 /**
- * Does the e2a we are about to run understand --encoded_chapters_dir?
+ * A recorded `tts_engine` as narrator spells it, or a refusal naming what was
+ * found.
  *
- * BookForge and ebook2audiobook are separate repos on separate release cadences,
- * and e2a exists as THREE checkouts (Windows, the WSL one Orpheus renders in, the
- * Mac one) that routinely sit at different commits. app.py parses with
- * parse_args(), so handing an older checkout a flag it does not know is not a
- * degraded run — it is an immediate exit 2 with the whole assembly lost.
- *
- * So this is checked, not assumed. When the answer is no, the pre-closed chapters
- * are simply not used and assembly does the work itself, which is the same thing
- * that happens for a session the closer never touched.
+ * ABSENT IS NOT A DEFAULT EITHER. A session with no engine recorded is one this
+ * app did not write, or wrote before it recorded one; assembling it under a name
+ * invented here would put that name into the argv and, eventually, into somebody's
+ * explanation of what they are listening to.
  */
-function e2aSupportsEncodedChapters(): boolean {
-  const argsFile = path.join(getDefaultE2aPath(), 'bookforge_ext', 'parallel', 'args.py');
+/**
+ * THE ENGINE THAT RENDERED THIS SESSION, from the file that actually records it.
+ *
+ * ── The two files, and why only one of them is the truth ────────────────────
+ *
+ * A process dir holds both:
+ *
+ *   session-state.json   HYPHEN. narrator's own, written by every prep on every
+ *                        path. `tts_engine` is the flag the render was given
+ *                        ('orpheus' or 'higgs-v3') and `fine_tuned` /
+ *                        `higgs_voice` the voice.
+ *   session_state.json   UNDERSCORE. BookForge's sidecar — runs, rates, settings.
+ *                        Written ONLY by `savePersistentState`, whose callers are
+ *                        `startParallelConversion`, the resume path and two timers.
+ *
+ * An earlier version of this function read the UNDERSCORE file, and the Mac's
+ * live run of 2026-09-05 found what that costs: `renderRangeHeadless` — the CLI
+ * path — never writes the sidecar, and neither did any app session from before it
+ * existed. So a headless render that had just produced 108/108 sentences and 40
+ * minutes of audio was refused at assembly with "This session records no TTS
+ * engine", pointing at the absence of a file that was never part of the record.
+ *
+ * The refusal itself was right; it was reading the wrong thing. narrator writes
+ * the truthful one, so this reads that.
+ *
+ * ── The sidecar is still worth consulting, as a CROSS-CHECK ─────────────────
+ *
+ * When present it must AGREE. The two are written by different code at different
+ * times, and a disagreement means one of them describes a different render — a
+ * session directory reused, or a sidecar left behind by an earlier pass. Assembling
+ * under either name would be a guess about which, so it refuses naming both.
+ *
+ * They spell the engine differently and that is not a disagreement: BookForge says
+ * `higgs`, narrator says `higgs-v3` (`higgs` is an ENGINE_NEAR_MISS in
+ * compat/flags.py), so the comparison is made after normalising.
+ */
+async function narratorEngineForSession(processDir: string): Promise<string> {
+  let recorded: string | undefined;
   try {
-    return fs.readFileSync(argsFile, 'utf8').includes('--encoded_chapters_dir');
+    const raw = await fs.promises.readFile(path.join(processDir, 'session-state.json'), 'utf-8');
+    const state = JSON.parse(raw);
+    recorded = typeof state?.tts_engine === 'string' ? state.tts_engine : undefined;
   } catch {
-    return false;
+    recorded = undefined;
   }
+
+  const normalise = (v: string | undefined): string | null => {
+    const id = v?.trim().toLowerCase();
+    if (id === 'orpheus') return 'orpheus';
+    // Both spellings of Higgs land on narrator's, which is the one an argv may carry.
+    if (id === 'higgs' || id === 'higgs-v3') return 'higgs-v3';
+    return null;
+  };
+
+  const engine = normalise(recorded);
+  if (!engine) {
+    throw new Error(
+      recorded
+        ? `This session's session-state.json records tts_engine '${recorded}', which narrator `
+          + 'cannot assemble. It serves orpheus and higgs-v3; XTTS was retired 2026-09-04 and '
+          + 'its sessions load read-only.'
+        : 'This session\'s session-state.json records no tts_engine, so there is nothing to '
+          + 'assemble it as. narrator writes that field on every prep — a session without it was '
+          + 'not written by a narrator prep.',
+    );
+  }
+
+  // The sidecar, when there is one. Absent is the NORMAL case for a headless
+  // render and is not an error; only a contradiction is.
+  // Read ONCE. The disagreement path used to re-read the sidecar to build its own
+  // error message, so the value being reported was a second read of a file that had
+  // already been read — and on a race could name something the comparison never saw.
+  const provenance = await parseSessionProvenance(processDir);
+  const sidecar = normalise(provenance?.ttsEngine);
+  if (sidecar && sidecar !== engine) {
+    throw new Error(
+      `This session disagrees with itself about what rendered it: session-state.json says `
+      + `'${recorded}' and BookForge's session_state.json sidecar says `
+      + `'${provenance?.ttsEngine}'. One of them describes a `
+      + 'different render (a reused session directory, or a sidecar left by an earlier pass). '
+      + 'Refusing to guess which.',
+    );
+  }
+  return engine;
 }
 
 /**
@@ -1010,6 +1026,26 @@ export async function startReassembly(
   }
 
   /*
+   * WHAT ENGINE RENDERED THIS SESSION — asked FIRST, because the answer can be a
+   * refusal and a refusal is worth nothing after the work.
+   *
+   * Below this line are gap normalization, the pre-closed-chapter resolver and
+   * the RVC pass: minutes of CPU, and a chapter closer that writes into the
+   * session. An XTTS session (a real thing on Owen's disk) has to be refused
+   * BEFORE any of that, not after — the same rule the variant filing above
+   * follows, and for the same reason.
+   */
+  let asmEngine: string;
+  try {
+    asmEngine = await narratorEngineForSession(config.processDir);
+  } catch (err) {
+    const error = err instanceof Error ? err.message : String(err);
+    reassemblyLog.error('Reassembly refused', { jobId, error });
+    sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error });
+    return { success: false, error };
+  }
+
+  /*
    * IS THIS RUN MAKING A SECOND AUDIOBOOK, and if so what is it called —
    * answered HERE, at the top, because both of its refusals ("which voice?",
    * "no filename to derive one from") are things this run can never learn later,
@@ -1298,11 +1334,19 @@ export async function startReassembly(
       return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
     }
     const minChunkGapForCloser = resolveOrpheusMinChunkGap(provenance?.voice) ?? 0;
-    const closed = !e2aSupportsEncodedChapters()
-      ? (reassemblyLog.info('Pre-closed chapters not used', {
-          jobId, reason: `the e2a at ${getDefaultE2aPath()} does not support --encoded_chapters_dir`,
-        }), null)
-      : await resolveClosedSession({
+    // NO CAPABILITY PROBE. `e2aSupportsEncodedChapters()` used to grep
+    // `<e2a>/bookforge_ext/parallel/args.py` for the flag, because BookForge and
+    // ebook2audiobook were separate repos at separate commits — three checkouts
+    // (Windows, the WSL one, the Mac one) that routinely disagreed — and app.py's
+    // parse_args() turns an unknown flag into exit 2 with the whole assembly lost.
+    //
+    // narrator ships INSIDE this repo, at this commit, and ACCEPTs the flag
+    // unconditionally (compat/FLAGS.md). The probe could only be wrong now, and it
+    // was wrong in the silent direction: its `catch { return false }` meant a
+    // machine with no e2a checkout at all — which is every machine after Phase 6 —
+    // quietly stopped using pre-closed chapters and re-encoded every chapter of
+    // every book, logged as a reason nobody would read as a defect.
+    const closed = await resolveClosedSession({
       tmpRoot: getDefaultE2aTmpPath(),
       sessionId: config.sessionId,
       sentencesDir: srcSentences,
@@ -1497,24 +1541,47 @@ export async function startReassembly(
     }
   }
 
+
   return new Promise((resolve) => {
-    const appPath = path.join(e2aPath, 'app.py');
-    const platform = os.platform();
-
-    // Check if session is in WSL - if so, we need to run assembly through WSL
-    const sessionInWsl = isWslPath(config.sessionDir);
-
-    // Build arguments for app.py
+    // ASSEMBLY IS NATIVE. The `sessionInWsl` branch that stood here ran the whole
+    // thing back through `wsl.exe` whenever the session lived on ext4, because
+    // e2a's assembly had to be able to READ that session. narrator's runs in the
+    // tools env on every platform and reads the session through whatever path it
+    // is handed — a \\wsl$ UNC included — so the branch bought nothing and cost
+    // the 9p mount. `buildWslAssemblyCommand` is deleted with it.
+    //
+    // (The render path avoids the 9p mount a better way:
+    // `normalizeWslSessionToWindows` copies the session onto a Windows path after
+    // generation, INSIDE the guest, which is fast. This door reassembles a session
+    // that already exists and does not get to choose where it lives.)
     const appArgs = [
-      appPath,
       '--headless',
       '--ebook', epubPath,
       '--output_dir', stagingDir,
       '--session', config.sessionId,
-      '--session_dir', config.sessionDir,
+    // THE PROCESS DIR, not the `ebook-<uuid>` dir. narrator's assembly route is
+      // the one place where the two are NOT interchangeable: `session_v1
+      // .build_manifest` calls `load_session_state(process_dir)` directly and opens
+      // `<dir>/session-state.json`, where the render routes go through
+      // `session_store.load_session_state`, which WALKS a session dir's
+      // subdirectories to find it. e2a resolved either shape, so this door sent the
+      // session dir for years and it worked.
+      //
+      // It refuses by name ("session-state.json not found: ..."), which is the good
+      // outcome; the bad one is that nothing in a snapshot can see it. Found by
+      // running the door against the kershaw golden session
+      // (tools/smoke-narrator-assembly.js) — the flags were right, the plan was
+      // right, and every book would have failed to assemble.
+      '--session_dir', config.processDir,
       '--device', 'CPU',
       '--language', language,
-      '--tts_engine', 'xtts',
+      // Read from the session's own provenance rather than the literal 'xtts'
+      // this door sent on every book including Orpheus ones. narrator does not
+      // gate assembly on the engine (`compat/app.py` routes `--assemble_only`
+      // before any engine resolution), so the flag names nothing today — but a
+      // session whose argv disagrees with its own state file is a fact somebody
+      // later has to disprove.
+      '--tts_engine', asmEngine,
       '--assemble_only',
       '--no_split',
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
@@ -1525,57 +1592,39 @@ export async function startReassembly(
       // concat; it validates and errors on anything it cannot use, and ignores the
       // flag entirely on the modes where pre-encoded chunks are not equivalent.
       ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []),
-      // Per-voice post-render filter (Orpheus provenance only) — applied at e2a's
-      // final encode. The native branch shell-escapes each arg (shellEscapeArgs) and
-      // the WSL branch shell-quotes each (buildWslAssemblyCommand); both are safe for
-      // the `|`, `:`, `/`, single-quote chars a filter chain may contain.
+      // Per-voice post-render filter (Orpheus provenance only) — applied at the
+      // final encode. It is ONE opaque argument that may contain `|`, `:`, `/` and
+      // quotes; it crosses as an argv element and is never shell-interpolated, so
+      // there is nothing left to escape it against.
       ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
     ];
 
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
     // Metadata will be applied after assembly using m4b-tool if available
 
-    let proc: ChildProcess;
+    // ONE SPAWN, native, every platform. `buildNarratorSpawn` with NO engine is
+    // the tools env — the bundled relocatable python that holds numpy/soundfile/
+    // mutagen with ffmpeg on PATH, which is everything an assembly needs.
+    //
+    // shell:false, where this used to pass shell:true + shellEscapeArgs. That
+    // existed because `conda run` re-invokes through a shell and a bundled python
+    // lives under "Application Support" on macOS; argv is passed as an array now
+    // and never round-trips through a shell, so paths with apostrophes ('Aesop's
+    // Fables') and a `--post_render_filter` chain full of `|` and `:` cross
+    // untouched instead of correctly escaped.
+    const asmPlan = buildNarratorSpawn({
+      phase: 'assembly',
+      args: appArgs,
+      envExtras: {},
+      cwdHint: e2aPath,
+    });
+    console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
 
-    if (sessionInWsl && platform === 'win32') {
-      // Session is in WSL filesystem - run assembly through WSL
-      const wslE2aPath = getWslE2aPath();
-      const wslBashCommand = buildWslAssemblyCommand(appArgs, config.outputDir);
-      console.log('[REASSEMBLY] Session in WSL, running through WSL:', wslBashCommand.substring(0, 200) + '...');
-
-      const distro = getWslDistro();
-      // Use bash -c (non-interactive) to avoid .bashrc issues blocking stdout
-      const wslArgs = distro
-        ? ['-d', distro, 'bash', '-c', wslBashCommand]
-        : ['bash', '-c', wslBashCommand];
-
-      proc = spawn('wsl.exe', wslArgs, {
-        cwd: e2aPath,
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
-        shell: false
-      });
-    } else {
-      // Standard Windows/macOS/Linux spawn
-      // Use shell: true + shellEscapeArgs to handle paths with apostrophes/quotes
-      // (conda run re-invokes through a shell, so paths must be properly escaped).
-      // The command is escaped too: a bundled relocatable python lives under
-      // "Application Support" on macOS.
-      const py = getPythonInvocation(e2aPath);
-      const escapedArgs = shellEscapeArgs([...py.args, ...appArgs]);
-      const escapedCommand = shellEscapeArgs([py.command])[0];
-      console.log('[REASSEMBLY] Running command:', escapedCommand, escapedArgs.join(' '));
-
-      // buildCondaSpawnEnv enriches PATH with the resolved ffmpeg dir so e2a's
-      // Python (pydub) finds ffmpeg/ffprobe even under a packaged app's minimal PATH.
-      proc = spawn(escapedCommand, escapedArgs, {
-        cwd: e2aPath,
-        env: buildCondaSpawnEnv({
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-        }),
-        shell: true,
-      });
-    }
+    const proc: ChildProcess = spawn(asmPlan.command, asmPlan.args, {
+      cwd: asmPlan.cwd,
+      env: asmPlan.env,
+      shell: false,
+    });
 
     activeReassemblies.set(jobId, proc);
 
@@ -1929,8 +1978,11 @@ export async function startReassembly(
             const result = JSON.parse(jsonMatch[0]);
             if (result.output_files && result.output_files[0]) {
               outputPath = result.output_files[0];
-              // e2a running in WSL emits /mnt/... paths — convert to Windows
-              if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
+              // NO WSL PATH CONVERSION any more. It was here because assembly
+              // itself ran in the guest and reported /mnt/... paths; it runs
+              // natively now and is handed a Windows --output_dir, so it reports
+              // the path this process gave it. Converting anyway would be a
+              // no-op that reads as a guard.
               console.log('[REASSEMBLY] Output path from JSON:', outputPath);
             }
           }
@@ -1943,8 +1995,6 @@ export async function startReassembly(
         const pathMatch = line.match(/(?:Audiobook saved to:|Output:)\s*(.+\.m4b)/i);
         if (pathMatch) {
           outputPath = pathMatch[1].trim();
-          // e2a running in WSL emits /mnt/... paths — convert to Windows
-          if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
         }
       }
     });
@@ -2647,14 +2697,73 @@ function sendProgress(
 }
 
 /**
- * Check if e2a is available
- * @param customTmpPath - Optional custom path to the e2a tmp folder
+ * CAN THIS MACHINE ASSEMBLE AN AUDIOBOOK?
+ *
+ * Two halves, and the second is the one that used to be missing.
+ *
+ *  1. the `narrator` package is in this checkout (`narratorPythonRoot()` throws
+ *     by name when it is not);
+ *  2. the tools env's python can actually IMPORT `narrator.assemble` — which is
+ *     where numpy / soundfile / mutagen have to be, and where a half-installed
+ *     env fails.
+ *
+ * The old check was `<e2a>/app.py exists`, which answered neither: a checkout
+ * with the file and an env missing soundfile passed it and then failed inside the
+ * assembler, minutes into a job. This runs the import once and caches the answer
+ * for the life of the process, because it costs a python start (~1 s) and the
+ * environment does not change under a running app.
+ *
+ * `customTmpPath` is accepted and ignored: it named an e2a install to look beside,
+ * and there is no longer an e2a install. Kept so a caller that still holds a tmp
+ * path does not have to be rewritten to ask this question.
  */
-export function isE2aAvailable(customTmpPath?: string): boolean {
-  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
-  const e2aPath = getE2aAppPath(tmpPath);
-  return fs.existsSync(e2aPath) && fs.existsSync(path.join(e2aPath, 'app.py'));
+let narratorReadyCache: boolean | null = null;
+
+export function narratorReady(_customTmpPath?: string): boolean {
+  if (narratorReadyCache !== null) return narratorReadyCache;
+  try {
+    narratorPythonRoot();
+  } catch (err) {
+    console.warn('[REASSEMBLY] narrator package not present:', (err as Error).message);
+    narratorReadyCache = false;
+    return false;
+  }
+  const plan = buildNarratorSpawn({
+    phase: 'assembly',
+    args: [],
+    envExtras: {},
+  });
+  // `-c import narrator.assemble` rather than `-m narrator.compat.app --help`:
+  // the import is what fails when the env is short a package, and --help would
+  // pass on an env that cannot assemble anything.
+  // `-u` is the interpreter flag every plan carries, and everything before it is the
+  // launcher prefix (conda run -p <env> python). An `indexOf` of -1 would slice the
+  // whole argv and silently probe with the last argument dropped, so it is checked.
+  const dashU = plan.args.indexOf('-u');
+  if (dashU < 0) {
+    throw new Error(
+      'The narrator spawn plan carries no `-u`, so the launcher prefix cannot be '
+      + `separated from the module invocation: ${plan.args.join(' ')}`,
+    );
+  }
+  const probe = spawnSync(
+    plan.command,
+    [...plan.args.slice(0, dashU), '-c', 'import narrator.assemble'],
+    // 15 s, not 60. This runs SYNCHRONOUSLY on the main process thread, which the
+    // bookshelf server shares, so the window is a UI freeze on any machine whose env
+    // is sick — and a Python that has not imported one module in 15 s is not going to
+    // assemble a book. Still owed: an async variant, so the answer costs no freeze at
+    // all (the result is cached after the first call).
+    { env: plan.env, cwd: plan.cwd, timeout: 15000, stdio: 'ignore' },
+  );
+  narratorReadyCache = probe.status === 0;
+  if (!narratorReadyCache) {
+    console.warn('[REASSEMBLY] narrator.assemble is not importable in the tools env '
+      + `(exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`);
+  }
+  return narratorReadyCache;
 }
+
 
 /**
  * Get a cached TTS session from a single project's audiobook folder.

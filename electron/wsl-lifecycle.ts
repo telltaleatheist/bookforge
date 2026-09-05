@@ -41,9 +41,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Args prefix for running a guest BINARY: distro selector + `-e` (exec, NO login
  *  shell). `-e` matters twice over: our pkill/pgrep patterns contain shell
- *  metacharacters (`(worker|app)\.py` — a bare `wsl.exe pkill -f (worker|app)...`
- *  would be a bash syntax error), and skipping the shell avoids .bashrc side
- *  effects. wsl.exe built-ins (--list, -t, --shutdown) must NOT use this. */
+ *  metacharacters (`narrator\.compat\.(worker|app)` — a bare
+ *  `wsl.exe pkill -f narrator.compat.(worker|app)` would be a bash syntax error),
+ *  and skipping the shell avoids .bashrc side effects. wsl.exe built-ins
+ *  (--list, -t, --shutdown) must NOT use this. */
 function guestExecArgs(): string[] {
   const distro = getWslDistro();
   return distro ? ['-d', distro, '-e'] : ['-e'];
@@ -176,6 +177,21 @@ export interface WslPkillOptions {
   graceMs?: number;
   pollMs?: number;
   label?: string;
+  /**
+   * A regex SOURCE for command lines this sweep must NOT touch.
+   *
+   * There is exactly one caller and one reason: the global orphan sweep matches
+   * `|vllm`, and the resident Listen server's vLLM is a vllm process. Without this
+   * the sweep SIGTERMs the engine a user is listening through — the pool owns that
+   * teardown, cooperatively, and a sweep taking it out from underneath is a
+   * playback that stops for no reason anyone can see.
+   *
+   * `pgrep` has no exclusion of its own, so the filtering is done here: `pgrep -af`
+   * returns `pid cmdline` per line, the excluded ones are dropped, and `kill` is
+   * given the surviving pids explicitly. That also means a pattern matching ONLY
+   * excluded processes is 'none' rather than a kill of nothing.
+   */
+  excludeRe?: string;
 }
 
 /**
@@ -190,27 +206,91 @@ export async function wslPkillGraceful(pattern: string, opts: WslPkillOptions = 
   const label = opts.label ?? 'wsl-pkill';
   const d = guestExecArgs();
 
-  const probe = await execWsl([...d, 'pgrep', '-f', pattern], 8000);
-  if (probe.timedOut || probe.code === -1) {
+  const exclude = opts.excludeRe ? new RegExp(opts.excludeRe) : null;
+
+  /**
+   * The pids `excludeRe` protects: the processes whose command line matches it, AND
+   * every descendant of those.
+   *
+   * The descendants are the point. `narrator.serve` hosts vLLM, and vLLM's engine-core
+   * children are separate processes whose OWN command lines say `VLLM::EngineCore`, not
+   * `narrator.serve`. A cmdline-only exclusion would spare the server and SIGTERM the
+   * engine underneath it, which is the same stopped playback by a longer route.
+   *
+   * `null` = WSL did not answer, which the caller must treat as unresponsive rather
+   * than as an empty exclusion set. Failing open here would kill the thing this exists
+   * to protect.
+   */
+  const protectedPids = async (): Promise<Set<string> | null> => {
+    if (!exclude) return new Set();
+    const r = await execWsl([...d, 'ps', '-eo', 'pid=,ppid=,args='], 8000);
+    if (r.timedOut || r.code === -1) return null;
+    const parents = new Map<string, string>();
+    const guarded = new Set<string>();
+    for (const line of (r.stdout || '').split('\n')) {
+      const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      if (!m) continue;
+      const [, pid, ppid, args] = m;
+      parents.set(pid, ppid);
+      if (exclude.test(args)) guarded.add(pid);
+    }
+    // Walk children-of-guarded to a fixed point. The table is one snapshot of a few
+    // hundred rows; looping to quiescence is cheaper than a recursive /proc walk and
+    // does not care what order ps emitted the rows in.
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const [pid, ppid] of parents) {
+        if (!guarded.has(pid) && guarded.has(ppid)) { guarded.add(pid); grew = true; }
+      }
+    }
+    return guarded;
+  };
+
+  /** Matching pids, minus anything `excludeRe` protects. `null` = WSL did not answer. */
+  const matchingPids = async (): Promise<string[] | null> => {
+    // `-a` prints `pid cmdline`. pgrep has no --exclude of its own, and pgrep (unlike
+    // `ps`) never truncates its output, so pgrep stays the thing that decides what
+    // MATCHES; `ps` is consulted only to decide what is protected.
+    const r = await execWsl([...d, 'pgrep', '-af', pattern], 8000);
+    if (r.timedOut || r.code === -1) return null;
+    if (r.code === 1) return [];
+    const guarded = await protectedPids();
+    if (guarded === null) return null;
+    return (r.stdout || '')
+      .split('\n')
+      .map((l) => l.trim())
+      .filter(Boolean)
+      .map((l) => l.split(/\s+/)[0])
+      .filter((pid) => /^\d+$/.test(pid))
+      .filter((pid) => !guarded.has(pid));
+  };
+
+  const initial = await matchingPids();
+  if (initial === null) {
     markWslWedged(`${label}: pgrep did not answer`);
     return 'unresponsive';
   }
-  if (probe.code === 1) return 'none';
+  if (initial.length === 0) return 'none';
 
-  console.log(`[WSL] ${label}: SIGTERM to guest processes matching "${pattern}" (grace ${graceMs}ms, no SIGKILL)`);
-  await execWsl([...d, 'pkill', '-TERM', '-f', pattern], 8000);
+  console.log(`[WSL] ${label}: SIGTERM to guest pids ${initial.join(', ')} matching "${pattern}"`
+    + `${exclude ? ` (excluding ${opts.excludeRe})` : ''} (grace ${graceMs}ms, no SIGKILL)`);
+  // `kill` on the surviving pids, NOT `pkill -f <pattern>`: pkill would re-match the
+  // pattern in the guest and take the excluded processes with it, which is the whole
+  // thing this is here to prevent.
+  await execWsl([...d, 'kill', '-TERM', ...initial], 8000);
 
   const deadline = Date.now() + graceMs;
   while (Date.now() < deadline) {
     await sleep(pollMs);
-    const c = await execWsl([...d, 'pgrep', '-f', pattern], 8000);
-    if (c.code === 1) {
-      console.log(`[WSL] ${label}: guest processes exited cleanly on SIGTERM`);
-      return 'exited';
-    }
-    if (c.timedOut || c.code === -1) {
+    const c = await matchingPids();
+    if (c === null) {
       markWslWedged(`${label}: WSL stopped answering while waiting for SIGTERM exit`);
       return 'unresponsive';
+    }
+    if (c.length === 0) {
+      console.log(`[WSL] ${label}: guest processes exited cleanly on SIGTERM`);
+      return 'exited';
     }
   }
 

@@ -9,7 +9,7 @@
  * TOO EAGER and the app refuses to render at all — the CLI's own parent chain
  * (`bookforge-tts.py` -> `node orpheus-batch-render.js` -> this process) matches
  * the very patterns we search for, our own workers carry `--session`, and the
- * resident Listen server (`orpheus_stream.py`) has coexisted with audiobook
+ * resident Listen server (`python -m narrator.serve`) has coexisted with audiobook
  * renders since it shipped. Any of those counted as a stranger and nobody can
  * start a book.
  *
@@ -59,12 +59,14 @@ function check(cond, label) {
 //   400    sshd (the PC's fine-tuning agent came in this way)
 //   410    python cli/bookforge-tts.py --voice=thirdreich      <- our ancestor
 //   420    node cli/orpheus-batch-render.js                     <- OUR PROCESS
-//   430    worker.py --session ours-1234                        <- our own worker
-//   900    worker.py --session someone-else                     <- THE ORPHAN
-//   910    app.py --worker_mode --session other                 <- foreign full worker
+//   430    narrator.compat.worker --session ours-1234           <- our own worker
+//   900    narrator.compat.worker --session someone-else        <- THE ORPHAN
+//   910    narrator.compat.app --session other                  <- foreign prep/assembly
+//   940    worker.py --session legacy-orphan                    <- a PRE-CUT-OVER orphan
+//   950    narrator.compat.app --list_sessions                  <- no session: NOT a fault
 //   920    python cli/bookforge-tts.py (another machine's run)   <- foreign CLI
 //   930    node cli/orpheus-batch-render.js (its child)          <- foreign CLI render
-//   700    orpheus_stream.py (the resident Listen server)        <- never a fault
+//   700    python -m narrator.serve (the resident Listen server) <- never a fault
 //   710    separator_worker.py (audio separation)                <- NOT worker.py
 //   720    python app.py (someone's Flask app)                   <- NOT e2a
 const E2A = '/Users/telltale/Projects/ebook2audiobook-latest';
@@ -77,12 +79,19 @@ const PS = [
   '  400     1    02:10:00 sshd: telltale@notty',
   `  410   400    01:40:11 ${PY} ${E2A}/../BookForgeApp/cli/bookforge-tts.py --voice=thirdreich --input book.epub`,
   `  420   410    01:40:09 node --require ./cli/electron-stub.js cli/orpheus-batch-render.js --voice thirdreich --input passage.txt`,
-  `  430   420    01:39:02 ${PY} ${E2A}/worker.py --session ${OUR_SESSION} --sentence_start 0 --sentence_end 5312`,
-  `  700     1    09:12:44 ${PY} electron/scripts/orpheus_stream.py --voice zac --port 8766`,
+  `  430   420    01:39:02 ${PY} -u -m narrator.compat.worker --session ${OUR_SESSION} --sentence_start 0 --sentence_end 5312`,
+  `  700     1    09:12:44 ${PY} -u -m narrator.serve`,
   `  710     1       04:31 ${PY} electron/scripts/separator_worker.py --model htdemucs`,
   '  720     1     1:02:00 /usr/bin/python3 /Users/telltale/dashboards/app.py --port 5000',
-  `  900     1    01:31:07 ${PY} ${E2A}/worker.py --session orphan-9999 --sentences_dir /Volumes/iO/bookforge/projects/Kershaw/stages/03-tts --sentence_start 0 --sentence_end 4210`,
-  `  910     1       12:03 ${PY} ${E2A}/app.py --headless --worker_mode --session other-5555 --tts_engine orpheus`,
+  `  900     1    01:31:07 ${PY} -u -m narrator.compat.worker --session orphan-9999 --sentences_dir /Volumes/iO/bookforge/projects/Kershaw/stages/03-tts --sentence_start 0 --sentence_end 4210`,
+  `  910     1       12:03 ${PY} -u -m narrator.compat.app --headless --session other-5555 --assemble_only`,
+  // A PRE-CUT-OVER ORPHAN. Nothing spawns worker.py any more, which is exactly why
+  // it must still be recognised: this guard exists for the Sep 1 2026 incident, an
+  // orphan whose parent was gone — and an orphan outlives the build that made it.
+  `  940     1    02:02:02 ${PY} ${E2A}/worker.py --session legacy-orphan --sentence_start 0 --sentence_end 99`,
+  // The same module WITHOUT a session: `--list_sessions` reads the filesystem and
+  // never touches the GPU, so refusing a render over it would be a false positive.
+  `  950     1       00:03 ${PY} -u -m narrator.compat.app --headless --list_sessions`,
   '  920   400       06:45 /usr/bin/python3 cli/bookforge-tts.py --voice=rohan --input other.epub',
   '  930   920       06:44 node --require ./cli/electron-stub.js cli/orpheus-batch-render.js --voice rohan',
 ].join('\n');
@@ -91,7 +100,7 @@ const PS = [
 console.log('parsing `ps -Ao pid,ppid,etime,command`');
 {
   const rows = parsePsRows(PS);
-  check(rows.length === 12, `header dropped, 12 process rows (got ${rows.length})`);
+  check(rows.length === 14, `header dropped, 14 process rows (got ${rows.length})`);
   check(rows[0].pid === 1 && rows[0].ppid === 0 && rows[0].etime === '24-03:25:14',
     'day-form ELAPSED (24-03:25:14) parses as one field');
   const worker = rows.find((r) => r.pid === 900);
@@ -122,19 +131,24 @@ console.log('selection — the CLI (pid 420) asking, with its own session alread
 {
   const found = findForeignRenders(PS, { selfPid: 420, sessionId: OUR_SESSION });
   const pids = found.map((p) => p.pid);
-  assert.deepStrictEqual(pids, [900, 910, 920, 930], `foreign pids were ${JSON.stringify(pids)}`);
-  check(true, 'exactly the four strangers, in pid order');
+  assert.deepStrictEqual(pids, [900, 910, 920, 930, 940], `foreign pids were ${JSON.stringify(pids)}`);
+  check(true, 'exactly the five strangers, in pid order');
 
   check(!pids.includes(410) && !pids.includes(420),
     'the CLI\'s own chain (bookforge-tts.py 410, orpheus-batch-render.js 420) is the CALLER, not a stranger');
-  check(!pids.includes(430), 'our own worker.py is excluded by --session ' + OUR_SESSION);
-  check(!pids.includes(700), 'the resident Listen server (orpheus_stream.py) is not a fault');
+  check(!pids.includes(430), 'our own narrator.compat.worker is excluded by --session ' + OUR_SESSION);
+  check(pids.includes(900), 'a foreign narrator.compat.worker IS a fault — the process that holds the model');
+  check(pids.includes(910), 'a session-scoped narrator.compat.app IS a fault');
+  check(pids.includes(940), 'a PRE-CUT-OVER worker.py orphan is still recognised');
+  check(!pids.includes(950), 'narrator.compat.app --list_sessions touches no GPU and is not a fault');
+  check(!pids.includes(700), 'the resident Listen server (-m narrator.serve) is not a fault');
   check(!pids.includes(710), 'separator_worker.py is not worker.py (name boundary, not substring)');
   check(!pids.includes(720), 'a bare app.py is somebody\'s Flask app, not an e2a batch worker');
 
   const byPid = Object.fromEntries(found.map((p) => [p.pid, p]));
-  check(byPid[900].kind === 'e2a-worker', 'the orphaned worker.py is classed e2a-worker');
-  check(byPid[910].kind === 'e2a-app-worker', 'app.py --worker_mode is classed e2a-app-worker');
+  check(byPid[900].kind === 'narrator-worker', 'the orphaned render worker is classed narrator-worker');
+  check(byPid[910].kind === 'narrator-app', 'a session-scoped compat.app is classed narrator-app');
+  check(byPid[940].kind === 'e2a-worker', 'a pre-cut-over worker.py orphan is still classed e2a-worker');
   check(byPid[920].kind === 'cli-tts', 'a foreign bookforge-tts.py is classed cli-tts');
   check(byPid[930].kind === 'cli-batch-render', 'a foreign orpheus-batch-render.js is classed cli-batch-render');
 }
@@ -146,7 +160,7 @@ console.log('selection — Electron (pid 42) asking, no worker of ours yet');
   // CLI chain is now genuinely foreign, and so is our-session-that-isn\'t-ours.
   const found = findForeignRenders(PS, { selfPid: 42, sessionId: 'fresh-session-0001' });
   const pids = found.map((p) => p.pid);
-  assert.deepStrictEqual(pids, [410, 420, 430, 900, 910, 920, 930], `got ${JSON.stringify(pids)}`);
+  assert.deepStrictEqual(pids, [410, 420, 430, 900, 910, 920, 930, 940], `got ${JSON.stringify(pids)}`);
   check(true, 'a CLI render started from another terminal IS a stranger to the app');
   check(!pids.includes(700), 'the Listen server stays excluded whoever is asking');
 }
@@ -169,8 +183,8 @@ console.log('session-id matching');
   check(findForeignRenders(equalsForm, { selfPid: 42, sessionId: OUR_SESSION }).length === 0,
     '--session=<id> is recognised as ours as well as --session <id>');
 
-  check(findForeignRenders(PS, { selfPid: 420, sessionId: null }).length === 5,
-    'with no session id, our own worker.py counts too — the caller must pass one');
+  check(findForeignRenders(PS, { selfPid: 420, sessionId: null }).length === 6,
+    'with no session id, our own worker counts too — the caller must pass one');
 }
 
 // ── the message the user actually sees ───────────────────────────────────────
@@ -190,9 +204,9 @@ console.log('the refusal');
     'one offender reads as one, not "1 other Orpheus renders"');
 
   const orphanLine = describeForeignRender(found.find((p) => p.pid === 900));
-  check(orphanLine.includes('worker.py --session orphan-9999'),
-    'the preview starts at the script, not at the 87-character interpreter path');
-  check(orphanLine.startsWith('  pid 900  running 01:31:07  …worker.py'),
+  check(orphanLine.includes('narrator.compat.worker --session orphan-9999'),
+    'the preview starts at the module, not at the 87-character interpreter path');
+  check(orphanLine.startsWith('  pid 900  running 01:31:07  …narrator.compat.worker'),
     'the elided interpreter prefix is marked with a leading ellipsis');
 
   const long = 'worker.py ' + 'x'.repeat(400);
@@ -218,7 +232,7 @@ console.log('a clear machine');
   const clean = [
     '  PID  PPID     ELAPSED COMMAND',
     '    1     0 24-03:25:14 /sbin/launchd',
-    `  700     1    09:12:44 ${PY} electron/scripts/orpheus_stream.py --voice zac`,
+    `  700     1    09:12:44 ${PY} -u -m narrator.serve`,
   ].join('\n');
   check(findForeignRenders(clean, { selfPid: 42, sessionId: 'x' }).length === 0,
     'nothing but launchd and the Listen server: the GPU is ours');
