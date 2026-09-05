@@ -1,0 +1,455 @@
+{
+ "streams": [
+  {
+   "index": 0,
+   "codec_name": "aac",
+   "codec_long_name": "AAC (Advanced Audio Coding)",
+   "profile": "LC",
+   "codec_type": "audio",
+   "codec_tag_string": "mp4a",
+   "codec_tag": "0x6134706d",
+   "sample_fmt": "fltp",
+   "sample_rate": "44100",
+   "channels": 1,
+   "channel_layout": "mono",
+   "bits_per_sample": 0,
+   "initial_padding": 0,
+   "id": "0x1",
+   "r_frame_rate": "0/0",
+   "avg_frame_rate": "0/0",
+   "time_base": "1/44100",
+   "start_pts": 0,
+   "start_time": "0.000000",
+   "duration_ts": 1538979982,
+   "duration": "34897.505261",
+   "bit_rate": "138739",
+   "nb_frames": "1502944",
+   "extradata_size": 5,
+   "disposition": {
+    "default": 1,
+    "dub": 0,
+    "original": 0,
+    "comment": 0,
+    "lyrics": 0,
+    "karaoke": 0,
+    "forced": 0,
+    "hearing_impaired": 0,
+    "visual_impaired": 0,
+    "clean_effects": 0,
+    "attached_pic": 0,
+    "timed_thumbnails": 0,
+    "non_diegetic": 0,
+    "captions": 0,
+    "descriptions": 0,
+    "metadata": 0,
+    "dependent": 0,
+    "still_image": 0,
+    "multilayer": 0
+   },
+   "tags": {
+    "language": "und",
+    "handler_name": "SoundHandler",
+    "vendor_id": "[0][0][0][0]"
+   }
+  },
+  {
+   "index": 1,
+   "codec_name": "bin_data",
+   "codec_long_name": "binary data",
+   "codec_type": "data",
+   "codec_tag_string": "text",
+   "codec_tag": "0x74786574",
+   "id": "0x2",
+   "r_frame_rate": "0/0",
+   "avg_frame_rate": "0/0",
+   "time_base": "1/1000",
+   "start_pts": 0,
+   "start_time": "0.000000",
+   "duration_ts": 34897489,
+   "duration": "34897.489000",
+   "nb_frames": "25",
+   "extradata_size": 43,
+   "disposition": {
+    "default": 0,
+    "dub": 0,
+    "original": 0,
+    "comment": 0,
+    "lyrics": 0,
+    "karaoke": 0,
+    "forced": 0,
+    "hearing_impaired": 0,
+    "visual_impaired": 0,
+    "clean_effects": 0,
+    "attached_pic": 0,
+    "timed_thumbnails": 0,
+    "non_diegetic": 0,
+    "captions": 0,
+    "descriptions": 0,
+    "metadata": 0,
+    "dependent": 0,
+    "still_image": 0,
+    "multilayer": 0
+   },
+   "tags": {
+    "language": "eng",
+    "handler_name": "SubtitleHandler"
+   }
+  },
+  {
+   "index": 2,
+   "codec_name": "mjpeg",
+   "codec_long_name": "Motion JPEG",
+   "profile": "Baseline",
+   "codec_type": "video",
+   "codec_tag_string": "[0][0][0][0]",
+   "codec_tag": "0x0000",
+   "width": 1400,
+   "height": 1400,
+   "coded_width": 1400,
+   "coded_height": 1400,
+   "closed_captions": 0,
+   "film_grain": 0,
+   "has_b_frames": 0,
+   "sample_aspect_ratio": "1:1",
+   "display_aspect_ratio": "1:1",
+   "pix_fmt": "yuvj420p",
+   "level": -99,
+   "color_range": "pc",
+   "color_space": "bt470bg",
+   "chroma_location": "center",
+   "refs": 1,
+   "id": "0x0",
+   "r_frame_rate": "90000/1",
+   "avg_frame_rate": "0/0",
+   "time_base": "1/90000",
+   "start_pts": 0,
+   "start_time": "0.000000",
+   "duration_ts": 3140775473,
+   "duration": "34897.505256",
+   "bits_per_raw_sample": "8",
+   "disposition": {
+    "default": 0,
+    "dub": 0,
+    "original": 0,
+    "comment": 0,
+    "lyrics": 0,
+    "karaoke": 0,
+    "forced": 0,
+    "hearing_impaired": 0,
+    "visual_impaired": 0,
+    "clean_effects": 0,
+    "attached_pic": 1,
+    "timed_thumbnails": 0,
+    "non_diegetic": 0,
+    "captions": 0,
+    "descriptions": 0,
+    "metadata": 0,
+    "dependent": 0,
+    "still_image": 0,
+    "multilayer": 0
+   }
+  }
+ ],
+ "chapters": [
+  {
+   "id": 0,
+   "time_base": "1/1000",
+   "start": 0,
+   "start_time": "0.000000",
+   "end": 85427,
+   "end_time": "85.427000",
+   "tags": {
+    "title": "INTO THE FIELD OF FIRE"
+   }
+  },
+  {
+   "id": 1,
+   "time_base": "1/1000",
+   "start": 85427,
+   "start_time": "85.427000",
+   "end": 692385,
+   "end_time": "692.385000",
+   "tags": {
+    "title": "Chapter One"
+   }
+  },
+  {
+   "id": 2,
+   "time_base": "1/1000",
+   "start": 692385,
+   "start_time": "692.385000",
+   "end": 1589880,
+   "end_time": "1589.880000",
+   "tags": {
+    "title": "Chapter Two"
+   }
+  },
+  {
+   "id": 3,
+   "time_base": "1/1000",
+   "start": 1589880,
+   "start_time": "1589.880000",
+   "end": 3780990,
+   "end_time": "3780.990000",
+   "tags": {
+    "title": "Chapter Three"
+   }
+  },
+  {
+   "id": 4,
+   "time_base": "1/1000",
+   "start": 3780990,
+   "start_time": "3780.990000",
+   "end": 5423721,
+   "end_time": "5423.721000",
+   "tags": {
+    "title": "Chapter Four"
+   }
+  },
+  {
+   "id": 5,
+   "time_base": "1/1000",
+   "start": 5423721,
+   "start_time": "5423.721000",
+   "end": 6675690,
+   "end_time": "6675.690000",
+   "tags": {
+    "title": "Chapter Five"
+   }
+  },
+  {
+   "id": 6,
+   "time_base": "1/1000",
+   "start": 6675690,
+   "start_time": "6675.690000",
+   "end": 7708616,
+   "end_time": "7708.616000",
+   "tags": {
+    "title": "Chapter Six"
+   }
+  },
+  {
+   "id": 7,
+   "time_base": "1/1000",
+   "start": 7708616,
+   "start_time": "7708.616000",
+   "end": 9324102,
+   "end_time": "9324.102000",
+   "tags": {
+    "title": "Book Two"
+   }
+  },
+  {
+   "id": 8,
+   "time_base": "1/1000",
+   "start": 9324102,
+   "start_time": "9324.102000",
+   "end": 10337200,
+   "end_time": "10337.200000",
+   "tags": {
+    "title": "Chapter Eight"
+   }
+  },
+  {
+   "id": 9,
+   "time_base": "1/1000",
+   "start": 10337200,
+   "start_time": "10337.200000",
+   "end": 11490046,
+   "end_time": "11490.046000",
+   "tags": {
+    "title": "Chapter Nine"
+   }
+  },
+  {
+   "id": 10,
+   "time_base": "1/1000",
+   "start": 11490046,
+   "start_time": "11490.046000",
+   "end": 13711311,
+   "end_time": "13711.311000",
+   "tags": {
+    "title": "Chapter Ten"
+   }
+  },
+  {
+   "id": 11,
+   "time_base": "1/1000",
+   "start": 13711311,
+   "start_time": "13711.311000",
+   "end": 15529934,
+   "end_time": "15529.934000",
+   "tags": {
+    "title": "Chapter Eleven"
+   }
+  },
+  {
+   "id": 12,
+   "time_base": "1/1000",
+   "start": 15529934,
+   "start_time": "15529.934000",
+   "end": 16896999,
+   "end_time": "16896.999000",
+   "tags": {
+    "title": "Chapter Twelve"
+   }
+  },
+  {
+   "id": 13,
+   "time_base": "1/1000",
+   "start": 16896999,
+   "start_time": "16896.999000",
+   "end": 17897452,
+   "end_time": "17897.452000",
+   "tags": {
+    "title": "Chapter Thirteen"
+   }
+  },
+  {
+   "id": 14,
+   "time_base": "1/1000",
+   "start": 17897452,
+   "start_time": "17897.452000",
+   "end": 18995072,
+   "end_time": "18995.072000",
+   "tags": {
+    "title": "Chapter Fourteen"
+   }
+  },
+  {
+   "id": 15,
+   "time_base": "1/1000",
+   "start": 18995072,
+   "start_time": "18995.072000",
+   "end": 20616466,
+   "end_time": "20616.466000",
+   "tags": {
+    "title": "Chapter Fifteen"
+   }
+  },
+  {
+   "id": 16,
+   "time_base": "1/1000",
+   "start": 20616466,
+   "start_time": "20616.466000",
+   "end": 22453798,
+   "end_time": "22453.798000",
+   "tags": {
+    "title": "Chapter Sixteen"
+   }
+  },
+  {
+   "id": 17,
+   "time_base": "1/1000",
+   "start": 22453798,
+   "start_time": "22453.798000",
+   "end": 24314017,
+   "end_time": "24314.017000",
+   "tags": {
+    "title": "Chapter Seventeen"
+   }
+  },
+  {
+   "id": 18,
+   "time_base": "1/1000",
+   "start": 24314017,
+   "start_time": "24314.017000",
+   "end": 25978888,
+   "end_time": "25978.888000",
+   "tags": {
+    "title": "Chapter Eighteen"
+   }
+  },
+  {
+   "id": 19,
+   "time_base": "1/1000",
+   "start": 25978888,
+   "start_time": "25978.888000",
+   "end": 27342169,
+   "end_time": "27342.169000",
+   "tags": {
+    "title": "Chapter Nineteen"
+   }
+  },
+  {
+   "id": 20,
+   "time_base": "1/1000",
+   "start": 27342169,
+   "start_time": "27342.169000",
+   "end": 28312342,
+   "end_time": "28312.342000",
+   "tags": {
+    "title": "Chapter Twenty"
+   }
+  },
+  {
+   "id": 21,
+   "time_base": "1/1000",
+   "start": 28312342,
+   "start_time": "28312.342000",
+   "end": 29395118,
+   "end_time": "29395.118000",
+   "tags": {
+    "title": "Chapter Twenty-one"
+   }
+  },
+  {
+   "id": 22,
+   "time_base": "1/1000",
+   "start": 29395118,
+   "start_time": "29395.118000",
+   "end": 31318161,
+   "end_time": "31318.161000",
+   "tags": {
+    "title": "Chapter Twenty-two"
+   }
+  },
+  {
+   "id": 23,
+   "time_base": "1/1000",
+   "start": 31318161,
+   "start_time": "31318.161000",
+   "end": 34165600,
+   "end_time": "34165.600000",
+   "tags": {
+    "title": "Chapter Twenty-three"
+   }
+  },
+  {
+   "id": 24,
+   "time_base": "1/1000",
+   "start": 34165600,
+   "start_time": "34165.600000",
+   "end": 34897489,
+   "end_time": "34897.489000",
+   "tags": {
+    "title": "Chapter Twenty-four"
+   }
+  }
+ ],
+ "format": {
+  "filename": "C:/tmp/narrator-golden/mutineer/reference.m4b",
+  "nb_streams": 3,
+  "nb_programs": 0,
+  "nb_stream_groups": 0,
+  "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+  "format_long_name": "QuickTime / MOV",
+  "start_time": "0.000000",
+  "duration": "34897.505261",
+  "size": "612332735",
+  "bit_rate": "140372",
+  "probe_score": 100,
+  "tags": {
+   "major_brand": "M4A ",
+   "minor_version": "512",
+   "compatible_brands": "M4A isomiso2",
+   "language": "en",
+   "year": "1991",
+   "artist": "David Weber",
+   "encoder": "Lavf61.7.100",
+   "title": "Mutineer's Moon (Dahak Book 1)"
+  }
+ },
+ "sha256": "5e55d7b1c234a6f9aadd2c7ddd2dd434774a8d1cb29665a9162bceaaac8775a7",
+ "bytes": 612332735
+}

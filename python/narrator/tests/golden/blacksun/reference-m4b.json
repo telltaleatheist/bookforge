@@ -1,0 +1,158 @@
+{
+ "streams": [
+  {
+   "index": 0,
+   "codec_name": "aac",
+   "codec_long_name": "AAC (Advanced Audio Coding)",
+   "profile": "LC",
+   "codec_type": "audio",
+   "codec_tag_string": "mp4a",
+   "codec_tag": "0x6134706d",
+   "sample_fmt": "fltp",
+   "sample_rate": "44100",
+   "channels": 1,
+   "channel_layout": "mono",
+   "bits_per_sample": 0,
+   "initial_padding": 0,
+   "id": "0x1",
+   "r_frame_rate": "0/0",
+   "avg_frame_rate": "0/0",
+   "time_base": "1/44100",
+   "start_pts": 0,
+   "start_time": "0.000000",
+   "duration_ts": 463606551,
+   "duration": "10512.620204",
+   "bit_rate": "163626",
+   "nb_frames": "452745",
+   "extradata_size": 5,
+   "disposition": {
+    "default": 1,
+    "dub": 0,
+    "original": 0,
+    "comment": 0,
+    "lyrics": 0,
+    "karaoke": 0,
+    "forced": 0,
+    "hearing_impaired": 0,
+    "visual_impaired": 0,
+    "clean_effects": 0,
+    "attached_pic": 0,
+    "timed_thumbnails": 0,
+    "non_diegetic": 0,
+    "captions": 0,
+    "descriptions": 0,
+    "metadata": 0,
+    "dependent": 0,
+    "still_image": 0,
+    "multilayer": 0
+   },
+   "tags": {
+    "language": "und",
+    "handler_name": "SoundHandler",
+    "vendor_id": "[0][0][0][0]"
+   }
+  },
+  {
+   "index": 1,
+   "codec_name": "bin_data",
+   "codec_long_name": "binary data",
+   "codec_type": "data",
+   "codec_tag_string": "text",
+   "codec_tag": "0x74786574",
+   "id": "0x2",
+   "r_frame_rate": "0/0",
+   "avg_frame_rate": "0/0",
+   "time_base": "1/1000",
+   "start_pts": 0,
+   "start_time": "0.000000",
+   "duration_ts": 10512599,
+   "duration": "10512.599000",
+   "nb_frames": "3",
+   "extradata_size": 43,
+   "disposition": {
+    "default": 0,
+    "dub": 0,
+    "original": 0,
+    "comment": 0,
+    "lyrics": 0,
+    "karaoke": 0,
+    "forced": 0,
+    "hearing_impaired": 0,
+    "visual_impaired": 0,
+    "clean_effects": 0,
+    "attached_pic": 0,
+    "timed_thumbnails": 0,
+    "non_diegetic": 0,
+    "captions": 0,
+    "descriptions": 0,
+    "metadata": 0,
+    "dependent": 0,
+    "still_image": 0,
+    "multilayer": 0
+   },
+   "tags": {
+    "language": "eng",
+    "handler_name": "SubtitleHandler"
+   }
+  }
+ ],
+ "chapters": [
+  {
+   "id": 0,
+   "time_base": "1/1000",
+   "start": 0,
+   "start_time": "0.000000",
+   "end": 1204751,
+   "end_time": "1204.751000",
+   "tags": {
+    "title": "Introduction"
+   }
+  },
+  {
+   "id": 1,
+   "time_base": "1/1000",
+   "start": 1204751,
+   "start_time": "1204.751000",
+   "end": 5890846,
+   "end_time": "5890.846000",
+   "tags": {
+    "title": "1. American Neo-Nazism"
+   }
+  },
+  {
+   "id": 2,
+   "time_base": "1/1000",
+   "start": 5890846,
+   "start_time": "5890.846000",
+   "end": 10512599,
+   "end_time": "10512.599000",
+   "tags": {
+    "title": "2. The British Nazi Underground"
+   }
+  }
+ ],
+ "format": {
+  "filename": "C:/tmp/narrator-golden/blacksun/reference.m4b",
+  "nb_streams": 2,
+  "nb_programs": 0,
+  "nb_stream_groups": 0,
+  "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+  "format_long_name": "QuickTime / MOV",
+  "start_time": "0.000000",
+  "duration": "10512.620204",
+  "size": "216834535",
+  "bit_rate": "165008",
+  "probe_score": 100,
+  "tags": {
+   "major_brand": "M4A ",
+   "minor_version": "512",
+   "compatible_brands": "M4A isomiso2",
+   "title": "Black Sun - Aryan Cults, Esoteric Nazism and the Politics of Identity",
+   "artist": "Nicholas Goodrick-Clarke",
+   "language": "en",
+   "encoder": "Lavf61.7.100"
+  }
+ },
+ "sha256": "9ae78a75c073eae4cb248e05794cc3673c5d05689f631715f28f05aab8360e1b",
+ "bytes": 216834535
+}
