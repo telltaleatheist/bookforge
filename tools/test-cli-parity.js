@@ -113,6 +113,12 @@ const WIRES = [
     calls: ['runFinalDenoise'],
     appDoor: 'electron/queue-steps/final-denoise.ts',
   },
+  {
+    adapter: 'cli/coverage-align.js',
+    module: 'coverage-align-job.js',
+    calls: ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython'],
+    appDoor: 'electron/queue-steps/align.ts',
+  },
 ];
 
 for (const wire of WIRES) {
@@ -141,7 +147,7 @@ test('no new adapter reimplements the pass it drives', () => {
   // this whole design exists to avoid. The three enhancement adapters are
   // argument plumbing and progress printing, and nothing else.
   for (const adapter of ['cli/final-denoise.js', 'cli/rvc-enhance.js', 'cli/session-target.js',
-                         'cli/processing-pass-step.js']) {
+                         'cli/processing-pass-step.js', 'cli/coverage-align.js']) {
     const source = read(adapter);
     for (const forbidden of ['spawn(', 'spawnSync(', 'execFile(', 'ffmpeg']) {
       assert.ok(!source.includes(forbidden),
@@ -187,6 +193,7 @@ test('every new command is registered, with a handler and an adapter that exists
   const py = read('cli/bookforge-tts.py');
   const rows = [
     ['assemble', 'cmd_assemble', null],
+    ['align', 'cmd_align', 'cli/coverage-align.js'],
     ['denoise', 'cmd_denoise', 'cli/final-denoise.js'],
     ['rvc-enhance', 'cmd_rvc_enhance', 'cli/rvc-enhance.js'],
     ['retake', 'cmd_retake', 'cli/correct-sentences.js'],
@@ -272,26 +279,68 @@ test('the CLI declares its own output encoding, so --help survives a cp1252 cons
     'stdout and stderr are declared UTF-8');
 });
 
-test('the ALIGN gap is recorded, and no second spawn builder was invented for it', () => {
-  // `narrator align` exists in python/narrator and `compat/app.py` already takes
-  // --coverage_report, but NOTHING in TypeScript builds either: there is no
-  // 'align' phase on buildNarratorSpawn and no --coverage_report anywhere under
-  // electron/. Until the app-side step lands, a CLI align door would be the
-  // FIRST implementation of a spawn the app does not yet have — a second one by
-  // the time it does. So it is a named gap, and this asserts it stayed one.
-  const spawn = read('electron/narrator-spawn.ts');
-  const phases = /export type NarratorPhase =([^;]*);/.exec(spawn);
-  assert.ok(phases, 'NarratorPhase is declared');
-  const appSideAlignExists = phases[1].includes("'align'");
-  const cliAlignExists = fs.existsSync(path.join(REPO, 'cli', 'narrator-align.js'));
-  if (!appSideAlignExists) {
-    assert.ok(!cliAlignExists,
-      'no cli/narrator-align.js while the app has no align phase — the CLI mirrors the '
-      + 'app\'s code path, it does not lead it');
-    const audit = read('docs/CLI_PARITY_AUDIT.md');
-    assert.ok(/align/i.test(audit) && /MISSING/.test(audit),
-      'and docs/CLI_PARITY_AUDIT.md records align as MISSING');
+test('--align drives the app\'s align job, and builds no spawn of its own', () => {
+  // The app-side step landed 2026-09-05 (electron/queue-steps/align.ts →
+  // coverage-align-job.runCoverageAlign), so this door exists. What it must NOT
+  // do is rebuild `narrator align`'s command line: the job owns that, through
+  // buildNarratorSpawn and the whisperx-env interpreter it resolves. A second
+  // builder in cli/ is exactly the drift this file exists to catch.
+  const source = read('cli/coverage-align.js');
+  assert.ok(source.includes("require('../dist/electron/coverage-align-job.js')"),
+    'it loads the app\'s compiled job');
+  assert.ok(source.includes('runCoverageAlign('), 'and calls it');
+  // Call-shaped, not name-shaped: the file's own header NAMES buildNarratorSpawn
+  // to say it does not use it, and a test that could not tell prose from code
+  // would have forced that explanation out of the file.
+  for (const forbidden of ['buildNarratorSpawn(', 'narrator.align', 'spawn(', 'whisperx-env/',
+                           "require('../dist/electron/narrator-spawn.js')"]) {
+    assert.ok(!source.includes(forbidden),
+      `cli/coverage-align.js does not reach for ${forbidden} — the job owns the spawn`);
   }
+  // The report path is the JOB's answer, so an align from here satisfies an
+  // assembly from anywhere. Both assembly spawns read coverageReportPath().
+  assert.ok(source.includes('coverageReportPath('), 'it names the report through the job');
+  assert.ok(read('electron/reassembly-bridge.ts').includes('coverageReportPath(config.processDir)'),
+    'and assembly passes --coverage_report from the same function');
+
+  const compiled = require(path.join(DIST, 'coverage-align-job.js'));
+  for (const symbol of ['runCoverageAlign', 'stopCoverageAlign', 'coverageAlignPython',
+                        'coverageReportPath']) {
+    assert.strictEqual(typeof compiled[symbol], 'function',
+      `dist/electron/coverage-align-job.js exports ${symbol}`);
+  }
+});
+
+test('--align refuses to guess the language, as the app\'s step does', () => {
+  // The aligner loads a per-language wav2vec2 checkpoint. One pointed at the
+  // wrong language scores every word badly, which the coverage guard reads as
+  // "the audio did not say the text" — refusing a book that was read correctly.
+  // `--language` carries a render default, so align gets its own flag rather
+  // than inheriting a guess.
+  const py = read('cli/bookforge-tts.py');
+  assert.ok(py.includes('"--align-language", dest="align_language"'),
+    'align has its own language flag');
+  assert.ok(/_require\(bool\(args\.align_language\),/.test(py), 'and it is required');
+  assert.ok(!/cmd \+= \["--language", args\.language\][\s\S]{0,200}COVERAGE_ALIGN/.test(py),
+    'the render default never reaches the aligner');
+  assert.ok(read('cli/coverage-align.js').includes('--language <code> is required'),
+    'and the adapter refuses it too, on its own');
+});
+
+test('--assemble states the denoise rather than inferring it from an engine flag', () => {
+  // The denoise is its own queue row, and whether it ran is a fact about the
+  // chain that produced the sentences being assembled. --audiobook infers it
+  // from --engine because it is the thing rendering them; --assemble reads no
+  // engine at all (the assembly resolves it from session-state.json), so
+  // inferring would either re-derive an hour of roformer or silently assemble
+  // the raw set.
+  const py = read('cli/bookforge-tts.py');
+  assert.ok(/elif assemble_only:[\s\S]{0,600}--assemble needs --final-denoise or --no-final-denoise/
+    .test(py), '--assemble refuses to default the denoise');
+  assert.ok(/if not assemble_only:\s*\n\s*_require\(args\.engine == "orpheus"/.test(py),
+    'and the engine check is the render path\'s alone');
+  assert.ok(read('electron/reassembly-bridge.ts').includes('narratorEngineForSession'),
+    'because the assembly resolves the engine from the session');
 });
 
 (async () => {

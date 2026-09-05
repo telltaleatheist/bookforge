@@ -137,8 +137,8 @@ It is the SAME adapter as `--audiobook`, run with `--assemble-only`. There is no
 second assembly implementation, deliberately.
 
 ```
-# Assemble what is already rendered:
-python cli/bookforge-tts.py --assemble --project "<dir>"
+# Assemble what is already rendered (the denoise answer is required):
+python cli/bookforge-tts.py --assemble --project "<dir>" --final-denoise
 
 # With the voice's de-ring filter and a 0.7s inter-sentence gap, no denoise:
 python cli/bookforge-tts.py --assemble --project "<dir>" \
@@ -152,9 +152,50 @@ here: nothing is generated and nothing is narrated, so a value that changes noth
 about the run is an error rather than a silent no-op.
 
 **Higgs.** narrator's assembly gate is `enforced` for `higgs-v3` and wants the
-`--coverage_report` that `narrator align` writes. Nothing in BookForge builds that
-flag yet (no TypeScript spawns `narrator align`), so `--assemble` is Orpheus-only for
-the same reason the app is. See `docs/CLI_PARITY_AUDIT.md` §3.
+`--coverage_report` that `narrator align` writes. `reassembly-bridge` passes it
+itself for an enforced engine, reading the path from the same `coverageReportPath()`
+the align step writes to — so the recipe is `--align` first, then `--assemble`, and
+no extra flag. `--engine` is **not read** on this door at all: the assembly resolves
+the engine from the session's own `session-state.json` and refuses one whose two
+records disagree.
+
+**`--final-denoise` or `--no-final-denoise` is REQUIRED here.** Whether the denoise
+ran is a fact about the chain that produced these sentences — its own queue row in
+the app — and this door reads no engine flag to infer it from. Guessing would either
+re-derive an hour of roformer nobody asked for or silently assemble the raw set.
+
+## Coverage alignment — `--align`
+
+The queue row between render and assembly. It force-aligns every rendered chunk
+and writes `<processDir>/coverage.json`: text with no aligned audio is a
+truncation, audio with no text is an insertion. `assemble/coverage_gate.py`
+**refuses** a book from an engine whose policy is enforced (`higgs-v3`) when no
+report is there — Higgs v3 has no duration guard worth the name.
+
+It drives `coverage-align-job.runCoverageAlign`, the one function
+`electron/queue-steps/align.ts` calls. **Nothing about the spawn lives in the
+CLI**: `narrator align` is invoked by that job through `buildNarratorSpawn` and
+the whisperx-env interpreter it resolves, and the report lands where
+`coverageReportPath()` says — the same place both assembly spawns look for it. So
+an alignment run from here satisfies an assembly run from anywhere.
+
+```
+python cli/bookforge-tts.py --align --project "<dir>" --align-language en
+python cli/bookforge-tts.py --align --process-dir "<session>/<hash>" --align-language de
+```
+
+**`--align-language`, not `--language`, and it is required.** The aligner loads a
+per-language wav2vec2 checkpoint; one pointed at the wrong language scores every
+word badly, which the guard reads as *"the audio did not say the text"* and uses
+to refuse a book that was read correctly. `--language` carries a render default
+(`en`), so align gets its own flag rather than laundering that default into a
+measurement. The app's own step refuses an absent language for the same reason.
+
+CPU only, by design: `align/aligner.py` refuses CUDA by name while
+`%APPDATA%\BookForge\external-gpu-job.lock` exists, and it does not want it —
+RTF 0.082, a book in minutes. The whisperx add-on must be installed
+(Settings → Add-ons); an absent one is refused here **before** the job starts,
+which is the same plan-time check the narration dialog makes.
 
 ## The two enhancement passes — `--denoise`, `--rvc-enhance`
 
@@ -784,7 +825,7 @@ Docker files for the NAS live in `deploy/bookshelf-server/`.
 
 `COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`,
 `audiobook`, `assemble`, `denoise`, `rvc-enhance`, `retake`, `pass`, `prep`,
-`narration-text`, `ai-cleanup`, `ai-simplify`, `generate-sentences`,
+`align`, `narration-text`, `ai-cleanup`, `ai-simplify`, `generate-sentences`,
 `generate-epub`, `rvc`).
 
 **Which app actions have a command, which do not, and why:**

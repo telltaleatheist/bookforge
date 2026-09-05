@@ -14,6 +14,10 @@ under `cli/electron-stub.js` — never a re-implementation. A CLI that ran its o
 version of a job could not catch the app's bugs, which is the only reason the CLI
 exists.
 
+**Written against** `main` at `3030ce38` (this branch merged it mid-pass — the
+Align step landed while the audit was open, which is why §3 records both the gap
+and its closure).
+
 **Scope.** Every user-invokable action in the main process: 382 `ipcMain.handle`
 registrations across `electron/main.ts` and its five delegated registrars, plus
 the 14 queue step modules in `electron/queue-steps/` and the job types in
@@ -77,37 +81,43 @@ refactors, and Owen's brief for this pass was explicitly not to refactor.
 | 2.2 | Assemble from a CACHED session ("Assemble" on the Versions row) | same `startReassembly` over `getBfpCachedSession`'s session | **`--assemble` (new)** | **Yes** | **PARITY** *(was MISSING from the Python front end — the adapter had `--assemble-only`, nothing surfaced it)* |
 | 2.3 | De-ring at the final encode | `ReassemblyConfig.applyDeRing` | **`--de-ring` (new)** | **Yes** | **PARITY** *(was MISSING)* |
 | 2.4 | Assembly-time sentence gap | `ReassemblyConfig.sentenceGap` | **`--assembly-gap` (new)** | **Yes** | **PARITY** *(was MISSING; `--sentence-gap` is the RENDER-time gap, a different pass)* |
+| 2.4b | Assemble a session from ANY engine | `reassembly-bridge.ts:456 narratorEngineForSession` reads it from `session-state.json` | `--assemble` reads no `--engine` | **Yes** | **PARITY** — the engine is a render choice; the assembly resolves it from the session and refuses one whose two records disagree |
 | 2.5 | Stop an assembly | `reassembly-bridge.ts:2633 stopReassembly` | NONE | — | **MISSING** — the adapter's SIGINT tears down the render, not the assembly. Mechanical, but it needs the adapter to hold the running step id; noted rather than half-done. |
 | 2.6 | Save session metadata / cover | `reassembly-bridge.ts:869 saveSessionMetadata` | NONE | — | **MISSING** (headless-capable) |
-| 2.7 | Higgs assembly with the coverage gate satisfied | `compat/app.py --assemble_only --coverage_report <path>` | NONE | — | **MISSING** — see §3. |
+| 2.7 | Higgs assembly with the coverage gate satisfied | `reassembly-bridge.ts:1585` passes `--coverage_report` for an enforced engine | `--assemble` (automatic), after `--align` | **Yes** | **PARITY** — see §3 |
 
-## 3. Align (post-render forced alignment) — the named gap
+## 3. Align (post-render forced alignment)
 
-| # | Action | App entry | CLI | Verdict |
-|---|---|---|---|---|
-| 3.1 | Align a rendered session, write `sentences.vtt` + `coverage.json` | **none in TypeScript** | NONE | **MISSING** |
+| # | Action | App entry | CLI | Same function? | Verdict |
+|---|---|---|---|---|---|
+| 3.1 | Align a rendered session, write `coverage.json` (queue row `align`) | `electron/queue-steps/align.ts:run` → `coverage-align-job.ts:141 runCoverageAlign` | **`--align` (new)** | **Yes** | **PARITY** |
+| 3.2 | Stop an alignment | `coverage-align-job.ts:335 stopCoverageAlign` | `--align` SIGINT | **Yes** | **PARITY** |
+| 3.3 | Refuse a guarded run whose aligner is missing, before queueing | `coverage-align-job.ts:130 coverageAlignPython` | `--align` (checked before the job starts) | **Yes** | **PARITY** |
+| 3.4 | Pass the report to assembly for an ENFORCED engine | `reassembly-bridge.ts:1585` — `coverageEnforcedFor(asmEngine)` → `--coverage_report coverageReportPath(processDir)` | automatic in `--assemble` / `--audiobook` | **Yes** | **PARITY** |
 
-`narrator align` exists and is finished on the Python side (`python/narrator/align/`,
-`narrator/cli.py:535`, `compat/app.py:85` already accepts `--coverage_report`).
-**BookForge does not spawn it.** Measured on this branch:
+**This was MISSING when the audit was written, and it was recorded as a gap
+rather than closed.** `narrator align` was finished on the Python side but
+nothing in TypeScript spawned it: `NarratorPhase` had no `'align'`, and
+`--coverage_report` was built nowhere under `electron/`. A CLI door then would
+have been the FIRST implementation of that spawn, and a second one the moment the
+app-side step landed. It landed hours later on `main` (`cd4c0d5c` *"the coverage
+guard gets the step that satisfies it"*), and this branch merged it — so `--align`
+now drives that step's own function and **builds no command line of its own**:
+`runCoverageAlign` owns the `buildNarratorSpawn` call and the whisperx-env
+interpreter, and `tools/test-cli-parity.js` asserts the adapter never reaches for
+either.
 
-* `electron/narrator-spawn.ts:128` — `NarratorPhase = 'serve' | 'prep' | 'worker' | 'assembly' | 'resume' | 'list'`. There is no `'align'`.
-* `grep -rn coverage_report electron/ shared/` → **zero hits**. The flag is built nowhere in TypeScript.
-* `python/narrator/align/README.md` says so itself: *"OWED, and routed separately by the orchestrator: the app-side step that RUNS the alignment between render and assembly… That is a cut-over item in the bridges."*
+**One flag is deliberately not shared: `--align-language`.** `--language` carries
+a render default (`en`), and the aligner loads a per-language wav2vec2
+checkpoint; one pointed at the wrong language scores every word badly, which the
+guard reads as *"the audio did not say the text"* and uses to refuse a book that
+was read correctly. `queue-steps/align.ts` refuses an absent language by name for
+exactly this reason, so the CLI does not launder a render default into it.
 
-So the app-side spawn builder does not exist yet, on `main` or on this branch. A
-CLI `--align` today would be the **first** implementation of that spawn, and a
-**second** one the moment the Align branch lands — exactly the drift this
-document exists to prevent. It is therefore left as a named gap, and
-`tools/test-cli-parity.js` asserts that it stays one: the moment
-`NarratorPhase` gains `'align'`, that test stops enforcing the absence and the
-CLI door should be added against the app's own builder.
-
-**Consequence for 2.7:** for Higgs v3 the assembly coverage gate is `enforced`
-(`assemble/engine_profiles.py`), so a Higgs book assembled without a
-`--coverage_report` hits `CoverageRefusal`. The CLI's `--assemble` is Orpheus-only
-for the same reason the app is, and says so by name rather than failing inside
-Python.
+**3.4 is why `--assemble` needs no Higgs flag of its own.** The reassembly bridge
+now decides from the engine's policy whether to pass `--coverage_report`, and
+reads the path from the same `coverageReportPath()` the align step writes to. An
+`--align` run from the CLI therefore satisfies an assembly run from anywhere.
 
 ## 4. The two enhancement passes (between render and assembly)
 
@@ -296,6 +306,7 @@ change to how the picker holds its document.
 | 2.3 | `--de-ring` | same | `ReassemblyConfig.applyDeRing` |
 | 2.4 | `--assembly-gap` | same | `ReassemblyConfig.sentenceGap` |
 | 1.x | `--skip-text-cleanup` | same | the render door's `textCleanup: 'skipped'` |
+| 3.1 | `--align` | `cli/coverage-align.js` (new) | `coverage-align-job.runCoverageAlign` / `stopCoverageAlign` / `coverageAlignPython` |
 | 4.1 | `--denoise` | `cli/final-denoise.js` (new) | `denoise-job.runFinalDenoise` / `stopFinalDenoise` |
 | 4.3 | `--rvc-enhance` | `cli/rvc-enhance.js` (new) | `rvc-job.runRvcEnhancement` / `stopRvcEnhancement` |
 | 5.1-5.5 | `--retake` | `cli/correct-sentences.js` (new) | the five `correct-sentences-bridge` exports |
@@ -313,15 +324,16 @@ symbol must actually be exported by the compiled module — so a rename in
 
 ## What is still owed, in the order it is worth doing
 
-1. **Align (§3)** — blocked on the app-side step. When `NarratorPhase` gains
-   `'align'`, add `--align` against that builder and wire `--coverage_report`
-   into `--assemble` for Higgs.
-2. **Queue control (10.9)** — one `--queue` command over `queue-engine` would
+1. **Queue control (10.9)** — one `--queue` command over `queue-engine` would
    reach every row in this table through the door the app actually uses, and
    would close 1.1/1.2's divergence as a side effect.
-3. **`generate-sentences` for a variant (6.1)** — small, but it is an app change
+2. **`generate-sentences` for a variant (6.1)** — small, but it is an app change
    (nullable window), not a CLI one.
-4. **The `library-actions` rows (9.8-9.14)** — mechanical, and `cli/library.js`
+3. **The `library-actions` rows (9.8-9.14)** — mechanical, and `cli/library.js`
    is where they go.
-5. **Analysis and enhance (10.1-10.4)** — mechanical; both bridges already take a
+4. **Analysis and enhance (10.1-10.4)** — mechanical; both bridges already take a
    null window.
+5. **A live Higgs v3 book through `--align` → `--assemble`.** Every coverage
+   threshold was calibrated on Orpheus output (`python/narrator/align/README.md`
+   says so and calls the Higgs sweep OWED). The wire is now testable end to end
+   from a shell, which is what that sweep needs.

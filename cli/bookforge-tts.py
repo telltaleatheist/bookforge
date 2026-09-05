@@ -54,6 +54,7 @@ FINAL_DENOISE = REPO_ROOT / "cli" / "final-denoise.js"          # the final-deno
 RVC_ENHANCE = REPO_ROOT / "cli" / "rvc-enhance.js"              # the rvc-enhancement STEP (rvc-job)
 CORRECT_SENTENCES = REPO_ROOT / "cli" / "correct-sentences.js"  # retake / commit / revert one sentence
 PASS_ADAPTER = REPO_ROOT / "cli" / "pass.js"                    # simplify / translate / footnote-refs
+COVERAGE_ALIGN = REPO_ROOT / "cli" / "coverage-align.js"        # the align STEP (coverage-align-job)
 
 # Sibling adapters with argument grammars of their own — named in the epilog so
 # `--help` lists every action this CLI can reach, not only the ones argparse owns.
@@ -304,8 +305,14 @@ def _audiobook_spawn(args, assemble_only):
     `reassembly-bridge.startReassembly`. That is what the app's own "Assemble"
     does with a cached session, so a defect in either shows up from either door.
     """
-    _require(args.engine == "orpheus",
-             f"--engine '{args.engine}' not wired yet (only 'orpheus')")
+    # THE ENGINE IS A RENDER CHOICE, AND ONLY A RENDER CHOICE. An assembly
+    # resolves it from the session it is assembling
+    # (`reassembly-bridge.narratorEngineForSession` reads session-state.json and
+    # refuses a session whose two records disagree), so --assemble reads nothing
+    # here rather than pretending to decide it.
+    if not assemble_only:
+        _require(args.engine == "orpheus",
+                 f"--engine '{args.engine}' not wired yet (only 'orpheus')")
     _require(bool(args.project), "--project <projectDir> is required")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(ORPHEUS_AUDIOBOOK.is_file(), f"missing engine adapter {ORPHEUS_AUDIOBOOK}")
@@ -371,6 +378,16 @@ def _audiobook_spawn(args, assemble_only):
         final_denoise = False
     elif args.final_denoise:
         final_denoise = True
+    elif assemble_only:
+        # NO DEFAULT ON THIS DOOR. Whether the denoise ran is a fact about the
+        # CHAIN that produced the sentences being assembled — its own queue row in
+        # the app since 2026-08-29 — not something to infer from an engine flag
+        # that an assembly does not read. Inferring it would either re-derive an
+        # hour of roformer nobody asked for or silently assemble the raw set.
+        _require(False,
+                 "--assemble needs --final-denoise or --no-final-denoise: whether the denoise "
+                 "ran is a fact about the chain that produced these sentences, and this door "
+                 "does not read the engine flag that --audiobook infers it from")
     else:
         final_denoise = (args.engine == "orpheus")
     cmd += ["--final-denoise"] if final_denoise else ["--no-final-denoise"]
@@ -912,6 +929,49 @@ def cmd_denoise(args):
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
 
 
+def cmd_align(args):
+    """Run the ALIGN step over a rendered session — the coverage guard's own row.
+
+    Drives `coverage-align-job.runCoverageAlign`, the one function
+    `electron/queue-steps/align.ts` calls. It force-aligns each rendered chunk and
+    writes `<processDir>/coverage.json`, which is where BOTH assembly spawns look
+    for it — so an alignment run from here satisfies an assembly run from
+    anywhere. For an engine whose coverage policy is ENFORCED (higgs-v3),
+    assembly refuses the book outright without it.
+
+    The spawn lives in the compiled job (buildNarratorSpawn + the whisperx-env
+    interpreter); nothing about `narrator align`'s command line is rebuilt here.
+
+    `--align-language` is separate from `--language`, and required, for the
+    reason the app's step states: the aligner loads a per-language wav2vec2
+    checkpoint, and one pointed at the wrong language scores every word badly —
+    which the guard reads as "the audio did not say the text" and uses to refuse
+    a book that was read correctly. `--language` carries a render default; this
+    one must not.
+    """
+    _require(bool(args.align_language),
+             "--align-language <code> is required for --align: the aligner loads a different "
+             "acoustic model for each language, and a guess would refuse a book that was read "
+             "correctly. (--language carries a render default; this one deliberately does not.)")
+    _require(bool(shutil.which("node")), "node not found on PATH")
+    _require(COVERAGE_ALIGN.is_file(), f"missing adapter {COVERAGE_ALIGN}")
+    _require((REPO_ROOT / "dist" / "electron" / "coverage-align-job.js").is_file(),
+             "BookForge is not built — run `npx tsc -p tsconfig.electron.json` first "
+             "(dist/electron/coverage-align-job.js missing)")
+
+    cmd = ["node", "--require", str(NODE_STUB), str(COVERAGE_ALIGN),
+           "--language", args.align_language]
+    cmd += _session_target_argv(args, "--align")
+
+    if args.dry_run:
+        print("[bookforge-tts] DRY RUN — coverage align (forced alignment per chunk), CPU only")
+        print("  spawn:", " ".join(cmd))
+        return 0
+
+    print("[bookforge-tts] coverage align ->", " ".join(cmd), flush=True)
+    return subprocess.call(cmd, cwd=str(REPO_ROOT), env=os.environ.copy())
+
+
 def cmd_rvc_enhance(args):
     """Run the RVC-ENHANCEMENT step over a session's PER-SENTENCE cache.
 
@@ -1115,6 +1175,8 @@ COMMANDS = {
     # The assembly on its own — the app's "Assemble" over a cached session. Same
     # adapter as --audiobook, with --assemble-only, so there is one code path.
     "assemble": cmd_assemble,
+    # The coverage guard's own row, between render and assembly.
+    "align": cmd_align,
     # The two enhancement passes the app runs as their own queue rows between
     # generation and assembly.
     "denoise": cmd_denoise,
@@ -1377,6 +1439,11 @@ def build_parser():
     p.add_argument("--process-dir", dest="process_dir",
                    help="--denoise/--rvc-enhance: the session's process dir, named directly "
                         "instead of resolved from --project's cached session")
+    p.add_argument("--align-language", dest="align_language",
+                   help="--align: the language the wav2vec2 checkpoint is loaded for. REQUIRED "
+                        "and deliberately separate from --language, which carries a render "
+                        "default: an aligner pointed at the wrong language scores every word "
+                        "badly, and the coverage guard reads that as a book that was not read")
     p.add_argument("--sentences-dir", dest="sentences_dir",
                    help="--denoise/--rvc-enhance: the set this pass reads, when an EARLIER pass "
                         "produced it (the 'convert first, then denoise' order and its mirror). "
