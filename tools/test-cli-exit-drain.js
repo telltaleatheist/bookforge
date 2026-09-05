@@ -204,7 +204,13 @@ function scanForBareExits() {
     const full = path.join(REPO, relPath);
     const lines = fs.readFileSync(full, 'utf-8').split('\n');
     lines.forEach((line, i) => {
-      if (!EXIT_RE.test(line)) return;
+      // A `process.exit(` NAMED IN A COMMENT is not a call. The scan counted one,
+      // so a comment explaining why an exit was REMOVED failed the check that it was
+      // removed — which teaches people to delete the explanation. The line-comment
+      // strip omits `$` on purpose: this repo is core.autocrlf=true and a split on
+      // '\n' leaves the '\r' behind.
+      const code = line.replace(/\/\/.*/, '');
+      if (!EXIT_RE.test(code)) return;
       if (!isLegitimateAbortExit(lines, i)) {
         offenders.push(`${relPath}:${i + 1}  ${line.trim()}`);
       }

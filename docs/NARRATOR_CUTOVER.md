@@ -769,6 +769,51 @@ change. But it changes what the sidecar IS for every book, and the embed-only
 doctrine (the embedded track is the truth) was a deliberate decision — so it is
 Owen's call, not a cleanup.
 
+## The review round of 2026-09-05 (no GPU)
+
+The whole-branch review came back MERGE AFTER FIXES: one blocker, nine majors and
+23 minors. All ten of the first two classes are fixed, each as its own commit with
+a keeper where a keeper can pin it, and each keeper mutation-checked — the fix is
+reverted and the row is required to go red before it is trusted.
+
+**Everything in that round is KEEPER-LEVEL PROOF ONLY.** The card belonged to the
+`higgs-v3-finetune` training session for the whole window and was not touched. So:
+
+| fix | pinned by | still owed live |
+|---|---|---|
+| BLOCKER — `processDir` left on the guest after normalization | `test-assembly-after-wsl-normalize.js` (post-normalization fixture) | one in-app Windows/WSL render whose assembly reads a Windows `--session_dir` |
+| darwin GPU-ownership blind to narrator | `test-gpu-ownership.js` (both sides of the fixture) | a real Mac render refusing to start onto a busy GPU |
+| `pushVoiceArgs` absent-voice refusal | `test-higgs-engine.js` | — (a refusal; nothing to render) |
+| `extension/` typecheck red | `test-extension-typecheck.js` | — |
+| the guest sweep now really excludes `narrator.serve` | `test-wsl-sweep-serve-exclusion.js` (shipped fn, fake guest table) | a batch job ending while a Listen session plays, with the server surviving |
+| worker count applied to the outgoing engine | `test-stream-engine-availability.js` (order, in dist) | — |
+| availability gate skipped a missing row; `isEngineName` refused Higgs by name | same file, functional rows | **Higgs on Listen has never been started** — deferred to the certified production checkpoint |
+| serve-engine probe defaulted to Orpheus | same file | — |
+| host-separator check could not fail | `test-serve-spawn-env.js` | — |
+| three `assert.ok(true)` rows | `test-narrator-refusal-surfacing.js` | — |
+
+Two live items are owed from the round BEFORE this one and are not discharged
+here: a clean `--real` exit code from `smoke-serve-spawn.js` (its watchdog
+overwrote the one the 08:53 window produced) and the macOS retake door.
+
+Of the 23 minors, 19 are fixed. Four are left, with reasons:
+
+- **17 — ~250 lines of dead e2a/XTTS code in `electron/tts-bridge.ts`.** Real, and
+  it is Phase 5's file. The file survives for one live call (`initializeLogger`);
+  gutting it during a review round mixes a deletion nobody has reviewed into a set
+  of fixes that have been.
+- **30 — two meta-checks assert against an extractor's own source.** They pin the
+  harness rather than the product, which is what they say they do; both are named
+  as such in their own rows. Deleting them would remove the only guard on the
+  extractor forcing `process.platform`, which is not checkable any other way from
+  one host.
+- **12's second half — an async `narratorReady`.** The 60 s main-thread freeze is
+  cut to 15 s and the `indexOf` hazard is closed, but making the probe async is a
+  change to an IPC contract and belongs with the bookshelf-thread work, not here.
+- **23's third spelling.** The check now catches a kill pattern written as a
+  quoted string or a regex literal. A pattern assembled at runtime from fragments
+  would still pass; no such sweep exists, and a source scan cannot see one.
+
 ## What is left after Phase 3
 
 **Phase 4 — bilingual assembly.** `parallel-tts-bridge.ts` still appends
