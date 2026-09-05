@@ -344,42 +344,25 @@ def route_prep(args) -> int:
     return 0
 
 
-def _refuse_higgs_render_until_the_worker_carries_a_voice(engine_id, args) -> None:
-    """A Higgs RENDER is refused by name; a Higgs PREP works today.
+def _check_engine_and_voice_agree(engine_id, args) -> None:
+    """A Higgs voice belongs to a Higgs engine, and only to one.
 
-    WHAT IS DONE, in this column: `--tts_engine higgs-v3` and `--higgs_voice`
-    are accepted, validated and recorded - `text/prep.py` writes `tts_engine`
-    exactly as given and the voice under its own `higgs_voice` key, and the
-    paragraph packer chunks the book against the Higgs `Budget`. So a Higgs
-    session can be PREPARED and read back correctly right now.
+    RESOLVED 2026-09-04: this used to REFUSE `--tts_engine higgs-v3` on the
+    render route entirely, because `render/worker.py`'s `WorkerRequest` had no
+    `higgs_voice` field and its config was built for Orpheus unconditionally.
+    Both are fixed - the request carries the field and `build_engine_for(id)`
+    asks `engine/registry.py` for the class - so the render route now accepts
+    higgs-v3 and the only check left is the one below.
 
-    WHAT IS OWED, and by whom: `render/worker.py` is another builder's column
-    (CONTRACTS.md's ownership table) and its `WorkerRequest` has no
-    `higgs_voice` field, while `_build_engine_config` builds an Orpheus
-    `EngineConfig` unconditionally rather than going through
-    `engine/registry.py`. Two changes there - carry the field, and pick the
-    config factory by engine id - are what turn this refusal off. Rather than
-    reach into that column, or quietly render a Higgs job with an Orpheus voice
-    token, the door says so.
-
-    A refusal, not a silent Orpheus render: `--fine_tuned` is a TOKEN and
-    `--higgs_voice` is a CATALOG ID, so handing one where the other is expected
-    resolves to the wrong voice for a whole book.
+    `--fine_tuned` is an Orpheus TOKEN and `--higgs_voice` is a CATALOG ID, so
+    handing one where the other is expected resolves to the wrong voice for a
+    whole book. Refused by name rather than ignored.
     """
-    if engine_id != 'higgs-v3':
-        if args.higgs_voice:
-            raise FlagRefused(
-                f'--higgs_voice names a Higgs voice but --tts_engine is '
-                f'{args.tts_engine or "(unset)"}. An Orpheus voice arrives in '
-                f'--fine_tuned; the two are not interchangeable.')
-        return
-    raise FlagRefused(
-        "--tts_engine higgs-v3 on the render route: narrator's worker cannot "
-        "carry a Higgs voice yet. WorkerRequest has no `higgs_voice` field and "
-        "the engine config is built for Orpheus unconditionally, both in "
-        "render/worker.py, which is not this column. PREP accepts higgs-v3 "
-        "today (--prep_only with --higgs_voice, chunking=paragraph); render "
-        "through ebook2audiobook or Orpheus until the worker is wired.")
+    if engine_id != 'higgs-v3' and args.higgs_voice:
+        raise FlagRefused(
+            f'--higgs_voice names a Higgs voice but --tts_engine is '
+            f'{args.tts_engine or "(unset)"}. An Orpheus voice arrives in '
+            f'--fine_tuned; the two are not interchangeable.')
 
 
 def route_worker(args, argv: list[str], engine_factory=None) -> int:
@@ -389,7 +372,7 @@ def route_worker(args, argv: list[str], engine_factory=None) -> int:
     explicit index set, which is exactly how e2a's `worker.py` did it.
     """
     from ..render import retake
-    from ..render.worker import WorkerRequest, run_worker, build_engine
+    from ..render.worker import WorkerRequest, run_worker
 
     if not args.session:
         print('Error: --worker_mode requires --session', flush=True)
@@ -437,9 +420,14 @@ def route_worker(args, argv: list[str], engine_factory=None) -> int:
         orpheus_model_dir=args.orpheus_model_dir,
         orpheus_adapter_dir=args.orpheus_adapter_dir,
         orpheus_base_dir=args.orpheus_base_dir,
+        # A CATALOG ID, not a prompt token - see WorkerRequest.higgs_voice. The
+        # engine/voice mismatch was already refused by name at the door.
+        higgs_voice=args.higgs_voice,
     )
 
-    factory = engine_factory if engine_factory is not None else build_engine
+    # None means "the loop picks, from the session's engine id" - see
+    # render/worker.build_engine_for. A test passes its own one-arg fake.
+    factory = engine_factory
     if sentence_indices is not None:
         result = retake.run_retake(request, engine_factory=factory)
     else:
@@ -517,9 +505,10 @@ def dispatch(args, argv: list[str], engine_factory=None) -> int:
     refused every real assembly. `--list_sessions` and `--resume_session` read
     the filesystem and never load a model, so they are not gated either.
 
-    The refusal that matters is not lost: `render/worker.py` refuses a SESSION
-    whose `tts_engine` is not `orpheus`, which is the value that decides what is
-    actually rendered.
+    The refusal that matters is not lost: `render/worker.py` resolves the
+    SESSION's engine through `engine/registry.py` and refuses an id the registry
+    does not know, naming the ones it does - and that is the value that decides
+    what is actually rendered.
     """
     if args.list_sessions:
         return route_list_sessions(args)
@@ -529,7 +518,7 @@ def dispatch(args, argv: list[str], engine_factory=None) -> int:
         return route_prep(args)
     if args.worker_mode or args.sentence_indices is not None:
         engine_id = flagdef.resolve_engine(args.tts_engine)
-        _refuse_higgs_render_until_the_worker_carries_a_voice(engine_id, args)
+        _check_engine_and_voice_agree(engine_id, args)
         return route_worker(args, argv, engine_factory=engine_factory)
     if args.assemble_only:
         return route_assemble(args)

@@ -433,19 +433,48 @@ class HiggsEngineTest(_PrepDoorTest):
             else:
                 os.environ['NARRATOR_ENGINE'] = saved
 
-    def test_a_higgs_RENDER_is_refused_with_what_is_owed(self):
-        """The worker cannot carry a Higgs voice yet, and the refusal names the
-        two changes in `render/worker.py` that turn it off."""
+    def test_a_higgs_RENDER_is_no_longer_refused_at_the_door(self):
+        """UPDATED once `render/worker.py` became engine-agnostic.
+
+        This used to assert the door refusing `--tts_engine higgs-v3` on the
+        render route, naming the two changes owed in `render/worker.py`
+        (`WorkerRequest.higgs_voice`, and a config built through
+        `engine/registry.py`). Both landed, so the refusal is gone and the route
+        must now get PAST the door.
+
+        It still fails - there is no session at this id to render - and that is
+        the point: the failure is about the SESSION, not about the engine.
+        """
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            code = compat_app.main(['--headless', '--worker_mode',
+                                    '--session', self.session_id,
+                                    '--session_dir', os.path.join(self.root, 'nope'),
+                                    '--sentence_start', '0',
+                                    '--sentence_end', '3',
+                                    '--tts_engine', 'higgs-v3',
+                                    '--higgs_voice', 'ds_ad4l'])
+        out = buf.getvalue()
+        self.assertEqual(code, 1)
+        # Not a door refusal any more...
+        self.assertNotIn('render/worker.py', out)
+        self.assertNotIn('PREP accepts higgs-v3 today', out)
+        # ...but the worker's own one-line result, about the missing session.
+        self.assertIn('Session directory not found', out)
+
+    def test_the_engine_and_voice_must_still_agree(self):
+        """The one door check that survives: `--fine_tuned` is an Orpheus TOKEN
+        and `--higgs_voice` is a CATALOG ID, so one where the other is expected
+        renders a whole book in the wrong voice."""
         code, out = self._door_refusal(['--headless', '--worker_mode',
                                         '--session', self.session_id,
                                         '--sentence_start', '0',
                                         '--sentence_end', '3',
-                                        '--tts_engine', 'higgs-v3',
+                                        '--tts_engine', 'orpheus',
                                         '--higgs_voice', 'ds_ad4l'])
         self.assertEqual(code, 1)
-        self.assertIn('higgs_voice', out)
-        self.assertIn('render/worker.py', out)
-        self.assertIn('PREP accepts higgs-v3 today', out)
+        self.assertIn('--higgs_voice names a Higgs voice', out)
+        self.assertIn('--fine_tuned', out)
 
     def test_a_higgs_prep_may_not_ask_for_the_parity_packer(self):
         """It has no Higgs branch and its caps were calibrated on Orpheus."""

@@ -182,12 +182,18 @@ higgs-v3 --higgs_voice <id>` prepares a session end to end: the engine is
 recorded exactly as given, the voice under `higgs_voice`, and the book is chunked
 by `text/paragraph_packer.py` against the Higgs `Budget` (prep forces
 `chunking=paragraph`, because the ported e2a packer is Orpheus-only and refuses
-by name otherwise). The RENDER route refuses `higgs-v3` for now: `WorkerRequest`
-carries no `higgs_voice` and `_build_engine_config` builds an Orpheus
-`EngineConfig` unconditionally, both in `render/worker.py`, which is a different
-column. The refusal names those two changes. It is a refusal and not a silent
-Orpheus render because `--fine_tuned` is a token and `--higgs_voice` is a catalog
-id - handing one where the other is expected resolves to the wrong voice.
+by name otherwise).
+
+**The RENDER route now takes `higgs-v3` too** (2026-09-04). It used to refuse it
+while `render/worker.py` could not carry a Higgs voice; both changes it named
+have landed - `WorkerRequest.higgs_voice`, and a config chosen by engine id
+through `engine/registry.py` rather than an Orpheus `EngineConfig` built
+unconditionally. What survives from that refusal is the narrower check that
+`--higgs_voice` and `--tts_engine` AGREE: `--fine_tuned` is a prompt TOKEN and
+`--higgs_voice` is a CATALOG ID, so one handed where the other is expected
+resolves to the wrong voice for a whole book. A Higgs render still needs
+`NARRATOR_HIGGS_VOICES` to point at the voice document, and says so by name when
+it does not.
 
 **PREP GATES THE ENGINE TOO, just not through `check_engine`.** Since migration
 step 4 the flag decides what gets PARSED as well as what gets rendered: the
@@ -198,8 +204,9 @@ That refusal leaves `compat/app.py` as `Error: <message>` and exit 1, not as
 e2a's `prep_ebook_only failed` dict - see "The prep route".
 
 Nothing is lost by this. The refusal that decides what gets RENDERED lives in
-`render/worker.py`, which refuses a SESSION whose `tts_engine` is not `orpheus`
-even when the flag was never passed.
+`render/worker.py`, which resolves the SESSION's `tts_engine` through
+`engine/registry.py` and refuses an id the registry does not know - naming the
+ones it does - even when the flag was never passed.
 
 ### `--post_render_filter`: who applies it, and when
 
@@ -284,9 +291,12 @@ kept in the same place and for the same reason.
 `xtts`/`XTTSv2`, `bark`/`BARK`, `vits`/`VITS`, `tortoise`/`TORTOISE`,
 `fairseq`/`FAIRSEQ`, `tacotron`/`TACOTRON`, `yourtts`/`YOURTTS`, `f5`/`F5`,
 `voxtral`/`VOXTRAL` (both the lowercase CLI form and e2a's `TTS_ENGINES` key, since
-`app.py:190` accepted either). Anything else is "unknown engine". Only `orpheus`
-is accepted, and `render/worker.py` refuses a SESSION whose `tts_engine` is not
-`orpheus` even when the flag was never passed.
+`app.py:190` accepted either). Anything else is "unknown engine". Only the
+registry's render ids are accepted (`orpheus`, `higgs-v3`), and
+`render/worker.py` refuses a SESSION whose `tts_engine` is not one of them even
+when the flag was never passed - a DELETED e2a engine by name and with the
+"use ebook2audiobook" advice, anything else as an unknown id listing
+`registry.ids()`.
 
 This check runs on the WORKER route only. See "`--tts_engine` on assembly is
 scaffolding" above for why an assembly spawn passing `xtts` must be honoured.

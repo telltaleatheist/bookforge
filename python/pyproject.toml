@@ -37,17 +37,27 @@ dependencies = [
 
 [project.optional-dependencies]
 # The GPU engines' pins live here so `pip install -e python/` stays torch-free on
-# a machine that only assembles. ONE GROUP PER ENGINE, because the two engines'
-# dependency sets are mutually exclusive: Orpheus needs vLLM 0.7.3 (the last
-# version whose V0 engine takes per-request logits processors, which is what the
-# EOS boost is) pinned against torch 2.5.1+cu121, and Higgs v2 needs
-# transformers >= 5.3 for HiggsAudioV2ForConditionalGeneration, which wants a
-# much newer torch. Installing both into one env resolves torch twice and breaks
-# whichever loses.
+# a machine that only assembles. ONE GROUP PER ENGINE, AND THEY ARE MUTUALLY
+# EXCLUSIVE - each engine has its own conda env and always will:
+#
+#   orpheus            vLLM 0.7.3 (the last version whose V0 engine takes
+#                      per-request logits processors, which is what the EOS boost
+#                      IS) against torch 2.5.1+cu121.
+#   higgs-v3-server    vllm-omni 0.28.0 against torch 2.13.0+cu130. THE second
+#                      engine - it runs as a SERVER, and only the server needs
+#                      this group; narrator's v3 client is numpy + soundfile +
+#                      urllib.
+#   higgs-v2-scaffold  transformers >= 5.3 against torch 2.6.0+cu124. NOT
+#                      SHIPPED - Higgs v2 was dropped 2026-09-04 and the code is
+#                      kept as interface scaffolding. Install it only to run that
+#                      reference implementation against a model.
+#
+# Installing any two into one env resolves torch twice and breaks whichever
+# loses.
 #
 # Every version below is READ OFF A WORKING ENV, not chosen: `pip freeze` in WSL
-# `orpheus_tts` (2026-09-04) and WSL `higgs` (2026-09-04). vLLM and torch are
-# deliberately NOT installed by pip in practice - both envs were built by hand
+# `orpheus_tts`, `higgs` and `higgs3` (2026-09-04). vLLM and torch are
+# deliberately NOT installed by pip in practice - the envs were built by hand
 # with the CUDA-matched wheels (see CLAUDE.md) - so these pins document and
 # VERIFY what must already be there rather than fetching it.
 engine = ["narrator[orpheus]"]
@@ -70,12 +80,28 @@ orpheus = [
 # why these are separate envs and separate groups rather than one install.
 # `higgs-audio-v2-generation-3B-base` has no python package of its own - the
 # model class ships inside transformers.
-higgs = [
+higgs-v2-scaffold = [
     "torch==2.6.0",
     "torchaudio==2.6.0",
     "transformers==5.16.1",
     "accelerate>=1.14",
     "librosa>=0.11",
+]
+
+# WSL `higgs3`: python 3.11, torch 2.13.0+cu130, vllm 0.28.0, vllm-omni 0.28.0.
+# The SERVED engine (higgs-v3). A third mutually exclusive group - it shares an
+# env with neither of the others.
+#
+# TWO SITE-PACKAGES PATCHES MUST BE RE-APPLIED AFTER ANY UPGRADE HERE:
+# work/patch_vllm.py (without it every voice-clone request is HTTP 400) and
+# work/patch_tail_trim.py (without it every chunk ends in ~240 ms of audible
+# garbage). pip cannot express that; see narrator/engine/PORT_NOTES.md 12.8.
+#
+# NB the v3 CLIENT needs none of this - it is numpy + soundfile + urllib, so the
+# engine can be driven from any env while the model runs in `higgs3`.
+higgs-v3-server = [
+    "vllm==0.28.0",
+    "vllm-omni==0.28.0",
 ]
 
 [project.scripts]

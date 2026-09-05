@@ -153,30 +153,69 @@ def _warn_fake_engine(where: str) -> None:
         print(f'[narrator.serve] (at: {where})', file=sys.stderr, flush=True)
 
 
-def _engine_class():
-    """The engine this worker builds.
+#: Engine ids this worker refuses to serve, and why. `higgs-v2-scaffold` is
+#: interface scaffolding kept to prove `narrator.engine.protocol` fits a
+#: non-Orpheus engine (see narrator/engine/higgs/__init__.py); Higgs v2 was
+#: dropped as a rendering engine on 2026-09-04. Letting a spawn select it would
+#: put a not-shipped engine in front of a real book, and its id is the only
+#: thing saying otherwise.
+UNSERVABLE_ENGINES = {
+    'higgs-v2-scaffold': (
+        'higgs-v2-scaffold is interface SCAFFOLDING, not a shipping engine: '
+        'Higgs v2 was dropped 2026-09-04 and the code is kept only to prove the '
+        "engine Protocol fits something that is not Orpheus. Use 'orpheus' or "
+        "'higgs-v3'."),
+}
 
-    --fake-engine substitutes serve.fake_engine.FakeEngine, which produces
-    deterministic sine-wave audio and needs no model, no GPU and no torch. It
-    exists so tests/test_engine_serve_protocol.py can drive THIS file - the real
-    reader thread, the real stdout lock, the real batch bookkeeping - and assert
-    the exact message sequence electron/orpheus-worker-pool.ts reads. It is a
-    TEST DOOR, never a fallback: nothing selects it implicitly.
+
+def engine_id() -> str:
+    """Which engine this worker serves: NARRATOR_ENGINE, default 'orpheus'.
+
+    An UNKNOWN value is refused by name at the first use (see
+    narrator.engine.registry), never defaulted: a book rendered by a different
+    model than the one asked for is a silent failure, and this worker is spawned
+    with an environment it does not author.
+    """
+    engine = (os.environ.get('NARRATOR_ENGINE') or '').strip() or 'orpheus'
+    if engine in UNSERVABLE_ENGINES:
+        raise ValueError(f'NARRATOR_ENGINE={engine}: {UNSERVABLE_ENGINES[engine]}')
+    return engine
+
+
+def _engine_class():
+    """The engine this worker builds, for the id NARRATOR_ENGINE names.
+
+    --fake-engine substitutes a model-free stand-in (serve.fake_engine), which
+    produces deterministic sine-wave audio and needs no model, no GPU and no
+    torch. It exists so tests/test_engine_serve_protocol.py can drive THIS file
+    - the real reader thread, the real stdout lock, the real batch bookkeeping -
+    and assert the exact message sequence electron/orpheus-worker-pool.ts reads.
+    It is a TEST DOOR, never a fallback: nothing selects it implicitly. The fake
+    is chosen PER ENGINE too, so a Higgs protocol test sees Higgs's sample rate
+    and its `pads = False`.
     """
     if _fake_engine_enabled():
-        from .fake_engine import FakeEngine
-        return FakeEngine
-    from ..engine import OrpheusEngine
-    return OrpheusEngine
+        from .fake_engine import fake_engine_class
+        return fake_engine_class(engine_id())
+    from ..engine import registry
+    return registry.engine_class(engine_id())
 
 
 def _engine_config(**kwargs):
-    """EngineConfig, or the fake's stand-in for it."""
+    """The config object this engine takes, or the fake's stand-in for it.
+
+    Each engine's factory decides which of the load message's keywords it
+    understands: Orpheus takes them all (voice / model_dir / base_dir /
+    adapter_dir / caps) as EngineConfig; Higgs refuses base_dir and caps by
+    name, because it has neither a shared-base split nor any of Orpheus's EOS
+    levers, and resolves its voice - reference clips plus transcripts - from the
+    NARRATOR_HIGGS_VOICES document.
+    """
     if _fake_engine_enabled():
-        from .fake_engine import FakeEngineConfig
-        return FakeEngineConfig(**kwargs)
-    from ..engine import EngineConfig
-    return EngineConfig(**kwargs)
+        from .fake_engine import fake_engine_config
+        return fake_engine_config(engine_id(), **kwargs)
+    from ..engine import registry
+    return registry.engine_config(engine_id(), **kwargs)
 
 
 # -- Text normalization (numbers/currency/years -> words) ----------------------
@@ -313,27 +352,72 @@ except (TypeError, ValueError):
     STREAM_GAP_SEC = 0.3
 
 
-def finalize_audio(audio_np):
-    """Trim Orpheus's long trailing end-pause, normalize, and append a short
-    inter-sentence gap so streamed sentences breathe instead of running together
-    (the player concatenates chunks with no gap). Keeps a small head and ~150ms
-    tail so words aren't clipped."""
+#: The sample rate the LOADED engine produces. DEFAULT_SAMPLERATE until one is
+#: loaded. Every duration and every `sampleRate` on the wire reads this, because
+#: the wire describes the audio that was actually rendered - not a constant. Both
+#: shipping engines are 24 kHz today, so this changes no byte on either path; it
+#: is what stops the next engine from mis-timing every cue in a session.
+_ACTIVE_SAMPLERATE = DEFAULT_SAMPLERATE
+#: Whether the loaded engine BAKES its own silence into a clip (`Engine.pads`).
+#: Orpheus does; Higgs does not. Read by finalize_audio - see there.
+_ACTIVE_PADS = True
+
+
+def active_samplerate() -> int:
+    return _ACTIVE_SAMPLERATE
+
+
+def set_active_engine_audio(samplerate: int, pads: bool) -> None:
+    """Adopt the loaded engine's audio facts. Called once per engine load."""
+    global _ACTIVE_SAMPLERATE, _ACTIVE_PADS
+    _ACTIVE_SAMPLERATE = int(samplerate)
+    _ACTIVE_PADS = bool(pads)
+
+
+def finalize_audio(audio_np, pads=None):
+    """Prepare one rendered sentence for the wire.
+
+    THREE STEPS, AND ONLY THE FIRST IS ENGINE-SPECIFIC.
+
+    1. TRIM, for a `pads=True` engine only. Orpheus bakes its own lead/trail
+       silence into every clip (`_classify_gap` + `_save_audio`), and its
+       trailing end-pause is long enough to hear as a stall; this cuts back to
+       the last sample above 0.01 plus ~150 ms. For a `pads=False` engine -
+       Higgs, measured: no pads, no fades, bare speech at both ends - THE SAME
+       TRIM WOULD CUT INTO THE WORD. A quiet final consonant sits under 0.01,
+       and there is no padding in front of it to absorb the cut. So it is
+       skipped, and the audio goes out exactly as decoded, which is also what
+       `Engine.edge_fade_ms` assumes (the fades are the assembler's).
+    2. Peak-normalize if it clipped. Engine-independent.
+    3. APPEND THE INTER-SENTENCE GAP, FOR EVERY ENGINE. This is a CLIENT
+       contract, not an engine property: the player concatenates streamed
+       chunks with no gap of its own, so without it every sentence runs into
+       the next. It is deliberately NOT conditioned on `pads` - `pads` says who
+       owns the silence INSIDE a chunk file for ASSEMBLY, and this is the
+       streaming wire, where the worker is the only thing that can put a gap
+       between two sentences. (The audiobook path never goes through here; it
+       writes chunk files and the assembler realizes the manifest's gaps.)
+
+    `pads` defaults to the loaded engine's (see set_active_engine_audio).
+    """
     if audio_np is None:
         return None
     a = np.asarray(audio_np, dtype=np.float32).flatten()
     if a.size == 0:
         return a
-    thr = 0.01
-    idx = np.where(np.abs(a) > thr)[0]
-    if idx.size:
-        start = max(0, int(idx[0]) - int(DEFAULT_SAMPLERATE * 0.05))
-        end = min(a.size, int(idx[-1]) + int(DEFAULT_SAMPLERATE * 0.15))
-        a = a[start:end]
+    rate = active_samplerate()
+    if _ACTIVE_PADS if pads is None else pads:
+        thr = 0.01
+        idx = np.where(np.abs(a) > thr)[0]
+        if idx.size:
+            start = max(0, int(idx[0]) - int(rate * 0.05))
+            end = min(a.size, int(idx[-1]) + int(rate * 0.15))
+            a = a[start:end]
     peak = float(np.max(np.abs(a))) if a.size else 0.0
     if peak > 1.0:
         a = a / peak * 0.95
     if STREAM_GAP_SEC > 0:
-        a = np.concatenate([a, np.zeros(int(DEFAULT_SAMPLERATE * STREAM_GAP_SEC), dtype=np.float32)])
+        a = np.concatenate([a, np.zeros(int(rate * STREAM_GAP_SEC), dtype=np.float32)])
     return a
 
 
@@ -461,36 +545,20 @@ class OrpheusStreamServer:
             })
             return False
 
-        if model_dir or adapter_dir:
-            # Custom token, verbatim - a single-speaker fine-tune is not in the
-            # built-in allowlist, and validating it there would drop it to the default.
-            v = (voice or '').strip().lower()
-            if not v or v == 'internal':
-                # 'internal' is the "no --fine_tuned given" sentinel. For an adapter
-                # it is fatal: the token is also the adapter's registry key, and
-                # rendering under a token the adapter never saw sounds plausible and
-                # is wrong.
-                send_response('error', {
-                    'message': f"Orpheus custom voice load is missing its voice token "
-                               f'(got {voice!r}). The token the fine-tune was trained on '
-                               'is required - refusing to guess.'
-                })
-                return False
-        else:
-            v = (voice or DEFAULT_VOICE).lower()
-            if v not in VALID_VOICES:
-                # Unknown built-in voice: FAIL the load instead of silently
-                # substituting the default (the wrong narrator reading a whole
-                # session is a silent failure). The TS pool already rejects
-                # unknown voices upstream; this second net now errors too rather
-                # than downgrading.
-                send_response('error', {
-                    'message': f"Unknown Orpheus voice '{voice}' - expected one of: "
-                               f"{', '.join(sorted(VALID_VOICES))} (or a custom voice "
-                               f"with a modelDir, or an adapter voice with adapterDir "
-                               f"+ baseDir). Refusing to substitute '{DEFAULT_VOICE}'."
-                })
-                return False
+        # THE ENGINE VALIDATES ITS OWN VOICES. Orpheus's rule is an allowlist of
+        # eight stock TOKENS plus "anything, verbatim, when a modelDir or an
+        # adapterDir names weights"; Higgs v3's is an entry in the
+        # NARRATOR_HIGGS_VOICES document. Checking a v3 load against Orpheus's
+        # list rejected every real v3 voice ("Unknown Orpheus voice
+        # 'deathstalker'") - the engine that will render it is the only thing
+        # that knows what a voice IS for it.
+        try:
+            v = _engine_class().resolve_load_voice(
+                voice, model_dir=model_dir, adapter_dir=adapter_dir,
+                base_dir=base_dir)
+        except Exception as e:
+            send_response('error', {'message': str(e)})
+            return False
 
         if not self._check_token_owner(v, voice_id):
             return False
@@ -526,11 +594,31 @@ class OrpheusStreamServer:
                 caps=caps or {},
             )
             self.orph = engine_cls(config)      # __init__ -> load_engine() loads model
+            # Every duration, every `sampleRate` on the wire and finalize_audio's
+            # trim now describe THIS engine instead of a module constant. Both
+            # shipping engines are 24 kHz, so nothing on either path changes
+            # today; what it prevents is the next engine mis-timing a session.
+            set_active_engine_audio(getattr(self.orph, 'SAMPLE_RATE',
+                                            DEFAULT_SAMPLERATE),
+                                    bool(getattr(self.orph, 'pads', True)))
             self.current_model_dir = model_dir
             self.current_base_dir = base_dir
             send_response('status', {'message': 'Model loaded'})
         else:
-            # Warm engine, same weights. For a stock voice this is the free
+            # Warm engine, same weights. NOT EVERY ENGINE CAN SWITCH IN PLACE: a
+            # served engine's voice is baked into the server it launched (the
+            # reference clip rides in every request, an adapter is a launch
+            # argument), so it refuses BY NAME instead of raising a bare
+            # AttributeError from a method it does not have.
+            if not hasattr(self.orph, 'set_voice'):
+                send_response('error', {
+                    'message': f"engine '{getattr(self.orph, 'ENGINE_ID', '?')}' "
+                               'cannot switch voice on a live worker: it has no '
+                               'set_voice(). Quit this worker and start one for '
+                               'that voice.'
+                })
+                return False
+            # For a stock voice this is the free
             # prompt-prefix switch it always was; for an adapter voice it registers
             # (and VALIDATES) the LoRA and re-points the engine's default voice at it
             # in one step. set_voice keeps orph.voice and orph.adapter_dir in lockstep
@@ -631,6 +719,8 @@ class OrpheusStreamServer:
         lora id that only means anything inside the vLLM object being destroyed. A
         surviving entry would let a request for a voice from the previous engine be
         accepted and rendered in whatever is loaded now."""
+        # The engine's audio facts go with it - a later load re-adopts.
+        set_active_engine_audio(DEFAULT_SAMPLERATE, True)
         if self.orph is not None:
             try:
                 self.orph.cleanup()
@@ -816,7 +906,7 @@ class OrpheusStreamServer:
         v = self._row_voice(voice)
         clean = orph._clean_sentence_for_tts(text)
         if not clean:
-            return np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+            return np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
         if orph.backend == 'mlx':
             self._reject_per_request_voice(v)
             # _safe variant: render the sentence WHOLE, and only re-render it split at
@@ -839,6 +929,22 @@ class OrpheusStreamServer:
                 lambda c: orph._generate_audio_vllm_safe(c, force_split=True, voice=v),
                 v
             )
+        elif orph.backend not in ('vllm', 'mlx', 'transformers'):
+            # A SERVED engine - Higgs v3 under vllm-omni. The model is behind an
+            # HTTP boundary, so there is no token stream on this side to decode
+            # and none of Orpheus's re-render ladders apply (v3 stops on its own;
+            # what it does instead is drop the tail of a long chunk, which is a
+            # PACKER concern - StopPolicy.max_chars - not a retry). One call, one
+            # waveform.
+            self._reject_per_request_voice(v)   # one voice per server process
+            render = getattr(orph, 'render_audio', None)
+            if render is None:
+                raise RuntimeError(
+                    f"engine '{getattr(orph, 'ENGINE_ID', '?')}' reports backend "
+                    f"'{orph.backend}', which is neither one of Orpheus's three nor "
+                    'an engine offering render_audio(text). This worker has no way '
+                    'to render one sentence with it.')
+            audio = render(clean)
         else:
             self._reject_per_request_voice(v)   # transformers: same one-voice limit
             audio = orph._tokens_to_audio(
@@ -926,7 +1032,7 @@ class OrpheusStreamServer:
                     results[i] = finalize_audio(audio_np)
             for i, c in enumerate(cleaned):
                 if not c:
-                    results[i] = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32)
+                    results[i] = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32)
             return results
 
         if orph.backend == 'mlx':
@@ -961,7 +1067,7 @@ class OrpheusStreamServer:
                         out.append(None)
                     else:
                         # Genuinely empty text -> tiny silence (the designed contract).
-                        out.append(np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                        out.append(np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                 else:
                     out.append(finalize_audio(a))
             return out
@@ -982,8 +1088,8 @@ class OrpheusStreamServer:
                 'i': it.get('i'),
                 'format': 'pcm16',
                 'data': audio_to_pcm16_base64(audio),
-                'duration': len(audio) / DEFAULT_SAMPLERATE,
-                'sampleRate': DEFAULT_SAMPLERATE,
+                'duration': len(audio) / active_samplerate(),
+                'sampleRate': active_samplerate(),
             })
 
     def _generate_batch_mlx_ordered(self, items, language: str):
@@ -1069,7 +1175,7 @@ class OrpheusStreamServer:
                 if len(group) == 1 and not cleaned[group[0]]:
                     pos = group[0]
                     self._emit_batch_item(
-                        items[pos], np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                        items[pos], np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                     emitted.add(pos)
                     continue
 
@@ -1107,7 +1213,7 @@ class OrpheusStreamServer:
                             print(f'[narrator.serve] MLX batch produced no audio for non-empty '
                                   f'sentence [{items[p].get("i")}] - reporting failure',
                                   file=sys.stderr)
-                        audio = np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32) if not cleaned[p] else None
+                        audio = np.zeros(int(active_samplerate() * 0.05), dtype=np.float32) if not cleaned[p] else None
                     else:
                         audio = finalize_audio(a)
                     self._emit_batch_item(items[p], audio)
@@ -1242,7 +1348,7 @@ class OrpheusStreamServer:
                     # for, so it is answered immediately and dropped from the batch.
                     if _claim(pos):
                         self._emit_batch_item(
-                            it, np.zeros(int(DEFAULT_SAMPLERATE * 0.05), dtype=np.float32))
+                            it, np.zeros(int(active_samplerate() * 0.05), dtype=np.float32))
                     continue
                 positions.append((pos, cleaned, voice))
 
@@ -1282,8 +1388,8 @@ class OrpheusStreamServer:
                     'seq': seq,
                     'format': 'pcm16',
                     'data': audio_to_pcm16_base64(a),
-                    'duration': len(a) / DEFAULT_SAMPLERATE,
-                    'sampleRate': DEFAULT_SAMPLERATE,
+                    'duration': len(a) / active_samplerate(),
+                    'sampleRate': active_samplerate(),
                 })
 
             def on_row(row, audio):
@@ -1298,7 +1404,7 @@ class OrpheusStreamServer:
                             items[pos],
                             None if audio is None or len(audio) == 0 else finalize_audio(audio))
                     return
-                total = 0.0 if audio is None else len(audio) / DEFAULT_SAMPLERATE
+                total = 0.0 if audio is None else len(audio) / active_samplerate()
                 with state_lock:
                     sent = chunk_counts.get(pos, 0)
                 if sent == 0 or total <= 0:
@@ -1313,7 +1419,7 @@ class OrpheusStreamServer:
                 # the row's LAST chunk (see the docstring): the only part of
                 # finalization that can still be applied to audio already in flight.
                 if STREAM_GAP_SEC > 0:
-                    gap = np.zeros(int(DEFAULT_SAMPLERATE * STREAM_GAP_SEC), dtype=np.float32)
+                    gap = np.zeros(int(active_samplerate() * STREAM_GAP_SEC), dtype=np.float32)
                     on_chunk(row, sent, gap)
                     total += STREAM_GAP_SEC
                     with state_lock:
@@ -1420,8 +1526,8 @@ class OrpheusStreamServer:
                             'i': it.get('i'),
                             'format': 'pcm16',
                             'data': audio_to_pcm16_base64(audio),
-                            'duration': len(audio) / DEFAULT_SAMPLERATE,
-                            'sampleRate': DEFAULT_SAMPLERATE,
+                            'duration': len(audio) / active_samplerate(),
+                            'sampleRate': active_samplerate(),
                         })
         except Exception as e:
             import traceback
@@ -1462,7 +1568,7 @@ class OrpheusStreamServer:
             if audio is None or len(audio) == 0:
                 send_response('error', {'message': 'No audio generated'})
                 return
-            duration = len(audio) / DEFAULT_SAMPLERATE
+            duration = len(audio) / active_samplerate()
             data = audio_to_pcm16_base64(audio)
             if stream:
                 # Whole sentence as a single chunk, then the stream terminator -
@@ -1472,7 +1578,7 @@ class OrpheusStreamServer:
                     'format': 'pcm16',
                     'data': data,
                     'duration': duration,
-                    'sampleRate': DEFAULT_SAMPLERATE,
+                    'sampleRate': active_samplerate(),
                 })
                 send_response('done', {
                     'duration': duration,
@@ -1484,7 +1590,7 @@ class OrpheusStreamServer:
                     'format': 'pcm16',
                     'data': data,
                     'duration': duration,
-                    'sampleRate': DEFAULT_SAMPLERATE,
+                    'sampleRate': active_samplerate(),
                 })
         except Exception as e:
             import traceback
@@ -1570,8 +1676,24 @@ class OrpheusStreamServer:
                     # leaving the pool's guard permanently armed.
                     self.backend = self.orph.backend
                     _warn_fake_engine(f'loaded voice {self.current_voice!r}')
-                    send_response('loaded', {'voice': self.current_voice,
-                                             'backend': self.backend})
+                    # ADDITIVE fields, so the existing pool reader is unaffected
+                    # (it takes `voice` and `backend` and ignores the rest):
+                    #   engine        which engine actually loaded
+                    #   sampleRate    the rate this engine renders at, so a
+                    #                 client does not assume 24 kHz forever
+                    #   pads          whether chunk audio already contains its
+                    #                 own silence (Orpheus true, Higgs false)
+                    #   edgeFadeMs    the fade an ASSEMBLER must apply at each
+                    #                 chunk edge before joining (Higgs 25, since
+                    #                 a decoded edge sits near -30 dB and clicks)
+                    send_response('loaded', {
+                        'voice': self.current_voice,
+                        'backend': self.backend,
+                        'engine': getattr(self.orph, 'ENGINE_ID', None),
+                        'sampleRate': active_samplerate(),
+                        'pads': bool(getattr(self.orph, 'pads', True)),
+                        'edgeFadeMs': float(getattr(self.orph, 'edge_fade_ms', 0.0)),
+                    })
             elif action == 'generate':
                 text = request.get('text', '')
                 if not text:

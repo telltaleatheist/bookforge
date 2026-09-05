@@ -560,3 +560,117 @@ The session was prepped for **mistborn** and the five chunks were re-rendered
 with **deathstalker**, as the brief specified, so the resulting audiobook is
 deliberately a two-voice chimera. Nothing in the checks depends on the voice, and
 no claim here is about audio quality - nobody has listened to it.
+
+---
+
+## 12. The worker went engine-agnostic (2026-09-04, after step 4)
+
+`render/worker.py` built an Orpheus `EngineConfig` unconditionally and imported
+`OrpheusEngine` directly, so a `higgs-v3` session was refused at the compat door
+with a note naming the two changes owed here. Both are made; the refusal is
+gone.
+
+### What changed
+
+| | before | after |
+|---|---|---|
+| engine choice | `if tts_engine != 'orpheus': raise` | `resolve_engine_id()` -> `narrator.engine.registry.ids()` |
+| config | `engine_config_from()` built `EngineConfig` | `CONFIG_BUILDERS[id]`, one function per engine |
+| class | `from ..engine import OrpheusEngine` | `registry.engine_class(id)` inside `build_engine_for(id)` |
+| request | no Higgs field | `WorkerRequest.higgs_voice`, a CATALOG ID |
+
+**Orpheus is byte-identical.** `orpheus_config_from_state` is the whole of the
+old `engine_config_from`, moved behind the dispatch table with its body
+untouched (only its `EngineConfig` import became the canonical
+`from ..engine import EngineConfig`, since `engine/config.py` is now a
+compatibility alias for `engine/orpheus/config.py`). Every Orpheus log line,
+every field and every precedence rule is unchanged.
+
+**The factory seam stayed ONE argument.** `engine_factory(config)` is the shape
+every test fake and both compat routes already had, so the engine id is closed
+over by `build_engine_for(id)` rather than threaded through the loop as a second
+parameter. `run_worker(request, engine_factory=None)` now means "pick from the
+session's engine id"; a test passing its own fake is unaffected.
+
+### Higgs's config is built by the REGISTRY's factory, not here
+
+`higgs_v3_config_from_state` calls `registry.engine_config('higgs-v3', voice=...,
+adapter_dir=...)`, which is `engine/higgs/v3_engine.py:
+higgs_v3_config_from_worker_kwargs`. That function resolves the voice NAME
+against the `NARRATOR_HIGGS_VOICES` document, builds the `ClipsVoice` with its
+reference clips and their book-exact transcripts, checks the 30 s total
+reference budget before a server is launched, and reads
+`NARRATOR_HIGGS3_ADAPTER_STRATEGY`. Duplicating any of that in `render/` would
+have been a second copy of a contract the engine layer owns.
+
+It REFUSES `model_dir`, `base_dir` and `caps` by name (Orpheus concepts), so this
+builder passes only the voice id - and passes `adapter_dir=None` deliberately
+rather than forwarding `--orpheus_adapter_dir`, because a Higgs fine-tune belongs
+to its CATALOG entry and an Orpheus-named flag steering it is the same
+cross-engine confusion the --fine_tuned/--higgs_voice refusal prevents. The three SESSION fields
+(`sentences_dir`, `process_dir`, `audio_format`) are set on the returned
+dataclass afterwards, because that factory also serves the in-memory streaming
+worker and refuses keywords it does not know.
+
+The voice id comes from `--higgs_voice` or the state's `higgs_voice` key, is
+REQUIRED, and never falls back to `fine_tuned` - that field is an Orpheus prompt
+token, and the model's own default voice measures 12 % of the narrator ceiling.
+
+### Three refusal tiers, in this order, all BEFORE any side effect
+
+`resolve_engine_id` runs before the sentences dir is created, so none of these
+leaves a directory behind:
+
+| the session names | answer |
+|---|---|
+| an id with a config builder here (`orpheus`, `higgs-v3`) | rendered |
+| an id the registry knows but this worker cannot configure (`higgs-v2-scaffold`) | refused, naming what it DOES render and what the registry knows. That id is scaffolding the registry itself says "nothing should select by accident" |
+| a deleted e2a engine (`xtts`, `bark`, ... 18 names) | refused BY NAME with "not ported ... use ebook2audiobook" - not "unknown engine", which would read like a typo |
+| anything else (`llasa-8b`) | `Unknown narrator engine '<id>'. Known engines: <registry.ids()>` |
+
+The "narrator renders ..." half of those messages lists `CONFIG_BUILDERS`, not
+`registry.ids()` - otherwise the deleted-engine refusal would advertise
+`higgs-v2-scaffold` as something narrator renders, one line after the tier above
+denied exactly that.
+
+### `run_retake`'s default factory was Orpheus-only
+
+`run_retake(request, engine_factory=build_engine)` would have retaken a Higgs
+chunk with Orpheus whenever a caller omitted the factory - the exact
+substitution `engine/registry.py` exists to refuse. Now `None`, meaning "the
+loop picks, from the session's engine id".
+
+### Two things this uncovered
+
+- **`_debug_view` read Orpheus-only config fields** (`config.model_dir` and its
+  two siblings) with attribute access, so the `[WORKER DEBUG]` dump - a LOG
+  BLOCK - killed a Higgs render before it started. Now `getattr(..., None)`,
+  with `higgs_voice` added for a non-Orpheus session. A debug dump must never be
+  the thing that fails a render.
+- **`config.voice` is not always a string.** Higgs's is a `ClipsVoice` whose repr
+  is its clips *and their transcripts*, pages of text in one log line.
+  `voice_label(config)` prints the NAME; Orpheus's token still prints verbatim,
+  so `[WORKER] TTS engine: orpheus, fine_tuned: deathstalker` is unchanged.
+
+### Two tests were EDITED, and why
+
+Both asserted behaviour that this change deliberately reverses, so they could not
+survive unedited:
+
+- `test_render_worker.py`'s non-Orpheus refusal asserted the message
+  "narrator renders 'orpheus' only", which is no longer a true statement. It now
+  asserts what must still hold: a DELETED e2a engine (`xtts`) is refused BY NAME,
+  told to use ebook2audiobook, and the message names what narrator can render.
+  Renamed `test_a_deleted_e2a_engine_is_refused_by_name`.
+- `test_compat_prep.py`'s `test_a_higgs_RENDER_is_refused_with_what_is_owed`
+  asserted the door refusal this task removes. It now asserts the opposite - the
+  route gets PAST the door and fails on the SESSION instead - plus a new test
+  that the engine/voice agreement check survives.
+
+### Not proven
+
+No Higgs render has been executed. `NARRATOR_HIGGS_VOICES` is unset on this
+machine, so the real path was driven only as far as the catalog lookup, where it
+fails with that document's own message - which is the correct next failure and
+proves the registry factory is reached. The selection itself (which class, which
+config, which keywords) is asserted against a recording fake for both ids.

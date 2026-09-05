@@ -383,10 +383,28 @@ class WorkerRequest:
     orpheus_adapter_dir: str | None = None
     orpheus_base_dir: str | None = None
 
+    #: Higgs v3's voice: a CATALOG ID looked up in the NARRATOR_HIGGS_VOICES
+    #: document, not a prompt token. It is a separate field from `fine_tuned`
+    #: on purpose - `--fine_tuned` is an Orpheus TOKEN and `--higgs_voice` is a
+    #: catalog id, so one arriving where the other is expected would resolve to
+    #: the wrong voice for a whole book (compat/app.py refuses the mismatch by
+    #: name for the same reason).
+    higgs_voice: str | None = None
+
 
 # =============================================================================
 # Building the engine
 # =============================================================================
+#
+# ONE ENGINE ID DECIDES BOTH HALVES: which class renders, and which config
+# object that class takes. `narrator.engine.registry` owns the first half; the
+# `CONFIG_BUILDERS` table below owns the second, because building a config needs
+# the SESSION - the state dict and the request - which the engine layer knows
+# nothing about and must not.
+#
+# The registry's refusal is the one that names the known ids, and it is reached
+# for an id this table has never heard of either, so the two cannot disagree
+# about what exists.
 
 def resolve_session_dir(request: WorkerRequest) -> str:
     """e2a: `session_dir_override or os.path.join(tmp_dir, f"ebook-{session_id}")`.
@@ -403,8 +421,70 @@ def resolve_session_dir(request: WorkerRequest) -> str:
     return os.path.join(root, f'ebook-{request.session_id}')
 
 
-def engine_config_from(state: dict, request: WorkerRequest, sentences_dir: str):
+def resolve_engine_id(state: dict, request: WorkerRequest) -> str:
+    """Which engine renders this session. Explicit flag beats the state.
+
+    Same precedence as every other field (`worker_core.create_worker_session`):
+    the state may have been written on another machine, or by an older prep.
+
+    Refuses rather than defaulting. e2a's own comment on the equivalent line is
+    the reason - "silently guessing an engine here would run the wrong model" -
+    and the registry says the same in stronger terms, because an engine
+    substitution is a whole book rendered by the wrong model and reported as
+    success.
+    """
+    from ..engine import registry
+
+    engine_id = request.tts_engine or state.get('tts_engine')
+    if not engine_id:
+        raise ValueError('No tts_engine in session state or args - the session '
+                         'state must name its engine')
+    if engine_id in CONFIG_BUILDERS:
+        return engine_id
+    if engine_id in registry.ids():
+        # In the registry, but this worker has no way to configure it. Today that
+        # is only 'higgs-v2-scaffold', which the registry itself documents as
+        # NOT SHIPPED ("nothing should select it by accident"). Refused HERE, so
+        # nothing is created on disk first.
+        raise ValueError(
+            f"narrator's render worker cannot configure engine '{engine_id}'. It "
+            f"renders {', '.join(repr(i) for i in sorted(CONFIG_BUILDERS))}; the "
+            f"registry also knows {', '.join(registry.ids())}, but an id with no "
+            f"config builder here is either scaffolding that is deliberately not "
+            f"shipped or a render-layer gap.")
+    if engine_id in DELETED_E2A_ENGINES:
+        raise ValueError(
+            f"narrator renders {', '.join(repr(i) for i in sorted(CONFIG_BUILDERS))}; "
+            f"this session names '{engine_id}'. XTTS, F5, Voxtral, bark, vits, "
+            f"tortoise, fairseq, tacotron and yourtts are not ported (see "
+            f"docs/NARRATOR_PLAN.md 'What is deleted'); use ebook2audiobook "
+            f"for them.")
+    raise ValueError(
+        f"Unknown narrator engine '{engine_id}'. Known engines: "
+        f"{', '.join(registry.ids())}.")
+
+
+#: Declared BEFORE resolve_engine_id runs (module scope binds at import, and the
+#: function reads it at call time), so the two cannot describe different sets.
+
+
+#: Engines ebook2audiobook could run and narrator deliberately dropped. Named so
+#: a session prepped by e2a gets "that engine was deleted, use e2a" rather than
+#: "unknown engine", which would read like a typo.
+DELETED_E2A_ENGINES = frozenset({
+    'xtts', 'XTTSv2', 'bark', 'BARK', 'vits', 'VITS', 'tortoise', 'TORTOISE',
+    'fairseq', 'FAIRSEQ', 'tacotron', 'TACOTRON', 'yourtts', 'YOURTTS',
+    'f5', 'F5', 'voxtral', 'VOXTRAL',
+})
+
+
+def orpheus_config_from_state(state: dict, request: WorkerRequest,
+                              sentences_dir: str):
     """The e2a session dict, reduced to the eight keys the engine ever read.
+
+    UNCHANGED from the single-engine port - this is the whole of what
+    `engine_config_from` used to be, moved behind the dispatch table so Orpheus
+    renders byte-identically.
 
     Precedence is e2a's throughout (`worker_core.create_worker_session`):
     an explicit CLI value beats the persisted state, because the state may have
@@ -414,7 +494,7 @@ def engine_config_from(state: dict, request: WorkerRequest, sentences_dir: str):
     `EngineConfig` is imported inside the function so this module stays
     importable without `narrator.engine`'s constants.
     """
-    from ..engine.config import EngineConfig
+    from ..engine import EngineConfig
 
     fine_tuned = (request.fine_tuned or state.get('fine_tuned')
                   or DEFAULT_FINE_TUNED)
@@ -429,16 +509,112 @@ def engine_config_from(state: dict, request: WorkerRequest, sentences_dir: str):
     )
 
 
-def build_engine(config):
-    """Construct the Orpheus engine. `OrpheusEngine.__init__` loads the model.
+def higgs_v3_config_from_state(state: dict, request: WorkerRequest,
+                               sentences_dir: str):
+    """Higgs v3's config, built through the registry's own config factory.
 
-    This is the ONLY place `narrator.engine` is imported on the render path, and
-    the only thing a test has to substitute to run the loop without a GPU
-    (`run_worker(..., engine_factory=...)`).
+    The registry factory (`engine/higgs/v3_engine.py:
+    higgs_v3_config_from_worker_kwargs`) is what resolves the voice: it looks the
+    NAME up in the `NARRATOR_HIGGS_VOICES` document, builds the `ClipsVoice` with
+    its reference clips and their book-exact transcripts, checks the 30 s total
+    reference budget BEFORE a server is ever launched, and reads
+    `NARRATOR_HIGGS3_ADAPTER_STRATEGY`. None of that belongs here, and calling it
+    is how the render path gets the same voice resolution `narrator.serve` gets.
+
+    It deliberately REFUSES `model_dir`, `base_dir` and `caps` by name - those are
+    Orpheus concepts - so this function passes only the voice id.
+
+    `adapter_dir` is passed as None ON PURPOSE, not forwarded from
+    `--orpheus_adapter_dir`. A Higgs fine-tune belongs to its CATALOG ENTRY
+    (`ClipsVoice.adapter_dir`, which the factory falls back to), and letting an
+    Orpheus-named flag override it would be the same cross-engine confusion the
+    `--fine_tuned` / `--higgs_voice` refusal exists to prevent: the two flags
+    name different kinds of thing, and one silently steering the other renders a
+    book in a voice nobody asked for. If a per-run Higgs adapter is ever wanted,
+    it needs its own flag.
+
+    The three SESSION fields (`sentences_dir`, `process_dir`, `audio_format`) are
+    set afterwards rather than passed in, because that factory serves the
+    in-memory streaming worker too and refuses keys it does not know. They are
+    plain fields on `HiggsV3Config` and the dataclass is not frozen.
+
+    The voice id comes from `--higgs_voice` or the session state's `higgs_voice`
+    key (written by `text/prep.py`). It is REQUIRED and never falls back to
+    `fine_tuned`: that field carries an Orpheus prompt token, and a token handed
+    to the catalog lookup resolves to nothing or, worse, to a different voice.
     """
-    from ..engine import OrpheusEngine
+    from ..engine import registry
 
-    return OrpheusEngine(config)
+    voice_id = request.higgs_voice or state.get('higgs_voice')
+    if not (voice_id or '').strip():
+        raise ValueError(
+            "A higgs-v3 session needs a voice id: pass --higgs_voice, or prep "
+            "the session with one so session-state.json carries `higgs_voice`. "
+            "The Orpheus `fine_tuned` token is NOT a substitute - it names a "
+            "prompt token, not an entry in the NARRATOR_HIGGS_VOICES catalog, "
+            "and the model's own default voice measures 12% of the narrator "
+            "ceiling.")
+
+    config = registry.engine_config(
+        'higgs-v3',
+        voice=voice_id.strip(),
+        adapter_dir=None,          # see the docstring: the CATALOG owns this
+    )
+    config.sentences_dir = sentences_dir
+    config.process_dir = state['process_dir']
+    config.audio_format = AUDIO_PROC_FORMAT
+    return config
+
+
+#: engine id -> the function that builds that engine's config from the session.
+#: An id in `narrator.engine.registry` but missing here is a render-layer gap and
+#: says so; an id in neither is refused by `resolve_engine_id` first.
+CONFIG_BUILDERS = {
+    'orpheus': orpheus_config_from_state,
+    'higgs-v3': higgs_v3_config_from_state,
+}
+
+
+def engine_config_from(state: dict, request: WorkerRequest, sentences_dir: str,
+                       engine_id: str = 'orpheus'):
+    """Dispatch to the per-engine config builder."""
+    from ..engine import registry
+
+    builder = CONFIG_BUILDERS.get(engine_id)
+    if builder is None:
+        raise ValueError(
+            f"narrator.engine.registry knows '{engine_id}' but "
+            f"render/worker.py has no config builder for it. Known here: "
+            f"{', '.join(sorted(CONFIG_BUILDERS))}; known to the registry: "
+            f"{', '.join(registry.ids())}.")
+    return builder(state, request, sentences_dir)
+
+
+def build_engine_for(engine_id: str):
+    """A one-argument engine factory bound to `engine_id`.
+
+    The factory the loop calls stays `factory(config)` - the shape every test
+    fake and every caller already has - and the engine id is closed over here
+    instead of being threaded through the loop. `registry.engine_class` performs
+    the backend import; nothing above it needs to know which module that is.
+    """
+    def _build(config):
+        from ..engine import registry
+
+        return registry.engine_class(engine_id)(config)
+
+    _build.engine_id = engine_id
+    return _build
+
+
+def build_engine(config):
+    """Construct the Orpheus engine. Kept for callers that name it directly.
+
+    `run_worker` no longer uses this: it builds `build_engine_for(engine_id)` so
+    a Higgs session reaches the Higgs class. This remains the Orpheus-only form
+    for a caller that has an `EngineConfig` in hand and means Orpheus.
+    """
+    return build_engine_for('orpheus')(config)
 
 
 def resolve_device(request: WorkerRequest, state: dict) -> str:
@@ -525,13 +701,30 @@ def chapter_range_to_sentences(state: dict, chapter_start: int, chapter_end: int
     return work_start, work_end
 
 
-def run_worker(request: WorkerRequest, engine_factory=build_engine) -> dict:
+def voice_label(config) -> str:
+    """What to PRINT as the voice, whatever shape the engine's config gives it.
+
+    Orpheus's is a token string and prints verbatim, so the worker's
+    `[WORKER] TTS engine: orpheus, fine_tuned: deathstalker` line is unchanged.
+    Higgs's is a `ClipsVoice`, whose repr is its clips and their transcripts -
+    pages of them - so the NAME is printed instead.
+    """
+    voice = getattr(config, 'voice', None)
+    if voice is None or isinstance(voice, str):
+        return str(voice)
+    return getattr(voice, 'name', None) or str(voice)
+
+
+def run_worker(request: WorkerRequest, engine_factory=None) -> dict:
     """Render `request`'s sentences. Port of `worker_core.run_worker_tts` (254).
 
     The return dict is e2a's, key for key, because `parallel-tts-bridge.ts`
     parses it off the worker's last stdout line.
 
-    `engine_factory(config) -> engine` is the one seam this port adds: e2a built
+    `engine_factory(config) -> engine` is the one seam this port adds, and it
+    stays ONE argument: the engine id is closed over by the default
+    (`build_engine_for(engine_id)`), so a Higgs session reaches the Higgs class
+    without every test fake having to grow a parameter. e2a built
     `TTSManager(session)` inline, which made the loop untestable without a 6 GB
     model. The default builds the real engine and nothing about the loop changes.
     The engine must offer exactly what `TTSManager` delegated to:
@@ -563,25 +756,15 @@ def run_worker(request: WorkerRequest, engine_factory=build_engine) -> dict:
         print(f"[WORKER] Loaded session: {state['total_chapters']} chapters, "
               f"{state['total_sentences']} sentences", flush=True)
 
-        # The engine must NAME its engine; guessing would render the wrong model.
-        tts_engine = request.tts_engine or state.get('tts_engine')
-        if not tts_engine:
-            raise ValueError('No tts_engine in session state or args - the session '
-                             'state must name its engine')
-        if tts_engine != 'orpheus':
-            raise ValueError(
-                f"narrator renders 'orpheus' only; this session names "
-                f"'{tts_engine}'. XTTS, F5, Voxtral, bark, vits, tortoise, "
-                f"fairseq, tacotron and yourtts are not ported (see "
-                f"docs/NARRATOR_PLAN.md 'What is deleted'); use ebook2audiobook "
-                f"for them.")
+        # The session must NAME its engine; guessing would render the wrong model.
+        tts_engine = resolve_engine_id(state, request)
 
         base_sentences_dir = session_store.sentences_dir_for(state, request.sentences_dir)
         os.makedirs(base_sentences_dir, exist_ok=True)
         sentences_dir_for_cleanup = base_sentences_dir
 
         device = resolve_device(request, state)
-        config = engine_config_from(state, request, base_sentences_dir)
+        config = engine_config_from(state, request, base_sentences_dir, tts_engine)
 
         all_sentences = flatten_sentences(state)
 
@@ -617,7 +800,7 @@ def run_worker(request: WorkerRequest, engine_factory=build_engine) -> dict:
 
         print(f"[WORKER] Processing {len(work_indices)} sentence(s) on "
               f"{device.upper()}", flush=True)
-        print(f"[WORKER] TTS engine: {tts_engine}, fine_tuned: {config.voice}",
+        print(f"[WORKER] TTS engine: {tts_engine}, fine_tuned: {voice_label(config)}",
               flush=True)
         print(f"[WORKER DEBUG] Full session dict:", flush=True)
         for k, v in sorted(_debug_view(state, config, request, device,
@@ -625,7 +808,9 @@ def run_worker(request: WorkerRequest, engine_factory=build_engine) -> dict:
             print(f"  {k}: {v}", flush=True)
 
         log_memory("Before engine init")
-        engine = engine_factory(config)
+        factory = (engine_factory if engine_factory is not None
+                   else build_engine_for(tts_engine))
+        engine = factory(config)
         log_memory("After engine init (model loaded)")
 
         counters = _Counters()
@@ -718,18 +903,26 @@ def _debug_view(state, config, request, device, sentences_dir, tts_engine) -> di
     such dict, so this is the same information assembled from the state, the
     request and the engine config - the fields an operator reads that block for
     (which model, which directory, which voice).
+
+    THE `orpheus_*` ROWS ARE READ WITH `getattr(..., None)`, not attribute
+    access: they are fields of the ORPHEUS config and no other engine's config
+    has them (Higgs v3's refuses `model_dir` and `base_dir` by name - the served
+    model is the launch script's argument, and v3 has no shared-base split). An
+    Orpheus session's three rows are unchanged; a Higgs session prints them as
+    None and gets `higgs_voice` instead. A debug dump must never be the thing
+    that fails a render.
     """
-    return {
+    view = {
         'id': state.get('session_id'),
         'device': device,
         'tts_engine': tts_engine,
-        'fine_tuned': config.voice,
+        'fine_tuned': voice_label(config),
         'voice': request.voice or state.get('voice'),
         'language': state.get('language'),
         'language_iso1': state.get('language_iso1'),
-        'orpheus_model_dir': config.model_dir,
-        'orpheus_adapter_dir': config.adapter_dir,
-        'orpheus_base_dir': config.base_dir,
+        'orpheus_model_dir': getattr(config, 'model_dir', None),
+        'orpheus_adapter_dir': getattr(config, 'adapter_dir', None),
+        'orpheus_base_dir': getattr(config, 'base_dir', None),
         'session_dir': state.get('session_dir'),
         'process_dir': state.get('process_dir'),
         'chapters_dir': state.get('chapters_dir'),
@@ -740,6 +933,9 @@ def _debug_view(state, config, request, device, sentences_dir, tts_engine) -> di
         'cover': state.get('cover'),
         'filename_noext': state.get('filename_noext'),
     }
+    if tts_engine != 'orpheus':
+        view['higgs_voice'] = request.higgs_voice or state.get('higgs_voice')
+    return view
 
 
 def _apply_take_temperature(engine, take: int, take_temperatures) -> None:

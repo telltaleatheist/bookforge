@@ -24,15 +24,20 @@ _tokens_to_audio). The fast-start path is exercised through `generate_batch_stre
 which the fake implements directly by emitting the same windowed cadence
 WindowedFrameEmitter would (4 frames per payload after the first 6).
 
-The text cleaning is the REAL one (narrator.engine.prompt.PromptMixin), so the
-SML-stripping contract is not faked.
+The text cleaning is the REAL one (narrator.engine.orpheus.prompt.PromptMixin),
+so the SML-stripping contract is not faked.
+
+THERE IS ONE FAKE PER ENGINE. `fake_engine_class(engine_id)` mirrors
+narrator.engine.registry, so `--fake-engine` with NARRATOR_ENGINE=higgs-v3 gets
+FakeHiggsEngine - 960-sample frames, `pads = False`, whole-row streaming - and a
+protocol test can prove the worker built the engine the environment asked for.
 """
 import time
 
 import numpy as np
 
-from ..engine.prompt import PromptMixin
-from ..engine.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
+from ..engine.orpheus.prompt import PromptMixin
+from ..engine.orpheus.snac import PAYLOAD_FRAMES, SAMPLES_PER_FRAME
 
 SAMPLE_RATE = 24000
 
@@ -69,11 +74,16 @@ class FakeEngineConfig:
 
 
 class FakeEngine(PromptMixin):
-    """Deterministic audio, real text handling, no model."""
+    """Deterministic audio, real text handling, no model. Orpheus-shaped."""
 
+    ENGINE_ID = 'orpheus'
     END_OF_AUDIO_TOKEN = 128258
     SAMPLE_RATE = SAMPLE_RATE
+    # Orpheus bakes its gaps into each chunk and needs no assembler-side fade.
+    pads = True
+    edge_fade_ms = 0.0
     VALID_VOICES = {'tara', 'leah', 'jess', 'leo', 'dan', 'mia', 'zac', 'zoe'}
+    DEFAULT_VOICE = 'leah'
 
     # Mirrors OrpheusEngine's class-level caps registry so the worker's
     # _apply_voice_caps sees the same shape.
@@ -100,6 +110,15 @@ class FakeEngine(PromptMixin):
     def detect_backend(cls) -> str:
         return 'transformers'
 
+    @classmethod
+    def resolve_load_voice(cls, voice, model_dir=None, adapter_dir=None,
+                           base_dir=None) -> str:
+        """Orpheus's rule, which is what the protocol tests assert against."""
+        from ..engine.orpheus.interface import OrpheusInterfaceMixin
+        return OrpheusInterfaceMixin.resolve_load_voice.__func__(
+            cls, voice, model_dir=model_dir, adapter_dir=adapter_dir,
+            base_dir=base_dir)
+
     def cleanup(self):
         self.engine = None
 
@@ -113,7 +132,7 @@ class FakeEngine(PromptMixin):
     def register_voice_caps(cls, voice: str, caps: dict) -> dict:
         """The real registry's shape and its refusal of unknown keys, so a test can
         prove the caps payload crosses the wire intact."""
-        from ..engine.caps import CapsMixin
+        from ..engine.orpheus.caps import CapsMixin
         if not voice:
             raise ValueError('FakeEngine.register_voice_caps() requires a voice token')
         stored = {}
@@ -227,3 +246,167 @@ class FakeEngine(PromptMixin):
                 on_chunk(i, seq, audio[emitted * SAMPLES_PER_FRAME:
                                        frames * SAMPLES_PER_FRAME].copy())
             on_row(i, audio)
+
+
+# ---------------------------------------------------------------------------
+# The Higgs variant
+# ---------------------------------------------------------------------------
+
+# Higgs geometry (narrator/engine/higgs/codec.py): 25 frames/s at 24 kHz is 960
+# samples per frame, against SNAC's 2048. Same sample rate, different framing -
+# which is exactly what a protocol test should be able to tell apart.
+HIGGS_SAMPLES_PER_FRAME = 960
+HIGGS_FRAMES_PER_CHAR = 0.34      # ~13.6 ms/char, matching FakeEngine's pace
+
+
+class FakeHiggsEngineConfig(FakeEngineConfig):
+    """Same stand-in shape; kept as its own class so a Higgs protocol test can
+    assert which engine the worker built."""
+
+
+class FakeHiggsEngine(FakeEngine):
+    """The Higgs contract, with fake audio.
+
+    Two things differ from the Orpheus fake, and they are the two things the
+    ASSEMBLER has to know about a Higgs render:
+
+      pads = False        Higgs emits bare speech - no silence, no fade at
+                          either end - so the manifest's gapBefore/gapAfter are
+                          live and the assembler realizes them.
+      edge_fade_ms = 10   the assembler fades each chunk edge (-30 dB -> about
+                          -46 dB) before joining.
+
+    It also streams the way the real HiggsEngine does: ONE whole-row chunk at
+    retirement, because a delay-pattern codec has no sound windowed decode (see
+    HiggsCodec.streaming_decoder). A fake that emitted SNAC's 4-frame cadence
+    would be testing a cadence no Higgs render can produce.
+    """
+
+    # The fake that BOTH Higgs ids share. It is named for what it fakes - Higgs
+    # geometry - not for one id, because a fake claiming to be 'higgs-v3' while
+    # serving a `higgs-v2-scaffold` spawn is exactly the mislabelling the
+    # registry ids exist to prevent. `ENGINE_ID` is set per instance from the id
+    # that selected it (see fake_engine_class).
+    ENGINE_ID = 'higgs'
+    pads = False
+    edge_fade_ms = 10.0
+
+    @classmethod
+    def resolve_load_voice(cls, voice, model_dir=None, adapter_dir=None,
+                           base_dir=None) -> str:
+        """A Higgs voice is a NAME, not one of Orpheus's eight tokens.
+
+        The fake does not read the voice document (it has no clips to load), but
+        it refuses the two fields Higgs has no meaning for, so a protocol test
+        sees the same refusals the real engine gives.
+        """
+        if model_dir:
+            raise ValueError(
+                f'Higgs load carried modelDir={model_dir!r}. The served model is '
+                "the launch script's argument, not a per-load field.")
+        if base_dir:
+            raise ValueError(
+                f'Higgs load carried baseDir={base_dir!r}. Higgs has no '
+                'shared-base + per-voice-adapter split.')
+        name = (voice or '').strip()
+        if not name:
+            raise ValueError(
+                'Higgs load has no voice name. The name selects an entry in the '
+                'NARRATOR_HIGGS_VOICES document; there is no default.')
+        return name
+
+    @staticmethod
+    def frames_for(text: str) -> int:
+        return max(MIN_FRAMES, int(len(text) * HIGGS_FRAMES_PER_CHAR))
+
+    @classmethod
+    def audio_for(cls, text: str) -> np.ndarray:
+        n = cls.frames_for(text) * HIGGS_SAMPLES_PER_FRAME
+        t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
+        return (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+
+    def _tokens_to_audio(self, tokens: list) -> np.ndarray:
+        """8 codebook entries per frame, against SNAC's 7."""
+        n = (len(tokens) // 8) * HIGGS_SAMPLES_PER_FRAME
+        t = np.arange(n, dtype=np.float32) / SAMPLE_RATE
+        return (0.5 * np.sin(2 * np.pi * 220.0 * t)).astype(np.float32)
+
+    def _generate_tokens_transformers(self, prompt: str) -> list:
+        text = prompt.split(': ', 1)[-1]
+        return list(range(self.frames_for(text) * 8))
+
+    def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
+                              should_stop=None) -> None:
+        """Whole rows, at retirement - the real Higgs cadence."""
+        if not texts:
+            return
+        if voices is not None and len(voices) != len(texts):
+            raise ValueError(
+                f'FakeHiggsEngine.generate_batch_stream: {len(voices)} voices for '
+                f'{len(texts)} texts; voices must be aligned to texts or None')
+        stream_rows = set() if stream_rows is None else set(stream_rows)
+        stray = [i for i in stream_rows if not (0 <= i < len(texts))]
+        if stray:
+            raise ValueError(
+                f'FakeHiggsEngine.generate_batch_stream: stream_rows names row(s) '
+                f'{stray} outside the batch of {len(texts)}')
+        if stream_rows and on_chunk is None:
+            raise ValueError(
+                'FakeHiggsEngine.generate_batch_stream: stream_rows is non-empty but '
+                'no on_chunk was given')
+        blank = [i for i, t in enumerate(texts) if not (t or '').strip()]
+        if blank:
+            raise ValueError(
+                f'FakeHiggsEngine.generate_batch_stream: row(s) {blank} have no text '
+                'after cleaning.')
+
+        for i, text in enumerate(texts):
+            if should_stop is not None and should_stop():
+                return
+            time.sleep(STREAM_ROW_SECONDS)
+            audio = self.audio_for(text)
+            if i in stream_rows:
+                on_chunk(i, 0, audio.copy())
+            on_row(i, audio)
+
+
+# engine id -> (fake engine class, fake config class). Mirrors
+# narrator.engine.registry, so `--fake-engine` exercises the same selection the
+# real spawn makes.
+FAKE_ENGINES = {
+    'orpheus': (FakeEngine, FakeEngineConfig),
+    # Both Higgs ids share one fake: what a protocol test can see of them is the
+    # same - 24 kHz, 960-sample frames, pads = False, whole-row streaming - and
+    # the difference between them (in-process transformers vs a vllm-omni
+    # server) is below the wire, not on it. The v3 SERVER is faked separately,
+    # by an HTTP server in tests/test_higgs_v3.py, which is the only way to
+    # exercise the real client.
+    'higgs-v3': (FakeHiggsEngine, FakeHiggsEngineConfig),
+    'higgs-v2-scaffold': (FakeHiggsEngine, FakeHiggsEngineConfig),
+}
+
+
+def _fake_entry(engine_id: str):
+    if engine_id not in FAKE_ENGINES:
+        raise ValueError(
+            f"--fake-engine has no stand-in for engine '{engine_id}'. Known: "
+            f"{', '.join(sorted(FAKE_ENGINES))}.")
+    return FAKE_ENGINES[engine_id]
+
+
+def fake_engine_class(engine_id: str):
+    """The fake for `engine_id`, STAMPED with that id.
+
+    A subclass per call rather than a shared class: `ENGINE_ID` is read back off
+    the engine in log lines and refusals, and a fake that reports the wrong id
+    would make a `higgs-v2-scaffold` spawn look like a `higgs-v3` one in exactly
+    the place a reader is trying to tell them apart.
+    """
+    base = _fake_entry(engine_id)[0]
+    if base.ENGINE_ID == engine_id:
+        return base
+    return type(base.__name__, (base,), {'ENGINE_ID': engine_id})
+
+
+def fake_engine_config(engine_id: str, **kwargs):
+    return _fake_entry(engine_id)[1](**kwargs)

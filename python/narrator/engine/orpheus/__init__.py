@@ -1,4 +1,13 @@
-"""narrator.engine - the Orpheus TTS engine, ported out of ebook2audiobook.
+"""narrator.engine.orpheus - the Orpheus TTS engine, ported out of ebook2audiobook.
+
+It is narrator's FIRST implementation of `narrator.engine.protocol.Engine`
+(registry id `orpheus`). The modules below moved here UNCHANGED from
+`narrator/engine/*.py` when the engine interface was extracted (2026-09-04);
+only their import paths moved. `interface.py` is the one addition - the
+protocol surface (codec / budget / stop_policy / backend_spec / pads /
+edge_fade_ms), which reads the same constants and the same per-voice cap lookup
+the engine already had. See ../PORT_NOTES.md for the old -> new table.
+
 
 Ported from ebook2audiobook@9daab0ba lib/classes/tts_engines/orpheus.py (5,507
 lines), lib/classes/tts_engines/orpheus_stream_decode.py,
@@ -26,6 +35,7 @@ them installed.
 from .config import EngineConfig, EngineDefaults
 from .engine import OrpheusEngine
 from .errors import TokenStreamMisaligned, is_fatal_cuda_error
+from .interface import OrpheusBudget, OrpheusCodec, OrpheusInterfaceMixin
 from .snac import (LEFT_CONTEXT_FRAMES, PAYLOAD_FRAMES, RIGHT_CONTEXT_FRAMES,
                    SAMPLES_PER_FRAME, TOKENS_PER_FRAME, StreamDecodeMisaligned,
                    WindowedFrameEmitter)
@@ -33,7 +43,10 @@ from .snac import (LEFT_CONTEXT_FRAMES, PAYLOAD_FRAMES, RIGHT_CONTEXT_FRAMES,
 __all__ = [
     'EngineConfig',
     'EngineDefaults',
+    'OrpheusBudget',
+    'OrpheusCodec',
     'OrpheusEngine',
+    'OrpheusInterfaceMixin',
     'TokenStreamMisaligned',
     'StreamDecodeMisaligned',
     'is_fatal_cuda_error',

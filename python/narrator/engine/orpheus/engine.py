@@ -40,6 +40,7 @@ from .caps import CapsMixin
 from .config import STOCK_VOICE_PRESETS, EngineConfig, EngineDefaults
 from .errors import TokenStreamMisaligned, is_fatal_cuda_error
 from .guards import GuardsMixin
+from .interface import OrpheusInterfaceMixin
 from .mlx_backend import MlxBackendMixin
 from .prompt import PromptMixin
 from .registry import LOADED
@@ -74,8 +75,8 @@ def _cleanup_on_exit():
 atexit.register(_cleanup_on_exit)
 
 
-class OrpheusEngine(EngineDefaults, CapsMixin, PromptMixin, SamplingMixin,
-                    SnacMixin, GuardsMixin, AudioMixin, AdaptersMixin,
+class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixin,
+                    SamplingMixin, SnacMixin, GuardsMixin, AudioMixin, AdaptersMixin,
                     VllmBackendMixin, MlxBackendMixin, TransformersBackendMixin):
     """Orpheus TTS engine - SOTA open-source TTS built on Llama-3b backbone.
     Excellent prosody and naturalness, ideal for audiobooks.

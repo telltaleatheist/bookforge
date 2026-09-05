@@ -513,7 +513,12 @@ class RangeTest(WorkerTestBase):
         self.assertFalse(result['success'])
         self.assertIn('Session directory not found', result['error'])
 
-    def test_a_non_orpheus_session_is_refused_by_name(self):
+    def test_a_deleted_e2a_engine_is_refused_by_name(self):
+        """UPDATED when the worker became engine-agnostic: it renders every id in
+        `narrator.engine.registry`, not Orpheus alone, so the old assertion
+        ("narrator renders 'orpheus' only") is no longer a true statement. What
+        must NOT change is that a deleted e2a engine is refused BY NAME and told
+        where to go - "unknown engine" would read like a typo."""
         state_path = os.path.join(self.process_dir, 'session-state.json')
         with open(state_path, encoding='utf-8') as f:
             state = json.load(f)
@@ -525,8 +530,11 @@ class RangeTest(WorkerTestBase):
                           sentences_dir=self.sentences_dir, device='cpu',
                           sentence_start=0, sentence_end=0))
         self.assertFalse(result['success'])
-        self.assertIn("narrator renders 'orpheus' only", result['error'])
         self.assertIn("'xtts'", result['error'])
+        self.assertIn('not ported', result['error'])
+        self.assertIn('ebook2audiobook', result['error'])
+        # ...and it still names what narrator CAN render, from the registry.
+        self.assertIn("'orpheus'", result['error'])
 
     def test_a_session_with_no_engine_is_refused(self):
         state_path = os.path.join(self.process_dir, 'session-state.json')
@@ -546,6 +554,245 @@ class RangeTest(WorkerTestBase):
 # =============================================================================
 # The cooperative stop
 # =============================================================================
+
+class EngineSelectionTest(WorkerTestBase):
+    """The worker picks its engine through `narrator.engine.registry`.
+
+    A RECORDING factory stands in for each id, so these assert the SELECTION -
+    which class is asked for, and which config it is handed - without importing
+    a backend or loading a model.
+    """
+
+    def setUp(self):
+        super().setUp()
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+
+    def set_state_engine(self, engine_id, **extra):
+        path = os.path.join(self.process_dir, 'session-state.json')
+        with open(path, encoding='utf-8') as f:
+            state = json.load(f)
+        state['tts_engine'] = engine_id
+        state.update(extra)
+        session_store.save_session_state(self.process_dir, state)
+
+    # -- the registry decides ------------------------------------------------
+
+    def test_the_registry_knows_both_ids_this_worker_can_configure(self):
+        """`CONFIG_BUILDERS` must not drift from the registry: an id narrator can
+        build a config for that the registry cannot instantiate (or the reverse)
+        is a gap that only shows up at render time."""
+        from narrator.engine import registry
+        from narrator.render.worker import CONFIG_BUILDERS
+
+        self.assertIn('orpheus', registry.ids())
+        self.assertIn('higgs-v3', registry.ids())
+        for engine_id in CONFIG_BUILDERS:
+            self.assertIn(engine_id, registry.ids(),
+                          f'{engine_id} has a config builder but no registry entry')
+
+    def test_build_engine_for_asks_the_registry_for_that_id(self):
+        """The factory is one argument (so every existing fake still fits) and the
+        id is closed over."""
+        from narrator.engine import registry
+        from narrator.render import worker as worker_mod
+
+        asked = []
+
+        def fake_engine_class(engine_id):
+            asked.append(engine_id)
+            return lambda config: ('engine-for', engine_id, config)
+
+        real = registry.engine_class
+        registry.engine_class = fake_engine_class
+        try:
+            factory = worker_mod.build_engine_for('higgs-v3')
+            self.assertEqual(factory.engine_id, 'higgs-v3')
+            built = factory('CONFIG')
+        finally:
+            registry.engine_class = real
+
+        self.assertEqual(asked, ['higgs-v3'])
+        self.assertEqual(built, ('engine-for', 'higgs-v3', 'CONFIG'))
+
+    def test_an_orpheus_session_reaches_the_orpheus_class_with_an_EngineConfig(self):
+        from narrator.engine import registry
+        from narrator.render import worker as worker_mod
+
+        seen = {}
+
+        def fake_engine_class(engine_id):
+            seen['id'] = engine_id
+
+            def make(config):
+                seen['config'] = config
+                return FakeRenderEngine(FakeEngineConfig(
+                    sentences_dir=config.sentences_dir, voice=config.voice))
+            return make
+
+        real = registry.engine_class
+        registry.engine_class = fake_engine_class
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                result = worker_mod.run_worker(
+                    self.request(sentence_start=0, sentence_end=1,
+                                 fine_tuned='deathstalker'))
+        finally:
+            registry.engine_class = real
+
+        self.assertTrue(result['success'], result)
+        self.assertEqual(seen['id'], 'orpheus')
+        # Byte-identical Orpheus config: an EngineConfig with the voice TOKEN.
+        from narrator.engine import EngineConfig
+        self.assertIsInstance(seen['config'], EngineConfig)
+        self.assertEqual(seen['config'].voice, 'deathstalker')
+        self.assertEqual(seen['config'].sentences_dir, self.sentences_dir)
+        self.assertEqual(seen['config'].audio_format, 'flac')
+        self.assertIn('[WORKER] TTS engine: orpheus, fine_tuned: deathstalker',
+                      buf.getvalue())
+
+    def test_a_higgs_session_reaches_the_higgs_class_with_a_higgs_config(self):
+        """The config comes from the REGISTRY's own factory (which resolves the
+        voice id against the catalog), then gets the three session fields."""
+        from narrator.engine import registry
+        from narrator.render import worker as worker_mod
+
+        class FakeHiggsConfig:
+            def __init__(self, voice, adapter_dir=None):
+                self.voice = voice
+                self.adapter_dir = adapter_dir
+                self.sentences_dir = None
+                self.process_dir = None
+                self.audio_format = None
+
+        seen = {}
+
+        def fake_engine_config(engine_id, **kwargs):
+            seen['config_id'] = engine_id
+            seen['config_kwargs'] = kwargs
+            return FakeHiggsConfig(**kwargs)
+
+        def fake_engine_class(engine_id):
+            seen['class_id'] = engine_id
+
+            def make(config):
+                seen['config'] = config
+                return FakeRenderEngine(FakeEngineConfig(
+                    sentences_dir=config.sentences_dir, voice='fake'))
+            return make
+
+        self.set_state_engine('higgs-v3', higgs_voice='deathstalker-samebook')
+        real_class, real_config = registry.engine_class, registry.engine_config
+        registry.engine_class, registry.engine_config = fake_engine_class, fake_engine_config
+        try:
+            buf = io.StringIO()
+            with redirect_stdout(buf):
+                result = worker_mod.run_worker(
+                    self.request(sentence_start=0, sentence_end=1,
+                                 tts_engine=None, fine_tuned=None))
+        finally:
+            registry.engine_class, registry.engine_config = real_class, real_config
+
+        self.assertTrue(result['success'], result)
+        self.assertEqual(seen['class_id'], 'higgs-v3')
+        self.assertEqual(seen['config_id'], 'higgs-v3')
+        # Only what v3 understands: the catalog voice id, and an adapter dir.
+        # NOT model_dir / base_dir / caps, which its factory refuses by name.
+        self.assertEqual(seen['config_kwargs'],
+                         {'voice': 'deathstalker-samebook', 'adapter_dir': None})
+        self.assertEqual(seen['config'].sentences_dir, self.sentences_dir)
+        self.assertEqual(seen['config'].audio_format, 'flac')
+
+    def test_the_flag_beats_the_state_for_the_engine_too(self):
+        from narrator.engine import registry
+        from narrator.render import worker as worker_mod
+
+        seen = {}
+
+        def fake_engine_class(engine_id):
+            seen['id'] = engine_id
+            return lambda config: FakeRenderEngine(FakeEngineConfig(
+                sentences_dir=config.sentences_dir, voice=config.voice))
+
+        real = registry.engine_class
+        registry.engine_class = fake_engine_class
+        try:
+            with redirect_stdout(io.StringIO()):
+                worker_mod.run_worker(self.request(sentence_start=0, sentence_end=0,
+                                                   tts_engine='orpheus'))
+        finally:
+            registry.engine_class = real
+        self.assertEqual(seen['id'], 'orpheus')
+
+    # -- refusals ------------------------------------------------------------
+
+    def test_an_unknown_engine_id_is_refused_naming_the_registrys_ids(self):
+        from narrator.engine import registry
+
+        self.set_state_engine('llasa-8b')
+        result, _, engine = self.run_it(
+            WorkerRequest(session_id='x', session_dir=self.session_dir,
+                          sentences_dir=self.sentences_dir, device='cpu',
+                          sentence_start=0, sentence_end=0))
+        self.assertFalse(result['success'])
+        self.assertIn("Unknown narrator engine 'llasa-8b'", result['error'])
+        for known in registry.ids():
+            self.assertIn(known, result['error'],
+                          f'the refusal does not name the registry id {known}')
+        self.assertIsNone(engine)      # nothing was constructed
+
+    def test_a_registry_id_this_worker_cannot_configure_is_refused_before_any_side_effect(self):
+        """`higgs-v2-scaffold` IS in the registry - as scaffolding the registry
+        itself says must never be selected by accident. It has no config builder
+        here, and the refusal must land BEFORE the sentences dir is created."""
+        from narrator.engine import registry
+
+        self.assertIn('higgs-v2-scaffold', registry.ids())
+        scratch = os.path.join(self.root, 'not-created-yet')
+        self.set_state_engine('higgs-v2-scaffold')
+
+        result, _, engine = self.run_it(
+            WorkerRequest(session_id='x', session_dir=self.session_dir,
+                          sentences_dir=scratch, device='cpu',
+                          sentence_start=0, sentence_end=0))
+        self.assertFalse(result['success'])
+        self.assertIn("cannot configure engine 'higgs-v2-scaffold'", result['error'])
+        self.assertIn('orpheus', result['error'])
+        self.assertIsNone(engine)
+        self.assertFalse(os.path.exists(scratch),
+                         'the refusal created a directory before refusing')
+
+    def test_a_higgs_session_with_no_voice_id_is_refused_and_never_falls_back(self):
+        """`fine_tuned` is an Orpheus prompt token; using it as a Higgs catalog id
+        would resolve to nothing, or to a different voice, for a whole book."""
+        self.set_state_engine('higgs-v3')
+        result, _, engine = self.run_it(
+            self.request(sentence_start=0, sentence_end=0,
+                         tts_engine=None, fine_tuned='deathstalker'))
+        self.assertFalse(result['success'])
+        self.assertIn('needs a voice id', result['error'])
+        self.assertIn('--higgs_voice', result['error'])
+        self.assertIn('NOT a substitute', result['error'])
+        self.assertIsNone(engine)
+
+    def test_the_voice_label_prints_a_name_not_a_ClipsVoice_repr(self):
+        """A ClipsVoice's repr is its clips AND their transcripts - pages of text
+        in a log line. The NAME is what the worker prints."""
+        from narrator.render.worker import voice_label
+
+        class V:
+            name = 'deathstalker-samebook'
+
+        class C:
+            voice = V()
+
+        class Orpheusish:
+            voice = 'deathstalker'
+
+        self.assertEqual(voice_label(C()), 'deathstalker-samebook')
+        self.assertEqual(voice_label(Orpheusish()), 'deathstalker')
+
 
 class CooperativeStopTest(WorkerTestBase):
 

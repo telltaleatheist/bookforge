@@ -72,7 +72,7 @@ from __future__ import annotations
 import json
 import os
 
-from .worker import WorkerRequest, build_engine, run_worker
+from .worker import WorkerRequest, run_worker
 
 
 class RetakeArgumentError(ValueError):
@@ -165,7 +165,7 @@ def candidate_files(sentences_dir: str, indices: list[int], num_takes: int,
     return out
 
 
-def run_retake(request: WorkerRequest, engine_factory=build_engine) -> dict:
+def run_retake(request: WorkerRequest, engine_factory=None) -> dict:
     """Render `request`'s explicit indices, `num_takes` times, in one model load.
 
     A thin, VALIDATING wrapper over `run_worker`: the retake path is the same loop
@@ -175,6 +175,11 @@ def run_retake(request: WorkerRequest, engine_factory=build_engine) -> dict:
 
     Refuses a request with no `sentence_indices`, because a "retake" of a range is
     just a render and should say so.
+
+    `engine_factory=None` means "the loop picks, from the session's engine id"
+    (`render/worker.build_engine_for`). The default used to be the Orpheus
+    factory, which would have silently retaken a Higgs chunk with Orpheus - the
+    exact class of substitution `engine/registry.py` refuses to make.
     """
     if not request.sentence_indices:
         raise RetakeArgumentError(

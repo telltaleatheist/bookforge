@@ -498,6 +498,78 @@ class RoutingTest(unittest.TestCase):
             self.assertEqual(code, 1, extra)
             self.assertIn(expected, out, extra)
 
+    # -- engine selection ----------------------------------------------------
+
+    def test_the_higgs_render_route_reaches_the_worker_and_carries_the_voice(self):
+        """`--tts_engine higgs-v3 --higgs_voice X` used to be refused at the door
+        while `render/worker.py` could not carry a Higgs voice. It now routes,
+        and the voice arrives on the WorkerRequest as a catalog id."""
+        from narrator.engine import registry
+
+        for i in range(10):
+            os.remove(os.path.join(self.sentences_dir, f'{i}.flac'))
+        seen = {}
+
+        def fake_engine_class(engine_id):
+            seen['class_id'] = engine_id
+            return lambda config: FakeRenderEngine(FakeEngineConfig(
+                sentences_dir=config.sentences_dir, voice='fake'))
+
+        def fake_engine_config(engine_id, **kwargs):
+            seen['config_kwargs'] = kwargs
+
+            class Cfg:
+                voice = kwargs.get('voice')
+                adapter_dir = kwargs.get('adapter_dir')
+                sentences_dir = None
+                process_dir = None
+                audio_format = None
+            return Cfg()
+
+        # NO engine_factory: the point is that the DEFAULT path picks the class
+        # through the registry. (run_main injects this suite's Orpheus fake,
+        # which would bypass exactly what is under test.)
+        real_class, real_config = registry.engine_class, registry.engine_config
+        registry.engine_class, registry.engine_config = fake_engine_class, fake_engine_config
+        buf = io.StringIO()
+        try:
+            with redirect_stdout(buf):
+                code = compat_app.main([
+                    '--headless', '--worker_mode', '--session', 'x',
+                    '--session_dir', self.session_dir,
+                    '--sentences_dir', self.sentences_dir,
+                    '--device', 'CUDA', '--tts_engine', 'higgs-v3',
+                    '--higgs_voice', 'deathstalker-samebook',
+                    '--sentence_start', '0', '--sentence_end', '1'])
+        finally:
+            registry.engine_class, registry.engine_config = real_class, real_config
+        out = buf.getvalue()
+
+        self.assertEqual(code, 0, out)
+        self.assertEqual(seen['class_id'], 'higgs-v3')
+        self.assertEqual(seen['config_kwargs'],
+                         {'voice': 'deathstalker-samebook', 'adapter_dir': None})
+        self.assertIn('[WORKER] TTS engine: higgs-v3', out)
+        result = self.worker_result(out)
+        self.assertTrue(result['success'])
+        self.assertEqual(result['sentences_converted'], 2)
+
+    def test_a_higgs_voice_on_an_orpheus_engine_is_refused_at_the_door(self):
+        code, out = self._refusal_via_main([
+            '--headless', '--worker_mode', '--session', 'x',
+            '--session_dir', self.session_dir, '--tts_engine', 'orpheus',
+            '--higgs_voice', 'deathstalker-samebook',
+            '--sentence_start', '0', '--sentence_end', '1'])
+        self.assertEqual(code, 1)
+        self.assertIn('--higgs_voice names a Higgs voice', out)
+
+    def _refusal_via_main(self, argv):
+        buf = io.StringIO()
+        with redirect_stdout(buf):
+            with self.assertRaises(SystemExit) as caught:
+                compat_app.main(argv, engine_factory=self.factory)
+        return int(caught.exception.code or 0), buf.getvalue()
+
     # -- sessions ------------------------------------------------------------
 
     def test_list_sessions_prints_e2as_json(self):
