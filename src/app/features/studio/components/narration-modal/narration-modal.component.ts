@@ -126,6 +126,7 @@ import { narrationVideoStep, type VideoResolution } from '@shared/queue/narratio
 // from the shared description rather than from the local mapping door, because
 // the sentence must be the same one main raises for a Foundry-pressed run.
 import { requireCoverageAligner } from '@shared/queue/narration-run';
+import { NARRATION_TEXT_FAILSAFE_NOTICE } from '@shared/processing/narration-text-notice';
 import {
   engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
 } from '../../../../core/models/tts-engine-registry';
@@ -1573,9 +1574,10 @@ export class NarrationModalComponent {
       message: `${why} Run it before narrating?`,
       detail: `You pressed ${pressed}. Yes runs the cleanup on this book first and queues this `
         + 'narration behind it, reading the book the cleanup produced rather than the file on the '
-        + 'row you pressed — minutes of model time over the whole book, once, and everything you '
-        + 'do afterwards carries it along. No narrates the text exactly as printed: a year stays '
-        + 'four digits for the voice to guess at, and the punctuation is the book’s own.',
+        + 'row you pressed — minutes of model time over the whole book, once. '
+        + NARRATION_TEXT_FAILSAFE_NOTICE
+        + ' No narrates the text exactly as printed: a year stays four digits for the voice to '
+        + 'guess at, and the punctuation is the book’s own.',
       confirmLabel: 'Yes, run cleanup then narrate',
       alternateLabel: 'No, narrate as printed',
       cancelLabel: 'Cancel',

@@ -55,7 +55,7 @@ remembers.
 > | what | where | asks |
 > |---|---|---|
 > | the stamp shape and parser | `NarrationTextStamp`, `readNarrationTextStamp`, `writeNarrationTextStamp` (`electron/epub-processor.ts`) | a FILE: what does the OPF's `bookforge:narration-text` meta say |
-> | the file gate | `narrationTextGate` (`electron/narration-text-pass.ts`) | a FILE: is there a stamp, and is it this build's version |
+> | the file gate | `narrationTextGate` (`electron/narration-clean-text.ts`) | a FILE: is there a stamp, and is it this build's version |
 > | the project gate | `narrationTextReadiness` / `narrationTextReadinessFor` (`electron/narration-text-readiness.ts`), over IPC `narration:text-readiness` | a PROJECT: is there a `narration-text` entry, and is it the LAST text-changing one |
 > | the door's naming of the case | `prepareNarrationInput` → `NarrationPrepResult.cleanup`: `stamped` / `unstamped` / `skipped-by-user` / `normalized-inline` | this RUN: what was read, and what the log should say |
 > | the queue kind | `FoundryJobKind` gained `clean` and `simplify` (`electron/foundry-host-queue.ts`); a press in the hosted window mints a row HERE, Foundry executes it | scheduling, which crosses; execution, which does not |
@@ -77,48 +77,76 @@ remembers.
 > door is synchronous by contract and asking a binary its version is a spawn),
 > reusing the one comparator `foundryVersionAtLeast`. Only `clean` is gated: a
 > simplify is `translate --rewrite`, a command every foundry this app has adopted
-> has had.
+> has had. **The FAILSAFE has a second floor**, foundry **1.2.0**
+> (`FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB` + `foundryTooOldForCleanTextEpub`, in the
+> same file, on the same comparator): 1.1.0 has `clean-text` and not its `--epub`
+> door.
 >
-> ### THE GAP — MEASURED, 2026-09-05, AND NOT CLOSED HERE
+> ### THE GAP IS CLOSED — foundry 1.2.0, and the failsafe is Foundry-backed
 >
-> **The engine cannot clean an arbitrary EPUB in place, so `prepareNarrationInput`
-> still runs BookForge's own pass for a bare book.** This was measured against the
-> real 1.1.0 binary rather than reasoned about, and all three legs of it failed:
+> Until 2026-09-05 the engine could not clean an arbitrary EPUB in place, so
+> `runNarrationTextPass` still ran BookForge's own copy of the three stages for a
+> bare book. That was measured against the 1.1.0 binary and all of it failed:
+> `vlm-compile` has no `--records`, so compiling the parent book file wrote a file
+> CLAIMING a cleanup over text nobody cleaned; and the round trip was not
+> preserving — every original id gone, `OEBPS/chapter1.xhtml` become
+> `EPUB/text/c0001.xhtml`, `dc:identifier` replaced.
 >
-> 1. `foundry vlm-book --epub <any.epub> --out book.jsonl` works on any publisher
->    EPUB and needs no stamp — so a book file CAN be made here.
-> 2. `foundry clean-text` then produces records and a stamp, correctly (measured:
->    `Dr. Smith` → *Doctor Smith*, `(1 Pet. 3:7)` → *First Peter three, verse
->    seven*, `2:00 p.m.` → *two p.m.*, `$5,000`/`12` read as words).
-> 3. **But nothing on the CLI turns those records back into the book.**
->    `vlm-compile` takes `--book` and `--narration-stamp` and has **no
->    `--records`** — so compiling the parent book file writes a file that CLAIMS a
->    cleanup over text nobody cleaned. The materialisation is Foundry's app code
->    (`translated()`, `app/shared/materialize.ts`), reachable only through its
->    Electron main process.
-> 4. **And the round trip is not preserving.** `vlm-compile` rebuilds a fresh
->    foundry-shaped EPUB: every original id gone, `OEBPS/chapter1.xhtml` becomes
->    `EPUB/text/c0001.xhtml`, `<section>` wrappers dropped, `dc:identifier`
->    replaced with `urn:foundry:bank:<hash>`. A BookForge narration EPUB — a cut,
->    with its working-copy identity, its chapter markers paired by position and
->    its provenance stamps — would come back a different document.
+> **Foundry 1.2.0 (`d6509e7`) shipped the door instead**, and it is a door onto
+> the same pass rather than a second implementation:
 >
-> Re-deriving Foundry's explode here to map `records.parts` back onto our own text
-> nodes would be a second copy of a rule that lives in another repository — the
-> exact two-copies-of-one-truth failure `foundry-app/` is a sealed subtree to
-> prevent — so it was not done. **The route that DOES work end to end today is the
-> hosted one**: press Clean text in the Foundry window, the row runs in BookForge's
-> queue, and every EPUB exported from at-or-under that step carries the stamp this
-> app reads. The bare-EPUB door (`--input book.epub`, and `prepareNarrationInput`
-> for a `.txt` audition) is the case with no engine route, and it is why the
-> modules below are still in this repository.
+> ```
+> foundry clean-text --epub <in.epub> --out <out.epub>
+>                    [--endpoint <url>] [--model <name>] [--keep-model]
+> ```
 >
-> Two of them could not have left in any case: `canonicalizePunctuationText` is
-> stage 1 on the **streaming** path (`electron/book-render-service.ts`,
-> `electron/reader-stream-bridge.ts`, `electron/tts-api-server.ts`), and
-> `ai-cleanup-prepass.ts` / `number-expansion.ts` / `shared/text/line-join.ts` are
-> imported by `ai-bridge.ts` and `mutool-bridge.ts` for work that has nothing to do
-> with narration.
+> It rides `translate`'s EPUB route: `readFoundryBook` for the container chain and
+> the admission rule, `findBlocks` for the same walk over the same stamped
+> categories, `spliceAll` to put every answer back into the SOURCE RANGE it came
+> out of. The container, the ids, the spine, the file names, `dc:identifier`,
+> every `data-bf-*` attribute and every unedited byte survive **by construction**;
+> the `bookforge:narration-text` meta is its only change to the package document.
+> An EPUB with no `data-bf-cat` anywhere is refused by name and pointed at
+> `foundry epub-stamp`.
+>
+> **So BookForge's own copy of the pass is gone.** `electron/narration-text-pass.ts`
+> was deleted on 2026-09-05 and `electron/narration-clean-text.ts` is what stands
+> in its place — a spawn, a version floor, a progress parse and the file gate.
+> Owen's ruling for the act it serves:
+>
+> > *"the cleaning step can be done on an epub because the user might forget it
+> > should be done at all, and they'll be asked to do it again. it should replace
+> > the epub that's currently there if one already exists. if the user deletes the
+> > epub and re-exports, the cleaning job will be lost. that's the cost of doing it
+> > to an epub. the user can be informed of it. the bookforge clean text action
+> > outside of foundry is a failsafe in case the user forgets and just wants to get
+> > it done immediately. it won't be treated as the standard method."*
+>
+> ### What is still in this repository, and why
+>
+> | file | why it stayed | who imports it |
+> |---|---|---|
+> | `electron/tts-punctuation.ts` | `canonicalizePunctuationText` is **stage 1 of the STREAMING path** — the live stream and the whole-book render clean punctuation inline, because that is instant and a pass is not. `PUNCTUATION_SPEC_VERSION` is also what the two gates measure a stamp by | `book-render-service.ts`, `reader-stream-bridge.ts`, `tts-api-server.ts`, `parallel-tts-bridge.ts`, `narration-text-readiness.ts`, `narration-clean-text.ts` |
+> | `electron/tts-number-normalizer.ts` | the **`.txt` audition path**. `normalizeTextBlocks` / `splitTextBlocks` are how `--tts --text` reads its numbers, and a plain-text audition has no book, no chain and no stamp, so it has no engine route. `NORMALIZER_VERSION` is the gates' other half | `parallel-tts-bridge.ts` (`normalizeTextNumbersFor`), `narration-text-readiness.ts`, `narration-clean-text.ts` |
+> | `electron/tts-number-rules.ts` | stage 2 of that audition, unforked | `tts-number-normalizer.ts` |
+> | `electron/tts-spoken-forms.ts` | the reading tables the one-token law consults, on that same path | `tts-number-normalizer.ts` |
+> | `electron/data/english-words.json` | the caps reading's word list | `tts-spoken-forms.ts` |
+> | `electron/prompts/tts-number-normalize.txt` | the audition's prompt | `ai-bridge.ts` (`loadNumberNormalizePrompt`) |
+> | `electron/prompts/tts-narration-text.txt` | the wider instruction `loadNarrationTextPrompt` composes onto it | `ai-bridge.ts` |
+> | `electron/ai-cleanup-prepass.ts`, `electron/number-expansion.ts`, `shared/text/line-join.ts` | work that has **nothing to do with narration**: `ai-bridge.ts`'s edit-list applier and `mutool-bridge.ts`'s wrap-hyphen rule | `ai-bridge.ts`, `mutool-bridge.ts`, and the three above |
+>
+> All eight are also the files `tools/test-foundry-clean-text-vendor.js` pins by
+> sha256 against Foundry's own copies, so the versions the gates demand here are
+> the versions the engine stamps there. **Editing one without the other is the
+> keeper's failure, by design.**
+>
+> What DID go: `electron/narration-text-pass.ts` (the EPUB driver, the punctuation
+> span differ, the two-write staging, the gate) and its keeper
+> `tools/test-narration-text-pass.js`. The gate moved verbatim into
+> `electron/narration-clean-text.ts`; the keeper's reading-law half — every ruling
+> of the four adversarial reviews of 2026-09-04 — is
+> `tools/test-narration-reading-law.js`, which runs against the vendored validator
+> those two paths still depend on.
 
 ---
 
@@ -313,13 +341,49 @@ Planned by
 `electron/queue-steps/pass.ts`'s shared `passModule`, executed by
 `runNarrationTextPass` in `electron/processing-passes.ts`. It never runs inline.
 
+**IT IS THE FAILSAFE, AND IT SPAWNS THE ENGINE.** The exact argv:
+
+```
+foundry clean-text --epub <the book the ledger names> --out <stages/NN-narration-text/narration-text.epub>
+                   --endpoint <ollamaUrl> --model <defaultLlmModel>
+```
+
+`--endpoint` and `--model` are read from `userData/app-settings.json` — the same
+file the hosted **Clean text** dialog seeds its two fields from (`llm:defaults`,
+foundry-app/electron/ipc.ts), read here by mirroring `clampModelTag` and
+`clampOllamaUrl` rather than by importing into the sealed subtree, on
+`standaloneFoundryProjectsRoot`'s precedent. The two doors cannot run a cleanup
+against different models.
+
+The book the ledger names may be an **exploded working copy**, and the engine
+reads an archive, so a tree is packed beside the stage through
+`copyBookIntoContainer` — the one copy in this app that proves its result entry
+by entry — and removed once the run is over. The landing is unchanged:
+`replaceBookEpub` converts the produced archive back to the book's own kind and
+lands it with **one rename**, and the pass then asserts that what it landed on is
+the book it read.
+
+The floor is **foundry 1.2.0** (`FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB`, beside
+`FOUNDRY_VERSION_FOR_CLEAN_TEXT` in `electron/foundry-host-queue.ts`, sharing the
+one comparator `foundryVersionAtLeast`). An older engine is refused by name,
+naming the release, before anything is spawned.
+
+**The notice.** Both places the failsafe is offered — the "Clean text…" button's
+confirmation and the "Yes" arm of the Narrate gate's offer — show
+`NARRATION_TEXT_FAILSAFE_NOTICE` (`shared/processing/narration-text-notice.ts`),
+one constant, verbatim: *this cleans the exported EPUB in place, deleting or
+re-exporting it loses the cleanup, and the standard method is the Clean text step
+in the Foundry window.* The finished row's summary says it again, because the
+moment somebody is about to re-export is later than the moment they pressed.
+
 It records:
 
 * `stages/NN-narration-text/diff.json` — the frozen receipt the versions page's
   **Review changes** reads (`writePassDiff` / `readPassDiff`);
-* `stages/NN-narration-text/narration-text.receipt.json` — the full record:
-  per-rule punctuation counts, every refusal, and the number pass's own unit
-  record with every proposed edit and the validator's verdict on it;
+* `stages/NN-narration-text/narration-text.receipt.json` — **the engine's own
+  `<out>.receipt.json`, moved into the stage rather than recomposed**: per-rule
+  punctuation counts, every refusal, every block left exactly as printed, and the
+  unit record with every proposed edit and the validator's verdict on it;
 * an `appliedPasses` entry and a **ledger entry** with the diff as its receipt.
 
 **Nothing to do is a refusal by name.** A book that already carries a current
@@ -343,17 +407,27 @@ while its file carried a current stamp, which is the divergence that made the
 re-run deadlock reachable. `--input` is the bare-EPUB door, for a file with no
 project around it.
 
-`--input` writes `<stem>.narration.epub` and
-`<stem>.narration.narration-text.json` beside the input. A file that already exists and describes a **different** book
-is never overwritten — `uniqueOutputPath` gives the new one its `" (2)"`. A
-cleaned book whose receipt names *this* source at *this* version is reused, and
-the reuse check enumerates **every** ` (n)` sibling: stat-ing only the bare name
-meant that after one collision every later run minted a new copy and paid for a
-full model pass while correctly-cleaned copies sat unread.
+**`--input` REPLACES THE BOOK.** Owen, 2026-09-05: *"it should replace the epub
+that's currently there if one already exists."* The engine writes a
+`<stem>.bookforge-clean-<uuid>.epub` beside the input and that is renamed onto it
+— one rename, within one filesystem, so a reader sees the old book or the new one
+and never a half-written one. The engine's receipt is kept beside it as
+`<stem>.narration-text.json`; its two sidecars, which are named off the staging
+path, are removed rather than left as orphans.
+
+That ends the `<stem>.narration.epub` sibling and the whole `" (n)"` reuse ladder
+that went with it. **What makes a second run cheap is the stamp the first one
+wrote**: the step asks `narrationTextGate` first and does nothing at all for a
+book that already carries a current one. (Inside the engine, a run killed part way
+resumes off its own `<out>.clean-bank.jsonl` and re-buys nothing.)
+
+`--model` is **ignored and said to be ignored** on both routes: the model is the
+engine's setting now, and honouring a tag here would run a cleanup the app's own
+settings say nothing about.
 
 `cli/narration-text-step.js` is the one door; `cli/narration-text.js` is the
-standalone command; both call the compiled `runNarrationTextPass` — the same
-function the queue job runs, never a reimplementation.
+standalone command; both call the compiled `cleanTextEpub` — the same door the
+queue job runs, never a reimplementation.
 
 `orpheus-batch-render.js` and `orpheus-audiobook-render.js` run that step
 **automatically** before the prep, because an unattended chain has nobody to ask.

@@ -4,7 +4,7 @@
  *
  * ── Two gates, one meaning ──────────────────────────────────────────────────
  *
- * `narrationTextGate` (electron/narration-text-pass.ts) asks a FILE: it reads the
+ * `narrationTextGate` (electron/narration-clean-text.ts) asks a FILE: it reads the
  * stamp on the OPF, and it is what the render door and the CLI use, because they
  * are handed a path and nothing else.
  *
@@ -28,6 +28,14 @@
  * `narrationTextReadiness` — the three-valued one below — is what the PASS
  * itself asks (`processing-passes.ts`, `runNarrationTextPass`) to decide whether
  * a re-run has any work to do. That is the question it was always right for.
+ *
+ * BOTH GATES READ VERSIONS THIS APP NO LONGER OWNS. `NORMALIZER_VERSION` and
+ * `PUNCTUATION_SPEC_VERSION` are the ENGINE's since Owen's 2026-09-05 ruling;
+ * the two modules they are read from here are the vendored copies, pinned
+ * against foundry's own by `tools/test-foundry-clean-text-vendor.js`. So a
+ * cleanup foundry stamped and a readiness this app computes are measured by one
+ * definition, and a drift between them is a keeper failure rather than a book
+ * that quietly reads stale forever.
  *
  * ── What counts as text-changing ────────────────────────────────────────────
  *
@@ -261,7 +269,7 @@ export async function narrationTextReadinessFor(
 ): Promise<NarrationTextReadinessAnswer> {
   const fs = await import('fs');
   const manifestService = await import('./manifest-service.js');
-  const { narrationTextGate } = await import('./narration-text-pass.js');
+  const { narrationTextGate } = await import('./narration-clean-text.js');
 
   try {
     const fileState = askedPath === undefined || !fs.existsSync(askedPath)

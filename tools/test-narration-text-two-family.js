@@ -21,10 +21,24 @@
  * guess between. So this one builds two, presses the button on the SECOND, and
  * follows the whole act through to the artifact a chained narration would read.
  *
- * The model is stubbed by replacing the runner module's exports in
- * `require.cache` before the pass loads it — the pass reaches it through a
- * dynamic import at call time, so the stub is what it gets, and production keeps
- * no test-only seam.
+ * ── THE ENGINE IS STUBBED, and only the engine ──────────────────────────
+ *
+ * Since 2026-09-05 the cleanup itself is `foundry clean-text --epub` and the
+ * pass in this app is the door that spawns it (electron/narration-clean-text.ts).
+ * Driving the real binary here would need a real model over a real book, which
+ * is minutes of GPU for a question that is not about the cleanup at all — this
+ * suite is about WHICH CHAIN the act lands on.
+ *
+ * So `cleanTextEpub` is replaced in `require.cache` before the pass loads it —
+ * the pass reaches the module through a dynamic import at call time, so the stub
+ * is what it gets, and production keeps no test-only seam. `narrationTextGate`
+ * on the same module is NOT stubbed: it reads the OPF the stub stamped, exactly
+ * as it reads the one the engine stamps, so every gate assertion below is the
+ * real reader. What the stub replaces is one spawn.
+ *
+ * The door itself — argv, the version floor, the receipt, the stamp read back —
+ * is held against the real 1.2.0 binary by
+ * `tools/test-narration-clean-text-door.js`.
  */
 'use strict';
 const assert = require('assert');
@@ -51,30 +65,109 @@ require(path.join(REPO, 'cli', 'electron-stub.js'));
 const manifestService = require(path.join(DIST, 'electron', 'manifest-service.js'));
 const { ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
 
-// ── The model, stubbed before anything loads it ─────────────────────────────
-const RUNNER_MODULE = require.resolve(path.join(DIST, 'electron', 'tts-number-normalizer-runner.js'));
-require(RUNNER_MODULE);
-const modelCalls = [];
-/** Every block the model was actually handed, so a REPLAY cannot pass for a run. */
-const modelTargets = () => modelCalls.map((input) => input);
-require.cache[RUNNER_MODULE].exports.numberNormalizerModel = () => 'fake:1b';
-require.cache[RUNNER_MODULE].exports.createOllamaNormalizerRunner = () => ({
-  model: 'fake:1b',
-  pinContextTo() { /* no window to size */ },
-  async generate(input) {
-    modelCalls.push(input);
-    // n6: a scripture reference is protected by the rules and READ here.
-    return input.includes('Col. 3:19-4:1')
-      ? '{"edits": [{"find": "Col. 3:19-4:1", '
-        + '"replace": "Colossians three, verse nineteen to four, verse one"}]}'
-      : '{"edits": []}';
-  },
-  async release() { /* nothing resident */ },
-});
+// ── The engine, stubbed before anything loads it ───────────────────────
+//
+// The stub does what `foundry clean-text --epub` does to THIS fixture: it
+// canonicalizes the curly quotes, reads the scripture reference, stamps the OPF
+// and writes the receipt beside its --out. Everything downstream of it in the
+// pass — the diff, the receipt copy, the strike carry, the landing, the ledger
+// row, the re-cut narration copy — is the app's own code, unchanged.
+const DOOR_MODULE = require.resolve(path.join(DIST, 'electron', 'narration-clean-text.js'));
+require(DOOR_MODULE);
+const {
+  readNarrationNumberTargets, writeNarrationEpub, writeNarrationTextStamp,
+  NARRATION_TEXT_STAMP_VERSION,
+} = require(path.join(DIST, 'electron', 'epub-processor.js'));
+const { canonicalizePunctuation, PUNCTUATION_SPEC_VERSION } =
+  require(path.join(DIST, 'electron', 'tts-punctuation.js'));
+const { NORMALIZER_VERSION } = require(path.join(DIST, 'electron', 'tts-number-normalizer.js'));
+
+/** Every block the stubbed engine was handed, so a REPLAY cannot pass for a run. */
+const engineBlocks = [];
+
+const SCRIPTURE = 'Col. 3:19-4:1';
+const SCRIPTURE_READ = 'Colossians three, verse nineteen to four, verse one';
+
+require.cache[DOOR_MODULE].exports.cleanTextEpub = async function cleanTextEpubStub(opts) {
+  const at = new Date().toISOString();
+  const targets = await readNarrationNumberTargets(opts.epubPath);
+  const rewrites = new Map();
+  const units = [];
+  let spansApplied = 0;
+  for (const target of targets) {
+    if (target.kind !== 'unit') continue;
+    engineBlocks.push(target.text);
+    const spans = [];
+    const canonical = canonicalizePunctuation(target.text);
+    // The fixture's only punctuation work is the pair of curly quotes, one
+    // character each, so the spans are exact and need no differ.
+    for (let i = 0; i < target.text.length; i++) {
+      if (canonical.text[i] === target.text[i]) continue;
+      spans.push({ at: i, find: target.text[i], replace: canonical.text[i] });
+    }
+    const edits = [];
+    const found = target.text.indexOf(SCRIPTURE);
+    if (found >= 0) {
+      spans.push({ at: found, find: SCRIPTURE, replace: SCRIPTURE_READ });
+      edits.push({
+        find: SCRIPTURE, replace: SCRIPTURE_READ, status: 'APPLIED', editClass: 'number',
+      });
+    }
+    units.push({
+      key: target.key, kind: 'unit', file: target.file, status: 'ANSWERED',
+      text: target.text, edits,
+    });
+    if (spans.length === 0) continue;
+    rewrites.set(target.key, spans);
+    spansApplied += spans.length;
+  }
+
+  const staged = `${opts.outPath}.stub-unstamped.epub`;
+  await writeNarrationEpub(opts.epubPath, staged, [], {
+    excludeCaptions: false, excludeFootnotes: false, stripSupMarkers: false, rewrites,
+  });
+  const stamp = {
+    stampVersion: NARRATION_TEXT_STAMP_VERSION,
+    normalizerVersion: NORMALIZER_VERSION,
+    punctuationSpec: PUNCTUATION_SPEC_VERSION,
+    model: 'fake:1b',
+    at,
+    punctuationRefused: 0,
+  };
+  await writeNarrationTextStamp(staged, opts.outPath, stamp);
+  fs.rmSync(staged, { force: true });
+
+  const receipt = {
+    normalizerVersion: NORMALIZER_VERSION,
+    punctuationSpec: PUNCTUATION_SPEC_VERSION,
+    model: 'fake:1b',
+    at,
+    source: opts.epubPath,
+    punctuation: {
+      spec: PUNCTUATION_SPEC_VERSION,
+      targetsChanged: rewrites.size,
+      spansApplied,
+      counts: {},
+      refused: [],
+    },
+    units,
+    keptAsPrinted: [],
+    unitsAsked: units.length,
+    unitsParseFailed: 0,
+  };
+  fs.writeFileSync(`${opts.outPath}.receipt.json`, JSON.stringify(receipt, null, 2), 'utf8');
+  if (opts.onProgress) opts.onProgress(units.length, units.length, 'Cleaning the text');
+  return {
+    outPath: opts.outPath,
+    receipt,
+    stamp,
+    settings: { model: 'fake:1b', endpoint: 'http://localhost:11434', source: '(stubbed)' },
+  };
+};
 
 const processingChain = require(path.join(DIST, 'electron', 'processing-chain.js'));
 const processingPasses = require(path.join(DIST, 'electron', 'processing-passes.js'));
-const narrationTextPass = require(path.join(DIST, 'electron', 'narration-text-pass.js'));
+const narrationTextDoor = require(path.join(DIST, 'electron', 'narration-clean-text.js'));
 const queueEngine = require(path.join(DIST, 'electron', 'queue-engine.js'));
 const { narrationTextStep } = require(path.join(DIST, 'electron', 'queue-steps', 'pass.js'));
 
@@ -229,22 +322,22 @@ test('the pass runs on THAT chain, end to end, and leaves the other alone', asyn
   // THE MODEL WAS ACTUALLY ASKED. Without this the assertions below pass on a
   // cached copy from an earlier run — which is exactly what was happening before
   // the scratch was pointed at this run's temp root.
-  assert.ok(modelTargets().some((input) => input.includes('Col. 3:19-4:1')),
-    `the pass never asked the model about the reference: ${modelCalls.length} call(s)`);
+  assert.ok(engineBlocks.some((text) => text.includes('Col. 3:19-4:1')),
+    `the engine was never handed the block with the reference: ${engineBlocks.length} block(s)`);
 
   // 1. The pressed chain's book is cleaned: curly quotes canonical, the
   //    scripture reference read, and it is stamped.
   const cleaned = await chapterText(result.outputPath);
   assert.ok(cleaned.startsWith('"the second edition"'), cleaned);
   assert.ok(cleaned.includes('Colossians three, verse nineteen to four, verse one'), cleaned);
-  const gate = await narrationTextPass.narrationTextGate(result.outputPath);
+  const gate = await narrationTextDoor.narrationTextGate(result.outputPath);
   assert.strictEqual(gate.ok, true, JSON.stringify(gate));
 
   // 2. The OTHER chain's book is untouched, text for text.
   const firstBookAfter = await manifestService.ensureBookEpub(dir, first.id);
   assert.strictEqual(await chapterText(firstBookAfter.absPath), beforeText,
     'the first chain was not read, written, or stamped');
-  assert.strictEqual((await narrationTextPass.narrationTextGate(firstBookAfter.absPath)).ok, false);
+  assert.strictEqual((await narrationTextDoor.narrationTextGate(firstBookAfter.absPath)).ok, false);
 
   // 3. The record lands on the pressed chain and NOWHERE else.
   const after = familiesOf(dir);
@@ -273,7 +366,7 @@ test('the pass runs on THAT chain, end to end, and leaves the other alone', asyn
   assert.strictEqual(
     path.resolve(result.narrationInputPath),
     path.resolve(path.join(dir, ttsRecorded.split('/').join(path.sep))));
-  assert.strictEqual((await narrationTextPass.narrationTextGate(result.narrationInputPath)).ok,
+  assert.strictEqual((await narrationTextDoor.narrationTextGate(result.narrationInputPath)).ok,
     true, 'and the copy carries the stamp, so the render door takes it');
 });
 
@@ -378,7 +471,7 @@ test('a chained narration reads the copy the PASS named, through the real queue'
     path.resolve(narrated[0]),
     path.resolve(path.join(dir, ttsRecorded.split('/').join(path.sep))),
     'the chained step read the regenerated narration copy of the pressed chain');
-  assert.strictEqual((await narrationTextPass.narrationTextGate(narrated[0])).ok, true);
+  assert.strictEqual((await narrationTextDoor.narrationTextGate(narrated[0])).ok, true);
   await queueEngine.pause();
 });
 /**

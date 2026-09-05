@@ -130,6 +130,37 @@ export function foundryTooOldForCleanText(installed: string): string {
   );
 }
 
+/**
+ * The foundry ENGINE that can clean a FINISHED EPUB — the failsafe door.
+ *
+ * A SECOND FLOOR ON THE SAME COMMAND, and the two are different facts. 1.1.0
+ * gave `clean-text` its book-file route, which is what a hosted **Clean text**
+ * press runs (`--book` / `--records` / `--stamp`). The bare-EPUB failsafe
+ * (`--epub` / `--out`, electron/narration-clean-text.ts) arrived later, in
+ * foundry 1.2.0 (`d6509e7`, "the stamp proves itself, and the pass gets its
+ * failsafe door"). A 1.1.x engine therefore answers the failsafe with
+ * `unknown option --epub` — a usage dump about argv, where the useful sentence
+ * is that the door is not in this build.
+ *
+ * Written HERE, beside its sibling, because this file is where every foundry
+ * version floor this app enforces is written down, and because both refusals
+ * must move together when foundry's package.json moves. The comparator is the
+ * one in `shared/vlm/readings-bank.ts` for both; there is no second one.
+ */
+export const FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB = '1.2.0';
+
+/** The refusal for a foundry whose `clean-text` has no `--epub` failsafe door. */
+export function foundryTooOldForCleanTextEpub(installed: string): string {
+  return (
+    'This is the Clean text FAILSAFE, which cleans a finished EPUB by running '
+    + `\`foundry clean-text --epub\` — but the installed foundry is ${installed} and that door `
+    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB}. Update foundry in Settings → Add-ons `
+    + 'and press Clean text again, or run the Clean text step in the Foundry window, which is the '
+    + 'standard method and works on any foundry from '
+    + `${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Nothing was cleaned and no model was loaded.`
+  );
+}
+
 /** Their `JobState`. `waiting` has no spelling there, so ours maps onto `queued`. */
 export type FoundryJobState = 'held' | 'queued' | 'running' | 'done' | 'failed' | 'cancelled';
 

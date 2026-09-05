@@ -4,12 +4,17 @@
  * Owen, 2026-09-04: *"We should make this its own intentional step that the user
  * runs and persists, so we don't have to run it again. It runs the step on an
  * epub that foundry exported/completed and it creates an updated epub."* This is
- * that step from a shell: hand it an EPUB, get back a cleaned, stamped EPUB and
- * a receipt.
+ * that step from a shell: hand it an EPUB, get it back cleaned and stamped, with
+ * a receipt beside it.
  *
- * It runs `runNarrationTextPass` out of the compiled dist — the SAME function
- * the app's `narration-text` queue job runs — through `narration-text-step.js`,
- * so a bug found here is a bug in the app.
+ * It runs `cleanTextEpub` out of the compiled dist - the SAME door the app's
+ * `narration-text` queue job runs, which spawns `foundry clean-text --epub` -
+ * through `narration-text-step.js`, so a bug found here is a bug in the app.
+ *
+ * `--input` IS THE FAILSAFE and it REPLACES THE FILE (Owen, 2026-09-05). The
+ * standard method is the Clean text step in the Foundry window, where the
+ * cleanup is a position on the document chain; a file remembers nothing about
+ * how it was made, so a re-export from the project loses this one.
  *
  * NOT `--prep`. That is the render door: the caption/endnote cut and the copy a
  * voice reads, made fresh per render and thrown away. This one edits the BOOK,
@@ -58,8 +63,10 @@ function parseArgs(argv) {
  */
 async function cleanProject(projectDir, model, familyArg) {
   if (model) {
-    console.log('[narration-text] note: --model is ignored for a project run; the app '
-      + 'reads its model from Settings so the pass and the app agree.');
+    console.log('[narration-text] note: --model is ignored. The cleanup runs '
+      + '`foundry clean-text`, which takes its model and its Ollama endpoint from the same '
+      + 'settings the hosted Clean text press uses, so the two doors cannot run different '
+      + 'models.');
   }
   await runProjectPass(projectDir, { kind: 'narration-text' },
     { family: familyArg, label: 'narration-text' });

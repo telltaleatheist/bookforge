@@ -60,7 +60,7 @@
  *           So the assertion is "punctuation-only output", never `want`.
  *
  * The chaining below is the SAME order the narration text pass uses
- * (`electron/narration-text-pass.ts`): punctuation first, then the number rules,
+ * (`foundry clean-text`): punctuation first, then the number rules,
  * then — in the live pass and not here — the model on whatever digits are left.
  */
 const assert = require('assert');
