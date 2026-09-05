@@ -269,6 +269,28 @@ class BackendSelectionTest(unittest.TestCase):
         self.assertFalse(hasattr(A, '_torchaudio_words'))
         self.assertFalse(hasattr(A, '_load_torchaudio'))
 
+    def test_a_backend_that_returns_no_words_names_the_truncated_render(self):
+        """whisperx returns NO words when the audio cannot carry the text
+        (measured: 138 words in 6.5 s). That is a truncated render, and the
+        refusal says so with the words-per-second, not "word lists must line
+        up"."""
+        import numpy as np
+        real = A._BACKEND_FUNCTIONS['whisperx']
+        A._BACKEND_FUNCTIONS['whisperx'] = lambda audio, text, language, device: []
+        try:
+            audio = np.zeros(int(A.SAMPLE_RATE * 6.5), dtype=np.float32)
+            with self.assertRaises(A.AlignerError) as caught:
+                A.align_chunk('one.flac', ' '.join(['word'] * 138), backend='whisperx',
+                              audio=audio)
+        finally:
+            A._BACKEND_FUNCTIONS['whisperx'] = real
+        message = str(caught.exception)
+        self.assertIn('could not align this chunk at all', message)
+        self.assertIn('6.5s of audio for 138 word(s)', message)
+        self.assertIn('21 words per second', message)
+        self.assertIn('Re-render this chunk', message)
+        self.assertNotIn('line up', message)
+
     def test_an_unknown_backend_is_refused_by_name(self):
         with self.assertRaises(A.AlignerError) as caught:
             A.align_chunk('x.flac', 'text', backend='gentle')

@@ -247,6 +247,36 @@ def ends_a_thought(text: str) -> bool:
     return bool(_TERMINAL_RE.search(text or ''))
 
 
+#: A LABEL LINE: every letter upper-case, at most this many words. A byline
+#: ("IAN KERSHAW"), a part label ("PART TWO"), a running title. It carries no
+#: terminal punctuation because labels never do, not because a page break cut
+#: it off - which is the one thing the fragment rule exists to repair.
+LABEL_MAX_WORDS = 8
+
+_HAS_LETTER_RE = re.compile(r'\p{L}')
+_HAS_LOWER_RE = re.compile(r'\p{Ll}')
+
+
+def is_label_line(text: str) -> bool:
+    """A short all-capitals line is a label, not the front half of a sentence.
+
+    MEASURED 2026-09-05 (Working Towards the Fuhrer, PDF-derived): the byline
+    paragraph "IAN KERSHAW" has no terminal punctuation, so
+    `join_provisional_fragments` welded it to the essay's first paragraph and
+    the narrator was asked to read "IAN KERSHAW The renewed focus, ..." as one
+    sentence - the chunk the model then stopped 6.5 s into. A page-break
+    fragment is prose in mixed case; a line with no lower-case letter at all
+    is something the book set as a label. It stands on its own and gets the
+    period a heading gets.
+    """
+    words = (text or '').split()
+    if not words or len(words) > LABEL_MAX_WORDS:
+        return False
+    if not _HAS_LETTER_RE.search(text):
+        return False
+    return not _HAS_LOWER_RE.search(text)
+
+
 def join_provisional_fragments(blocks: Sequence[Block]) -> list:
     """TIER 2. Join every PARAGRAPH block that does not end a thought to the
     block that follows it, before any floor or wall logic sees them.
@@ -275,9 +305,16 @@ def join_provisional_fragments(blocks: Sequence[Block]) -> list:
             block = Block(text=merged_text, kind=pending[0].kind,
                           doc=pending[0].doc, index=pending[0].index)
             pending = []
-        if block.kind == PARAGRAPH and block.text and not ends_a_thought(block.text):
+        if (block.kind == PARAGRAPH and block.text and not ends_a_thought(block.text)
+                and not is_label_line(block.text)):
             pending.append(block)
             continue
+        if block.kind == PARAGRAPH and block.text and is_label_line(block.text) \
+                and not ends_a_thought(block.text):
+            # A label stands alone and stops the voice, exactly as a heading
+            # does; see `is_label_line` for the measurement.
+            block = Block(text=block.text + '.', kind=block.kind, doc=block.doc,
+                          index=block.index)
         out.append(block)
     if pending:
         # A trailing fragment with nothing to join to is emitted as it stands:

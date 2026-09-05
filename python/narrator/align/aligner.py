@@ -609,6 +609,20 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
             f'{type(failure).__name__}: {failure}') from failure
     elapsed = time.time() - started
 
+    if len(raw) == 0 and expected:
+        # THE BACKEND GAVE UP ON THE WHOLE CHUNK, which is a different fact from
+        # a word-count disagreement and deserves its own sentence. Measured
+        # 2026-09-05 (witches chunk 4: 100 words in 4.5 s; Fuhrer chunk 1: 138
+        # words in 6.5 s): whisperx logs "backtrack failed" and returns no
+        # words when the audio cannot carry the text - a render that stopped
+        # early, or one that says something else. The old sentence talked about
+        # word lists lining up, which sent the operator looking at the text.
+        rate = len(expected) / duration if duration > 0 else float('inf')
+        raise AlignerError(
+            f'{audio_path}: backend {backend!r} could not align this chunk at all: '
+            f'{duration:.1f}s of audio for {len(expected)} word(s) '
+            f'({rate:.0f} words per second). The render stopped early or does not '
+            f'say this text. Re-render this chunk and align again.')
     if len(raw) != len(expected):
         raise AlignerError(
             f'{audio_path}: backend {backend!r} returned {len(raw)} word(s) for '

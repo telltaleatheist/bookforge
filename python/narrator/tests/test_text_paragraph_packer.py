@@ -345,6 +345,30 @@ class FragmentTest(unittest.TestCase):
                      'She said "no."', 'It ended...'):
             self.assertTrue(pp.ends_a_thought(text), text)
 
+    def test_an_all_caps_label_line_is_not_a_fragment(self):
+        """Measured 2026-09-05: the byline "IAN KERSHAW" (a centered paragraph
+        with no terminal punctuation in a PDF-derived book) was welded to the
+        essay's first sentence. A short all-capitals line is a label: it stands
+        alone, with the period a heading gets."""
+        blocks = [
+            pp.Block(text='IAN KERSHAW', kind=pp.PARAGRAPH, doc='d', index=0),
+            pp.Block(text='The renewed focus has become much stronger.',
+                     kind=pp.PARAGRAPH, doc='d', index=1),
+            pp.Block(text='and the column ran out here', kind=pp.PARAGRAPH, doc='d', index=2),
+            pp.Block(text='but the thought finished on the next page.',
+                     kind=pp.PARAGRAPH, doc='d', index=3),
+        ]
+        joined = pp.join_provisional_fragments(blocks)
+        self.assertEqual([b.text for b in joined], [
+            'IAN KERSHAW.',
+            'The renewed focus has become much stronger.',
+            'and the column ran out here but the thought finished on the next page.',
+        ])
+        self.assertTrue(pp.is_label_line('PART TWO'))
+        self.assertFalse(pp.is_label_line('The column ran out'))
+        self.assertFalse(pp.is_label_line('A B C D E F G H I'))   # nine words is not a label
+        self.assertFalse(pp.is_label_line('1234'))                # no letters
+
     def test_headings_and_items_are_never_treated_as_fragments(self):
         """A heading that ends in a letter is a heading, and an item is a
         complete thought by the refinement - joining either would destroy the
