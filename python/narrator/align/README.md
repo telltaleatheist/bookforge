@@ -146,6 +146,26 @@ word's seconds as "audio with no text" reported one defect twice and failed a
 40-word chunk that had two weak words and no insertion at all (measured while
 writing the tests). The two lists answer different questions.
 
+## The app's door, and what is still owed there
+
+`compat/app.py --assemble_only` - the door `reassembly-bridge.ts` and
+`parallel-tts-bridge.ts` spawn - now takes **`--coverage_report <path>`**, passed
+straight to `assemble(coverage_report=...)` and listed in `compat/FLAGS.md` as
+narrator's own flag. Without it a Higgs v3 book through that door would have hit
+`CoverageRefusal` with no CLI surface to satisfy it, and read as "assembly is
+broken" rather than "run align first". For Orpheus the flag changes nothing: the
+policy is not enforced and the gate is a no-op whether it is passed or not.
+
+**OWED, and routed separately by the orchestrator: the app-side step that RUNS
+the alignment between render and assembly.** narrator can align a session and
+assembly can be told about the result, but nothing in BookForge yet spawns
+`narrator align` after a render and hands the report to the assembly spawn. That
+is a cut-over item in the bridges, not in this package.
+
+**ALSO OWED: a Higgs v3 render to align.** Every threshold above was calibrated
+on ORPHEUS output for its false-positive rate and on failures built by hand for
+its true-positive rate. No v3 render exists on this machine.
+
 ## Where it runs
 
 The aligner needs torch and whisperx; narrator's own interpreters do not have
