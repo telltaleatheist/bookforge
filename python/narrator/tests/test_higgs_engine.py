@@ -267,12 +267,16 @@ class LoadMessageTest(unittest.TestCase):
             higgs_config_from_worker_kwargs(voice='')
         self.assertIn('no default', str(caught.exception))
 
-    def test_a_checkpoint_dir_rides_on_the_voice(self):
-        """The pool's field is still called `adapterDir`, but what it names is a
-        MERGED CHECKPOINT: there is no runtime LoRA on this stack."""
-        config = higgs_config_from_worker_kwargs(voice='deathstalker',
-                                                 adapter_dir='/models/ds-merged')
-        self.assertEqual(config.voice.checkpoint_dir, '/models/ds-merged')
+    def test_an_adapter_dir_on_a_load_message_is_refused(self):
+        """Same refusal as v3, at the same boundary: a fine-tuned voice is a
+        merged CHECKPOINT declared in the voice document, and the pool's
+        `adapterDir` field cannot be told apart from a real LoRA directory."""
+        with self.assertRaises(ValueError) as caught:
+            higgs_config_from_worker_kwargs(voice='deathstalker',
+                                            adapter_dir='/models/ds-lora')
+        message = str(caught.exception)
+        self.assertIn('adapterDir', message)
+        self.assertIn('checkpointDir', message)
 
     def test_the_engine_refuses_a_config_of_the_wrong_type(self):
         with self.assertRaises(ValueError) as caught:

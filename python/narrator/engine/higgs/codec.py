@@ -38,7 +38,8 @@ addition marked (BF):
      24 kHz.
 
 Even after 4a a chunk edge sits near -30 dB and clicks on a join, which is what
-`HiggsEngine.edge_fade_ms` (10 ms) is for: the ASSEMBLER fades it to -45..-48 dB.
+`HiggsEngine.edge_fade` - EdgeFade(10 in, 25 out) - is for: the ASSEMBLER fades
+it to -45..-48 dB.
 No pads, no fades and no trimming are applied at either end here - Higgs emits
 bare speech and the gaps are the assembler's (`Engine.pads` is False).
 

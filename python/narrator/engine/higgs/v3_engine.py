@@ -12,8 +12,9 @@ and the render calls.
 WHAT IS DIFFERENT FROM ORPHEUS
 
   backend       SERVED, not in-process (`BackendSpec.kind == 'served'`). The
-                engine owns a server process: it starts it, waits ~55 s for
-                health, and stops it. While up, the server preallocates to its
+                engine owns a server process: it starts it, waits out a
+                55-297 s cold start (the measured range on this box) for health,
+                and stops it. While up, the server preallocates to its
                 gpu-memory-utilization target and OWNS the GPU.
   pads          False. Higgs emits bare speech; the manifest's
                 gapBefore/gapAfter are live and the assembler realizes them.
@@ -434,11 +435,12 @@ class HiggsV3Engine:
 
         The serve worker's warm path calls this when a load arrives on an engine
         that is already up. For Orpheus it is a free prompt-prefix switch (or a
-        LoRA re-point). For v3 it cannot be: the voice is a reference clip
-        embedded in every request, and an adapter is a LAUNCH argument - both
-        strategies (`lora-modules`, `merged-dir`) restart the server. Silently
-        accepting would leave the worker reporting voice B while the server
-        renders voice A for a whole book.
+        LoRA re-point). For v3 it cannot be: a fine-tuned voice IS a merged
+        checkpoint the server was started ON, and vllm-omni cannot load a voice
+        into a running one - no adapter flags, and its talker does not implement
+        `SupportsLoRA`. (A diagnostic clips voice is no better: its reference
+        rides in every request.) Silently accepting would leave the worker
+        reporting voice B while the server renders voice A for a whole book.
 
         Switching the SAME voice back to itself is a no-op, which is what a pool
         re-issuing an identical load actually wants.
@@ -528,7 +530,7 @@ class HiggsV3Engine:
     def convert(self, sentence_number: int, sentence: str) -> bool:
         """Render one chunk to `<sentences_dir>/<n>.<audio_format>`, EXACTLY AS
         DECODED - no trim, no fade, no pad. The server already trimmed the
-        sentinel tail; the fades are the assembler's (`edge_fade_ms`), and the
+        sentinel tail; the fades are the assembler's (`edge_fade`), and the
         gaps are the manifest's."""
         import soundfile as sf
         path = self._sentence_file(sentence_number)
@@ -599,10 +601,8 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
     """Build a HiggsV3Config from the keywords `narrator.serve` hands an engine.
 
       voice       the voice NAME, looked up in the NARRATOR_HIGGS_VOICES document
-      adapter_dir a MERGED CHECKPOINT directory (the pool's field name is still
-                  `adapterDir`; there is no adapter to load - see
-                  v3_served.CHECKPOINT_STRATEGY). Usually it comes from the
-                  voice document instead.
+      adapter_dir REFUSED - see below. A fine-tuned Higgs voice is a merged
+                  CHECKPOINT and it comes from the voice document.
       model_dir   REFUSED - the model the server serves is the launch script's
                   argument, not a per-load field
       base_dir    REFUSED - v3 has no shared-base + adapter split of Orpheus's kind
@@ -625,6 +625,21 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
             'caps and v3 implements none of them - its sampling rides in '
             'extra_params and its default is the server\'s own. Refusing a payload '
             'that would look applied and do nothing.')
+    if adapter_dir:
+        # THE SAME REFUSAL `load_voices` MAKES, at the other boundary. The pool's
+        # field is called `adapterDir`, and taking it as a merged checkpoint
+        # would accept an actual LoRA directory here and hand it to
+        # `vllm-omni serve` - which cannot load one (no adapter flags; the
+        # talker does not implement SupportsLoRA) and would come up on garbage
+        # or on the base model. The two are not interchangeable and the field
+        # name cannot tell them apart, so this end refuses too.
+        raise ValueError(
+            f'Higgs v3 load carried adapterDir={adapter_dir!r}. There is no '
+            'runtime LoRA on this stack, so an adapter directory has nothing to '
+            'be loaded into - and it is NOT a merged checkpoint. A fine-tuned '
+            "voice is declared in the NARRATOR_HIGGS_VOICES document as "
+            '{"kind": "checkpoint", "checkpointDir": ...}, and the server is '
+            'started on that directory.')
     if extra:
         raise ValueError(f'Higgs v3 load carried unknown keys: {sorted(extra)}.')
     if not (voice or '').strip():
@@ -645,4 +660,4 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
         v3_served.check_strategy(strategy)
     return HiggsV3Config(
         voice=resolved,
-        checkpoint_dir=adapter_dir or getattr(resolved, 'checkpoint_dir', None))
+        checkpoint_dir=getattr(resolved, 'checkpoint_dir', None))

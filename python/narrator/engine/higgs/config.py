@@ -479,8 +479,9 @@ def higgs_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,
 
       voice       the voice NAME, looked up in the NARRATOR_HIGGS_VOICES document
       model_dir   the Higgs snapshot dir or repo id (default: MODEL_ID)
-      adapter_dir a PEFT adapter over the base (v2 is fine-tunable); it rides on
-                  the voice, so it may also come from the voice document
+      adapter_dir REFUSED, as on v3: a fine-tuned voice is a merged CHECKPOINT
+                  declared in the voice document, never an adapter directory
+                  arriving on a load message
       base_dir    REFUSED - Higgs has no base+adapter split of Orpheus's kind
       caps        REFUSED - the Orpheus cap names (eosBoost, eosFloor, ...) have
                   no meaning here, and accepting them would suggest they do
@@ -504,16 +505,14 @@ def higgs_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,
             'Higgs load has no voice name. The name selects an entry in the '
             f'{VOICES_ENV} document; there is no default.')
 
+    if adapter_dir:
+        raise ValueError(
+            f'Higgs load carried adapterDir={adapter_dir!r}. A fine-tuned voice is '
+            'a merged checkpoint declared in the NARRATOR_HIGGS_VOICES document '
+            '({"kind": "checkpoint", "checkpointDir": ...}), not an adapter '
+            'directory on a load message.')
     clips_voice = load_voice(voice.strip(),
                              allowed_controls=HiggsDefaults.ALLOWED_CONTROLS,
                              max_reference_seconds=HiggsDefaults.MAX_REFERENCE_SECONDS,
                              placeholder_max_chars=HiggsDefaults.MAX_CHARS)
-    if adapter_dir:
-        clips_voice = ClipsVoice(
-            clips=clips_voice.clips, name=clips_voice.name, scene=clips_voice.scene,
-            checkpoint_dir=adapter_dir,
-            allowed_controls=clips_voice.allowed_controls,
-            max_reference_seconds=clips_voice.max_reference_seconds,
-            max_chars=clips_voice.max_chars,
-            max_chars_source=clips_voice.max_chars_source)
     return HiggsConfig(voice=clips_voice, model_id=model_dir or MODEL_ID)

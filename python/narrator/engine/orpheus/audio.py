@@ -133,7 +133,18 @@ class AudioMixin:
         # The container comes from the PATH's own extension, not from a config
         # field: the reject-clip writer asks for .wav and the chunk writer for
         # .flac, through this one function. Both are PCM_16.
-        container = os.path.splitext(path)[1].lstrip('.').upper() or 'FLAC'
+        #
+        # NO FALLBACK to FLAC. An extension-less path used to be written as a
+        # FLAC named without one, which reads back fine here and is unopenable
+        # by everything downstream that dispatches on the name - ffmpeg's concat
+        # list included. A caller that did not say what it wanted is a caller
+        # with a bug.
+        container = os.path.splitext(path)[1].lstrip('.').upper()
+        if not container:
+            raise ValueError(
+                f'{path}: no file extension, so there is no container to write. '
+                "narrator writes '.flac' chunks and '.wav' post-mortem clips; "
+                'name the file for what it is.')
         sf.write(path, audio, int(samplerate), subtype='PCM_16',
                  format=container)
 

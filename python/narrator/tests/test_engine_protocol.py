@@ -13,7 +13,7 @@ What is asserted:
      not-shipped higgs-v2-scaffold - and REFUSES a fourth by name, without
      defaulting to Orpheus.
   3. The two engines DISAGREE where the plan says they must: `pads`,
-     `edge_fade_ms`, the codec's frame geometry, whether EOS is reliable, and
+     `edge_fade`, the codec's frame geometry, whether EOS is reliable, and
      the shape of `max_total_tokens`. A seam whose two implementations answer
      identically would not be evidence of anything.
   4. The Orpheus levers stayed Orpheus-private: nothing in the protocol names
@@ -481,6 +481,19 @@ class ChunkWriterTest(unittest.TestCase):
             engine.write_chunk_file('x.flac', np.zeros((2, 100), np.float32), 24000)
         self.assertIn('MONO', str(caught.exception))
 
+    def test_a_path_with_no_extension_is_refused(self):
+        """NO FALLBACK to FLAC. An extension-less path used to be written as a
+        FLAC named without one - it reads back fine here and is unopenable by
+        everything downstream that dispatches on the name, ffmpeg's concat list
+        included."""
+        import numpy as np
+        engine = _bare(OrpheusEngine)
+        engine.params = {'samplerate': 24000}
+        engine.config = type('C', (), {'audio_format': 'flac'})()
+        with self.assertRaises(ValueError) as caught:
+            engine.write_chunk_file('chunk', np.zeros(100, np.float32), 24000)
+        self.assertIn('no file extension', str(caught.exception))
+
     def test_the_silence_writer_uses_the_same_path(self):
         import shutil
         import tempfile
@@ -517,6 +530,39 @@ class ChunkWriterTest(unittest.TestCase):
                      and getattr(node.func.value, 'id', None) == 'torchaudio']
             with self.subTest(module=name):
                 self.assertEqual(calls, [], f'{name} still writes with torchaudio')
+
+
+class EdgeFadeIsRequiredTest(unittest.TestCase):
+    """`_edge_fade_of` must RAISE, not assume Orpheus's answer.
+
+    EdgeFade(0, 0) is "this engine needs no fade", which is true of Orpheus and
+    false of every codec that emits bare edges. A `pads = False` engine that
+    forgot to declare one would have reported it and the assembler would have
+    joined its chunks bare - a book that clicks at every join, shipped as a
+    success.
+    """
+
+    def test_an_engine_without_edge_fade_is_refused_by_name(self):
+        from narrator.serve import worker as W
+
+        class Nameless:
+            ENGINE_ID = 'forgot-to-declare'
+            pads = False
+
+        with self.assertRaises(RuntimeError) as caught:
+            W._edge_fade_of(Nameless())
+        message = str(caught.exception)
+        self.assertIn('forgot-to-declare', message)
+        self.assertIn('edge_fade', message)
+        self.assertIn('click', message)
+
+    def test_both_shipping_engines_declare_one(self):
+        from narrator.engine.higgs import HiggsV3Engine
+        from narrator.serve import worker as W
+        for engine in (OrpheusEngine, HiggsV3Engine):
+            with self.subTest(engine=engine.ENGINE_ID):
+                self.assertEqual(W._edge_fade_of(engine),
+                                 engine.edge_fade)
 
 
 class BackendSpecTest(unittest.TestCase):

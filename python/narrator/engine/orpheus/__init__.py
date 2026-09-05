@@ -4,9 +4,9 @@ It is narrator's FIRST implementation of `narrator.engine.protocol.Engine`
 (registry id `orpheus`). The modules below moved here UNCHANGED from
 `narrator/engine/*.py` when the engine interface was extracted (2026-09-04);
 only their import paths moved. `interface.py` is the one addition - the
-protocol surface (codec / budget / stop_policy / backend_spec / pads /
-edge_fade_ms), which reads the same constants and the same per-voice cap lookup
-the engine already had. See ../PORT_NOTES.md for the old -> new table.
+protocol surface (codec / budget / stop_policy / backend_spec /
+resolve_load_voice / pads / edge_fade), which reads the same constants and the
+same per-voice cap lookup the engine already had. See ../PORT_NOTES.md for the old -> new table.
 
 
 Ported from ebook2audiobook@9daab0ba lib/classes/tts_engines/orpheus.py (5,507

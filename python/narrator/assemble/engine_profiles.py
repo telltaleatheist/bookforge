@@ -26,14 +26,24 @@ The fade is asymmetric on purpose: a chunk begins on an attack the ear expects
 and ends on a decay the ear does not, so the tail needs more than twice the
 window the head does.
 
-WHERE THESE NUMBERS OUGHT TO COME FROM. `engine/protocol.py` declares `pads:
-bool` and `edge_fade_ms: float` on the engine itself, which is the right home -
-they are properties of the codec's edges. This table exists because ASSEMBLY
-runs without importing an engine (it must work on a machine with no torch, and
-`--tts_engine xtts` is what the reassembly bridge actually passes), so it cannot
-ask the engine object. NOTE the shape mismatch to reconcile when the two meet:
-`edge_fade_ms` is a single float and cannot express Higgs' asymmetric 10-in /
-25-out, which its own docstring describes as "10-25". Reported, not papered over.
+WHERE THESE NUMBERS COME FROM, AND WHY THEY ARE HERE TWICE. `engine/protocol.py`
+declares `pads: bool` and `edge_fade: EdgeFade(in_ms, out_ms)` on the engine
+itself, which is the right home - they are properties of the codec's edges, and
+that type now expresses the asymmetry exactly (Higgs 10 in / 25 out; an earlier
+draft had a single float, which could not).
+
+THE DUPLICATE IS DELIBERATE AND STAYS: **assembly must not import `engine/`.**
+Assembly runs on machines with no torch, no transformers and no engine
+environment at all - the reassembly bridge spawns it with `--tts_engine xtts`
+against a bundled CPU env - so it cannot ask an engine object what its edges
+need. Importing one to read two numbers would drag a GPU stack into the one part
+of the pipeline that is deliberately free of it.
+
+What keeps the two copies honest is a TEST, not a convention:
+`tests/test_engine_protocol.py::test_the_engines_agree_with_the_assemblers_own_table`
+loads THIS module by path and asserts `pads`, `fade_in_ms` and `fade_out_ms`
+equal each engine's own `pads` and `edge_fade`. A divergence is an audiobook
+that clicks at every join, so it fails the suite instead.
 """
 
 from __future__ import annotations

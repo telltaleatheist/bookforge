@@ -4,7 +4,7 @@ WHY THIS EXISTS. Orpheus bakes its inter-chunk silence and its own trimmed edges
 into every chunk's FLAC, so assembly concatenates and does nothing else. Higgs
 emits bare speech: after the codec's sentinel run is content-trimmed, the chunk
 edge still sits around -30 dB, and butt-joining two of those clicks audibly. The
-engine declares the cure (`engine/protocol.py`: `pads`, `edge_fade_ms`); this
+engine declares the cure (`engine/protocol.py`: `pads`, `edge_fade`); this
 applies it.
 
 THE FADE IS RAISED-COSINE, NOT LINEAR. A linear ramp is continuous in amplitude
