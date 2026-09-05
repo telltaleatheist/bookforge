@@ -1449,7 +1449,6 @@ class MlxBackendMixin:
             import mlx.core as mx
 
             results = {}
-            sentence_by_idx = dict(items)  # for per-item retry on a bucket failure
             gen = []  # (idx, prompt_tokens, (clean_text, gap), token_budget)
             for idx, sentence in items:
                 gap = self._classify_gap(sentence)
@@ -1515,15 +1514,15 @@ class MlxBackendMixin:
                           f'{steps} steps, peak {mx.get_peak_memory() / 1e9:.1f} GB',
                           flush=True)
                 except Exception as bucket_err:
-                    # A generation-phase failure (BatchGenerator/insert/next) must
-                    # not drop the call's rows: retry per item via convert(),
-                    # exactly as the group path does for one bucket.
-                    log(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
+                    # A generation-phase failure (BatchGenerator/insert/next)
+                    # FAILS THE ROWS IT WAS GENERATING, by name. It used to
+                    # re-render them one at a time through convert() - a
+                    # try-A-then-B that hid whatever broke the batch behind a
+                    # slower success (Owen, 2026-09-05: "did you say fallback").
+                    # The worker's failed list and resume are the recovery.
                     import traceback
                     traceback.print_exc()
-                    for idx, _ptoks, _payload, _budget in gen:
-                        if idx not in results:
-                            results[idx] = self.convert(idx, sentence_by_idx[idx])
+                    self._fail_bucket_rows(gen, results, bucket_err, 'continuous')
             else:
                 if not getattr(self, '_mlx_continuous_announced', False):
                     self._mlx_continuous_announced = True
@@ -1540,17 +1539,13 @@ class MlxBackendMixin:
                             results=results, group_no=group_no,
                             group_count=len(groups), continuous=False)
                     except Exception as bucket_err:
-                        # A generation-phase failure (BatchGenerator/insert/next)
-                        # for ONE bucket must not kill the others. Mirror the outer
-                        # batch-level recovery at bucket granularity: retry this
-                        # bucket's rows per item via convert() rather than dropping
-                        # them.
-                        log(f"Orpheus._convert_mlx_batch() bucket error: {bucket_err}")
+                        # A generation-phase failure for ONE bucket fails THAT
+                        # bucket's rows, by name, and the other buckets go on.
+                        # No per-item re-render: see the continuous arm above.
                         import traceback
                         traceback.print_exc()
-                        for idx, _ptoks, _payload, _budget in bucket:
-                            if idx not in results:
-                                results[idx] = self.convert(idx, sentence_by_idx[idx])
+                        self._fail_bucket_rows(bucket, results, bucket_err,
+                                               f'group {group_no}/{len(groups)}')
 
             # NO mx.clear_cache() / _cleanup_memory() here. The buffer cache is
             # bounded once at load (_load_mlx_engine sets mx.set_cache_limit), so
@@ -1560,8 +1555,27 @@ class MlxBackendMixin:
             # ~46 GB DURING each chunk, between the flushes).
             return [results.get(idx, False) for idx, _ in items]
         except Exception as e:
-            log(f'Orpheus._convert_mlx_batch() error: {e}')
             import traceback
             traceback.print_exc()
-            # A batch-level failure shouldn't lose the whole chunk - retry per item.
-            return [self.convert(idx, s) for idx, s in items]
+            # A failure OUTSIDE any bucket (tokenizing, bucketing, the writer)
+            # fails the whole call, by name, with the row range. No per-item
+            # re-render - a batch that breaks is reported, not retried.
+            indices = [idx for idx, _ in items]
+            log(f'Orpheus._convert_mlx_batch() FAILED {len(items)} row(s) '
+                f'{indices[0]}..{indices[-1]} ({type(e).__name__}: {e}); not '
+                're-rendering them one by one.')
+            return [False] * len(items)
+
+    def _fail_bucket_rows(self, rows, results: dict, error: BaseException,
+                          label: str) -> None:
+        """Mark every not-yet-finished row of a failed bucket False and say so
+        ONCE, with the error, the bucket width and the row indices. Rows that
+        already retired (results has them) keep their answer."""
+        failed = [idx for idx, _ptoks, _payload, _budget in rows
+                  if idx not in results]
+        for idx in failed:
+            results[idx] = False
+        log(f'[ORPHEUS] MLX batch ({label}) FAILED {len(failed)} of {len(rows)} '
+            f'row(s) {failed[0] if failed else "-"}..{failed[-1] if failed else "-"} '
+            f'({type(error).__name__}: {error}); rows are reported failed, not '
+            're-rendered one by one.')
