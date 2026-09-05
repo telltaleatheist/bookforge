@@ -486,5 +486,182 @@ class TestFailureModes(SessionCase):
             S.build_manifest(process_dir)
 
 
+class TestGapSidecar(SessionCase):
+    """`<sentences_dir>/gaps.json` - the one additive sidecar layout v1 gains.
+
+    Prep writes it for engines that do not pad their chunks. Orpheus bakes its
+    silence into the FLACs and must NOT have one.
+    """
+
+    def higgs_session(self, gaps=None, *, write_gaps=True, engine="higgs-v3",
+                      version=1, where="sentences") -> str:
+        process_dir = self.build()
+        self.rewrite_state(process_dir, lambda st: st.update(tts_engine=engine))
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        if gaps is None:
+            gaps = {str(i): {"before": 0.0, "after": 0.6} for i in range(n)}
+        if write_gaps:
+            target = os.path.join(process_dir, "chapters", where)
+            os.makedirs(target, exist_ok=True)
+            with open(os.path.join(target, S.GAPS_FILENAME), "w",
+                      encoding="utf-8") as f:
+                json.dump({"version": version, "engine": engine, "gaps": gaps}, f)
+        return process_dir
+
+    # -- the happy path -------------------------------------------------
+
+    def test_gaps_reach_the_manifest(self):
+        process_dir = self.higgs_session()
+        m = S.build_manifest(process_dir)
+        self.assertIsNotNone(m.engine)
+        self.assertFalse(m.engine.pads)
+        self.assertEqual(m.engine.edgeFadeMs.fade_in, 10.0)
+        self.assertEqual(m.engine.edgeFadeMs.fade_out, 25.0)
+        for chunk in (k for c in m.chapters for k in c.chunks):
+            self.assertEqual(chunk.gapBefore, 0.0)
+            self.assertEqual(chunk.gapAfter, 0.6)
+        validate(m)
+
+    def test_per_chunk_values_land_on_the_right_chunks(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        gaps = {str(i): {"before": i / 100.0, "after": 0.5} for i in range(n)}
+        m = S.build_manifest(self.higgs_session(gaps))
+        flat = [k for c in m.chapters for k in c.chunks]
+        for i, chunk in enumerate(flat):
+            self.assertAlmostEqual(chunk.gapBefore, i / 100.0)
+            self.assertAlmostEqual(chunk.gapAfter, 0.5)
+
+    def test_a_missing_field_defaults_to_no_gap_on_that_side(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        m = S.build_manifest(self.higgs_session(
+            {str(i): {"after": 0.6} for i in range(n)}))
+        first = m.chapters[0].chunks[0]
+        self.assertEqual(first.gapBefore, 0.0)
+        self.assertEqual(first.gapAfter, 0.6)
+
+    def test_a_derived_set_finds_the_canonical_copy(self):
+        # gaps.json beside chapters/sentences; assembly pointed at a derived set.
+        process_dir = self.higgs_session()
+        denoised = os.path.join(process_dir, "chapters", "sentences-denoised")
+        os.makedirs(denoised)
+        for i, secs in enumerate(synthetic.CHUNK_SECONDS):
+            synthetic.write_flac(os.path.join(denoised, f"{i}.flac"), secs)
+        m = S.build_manifest(process_dir, denoised)
+        self.assertEqual(m.chapters[0].chunks[0].gapAfter, 0.6)
+
+    def test_a_copy_beside_the_derived_set_wins(self):
+        process_dir = self.higgs_session()
+        denoised = os.path.join(process_dir, "chapters", "sentences-denoised")
+        os.makedirs(denoised)
+        for i, secs in enumerate(synthetic.CHUNK_SECONDS):
+            synthetic.write_flac(os.path.join(denoised, f"{i}.flac"), secs)
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        with open(os.path.join(denoised, S.GAPS_FILENAME), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "engine": "higgs-v3",
+                       "gaps": {str(i): {"before": 0.0, "after": 0.25}
+                                for i in range(n)}}, f)
+        m = S.build_manifest(process_dir, denoised)
+        self.assertEqual(m.chapters[0].chunks[0].gapAfter, 0.25)
+
+    # -- the two refusals -----------------------------------------------
+
+    def test_an_unpadded_session_without_the_file_is_refused(self):
+        process_dir = self.higgs_session(write_gaps=False)
+        with self.assertRaisesRegex(S.SessionError, "does not pad its chunks"):
+            S.build_manifest(process_dir)
+
+    def test_a_padded_session_with_the_file_is_refused(self):
+        # Orpheus + gaps.json = the silence would be added twice.
+        process_dir = self.build()
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        with open(os.path.join(process_dir, "chapters", "sentences",
+                               S.GAPS_FILENAME), "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "engine": "orpheus",
+                       "gaps": {str(i): {"before": 0.0, "after": 0.6}
+                                for i in range(n)}}, f)
+        with self.assertRaisesRegex(S.SessionError, "a second time"):
+            S.build_manifest(process_dir)
+
+    # -- the file's own validation --------------------------------------
+
+    def test_wrong_version(self):
+        with self.assertRaisesRegex(S.SessionError, "gaps.json v1 only"):
+            S.build_manifest(self.higgs_session(version=2))
+
+    def test_engine_mismatch(self):
+        process_dir = self.higgs_session()
+        path = os.path.join(process_dir, "chapters", "sentences", S.GAPS_FILENAME)
+        with open(path, encoding="utf-8") as f:
+            doc = json.load(f)
+        doc["engine"] = "orpheus"
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(doc, f)
+        with self.assertRaisesRegex(S.SessionError, "written for engine"):
+            S.build_manifest(process_dir)
+
+    def test_bad_json(self):
+        process_dir = self.higgs_session()
+        with open(os.path.join(process_dir, "chapters", "sentences",
+                               S.GAPS_FILENAME), "w") as f:
+            f.write("{oops")
+        with self.assertRaisesRegex(S.SessionError, "not valid JSON"):
+            S.build_manifest(process_dir)
+
+    def test_incomplete_coverage_is_refused(self):
+        # The failure the no-fallbacks rule exists for: a truncated file would
+        # otherwise leave the rest of the book silently unpaused.
+        with self.assertRaisesRegex(S.SessionError, "covers 3 of 10 chunks"):
+            S.build_manifest(self.higgs_session(
+                {str(i): {"before": 0.0, "after": 0.6} for i in range(3)}))
+
+    def test_a_stray_index_is_refused(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        gaps = {str(i): {"before": 0.0, "after": 0.6} for i in range(n)}
+        gaps["999"] = {"before": 0.0, "after": 0.6}
+        with self.assertRaisesRegex(S.SessionError, "outside this book's"):
+            S.build_manifest(self.higgs_session(gaps))
+
+    def test_a_non_numeric_key_is_refused(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        gaps = {str(i): {"before": 0.0, "after": 0.6} for i in range(n)}
+        gaps["last"] = {"before": 0.0, "after": 0.6}
+        with self.assertRaisesRegex(S.SessionError, "is not a chunk index"):
+            S.build_manifest(self.higgs_session(gaps))
+
+    def test_negative_and_non_finite_and_non_numeric_values(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        for bad, pattern in (
+            ({"before": -0.1, "after": 0.6}, "negative"),
+            ({"before": 0.0, "after": "0.6"}, "must be a number"),
+            ({"before": 0.0, "after": float("inf")}, "not finite"),
+        ):
+            gaps = {str(i): {"before": 0.0, "after": 0.6} for i in range(n)}
+            gaps["2"] = bad
+            with self.subTest(bad=bad):
+                with self.assertRaisesRegex(S.SessionError, pattern):
+                    S.build_manifest(self.higgs_session(gaps))
+
+    def test_an_entry_that_is_not_an_object(self):
+        n = sum(len(c) for c in synthetic.CHAPTER_SENTENCES)
+        gaps = {str(i): {"before": 0.0, "after": 0.6} for i in range(n)}
+        gaps["1"] = 0.6
+        with self.assertRaisesRegex(S.SessionError, "is not an object"):
+            S.build_manifest(self.higgs_session(gaps))
+
+    def test_missing_gaps_object(self):
+        process_dir = self.higgs_session()
+        path = os.path.join(process_dir, "chapters", "sentences", S.GAPS_FILENAME)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump({"version": 1, "engine": "higgs-v3"}, f)
+        with self.assertRaisesRegex(S.SessionError, "no 'gaps' object"):
+            S.build_manifest(process_dir)
+
+    def test_an_unknown_engine_is_refused_before_anything_else(self):
+        process_dir = self.build()
+        self.rewrite_state(process_dir, lambda st: st.update(tts_engine="xtts"))
+        with self.assertRaisesRegex(KeyError, "no assembly profile"):
+            S.build_manifest(process_dir)
+
+
 if __name__ == "__main__":
     unittest.main()

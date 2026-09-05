@@ -476,6 +476,117 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertIn('--higgs_voice names a Higgs voice', out)
         self.assertIn('--fine_tuned', out)
 
+    def test_a_higgs_prep_writes_a_gap_file_keyed_by_every_chunk(self):
+        """`chapters/sentences/gaps.json`: a key for every global chunk index,
+        `0 .. N-1` as strings, and the values are `classify_gap`'s own."""
+        from narrator.text.gaps import classify_gap_seconds
+        from narrator.text.prep import GAPS_VERSION
+
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        process_dir, state = self._read_state_the_way_the_bridge_does()
+        path = os.path.join(process_dir, 'chapters', 'sentences', 'gaps.json')
+        self.assertTrue(os.path.isfile(path), f'no gap file at {path}')
+        with open(path, encoding='utf-8') as f:
+            payload = json.load(f)
+
+        self.assertEqual(payload['version'], GAPS_VERSION)
+        self.assertEqual(payload['engine'], 'higgs-v3')
+        total = state['total_sentences']
+        self.assertEqual(sorted(int(k) for k in payload['gaps']),
+                         list(range(total)),
+                         'the keys must be exactly 0..N-1, the FLAC stems')
+
+        # ...and every value is what the Orpheus engine would have baked in.
+        flat = [c for chapter in state['chapter_sentences'] for c in chapter]
+        self.assertEqual(len(flat), total)
+        for index, chunk in enumerate(flat):
+            before, after = classify_gap_seconds(chunk)
+            self.assertEqual(payload['gaps'][str(index)],
+                             {'before': before, 'after': after},
+                             f'chunk {index}: {chunk!r}')
+
+    def test_the_gap_file_covers_every_chunk_kind_the_book_has(self):
+        """A heading, an item and prose all classify to the same floor at
+        9daab0ba - the paragraph and section tiers were removed 2026-07-17. The
+        test asserts the CLASSIFIER's answer per kind rather than a constant, so
+        it still holds if a tier is ever reintroduced."""
+        from narrator.text.gaps import classify_gap_seconds
+        from narrator.text.sml import SML_HEADING_PATTERN
+
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        process_dir, state = self._read_state_the_way_the_bridge_does()
+        with open(os.path.join(process_dir, 'chapters', 'sentences',
+                               'gaps.json'), encoding='utf-8') as f:
+            gaps = json.load(f)['gaps']
+
+        flat = [c for chapter in state['chapter_sentences'] for c in chapter]
+        kinds = {'heading': 0, 'item': 0, 'prose': 0}
+        for index, chunk in enumerate(flat):
+            if SML_HEADING_PATTERN.search(chunk):
+                kind = 'heading'
+            elif '[item]' in chunk:
+                kind = 'item'
+            else:
+                kind = 'prose'
+            kinds[kind] += 1
+            before, after = classify_gap_seconds(chunk)
+            self.assertEqual(gaps[str(index)]['before'], before, chunk[:60])
+            self.assertEqual(gaps[str(index)]['after'], after, chunk[:60])
+        self.assertGreater(kinds['heading'], 0, 'the fixture book has no heading')
+        self.assertGreater(kinds['prose'], 0)
+
+    def test_an_orpheus_prep_writes_NO_gap_file(self):
+        """Orpheus bakes its silence into each FLAC, so a gap file would be a
+        second and contradictory source of truth. The absence IS the signal."""
+        code, out = self._run(self._bridge_argv(fine_tuned='leah'))
+        self.assertEqual(code, 0, out)
+        process_dir, _ = self._read_state_the_way_the_bridge_does()
+        self.assertFalse(os.path.exists(
+            os.path.join(process_dir, 'chapters', 'sentences', 'gaps.json')))
+
+    def test_the_writer_reads_the_profile_table_and_refuses_an_unknown_engine(self):
+        """`assemble/engine_profiles.py` is THE table; this must not carry a
+        second copy, and must not guess for an engine the table does not know."""
+        from narrator.assemble.engine_profiles import PROFILES
+        from narrator.text.prep import write_gaps_file
+
+        self.assertFalse(PROFILES['higgs-v3'].pads)
+        self.assertTrue(PROFILES['orpheus'].pads)
+        target = os.path.join(self.root, 'sentences')
+        self.assertIsNone(
+            write_gaps_file(self.root, target, 'orpheus', [['[break]One.']]))
+        self.assertFalse(os.path.exists(os.path.join(target, 'gaps.json')))
+        with self.assertRaises(KeyError):
+            write_gaps_file(self.root, target, 'kokoro', [['[break]One.']])
+
+    def test_an_explicit_pause_is_the_one_thing_that_moves_a_gap(self):
+        """The only surviving tier. Driven through the writer, not the
+        classifier, so the SERIALIZED value is what is asserted."""
+        from narrator.text.prep import write_gaps_file
+
+        target = os.path.join(self.root, 'sentences-pause')
+        write_gaps_file(self.root, target, 'higgs-v3',
+                        [['[break]Plain.', '[pause:2.5]A deliberate beat.',
+                          'Mid [pause:1.2] beat.']])
+        with open(os.path.join(target, 'gaps.json'), encoding='utf-8') as f:
+            gaps = json.load(f)['gaps']
+        self.assertEqual(gaps['0'], {'before': 0.0, 'after': 0.6})
+        self.assertEqual(gaps['1'], {'before': 2.5, 'after': 0.6})
+        self.assertEqual(gaps['2'], {'before': 0.0, 'after': 1.2})
+
+    def test_the_gap_values_are_json_floats_not_ints(self):
+        """A `0` where `0.0` is meant round-trips as an int and changes type in
+        every reader; the writer pins the type."""
+        from narrator.text.prep import write_gaps_file
+
+        target = os.path.join(self.root, 'sentences-types')
+        write_gaps_file(self.root, target, 'higgs-v3', [['[break]One.']])
+        raw = open(os.path.join(target, 'gaps.json'), encoding='utf-8').read()
+        self.assertIn('"before": 0.0', raw)
+        self.assertIn('"after": 0.6', raw)
+
     def test_a_higgs_prep_may_not_ask_for_the_parity_packer(self):
         """It has no Higgs branch and its caps were calibrated on Orpheus."""
         from narrator.text.normalize import UnsupportedEngine

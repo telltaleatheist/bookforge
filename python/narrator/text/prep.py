@@ -49,6 +49,7 @@ All of these are enumerated in `text/PORT_NOTES.md`.
 """
 from __future__ import annotations
 
+import json
 import os
 import uuid
 from dataclasses import dataclass, field
@@ -58,6 +59,7 @@ import regex as re
 
 from . import epub as epub_mod
 from .chapters import ChapterContext, get_chapters
+from .gaps import classify_gap_seconds
 from .lang import default_fine_tuned, default_language_code, default_output_format
 from .normalize import (BOOK_EXACT_ENGINES, HIGGS_V3, ORPHEUS,
                         UnsupportedEngine)
@@ -86,6 +88,87 @@ DEFAULT_DEVICE = DEVICE_PROC['CPU']
 #: The status prep stamps. Nothing ever changes it - see
 #: `render/session_store.py`'s note that this file is written exactly once.
 PREPARED_STATUS = 'prepared'
+
+#: Where the gap file goes when the engine needs one, relative to `process_dir`.
+#: Beside the audio it describes, and NOT in the process dir root, because the
+#: derived sets (`sentences-denoised`, `sentences-rvc-<voice>`) are copies of
+#: this directory's chunks and inherit its gaps with it.
+GAPS_FILENAME = 'gaps.json'
+
+#: The schema version of that file. One number, so a reader can refuse a shape
+#: it does not know rather than mis-read it.
+GAPS_VERSION = 1
+
+
+def write_gaps_file(process_dir: str, sentences_dir: str, engine_id: str,
+                    chapters: list) -> str | None:
+    """Write `chapters/sentences/gaps.json` when - and only when - the engine
+    does not bake its inter-chunk silence into its own audio.
+
+    ## Who needs this file, and who must not have one
+
+    `assemble/engine_profiles.py` is THE table, and it is read here rather than
+    copied: `orpheus` is `pads=True` (the engine bakes each chunk's silence into
+    that chunk's FLAC, so the audio is already the complete unit and a gap file
+    would be a second, contradictory source of truth), and `higgs-v3` is
+    `pads=False` (bare speech; the silence exists nowhere until the assembler
+    puts it there). So an Orpheus prep writes NO file at all, and that absence is
+    the signal, not an omission.
+
+    An engine the table does not know raises through `profile_for`. NO FALLBACK:
+    guessing `pads=True` ships an audiobook with every gap missing, and guessing
+    `pads=False` re-spaces audio that was already correct.
+
+    ## What is in it
+
+        {"version": 1,
+         "engine": "higgs-v3",
+         "gaps": {"0": {"before": 0.0, "after": 0.6}, ...}}
+
+    A key for EVERY chunk, `0 .. total_sentences-1` as strings (JSON has no
+    integer keys), in GLOBAL index order - the same index that names the FLAC,
+    so a reader joins the two by name and never by position. Seconds, as floats.
+
+    ## Where the numbers come from
+
+    `text/gaps.classify_gap`, which IS `engine/orpheus/prompt.py`'s
+    `_classify_gap` - the function moved down to `text/` unchanged so both
+    callers use one implementation. Whatever silence Orpheus would have baked
+    into a chunk is what this file asks the assembler to insert around the same
+    chunk rendered by an engine that bakes nothing.
+
+    A READER SHOULD EXPECT ONE REPEATED VALUE. At 9daab0ba the paragraph and
+    section tiers are gone (2026-07-17: measured as purely additive dead air),
+    so a heading, a `[break]`, an `[item]` and a plain sentence end all classify
+    to `(0.0, 0.6)`. Only an explicit `[pause:X]` differs. `ORPHEUS_SENTENCE_GAP`
+    still moves the floor, and it is read at PREP time here rather than at render
+    time - which is the one behavioural difference from the Orpheus path and is
+    recorded in `text/PORT_NOTES.md`.
+
+    Returns the path written, or None when the engine pads its own audio.
+    """
+    from ..assemble.engine_profiles import profile_for
+
+    if profile_for(engine_id).pads:
+        return None
+
+    gaps = {}
+    index = 0
+    for chapter in chapters:
+        for chunk in chapter:
+            before, after = classify_gap_seconds(chunk)
+            gaps[str(index)] = {'before': before, 'after': after}
+            index += 1
+
+    os.makedirs(sentences_dir, exist_ok=True)
+    path = os.path.join(sentences_dir, GAPS_FILENAME)
+    payload = json.dumps({'version': GAPS_VERSION, 'engine': engine_id,
+                          'gaps': gaps}, indent=2)
+    with open(path, 'w', encoding='utf-8', newline='\n') as f:
+        f.write(payload)
+    print(f'[gaps] {engine_id} does not pad its own audio: wrote {index} gap(s) '
+          f'to {path}')
+    return path
 
 STATE_VERSION = 2
 
@@ -428,6 +511,10 @@ def prep_session(epub_path: str, session_dir: str,
         # for this one trailing entry.
         'bookforge_chunking': chunking_record,
     }
+
+    # BEFORE the state is written, so a session dir is never left with a state
+    # promising an engine whose gap file failed to appear.
+    write_gaps_file(process_dir, sentences_dir, options.tts_engine, chapters)
 
     from ..render import session_store
 

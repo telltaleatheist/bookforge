@@ -23,11 +23,35 @@ import json
 import os
 import re
 
-from ..manifest import Chapter, Chunk, Manifest, Source, Book, Voice, validate
+from ..assemble.engine_profiles import profile_for
+from ..manifest import (
+    Book,
+    Chapter,
+    Chunk,
+    EdgeFadeMs,
+    Engine,
+    Manifest,
+    Source,
+    Voice,
+    validate,
+)
 from .flac_header import read_expected
 
 #: e2a's `default_audio_proc_format`. Every rendered chunk is a FLAC.
 AUDIO_PROC_FORMAT = "flac"
+
+#: The ONE additive sidecar layout v1 gains for engines that do not pad their
+#: chunks: `<sentences_dir>/gaps.json`. Written by PREP, never by the worker.
+#:
+#:   {"version": 1, "engine": "higgs-v3",
+#:    "gaps": {"0": {"before": 0.0, "after": 0.6}, ...}}
+#:
+#: A `.json` name is safe beside the numbered FLACs: the contiguity check that
+#: guards this directory globs `*.flac` (SESSION_READERS.md invariant 1b), so a
+#: sidecar cannot shift an index. `normalize_gaps.py` copies non-audio files
+#: verbatim, so a derived set (sentences-denoised, sentences-rvc-*) carries it
+#: along.
+GAPS_FILENAME = "gaps.json"
 
 #: Orpheus renders at 24 kHz mono. The assembler resamples to 44.1 kHz at the AAC
 #: encode, exactly as e2a does; nothing before that point changes the rate.
@@ -159,6 +183,114 @@ def detect_completed_chapters(sentences_dir: str, chapter_sentences: list) -> li
         completed.append(i + 1)
         offset += len(chapter)
     return completed
+
+
+def _find_gaps_file(resolved_sentences: str, process_dir: str) -> str | None:
+    """Where this session's `gaps.json` is, or None.
+
+    Looked for beside the audio being assembled FIRST, then at the canonical
+    `<process_dir>/chapters/sentences/gaps.json`. Two locations, not a fallback
+    value: the gaps are derived from the TEXT and are identical across every
+    derived set, so the canonical copy is the same document a derived set would
+    carry. Which one was used is logged.
+    """
+    beside = os.path.join(resolved_sentences, GAPS_FILENAME)
+    if os.path.isfile(beside):
+        return beside
+    canonical = os.path.join(process_dir, "chapters", "sentences", GAPS_FILENAME)
+    if os.path.isfile(canonical):
+        return canonical
+    return None
+
+
+def _load_gaps(path: str, engine_id: str, total_chunks: int) -> dict[int, tuple[float, float]]:
+    """Read and validate `gaps.json`. Returns {chunk index: (before, after)}.
+
+    STRICT, and complete-coverage: every chunk 0..N-1 must have an entry. A file
+    that stops early would otherwise hand back 0.0 for every chunk past its end,
+    which is a silently un-paused second half of a book - exactly the shape of
+    failure the no-fallbacks rule exists to prevent. It is a generated file;
+    completeness costs prep nothing.
+    """
+    with open(path, "r", encoding="utf-8") as f:
+        try:
+            doc = json.load(f)
+        except json.JSONDecodeError as e:
+            raise SessionError(f"{path} is not valid JSON: {e}") from e
+
+    version = doc.get("version")
+    if version != 1:
+        raise SessionError(
+            f"{path} is version {version!r}; this reader implements gaps.json v1 only"
+        )
+    declared = doc.get("engine")
+    if declared != engine_id:
+        raise SessionError(
+            f"{path} was written for engine {declared!r} but this session was rendered "
+            f"by {engine_id!r}. The pause structure of one engine is not the other's."
+        )
+    raw = doc.get("gaps")
+    if not isinstance(raw, dict):
+        raise SessionError(f"{path} has no 'gaps' object")
+
+    out: dict[int, tuple[float, float]] = {}
+    for key, entry in raw.items():
+        try:
+            index = int(key)
+        except (TypeError, ValueError):
+            raise SessionError(
+                f"{path}: {key!r} is not a chunk index"
+            ) from None
+        if not (0 <= index < total_chunks):
+            raise SessionError(
+                f"{path}: chunk index {index} is outside this book's 0..{total_chunks - 1}"
+            )
+        if not isinstance(entry, dict):
+            raise SessionError(f"{path}: entry for chunk {index} is not an object")
+        pair = []
+        for field_name in ("before", "after"):
+            value = entry.get(field_name, 0.0)
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise SessionError(
+                    f"{path}: chunk {index} {field_name!r} must be a number, got {value!r}"
+                )
+            if value != value or value in (float("inf"), float("-inf")):
+                raise SessionError(f"{path}: chunk {index} {field_name!r} is not finite")
+            if value < 0:
+                raise SessionError(
+                    f"{path}: chunk {index} {field_name!r} is negative: {value!r}"
+                )
+            pair.append(float(value))
+        out[index] = (pair[0], pair[1])
+
+    missing = [i for i in range(total_chunks) if i not in out]
+    if missing:
+        shown = ", ".join(str(i) for i in missing[:10])
+        more = f" (and {len(missing) - 10} more)" if len(missing) > 10 else ""
+        raise SessionError(
+            f"{path} covers {len(out)} of {total_chunks} chunks; no entry for {shown}"
+            f"{more}. Every chunk needs one - a partial file would silently leave the "
+            f"rest of the book unpaused."
+        )
+    return out
+
+
+def _engine_block(engine_id: str) -> Engine:
+    """The manifest's `engine` block for a session rendered by `engine_id`.
+
+    The NUMBERS are not here on purpose - they live in
+    `assemble/engine_profiles.py`, because what a chunk edge needs is a fact
+    about assembly, not about a session directory. This only maps the id.
+    """
+    profile = profile_for(engine_id)
+    return Engine(
+        id=profile.id,
+        pads=profile.pads,
+        edgeFadeMs=EdgeFadeMs(
+            fade_in=profile.fade_in_ms,
+            fade_out=profile.fade_out_ms,
+        ),
+    )
 
 
 def _required_str(state: dict, key: str, process_dir: str) -> str:
@@ -445,6 +577,39 @@ def build_manifest(
             f"chapter_sentences hold {flat_count} chunks ({process_dir})"
         )
 
+    # The engine decides how assembly must treat a chunk edge, and whether the
+    # gap sidecar must be there. Resolved before either question is asked, so a
+    # session rendered by an engine assembly has no contract for fails at
+    # manifest time rather than after the first chapter has been encoded.
+    engine_id = _required_str(state, "tts_engine", process_dir)
+
+    # ------------------------------------------------------------------
+    # The gap sidecar. An engine that pads its own chunks must NOT have one;
+    # an engine that does not pad MUST.
+    # ------------------------------------------------------------------
+    profile = profile_for(engine_id)
+    gaps_path = _find_gaps_file(resolved_sentences, process_dir)
+    gaps: dict[int, tuple[float, float]] = {}
+    if profile.pads:
+        if gaps_path:
+            raise SessionError(
+                f"{gaps_path} exists, but {engine_id!r} BAKES its inter-chunk silence "
+                f"into each chunk's own audio. Honouring this file would add that "
+                f"silence a second time, on top of the silence already in the FLACs."
+            )
+    else:
+        if not gaps_path:
+            raise SessionError(
+                f"{engine_id!r} does not pad its chunks, so the inter-chunk silence "
+                f"lives in {GAPS_FILENAME} - and there is none at "
+                f"{os.path.join(resolved_sentences, GAPS_FILENAME)} or "
+                f"{os.path.join(process_dir, 'chapters', 'sentences', GAPS_FILENAME)}. "
+                f"Assembling without it would ship the book with no pauses at all; "
+                f"prep writes it."
+            )
+        gaps = _load_gaps(gaps_path, engine_id, sum(len(c) for c in chapter_sentences))
+        print(f"[ASSEMBLE] Inter-chunk gaps from {gaps_path}", flush=True)
+
     titles = _resolve_chapter_titles(process_dir, state, chapter_sentences)
     docs = _resolve_chapter_docs(process_dir, state, len(chapter_sentences))
 
@@ -509,9 +674,11 @@ def build_manifest(
                     text=text,
                     kind=chunk_kind(text),
                     file=_relative_file(process_dir, audio_path),
-                    # Every gap is already inside `samples`. See assemble/README.md.
-                    gapBefore=0.0,
-                    gapAfter=0.0,
+                    # For a padded engine every gap is already inside `samples`
+                    # (see assemble/README.md); for an unpadded one it comes from
+                    # gaps.json and the assembler realizes it.
+                    gapBefore=gaps.get(global_index, (0.0, 0.0))[0],
+                    gapAfter=gaps.get(global_index, (0.0, 0.0))[1],
                     samples=info.samples,
                     take=1,
                 )
@@ -572,8 +739,9 @@ def build_manifest(
             language3=_required_str(state, "language", process_dir),
             cover=_resolve_cover(process_dir, state),
         ),
+        engine=_engine_block(engine_id),
         voice=Voice(
-            engine=_required_str(state, "tts_engine", process_dir),
+            engine=engine_id,
             # NEVER default this. e2a's own default is the literal 'internal',
             # which is the value CLAUDE.md records as KeyError-ing for Orpheus
             # (the voice is passed in --fine_tuned), so substituting it turns a

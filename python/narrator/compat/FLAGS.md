@@ -140,6 +140,25 @@ starting with `{` (`:3305-3310`), and reads `session-state.json`
 `{"success": false, "error": "prep_ebook_info failed"}` on failure) because that
 is what the door printed.
 
+**PREP WRITES A GAP FILE FOR A `pads=False` ENGINE, AND ONLY THEN.**
+`<process_dir>/chapters/sentences/gaps.json` -
+`{"version":1,"engine":"higgs-v3","gaps":{"<global chunk index>":{"before":<s>,"after":<s>}}}`,
+one key per chunk, `0..N-1` as strings. The values are
+`text/gaps.classify_gap`'s, which IS `engine/orpheus/prompt.py`'s
+`_classify_gap` moved down to `text/` unchanged - so the silence the file asks
+the assembler to insert around a Higgs chunk is exactly the silence Orpheus
+would have baked into the same chunk. `assemble/engine_profiles.py` is the table
+that decides (`orpheus` pads, `higgs-v3` does not); an engine it does not know
+raises rather than being guessed at. **An Orpheus prep writes no such file, and
+that absence is the signal**, not an omission - its gaps are in the audio.
+
+Expect ONE REPEATED VALUE in it. At 9daab0ba the paragraph and section tiers are
+gone (2026-07-17, measured as purely additive dead air), so a heading, a
+`[break]`, an `[item]` and a plain sentence end all classify to `(0.0, 0.6)`;
+only an explicit `[pause:X]` differs. `ORPHEUS_SENTENCE_GAP` still moves the
+floor and is read at PREP time here, which is the one behavioural difference
+from the Orpheus path (`text/PORT_NOTES.md`).
+
 **A non-EPUB `--ebook` is refused by name.** e2a Calibre-converted txt/pdf/image
 inputs; Foundry produces an EPUB for every book, and e2a's own EPUB branch
 refuses to Calibre an EPUB because it was destructive. `text/PORT_NOTES.md`

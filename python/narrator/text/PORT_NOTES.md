@@ -350,3 +350,29 @@ stay Orpheus-only - their caps and floors were calibrated on Orpheus voices - so
 `--higgs_voice` is the one flag in `compat/FLAGS.md` that ebook2audiobook never
 declared. A Higgs PREP works end to end today; a Higgs RENDER is refused by name
 because `render/worker.py` (another column) carries no Higgs voice yet.
+
+### 7.3 `text/gaps.py` - the gap classifier, moved DOWN
+
+`engine/orpheus/prompt.py:_classify_gap` moved into `text/gaps.py` on 2026-09-04
+with its BODY UNCHANGED (lifted mechanically: dedent one level, drop `self`), and
+`PromptMixin._classify_gap` is now a one-line delegate, so every
+`self._classify_gap(...)` call site and every number is untouched. It moved DOWN
+rather than being imported UP because `text/` is the lower layer - pure stdlib,
+must import with no torch - while `import narrator.engine` pulls in the whole
+Orpheus package; `assemble/engine_profiles.py` refuses to import an engine for
+exactly the same reason.
+
+Two callers now: the Orpheus engine bakes the answer into each FLAC, and
+`text/prep.write_gaps_file` writes it to `chapters/sentences/gaps.json` for a
+`pads=False` engine whose audio carries no silence at all.
+
+**ONE BEHAVIOURAL DIFFERENCE, and it is the only one in this addition.** Orpheus
+evaluates `ORPHEUS_SENTENCE_GAP` at RENDER time, once per chunk, inside the
+worker process. The gap file is written at PREP time, so the value frozen into it
+is the one in prep's environment. For every live spawn these are the same
+environment (`buildCondaSpawnEnv` / the WSL `forwardKeys` list export the same
+vars to prep and to the worker), and for a `pads=False` engine the render does
+not consult the variable at all - the assembler does, through the file. Recorded
+rather than papered over: setting `ORPHEUS_SENTENCE_GAP` differently for a render
+than for its prep would have no effect on a Higgs book, where today it silently
+would on an Orpheus one.

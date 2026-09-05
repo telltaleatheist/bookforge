@@ -6,14 +6,69 @@ checkout, and where a number is claimed it was measured on a real session
 
 ---
 
-## 1. THE GAP RULE
+## 1. THE GAP RULE (PER ENGINE)
 
-**Assembly inserts nothing. Every gap is already PCM inside the chunk's own FLAC,
-so `samples` is the complete answer and `gapBefore`/`gapAfter` are 0.0 for every
-e2a session.**
+**Which rule applies is decided by the manifest's `engine` block. Absent means
+Orpheus.** The table is `assemble/engine_profiles.py`.
+
+| engine | `pads` | edge fade | who owns the silence |
+|---|---|---|---|
+| `orpheus` (and any manifest with no `engine` block) | true | none | the ENGINE - it is already PCM in the chunk's FLAC |
+| `higgs-v3` | false | 10 ms in / 25 ms out | the MANIFEST - `gapBefore`/`gapAfter`, realized at concat |
+
+### Padded engines: assembly inserts nothing
+
+**Every gap is already PCM inside the chunk's own FLAC, so `samples` is the
+complete answer and `gapBefore`/`gapAfter` must be 0.0.**
 
 That is not a placeholder. It is the rule, and it is what makes the VTT and the
-audio unable to disagree.
+audio unable to disagree. `manifest.validate()` refuses a non-zero gap on a
+padded engine, and `chapters._plan_padded` refuses it again - on that path a gap
+is not merely wrong, it is silently DISCARDED, because nothing downstream looks
+at it.
+
+### Unpadded engines: assembly does both jobs
+
+Higgs emits bare speech. Two things have to happen before a chunk can be joined,
+both in `assemble/edges.py`:
+
+- **Fade the edges.** After the codec's sentinel run is content-trimmed, a chunk
+  edge still sits around -30 dB. Butt-joining two of those clicks audibly. A
+  10 ms fade-in and a 25 ms fade-out take it to -45..-48 dB (measured by the
+  training side, 2026-09-04). Asymmetric on purpose: a chunk begins on an attack
+  the ear expects and ends on a decay it does not.
+- **Realize the gaps.** The inter-chunk silence is not in the audio; it is in the
+  manifest, and the assembler writes it into the concat list.
+
+**The window is RAISED-COSINE, not linear.** A linear ramp is continuous in
+amplitude but its first derivative jumps at both ends of the ramp, and that
+corner is itself a (much smaller) click - a -6 dB/octave spray across the
+spectrum. `0.5 - 0.5*cos(pi*t)` starts and ends with zero slope, so amplitude
+and its derivative are both continuous where the fade meets silence and where it
+meets full-scale audio.
+
+**Sample-exact, so the VTT arithmetic is unchanged.** A fade multiplies in place
+and changes no length. A gap contributes exactly `round(seconds * sample_rate)`
+samples, from the single rounding rule in `edges.gap_frames`. So the audio and
+the VTT's float running sum agree to within half a sample, and
+`ChapterPlan.samples` stays the one true length for chapter markers, the export
+guard and the pre-encoded duration check alike.
+
+**Nothing in the session is ever modified.** Faded copies and generated silence
+go into the assembly's own working directory (`.nw<pid>/e<chapter>/`). The
+session's chunk FLACs are the render's cache; Studio retakes, training exports
+and any later re-assembly read them expecting the bytes the engine wrote.
+
+**Why gap realization was impossible before, and is not now.** This module used
+to refuse a non-zero gap outright: ffmpeg's concat demuxer silently drops FLAC
+frames whose blocksize exceeds the first list entry's, and a generated silence
+file would not have matched the rendered set's blocksize. That is still true -
+and it stopped mattering, because on the unpadded path EVERY chunk is rewritten
+through `edges.py` as well. The whole concat list comes out of one writer with
+one setting, so it is homogeneous by construction. The guard in section 2 still
+runs on whatever actually goes into the list.
+
+### The evidence for the padded rule
 
 ### Where the silence is written
 
@@ -88,6 +143,44 @@ whose first cue ends at 2.921 s while the raw chunk 0 is 2.3893 s long.
 `metadata.txt` in that session records `END=2623941`, which is
 `round(62974573 / 24000 * 1000)` exactly - so a manifest built against the same
 sentences directory reproduces the chapter atom to the millisecond.
+
+---
+
+## 1b. THE `engine` BLOCK, AND WHERE THE NUMBERS LIVE
+
+The manifest gained an OPTIONAL top-level block:
+
+```json
+"engine": {"id": "higgs-v3", "pads": false,
+           "edgeFadeMs": {"in": 10.0, "out": 25.0}}
+```
+
+Additive: absent means Orpheus semantics, every manifest written before it
+existed reads correctly with no migration, and `to_dict` still emits an Orpheus
+manifest without the key at all.
+
+The NUMBERS live in `assemble/engine_profiles.py`, not in
+`render/session_v1.py`, because what a chunk edge needs is a fact about
+assembly, not about a session directory. `session_v1` maps
+`session-state.json`'s `tts_engine` through `profile_for()` and fills the block;
+an engine with no profile raises there, at manifest time, rather than after the
+first chapter has been encoded.
+
+**Where an unpadded engine's gaps come from.** Session layout v1 gains ONE
+additive sidecar, `<process_dir>/chapters/sentences/gaps.json`, written by prep
+and read by `render/session_v1.py`. Schema, the derived-set rule and the two
+refusals (unpadded-without-file, padded-with-file) are in
+`render/SESSION_READERS.md` section 0b. Assembly itself never reads it - by the
+time a manifest reaches this package the gaps are already on the chunks.
+
+**One shape mismatch to reconcile.** `engine/protocol.py` declares `pads: bool`
+and `edge_fade_ms: float` on the engine object itself, which is the right home
+for them. But `edge_fade_ms` is a single float and cannot express Higgs'
+asymmetric 10-in / 25-out, which its own docstring writes as "10-25". The
+manifest uses `{in, out}`. When the two meet, the engine side needs the pair.
+(Assembly cannot read the engine object anyway - it must run on a machine with
+no torch, and the reassembly bridge passes `--tts_engine xtts` - which is why
+the table exists at all.)
 
 ---
 

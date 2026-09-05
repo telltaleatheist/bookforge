@@ -215,7 +215,9 @@ def assemble(
     # all the guards, BEFORE a single ffmpeg is spawned.
     # ------------------------------------------------------------------
     log(f"[ASSEMBLE] Assembling all {len(manifest.chapters)} chapters...")
-    plans = plan_chapters(manifest)
+    # work_dir is where an unpadded engine's faded chunks and generated
+    # silence go; a padded engine never touches it.
+    plans = plan_chapters(manifest, work_dir)
     for plan in plans:
         log(
             f"[ASSEMBLE] Chapter {plan.index}: sentences "

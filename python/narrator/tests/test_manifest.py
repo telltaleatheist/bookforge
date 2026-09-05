@@ -297,10 +297,25 @@ class TestValidate(unittest.TestCase):
             lambda m: setattr(m.chapters[0].chunks[0], "gapBefore", "0"),
             "must be a number")
 
-    def test_positive_gaps_are_allowed_in_the_schema(self):
+    def test_a_gap_is_refused_when_the_engine_pads(self):
+        # Absent engine block == Orpheus semantics: the silence is already in
+        # the FLAC, so a gap on top of it is double-counting.
+        self.assert_invalid(
+            lambda m: setattr(m.chapters[0].chunks[0], "gapAfter", 0.55),
+            "BAKES its silence")
+        self.assert_invalid(
+            lambda m: (setattr(m, "engine", M.Engine(id="orpheus", pads=True)),
+                       setattr(m.chapters[0].chunks[0], "gapAfter", 0.55)),
+            "BAKES its silence")
+
+    def test_a_gap_is_allowed_when_the_engine_does_not_pad(self):
         m = sample_manifest()
+        m.engine = M.Engine(id="higgs-v3", pads=False,
+                            edgeFadeMs=M.EdgeFadeMs(10.0, 25.0))
         m.chapters[0].chunks[0].gapAfter = 0.55
-        M.validate(m)  # the SCHEMA allows it; assemble/chapters.py is what refuses it
+        m.chapters[1].chunks[0].gapBefore = 0.3
+        M.validate(m)
+
 
     def test_samples_type(self):
         self.assert_invalid(
@@ -350,6 +365,91 @@ class TestValidate(unittest.TestCase):
             with self.assertRaises(M.ManifestError):
                 M.save(m, path)
             self.assertFalse(os.path.exists(path))
+
+
+class TestEngineBlock(unittest.TestCase):
+    """The optional top-level `engine` block."""
+
+    def higgs(self) -> M.Manifest:
+        m = sample_manifest()
+        m.engine = M.Engine(id="higgs-v3", pads=False,
+                            edgeFadeMs=M.EdgeFadeMs(10.0, 25.0))
+        return m
+
+    def test_absent_is_valid_and_means_orpheus(self):
+        m = sample_manifest()
+        self.assertIsNone(m.engine)
+        M.validate(m)
+
+    def test_absent_round_trips_without_the_key(self):
+        # An Orpheus manifest must serialize byte-identically to what this
+        # wrote before the block existed.
+        self.assertNotIn("engine", M.to_dict(sample_manifest()))
+
+    def test_round_trip(self):
+        m = self.higgs()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "m.json")
+            M.save(m, path)
+            loaded = M.load(path)
+        self.assertEqual(M.to_dict(m), M.to_dict(loaded))
+        self.assertEqual(loaded.engine.id, "higgs-v3")
+        self.assertFalse(loaded.engine.pads)
+        self.assertEqual(loaded.engine.edgeFadeMs.fade_in, 10.0)
+        self.assertEqual(loaded.engine.edgeFadeMs.fade_out, 25.0)
+
+    def test_serialized_shape(self):
+        d = M.to_dict(self.higgs())
+        self.assertEqual(
+            d["engine"],
+            {"id": "higgs-v3", "pads": False, "edgeFadeMs": {"in": 10.0, "out": 25.0}},
+        )
+        # placed after voice, before sampleRate
+        keys = list(d)
+        self.assertEqual(keys[keys.index("voice") + 1], "engine")
+        self.assertEqual(keys[keys.index("engine") + 1], "sampleRate")
+
+    def test_required_keys(self):
+        for key in ("id", "pads"):
+            d = M.to_dict(self.higgs())
+            del d["engine"][key]
+            with self.assertRaisesRegex(M.ManifestError, f"missing required key '{key}'"):
+                M.from_dict(d)
+
+    def test_edge_fade_defaults_to_zero_when_absent(self):
+        d = M.to_dict(self.higgs())
+        del d["engine"]["edgeFadeMs"]
+        m = M.from_dict(d)
+        self.assertEqual(m.engine.edgeFadeMs.fade_in, 0.0)
+        self.assertEqual(m.engine.edgeFadeMs.fade_out, 0.0)
+
+    def test_edge_fade_must_be_an_object(self):
+        d = M.to_dict(self.higgs())
+        d["engine"]["edgeFadeMs"] = 10.0
+        with self.assertRaisesRegex(M.ManifestError, "must be an object"):
+            M.from_dict(d)
+
+    def test_validation_failures(self):
+        cases = [
+            (lambda e: setattr(e, "id", ""), "non-empty string"),
+            (lambda e: setattr(e, "pads", "no"), "must be a bool"),
+            (lambda e: setattr(e.edgeFadeMs, "fade_in", -1.0), "negative"),
+            (lambda e: setattr(e.edgeFadeMs, "fade_out", -0.5), "negative"),
+            (lambda e: setattr(e.edgeFadeMs, "fade_in", "10"), "must be a number"),
+            (lambda e: setattr(e.edgeFadeMs, "fade_out", float("nan")), "not finite"),
+        ]
+        for mutate, pattern in cases:
+            m = self.higgs()
+            mutate(m.engine)
+            with self.assertRaisesRegex(M.ManifestError, pattern):
+                M.validate(m)
+
+    def test_a_padded_engine_may_not_ask_for_a_fade(self):
+        m = sample_manifest()
+        m.engine = M.Engine(id="orpheus", pads=True,
+                            edgeFadeMs=M.EdgeFadeMs(10.0, 0.0))
+        with self.assertRaisesRegex(M.ManifestError, "would never be applied"):
+            M.validate(m)
 
 
 if __name__ == "__main__":

@@ -451,5 +451,110 @@ class GoldenParityTest(unittest.TestCase):
         self.assertIn('published', self.gold['kershaw']['metadata'])
 
 
+class HiggsGapFileTest(unittest.TestCase):
+    """A pads=False prep of a REAL book writes the gap file the assembler needs.
+
+    Driven on the kershaw staged EPUB rather than a synthetic one, because the
+    thing under test is that EVERY chunk of a real chapter gets a key: a book
+    with headings, an epigraph and 60-odd paragraphs is what makes an off-by-one
+    in the global index visible.
+    """
+
+    @classmethod
+    def setUpClass(cls):
+        if not os.path.isdir(GOLDEN_LOCAL):
+            raise unittest.SkipTest(
+                f'golden binaries absent at {GOLDEN_LOCAL} - set '
+                f'$NARRATOR_GOLDEN_LOCAL to the directory holding index.json')
+        from narrator.text.paragraph_packer import CatalogBudget
+
+        entry = _index()['kershaw']
+        proc = _local_process_dir(entry)
+        staged = [f for f in os.listdir(proc)
+                  if f.startswith('staged-') and f.endswith('.epub')]
+        if not staged:
+            raise unittest.SkipTest('kershaw: no staged-*.epub in the golden copy')
+
+        cls.root = tempfile.mkdtemp(prefix='narrator-T-gaps-')
+        with redirect_stdout(io.StringIO()):
+            cls.higgs = prep_session(
+                os.path.join(proc, staged[0]),
+                os.path.join(cls.root, 'higgs', 'ebook-h'),
+                PrepOptions(session='h', language='eng', tts_engine='higgs-v3',
+                            higgs_voice='ds_ad4l', chunking='paragraph',
+                            source_kind='pdf-derived',
+                            budget=CatalogBudget(chars=1500, chars_per_sec=22.6)))
+            saved = os.environ.get('ORPHEUS_MAX_CHARS')
+            os.environ['ORPHEUS_MAX_CHARS'] = '430'
+            try:
+                cls.orpheus = prep_session(
+                    os.path.join(proc, staged[0]),
+                    os.path.join(cls.root, 'orpheus', 'ebook-o'),
+                    PrepOptions(session='o', language='eng',
+                                fine_tuned='mistborn'))
+            finally:
+                if saved is None:
+                    os.environ.pop('ORPHEUS_MAX_CHARS', None)
+                else:
+                    os.environ['ORPHEUS_MAX_CHARS'] = saved
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(getattr(cls, 'root', ''), ignore_errors=True)
+
+    def _gap_path(self, outcome):
+        return os.path.join(outcome.process_dir, 'chapters', 'sentences',
+                            'gaps.json')
+
+    def test_the_higgs_prep_of_kershaw_writes_a_key_for_every_chunk(self):
+        from narrator.text.prep import GAPS_VERSION
+
+        with open(self._gap_path(self.higgs), encoding='utf-8') as f:
+            payload = json.load(f)
+        total = self.higgs.state['total_sentences']
+        self.assertEqual(payload['version'], GAPS_VERSION)
+        self.assertEqual(payload['engine'], 'higgs-v3')
+        self.assertEqual(sorted(int(k) for k in payload['gaps']),
+                         list(range(total)))
+        self.assertGreater(total, 50, 'kershaw should be a real chapter')
+
+    def test_every_value_is_classify_gaps_own_answer_for_that_chunk(self):
+        from narrator.text.gaps import classify_gap_seconds
+
+        with open(self._gap_path(self.higgs), encoding='utf-8') as f:
+            gaps = json.load(f)['gaps']
+        flat = [c for chapter in self.higgs.state['chapter_sentences']
+                for c in chapter]
+        for index, chunk in enumerate(flat):
+            before, after = classify_gap_seconds(chunk)
+            self.assertEqual(gaps[str(index)],
+                             {'before': before, 'after': after},
+                             f'chunk {index}: {chunk[:70]!r}')
+
+    def test_the_heading_chunk_is_covered_like_every_other_kind(self):
+        """kershaw opens on a heading. At 9daab0ba it classifies to the same
+        floor as prose - the 2026-07-17 ruling - and the point of the assertion
+        is that it is PRESENT and matches the classifier, not that it differs."""
+        from narrator.text.gaps import classify_gap_seconds
+        from narrator.text.sml import SML_HEADING_PATTERN
+
+        flat = [c for chapter in self.higgs.state['chapter_sentences']
+                for c in chapter]
+        headings = [i for i, c in enumerate(flat)
+                    if SML_HEADING_PATTERN.search(c)]
+        self.assertTrue(headings, 'kershaw has no heading chunk to check')
+        with open(self._gap_path(self.higgs), encoding='utf-8') as f:
+            gaps = json.load(f)['gaps']
+        for i in headings:
+            self.assertEqual(gaps[str(i)],
+                             dict(zip(('before', 'after'),
+                                      classify_gap_seconds(flat[i]))))
+
+    def test_the_orpheus_prep_of_the_same_book_writes_none(self):
+        self.assertFalse(os.path.exists(self._gap_path(self.orpheus)))
+        # ...and still produced the parity chunk list.
+        self.assertEqual(self.orpheus.state['total_sentences'], 133)
+
+
 if __name__ == '__main__':
     unittest.main()

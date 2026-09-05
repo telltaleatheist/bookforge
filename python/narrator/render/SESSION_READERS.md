@@ -24,7 +24,7 @@ moves.
 
 ---
 
-## 0. The nine things that must not change
+## 0. The ten things that must not change
 
 | # | The invariant | Why it is load-bearing |
 |---|---|---|
@@ -37,6 +37,62 @@ moves.
 | 6 | 1024 bytes is the "is it rendered" floor | `scan_completed_sentences`, both copies. A 0.1 s silence FLAC is ~100 bytes and therefore never counts |
 | 7 | `take<k>/` subdirs under the sentences dir for a multi-take retake | `worker_core.py:415`. Studio's re-roll collects candidates from there |
 | 8 | `<process_dir>/parallel_encode/<n:05d>.m4a`, `concat_list_sentences.txt`, `concat_list_encoded.txt`, `metadata.txt`, `chapter-provenance.json` | Assembly's own products; `chapter-closer.ts` writes the pre-encoded chapters BookForge hands to `--encoded_chapters_dir` |
+| 9 | `<process_dir>/chapters/sentences/gaps.json` - **present for a `pads=False` engine, ABSENT for Orpheus, and the absence is the signal** | Written by `text/prep.py:write_gaps_file` (2026-09-04) for an engine whose audio carries no inter-chunk silence of its own (`assemble/engine_profiles.py`: `higgs-v3` is `pads=False`, `orpheus` is `pads=True`). `{"version":1,"engine":"<id>","gaps":{"<global chunk index>":{"before":<s>,"after":<s>}}}`, one key per chunk, `0..N-1` as strings - the SAME index that names the FLAC. Orpheus bakes its gaps into each FLAC, so a file there would be a second and contradictory source of truth. It sits BESIDE the audio, not in the process-dir root, so a derived set (`sentences-denoised`, `sentences-rvc-<voice>`) that copies the chunks inherits their gaps with them. **OWED: `render/session_v1.py` must read it and refuse a `pads=False` session that has none** - that is another column, and nothing reads the file yet |
+
+---
+
+## 0b. The ONE additive change to layout v1: `gaps.json`
+
+`<process_dir>/chapters/sentences/gaps.json` - written by PREP, only for engines
+that do NOT pad their own chunks (Higgs). Nothing that existed before reads it,
+and no existing byte moves, which is why it can be added without touching the
+enumeration above.
+
+```json
+{"version": 1, "engine": "higgs-v3",
+ "gaps": {"0": {"before": 0.0, "after": 0.6},
+          "1": {"before": 0.0, "after": 0.25}}}
+```
+
+| field | rule |
+|---|---|
+| `version` | must be `1` |
+| `engine` | must equal the session's `tts_engine`; a pause structure is not transferable between engines |
+| `gaps` | one entry per chunk, keyed by the GLOBAL 0-based index. **Complete coverage is required** - a file that stops early would leave the rest of the book silently unpaused, which is the exact failure the no-fallbacks rule exists to prevent |
+| `before` / `after` | seconds, finite, >= 0. A missing side means 0.0 for that side only |
+
+**Why it is safe beside the numbered FLACs.** Invariant 1b above refuses the
+sentences directory unless the `*.flac` stems are exactly `range(n)`. A `.json`
+is not globbed by that check, so the sidecar cannot shift an index. (This is the
+same reason `take<k>/` and `.orig-backup/` are subdirectories.)
+
+**Derived sets.** `electron/scripts/normalize_gaps.py` copies every non-audio
+file in the sentences directory verbatim into its output, so a derived set
+(`sentences-denoised`, `sentences-rvc-<voice>`) carries the sidecar along.
+`render/session_v1.py` looks beside the audio it was pointed at first and falls
+back to the canonical `chapters/sentences/gaps.json`; both are the same document,
+because the gaps are derived from the TEXT and no post-processing pass changes
+them. Which file was used is logged.
+
+**The two refusals** (`render/session_v1.py`, `build_manifest`):
+
+- a session whose engine does NOT pad and has no `gaps.json` anywhere is refused
+  by name. It is never assembled with zeros - that would ship a book with no
+  pauses at all.
+- a session whose engine DOES pad (Orpheus) and has a `gaps.json` is refused
+  too. Orpheus's silence is already PCM inside every chunk's FLAC, so honouring
+  the file would add it a second time.
+
+**A correction to carry into prep.** The gap classification this file is meant
+to reproduce, `_classify_gap` (`engine/orpheus/prompt.py:126`), no longer has
+heading/paragraph/`[break]`/`[item]` tiers - they were deleted on 2026-07-17 and
+the docstring is emphatic about not restoring them. What remains is exactly two
+things: a per-chunk trailing FLOOR (`ORPHEUS_SENTENCE_GAP`, default 0.6 s) and an
+EXPLICIT `[pause:X]` (lead when the token opens the chunk, otherwise
+`max(X, floor)` on the tail). The blanket blank-line/section gap is what caused
+the long-standing "dialogue has huge pauses" complaint (measured: 2.0-2.5 s
+dialogue-turn gaps against the narrator's own 0.6-1.0 s). Prep must reproduce the
+CURRENT two rules, not the removed three-tier logic.
 
 ---
 

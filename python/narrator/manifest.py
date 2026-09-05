@@ -13,6 +13,28 @@ manifest missing `sampleRate` is a bug to surface, not a 24000 to assume. The on
 place `None` is legal is a value the schema declares nullable (`samples` for a
 chunk not rendered yet, `cover`, `epubPath`, `year`, and the three voice dirs).
 
+THE OPTIONAL `engine` BLOCK:
+
+    "engine": {"id": "higgs-v3", "pads": false,
+               "edgeFadeMs": {"in": 10.0, "out": 25.0}}
+
+Additive, and ABSENT MEANS ORPHEUS SEMANTICS - the engine baked the inter-chunk
+silence and its own trimmed edges into every chunk, so the assembler joins them
+untouched, applies no fade, and requires every gapBefore/gapAfter to be 0.
+Manifests written before this block existed are all Orpheus manifests, so they
+read correctly with no migration and `to_dict` still emits them byte-identically.
+
+`pads: false` inverts both halves: the silence is NOT in the audio (it is in the
+chunks' gapBefore/gapAfter and assembly realizes it) and the bare edges must be
+faded before joining or every join clicks. See `assemble/engine_profiles.py`.
+
+WHERE THE GAPS COME FROM. For a padded engine they are all 0.0 and the silence
+is inside the audio. For an unpadded one they are read from the session's
+`chapters/sentences/gaps.json` sidecar by `render/session_v1.py` (schema and the
+two refusals: `render/SESSION_READERS.md` section 0b) and realized by
+`assemble/edges.py`. Nothing defaults a gap: a session that should have the
+sidecar and does not is refused.
+
 WHAT `file` IS RELATIVE TO: `source.processDir`, which is ABSOLUTE and lives
 inside the document. Not the manifest file's own directory. A manifest can
 therefore be written anywhere, copied, or never written at all, and every chunk
@@ -75,6 +97,38 @@ class Voice:
 
 
 @dataclass
+class EdgeFadeMs:
+    """Milliseconds of fade the assembler applies at each chunk edge.
+
+    Asymmetric on purpose: a chunk begins on an attack the ear expects and ends
+    on a decay it does not, so the tail needs more window than the head.
+    """
+
+    fade_in: float = 0.0
+    fade_out: float = 0.0
+
+
+@dataclass
+class Engine:
+    """What the rendering engine leaves at a chunk edge - OPTIONAL, additive.
+
+    ABSENT MEANS ORPHEUS SEMANTICS: the engine baked the inter-chunk silence and
+    its own trimmed/padded edges into every chunk, so the assembler concatenates
+    and does nothing else. Every manifest written before this block existed came
+    from an e2a Orpheus session, so absent is the correct reading of them and
+    they keep round-tripping unchanged.
+
+    `pads=False` (Higgs) inverts both halves: the silence is NOT in the audio -
+    it is in each chunk's gapBefore/gapAfter and assembly must realize it - and
+    the bare chunk edge sits near -30 dB and clicks on a join unless faded.
+    """
+
+    id: str
+    pads: bool
+    edgeFadeMs: EdgeFadeMs = field(default_factory=EdgeFadeMs)
+
+
+@dataclass
 class Chunk:
     """One rendered unit: the smallest thing that gets its own FLAC and its own
     VTT cue.
@@ -124,6 +178,8 @@ class Manifest:
     sentencesDir: str
     chapters: list[Chapter] = field(default_factory=list)
     version: int = SCHEMA_VERSION
+    #: OPTIONAL. None means Orpheus semantics - see Engine.
+    engine: Engine | None = None
 
 
 # --------------------------------------------------------------------------
@@ -176,6 +232,24 @@ def from_dict(data: dict[str, Any]) -> Manifest:
         baseDir=_require(v, "baseDir", "voice"),
     )
 
+    # OPTIONAL and additive: a manifest without it is an Orpheus manifest.
+    engine = None
+    if data.get("engine") is not None:
+        e = data["engine"]
+        fade = e.get("edgeFadeMs") or {}
+        if not isinstance(fade, dict):
+            raise ManifestError(
+                f"engine.edgeFadeMs must be an object with 'in' and 'out', got {fade!r}"
+            )
+        engine = Engine(
+            id=_require(e, "id", "engine"),
+            pads=_require(e, "pads", "engine"),
+            edgeFadeMs=EdgeFadeMs(
+                fade_in=fade.get("in", 0.0),
+                fade_out=fade.get("out", 0.0),
+            ),
+        )
+
     chapters: list[Chapter] = []
     raw_chapters = _require(data, "chapters", "manifest")
     if not isinstance(raw_chapters, list):
@@ -217,13 +291,18 @@ def from_dict(data: dict[str, Any]) -> Manifest:
         sampleRate=_require(data, "sampleRate", "manifest"),
         sentencesDir=_require(data, "sentencesDir", "manifest"),
         chapters=chapters,
+        engine=engine,
     )
 
 
 def to_dict(manifest: Manifest) -> dict[str, Any]:
     """The JSON document for a Manifest. Key order matches CONTRACTS.md so a
-    saved manifest diffs cleanly against the schema in the docs."""
-    return {
+    saved manifest diffs cleanly against the schema in the docs.
+
+    `engine` is emitted ONLY when the manifest carries one, so an Orpheus
+    manifest is byte-identical to what this wrote before the block existed.
+    """
+    doc: dict[str, Any] = {
         "version": manifest.version,
         "source": {
             "kind": manifest.source.kind,
@@ -271,6 +350,23 @@ def to_dict(manifest: Manifest) -> dict[str, Any]:
             for c in manifest.chapters
         ],
     }
+    if manifest.engine is not None:
+        # After "voice", before "sampleRate", so the document reads in the same
+        # order the schema documents it.
+        ordered: dict[str, Any] = {}
+        for key, value in doc.items():
+            ordered[key] = value
+            if key == "voice":
+                ordered["engine"] = {
+                    "id": manifest.engine.id,
+                    "pads": manifest.engine.pads,
+                    "edgeFadeMs": {
+                        "in": manifest.engine.edgeFadeMs.fade_in,
+                        "out": manifest.engine.edgeFadeMs.fade_out,
+                    },
+                }
+        doc = ordered
+    return doc
 
 
 def save(manifest: Manifest, path: str) -> str:
@@ -315,10 +411,11 @@ def validate(manifest: Manifest) -> None:
     """Strict structural check. Raises ManifestError on the FIRST problem, naming
     the chapter/chunk it is in.
 
-    Checks, in order: schema version; sample rate; chapter numbering (1-based,
-    contiguous, no empty chapters); chunk kinds; non-negative finite gaps;
-    `samples` int-or-None and positive when present; `take` a positive int;
-    global chunk index contiguity 0..N-1 across the whole book; unique `file`.
+    Checks, in order: schema version; sample rate; the optional engine block;
+    chapter numbering (1-based, contiguous, no empty chapters); chunk kinds;
+    non-negative finite gaps; `samples` int-or-None and positive when present;
+    `take` a positive int; global chunk index contiguity 0..N-1 across the whole
+    book; unique `file`.
     """
     if manifest.version != SCHEMA_VERSION:
         raise ManifestError(
@@ -334,6 +431,36 @@ def validate(manifest: Manifest) -> None:
         raise ManifestError("manifest.sentencesDir must be a non-empty string")
     if not manifest.chapters:
         raise ManifestError("manifest.chapters is empty: there is no book to assemble")
+
+    if manifest.engine is not None:
+        e = manifest.engine
+        if not isinstance(e.id, str) or not e.id:
+            raise ManifestError(f"engine.id must be a non-empty string, got {e.id!r}")
+        if not isinstance(e.pads, bool):
+            raise ManifestError(f"engine.pads must be a bool, got {e.pads!r}")
+        for name, value in (("in", e.edgeFadeMs.fade_in), ("out", e.edgeFadeMs.fade_out)):
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise ManifestError(
+                    f"engine.edgeFadeMs.{name} must be a number, got {value!r}"
+                )
+            if value != value or value in (float("inf"), float("-inf")):
+                raise ManifestError(f"engine.edgeFadeMs.{name} is not finite: {value!r}")
+            if value < 0:
+                raise ManifestError(f"engine.edgeFadeMs.{name} is negative: {value!r}")
+        if e.pads and (e.edgeFadeMs.fade_in or e.edgeFadeMs.fade_out):
+            # The assembler only fades when pads is False, so a padded engine
+            # asking for a fade would be silently ignored - which is exactly the
+            # kind of declaration that looks applied and is not.
+            raise ManifestError(
+                f"engine {e.id!r} declares pads=True and a non-zero edgeFadeMs "
+                f"({e.edgeFadeMs.fade_in} in / {e.edgeFadeMs.fade_out} out). A padded "
+                f"engine's chunks are joined untouched, so that fade would never be "
+                f"applied."
+            )
+
+    # An absent engine block means Orpheus semantics: padded chunks, no gaps.
+    pads_engine = manifest.engine is None or manifest.engine.pads
+    engine_label = manifest.engine.id if manifest.engine else "absent, so Orpheus"
 
     expected_index = 0
     seen_files: dict[str, int] = {}
@@ -396,6 +523,13 @@ def validate(manifest: Manifest) -> None:
                     raise ManifestError(f"{where}.{gap_name} is not finite: {gap!r}")
                 if gap < 0:
                     raise ManifestError(f"{where}.{gap_name} is negative: {gap!r}")
+                if gap and pads_engine:
+                    raise ManifestError(
+                        f"{where}.{gap_name} is {gap!r}, but this manifest's engine "
+                        f"({engine_label}) BAKES its silence into each chunk's own "
+                        f"audio. A gap here would be added on top of silence that is "
+                        f"already in the FLAC."
+                    )
 
             if chunk.samples is not None:
                 if isinstance(chunk.samples, bool) or not isinstance(chunk.samples, int):

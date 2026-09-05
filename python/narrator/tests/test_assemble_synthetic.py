@@ -492,10 +492,13 @@ class TestAssembleGuards(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "is 0 bytes"):
             plan_chapters(self.manifest)
 
-    def test_a_non_zero_gap_is_refused_rather_than_guessed(self):
+    def test_a_non_zero_gap_is_refused_for_a_padded_engine(self):
+        # Not "not implemented" any more - realizing gaps IS implemented, for
+        # engines that need it. For a padded engine a gap is double-counting,
+        # and on that path it would be silently discarded.
         self.manifest.chapters[0].chunks[1].gapAfter = 0.55
-        with self.assertRaisesRegex(NotImplementedError, "PCM already inside"):
-            plan_chapters(self.manifest)
+        with self.assertRaisesRegex(ValueError, "already PCM inside the FLAC"):
+            plan_chapters(self.manifest, self.tmp)
 
     def test_total_duration_is_the_sample_sum(self):
         plans = plan_chapters(self.manifest)
