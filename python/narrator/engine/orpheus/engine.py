@@ -642,12 +642,20 @@ class OrpheusEngine(EngineDefaults, OrpheusInterfaceMixin, CapsMixin, PromptMixi
             import traceback
             traceback.print_exc()
             if is_fatal_cuda_error(e):
-                # Do NOT fall through to the per-item retry: with a poisoned CUDA
-                # context each convert() would fail in microseconds and the run
-                # would churn through the whole book marking sentences failed.
+                # A poisoned CUDA context: nothing else in this process can
+                # succeed. Die loudly so the worker respawns fresh.
                 raise
-            # A batch-level failure shouldn't lose the whole chunk - retry per item.
-            return [self.convert(idx, s) for idx, s in items]
+            # A batch-level failure FAILS THE BATCH, by name. It used to re-render
+            # every row through convert() one at a time - a try-A-then-B that hid
+            # whatever broke the batch behind a slower success (Owen, 2026-09-05:
+            # "did you say fallback"). The rows are reported failed; the worker's
+            # failed list and resume are the recovery, and the log says why.
+            indices = [idx for idx, _ in items]
+            log(f'OrpheusEngine.convert_batch() FAILED {len(items)} row(s) '
+                f'{indices[0]}..{indices[-1]} together ({type(e).__name__}: {e}); '
+                'not re-rendering them one by one - a batch that breaks is reported, '
+                'not retried.')
+            return [False] * len(items)
 
     # ---- fast-start streaming (the serve worker calls this) -----------------
     #

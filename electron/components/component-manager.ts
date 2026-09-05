@@ -1418,7 +1418,7 @@ export async function runInstaller(
 const DIAGNOSTIC_ENGINES = new Set(['orpheus']);
 
 /** asar → asar.unpacked rewrite (a spawned python can't read inside the archive).
- *  Inlined rather than importing e2a-paths, which imports this module (cycle). */
+ *  Inlined rather than importing narrator-paths, which imports this module (cycle). */
 function unpackedScriptPath(p: string): string {
   return p.includes('app.asar') && !p.includes('app.asar.unpacked')
     ? p.replace('app.asar', 'app.asar.unpacked')

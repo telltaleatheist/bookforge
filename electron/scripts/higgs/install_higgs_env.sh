@@ -15,9 +15,14 @@
 #   --check   probe only. Prints one `key=value` line per step and exits 0/1.
 #             Reads nothing, writes nothing, installs nothing. This is the mode
 #             BookForge's doctor and CI run.
-#   (default) create the env if absent, install the pins if absent, apply both
-#             patches, deploy the launcher. Every step is skipped when it is
-#             already done, so re-running after a partial failure resumes.
+#   (default) create the env if absent, install the pins if absent, install
+#             narrator's runtime imports if any are missing, apply both patches,
+#             deploy the launcher. Every step whose work is already done is
+#             skipped, so re-running after a partial failure resumes — with ONE
+#             deliberate exception: the launcher is copied EVERY time (see
+#             section 5), because "only if absent" made the env's copy a
+#             snapshot of the day it was built and every later fix to the script
+#             shipped in the repo and was read by nobody.
 #
 # It is NEVER run automatically. Higgs is a GPU engine whose install downloads
 # many GB and whose server preallocates ~24 GB of VRAM; that starts because a
@@ -108,6 +113,7 @@ if [ ! -x "$PY" ]; then
   bad "vllm-omni=absent"
   bad "patch:vllm-negative-token-id=absent"
   bad "patch:higgs-sentinel-filter=absent"
+  bad "narrator-deps=absent"
   bad "launcher=absent"
   bad "weights=absent"
   exit $fail
@@ -170,19 +176,93 @@ if [ "$CHECK_ONLY" = "0" ]; then
   fi
 fi
 
+# ── 4b. narrator's own runtime imports ──────────────────────────────────────
+# THE ENV NEEDS THESE BECAUSE NARRATOR IS NOT PIP-INSTALLED INTO IT. narrator
+# reaches this env over PYTHONPATH (electron/narrator-spawn.ts), so nothing ever
+# resolves its dependency list here — and Owen's first in-app Higgs prep died
+# with `ModuleNotFoundError: No module named 'bs4'` for exactly that reason
+# (2026-09-05). The list, its provenance and the reason each row carries an
+# `# import:` annotation are in the file itself; the doctor builds its probe
+# from THE SAME rows (electron/tool-paths.ts narratorRuntimeDeps), so a
+# dependency added there is installed and checked together.
+REQ_FILE="$SCRIPT_DIR/requirements-narrator-runtime.txt"
+if [ ! -f "$REQ_FILE" ]; then
+  bad "narrator-deps=list-missing"
+  if [ "$CHECK_ONLY" = "0" ]; then
+    echo "requirements-narrator-runtime.txt is not beside this script ($REQ_FILE)." >&2
+    exit 16
+  fi
+else
+  # The module names, from the `# import:` annotations on the REQUIREMENT rows.
+  # Whole-line comments are dropped FIRST: the file documents its own format in
+  # a comment that contains the words `# import:`, and a parser that matched it
+  # would probe a module called "<module".
+  #
+  # One python, one answer: find_spec asks "is it importable" without paying the
+  # import, which is what the failure being prevented actually is.
+  NARRATOR_ROWS=$(grep -v '^[[:space:]]*#' "$REQ_FILE" | grep -c '[^[:space:]]' || true)
+  NARRATOR_MODULES=$(grep -v '^[[:space:]]*#' "$REQ_FILE" \
+    | sed -n 's/.*#[[:space:]]*import:[[:space:]]*\([^[:space:]]*\).*/\1/p' | tr '\n' ' ')
+  NARRATOR_COUNT=$(echo $NARRATOR_MODULES | wc -w)
+  if [ "$NARRATOR_ROWS" != "$NARRATOR_COUNT" ]; then
+    # EVERY ROW MUST SAY WHAT IT IMPORTS. `beautifulsoup4` imports as `bs4`,
+    # `pillow` as `PIL`, `iso639-lang` as `iso639` — a row without its
+    # annotation is a package that gets installed and never verified.
+    bad "narrator-deps=list-unannotated"
+    if [ "$CHECK_ONLY" = "0" ]; then
+      echo "$REQ_FILE has $NARRATOR_ROWS requirement row(s) and $NARRATOR_COUNT '# import:' annotation(s)." >&2
+      echo "Every row must carry one — see the header of that file." >&2
+      exit 16
+    fi
+  else
+    # shellcheck disable=SC2086
+    MISSING=$("$PY" -c 'import importlib.util as u,sys;print(",".join([m for m in sys.argv[1:] if u.find_spec(m) is None]))' $NARRATOR_MODULES 2>/dev/null)
+    if [ -z "$MISSING" ]; then
+      say "narrator-deps=ok"
+    else
+      bad "narrator-deps=$MISSING"
+      if [ "$CHECK_ONLY" = "0" ]; then
+        echo "== installing narrator's runtime imports ($MISSING) =="
+        "$PY" -m pip install -r "$REQ_FILE" || exit 16
+        # shellcheck disable=SC2086
+        STILL=$("$PY" -c 'import importlib.util as u,sys;print(",".join([m for m in sys.argv[1:] if u.find_spec(m) is None]))' $NARRATOR_MODULES 2>/dev/null)
+        if [ -n "$STILL" ]; then
+          echo "still not importable after pip install: $STILL" >&2
+          exit 16
+        fi
+        say "narrator-deps=installed"
+      fi
+    fi
+  fi
+fi
+
 # ── 5. the launcher, deployed INTO the env ──────────────────────────────────
 # Inside the env on purpose: it makes the serving stack self-contained, so
 # nothing at run time reaches back into the BookForge install (or, historically,
 # into E:\training) to find out how to start the server.
-if [ -x "$ENV_PREFIX/bin/serve_higgs_v3.sh" ]; then
-  say "launcher=ok"
-else
-  bad "launcher=absent"
-  if [ "$CHECK_ONLY" = "0" ]; then
-    cp "$SCRIPT_DIR/serve_higgs_v3.sh" "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
-    chmod +x "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
-    say "launcher=installed"
+#
+# ALWAYS COPIED, NEVER "ONLY IF ABSENT". It used to be the second, and that made
+# the env's copy a SNAPSHOT of whatever the script said the day the env was
+# first built: every later fix — the --stage-overrides split that stopped the
+# codec stage reserving a second 0.60 of the card, the $HIGGS_CODEC_GPU_MEM_UTIL
+# and $HIGGS_DEPLOY_CONFIG knobs BookForge now sets — shipped in the repo and
+# was read by nobody, while the doctor's `test -x` reported the stale copy as
+# ok. It is our file, the copy is idempotent, and it costs 7 kB.
+if [ "$CHECK_ONLY" = "1" ]; then
+  # --check WRITES NOTHING. Three distinct answers, because they send a person
+  # to three different places: no launcher at all, a launcher that is not the
+  # one this build ships (re-run the installer), and a match.
+  if [ ! -x "$ENV_PREFIX/bin/serve_higgs_v3.sh" ]; then
+    bad "launcher=absent"
+  elif ! cmp -s "$SCRIPT_DIR/serve_higgs_v3.sh" "$ENV_PREFIX/bin/serve_higgs_v3.sh"; then
+    bad "launcher=stale"
+  else
+    say "launcher=ok"
   fi
+else
+  cp "$SCRIPT_DIR/serve_higgs_v3.sh" "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
+  chmod +x "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
+  say "launcher=installed"
 fi
 
 # ── 6. the weights ──────────────────────────────────────────────────────────

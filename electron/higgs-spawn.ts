@@ -275,12 +275,20 @@ export function higgsEnvExtras(
   const voicesHostPath = writeHiggsVoicesDocument(model, jobId, {
     arm, userDataDir, translatePath: translate,
   });
-  const serveScriptGuestPath =
-    `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
+  // ONE DERIVATION, TWO VARIABLES. `HIGGS_ENV` is the prefix the launch script
+  // builds CUDA_HOME, PATH, LD_LIBRARY_PATH and its `vllm-omni` path out of, and
+  // the script lives at `<prefix>/bin/<launchScript>` because the installer put
+  // it there — so naming the prefix and then naming the script's directory
+  // separately would be two ways to say the same thing, and one of them would
+  // eventually be wrong.
+  const higgsEnvGuestPrefix =
+    `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}`;
+  const serveScriptGuestPath = `${higgsEnvGuestPrefix}/bin/${serving.launchScript}`;
 
   return { ...higgsMlxBatchEnv(kind), ...higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
+    condaEnvPrefix: viaWsl ? higgsEnvGuestPrefix : undefined,
     wslDistro: viaWsl ? getWslDistro() : undefined,
     // darwin ONLY: the in-process MLX backend loads its weights from a directory
     // this variable names, and refuses BY NAME when it is unset ("no default and

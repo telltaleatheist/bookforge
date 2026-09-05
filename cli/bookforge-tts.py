@@ -155,7 +155,17 @@ def cmd_tts(args):
              "windowed decode. Use --mode tts.")
     _require(bool(args.voice), "--voice <id> is required for --tts")
     _require(bool(args.out), "--out <file.wav> is required for --tts")
-    _require(bool(args.input or args.text), "--input <file> or --text <str> is required")
+    if args.mode == "tts":
+        # Renders are EPUB-only (Owen, 2026-09-05). Raw text and .txt files are the
+        # streaming adapter's input - the Listen path - and nothing else.
+        _require(bool(args.input) and str(args.input).lower().endswith(".epub"),
+                 "--tts renders an EPUB: --input <book.epub>. Renders are EPUB-only; "
+                 "--text and .txt belong to --mode streaming (the Listen path).")
+        _require(not args.text,
+                 "--text is not a render input; renders are EPUB-only. Use --mode "
+                 "streaming for raw text.")
+    else:
+        _require(bool(args.input or args.text), "--input <file> or --text <str> is required")
     _require(bool(shutil.which("node")), "node not found on PATH")
 
     if args.mode == "tts":
@@ -803,9 +813,10 @@ def build_parser():
                    help="custom model directory (overrides voice resolution)")
     p.add_argument("--models-dir", dest="models_dir",
                    help="override the Orpheus models directory to discover voices in")
-    p.add_argument("--input", help="text file to render (--tts); EPUB override (--audiobook); "
+    p.add_argument("--input", help="the EPUB to render (--tts; renders are EPUB-only); "
+                   "text file to stream (--tts --mode streaming); EPUB override (--audiobook); "
                    "the .epub or .txt to prep (--prep)")
-    p.add_argument("--text", help="literal text to render")
+    p.add_argument("--text", help="literal text to stream (--mode streaming only)")
     p.add_argument("--out", help="output .wav path")
     p.add_argument("--project", help="BookForge project dir. --audiobook: output lands in "
                    "<project>/output/audiobook.m4b (input EPUB resolved like the app's 'Latest'). "

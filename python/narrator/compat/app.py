@@ -299,6 +299,19 @@ def route_prep(args) -> int:
     # parity policy and a Higgs prep cannot silently get it.
     if engine_id == 'higgs-v3':
         optional['chunking'] = 'paragraph'
+        # THE VOICE'S OWN CAP, from the document BookForge wrote for this job.
+        # Without it prep reached for Orpheus's env budget and packed at 350
+        # (measured 2026-09-05: 1067 chunks of ~220 chars against a 900/1200
+        # certificate). Refuses by name with no --higgs_voice or with a
+        # fine-tune that declares no maxChars.
+        from ..engine.higgs.v3_engine import higgs_v3_prep_budget
+        try:
+            optional['budget'] = higgs_v3_prep_budget(args.higgs_voice)
+        except ValueError as refused:
+            # narrator's own named refusal - the same shape as UnsupportedInput
+            # below: the message IS the answer.
+            print(f'Error: {refused}', flush=True)
+            return 1
     if args.fine_tuned:
         optional['fine_tuned'] = args.fine_tuned
     if args.output_format:

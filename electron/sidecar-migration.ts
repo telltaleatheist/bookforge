@@ -122,23 +122,37 @@ async function migrateVariant(
 
   // 2. Transcript, from the three places it can legitimately be, in order of how
   //    strongly it is tied to THESE bytes:
-  //      embedded — the mov_text track inside this m4b (mono audiobooks);
-  //      external — a transcript the caller states belongs to this m4b, i.e. the
-  //                 .vtt the assembly that built this audio just wrote beside it;
+  //      external — the transcript the caller states BUILT this m4b: the .vtt the
+  //                 assembler wrote from its manifest, cue N for chunk N, with the
+  //                 exact durations it concatenated. Nothing is closer to these
+  //                 bytes than the file that produced them.
+  //      embedded — the mov_text track inside this m4b (mono audiobooks). A COPY
+  //                 of the external one, and a lossy copy: mov_text cannot carry
+  //                 an empty cue, so a book whose assembler wrote 133 cues (one
+  //                 of them an empty chunk) comes back out of the track as 132,
+  //                 and every cue after it is off by one against the chunk list
+  //                 the correction door and the reading overlay index by. Owen,
+  //                 2026-09-05: "VTTs should function correctly" — preferring
+  //                 the re-extraction over the file it was made from was the
+  //                 whole defect (NARRATOR_CUTOVER.md "one cue fewer than the
+  //                 book has chunks").
   //      metadata — the sidecar recorded on the variant (bilingual).
   //
-  //    The `external` source exists because the embed can fail (a locked file on
-  //    a synced volume) while the transcript is sitting right there. Before it,
-  //    the binder consulted ONLY the embedded track and the manifest, so a failed
-  //    embed meant `skipped-none` — the safety net reported "this book has no
-  //    transcript" while its transcript lay next to the m4b (Nuremberg,
+  //    The `external` source came in because the embed can fail (a locked file
+  //    on a synced volume) while the transcript is sitting right there. Before
+  //    it, the binder consulted ONLY the embedded track and the manifest, so a
+  //    failed embed meant `skipped-none` — the safety net reported "this book has
+  //    no transcript" while its transcript lay next to the m4b (Nuremberg,
   //    2026-08-14). Absent all three → this book really has no transcript.
   try {
-    let vttText = await extractVttFromM4b(m4bAbs);
-    let vttSource: SidecarAssetSource = 'embedded';
-    if (!vttText && opts.externalVttPath && fs.existsSync(opts.externalVttPath)) {
+    let vttText: string | null = null;
+    let vttSource: SidecarAssetSource = 'external';
+    if (opts.externalVttPath && fs.existsSync(opts.externalVttPath)) {
       vttText = fs.readFileSync(opts.externalVttPath, 'utf8');
-      vttSource = 'external';
+    }
+    if (!vttText) {
+      vttText = await extractVttFromM4b(m4bAbs);
+      vttSource = 'embedded';
     }
     if (!vttText && variant.vttPath) {
       const sidecarAbs = path.join(projectDir, variant.vttPath);
