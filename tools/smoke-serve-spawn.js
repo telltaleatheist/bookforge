@@ -235,6 +235,14 @@ child.stderr.on('data', (b) => {
 });
 
 child.on('close', (code) => {
+  // The watchdog timer MUST be cleared here. Node keeps the event loop alive for
+  // any pending timer, so without this a run that finished perfectly sits until the
+  // timeout fires and then exits 1 — overwriting the exitCode two lines below. The
+  // smoke prints "SMOKE OK", waits out the full window in silence, and reports
+  // failure. Found 2026-09-05: `--real` raised the window from 180 s to 900 s,
+  // which turned a latent 3-minute stall into a quarter-hour one and made a
+  // chained second run start long after its output directory was gone.
+  clearTimeout(watchdog);
   const uniq = seen.filter((t, i) => seen.indexOf(t) === i);
   console.log('EXIT ' + code + '  sequence: ' + uniq.join(' -> ') + `  (${seen.length} messages)`);
   const need = ['ready', 'loaded', 'audio', 'batch_item', 'batch_done'];
@@ -249,7 +257,7 @@ child.on('close', (code) => {
 // lose. `quit` first, and only then the signal: under --real the child holds GPU
 // memory in a WSL guest, where SIGKILLing a process mid-CUDA is what wedges the VM
 // (memory: wsl-wedge-proofing). Cooperative shutdown, then a grace period.
-setTimeout(() => {
+const watchdog = setTimeout(() => {
   console.log('TIMEOUT — asking the worker to quit');
   try { send({ action: 'quit' }); } catch { /* stdin already gone */ }
   setTimeout(() => { console.log('TIMEOUT — worker did not exit; terminating'); child.kill('SIGTERM'); process.exit(1); /* abort-path */ }, 30000);

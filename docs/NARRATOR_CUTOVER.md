@@ -608,6 +608,32 @@ wsl.exe -d Ubuntu bash -c 'export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
 `activeSampleRate()` is reading a real engine's answer, not a default. CUDA graphs
 captured here too (13 s, 0.16 GiB). Exit 0 both runs.
 
+#### A fourth bug, found after the window closed, in the smoke tool itself
+
+`smoke-serve-spawn.js` never cleared its watchdog `setTimeout`. Node keeps the
+event loop alive for a pending timer, so a run that finished perfectly printed
+`SMOKE OK`, set `exitCode = 0`, and then sat in silence until the timeout fired
+and called `process.exit(1)`. **A successful `--real` run reported failure**, and
+the two chained invocations in this window each stalled ~15 minutes past their own
+completion — long enough that the second one started after its output directory
+had been cleaned up.
+
+Latent before this phase (the fake path had a 180 s window and nobody watched the
+exit code); `--real` raised it to 900 s and made it impossible to miss. Fixed by
+clearing the timer in the `close` handler, and verified on the fake path: 4 s wall,
+exit 0, where it previously took 180 s and exited 1.
+
+**Two honesty notes about the serve figures above.** The buffered-mode numbers are
+from the run read live at 08:41:45 and are attributable with certainty. The
+streamed-mode numbers were also read live, from a complete log carrying the
+`LOAD :` line that only the post-`resolveLoadPlan` code emits, mistborn's real caps
+and a coherent vLLM load — so the measurement is real — but the run logs were
+deleted during scratch cleanup before this bug was understood, so WHICH invocation
+wrote it can no longer be established. And the timer fix is verified on the fake
+path only: the GPU lock passed to the `higgs-v3-finetune` agent at 08:51:56, so the
+card was not taken back to re-run it. The fix is in the engine-agnostic `close`
+handler, which the fake path exercises identically.
+
 **Rate against speech.** A single short row runs at 0.61-0.65x realtime — below
 speech — while a two-row batch runs at 1.38-1.45x. That is the shape the fast-start
 design predicts: one row alone is dominated by per-request overhead, and the reader
