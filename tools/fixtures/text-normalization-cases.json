@@ -868,5 +868,45 @@
     "rule": "integer",
     "in": "he did. 45 men remained",
     "want": "he did. forty five men remained"
+  },
+  {
+    "id": "ask2c-grouped-copies",
+    "stage": "rules",
+    "rule": "grouped",
+    "in": "5,000 copies went out",
+    "want": "five thousand copies went out",
+    "added_in": "n5 — Ask 2c (NORMALIZATION_SPEC.md F4). The exact string the training side reported: the rules read it, and the validator no longer refuses the same reading from the model as NUMBER_DROPPED."
+  },
+  {
+    "id": "ask2c-grouped-millions",
+    "stage": "rules",
+    "rule": "grouped",
+    "in": "it cost 1,250,000 marks",
+    "want": "it cost one million two hundred fifty thousand marks",
+    "added_in": "n5 — Ask 2c: two commas are still ONE number, so a three-group integer needs no more number words than its reading has."
+  },
+  {
+    "id": "ask2c-grouped-glued-strong",
+    "stage": "model",
+    "rule": "grouped",
+    "in": "an 18,000-strong crowd",
+    "want": "an eighteen thousand-strong crowd",
+    "added_in": "n5 — Ask 2c: measured still printing its digits on tr_dn3. The GROUPED rule declines it (the number is glued to more text), so the model owns the reading and the validator is the only thing in its way. The compound keeps its printed hyphen, as 1940s-era does; the validator accepts the unhyphenated reading too."
+  },
+  {
+    "id": "ask2c-grouped-range",
+    "stage": "model",
+    "rule": "range",
+    "in": "some 20-30,000 of them",
+    "want": "some twenty to thirty thousand of them",
+    "added_in": "n5 — Ask 2c: the other shape measured still printing its digits on tr_dn3. A range whose second number is comma-grouped; the rules decline it and the model reads it."
+  },
+  {
+    "id": "ask2c-grouped-is-not-two-numbers",
+    "stage": "rules",
+    "rule": "grouped",
+    "in": "5,000 copies in 12 crates",
+    "want": "five thousand copies in twelve crates",
+    "added_in": "n5 — Ask 2c, the other direction: a comma-grouped number beside a BARE one is still two numbers, and a reading that drops the bare one is refused NUMBER_DROPPED. The floor was never the defect; counting a comma as a separator between numbers was."
   }
 ]

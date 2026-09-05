@@ -526,7 +526,7 @@ definition are both BookForge's.
 ### Shared fixtures — and what the training side owes
 
 `tools/fixtures/text-normalization-cases.json` began as a copy of their
-`fixtures/cases.json`, case ids kept. **The two files have diverged**: 104 cases
+`fixtures/cases.json`, case ids kept. **The two files have diverged**: 122 cases
 here against 53 there, and **until their file is updated the corpora and the
 renders normalize differently** — by design, from rulings they have not mirrored,
 not by accident.
@@ -535,10 +535,10 @@ not by accident.
 |---|---|---|
 | expectations to **change** | 3 | `leave-page-cite`, `leave-doc-code`, `leave-glued` |
 | `known_defect` now **fixed** | 1 | `leave-archive` |
-| cases to **add** | 51 | every one marked `added_in` with its ruling or review row |
+| cases to **add** | 56 | every one marked `added_in` with its ruling or review row |
 
 Those four changed expectations are exactly the four differences
-`run_fixtures.js --compare` reports. The 51 additions cover the cross-chapter
+`run_fixtures.js --compare` reports. The 56 additions cover the cross-chapter
 scripture range, the archive sigil's opposite direction, the page and glued
 readings, the unit suffixes, the `<br/>`-fused ordinals, and the
 year/decade/ordinal shapes the glued rule must leave to the model.
@@ -600,6 +600,24 @@ tr_dn3 (NORMALIZATION_SPEC.md §F4): it also refused `18,000-strong` and
 `digitRuns` now reads a comma-grouped number as ONE number. The floor it was
 protecting still fires: `20:6` → *"twenty"* and `1914-1918` → *"nineteen
 fourteen"* are both still refused.
+
+The keepers sit in **two** suites on purpose. `tools/test-text-normalization.js`
+judges the shared definition; `tools/test-tts-number-normalizer.js` owns the
+disposition itself, so a regression in `digitRuns` has to fail the suite that
+owns `NUMBER_DROPPED` and not only the fixture one. The comma-grouped cases are
+in both, in both directions — `5,000` → *"five"* and `20-30,000` → *"twenty
+thousand"* are still `NUMBER_DROPPED`, and `5,000 copies in 12 crates` →
+*"five thousand copies in crates"* proves a comma-grouped number standing beside
+a **bare** one is still two numbers.
+
+Two notes the record needs. `18,000-strong` may be read *"eighteen
+thousand-strong"* or *"eighteen thousand strong"* — the prompt lets a
+replacement carry a hyphen and the compound's own hyphen is the book's (as in
+`1940s-era` → *"nineteen forties-era"*), so the validator accepts both and the
+choice is the model's. And a find whose second number is dropped **along with
+its prose words** — `5,000 copies and 12 men` → *"five thousand copies"* — is
+refused one check earlier, as `WORDS_DROPPED`: `keepsEveryWord` runs ahead of
+the number floor. Refused either way; the record just names the right reason.
 
 ## The two rule fixes in n5
 
