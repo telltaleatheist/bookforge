@@ -772,7 +772,7 @@ export interface HiggsDoctorResult {
   remedy: string;
   checks: Array<{
     id:
-      | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha'
+      | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha' | 'profile-sha'
       | 'narrator-deps'
       | 'toggle'
       | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'

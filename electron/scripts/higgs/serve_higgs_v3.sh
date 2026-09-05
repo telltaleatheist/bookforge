@@ -23,15 +23,28 @@
 #      and 0.25 for the codec, and that is what the two variables below default
 #      to. Likewise `--max-model-len 8192` was clamping the codec stage, whose
 #      profile value is 65536.
-#   4. $HIGGS_DEPLOY_CONFIG selects vllm-omni's deploy profile. Unset, vllm-omni
-#      auto-discovers `higgs_multimodal_qwen3.yaml`, which keeps stage 0 in
-#      enforce_eager (NO CUDA GRAPHS on the talker). The sibling
-#      `higgs_multimodal_qwen3_low_latency.yaml` profile (the FILE name - see
-#      the check below) turns them on
-#      (enforce_eager: false, cudagraph_mode FULL_DECODE_ONLY). Which profile is
-#      certified for a voice is the training side's measurement, and until it is
-#      made this stays unset - the variable exists so that measurement needs no
-#      script edit.
+#   4. $HIGGS_DEPLOY_CONFIG selects vllm-omni's deploy profile, and BookForge now
+#      SETS it - to the file the installer copies in beside this script,
+#      <env>/bin/higgs_default_frames7500.yaml.
+#      THAT PROFILE EXISTS BECAUSE THE SERVED SPEECH ENDPOINT IGNORES A
+#      PER-REQUEST max_tokens. MEASURED 2026-09-05 (owens-pc, vllm-omni 0.28.0):
+#      stage 0's `default_sampling_params.max_tokens` is a HARD CEILING on every
+#      render, and the auto-discovered profile sets it to 2048 frames = 81.92 s,
+#      so any chunk needing more audio than that is cut mid-sentence and no
+#      request parameter can raise it. The shipped profile is byte-identical to
+#      vllm-omni's own `higgs_multimodal_qwen3.yaml` EXCEPT max_tokens 7500
+#      (300 s). Unset, vllm-omni auto-discovers its own file again and the
+#      81.92 s ceiling is back - which is why this is set rather than left to a
+#      default. (The sibling `higgs_multimodal_qwen3_low_latency.yaml` is a
+#      different question - CUDA graphs on the talker - and is still uncertified.)
+#   5. The attention backend is forced PER STAGE in --stage-overrides as well as
+#      by the global --attention-backend flag. MEASURED (training, 2026-09-05):
+#      when a deploy profile is passed EXPLICITLY, a stage-level
+#      `attention_backend: FLASHINFER` in that profile can beat the global flag -
+#      and FlashInfer cannot JIT on this box (the CUDA 13 nvcc from the pip wheel
+#      rejects its bundled CCCL headers), so the global flag alone is not enough
+#      to keep it out. Passing it in the stage override says it at the level the
+#      profile says it at.
 # The levers are documented in the campaign's HIGGS_V3_LEVERS.md.
 #
 # The installer copies this into <env>/bin/serve_higgs_v3.sh and chmod +x's it;
@@ -45,12 +58,26 @@ HIGGS_PORT="${HIGGS_PORT:-8095}"
 HIGGS_HOST="${HIGGS_HOST:-127.0.0.1}"
 # Stage 0, the talker: weights + KV cache. Stage 1, the codec decoder: no KV
 # cache. Both are FRACTIONS OF THE WHOLE CARD, and they add - and the sum must
-# leave room for three CUDA contexts. MEASURED 2026-09-05 at 0.60 + 0.25 on the
-# 24.5 GB card: 24,274 MiB in use, the WDDM driver paging into shared system RAM,
-# the render falling from ~8 to ~2 chunks/min and the host left with 2 GB free.
-# 0.55 + 0.15 = 17.2 GB reserved + contexts ~ 19 GB, ~5 GB headroom.
-HIGGS_GPU_MEM_UTIL="${HIGGS_GPU_MEM_UTIL:-0.55}"
-HIGGS_CODEC_GPU_MEM_UTIL="${HIGGS_CODEC_GPU_MEM_UTIL:-0.15}"
+# leave room for three CUDA contexts.
+#
+# THE TALKER'S FRACTION IS ITS KV CACHE BUDGET ON TOP OF THE WEIGHTS, not a cap
+# on the stage. MEASURED 2026-09-05 (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni
+# 0.28.0) at 0.35, from the server's own log: "Desired GPU memory utilization is
+# (0.35, 8.4 GiB). Actual usage is 7.72 GiB", "Available KV cache memory:
+# 8.4 GiB", "GPU KV cache size: 61,120 tokens" - so stage 0 holds 7.72 GiB of
+# weights AND 8.4 GiB of cache. Reading the fraction as a ceiling is what made
+# the earlier pairs overcommit the card:
+#
+#   0.60 + 0.25   24,274 MiB in use, the WDDM driver paging into shared system
+#                 RAM, the render falling from ~8 to ~2 chunks/min, 2 GB free.
+#   0.55 + 0.15   24.0 GB in use - still paging.
+#   0.35 + 0.10   18.7-19.2 GB in use, and IDENTICAL THROUGHPUT at 16 concurrent:
+#                 11,387-11,584 chars/min across three runs. Shipped.
+#
+# At 0.35 + 0.10, 32 concurrent filled the card and stalled, which is the other
+# half of why HIGGS_MAX_NUM_SEQS ships at 16.
+HIGGS_GPU_MEM_UTIL="${HIGGS_GPU_MEM_UTIL:-0.35}"
+HIGGS_CODEC_GPU_MEM_UTIL="${HIGGS_CODEC_GPU_MEM_UTIL:-0.10}"
 HIGGS_MAX_MODEL_LEN="${HIGGS_MAX_MODEL_LEN:-8192}"
 HIGGS_MAX_NUM_SEQS="${HIGGS_MAX_NUM_SEQS:-16}"
 HIGGS_DEPLOY_CONFIG="${HIGGS_DEPLOY_CONFIG:-}"
@@ -113,7 +140,12 @@ done
 case "$HIGGS_MAX_NUM_SEQS" in ''|*[!0-9]*|0) echo "HIGGS_MAX_NUM_SEQS must be a positive integer; got '$HIGGS_MAX_NUM_SEQS'" >&2; exit 4 ;; esac
 case "$HIGGS_MAX_MODEL_LEN" in ''|*[!0-9]*|0) echo "HIGGS_MAX_MODEL_LEN must be a positive integer; got '$HIGGS_MAX_MODEL_LEN'" >&2; exit 4 ;; esac
 
-STAGE_OVERRIDES="{\"0\": {\"gpu_memory_utilization\": $HIGGS_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS, \"max_model_len\": $HIGGS_MAX_MODEL_LEN}, \"1\": {\"gpu_memory_utilization\": $HIGGS_CODEC_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS}}"
+# `attention_backend` is stated on stage 0 as well as globally: see note 5 in the
+# header. A deploy profile passed with --deploy-config carries its own
+# stage-level attention_backend, and that beat the global --attention-backend
+# flag when the profile was given explicitly (training, 2026-09-05) - so the
+# override has to say it at the same level the profile does.
+STAGE_OVERRIDES="{\"0\": {\"gpu_memory_utilization\": $HIGGS_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS, \"max_model_len\": $HIGGS_MAX_MODEL_LEN, \"attention_backend\": \"$VLLM_ATTENTION_BACKEND\"}, \"1\": {\"gpu_memory_utilization\": $HIGGS_CODEC_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS}}"
 
 # A deploy profile is a FILE NAME or a full path, never a bare name. MEASURED
 # (training, 2026-09-05, vllm-omni 0.28.0): `--deploy-config

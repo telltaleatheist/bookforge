@@ -17,12 +17,13 @@
 #             BookForge's doctor and CI run.
 #   (default) create the env if absent, install the pins if absent, install
 #             narrator's runtime imports if any are missing, apply both patches,
-#             deploy the launcher. Every step whose work is already done is
-#             skipped, so re-running after a partial failure resumes — with ONE
-#             deliberate exception: the launcher is copied EVERY time (see
-#             section 5), because "only if absent" made the env's copy a
-#             snapshot of the day it was built and every later fix to the script
-#             shipped in the repo and was read by nobody.
+#             deploy the launcher and the deploy profile. Every step whose work
+#             is already done is skipped, so re-running after a partial failure
+#             resumes — with TWO deliberate exceptions: the launcher (section 5)
+#             and higgs_default_frames7500.yaml (section 5b) are copied EVERY
+#             time, because "only if absent" made the env's copy a snapshot of
+#             the day it was built and every later fix to those files shipped in
+#             the repo and was read by nobody.
 #
 # It is NEVER run automatically. Higgs is a GPU engine whose install downloads
 # many GB and whose server preallocates ~24 GB of VRAM; that starts because a
@@ -263,6 +264,38 @@ else
   cp "$SCRIPT_DIR/serve_higgs_v3.sh" "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
   chmod +x "$ENV_PREFIX/bin/serve_higgs_v3.sh" || exit 14
   say "launcher=installed"
+fi
+
+# ── 5b. the deploy profile, deployed BESIDE the launcher ────────────────────
+# higgs_default_frames7500.yaml is byte-identical to vllm-omni 0.28.0's own
+# deploy/higgs_multimodal_qwen3.yaml EXCEPT stage 0's
+# default_sampling_params.max_tokens, 2048 -> 7500.
+#
+# WHY IT SHIPS AT ALL: the served speech endpoint IGNORES a per-request
+# max_tokens, so that profile value is a HARD CEILING on every render — 2048
+# frames is 81.92 s of audio and a chunk needing more is cut mid-sentence
+# (MEASURED 2026-09-05, owens-pc). 7500 frames is 300 s.
+#
+# NOT WRITTEN INTO site-packages, which is the other way to raise it: a pip
+# upgrade in this env would revert that silently, exactly as it reverts the two
+# patches above. A profile FILE passed with --deploy-config survives an upgrade
+# and can be hashed, and the doctor's `profile-sha` row hashes it — the training
+# side's certificates bind to these bytes, so a drifted copy is a different
+# server, not a cosmetic difference.
+#
+# Same rule as the launcher: ALWAYS COPIED, never "only if absent", and the same
+# exit code (14), because a half-deployed env is one failure, not two.
+if [ "$CHECK_ONLY" = "1" ]; then
+  if [ ! -f "$ENV_PREFIX/bin/higgs_default_frames7500.yaml" ]; then
+    bad "profile=absent"
+  elif ! cmp -s "$SCRIPT_DIR/higgs_default_frames7500.yaml" "$ENV_PREFIX/bin/higgs_default_frames7500.yaml"; then
+    bad "profile=stale"
+  else
+    say "profile=ok"
+  fi
+else
+  cp "$SCRIPT_DIR/higgs_default_frames7500.yaml" "$ENV_PREFIX/bin/higgs_default_frames7500.yaml" || exit 14
+  say "profile=installed"
 fi
 
 # ── 6. the weights ──────────────────────────────────────────────────────────

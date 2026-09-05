@@ -120,11 +120,13 @@ roster, and a voice not in it is refused by name.
     "servedModelName": "higgs-v3",
     "host": "127.0.0.1", "port": 8095,
     "endpoint": "/v1/audio/speech", "healthEndpoint": "/health",
-    // TWO STAGES, TWO FRACTIONS OF THE WHOLE CARD, and they ADD (~0.85).
-    "gpuMemoryUtilization": 0.6,        // stage 0, the talker
-    "codecGpuMemoryUtilization": 0.25,  // stage 1, the codec decoder
+    // TWO STAGES, TWO FRACTIONS OF THE WHOLE CARD, and they ADD.
+    // MEASURED 2026-09-05: each is a KV-cache budget ON TOP of that stage's weights.
+    "gpuMemoryUtilization": 0.35,       // stage 0, the talker
+    "codecGpuMemoryUtilization": 0.1,   // stage 1, the codec decoder
     "maxModelLen": 8192, "maxNumSeqs": 16,
-    "deployConfig": null,               // null = vllm-omni's auto-discovered profile
+    // A FILE NAME, resolved to <env>/bin/<file>. See "The frame ceiling".
+    "deployConfig": "higgs_default_frames7500.yaml",
     "attentionBackend": "FLASH_ATTN",
     "coldStartSeconds": 297, "readyTimeoutSeconds": 300,   // MEASURED
     "patches": [ { "id", "script", "target", "marker", "why" } ]
@@ -354,7 +356,7 @@ server** — except the batch width, which narrator itself reads:
 | `HIGGS_CODEC_GPU_MEM_UTIL` | `serving.codecGpuMemoryUtilization` | stage 1 (codec decoder), same flag |
 | `HIGGS_MAX_MODEL_LEN` | `serving.maxModelLen` | stage 0 context length |
 | `HIGGS_MAX_NUM_SEQS` | `serving.maxNumSeqs` | stage 0 batch width **and** narrator's own (`serve_concurrency`) — set on **every arm and every phase**, because that function refuses by name when it is unset |
-| `HIGGS_DEPLOY_CONFIG` | `serving.deployConfig` | a vllm-omni deploy profile — emitted **only** when the catalog names one; `null` means the auto-discovered `higgs_multimodal_qwen3.yaml`, which keeps stage 0 in `enforce_eager` |
+| `HIGGS_DEPLOY_CONFIG` | `serving.deployConfig` | a vllm-omni deploy profile, as an **absolute guest path**: a bare file name in the catalog is resolved to `<HIGGS_ENV>/bin/<file>` — the same derivation `NARRATOR_HIGGS3_SERVE_SCRIPT` uses, so the profile that runs is provably the installer's copy and not something under vllm-omni's own `deploy/`. Emitted **only** when the catalog names one; `null` means the auto-discovered `higgs_multimodal_qwen3.yaml`, which keeps stage 0 in `enforce_eager` **and** caps every render at 81.92 s (see [The frame ceiling](#the-frame-ceiling)) |
 
 `HIGGS_MODEL_DIR` is the exception in the other direction: **narrator** exports it
 per voice from the document's `checkpointDir` (`_launch_exports`), unsetting it
@@ -655,6 +657,87 @@ against the three that could, all in `parallel-tts-bridge.ts`:
 magnitude, so a keeper reads all three out of the source and fails if one is
 tightened below the recorded cold start.
 
+### The frame ceiling
+
+**The served speech endpoint ignores a per-request `max_tokens`.** Stage 0's
+`default_sampling_params.max_tokens`, in whichever *deploy profile* the server was
+started with, is therefore a hard ceiling on the audio length of **every** render,
+and no request parameter can raise it.
+
+MEASURED 2026-09-05 (owens-pc, RTX 3090 Ti, vllm-omni 0.28.0): vllm-omni's
+auto-discovered `higgs_multimodal_qwen3.yaml` sets it to **2048 frames = 81.92 s**.
+A chunk needing more audio than that is **cut mid-sentence**, and the request still
+reports success — there is no error to notice, only a book with clipped paragraphs.
+
+So BookForge ships its own profile:
+
+```
+electron/scripts/higgs/higgs_default_frames7500.yaml
+```
+
+byte-identical to vllm-omni's own file **except** `max_tokens: 7500` (300 s).
+
+| | |
+|---|---|
+| named by | `serving.deployConfig` in `electron/data/higgs-models.json`, as a bare **file name** |
+| resolved by | `higgsSpawnEnv` → `HIGGS_DEPLOY_CONFIG=<HIGGS_ENV>/bin/higgs_default_frames7500.yaml` |
+| deployed by | `install_higgs_env.sh` section 5b, **every run**, beside the launcher |
+| checked by | the doctor's `profile-sha` row |
+| sha256 | `24d288f193eaa8c5…` — **the training certificates bind to these bytes** |
+
+**Why a FILE and not a write into `site-packages`.** Editing the profile inside the
+installed package is the other way to raise the ceiling, and a pip upgrade in the env
+reverts it silently — which is exactly what reverts the two patches above. A profile
+passed on the command line survives an upgrade and can be hashed.
+
+**Why the name is resolved rather than passed on.** `--deploy-config` takes a file
+name or a full path; a bare profile *name* with no extension is
+`Deploy config not found` (`config_factory._load_user_deploy_config` joins it to the
+deploy dir without appending `.yaml`), which costs a 297 s cold start to discover —
+so both `higgsSpawnEnv` and `serve_higgs_v3.sh` refuse one by name. But a bare *file
+name* resolves against **vllm-omni's own `deploy/` directory**, which is not where the
+installer puts ours. BookForge therefore resolves it against `HIGGS_ENV`, using the
+same `<prefix>/bin/<file>` derivation that produces the launcher path.
+
+**The file's bytes do not change here.** A certificate binds (checkpoint dir,
+stage-processor sha, max_chars) measured against a particular server; the profile is
+part of that server. Editing it is re-certifying, not a tweak. `.gitattributes` pins
+`electron/scripts/higgs/*.yaml` to LF so a Windows checkout cannot silently deploy a
+CRLF copy — YAML would parse it, and it would no longer be the certified file.
+
+### Memory: two stages, two fractions, and neither is a cap
+
+Both fractions are shares of the **whole card**, they **add**, and each is a **KV
+cache budget on top of that stage's weights** — not a ceiling on the stage. The
+server's own log at 0.35:
+
+```
+Desired GPU memory utilization is (0.35, 8.4 GiB). Actual usage is 7.72 GiB
+Available KV cache memory: 8.4 GiB
+GPU KV cache size: 61,120 tokens
+```
+
+i.e. stage 0 holds 7.72 GiB of weights **and** 8.4 GiB of cache. Reading the fraction
+as a cap is what overcommitted the card. MEASURED on owens-pc (24.5 GB), 2026-09-05:
+
+| talker + codec | card in use | throughput @ 16 concurrent |
+|---|---|---|
+| 0.60 + 0.25 | 24,274 MiB — WDDM paging into shared system RAM | ~8 → ~2 chunks/min |
+| 0.55 + 0.15 | 24.0 GB — still paging | — |
+| **0.35 + 0.10** | **18.7–19.2 GB** | **11,387–11,584 chars/min** (three runs) |
+
+The last row is what ships: five GB of headroom bought for **no** measured
+throughput. At those fractions **32 concurrent filled the card and stalled**, which is
+the other half of why `maxNumSeqs` is 16.
+
+Each fraction is passed **per stage** through `--stage-overrides`, because vllm-omni
+applies a global `--gpu-memory-utilization` to *every* stage
+(`omni_config.py _stage_cli_overrides`) — the campaign's single `0.60` reserved 0.60
+twice. The stage-0 override also states `attention_backend`: a deploy profile passed
+explicitly carries its own stage-level value, and that beat the global
+`--attention-backend FLASH_ATTN` flag (training, 2026-09-05) — which matters because
+FlashInfer cannot JIT on this box.
+
 ## 4. The environment
 
 ### Settings and routing
@@ -754,6 +837,7 @@ check and **never short-circuits** — every check is reported pass or fail, bec
 | `patch:higgs-sentinel-filter` | grep `_filter_sentinel_frames` in `vllm_omni/.../higgs_audio_v3.py` **and** grep for the ABSENCE of `[:, :-1]` |
 | `launcher` | `test -x <env>/bin/serve_higgs_v3.sh` |
 | `launcher-sha` | `sha256sum` of the deployed copy vs the shipped `electron/scripts/higgs/serve_higgs_v3.sh`, **CR stripped on both sides** → `launcher-stale` |
+| `profile-sha` | `sha256sum` of `<env>/bin/higgs_default_frames7500.yaml` vs the shipped one, same CR strip → `profile-stale`, or `absent` for an env built before the profile shipped. It carries [the frame ceiling](#the-frame-ceiling), and its failure is SILENT — short audio, not an error |
 | `narrator-deps` | one `python -c` over `importlib.util.find_spec` for every module in `requirements-narrator-runtime.txt`; missing ones reported **by name, with the pip package that provides each** |
 
 A missing probe line is **not** a pass — defaulting those to ok would report green

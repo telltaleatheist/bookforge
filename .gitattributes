@@ -17,7 +17,16 @@
 # the guest twice — `pip install -r` and the installer's sed/grep that pulls the
 # `# import:` annotations out of it — so a trailing CR would ride into a pip
 # requirement and into a module name the doctor then probes for.
+# The .yaml beside them is higgs_default_frames7500.yaml, a vllm-omni deploy
+# profile the installer copies into the env and vllm-omni reads INSIDE the guest.
+# It is pinned for a stronger reason than the doctor's hash (which is CR-stripped
+# on both sides, like the launcher's, so it would not notice): the training
+# side's certificates bind to this file's EXACT BYTES, sha256
+# 24d288f193eaa8c5…, and a CRLF checkout would deploy a file that is not the one
+# any certificate was measured against. YAML parses either way, so nothing would
+# fail — it would just no longer be the certified profile.
 electron/scripts/higgs/*.sh text eol=lf
 electron/scripts/higgs/*.py text eol=lf
 electron/scripts/higgs/*.txt text eol=lf
+electron/scripts/higgs/*.yaml text eol=lf
 python/narrator/tests/golden/** text eol=lf
