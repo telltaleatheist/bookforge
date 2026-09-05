@@ -41,9 +41,10 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 /** Args prefix for running a guest BINARY: distro selector + `-e` (exec, NO login
  *  shell). `-e` matters twice over: our pkill/pgrep patterns contain shell
- *  metacharacters (`(worker|app)\.py` — a bare `wsl.exe pkill -f (worker|app)...`
- *  would be a bash syntax error), and skipping the shell avoids .bashrc side
- *  effects. wsl.exe built-ins (--list, -t, --shutdown) must NOT use this. */
+ *  metacharacters (`narrator\.compat\.(worker|app)` — a bare
+ *  `wsl.exe pkill -f narrator.compat.(worker|app)` would be a bash syntax error),
+ *  and skipping the shell avoids .bashrc side effects. wsl.exe built-ins
+ *  (--list, -t, --shutdown) must NOT use this. */
 function guestExecArgs(): string[] {
   const distro = getWslDistro();
   return distro ? ['-d', distro, '-e'] : ['-e'];

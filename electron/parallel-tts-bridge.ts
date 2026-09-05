@@ -546,15 +546,11 @@ export function forceKillAllNarratorBatchProcesses(): void {
       console.log('[PARALLEL-TTS] WMIC process search completed');
     }
 
-    // Also try to kill any vllm processes directly
-    try {
-      execSync('taskkill /F /IM "python.exe" /FI "WINDOWTITLE eq *vllm*"', {
-        stdio: 'ignore',
-        timeout: 5000,
-      });
-    } catch {
-      // May not find any, that's OK
-    }
+    // A `taskkill /FI "WINDOWTITLE eq *vllm*"` sibling stood here. Deleted for the
+    // same reason as its twin in main.ts: a spawned python.exe has no window
+    // title, so the filter cannot match, and a sweep that cannot match is a lie
+    // told in the one place people look after a bad shutdown. The WMIC
+    // command-line match above is the thing that works.
   }
 
   // Also clean up WSL processes if applicable

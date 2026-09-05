@@ -444,39 +444,6 @@ export interface CleanupResult {
 // TTS Types (ebook2audiobook)
 // ─────────────────────────────────────────────────────────────────────────────
 
-export type ConversionPhase = 'preparing' | 'converting' | 'merging' | 'complete' | 'error';
-
-export interface VoiceInfo {
-  id: string;
-  name: string;
-  language: string;
-}
-
-export interface TTSSettings {
-  device: 'gpu' | 'mps' | 'cpu';
-  language: string;
-  voice: string;
-  temperature: number;
-  speed: number;
-}
-
-export interface TTSProgress {
-  phase: ConversionPhase;
-  currentChapter: number;
-  totalChapters: number;
-  percentage: number;
-  estimatedRemaining: number;
-  message?: string;
-  error?: string;
-}
-
-export interface ConversionResult {
-  success: boolean;
-  outputPath?: string;
-  error?: string;
-  duration?: number;
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Processing Queue Types
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1311,24 +1278,6 @@ export interface ElectronAPI {
       data?: { valid: boolean; condaFound: boolean; e2aFound: boolean; orpheusEnvFound: boolean; errors: string[] };
       error?: string;
     }>;
-  };
-  tts: {
-    checkAvailable: () => Promise<{ success: boolean; data?: { available: boolean; version?: string; error?: string }; error?: string }>;
-    getVoices: () => Promise<{ success: boolean; data?: VoiceInfo[]; error?: string }>;
-    startConversion: (
-      epubPath: string,
-      outputDir: string,
-      settings: TTSSettings
-    ) => Promise<{ success: boolean; data?: ConversionResult; error?: string }>;
-    stopConversion: () => Promise<{ success: boolean; data?: boolean; error?: string }>;
-    generateFilename: (
-      title: string,
-      subtitle?: string,
-      author?: string,
-      authorFileAs?: string,
-      year?: string
-    ) => Promise<{ success: boolean; data?: string; error?: string }>;
-    onProgress: (callback: (progress: TTSProgress) => void) => () => void;
   };
   foundry: {
     version: () => Promise<{ ok: boolean; path?: string; version?: string; commit?: string | null; error?: string }>;
@@ -2727,37 +2676,6 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('wsl:detect'),
     checkOrpheusSetup: (config: { distro?: string; condaPath?: string; e2aPath?: string }) =>
       ipcRenderer.invoke('wsl:check-orpheus-setup', config),
-  },
-  tts: {
-    checkAvailable: () =>
-      ipcRenderer.invoke('tts:check-available'),
-    getVoices: () =>
-      ipcRenderer.invoke('tts:get-voices'),
-    startConversion: (
-      epubPath: string,
-      outputDir: string,
-      settings: TTSSettings
-    ) =>
-      ipcRenderer.invoke('tts:start-conversion', epubPath, outputDir, settings),
-    stopConversion: () =>
-      ipcRenderer.invoke('tts:stop-conversion'),
-    generateFilename: (
-      title: string,
-      subtitle?: string,
-      author?: string,
-      authorFileAs?: string,
-      year?: string
-    ) =>
-      ipcRenderer.invoke('tts:generate-filename', title, subtitle, author, authorFileAs, year),
-    onProgress: (callback: (progress: TTSProgress) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, progress: TTSProgress) => {
-        callback(progress);
-      };
-      ipcRenderer.on('tts:progress', listener);
-      return () => {
-        ipcRenderer.removeListener('tts:progress', listener);
-      };
-    },
   },
   foundry: {
     version: () => ipcRenderer.invoke('foundry:version'),

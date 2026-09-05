@@ -69,6 +69,7 @@ const SUITES = [
   'test-narrator-argv-snapshot',
   'test-serve-spawn-env',
   'test-narrator-log-strings',
+  'test-no-e2a-doors',
   'test-gpu-ownership',
   'test-editor-state-store',
   'test-family-lifecycle',
