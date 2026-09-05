@@ -68,5 +68,42 @@
       "VLLM_USE_V1": "0"
     },
     "cwd": "C:\\FAKE\\e2a"
+  },
+  "higgs:wsl": {
+    "arm": "wsl",
+    "engine": "higgs",
+    "command": "wsl.exe",
+    "viaWsl": true,
+    "args": [
+      "-d",
+      "Ubuntu",
+      "bash",
+      "-c"
+    ],
+    "bash": {
+      "exports": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "NARRATOR_ENGINE": "higgs-v3",
+        "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
+        "NARRATOR_HIGGS3_SERVE_SCRIPT": "/home/fake/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh",
+        "NARRATOR_HIGGS3_WSL_DISTRO": "Ubuntu",
+        "PYTHONPATH": "<REPO>/python"
+      },
+      "cd": "cd ~",
+      "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'higgs3' python -u -m narrator.serve"
+    },
+    "env": "(inherited process.env — nothing crosses into the guest)",
+    "cwd": "(process.cwd)"
+  },
+  "higgs:native-win": {
+    "arm": "native-win",
+    "engine": "higgs",
+    "refused": "Higgs runs on vLLM-Omni, which has no Windows build. Enable \"WSL2 for Higgs\" in Settings → Higgs and install the Higgs environment there."
+  },
+  "higgs:native-mac": {
+    "arm": "native-mac",
+    "engine": "higgs",
+    "refused": "Higgs TTS environment not found. Install or locate it in Settings → Higgs."
   }
 }

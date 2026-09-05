@@ -223,15 +223,75 @@ for (const arm of ARMS) {
   });
 }
 
+console.log('the Higgs serve spawn, per arm');
+// ONE POOL, TWO ENGINES: which one answers is `NARRATOR_ENGINE` in the spawn. These
+// rows pin what a Higgs Listen session starts, and — on the two native arms — that
+// it REFUSES rather than starting something that cannot run.
+const higgsRows = {};
+for (const arm of ARMS) {
+  higgsRows[arm] = hostNeutral(JSON.parse(execFileSync(
+    process.execPath,
+    [path.join(__dirname, 'serve-spawn-extract.js'), arm, 'higgs'],
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+  )));
+}
+
+for (const arm of ARMS) {
+  check(`higgs/${arm}: unchanged`, () => {
+    assert.deepStrictEqual(higgsRows[arm], base[`higgs:${arm}`]);
+  });
+}
+
+check('higgs/wsl: starts narrator.serve in the higgs3 env as higgs-v3', () => {
+  const row = higgsRows.wsl;
+  assert.ok(!row.refused, `the WSL arm refused: ${row.refused}`);
+  assert.ok(row.viaWsl, 'the WSL arm did not route through WSL');
+  assert.match(row.bash.run, /-n 'higgs3' python -u -m narrator\.serve$/,
+    `not a higgs3 serve spawn: ${row.bash.run}`);
+  // `higgs-v3`, never `higgs`: compat/flags.py lists the latter under
+  // ENGINE_NEAR_MISSES and refuses it by name.
+  assert.strictEqual(row.bash.exports.NARRATOR_ENGINE, 'higgs-v3');
+  assert.ok(!/ORPHEUS_/.test(JSON.stringify(row)),
+    'an ORPHEUS_* variable leaked into a Higgs spawn');
+});
+
+check('higgs/wsl: the voice document is named in the GUEST filesystem', () => {
+  const doc = higgsRows.wsl.bash.exports.NARRATOR_HIGGS_VOICES;
+  assert.ok(doc, 'no NARRATOR_HIGGS_VOICES — the engine would have no voice to resolve');
+  assert.ok(!/^[A-Za-z]:/.test(doc), `the voice document crossed as a Windows path: ${doc}`);
+});
+
+for (const arm of ['native-win', 'native-mac']) {
+  check(`higgs/${arm}: refuses BY NAME rather than spawning`, () => {
+    // v3's only backend is a vLLM-Omni server: no Windows build without the WSL
+    // toggle, and no macOS build at all. A refusal here is the correct behaviour
+    // and is pinned so that it changing is a decision.
+    assert.ok(higgsRows[arm].refused,
+      `${arm} built a Higgs spawn it cannot run: ${JSON.stringify(higgsRows[arm]).slice(0, 200)}`);
+    assert.match(higgsRows[arm].refused, /Higgs/);
+  });
+}
+
 console.log('the capture says the same thing on Windows and on a Mac');
 check('no captured value carries a host path separator', () => {
   // The exact shape of the failure a macOS host reported: `path.join` gives
   // `<REPO>\python` on Windows and `<REPO>/python` on a Mac, so an un-normalised
   // capture can never match across the two. Checkable from one host.
-  const blob = JSON.stringify(now);
-  const at = blob.indexOf(String.fromCharCode(92));
-  assert.strictEqual(at, -1,
-    'a backslash survived canon() near: ' + blob.slice(Math.max(0, at - 90), at + 60));
+  // WALKS THE VALUES, not `JSON.stringify` of them: serialising re-introduces
+  // backslashes of its own for every escaped quote, and a refusal message quoting
+  // \"WSL2 for Higgs\" would fail a check that is supposed to be about path
+  // separators.
+  const offenders = [];
+  const walk = (v, at) => {
+    if (typeof v === 'string') {
+      if (v.includes(String.fromCharCode(92))) offenders.push(`${at} = ${v}`);
+    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`));
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) walk(x, `${at}.${k}`);
+    }
+  };
+  walk({ now, higgsRows }, '');
+  assert.deepStrictEqual(offenders, [], 'a host path separator survived canon()');
 });
 check('the extractor forces the platform per fixture arm', () => {
   // Cannot be observed from a Windows host for the two win32 arms, so it is

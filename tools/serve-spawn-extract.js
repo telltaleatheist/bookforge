@@ -42,7 +42,21 @@ const DIST = path.join(REPO, 'dist', 'electron');
 
 const ARM = process.argv[2];
 if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
-  console.error('usage: serve-spawn-extract.js wsl|native-win|native-mac');
+  console.error('usage: serve-spawn-extract.js wsl|native-win|native-mac [orpheus|higgs]');
+  process.exit(64);
+}
+
+/**
+ * WHICH ENGINE the Listen server is being started for.
+ *
+ * The pool serves both: it speaks narrator's JSON-lines protocol and the engine on
+ * the other end is `NARRATOR_ENGINE` in the spawn. Orpheus is the default so the
+ * pre-cut-over baseline (which predates Higgs entirely) still compares against the
+ * rows it was written from.
+ */
+const ENGINE = process.argv[3] || 'orpheus';
+if (!['orpheus', 'higgs'].includes(ENGINE)) {
+  console.error('usage: serve-spawn-extract.js <arm> [orpheus|higgs]');
   process.exit(64);
 }
 
@@ -128,6 +142,7 @@ function stub(mod, name, fn) {
 
 // Owned by tool-paths, re-exported (sealed) by e2a-paths.
 stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => ARM === 'wsl');
+stub(toolPaths, 'shouldUseWsl2ForHiggs', () => ARM === 'wsl');
 stub(toolPaths, 'getWslE2aPath', () => FAKE.wslE2a);
 stub(toolPaths, 'getWslCondaPath', () => FAKE.wslConda);
 stub(toolPaths, 'getWslOrpheusCondaEnv', () => FAKE.orpheusEnv);
@@ -135,7 +150,14 @@ stub(toolPaths, 'getWslDistro', () => FAKE.distro);
 
 // Owned by e2a-paths.
 stub(paths, 'getDefaultE2aPath', () => FAKE.e2a);
-stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
+// ORPHEUS ONLY. The Orpheus component env is not installed on every dev machine,
+// so its native arms need a stand-in interpreter to have anything to capture.
+// HIGGS MUST NOT BE STUBBED: its native arms are supposed to REFUSE (no Windows
+// build without the WSL toggle; no macOS build at all), and stubbing the resolver
+// would walk straight past the refusal and record a spawn that cannot happen.
+if (ENGINE === 'orpheus') {
+  stub(paths, 'getPythonInvocation', () => ({ command: FAKE.python, args: [] }));
+}
 // Identity: the capture is the pool's OWN contribution, not the machine's env.
 stub(paths, 'buildCondaSpawnEnv', (extra) => ({ ...extra }));
 // Only reached on the macOS arm, and only AFTER the cut-over — the pre-cut-over
@@ -155,13 +177,49 @@ stub(memory, 'orpheusMemoryProfile', () => ({
 stub(memory, 'resolveConcreteOrpheusTier', () => 'balanced');
 stub(memory, 'fitOrpheusTier', (t) => ({ tier: t, steppedDown: false }));
 
+// WHICH VOICE the document is written for. The catalog is a per-machine fact - an
+// artifact is installed or it is not - so the capture is pinned to the REAL
+// `default` entry (the zero-shot served voice, present in every build) rather than
+// to a hand-built fake. A fake would also be REFUSED, and rightly:
+// `higgsServingFor` checks a voice's engineVersion against the catalog's serving
+// block, which is exactly the kind of guard a fixture must not be allowed to walk
+// past.
+if (ENGINE === 'higgs') {
+  const higgsModels = require(path.join(DIST, 'higgs-models.js'));
+  const DEFAULT_MODEL = higgsModels.resolveHiggsModel('default');
+  stub(higgsModels, 'listRenderableHiggsModels', () => [DEFAULT_MODEL]);
+  stub(toolPaths, 'getWslHiggsCondaEnv', () => 'higgs3');
+}
+
 const pool = require(path.join(DIST, 'orpheus-worker-pool.js'));
+if (ENGINE === 'higgs') pool.setServeEngineProbe(() => 'higgs');
+
+/**
+ * A REFUSAL IS A CAPTURE, not a crash.
+ *
+ * Higgs on macOS has no backend — v3 ships a vLLM-Omni server and there is no
+ * macOS build — so `buildSpawnPlan` refuses BY NAME there. That refusal is the
+ * behaviour under test on that row, and a snapshot that recorded it as a stack
+ * trace (or, worse, as a missing row) would let it change without anyone noticing.
+ * The message is normalised through canon() like everything else.
+ */
+function captureRefusal(err) {
+  process.stdout.write(JSON.stringify({
+    arm: ARM, engine: ENGINE, refused: canon(err instanceof Error ? err.message : String(err)),
+  }, null, 2) + '\n');
+  process.exit(0);
+}
 
 // The signature is the detector for which side of the cut-over this is:
 // `resolveScriptPath` exists only while a script file is being spawned.
-const plan = pool.resolveScriptPath
-  ? pool.buildSpawnPlan(pool.resolveScriptPath(), GPU_UTIL)
-  : pool.buildSpawnPlan(GPU_UTIL);
+let plan;
+try {
+  plan = pool.resolveScriptPath
+    ? pool.buildSpawnPlan(pool.resolveScriptPath(), GPU_UTIL)
+    : pool.buildSpawnPlan(GPU_UTIL);
+} catch (err) {
+  captureRefusal(err);
+}
 
 /** Replace this checkout's location with a stable token, in both filesystems. */
 /**
@@ -177,6 +235,14 @@ const plan = pool.resolveScriptPath
 function canon(s) {
   if (typeof s !== 'string') return s;
   const win = REPO.replace(/\\/g, '\\\\');
+  // The OS temp dir is as much the host's as the repo path is: the Higgs voice
+  // document is written there, and `C:/Users/<name>/AppData/Local/Temp` and
+  // `/var/folders/xx/...` are the same fact about two machines.
+  const tmp = require('os').tmpdir();
+  s = s
+    .split(tmp).join('<TMP>')
+    .split(tmp.replace(/\\/g, '/')).join('<TMP>')
+    .split(wslish(tmp)).join('<TMP>');
   return s
     .split(REPO).join('<REPO>')
     .split(REPO.replace(/\\/g, '/')).join('<REPO>')
@@ -212,7 +278,7 @@ function splitBash(bash) {
 
 // `command` is canon'd like everything else — it is a host path (a conda exe, a
 // relocatable python) and an un-normalised one is the separator difference again.
-const out = { arm: ARM, command: canon(plan.command), viaWsl: !!plan.viaWsl };
+const out = { arm: ARM, engine: ENGINE, command: canon(plan.command), viaWsl: !!plan.viaWsl };
 if (plan.viaWsl) {
   const bash = plan.args[plan.args.length - 1];
   out.args = plan.args.slice(0, -1).map(canon);

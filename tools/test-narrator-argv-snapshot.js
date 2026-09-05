@@ -240,10 +240,21 @@ check('no captured value carries a host path separator', () => {
   // on a Mac and the snapshot can never agree across the two. Asserting the
   // absence of backslashes anywhere in the capture is checkable from ONE host and
   // is precisely the property that was violated.
-  const blob = JSON.stringify(plans);
-  const at = blob.indexOf(String.fromCharCode(92));
-  assert.strictEqual(at, -1,
-    'a backslash survived canon() near: ' + blob.slice(Math.max(0, at - 90), at + 60));
+  // WALKS THE VALUES, not `JSON.stringify` of them: serialising re-introduces
+  // backslashes of its own for every escaped quote, and a refusal message quoting
+  // \"WSL2 for Higgs\" would fail a check that is supposed to be about path
+  // separators.
+  const offenders = [];
+  const walk = (v, at) => {
+    if (typeof v === 'string') {
+      if (v.includes(String.fromCharCode(92))) offenders.push(`${at} = ${v}`);
+    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`));
+    else if (v && typeof v === 'object') {
+      for (const [k, x] of Object.entries(v)) walk(x, `${at}.${k}`);
+    }
+  };
+  walk(plans, '');
+  assert.deepStrictEqual(offenders, [], 'a host path separator survived canon()');
 });
 check('the extractor forces the platform per fixture arm', () => {
   // The other half, and it cannot be observed from a Windows host for the two
