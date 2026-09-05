@@ -40,6 +40,14 @@ const Module = require('module');
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
 
+// THE ARM IS THE FIXTURE'S, NOT THE HOST'S. A WSL render exists only on win32, and
+// the lifted normalizer returns before doing anything on any other platform — so
+// on a macOS host this keeper went red while pinning nothing (2026-09-05, the Mac
+// agent's run at ffca9398). The host is remembered only for the one assertion
+// that is genuinely about the host's own filesystem shape.
+const HOST_PLATFORM = process.platform;
+Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+
 if (!fs.existsSync(path.join(DIST, 'parallel-tts-bridge.js'))) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
   process.exitCode = 1;
@@ -179,7 +187,15 @@ async function main() {
   for (const f of PATH_FIELDS) {
     await check(`${f} is repointed onto Windows`, () => {
       assert.ok(!/^\\\\wsl[$.]/i.test(prep[f]), `${f} was left on the guest: ${prep[f]}`);
-      assert.match(prep[f], /^[A-Za-z]:[\\/]/, `${f} is not a Windows path: ${prep[f]}`);
+      // The "Windows copy" is a real directory under the host's tmpdir, so its
+      // shape is the HOST's: a drive-letter path on Windows, a plain absolute path
+      // on a macOS keeper run. Absolute-and-not-UNC is the invariant; the
+      // drive-letter form is asserted where the host can produce it.
+      assert.ok(path.isAbsolute(prep[f]) && !/^\\\\/.test(prep[f]),
+        `${f} is not a host-native absolute path: ${prep[f]}`);
+      if (HOST_PLATFORM === 'win32') {
+        assert.match(prep[f], /^[A-Za-z]:[\\/]/, `${f} is not a Windows path: ${prep[f]}`);
+      }
     });
   }
 
