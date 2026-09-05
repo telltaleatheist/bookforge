@@ -600,14 +600,87 @@ test('SCRIPTURE_UNREAD — the word "chapter" is never spoken', () => {
 });
 
 test('scripture: BOTH measured shapes are accepted, and neither is forced', () => {
-  // 22 of the 23 measured references say "verse"; one is bare. The default the
-  // prompt asks for is the comma AND the word; the validator takes any of them.
+  // 22 of the 23 measured references say "verse"; one is bare. The prompt ASKS
+  // for the comma and the word — that preference is pinned in
+  // tools/test-prompt-examples.js, where it belongs, because a validator that
+  // accepted only one form would refuse a narrator the corpus records.
   const target = 'He turned to 1 John 1:9 there.';
   assert.strictEqual(only(target, '1 John 1:9', 'First John one, verse nine'), 'APPLIED');
   assert.strictEqual(only(target, '1 John 1:9', 'First John one verse nine'), 'APPLIED');
   assert.strictEqual(only(target, '1 John 1:9', 'First John one, nine'), 'APPLIED');
   // What is refused is NEITHER — the fusion that has no pause in it at all.
   assert.strictEqual(only(target, '1 John 1:9', 'First John one nine'), 'SCRIPTURE_UNREAD');
+});
+
+test('scripture: a detected span that is NOT scripture is read as what it is', () => {
+  // THE FINDING THIS ANSWERS (adversarial review, 2026-09-05): the design said a
+  // false-positive detection was harmless because the span "is merely sent to the
+  // model". It was not — the chapter-and-verse pause was demanded of EVERY
+  // reading of a detected span, so the model's correct reading of a thing that is
+  // not scripture was refused and the digits reached the narrator.
+  //
+  // Detection is much narrower now, but an abbreviation carrying its own period
+  // is evidence enough on its own, and plenty of those are not books. Their
+  // readings must pass: the pause is asked only of a reading that is CLAIMING to
+  // be a reference — one that names a canonical book or an ordinal volume.
+  assert.strictEqual(
+    only('Sec. 3:7 of the statute.', 'Sec. 3:7', 'Section three seven'), 'APPLIED');
+  assert.strictEqual(
+    only('Ch. 3:7 of the manual.', 'Ch. 3:7', 'Chapter three seven'), 'APPLIED');
+  assert.strictEqual(
+    only('Mr. 3:7 is nonsense.', 'Mr. 3:7', 'Mister three seven'), 'APPLIED');
+  // And the claim test is not a hole: a reading that DOES name a book still owes
+  // the pause, and still may not say "chapter".
+  assert.strictEqual(
+    only('He quoted Ps. 63:6 there.', 'Ps. 63:6', 'Psalm sixty three six'), 'SCRIPTURE_UNREAD');
+  assert.strictEqual(
+    only('He quoted Ps. 63:6 there.', 'Ps. 63:6', 'Psalm chapter sixty three, verse six'),
+    'SCRIPTURE_UNREAD');
+});
+
+test('scripture: the word that arrives must be one the abbreviation was short FOR', () => {
+  // The one-token allowance is for the book NAME. An earlier cut accepted any new
+  // word that was not a number or a structural word, so "First three, verse
+  // seven" passed with the book gone and "verse" standing in for it.
+  assert.strictEqual(
+    only('We are to dwell (1 Pet. 3:7).', '1 Pet. 3:7', 'First chapter, verse seven'),
+    'WORDS_DROPPED');
+  assert.strictEqual(
+    only('We are to dwell (1 Pet. 3:7).', '1 Pet. 3:7', 'First three, verse seven'),
+    'WORDS_DROPPED');
+  // Every contraction a publisher actually prints still reads: the token's
+  // letters have only to appear in order in a longer word.
+  assert.strictEqual(
+    only('Read Jas. 1:17 there.', 'Jas. 1:17', 'James one, verse seventeen'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Phlm. 1:6 there.', 'Phlm. 1:6', 'Philemon one, verse six'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Mk. 16:15 there.', 'Mk. 16:15', 'Mark sixteen, verse fifteen'), 'APPLIED');
+  assert.strictEqual(
+    only('Read Pss. 42:11 there.', 'Pss. 42:11', 'Psalms forty two, verse eleven'), 'APPLIED');
+  // …or be a canonical book name outright, for the abbreviation whose reading is
+  // the book's OTHER name rather than its spelling-out.
+  assert.strictEqual(
+    only('Read Cant. 8:6 there.', 'Cant. 8:6', 'Song of Songs eight, verse six'), 'APPLIED');
+});
+
+test('scripture: a ROMAN volume numeral is readable, which it was not', () => {
+  // MEASURED (adversarial review, 2026-09-05): "II Cor. 5:17" detected as
+  // "Cor. 5:17" with the numeral stranded outside the span, and BOTH readings the
+  // model could offer were refused — the whole reference WORDS_DROPPED (two prose
+  // words gone, "ii" and "cor"), and the bare "Cor. 5:17" CITATION_CODE (the
+  // roman-lead citation guard). The reference was narrated as digits.
+  assert.strictEqual(
+    only('See II Cor. 5:17 there.', 'II Cor. 5:17', 'Second Corinthians five, verse seventeen'),
+    'APPLIED');
+  assert.strictEqual(
+    only('See III John 1:4 there.', 'III John 1:4', 'Third John one, verse four'), 'APPLIED');
+  assert.strictEqual(
+    only('See 1st John 1:9 there.', '1st John 1:9', 'First John one, verse nine'), 'APPLIED');
+  // The citation guard is exempted INSIDE a detected span and nowhere else: a
+  // roman numeral in front of an ordinary number is still apparatus.
+  assert.strictEqual(
+    only('Wurm, Document II 9 34 there.', '9 34', 'nine thirty four'), 'CITATION_CODE');
 });
 
 test('scripture: every reading in the evidence set passes the validator', () => {
@@ -873,6 +946,40 @@ test('the pass VERIFIES the rewrite landed, against the written file', async () 
   assert.strictEqual(record.appliedByRules, 2);
   assert.strictEqual(record.appliedByModel, 1);
   assert.strictEqual(record.appliedByRules + record.appliedByModel, record.appliedSpans);
+});
+
+test('the record NAMES every scripture reference the rules protected', async () => {
+  // THE CLAIM THIS PROVES. `NumberRuleOutcome.scripture` says it exists "so the
+  // pass above can say why a block still holds digits after the rules ran"; the
+  // adversarial review of 2026-09-05 found the field had no consumer at all, and
+  // a documented field nobody reads is a lie in vendored public surface.
+  //
+  // Now every protected reference is a SCRIPTURE_PROTECTED line in the receipt
+  // and a count on the record. Without it a reference the model declines leaves
+  // a block that was asked about, changed nothing, and says nothing about why.
+  const chapter = '<?xml version="1.0" encoding="utf-8"?>'
+    + '<html xmlns="http://www.w3.org/1999/xhtml"><head><title>One</title></head><body>'
+    + '<p>We are to dwell with knowledge (1 Pet. 3:7), and see 2 Cor. 5:17 besides.</p>'
+    + '</body></html>';
+  const book = await buildBook('protected.epub', chapter);
+  // The model declines, which is the case the record has to be able to explain.
+  const runner = scriptedRunner({});
+  const out = await bookPass(book, runner);
+
+  assert.strictEqual(out.record.scriptureReferences, 2,
+    JSON.stringify(out.record.dispositions));
+  const record = JSON.parse(fs.readFileSync(out.recordPath, 'utf8'));
+  assert.strictEqual(record.scriptureReferences, 2);
+  const protectedLines = record.units
+    .flatMap((u) => u.edits)
+    .filter((e) => e.status === 'SCRIPTURE_PROTECTED');
+  assert.deepStrictEqual(protectedLines.map((e) => e.find), ['1 Pet. 3:7', '2 Cor. 5:17']);
+  // The reference is reported AS PRINTED, because no rule proposed a reading of
+  // it — that is the whole point of the disposition.
+  assert.deepStrictEqual(protectedLines.map((e) => e.replace), ['1 Pet. 3:7', '2 Cor. 5:17']);
+  // And a book with no scripture in it reports none.
+  const plain = await bookPass(await buildBook('unprotected.epub'), scriptedRunner({}));
+  assert.strictEqual(plain.record.scriptureReferences, 0);
 });
 
 test('a span across an <em> is refused and RECORDED, never flattened', async () => {
