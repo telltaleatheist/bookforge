@@ -276,12 +276,19 @@ export function higgsEnvExtras(
   const voicesHostPath = writeHiggsVoicesDocument(model, jobId, {
     arm, userDataDir, translatePath: translate,
   });
-  // ONE DERIVATION, TWO VARIABLES. `HIGGS_ENV` is the prefix the launch script
+  // ONE DERIVATION, THREE VARIABLES. `HIGGS_ENV` is the prefix the launch script
   // builds CUDA_HOME, PATH, LD_LIBRARY_PATH and its `vllm-omni` path out of, and
   // the script lives at `<prefix>/bin/<launchScript>` because the installer put
   // it there — so naming the prefix and then naming the script's directory
   // separately would be two ways to say the same thing, and one of them would
   // eventually be wrong.
+  //
+  // The third is `HIGGS_DEPLOY_CONFIG`. The installer copies the deploy profile
+  // into the SAME `<prefix>/bin/`, and `higgsSpawnEnv` resolves the catalog's
+  // bare file name against the prefix passed below (`resolveDeployConfig`) — so
+  // the profile that runs is provably the copy beside the launcher, and not
+  // whatever a relative name would find in vllm-omni's own deploy directory.
+  // The prefix is derived HERE, once, and everything under it is named from it.
   const higgsEnvGuestPrefix =
     `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}`;
   const serveScriptGuestPath = `${higgsEnvGuestPrefix}/bin/${serving.launchScript}`;

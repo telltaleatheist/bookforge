@@ -1241,11 +1241,51 @@ check('a serving block with a bad number is REFUSED by field name', () => {
   // catalog, so it is refused.
   assert.throws(() => higgs.higgsSpawnEnv(withServing({ deployConfig: undefined }), opts),
     /deployConfig/);
+  // A BARE PROFILE NAME IS REFUSED HERE, not carried into the guest to die. It
+  // costs a 297 s cold start to learn that vllm-omni answers "Deploy config not
+  // found" for one (measured 2026-09-05, 0.28.0:
+  // config_factory._load_user_deploy_config joins a bare name to the deploy dir
+  // without appending .yaml), and that failure arrives as a dead worker rather
+  // than as a sentence about the catalog. serve_higgs_v3.sh refuses it too — in
+  // the guest, one process later.
+  assert.throws(
+    () => higgs.higgsSpawnEnv(withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency' }),
+      opts),
+    /bare profile NAME/);
+  // A FILE NAME is resolved against the env prefix, because the installer puts
+  // our profiles in <env>/bin/ and vllm-omni would resolve a bare file name
+  // against its OWN deploy/ directory inside site-packages.
   const chosen = higgs.higgsSpawnEnv(
-    withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency' }), opts);
-  assert.strictEqual(chosen.HIGGS_DEPLOY_CONFIG, 'higgs_multimodal_qwen3_low_latency');
-  assert.ok(!('HIGGS_DEPLOY_CONFIG' in env),
-    'the shipped catalog declares deployConfig null, so nothing should be exported');
+    withServing({ deployConfig: 'higgs_multimodal_qwen3_low_latency.yaml' }), opts);
+  assert.strictEqual(chosen.HIGGS_DEPLOY_CONFIG,
+    `${HIGGS3_PREFIX}/bin/higgs_multimodal_qwen3_low_latency.yaml`);
+  // A value that already carries a separator is the caller saying exactly where
+  // the file is — including one of vllm-omni's own, which is not under our bin.
+  const explicit = higgs.higgsSpawnEnv(
+    withServing({ deployConfig: '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml' }), opts);
+  assert.strictEqual(explicit.HIGGS_DEPLOY_CONFIG,
+    '/opt/vllm_omni/deploy/higgs_multimodal_qwen3.yaml');
+  // And `null` still means the auto-discovered profile and emits nothing.
+  const none = higgs.higgsSpawnEnv(withServing({ deployConfig: null }), opts);
+  assert.ok(!('HIGGS_DEPLOY_CONFIG' in none),
+    'a null deployConfig exported something — vllm-omni would take the -n branch');
+});
+
+check('the SHIPPED catalog names the profile that raises the frame ceiling', () => {
+  // The served speech endpoint IGNORES a per-request max_tokens, so stage 0's
+  // default_sampling_params.max_tokens in the deploy profile is a hard ceiling on
+  // every render: vllm-omni's auto profile sets 2048 frames = 81.92 s and cuts
+  // anything longer mid-sentence while reporting success. Leaving deployConfig
+  // null is therefore not a neutral default any more, and this row is what says
+  // so — it is the one failure with no crash to notice.
+  const spec = higgs.higgsServingSpec();
+  assert.strictEqual(spec.deployConfig, 'higgs_default_frames7500.yaml',
+    'the catalog no longer names the 7500-frame profile, so every render is capped at 81.92 s');
+  assert.ok(fs.existsSync(path.join(REPO, 'electron', 'scripts', 'higgs', spec.deployConfig)),
+    `the catalog names ${spec.deployConfig} but this build ships no such file — the installer `
+    + 'would have nothing to copy and --deploy-config would point at a missing path');
+  assert.strictEqual(env.HIGGS_DEPLOY_CONFIG, `${HIGGS3_PREFIX}/bin/${spec.deployConfig}`,
+    "the shipped catalog's profile did not resolve to the installer's copy");
 });
 
 check('the CAPS do not travel — narrator refuses a caps payload by name', () => {

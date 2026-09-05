@@ -986,13 +986,14 @@ export interface HiggsCheck {
    * Stable id, so a UI can key on it without matching prose.
    *
    * THE IDS OF BOTH ARMS LIVE IN ONE UNION, because one renderer displays both:
-   * `distro`/`vllm-omni`/`patch`/`launcher` can only come from the WSL doctor,
+   * `distro`/`vllm-omni`/`patch`/`launcher`/`launcher-sha`/`profile-sha` can only
+   * come from the WSL doctor,
    * `python`/`mlx`/`mlx-audio`/`narrator`/`weights` only from the MLX one, `env`
    * from either (each arm has an environment), and `toggle`/`platform` from the
    * dispatcher that chooses between them.
    */
   id:
-    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha'
+    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha' | 'profile-sha'
     | 'narrator-deps'
     | 'toggle'
     | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
@@ -1112,6 +1113,22 @@ export const HIGGS_PATCHES: ReadonlyArray<{
 /** The launcher the installer deploys INTO the env, so the stack is self-contained. */
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
 
+/**
+ * THE vllm-omni DEPLOY PROFILE the installer deploys beside the launcher.
+ *
+ * Byte-identical to vllm-omni 0.28.0's own `deploy/higgs_multimodal_qwen3.yaml`
+ * except stage 0's `default_sampling_params.max_tokens`, 2048 → 7500. That value
+ * is a HARD CEILING on the audio length of every render — the served speech
+ * endpoint ignores a per-request `max_tokens` — so 2048 frames caps a chunk at
+ * 81.92 s and cuts anything longer mid-sentence (measured 2026-09-05). 7500 is
+ * 300 s.
+ *
+ * The catalog names this file in `serving.deployConfig` and the spawn resolves
+ * it to `<env>/bin/<this>`; the doctor's `profile-sha` row is what says the copy
+ * there is still the one this build ships.
+ */
+export const HIGGS_DEPLOY_PROFILE = 'higgs_default_frames7500.yaml';
+
 /** narrator's runtime imports, as the installer and the doctor both read them. */
 export const HIGGS_NARRATOR_REQUIREMENTS = 'requirements-narrator-runtime.txt';
 
@@ -1151,16 +1168,48 @@ export function higgsScriptsDir(): string {
  * pass every stale launcher there is.
  */
 export function shippedHiggsLauncherSha256(): string {
-  const file = path.join(higgsScriptsDir(), HIGGS_LAUNCH_SCRIPT);
+  return shippedHiggsFileSha256(
+    HIGGS_LAUNCH_SCRIPT,
+    'It is what the installer copies into the env and what the doctor compares the env\'s copy '
+    + 'against, so without it there is no way to tell a current launcher from one built months ago.',
+  );
+}
+
+/**
+ * THE SHA256 OF THE DEPLOY PROFILE THIS BUILD SHIPS, with CR stripped.
+ *
+ * Same question as the launcher's, about the other file the installer deploys
+ * into `<env>/bin/`, and it matters for the same reason: the profile carries the
+ * frame ceiling (`max_tokens` 7500 rather than 2048), so an env still holding an
+ * older copy — or none, because it was built before this file existed — runs
+ * every render against a 81.92 s cap and cuts long chunks mid-sentence. Nothing
+ * crashes; the audio is just short.
+ *
+ * CR-STRIPPED ON BOTH SIDES, exactly as the launcher is, so the row does not go
+ * red on a Windows-built env against a Mac-built one. That is not what protects
+ * the certified bytes: `.gitattributes` pins this file to LF in the working tree
+ * (the training side's certificates bind to sha256 24d288f193eaa8c5…), and this
+ * hash asks the narrower question "is the deployed copy the shipped one".
+ */
+export function shippedHiggsProfileSha256(): string {
+  return shippedHiggsFileSha256(
+    HIGGS_DEPLOY_PROFILE,
+    'It is the deploy profile the installer copies into the env and the one the spawn points '
+    + '--deploy-config at, so without it there is no way to tell an env that raises the frame '
+    + 'ceiling from one that still cuts every long chunk at 81.92 s.',
+  );
+}
+
+/** The shared read + CR strip + hash. See the two exported callers for why each is asked. */
+function shippedHiggsFileSha256(name: string, why: string): string {
+  const file = path.join(higgsScriptsDir(), name);
   let raw: Buffer;
   try {
     raw = fs.readFileSync(file);
   } catch (err) {
     throw new Error(
-      `Could not read the shipped Higgs launcher at ${file}: `
-      + `${err instanceof Error ? err.message : String(err)}. It is what the installer copies `
-      + `into the env and what the doctor compares the env's copy against, so without it there `
-      + 'is no way to tell a current launcher from one built months ago.',
+      `Could not read the shipped Higgs file at ${file}: `
+      + `${err instanceof Error ? err.message : String(err)}. ${why}`,
     );
   }
   const lf = Buffer.from(raw.toString('binary').replace(/\r/g, ''), 'binary');
@@ -1290,13 +1339,19 @@ export function wslScriptArgs(distro: string | undefined, script: string): strin
 export interface HiggsExpectations {
   /** sha256 of the shipped launcher, CR-stripped. See `shippedHiggsLauncherSha256`. */
   launcherSha: string;
+  /** sha256 of the shipped deploy profile, CR-stripped. See `shippedHiggsProfileSha256`. */
+  profileSha: string;
   /** The rows of `requirements-narrator-runtime.txt`. See `narratorRuntimeDeps`. */
   deps: ReadonlyArray<NarratorRuntimeDep>;
 }
 
 /** The expectations, read off this build's own shipped files. */
 export function higgsExpectations(): HiggsExpectations {
-  return { launcherSha: shippedHiggsLauncherSha256(), deps: narratorRuntimeDeps() };
+  return {
+    launcherSha: shippedHiggsLauncherSha256(),
+    profileSha: shippedHiggsProfileSha256(),
+    deps: narratorRuntimeDeps(),
+  };
 }
 
 function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string {
@@ -1333,6 +1388,23 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
     `else echo 'launcher=ok'; ` +
     `echo "launcher-sha=$(tr -d '\\r' < ${launcherPath} | sha256sum | cut -c1-64)"; fi`;
 
+  // THE DEPLOY PROFILE, THE OTHER FILE THE INSTALLER DEPLOYS INTO <env>/bin/.
+  //
+  // Asked the same way and for a sharper reason: the profile carries the frame
+  // ceiling. `HIGGS_DEPLOY_CONFIG` now points --deploy-config at this exact path,
+  // so an env built before it existed starts a server that CANNOT be given the
+  // file — vllm-omni auto-discovers its own, whose stage-0 max_tokens is 2048
+  // frames (81.92 s), and every chunk longer than that is cut mid-sentence with
+  // the request reporting success. There is no crash to notice.
+  //
+  // ONE ROW, not two: unlike the launcher there is nothing to execute, so
+  // "present but not ours" and "absent" are the same remedy — re-run the
+  // installer — and a second row would be a distinction with no different act.
+  const profilePath = `${envPrefix}/bin/${HIGGS_DEPLOY_PROFILE}`;
+  const profileProbe =
+    `if [ ! -f ${profilePath} ]; then echo 'profile-sha=absent'; ` +
+    `else echo "profile-sha=$(tr -d '\\r' < ${profilePath} | sha256sum | cut -c1-64)"; fi`;
+
   // NARRATOR'S OWN IMPORTS. narrator is NOT pip-installed into this env — it
   // arrives over PYTHONPATH — so nothing ever resolved its dependency list here,
   // and Owen's first in-app Higgs prep died on `No module named 'bs4'`.
@@ -1353,6 +1425,7 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
     `${envPrefix}/bin/python -c 'import vllm_omni' >/dev/null 2>&1 && echo 'omni=ok' || echo 'omni=absent'`,
     patchProbe,
     launcherProbe,
+    profileProbe,
     depsProbe,
   ].join('; ');
 }
@@ -1460,6 +1533,44 @@ function higgsChecksFrom(
             + 'fraction, the deploy profile — so an old one ignores what BookForge now sets and '
             + 'starts a differently-configured server. Re-run the Higgs installer, which now '
             + 'copies the launcher EVERY time rather than only when it is missing.',
+    }),
+  });
+
+  // ── IS THE DEPLOY PROFILE THE ONE THIS BUILD SHIPS? ─────────────────────
+  //
+  // The launcher's question, asked about the file that carries the FRAME
+  // CEILING. `HIGGS_DEPLOY_CONFIG` points --deploy-config at
+  // <env>/bin/<profile>, so an env missing it (built before it shipped) or
+  // holding an older copy falls back to vllm-omni's own profile, whose stage-0
+  // max_tokens is 2048 frames = 81.92 s — and the server ignores a per-request
+  // max_tokens, so every longer chunk is cut mid-sentence while the request
+  // reports success. This row is the only place that failure is visible before
+  // someone listens to the book.
+  const profileSha = seen.get('profile-sha');
+  const profileOk = !probeError && profileSha === expect.profileSha;
+  checks.push({
+    id: 'profile-sha',
+    label: `${HIGGS_DEPLOY_PROFILE} matches this build`,
+    ok: profileOk,
+    ...(profileOk ? {} : {
+      detail: probeError
+        ? `The probe did not run: ${probeError}`
+        : profileSha === undefined
+          ? 'The probe printed no sha for the deployed profile, which means sha256sum is not '
+            + `available in ${distro ? `"${distro}"` : 'the distro'} — the env's copy cannot be `
+            + 'told apart from the shipped one.'
+          : profileSha === 'absent'
+            ? `There is no deploy profile at ${envPrefix}/bin/${HIGGS_DEPLOY_PROFILE}. It raises `
+              + "stage 0's max_tokens from 2048 frames (81.92 s of audio) to 7500 (300 s), and "
+              + 'the server ignores a per-request max_tokens — so without it every chunk longer '
+              + 'than 81.92 s is cut mid-sentence and the render still reports success. Re-run '
+              + 'the Higgs installer.'
+            : `profile-stale: ${envPrefix}/bin/${HIGGS_DEPLOY_PROFILE} is sha256 `
+              + `${profileSha.slice(0, 16)}… while this build ships `
+              + `${expect.profileSha.slice(0, 16)}… (compared with CR stripped, so line endings `
+              + 'are not the difference). The deployed copy is what --deploy-config actually '
+              + "points at, and it sets the frame ceiling every render is cut at. Re-run the "
+              + 'Higgs installer, which copies the profile EVERY time.',
     }),
   });
 

@@ -59,7 +59,9 @@
  *   HIGGS_CODEC_GPU_MEM_UTIL  stage 1 (codec) share of the card; they ADD
  *   HIGGS_MAX_MODEL_LEN       stage 0 context length
  *   HIGGS_MAX_NUM_SEQS        stage 0 batch width — AND narrator's own
- *   HIGGS_DEPLOY_CONFIG       a vllm-omni deploy profile, when one is chosen
+ *   HIGGS_DEPLOY_CONFIG       a vllm-omni deploy profile, as an ABSOLUTE guest
+ *                             path — a bare file name in the catalog is
+ *                             resolved to `<HIGGS_ENV>/bin/<file>`
  *
  * Every one of them comes from the catalog's `serving` block (`higgsServingFor`)
  * and NONE of them reached the script until 2026-09-05: the block declared a
@@ -358,10 +360,20 @@ export interface HiggsServingSpec {
   port: number;
   endpoint: string;
   /**
-   * STAGE 0, THE TALKER — its fraction of the WHOLE CARD (`HIGGS_GPU_MEM_UTIL`).
+   * STAGE 0, THE TALKER — its KV CACHE BUDGET, as a fraction of the WHOLE CARD
+   * (`HIGGS_GPU_MEM_UTIL`).
    *
-   * Weights plus KV cache. It is NOT the server's total: the codec decoder is a
-   * second stage with its own fraction, and the two ADD.
+   * IT IS A BUDGET ON TOP OF THE WEIGHTS, NOT A CAP ON THE STAGE. The server's
+   * own log at 0.35 (owens-pc, RTX 3090 Ti 24.5 GB, vllm-omni 0.28.0,
+   * 2026-09-05): "Desired GPU memory utilization is (0.35, 8.4 GiB). Actual
+   * usage is 7.72 GiB", "Available KV cache memory: 8.4 GiB", "GPU KV cache
+   * size: 61,120 tokens" — so stage 0 holds 7.72 GiB of weights AND 8.4 GiB of
+   * cache. Nor is it the server's total: the codec decoder is a second stage
+   * with its own fraction, and the two ADD.
+   *
+   * 0.35 is measured, not conservative: 0.55 + 0.15 held 24.0 GB and paged on
+   * WDDM, while 0.35 + 0.10 holds 18.7-19.2 GB at IDENTICAL throughput —
+   * 11,387-11,584 chars/min over three runs at 16 concurrent.
    */
   gpuMemoryUtilization: number;
   /**
@@ -371,22 +383,36 @@ export interface HiggsServingSpec {
    * SEPARATE BECAUSE vllm-omni APPLIES A GLOBAL FLAG TO EVERY STAGE. A single
    * `--gpu-memory-utilization 0.60` reserved 0.60 TWICE — measured 24.2 GB of a
    * 24.5 GB card on 2026-09-05 — which is why the launch script passes both
-   * through `--stage-overrides` instead. 0.25 is the codec's value in
-   * vllm-omni's own deploy profile (`higgs_multimodal_qwen3.yaml`).
+   * through `--stage-overrides` instead.
+   *
+   * 0.25 is the codec's value in vllm-omni's own deploy profile
+   * (`higgs_multimodal_qwen3.yaml`) and 0.10 is what BookForge ships: at
+   * 0.35 + 0.10 the card sits at 18.7-19.2 GB and the render is no slower than
+   * it was at 0.55 + 0.15, which filled it (measured 2026-09-05).
    */
   codecGpuMemoryUtilization: number;
   maxModelLen: number;
   maxNumSeqs: number;
   /**
-   * A vllm-omni DEPLOY PROFILE by name (`HIGGS_DEPLOY_CONFIG`), or `null`.
+   * A vllm-omni DEPLOY PROFILE — a FILE NAME or a full path, or `null`.
    *
-   * `null` is a DECLARED ABSENCE, not a missing field: it means "let vllm-omni
-   * auto-discover `higgs_multimodal_qwen3.yaml`", which keeps stage 0 in
-   * enforce_eager — NO CUDA GRAPHS on the talker. The sibling
-   * `higgs_multimodal_qwen3_low_latency` profile turns them on. Which profile a
-   * voice is certified against is a MEASUREMENT the training side owes, and
-   * until it exists this stays null; the field is here so that making it needs
-   * no script edit. The key is REQUIRED — an absent key would make "nobody has
+   * A bare file name (no separator) is one of OUR profiles, deployed into
+   * `<env>/bin/` by the installer, and `resolveDeployConfig` turns it into the
+   * absolute guest path `HIGGS_DEPLOY_CONFIG` carries. A value with a separator
+   * is passed through verbatim. A bare profile NAME with no `.yaml`/`.yml` is
+   * REFUSED here — vllm-omni answers "Deploy config not found" for one, 297 s
+   * into a cold start.
+   *
+   * IT IS NOT null ANY MORE, and the reason is a ceiling rather than a
+   * preference: stage 0's `default_sampling_params.max_tokens` in the profile is
+   * a hard cap on the audio length of every render (the served speech endpoint
+   * ignores a per-request `max_tokens`), and the auto-discovered
+   * `higgs_multimodal_qwen3.yaml` sets it to 2048 frames = 81.92 s. Anything
+   * longer is cut mid-sentence. `higgs_default_frames7500.yaml` is that file
+   * with 7500 (300 s) and nothing else changed.
+   *
+   * `null` remains meaningful — "let vllm-omni auto-discover its own profile" —
+   * and the key is REQUIRED, because an absent key would make "nobody has
    * decided" and "we chose the default" the same catalog.
    */
   deployConfig: string | null;
@@ -1265,6 +1291,51 @@ function servingCount(serving: HiggsServingSpec, field: 'maxModelLen' | 'maxNumS
   return value;
 }
 
+/**
+ * THE DEPLOY PROFILE, AS AN ABSOLUTE PATH INSIDE THE GUEST.
+ *
+ * ── Why a bare file name is resolved rather than passed on ──────────────────
+ *
+ * `--deploy-config` takes a FILE NAME or a full path (a bare profile name — no
+ * extension — is "Deploy config not found", measured 2026-09-05 on vllm-omni
+ * 0.28.0: `config_factory._load_user_deploy_config` joins it to the deploy dir
+ * without appending `.yaml`). A bare FILE NAME does resolve, but it resolves
+ * against vllm-omni's OWN `deploy/` directory inside site-packages — which is
+ * not where the installer puts ours. `higgs_default_frames7500.yaml` is copied
+ * into `<env>/bin/`, beside the launcher, so the name alone would either miss it
+ * or, worse, find an upstream file of a similar name and start a
+ * differently-configured server five minutes later.
+ *
+ * So the catalog names the FILE and this resolves it against the env prefix,
+ * using the SAME `<prefix>/bin/<file>` derivation `higgsEnvExtras` already uses
+ * for the launcher itself. One derivation, three variables: the two say where
+ * the installer's copies are, and they cannot drift apart.
+ *
+ * A value that already carries a path separator is the caller having said
+ * exactly where the file is — passed through verbatim, including a path to one
+ * of vllm-omni's own profiles.
+ *
+ * ── Why the extension is refused here and not only in bash ──────────────────
+ *
+ * `serve_higgs_v3.sh` refuses a bare name too, and it is right to. But it does
+ * so INSIDE the guest, after the spawn — the failure arrives as a dead worker
+ * rather than as a sentence about the catalog. This is the same rule asked
+ * before anything is started.
+ */
+function resolveDeployConfig(profile: string, envPrefix: string): string {
+  if (profile.includes('/') || profile.includes('\\')) return profile;
+  if (!profile.endsWith('.yaml') && !profile.endsWith('.yml')) {
+    throw new Error(
+      `The Higgs serving block's deployConfig is ${JSON.stringify(profile)}, which is a bare ` +
+        'profile NAME. vllm-omni resolves only a file name (with its .yaml/.yml extension) or a ' +
+        'full path — a bare name is "Deploy config not found" at startup, which costs a 297 s ' +
+        'cold start to discover. Write the file name, e.g. higgs_default_frames7500.yaml, and ' +
+        "BookForge resolves it to the installer's copy in the env.",
+    );
+  }
+  return `${envPrefix}/bin/${profile}`;
+}
+
 export function higgsSpawnEnv(
   model: HiggsModel,
   opts: {
@@ -1390,7 +1461,7 @@ export function higgsSpawnEnv(
             "chosen is `null` — an empty name says \"chosen, and it is called nothing\".",
         );
       }
-      env.HIGGS_DEPLOY_CONFIG = profile;
+      env.HIGGS_DEPLOY_CONFIG = resolveDeployConfig(profile, prefix);
     }
   } else if (opts.condaEnvPrefix) {
     throw new Error(

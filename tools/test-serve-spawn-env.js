@@ -410,6 +410,31 @@ check('higgs: HIGGS_DEPLOY_CONFIG is emitted only when a profile is CHOSEN', () 
     + `${present ? 'set' : 'unset'}`);
 });
 
+check('higgs/wsl: a bare profile FILE NAME is resolved to the installer\'s copy', () => {
+  // vllm-omni resolves a bare file name against its OWN deploy/ directory inside
+  // site-packages, which is not where the installer puts ours: the profile is
+  // copied into <env>/bin/, beside the launcher. So the name alone would either
+  // miss it or find an upstream file of a similar name and start a
+  // differently-configured server 297 s later — and the difference this profile
+  // carries is the FRAME CEILING (stage 0 max_tokens 7500 = 300 s against the
+  // auto profile's 2048 = 81.92 s), which does not crash, it truncates audio.
+  if (serving.deployConfig === null) return; // nothing chosen; the check above owns that case
+  const e = envOf(higgsRows.wsl);
+  const bare = !serving.deployConfig.includes('/') && !serving.deployConfig.includes('\\');
+  assert.strictEqual(e.HIGGS_DEPLOY_CONFIG,
+    bare ? `${e.HIGGS_ENV}/bin/${serving.deployConfig}` : serving.deployConfig,
+    'the deploy profile did not travel as the path the installer deploys to');
+  // THE SAME DERIVATION AS THE LAUNCHER'S, which is the point: one prefix, and
+  // everything the installer put under it named from that prefix.
+  if (bare) {
+    assert.strictEqual(
+      path.posix.dirname(e.HIGGS_DEPLOY_CONFIG),
+      path.posix.dirname(e.NARRATOR_HIGGS3_SERVE_SCRIPT),
+      'the profile and the launcher resolved to different directories, so one of the two '
+      + 'derivations is wrong');
+  }
+});
+
 check('higgs: BookForge never sets HIGGS_MODEL_DIR', () => {
   // narrator exports it per voice from the voice document's checkpointDir
   // (v3_served.py `_launch_exports`). A copy from this side would be a second

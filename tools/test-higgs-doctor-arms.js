@@ -213,11 +213,11 @@ const MLX_GREEN = {
 /**
  * Every WSL row green.
  *
- * The launcher's sha and the narrator-import answer are what a MATCHING env
- * says: `higgsExpectations()` reads this build's own shipped files, so the
- * fixture states the same sha rather than a literal — a hardcoded one would go
- * stale the next time serve_higgs_v3.sh is edited and this file would start
- * failing for a reason that is not about the doctor.
+ * The two shas and the narrator-import answer are what a MATCHING env says:
+ * `higgsExpectations()` reads this build's own shipped files, so the fixture
+ * states the same shas rather than literals — hardcoded ones would go stale the
+ * next time serve_higgs_v3.sh or the deploy profile is edited and this file
+ * would start failing for a reason that is not about the doctor.
  */
 const WSL_GREEN = {
   stdout: [
@@ -226,6 +226,7 @@ const WSL_GREEN = {
     ...toolPaths.HIGGS_PATCHES.map((p) => `patch:${p.id}=ok`),
     'launcher=ok',
     `launcher-sha=${toolPaths.shippedHiggsLauncherSha256()}`,
+    `profile-sha=${toolPaths.shippedHiggsProfileSha256()}`,
     'narrator-deps=ok',
     '',
   ].join('\n'),
@@ -237,6 +238,33 @@ const WSL_STALE_LAUNCHER = {
   stdout: WSL_GREEN.stdout.replace(
     `launcher-sha=${toolPaths.shippedHiggsLauncherSha256()}`,
     'launcher-sha=' + '0'.repeat(64),
+  ),
+  exit: 'close',
+};
+
+/**
+ * The same env, with a deploy profile from an older BookForge — and the same env
+ * again with none at all, which is what every env built before the profile
+ * shipped looks like.
+ *
+ * BOTH ARE THE SAME REMEDY AND STILL WORTH TWO FIXTURES: the missing case is the
+ * one that will actually be hit (an env built last week), and it is also the one
+ * whose failure is invisible at run time — vllm-omni falls back to its own
+ * profile, caps stage 0 at 2048 frames = 81.92 s and cuts every longer chunk
+ * mid-sentence while the render reports success.
+ */
+const WSL_STALE_PROFILE = {
+  stdout: WSL_GREEN.stdout.replace(
+    `profile-sha=${toolPaths.shippedHiggsProfileSha256()}`,
+    'profile-sha=' + '0'.repeat(64),
+  ),
+  exit: 'close',
+};
+
+const WSL_NO_PROFILE = {
+  stdout: WSL_GREEN.stdout.replace(
+    `profile-sha=${toolPaths.shippedHiggsProfileSha256()}`,
+    'profile-sha=absent',
   ),
   exit: 'close',
 };
@@ -339,6 +367,49 @@ check('a launcher from an older BookForge is launcher-stale, not ok', () => onPl
     assert.strictEqual(sha.ok, false);
     assert.match(sha.detail, /launcher-stale/, 'the row does not name the condition');
     assert.match(sha.detail, /re-run the Higgs installer/i, 'the row does not name the remedy');
+  },
+));
+
+check('the WSL probe hashes the DEPLOY PROFILE as well as the launcher', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    const script = lastSpawn.args.join(' ');
+    assert.ok(script.includes(toolPaths.HIGGS_DEPLOY_PROFILE),
+      'the probe never looks at the deploy profile, which is what carries the frame ceiling');
+    const row = res.checks.find((c) => c.id === 'profile-sha');
+    assert.ok(row, 'no profile-sha row at all');
+    assert.strictEqual(row.ok, true, JSON.stringify(row));
+    assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
+  },
+));
+
+check('a deploy profile from an older BookForge is profile-stale, not ok', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_STALE_PROFILE },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    assert.strictEqual(res.valid, false, 'a stale deploy profile passed the doctor');
+    const row = res.checks.find((c) => c.id === 'profile-sha');
+    assert.strictEqual(row.ok, false);
+    assert.match(row.detail, /profile-stale/, 'the row does not name the condition');
+    assert.match(row.detail, /re-run the Higgs installer/i, 'the row does not name the remedy');
+  },
+));
+
+check('an env with NO deploy profile says what it costs, not just "missing"', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: WSL_NO_PROFILE },
+  async () => {
+    // This is every env built before the profile shipped, and its failure mode is
+    // silent: vllm-omni auto-discovers its own profile, stage 0's max_tokens is
+    // 2048 frames = 81.92 s, and a longer chunk is CUT MID-SENTENCE with the
+    // request reporting success. A row that only said "not found" would be read
+    // as cosmetic.
+    const res = await doctorMod.higgsDoctor();
+    assert.strictEqual(res.valid, false, 'an env with no deploy profile passed the doctor');
+    const row = res.checks.find((c) => c.id === 'profile-sha');
+    assert.strictEqual(row.ok, false);
+    assert.match(row.detail, /81\.92 s/, 'the row does not say what the missing profile costs');
+    assert.match(row.detail, /re-run the Higgs installer/i, 'the row does not name the remedy');
   },
 ));
 
