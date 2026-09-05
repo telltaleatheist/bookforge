@@ -319,6 +319,113 @@ to `narratorRunsInWsl`, which is what the spawn itself asks.
 
 ---
 
+## Higgs on Listen (2026-09-05)
+
+Owen wants Higgs available for the browser extension, especially on the Mac. The
+app side is built; the Mac half of it is blocked on narrator.
+
+### One pool, two engines
+
+`orpheus-worker-pool.ts` is not Orpheus machinery with a Higgs mode bolted on. It
+speaks narrator's JSON-lines protocol, and which engine answers is
+`NARRATOR_ENGINE` in the spawn — so the same object serves both and the difference
+is confined to `buildSpawnPlan` and `resolveLoadPlan`. `setServeEngineProbe`
+injects the selection (importing `streaming-engine.ts` back would be a cycle).
+
+**The load message could not be guessed, and reading narrator settled it.**
+`higgs_v3_config_from_worker_kwargs` refuses `modelDir`, `baseDir`, `adapterDir`
+and `caps` one at a time, by name: the served model is the launch script's
+argument, v3 has no shared-base split, there is no runtime LoRA for an adapter dir
+to load into, and the Orpheus cap names mean nothing there. A Higgs load carries
+THE VOICE NAME AND NOTHING ELSE (an empty caps object is accepted — it is the
+pool's "no catalog tuning" signal).
+
+**A Higgs voice change is a NEW WORKER.** `HiggsV3Engine.set_voice` refuses in
+place: a fine-tuned v3 voice IS the merged checkpoint the server was started on,
+and vLLM-Omni has no adapter flags. The pool tears the session down and restarts,
+which rewrites the voice document. Orpheus's switches stay free.
+
+### The gap/fade contract for a streaming client
+
+Higgs's codec has no sound windowed decode (`HiggsCodec.streaming_decoder()`
+returns None on purpose — its delay pattern leaves a window's last frames
+incomplete by construction), so it cannot emit audio mid-sentence.
+`generate_batch_stream` emits WHOLE ROWS at retirement instead, which is the
+pool's existing `batch_chunk` / `batch_item` path unchanged: a sentence arrives all
+at once rather than in slices. **A latency difference, not a missing feature** —
+an earlier version of `streaming-engine.ts` refused the engine outright over it.
+
+So for a client: keep the 0.3 s inter-sentence gap, and apply NO client-side fade.
+The `edgeFadeMs` the `loaded` message carries (10 in / 25 out) is the ASSEMBLER's,
+for joining chunks inside one sentence; a streamed row is already whole.
+
+### Availability, and why the Mac says no today
+
+`getAvailableEngines()` lists both rows always, with `available` and a `reason`.
+Higgs needs three things and each is false somewhere real: a platform backend, its
+environment, and an installed voice (a voice whose artifact is missing renders in
+the model's own speaker — 12% of the narrator's ECAPA ceiling, a different person).
+
+| platform | today |
+|---|---|
+| Windows + "WSL2 for Higgs" | available |
+| Windows, toggle off | refused, naming the toggle |
+| macOS | **refused** — v3's only backend is a vLLM-Omni server and there is no macOS build |
+
+`higgsMlxBackendPresent()` DETECTS the in-process MLX backend landing, by content
+under `engine/higgs/` (the filename is the other builder's to choose), rather than
+hard-coding a `false` somebody has to remember to flip. It reads false today:
+`feat/narrator-higgs-mlx` currently contains a plan document and no backend.
+
+**So the Mac half of Owen's request is blocked on narrator, not on the app.** When
+that branch lands, the picker turns Higgs on by itself and
+`test-stream-engine-availability.js` fails loudly — its darwin case asserts the
+detector is still false, and says in its message that the case must be rewritten.
+
+### What is NOT proven
+
+Nothing about Higgs streaming has been RUN. The WSL serve spawn is pinned by
+snapshot (`higgs:wsl` in `serve-spawn-base.json`) and the two native arms are
+pinned as refusals, but no Higgs Listen session has started, loaded a voice or
+produced audio. That needs the GPU.
+
+## The proof ledger
+
+Every door, and what has actually been RUN through it rather than reasoned about.
+
+| door | Windows / WSL | macOS (MLX) |
+|---|---|---|
+| prep | owed (GPU) | **PROVEN** 2026-09-05 — spawn shape exactly as designed |
+| worker | owed (GPU) | **PROVEN** — 108/108 sentences, 40.3 min of 24 kHz PCM_16 in 486 s = **4.97x realtime**, one-line result JSON, session cached resume-ready |
+| retake | owed | owed |
+| assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | owed (the refusal below fired first) |
+| assembly (reassembly) | **PROVEN** (same door) | owed |
+| resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser | n/a (native both sides) |
+| serve (Listen, Orpheus) | fake-engine smoke only; real model owed (GPU) | owed |
+| serve (Listen, Higgs) | argv/env snapshot only | refuses by name — no MLX backend yet |
+
+The Mac's run 4 (via `cli/bookforge-tts.py`, MLX, deathstalker) is the first live
+proof that the cut-over renders a book. Its prep spawn, verbatim:
+
+```
+conda run -p narrator-mlx python -u -m narrator.compat.app --headless \
+  --ebook ... --session ... --session_dir ... --language en \
+  --tts_engine orpheus --device MPS --prep_only \
+  --orpheus_model_dir <runtime dir> --fine_tuned deathstalker
+```
+
+Two things that run found which nothing else could have:
+
+1. **A missing `bs4` in the `narrator-mlx` env** — an environment fact, fixed
+   there, not a cut-over defect.
+2. **The assembly door refused before its spawn line**, on a session that had just
+   rendered perfectly. That WAS a cut-over defect and it was mine: the engine
+   check read `session_state.json` (BookForge's sidecar, which `renderRangeHeadless`
+   never writes) instead of `session-state.json` (narrator's own, written by every
+   prep). See "Three bugs the live proofs caught" — this is the fourth, and the
+   only one a snapshot could never have found, because both files exist and on the
+   machine the sidecar is written on it is always there.
+
 ## What is left after Phase 3
 
 **Phase 4 — bilingual assembly.** `parallel-tts-bridge.ts` still appends
