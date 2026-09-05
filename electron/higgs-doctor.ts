@@ -175,8 +175,15 @@ function mlxVoiceNotes(baseDirOk: boolean): string[] {
     if (m.kind === 'checkpoint') {
       const dir = m.voice.checkpointDir;
       if (!dir) return `${m.id}: a checkpoint voice with no checkpointDir — the catalog entry is malformed.`;
-      return fs.existsSync(dir)
-        ? `${m.id}: loadable — fine-tuned weights at ${dir}.`
+      if (fs.existsSync(dir)) return `${m.id}: loadable — fine-tuned weights at ${dir}.`;
+      // A `/home/...` path is not where macOS puts home directories — it names
+      // the WSL guest. So this is not "you have not installed it", it is THE
+      // OTHER ARM, and saying "not installed" would invite someone to go looking
+      // for a download that does not exist. Staging the checkpoint here is a NEW
+      // CERTIFICATION rather than a copy: a cap is measured against one
+      // directory on one patched server (docs/HIGGS_ENGINE.md, Certificates).
+      return dir.startsWith('/home/')
+        ? `${m.id}: not on this arm — the checkpoint lives in WSL at ${dir}.`
         : `${m.id}: NOT loadable on this Mac — its weights are named at ${dir}, which is not on this machine.`;
     }
     return baseDirOk
