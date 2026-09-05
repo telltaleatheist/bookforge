@@ -254,7 +254,7 @@ class BridgePatternsTest(unittest.TestCase):
         return out
 
     def _literals(self, filename):
-        """Every MESSAGE literal in the module, f-strings reconstructed.
+        r"""Every MESSAGE literal in the module, f-strings reconstructed.
 
         TWO THINGS THE EARLIER VERSION GOT WRONG.
 
