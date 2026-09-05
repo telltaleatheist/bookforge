@@ -133,6 +133,7 @@ function isKvPreemptionNote(line: string): boolean {
   return /is preempted by PreemptionMode|not enough KV cache space/.test(line);
 }
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, embedAndVerifyVtt, deleteSidecarsForM4b } from './metadata-tools';
+import { regenerateBoundSidecars } from './sidecar-migration';
 import * as manifestService from './manifest-service';
 import { isCudaTtsInstalled } from './components/cuda-tts';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
@@ -5229,11 +5230,15 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
         processedPath,
       );
       console.log('[PARALLEL-TTS] Post-processing complete:', result);
-      // Seal the transcript INTO the m4b as a subtitle track — the single source of
-      // truth (embed-only model). The sidecar is ALWAYS removed afterward: redundant
-      // on success, untrusted on failure. On embed failure the audiobook simply has
-      // no transcript (loud error) — there is no sidecar fallback. bilingual-*.vtt
-      // are skipped by deleteSidecarsForM4b.
+      // The transcript the assembler wrote (cue N for chunk N, exact durations) is
+      // (1) embedded INTO the m4b as a mov_text track for players, and (2) BOUND
+      // to these exact bytes as the `<m4b>.vtt` sidecar, FROM THAT FILE. The
+      // order matters and used to be wrong: this was "embed-only" — the loose
+      // .vtt was deleted right here and the sidecar later re-extracted from the
+      // track, which is lossy (mov_text drops an empty cue, so a 133-chunk book
+      // shipped 132 cues and every later cue indexed the wrong chunk). Owen,
+      // 2026-09-05: "VTTs should function correctly." The file is the transcript;
+      // the track is a copy. Strays are swept only after the binder has it.
       if (result.audioPath && result.vttPath) {
         try {
           // Language tag on the subtitle stream is cosmetic; the persisted settings
@@ -5241,10 +5246,23 @@ async function finalizeOutputPath(processedPath: string, session: ConversionSess
           const lang = session.persistentState?.settings?.language;
           const embedded = await embedAndVerifyVtt(result.audioPath, result.vttPath, lang ? { language: lang } : undefined);
           if (embedded) console.log('[PARALLEL-TTS] Embedded transcript into m4b:', result.audioPath);
-          else console.error('[PARALLEL-TTS] Embed verify failed — audiobook has NO transcript (embed-only, no sidecar fallback):', result.audioPath);
+          else console.error('[PARALLEL-TTS] Embed verify failed — players get no in-file transcript; the bound sidecar still carries it:', result.audioPath);
         } catch (embedErr) {
-          console.error('[PARALLEL-TTS] Failed to embed transcript — audiobook has NO transcript:', embedErr);
+          console.error('[PARALLEL-TTS] Failed to embed transcript — players get no in-file transcript; the bound sidecar still carries it:', embedErr);
         }
+        try {
+          const bound = await regenerateBoundSidecars(result.audioPath, { vttPath: result.vttPath });
+          const vttAction = bound?.vtt.action ?? 'none';
+          if (vttAction === 'written' || vttAction === 'would-write') {
+            console.log(`[PARALLEL-TTS] Transcript bound as a sidecar (source: ${bound?.vtt.source}):`, result.audioPath);
+          } else {
+            console.error(`[PARALLEL-TTS] Sidecar binding produced NO transcript (vtt: ${vttAction}) — players will show none for:`, result.audioPath);
+          }
+        } catch (bindErr) {
+          console.error('[PARALLEL-TTS] Sidecar binding threw:', bindErr);
+        }
+        // Removes the loose `<stem>.vtt` stray and PROTECTS the bound sidecar (it
+        // refuses any .vtt that has a `.sidecars.json` beside it).
         deleteSidecarsForM4b(result.audioPath);
       }
       return result.audioPath;

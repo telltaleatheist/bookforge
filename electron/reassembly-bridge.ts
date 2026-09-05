@@ -2308,13 +2308,15 @@ export async function startReassembly(
           }
           if (embedded) {
             console.log('[REASSEMBLY] Embedded transcript into m4b:', outputPath);
-            // Only NOW is the staging copy redundant — the m4b carries the transcript
-            // and regenerateBoundSidecars re-extracts it into the bound sidecar below.
-            deleteSidecarsForM4b(outputPath);
-            // …and it is gone, so it is no longer a transcript this run can hand to
-            // the sidecar binder. Clearing it keeps `sealVttSource` meaning exactly
-            // one thing: "the loose transcript this run still owns, wherever it is".
-            sealVttSource = undefined;
+            // The staging copy is NOT redundant now, and it is not deleted here.
+            // It used to be: the m4b "carried the transcript" and the binder below
+            // re-extracted the mov_text track into the bound sidecar. That
+            // re-extraction is LOSSY — mov_text cannot represent an empty cue, so
+            // a 133-cue book shipped as 132 and every later cue was off by one
+            // against the chunk list. The file the assembler wrote IS the
+            // transcript; the track is a copy for players. `sealVttSource` keeps
+            // naming it, it rides the promotion below, and the binder takes it as
+            // the external source. Strays are swept only after binding.
           } else {
             // KEEP the staging .vtt. With no embedded track it is the only transcript
             // this run produced, and deleting it (as the old embed-only rule did)
