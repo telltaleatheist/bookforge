@@ -105,8 +105,7 @@ from typing import Optional
 
 import numpy as np
 
-from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
-                        StopPolicy)
+from ..protocol import BackendSpec, ClipsVoice, DefaultVoice, StopPolicy
 from . import v3_served
 from .prompt import clean_text
 from .v3_engine import HiggsV3Defaults, apply_v3_voice_defaults
