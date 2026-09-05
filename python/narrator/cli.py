@@ -5,6 +5,7 @@
     render     render a sentence range of a session into <i>.flac
     retake     re-render named sentences, N takes each, in one model load
     sessions   list resumable sessions, or report one session's progress
+    align      force-align a rendered session: sentence cues + coverage guard
     assemble   assemble that session into one m4b + one VTT
     serve      run the resident Orpheus streaming worker
 
@@ -91,6 +92,61 @@ def build_parser() -> argparse.ArgumentParser:
     p_assemble.add_argument(
         "--manifest-out", metavar="FILE",
         help="also write the manifest that was assembled from",
+    )
+    p_assemble.add_argument(
+        "--coverage-report", metavar="FILE",
+        help="the report `narrator align --report` wrote. REQUIRED for an "
+             "engine guarded by post-render forced alignment (Higgs v3); its "
+             "absence refuses the assembly. Default for such an engine: "
+             "coverage.json beside the session.",
+    )
+
+    # ---- align -------------------------------------------------------------
+    p_align = sub.add_parser(
+        "align",
+        help="force-align a rendered session: sentence cues + the coverage guard",
+        description="docs/NARRATOR_PLAN.md 'Higgs v3 path design points', "
+                    "points 3 and 4. Writes <stem>.sentences.vtt BESIDE the "
+                    "chunk-level VTT (which is unchanged and stays the "
+                    "contract training and the bridges read) and a coverage "
+                    "report assembly consults. CPU work; seconds per chunk.",
+    )
+    _add_session_args(p_align)
+    p_align.add_argument(
+        "--out", metavar="FILE",
+        help="the sentence VTT. Default: <processDir>/<book stem>.sentences.vtt",
+    )
+    p_align.add_argument(
+        "--report", metavar="FILE",
+        help="the coverage report. Default: <processDir>/coverage.json",
+    )
+    # No --backend: ONE aligner ships (Owen, 2026-09-05). The measurement that
+    # chose it, against torchaudio's forced_align, is the table in
+    # python/narrator/align/README.md.
+    p_align.add_argument("--language", default="en", metavar="CODE")
+    p_align.add_argument(
+        "--device", default="cpu", metavar="NAME",
+        help="cpu (default). cuda is refused while BookForge's "
+             "external-gpu-job.lock exists",
+    )
+    p_align.add_argument(
+        "--python", metavar="PATH",
+        help="run the aligner in this interpreter (BookForge's whisperx-env "
+             "python). Absent: align in THIS interpreter, refusing by name if "
+             "it cannot import the backend",
+    )
+    p_align.add_argument("--ffmpeg", metavar="PATH")
+    p_align.add_argument(
+        "--indices", metavar="LIST",
+        help="comma-separated global chunk indices to align instead of all of "
+             "them (a spot check; the report is then partial and an enforced "
+             "engine will refuse it)",
+    )
+    p_align.add_argument(
+        "--continue-on-error", action="store_true",
+        help="finish the pass and record every failed chunk in the report "
+             "instead of stopping at the first one. Default is to STOP, naming "
+             "the chunk, and write nothing",
     )
 
     # ---- render / retake / sessions ---------------------------------------
@@ -371,6 +427,53 @@ def _run_prep(args) -> int:
     return 0
 
 
+def _run_align(args, manifest) -> int:
+    """`narrator align`. Sentence cues and the coverage guard, both from ONE
+    forced alignment of each rendered chunk.
+
+    The two outputs default into the session's own process dir under the names
+    the rest of the pipeline expects: `coverage.json`, which
+    `assemble/coverage_gate.py` looks for, and `<book stem>.sentences.vtt`,
+    whose stem is the one `assemble/run.final_name` will give the m4b, so the
+    sentence transcript binds to the book the same way the chunk-level one does.
+    """
+    from .align.aligner import AlignerError
+    from .align.run import (DEFAULT_REPORT_NAME, SENTENCE_VTT_SUFFIX,
+                            align_session, write_outputs)
+    from .assemble.run import final_name
+
+    indices = None
+    if args.indices:
+        try:
+            indices = [int(part) for part in args.indices.split(",") if part.strip()]
+        except ValueError:
+            print(f"Error: --indices must be comma-separated integers, got "
+                  f"{args.indices!r}", flush=True)
+            return 1
+
+    process_dir = manifest.source.processDir
+    out = args.out or os.path.join(
+        process_dir,
+        os.path.splitext(final_name(manifest))[0] + SENTENCE_VTT_SUFFIX)
+    report = args.report or os.path.join(process_dir, DEFAULT_REPORT_NAME)
+
+    try:
+        result = align_session(
+            manifest, language=args.language, device=args.device,
+            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices,
+            continue_on_error=args.continue_on_error)
+        write_outputs(result, vtt_path=out, report_path=report)
+    except AlignerError as refused:
+        print(f"Error: {refused}", flush=True)
+        return 1
+
+    summary = result["document"]["summary"]
+    print(f"[align] {summary['chunksAligned']} chunk(s) aligned, "
+          f"{summary['chunksFailed']} failed coverage, {summary['errors']} error(s)",
+          flush=True)
+    return 0 if not (summary["chunksFailed"] or summary["errors"]) else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
 
@@ -395,6 +498,9 @@ def main(argv: list[str] | None = None) -> int:
     from .render.session_v1 import build_manifest
 
     manifest = build_manifest(args.session_dir, args.sentences_dir, args.chapters)
+
+    if args.command == "align":
+        return _run_align(args, manifest)
 
     if args.command == "manifest":
         from .manifest import save
@@ -426,6 +532,7 @@ def main(argv: list[str] | None = None) -> int:
         encoded_chapters_dir=args.encoded_chapters_dir,
         workers=args.workers,
         post_render_filter=args.post_render_filter,
+        coverage_report=args.coverage_report,
     )
     print(
         f"[assemble] {result.chapter_count} chapter(s), {result.duration_s:.2f}s -> "

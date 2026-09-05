@@ -38,9 +38,52 @@ it stands. So:
 
   - a HEADING is its own chunk and a wall, carrying `[heading]` as today;
   - a LIST ITEM is its own chunk and a wall, carrying `[item]` as today;
+  - a TABLE ROW is its own chunk and a wall, carrying `[item]` (2026-09-05,
+    `docs/NARRATOR_PLAN.md` "Higgs v3 path design points" point 2). See
+    "Table-like fragments" below for what one is and why it borrows `[item]`;
   - a SCENE BREAK and a CHAPTER START are walls that speak nothing;
   - the ~300-char floor applies ONLY to consecutive short PROSE/dialogue
     paragraphs, and to the fragments tier 2 has already joined.
+
+## Table-like fragments (2026-09-05)
+
+A table is not prose and must never be packed with it: "1933 - Chancellor"
+followed by "1934 - Fuhrer" read as one paragraph is a run-on the ear cannot
+parse, and a table row welded onto the sentence before it is worse. (The real
+separator is an em dash - `TABLE_CELL_JOIN` - written as an escape so this
+module is ASCII on disk. The text it produces is not.) Two independent
+detectors, because tables reach this module by two roads:
+
+  MARKUP LINEAGE (authoritative, `extract_blocks`). A `<table>` becomes one
+  TABLE block per `<tr>`, built with ebook2audiobook's own cell recipe
+  (core.py:1461-1481 at 9daab0ba): the first row supplies the headers, each
+  later row becomes `header: cell` pairs joined by `TABLE_CELL_JOIN`, or the
+  cells joined by it when the widths disagree. narrator's only change is that each ROW is
+  its own block - e2a appended the same lines into the running text and the
+  character-window packer then packed several of them into one generation, which
+  is precisely what point 2 forbids.
+
+  TEXT SHAPE (`looks_table_like`). A PDF-derived conversion, where the layout
+  model emits a table as plain blocks, carries the table only in its shape:
+  cells separated by tabs, by a run of two or more spaces, or by a pipe, most of
+  them short or numeric; or a short line that is mostly numbers with no sentence
+  in it. TWO CONDITIONS, both from the 2026-09-05 review and both enforced in
+  `extract_blocks` rather than promised in prose: it runs ONLY when the source
+  is `pdf-derived`, and it runs on each paragraph's text BEFORE whitespace
+  collapse, because two of the three cell separators are whitespace runs that
+  `block_text` would otherwise have destroyed. The rule is narrow and every
+  number in it is a named constant carrying the false positives it was measured
+  to remove, because a false positive costs a paragraph of prose read as its own
+  chunk AND makes it a wall tier 2 can never rejoin.
+
+THE MARKER IS `[item]`, NOT A NEW `[table]`. `TTS_SML` has five tags and
+`SML_UNSPOKEN_PATTERN` strips seven names; a `[table]` marker is in neither, so
+the engine would READ IT ALOUD and the VTT would print it. `[item]` already
+means exactly what a table row needs - "this row is its own generation and never
+merges with its neighbours" (2026-09-01) - so a table row is an item, and
+`manifest.py` classifies it as one. Inventing a token would mean changing the
+SML vocabulary in e2a, in narrator, in the VTT builder and in every session on
+disk; borrowing the one whose meaning already fits costs nothing.
 
 ## Markers are unchanged, deliberately
 
@@ -97,19 +140,20 @@ if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
 # Blocks
 # =============================================================================
 
-#: The five kinds a source block can have. `paragraph` is the only one the floor
-#: may merge; the other four are walls.
+#: The six kinds a source block can have. `paragraph` is the only one the floor
+#: may merge; the other five are walls.
 PARAGRAPH = 'paragraph'
 HEADING = 'heading'
 ITEM = 'item'
+TABLE = 'table'
 SCENE_BREAK = 'scene-break'
 CHAPTER_START = 'chapter-start'
 
-BLOCK_KINDS = (PARAGRAPH, HEADING, ITEM, SCENE_BREAK, CHAPTER_START)
+BLOCK_KINDS = (PARAGRAPH, HEADING, ITEM, TABLE, SCENE_BREAK, CHAPTER_START)
 
 #: Everything that is not a prose paragraph is a wall. Passed in rather than
 #: hard-coded so a caller can narrow it (and so a test can prove each one).
-DEFAULT_WALLS = frozenset({HEADING, ITEM, SCENE_BREAK, CHAPTER_START})
+DEFAULT_WALLS = frozenset({HEADING, ITEM, TABLE, SCENE_BREAK, CHAPTER_START})
 
 #: Consecutive short PROSE paragraphs travel together up to this many characters.
 #: Not a minimum chunk length: a paragraph that is already this long stands
@@ -246,6 +290,143 @@ def join_provisional_fragments(blocks: Sequence[Block]) -> list:
 
 
 # =============================================================================
+# Table-like fragments
+# =============================================================================
+
+#: What separates two CELLS on one line when the markup is gone: a tab, a run of
+#: two or more spaces (what a PDF layout model leaves between columns), or a
+#: pipe. A single space is NOT a separator - that is prose.
+_CELL_SPLIT_RE = re.compile('\\t+|[ \\u00a0]{2,}|\\s*\\|\\s*')
+
+#: A cell that is "numeric": a number, a year, a percentage, a currency
+#: amount, a range or a count, with the punctuation a table puts around one.
+#: Written with escapes rather than literal dashes and currency signs so this
+#: module stays ASCII on disk.
+_NUMERIC_CELL_RE = re.compile(
+    '^[\\s\\u2013\\u2014\\-+(\\[]*[$\\u00a3\\u20ac]?\\d'
+    '[\\d,.\\u2013\\u2014\\-/:%\\s]*[)\\]%]?[\\s.]*$')
+
+#: A cell at or under this many characters is "short" - a column entry rather
+#: than a sentence. Twenty-four characters is about four words; the longest
+#: header in the kershaw/blacksun tables measured 19.
+TABLE_CELL_MAX_CHARS = 24
+
+#: How many of a line's cells must be short-or-numeric before the line is a
+#: table row. Three fifths: a two-cell line needs both, a five-cell line needs
+#: three.
+TABLE_CELL_FRACTION = 0.6
+
+#: A line with no cell separators at all is still a table row when it is SHORT
+#: and mostly numbers - '1933 1934 1935 1936', a column of years whose spacing
+#: the extractor already collapsed. Bounded at both ends: two tokens are not a
+#: row, and a dozen tokens is prose with figures in it.
+#:
+#: THREE GATES, ALL MEASURED AGAINST FALSE POSITIVES (review, 2026-09-05). At
+#: MIN_TOKENS 2 / FRACTION 0.5 this branch promoted every two-token block of the
+#: form "word number": 'Chapter 12', 'Genesis 1:1', 'Psalm 23', 'verse 14',
+#: 'Page 42', 'Figure 12', '30 years', '12 men', 'No. 7', 'pp. 22-31' - which is
+#: the opposite of the narrowness the docstring claimed. So:
+#:   MIN_TOKENS 3          kills every two-token case above at a stroke;
+#:   MIN_NUMERIC 2         kills 'It was 1940' and 'the Chapter 12 heading';
+#:   FRACTION 0.6          kills 'in 1939 and 1940' (4 tokens, 2 numeric, 0.50),
+#:                         which the first two gates let through.
+#: '1933 1934 1935 1936' is 4 tokens, 4 numeric, 1.00 - still a table row.
+TABLE_BARE_MIN_TOKENS = 3
+TABLE_BARE_MAX_TOKENS = 12
+TABLE_BARE_MIN_NUMERIC = 2
+TABLE_BARE_NUMERIC_FRACTION = 0.6
+
+
+def _is_numeric_cell(cell: str) -> bool:
+    return bool(_NUMERIC_CELL_RE.match(cell)) and bool(re.search(r'\d', cell))
+
+
+def looks_table_like(text: str) -> bool:
+    """True when a block's TEXT is a table row rather than prose.
+
+    THE SHAPE DETECTOR, FOR PDF-DERIVED SOURCES ONLY - a conversion where a
+    table arrives as ordinary blocks whose only remaining evidence is their
+    layout. An EPUB's own `<table>` never needs this: `extract_blocks` reads the
+    lineage and says so outright. Nothing calls this on a publisher EPUB: the
+    pipeline runs it from `extract_blocks` only when `source_kind` is
+    `pdf-derived`, and `pack_paragraphs` leaves it OFF by default.
+
+    IT MUST BE GIVEN THE PRE-COLLAPSE TEXT. Two of the three cell separators are
+    whitespace runs, and `extract_blocks.block_text` collapses `\\s+` to a single
+    space, so a block classified after that step can only ever match on `|`
+    (review finding B3, 2026-09-05: the tab/space branch was dead in the
+    pipeline and only the tests, which built `Block(text=...)` by hand, could
+    reach it). `extract_blocks` therefore classifies on the RAW text and stores
+    the collapsed one.
+
+    Two rules, in order:
+
+      CELLS. Split on a tab, a run of two or more spaces, or a pipe. Two or more
+      cells, of which at least `TABLE_CELL_FRACTION` are short
+      (<= `TABLE_CELL_MAX_CHARS`) or numeric, is a row. A single space is never
+      a separator, so no ordinary sentence can reach this rule.
+
+      BARE NUMBERS. No separators, `TABLE_BARE_MIN_TOKENS`..
+      `TABLE_BARE_MAX_TOKENS` tokens, at least `TABLE_BARE_MIN_NUMERIC` of them
+      numeric AND at least `TABLE_BARE_NUMERIC_FRACTION` of them numeric, and NO
+      sentence-terminal punctuation. See the constants for the false positives
+      each of those three gates was measured to remove.
+
+    Deliberately narrow. A false positive reads a paragraph of prose as its own
+    unmerged chunk (audible, wrong) AND makes it a wall tier 2 can never rejoin;
+    a false negative leaves a table packed the way e2a packed it, which is the
+    behaviour that already exists.
+    """
+    text = (text or '').strip()
+    if not text:
+        return False
+    cells = [c.strip() for c in _CELL_SPLIT_RE.split(text)]
+    cells = [c for c in cells if c]
+    if len(cells) >= 2:
+        good = sum(1 for c in cells
+                   if len(c) <= TABLE_CELL_MAX_CHARS or _is_numeric_cell(c))
+        return good / len(cells) >= TABLE_CELL_FRACTION
+    tokens = text.split()
+    if not (TABLE_BARE_MIN_TOKENS <= len(tokens) <= TABLE_BARE_MAX_TOKENS):
+        return False
+    if ends_a_thought(text):
+        return False
+    numeric = sum(1 for t in tokens if _is_numeric_cell(t))
+    if numeric < TABLE_BARE_MIN_NUMERIC:
+        return False
+    return numeric / len(tokens) >= TABLE_BARE_NUMERIC_FRACTION
+
+
+def classify_table_blocks(blocks: Sequence[Block]) -> list:
+    """Re-read every PARAGRAPH block's shape and promote the table rows.
+
+    THE DIRECT-API ENTRY POINT, for a caller holding its own PDF-derived block
+    list. The EPUB pipeline does NOT come through here: `extract_blocks` does
+    the same classification on each block's PRE-COLLAPSE text, which is the only
+    place two of the three cell separators still exist (review B3), and it does
+    it only when the source is `pdf-derived` (review B2 - a PDF-shape heuristic
+    has no business running over a publisher EPUB, which is what both
+    docstrings already promised and neither enforced).
+
+    Whoever calls it must call it BEFORE tier 2: a table row rarely ends in a
+    full stop, so `join_provisional_fragments` would weld it onto the block
+    after it - reconstructing a "thought" out of two things that were never one.
+
+    Idempotent (a TABLE block is no longer a PARAGRAPH), and it touches nothing
+    else: a heading, an item, a scene break and a chapter start keep the kind
+    their source gave them, whatever they look like.
+    """
+    out = []
+    for block in blocks:
+        if block.kind == PARAGRAPH and looks_table_like(block.text):
+            out.append(Block(text=block.text, kind=TABLE, doc=block.doc,
+                             index=block.index))
+        else:
+            out.append(block)
+    return out
+
+
+# =============================================================================
 # The sentence splitter (a second copy of the parity packer's PASS 1)
 # =============================================================================
 
@@ -329,13 +510,16 @@ def effective_cap(budget, voice=None, audio_budget_s: float | None = None) -> in
 def _marker_for(kind: str) -> str:
     if kind == HEADING:
         return sml_token('heading')
-    if kind == ITEM:
+    # A TABLE ROW carries `[item]`: see the module docstring, "THE MARKER IS
+    # [item], NOT A NEW [table]". `[table]` is in neither TTS_SML nor
+    # SML_UNSPOKEN_PATTERN, so the engine would speak it.
+    if kind in (ITEM, TABLE):
         return sml_token('item')
     return ''
 
 
 def _chunk_kind(kind: str) -> str:
-    return {HEADING: 'heading', ITEM: 'item'}.get(kind, 'prose')
+    return {HEADING: 'heading', ITEM: 'item', TABLE: 'item'}.get(kind, 'prose')
 
 
 def pack_paragraphs(blocks: Sequence[Block], budget, *,
@@ -343,7 +527,8 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                     walls: Iterable[str] = DEFAULT_WALLS,
                     voice=None,
                     audio_budget_s: float | None = None,
-                    lead_break: bool = True) -> PackReport:
+                    lead_break: bool = True,
+                    table_detect: bool = False) -> PackReport:
     """Tier 1. Blocks in reading order -> the chunks a render will generate.
 
     `blocks` must ALREADY have had `join_provisional_fragments` applied when the
@@ -374,8 +559,18 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     sentence. A single sentence longer than the cap is emitted whole and counted
     in `over_budget_sentences`: splitting it would break the one rule this policy
     exists to keep, and the engine's own guards are what catch it.
+
+    `table_detect` is OFF by default and that is a deliberate reversal (review
+    B2). The SHAPE detector is a PDF heuristic; the EPUB pipeline gets its
+    tables from `<table>` lineage in `extract_blocks`, which also runs the shape
+    rule when - and only when - the source is `pdf-derived`, on the text before
+    whitespace collapse. Running it here as well would apply it to publisher
+    EPUBs, on already-collapsed text, which is both wrong and useless. A caller
+    holding its own PDF-derived block list passes True.
     """
     walls = frozenset(walls)
+    if table_detect:
+        blocks = classify_table_blocks(blocks)
     if PARAGRAPH in walls:
         raise ValueError('paragraph cannot be a wall: nothing would ever merge')
     if floor_chars < 0:
@@ -457,7 +652,7 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
     for block in blocks:
         if block.kind in walls:
             flush()
-            if block.kind in (HEADING, ITEM) and block.text.strip():
+            if block.kind in (HEADING, ITEM, TABLE) and block.text.strip():
                 marker = _marker_for(block.kind)
                 lead = sml_token('break') if lead_break else ''
                 report.chunks.append(Chunk(
@@ -476,8 +671,51 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
 _HEADING_TAGS = {f'h{i}' for i in range(1, 7)}
 _PARAGRAPH_TAGS = {'p', 'div', 'blockquote', 'pre'}
 
+#: What e2a puts between two cells of one row (core.py:1474/1476 at 9daab0ba):
+#: an em dash with a space either side. Spelled as an escape so this module is
+#: ASCII on disk; the text it produces is not.
+TABLE_CELL_JOIN = ' — '
 
-def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
+
+def table_rows(table) -> list:
+    """One `<table>` element -> one spoken line per DATA row.
+
+    Ported from ebook2audiobook@9daab0ba lib/core.py:1461-1481, cell recipe
+    unchanged: the FIRST row supplies the headers and speaks no line of its own,
+    and every later row becomes `header: cell` pairs joined by an em dash, or -
+    when the row's width does not match the header's, or there are no headers -
+    the cells joined by the same dash. A row with no `<td>` at all is skipped,
+    exactly as e2a skips it.
+
+    THE ONE CHANGE narrator makes is structural, not textual: e2a appended these
+    lines into the running text of the chapter and let the character-window
+    packer pack several of them into one generation. Here each line is its own
+    BLOCK, so each becomes its own chunk - `docs/NARRATOR_PLAN.md` "Higgs v3
+    path design points" point 2.
+    """
+    rows = table.find_all('tr')
+    if not rows:
+        return []
+    headers = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
+    lines = []
+    for row in rows[1:]:
+        cells = [c.get_text(strip=True).replace('\xa0', ' ')
+                 for c in row.find_all('td')]
+        if not cells:
+            continue
+        if len(cells) == len(headers) and headers:
+            line = TABLE_CELL_JOIN.join(f'{h}: {c}'
+                                        for h, c in zip(headers, cells))
+        else:
+            line = TABLE_CELL_JOIN.join(cells)
+        line = line.strip()
+        if line:
+            lines.append(line)
+    return lines
+
+
+def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
+                   source_kind: str | None = None) -> list:
     """One spine document -> its blocks, in reading order.
 
     A DIFFERENT WALK FROM `chapters.filter_chapter`, and deliberately so: that
@@ -489,6 +727,8 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
       h1-h6            -> heading   (a wall, its own chunk, terminated as the
                                      parity packer terminates one)
       li               -> item      (a wall, its own chunk)
+      table            -> one TABLE block per data row (a wall, its own chunk),
+                          built with e2a's cell recipe - see `table_rows`
       hr               -> scene-break
       p/div/blockquote -> paragraph, or scene-break when it has no word in it
                           (a rule of asterisks, a dinkus, a decorative bullet)
@@ -496,6 +736,20 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
 
     A `div` that contains block children contributes nothing itself; only leaf
     blocks carry text, so a wrapper never duplicates its children.
+
+    `source_kind` decides whether the SHAPE detector runs on the paragraphs.
+    `pdf-derived` runs it; anything else (including the default None) does not -
+    a PDF-shape heuristic over a publisher EPUB is a false positive waiting to
+    happen and buys nothing, because a publisher EPUB writes its tables as
+    `<table>` and the lineage branch above already has them.
+
+    IT RUNS ON THE PRE-COLLAPSE TEXT (review B3). Two of the three cell
+    separators - a tab and a run of two or more spaces - are whitespace runs,
+    and `block_text` collapses `\\s+` to a single space, so classifying after
+    that step could only ever match on `|`. So a paragraph is TESTED on
+    `raw_block_text` and STORED with `block_text`: the detector sees the
+    layout, and everything downstream sees the same normalized text it always
+    saw.
     """
     from bs4 import NavigableString, Tag
 
@@ -510,9 +764,10 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
     blocks: list = []
     counter = start_index
 
-    def block_text(tag) -> str:
-        # The heading rule of `chapters.heading_text` in miniature: a <br> is a
-        # word boundary, everything else joins on the markup's own whitespace.
+    def raw_block_text(tag) -> str:
+        # The markup's own text, WHITESPACE INTACT. The heading rule of
+        # `chapters.heading_text` in miniature: a <br> is a word boundary,
+        # everything else joins on the markup's own whitespace.
         parts = []
         for node in tag.descendants:
             if isinstance(node, Tag):
@@ -521,7 +776,13 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
                 continue
             if isinstance(node, NavigableString):
                 parts.append(str(node))
-        return re.sub(r'\s+', ' ', ''.join(parts)).strip()
+        return ''.join(parts)
+
+    def block_text(tag) -> str:
+        return collapse(raw_block_text(tag))
+
+    def collapse(text: str) -> str:
+        return re.sub(r'\s+', ' ', text).strip()
 
     def has_block_child(tag) -> bool:
         return any(isinstance(c, Tag)
@@ -559,16 +820,34 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0) -> list:
                 for nested in inner:
                     walk(nested)
                 continue
+            if name == 'table':
+                for line in table_rows(child):
+                    # The period a table row needs so TTS stops at the end of
+                    # it - the same one a heading and an item get, for the same
+                    # reason.
+                    if line[-1] not in '.!?…':
+                        line += '.'
+                    blocks.append(Block(text=line, kind=TABLE, doc=doc_name,
+                                        index=counter))
+                    counter += 1
+                continue
             if name == 'hr':
                 blocks.append(Block(text='', kind=SCENE_BREAK, doc=doc_name,
                                     index=counter))
                 counter += 1
                 continue
             if name in _PARAGRAPH_TAGS and not has_block_child(child):
-                text = block_text(child)
+                raw = raw_block_text(child)
+                text = collapse(raw)
                 if not text:
                     continue
-                kind = PARAGRAPH if re.search(r'\w', text) else SCENE_BREAK
+                if not re.search(r'\w', text):
+                    kind = SCENE_BREAK
+                elif source_kind == PDF_DERIVED and looks_table_like(raw):
+                    # Tested on `raw`, stored as `text`: see the docstring.
+                    kind = TABLE
+                else:
+                    kind = PARAGRAPH
                 blocks.append(Block(text='' if kind == SCENE_BREAK else text,
                                     kind=kind, doc=doc_name, index=counter))
                 counter += 1
@@ -659,10 +938,19 @@ def make_chapter_chunker(budget, *, source_kind: str,
             print('No body part. Skip to next doc...')
             return []
 
-        blocks = extract_blocks(doc, doc_name=doc.get_name())
+        # `source_kind` reaches the extractor because the SHAPE detector runs
+        # there and nowhere else on this path: it needs each paragraph's
+        # pre-collapse text (two of the three cell separators are whitespace
+        # runs), and it must not run at all on a publisher EPUB. Both are
+        # review findings B3 and B2; see `looks_table_like`.
+        blocks = extract_blocks(doc, doc_name=doc.get_name(),
+                                source_kind=source_kind)
         if not blocks:
             print('No blocks in this document. Skip to next doc...')
             return []
+        shaped = sum(1 for b in blocks if b.kind == TABLE)
+        if shaped:
+            print(f'[tables] {shaped} table row block(s) in this document')
         if source_kind == PDF_DERIVED:
             before = len(blocks)
             blocks = join_provisional_fragments(blocks)

@@ -96,8 +96,14 @@ def cue_text(text: str, is_heading: bool) -> str:
     return stripped
 
 
-def build_vtt(manifest: Manifest) -> str:
-    """The complete VTT document for a manifest, as a string.
+def chunk_spans(manifest: Manifest, where: str = "chunk_spans") -> list:
+    """`[(chunk, start_s, end_s)]` - every chunk's cue span, in order.
+
+    THE ONE PLACE the running sum lives. `build_vtt` reads it, and so does
+    `align/run.py`, which places sentence cues INSIDE these spans: point 3 of
+    the Higgs design says the chunk-level times stay the truth, and two copies
+    of this loop is exactly how a sentence cue would come to sit outside its own
+    chunk's cue.
 
     Raises when a chunk has no sample count: an unrendered chunk timed as 0.0
     would slide every later cue earlier by that chunk's true length and desync
@@ -105,21 +111,28 @@ def build_vtt(manifest: Manifest) -> str:
     """
     chunks = flat_chunks(manifest)
     if not chunks:
-        raise ValueError("build_vtt(): the manifest has no chunks")
+        raise ValueError(f"{where}(): the manifest has no chunks")
 
     rate = manifest.sampleRate
-    blocks = []
+    spans = []
     current_time = 0.0
     for chunk in chunks:
         if chunk.samples is None:
             raise ValueError(
-                f"build_vtt(): chunk {chunk.index} has no sample count ({chunk.file}); "
+                f"{where}(): chunk {chunk.index} has no sample count ({chunk.file}); "
                 f"the book is not fully rendered"
             )
         start_time = current_time + chunk.gapBefore
         end_time = start_time + chunk.samples / rate
         current_time = end_time + chunk.gapAfter
+        spans.append((chunk, start_time, end_time))
+    return spans
 
+
+def build_vtt(manifest: Manifest) -> str:
+    """The complete VTT document for a manifest, as a string."""
+    blocks = []
+    for chunk, start_time, end_time in chunk_spans(manifest, "build_vtt"):
         text = cue_text(chunk.text, chunk.kind == "heading")
         blocks.append(
             f"{format_timestamp(start_time)} --> {format_timestamp(end_time)}\n{text}\n"

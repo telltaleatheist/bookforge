@@ -56,6 +56,14 @@ FLAGS: dict[str, tuple[str, str]] = {
         'mode, the sentence SOURCE in assembly'),
     '--encoded_chapters_dir': (ACCEPT, 'pre-encoded <N>.m4a chapters for assembly'),
     '--output_dir': (ACCEPT, 'where assembly writes the m4b and the VTT'),
+    # NARRATOR'S OWN, like --higgs_voice: e2a never had it, and an engine
+    # guarded by post-render forced alignment cannot be assembled without it
+    # (review finding 4).
+    '--coverage_report': (
+        ACCEPT,
+        "narrator's own: the report `narrator align --report` wrote. Required "
+        'by an engine whose CoveragePolicy is enforced (higgs-v3); a no-op for '
+        'orpheus'),
 
     # ---- the work range ---------------------------------------------------
     '--sentence_start': (ACCEPT, ''),

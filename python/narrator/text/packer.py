@@ -818,9 +818,22 @@ def get_sentences(text: str, language: str, tts_engine: str,
         if run:
             _emit(run)
         if dropped_join_tokens:
+            # THE CHUNK COUNT HERE IS PASS 5'S OWN, NOT THE BOOK'S. Two passes
+            # still run on `packed` below - the min-chars floor (which only ever
+            # merges, so it can lower the count) and the near-dup anti-runaway
+            # split (which only ever splits, so it can raise it) - and it is
+            # THEIR output that becomes `chapter_sentences` and
+            # `total_sentences`. A measured Mac render logged 106 here against
+            # 108 in the state, all of it PASS 6 splitting two chunks that
+            # carried a repetition primer. e2a prints exactly the same line at
+            # exactly the same point (core.py:2969-2981 at 9daab0ba), so this is
+            # faithful, not a narrator bug; the parenthetical is narrator's only
+            # addition, so nobody has to rediscover the delta.
             print(f'get_sentences() Orpheus pack: {dropped_join_tokens} join pause '
                   f'token(s) dropped packing {len(final_list)} rows into '
-                  f'{len(packed)} chunks (packing > pause)')
+                  f'{len(packed)} chunks (packing > pause; before the min-chars '
+                  f'floor and the near-dup split, so the book\'s final chunk '
+                  f'count can differ)')
 
         if max_sents is None:
             # MIN-CHARS FLOOR runs BEFORE PASS 6: anti-runaway trumps the floor,

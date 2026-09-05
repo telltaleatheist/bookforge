@@ -52,6 +52,93 @@ from dataclasses import dataclass
 
 
 @dataclass(frozen=True)
+class CoveragePolicy:
+    """What a forced alignment has to show before a chunk counts as SPOKEN.
+
+    `docs/NARRATOR_PLAN.md` -> "Higgs v3 path design points", point 4: the
+    alignment replaces the duration-ratio guard, which cannot see a measured
+    22 % text loss (a v3 chunk scored a duration ratio of 0.99 while dropping a
+    fifth of its text and inserting filler). `align/coverage.py` applies these;
+    they live HERE because they are per-engine data and because assembly - which
+    refuses a book on them - must not import `engine/` or `align/`.
+
+    EVERY NUMBER WAS MEASURED, on the kershaw golden session, CPU, 2026-09-05;
+    `align/README.md` carries the distributions. In outline: a correctly
+    rendered chunk puts 2 % of its words under a 0.4 alignment score, while a
+    sentence the audio never says puts 91 % of ITS words there, and a truncated
+    tail puts 94-100 % there. So the score is the discriminator and the RUN
+    LENGTH is what keeps the two apart.
+
+    enforced             True when a failed chunk REFUSES assembly. Higgs v3 has
+                         no duration guard worth the name, so this is its only
+                         proof the book was read. Orpheus keeps its chars/sec
+                         guard and its resplit ladder, so coverage there is
+                         measured and REPORTED and never blocks - turning it on
+                         for Orpheus would re-litigate a guard that already
+                         works, on a corpus nobody has swept.
+    min_word_score       below this an aligned word is not credible.
+    min_aligned_ratio    the fraction of a chunk's words that must clear it.
+    min_uncredible_words how many words must be non-credible before the RATIO
+                         test may fire at all. Three, because a ratio is a bad
+                         instrument on a short chunk: measured on kershaw, a
+                         15-word chunk with ONE weak word scores 0.933 and a
+                         10-word chunk with one scores 0.900 - at the threshold
+                         - while the 38-word chunk that genuinely needed
+                         flagging had five. Without this floor the guard would
+                         punish chunks for being short.
+    dropped_run_words    consecutive non-credible words that make a DROPPED TEXT
+                         span. Six: at a 2 % per-word false rate a run of six is
+                         a 1-in-10^10 accident, while real dropped text runs to
+                         tens of words.
+    max_dropped_spans    dropped-text spans a chunk may have and still pass.
+                         Zero for Higgs: point 4 says text with no aligned audio
+                         is a truncation, and a truncated chunk is re-rendered.
+    min_inserted_audio_s a stretch of unexplained audio shorter than this is a
+                         breath, a page turn or a codec edge, not an insertion.
+    max_inserted_speech_fraction
+                         how much of such a stretch may be SPEECH before it
+                         counts. A pause is silent; an inserted word is not.
+    """
+
+    enforced: bool
+    min_word_score: float
+    min_aligned_ratio: float
+    min_uncredible_words: int
+    dropped_run_words: int
+    max_dropped_spans: int
+    min_inserted_audio_s: float
+    max_inserted_speech_fraction: float
+
+
+#: Orpheus: MEASURED AND REPORTED, never blocking. The thresholds are the same
+#: measured numbers, so the report reads the same on both engines and a sweep
+#: can compare them.
+ORPHEUS_COVERAGE = CoveragePolicy(
+    enforced=False,
+    min_word_score=0.4,
+    min_aligned_ratio=0.90,
+    min_uncredible_words=3,
+    dropped_run_words=6,
+    max_dropped_spans=0,
+    min_inserted_audio_s=1.0,
+    max_inserted_speech_fraction=0.35,
+)
+
+#: Higgs v3: the guard. `StopPolicy.coverage_check == 'asr'` made concrete - an
+#: ALIGNMENT check, not a transcription diff.
+HIGGS_V3_COVERAGE = CoveragePolicy(
+    enforced=True,
+    min_word_score=0.4,
+    min_aligned_ratio=0.90,
+    min_uncredible_words=3,
+    dropped_run_words=6,
+    max_dropped_spans=0,
+    min_inserted_audio_s=1.0,
+    max_inserted_speech_fraction=0.35,
+)
+
+
+@dataclass(frozen=True)
 class EngineProfile:
     """How assembly must treat one engine's chunks."""
 
@@ -64,6 +151,9 @@ class EngineProfile:
     fade_in_ms: float
     #: Fade applied to the tail of every chunk, in milliseconds.
     fade_out_ms: float
+    #: What a post-render forced alignment must show before a chunk counts as
+    #: spoken, and whether a failure refuses the book.
+    coverage: CoveragePolicy = ORPHEUS_COVERAGE
 
     @property
     def needs_processing(self) -> bool:
@@ -73,8 +163,10 @@ class EngineProfile:
 
 #: Every engine assembly knows how to join. Adding one is a row here and a test.
 PROFILES: dict[str, EngineProfile] = {
-    "orpheus": EngineProfile("orpheus", pads=True, fade_in_ms=0.0, fade_out_ms=0.0),
-    "higgs-v3": EngineProfile("higgs-v3", pads=False, fade_in_ms=10.0, fade_out_ms=25.0),
+    "orpheus": EngineProfile("orpheus", pads=True, fade_in_ms=0.0, fade_out_ms=0.0,
+                             coverage=ORPHEUS_COVERAGE),
+    "higgs-v3": EngineProfile("higgs-v3", pads=False, fade_in_ms=10.0, fade_out_ms=25.0,
+                              coverage=HIGGS_V3_COVERAGE),
 }
 
 #: What a manifest with no `engine` block means. Every manifest written before

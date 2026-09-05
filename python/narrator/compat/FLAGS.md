@@ -5,13 +5,15 @@ complete table, generated from the same dict the code routes on
 (`compat/flags.py:FLAGS`) so the two cannot drift; `tests/test_compat_flags.py`
 asserts every row.
 
-**Counts: 57 flags - 35 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
+**Counts: 58 flags - 36 ACCEPT, 17 IGNORE, 5 REFUSE.** Plus 18 engine names
 refused by name on `--tts_engine`, and 4 near-misses refused for naming no
 registry id.
 
-**57, not 56, and that is narrator's own flag.** `--higgs_voice` is the one
-flag in this table ebook2audiobook never declared: Higgs did not exist in it.
-Everything else here is still e2a's argv answered by narrator.
+**58, not 56, and the two extras are narrator's own.** `--higgs_voice`
+(Higgs did not exist in e2a, and its voice is a catalog id rather than a prompt
+token) and `--coverage_report` (e2a had no engine guarded by post-render forced
+alignment, so it needed no way to satisfy one). Everything else here is still
+e2a's argv answered by narrator.
 
 **Changed for Higgs v3 (2026-09-04, the first cut-over slice):** `--tts_engine`
 now accepts `higgs-v3` as well as `orpheus`, on the prep, worker and retake
@@ -54,7 +56,7 @@ nothing downstream can tell; what changes is that a caller who used
 
 ---
 
-## ACCEPT (34)
+## ACCEPT (35)
 
 | flag | passed by | what narrator does |
 |---|---|---|
@@ -68,6 +70,7 @@ nothing downstream can tell; what changes is that a caller who used
 | `--sentences_dir` | `:3896`, `:3938`, `:3609` (retake scratch), `:5199` (assembly source) | the authoritative sentence store: written and skip-checked in worker mode, the sentence SOURCE in assembly |
 | `--encoded_chapters_dir` | `reassembly-bridge.ts` | pre-encoded `<N>.m4a` chapters, each held to the 0.06 s duration guard |
 | `--output_dir` | `:3919`, `:3931`, `:5187` | where assembly writes the m4b and the VTT |
+| `--coverage_report` | nothing today | **narrator's own flag** - the report `narrator align --report` wrote, passed straight to `assemble(coverage_report=...)`. REQUIRED for an engine guarded by post-render forced alignment (Higgs v3), where its absence is a refusal by name; a no-op for Orpheus, whose `CoveragePolicy` is not enforced. See `align/README.md` and `assemble/coverage_gate.py` |
 | `--sentence_start` / `--sentence_end` | `:3915-3918` | the contiguous 0-based inclusive range |
 | `--chapter_start` / `--chapter_end` | `:3911-3914` (chapter mode) | 1-based inclusive; converted to a sentence range |
 | `--chapters` | nothing today | assembly's chapter selection; must be a contiguous run from 1 (`assemble/README.md` s8) |
@@ -90,9 +93,9 @@ nothing downstream can tell; what changes is that a caller who used
 | `--sentence_per_paragraph` | `parallel-tts-bridge.ts:3248` (language-learning mode) | prep splits on `[break]` before `escape_sml` runs, so each paragraph is one chunk and the packer never runs |
 | `--skip_headings` | `parallel-tts-bridge.ts:3253` | prep suppresses the TEXT of real `h1`-`h6` headings (still parsed for chapter detection). It does NOT suppress a TOC-matched title recovered from body text, and never did |
 
-(30 rows; the paired `start`/`end`, `adapter`/`base` and
+(31 rows; the paired `start`/`end`, `adapter`/`base` and
 `custom_model`/`custom_model_dir` rows carry two flags each, which is what makes
-34 flags.)
+35 flags.)
 
 ### The prep route
 
