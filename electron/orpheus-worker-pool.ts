@@ -196,6 +196,12 @@ export const STREAM_RAMP_WIDTH = 8;
 // Worker process state
 // ─────────────────────────────────────────────────────────────────────────────
 
+/** narrator's `EdgeFade.as_manifest()`: milliseconds at each end of a chunk. */
+export interface EdgeFadeMs {
+  in: number;
+  out: number;
+}
+
 interface OrpheusResponse {
   type: 'ready' | 'status' | 'loaded' | 'audio' | 'chunk' | 'done' | 'error' | 'stopped'
       | 'batch_item' | 'batch_chunk' | 'batch_done';
@@ -208,9 +214,11 @@ interface OrpheusResponse {
    *  Orpheus true, Higgs false. An assembler that joins `pads:false` chunks
    *  without its own fade gets a click at every edge. */
   pads?: boolean;
-  /** 'loaded': the fade in milliseconds an assembler must apply at each chunk edge
-   *  before joining (Higgs 25 — a decoded edge sits near -30 dB). */
-  edgeFadeMs?: number;
+  /** 'loaded': the fade an assembler must apply at each chunk edge before joining.
+   *  A SHAPE, not a number — Higgs's is asymmetric (10 in / 25 out) because a
+   *  chunk ends on a decay the ear does not expect. Matches the manifest's
+   *  `edgeFadeMs: {in, out}` and narrator's assemble.engine_profiles. */
+  edgeFadeMs?: EdgeFadeMs;
   voice?: string;
   message?: string;
   data?: string;
@@ -320,7 +328,7 @@ function noteBackend(reported: string | undefined): void {
 //   engine      the engine id that loaded
 //   sampleRate  the rate it renders at
 //   pads        whether a chunk already contains its own lead/trail silence
-//   edgeFadeMs  the fade an assembler must apply at each chunk edge
+//   edgeFadeMs  {in, out} milliseconds an assembler must fade at each chunk edge
 //
 // Both shipping engines are 24 kHz, so nothing on any path changes today. What
 // this prevents is the NEXT engine mis-timing a session: every duration this pool
@@ -335,7 +343,7 @@ const FALLBACK_SAMPLE_RATE = 24000;
 let loadedEngineId: string | null = null;
 let loadedSampleRate: number | null = null;
 let loadedPads: boolean | null = null;
-let loadedEdgeFadeMs: number | null = null;
+let loadedEdgeFadeMs: EdgeFadeMs | null = null;
 
 /** The rate the LOADED engine renders at, before any per-message override. */
 function activeSampleRate(): number {
@@ -350,7 +358,7 @@ export function getLoadedEngineAudio(): {
   engine: string | null;
   sampleRate: number | null;
   pads: boolean | null;
-  edgeFadeMs: number | null;
+  edgeFadeMs: EdgeFadeMs | null;
 } {
   return {
     engine: loadedEngineId,
@@ -366,12 +374,19 @@ function noteLoadedEngine(response: OrpheusResponse): void {
   if (typeof response.sampleRate === 'number' && response.sampleRate > 0) {
     if (loadedSampleRate !== response.sampleRate) {
       console.log(`[Orpheus Pool] Engine audio: ${response.engine ?? 'unknown'} @ ${response.sampleRate} Hz`
-        + `, pads=${response.pads}, edgeFadeMs=${response.edgeFadeMs}`);
+        + `, pads=${response.pads}, edgeFadeMs=${JSON.stringify(response.edgeFadeMs)}`);
     }
     loadedSampleRate = response.sampleRate;
   }
   if (typeof response.pads === 'boolean') loadedPads = response.pads;
-  if (typeof response.edgeFadeMs === 'number') loadedEdgeFadeMs = response.edgeFadeMs;
+  // A SHAPE, not a number: narrator sends {in, out} because Higgs's fade is
+  // asymmetric. Read defensively — an older worker sent a bare float, and taking
+  // that as an object would give an assembler NaN at both edges.
+  const fade = response.edgeFadeMs;
+  if (fade && typeof fade === 'object'
+      && typeof fade.in === 'number' && typeof fade.out === 'number') {
+    loadedEdgeFadeMs = { in: fade.in, out: fade.out };
+  }
 }
 
 /** The loaded engine died with its process; the next load re-reports all of it. */
@@ -733,6 +748,46 @@ async function doStartSession(): Promise<{ success: boolean; voices?: string[]; 
   }
 }
 
+/**
+ * Why a worker died before it ever said `ready`.
+ *
+ * narrator.serve documents three exit codes and two of them are DIAGNOSES, not
+ * crashes:
+ *
+ *   2  bad arguments — the pool built a command line the worker does not accept.
+ *      That is a BookForge bug and the message says so, because a user cannot
+ *      act on it and should not be told to reinstall an environment.
+ *   3  no engine can load in this process: an unservable NARRATOR_ENGINE, or a
+ *      backend detection that raised. The worker deliberately prints no `ready`
+ *      first — a handshake followed by "Model not loaded" on every generate is a
+ *      worker that looks alive forever (found on the Mac, 2026-09-04).
+ *
+ * Both put their reason on STDERR and nowhere else, so this carries it into the
+ * error the caller shows. Restarting on either is pointless: the same argv and
+ * the same environment produce the same exit, and a crash-loop would bury the one
+ * line that explains it.
+ */
+function startupFailure(code: number | null, stderrTail: string[]): string {
+  const reason = stderrTail
+    .filter((l) => /FATAL|Error|error|no engine|unknown argument/.test(l))
+    .slice(-4)
+    .join('\n');
+  const detail = reason || stderrTail.slice(-4).join('\n');
+  if (code === 3) {
+    return 'The Orpheus streaming worker could not build an engine, so it exited '
+      + 'without starting (narrator.serve exit 3). This is the environment, not a '
+      + 'crash — restarting will reproduce it.'
+      + (detail ? `\n\n${detail}` : '');
+  }
+  if (code === 2) {
+    return 'The Orpheus streaming worker rejected its command line (narrator.serve '
+      + 'exit 2). That is a BookForge bug in the spawn, not something to fix on this '
+      + 'machine.'
+      + (detail ? `\n\n${detail}` : '');
+  }
+  return 'Worker stopped during startup' + (detail ? `\n\n${detail}` : '');
+}
+
 function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: string }> {
   return new Promise((resolve) => {
     let plan: SpawnPlan;
@@ -780,14 +835,26 @@ function startWorker(gpuUtil?: number): Promise<{ success: boolean; error?: stri
       });
     }
 
+    // KEPT so a non-zero exit can SAY something. narrator.serve exits 3 when no
+    // engine can load in this process (an unservable NARRATOR_ENGINE, or a backend
+    // detection that raised) and it deliberately prints NO 'ready' first — the
+    // alternative, found on the Mac 2026-09-04, is a worker that handshakes and
+    // then answers 'Model not loaded' to every generate, forever. The reason is on
+    // stderr and nowhere else, so the last few lines are held to put in the error.
+    const stderrTail: string[] = [];
     child.stderr?.on('data', (data: Buffer) => {
       const msg = data.toString().trim();
-      if (msg) console.log('[Orpheus Pool stderr]', msg);
+      if (!msg) return;
+      console.log('[Orpheus Pool stderr]', msg);
+      for (const line of msg.split(/\r?\n/)) {
+        if (line.trim()) stderrTail.push(line.trim());
+      }
+      while (stderrTail.length > 12) stderrTail.shift();
     });
 
     child.on('close', (code) => {
       console.log('[Orpheus Pool] Process exited with code:', code);
-      if (!w.isReady) resolve({ success: false, error: 'Worker stopped during startup' });
+      if (!w.isReady) resolve({ success: false, error: startupFailure(code, stderrTail) });
       if (w.pendingRequest) {
         if (w.pendingRequest.resolveStream) w.pendingRequest.resolveStream({ success: false, error: 'Worker died' });
         else w.pendingRequest.resolve({ success: false, error: 'Worker died' });
