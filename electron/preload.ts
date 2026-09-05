@@ -808,7 +808,14 @@ export interface HiggsModelDto {
   kind: 'default' | 'clips' | 'checkpoint';
   voice: {
     clips?: Array<{ path: string; transcript: string; seconds: number }>;
-    checkpointDir?: string;
+    /**
+     * ONE MERGED DIRECTORY PER ARM. The two Higgs arms cannot see each other's
+     * disks — the served one loads from inside the WSL guest, the MLX one from
+     * the Mac's own userData — so a checkpoint voice names both, and an arm with
+     * no entry is an arm the voice is NOT loadable on. `wsl` is the guest's
+     * absolute path; `darwin` is relative to the app's userData directory.
+     */
+    checkpoint?: { wsl?: string; darwin?: string };
     scene?: string;
   };
   license: string;

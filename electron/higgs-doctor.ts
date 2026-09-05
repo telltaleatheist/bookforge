@@ -48,7 +48,12 @@ import {
 } from './tool-paths';
 import { buildCondaSpawnEnv } from './e2a-paths';
 import { narratorNativePython, narratorPythonRoot } from './narrator-spawn';
-import { higgsMlxBaseDir, listHiggsModels } from './higgs-models';
+import {
+  higgsCheckpointDirFor,
+  higgsCheckpointStagedOn,
+  higgsMlxBaseDir,
+  listHiggsModels,
+} from './higgs-models';
 
 /**
  * The mlx-audio release BOTH MLX engines are written against.
@@ -166,18 +171,42 @@ function probeLines(out: string): Map<string, string> {
  * this cannot make `valid` false. It is here because the difference between
  * "Higgs is broken" and "Higgs works and the voice you want is on the other
  * machine" is invisible from the environment rows alone: a `checkpoint` voice
- * loads from ITS OWN directory (`checkpointDir`), which on the Mac is a
- * host-native path that a WSL-shaped catalog entry simply does not have.
+ * loads from ITS OWN directory, which the catalog names ONCE PER ARM — so a
+ * fine-tune staged only in the WSL guest is simply not a voice this Mac has.
  */
-function mlxVoiceNotes(baseDirOk: boolean): string[] {
+function mlxVoiceNotes(baseDirOk: boolean, userDataDir: string): string[] {
   return listHiggsModels().map((m) => {
     if (m._pendingNote) return `${m.id}: not installed yet — ${m._pendingNote.split('.')[0]}.`;
     if (m.kind === 'checkpoint') {
-      const dir = m.voice.checkpointDir;
-      if (!dir) return `${m.id}: a checkpoint voice with no checkpointDir — the catalog entry is malformed.`;
+      // THREE DISTINCT STATES, and they send a person three different places.
+      //
+      //   not staged for this arm   the CATALOG names no darwin directory. The
+      //                             merged weights exist (somewhere — the WSL
+      //                             guest, usually); nothing on this Mac will
+      //                             ever find them until the catalog is edited.
+      //                             Nothing to download until someone decides
+      //                             to stage it, and staging it means measuring
+      //                             this arm's own cap.
+      //   staged path missing       the catalog SAYS where it is and it is not
+      //                             there: an interrupted copy, a deleted
+      //                             directory, the wrong userData. A copy fixes
+      //                             this one.
+      //   loadable                  both.
+      //
+      // Collapsing the first two — which one sentence did until 2026-09-05 —
+      // told a person to go looking on disk for a directory the catalog had
+      // never named on this arm.
+      if (!higgsCheckpointStagedOn(m, 'darwin')) {
+        return `${m.id}: not staged for this arm — the catalog names no darwin checkpoint for `
+          + 'it, so its fine-tuned weights are on the other machine. Staging a copy here is a '
+          + "NEW certificate: this arm's maxChars must be measured, not carried across.";
+      }
+      const dir = higgsCheckpointDirFor(m, 'darwin', userDataDir);
       return fs.existsSync(dir)
         ? `${m.id}: loadable — fine-tuned weights at ${dir}.`
-        : `${m.id}: NOT loadable on this Mac — its weights are named at ${dir}, which is not on this machine.`;
+        : `${m.id}: staged path missing on disk — the catalog names ${dir}, which is not on `
+          + 'this machine. Copy the merged directory there (~8.5 GB), or finish the copy that '
+          + 'was interrupted.';
     }
     return baseDirOk
       ? `${m.id}: loadable — renders from the base weights.`
@@ -207,7 +236,8 @@ function mlxVoiceNotes(baseDirOk: boolean): string[] {
  * the case where "and by the way, there are no weights either" is worth having.
  */
 export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
-  const baseDir = higgsMlxBaseDir(app.getPath('userData'));
+  const userDataDir = app.getPath('userData');
+  const baseDir = higgsMlxBaseDir(userDataDir);
   const remedy =
     'Create or repair the narrator-mlx environment — '
     + '`conda env create -f packaging/env/narrator-mlx.yml` then '
@@ -227,7 +257,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
         weightsCheck(baseDir),
       ],
       remedy,
-      mlxVoiceNotes(baseWeightsOk(baseDir)),
+      mlxVoiceNotes(baseWeightsOk(baseDir), userDataDir),
       undefined,
     ));
   }
@@ -243,7 +273,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
     return Promise.resolve(mlxResult(
       [envCheck, ...mlxProbeChecks(new Map(), root.error, ''), weightsCheck(baseDir)],
       remedy,
-      mlxVoiceNotes(baseWeightsOk(baseDir)),
+      mlxVoiceNotes(baseWeightsOk(baseDir), userDataDir),
       envPrefixOf(invocation),
     ));
   }
@@ -275,7 +305,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
         ...mlxProbeChecks(probeLines(out), probeError, err),
         weightsCheck(baseDir),
       ];
-      resolve(mlxResult(checks, remedy, mlxVoiceNotes(baseWeightsOk(baseDir)), envPrefixOf(invocation)));
+      resolve(mlxResult(checks, remedy, mlxVoiceNotes(baseWeightsOk(baseDir), userDataDir), envPrefixOf(invocation)));
     };
     let proc: ReturnType<typeof spawn>;
     try {

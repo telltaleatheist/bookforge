@@ -79,9 +79,9 @@ import {
   higgsMlxBaseDir,
   resolveHiggsModel,
   higgsSpawnEnv,
-  higgsVoiceCapsForModel,
   higgsServingFor,
   writeHiggsVoicesDocument,
+  type HiggsCheckpointArm,
   type HiggsModel,
 } from './higgs-models';
 
@@ -257,12 +257,21 @@ export function higgsEnvExtras(
   // Asked of narrator-spawn rather than recomputed, so the arm the voice document
   // is written FOR is provably the arm the spawn will take.
   const viaWsl = narratorRunsInWsl('higgs', kind);
+  const arm = checkpointArmForSpawn(viaWsl);
+  // The Mac's checkpoint paths are stored RELATIVE to userData (a Mac's
+  // Application Support carries the account name, so an absolute one in a
+  // repo-tracked catalog names a directory that exists on one machine). The app
+  // is the only thing that knows where userData is, so it is passed in rather
+  // than looked up inside the catalog module, which imports no Electron.
+  const userDataDir = app.getPath('userData');
 
   // Under WSL the document is read over /mnt/c. The 9p mount is slow and it does
   // not matter here: this is a few hundred bytes read once at load, not the model
   // weights — which is exactly why the models dir is WSL-native and this is not.
   const translate = viaWsl ? toGuestPath : (p: string) => p;
-  const voicesHostPath = writeHiggsVoicesDocument(model, jobId, translate);
+  const voicesHostPath = writeHiggsVoicesDocument(model, jobId, {
+    arm, userDataDir, translatePath: translate,
+  });
   const serveScriptGuestPath =
     `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
 
@@ -279,6 +288,35 @@ export function higgsEnvExtras(
       ? higgsMlxBaseDir(app.getPath('userData'))
       : undefined,
   });
+}
+
+/**
+ * WHICH FILESYSTEM THIS SPAWN'S WEIGHTS COME OFF — derived from the spawn's own
+ * `viaWsl`, never from `process.platform` alone.
+ *
+ * The whole point is that the arm the voice document is written FOR is the arm
+ * the command line is built for: if `narratorRunsInWsl` says this job crosses
+ * into the guest, the checkpoint named in the document is the guest's copy, and
+ * nothing else can be true at the same time.
+ *
+ * Windows with the "WSL2 for Higgs" toggle OFF reaches the else-branch and is
+ * REFUSED here rather than silently handed the guest path: there is no native
+ * Windows Higgs arm at all (vLLM-Omni has no Windows build), so the honest answer
+ * is that this spawn has no weights location. `higgsEnvironmentRefusal()` reaches
+ * the same conclusion earlier and more helpfully, through the doctor's toggle
+ * row; this is the backstop for a caller that skipped it.
+ */
+function checkpointArmForSpawn(viaWsl: boolean): HiggsCheckpointArm {
+  if (viaWsl) return 'wsl';
+  if (process.platform === 'darwin') return 'darwin';
+  throw new Error(
+    process.platform === 'win32'
+      ? 'A Higgs spawn on Windows must go through WSL — vLLM-Omni has no Windows build — but '
+        + '"WSL2 for Higgs" is off, so this job has no arm and no checkpoint location. Turn it '
+        + 'on in Settings → Higgs.'
+      : `Higgs has no backend on ${process.platform}: a vLLM-Omni server reached through WSL on `
+        + 'Windows, and an in-process mlx-audio backend on macOS, are the two BookForge builds.',
+  );
 }
 
 /** `<base>/bin/conda` -> `<base>`. The same derivation the doctor makes. */
