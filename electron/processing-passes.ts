@@ -864,10 +864,15 @@ async function recutNarrationCopy(
  * So it is offered, planned, queued and recorded exactly as those are, and it
  * may be run at any point in the chain. What makes it different is the STAMP:
  * `electron/narration-text-pass.ts` writes it into the book's OPF, and
- * `prepareNarrationInput` refuses a render whose book has none — which is what
- * "everything after it is finalized" means in code. A later simplify or
- * translate rewrites the cleaned text and is recorded after this one in the
- * ledger, so the gate calls the stamp STALE rather than missing.
+ * the Narrate button reads it off the file it is about to hand the voice and
+ * OFFERS the pass when it is not there — which is what "everything after it is
+ * finalized" means in code, since every cut exported after the pass carries the
+ * stamp along. Declining is a real answer (Owen, 2026-09-05: *"make it so i dont
+ * HAVE to run cleanup"*), and the render door then says in the log that the book
+ * was read as printed. A later simplify or translate rewrites the cleaned text
+ * and is recorded after this one in the ledger, which is what makes
+ * `narrationTextReadiness` — the question THIS pass asks below — call it stale
+ * and give a re-run something to do.
  *
  * ── Not a string replace, and it still belongs here ─────────────────────────
  *

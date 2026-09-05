@@ -33,6 +33,9 @@
  *   --sentence-gap <s>   normalize the inter-sentence gap to <s> seconds at assembly
  *                        (strips e2a's artificial trailing exact-zero pad, then re-adds
  *                        <s>s of silence). Omit to use the voice's models.json default.
+ *   --skip-text-cleanup  do NOT run the narration text cleanup, and tell the render
+ *                        door so: the book is read exactly as printed, digits and all.
+ *                        The app's own "No, narrate as printed" button, headless.
  *
  * Output lands in its canonical project location (<project>/output/audiobook.m4b),
  * exactly like the app — there is no --out.
@@ -252,13 +255,24 @@ async function main() {
     // ── STEP 0a: the NARRATION TEXT CLEANUP, run automatically ──────────────
     //
     // The persisted text pass — punctuation, then the number rules, then the
-    // model on the residue — writes a cleaned, STAMPED book beside the input.
-    // `prepareNarrationInput` refuses an unstamped book by name, and an
-    // unattended chain has nobody to ask, so it runs the pass itself. A book
-    // already carrying a current stamp costs one hash and no model call.
-    const cleaned = await runNarrationTextStep(inputPath, {});
+    // model on the residue — writes a cleaned, STAMPED book beside the input. An
+    // unattended chain has nobody to ask, so it runs the pass itself rather than
+    // narrating raw digits; a book already carrying a current stamp costs one
+    // hash and no model call.
+    //
+    // `--skip-text-cleanup` is the operator saying what the app's "No, narrate
+    // as printed" button says: don't run the pass, and tell the door, so the
+    // render's log names the skip instead of guessing at an absent stamp.
+    const textCleanup = args['skip-text-cleanup'] ? 'skipped' : 'required';
+    const toRender = textCleanup === 'skipped'
+      ? inputPath
+      : (await runNarrationTextStep(inputPath, {})).inputPath;
+    if (textCleanup === 'skipped') {
+      console.log('[audiobook] --skip-text-cleanup: the book is read exactly as printed');
+    }
 
-    const prepared = await runNarrationPrep(bridge, cleaned.inputPath, jobId, { skipAssembly: false });
+    const prepared = await runNarrationPrep(
+      bridge, toRender, jobId, { skipAssembly: false, textCleanup });
 
     // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
     console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(prepared.inputPath)}`);

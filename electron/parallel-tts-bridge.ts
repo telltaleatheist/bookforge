@@ -28,6 +28,7 @@ import type { JobStageProgress } from './job-stages';
 // type-only import: nothing here ever dials Ollama.
 import type { NumberNormalizerRunner } from './tts-number-normalizer';
 import type { NarrationTextGate } from './narration-text-pass';
+import type { NarrationTextCleanupChoice } from '../shared/queue/narration-run';
 
 // Cap stderr buffers to prevent OOM on large books (e.g. 7983 sentences producing
 // megabytes of FFmpeg output). Only the tail is needed for error diagnostics.
@@ -1977,6 +1978,29 @@ export interface ParallelConversionConfig {
   // `assembleAfter`). This also served the dual-voice bilingual workflow, which
   // was removed on 2026-09-05; the mono pipeline's use of it is the live one.
   skipAssembly?: boolean;
+  /**
+   * WHETHER THE NARRATION TEXT CLEANUP IS REQUIRED OF THIS RUN — the user's own
+   * answer at the Narrate button, handed straight to `prepareNarrationInput`,
+   * which reads it by name.
+   *
+   * HERE AND NOT ON `settings`: `settings` is what the VOICE is told (device,
+   * model, speed) and it is also what `renderRangeHeadless` is handed, which
+   * preps nothing. This is a fact about the DOOR this conversion walks through,
+   * beside `skipAssembly`, which is the other one.
+   *
+   * NO DEFAULT, EVER. `startParallelConversion` refuses a conversion that does
+   * not say, by name, rather than picking one — the two values are two different
+   * sentences to write in the log about an hour of GPU, and neither may be
+   * written on this file's authority.
+   *
+   * Optional in the TYPE for exactly one caller: `renderRangeHeadless` builds a
+   * config for its session bookkeeping and preps nothing (its index-seeded FLAC
+   * resume depends on reading exactly what it is handed — its callers walk the
+   * door themselves and give it the result). A conversion that does not prep has
+   * no answer to give, and inventing one for it would put a fabricated word in
+   * the one field this door trusts.
+   */
+  textCleanup?: NarrationTextCleanupChoice;
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
   cleanSession?: boolean;
@@ -7053,6 +7077,22 @@ export interface NarrationPrepOptions {
   /** The job's own flag, so the prep progress bars match the job's shape. */
   skipAssembly: boolean;
   /**
+   * WHETHER THE NARRATION TEXT CLEANUP IS REQUIRED OF THIS RUN — the caller's
+   * answer, read here by name and never guessed.
+   *
+   * REQUIRED, with no default, because the two values are two different things
+   * to say in the log about an hour of GPU: `'required'` means the run believes
+   * the book has been cleaned (the app checked the file's stamp before it
+   * queued; a CLI chain ran the pass itself), and `'skipped'` means the user was
+   * shown the offer and pressed "No, narrate as printed". A door that defaulted
+   * would file one of those two sentences under a decision nobody made.
+   *
+   * NEITHER VALUE REFUSES. Owen's ruling of 2026-09-05 made the cleanup optional
+   * — offered at the Narrate button, declinable there — so the stamp is read
+   * here for what it says, not for permission. See {@link prepareNarrationInput}.
+   */
+  textCleanup: NarrationTextCleanupChoice;
+  /**
    * The model, INJECTED — `tts-number-normalizer.ts`'s own doctrine, one level
    * up. Production omits it and the door builds the Ollama runner from the
    * Settings tag; a test passes a scripted runner and reaches both branches of
@@ -7082,7 +7122,29 @@ export interface NarrationPrepResult {
   reused: boolean;
   /** The disposition tally, for the record and the CLI's one line. */
   dispositions: Record<string, number>;
+  /**
+   * WHAT HAPPENED ABOUT THE CLEANUP, as one word rather than a sentence to
+   * parse — so the job log, the CLI's line and anything that files this render's
+   * provenance all name the same case.
+   *
+   *  - `'stamped'`             the book carried a current narration-text stamp;
+   *                            its numbers are already words. `model` is the
+   *                            model that read them.
+   *  - `'skipped-by-user'`     the user was offered the cleanup at the Narrate
+   *                            button and chose to narrate as printed.
+   *  - `'unstamped'`           the run expected a cleaned book and this file
+   *                            carries no current stamp — an export cut before
+   *                            the pass, or a book nobody has cleaned. Read as
+   *                            printed, and said so, loudly.
+   *  - `'normalized-inline'`   a `.txt` input, whose numbers this door reads
+   *                            itself: there is no stamp and no ledger to carry.
+   */
+  cleanup: NarrationPrepCleanup;
 }
+
+/** The four things that can have happened about the cleanup. See {@link NarrationPrepResult.cleanup}. */
+export type NarrationPrepCleanup =
+  'stamped' | 'skipped-by-user' | 'unstamped' | 'normalized-inline';
 
 /**
  * The file a narration should actually read: the book, or a cut of it with the
@@ -7160,8 +7222,34 @@ export async function prepareNarrationInput(
   jobId: string,
   opts: NarrationPrepOptions,
 ): Promise<NarrationPrepResult> {
+  // Checked at RUNTIME as well as in the types: half this door's callers are the
+  // CLI adapters, plain JS against the compiled bundle, and a `textCleanup` that
+  // arrived as undefined there would silently take the 'required' path — filing
+  // "this book carries no stamp" against a run whose operator may have meant the
+  // opposite. There is no default to fall back to; there is only asking again.
+  if (opts.textCleanup !== 'required' && opts.textCleanup !== 'skipped') {
+    throw new Error(
+      `The narration prep was not told whether the text cleanup is required of this run `
+      + `(got ${JSON.stringify(opts.textCleanup)}), so it cannot say in the log how `
+      + `${path.basename(inputPath)}'s numbers were read. Pass textCleanup: 'required' or `
+      + "'skipped'.");
+  }
   const ext = path.extname(inputPath).toLowerCase();
   if (ext === '.txt') {
+    // A `.txt` carries no stamp and belongs to no ledger, so this door reads its
+    // numbers itself — unless the caller said the cleanup was skipped, which
+    // means the same thing for a text file as for a book: read it as printed.
+    if (opts.textCleanup === 'skipped') {
+      const line = 'narration text cleanup SKIPPED by the user for this run — numbers and '
+        + 'punctuation are read as printed';
+      console.log(`[PARALLEL-TTS] ${path.basename(inputPath)}: ${line}`);
+      await logger.log('WARN', jobId, line, { input: path.basename(inputPath) });
+      return {
+        inputPath, recordPath: null, model: 'skipped (the user chose to narrate as printed)',
+        appliedSpans: 0, appliedByRules: 0, appliedByModel: 0, reused: false, dispositions: {},
+        cleanup: 'skipped-by-user',
+      };
+    }
     return normalizeTextNumbersFor(inputPath, jobId, opts);
   }
   if (ext !== '.epub') {
@@ -7169,46 +7257,74 @@ export async function prepareNarrationInput(
       `The narration prep has no reader for '${ext || path.basename(inputPath)}' `
       + `(${inputPath}). It reads .epub and .txt.`);
   }
-  // ── The CHECK that replaced the transform (2026-09-04) ────────────────────
+  // ── THE STAMP IS READ, AND IT IS NOT PERMISSION (2026-09-05) ───────────
   //
-  // The punctuation and the numbers are now a PASS the user runs on the book —
+  // The punctuation and the numbers are a PASS the user runs on the book —
   // `electron/narration-text-pass.ts`, recorded in the ledger, stamped into the
-  // OPF. This door reads that stamp and REFUSES a book that has not been through
-  // it. It does not run the pass itself: an hour of model time inside a render's
-  // prep is exactly what Owen's ruling moved out of here, and a door that
+  // OPF. This door does not run it: an hour of model time inside a render's prep
+  // is exactly what the 2026-09-04 ruling moved out of here, and a door that
   // silently did the work again would make the persisted pass pointless.
   //
-  // Refused by NAME, never skipped. e2a has no number transform of its own any
-  // more (permanently disabled, 2026-09-02), so a book that reached the voice
-  // unstamped would be narrated as printed digits with nothing to say so.
-  const gate = await narrationTextGate(inputPath);
-  if (!gate.ok) {
-    // INTERIM (Owen, 2026-09-05): the cleanup is OPTIONAL — "if that flag isn't
-    // set, ask the user... yes/no/cancel". The modal asks; a book that arrives
-    // here unstamped is one the user chose to narrate as printed, so this door
-    // says so loudly and reads it. The explicit per-run flag and the project
-    // "cleanup done" state are on fix/narration-cleanup-skip; until it lands the
-    // stamp's absence is the only signal, and it is logged, never hidden.
-    console.warn(
-      `[PARALLEL-TTS] narration text cleanup NOT applied to ${path.basename(inputPath)} — `
-      + `${gate.reason} Numbers and punctuation are read AS PRINTED for this run.`);
-    await logger.log('WARN', jobId,
-      'narration text cleanup not applied; the render reads the book as printed', {
-        reason: gate.reason,
-      });
-    const cutAsPrinted = await cutCaptionsAndNotes(inputPath, jobId);
+  // It USED to refuse an unstamped book. Owen ended that on 2026-09-05: *"make
+  // it so i dont HAVE to run cleanup"*, and *"if that flag isnt set, ask the
+  // user if they want to run cleanup on the document when they hit the narrate
+  // button. yes/no/cancel."* The question belongs at the button, where there is
+  // somebody to answer it — not down here, an hour into a queue, as an
+  // exception. So the stamp is read for what it SAYS, the run's own
+  // `textCleanup` says which case this is, and every one of them is logged by
+  // name. Nothing here throws about the cleanup any more.
+  //
+  // Loudly, in both places, because e2a has no number transform of its own
+  // (permanently disabled, 2026-09-02): a book read as printed is one whose
+  // "1933" the voice must guess at, and that must never be a silent outcome.
+  const cut = await cutCaptionsAndNotes(inputPath, jobId);
+
+  if (opts.textCleanup === 'skipped') {
+    const line = `narration text cleanup SKIPPED by the user for this run — numbers and `
+      + 'punctuation are read as printed';
+    console.log(`[PARALLEL-TTS] ${path.basename(inputPath)}: ${line}`);
+    await logger.log('WARN', jobId, line, { book: path.basename(inputPath) });
     return {
-      inputPath: cutAsPrinted,
+      inputPath: cut,
       recordPath: null,
-      model: 'none (cleanup not applied; read as printed)',
+      // The provenance a receipt files this render under. NOT a model tag: no
+      // model read this book, and naming one would be a lie in the ledger.
+      model: 'skipped (the user chose to narrate as printed)',
       appliedSpans: 0,
       appliedByRules: 0,
       appliedByModel: 0,
       reused: false,
       dispositions: {},
+      cleanup: 'skipped-by-user',
     };
   }
-  const cut = await cutCaptionsAndNotes(inputPath, jobId);
+
+  const gate = await narrationTextGate(inputPath);
+  if (!gate.ok) {
+    // The run said the cleanup was required of it and the file cannot show for
+    // it — an export cut before the pass ran, or a stamp written at rule
+    // versions this build no longer reads by. Not a refusal, and not silence
+    // either: the render goes ahead on the printed text and the log says which
+    // book, and why, in the gate's own sentence.
+    console.warn(
+      `[PARALLEL-TTS] narration text cleanup NOT applied to ${path.basename(inputPath)} — `
+      + `${gate.reason} Numbers and punctuation are read AS PRINTED for this run.`);
+    await logger.log('WARN', jobId,
+      'this run expected a cleaned book and the file carries no current narration-text stamp; '
+      + 'the render reads it as printed', { reason: gate.reason });
+    return {
+      inputPath: cut,
+      recordPath: null,
+      model: 'none (no current narration-text stamp; read as printed)',
+      appliedSpans: 0,
+      appliedByRules: 0,
+      appliedByModel: 0,
+      reused: false,
+      dispositions: {},
+      cleanup: 'unstamped',
+    };
+  }
+
   console.log(
     `[PARALLEL-TTS] ${path.basename(inputPath)} carries a current narration-text stamp `
     + `(${gate.stamp.normalizerVersion}/${gate.stamp.punctuationSpec}, ${gate.stamp.model}) — `
@@ -7230,6 +7346,7 @@ export async function prepareNarrationInput(
     appliedByModel: 0,
     reused: true,
     dispositions: {},
+    cleanup: 'stamped',
   };
 }
 
@@ -7331,6 +7448,7 @@ async function normalizeTextNumbersFor(
     return {
       inputPath, recordPath: null, model: runner.model,
       appliedSpans: 0, appliedByRules: 0, appliedByModel: 0, reused: false, dispositions: {},
+      cleanup: 'normalized-inline',
     };
   }
 
@@ -7350,6 +7468,7 @@ async function normalizeTextNumbersFor(
     appliedByModel: outcome.record.appliedByModel,
     reused: outcome.reused,
     dispositions: outcome.record.dispositions,
+    cleanup: 'normalized-inline',
   };
 }
 
@@ -7433,13 +7552,39 @@ export async function startParallelConversion(
     device: config.settings.device
   });
 
+  // WHICH CLEANUP STORY THIS RUN IS, refused rather than guessed. Everything
+  // that queues a conversion states it (the Narrate button asks the user when
+  // the file it is about to read carries no stamp); a config that reached here
+  // without it is a row from a build that had no such question, and reading it
+  // as either answer would be this file deciding whether an unstamped book is a
+  // mistake or the user's own choice. Re-queueing says it.
+  const textCleanup = config.textCleanup;
+  if (textCleanup === undefined) {
+    const error = 'This narration run does not say whether the narration text cleanup is '
+      + 'required of it, so there is no way to tell whether reading the book as printed is a '
+      + "mistake or your own choice. Press Narrate again on the book's version row — the run it "
+      + 'queues says so.';
+    console.error('[PARALLEL-TTS]', error);
+    await logger.failJob(jobId, error);
+    stopPowerBlock();
+    emitJobFailure(jobId, error);
+    return { success: false, error };
+  }
+
   // The captions out, before anything downstream sees the path: the session,
   // its resume matching and the clean-session sweep all key on `epubPath`, so
   // one substitution here keeps every one of them speaking about one file.
   // After the title above, which should read as the book and not as a sha.
   try {
     const prepared = await prepareNarrationInput(
-      config.epubPath, jobId, { skipAssembly: config.skipAssembly === true });
+      config.epubPath, jobId, {
+        skipAssembly: config.skipAssembly === true,
+        // THE RUN'S OWN ANSWER, carried from the Narrate button through the tts
+        // step's settings. Not defaulted here: `tts-conversion.ts` refuses a
+        // step whose config does not say, so by the time it reaches this line it
+        // is one of the two words the user's press produced.
+        textCleanup,
+      });
     if (prepared.inputPath !== config.epubPath) {
       config = { ...config, epubPath: prepared.inputPath };
     }
