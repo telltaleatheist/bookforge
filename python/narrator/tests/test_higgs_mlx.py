@@ -45,6 +45,7 @@ from narrator.engine.higgs.mlx_backend import (AUDIO_BOC_ID, AUDIO_EOC_ID,
                                                revert_delay_pattern)
 from narrator.engine.registry import (HIGGS_V3_BACKENDS,
                                       higgs_v3_backend_for_platform)
+from narrator.tests.test_higgs_v3 import MERGED_GENERATION_CONFIG
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 FIXTURES = os.path.join(_HERE, 'golden', 'higgs_sentinel')
@@ -421,6 +422,13 @@ class MlxConfigTest(unittest.TestCase):
         with open(os.path.join(checkpoint, 'config.json'), 'w',
                   encoding='utf-8') as handle:
             handle.write('{}')
+        # A merged checkpoint MUST carry generation_config.json - on this arm it
+        # is not merely the server's sampling, it is THIS process's (mlx-audio
+        # reads no such file). See test_higgs_v3.MERGED_GENERATION_CONFIG.
+        self.generation_config = os.path.join(checkpoint,
+                                              'generation_config.json')
+        with open(self.generation_config, 'w', encoding='utf-8') as handle:
+            handle.write(MERGED_GENERATION_CONFIG)
         self.checkpoint = checkpoint
         document = {
             'ft': {'kind': 'checkpoint', 'checkpointDir': checkpoint,
@@ -521,10 +529,48 @@ class MlxConfigTest(unittest.TestCase):
             HiggsV3MlxConfig(voice=config.voice, model_dir=config.model_dir,
                              sampling={'repetition_penalty': 1.1})
 
-    def test_the_sampling_defaults_are_v3s_own(self):
+    def test_base_weights_sample_at_v3s_documented_deploy_default(self):
+        """The bosonai snapshot ships NO generation_config.json (verified on the
+        WSL HF cache and on the Mac's runtime/higgs-models/base, 2026-09-05),
+        which is the whole reason a MERGED dir has to carry one. For base
+        weights the stated authority is v3's deploy default."""
         config = self._build('base')
         self.assertEqual(config.mlx_sampling(),
                          {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50})
+
+    def test_a_checkpoint_voice_samples_from_ITS_generation_config(self):
+        """mlx-audio does not read generation_config.json (measured against
+        0.4.8: `grep -rn generation_config tts/models/higgs_audio_v3/` finds
+        nothing, and `Model.generate` defaults top_p/top_k to None), so on this
+        arm narrator is the only thing that can apply the checkpoint's sampling -
+        and it takes it from THE FILE, never from a constant."""
+        import json
+        with open(self.generation_config, 'w', encoding='utf-8') as handle:
+            json.dump({'temperature': 0.7, 'top_p': 0.8, 'top_k': 20,
+                       'repetition_penalty': 1.0}, handle)
+        self.assertEqual(self._build('ft').mlx_sampling(),
+                         {'temperature': 0.7, 'top_p': 0.8, 'top_k': 20})
+
+    def test_a_checkpoint_whose_generation_config_is_gone_is_refused(self):
+        """The load boundary refuses it, so nothing ever reaches the sampler
+        with the untruncated codebook tail."""
+        os.remove(self.generation_config)
+        with self.assertRaises(ValueError) as caught:
+            self._build('ft')
+        message = str(caught.exception)
+        self.assertIn('generation_config.json', message)
+        self.assertIn('ft', message)
+
+    def test_the_stop_policy_reports_the_checkpoints_own_levers(self):
+        """`levers` is what WILL be applied; reporting the base default for a
+        fine-tune would make a manifest that names sampling nobody used."""
+        import json
+        from narrator.engine.higgs import higgs_v3_mlx_stop_policy
+        with open(self.generation_config, 'w', encoding='utf-8') as handle:
+            json.dump({'temperature': 0.6, 'top_p': 0.85, 'top_k': 30}, handle)
+        policy = higgs_v3_mlx_stop_policy(self._build('ft'))
+        self.assertEqual(policy.levers,
+                         {'temperature': 0.6, 'top_p': 0.85, 'top_k': 30.0})
 
     def test_the_stop_policy_reports_the_levers_that_will_be_applied(self):
         from narrator.engine.higgs import higgs_v3_mlx_stop_policy

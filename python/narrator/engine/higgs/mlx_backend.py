@@ -295,9 +295,10 @@ class HiggsV3MlxConfig:
     here loading it is a `load_model` call rather than a server restart. For a
     `clips` or `default` voice it is the base checkpoint from `MODEL_ENV`.
 
-    `sampling` EMPTY means v3's own defaults - temperature 1.0, top_p 0.95,
-    top_k 50 - which is what the delivered render used and what Owen asked for.
-    The remaining keys of `v3_served.SERVER_DEFAULT_SAMPLING` are the SERVER's
+    `sampling` EMPTY means THE MODEL DIRECTORY'S OWN SAMPLING - see
+    `mlx_sampling`, which reads it from the checkpoint's
+    `generation_config.json` rather than from a constant here. The remaining
+    keys of `v3_served.SERVER_DEFAULT_SAMPLING` are the SERVER's
     (`repetition_penalty`, `seed`) and have no counterpart in mlx-audio's
     sampler; passing one is refused by name rather than silently ignored.
     """
@@ -342,9 +343,48 @@ class HiggsV3MlxConfig:
                 'nothing.')
 
     def mlx_sampling(self) -> dict:
-        """The three levers actually handed to `step()`."""
-        resolved = {k: v3_served.SERVER_DEFAULT_SAMPLING[k]
-                    for k in self.MLX_SAMPLING_KEYS}
+        """The three levers actually handed to `step()` - FROM THE MODEL DIR.
+
+        **mlx-audio DOES NOT READ `generation_config.json`.** Measured against
+        mlx-audio 0.4.8 on the Mac, 2026-09-05: `grep -rn generation_config` over
+        `tts/models/higgs_audio_v3/` returns NOTHING, while three other model
+        packages in the same release do read it (`moss_tts.py:349`,
+        `qwen3_tts.py:2914`, `stt/models/whisper/whisper.py:717`), so its absence
+        here is a gap and not a convention. `Model.generate`
+        (`higgs_audio_v3/model.py:751-753`) defaults `temperature=1.0`,
+        `top_p=None`, `top_k=None`, and `generation.step`
+        (`generation.py:114-141`) takes all three as required keyword arguments -
+        `_apply_top_k`/`_apply_top_p` (`generation.py:62-77`) are no-ops for
+        None. So on this runtime the CALLER is the only thing that can apply the
+        checkpoint's sampling, and passing nothing samples the untruncated
+        codebook tail exactly as an unconfigured vllm-omni does.
+
+        So narrator reads the file itself, and the FILE is the authority:
+
+          checkpoint voice   `<checkpointDir>/generation_config.json`, which
+                             `v3_served.require_generation_config` has already
+                             proved is there and carries all three keys. That is
+                             the same file the served arm's vllm-omni reads, so
+                             both arms render one voice at one sampling.
+          base weights       there is NO file to read: the
+                             `bosonai/higgs-audio-v3-tts-4b` snapshot ships none
+                             (verified 2026-09-05 on the WSL HF cache AND on the
+                             Mac's `runtime/higgs-models/base`), which is the
+                             whole reason a MERGED dir has to carry one. The
+                             authority for base weights is therefore v3's
+                             documented deploy default,
+                             `v3_served.SERVER_DEFAULT_SAMPLING` - stated here,
+                             not guessed, and it is what the served arm's
+                             stage-0 config uses for the same weights.
+
+        `sampling` is a named per-config override on top and stays what it was.
+        """
+        if self.voice.checkpoint_dir:
+            document = v3_served.require_generation_config(
+                self.voice.checkpoint_dir, self.voice.name)
+        else:
+            document = v3_served.SERVER_DEFAULT_SAMPLING
+        resolved = {k: document[k] for k in self.MLX_SAMPLING_KEYS}
         resolved.update(self.sampling or {})
         return {'temperature': float(resolved['temperature']),
                 'top_p': float(resolved['top_p']),
@@ -534,6 +574,11 @@ class HiggsV3MlxEngine:
         self._reference_texts = None
         self._codec_obj = None
         self._budget = HiggsV3MlxBudget(config)
+        # Resolved ONCE, from the model directory's generation_config.json (see
+        # HiggsV3MlxConfig.mlx_sampling). Re-reading the file per chunk would ask
+        # the same question thousands of times a book and would let the answer
+        # change mid-render.
+        self._sampling = config.mlx_sampling()
         self.load_engine()
 
     # ---- lifecycle ----------------------------------------------------------
@@ -598,6 +643,12 @@ class HiggsV3MlxEngine:
         self._codec_obj = HiggsV3MlxCodec(
             self._decode_frames, label=f'voice {self.voice}')
         self._encode_references()
+        _log(f'sampling {self._sampling} from ' + (
+            os.path.join(self.config.voice.checkpoint_dir,
+                         v3_served.GENERATION_CONFIG_FILE)
+            if self.config.voice.checkpoint_dir
+            else "v3's deploy default (the base weights carry no "
+                 'generation_config.json)'))
         return model
 
     @staticmethod
@@ -720,9 +771,16 @@ class HiggsV3MlxEngine:
                 "NARRATOR_HIGGS_VOICES document; there is no default, and the model's "
                 'own voice sits at 12 % of the narrator ceiling.')
         from .config import load_voice
-        load_voice(name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
-                   max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
-                   placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        resolved = load_voice(
+            name, allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+            max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+            placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+        checkpoint = getattr(resolved, 'checkpoint_dir', None)
+        if checkpoint:
+            # The checkpoint's REQUIRED FILES, at the load message - here the
+            # generation_config.json is not just the server's sampling, it is
+            # THIS process's (see HiggsV3MlxConfig.mlx_sampling).
+            v3_served.checkpoint_serve_target(checkpoint, resolved.name)
         return name
 
     def backend_spec(self) -> BackendSpec:
@@ -847,7 +905,7 @@ class HiggsV3MlxEngine:
         last_hidden = hidden[:, -1, :]
 
         state = HiggsSamplerState(num_codebooks=NUM_CODEBOOKS)
-        sampling = self.config.mlx_sampling()
+        sampling = self._sampling
         rows = []
         for _ in range(int(cap)):
             if should_stop is not None and should_stop():
@@ -1011,6 +1069,6 @@ def higgs_v3_mlx_config_from_worker_kwargs(voice=None, model_dir=None,
     # voice's own checkpoint. Everything else loads the base.
     checkpoint = getattr(resolved, 'checkpoint_dir', None)
     if checkpoint:
-        v3_served.checkpoint_serve_target(checkpoint)
+        v3_served.checkpoint_serve_target(checkpoint, resolved.name)
     return HiggsV3MlxConfig(voice=resolved,
                             model_dir=checkpoint or model_dir_from_env())
