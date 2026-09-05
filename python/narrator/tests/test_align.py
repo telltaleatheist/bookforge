@@ -80,6 +80,53 @@ def _word(index, word='word', start=0.0, end=0.1, score=0.9):
 # Pure: spans
 # =============================================================================
 
+class WorkerProtocolTest(unittest.TestCase):
+    """The worker's result channel survives a library that prints on stdout.
+
+    Runs the REAL `narrator.align.worker.main` in a subprocess with the
+    backend faked to print a whisperx-style warning on stdout before
+    answering: the parent must read exactly one JSON result on the worker's
+    stdout and find the warning on stderr. Measured failure on 2026-09-05:
+    whisperx's StreamHandler(sys.stdout) put "Failed to align segment" between
+    two results and the parent died with JSONDecodeError("Extra data").
+    """
+
+    SCRIPT = """
+import json, sys
+sys.path.insert(0, {root!r})
+import narrator.align.worker as worker
+import narrator.align.aligner as aligner
+
+class FakeAlignment:
+    def as_dict(self):
+        return {{'words': [], 'duration_s': 1.0}}
+
+def fake_align_chunk(audio_path, text, **kw):
+    print('2026-09-05 18:45:03 - whisperx.alignment - WARNING - Failed to align segment ("x")')
+    sys.stdout.flush()
+    return FakeAlignment()
+
+worker.load_backend = lambda *a, **k: 0.0
+worker.align_chunk = fake_align_chunk
+sys.exit(worker.main())
+"""
+
+    def test_a_library_print_on_stdout_lands_on_stderr_not_in_the_results(self):
+        import subprocess
+        root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        job = json.dumps({'index': 7, 'audioPath': 'x.flac', 'text': 'hello',
+                          'language': 'en', 'backend': 'whisperx', 'device': 'cpu'})
+        proc = subprocess.run(
+            [sys.executable, '-c', self.SCRIPT.format(root=root)],
+            input=(job + '\n').encode('utf-8'), capture_output=True, timeout=60)
+        self.assertEqual(proc.returncode, 0, proc.stderr.decode('utf-8', 'replace'))
+        lines = [l for l in proc.stdout.decode('utf-8').splitlines() if l.strip()]
+        self.assertEqual(len(lines), 1, lines)
+        result = json.loads(lines[0])
+        self.assertEqual((result['ok'], result['index']), (True, 7))
+        self.assertIn('Failed to align segment', proc.stderr.decode('utf-8', 'replace'))
+
+
 class SpanTest(unittest.TestCase):
 
     def test_a_clean_chunk_has_no_spans_of_either_kind(self):

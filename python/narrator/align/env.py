@@ -210,7 +210,18 @@ def run_jobs(python_exe: str, jobs: Sequence[dict],
                 text = line.decode('utf-8', 'replace').strip()
                 if not text:
                     continue
-                results.append(json.loads(text))
+                try:
+                    results.append(json.loads(text))
+                except ValueError:
+                    # The worker reserves fd 1 for results
+                    # (`worker._reserve_result_channel`), so a line that is
+                    # not one is a broken worker, and it is named — the bare
+                    # JSONDecodeError("Extra data") this used to raise told
+                    # nobody which line, or whose.
+                    raise RuntimeError(
+                        f'the align worker in {python_exe} wrote a line on its '
+                        f'result channel that is not a protocol result: '
+                        f'{text[:300]!r}')
                 if on_result is not None:
                     on_result(len(results), len(jobs))
             proc.wait(timeout=timeout)

@@ -10,6 +10,9 @@ drive one that has it without either side importing the other's dependencies.
     stdout  one JSON result per line, IN THE SAME ORDER:
             {"ok": true, "index": 12, "alignment": {...}}
             {"ok": false, "index": 12, "error": "..."}
+            RESERVED: the worker takes fd 1 for these lines at startup and
+            points fd 1 at stderr for everything else (`_reserve_result_channel`),
+            so a library that prints or logs to stdout cannot corrupt them.
 
 A job that fails is reported and the run CONTINUES to the next job, so one bad
 chunk does not cost the model load for the rest of the book - but nothing is
@@ -26,6 +29,7 @@ with the sentence splitter running on the other side.
 from __future__ import annotations
 
 import json
+import os
 import sys
 
 from .aligner import AlignerError, align_chunk, load_backend
@@ -48,8 +52,34 @@ def _require(job: dict, fields) -> None:
             f'them (see REQUIRED_JOB_FIELDS)')
 
 
+def _reserve_result_channel():
+    """Take fd 1 for the protocol and hand everyone else stderr.
+
+    MEASURED 2026-09-05 on Owen's first in-app Higgs book (witches, 401 chunks):
+    whisperx's logger writes through a `StreamHandler(sys.stdout)`
+    (`whisperx/log_utils.py`), so its
+    `whisperx.alignment - WARNING - Failed to align segment ("...")` landed
+    BETWEEN two result lines, the parent's `json.loads` died with
+    "Extra data", and the queue reported "the forced alignment did not
+    finish" with no traceback (the stdout tail won over stderr). Three chunks
+    aligned fine; the whole book did not, because only one chunk in 401 made
+    the library speak.
+
+    A protocol channel that any library can write to is not a protocol
+    channel. So the ORIGINAL fd 1 is duplicated and kept for results, and fd 1
+    itself is pointed at stderr — for Python's `print`, for logging handlers
+    bound to `sys.stdout` before or after this call, and for C extensions
+    writing to the fd directly. Nothing is asked of the libraries.
+    """
+    sys.stdout.flush()
+    results = os.fdopen(os.dup(1), 'w', encoding='utf-8', buffering=1)
+    os.dup2(2, 1)
+    return results
+
+
 def main(argv=None) -> int:
     del argv
+    results_out = _reserve_result_channel()
     failures = 0
     loaded = None
     for line in sys.stdin:
@@ -87,8 +117,8 @@ def main(argv=None) -> int:
             failures += 1
             result = {'ok': False, 'index': index,
                       'error': f'{type(failed).__name__}: {failed}'}
-        sys.stdout.write(json.dumps(result) + '\n')
-        sys.stdout.flush()
+        results_out.write(json.dumps(result) + '\n')
+        results_out.flush()
     if failures:
         print(f'[align-worker] {failures} job(s) failed', file=sys.stderr,
               flush=True)

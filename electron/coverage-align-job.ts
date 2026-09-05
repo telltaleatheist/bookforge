@@ -311,7 +311,11 @@ export async function runCoverageAlign(
        * it names every failing chunk and quotes the text the audio did not say.
        * Pointing the operator at it is the whole point of the guard.
        */
-      const detail = (tail.trim() || stderr.trim() || `exit ${code}`).slice(-1200);
+      // BOTH streams. The stdout tail alone won here on 2026-09-05 and the
+      // card showed six [ASSEMBLE] lines and no traceback; the traceback was
+      // on stderr, dropped by the `||`.
+      const detail = ([tail.trim(), stderr.trim()].filter((s) => s !== '').join('\n')
+        || `exit ${code}`).slice(-1600);
       const error = fs.existsSync(reportPath)
         ? 'The forced alignment found chunk(s) whose audio did not say their text, so this book '
           + 'is not ready to assemble. The report names every one of them and quotes the dropped '
