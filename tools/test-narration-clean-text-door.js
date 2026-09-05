@@ -394,13 +394,78 @@ test('`foundry epub-stamp` makes a book this door can clean', () => {
     'the stamped book carries the categories clean-text admits a book by');
 });
 
+test('a STAMPED book is ADMITTED, and the run reaches the model the settings named', async () => {
+  /*
+   * THE WHOLE RUN, OVER A REAL STAMPED BOOK, WITH NO MODEL ANYWHERE — the
+   * endpoint is a port nothing listens on, so the engine admits the book, walks
+   * its stamped blocks, runs the punctuation stage, and then cannot reach the
+   * model. Everything this app is responsible for has happened by then: the
+   * floor, the settings, the argv, the spawn, the progress plumbing, and the
+   * engine's own sentence carried back out.
+   *
+   * Deterministic, and that is why it is the gate rather than the live leg
+   * below: a connection refused takes milliseconds and depends on nothing that
+   * is running on the machine.
+   */
+  writeAppSettings({ defaultLlmModel: 'nothing-is-here:0b', ollamaUrl: 'http://127.0.0.1:1' });
+  const printed = path.join(ROOT, 'admitted.epub');
+  writeFixtureEpub(printed, 'On 23/3/1933 the committee approved $5,000.');
+  const stamped = path.join(ROOT, 'admitted.stamped.epub');
+  execFileSync(BINARY, ['epub-stamp', '--epub', printed, '--out', stamped],
+    { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] });
+
+  await assert.rejects(
+    () => door.cleanTextEpub({
+      epubPath: stamped, outPath: path.join(ROOT, 'admitted.cleaned.epub'),
+    }),
+    (err) => {
+      assert.ok(!/epub-stamp/.test(err.message),
+        `a stamped book must be ADMITTED, not refused: ${err.message}`);
+      assert.ok(/punctuation \(s1\)/.test(err.message),
+        `stage 1 must have run over the book's blocks: ${err.message}`);
+      // THE ENDPOINT, AND NOT THE MODEL, and that is the engine's shape rather
+      // than a gap here: it probes `/api/tags` before it ever names a tag, so a
+      // dead endpoint is reported without one. What model a run asks for is
+      // proved by the settings case above and by the live leg below.
+      assert.ok(/127\.0\.0\.1:1/.test(err.message),
+        `the endpoint the settings named must be the one it dialled: ${err.message}`);
+      assert.ok(/ollama serve/.test(err.message),
+        `the engine's own remedy must survive to the user: ${err.message}`);
+      return true;
+    });
+});
+
 // ─────────────────────────────────────────────────────────────────────────────
 // 3. The real engine, with a model
 // ─────────────────────────────────────────────────────────────────────────────
 
 test('a REAL cleanup stamps the book, and this app\'s own gate reads it', async () => {
+  /*
+   * ── OPT-IN, AND THE REASON IS MEASURED ────────────────────────────────────
+   *
+   * This leg is not a gate, because what it depends on is not this repository.
+   * Run twice on the same machine on 2026-09-05 it took 175s and then TIMED OUT
+   * at the engine's own 300s inactivity ceiling — same book, same model
+   * (`cogito:8b`, which thinks), different VRAM weather. A keeper that goes red
+   * because a shared ollama was loading somebody else's model is a keeper people
+   * learn to ignore, and retrying it would be a band-aid over a real answer.
+   *
+   * So it runs when it is ASKED for: `BOOKFORGE_CLEAN_TEXT_LIVE=1`, with
+   * `BOOKFORGE_CLEAN_TEXT_MODEL` naming a tag when the smallest one ollama holds
+   * is not the one you want. The deterministic half of the same wire — a stamped
+   * book admitted, walked and carried to the model — is the case above, and it
+   * is what the gate rests on.
+   */
+  if (process.env.BOOKFORGE_CLEAN_TEXT_LIVE !== '1') {
+    console.log(
+      '      SKIPPED BY NAME — the live leg loads a real model and its runtime is the machine\'s, '
+      + 'not this repo\'s. Run it with BOOKFORGE_CLEAN_TEXT_LIVE=1 (and optionally '
+      + 'BOOKFORGE_CLEAN_TEXT_MODEL=<tag>).');
+    return;
+  }
   const endpoint = 'http://localhost:11434';
-  const model = await ollamaSmallestModel(endpoint);
+  const named = process.env.BOOKFORGE_CLEAN_TEXT_MODEL?.trim();
+  const model = named || await ollamaSmallestModel(endpoint);
   if (model === null) {
     // BY NAME, and not silently: a machine with no ollama cannot answer this,
     // and pretending it passed would be worse than saying it was not asked.

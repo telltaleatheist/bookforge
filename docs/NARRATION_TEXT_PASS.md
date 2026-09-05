@@ -475,7 +475,7 @@ Two gates, one meaning:
 
 | gate | asks | used by |
 |---|---|---|
-| `narrationTextGate(bookPath)` — `electron/narration-text-pass.ts` | a **file**: is there a stamp, and is it this build's version? | `prepareNarrationInput`, `cli/narration-text-step.js`, and the Narrate gate for the pressed row |
+| `narrationTextGate(bookPath)` — `electron/narration-clean-text.ts` | a **file**: is there a stamp, and is it this build's version? | `prepareNarrationInput`, `cli/narration-text-step.js`, and the Narrate gate for the pressed row |
 | `narrationTextReadiness(appliedPasses)` — `electron/narration-text-readiness.ts` | a **project**: is there a `narration-text` entry, and is it the LAST text-changing one? | the app's Narrate door, over IPC `narration:text-readiness` |
 
 The project gate knows something the file cannot: a `simplify` or `translate`
@@ -767,7 +767,7 @@ So, on any such change:
 ```bash
 npx tsc -p tsconfig.electron.json
 node tools/test-text-normalization.js
-node tools/test-narration-text-pass.js
+node tools/test-narration-reading-law.js
 node C:/Users/tellt/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
      --mode bookforge --bookforge <this checkout>
 node C:/Users/tellt/Projects/orpheus-finetune/pipeline/normalization/run_fixtures.js \
@@ -1318,17 +1318,19 @@ and the live run measured it making it correctly.
 | `electron/tts-punctuation.ts` | stage 1, the shared spec (`s1`) |
 | `electron/tts-number-rules.ts` | stage 2 — the rules, and `scriptureSpans` (detect-and-protect) |
 | `electron/tts-number-normalizer.ts` | stage 3 + the record (`NORMALIZER_VERSION`) |
-| `electron/narration-text-pass.ts` | the pass, the receipt, `narrationTextGate` |
+| `electron/narration-clean-text.ts` | the FAILSAFE door — the `foundry clean-text --epub` spawn, the 1.2.0 floor, the engine's settings, and `narrationTextGate` |
 | `electron/narration-text-readiness.ts` | the ledger-side gate, and `narrationTextCleanupDone` (derived, never stored) |
+| `shared/processing/narration-text-notice.ts` | `NARRATION_TEXT_FAILSAFE_NOTICE` — the one sentence both offer surfaces show |
 | `shared/queue/narration-run.ts` | `NarrationTextCleanupChoice` and the run's `textCleanup` |
 | `electron/parallel-tts-bridge.ts` | `prepareNarrationInput` — the render door, which logs the cleanup's case and refuses nothing |
 | `electron/epub-processor.ts` | `readNarrationTextStamp` / `writeNarrationTextStamp` |
-| `electron/processing-passes.ts` | `runNarrationTextPass` — the ledger pass |
+| `electron/processing-passes.ts` | `runNarrationTextPass` — the ledger pass, which spawns the door and lands its result on the book |
 | `electron/queue-steps/pass.ts` | `narrationTextStep` |
 | `cli/narration-text-step.js`, `cli/narration-text.js` | the CLI door and command |
 | `tools/test-text-normalization.js` | the shared fixtures + both fixes |
 | `tools/fixtures/scripture-readings.json` | the 66 books, the deuterocanon and the measured readings — evidence for the MODEL, never a rule |
-| `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
+| `tools/test-narration-clean-text-door.js` | the failsafe door against the REAL foundry 1.2.0 binary. Its LIVE leg (a cleanup with a model actually loaded) is opt-in — `BOOKFORGE_CLEAN_TEXT_LIVE=1`, optionally `BOOKFORGE_CLEAN_TEXT_MODEL=<tag>` — because its runtime belongs to the machine and not to this repository: measured 175s and then a 300s engine timeout on the same book, same model, different VRAM weather. The deterministic case is a stamped book admitted, walked and carried to a dead endpoint, which proves everything this app is responsible for |
+| `tools/test-narration-reading-law.js` | the reading law, over the vendored validator, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
 | `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |
 | `electron/tts-spoken-forms.ts` | what a token may be read AS — the curated tables (a LEAF: imports nothing from this repo) |
