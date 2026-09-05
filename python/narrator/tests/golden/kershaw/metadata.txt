@@ -1,0 +1,10 @@
+;FFMETADATA1
+title=Working Towards The Fuhrer
+artist=Ian Kershaw
+language=en
+year=1993
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=2615396
+title=Working Toward the Führer

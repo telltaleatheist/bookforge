@@ -1,0 +1,3575 @@
+[
+ {
+  "index": 0,
+  "file": "chapters/sentences/0.flac",
+  "samples": 559104,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 555351,
+  "sha256": "689f29d96a6c696fb64f0998a6763706b6eb222215ce159658578758467d4cc9"
+ },
+ {
+  "index": 1,
+  "file": "chapters/sentences/1.flac",
+  "samples": 270336,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 275768,
+  "sha256": "a86b8faae000a1b24201a2daff6fc076b0a69828d287dd47f750b62b822bca00"
+ },
+ {
+  "index": 2,
+  "file": "chapters/sentences/2.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 787688,
+  "sha256": "5bf42b4acdee3b70c3110921e28d4767678bdc670cbbe7934b8adf495bf738b4"
+ },
+ {
+  "index": 3,
+  "file": "chapters/sentences/3.flac",
+  "samples": 292864,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 279052,
+  "sha256": "3e48b39b552a38809ebb5b2ac8a033f551f69913cc4d3081bd7bde316ebd5f74"
+ },
+ {
+  "index": 4,
+  "file": "chapters/sentences/4.flac",
+  "samples": 804864,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 757251,
+  "sha256": "75b72e169de11bd5d098a9a84a39f853a01d63d647fdd64799ec5615661b1fe4"
+ },
+ {
+  "index": 5,
+  "file": "chapters/sentences/5.flac",
+  "samples": 843776,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 830284,
+  "sha256": "e767a766ba56196893ae0467119b88b09e576045347dd5bce5975db24d175183"
+ },
+ {
+  "index": 6,
+  "file": "chapters/sentences/6.flac",
+  "samples": 894976,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 896493,
+  "sha256": "3e38ca057540c142eb523e86b2e685f64ef8bde6db812b594e8dad773bf63898"
+ },
+ {
+  "index": 7,
+  "file": "chapters/sentences/7.flac",
+  "samples": 720896,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 727496,
+  "sha256": "9547a55ee28c649237b5c22f229d1a5bf4fe91c7d5b6c3f4de2610b52e646fb9"
+ },
+ {
+  "index": 8,
+  "file": "chapters/sentences/8.flac",
+  "samples": 233472,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 248520,
+  "sha256": "348b2fdd8c9163651cc03a4f369c4405b1e29e0b34fe6edb9144412da6ed691a"
+ },
+ {
+  "index": 9,
+  "file": "chapters/sentences/9.flac",
+  "samples": 862208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 821851,
+  "sha256": "628c7285364e3ff13bb22abacbdf7fa50a08afd54425498b75830c71a5fcefa5"
+ },
+ {
+  "index": 10,
+  "file": "chapters/sentences/10.flac",
+  "samples": 212992,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 217565,
+  "sha256": "3ad287051bbc5396b8c9691d80afb0a72739f33b21479ff85cdf1317959dd984"
+ },
+ {
+  "index": 11,
+  "file": "chapters/sentences/11.flac",
+  "samples": 792576,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 784425,
+  "sha256": "fc16924158d4a579b2d2f7bd00d64b64adc17224782ffed4497a3b000e012fe3"
+ },
+ {
+  "index": 12,
+  "file": "chapters/sentences/12.flac",
+  "samples": 700416,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 697950,
+  "sha256": "f893d45856ba4fe4f90f6f80622970754759634f92259769e57f2d0f162b18bc"
+ },
+ {
+  "index": 13,
+  "file": "chapters/sentences/13.flac",
+  "samples": 598016,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 571334,
+  "sha256": "e1eb786d31a8147f2ae4c3b5686df78b85389ec89e909d804ee6a7d88c250556"
+ },
+ {
+  "index": 14,
+  "file": "chapters/sentences/14.flac",
+  "samples": 167936,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 165972,
+  "sha256": "59c3137ef16dd49fd59a0c83126fda3e02322e3a11bcf60820455fb02826cef0"
+ },
+ {
+  "index": 15,
+  "file": "chapters/sentences/15.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 784409,
+  "sha256": "b9ddd357177bbd75101092622c44561dfcd27ffd2bc79cb3dc013f90013803da"
+ },
+ {
+  "index": 16,
+  "file": "chapters/sentences/16.flac",
+  "samples": 808960,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 805816,
+  "sha256": "b6c6d142a8e5d86c2e4612da147928cde8cdb6fbba445a9994b74f701426a5ea"
+ },
+ {
+  "index": 17,
+  "file": "chapters/sentences/17.flac",
+  "samples": 792576,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 771236,
+  "sha256": "98c5db1a58d2b854c36cbf8310dfc306d7a9a5013e73b1951cc55c07a93190c9"
+ },
+ {
+  "index": 18,
+  "file": "chapters/sentences/18.flac",
+  "samples": 180224,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 186495,
+  "sha256": "be9b876657b930c44345366f830fd0dd7eccc4a3a5fbb63ed150973d0f266c7c"
+ },
+ {
+  "index": 19,
+  "file": "chapters/sentences/19.flac",
+  "samples": 782336,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 770740,
+  "sha256": "a3d75c0e25aff3a5a0cc5b2fd428ecd3b3a01ba0b8aef1aab9efa9fe285c601b"
+ },
+ {
+  "index": 20,
+  "file": "chapters/sentences/20.flac",
+  "samples": 829440,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 846679,
+  "sha256": "21302bf3fe78371717ba8b2b6cf50299fbfe3f27dee2a26673df3c901b1f7c26"
+ },
+ {
+  "index": 21,
+  "file": "chapters/sentences/21.flac",
+  "samples": 260096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 249339,
+  "sha256": "f25dfebb86e78bb10a4908056fcc1974418fd168ca27a6db83d18264cfa48031"
+ },
+ {
+  "index": 22,
+  "file": "chapters/sentences/22.flac",
+  "samples": 874496,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 866758,
+  "sha256": "ccaea03c6e8c160581157bf741a8a273f97f48d94606b2e347888c8a4df7181f"
+ },
+ {
+  "index": 23,
+  "file": "chapters/sentences/23.flac",
+  "samples": 221184,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 209531,
+  "sha256": "ed40464f0908808ebdbc267921ec61dfce32e6f3d4b51cf43c7bf1303c5f8bdc"
+ },
+ {
+  "index": 24,
+  "file": "chapters/sentences/24.flac",
+  "samples": 727040,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 725800,
+  "sha256": "41107ead70bf2e5071d059511307e7964b6578977aef2c7cbda9c06a9ece1044"
+ },
+ {
+  "index": 25,
+  "file": "chapters/sentences/25.flac",
+  "samples": 788480,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 797081,
+  "sha256": "bd4fdabfe74e513e12b4365293c5d18a72c81800b1e033823e1eb01d1ea4dd74"
+ },
+ {
+  "index": 26,
+  "file": "chapters/sentences/26.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 736238,
+  "sha256": "71383b0dbb7c4d4b2ebb0d798e4acfbd3152f0f95416e11bf26492def3bf21bc"
+ },
+ {
+  "index": 27,
+  "file": "chapters/sentences/27.flac",
+  "samples": 301056,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 280040,
+  "sha256": "79b22472b25c23e4f38f1e30330f87e3a3a243de8aa54cd50ef4068bd27dafdc"
+ },
+ {
+  "index": 28,
+  "file": "chapters/sentences/28.flac",
+  "samples": 915456,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 890330,
+  "sha256": "a3c548d3d2a5369335c2744c856c97aa00683e43a0bc74b6dbe1ecdbd646ed4b"
+ },
+ {
+  "index": 29,
+  "file": "chapters/sentences/29.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 763394,
+  "sha256": "0105030ad9a5efc605a3c5d3f08f4de40dd9fad52aaf3cd119fcfb8789b2e455"
+ },
+ {
+  "index": 30,
+  "file": "chapters/sentences/30.flac",
+  "samples": 794624,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 814408,
+  "sha256": "ba01f6db9d7fb3e264bed2efa1b88155c7ca8da7548d5852aeaf46b8ccbb335f"
+ },
+ {
+  "index": 31,
+  "file": "chapters/sentences/31.flac",
+  "samples": 286720,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 287296,
+  "sha256": "2571a442f9e4acdb87a2905da613ff735a6f4c33b4f8e0dee8bfb5d17a8bd4e9"
+ },
+ {
+  "index": 32,
+  "file": "chapters/sentences/32.flac",
+  "samples": 741376,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 738087,
+  "sha256": "f0f98b6fbf67211146ed1c5aec721c35825818edfe035bfd113774bea3ebf622"
+ },
+ {
+  "index": 33,
+  "file": "chapters/sentences/33.flac",
+  "samples": 772096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 731284,
+  "sha256": "a4c2036ac18b76ee6126571d7bbd364803fc3b75457dd1458060f091f12eed00"
+ },
+ {
+  "index": 34,
+  "file": "chapters/sentences/34.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 783813,
+  "sha256": "64c6c8b0b5fe38d499c44db0cd88f53dda0ea4de24c772d514f7073dad590bec"
+ },
+ {
+  "index": 35,
+  "file": "chapters/sentences/35.flac",
+  "samples": 800768,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 820072,
+  "sha256": "86483c7f629e402552aba407814d290cdfea3aa9fd0553212519eb55fb641f7f"
+ },
+ {
+  "index": 36,
+  "file": "chapters/sentences/36.flac",
+  "samples": 890880,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 857058,
+  "sha256": "a38abef2805915a80e5cabbeccf234b6ce124e13ae33beaeb204562fecf1b7a8"
+ },
+ {
+  "index": 37,
+  "file": "chapters/sentences/37.flac",
+  "samples": 831488,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 832483,
+  "sha256": "acf004c268b6fc891e98f495fa4ffdfe4e862e36f6ff608ef9fc9b7903e58b07"
+ },
+ {
+  "index": 38,
+  "file": "chapters/sentences/38.flac",
+  "samples": 819200,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 791622,
+  "sha256": "6ab0df65a34703e15c3ba6c0398a2dd7c5a38d394a535b5f7d0983a806a49877"
+ },
+ {
+  "index": 39,
+  "file": "chapters/sentences/39.flac",
+  "samples": 184320,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 191296,
+  "sha256": "7c0a790c1274977b0b33864ebd705fd5ea47ccb9464b18b7a13477935eeb09cb"
+ },
+ {
+  "index": 40,
+  "file": "chapters/sentences/40.flac",
+  "samples": 942080,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 893962,
+  "sha256": "0cd7701d560b8f19ce13ca60b1507cbcbe80a744dc23cb520c9dc3b48480e9c0"
+ },
+ {
+  "index": 41,
+  "file": "chapters/sentences/41.flac",
+  "samples": 823296,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 831965,
+  "sha256": "b84c4865558eea99d5ec6eeb1b8778da32d5f574541de83f39db60cead9586fd"
+ },
+ {
+  "index": 42,
+  "file": "chapters/sentences/42.flac",
+  "samples": 364544,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 370398,
+  "sha256": "b3a66d1c626a3e7883289224bc0615ccb91c6caf99db1f67040df52cb4333e80"
+ },
+ {
+  "index": 43,
+  "file": "chapters/sentences/43.flac",
+  "samples": 866304,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 839091,
+  "sha256": "68336ae0cd5078049b15e25e3d4c64d06b881803911e81a24b613308b428c291"
+ },
+ {
+  "index": 44,
+  "file": "chapters/sentences/44.flac",
+  "samples": 376832,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 365963,
+  "sha256": "525e8b6663f8806bb6c81adbde6bffca5ddb4fdc476ea462e19cd7c35fb1e71a"
+ },
+ {
+  "index": 45,
+  "file": "chapters/sentences/45.flac",
+  "samples": 2400,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 8311,
+  "sha256": "647d18b894667de30ad143883fa52e154014def24bd37fa299d614ce0739ec77"
+ },
+ {
+  "index": 46,
+  "file": "chapters/sentences/46.flac",
+  "samples": 432128,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 421570,
+  "sha256": "9c59c6d7ed720b0a0371a232b952730fb10e02255abd9e0c482d6fb4b5073441"
+ },
+ {
+  "index": 47,
+  "file": "chapters/sentences/47.flac",
+  "samples": 800768,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 790487,
+  "sha256": "071dbffe66f0b7826d879fa9ab7fa7e538c928ca1130e6cfee013c097e31949b"
+ },
+ {
+  "index": 48,
+  "file": "chapters/sentences/48.flac",
+  "samples": 821248,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 818325,
+  "sha256": "3373900186e6c8d526317c15d303c5b90f966b43d85b7548c7af731053d9fa12"
+ },
+ {
+  "index": 49,
+  "file": "chapters/sentences/49.flac",
+  "samples": 284672,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 295926,
+  "sha256": "8c6a63e7ba681fe459245efea10412ebc5587056c007cb0465cf7bd6c5ed781d"
+ },
+ {
+  "index": 50,
+  "file": "chapters/sentences/50.flac",
+  "samples": 710656,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 695891,
+  "sha256": "1abe420e302dc0a823c14d8cca4fbf7c43e360a933cc895060dc624fcbe86827"
+ },
+ {
+  "index": 51,
+  "file": "chapters/sentences/51.flac",
+  "samples": 671744,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 676533,
+  "sha256": "c89b263b42c3e97d43691daa6f527ab08e51afcc3a916d4cc1124ebf0234e7ea"
+ },
+ {
+  "index": 52,
+  "file": "chapters/sentences/52.flac",
+  "samples": 632832,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 623481,
+  "sha256": "4cc31af07651c8e85399d57195d0ba18953c6526cee609c8c9d0acbd636bc1ff"
+ },
+ {
+  "index": 53,
+  "file": "chapters/sentences/53.flac",
+  "samples": 753664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 745008,
+  "sha256": "e0d0beb8930394aa49216d75601e60b9cc0834012152f4e0dd825a9fac7e7476"
+ },
+ {
+  "index": 54,
+  "file": "chapters/sentences/54.flac",
+  "samples": 448512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 428770,
+  "sha256": "953e1183c5a1da7ecc1c00c8f038c0e6e681c9a7a4c01264c56850a3134da065"
+ },
+ {
+  "index": 55,
+  "file": "chapters/sentences/55.flac",
+  "samples": 851968,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 812608,
+  "sha256": "14fa39ac55c17067db2873d695531e59bc78c3a62300d0a844e23f778145382b"
+ },
+ {
+  "index": 56,
+  "file": "chapters/sentences/56.flac",
+  "samples": 741376,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 690767,
+  "sha256": "d42bb260f74fd363749fdedda4fbb5e5f0940cc57371127794c72cb8035b91e1"
+ },
+ {
+  "index": 57,
+  "file": "chapters/sentences/57.flac",
+  "samples": 907264,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 836227,
+  "sha256": "c25d9fe792b503e17bb6a0fdce63eb4f8890498734ffd2b48770129f616da21d"
+ },
+ {
+  "index": 58,
+  "file": "chapters/sentences/58.flac",
+  "samples": 704512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 673406,
+  "sha256": "d7bc004ca6f2e0e7b93392dcb35aff12b64f4a6339966cd453caa2156c6f25d3"
+ },
+ {
+  "index": 59,
+  "file": "chapters/sentences/59.flac",
+  "samples": 638976,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 647516,
+  "sha256": "3c37974b53d86462cf9ab48f575b639d80e69c4e35e45030e7dc13814c16052b"
+ },
+ {
+  "index": 60,
+  "file": "chapters/sentences/60.flac",
+  "samples": 862208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 820486,
+  "sha256": "51c3b0ecf2ee703708da411a882a25ded2219185dc1bd48d9ad9af841a07b71e"
+ },
+ {
+  "index": 61,
+  "file": "chapters/sentences/61.flac",
+  "samples": 452608,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 438016,
+  "sha256": "5f485e2964d0c148819394d06c0258acf5c2e725d63cf87c3e89ee0b0e5b0351"
+ },
+ {
+  "index": 62,
+  "file": "chapters/sentences/62.flac",
+  "samples": 763904,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 743293,
+  "sha256": "6e6a943ce17d7a4fb23e9c0b4b1fd11487775fb59826a6445399acbfb26c0f96"
+ },
+ {
+  "index": 63,
+  "file": "chapters/sentences/63.flac",
+  "samples": 688128,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 660633,
+  "sha256": "e56d5469460468fa52dc72f97e25e04aba3ab93801b18827e3f0e2d8af64a7d9"
+ },
+ {
+  "index": 64,
+  "file": "chapters/sentences/64.flac",
+  "samples": 669696,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 655773,
+  "sha256": "6284218ac7a3f3eeda0bc1d26bb2206722db1fcb8ace540325bc074be8a5c88a"
+ },
+ {
+  "index": 65,
+  "file": "chapters/sentences/65.flac",
+  "samples": 770048,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 785260,
+  "sha256": "b665400ea8f2466ed63ba9cc3f8d97b8a0f86be7dcec8e09850834ec360e4ec1"
+ },
+ {
+  "index": 66,
+  "file": "chapters/sentences/66.flac",
+  "samples": 405504,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 401068,
+  "sha256": "858bc42492867ab99b1b399f9a189364ef35bfd46a5f731dbc563722c3f00a78"
+ },
+ {
+  "index": 67,
+  "file": "chapters/sentences/67.flac",
+  "samples": 786432,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 745698,
+  "sha256": "92313406817e3802d7fcd84583abf1e8d9748f6486d8c164964ea4592397f267"
+ },
+ {
+  "index": 68,
+  "file": "chapters/sentences/68.flac",
+  "samples": 630784,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 619769,
+  "sha256": "6d6c6de38b7cdfe97eaf5e91e88c41b211ef1e60b85f7e06a74de92b63b21e06"
+ },
+ {
+  "index": 69,
+  "file": "chapters/sentences/69.flac",
+  "samples": 415744,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 398158,
+  "sha256": "59745770026be4f7f131b4a61c7975c12f8b31e73bee67272c9c57cae2902f92"
+ },
+ {
+  "index": 70,
+  "file": "chapters/sentences/70.flac",
+  "samples": 874496,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 825152,
+  "sha256": "5fbf1460cd8770599f3582329413762c65a50db17ab8f8c0b84d78f50aea92fd"
+ },
+ {
+  "index": 71,
+  "file": "chapters/sentences/71.flac",
+  "samples": 530432,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 499446,
+  "sha256": "e13c354a31f97ebf8c97ce61bb85300e8a28ec6d6c02e871042343165410dfd3"
+ },
+ {
+  "index": 72,
+  "file": "chapters/sentences/72.flac",
+  "samples": 704512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 693485,
+  "sha256": "68c06c9e67237cfeb2fd027d23a9ebd568ce33d34b2634f8d274eb5e86368bee"
+ },
+ {
+  "index": 73,
+  "file": "chapters/sentences/73.flac",
+  "samples": 702464,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 694299,
+  "sha256": "7097a0cc444e3a0d45232a217c27dd1c0166b2c02afdc7b61acbd4ba7d0594b8"
+ },
+ {
+  "index": 74,
+  "file": "chapters/sentences/74.flac",
+  "samples": 296960,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 303281,
+  "sha256": "e9a40c03c3101d6a5f05e0628336f89eb177bc51c58c53fd4cfbba1d9ff19d22"
+ },
+ {
+  "index": 75,
+  "file": "chapters/sentences/75.flac",
+  "samples": 702464,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 702930,
+  "sha256": "18a7fea0280a5ce0ce9c891ae612ed08ebd966618337eb11ffa5114c3e6813e1"
+ },
+ {
+  "index": 76,
+  "file": "chapters/sentences/76.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 711896,
+  "sha256": "2cb3bbb51dba867b897aa8c175080f0f1fe43b596f9f675ebad782af04435192"
+ },
+ {
+  "index": 77,
+  "file": "chapters/sentences/77.flac",
+  "samples": 647168,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 600895,
+  "sha256": "fc0b260f26a974fb68731db0eadef632405a14542b45c220d9169184d9dd3565"
+ },
+ {
+  "index": 78,
+  "file": "chapters/sentences/78.flac",
+  "samples": 817152,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 775745,
+  "sha256": "4c926e21a719d41dfbe5031ee3469c1c88934dd8f48b8d1152ff024cf82529d4"
+ },
+ {
+  "index": 79,
+  "file": "chapters/sentences/79.flac",
+  "samples": 278528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 273738,
+  "sha256": "47597f2cfc92ffef3237bb1e98e91a41f39939a1da599c1a99ffa2dc7355909e"
+ },
+ {
+  "index": 80,
+  "file": "chapters/sentences/80.flac",
+  "samples": 804864,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 754291,
+  "sha256": "8b071271a0d651ec345790950f73970b33dacb3c4a10ce7067e64e8a7c034c11"
+ },
+ {
+  "index": 81,
+  "file": "chapters/sentences/81.flac",
+  "samples": 319488,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 317113,
+  "sha256": "90d1a79bceb3c352ea1e7bbe32e9336e1ba9947514e8df6f191fdbc169bacbde"
+ },
+ {
+  "index": 82,
+  "file": "chapters/sentences/82.flac",
+  "samples": 827392,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 795934,
+  "sha256": "b4bd3d685a6f5985e4806f35b0799f42fa5d80cc3654205ec463ba05500df890"
+ },
+ {
+  "index": 83,
+  "file": "chapters/sentences/83.flac",
+  "samples": 837632,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 811144,
+  "sha256": "1607233c86c4b4a9c374d276512742b24f68a7687d4ffea081cec23aeb42faaa"
+ },
+ {
+  "index": 84,
+  "file": "chapters/sentences/84.flac",
+  "samples": 712704,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 691885,
+  "sha256": "a33d4ded8f4570bfdc2eea79bd1cce59011590f8c7a2eb2fb3c0bc4474bfb381"
+ },
+ {
+  "index": 85,
+  "file": "chapters/sentences/85.flac",
+  "samples": 710656,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 697698,
+  "sha256": "7f61e5c48a50b630d8ed7af939bbd24579086d19c6e8b84b5230490fe634a57e"
+ },
+ {
+  "index": 86,
+  "file": "chapters/sentences/86.flac",
+  "samples": 778240,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 737057,
+  "sha256": "42ff04819766a247cbc377c672d61dbc7bfb3e12a2922f26c287aeff2b65e4aa"
+ },
+ {
+  "index": 87,
+  "file": "chapters/sentences/87.flac",
+  "samples": 528384,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 505366,
+  "sha256": "f89a54513e9533a8c17229c5a812ec8a212c6fdbe5818f2db3a121ab7902bbef"
+ },
+ {
+  "index": 88,
+  "file": "chapters/sentences/88.flac",
+  "samples": 735232,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 721382,
+  "sha256": "8ac66e3f4f94f4d2c454a7ffbf6d89987b35987e7afdb855fcc4f91e6c2568d1"
+ },
+ {
+  "index": 89,
+  "file": "chapters/sentences/89.flac",
+  "samples": 378880,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 379522,
+  "sha256": "89c972d9b36b5ad41df13ac15adfa0cfcfaaf97283fb8c972cc497d595d0daf4"
+ },
+ {
+  "index": 90,
+  "file": "chapters/sentences/90.flac",
+  "samples": 710656,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 694629,
+  "sha256": "1b3f155fb1f578d5652c42b5799c12537b908547731f3d99026d577ae0c9a3f3"
+ },
+ {
+  "index": 91,
+  "file": "chapters/sentences/91.flac",
+  "samples": 759808,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 721194,
+  "sha256": "94d3cf66eebd148498d75007dfbd536bd889b0e6969c616748c1c0865f6e048e"
+ },
+ {
+  "index": 92,
+  "file": "chapters/sentences/92.flac",
+  "samples": 253952,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 249190,
+  "sha256": "8e58d1e3aa12846c8d6251234b5d51893de7b7ed8f10e882d6bcaf9dc9039fb8"
+ },
+ {
+  "index": 93,
+  "file": "chapters/sentences/93.flac",
+  "samples": 808960,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 788366,
+  "sha256": "1eca0e6f86a2d60ce16df7668d4d31669404e4bbd00e7d370f1287c6f598832e"
+ },
+ {
+  "index": 94,
+  "file": "chapters/sentences/94.flac",
+  "samples": 741376,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 734705,
+  "sha256": "31e4ade5e1665d83790a2b0a8d9ea03ccf14b0eb0a3cde8002e490bb74ecebe8"
+ },
+ {
+  "index": 95,
+  "file": "chapters/sentences/95.flac",
+  "samples": 268288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 246480,
+  "sha256": "6f322091ded88014aa481fe31fe7be3673b9b8627fac00a27495dfb6989b8db7"
+ },
+ {
+  "index": 96,
+  "file": "chapters/sentences/96.flac",
+  "samples": 794624,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 772370,
+  "sha256": "9026e7a908364de2e2fdabe0a94f0e9d096a27b86fe4580d8ca6ba99a57e676a"
+ },
+ {
+  "index": 97,
+  "file": "chapters/sentences/97.flac",
+  "samples": 774144,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 738293,
+  "sha256": "106310ee0a2401c2b0289c8fa1909688541c6f6f30338373c4bb5360d5bda3dd"
+ },
+ {
+  "index": 98,
+  "file": "chapters/sentences/98.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 784095,
+  "sha256": "1a91cac634bb9af9db69b8e58eabb812d859eeb08cf79eec07202096ad721dc0"
+ },
+ {
+  "index": 99,
+  "file": "chapters/sentences/99.flac",
+  "samples": 747520,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 723011,
+  "sha256": "fe051c29e806a0c71f6505a672f71d3939609f81215d7c7e3de83057362d0e8d"
+ },
+ {
+  "index": 100,
+  "file": "chapters/sentences/100.flac",
+  "samples": 839680,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 770816,
+  "sha256": "8c6521637fdd81b40518df15a90dc3ba7785a1791d94743aecdef2dece62f69a"
+ },
+ {
+  "index": 101,
+  "file": "chapters/sentences/101.flac",
+  "samples": 737280,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 716398,
+  "sha256": "ea4c020e5b6b08432dd87ef715a551b23146d48b4bd6d5698c00c574ef14501c"
+ },
+ {
+  "index": 102,
+  "file": "chapters/sentences/102.flac",
+  "samples": 874496,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 844645,
+  "sha256": "6240ac4f9e992c41b79c72bc72990d053d7c96e54dacbcdd5ae79358fd381be2"
+ },
+ {
+  "index": 103,
+  "file": "chapters/sentences/103.flac",
+  "samples": 784384,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 731311,
+  "sha256": "10090d2218abe7641f7b2975dfb2d4518f4ffbcf281616558144bff18e7fee7a"
+ },
+ {
+  "index": 104,
+  "file": "chapters/sentences/104.flac",
+  "samples": 530432,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 494405,
+  "sha256": "50fe5751581a7ca6704a52927ad6da87694d85db7ae03bf907f96c6cbc522b87"
+ },
+ {
+  "index": 105,
+  "file": "chapters/sentences/105.flac",
+  "samples": 837632,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 797895,
+  "sha256": "7006ea6b3b55bb34a6c4a33c06fc0970334133f01805ec3bf287f17c9c97add1"
+ },
+ {
+  "index": 106,
+  "file": "chapters/sentences/106.flac",
+  "samples": 608256,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 595477,
+  "sha256": "a87a89c0dc0be9a1ddfc6ace591f8e8ea65fed645572e32b28875f305caf13ff"
+ },
+ {
+  "index": 107,
+  "file": "chapters/sentences/107.flac",
+  "samples": 667648,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 630350,
+  "sha256": "4b81f1e20989490334d625cb584a372070f086de1e8009363b9dbc6557c880d8"
+ },
+ {
+  "index": 108,
+  "file": "chapters/sentences/108.flac",
+  "samples": 186368,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 180621,
+  "sha256": "0690833e1e6879a1488960811e7e27a26adc3142b132a796f72a908d9a781ac7"
+ },
+ {
+  "index": 109,
+  "file": "chapters/sentences/109.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 696763,
+  "sha256": "5d49d529d614a0db3c9c8fb6701405bd4d1babd0442335c767f85c445494d5d9"
+ },
+ {
+  "index": 110,
+  "file": "chapters/sentences/110.flac",
+  "samples": 792576,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 787546,
+  "sha256": "b0d561c70c1559bb5efd5ed547291b9d9ca7bba44645a89f593ca1a1561be471"
+ },
+ {
+  "index": 111,
+  "file": "chapters/sentences/111.flac",
+  "samples": 462848,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 439541,
+  "sha256": "e59da65881c794206aed0409e8b0555fa6b2054aefc61ac3349be5313f32e9df"
+ },
+ {
+  "index": 112,
+  "file": "chapters/sentences/112.flac",
+  "samples": 761856,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 770252,
+  "sha256": "b45caa2f3ee61823c93c05333f318970c64619efe47c71c31b1fade56b4da1fd"
+ },
+ {
+  "index": 113,
+  "file": "chapters/sentences/113.flac",
+  "samples": 636928,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 625339,
+  "sha256": "643e5457712fb09420b1c93300d5dc6f9e47ab9ad9744ee6e70e276949bdf728"
+ },
+ {
+  "index": 114,
+  "file": "chapters/sentences/114.flac",
+  "samples": 382976,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 378886,
+  "sha256": "1870c097719bafb092846d4eb471d45ec891ed7a59c17eb635c62aa1ff72f520"
+ },
+ {
+  "index": 115,
+  "file": "chapters/sentences/115.flac",
+  "samples": 915456,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 880031,
+  "sha256": "faf4e3ec25d62433d5957aa81aa51a62ca71eee81a4dbc8c3c2d760438523791"
+ },
+ {
+  "index": 116,
+  "file": "chapters/sentences/116.flac",
+  "samples": 835584,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 806712,
+  "sha256": "dbcdad07e2e3a073599f43048c7aca5b1eceb71000cf081f93966a94f59dfd67"
+ },
+ {
+  "index": 117,
+  "file": "chapters/sentences/117.flac",
+  "samples": 577536,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 540303,
+  "sha256": "2bd02a192f8368ae679290df33fba3485955c066b03ffdd0498957b8da897725"
+ },
+ {
+  "index": 118,
+  "file": "chapters/sentences/118.flac",
+  "samples": 337920,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 319770,
+  "sha256": "510b68230a1a80adbc4b2ed322d39885dcbb396aefa1766749552bbecf0e4616"
+ },
+ {
+  "index": 119,
+  "file": "chapters/sentences/119.flac",
+  "samples": 278528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 265658,
+  "sha256": "e0cd726a97668db1833fac42ff860bd471f54b0665a26b4cd2beecfa957d9bd4"
+ },
+ {
+  "index": 120,
+  "file": "chapters/sentences/120.flac",
+  "samples": 794624,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 740040,
+  "sha256": "0f323748a8c51e77e26f05f89d39e88332132c5d171dafb4b5a2864913289eb5"
+ },
+ {
+  "index": 121,
+  "file": "chapters/sentences/121.flac",
+  "samples": 964608,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 856308,
+  "sha256": "97eb3508674d57499909d6bace5503d1eb5d5fe7a8056a90cb5458b71d408278"
+ },
+ {
+  "index": 122,
+  "file": "chapters/sentences/122.flac",
+  "samples": 290816,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 273523,
+  "sha256": "318cf2ef8b35a64d87345812fdb5fc9c7bd652448abd44686476271ada6ec57c"
+ },
+ {
+  "index": 123,
+  "file": "chapters/sentences/123.flac",
+  "samples": 757760,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 750675,
+  "sha256": "929f3e56dc0b2c2636b61a313be9369ef93a29c48041c1e0a5fd2ce6a560bcf4"
+ },
+ {
+  "index": 124,
+  "file": "chapters/sentences/124.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 689095,
+  "sha256": "853a86c3e8a9bed58b551d186e46e80a1f7f2ccac7923b84595181405c84325b"
+ },
+ {
+  "index": 125,
+  "file": "chapters/sentences/125.flac",
+  "samples": 851968,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 818028,
+  "sha256": "30023b24de98a4e18da277094de8cf065b05cd4bd4adccae9c85cc33e3b557ed"
+ },
+ {
+  "index": 126,
+  "file": "chapters/sentences/126.flac",
+  "samples": 776192,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 745408,
+  "sha256": "0d39c6f136c0f2a9399e1aca8e622c85437557f8132f83d8df0516f097bd974d"
+ },
+ {
+  "index": 127,
+  "file": "chapters/sentences/127.flac",
+  "samples": 620544,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 598954,
+  "sha256": "14c1f7358894394253a0b52fe95b6b8c6ef670a4e0324ceb0a5a3992c6ddbe87"
+ },
+ {
+  "index": 128,
+  "file": "chapters/sentences/128.flac",
+  "samples": 346112,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 320559,
+  "sha256": "da4f5a9c6986ec8dd3fb28c96336ed78ba155c291017c7b571eaa0146ce9f554"
+ },
+ {
+  "index": 129,
+  "file": "chapters/sentences/129.flac",
+  "samples": 980992,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 933900,
+  "sha256": "6bdcef82934d364c37907d21c3bb165f5f91171cf0e29d1b44b164af91881f04"
+ },
+ {
+  "index": 130,
+  "file": "chapters/sentences/130.flac",
+  "samples": 530432,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 530828,
+  "sha256": "fc3d6a943e8ff02c9019a04ad839d6abcbebf45ba17249a318297aa910e84a24"
+ },
+ {
+  "index": 131,
+  "file": "chapters/sentences/131.flac",
+  "samples": 768000,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 734125,
+  "sha256": "3c0e98d62cc430ec9e834dfe83a15b6dba539630cef7778acc63d7d6e2683d95"
+ },
+ {
+  "index": 132,
+  "file": "chapters/sentences/132.flac",
+  "samples": 837632,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 806169,
+  "sha256": "a2480498c9f5af8a4d1c4869b35bad83e568fc2db6732ace952aa759a9c9d11f"
+ },
+ {
+  "index": 133,
+  "file": "chapters/sentences/133.flac",
+  "samples": 704512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 699209,
+  "sha256": "9bca3555c698ee4481b6e9ba80535db00d06c2e5bd9513015604bbf7a8c4d47b"
+ },
+ {
+  "index": 134,
+  "file": "chapters/sentences/134.flac",
+  "samples": 798720,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 796804,
+  "sha256": "dfa14e5a9809dc84962086da25d634ca522f5d4c620b4b81901597f100d3538e"
+ },
+ {
+  "index": 135,
+  "file": "chapters/sentences/135.flac",
+  "samples": 524288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 536185,
+  "sha256": "8a3cf3d21d5609cf98b36902388bd9a1def82e76672ca2c5a503b09aadc41b6a"
+ },
+ {
+  "index": 136,
+  "file": "chapters/sentences/136.flac",
+  "samples": 765952,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 738018,
+  "sha256": "ea3aa05c3168bb8646490cd11ee807a6ec57974f7671ae3bc8a3b83ec2b64cea"
+ },
+ {
+  "index": 137,
+  "file": "chapters/sentences/137.flac",
+  "samples": 387072,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 388929,
+  "sha256": "f814c7869d26c5e39d15e3c559c4b80fe872e94bd22bcf3564451567a131ea65"
+ },
+ {
+  "index": 138,
+  "file": "chapters/sentences/138.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 782457,
+  "sha256": "dfe365fa5f03af76b7d1dd84f2d1f01f61c3ffe236b558b66ec347ff8bd4b050"
+ },
+ {
+  "index": 139,
+  "file": "chapters/sentences/139.flac",
+  "samples": 864256,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 832167,
+  "sha256": "e47f23096b8ab9083c2b70fd0bd6a6fa0559d681e9812f2d048f004e502e6768"
+ },
+ {
+  "index": 140,
+  "file": "chapters/sentences/140.flac",
+  "samples": 192512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 194594,
+  "sha256": "a2100cc5923538e5ce02cc396cc88d292b8be58c9bab6dbe73580988f4714b5b"
+ },
+ {
+  "index": 141,
+  "file": "chapters/sentences/141.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 791131,
+  "sha256": "21974fbf3f05271abfe56f324efc0c52c50afcb856d76fb6ffe96f598d98919b"
+ },
+ {
+  "index": 142,
+  "file": "chapters/sentences/142.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 717976,
+  "sha256": "5dcefc35940226595254cc284532b5875d8faf849cbc02d18f40e96fbbda50d5"
+ },
+ {
+  "index": 143,
+  "file": "chapters/sentences/143.flac",
+  "samples": 264192,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 274186,
+  "sha256": "f4ca0654ee41b4c2c14d8c95ee76a1589b829648fff75e104d0d9e5e21c92bdf"
+ },
+ {
+  "index": 144,
+  "file": "chapters/sentences/144.flac",
+  "samples": 837632,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 824438,
+  "sha256": "d7a9468f5388ab000ae6eb13c8316b2fcbb7a81a2dd345fd7bc57c144378c4a5"
+ },
+ {
+  "index": 145,
+  "file": "chapters/sentences/145.flac",
+  "samples": 851968,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 809220,
+  "sha256": "f110f9599183a1e3e76faa44b0c5ee73670de67edddff3f27b8bb869a5767f24"
+ },
+ {
+  "index": 146,
+  "file": "chapters/sentences/146.flac",
+  "samples": 354304,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 341517,
+  "sha256": "a48c4551b7ea43326aec3463d6c05e1e58dd7ad7f21c344ab1453fc13b9cfcbc"
+ },
+ {
+  "index": 147,
+  "file": "chapters/sentences/147.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 708338,
+  "sha256": "b96eacfe33d66328fd33d23dda7d52eabc07494d7cb43c020e231bd53498d1ec"
+ },
+ {
+  "index": 148,
+  "file": "chapters/sentences/148.flac",
+  "samples": 196608,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 206735,
+  "sha256": "229242cbed34ff5821a3952e1095fa3a5aa979cd13150be08f4e01bcf148b44f"
+ },
+ {
+  "index": 149,
+  "file": "chapters/sentences/149.flac",
+  "samples": 837632,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 803224,
+  "sha256": "80b0a29d2140d0caecfbb33fb2ed8fb64b95f0d0f79e49fef88a827aae423123"
+ },
+ {
+  "index": 150,
+  "file": "chapters/sentences/150.flac",
+  "samples": 866304,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 832115,
+  "sha256": "7ae7869e20f4a61705c4ac3e2e68a714c51b055fa33fe6f4b36432f702194b09"
+ },
+ {
+  "index": 151,
+  "file": "chapters/sentences/151.flac",
+  "samples": 714752,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 703206,
+  "sha256": "9e3e04f3f9627e36a21f382633e5171d8f7814c965a6a606447d0f176a4a8750"
+ },
+ {
+  "index": 152,
+  "file": "chapters/sentences/152.flac",
+  "samples": 823296,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 800743,
+  "sha256": "255ddbf6ca6cae638558b76dea3e7635a6aaad43f3a5362db405e874da9cb253"
+ },
+ {
+  "index": 153,
+  "file": "chapters/sentences/153.flac",
+  "samples": 278528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 279273,
+  "sha256": "63361bb287baa93ead330a1bff8098fae86158a97318dd2cf3ca08b47ec1d306"
+ },
+ {
+  "index": 154,
+  "file": "chapters/sentences/154.flac",
+  "samples": 802816,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 783781,
+  "sha256": "91681924e54d0c1157ae5a32a3b14c4c8a92a03b29ca4842f4bb098e610231c5"
+ },
+ {
+  "index": 155,
+  "file": "chapters/sentences/155.flac",
+  "samples": 821248,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 846003,
+  "sha256": "961a6efd4fe3a6ac5293b4469f338aa4fdb57e16a70b6ea13cbb7d6b2aae79ab"
+ },
+ {
+  "index": 156,
+  "file": "chapters/sentences/156.flac",
+  "samples": 821248,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 806716,
+  "sha256": "45e1eab2cc12b03cd06148121e522f4d118a7dd938cfb2b763a52e0b75458890"
+ },
+ {
+  "index": 157,
+  "file": "chapters/sentences/157.flac",
+  "samples": 737280,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 712984,
+  "sha256": "d1e9090eba768780bfb55679d2b43685081d48a536ad0630839f761d5b727c7a"
+ },
+ {
+  "index": 158,
+  "file": "chapters/sentences/158.flac",
+  "samples": 188416,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 193372,
+  "sha256": "af158274edec53fb441db05b4391d8fb5ad4c680eaeba1f3fd6f23c31af0b430"
+ },
+ {
+  "index": 159,
+  "file": "chapters/sentences/159.flac",
+  "samples": 471040,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 457712,
+  "sha256": "970dbae1058495d5eb3a2e9dbae9a498ca62276be131dfd29131a6878ea8899e"
+ },
+ {
+  "index": 160,
+  "file": "chapters/sentences/160.flac",
+  "samples": 385024,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 379731,
+  "sha256": "38d20ab494aee131d55803d9f2351bd01e958615e6a9d65ec490a314432bc63c"
+ },
+ {
+  "index": 161,
+  "file": "chapters/sentences/161.flac",
+  "samples": 563200,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 543182,
+  "sha256": "4a2b05af45330586654cfbde808db2eb6707fa7772a72cb246a8797d730e4828"
+ },
+ {
+  "index": 162,
+  "file": "chapters/sentences/162.flac",
+  "samples": 485376,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 476949,
+  "sha256": "a820a9cd25c65dad5f29acda1f4c47e8eb68d9be2f706749510dd0f08faac2da"
+ },
+ {
+  "index": 163,
+  "file": "chapters/sentences/163.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 761744,
+  "sha256": "eb035271fd58bfad38bb3f37bace9b5929d31c91ad738da0daacda719cbdd180"
+ },
+ {
+  "index": 164,
+  "file": "chapters/sentences/164.flac",
+  "samples": 706560,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 685283,
+  "sha256": "dc166b2d4376996727a8e1900d31f1a939be171481621d163982c414824fa2f2"
+ },
+ {
+  "index": 165,
+  "file": "chapters/sentences/165.flac",
+  "samples": 862208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 829099,
+  "sha256": "7974614ad9542516e63ed40b43b360bb1d6352c31371044b1ef946c0d7bbea63"
+ },
+ {
+  "index": 166,
+  "file": "chapters/sentences/166.flac",
+  "samples": 792576,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 758552,
+  "sha256": "fb7292fb4ff14769951825e827d7542ef5439967076ad2af7ffe3871eab53317"
+ },
+ {
+  "index": 167,
+  "file": "chapters/sentences/167.flac",
+  "samples": 493568,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 476598,
+  "sha256": "b83e2a39d0372f48e203f131ad07c6389376d2836776565b80684bec097748c3"
+ },
+ {
+  "index": 168,
+  "file": "chapters/sentences/168.flac",
+  "samples": 716800,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 721946,
+  "sha256": "2f3f9422417834d7d4311dfd40a54598b1d87ef41a8cc00fa3bec972baac94c4"
+ },
+ {
+  "index": 169,
+  "file": "chapters/sentences/169.flac",
+  "samples": 681984,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 680434,
+  "sha256": "05442d4e097ba6193641b03225ea0e3dd64a384a604b76a0b79e6b901aaeccf3"
+ },
+ {
+  "index": 170,
+  "file": "chapters/sentences/170.flac",
+  "samples": 825344,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 796357,
+  "sha256": "24fdf8b513961dc633c201239b0d0e56f7382bbae172d0ccea737c755b3cfb74"
+ },
+ {
+  "index": 171,
+  "file": "chapters/sentences/171.flac",
+  "samples": 788480,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 727751,
+  "sha256": "39ad6818ee779ee031c2e60c22b7f1878e464daf05165be6c897520664c0d70a"
+ },
+ {
+  "index": 172,
+  "file": "chapters/sentences/172.flac",
+  "samples": 788480,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 741245,
+  "sha256": "d1bead9ea2f7d82d0aea963fc6ab51618b680be1b3f17c385c510e3943172730"
+ },
+ {
+  "index": 173,
+  "file": "chapters/sentences/173.flac",
+  "samples": 831488,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 806128,
+  "sha256": "f80d001659023e6abcc301ac5bb75ac77afa0ee04cd9a9cbbc193f81128841bc"
+ },
+ {
+  "index": 174,
+  "file": "chapters/sentences/174.flac",
+  "samples": 825344,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 801428,
+  "sha256": "dd2b09d07ad3bc0f836fa1bb7a7a14153cdc28fade71dc8a2a55713378beb0a9"
+ },
+ {
+  "index": 175,
+  "file": "chapters/sentences/175.flac",
+  "samples": 772096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 765546,
+  "sha256": "833edf75768129638ab77342c725a4aa65ad27fdfad9dc8a30ddaa04c42c8274"
+ },
+ {
+  "index": 176,
+  "file": "chapters/sentences/176.flac",
+  "samples": 710656,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 685841,
+  "sha256": "49c219cb1b65d49b823a89edbb30d03375c7a6d51557af7ea46bfdb1a17c6b30"
+ },
+ {
+  "index": 177,
+  "file": "chapters/sentences/177.flac",
+  "samples": 165888,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 154571,
+  "sha256": "e851e79bc7837ee11f74d7f3446494167de134a2061a6509bafda6d73045378c"
+ },
+ {
+  "index": 178,
+  "file": "chapters/sentences/178.flac",
+  "samples": 659456,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 650529,
+  "sha256": "554a0704cc228b7f7ed5c59f26e2c4a97fdba7350261fd7bf00e21f27e210763"
+ },
+ {
+  "index": 179,
+  "file": "chapters/sentences/179.flac",
+  "samples": 772096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 755203,
+  "sha256": "061773688efa2b92ed9bef8505048faf549521b1d4b0972b63adcdf2cc29c4d1"
+ },
+ {
+  "index": 180,
+  "file": "chapters/sentences/180.flac",
+  "samples": 378880,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 378451,
+  "sha256": "d5a81b00fa5fa62ee0f4ab62a9aec6140b50098e8cd5da112abaad931caf34a3"
+ },
+ {
+  "index": 181,
+  "file": "chapters/sentences/181.flac",
+  "samples": 835584,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 783253,
+  "sha256": "544b92466e078df16a6a3498991fbb16fdc843b0ce06168506215c4fbcbdd76e"
+ },
+ {
+  "index": 182,
+  "file": "chapters/sentences/182.flac",
+  "samples": 737280,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 710017,
+  "sha256": "0eb9bf58614ad9892bb0a5885a56130ec65c45eaecd580535e623650c8e0151a"
+ },
+ {
+  "index": 183,
+  "file": "chapters/sentences/183.flac",
+  "samples": 495616,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 483357,
+  "sha256": "4f43fcc4b874ed0f9dcfd2bb87981bc60ae9e1c237711bc98c20d2aaf4e06916"
+ },
+ {
+  "index": 184,
+  "file": "chapters/sentences/184.flac",
+  "samples": 641024,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 624632,
+  "sha256": "98b38f961feb8036bcd54c34d47d0efa19fe15aec6bd202507518abb9ae73fd0"
+ },
+ {
+  "index": 185,
+  "file": "chapters/sentences/185.flac",
+  "samples": 233472,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 229954,
+  "sha256": "65f8fbc48829ec67709b0ed72a4c35da86766921f7f286b526b229e22634be52"
+ },
+ {
+  "index": 186,
+  "file": "chapters/sentences/186.flac",
+  "samples": 415744,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 418553,
+  "sha256": "64f18d67a7b11240e469e39475ace9790b71d2d94361df7e31ced1f22d33aefa"
+ },
+ {
+  "index": 187,
+  "file": "chapters/sentences/187.flac",
+  "samples": 790528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 753797,
+  "sha256": "3c045913dea2a8099984da8ced5c56f3093b2fa2e6669bf391438ab45daf466f"
+ },
+ {
+  "index": 188,
+  "file": "chapters/sentences/188.flac",
+  "samples": 215040,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 203322,
+  "sha256": "7090e859d64f33440dd0bb9e463205bf63a3be770291d7ef51f1e2510faf7f28"
+ },
+ {
+  "index": 189,
+  "file": "chapters/sentences/189.flac",
+  "samples": 901120,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 875042,
+  "sha256": "6046ceb78a55fe76e790a5190bb54e50ce0890e84614a7ea3ef086714beb4cb6"
+ },
+ {
+  "index": 190,
+  "file": "chapters/sentences/190.flac",
+  "samples": 667648,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 657764,
+  "sha256": "658b8ead4d5588626287a56aa5ca79e688685a6f7a3b23502e4c1d2cd7849b7e"
+ },
+ {
+  "index": 191,
+  "file": "chapters/sentences/191.flac",
+  "samples": 847872,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 765457,
+  "sha256": "e632918263e68f6d4b992dea35c209005bbdeff1e28afd415d489520cb488ed6"
+ },
+ {
+  "index": 192,
+  "file": "chapters/sentences/192.flac",
+  "samples": 178176,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 183316,
+  "sha256": "91bcd0ebe8ace63ff0cdf6ab8f584c2ebfc31bc043616997b2e14b6c9cc27e5a"
+ },
+ {
+  "index": 193,
+  "file": "chapters/sentences/193.flac",
+  "samples": 743424,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 715297,
+  "sha256": "602a2b5d2bfc39791c1f53e329a7c9edb0b6da5b331637e64ad239ed6f4514e1"
+ },
+ {
+  "index": 194,
+  "file": "chapters/sentences/194.flac",
+  "samples": 448512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 443191,
+  "sha256": "42c66a3c45f08d3d40882a84d99be87824981f4d6914b32a66f4e69dadae9f78"
+ },
+ {
+  "index": 195,
+  "file": "chapters/sentences/195.flac",
+  "samples": 796672,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 783053,
+  "sha256": "6bd97fe989a0024da90e02b38a0a975f4b756d6c2da443266e5428f0930e9b6b"
+ },
+ {
+  "index": 196,
+  "file": "chapters/sentences/196.flac",
+  "samples": 749568,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 740909,
+  "sha256": "718ebe560973094a0d94162c0af105ab1df5e0395ecf1b0cc3b754d406be09a5"
+ },
+ {
+  "index": 197,
+  "file": "chapters/sentences/197.flac",
+  "samples": 706560,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 693837,
+  "sha256": "176a1fc4ae0ac25db2e2e7de8a2f0572c92d9bdb107006a36f5e11b4500b37a7"
+ },
+ {
+  "index": 198,
+  "file": "chapters/sentences/198.flac",
+  "samples": 151552,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 162945,
+  "sha256": "28cba3dae9bae585b1aa8ca7b8e81ae6f104c9ea3c5464de57ad55b875cc9d2e"
+ },
+ {
+  "index": 199,
+  "file": "chapters/sentences/199.flac",
+  "samples": 698368,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 668959,
+  "sha256": "2799a0202aaa5382762fd3ba0903d9005cb7668064642cac0a647b43a53cc383"
+ },
+ {
+  "index": 200,
+  "file": "chapters/sentences/200.flac",
+  "samples": 880640,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 822525,
+  "sha256": "aa9b2011842b3941843986aedd366e9941369ed929c6d1527f6a1c96cb4a7726"
+ },
+ {
+  "index": 201,
+  "file": "chapters/sentences/201.flac",
+  "samples": 817152,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 786250,
+  "sha256": "03e99b47ae32d7da27d23547947fc405bfc377aac8a0eca62d7b973c31a5132e"
+ },
+ {
+  "index": 202,
+  "file": "chapters/sentences/202.flac",
+  "samples": 790528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 765360,
+  "sha256": "6da40d2898b5ddb0262b6f4e6f3c5ebc3df7ace9a9cba3302e73f2334d8da7b7"
+ },
+ {
+  "index": 203,
+  "file": "chapters/sentences/203.flac",
+  "samples": 724992,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 705991,
+  "sha256": "db66d0cb21efebd6e8a432957a4263dfbac70ce9a4e52aea4b1ed42c69483f62"
+ },
+ {
+  "index": 204,
+  "file": "chapters/sentences/204.flac",
+  "samples": 698368,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 682957,
+  "sha256": "568ee905ad7d419552eb1f6a1f02bde9aa6e968abccba828586d4ef8d6e8ea6b"
+ },
+ {
+  "index": 205,
+  "file": "chapters/sentences/205.flac",
+  "samples": 804864,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 799584,
+  "sha256": "3ed540ee00fc48768ab7fb3b0a35827c1c74b210b96fcf922e8db2f8a543d4c4"
+ },
+ {
+  "index": 206,
+  "file": "chapters/sentences/206.flac",
+  "samples": 481280,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 456939,
+  "sha256": "97a141337cde8a5784a8012fe623ea6a911e265c33a126a707970710eaa77a8b"
+ },
+ {
+  "index": 207,
+  "file": "chapters/sentences/207.flac",
+  "samples": 497664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 501103,
+  "sha256": "2823e057a80ed449e78139201278c9c3629a3cf1f624af87a3960c9e616f8a4f"
+ },
+ {
+  "index": 208,
+  "file": "chapters/sentences/208.flac",
+  "samples": 739328,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 716091,
+  "sha256": "16acc4ea9e84fb9f30e4caba57bcbb7b34dc6f69858d102c9639b802d2c5d5a4"
+ },
+ {
+  "index": 209,
+  "file": "chapters/sentences/209.flac",
+  "samples": 804864,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 786041,
+  "sha256": "da37943bf7b106c8572a187253ae73242d376795815a0ec68bc6ea984f3856ba"
+ },
+ {
+  "index": 210,
+  "file": "chapters/sentences/210.flac",
+  "samples": 776192,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 761191,
+  "sha256": "a5017942407da25d7888bca835fa4dd1b59920708c48623954ed333a712c79bc"
+ },
+ {
+  "index": 211,
+  "file": "chapters/sentences/211.flac",
+  "samples": 659456,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 612512,
+  "sha256": "9d09b322af87e321690c53f297fdb07362f6e36490661dfcaa38a915dd0fc599"
+ },
+ {
+  "index": 212,
+  "file": "chapters/sentences/212.flac",
+  "samples": 763904,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 703505,
+  "sha256": "11d704cf198d78e51be2af255b467eeba6ce49cd493c99f42df7ca7017988488"
+ },
+ {
+  "index": 213,
+  "file": "chapters/sentences/213.flac",
+  "samples": 628736,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 615991,
+  "sha256": "18628cd70e578327eadfad5897bf4e3c9a50803de1ead27d3a1a59db64b8d646"
+ },
+ {
+  "index": 214,
+  "file": "chapters/sentences/214.flac",
+  "samples": 677888,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 652985,
+  "sha256": "1bb80bc0c64ac8dbfb1693e5acc84adcfb26e04b8661a0d0e238fd2e02d171dc"
+ },
+ {
+  "index": 215,
+  "file": "chapters/sentences/215.flac",
+  "samples": 464896,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 445125,
+  "sha256": "2a71e18048d224eed5df4cfe138f51b26497b2a577c3a755f1c127a52a0dde23"
+ },
+ {
+  "index": 216,
+  "file": "chapters/sentences/216.flac",
+  "samples": 706560,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 693144,
+  "sha256": "a245d91e0469e0540462657e836edb907b4fb7bb1dadb12349f18fa3b90f1382"
+ },
+ {
+  "index": 217,
+  "file": "chapters/sentences/217.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 731453,
+  "sha256": "e4087bdefb8836351ef6c9aaf89b975d6dbab951196fdc5c6e877b54b7a13ded"
+ },
+ {
+  "index": 218,
+  "file": "chapters/sentences/218.flac",
+  "samples": 2400,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 8311,
+  "sha256": "647d18b894667de30ad143883fa52e154014def24bd37fa299d614ce0739ec77"
+ },
+ {
+  "index": 219,
+  "file": "chapters/sentences/219.flac",
+  "samples": 180224,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 166167,
+  "sha256": "daafa2c58d36e9ca1142a47eb02d18eda58f6d1e17053d1b26b0e2df6352ba91"
+ },
+ {
+  "index": 220,
+  "file": "chapters/sentences/220.flac",
+  "samples": 706560,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 686567,
+  "sha256": "9ed25a1d28b7dc70ed7b369ff53509090ef171d04f80119eabef8988c383e082"
+ },
+ {
+  "index": 221,
+  "file": "chapters/sentences/221.flac",
+  "samples": 772096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 748541,
+  "sha256": "d6f7c81e6b6b7e9a1781e92fdcf5edb8691134d2f6e1d9c9cc27af7005eaf7df"
+ },
+ {
+  "index": 222,
+  "file": "chapters/sentences/222.flac",
+  "samples": 667648,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 660735,
+  "sha256": "40ede2eb596b0ccfff190db1fdc2600f0f7cbcd805e291980037a5a30fc2951b"
+ },
+ {
+  "index": 223,
+  "file": "chapters/sentences/223.flac",
+  "samples": 235520,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 230770,
+  "sha256": "a1a1fa5276b2d2c4d0dfbb642b0ccb3223ff4a87e3ad02e4282ade523f365f2e"
+ },
+ {
+  "index": 224,
+  "file": "chapters/sentences/224.flac",
+  "samples": 950272,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 877158,
+  "sha256": "d99cbc4c16594ba5067e26ec7f34777828f8f176fc30f1388a22ad7ffbc9777f"
+ },
+ {
+  "index": 225,
+  "file": "chapters/sentences/225.flac",
+  "samples": 505856,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 514410,
+  "sha256": "dd0e9e334eb5a08772a2ed2ced3ae253d87eed563e484e920f150f26e86a5c8d"
+ },
+ {
+  "index": 226,
+  "file": "chapters/sentences/226.flac",
+  "samples": 819200,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 796665,
+  "sha256": "f57727d2e9301314f05071a6abfd8553f73190295e1de358473a7af6e587dccd"
+ },
+ {
+  "index": 227,
+  "file": "chapters/sentences/227.flac",
+  "samples": 702464,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 692436,
+  "sha256": "f0ab75a4b9d669cf5bd5fc624f24c8b6113c91aaf9adf1da41153138735f6d95"
+ },
+ {
+  "index": 228,
+  "file": "chapters/sentences/228.flac",
+  "samples": 712704,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 674049,
+  "sha256": "adb83f904154461ea4272f380f3cb8dc13a715243ad0e913856bb903fb5b761b"
+ },
+ {
+  "index": 229,
+  "file": "chapters/sentences/229.flac",
+  "samples": 714752,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 700598,
+  "sha256": "a8aa471a338415571142ab1aa72666248d736e2e919f02c45e044ad4ffb5c5ef"
+ },
+ {
+  "index": 230,
+  "file": "chapters/sentences/230.flac",
+  "samples": 550912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 526851,
+  "sha256": "005b278101bcb5f69d3212d786b0f606e9112fcb33b3e1197d80c27ec67ae98c"
+ },
+ {
+  "index": 231,
+  "file": "chapters/sentences/231.flac",
+  "samples": 704512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 685994,
+  "sha256": "bd3ee10b2180cd3b73d4f8298cfaef17a012d0a0ae30df7f4e0a1f6e522ce139"
+ },
+ {
+  "index": 232,
+  "file": "chapters/sentences/232.flac",
+  "samples": 681984,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 645744,
+  "sha256": "1e7408cbccc9a2b4dcf285a89f165baac7a63186f9ab97711239373ba59a6aff"
+ },
+ {
+  "index": 233,
+  "file": "chapters/sentences/233.flac",
+  "samples": 651264,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 630162,
+  "sha256": "ea9af305594de4925eb6687a33df62dcb495500463444b65e3ad0343d522d164"
+ },
+ {
+  "index": 234,
+  "file": "chapters/sentences/234.flac",
+  "samples": 798720,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 776664,
+  "sha256": "4420687df7ee3a51c751144ba3d6d2e5ba11444c2f8084d5150b04b05b158c73"
+ },
+ {
+  "index": 235,
+  "file": "chapters/sentences/235.flac",
+  "samples": 716800,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 685527,
+  "sha256": "bd4844ba70e71d6c3e309a000325d72416a0aea4f9dae7d5eab00edc395d6ffe"
+ },
+ {
+  "index": 236,
+  "file": "chapters/sentences/236.flac",
+  "samples": 768000,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 746294,
+  "sha256": "de67907a4ae9b291ee9520fcb713464de3911cd0a17915a78c1ed627fa945ae5"
+ },
+ {
+  "index": 237,
+  "file": "chapters/sentences/237.flac",
+  "samples": 751616,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 720844,
+  "sha256": "051edfccd6a20db15182281a3e3694091f220a5e73d3a9c161a62379a1d76d01"
+ },
+ {
+  "index": 238,
+  "file": "chapters/sentences/238.flac",
+  "samples": 192512,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 190736,
+  "sha256": "6ebd29a1958d35cd5614fa9ee98e6cfdf62fbdcfa2be02cff7d7b1c96af5a508"
+ },
+ {
+  "index": 239,
+  "file": "chapters/sentences/239.flac",
+  "samples": 784384,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 756114,
+  "sha256": "e296ca03cb9f13087084055e9c3503a40bbfd516eebaa0aa0e3eb78db3f63377"
+ },
+ {
+  "index": 240,
+  "file": "chapters/sentences/240.flac",
+  "samples": 872448,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 857531,
+  "sha256": "7d74e988a474345c6927bf11d612d2746e882ff66d6d603071a126d303b87bfb"
+ },
+ {
+  "index": 241,
+  "file": "chapters/sentences/241.flac",
+  "samples": 727040,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 732347,
+  "sha256": "f7956cb82bf3f43cf8d5b235ccbe6c37777f8e7845e38becbee3f95022ebe4c5"
+ },
+ {
+  "index": 242,
+  "file": "chapters/sentences/242.flac",
+  "samples": 112640,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 113358,
+  "sha256": "0d59788eb3893cff408c1182f3e15c59c6e74fd6979bc248ebec081921a5ba7a"
+ },
+ {
+  "index": 243,
+  "file": "chapters/sentences/243.flac",
+  "samples": 600064,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 580043,
+  "sha256": "3fbee713f1b875f9d63f2794af386ccc06fc417cb00339882e21baba8ceb06d3"
+ },
+ {
+  "index": 244,
+  "file": "chapters/sentences/244.flac",
+  "samples": 196608,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 199149,
+  "sha256": "911486b953206681f45b6c7e3ceeca3d7abeea180a0f2695382d5e5328cbfcc2"
+ },
+ {
+  "index": 245,
+  "file": "chapters/sentences/245.flac",
+  "samples": 770048,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 755350,
+  "sha256": "754a2e4134a9ee9a486e62d8d914511a7c8c882d35d52c2b2579345024bacebb"
+ },
+ {
+  "index": 246,
+  "file": "chapters/sentences/246.flac",
+  "samples": 606208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 564609,
+  "sha256": "e0e211259a940caa07b4a20ea6f398c8530d7bcefab3fe9c376ff40095f81bd2"
+ },
+ {
+  "index": 247,
+  "file": "chapters/sentences/247.flac",
+  "samples": 665600,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 638911,
+  "sha256": "ded726300db7eabb322aa5bfa967e3d76c3c3c3c0d507584975e0489276bcbc0"
+ },
+ {
+  "index": 248,
+  "file": "chapters/sentences/248.flac",
+  "samples": 534528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 528200,
+  "sha256": "d3d0a6c437f23f4de19c57dd6544fc419539b0e53c043245449f1c40c845ac43"
+ },
+ {
+  "index": 249,
+  "file": "chapters/sentences/249.flac",
+  "samples": 856064,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 805043,
+  "sha256": "fa190ce94a11d3e863146ab43b7853a4c12a2f37be1ee17fda8970ef0eece644"
+ },
+ {
+  "index": 250,
+  "file": "chapters/sentences/250.flac",
+  "samples": 428032,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 417723,
+  "sha256": "a8d6b4d1d50ca071ece366fc622555e1bd7d047a2bc3fad79f12fc954813aa0d"
+ },
+ {
+  "index": 251,
+  "file": "chapters/sentences/251.flac",
+  "samples": 796672,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 768144,
+  "sha256": "00724909db97a13d8ff78a8050c297e8811c0a73c7099e889bbe3ec95e76d2d7"
+ },
+ {
+  "index": 252,
+  "file": "chapters/sentences/252.flac",
+  "samples": 133120,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 139769,
+  "sha256": "78e7f2d10f1160cfeef3e21b72abad2b535dded9de1a3f6ee60be7b79391f161"
+ },
+ {
+  "index": 253,
+  "file": "chapters/sentences/253.flac",
+  "samples": 815104,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 777228,
+  "sha256": "eed31d9333c384910cd656a4229a144ef4e2bb37a2eabbfd9422421008839a6d"
+ },
+ {
+  "index": 254,
+  "file": "chapters/sentences/254.flac",
+  "samples": 350208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 349274,
+  "sha256": "9a834b2c5acd7c2cc9b4c973a1a734d1f03f76fe6b926d8cdacfc8e560a29363"
+ },
+ {
+  "index": 255,
+  "file": "chapters/sentences/255.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 768023,
+  "sha256": "696ee25a6f06e0a4e2598cd21460144634c4f83aed5753e08adf2c6516d09056"
+ },
+ {
+  "index": 256,
+  "file": "chapters/sentences/256.flac",
+  "samples": 802816,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 762313,
+  "sha256": "dc79805ceb211128081b34eb09caea9657125ad6f708c929ae7a0ed33d3ae9fb"
+ },
+ {
+  "index": 257,
+  "file": "chapters/sentences/257.flac",
+  "samples": 350208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 323237,
+  "sha256": "de927610c23a42e654a64c0547af5f766c3c8604ee79e3b259ff3121d9456b31"
+ },
+ {
+  "index": 258,
+  "file": "chapters/sentences/258.flac",
+  "samples": 690176,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 675469,
+  "sha256": "bda10a4e6984f67b9b8d6f2dc8a7003051fd25269e4c08bd0c27a47928168cd8"
+ },
+ {
+  "index": 259,
+  "file": "chapters/sentences/259.flac",
+  "samples": 557056,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 557968,
+  "sha256": "ae0ec28ee2954e85828247ded6af8766a5bf1cd5f20421e1b23ef37e7c38ff20"
+ },
+ {
+  "index": 260,
+  "file": "chapters/sentences/260.flac",
+  "samples": 772096,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 742661,
+  "sha256": "c08871f25e349ba419020a1bbf0138e7e47df3fa080d294faec10ad482d13497"
+ },
+ {
+  "index": 261,
+  "file": "chapters/sentences/261.flac",
+  "samples": 151552,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 141946,
+  "sha256": "acd62a29310b8f8630c3989789dc3fd34a902b5daf575303f6744319319196b7"
+ },
+ {
+  "index": 262,
+  "file": "chapters/sentences/262.flac",
+  "samples": 858112,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 797269,
+  "sha256": "454bf6bf24f27597c0aa0eb956085151c37402c4c1d7c8aa5ebcec7f613ff930"
+ },
+ {
+  "index": 263,
+  "file": "chapters/sentences/263.flac",
+  "samples": 901120,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 811311,
+  "sha256": "62a620255893ddaeca0b4ab822ae06cb33ae9722fc2ac61539c7d97b9452a5bb"
+ },
+ {
+  "index": 264,
+  "file": "chapters/sentences/264.flac",
+  "samples": 696320,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 661815,
+  "sha256": "24d690d4d2ff60b6ca8ba17d2bec79f712d64cb38e9e9fb99a6c375fd0e96919"
+ },
+ {
+  "index": 265,
+  "file": "chapters/sentences/265.flac",
+  "samples": 753664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 737034,
+  "sha256": "04bc4e139d3eaed5395a3331d590ec2d16258d4414f22de413ebc4b0e3c68ddb"
+ },
+ {
+  "index": 266,
+  "file": "chapters/sentences/266.flac",
+  "samples": 819200,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 782915,
+  "sha256": "9e0e43ec940433d634687d64c4460a7e97cffb5790f70d2abaa3dce6065bccd1"
+ },
+ {
+  "index": 267,
+  "file": "chapters/sentences/267.flac",
+  "samples": 151552,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 153307,
+  "sha256": "de0c8c136c04ea5d7ef55d469781338dc17e462ba36ae29800505b698a8f576f"
+ },
+ {
+  "index": 268,
+  "file": "chapters/sentences/268.flac",
+  "samples": 753664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 709739,
+  "sha256": "1406067941797a53f6c89bf2480c7e2233a122bcfb067b43b5e9b52086f0a3ce"
+ },
+ {
+  "index": 269,
+  "file": "chapters/sentences/269.flac",
+  "samples": 753664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 721697,
+  "sha256": "c718c2d484cd2275264a28a9023a1a88d288884aa48c40d9531713b51f829534"
+ },
+ {
+  "index": 270,
+  "file": "chapters/sentences/270.flac",
+  "samples": 737280,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 728318,
+  "sha256": "dd58b03f9ca6345c88624dfd55d30886862c44f5e77a032d6a55e50d2089bad2"
+ },
+ {
+  "index": 271,
+  "file": "chapters/sentences/271.flac",
+  "samples": 118784,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 129482,
+  "sha256": "9d2a7e97c3435cb29bc91d09e7c02df3f21c9e4be4ffdfdf7f4b2ab2d2f7efc7"
+ },
+ {
+  "index": 272,
+  "file": "chapters/sentences/272.flac",
+  "samples": 669696,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 649785,
+  "sha256": "a67df88bdf6378ac74ad9f461aad5640a5dee8c6157000c8951bad10627fc81e"
+ },
+ {
+  "index": 273,
+  "file": "chapters/sentences/273.flac",
+  "samples": 542720,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 527018,
+  "sha256": "540d0839afb3c3d4f44a12431f9122623f45e8b6d8d81b37d8ee84c684fd13ce"
+ },
+ {
+  "index": 274,
+  "file": "chapters/sentences/274.flac",
+  "samples": 727040,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 705776,
+  "sha256": "75ff768a5ac3f115f18c8da8afbe55ebe79289a70bb91ffbbf59318119b4c050"
+ },
+ {
+  "index": 275,
+  "file": "chapters/sentences/275.flac",
+  "samples": 851968,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 814070,
+  "sha256": "d23763bff0e21b8129f89a725fb66456801178529d97db6b87d2d82b1739125b"
+ },
+ {
+  "index": 276,
+  "file": "chapters/sentences/276.flac",
+  "samples": 645120,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 606406,
+  "sha256": "827a8c50c27962fce2527af1cfdcbb32086a063887d84125b8df473339fb0a04"
+ },
+ {
+  "index": 277,
+  "file": "chapters/sentences/277.flac",
+  "samples": 720896,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 659886,
+  "sha256": "c2f63a77adb546d99fb4ddc4e8ee927f053a22b9fb12ddc7a3ede6fb3dd26afa"
+ },
+ {
+  "index": 278,
+  "file": "chapters/sentences/278.flac",
+  "samples": 235520,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 217939,
+  "sha256": "b06ba65065101cb72a37cee92eca8ac3c34933c93a591276294e2a1608da4e6e"
+ },
+ {
+  "index": 279,
+  "file": "chapters/sentences/279.flac",
+  "samples": 591872,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 578088,
+  "sha256": "4acedf9316986fcfb778c958126ac0ae8d2838c34b929db82ea220d9580cef59"
+ },
+ {
+  "index": 280,
+  "file": "chapters/sentences/280.flac",
+  "samples": 612352,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 585980,
+  "sha256": "e4e680183213bd3a59c4436ff36199f44fb7400d90dec43e4d2c4de1d06ce38f"
+ },
+ {
+  "index": 281,
+  "file": "chapters/sentences/281.flac",
+  "samples": 212992,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 215392,
+  "sha256": "a249505746c4bf63fb4adf4775f85f78c1f28316a09523467de96635ddcca227"
+ },
+ {
+  "index": 282,
+  "file": "chapters/sentences/282.flac",
+  "samples": 686080,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 686040,
+  "sha256": "2ed46326d1c7d0ac6d6a3b7ace76c2b1717ff04d5032e87e071ee3b0cc2f5f9c"
+ },
+ {
+  "index": 283,
+  "file": "chapters/sentences/283.flac",
+  "samples": 667648,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 622155,
+  "sha256": "9c38240c2d5bdb7c1d382c47ebcb90800f58d9520461d1594823adc0060e17e6"
+ },
+ {
+  "index": 284,
+  "file": "chapters/sentences/284.flac",
+  "samples": 546816,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 516561,
+  "sha256": "adf3c013bb00a329d98f9a85294252d3e97b9a3faf45a3f5cd427f8b8b7a55f8"
+ },
+ {
+  "index": 285,
+  "file": "chapters/sentences/285.flac",
+  "samples": 831488,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 776503,
+  "sha256": "47556fff57b55bf440900ee50cbb032d82f73553c4ea57181bbb062728a85899"
+ },
+ {
+  "index": 286,
+  "file": "chapters/sentences/286.flac",
+  "samples": 645120,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 599870,
+  "sha256": "7cd17f06c177c881f46bd43101c953e105e176d38669b9415dc9c8ffd951ba3d"
+ },
+ {
+  "index": 287,
+  "file": "chapters/sentences/287.flac",
+  "samples": 860160,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 815316,
+  "sha256": "b6410b393637afde97acbf61b218249932e80f3454122ad75f43070085d6f826"
+ },
+ {
+  "index": 288,
+  "file": "chapters/sentences/288.flac",
+  "samples": 653312,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 648911,
+  "sha256": "f146ad3890f341755b3f344be00f7aad0112aead2288354c595105e381a59380"
+ },
+ {
+  "index": 289,
+  "file": "chapters/sentences/289.flac",
+  "samples": 790528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 765364,
+  "sha256": "8e90f6302b6b5fb83786475613976d3cdebbe9131f02808f956eb5f6073b5eab"
+ },
+ {
+  "index": 290,
+  "file": "chapters/sentences/290.flac",
+  "samples": 346112,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 333743,
+  "sha256": "c00348801bdb37a0639467e536c3a9ad624274f4da30548ce0b7a5177d8898c9"
+ },
+ {
+  "index": 291,
+  "file": "chapters/sentences/291.flac",
+  "samples": 700416,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 696475,
+  "sha256": "e48a603584f938fc5ff510f505376f683440aa6dd57ca72130324d5038be0ce1"
+ },
+ {
+  "index": 292,
+  "file": "chapters/sentences/292.flac",
+  "samples": 817152,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 799216,
+  "sha256": "cfcb1053cd77231a4bd46b42ff9bc3ddf85618ed255c89991693b86f6464aede"
+ },
+ {
+  "index": 293,
+  "file": "chapters/sentences/293.flac",
+  "samples": 739328,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 715153,
+  "sha256": "2465ebbe6ba73511aaf69daa7f3b568fa5e8f061ff0bb39864c60127582b3317"
+ },
+ {
+  "index": 294,
+  "file": "chapters/sentences/294.flac",
+  "samples": 190464,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 195236,
+  "sha256": "f847be45690c6c4e4b87e3d509ddc8864a981ef33cb3f96b5220ddda21b2edfd"
+ },
+ {
+  "index": 295,
+  "file": "chapters/sentences/295.flac",
+  "samples": 718848,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 681814,
+  "sha256": "209986bf5e2ea5e91e32993c62e592b27b68c10fb2045145a88e4a7f3d1437a8"
+ },
+ {
+  "index": 296,
+  "file": "chapters/sentences/296.flac",
+  "samples": 688128,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 690223,
+  "sha256": "557b5ccc81f09c90de08975b1372f752939dca5e008cb617fc422e257a48ddf8"
+ },
+ {
+  "index": 297,
+  "file": "chapters/sentences/297.flac",
+  "samples": 415744,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 426453,
+  "sha256": "a8192edffde0faa1234fd4bad3508aa9b4aed5afe3cfeef10c8db138f9a1d4b6"
+ },
+ {
+  "index": 298,
+  "file": "chapters/sentences/298.flac",
+  "samples": 714752,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 695150,
+  "sha256": "14806faddee9bbfdb5fb806c7a0529a466ed46bb1c251b531bbd2e83f000127e"
+ },
+ {
+  "index": 299,
+  "file": "chapters/sentences/299.flac",
+  "samples": 489472,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 458686,
+  "sha256": "cfccc88b8a563af00e4dc99b7132110fe52f061cca20612ea57067aa36f15ac3"
+ },
+ {
+  "index": 300,
+  "file": "chapters/sentences/300.flac",
+  "samples": 675840,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 666098,
+  "sha256": "16f8b7bdf5f655fb203aed5dc49cb72d7ec92e85ad4fbf7ca37b1caf9770fa2a"
+ },
+ {
+  "index": 301,
+  "file": "chapters/sentences/301.flac",
+  "samples": 233472,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 212589,
+  "sha256": "9b2873eb0d3e5251bac22a12ad95967893942726bc52704b4eb3fdbc45380393"
+ },
+ {
+  "index": 302,
+  "file": "chapters/sentences/302.flac",
+  "samples": 675840,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 664079,
+  "sha256": "68134fc1e89955e10f6535d44a2a4b1e464b355de6f09061187e20c5ae67ccd2"
+ },
+ {
+  "index": 303,
+  "file": "chapters/sentences/303.flac",
+  "samples": 321536,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 311736,
+  "sha256": "7524b7a048aac95f0b5962cceeb0b54b9f309cd1985c8167c30300b67de5deff"
+ },
+ {
+  "index": 304,
+  "file": "chapters/sentences/304.flac",
+  "samples": 790528,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 779392,
+  "sha256": "9914619ff9ba111eb8fff4d091a2135610db0f353ee9f6743298fdeaac84d6b3"
+ },
+ {
+  "index": 305,
+  "file": "chapters/sentences/305.flac",
+  "samples": 229376,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 229377,
+  "sha256": "c413860a37c1ec44b3ddf05bd1a01f327a578d8a6386bfb5c8aa7e6ae3401862"
+ },
+ {
+  "index": 306,
+  "file": "chapters/sentences/306.flac",
+  "samples": 819200,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 776645,
+  "sha256": "80358df4fa11941be65d393c3bb07e7ff5c33c593074ac4d1b928c13aee48c65"
+ },
+ {
+  "index": 307,
+  "file": "chapters/sentences/307.flac",
+  "samples": 800768,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 752569,
+  "sha256": "b22fabcf4b27205469cc14502f41068e3aef7646c32365e59c7afe3a0075d0d6"
+ },
+ {
+  "index": 308,
+  "file": "chapters/sentences/308.flac",
+  "samples": 692224,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 671536,
+  "sha256": "2f08994b85a70babf85f2b335ba9d64320b7b2445fdd7b2b758444a55dbb8f54"
+ },
+ {
+  "index": 309,
+  "file": "chapters/sentences/309.flac",
+  "samples": 729088,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 710505,
+  "sha256": "1fba096010d7a083f30a1bdda7eb833ccfc02385143573a934ff3f599883ec26"
+ },
+ {
+  "index": 310,
+  "file": "chapters/sentences/310.flac",
+  "samples": 714752,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 682418,
+  "sha256": "0436fa97da28a070e66f130067fdcde461411702d7d0df2a39f9802d2b53d870"
+ },
+ {
+  "index": 311,
+  "file": "chapters/sentences/311.flac",
+  "samples": 561152,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 529181,
+  "sha256": "dcccb0a04338e78e4337fe4ee7f7c343a44c4b895ca7527c3c14cdd1418d9dab"
+ },
+ {
+  "index": 312,
+  "file": "chapters/sentences/312.flac",
+  "samples": 657408,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 665241,
+  "sha256": "dca1d37378687cb0bf3295646f42268edda9e36a7192f0e50d6f500c27f14eb1"
+ },
+ {
+  "index": 313,
+  "file": "chapters/sentences/313.flac",
+  "samples": 296960,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 278702,
+  "sha256": "a1f31fcc3104fcc967e8bcb9172e38140d147d0492a4afbcd00040f33478a7c9"
+ },
+ {
+  "index": 314,
+  "file": "chapters/sentences/314.flac",
+  "samples": 755712,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 728487,
+  "sha256": "250be920e264edafe2d2f4459e1b5b2e9bb1db896b7097ab036b52b4ee2d6775"
+ },
+ {
+  "index": 315,
+  "file": "chapters/sentences/315.flac",
+  "samples": 126976,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 136368,
+  "sha256": "49e9341e9f666a829dff491ef43aea1ba0bfefc5c0bf48952502e1e1b97f4548"
+ },
+ {
+  "index": 316,
+  "file": "chapters/sentences/316.flac",
+  "samples": 847872,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 828403,
+  "sha256": "bd3a838cfd01c08cca4552bc439e928a4cc9e60d22d36e8f0fe90d4143e3a458"
+ },
+ {
+  "index": 317,
+  "file": "chapters/sentences/317.flac",
+  "samples": 673792,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 645166,
+  "sha256": "0db87e2196695bc31f4ad0067587bd2e956fc1cc2cf061bc366f6796141e8a55"
+ },
+ {
+  "index": 318,
+  "file": "chapters/sentences/318.flac",
+  "samples": 798720,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 755221,
+  "sha256": "caa8c44d523e06cabac5d95aae414832afeedc31d05227cd88146e8427581d44"
+ },
+ {
+  "index": 319,
+  "file": "chapters/sentences/319.flac",
+  "samples": 466944,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 429050,
+  "sha256": "a8041a7a89f0d7afa6122182f3008fabfcbf2010d6e02051b3e5633e478bc925"
+ },
+ {
+  "index": 320,
+  "file": "chapters/sentences/320.flac",
+  "samples": 778240,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 761393,
+  "sha256": "d13e05488e77f844097430a238328b9549a7f9405b15bc77c39d50469bda5952"
+ },
+ {
+  "index": 321,
+  "file": "chapters/sentences/321.flac",
+  "samples": 342016,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 327641,
+  "sha256": "13384be575061e06e3213f0bf195f4e7c9e3714d4021d9d899287b5daa1e789c"
+ },
+ {
+  "index": 322,
+  "file": "chapters/sentences/322.flac",
+  "samples": 886784,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 851985,
+  "sha256": "dae3bf9ff1e293de84f8af07a9211443d2010869c006b21ac911a14150b72f44"
+ },
+ {
+  "index": 323,
+  "file": "chapters/sentences/323.flac",
+  "samples": 839680,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 797097,
+  "sha256": "76adf545d795baaa06cd5c5ed23662d31363e41e1af21e2b3637d3243f7196d3"
+ },
+ {
+  "index": 324,
+  "file": "chapters/sentences/324.flac",
+  "samples": 403456,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 398537,
+  "sha256": "65680d2696af92a241b3efbfb0b605341cc55acd201c63c05bdb235392d39dbd"
+ },
+ {
+  "index": 325,
+  "file": "chapters/sentences/325.flac",
+  "samples": 606208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 587881,
+  "sha256": "e35d6d2023fbb4c740526ecfa8c4d4a17655bb20784bbf6149fad09b0c0433da"
+ },
+ {
+  "index": 326,
+  "file": "chapters/sentences/326.flac",
+  "samples": 397312,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 385649,
+  "sha256": "086e3c007b84f83dab9ef39e44273d162f93927ab19ce3274d8d1dadcee2d42c"
+ },
+ {
+  "index": 327,
+  "file": "chapters/sentences/327.flac",
+  "samples": 671744,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 643731,
+  "sha256": "4782735c0c14bc0190b1ebb6dd93e80c28e44d83993442b6a2b85a7a61ef1c5c"
+ },
+ {
+  "index": 328,
+  "file": "chapters/sentences/328.flac",
+  "samples": 780288,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 741609,
+  "sha256": "a1c4fd6ee606649cfeda571858e6eda8b3b977c6ce5896483ca75d9205228701"
+ },
+ {
+  "index": 329,
+  "file": "chapters/sentences/329.flac",
+  "samples": 784384,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 765923,
+  "sha256": "c9ec9f246b32a740be39700a2376f6bead8af9eac55e7af73330c048a5dc77e7"
+ },
+ {
+  "index": 330,
+  "file": "chapters/sentences/330.flac",
+  "samples": 571392,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 581848,
+  "sha256": "7d0a7189219933b31190a29740f0641c30bea7c336ab921cc681cbded57ad276"
+ },
+ {
+  "index": 331,
+  "file": "chapters/sentences/331.flac",
+  "samples": 823296,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 792965,
+  "sha256": "e2a13aa14c00cec58ae1e8c04da2e99ce2e6bdad1599314a697d288b14a8df52"
+ },
+ {
+  "index": 332,
+  "file": "chapters/sentences/332.flac",
+  "samples": 845824,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 839746,
+  "sha256": "1944f7872b65ef6d2de49a4ea8552262c7b5f1a195c65685b8dc15116225645b"
+ },
+ {
+  "index": 333,
+  "file": "chapters/sentences/333.flac",
+  "samples": 825344,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 778519,
+  "sha256": "139287e9f00262c40f29534da9f38c181cfc84f0955981af596e59cfa135cf02"
+ },
+ {
+  "index": 334,
+  "file": "chapters/sentences/334.flac",
+  "samples": 200704,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 176267,
+  "sha256": "c36059d262dfc4e9ca46dc2fe117c34137e00ee8842ddfa220e9312f258e5615"
+ },
+ {
+  "index": 335,
+  "file": "chapters/sentences/335.flac",
+  "samples": 829440,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 776407,
+  "sha256": "8425e9ae4edecc856cfb3be83adb430d593bb05fe2865577a2b63981c51f9121"
+ },
+ {
+  "index": 336,
+  "file": "chapters/sentences/336.flac",
+  "samples": 247808,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 248217,
+  "sha256": "e784b1b7853aa1d314e4c3af68d9c06543322dce7e88026a4dc4d9e9666f658f"
+ },
+ {
+  "index": 337,
+  "file": "chapters/sentences/337.flac",
+  "samples": 753664,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 743879,
+  "sha256": "c13470000041f76e64e645a951498b1ff509fdc9e948a984bd9b0df3ec44372a"
+ },
+ {
+  "index": 338,
+  "file": "chapters/sentences/338.flac",
+  "samples": 557056,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 505417,
+  "sha256": "2359b875b8d733bec803809627b79504f496d16180bc8e0635410d4b80978a9c"
+ },
+ {
+  "index": 339,
+  "file": "chapters/sentences/339.flac",
+  "samples": 827392,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 780118,
+  "sha256": "3f97c810b93ceb8261ace268320146254d88e6a8d9056159b9e2b39bcec80af3"
+ },
+ {
+  "index": 340,
+  "file": "chapters/sentences/340.flac",
+  "samples": 827392,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 783336,
+  "sha256": "85fb41c350c57fc571a6478f1a140568e8f18373e13338114c7c2970ba21d53c"
+ },
+ {
+  "index": 341,
+  "file": "chapters/sentences/341.flac",
+  "samples": 829440,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 819538,
+  "sha256": "784f5a614f8cf7a3142d68e375c33c796ec2ef8f1191a0a78de2c53815f21ebc"
+ },
+ {
+  "index": 342,
+  "file": "chapters/sentences/342.flac",
+  "samples": 720896,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 687124,
+  "sha256": "620a498d3ff814e6cb9fbe5aa4da5a5e6e0d3941a20a84785bb5e0657f28d8bf"
+ },
+ {
+  "index": 343,
+  "file": "chapters/sentences/343.flac",
+  "samples": 206848,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 208425,
+  "sha256": "ebde4d0aa91cb697a8c697c7652f44c2b0fc8eb70d8c38e12d47961a6c38cd7c"
+ },
+ {
+  "index": 344,
+  "file": "chapters/sentences/344.flac",
+  "samples": 894976,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 828952,
+  "sha256": "362504e1d4985f555a89cf3fcf6b402e516086a8dfc0c6fffbb26ba674cb6c9d"
+ },
+ {
+  "index": 345,
+  "file": "chapters/sentences/345.flac",
+  "samples": 636928,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 606255,
+  "sha256": "76e2432fb939fc7c817558966a369161cb849bd71317ba919b3926b6701680e9"
+ },
+ {
+  "index": 346,
+  "file": "chapters/sentences/346.flac",
+  "samples": 722944,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 670527,
+  "sha256": "d882d262a4e643a83ab0cdbc6ab40e09a6c24d4987e623ede1cb10e656469cd8"
+ },
+ {
+  "index": 347,
+  "file": "chapters/sentences/347.flac",
+  "samples": 724992,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 740508,
+  "sha256": "324013e4f5f0f4709635a4917ec4cb2fbfa611c2df51c14f50d749a9e050eee1"
+ },
+ {
+  "index": 348,
+  "file": "chapters/sentences/348.flac",
+  "samples": 813056,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 753087,
+  "sha256": "a931770f643e01e56e4ec9f334eb98e017ca26efdfb3c799597552c9a795635d"
+ },
+ {
+  "index": 349,
+  "file": "chapters/sentences/349.flac",
+  "samples": 749568,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 697645,
+  "sha256": "601dd02c18507a21d6c2b9f1e4ef9dbb9465b625765530cf602b5834ce5e88ad"
+ },
+ {
+  "index": 350,
+  "file": "chapters/sentences/350.flac",
+  "samples": 460800,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 449938,
+  "sha256": "188a3d73f6c299ceab15d177d0c88bca23a23fb6875d97bd36be4138e580a4d5"
+ },
+ {
+  "index": 351,
+  "file": "chapters/sentences/351.flac",
+  "samples": 827392,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 766649,
+  "sha256": "182c457491680ec06495d935f7d4e3253460e94352e45e0791005a788e02f63b"
+ },
+ {
+  "index": 352,
+  "file": "chapters/sentences/352.flac",
+  "samples": 770048,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 750079,
+  "sha256": "0a05a61a86626e2d6dd0429d4a12ebcd7374377807d0583d37287d6e0f27baff"
+ },
+ {
+  "index": 353,
+  "file": "chapters/sentences/353.flac",
+  "samples": 835584,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 792505,
+  "sha256": "839e6e31435d6083d97e7b360dfc54e757bbaae921d36271ee68839b94ca141e"
+ },
+ {
+  "index": 354,
+  "file": "chapters/sentences/354.flac",
+  "samples": 200704,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 190666,
+  "sha256": "eab588762ea47f478ade473aacb2854b6c1a4004f64ae406129fea90a19078a5"
+ },
+ {
+  "index": 355,
+  "file": "chapters/sentences/355.flac",
+  "samples": 806912,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 784987,
+  "sha256": "8e98c4d376c31fbb9079ad1f90aec1cefc339ddeda033aef9759ab44afc1a214"
+ },
+ {
+  "index": 356,
+  "file": "chapters/sentences/356.flac",
+  "samples": 165888,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 167070,
+  "sha256": "4159143de28bd430a2353db73ed9114b286ad6bd0666dbda85eef9020470430b"
+ },
+ {
+  "index": 357,
+  "file": "chapters/sentences/357.flac",
+  "samples": 681984,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 669392,
+  "sha256": "fbf3a1d7d33b6ef826a0cf5bae87484171f714ac646bdbb1216c190cb370c70c"
+ },
+ {
+  "index": 358,
+  "file": "chapters/sentences/358.flac",
+  "samples": 180224,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 180732,
+  "sha256": "b884f7a22ad2807bd5e9b29b5a3c2608e7c9e413b806acf3e04530f7f6a759b3"
+ },
+ {
+  "index": 359,
+  "file": "chapters/sentences/359.flac",
+  "samples": 778240,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 750400,
+  "sha256": "b63feee1483ebe712471538b09cdaec724cf5233297d94ad34c36f27cd68e1b3"
+ },
+ {
+  "index": 360,
+  "file": "chapters/sentences/360.flac",
+  "samples": 745472,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 727786,
+  "sha256": "ecb6ca4e3ac707e6b7bdf51349d5512ac9a0e048dc50a46705a825df644123d4"
+ },
+ {
+  "index": 361,
+  "file": "chapters/sentences/361.flac",
+  "samples": 794624,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 782611,
+  "sha256": "271df91c32ed4c68291864a344ceb8e792a3b3c3e5fcc15a7c0b33c4b2e61dbe"
+ },
+ {
+  "index": 362,
+  "file": "chapters/sentences/362.flac",
+  "samples": 587776,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 583551,
+  "sha256": "c2487bed9992f59e92e52ebed3ede49220e3536bf7e91c2d8b2e459292d15fec"
+ },
+ {
+  "index": 363,
+  "file": "chapters/sentences/363.flac",
+  "samples": 774144,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 737091,
+  "sha256": "f35645cc0759569978994b502e6374d1ea1d33d6478427469c7e2eebbca16e0a"
+ },
+ {
+  "index": 364,
+  "file": "chapters/sentences/364.flac",
+  "samples": 479232,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 463967,
+  "sha256": "66b5a9fd866b64dcbc111af3d996235deed1d0ae557f4b8dc0d0647b52b958e5"
+ },
+ {
+  "index": 365,
+  "file": "chapters/sentences/365.flac",
+  "samples": 782336,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 761946,
+  "sha256": "036c753ffd0639ce769ef63bfa1a5e80d4078581f7eaaa2707ee56ddc355ed85"
+ },
+ {
+  "index": 366,
+  "file": "chapters/sentences/366.flac",
+  "samples": 784384,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 751716,
+  "sha256": "d20ee49a8569a9ff84e5cbbd4302a2a7f27dea1cbf65ab1403ad42a90be26d79"
+ },
+ {
+  "index": 367,
+  "file": "chapters/sentences/367.flac",
+  "samples": 190464,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 186161,
+  "sha256": "a10a75add7de0e47e6ab1979473f234cdd9c00733994b1ab504d8d437f7e2878"
+ },
+ {
+  "index": 368,
+  "file": "chapters/sentences/368.flac",
+  "samples": 751616,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 745644,
+  "sha256": "896ae0a4c7ad1375ddd4d325bcffe91ff9568ae6977b1d6c50039700710be630"
+ },
+ {
+  "index": 369,
+  "file": "chapters/sentences/369.flac",
+  "samples": 198656,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 193681,
+  "sha256": "e273c293614577439b0e1f7f998a887b2c4cdef6ccc28bc73df13a7282f5eed7"
+ },
+ {
+  "index": 370,
+  "file": "chapters/sentences/370.flac",
+  "samples": 720896,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 689148,
+  "sha256": "809427ede85a929ce55c7ffc03d3a773de74be1dc76baed7be9a52360f3c5839"
+ },
+ {
+  "index": 371,
+  "file": "chapters/sentences/371.flac",
+  "samples": 507904,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 495876,
+  "sha256": "9bb3acf78965d2e127a1ac91d3b833f74e47c15cb9607ed7e053ee78a820b0a1"
+ },
+ {
+  "index": 372,
+  "file": "chapters/sentences/372.flac",
+  "samples": 735232,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 709297,
+  "sha256": "738fd6fb19e174db4eec808b6fa520925af922796ac5938ccd8ad0d7f753aa30"
+ },
+ {
+  "index": 373,
+  "file": "chapters/sentences/373.flac",
+  "samples": 262144,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 257742,
+  "sha256": "9565b3dee00569a28a4a8bae3843aa893e36c78fe09e9ff8b643ea444d5e022a"
+ },
+ {
+  "index": 374,
+  "file": "chapters/sentences/374.flac",
+  "samples": 833536,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 791912,
+  "sha256": "21f1db6e46eeeba72da074c4d2131d8490434dd7b76203e3aacc28ba0fd04440"
+ },
+ {
+  "index": 375,
+  "file": "chapters/sentences/375.flac",
+  "samples": 610304,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 594313,
+  "sha256": "f4d6ffa9baff475d061171a69ab53bed84f6eb972eab173f76d3319b98475c1f"
+ },
+ {
+  "index": 376,
+  "file": "chapters/sentences/376.flac",
+  "samples": 833536,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 796485,
+  "sha256": "ef7ce862510e807ca086f6f02566ec5cd9a1b3500d34ac3bcee07d3a295238c6"
+ },
+ {
+  "index": 377,
+  "file": "chapters/sentences/377.flac",
+  "samples": 696320,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 681679,
+  "sha256": "1ebab18bbcb2bc1712a469657dc1c5f99bc48e2ba23b9e80f9607e0626032a1f"
+ },
+ {
+  "index": 378,
+  "file": "chapters/sentences/378.flac",
+  "samples": 174080,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 180021,
+  "sha256": "0403e5d49f845a3de667a07bda08c38826903b8881508aef21285769cca33dcf"
+ },
+ {
+  "index": 379,
+  "file": "chapters/sentences/379.flac",
+  "samples": 757760,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 771474,
+  "sha256": "873f1b39d1bf6e78bb43571d1851158cd066b0549d5063aa47cde2ca2b449a61"
+ },
+ {
+  "index": 380,
+  "file": "chapters/sentences/380.flac",
+  "samples": 909312,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 855342,
+  "sha256": "8ebf0428e3018a112bc62654cce1891aa0e71ac2063421566069d6fb33069526"
+ },
+ {
+  "index": 381,
+  "file": "chapters/sentences/381.flac",
+  "samples": 731136,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 703078,
+  "sha256": "e33866f652897aa21fd962426f068fda5413cc81acf0ed853ede5584a52d8285"
+ },
+ {
+  "index": 382,
+  "file": "chapters/sentences/382.flac",
+  "samples": 862208,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 859578,
+  "sha256": "0afbe3fe919e5dccc511ad01cc6b02b9ca79917d59c295f863573026c776472c"
+ },
+ {
+  "index": 383,
+  "file": "chapters/sentences/383.flac",
+  "samples": 696320,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 674578,
+  "sha256": "d773e552bf2a50c1a6de931420761e47a85883489d0486910a4c4643532b375d"
+ },
+ {
+  "index": 384,
+  "file": "chapters/sentences/384.flac",
+  "samples": 393216,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 390068,
+  "sha256": "bb9c6c588685a414f642c5c0eb028e949b23f554337f24d2b979c6de0e227d21"
+ },
+ {
+  "index": 385,
+  "file": "chapters/sentences/385.flac",
+  "samples": 657408,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 650528,
+  "sha256": "29f0ecbd99afe1e1c22da746493d2358d6897714de9e07a90ffed6649679c6fc"
+ },
+ {
+  "index": 386,
+  "file": "chapters/sentences/386.flac",
+  "samples": 860160,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 811585,
+  "sha256": "163b64679b855b2e57ceb847bd5b970546b674cd8123bf57b240241243a5f6bc"
+ },
+ {
+  "index": 387,
+  "file": "chapters/sentences/387.flac",
+  "samples": 823296,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 816737,
+  "sha256": "40b3132a96e9660e40a06850239eb0ae48257068ebb7f31209369a939bd74c49"
+ },
+ {
+  "index": 388,
+  "file": "chapters/sentences/388.flac",
+  "samples": 763904,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 751745,
+  "sha256": "4eddc102e94c8e2159dd40f62971c3e19ff9e688c82e44422d5e2d6dfc292aaf"
+ },
+ {
+  "index": 389,
+  "file": "chapters/sentences/389.flac",
+  "samples": 661504,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 635440,
+  "sha256": "cd973f252273736d8d60e4c4bfaf0825eef3aff1d0aa3e9a17be6402d3d8abc5"
+ },
+ {
+  "index": 390,
+  "file": "chapters/sentences/390.flac",
+  "samples": 378880,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 359560,
+  "sha256": "950bcdf563b793b12a90fcf8cc0bb981a1db3f1ccac1e43b4db1a7ba86afc4da"
+ },
+ {
+  "index": 391,
+  "file": "chapters/sentences/391.flac",
+  "samples": 823296,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 773622,
+  "sha256": "d8898a39b4e94b515ae0ddffc167618950158bcb1a623333bfd7cee3d93efff4"
+ },
+ {
+  "index": 392,
+  "file": "chapters/sentences/392.flac",
+  "samples": 368640,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 369202,
+  "sha256": "1b79ea98106b33f583b44a7801f7dcf67f119935f84f5efdfec1225820ccb36c"
+ },
+ {
+  "index": 393,
+  "file": "chapters/sentences/393.flac",
+  "samples": 821248,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 789508,
+  "sha256": "bbdb0265242733d03160101b4d7893c130a9d29bd0192405e796c5608c47fe6c"
+ },
+ {
+  "index": 394,
+  "file": "chapters/sentences/394.flac",
+  "samples": 755712,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 739942,
+  "sha256": "d422f0b0771a35c72604e99b8e89df6abb7fb63e2ee53436827863179e65f5dd"
+ },
+ {
+  "index": 395,
+  "file": "chapters/sentences/395.flac",
+  "samples": 499712,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 495238,
+  "sha256": "11e0d79b9460973a8111d2fe65ca632f70679c22a2a72931a106d9d1c80372da"
+ },
+ {
+  "index": 396,
+  "file": "chapters/sentences/396.flac",
+  "samples": 2400,
+  "sampleRate": 24000,
+  "channels": 1,
+  "bytes": 8311,
+  "sha256": "647d18b894667de30ad143883fa52e154014def24bd37fa299d614ce0739ec77"
+ }
+]
