@@ -3649,8 +3649,10 @@ export async function regenerateSentenceIndices(
     return { success: false, converted: 0, failedIndices: indices, error: err?.message || String(err) };
   }
 
-  // Build args mirroring startWorker's lightweight (worker.py) branch, but for a
-  // discrete index list writing into a scratch sentences dir.
+  // The same argv startWorker builds, for a discrete index list writing into a
+  // scratch sentences dir rather than a contiguous range writing into the
+  // session's own. (It mirrored startWorker's "lightweight worker.py branch"
+  // until Phase 3; there is one branch now.)
   let args: string[];
   try {
     const deviceArg = resolveTtsDeviceArg(settings.device, settings.ttsEngine);

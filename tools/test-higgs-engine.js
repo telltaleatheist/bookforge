@@ -988,16 +988,50 @@ check('the retake door refuses a retired engine too', () => {
 check('the retake door routes Higgs to narrator instead of e2a worker.py', () => {
   // Finding 8: it built pythonInvocation('higgs'), which returns the MARKER path
   // <e2a>/higgs_wsl_env — not a directory — and handed it e2a's worker.py.
+  //
+  // UPDATED at the Phase 3 cut-over. The `higgsRetakePlan` branch this used to
+  // look for is gone, and so is the e2a command line it existed to differ from:
+  // the door now builds ONE argv and hands it to `buildJobSpawn`, which routes by
+  // engine. The intent is unchanged and is what is asserted — a Higgs retake
+  // reaches narrator's worker module and carries --higgs_voice, never
+  // --fine_tuned and never a script path.
   const at = bridgeSrc.indexOf('export async function regenerateSentenceIndices');
   const body = bridgeSrc.slice(at, at + 12000);
-  assert.match(body, /higgsRetakePlan/, 'the retake door has no Higgs branch');
-  assert.match(body, /buildHiggsSpawn\('worker'/, 'the Higgs retake does not build a narrator spawn');
+  assert.match(body, /buildJobSpawn\(\{/, 'the retake door does not go through the engine-routing spawn');
+  assert.match(body, /phase: 'worker'/, 'the retake door does not open the worker door');
   assert.match(body, /HIGGS_VOICE_FLAG/, 'the Higgs retake does not pass --higgs_voice');
+  // COMMENTS STRIPPED FIRST — BLOCK COMMENTS TOO. The door's prose still explains
+  // what it used to do and why (the marker-path failure; what `compat/` answers),
+  // and a few lines on a block comment records the Sep 1 2026 incident in which an
+  // orphaned e2a worker.py rendered for 1h31m. That history is the reason the code
+  // is shaped as it is. Asserting on the raw text would make the file's own
+  // explanation the thing that fails it, which teaches people to delete comments
+  // rather than write them.
+  //
+  // NO `$` ON THE LINE-COMMENT PATTERN. This repo is core.autocrlf=true, so a
+  // split on '\n' leaves a '\r' at the end of every line; `.` does not match a
+  // carriage return (it is a line terminator) and `$` without /m anchors to the
+  // end of the whole string, so `/\/\/.*$/` matches NOTHING on a CRLF file and
+  // every comment survives the strip.
+  const code = body
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/\/\/.*/, '')).join('\n');
+  assert.ok(!/worker\.py/.test(code), "e2a's worker.py is still SPAWNED by the retake door");
 });
 
 check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () => {
-  // Every pushVoiceArgs call must sit behind `if (!isHiggsJob(settings))`.
-  // Finding 10 was one that did not.
+  // Finding 10: one call site was not guarded, so a Higgs worker carried BOTH
+  // `--fine_tuned default` and `--higgs_voice default`. They are a prompt TOKEN
+  // and a CATALOG ID; one handed where the other belongs renders a whole book in
+  // the wrong voice.
+  //
+  // UPDATED at the Phase 3 cut-over. The guard used to be `if
+  // (!isHiggsJob(settings)) pushVoiceArgs(...)` with the Higgs voice appended
+  // somewhere else; every door now writes the CHOICE in one place —
+  // `if (isHiggsJob(settings)) { args.push(HIGGS_VOICE_FLAG, ...) } else {
+  // pushVoiceArgs(...) }` — which is the same rule stated so that neither branch
+  // can be forgotten. So the assertion is now that each call site sits in the
+  // ELSE of a Higgs test, rather than after a negated one.
   let from = 0;
   let guarded = 0;
   let total = 0;
@@ -1005,9 +1039,13 @@ check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () =>
     const at = bridgeSrc.indexOf('pushVoiceArgs(args, settings)', from);
     if (at < 0) break;
     total++;
-    // Look back a short way for the guard that must precede it.
     const before = bridgeSrc.slice(Math.max(0, at - 400), at);
-    if (/!isHiggsJob\(settings\)/.test(before)) guarded++;
+    // Either shape counts: the old negated guard, or the if/else that replaced it
+    // (recognised by the Higgs test AND the voice flag its branch pushes).
+    if (/!isHiggsJob\(settings\)/.test(before)
+      || (/if \(isHiggsJob\(settings\)\)/.test(before) && /HIGGS_VOICE_FLAG/.test(before))) {
+      guarded++;
+    }
     from = at + 1;
   }
   assert.ok(total >= 3, 'expected at least 3 pushVoiceArgs call sites, saw ' + total);
