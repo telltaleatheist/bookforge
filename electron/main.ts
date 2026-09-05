@@ -7488,7 +7488,7 @@ function setupIpcHandlers(): void {
   });
 
   // ─────────────────────────────────────────────────────────────────────────────
-  // XTTS Worker Pool handlers (for Play tab real-time TTS with parallel generation)
+  // Streaming worker pool handlers (Play tab / TTS API real-time TTS)
   // ─────────────────────────────────────────────────────────────────────────────
 
   ipcMain.handle('play:start-session', async () => {
@@ -7778,7 +7778,7 @@ function setupIpcHandlers(): void {
 
   // ── RVC enhancement voices ────────────────────────────────────────────────
   // RVC voice models are first-class optional components (kind 'rvc-model') and
-  // flow through the SAME components:* IPC + ComponentService as XTTS voices —
+  // flow through the SAME components:* IPC + ComponentService the XTTS voices used —
   // download, status, and removal are handled there (see rvc-voice-components.ts
   // + component-manager's fetchRvcVoice). No dedicated RVC-voice IPC remains.
 
@@ -11127,7 +11127,7 @@ ipcMain.handle('narration:text-readiness', async (
   });
 
   // ── Listen window (Play / Stream player) ──
-  // The XTTS stream engine's lifetime is tied to these windows: when the last
+  // The stream engine's lifetime is tied to these windows: when the last
   // listen window closes, the engine is shut down. That guarantees the engine
   // is only ever running while a player window is open.
   const listenWindows = new Map<string, BrowserWindow>();

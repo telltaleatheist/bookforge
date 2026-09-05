@@ -506,7 +506,7 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                     everywhere and frees memory.
                     @if (isMac()) {
                       <strong>GPU (MPS)</strong> uses the Apple-Silicon GPU — it's a real
-                      choice, though CPU is usually better for XTTS on Mac.
+                      choice.
                     } @else {
                       <strong>GPU</strong> (NVIDIA/CUDA) is much faster but needs the GPU
                       acceleration pack below. <strong>Auto</strong> uses the GPU when it's

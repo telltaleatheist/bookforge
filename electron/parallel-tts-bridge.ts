@@ -3841,7 +3841,7 @@ export async function regenerateSentenceIndices(
  */
 function assertGpuIsOurs(session: ConversionSession): void {
   if (process.platform !== 'darwin') return;                       // one MLX GPU is a Mac problem
-  if (session.config.settings.ttsEngine !== 'orpheus') return;      // XTTS on Mac runs on the CPU
+  if (session.config.settings.ttsEngine !== 'orpheus') return;      // this profile is Orpheus's
   if (session.gpuOwnershipChecked) return;
   session.gpuOwnershipChecked = true;
 
@@ -3931,7 +3931,8 @@ function startWorker(
       pushVoiceArgs(args, settings);
     }
 
-    // Pass speed setting (XTTS only)
+    // Pass speed. NOT engine-gated, and that is why `ttsSpeed` survived the
+    // XTTS removal while the sampling trio beside it did not.
     if (settings.speed !== undefined && settings.speed !== 1.0) {
       args.push('--speed', settings.speed.toString());
     }
@@ -3994,7 +3995,8 @@ function startWorker(
       args.push('--enable_text_splitting');
     }
 
-    // Pass speed setting (XTTS only)
+    // Pass speed. NOT engine-gated, and that is why `ttsSpeed` survived the
+    // XTTS removal while the sampling trio beside it did not.
     if (settings.speed !== undefined && settings.speed !== 1.0) {
       args.push('--speed', settings.speed.toString());
     }
@@ -6557,7 +6559,7 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
     // a second, uninformed sizing path is exactly how the two halves drift apart.
     return ORPHEUS_MIN_VRAM_MB;
   }
-  return 4500; // XTTS / F5 / Voxtral conservative floor
+  return 4500; // conservative floor for any engine without a measured profile
 }
 
 /**
@@ -6794,7 +6796,7 @@ async function acquireGpuForJob(session: ConversionSession): Promise<void> {
     return;
   }
 
-  // Other engines (XTTS / F5 / Voxtral): best-effort preflight against a conservative
+  // Any other engine: best-effort preflight against a conservative
   // floor, to ride out GPU users outside this process. Never fails the job.
   const requiredMB = await requiredVramMB(engine);
   if (requiredMB > 0) {
@@ -8268,7 +8270,7 @@ export interface ResumeCheckResult {
   }>;
   metadata?: { title?: string; creator?: string; language?: string };
   // Original render settings + RVC-enhancement config from the previous run, so a
-  // Continue pre-fills the wizard with what the user actually used (not xtts/Scarlett).
+  // Continue pre-fills the wizard with what the user actually used, not the defaults.
   renderSettings?: ResumeRenderSettings;
   rvcEnhancement?: ParallelConversionConfig['rvcEnhancement'];
   warnings?: string[];
