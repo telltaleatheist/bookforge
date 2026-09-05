@@ -10211,8 +10211,8 @@ function setupIpcHandlers(): void {
 
   ipcMain.handle('reassembly:is-available', async () => {
     try {
-      const { isE2aAvailable } = await import('./reassembly-bridge.js');
-      return { success: true, data: { available: isE2aAvailable() } };
+      const { narratorReady } = await import('./reassembly-bridge.js');
+      return { success: true, data: { available: narratorReady() } };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

@@ -5356,37 +5356,36 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     rendererSend('parallel-tts:progress', { jobId: session.jobId, progress });
   }
 
-  // Run e2a with --assemble_only to combine sentence audio files into final audiobook
-  const appPath = path.join(getDefaultE2aPath(), 'app.py');
+  // ── ASSEMBLY IS NATIVE, ON EVERY PLATFORM, FOR EVERY ENGINE ───────────────
+  //
+  // It concatenates sentence audio and encodes one m4b. It loads no model, it
+  // touches no GPU, and narrator does not gate it on an engine: `compat/app.py`
+  // routes `--assemble_only` BEFORE any engine resolution and `check_engine`
+  // never runs on it. So it belongs in the tools env — the bundled relocatable
+  // python that already holds numpy/soundfile/mutagen and ffmpeg on PATH — and
+  // nowhere else.
+  //
+  // WHAT WAS HERE. Four variables (`assembleOrpheusNative`, `asmInvocation`,
+  // `asmEngineArg`, `asmRoutingEngine`) computed which of THREE routes to take:
+  // native-with-the-generic-env-and-a-lie (`--tts_engine xtts`, because
+  // `pythonInvocation('orpheus')` returns the marker path `<e2a>/orpheus_wsl_env`
+  // that only resolves after buildWslBashCommand rewrites it inside WSL), native
+  // with the engine's own env, or back through WSL when normalization had failed.
+  // All three are gone. The one that mattered is preserved as the DEFAULT rather
+  // than as a special case.
+  //
+  // AND `normalizeWslSessionToWindows` STAYS — it is what makes this possible.
+  // Orpheus prep and render still run in WSL, so the session is written to ext4;
+  // that function copies it onto a Windows path after generation and repoints
+  // prepInfo. Without it a native assembly would be reading the \\wsl$ 9p mount,
+  // which is slow enough to dominate the job, or nothing at all when WSL is down.
   const settings = config.settings;
 
-  // Assembly only concatenates sentence audio — it loads no TTS model and is
-  // engine-agnostic. This block is WINDOWS-ONLY: it handles Orpheus, which runs in
-  // WSL on Windows but is normalized onto Windows after generation
-  // (normalizeWslSessionToWindows), so assembly runs NATIVELY here. We can't use
-  // the engine's real env for that: pythonInvocation('orpheus') returns a fake
-  // orpheus_wsl_env prefix that only resolves after buildWslBashCommand rewrites it
-  // to `-n orpheus_tts` inside WSL. So for a Windows-native Orpheus session,
-  // assemble through the generic bundled env with --tts_engine xtts (as
-  // reassembly-bridge does), on CPU. If normalization failed (session still
-  // WSL-resident), fall back to the original WSL spawn with the real engine.
-  // On macOS/Linux Orpheus runs natively (no WSL) — leave its assembly untouched
-  // (gated by platform === 'win32'), as are all non-Orpheus engines everywhere.
-  const isWindows = process.platform === 'win32';
-  const isOrpheus = settings.ttsEngine?.toLowerCase() === 'orpheus';
-  const sessionStillInWsl = isWslUncPath(prepInfo.sessionDir);
-  const assembleOrpheusNative = isWindows && isOrpheus && !sessionStillInWsl;
-  const asmInvocation = assembleOrpheusNative ? pythonInvocation(undefined) : pythonInvocation(settings.ttsEngine);
-  const asmEngineArg = assembleOrpheusNative ? 'xtts' : settings.ttsEngine;
-  // Route through WSL only for a Windows Orpheus session that's still WSL-resident.
-  const asmRoutingEngine = (isWindows && isOrpheus && sessionStillInWsl) ? settings.ttsEngine
-    : (assembleOrpheusNative ? undefined : settings.ttsEngine);
-
-  // Map UI device names to e2a CLI device names (app.py expects uppercase).
-  // Same resolver as the worker/prep paths so 'auto' resolves identically and
-  // assembly runs on the same device the audio was synthesized on. Native Orpheus
-  // assembly forces CPU (no GPU work; avoids any CUDA init in the bundled env).
-  const asmDeviceArg = assembleOrpheusNative ? 'CPU' : resolveTtsDeviceArg(settings.device);
+  // The device flag is scaffolding on this door — narrator's assembly reads no
+  // device — but it is passed as CPU rather than omitted, because that is what it
+  // truthfully does and a session dump that says CUDA on an assembly is a lie a
+  // reader has to disprove.
+  const asmDeviceArg = 'CPU';
 
   // De-ring is OPT-IN and lives on the reassembly path (see reassembly-bridge:
   // config.applyDeRing). This inline TTS→assemble path never auto-applies a per-voice
@@ -5397,8 +5396,6 @@ async function runAssembly(session: ConversionSession): Promise<string> {
   const postRenderFilter: string | undefined = undefined;
 
   const args = [
-    ...asmInvocation.args,
-    appPath,
     '--headless',
     // Only include --ebook if we have a path (assembly_only doesn't require it)
     ...(config.epubPath ? ['--ebook', config.epubPath] : []),
@@ -5417,9 +5414,14 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         : []),
     '--device', asmDeviceArg,
     '--language', settings.language,
-    '--tts_engine', asmEngineArg,  // Required for session setup even in assembly mode
+    // THE JOB'S OWN ENGINE, in narrator's spelling. Not the literal 'xtts' this
+    // door used to send when it ran natively, and not omitted as the Higgs door
+    // used to. narrator does not gate assembly on the engine, so any of the three
+    // works today — but only this one is still right if it ever does, and only
+    // this one never names an ENGINE_NEAR_MISS ('higgs' is one; 'higgs-v3' is the
+    // id). A session's own record of what rendered it should agree with the flag.
+    '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
-    '--skip_deps',      // Deps already verified during prep phase
     '--no_split',       // Don't split into multiple parts - create single file
     // Per-voice post-render filter (Orpheus voices only) — applied at e2a's final encode.
     ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
@@ -5448,76 +5450,35 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     const assemblyStartMs = Date.now();
     const FRESHNESS_SLACK_MS = 2000;
 
-    // Orpheus generation ran in WSL, but after normalization the session lives on
-    // Windows, so assembly runs natively here (asmRoutingEngine is undefined →
-    // native spawn). Only a failed normalization keeps it on the WSL path.
-    // ── The Higgs assembly route ─────────────────────────────────────────────
+    // ONE ASSEMBLY SPAWN. `buildNarratorSpawn` with NO engine is the tools env on
+    // every platform — see its PHASE_ENGINE table, where `assembly` is the single
+    // 'optional' entry and passing no engine is what selects the engine-agnostic
+    // route. The Higgs branch that stood here is gone with the Orpheus one: a
+    // Higgs session is a narrator session and its assembly is the same door.
     //
-    // A Higgs book is assembled by narrator, and the reason is the plain one:
-    // this is the same `--assemble_only` door Orpheus-native assembly will use at
-    // cut-over, and a Higgs session is a narrator session — prep wrote it, the
-    // worker filled it, and its manifest is narrator's.
-    //
-    // AND IT DOES READ THE ENGINE PROFILE, as of narrator 4854aae4. An earlier
-    // version of this comment asserted that before it was true — `assemble/` had
-    // no fade at all at the time, and neither did BookForge. It now has
-    // `engine_profiles.py` (higgs-v3: pads=false, 10/25 ms raised-cosine fades),
-    // `edges.py`, and `_plan_unpadded` realizing the manifest's
-    // gapBefore/gapAfter as generated silence through one FLAC writer. Prep
-    // writes the `gaps.json` those read, and `session_v1` refuses a pads=false
-    // session without it — so the routing and the capability now line up, rather
-    // than the comment describing the capability we wanted.
-    //
-    // NO CAPS ARE PASSED, and `--tts_engine` is OMITTED. `dispatch` routes
-    // `--assemble_only` before any engine resolution (`compat/app.py:517-528`)
-    // and `check_engine` never runs on it, so the flag names nothing — while the
-    // value the argv would otherwise carry is the literal `higgs`, which
-    // `compat/flags.py` lists under ENGINE_NEAR_MISSES ("names no registry id")
-    // and would refuse by name the moment assembly is ever gated. Omitting it is
-    // the one option that is correct both now and then.
-    const higgsAsmPlan = isHiggsJob(settings)
-      ? (() => {
-          // Slice from `--headless`, which is where the e2a-shaped flags begin
-          // (everything before it is the interpreter prefix). Throwing when it is
-          // absent rather than letting `indexOf` return -1 and `slice(-1)` hand
-          // narrator a one-element argv: the worker and retake routes already
-          // refuse their own missing anchor by name, and this one was the odd
-          // door out.
-          const at = args.indexOf('--headless');
-          if (at < 0) {
-            throw new Error(
-              'Higgs assembly argv has no --headless anchor, so the e2a flag list cannot be ' +
-                'located — refusing to hand narrator a truncated command line.',
-            );
-          }
-          return buildHiggsSpawn('assembly', {
-            model: higgsPreflight(settings.fineTuned),
-            args: stripFlagWithValue(args.slice(at), '--tts_engine'),
-            cwd: getDefaultE2aPath(),
-            jobId: session.jobId,
-          });
-        })()
-      : null;
-    if (higgsAsmPlan) {
-      console.log('[PARALLEL-TTS] Assembly → narrator (Higgs):', higgsAsmPlan.describe());
-    }
-
-    session.assemblyProcess = higgsAsmPlan
-      ? spawn(higgsAsmPlan.command, higgsAsmPlan.args, {
-          cwd: higgsAsmPlan.cwd,
-          env: higgsAsmPlan.env,
-          shell: false,
-        })
-      : spawnWithWslSupport(
-      asmInvocation.command,
+    // narrator's assembler reads the manifest's engine profile for the things
+    // that ARE engine-specific — `engine_profiles.py` (higgs-v3: pads=false,
+    // 10/25 ms raised-cosine fades), `edges.py`, and `_plan_unpadded` realizing
+    // gapBefore/gapAfter as generated silence through one FLAC writer. Prep writes
+    // the `gaps.json` those read and `session_v1` refuses a pads=false session
+    // without it. So the door is engine-agnostic and the AUDIO is not, which is
+    // the correct division: the profile travels in the session, not in the argv.
+    const asmPlan = buildNarratorSpawn({
+      phase: 'assembly',
       args,
-      {
-        cwd: getDefaultE2aPath(),
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8', VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0' }),
-        shell: false
+      envExtras: {
+        // No ORPHEUS_* and no CUDA pins: nothing here loads vLLM or MLX.
+        VLLM_USE_V1: '0',
       },
-      asmRoutingEngine  // WSL only if the session is still WSL-resident
-    );
+      cwdHint: getDefaultE2aPath(),
+    });
+    console.log('[PARALLEL-TTS] Assembly → narrator:', asmPlan.describe());
+
+    session.assemblyProcess = spawn(asmPlan.command, asmPlan.args, {
+      cwd: asmPlan.cwd,
+      env: asmPlan.env,
+      shell: false,
+    });
 
     // Track assembly state for progress reporting
     let assemblySubPhase: 'combining' | 'vtt' | 'encoding' | 'metadata' = 'combining';

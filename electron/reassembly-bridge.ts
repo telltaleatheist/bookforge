@@ -5,9 +5,10 @@
 import { publishBridgeEvent } from './bridge-events';
 import * as fs from 'fs';
 import * as path from 'path';
-import { spawn, ChildProcess } from 'child_process';
+import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, getPythonInvocation, getWslDistro, getWslCondaPath, getWslE2aPath, windowsToWslPath, wslToWindowsPath, buildCondaSpawnEnv, shellEscapeArgs } from './e2a-paths';
+import { getDefaultE2aPath, getDefaultE2aTmpPath, wslToWindowsPath, buildCondaSpawnEnv } from './e2a-paths';
+import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
 import { renameWithRetry, unlinkWithRetry, isTransientFsError } from './fs-retry';
@@ -54,64 +55,6 @@ function appendCapped(buf: string, chunk: string): string {
 function isWslPath(p: string): boolean {
   const normalized = p.replace(/\\/g, '/');
   return /^\/\/wsl[\$.](?:localhost)?\//.test(normalized);
-}
-
-/**
- * Convert UNC WSL paths back to native WSL paths.
- * Handles any distro name and both \\wsl$ and \\wsl.localhost forms.
- */
-function uncToWslPath(p: string): string {
-  const uncMatch = p.replace(/\\/g, '/').match(/^\/\/wsl[\$.](?:localhost)?\/[^/]+\/(.*)/);
-  if (uncMatch) {
-    return '/' + uncMatch[1];
-  }
-  if (/^[A-Za-z]:[\\/]/.test(p)) {
-    return windowsToWslPath(p);
-  }
-  return p;
-}
-
-/** Shell-quote a string for safe use in a bash -c command */
-function shellQuoteArg(s: string): string {
-  return `'${s.replace(/'/g, "'\\''")}'`;
-}
-
-/**
- * Build WSL bash command for assembly
- * First argument in appArgs is the Windows app.py path - we skip it and use WSL native path
- */
-function buildWslAssemblyCommand(
-  appArgs: string[],
-  outputDir: string
-): string {
-  const wslCondaPath = getWslCondaPath();
-  const wslE2aPath = getWslE2aPath();
-
-  // Skip the first argument (Windows app.py path) - we'll use WSL native path
-  const argsWithoutAppPath = appArgs.slice(1);
-
-  // Convert remaining args - replace Windows paths with WSL paths
-  const wslArgs = argsWithoutAppPath.map(arg => {
-    // Convert Windows drive paths (C:\...) to WSL paths (/mnt/c/...)
-    if (arg.match(/^[A-Za-z]:\\/)) {
-      return windowsToWslPath(arg);
-    }
-    // Convert UNC WSL paths (\\wsl$\..., \\wsl.localhost\...) to native WSL paths
-    if (isWslPath(arg)) {
-      return uncToWslPath(arg);
-    }
-    // Already a WSL path or flag - pass through
-    return arg;
-  });
-
-  const q = shellQuoteArg;
-  const cdCommand = `cd ${q(wslE2aPath)}`;
-  // Use WSL native app.py path
-  const wslAppPath = `${wslE2aPath}/app.py`;
-  const quotedArgs = wslArgs.map(a => q(a)).join(' ');
-  const condaCommand = `${q(wslCondaPath)} run --no-capture-output -p ${q(`${wslE2aPath}/python_env`)} python ${q(wslAppPath)} ${quotedArgs}`;
-
-  return `${cdCommand} && ${condaCommand}`;
 }
 
 // The e2a app path (uses cross-platform detection)
@@ -1497,16 +1440,33 @@ export async function startReassembly(
     }
   }
 
+  // The engine this session was RENDERED by, in narrator's spelling, read from
+  // the session's own state file.
+  //
+  // This door used to send the literal 'xtts' on every book including Orpheus
+  // ones, and narrator still would not care: `compat/app.py` routes
+  // `--assemble_only` before any engine resolution, so `check_engine` never sees
+  // it. What changes is that the argv and the session no longer contradict each
+  // other. A session with no readable provenance is assembled as `orpheus`, which
+  // is not a guess about the audio — nothing on this path reads the flag — but it
+  // IS the only runnable id, and inventing `higgs-v3` for an unknown session would
+  // be one.
+  const asmProvenance = await parseSessionProvenance(config.processDir);
+  const asmEngine = asmProvenance?.ttsEngine?.toLowerCase() === 'higgs' ? 'higgs-v3' : 'orpheus';
+
   return new Promise((resolve) => {
-    const appPath = path.join(e2aPath, 'app.py');
-    const platform = os.platform();
-
-    // Check if session is in WSL - if so, we need to run assembly through WSL
-    const sessionInWsl = isWslPath(config.sessionDir);
-
-    // Build arguments for app.py
+    // ASSEMBLY IS NATIVE. The `sessionInWsl` branch that stood here ran the whole
+    // thing back through `wsl.exe` whenever the session lived on ext4, because
+    // e2a's assembly had to be able to READ that session. narrator's runs in the
+    // tools env on every platform and reads the session through whatever path it
+    // is handed — a \\wsl$ UNC included — so the branch bought nothing and cost
+    // the 9p mount. `buildWslAssemblyCommand` is deleted with it.
+    //
+    // (The render path avoids the 9p mount a better way:
+    // `normalizeWslSessionToWindows` copies the session onto a Windows path after
+    // generation, INSIDE the guest, which is fast. This door reassembles a session
+    // that already exists and does not get to choose where it lives.)
     const appArgs = [
-      appPath,
       '--headless',
       '--ebook', epubPath,
       '--output_dir', stagingDir,
@@ -1514,7 +1474,13 @@ export async function startReassembly(
       '--session_dir', config.sessionDir,
       '--device', 'CPU',
       '--language', language,
-      '--tts_engine', 'xtts',
+      // Read from the session's own provenance rather than the literal 'xtts'
+      // this door sent on every book including Orpheus ones. narrator does not
+      // gate assembly on the engine (`compat/app.py` routes `--assemble_only`
+      // before any engine resolution), so the flag names nothing today — but a
+      // session whose argv disagrees with its own state file is a fact somebody
+      // later has to disprove.
+      '--tts_engine', asmEngine,
       '--assemble_only',
       '--no_split',
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir
@@ -1525,57 +1491,39 @@ export async function startReassembly(
       // concat; it validates and errors on anything it cannot use, and ignores the
       // flag entirely on the modes where pre-encoded chunks are not equivalent.
       ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []),
-      // Per-voice post-render filter (Orpheus provenance only) — applied at e2a's
-      // final encode. The native branch shell-escapes each arg (shellEscapeArgs) and
-      // the WSL branch shell-quotes each (buildWslAssemblyCommand); both are safe for
-      // the `|`, `:`, `/`, single-quote chars a filter chain may contain.
+      // Per-voice post-render filter (Orpheus provenance only) — applied at the
+      // final encode. It is ONE opaque argument that may contain `|`, `:`, `/` and
+      // quotes; it crosses as an argv element and is never shell-interpolated, so
+      // there is nothing left to escape it against.
       ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
     ];
 
     // Note: --output_filename, --title, --author, --cover are not supported by all e2a versions
     // Metadata will be applied after assembly using m4b-tool if available
 
-    let proc: ChildProcess;
+    // ONE SPAWN, native, every platform. `buildNarratorSpawn` with NO engine is
+    // the tools env — the bundled relocatable python that holds numpy/soundfile/
+    // mutagen with ffmpeg on PATH, which is everything an assembly needs.
+    //
+    // shell:false, where this used to pass shell:true + shellEscapeArgs. That
+    // existed because `conda run` re-invokes through a shell and a bundled python
+    // lives under "Application Support" on macOS; argv is passed as an array now
+    // and never round-trips through a shell, so paths with apostrophes ('Aesop's
+    // Fables') and a `--post_render_filter` chain full of `|` and `:` cross
+    // untouched instead of correctly escaped.
+    const asmPlan = buildNarratorSpawn({
+      phase: 'assembly',
+      args: appArgs,
+      envExtras: {},
+      cwdHint: e2aPath,
+    });
+    console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
 
-    if (sessionInWsl && platform === 'win32') {
-      // Session is in WSL filesystem - run assembly through WSL
-      const wslE2aPath = getWslE2aPath();
-      const wslBashCommand = buildWslAssemblyCommand(appArgs, config.outputDir);
-      console.log('[REASSEMBLY] Session in WSL, running through WSL:', wslBashCommand.substring(0, 200) + '...');
-
-      const distro = getWslDistro();
-      // Use bash -c (non-interactive) to avoid .bashrc issues blocking stdout
-      const wslArgs = distro
-        ? ['-d', distro, 'bash', '-c', wslBashCommand]
-        : ['bash', '-c', wslBashCommand];
-
-      proc = spawn('wsl.exe', wslArgs, {
-        cwd: e2aPath,
-        env: buildCondaSpawnEnv({ PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8' }),
-        shell: false
-      });
-    } else {
-      // Standard Windows/macOS/Linux spawn
-      // Use shell: true + shellEscapeArgs to handle paths with apostrophes/quotes
-      // (conda run re-invokes through a shell, so paths must be properly escaped).
-      // The command is escaped too: a bundled relocatable python lives under
-      // "Application Support" on macOS.
-      const py = getPythonInvocation(e2aPath);
-      const escapedArgs = shellEscapeArgs([...py.args, ...appArgs]);
-      const escapedCommand = shellEscapeArgs([py.command])[0];
-      console.log('[REASSEMBLY] Running command:', escapedCommand, escapedArgs.join(' '));
-
-      // buildCondaSpawnEnv enriches PATH with the resolved ffmpeg dir so e2a's
-      // Python (pydub) finds ffmpeg/ffprobe even under a packaged app's minimal PATH.
-      proc = spawn(escapedCommand, escapedArgs, {
-        cwd: e2aPath,
-        env: buildCondaSpawnEnv({
-          PYTHONUNBUFFERED: '1',
-          PYTHONIOENCODING: 'utf-8',
-        }),
-        shell: true,
-      });
-    }
+    const proc: ChildProcess = spawn(asmPlan.command, asmPlan.args, {
+      cwd: asmPlan.cwd,
+      env: asmPlan.env,
+      shell: false,
+    });
 
     activeReassemblies.set(jobId, proc);
 
@@ -1929,8 +1877,11 @@ export async function startReassembly(
             const result = JSON.parse(jsonMatch[0]);
             if (result.output_files && result.output_files[0]) {
               outputPath = result.output_files[0];
-              // e2a running in WSL emits /mnt/... paths — convert to Windows
-              if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
+              // NO WSL PATH CONVERSION any more. It was here because assembly
+              // itself ran in the guest and reported /mnt/... paths; it runs
+              // natively now and is handed a Windows --output_dir, so it reports
+              // the path this process gave it. Converting anyway would be a
+              // no-op that reads as a guard.
               console.log('[REASSEMBLY] Output path from JSON:', outputPath);
             }
           }
@@ -1943,8 +1894,6 @@ export async function startReassembly(
         const pathMatch = line.match(/(?:Audiobook saved to:|Output:)\s*(.+\.m4b)/i);
         if (pathMatch) {
           outputPath = pathMatch[1].trim();
-          // e2a running in WSL emits /mnt/... paths — convert to Windows
-          if (sessionInWsl) outputPath = wslToWindowsPath(outputPath);
         }
       }
     });
@@ -2647,14 +2596,58 @@ function sendProgress(
 }
 
 /**
- * Check if e2a is available
- * @param customTmpPath - Optional custom path to the e2a tmp folder
+ * CAN THIS MACHINE ASSEMBLE AN AUDIOBOOK?
+ *
+ * Two halves, and the second is the one that used to be missing.
+ *
+ *  1. the `narrator` package is in this checkout (`narratorPythonRoot()` throws
+ *     by name when it is not);
+ *  2. the tools env's python can actually IMPORT `narrator.assemble` — which is
+ *     where numpy / soundfile / mutagen have to be, and where a half-installed
+ *     env fails.
+ *
+ * The old check was `<e2a>/app.py exists`, which answered neither: a checkout
+ * with the file and an env missing soundfile passed it and then failed inside the
+ * assembler, minutes into a job. This runs the import once and caches the answer
+ * for the life of the process, because it costs a python start (~1 s) and the
+ * environment does not change under a running app.
+ *
+ * `customTmpPath` is accepted and ignored: it named an e2a install to look beside,
+ * and there is no longer an e2a install. Kept so the IPC caller does not have to
+ * change shape in the same commit.
  */
-export function isE2aAvailable(customTmpPath?: string): boolean {
-  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
-  const e2aPath = getE2aAppPath(tmpPath);
-  return fs.existsSync(e2aPath) && fs.existsSync(path.join(e2aPath, 'app.py'));
+let narratorReadyCache: boolean | null = null;
+
+export function narratorReady(_customTmpPath?: string): boolean {
+  if (narratorReadyCache !== null) return narratorReadyCache;
+  try {
+    narratorPythonRoot();
+  } catch (err) {
+    console.warn('[REASSEMBLY] narrator package not present:', (err as Error).message);
+    narratorReadyCache = false;
+    return false;
+  }
+  const plan = buildNarratorSpawn({
+    phase: 'assembly',
+    args: [],
+    envExtras: {},
+  });
+  // `-c import narrator.assemble` rather than `-m narrator.compat.app --help`:
+  // the import is what fails when the env is short a package, and --help would
+  // pass on an env that cannot assemble anything.
+  const probe = spawnSync(
+    plan.command,
+    [...plan.args.slice(0, plan.args.indexOf('-u')), '-c', 'import narrator.assemble'],
+    { env: plan.env, cwd: plan.cwd, timeout: 60000, stdio: 'ignore' },
+  );
+  narratorReadyCache = probe.status === 0;
+  if (!narratorReadyCache) {
+    console.warn('[REASSEMBLY] narrator.assemble is not importable in the tools env '
+      + `(exit ${probe.status}${probe.error ? `, ${probe.error.message}` : ''})`);
+  }
+  return narratorReadyCache;
 }
+
 
 /**
  * Get a cached TTS session from a single project's audiobook folder.
