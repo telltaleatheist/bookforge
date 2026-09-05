@@ -109,7 +109,13 @@ const LINES = [
     what: 'the model-load done line',
     emits: 'Orpheus TTS Loaded!',
     source: 'engine/orpheus/engine.py',
-    fragment: "print('Orpheus TTS Loaded!')",
+    // `log(...)`, not `print(...)`, and the call name is part of the fragment on
+    // purpose. `engine/log.py` (2026-09-05) routes every engine line to the stream
+    // THE HOST chose: stderr by default, stdout under `narrator.compat.worker`,
+    // which is the stream `parallel-tts-bridge.ts` runs this matcher on. A
+    // `print(..., file=sys.stderr)` here would keep the string and still turn the
+    // load bar off, so pinning the string alone is not enough — pin the routing.
+    fragment: "log('Orpheus TTS Loaded!')",
     match: [MODEL_LOAD_DONE_RE],
     noMatch: [MODEL_LOAD_START_RE, PROGRESS_LINE_RE, REPAIR_START_RE],
   },
@@ -173,6 +179,39 @@ for (const row of LINES) {
       + 'changing the matcher here turns a watchdog off silently.');
   });
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+console.log('the worker door still points the engine\'s log lines at STDOUT');
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// SIX of the eight rows above are printed from `engine/orpheus/`, and since
+// `engine/log.py` (2026-09-05) every one of them goes to a stream THE HOST
+// chooses — stderr by default, because `narrator.serve`'s stdout is a JSON-lines
+// protocol that a stray log line corrupts.
+//
+// `parallel-tts-bridge.ts` runs these matchers on the worker's STDOUT handler and
+// not on its stderr handler (log.py's own docstring lists the five parsers that
+// differ). So the door the bridge spawns has to opt in, and if it ever stops,
+// SIX watchdogs go dark at once with every string above still perfectly present.
+// No per-string fragment can catch that; this can.
+check('compat/worker.py calls set_log_stream(sys.stdout)', () => {
+  const file = path.join(PY, 'compat/worker.py');
+  assert.ok(fs.existsSync(file), 'compat/worker.py does not exist — the worker door moved');
+  const src = fs.readFileSync(file, 'utf-8');
+  assert.ok(/set_log_stream\(\s*sys\.stdout\s*\)/.test(src),
+    'compat/worker.py no longer routes the engine log to stdout. The bridge parses '
+    + 'the worker\'s stdout, not its stderr, so the model-load bar, the re-split '
+    + 'ladder, the guard-event index and the MLX batch bar all go silent — with '
+    + 'every log string still exactly as this file asserts.');
+});
+check('narrator.serve does NOT — its stdout is the protocol', () => {
+  const src = fs.readFileSync(path.join(PY, 'serve/worker.py'), 'utf-8');
+  assert.ok(/set_log_stream\(\s*sys\.stderr\s*\)/.test(src),
+    'narrator.serve must keep engine logs OFF stdout: a bare log line between two '
+    + 'protocol messages breaks orpheus-worker-pool.ts\'s JSON parse.');
+  assert.ok(!/set_log_stream\(\s*sys\.stdout\s*\)/.test(src),
+    'narrator.serve points engine logs at stdout — that corrupts the JSON-lines protocol.');
+});
 
 console.log('the bridge matches it');
 for (const row of LINES) {

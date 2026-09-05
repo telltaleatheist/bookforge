@@ -140,14 +140,38 @@ check('no voice installed → refused, whatever the platform', () => {
     assert.match(h.reason, /voice/i);
   }
 });
-check('darwin → refused while narrator has no MLX Higgs backend', () => {
+// REWRITTEN 2026-09-05, exactly as the case it replaces demanded. The old case
+// asserted `higgsMlxBackendPresent() === false` and that darwin therefore refused
+// by name ("v3's only backend is a vLLM-Omni server and there is no macOS build").
+// `feat/narrator-higgs-mlx` merged in bbe845b8 and the detector — which reads the
+// CONTENT under `engine/higgs/` rather than a hard-coded false — flipped by
+// itself, which is what it was built to do. So the Mac no longer refuses over the
+// BACKEND. What decides it now is the same thing that decides Orpheus there: the
+// `narrator-mlx` environment.
+//
+// The assertion has to stay host-independent (this keeper runs on Windows, where
+// that env is absent, and on a Mac where it may not be), so it pins the QUESTION
+// rather than the answer: whatever darwin says about Higgs, it must be about
+// narrator-mlx and never again about a missing backend.
+check('darwin → decided by narrator-mlx, no longer by a missing MLX backend', () => {
+  assert.strictEqual(spawnMod.higgsMlxBackendPresent(), true,
+    'the in-process MLX Higgs backend has disappeared from engine/higgs/ — if that '
+    + 'is deliberate, this case goes back to asserting darwin refuses by name');
   const h = higgsOn('darwin', {});
-  assert.strictEqual(spawnMod.higgsMlxBackendPresent(), false,
-    'narrator now HAS an MLX Higgs backend — this case must be rewritten to assert '
-    + 'the Mac arm resolves narrator-mlx, not that it refuses');
-  assert.strictEqual(h.available, false);
-  assert.match(h.reason, /vLLM-Omni|MLX|backend/,
-    'the refusal does not say why a Mac cannot run it');
+  if (h.available) {
+    // A Mac with the env: the spawn must be buildable. (The loop below asserts
+    // this for both platforms; stated here so the case reads as a whole.)
+    assert.doesNotThrow(() => spawnMod.buildNarratorSpawn({
+      engine: 'higgs', phase: 'serve', args: [], envExtras: {}, cwdHint: REPO,
+    }), 'darwin offers Higgs but the spawn cannot be built');
+  } else {
+    assert.match(h.reason, /narrator-mlx/,
+      'darwin refuses Higgs for something other than the narrator-mlx environment');
+    assert.doesNotMatch(h.reason, /vLLM-Omni|no macOS build/,
+      'darwin still refuses Higgs for want of a macOS backend — the MLX backend '
+      + 'has landed, so that reason is stale and would send a Mac user looking for '
+      + 'the wrong thing');
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
