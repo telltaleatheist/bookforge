@@ -26,7 +26,8 @@
 #   4. $HIGGS_DEPLOY_CONFIG selects vllm-omni's deploy profile. Unset, vllm-omni
 #      auto-discovers `higgs_multimodal_qwen3.yaml`, which keeps stage 0 in
 #      enforce_eager (NO CUDA GRAPHS on the talker). The sibling
-#      `higgs_multimodal_qwen3_low_latency` profile turns them on
+#      `higgs_multimodal_qwen3_low_latency.yaml` profile (the FILE name - see
+#      the check below) turns them on
 #      (enforce_eager: false, cudagraph_mode FULL_DECODE_ONLY). Which profile is
 #      certified for a voice is the training side's measurement, and until it is
 #      made this stays unset - the variable exists so that measurement needs no
@@ -114,8 +115,19 @@ case "$HIGGS_MAX_MODEL_LEN" in ''|*[!0-9]*|0) echo "HIGGS_MAX_MODEL_LEN must be 
 
 STAGE_OVERRIDES="{\"0\": {\"gpu_memory_utilization\": $HIGGS_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS, \"max_model_len\": $HIGGS_MAX_MODEL_LEN}, \"1\": {\"gpu_memory_utilization\": $HIGGS_CODEC_GPU_MEM_UTIL, \"max_num_seqs\": $HIGGS_MAX_NUM_SEQS}}"
 
+# A deploy profile is a FILE NAME or a full path, never a bare name. MEASURED
+# (training, 2026-09-05, vllm-omni 0.28.0): `--deploy-config
+# higgs_multimodal_qwen3_low_latency` fails at startup with "Deploy config not
+# found" - config_factory._load_user_deploy_config joins a bare name to the
+# deploy dir without appending .yaml. `higgs_multimodal_qwen3_low_latency.yaml`
+# resolves. Refused here by name rather than passed through to a crash that
+# costs a 55-297 s launch to read.
 DEPLOY_ARGS=()
 if [ -n "$HIGGS_DEPLOY_CONFIG" ]; then
+  case "$HIGGS_DEPLOY_CONFIG" in
+    *.yaml|*.yml|*/*) ;;
+    *) echo "HIGGS_DEPLOY_CONFIG='$HIGGS_DEPLOY_CONFIG' is a bare profile name; vllm-omni resolves only a file name (append .yaml) or a full path." >&2; exit 4 ;;
+  esac
   DEPLOY_ARGS=(--deploy-config "$HIGGS_DEPLOY_CONFIG")
 fi
 

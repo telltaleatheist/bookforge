@@ -24,6 +24,7 @@
     "maxModelLen": 8192,
     "maxNumSeqs": 16,
     "deployConfig": null,
+    "_deployConfigNote": "A vllm-omni deploy profile, reaching the launcher as HIGGS_DEPLOY_CONFIG. It is a FILE NAME (e.g. higgs_multimodal_qwen3_low_latency.yaml) or a full path, NEVER a bare profile name: measured 2026-09-05, vllm-omni 0.28.0 resolves `--deploy-config <bare name>` to Deploy config not found, and the launcher refuses a bare name before the launch. null = the auto profile (talker enforce_eager, no CUDA graphs). The low_latency file turns graphs on (cudagraph_mode FULL_DECODE_ONLY, capture sizes 1-16); it becomes this value once the training side certifies the deathstalker checkpoint under it.",
     "attentionBackend": "FLASH_ATTN",
     "coldStartSeconds": 297,
     "readyTimeoutSeconds": 300,
