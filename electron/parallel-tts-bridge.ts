@@ -199,14 +199,24 @@ import { uniqueOutputPath, uniqueOutputStem } from './output-naming';
 import { destroyWslGuestProcesses, wslPkillGraceful, waitForGuestExit, isWslWedged, wslWedgedMessage, isWslAliveCached, type WslPkillOutcome } from './wsl-lifecycle';
 import { assertRunnableTtsEngine } from '../shared/tts/engine-caps';
 import {
-  HIGGS_NARRATOR_ENGINE,
   HIGGS_VOICE_FLAG,
   buildHiggsSpawn,
   higgsEnvironmentRefusal,
   higgsPreflight,
   higgsRunsInWsl,
 } from './higgs-spawn';
-import { SERVE_PROCESS_RE } from './narrator-spawn';
+import {
+  NARRATOR_APP_RE,
+  NARRATOR_BATCH_RE,
+  NARRATOR_WORKER_RE,
+  SERVE_PROCESS_RE,
+  buildNarratorSpawn,
+  narratorEngineId,
+  narratorRunsInWsl,
+  type NarratorEngineId,
+  type NarratorPhase,
+  type NarratorSpawnPlan,
+} from './narrator-spawn';
 import {
   findForeignRenders,
   gpuOwnershipRefusal,
@@ -2273,6 +2283,65 @@ export function isHiggsJob(settings: ParallelTtsSettings): boolean {
   return settings.ttsEngine === 'higgs';
 }
 
+/**
+ * Which narrator engine this job runs on.
+ *
+ * REFUSES a retired id rather than coercing it. `assertRunnableTtsEngine` already
+ * guards the queue boundary and the retake door, but a session-state.json written
+ * by an XTTS-era build reaches some of these functions with no UI in between, and
+ * an engine that silently became Orpheus would render a whole book in a voice
+ * nobody chose and report success.
+ */
+function narratorEngineFor(settings: ParallelTtsSettings): NarratorEngineId {
+  if (settings.ttsEngine === 'higgs') return 'higgs';
+  if (settings.ttsEngine === 'orpheus') return 'orpheus';
+  throw new Error(
+    `TTS engine '${settings.ttsEngine}' cannot render: narrator serves orpheus and higgs. ` +
+      'XTTS was retired 2026-09-04 and its sessions load read-only.',
+  );
+}
+
+/**
+ * THE spawn door for every batch phase, for every engine.
+ *
+ * One argv, one environment, one plan — the point of Phase 3. Before it, each of
+ * prep / worker / retake / assembly carried an `if (isHiggsJob)` that built a
+ * SECOND command line beside the e2a one, sliced the first at an anchor flag and
+ * substituted the engine name in place. Four copies of that, each able to drift
+ * from the others; the retake copy already had.
+ *
+ * The Higgs branch here is not a second command line. It is the same argv with
+ * the voice document written for it (`higgsEnvExtras`), which is the one thing
+ * that is genuinely about Higgs and not about spawning.
+ */
+function buildJobSpawn(opts: {
+  settings: ParallelTtsSettings;
+  phase: NarratorPhase;
+  args: string[];
+  envExtras: Record<string, string>;
+  /** Names the Higgs voice document written for this run; ignored for Orpheus. */
+  jobId: string;
+  cwdHint?: string;
+}): NarratorSpawnPlan {
+  const engine = narratorEngineFor(opts.settings);
+  if (engine === 'higgs') {
+    return buildHiggsSpawn(opts.phase, {
+      model: higgsPreflight(opts.settings.fineTuned),
+      args: opts.args,
+      cwd: opts.cwdHint ?? getDefaultE2aPath(),
+      jobId: opts.jobId,
+      envExtras: opts.envExtras,
+    });
+  }
+  return buildNarratorSpawn({
+    engine,
+    phase: opts.phase,
+    args: opts.args,
+    envExtras: opts.envExtras,
+    cwdHint: opts.cwdHint,
+  });
+}
+
 
 // DeepSpeed accelerates XTTS's GPT decoder ~1.5x, but it must be installed (with a
 // GPU-arch-matched, prebuilt transformer_inference op) in the XTTS env — which it
@@ -3192,7 +3261,6 @@ export async function prepareSession(
   settings: ParallelTtsSettings,
   prepJobId?: string  // Used only to address first-run model-download progress notes
 ): Promise<PrepInfo> {
-  const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const sessionId = crypto.randomUUID();
 
   // The Higgs ENVIRONMENT, checked ONCE for this job — not once per worker.
@@ -3260,46 +3328,43 @@ export async function prepareSession(
   assertDeviceUsable(settings.device, deviceArg);
   console.log(`[PARALLEL-TTS] Device: requested='${settings.device}' → running on ${deviceArg}`);
 
+  // narrator's prep flags. One array for every engine — the Higgs branch below
+  // only substitutes the voice flag, because `--fine_tuned` carries an Orpheus
+  // prompt TOKEN and `--higgs_voice` a CATALOG ID and neither stands in for the
+  // other.
+  //
+  // `--session_dir` IS MANDATORY, and it is the one flag that was NOT here
+  // before. e2a survived without it because `lib/conf.py` fell back to
+  // `<e2a_root>/tmp`, which happened to be the directory this function had
+  // already computed. narrator has no e2a root: `session_store.sessions_root()`
+  // reads `$E2A_TMP_DIR` and otherwise refuses to guess. Forwarding E2A_TMP_DIR
+  // is NOT an alternative — it holds a WINDOWS path while a WSL prep derives its
+  // session dir from the guest's filesystem, so the two would disagree exactly
+  // where it matters.
   const args = [
-    ...pythonInvocation(settings.ttsEngine).args,
-    appPath,
     '--headless',
     '--ebook', ebookArgPath,
     '--session', sessionId,
+    '--session_dir', sessionDir,
     '--language', settings.language,
-    '--tts_engine', settings.ttsEngine,
+    '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
     '--device', deviceArg,
     '--prep_only'
   ];
 
-  // A Higgs prep spawns the narrator plan below and never runs this e2a argv,
-  // but the array is still BUILT for it, so the guard is what keeps an
-  // Orpheus-shaped voice arg out of a Higgs job if the two are ever untangled.
-  if (!isHiggsJob(settings)) {
+  if (isHiggsJob(settings)) {
+    args.push(HIGGS_VOICE_FLAG, higgsPreflight(settings.fineTuned).id);
+  } else {
     pushVoiceArgs(args, settings);
   }
 
-  // Pass XTTS settings explicitly (stored in session-state.json for workers)
-  if (settings.ttsEngine === 'xtts') {
-    if (settings.temperature !== undefined) {
-      args.push('--temperature', settings.temperature.toString());
-    }
-    if (settings.topP !== undefined) {
-      args.push('--top_p', settings.topP.toString());
-    }
-    if (settings.topK !== undefined) {
-      args.push('--top_k', settings.topK.toString());
-    }
-    if (settings.repetitionPenalty !== undefined) {
-      args.push('--repetition_penalty', settings.repetitionPenalty.toString());
-    }
-    if (settings.speed !== undefined) {
-      args.push('--speed', settings.speed.toString());
-    }
-    if (settings.enableTextSplitting) {
-      args.push('--enable_text_splitting');
-    }
-  }
+  // The XTTS sampling block that stood here (--temperature / --top_p / --top_k /
+  // --repetition_penalty / --speed / --enable_text_splitting) is GONE. narrator
+  // parses all six and honours none of them: compat/FLAGS.md files them under
+  // IGNORE, "XTTS only", and Orpheus's equivalents arrive as ORPHEUS_TEMPERATURE
+  // / ORPHEUS_TOP_P / ORPHEUS_REP_PENALTY env vars or as registered per-voice
+  // caps. Sending them anyway would suggest a book's sampling had been honoured
+  // when nothing read it.
 
   // Language learning mode: preserve paragraph boundaries as sentences
   if (settings.sentencePerParagraph) {
@@ -3341,70 +3406,51 @@ export async function prepareSession(
 
     // Per-voice caps for the selected fine-tune (maxChars is the one prep consumes).
     const voiceCaps = orpheusVoiceCaps(settings);
-    // ── The Higgs prep route ────────────────────────────────────────────────
+    // ── ONE PREP ROUTE, for every engine ────────────────────────────────────
     //
-    // narrator, not ebook2audiobook: its `text/paragraph_packer.py` IS the Higgs
-    // chunking rule, `compat/app.py` forces `chunking = 'paragraph'` for
-    // `higgs-v3`, and the session it writes records the engine as `higgs-v3` with
-    // the voice under `higgs_voice` — all three of which the e2a route got wrong
-    // silently (see higgs-spawn.ts's header).
+    // narrator, not ebook2audiobook. For Higgs that was already true and the
+    // reason was specific: `text/paragraph_packer.py` IS the Higgs chunking rule,
+    // `compat/app.py` forces `chunking = 'paragraph'` for `higgs-v3`, and the
+    // session it writes records the engine and the voice where the render route
+    // will look for them. For Orpheus it is now true for the plainer reason —
+    // there is nothing else left to prep with.
     //
-    // `--session_dir` is passed unconditionally. narrator has no e2a root to fall
-    // back to and refuses to guess, and forwarding `E2A_TMP_DIR` is not an
-    // alternative because it holds a Windows path.
-    const higgsPrepPlan = isHiggsJob(settings)
-      ? (() => {
-          const model = higgsPreflight(settings.fineTuned);
-          return buildHiggsSpawn('prep', {
-            model,
-            args: [
-              '--headless',
-              '--prep_only',
-              '--ebook', ebookArgPath,
-              '--session', sessionId,
-              '--session_dir', sessionDir,
-              '--language', settings.language,
-              '--device', deviceArg,
-              '--tts_engine', HIGGS_NARRATOR_ENGINE,
-              HIGGS_VOICE_FLAG, model.id,
-              ...(settings.sentencePerParagraph ? ['--sentence_per_paragraph'] : []),
-              ...(settings.skipHeadings ? ['--skip_headings'] : []),
-            ],
-            cwd: getDefaultE2aPath(),
-            jobId: prepJobId || sessionId,
-          });
-        })()
-      : null;
-    if (higgsPrepPlan) {
-      console.log('[PARALLEL-TTS] Prep → narrator (Higgs):', higgsPrepPlan.describe());
-    }
-
-    const prepProcess = higgsPrepPlan
-      ? spawn(higgsPrepPlan.command, higgsPrepPlan.args, {
-          cwd: higgsPrepPlan.cwd,
-          env: higgsPrepPlan.env,
-          shell: false,
-        })
-      : spawnWithWslSupport(
-      pythonInvocation(settings.ttsEngine).command,
+    // The Higgs-only branch that stood here is gone with it. It existed because
+    // the e2a route could not be made to write a correct Higgs session; a second
+    // spawn shape is not something to keep once the first one is right.
+    const prepPlan = buildJobSpawn({
+      settings,
+      phase: 'prep',
       args,
-      {
-        cwd: getDefaultE2aPath(),
-        // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences via core.py get_sentences),
-        // not in the worker. Inject it so buildWslBashCommand forwards it into the WSL prep.
-        // Precedence: an explicit user env override wins, else the selected voice's
-        // declared packing cap, else nothing (e2a's default applies — NO invented default).
-        env: buildCondaSpawnEnv({
-          PYTHONUNBUFFERED: '1', PYTHONIOENCODING: 'utf-8',
-          VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1', VLLM_USE_V1: '0',
-          ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS?.trim() || voiceCaps.maxChars !== undefined)
-            ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS?.trim() || String(voiceCaps.maxChars) }
-            : {}),
-        }),
-        shell: false
+      jobId: prepJobId || sessionId,
+      // ORPHEUS_MAX_CHARS is consumed HERE (prep packs sentences), not in the
+      // worker. Precedence: an explicit user env override wins, else the selected
+      // voice's declared packing cap, else nothing — NO invented default.
+      envExtras: {
+        ...(settings.ttsEngine === 'orpheus'
+          && (process.env.ORPHEUS_MAX_CHARS?.trim() || voiceCaps.maxChars !== undefined)
+          ? { ORPHEUS_MAX_CHARS: process.env.ORPHEUS_MAX_CHARS?.trim() || String(voiceCaps.maxChars) }
+          : {}),
+        // Native-arm only: these are Windows belt-and-braces guards against vLLM
+        // touching CUDA graphs in an env that cannot capture them. Sending them
+        // into WSL would fight ORPHEUS_DISABLE_EAGER, which is the whole reason
+        // Orpheus runs there — and under buildNarratorSpawn every value in
+        // envExtras DOES cross, where the old forwardKeys allowlist silently
+        // dropped them.
+        ...(narratorRunsInWsl(narratorEngineFor(settings), 'prep')
+          ? { ORPHEUS_DISABLE_EAGER: '1' }
+          : { VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1' }),
+        VLLM_USE_V1: '0',
       },
-      settings.ttsEngine
-    );
+      cwdHint: getDefaultE2aPath(),
+    });
+    console.log('[PARALLEL-TTS] Prep → narrator:', prepPlan.describe());
+
+    const prepProcess = spawn(prepPlan.command, prepPlan.args, {
+      cwd: prepPlan.cwd,
+      env: prepPlan.env,
+      shell: false,
+    });
 
     // Log stdout for visibility (but don't parse it)
     prepProcess.stdout?.on('data', (data: Buffer) => {
@@ -3455,11 +3501,15 @@ export async function prepareSession(
       if (Date.now() - lastOutputAt > PREP_STALL_TIMEOUT_MS) {
         clearStallTimer();
         console.error('[PARALLEL-TTS] Prep stalled — no output for 10 minutes, killing prep process');
-        if (shouldUseWslForSpawn(settings.ttsEngine)) {
+        if (prepPlan.viaWsl) {
           // Session-scoped graceful teardown (prep argv carries --session <id>); prep
           // is CPU text work / a hung download, so a short grace suffices. Wrapper is
           // closed only after the guest process is gone.
-          void destroyWslGuestProcesses(`app\\.py.*${sessionId}`, { graceMs: 10000, label: 'prep-stall' })
+          //
+          // THE PATTERN IS NARRATOR'S MODULE NAME. `app\.py` matches nothing in
+          // `python -u -m narrator.compat.app`, so a stalled prep would have been
+          // reported as killed and left running in the guest, holding the session.
+          void destroyWslGuestProcesses(`${NARRATOR_APP_RE}.*${sessionId}`, { graceMs: 10000, label: 'prep-stall' })
             .then(() => killWslWrapper(prepProcess, 'prep'))
             .catch((err) => console.error('[PARALLEL-TTS] prep-stall teardown failed:', err));
         } else {

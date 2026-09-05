@@ -71,6 +71,7 @@ import {
   narratorPythonRoot,
   narratorRunsInWsl,
   toGuestPath,
+  type NarratorPhase,
   type NarratorSpawnPlan,
 } from './narrator-spawn';
 import {
@@ -119,7 +120,13 @@ export const HIGGS_VOICE_FLAG = '--higgs_voice';
 /** `NARRATOR_ENGINE`, which selects the backend inside `serve/worker.py`. */
 export const HIGGS_NARRATOR_ENGINE_ENV = narratorEngineEnvId('higgs');
 
-export type HiggsSpawnKind = 'prep' | 'worker' | 'assembly' | 'serve';
+/**
+ * Every phase a Higgs job can reach. WIDENED to narrator's own phase union at the
+ * Phase 3 cut-over: `resume` and `list` are engine-agnostic tools-env doors that
+ * a Higgs session reaches like any other, and a separate narrower union here
+ * would have had to be kept in step by hand.
+ */
+export type HiggsSpawnKind = NarratorPhase;
 
 /** The plan every narrator spawn produces; Higgs adds nothing to its shape. */
 export type HiggsSpawnPlan = NarratorSpawnPlan;
@@ -199,6 +206,14 @@ export function higgsPreflight(voiceId: string | undefined | null): HiggsModel {
  * path to be native to. An earlier draft stored WSL-native paths in the catalog
  * and handed them to every arm untranslated — right on the WSL arm by accident,
  * meaningless everywhere else.
+ *
+ * ── Why it takes `envExtras` now ────────────────────────────────────────────
+ *
+ * At the Phase 3 cut-over the batch bridge builds ONE argv per door for both
+ * engines and one env per door, and passes the env through. The Higgs voice
+ * variables are MERGED UNDER it, not over it: a caller may not override
+ * NARRATOR_HIGGS_VOICES by accident, because the document this function just
+ * wrote is the only one that describes this run's voice.
  */
 export function buildHiggsSpawn(
   kind: HiggsSpawnKind,
@@ -209,9 +224,34 @@ export function buildHiggsSpawn(
     cwd: string;
     /** Names the voice document written for this run. */
     jobId: string;
+    /** The door's own environment. Never overrides the Higgs voice variables. */
+    envExtras?: Record<string, string>;
   },
 ): HiggsSpawnPlan {
-  const serving = higgsServingFor(opts.model);
+  return buildNarratorSpawn({
+    engine: 'higgs',
+    phase: kind,
+    args: opts.args,
+    envExtras: { ...opts.envExtras, ...higgsEnvExtras(opts.model, opts.jobId, kind) },
+    cwdHint: opts.cwd,
+  });
+}
+
+/**
+ * The environment a Higgs spawn needs, and the catalog refusals that produce it.
+ *
+ * Split out of `buildHiggsSpawn` at the Phase 3 cut-over so the batch bridge can
+ * build ONE plan per door for both engines and still hand the Higgs half its
+ * voice. Writing the voice document is a SIDE EFFECT of calling this — it lands
+ * on the Windows filesystem, named for `jobId`, with its contents translated for
+ * the arm `kind` will take.
+ */
+export function higgsEnvExtras(
+  model: HiggsModel,
+  jobId: string,
+  kind: HiggsSpawnKind,
+): Record<string, string> {
+  const serving = higgsServingFor(model);
   // Asked of narrator-spawn rather than recomputed, so the arm the voice document
   // is written FOR is provably the arm the spawn will take.
   const viaWsl = narratorRunsInWsl('higgs', kind);
@@ -220,26 +260,14 @@ export function buildHiggsSpawn(
   // not matter here: this is a few hundred bytes read once at load, not the model
   // weights — which is exactly why the models dir is WSL-native and this is not.
   const translate = viaWsl ? toGuestPath : (p: string) => p;
-  const voicesHostPath = writeHiggsVoicesDocument(opts.model, opts.jobId, translate);
+  const voicesHostPath = writeHiggsVoicesDocument(model, jobId, translate);
   const serveScriptGuestPath =
     `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
 
-  const voiceEnv = higgsSpawnEnv(opts.model, {
+  return higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
     wslDistro: viaWsl ? getWslDistro() : undefined,
-  });
-
-  return buildNarratorSpawn({
-    // NAMED EVEN FOR ASSEMBLY, which is the one phase that would run in the tools
-    // env without it. That is Phase 1's behaviour preserved exactly: the Higgs
-    // pipeline assembles in the Higgs env today. Phase 3 of the e2a removal drops
-    // this to `undefined` for both engines and the door moves to the tools env.
-    engine: 'higgs',
-    phase: kind,
-    args: opts.args,
-    envExtras: voiceEnv,
-    cwdHint: opts.cwd,
   });
 }
 

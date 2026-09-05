@@ -154,8 +154,28 @@ const NARRATOR_ENGINE_ENV: Record<NarratorEngineId, string> = {
   higgs: 'higgs-v3',
 };
 
-export function narratorEngineEnvId(engine: NarratorEngineId): string {
+/**
+ * BookForge's engine id as NARRATOR spells it.
+ *
+ * ONE function for two uses, because they are the same string and drifting them
+ * apart is a class of bug rather than a typo: it is the value of `NARRATOR_ENGINE`
+ * (which selects the backend inside `serve/worker.py`) AND the value of
+ * `--tts_engine` (which `compat/flags.py:check_engine` resolves through
+ * `engine/registry.py` on the prep, worker and retake routes).
+ *
+ * `higgs` is not a narrator id. `compat/FLAGS.md` lists it under
+ * ENGINE_NEAR_MISSES beside `higgs-v2`, `higgs-v2-scaffold` and `higgs_v3`, all
+ * four refused BY NAME rather than helpfully resolved — guessing which Higgs a
+ * caller meant is how a whole book gets rendered by the wrong model. So no spawn
+ * site may pass `settings.ttsEngine` straight through; it passes this.
+ */
+export function narratorEngineId(engine: NarratorEngineId): string {
   return NARRATOR_ENGINE_ENV[engine];
+}
+
+/** @deprecated Same value, older name. Kept for `higgs-spawn.ts`'s constant. */
+export function narratorEngineEnvId(engine: NarratorEngineId): string {
+  return narratorEngineId(engine);
 }
 
 /**
@@ -223,6 +243,28 @@ const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> =
  * doors are `narrator.compat.worker` and `narrator.compat.app`.
  */
 export const SERVE_PROCESS_RE = 'narrator\\.serve';
+
+/**
+ * The BATCH doors, as they appear in a process list. Regex SOURCE strings.
+ *
+ * `narrator.compat.worker` is every render worker and every retake;
+ * `narrator.compat.app` is prep, assembly, resume and list. Together they are
+ * what the orphan reapers hunt, and `SERVE_PROCESS_RE` is what those reapers must
+ * never touch - killing the resident Listen server because a batch job ended is a
+ * user's playback stopping for no reason they can see.
+ *
+ * These replace e2a's `worker\.py` / `app\.py` / `ebook2audiobook.*\.py`. Nothing
+ * FAILS when a kill pattern goes stale: the sweep reports success, matches
+ * nothing, and leaves a vLLM process holding the GPU - which is the shape that
+ * wedges the WSL VM and the shape that makes the next job refuse to start.
+ *
+ * The dot is escaped because these go into `pgrep -f` and PowerShell `-match`.
+ */
+export const NARRATOR_WORKER_RE = 'narrator\\.compat\\.worker';
+export const NARRATOR_APP_RE = 'narrator\\.compat\\.app';
+
+/** Either batch door. Used where a sweep does not care which phase it caught. */
+export const NARRATOR_BATCH_RE = 'narrator\\.compat\\.(worker|app)';
 
 /**
  * Where the `narrator` package lives, as a HOST path.
