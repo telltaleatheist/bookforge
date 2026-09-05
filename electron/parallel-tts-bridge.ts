@@ -717,7 +717,7 @@ async function copyDirOutOfWsl(sourceUnc: string, destDir: string): Promise<void
  * Give a WSL-spawned worker a session dir it can actually READ, and say where to
  * delete the staging afterwards.
  *
- * buildWslBashCommand maps a drive letter to /mnt/<letter> unconditionally, but WSL
+ * A drive letter maps to /mnt/<letter> unconditionally, but WSL
  * auto-mounts FIXED drives only. With the library on the mapped titan share there is
  * no /mnt/z at all, so `--session_dir Z:\…` reached the guest as a path that does not
  * exist and every Correct Sentences re-roll died on e2a's "Session directory not
@@ -1458,26 +1458,37 @@ export async function cleanupStaleTempFolders(maxAgeHours: number = 24): Promise
 // WSL2 Spawn Support (Windows only, for Orpheus TTS)
 // ─────────────────────────────────────────────────────────────────────────────
 
-interface WslSpawnConfig {
-  condaArgs: string[];       // Conda run args (without conda executable)
-  cwd: string;               // Working directory (Windows path)
-  env?: Record<string, string>;  // Environment variables
-  ttsEngine?: string;        // TTS engine name
-}
-
 /**
- * Check if we should use WSL for this spawn
- * Returns true if:
- * - useWsl2ForAllTts is enabled (uses WSL for all TTS engines), OR
- * - Engine is Orpheus AND useWsl2ForOrpheus is enabled
+ * DOES THIS JOB'S PYTHON RUN INSIDE THE WSL GUEST?
+ *
+ * Asked by everything that is NOT the spawn: where the session directory lives,
+ * whether the EPUB has to be staged, which teardown ladder a kill uses, whether a
+ * detected output path needs translating back to Windows, and whether a wedged VM
+ * means "do not retry".
+ *
+ * ── It used to lie about Higgs, and the reason expired ───────────────────────
+ *
+ * This was `shouldUseWslForSpawn` and it returned FALSE for Higgs on purpose:
+ * every caller was also the gate in front of `spawnWithWslSupport`, and a Higgs
+ * command through that function came out an Orpheus command (it rewrote argv by
+ * pattern). So the lie kept Higgs away from it, and each site that genuinely
+ * needed the truth had to say `|| (isHiggsJob(...) && higgsRunsInWsl())` and
+ * remember to.
+ *
+ * `spawnWithWslSupport` is gone, so the lie has no beneficiary and several sites
+ * were quietly wrong for Higgs: a Higgs job's guest workers were not
+ * session-torn-down, its retake did not stage session state into the guest, and a
+ * wedged VM did not stop it retrying. It now answers the question it asks.
+ *
+ * Delegates to `narratorRunsInWsl`, so the answer the app acts on and the arm the
+ * spawn actually takes are the same computation rather than two that agree today.
  */
-function shouldUseWslForSpawn(ttsEngine?: string): boolean {
-  if (os.platform() !== 'win32') return false;
-  // Check if all TTS should use WSL
-  if (shouldUseWsl2ForAllTts()) return true;
-  // Otherwise, only use WSL for Orpheus
-  if (ttsEngine?.toLowerCase() !== 'orpheus') return false;
-  return shouldUseWsl2ForOrpheus();
+function jobRunsInWsl(ttsEngine?: string): boolean {
+  const id = ttsEngine?.toLowerCase();
+  if (id !== 'orpheus' && id !== 'higgs') return false;
+  // 'worker' stands for every GPU phase: prep, worker and retake all take the
+  // same arm, and the tools phases (assembly/resume/list) never ask this.
+  return narratorRunsInWsl(id, 'worker');
 }
 
 /**
@@ -1510,176 +1521,6 @@ function shellQuote(s: string): string {
 }
 
 /**
- * Build bash command for WSL execution
- * Converts Windows paths and builds the full conda activation command
- */
-function buildWslBashCommand(config: WslSpawnConfig): string {
-  const wslCondaPath = getWslCondaPath();
-  const wslE2aPath = getWslE2aPath();
-
-  // Don't export Windows env vars to WSL - they contain paths with parentheses
-  // that break bash syntax. WSL has its own environment and doesn't need these.
-  // Only export specific safe variables if needed in the future.
-
-  // Convert condaArgs paths from Windows to WSL format
-  // Also replace Windows conda env path with WSL native orpheus_tts conda env
-  // And replace Windows e2a path with WSL native e2a path
-  const wslArgs: string[] = [];
-  let skipNext = false;
-  const orpheusCondaEnv = getWslOrpheusCondaEnv();
-
-  // Map a Windows path that lives UNDER the e2a install (app.py, worker.py, the
-  // staged session/tmp tree, etc.) onto the WSL-native e2a at wslE2aPath. This is
-  // critical: BookForge's e2a root varies (dev: ...\ebook2audiobook ; packaged:
-  // <userData>\runtime\e2a), and only the dev path contains the literal
-  // "ebook2audiobook". Without a root-prefix rewrite the packaged build ran e2a
-  // from /mnt/c (the bundled copy) and wrote sessions to the Windows tmp, while
-  // BookForge read the \\wsl$ WSL-native tmp → "no usable session". Matching the
-  // real root makes e2a run WSL-native and write where BookForge reads, and keeps
-  // Python off the slow /mnt 9p mount (avoids multiprocessing issues).
-  const winE2aRootNorm = getDefaultE2aPath().replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
-  const rewriteUnderE2aRoot = (p: string): string | null => {
-    const norm = p.replace(/\\/g, '/');
-    if (norm.toLowerCase().startsWith(winE2aRootNorm + '/') || norm.toLowerCase() === winE2aRootNorm) {
-      const rel = norm.slice(winE2aRootNorm.length).replace(/^\/+/, '');
-      return rel ? `${wslE2aPath}/${rel}` : wslE2aPath;
-    }
-    // Fallback for any stray path that names the dev repo dir explicitly.
-    if (/ebook2audiobook/i.test(norm)) {
-      const m = norm.match(/ebook2audiobook\/?(.*)/i);
-      return m && m[1] ? `${wslE2aPath}/${m[1]}` : wslE2aPath;
-    }
-    return null;
-  };
-
-  for (let i = 0; i < config.condaArgs.length; i++) {
-    const arg = config.condaArgs[i];
-
-    if (skipNext) {
-      skipNext = false;
-      continue;
-    }
-
-    // Replace -p <windows_env_path> with appropriate WSL path
-    if (arg === '-p' && config.condaArgs[i + 1]) {
-      const envPath = config.condaArgs[i + 1];
-      if (envPath.includes('orpheus')) {
-        // Orpheus uses its own conda env
-        wslArgs.push('-n', orpheusCondaEnv);
-      } else if (envPath.includes('python_env') || envPath.includes('ebook2audiobook')) {
-        // e2a's python_env - use WSL native path
-        wslArgs.push('-p', `${wslE2aPath}/python_env`);
-      } else {
-        // Other conda env - convert Windows path to WSL
-        wslArgs.push('-p', windowsToWslPath(envPath));
-      }
-      skipNext = true;  // Skip the next arg (the Windows path)
-      continue;
-    }
-
-    // Replace Windows e2a paths (app.py, worker.py, session/tmp tree) with the
-    // WSL-native e2a path so e2a runs WSL-native and writes where BookForge reads.
-    const e2aRewritten = /^[A-Za-z]:[\\/]/.test(arg) ? rewriteUnderE2aRoot(arg) : null;
-    if (e2aRewritten) {
-      wslArgs.push(e2aRewritten);
-    }
-    // Convert other Windows paths (epub, output dir) to /mnt/... format
-    else if (/^[A-Za-z]:[\\/]/.test(arg)) {
-      wslArgs.push(windowsToWslPath(arg));
-    }
-    // Convert UNC WSL paths (\\wsl$\..., \\wsl.localhost\...) to native WSL paths
-    else if (isWslUncPath(arg)) {
-      wslArgs.push(uncToWslPath(arg));
-    } else {
-      wslArgs.push(arg);
-    }
-  }
-
-  // Build the full command:
-  // 1. Export Python env vars so output isn't buffered (critical for subprocess stdout capture)
-  // 2. cd to e2a directory
-  // 3. Run conda with converted args (shell-quoted to handle spaces/special chars)
-  // ORPHEUS_DISABLE_EAGER=1 forces vLLM CUDA graphs ON inside WSL (Linux), where
-  // they capture correctly — the whole reason Orpheus routes through WSL. e2a's
-  // orpheus.py honors this env var (see lib/classes/tts_engines/orpheus.py).
-  // The WSL subshell only sees vars we export here (Windows env does NOT cross into
-  // `wsl.exe bash -c`). Forward the per-job Orpheus tuning vars (set in config.env by
-  // the worker spawn) so vLLM honors them inside WSL instead of falling back to
-  // orpheus.py's defaults — gpu_memory_utilization (VRAM-sized per job) and the batch
-  // width. Without this forwarding the worker ignored both.
-  const forwardKeys = ['ORPHEUS_GPU_MEM_UTIL', 'ORPHEUS_BATCH_SIZE', 'ORPHEUS_SENTENCE_GAP', 'ORPHEUS_MAX_CHARS',
-                       'ORPHEUS_MAX_CHARS_PER_SEC',
-                       'ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_REP_PENALTY',
-                       'ORPHEUS_EOS_BOOST', 'ORPHEUS_EOS_BOOST_START',
-                       'ORPHEUS_EOS_FLOOR', 'ORPHEUS_EOS_FLOOR_RATE',
-                       'ORPHEUS_VLLM_DTYPE',
-                       // Already a WSL-form path when we spawn through WSL — see startWorker.
-                       'ORPHEUS_REJECT_DIR',
-                       // Forwarded so the guest worker can SAY that the owner pid is a
-                       // Windows pid it cannot see, instead of silently having no owner
-                       // rule at all. It never arms the rule across that boundary.
-                       'BOOKFORGE_OWNER_PID', 'BOOKFORGE_OWNER_PLATFORM'];
-  const forwarded = forwardKeys
-    .filter((k) => config.env?.[k])
-    .map((k) => ` ${k}=${shellQuote(String(config.env![k]))}`)
-    .join('');
-  const exportCommand = `export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 ORPHEUS_DISABLE_EAGER=1${forwarded}`;
-  const cdCommand = `cd ${shellQuote(wslE2aPath)}`;
-  const quotedArgs = wslArgs.map(a => shellQuote(a)).join(' ');
-  const condaCommand = `${shellQuote(wslCondaPath)} ${quotedArgs}`;
-
-  return `${exportCommand} && ${cdCommand} && ${condaCommand}`;
-}
-
-/**
- * Spawn a process, routing to WSL if configured for Orpheus
- * On macOS/Linux or non-Orpheus: uses regular spawn
- * On Windows with Orpheus + WSL enabled: spawns via wsl.exe
- */
-function spawnWithWslSupport(
-  command: string,
-  args: string[],
-  options: {
-    cwd: string;
-    env: NodeJS.ProcessEnv;
-    shell: boolean;
-  },
-  ttsEngine?: string
-): ChildProcess {
-  // Check if we should use WSL
-  if (shouldUseWslForSpawn(ttsEngine)) {
-    console.log('[PARALLEL-TTS] Using WSL2 for Orpheus TTS spawn');
-
-    const wslBashCommand = buildWslBashCommand({
-      condaArgs: args,
-      cwd: options.cwd,
-      env: options.env as Record<string, string>,
-      ttsEngine,
-    });
-
-    console.log('[PARALLEL-TTS] WSL full command:', wslBashCommand);
-
-    const distro = getWslDistro();
-    // Use bash -c (non-interactive) to avoid .bashrc issues blocking stdout
-    const wslArgs = distro
-      ? ['-d', distro, 'bash', '-c', wslBashCommand]
-      : ['bash', '-c', wslBashCommand];
-
-    return spawn('wsl.exe', wslArgs, {
-      env: process.env,  // Pass through Windows env (WSL inherits these)
-      shell: false,      // Don't use shell, wsl.exe handles it
-    });
-  }
-
-  // Shell-escape args when using shell: true to handle paths with
-  // special characters (e.g., apostrophes in "Aesop's Fables")
-  const safeArgs = options.shell ? shellEscapeArgs(args) : args;
-
-  // Regular Windows/Mac/Linux spawn
-  return spawn(command, safeArgs, options);
-}
-
-/**
  * WSL guest teardown — all the actual signalling/escalation lives in wsl-lifecycle.ts.
  * The rules that keep the VM alive:
  *   - NEVER SIGKILL a guest GPU process (force-killing a process kernel-stuck in a dxg
@@ -1692,13 +1533,21 @@ function spawnWithWslSupport(
  *     confirmed dead (killing the wrapper first severed the in-guest pkill mid-flight).
  */
 
-/** Session-scoped guest kill pattern: matches this job's worker.py/app.py (their argv
- *  contains `--session <id>`), never another session's worker and never the persistent
- *  Listen server (orpheus_stream.py carries no session id). Falls back to the global
- *  e2a pattern only when the session id is missing/unsafe. */
+/** Session-scoped guest kill pattern: matches this job's narrator batch doors
+ *  (their argv contains `--session <id>`), never another session's worker and never
+ *  the persistent Listen server, which carries no session id and is a different
+ *  module. Falls back to the global narrator pattern only when the session id is
+ *  missing or unsafe to put in a shell.
+ *
+ *  THE OLD PATTERNS MATCHED NOTHING after the cut-over: `(worker|app)\.py` does not
+ *  appear in `python -u -m narrator.compat.worker`, and neither does
+ *  `ebook2audiobook.*\.py`. A kill pattern that matches nothing does not fail — the
+ *  sweep reports success and leaves a vLLM process holding ~6 GB of VRAM, which is
+ *  the shape that wedges the WSL VM and the shape that makes the next job refuse to
+ *  start for lack of memory. */
 function wslSessionPattern(sessionId: string | undefined | null): string {
-  if (sessionId && /^[\w-]+$/.test(sessionId)) return `(worker|app)\\.py.*${sessionId}`;
-  return 'ebook2audiobook.*\\.py';
+  if (sessionId && /^[\w-]+$/.test(sessionId)) return `${NARRATOR_BATCH_RE}.*${sessionId}`;
+  return NARRATOR_BATCH_RE;
 }
 
 /**
@@ -1746,15 +1595,13 @@ export async function gracefulWslShutdown(): Promise<WslPkillOutcome> {
  * Scoped to the per-job e2a session id (a UUID present ONLY in batch worker argv, as
  * `--session <id>`). The persistent Listen/extension server (`python -m narrator.serve`,
  * managed by orpheus-worker-pool.ts) carries NO session id, and the match additionally
- * requires worker.py/app.py and explicitly excludes the serve process — so the streaming
- * server can never be reaped here. Best-effort and non-fatal.
+ * requires a narrator BATCH door and explicitly excludes the serve process — so the
+ * streaming server can never be reaped here. Best-effort and non-fatal.
  *
- * THE EXCLUSION IS `SERVE_PROCESS_RE`, imported from the pool, because the pool
- * changed what the server's command line looks like (phase 2 of the e2a removal:
- * `orpheus_stream.py` → `-m narrator.serve`). A stale literal here would not fail
- * loudly; it would silently stop excluding anything, and the first batch sweep
- * during playback would kill the server the user is listening to. The batch half
- * of these patterns still names worker.py/app.py — phase 3 moves those.
+ * ALL THREE PATTERNS COME FROM `narrator-spawn.ts`, beside the code that builds the
+ * command lines they match. Neither half fails loudly when it goes stale: a batch
+ * pattern that matches nothing leaves a vLLM process on the GPU and reports success,
+ * and an exclusion that matches nothing kills the server a user is listening to.
  */
 function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void {
   // Guard: only a clean UUID-ish token may reach the shell (prevents injection and an
@@ -1762,13 +1609,13 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
   if (!sessionId || !/^[\w-]+$/.test(sessionId)) return;
   try {
     if (os.platform() === 'win32') {
-      // Native Windows python workers: match worker.py/app.py + this session id,
-      // never the resident Listen server.
+      // Native Windows python workers: match a narrator batch door + this session
+      // id, never the resident Listen server.
       try {
         execSync(
           `powershell -NoProfile -Command "Get-CimInstance Win32_Process | ` +
           `Where-Object { $_.CommandLine -match '${sessionId}' -and ` +
-          `($_.CommandLine -match 'worker\\.py' -or $_.CommandLine -match 'app\\.py') -and ` +
+          `($_.CommandLine -match '${NARRATOR_WORKER_RE}' -or $_.CommandLine -match '${NARRATOR_APP_RE}') -and ` +
           `$_.CommandLine -notmatch '${SERVE_PROCESS_RE}' } | ` +
           `ForEach-Object { Stop-Process -Id $_.ProcessId -Force }"`,
           { stdio: 'ignore', timeout: 8000 }
@@ -1790,7 +1637,7 @@ function reapOrphanedSessionWorkers(sessionId: string | undefined | null): void 
       try {
         const cmd = execSync(`ps -p ${pid} -o command=`, { encoding: 'utf8', timeout: 5000 });
         if (new RegExp(SERVE_PROCESS_RE).test(cmd)) continue;  // never the persistent Listen/extension server
-        if (!/\b(worker|app)\.py\b/.test(cmd)) continue;  // only batch audiobook workers
+        if (!new RegExp(NARRATOR_BATCH_RE).test(cmd)) continue;  // only batch audiobook workers
         process.kill(Number(pid), 'SIGKILL');
         console.log(`[PARALLEL-TTS] Reaped orphaned worker PID ${pid} (session ${sessionId})`);
       } catch { /* already gone, or not ours */ }
@@ -2636,6 +2483,18 @@ const MODEL_LOAD_DONE_RE = /TTS Loaded!|model loaded!/i;
 // depth bound and the batch ordinal, and tolerates the older token-only line.
 // A chunk that overran the token cap is being repaired by the serial re-split ladder
 // (_generate_mlx_safe). Minutes long, and otherwise indistinguishable from a stall.
+/**
+ * The render progress line: `Converting sentence <i>/<total> (<pct>%)`.
+ *
+ * ONE shape. Groups are (index, total, percent) IN THAT ORDER, which is why the
+ * e2a-era alternative that used to be tried first — `Converting sentence 49 -
+ * 0.53%: 49/9248`, groups (index, percent, done, total) — could not simply be
+ * left in place: a line matching it fills the same four variables from different
+ * positions. narrator emits only this one and asserts it emits nothing matching
+ * the other (render/PORT_NOTES.md section 6).
+ */
+const PROGRESS_LINE_RE = /Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i;
+
 const REPAIR_START_RE = /sentence (\d+) (?:hit the MLX audio-token cap|produced no audio|audio too short for text)/i;
 
 /**
@@ -3143,7 +3002,7 @@ export async function killAllWorkers(clearSessions = true): Promise<void> {
       clearInterval(session.watchdogTimer);
     }
 
-    if (shouldUseWslForSpawn(ttsEngine)) {
+    if (jobRunsInWsl(ttsEngine)) {
       // ONE session-scoped guest teardown covers every worker of this session:
       // cooperative SIGTERM → verified wait → VM terminate for a survivor (never
       // SIGKILL — that's the WSL wedge trigger). Shorter grace: the app is quitting.
@@ -3275,14 +3134,14 @@ export async function prepareSession(
 
   // When using WSL for Orpheus, the session is created in WSL's filesystem
   // We need to use the WSL path for session directory and convert to Windows UNC for reading
-  // WHERE THE SESSION LIVES, which is not the same question as which spawn helper
-  // to use. `shouldUseWslForSpawn` is keyed to Orpheus and returns false for
-  // Higgs on purpose — a Higgs command must never go through
-  // `spawnWithWslSupport` (see buildHiggsSpawn) — but a Higgs prep still RUNS in
-  // the guest, so it needs the guest's filesystem for the session dir and the
-  // staged EPUB, exactly as an Orpheus WSL prep does.
-  const useWsl = shouldUseWslForSpawn(settings.ttsEngine)
-    || (isHiggsJob(settings) && higgsRunsInWsl());
+  // WHERE THE SESSION LIVES: the guest's filesystem for a guest prep, so the
+  // session dir and the staged EPUB are somewhere the spawned python can open.
+  //
+  // The `|| (isHiggsJob(...) && higgsRunsInWsl())` that used to be needed here is
+  // gone: `jobRunsInWsl` answers for Higgs now. It did not before, because every
+  // caller was also the gate in front of `spawnWithWslSupport`, and a Higgs command
+  // through that function came out an Orpheus command. See jobRunsInWsl's header.
+  const useWsl = jobRunsInWsl(settings.ttsEngine);
   let sessionDir: string;
   let sessionDirForReading: string;
   // The --ebook path as the spawned e2a will see it. For a WSL prep the file is
@@ -3760,7 +3619,7 @@ export async function regenerateSentenceIndices(
   // needs onto WSL's own filesystem and hand it that path instead.
   let sessionDirArg = sessionDir;
   let stagedSessionUnc: string | null = null;
-  if (shouldUseWslForSpawn(settings.ttsEngine)) {
+  if (jobRunsInWsl(settings.ttsEngine)) {
     try {
       const staged = await stageSessionStateForWsl(sessionDir);
       sessionDirArg = staged.guestSessionDir;
@@ -3931,8 +3790,7 @@ export async function regenerateSentenceIndices(
         writeWorkerLog(`[REGEN] ${t}`);
         // Progress: count our own converted lines against the batch total (the
         // worker's printed "/N" is the BOOK total, not our subset).
-        if (/Converting sentence \d+\/\d+\s*\([\d.]+%\)/i.test(t)
-          || /Converting sentence \d+ - [\d.]+%: \d+\/\d+/i.test(t)) {
+        if (PROGRESS_LINE_RE.test(t)) {
           converted += 1;
           onProgress?.(converted, indices.length * numTakes);
         }
@@ -4188,29 +4046,29 @@ function startWorker(
     args,
     jobId: session.jobId,
     cwdHint: getDefaultE2aPath(),
-    envExtras: {
+    envExtras: {
       // PYTHONUNBUFFERED / PYTHONIOENCODING are set by buildNarratorSpawn for
       // every narrator spawn; they were repeated here when this call site built
       // its own environment.
-      // WHO THIS WORKER BELONGS TO — and why ppid is not enough.
-      //
-      // On darwin, Orpheus resolves to a `prefix` env unconditionally
-      // (e2a-paths.ts resolveCondaEnv returns early for orpheus/voxtral/f5), so
-      // pythonInvocation gives us `conda run --no-capture-output -p <env> python`.
-      // Measured chain from a real spawn: node -> Miniforge3/bin/python (`conda
-      // run`) -> /bin/bash (activation) -> python worker.py. The worker's PARENT
-      // IS THAT BASH, not us. When Electron dies, `conda run` and its bash are
-      // reparented to launchd and go on waiting for the worker, so the worker's
-      // ppid never changes and its parent-death watchdog never fires — which is
-      // exactly how the Sep 1 2026 zombie rendered on for 1h31m.
-      //
-      // So we name ourselves. The worker polls this pid directly (existence +
-      // start time, against pid reuse) and stops itself when we are gone,
-      // wrapper or no wrapper. The platform rides along because a Windows pid
-      // means nothing inside a WSL guest: the worker refuses to arm the rule
-      // across that boundary rather than watch a coincidentally-equal guest pid.
-      BOOKFORGE_OWNER_PID: String(process.pid),
-      BOOKFORGE_OWNER_PLATFORM: process.platform,
+      // WHO THIS WORKER BELONGS TO — and why ppid is not enough.
+      //
+      // On darwin, Orpheus resolves to a `prefix` env unconditionally
+      // (e2a-paths.ts resolveCondaEnv returns early for orpheus/voxtral/f5), so
+      // pythonInvocation gives us `conda run --no-capture-output -p <env> python`.
+      // Measured chain from a real spawn: node -> Miniforge3/bin/python (`conda
+      // run`) -> /bin/bash (activation) -> python worker.py. The worker's PARENT
+      // IS THAT BASH, not us. When Electron dies, `conda run` and its bash are
+      // reparented to launchd and go on waiting for the worker, so the worker's
+      // ppid never changes and its parent-death watchdog never fires — which is
+      // exactly how the Sep 1 2026 zombie rendered on for 1h31m.
+      //
+      // So we name ourselves. The worker polls this pid directly (existence +
+      // start time, against pid reuse) and stops itself when we are gone,
+      // wrapper or no wrapper. The platform rides along because a Windows pid
+      // means nothing inside a WSL guest: the worker refuses to arm the rule
+      // across that boundary rather than watch a coincidentally-equal guest pid.
+      BOOKFORGE_OWNER_PID: String(process.pid),
+      BOOKFORGE_OWNER_PLATFORM: process.platform,
       // VLLM_USE_V1=0 pins vLLM's V0 engine: the per-request logits processors
       // that carry the EOS boost and the EOS floor are a V0-only feature, and a
       // future vLLM bump defaulting to V1 would drop both silently — every
@@ -4227,111 +4085,111 @@ function startWorker(
       ...(narratorRunsInWsl(narratorEngineFor(settings), 'worker')
         ? { ORPHEUS_DISABLE_EAGER: '1' }
         : { VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1' }),
-      // Keep guard rejects for this job somewhere durable and identifiable. Without
-      // this e2a falls back to its own tmp, where the evidence is anonymous (keyed
-      // by session uuid) and shares the lifetime of a scratch directory.
-      ...(rejectDir ? { ORPHEUS_REJECT_DIR: rejectDir } : {}),
-      // VRAM-sized gpu_memory_utilization for Orpheus (see acquireGpuForJob). Must be
-      // set here so buildWslBashCommand can export it INTO the WSL worker — without
-      // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.
-      ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
-        ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
-        : {}),
-      // Orpheus batch width: how many sentences to submit at once. On Mac (MLX unified
-      // memory) this IS the memory lever, so the tier sets it. On NVIDIA/vLLM the batch
-      // doesn't change VRAM (KV pool is fixed by gpu_memory_utilization), but submitting
-      // MORE than the KV cache can hold makes vLLM admit-then-evict (RECOMPUTE
-      // preemption) — wasted work. So match the submission batch to the level's KV
-      // cache (session.orpheusVllmBatch, set at sizing time). Explicit env still wins.
-      ...(settings.ttsEngine === 'orpheus'
-        ? {
-            ORPHEUS_BATCH_SIZE: process.platform === 'darwin'
-              ? (process.env.ORPHEUS_BATCH_SIZE?.trim()
-                  || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).batchSize))
-              : (process.env.ORPHEUS_BATCH_SIZE?.trim()
-                  || (session.orpheusVllmBatch ? String(session.orpheusVllmBatch) : defaultOrpheusBatchSize())),
-          }
-        : {}),
-      // Mac/MLX only: bound the MLX allocator's freed-buffer cache (it grows to
-      // ~46 GB per batched chunk unbounded — the real memory-pressure source on
-      // unified memory). orpheus.py reads this at engine load → mx.set_cache_limit.
-      ...(settings.ttsEngine === 'orpheus' && process.platform === 'darwin'
-        ? {
-            ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
-              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
-            // Total unified-memory budget a batch may occupy; orpheus.py narrows
-            // batch WIDTH from the batch's token depth to stay inside it.
-            ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
-              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
-          }
-        : {}),
-      // Orpheus deterministic inter-clip gap. orpheus.py _classify_gap reads
-      // ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys.
-      //
-      // NOW DERIVED FROM THE VOICE'S `sentenceGap` (2026-07-27), env still wins.
-      // Previously this was explicit-env-only, so every render baked e2a's 0.6 s
-      // default pad regardless of the voice's tuning — and assembly then DETECTED
-      // and STRIPPED it (normalize_gaps.py finds the exactly-zero pad) before
-      // appending the real gap. That round trip is pointless work and it is
-      // fragile: the strip only works because the pad is bit-exact zero, so it
-      // MUST run before any denoise pass or the pad becomes indistinguishable
-      // from the model's tail and survives into every join.
-      // The original reason for a floor is also gone: _classify_gap's docstring
-      // says one is needed because "each chunk's trailing silence is trimmed",
-      // but that trim was REMOVED from _save_audio on 2026-07-11 as a
-      // no-fallback fix. The model's own trained tail is preserved verbatim
-      // (measured 0.42-1.44 s on thirdreich ep248), so a 0 floor concatenates
-      // clips on the narrator's own pauses rather than a stamped uniform gap.
-      // An explicit [pause:X] is still honored at 0.
-      ...(settings.ttsEngine === 'orpheus'
-        && (process.env.ORPHEUS_SENTENCE_GAP?.trim() || voiceCaps.sentenceGap !== undefined)
-        ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP?.trim() || String(voiceCaps.sentenceGap) }
-        : {}),
-      // Orpheus per-voice generation truncation-guard rate (chars/sec). orpheus.py
-      // trips a truncation-retry when a chunk exceeds ORPHEUS_MAX_CHARS_PER_SEC
-      // (default 19.0); a genuinely fast-reading fine-tune needs a higher threshold.
-      // Forwarded into WSL via forwardKeys. Precedence: explicit user env override
-      // wins, else the selected voice's declared threshold, else nothing (e2a default).
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
-        ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
-        : {}),
-      // Orpheus per-voice repetition penalty. PROVEN 2026-07-14 (probe_runaway):
-      // vLLM's whole-sequence rep penalty at the 1.1 default lets an EOS-weak
-      // fine-tune lock into an infinite silence-frame loop (token-cap runaway) on
-      // long chunks; 1.15 broke the loop 12/12 for the CoD deathstalker while 1.2+
-      // overshoots into early-EOS truncation. Same precedence as the caps above:
-      // explicit env wins, else the voice's declared value, else nothing.
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
-        ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
-        : {}),
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST?.trim() || voiceCaps.eosBoost !== undefined)
-        ? { ORPHEUS_EOS_BOOST: process.env.ORPHEUS_EOS_BOOST?.trim() || String(voiceCaps.eosBoost) }
-        : {}),
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
-        ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
-        : {}),
-      // EOS minimum-length floor (the boost's mirror, for early stops): same
-      // precedence — explicit env, else the voice's declared value, else nothing.
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR?.trim() || voiceCaps.eosFloor !== undefined)
-        ? { ORPHEUS_EOS_FLOOR: process.env.ORPHEUS_EOS_FLOOR?.trim() || String(voiceCaps.eosFloor) }
-        : {}),
-      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || voiceCaps.eosFloorRate !== undefined)
-        ? { ORPHEUS_EOS_FLOOR_RATE: process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || String(voiceCaps.eosFloorRate) }
-        : {}),
-      // Orpheus sampling + engine overrides (CLI --temperature/--top-p;
-      // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;
-      // forwarded into WSL via forwardKeys. Explicit env only — orpheus.py's
-      // defaults rule otherwise. (ORPHEUS_REP_PENALTY moved above: it now also
-      // has a per-voice source.)
-      ...(settings.ttsEngine === 'orpheus'
-        ? Object.fromEntries(
-            (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
-              .filter((k) => process.env[k]?.trim())
-              .map((k) => [k, process.env[k]!.trim()])
-          )
-        : {}),
-      // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
-      ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
+      // Keep guard rejects for this job somewhere durable and identifiable. Without
+      // this e2a falls back to its own tmp, where the evidence is anonymous (keyed
+      // by session uuid) and shares the lifetime of a scratch directory.
+      ...(rejectDir ? { ORPHEUS_REJECT_DIR: rejectDir } : {}),
+      // VRAM-sized gpu_memory_utilization for Orpheus (see acquireGpuForJob). Must be
+      // set here so buildWslBashCommand can export it INTO the WSL worker — without
+      // this the worker always falls back to orpheus.py's hardcoded 0.70 of total.
+      ...(settings.ttsEngine === 'orpheus' && session.orpheusGpuMemUtil
+        ? { ORPHEUS_GPU_MEM_UTIL: String(session.orpheusGpuMemUtil) }
+        : {}),
+      // Orpheus batch width: how many sentences to submit at once. On Mac (MLX unified
+      // memory) this IS the memory lever, so the tier sets it. On NVIDIA/vLLM the batch
+      // doesn't change VRAM (KV pool is fixed by gpu_memory_utilization), but submitting
+      // MORE than the KV cache can hold makes vLLM admit-then-evict (RECOMPUTE
+      // preemption) — wasted work. So match the submission batch to the level's KV
+      // cache (session.orpheusVllmBatch, set at sizing time). Explicit env still wins.
+      ...(settings.ttsEngine === 'orpheus'
+        ? {
+            ORPHEUS_BATCH_SIZE: process.platform === 'darwin'
+              ? (process.env.ORPHEUS_BATCH_SIZE?.trim()
+                  || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).batchSize))
+              : (process.env.ORPHEUS_BATCH_SIZE?.trim()
+                  || (session.orpheusVllmBatch ? String(session.orpheusVllmBatch) : defaultOrpheusBatchSize())),
+          }
+        : {}),
+      // Mac/MLX only: bound the MLX allocator's freed-buffer cache (it grows to
+      // ~46 GB per batched chunk unbounded — the real memory-pressure source on
+      // unified memory). orpheus.py reads this at engine load → mx.set_cache_limit.
+      ...(settings.ttsEngine === 'orpheus' && process.platform === 'darwin'
+        ? {
+            ORPHEUS_MLX_CACHE_LIMIT_GB: process.env.ORPHEUS_MLX_CACHE_LIMIT_GB?.trim()
+              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxCacheLimitGB),
+            // Total unified-memory budget a batch may occupy; orpheus.py narrows
+            // batch WIDTH from the batch's token depth to stay inside it.
+            ORPHEUS_MLX_MEM_BUDGET_GB: process.env.ORPHEUS_MLX_MEM_BUDGET_GB?.trim()
+              || String(orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null)).mlxMemBudgetGB),
+          }
+        : {}),
+      // Orpheus deterministic inter-clip gap. orpheus.py _classify_gap reads
+      // ORPHEUS_SENTENCE_GAP; forwarded into WSL via forwardKeys.
+      //
+      // NOW DERIVED FROM THE VOICE'S `sentenceGap` (2026-07-27), env still wins.
+      // Previously this was explicit-env-only, so every render baked e2a's 0.6 s
+      // default pad regardless of the voice's tuning — and assembly then DETECTED
+      // and STRIPPED it (normalize_gaps.py finds the exactly-zero pad) before
+      // appending the real gap. That round trip is pointless work and it is
+      // fragile: the strip only works because the pad is bit-exact zero, so it
+      // MUST run before any denoise pass or the pad becomes indistinguishable
+      // from the model's tail and survives into every join.
+      // The original reason for a floor is also gone: _classify_gap's docstring
+      // says one is needed because "each chunk's trailing silence is trimmed",
+      // but that trim was REMOVED from _save_audio on 2026-07-11 as a
+      // no-fallback fix. The model's own trained tail is preserved verbatim
+      // (measured 0.42-1.44 s on thirdreich ep248), so a 0 floor concatenates
+      // clips on the narrator's own pauses rather than a stamped uniform gap.
+      // An explicit [pause:X] is still honored at 0.
+      ...(settings.ttsEngine === 'orpheus'
+        && (process.env.ORPHEUS_SENTENCE_GAP?.trim() || voiceCaps.sentenceGap !== undefined)
+        ? { ORPHEUS_SENTENCE_GAP: process.env.ORPHEUS_SENTENCE_GAP?.trim() || String(voiceCaps.sentenceGap) }
+        : {}),
+      // Orpheus per-voice generation truncation-guard rate (chars/sec). orpheus.py
+      // trips a truncation-retry when a chunk exceeds ORPHEUS_MAX_CHARS_PER_SEC
+      // (default 19.0); a genuinely fast-reading fine-tune needs a higher threshold.
+      // Forwarded into WSL via forwardKeys. Precedence: explicit user env override
+      // wins, else the selected voice's declared threshold, else nothing (e2a default).
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || voiceCaps.maxCharsPerSec !== undefined)
+        ? { ORPHEUS_MAX_CHARS_PER_SEC: process.env.ORPHEUS_MAX_CHARS_PER_SEC?.trim() || String(voiceCaps.maxCharsPerSec) }
+        : {}),
+      // Orpheus per-voice repetition penalty. PROVEN 2026-07-14 (probe_runaway):
+      // vLLM's whole-sequence rep penalty at the 1.1 default lets an EOS-weak
+      // fine-tune lock into an infinite silence-frame loop (token-cap runaway) on
+      // long chunks; 1.15 broke the loop 12/12 for the CoD deathstalker while 1.2+
+      // overshoots into early-EOS truncation. Same precedence as the caps above:
+      // explicit env wins, else the voice's declared value, else nothing.
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_REP_PENALTY?.trim() || voiceCaps.repPenalty !== undefined)
+        ? { ORPHEUS_REP_PENALTY: process.env.ORPHEUS_REP_PENALTY?.trim() || String(voiceCaps.repPenalty) }
+        : {}),
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST?.trim() || voiceCaps.eosBoost !== undefined)
+        ? { ORPHEUS_EOS_BOOST: process.env.ORPHEUS_EOS_BOOST?.trim() || String(voiceCaps.eosBoost) }
+        : {}),
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_BOOST_START?.trim() || voiceCaps.eosBoostStart !== undefined)
+        ? { ORPHEUS_EOS_BOOST_START: process.env.ORPHEUS_EOS_BOOST_START?.trim() || String(voiceCaps.eosBoostStart) }
+        : {}),
+      // EOS minimum-length floor (the boost's mirror, for early stops): same
+      // precedence — explicit env, else the voice's declared value, else nothing.
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR?.trim() || voiceCaps.eosFloor !== undefined)
+        ? { ORPHEUS_EOS_FLOOR: process.env.ORPHEUS_EOS_FLOOR?.trim() || String(voiceCaps.eosFloor) }
+        : {}),
+      ...(settings.ttsEngine === 'orpheus' && (process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || voiceCaps.eosFloorRate !== undefined)
+        ? { ORPHEUS_EOS_FLOOR_RATE: process.env.ORPHEUS_EOS_FLOOR_RATE?.trim() || String(voiceCaps.eosFloorRate) }
+        : {}),
+      // Orpheus sampling + engine overrides (CLI --temperature/--top-p;
+      // ORPHEUS_VLLM_DTYPE is env-only). orpheus.py reads these at engine init;
+      // forwarded into WSL via forwardKeys. Explicit env only — orpheus.py's
+      // defaults rule otherwise. (ORPHEUS_REP_PENALTY moved above: it now also
+      // has a per-voice source.)
+      ...(settings.ttsEngine === 'orpheus'
+        ? Object.fromEntries(
+            (['ORPHEUS_TEMPERATURE', 'ORPHEUS_TOP_P', 'ORPHEUS_MIN_P', 'ORPHEUS_VLLM_DTYPE'] as const)
+              .filter((k) => process.env[k]?.trim())
+              .map((k) => [k, process.env[k]!.trim()])
+          )
+        : {}),
+      // Auto-enable DeepSpeed for XTTS only when it's actually installed in the env.
+      ...(xttsDeepspeedAvailable(settings.ttsEngine) ? { XTTS_USE_DEEPSPEED: '1' } : {}),
         },
   });
 
@@ -4385,11 +4243,19 @@ function startWorker(
       }
 
       // Parse progress - support both output formats:
-      // Format 1 (Windows e2a): "Converting sentence 49 - 0.53%: 49/9248"
-      // Format 2 (Mac e2a):     "Converting sentence 996/3954 (0.1%)"
+      // THE PROGRESS LINE, and there is only one shape of it now.
+      //
+      // e2a had two: an older `Converting sentence 49 - 0.53%: 49/9248` and
+      // `Converting sentence 996/3954 (0.1%)`. The first was tried FIRST, and its
+      // capture groups are in a different ORDER (index, pct, done, total vs index,
+      // total, pct) — so a line matching the wrong one is not a miss, it is four
+      // fields read off the wrong positions and a progress bar that lies.
+      //
+      // narrator emits only the second, and its own test asserts it never emits
+      // anything matching the first (render/PORT_NOTES.md section 6). Keeping the
+      // dead alternative would leave that trap armed for a future log line.
       // Each line = 1 actual conversion (skipped sentences don't print progress)
-      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i)
-        || line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
+      const progressMatch = line.match(PROGRESS_LINE_RE);
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
@@ -4491,8 +4357,7 @@ function startWorker(
       writeWorkerLog(logLine);
 
       // Parse progress from stderr too (both formats)
-      const progressMatch = line.match(/Converting sentence (\d+) - ([\d.]+)%: (\d+)\/(\d+)/i)
-        || line.match(/Converting sentence (\d+)\/(\d+)\s*\(([\d.]+)%\)/i);
+      const progressMatch = line.match(PROGRESS_LINE_RE);
       if (progressMatch) {
         const currentSentence = parseInt(progressMatch[1]);
         worker.currentSentence = currentSentence;
@@ -5051,7 +4916,7 @@ async function checkForStuckWorkers(session: ConversionSession): Promise<void> {
     if (worker.process) {
       console.log(`[PARALLEL-TTS] Killing stuck worker ${worker.id} (PID: ${worker.pid})`);
       await logger.log('WARN', session.jobId, `Killing stuck worker ${worker.id}`, { pid: worker.pid });
-      if (shouldUseWslForSpawn(ttsEngine)) {
+      if (jobRunsInWsl(ttsEngine)) {
         // Session-scoped graceful teardown (Orpheus-WSL runs a single worker, so
         // "the session's workers" IS this worker). Never SIGKILL in the guest.
         await destroyWslSessionWorkers(session, `stuck worker ${worker.id}`);
@@ -5082,7 +4947,7 @@ function retryWorker(session: ConversionSession, worker: WorkerState): void {
   }
   // Never retry into a wedged WSL VM — mark the worker permanently failed so the
   // session resolves loudly instead of spawning more doomed GPU work.
-  if (isWslWedged() && shouldUseWslForSpawn(config.settings.ttsEngine)) {
+  if (isWslWedged() && jobRunsInWsl(config.settings.ttsEngine)) {
     worker.retryCount = MAX_WORKER_RETRIES;
     worker.status = 'error';
     worker.error = wslWedgedMessage();
@@ -5607,7 +5472,7 @@ async function runAssembly(session: ConversionSession): Promise<string> {
       if (outputMatch) {
         let detectedPath = outputMatch[2].trim();
         // If running via WSL, convert WSL path (/mnt/c/...) back to Windows path
-        if (shouldUseWslForSpawn(settings.ttsEngine) && detectedPath.startsWith('/mnt/')) {
+        if (jobRunsInWsl(settings.ttsEngine) && detectedPath.startsWith('/mnt/')) {
           detectedPath = wslToWindowsPath(detectedPath);
           console.log('[PARALLEL-TTS] Converted WSL output path to Windows:', detectedPath);
         }
@@ -6674,7 +6539,7 @@ async function requiredVramMB(ttsEngine: string): Promise<number> {
  * asks for nothing.
  */
 async function ensureGuestCanReachSession(session: ConversionSession): Promise<void> {
-  if (!shouldUseWslForSpawn(session.config.settings.ttsEngine)) return;
+  if (!jobRunsInWsl(session.config.settings.ttsEngine)) return;
   const prep = session.prepInfo;
   await ensureWslDrivesFor([
     prep?.sessionDir,
@@ -7969,7 +7834,7 @@ export async function stopParallelConversion(jobId: string): Promise<boolean> {
     }
   }
 
-  if (shouldUseWslForSpawn(ttsEngine)) {
+  if (jobRunsInWsl(ttsEngine)) {
     // ONE session-scoped guest teardown, AWAITED: cooperative SIGTERM (the worker
     // exits itself between sentences, releasing the GPU) → verified wait → VM
     // terminate for a survivor. Never SIGKILL (the WSL wedge trigger). Awaiting also
