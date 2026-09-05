@@ -686,6 +686,91 @@ class GenerationConfigTest(V3TestCase):
             'the refusal must not create the file it refused over')
 
 
+class ServedSamplingTest(V3TestCase):
+    """WHAT THE SERVED ARM SENDS, and it is not the same for the two kinds.
+
+    "Send nothing and get the deploy defaults" was the belief this branch
+    refuted: `vllm-omni serve` resolves sampling from the MODEL DIRECTORY
+    (`--generation-config auto`), so an empty request gets whatever that
+    directory holds - and the `bosonai/higgs-audio-v3-tts-4b` snapshot holds NO
+    generation_config.json, which is a bare SamplingParams(): top_p 1.0, top_k
+    DISABLED, the untruncated 1026-way tail. So base weights must STATE the
+    values and a checkpoint must not.
+    """
+
+    def _checkpoint_config(self, **kwargs):
+        from narrator.engine.protocol import DefaultVoice
+        merged = kwargs.pop('merged', None) or self.merged_checkpoint()
+        # Which checkpoint the server is running cannot be discovered, so it is
+        # STATED - the engine refuses a checkpoint voice against a server that
+        # says nothing (CheckpointVoiceTest covers that refusal itself).
+        os.environ[v3_served.CHECKPOINT_ENV] = merged
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
+                             max_chars=500, max_chars_source='catalog')
+        kwargs.setdefault('base_url', self.server.base_url)
+        kwargs.setdefault('probe_tail_trim', False)
+        return HiggsV3Config(voice=voice, **kwargs)
+
+    def test_base_weights_state_the_sampling_in_extra_params(self):
+        """The bosonai snapshot ships no generation_config.json, so sending
+        nothing here is the babble sampling, not the deploy default."""
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        extra = self.server.requests[-1]['extra_params']
+        self.assertEqual(extra['temperature'], 1.0)
+        self.assertEqual(extra['top_p'], 0.95)
+        self.assertEqual(extra['top_k'], 50)
+        self.assertEqual(extra['repetition_penalty'], 1.0)
+
+    def test_the_seed_never_rides_inside_extra_params(self):
+        """It is the request's TOP-LEVEL field, and two sources for one number
+        is one too many - build_request_body refuses the duplicate."""
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        body = self.server.requests[-1]
+        self.assertNotIn('seed', body['extra_params'])
+        self.assertEqual(body['seed'], 1234)
+
+    def test_a_checkpoint_voice_sends_NO_extra_params(self):
+        """Its directory carries the file and the server reads it; an
+        extra_params here would override the model's own declared sampling with
+        narrator's opinion of it."""
+        engine = HiggsV3Engine(self._checkpoint_config())
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        self.assertNotIn('extra_params', self.server.requests[-1])
+
+    def test_an_override_still_rides_for_either_kind(self):
+        engine = HiggsV3Engine(
+            self._checkpoint_config(sampling={'temperature': 0.7}))
+        self.addCleanup(engine.cleanup)
+        engine.render_audio('It was a Saturday morning.')
+        self.assertEqual(self.server.requests[-1]['extra_params'],
+                         {'temperature': 0.7})
+
+    # -- what the stop policy reports (the manifest outlives the render) ------
+
+    def test_the_stop_policy_reports_the_checkpoints_OWN_levers(self):
+        import json as _json
+        merged = self.merged_checkpoint(
+            generation_config=_json.dumps({'temperature': 0.6, 'top_p': 0.85,
+                                           'top_k': 30}))
+        policy = higgs_v3_stop_policy(self._checkpoint_config(merged=merged))
+        self.assertEqual(policy.levers,
+                         {'temperature': 0.6, 'top_p': 0.85, 'top_k': 30.0})
+
+    def test_the_stop_policy_reports_the_deploy_default_for_base_weights(self):
+        policy = higgs_v3_stop_policy(self.config())
+        self.assertEqual(policy.levers['temperature'], 1.0)
+        self.assertEqual(policy.levers['top_p'], 0.95)
+        self.assertEqual(policy.levers['top_k'], 50.0)
+        self.assertNotIn('seed', policy.levers,
+                         'the seed is not a sampling lever')
+
+
 class LifecycleTest(V3TestCase):
 
     def test_attach_mode_does_not_launch_or_kill(self):
@@ -790,7 +875,11 @@ class EngineTest(V3TestCase):
         self.assertGreater(audio.size, 0)
         sent = self.server.requests[-1]
         self.assertEqual(sent['input'], 'It was a Saturday morning.')
-        self.assertNotIn('extra_params', sent)
+        # BASE WEIGHTS STATE THEIR SAMPLING. Sending no extra_params would mean
+        # the model directory's generation_config.json, and the bosonai snapshot
+        # carries none - i.e. a bare SamplingParams(), top_p 1.0 / top_k off.
+        # See ServedSamplingTest.
+        self.assertEqual(sent['extra_params']['top_p'], 0.95)
 
     def test_the_seam_facts(self):
         engine = HiggsV3Engine(self.config())
