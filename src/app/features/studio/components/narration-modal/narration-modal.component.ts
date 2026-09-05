@@ -1562,10 +1562,13 @@ export class NarrationModalComponent {
       confirmLabel: cleanup.state === 'stale'
         ? 'Run cleanup again, then narrate'
         : 'Run cleanup, then narrate',
-      cancelLabel: 'Cancel',
+      // INTERIM (Owen, 2026-09-05): the cleanup is optional. Declining means
+      // "narrate as printed" and the run proceeds; the render door logs the
+      // skip instead of refusing. The three-button yes/no/cancel form with a
+      // project-level "cleanup done" flag is on fix/narration-cleanup-skip.
+      cancelLabel: 'No, narrate as printed',
       type: 'question',
     });
-    if (!confirmed) this.error.set(cleanup.reason);
     return confirmed;
   }
 
@@ -1709,13 +1712,10 @@ export class NarrationModalComponent {
           }
         } else if (!chain.ok) {
           const proceed = await this.offerCleanup(chain, book);
-          if (!proceed) return;
-          const cleaned = readiness.bookPath;
-          if (cleaned === null || cleaned === undefined) {
-            throw new Error(
-              'The cleanup was accepted, but this project could not name the book it applies '
-              + 'to, so there is nothing to run it on. Nothing was queued.');
-          }
+          // "No, narrate as printed": fall through and queue the jobs as pressed.
+          // The recorded-book check that used to sit here was dead — the pass runs
+          // on the FILE the user pressed (`sourcePath` below), never on that value.
+          if (proceed) {
           const run = await this.queue.submitProcessingRun({
             projectDir: book.projectDir,
             /*
@@ -1734,6 +1734,7 @@ export class NarrationModalComponent {
           if (!run.success) throw new Error(run.error ?? 'The cleanup run could not be queued.');
           this.queued.emit({ jobs: jobs.length + 1 });
           return;
+          }
         } else if (file !== null && !file.ok) {
           /*
            * The BOOK has been cleaned and this VERSION has not — an export made

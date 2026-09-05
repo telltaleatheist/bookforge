@@ -7183,9 +7183,30 @@ export async function prepareNarrationInput(
   // unstamped would be narrated as printed digits with nothing to say so.
   const gate = await narrationTextGate(inputPath);
   if (!gate.ok) {
-    throw new Error(
-      `${gate.reason} (Narration was asked to read ${path.basename(inputPath)}; nothing was `
-      + 'rendered.)');
+    // INTERIM (Owen, 2026-09-05): the cleanup is OPTIONAL — "if that flag isn't
+    // set, ask the user... yes/no/cancel". The modal asks; a book that arrives
+    // here unstamped is one the user chose to narrate as printed, so this door
+    // says so loudly and reads it. The explicit per-run flag and the project
+    // "cleanup done" state are on fix/narration-cleanup-skip; until it lands the
+    // stamp's absence is the only signal, and it is logged, never hidden.
+    console.warn(
+      `[PARALLEL-TTS] narration text cleanup NOT applied to ${path.basename(inputPath)} — `
+      + `${gate.reason} Numbers and punctuation are read AS PRINTED for this run.`);
+    await logger.log('WARN', jobId,
+      'narration text cleanup not applied; the render reads the book as printed', {
+        reason: gate.reason,
+      });
+    const cutAsPrinted = await cutCaptionsAndNotes(inputPath, jobId);
+    return {
+      inputPath: cutAsPrinted,
+      recordPath: null,
+      model: 'none (cleanup not applied; read as printed)',
+      appliedSpans: 0,
+      appliedByRules: 0,
+      appliedByModel: 0,
+      reused: false,
+      dispositions: {},
+    };
   }
   const cut = await cutCaptionsAndNotes(inputPath, jobId);
   console.log(
