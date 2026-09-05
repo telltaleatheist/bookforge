@@ -704,6 +704,11 @@ process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: tr
 const wslWasOn = toolPaths.shouldUseWsl2ForHiggs();
 toolPaths.shouldUseWsl2ForHiggs = () => true;
 const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+// The REAL host, captured before the override: two checks below assert on paths the
+// code derives from the host (os.tmpdir(), the repo root), which are drive paths only
+// on Windows. On a Mac/Linux host they are POSIX paths that toGuestPath passes through
+// unchanged by design, so those two checks are host-conditional (Mac run, 2026-09-05).
+const REAL_HOST = process.platform;
 if (process.platform !== 'win32') {
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 }
@@ -749,6 +754,7 @@ process.on('exit', () => {
 
   check('every ENV value is translated too, not just argv', () => {
     if (!plan.viaWsl) return;
+    if (REAL_HOST !== 'win32') return; // host tmpdir is POSIX here; nothing to translate
     // NARRATOR_HIGGS_VOICES is written to the Windows temp dir and must be named
     // in the guest's filesystem. It used to be translated by its own call, which
     // is how the argv guard's bug stayed invisible in a log.
@@ -774,7 +780,7 @@ process.on('exit', () => {
   check('PYTHONPATH points at the narrator package, in the guest filesystem', () => {
     const m = line.match(/PYTHONPATH='([^']+)'/);
     assert.ok(m, 'PYTHONPATH is not exported');
-    if (plan.viaWsl) assert.match(m[1], /^\/mnt\/[a-z]\//);
+    if (plan.viaWsl && REAL_HOST === 'win32') assert.match(m[1], /^\/mnt\/[a-z]\//); // repo root is a drive path only on Windows
   });
 
   check('no ORPHEUS_* variable rides along', () => {
