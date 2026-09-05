@@ -205,6 +205,14 @@ BASE_SNAPSHOT_MARKER = 'models--bosonai--higgs-audio-v3-tts-4b'
 #: process GROUP (read off /proc/<pid>/stat, not remembered) is what a stop
 #: signals - measured: the two `VLLM::StageEngineCoreProc` children share the
 #: listener's pgid.
+#: How long one guest-side command (a /proc scan, a group signal) may take
+#: before it is reported as unanswered. Owen, 2026-09-05: "timeouts are intended
+#: to kill something if its waiting for an obscenely long time ... it should be
+#: like 10 minutes." These are wedge detectors, not budgets: a WSL VM that takes
+#: a minute to answer under load is slow, not gone, and a 30 s ceiling turned
+#: slow into "could not scan" on a healthy machine.
+GUEST_COMMAND_TIMEOUT_SECONDS = 10 * 60
+
 OWNER_ENV = 'NARRATOR_HIGGS3_OWNER'
 #: How long the guest-side watchdog sleeps between looks at the owner.
 WATCHDOG_INTERVAL_SECONDS = 3
@@ -1266,7 +1274,8 @@ while True:
         port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
         argv = self._guest_argv(['python3', '-c', self._OWN_SERVERS_SCAN, port])
         try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+            out = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=GUEST_COMMAND_TIMEOUT_SECONDS)
         except (OSError, subprocess.SubprocessError) as exc:
             raise HiggsV3ServerError(
                 f'Higgs v3: could not scan for narrator\'s own servers on port '
@@ -1802,7 +1811,8 @@ print(pgid)
                 'not killed.')
         argv = self._guest_argv(['python3', '-c', self._SIGNAL_GROUP, str(int(pid))])
         try:
-            out = subprocess.run(argv, capture_output=True, text=True, timeout=30)
+            out = subprocess.run(argv, capture_output=True, text=True,
+                                 timeout=GUEST_COMMAND_TIMEOUT_SECONDS)
         except (OSError, subprocess.SubprocessError) as exc:
             log(f'[HIGGS3] could not signal the group of pid {pid}: {exc}',
                 flush=True)

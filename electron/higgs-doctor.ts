@@ -93,7 +93,9 @@ export const HIGGS_MLX_AUDIO_VERSION = '0.4.8';
 const MLX_BASE_REQUIRED_FILES = ['config.json', 'tokenizer.json'] as const;
 
 /** How long either probe may take before it is reported as no answer. */
-const PROBE_TIMEOUT_MS = 30000;
+// The MLX probe on the Mac loads mlx-audio for real; same ruling as
+// WSL_PROBE_TIMEOUT_MS (tool-paths.ts): a wedge detector, not a budget.
+const PROBE_TIMEOUT_MS = 10 * 60 * 1000;
 
 /**
  * The MLX probe, as one python program.

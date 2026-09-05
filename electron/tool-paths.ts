@@ -1320,6 +1320,21 @@ export function narratorRuntimeDeps(): NarratorRuntimeDep[] {
  * shell to eat — and so is `bash -s` with the script on STDIN, which is why
  * `wsl-mounts.ts` needs no change.
  */
+/**
+ * How long a WSL probe may take before it is killed and reported as unanswered.
+ *
+ * Owen, 2026-09-05: "timeouts are intended to kill something if its waiting for
+ * an obscenely long time. it shouldnt be 30 seconds if it takes 41 seconds to
+ * load in. it should be like 10 minutes." The probe imports vllm_omni for real
+ * (measured on this machine: torch 6 s, vllm 15 s, vllm_omni 34-41 s, because
+ * vllm-omni installs three torch/inductor patches at import time), and at 30 s
+ * the doctor reported "the WSL probe did not answer" and every later check as
+ * failed on a healthy env, and the TTS step refused to prepare. The check stays
+ * a REAL import - that is what "importable" means - and the ceiling is a wedge
+ * detector, not a budget.
+ */
+export const WSL_PROBE_TIMEOUT_MS = 10 * 60 * 1000;
+
 export function wslScriptArgs(distro: string | undefined, script: string): string[] {
   return [...(distro ? ['-d', distro] : []), '--exec', 'bash', '-c', script];
 }
@@ -1673,8 +1688,8 @@ export function checkWslHiggsSetupAsync(config: {
     }
     const timer = setTimeout(() => {
       try { proc.kill(); } catch { /* already gone */ }
-      finish('the WSL probe did not answer within 30 s');
-    }, 30000);
+      finish(`the WSL probe did not answer within ${WSL_PROBE_TIMEOUT_MS / 1000} s`);
+    }, WSL_PROBE_TIMEOUT_MS);
     proc.stdout?.on('data', (c: Buffer) => { out += c.toString('utf8'); });
     proc.on('error', (err) => { clearTimeout(timer); finish(err.message); });
     proc.on('close', () => { clearTimeout(timer); finish(null); });
@@ -1730,7 +1745,7 @@ export function checkWslHiggsSetup(config: {
   try {
     out = execSync(`wsl.exe ${syncArgv} "${script.replace(/"/g, '\\"')}"`, {
       encoding: 'utf8',
-      timeout: 30000,
+      timeout: WSL_PROBE_TIMEOUT_MS,
       windowsHide: true,
     });
   } catch (err) {
