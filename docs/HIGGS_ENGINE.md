@@ -362,7 +362,19 @@ directory is the one that must check it.
 0.4.8's `higgs_audio_v3` reads no `generation_config.json` at all (its
 `Model.generate` defaults `top_p` and `top_k` to `None`, which disables both), so
 the MLX backend reads the checkpoint's file itself and passes those exact values
-to the sampler. See `python/narrator/engine/PORT_NOTES.md` 12.8d and 13.11.
+to the sampler. A `repetition_penalty` other than 1.0 in the file is *refused*
+there rather than dropped — mlx-audio has no such lever, and ignoring it would
+give one checkpoint two samplings across the two arms. See
+`python/narrator/engine/PORT_NOTES.md` 12.8d and 13.11.
+
+**And the corollary, which is about `clips` and `default` voices:** if sending no
+`extra_params` means the model directory, and the base snapshot has no file, then
+a zero-shot voice rendering against the base was itself getting top_p 1.0 /
+top_k disabled. So narrator now sends v3's deploy default **explicitly** in
+`extra_params` for a base-weights voice, and sends nothing for a checkpoint voice
+(whose directory carries the file the server reads for itself). `stop_policy` —
+and therefore the manifest — reports what the model actually sampled at, which
+for a fine-tune is its own directory's numbers.
 
 ### Cold start: 297 s, not 55
 

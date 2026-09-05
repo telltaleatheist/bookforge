@@ -1210,8 +1210,42 @@ WHERE THE FILE COMES FROM - the provenance, which is not "the base ships one":
 | the record | `merge_manifest.json` beside the weights carries `generation_config_source`, `generation_config_override` and the resulting `sampling`. |
 
 Those four numbers are also what `v3_served.SERVER_DEFAULT_SAMPLING` has always
-held; that constant is now documented as the DEPLOY DEFAULT for the base weights
-and is never used to stand in for a checkpoint's file.
+held; that constant is now documented AT ITS DEFINITION as the deploy default
+for the BASE WEIGHTS, and is never used to stand in for a checkpoint's file.
+Every docstring that used to say "sending no `extra_params` uses these verbatim"
+said the thing this section refutes, and now says what actually happens.
+
+**AND BASE WEIGHTS MUST STATE THEM.** The corollary took a review to see: if
+sending nothing means the model directory, and the base snapshot has no file,
+then a `clips` or `default` voice rendering against the base was itself getting
+top_p 1.0 / top_k disabled - the babble sampling, live on the served arm for
+every non-checkpoint voice. So `HiggsV3Config.served_sampling()` branches on
+voice KIND exactly as the MLX arm does:
+
+    checkpoint voice   send NO extra_params. The server reads the directory's
+                       file for itself, and an extra_params here would override
+                       the model's own declared sampling with narrator's opinion
+                       of it.
+    base weights       send SERVER_DEFAULT_SAMPLING explicitly (minus `seed`,
+                       which is the request's top-level field and which
+                       `build_request_body` refuses inside extra_params).
+
+`HiggsV3Config.applied_sampling()` is the other half: what the model will
+actually SAMPLE at, which for a checkpoint is its directory's file and is NOT
+what was sent. That is what `higgs_v3_stop_policy` reports, because the manifest
+outlives the render and reporting the base default for a fine-tune would name
+sampling nobody used.
+
+TYPES, NOT JUST PRESENCE. The validator also checks what the three values ARE:
+`temperature` and `top_p` (and `repetition_penalty` when present) must be finite
+non-bool numbers in range, and `top_k` must be a whole number >= 0. Presence
+without type is not validation - `"top_k": 50.7` truncates silently to 50 in
+every consumer, `"top_p": "0.95"` coerces, and `"temperature": null` used to
+raise a bare `TypeError` naming neither the voice nor the file. `0.0`
+temperature, `1.0` top_p and `0` top_k are ACCEPTED: a checkpoint that states
+them is stating them deliberately and narrator does not second-guess a model's
+own file. An unreadable file (permissions, a broken symlink) is refused by name
+like every other state rather than raising a bare `OSError`.
 
 WHAT NARRATOR DOES ABOUT IT. One validator,
 `v3_served.require_generation_config(checkpoint_dir, voice_name)`, called from
@@ -1727,7 +1761,21 @@ no longer resolves from a constant:
 It is resolved ONCE, in `HiggsV3MlxEngine.__init__`, and logged at load with its
 source; re-reading per chunk would ask the same question thousands of times a
 book and would let the answer change mid-render. `HiggsV3MlxConfig.sampling`
-stays what it was: a named per-config override on top.
+stays what it was: a named per-config override on top, and
+`HiggsV3MlxConfig.__post_init__` now resolves the sampling at CONSTRUCTION, the
+same moment its served twin validates, so a caller building the dataclass
+directly cannot get an object whose first refusal arrives from inside the
+generation loop.
+
+**A `repetition_penalty` other than 1.0 in the file is REFUSED here, not
+dropped.** mlx-audio has no such lever at all - `Model.generate` takes no such
+argument and the word appears nowhere in the package - so honouring the file is
+impossible on this runtime, and ignoring it would give one checkpoint two
+samplings: penalised on the vllm-omni server, unpenalised on the Mac, from the
+same file. 1.0 is a no-op and is accepted as the nothing it is, which is what
+every correctly merged checkpoint carries. The same rule already applied to a
+user-supplied `repetition_penalty`; a lever the runtime cannot honour is a
+refusal at either door.
 
 `higgs_v3_mlx_stop_policy` therefore reports the CHECKPOINT's own levers, so a
 manifest never names sampling nobody used.
