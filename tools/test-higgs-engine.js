@@ -710,6 +710,11 @@ process.on('exit', () => { try { fs.rmSync(SCRATCH, { recursive: true, force: tr
 const wslWasOn = toolPaths.shouldUseWsl2ForHiggs();
 toolPaths.shouldUseWsl2ForHiggs = () => true;
 const origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+// The REAL host, captured before the override: two checks below assert on paths the
+// code derives from the host (os.tmpdir(), the repo root), which are drive paths only
+// on Windows. On a Mac/Linux host they are POSIX paths that toGuestPath passes through
+// unchanged by design, so those two checks are host-conditional (Mac run, 2026-09-05).
+const REAL_HOST = process.platform;
 if (process.platform !== 'win32') {
   Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
 }
@@ -755,6 +760,7 @@ process.on('exit', () => {
 
   check('every ENV value is translated too, not just argv', () => {
     if (!plan.viaWsl) return;
+    if (REAL_HOST !== 'win32') return; // host tmpdir is POSIX here; nothing to translate
     // NARRATOR_HIGGS_VOICES is written to the Windows temp dir and must be named
     // in the guest's filesystem. It used to be translated by its own call, which
     // is how the argv guard's bug stayed invisible in a log.
@@ -780,7 +786,7 @@ process.on('exit', () => {
   check('PYTHONPATH points at the narrator package, in the guest filesystem', () => {
     const m = line.match(/PYTHONPATH='([^']+)'/);
     assert.ok(m, 'PYTHONPATH is not exported');
-    if (plan.viaWsl) assert.match(m[1], /^\/mnt\/[a-z]\//);
+    if (plan.viaWsl && REAL_HOST === 'win32') assert.match(m[1], /^\/mnt\/[a-z]\//); // repo root is a drive path only on Windows
   });
 
   check('no ORPHEUS_* variable rides along', () => {
@@ -1079,9 +1085,11 @@ check('a pending voice is offered DISABLED, with its note as the reason', () => 
 // are written to a scratch dir this test owns.
 console.log('cross-check against narrator load_voices');
 
-const NARRATOR_PY = path.join(
-  REPO, '..', 'narrator', 'python',
-);
+// narrator lives IN this repo (python/narrator) since feat/narrator merged; the
+// sibling-worktree path is kept only for a checkout that predates the merge.
+const NARRATOR_PY = fs.existsSync(path.join(REPO, 'python', 'narrator', 'engine', 'higgs', 'config.py'))
+  ? path.join(REPO, 'python')
+  : path.join(REPO, '..', 'narrator', 'python');
 const CONFIG_PY = path.join(NARRATOR_PY, 'narrator', 'engine', 'higgs', 'config.py');
 
 function crossCheckSkipReason() {

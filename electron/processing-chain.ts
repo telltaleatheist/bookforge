@@ -57,12 +57,18 @@ const JOB_TYPE_OF: Record<ProcessingPassKind, PassJobType> = {
   // pass entries, and every pass now builds its PassJobConfig here and ends in
   // `runProcessingPass`.
   'footnote-refs': 'footnote-refs',
+  // Chainable like the others, and the one that has to come LAST when it is in a
+  // chain at all: a later simplify or translate rewrites the text this pass
+  // cleaned, which makes its stamp stale and the render refuse. The planner does
+  // not reorder — the user's order is the user's order — but the gate says so.
+  'narration-text': 'narration-text',
 };
 
 const LABEL_OF: Record<AppliedPassKind, string> = {
   simplify: 'Simplify',
   translate: 'Translate',
   'footnote-refs': 'Remove footnote references',
+  'narration-text': 'Narration text cleanup',
   // The route to a book, and NOT a pass: it is a document stage
   // (electron/vlm-convert.ts) and a chain request naming it is refused by
   // `JOB_TYPE_OF` having no entry for it. Named here because provenance is a
@@ -172,6 +178,10 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   }
 
   const sourcePath = await resolveSource(request, projectDir, manifest);
+  // The chain the source belongs to. Null when the file names none — a project
+  // with one family needs no id and the resolvers find it themselves.
+  const resolvedFamily = await manifestService.familyForOpen(projectDir, sourcePath);
+  const familyId = resolvedFamily === null ? null : resolvedFamily.family.id;
   // `isBookPath`, not the extension: the project's own working copy is an
   // exploded directory whose "extension" reads `.working`, so an extension test
   // here refused every migrated project its own book and told the user to "pick
@@ -184,7 +194,14 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
     );
   }
 
-  const record = await manifestService.readExportEpub(projectDir);
+  // WITH THE FAMILY, every time. Resolving the chain and then asking the
+  // family-less resolvers about the project is how "Clean text…" and "Run
+  // cleanup, then narrate" both died at PLAN time in exactly the two-chain
+  // projects the readiness gate was written for: `familyForListing` refuses to
+  // guess and throws "Press the button on the version you mean" (the second
+  // adversarial review, 2026-09-04).
+  const family = familyId === null ? undefined : familyId;
+  const record = await manifestService.readExportEpub(projectDir, family);
   const bookEpubPath = record?.absPath ?? sourcePath;
 
   // Stage numbering carries on from what the book already records: a pass writes
@@ -193,7 +210,7 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
   // so a project with several versions cannot number this run's stages from a
   // different version's history — and so `record` and this count are answers
   // about the same book.
-  const base = record ? (await manifestService.readAppliedPasses(projectDir)).length : 0;
+  const base = record ? (await manifestService.readAppliedPasses(projectDir, family)).length : 0;
 
   const jobs: PlannedPassJob[] = passes.map((pass: ChainPassRequest, i: number) => {
     if (pass.kind === 'simplify' && !pass.simplify) {
@@ -207,6 +224,11 @@ export async function planProcessingChain(request: ProcessingChainRequest): Prom
       kind: pass.kind,
       projectDir,
       stageRelDir: manifestService.passStageRelDir(base + i + 1, pass.kind),
+      // WHICH CHAIN, resolved from the file the run was pointed at rather than
+      // left for each resolver to guess. A project with two archive EPUBs has
+      // two chains, and a pass that did not name one would read the default
+      // family's book while the user pressed a button on the other's.
+      ...(familyId === null ? {} : { familyId }),
       ...(pass.simplify ? { simplify: pass.simplify } : {}),
       ...(pass.translate ? { translate: pass.translate } : {}),
     };

@@ -44,6 +44,7 @@ const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
 const { resolveInputEpub } = require('./resolve-project-epub.js');
 const { runNarrationPrep } = require('./narration-prep-step.js');
+const { runNarrationTextStep } = require('./narration-text-step.js');
 const { applyE2aScratchDir } = require('./e2a-scratch.js');
 
 function parseArgs(argv) {
@@ -248,7 +249,16 @@ async function main() {
     // the book exactly as a queued job does and a defect in the door shows up
     // here. Its output is what generation reads; the project's own EPUB is never
     // rewritten.
-    const prepared = await runNarrationPrep(bridge, inputPath, jobId, { skipAssembly: false });
+    // ── STEP 0a: the NARRATION TEXT CLEANUP, run automatically ──────────────
+    //
+    // The persisted text pass — punctuation, then the number rules, then the
+    // model on the residue — writes a cleaned, STAMPED book beside the input.
+    // `prepareNarrationInput` refuses an unstamped book by name, and an
+    // unattended chain has nobody to ask, so it runs the pass itself. A book
+    // already carrying a current stamp costs one hash and no model call.
+    const cleaned = await runNarrationTextStep(inputPath, {});
+
+    const prepared = await runNarrationPrep(bridge, cleaned.inputPath, jobId, { skipAssembly: false });
 
     // ── STEP 1/2: TTS — the tts-conversion core (real prep + batch worker) ──
     console.log(`[audiobook] STEP 1/2 renderRangeHeadless — e2a prep + batch worker on ${path.basename(prepared.inputPath)}`);

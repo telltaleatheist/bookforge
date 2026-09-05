@@ -92,8 +92,20 @@ function literalFrom(source, start) {
 }
 
 function extract(source) {
+  // LINE ENDINGS FIRST. The anchors above are written with `\n`, and this repo has
+  // `core.autocrlf=true`, so on Windows every working file is CRLF and every
+  // anchor missed — `indexOf` returned -1 and the keeper died with "the argv
+  // anchor was not found" on a tree where nothing had moved. It has been failing
+  // that way on Windows since it was written (verified on a clean checkout,
+  // 2026-09-05), which made the one keeper whose whole job is to say "the Orpheus
+  // argv did not change" unable to say anything at all.
+  //
+  // Normalising here and not at the call site because `normalize()` already
+  // collapses all whitespace, so the SNAPSHOT is identical either way — this
+  // only affects whether the anchors can be found.
+  const lf = source.replace(/\r\n/g, '\n');
   const out = {};
-  for (const a of ANCHORS) out[a.name] = literalFrom(source, a.start);
+  for (const a of ANCHORS) out[a.name] = literalFrom(lf, a.start);
   return out;
 }
 

@@ -37,6 +37,7 @@ import * as path from 'path';
 import type { BrowserWindow } from 'electron';
 
 import * as manifestService from './manifest-service';
+import { publishBridgeEvent } from './bridge-events';
 import { writePassDiff, type PassDiffUnit } from './diff-cache';
 import { loadEpubForComparison } from './epub-processor';
 import { removeEpubContainer, stagedContainerKindFor } from './epub-container';
@@ -79,8 +80,11 @@ const STAGING_DIR = path.join(os.tmpdir(), 'bookforge-staging');
  * A PDF project with no book is still refused, by name: converting the pages is
  * what makes a book, and no amount of copying gets you one.
  */
-export async function requireBookEpub(projectDir: string): Promise<string> {
-  const record = await manifestService.ensureBookEpub(projectDir);
+export async function requireBookEpub(
+  projectDir: string,
+  familyId?: string,
+): Promise<string> {
+  const record = await manifestService.ensureBookEpub(projectDir, familyId);
   return record.absPath;
 }
 
@@ -110,9 +114,10 @@ export async function requireBookEpub(projectDir: string): Promise<string> {
  */
 async function replaceBookEpub(
   projectDir: string,
-  producedAbsPath: string
+  producedAbsPath: string,
+  familyId?: string
 ): Promise<{ bookPath: string; digest: string }> {
-  const bookPath = await requireBookEpub(projectDir);
+  const bookPath = await requireBookEpub(projectDir, familyId);
   if (!fs.existsSync(producedAbsPath)) {
     throw new Error(`The pass reported success but wrote no file at ${producedAbsPath}.`);
   }
@@ -381,7 +386,8 @@ async function recordInLedger(
   pass: AppliedPass
 ): Promise<{ ledgerEntryId?: string; note?: string }> {
   const { registerLedgerPass } = await import('./book-ledger.js');
-  const recorded = await registerLedgerPass(config.projectDir, { kind: pass.kind, label, pass });
+  const recorded = await registerLedgerPass(
+    config.projectDir, { kind: pass.kind, label, pass, familyId: config.familyId });
   if (recorded.refusal !== null) {
     console.warn(`[processing-pass] ${recorded.refusal}`);
     return { note: recorded.refusal };
@@ -499,8 +505,13 @@ async function carryNarrationAcrossPass(
   beforeAbsPath: string,
   producedAbsPath: string,
 ): Promise<{ carry: NarrationDeletionsCarry; bookAfter: string }> {
-  const verdict = await verifyNarrationCarry(config.projectDir, beforeAbsPath, producedAbsPath);
-  const landed = await replaceBookEpub(config.projectDir, producedAbsPath);
+  // THE WHOLE WAY DOWN. Threading the family into the pass and then dropping it
+  // here only moved the family-less resolvers' refusal to AFTER the model pass,
+  // which is the most expensive place in the run to discover it (the second
+  // adversarial review, 2026-09-04).
+  const verdict = await verifyNarrationCarry(
+    config.projectDir, beforeAbsPath, producedAbsPath, config.familyId);
+  const landed = await replaceBookEpub(config.projectDir, producedAbsPath, config.familyId);
   return {
     carry: await sealNarrationCarry(verdict, landed.bookPath, landed.digest),
     bookAfter: landed.bookPath,
@@ -539,7 +550,7 @@ async function runSimplifyPass(
   const params = config.simplify;
   if (!params) throw new Error('A simplify pass was queued without its settings (mode, provider, model).');
 
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -603,7 +614,7 @@ async function runSimplifyPass(
     params: { mode: params.mode, provider: params.aiProvider, model: params.aiModel },
     diff: diff.rel,
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   const ledger = await recordInLedger(config, 'Simplify', applied);
   return {
     success: true,
@@ -629,7 +640,7 @@ async function runTranslatePass(
   const params = config.translate;
   if (!params) throw new Error('A translate pass was queued without its languages and model.');
 
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -672,7 +683,7 @@ async function runTranslatePass(
       model: params.aiModel,
     },
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   // No diff to freeze — a translation shares no words with what it replaced, so
   // the entry's receipt is null and the row says so rather than offering a review
   // of a wall of red and green.
@@ -722,7 +733,7 @@ async function runTranslatePass(
  * nothing to do, and saying that is the whole of the right answer.
  */
 async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult> {
-  const bookPath = await requireBookEpub(config.projectDir);
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
   const stageDir = absStage(config);
   await fs.promises.mkdir(stageDir, { recursive: true });
 
@@ -784,7 +795,7 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
     params: { removed: strip.removed, files: strip.files.length, breaks: strip.breaks },
     diff: diff.rel,
   };
-  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry);
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
   const ledger = await recordInLedger(config, 'Remove footnote references', applied);
   return {
     success: true,
@@ -794,6 +805,239 @@ async function runFootnoteRefsPass(config: PassJobConfig): Promise<PassJobResult
       + (strip.breaks > 0
         ? ` ${strip.breaks} paragraph(s) held nothing but a marker and now say [break] — a pause, `
           + 'which is what they always were.'
+        : ''),
+    ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
+    ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
+    ...(recorded.narrationNote ? { narrationCarryNote: recorded.narrationNote } : {}),
+  };
+}
+
+/**
+ * The narration copy, re-cut from the book as it stands.
+ *
+ * The strikes live in `ensureNarrationEpub`, not in the book, so a chained
+ * narration handed the raw book reads every passage the user struck out. That is
+ * why BOTH exits of the pass go through here — the one that did work, and the
+ * one that found nothing to do (the second adversarial review, 2026-09-04: the
+ * "already clean" success returned the book and lost the strikes).
+ *
+ * A failure is SAID, not swallowed, and it is not the pass's failure: the book
+ * is written and recorded either way. The caller then names the book itself,
+ * which `prepareNarrationInput` cuts on its way in — what is lost is the user's
+ * own strikes, and the note is what says so.
+ */
+async function recutNarrationCopy(
+  config: PassJobConfig,
+  bookPath: string,
+): Promise<{ narrationInputPath: string; note: string | null }> {
+  try {
+    const { ensureNarrationEpub } = await import('./narration-export.js');
+    const cut = await ensureNarrationEpub(config.projectDir, undefined, config.familyId);
+    console.log(
+      '[processing-pass] narration copy re-cut from the cleaned book'
+      + `${cut.cutReason === null ? ' (the one on record still described it)' : `: ${cut.cutReason}`}`
+      + ` — ${cut.epubPath}`);
+    return { narrationInputPath: cut.epubPath, note: null };
+  } catch (err) {
+    const note = 'The book was cleaned, but its narration copy could not be re-cut from it: '
+      + `${(err as Error).message} Anything narrated from here reads the book itself, so the `
+      + 'passages struck out for narration will be read aloud until the copy is remade.';
+    console.warn(`[processing-pass] ${note}`);
+    return { narrationInputPath: bookPath, note };
+  }
+}
+
+
+/**
+ * The narration text cleanup, as a pass on the book's chain.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-04: *"We should make this its own intentional step that the user
+ * runs and persists, so we don't have to run it again… This should be a foundry
+ * step that's necessary before it goes to TTS."* And, on where it sits: *"a step
+ * that can be performed at any point, including on an epub, but it's a
+ * computationally expensive step that needs to take place somewhere along the
+ * line, and everything after it is finalized/fixed… a step that goes in just
+ * like translate/simplify."*
+ *
+ * So it is offered, planned, queued and recorded exactly as those are, and it
+ * may be run at any point in the chain. What makes it different is the STAMP:
+ * `electron/narration-text-pass.ts` writes it into the book's OPF, and
+ * `prepareNarrationInput` refuses a render whose book has none — which is what
+ * "everything after it is finalized" means in code. A later simplify or
+ * translate rewrites the cleaned text and is recorded after this one in the
+ * ledger, so the gate calls the stamp STALE rather than missing.
+ *
+ * ── Not a string replace, and it still belongs here ─────────────────────────
+ *
+ * Unlike `footnote-refs` this loads a model: the deterministic stages read what
+ * they can guarantee and the model reads the residue. That is why it takes the
+ * GPU pool like a simplify does, and why it reports progress. Everything else
+ * about the ROW is the same, and the shared `passModule` runs it.
+ *
+ * ── Nothing to do is a REFUSAL ──────────────────────────────────────────────
+ *
+ * `footnote-refs`' rule, with one difference that matters. A book that is
+ * ALREADY STAMPED at this version has genuinely nothing to gain, and a second
+ * row would be a ledger entry the user can delete to undo nothing. But a book
+ * that merely prints no curly quote and no digit still needs the stamp — it is
+ * what unlocks the render — so a text-unchanged run over an UNSTAMPED book is a
+ * real pass with a real row, and says so.
+ */
+async function runNarrationTextPass(
+  jobId: string,
+  config: PassJobConfig
+): Promise<PassJobResult> {
+  const bookPath = await requireBookEpub(config.projectDir, config.familyId);
+  const { runNarrationTextPass: runPass } = await import('./narration-text-pass.js');
+  const { narrationTextReadiness } = await import('./narration-text-readiness.js');
+
+  // ── ALREADY DONE? Asked of the LEDGER, which is the authority the UI used ──
+  //
+  // This guarded itself with the FILE STAMP until the adversarial review of
+  // 2026-09-04 traced what that costs. `simplify` copies the OPF byte for byte,
+  // so a book cleaned and then simplified still carries a current stamp while
+  // its text is no longer the text that was cleaned — which is precisely why
+  // `narrationTextReadiness` reports `stale` and why the Narrate gate offers
+  // "Run cleanup again, then narrate". The stamp said `ok`, this returned a
+  // refusal, the step failed, and the chained narration never ran: the offer the
+  // design document describes could not complete, ever.
+  //
+  // Two authorities answering one question is the defect. There is one now.
+  const already = narrationTextReadiness(
+    await manifestService.readAppliedPasses(config.projectDir, config.familyId));
+
+  // ── AND "NOTHING TO DO" IS A SUCCESS, because work may be chained behind it ──
+  //
+  // `runFootnoteRefsPass` returns `success:false` for its own no-op and that is
+  // right for it: nothing is ever queued behind it, so the red row IS the
+  // message. This pass stands in front of a narration run, and a step that fails
+  // takes the run with it. So it succeeds, records nothing, and says so.
+  if (already.ok) {
+    // THE COPY IS STILL RE-CUT. A no-op that handed a chained narration the raw
+    // book would narrate every passage the user struck out, because the strikes
+    // live in the cut and not in the book (the second adversarial review).
+    const recut = await recutNarrationCopy(config, bookPath);
+    return {
+      success: true,
+      outputPath: bookPath,
+      narrationInputPath: recut.narrationInputPath,
+      summary: 'This book had already been through the narration text cleanup at this version '
+        + `(read by ${already.model}), so nothing was changed and nothing was recorded. It is `
+        + 'ready to narrate; the ledger of this version names the run that did it.'
+        + (recut.note === null ? '' : ` ${recut.note}`),
+    };
+  }
+
+  // Made only now, so a refusal above leaves no empty stage directory behind.
+  const stageDir = absStage(config);
+  await fs.promises.mkdir(stageDir, { recursive: true });
+
+  // The before-text, read now: the pass is about to replace the file it came
+  // from, and the diff is computed against this.
+  const before = await loadEpubForComparison(bookPath, false);
+
+  const { createOllamaNormalizerRunner, numberNormalizerModel } =
+    await import('./tts-number-normalizer-runner.js');
+  const { loadNarrationTextPrompt } = await import('./ai-bridge.js');
+  const { narrationCutsDir } = await import('./parallel-tts-bridge.js');
+  // Read ONCE and carried: the tag is part of the cache path AND of the stamp,
+  // so a run that read it twice could name the copy after one model and make it
+  // with another.
+  const model = numberNormalizerModel();
+
+  const produced = path.join(stageDir, 'narration-text.epub');
+  const outcome = await runPass({
+    epubPath: bookPath,
+    outPath: produced,
+    // The SAME scratch the render door looks in, so the copies this pass makes
+    // are the copies a later render finds instead of paying for them again.
+    cacheDir: narrationCutsDir(),
+    systemPrompt: await loadNarrationTextPrompt(),
+    model,
+    runner: createOllamaNormalizerRunner(model),
+    onProgress: (done, total, label) => {
+      // The same `queue:progress` bridge event the row's step module is already
+      // listening on (electron/queue-steps/pass.ts), so the bar this draws is
+      // the bar every other pass draws.
+      publishBridgeEvent('queue:progress', {
+        jobId,
+        message: label,
+        progress: total > 0 ? Math.round((done / total) * 100) : 0,
+      });
+    },
+  });
+
+  const after = await loadEpubForComparison(produced, false);
+  const diff = diffPaths(config);
+  await writePassDiff(diff.abs, pairChapters(before.chapters, after.chapters));
+
+  // The full record beside the diff: per-rule punctuation counts, every model
+  // edit and the verdict the validator gave it, everything refused. The diff is
+  // what Review changes shows; this is what a disagreement is settled from.
+  const receiptRel = `${config.stageRelDir}/narration-text.receipt.json`;
+  await fs.promises.writeFile(
+    path.join(stageDir, 'narration-text.receipt.json'),
+    `${JSON.stringify(outcome.receipt, null, 2)}\n`, 'utf8');
+
+  // The strikes, carried. This pass CANNOT move an element — it rewrites text
+  // nodes by offset and never adds, removes or reorders one — but that is
+  // asserted rather than trusted: the walk is compared anyway, so a future change
+  // that broke the claim refuses the carry instead of shifting a user's strikes
+  // by one paragraph.
+  const { carry, bookAfter } = await carryNarrationAcrossPass(config, bookPath, produced);
+
+  const punctuation = outcome.receipt.punctuation;
+  const numbers = outcome.receipt.numbers;
+  const byClass = numbers === null ? {} : numbers.appliedByClass;
+  const classSummary = Object.entries(byClass)
+    .sort((a, b) => b[1] - a[1]).map(([k, n]) => `${n} ${k}`).join(', ');
+  const applied: AppliedPass = {
+    kind: 'narration-text',
+    at: outcome.receipt.at,
+    params: {
+      normalizerVersion: outcome.receipt.normalizerVersion,
+      punctuationSpec: outcome.receipt.punctuationSpec,
+      model,
+      punctuationSpans: punctuation.spansApplied,
+      punctuationRules: punctuation.counts,
+      punctuationRefused: punctuation.refused.length,
+      numbersApplied: numbers === null ? 0 : numbers.appliedSpans,
+      numbersByRules: numbers === null ? 0 : numbers.appliedByRules,
+      numbersByModel: numbers === null ? 0 : numbers.appliedByModel,
+      // What the pass actually DID, by kind of reading — the number a reviewer
+      // looks at first now that the model is asked about more than digits.
+      appliedByClass: numbers === null ? {} : numbers.appliedByClass,
+      receipt: receiptRel,
+    },
+    diff: diff.rel,
+  };
+  const recorded = await manifestService.appendAppliedPass(config.projectDir, applied, carry, config.familyId);
+  const ledger = await recordInLedger(config, 'Narration text cleanup', applied);
+
+  // The narration copy, re-cut from the book this pass just wrote — and named
+  // as this step's artifact, because the queue gives a chained step its PARENT'S
+  // artifact and nothing else.
+  const recut = await recutNarrationCopy(config, bookAfter);
+  const narrationInputPath = recut.narrationInputPath;
+  const recutNote = recut.note;
+
+  return {
+    success: true,
+    outputPath: bookAfter,
+    narrationInputPath,
+    summary: `${punctuation.spansApplied} punctuation span(s) canonicalized and `
+      + `${numbers === null ? 0 : numbers.appliedSpans} number(s) read as words `
+      + `(${numbers === null ? 0 : numbers.appliedByRules} by rule, `
+      + `${numbers === null ? 0 : numbers.appliedByModel} by ${model}`
+      + `${classSummary === '' ? '' : `; ${classSummary}`}). The book is stamped `
+      + `${outcome.receipt.normalizerVersion}/${outcome.receipt.punctuationSpec} and is ready to `
+      + 'narrate.'
+      + (recutNote === null ? '' : ` ${recutNote}`)
+      + (punctuation.refused.length > 0
+        ? ` ${punctuation.refused.length} span(s) were left as printed because canonicalizing them `
+          + 'would have meant flattening an <em> or a <sup>; the receipt names each one.'
         : ''),
     ...(ledger.ledgerEntryId ? { ledgerEntryId: ledger.ledgerEntryId } : {}),
     ...(ledger.note ? { ledgerRefusal: ledger.note } : {}),
@@ -892,6 +1136,10 @@ export async function runProcessingPass(
       // before a progress row could be drawn.
       case 'footnote-refs':
         return await runFootnoteRefsPass(config);
+      // The jobId IS the progress channel: the deterministic stages finish in
+      // seconds and the model pass is minutes, so the row reports.
+      case 'narration-text':
+        return await runNarrationTextPass(jobId, config);
       default: {
         const unknown: never = config.kind;
         throw new Error(`There is no ${unknown} pass.`);

@@ -54,6 +54,15 @@ export interface LedgerPassRegistration {
   label: string;
   /** The record the pass appended a moment ago, verbatim. */
   pass: AppliedPass;
+  /**
+   * WHICH OF THE PROJECT'S CHAINS this row belongs to.
+   *
+   * Absent means the project has one and the resolvers may find it themselves —
+   * which is every caller before 2026-09-04. A project with two archive EPUBs
+   * has two, and a ledger row that did not name one would be written against
+   * whichever the resolver guessed, or refuse outright.
+   */
+  familyId?: string;
 }
 
 /** Registered, or refused with the sentence that says why. */
@@ -115,7 +124,7 @@ export async function registerLedgerPass(
   projectDir: string,
   registration: LedgerPassRegistration
 ): Promise<LedgerRegistration> {
-  const book = await manifestService.bookForAct(projectDir);
+  const book = await manifestService.bookForAct(projectDir, registration.familyId);
   if (book === null || !fs.existsSync(book.absPath)) {
     return {
       entry: null,
@@ -175,7 +184,7 @@ export async function registerLedgerPass(
     };
   }
 
-  const existing = await manifestService.readBookLedger(projectDir);
+  const existing = await manifestService.readBookLedger(projectDir, registration.familyId);
   const id = ledgerEntryId(existing.length + 1, registration.kind);
   const relDir = ledgerEntryRelDir(id);
   const absDir = manifestService.ledgerEntryDir(projectDir, id);
@@ -258,7 +267,7 @@ export async function registerLedgerPass(
     // the pass wrote in has been cleared by the same act.
     pass: { ...registration.pass, ...(receipt === null ? {} : { diff: receipt }) },
   };
-  await manifestService.appendLedgerEntry(projectDir, entry);
+  await manifestService.appendLedgerEntry(projectDir, entry, registration.familyId);
   console.log(
     `[book-ledger] ${path.basename(projectDir)}: ${registration.label} is entry ${id} in this `
     + `book's ledger — snapshot ${snapshotRel} (${snapshotIdentity.hex.slice(0, 12)})`

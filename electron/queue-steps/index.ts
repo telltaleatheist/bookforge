@@ -12,7 +12,9 @@ import { bookAnalysisStep } from './book-analysis';
 import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
 import { foundryJobStep } from './foundry-job';
-import { footnoteRefsStep, simplifyStep, translatePassStep } from './pass';
+import {
+  footnoteRefsStep, narrationTextStep, simplifyStep, translatePassStep,
+} from './pass';
 import { reassemblyStep } from './reassembly';
 import { rvcEnhancementStep } from './rvc-enhancement';
 import { translationStep } from './translation';
@@ -39,6 +41,7 @@ export function registerAllStepModules(): void {
     simplifyStep,
     translatePassStep,
     footnoteRefsStep,
+    narrationTextStep,
   ]) {
     registerStepModule(mod);
   }

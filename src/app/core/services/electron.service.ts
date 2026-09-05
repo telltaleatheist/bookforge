@@ -2398,6 +2398,37 @@ export class ElectronService {
   }
 
   /** Plan a processing run without queueing it. */
+  /**
+   * Has this project's book had the narration text cleanup, and is it still the
+   * last word on its text?
+   *
+   * Read-only. The Narrate door asks before it queues anything, so a missing or
+   * stale cleanup can be OFFERED rather than thrown from inside a running job.
+   */
+  async narrationTextReadiness(
+    projectDir: string, askedPath?: string, familyId?: string,
+  ): Promise<{
+    success: boolean;
+    /** The CHAIN's answer, or null when this project's chains cannot name one. */
+    readiness?: { ok: true; at: string; model: string }
+      | { ok: false; state: 'missing' | 'stale'; reason: string }
+      | null;
+    /** The FILE's own answer — the stamp the render door will read. */
+    fileState?: { ok: true; stamp: { normalizerVersion: string; punctuationSpec: string;
+      model: string } }
+      | { ok: false; state: 'missing' | 'stale'; reason: string }
+      | null;
+    familyId?: string | null;
+    bookPath?: string | null;
+    familyNote?: string;
+    error?: string;
+  }> {
+    if (this.isElectron) {
+      return (window as any).electron.narration.textReadiness(projectDir, askedPath, familyId);
+    }
+    return { success: false, error: 'Not running in Electron' };
+  }
+
   async planProcessingChain(request: ProcessingChainRequest): Promise<{
     success: boolean; plan?: ProcessingChainPlan; error?: string;
   }> {

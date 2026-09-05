@@ -1,0 +1,19 @@
+;FFMETADATA1
+title=Black Sun - Aryan Cults, Esoteric Nazism and the Politics of Identity
+artist=Nicholas Goodrick-Clarke
+language=en
+[CHAPTER]
+TIMEBASE=1/1000
+START=0
+END=1204751
+title=Introduction
+[CHAPTER]
+TIMEBASE=1/1000
+START=1204751
+END=5890846
+title=1. American Neo-Nazism
+[CHAPTER]
+TIMEBASE=1/1000
+START=5890846
+END=10512599
+title=2. The British Nazi Underground

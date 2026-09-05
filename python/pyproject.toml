@@ -1,0 +1,150 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "narrator"
+version = "0.1.0"
+description = "BookForge's audiobook render pipeline: manifest, render sessions, assembly."
+requires-python = ">=3.11"
+
+# Pinned to what the two hand-built Orpheus envs ALREADY have, not to what pip
+# would prefer (WSL orpheus_tts: numpy 1.26.4; the e2a python_env used for tests:
+# numpy 1.26.4 / soundfile 0.13.1). Resolving numpy upward would drag torch and
+# vLLM with it and break CUDA-graph capture, which is the whole reason those envs
+# are pinned by hand. See docs/NARRATOR_PLAN.md "Risks".
+#
+# numpy, soundfile and mutagen are the ONLY runtime dependencies outside
+# engine/: the manifest, the FLAC header reader and the assembler are otherwise
+# stdlib + subprocess ffmpeg. soundfile is used by the tests to synthesise real
+# FLACs, and by nothing in manifest/render/assemble at import time.
+#
+# mutagen is REQUIRED, not a convenience: it is the only way to have both the
+# m4b's freeform tags and its cover art. ffmpeg's mov muxer will not write a
+# `covr` atom while `-movflags +use_metadata_tags` is set (measured, ffmpeg 7.x),
+# and that flag is what carries the `year` and `language` tags the golden
+# references all have. So the cover is attached in a second pass exactly as
+# ebook2audiobook does it (lib/core.py:4384-4391, MP4/MP4Cover). It is already
+# present in both Orpheus envs because e2a imports it for the same reason.
+dependencies = [
+    "numpy==1.26.4",
+    "soundfile>=0.12",
+    # psutil: render/worker.py log_memory (ported from e2a worker_core); present in
+    # every env that has run an e2a worker and in the Windows test interpreter.
+    "psutil>=5.9",
+    # beautifulsoup4 + pillow: text/ (EPUB chapters/cover parsing, ported from e2a which
+    # had them via ebooklib/bs4). Missing on a bare env = 55 test errors (Mac run 2026-09-05).
+    "beautifulsoup4>=4.12",
+    "pillow>=10",
+    "mutagen>=1.45",
+]
+
+[project.optional-dependencies]
+# The GPU engines' pins live here so `pip install -e python/` stays torch-free on
+# a machine that only assembles. ONE GROUP PER ENGINE, AND THEY ARE MUTUALLY
+# EXCLUSIVE - each engine has its own conda env and always will:
+#
+#   orpheus            vLLM 0.7.3 (the last version whose V0 engine takes
+#                      per-request logits processors, which is what the EOS boost
+#                      IS) against torch 2.5.1+cu121.
+#   higgs-v3-server    vllm-omni 0.28.0 against torch 2.13.0+cu130. THE second
+#                      engine - it runs as a SERVER, and only the server needs
+#                      this group; narrator's v3 client is numpy + soundfile +
+#                      urllib.
+#   higgs-v2-scaffold  transformers >= 5.3 against torch 2.6.0+cu124. NOT
+#                      SHIPPED - Higgs v2 was dropped 2026-09-04 and the code is
+#                      kept as interface scaffolding. Install it only to run that
+#                      reference implementation against a model.
+#
+# Installing any two into one env resolves torch twice and breaks whichever
+# loses.
+#
+# Every version below is READ OFF A WORKING ENV, not chosen: `pip freeze` in WSL
+# `orpheus_tts`, `higgs` and `higgs3` (2026-09-04). vLLM and torch are
+# deliberately NOT installed by pip in practice - the envs were built by hand
+# with the CUDA-matched wheels (see CLAUDE.md) - so these pins document and
+# VERIFY what must already be there rather than fetching it.
+engine = ["narrator[orpheus]"]
+
+# WSL `orpheus_tts`: python 3.11, torch 2.5.1+cu121, vLLM 0.7.3, numpy 1.26.4.
+# vllm 0.7.3 is a hard pin, not a floor: V1 has no per-request logits processor,
+# so the EOS boost silently stops applying above it (the spawn env sets
+# VLLM_USE_V1=0 for the same reason).
+orpheus = [
+    "torch==2.5.1",
+    "torchaudio==2.5.1",
+    "vllm==0.7.3",
+    "transformers==4.57.6",
+    "snac==1.2.1",
+]
+
+# Orpheus on Apple Silicon (the Mac's MLX backend). A SEPARATE group: it shares
+# the engine but none of the CUDA stack.
+#
+# EVERY PIN IS LOAD-BEARING, and two of them are exact for measured reasons:
+#   mlx-lm==0.31.3    the batched fast path is version-PINNED, not
+#                     feature-detected (mlx_fastpath refuses below it); 0.31.3
+#                     is where `GenerationBatch` exists.
+#   mlx-audio==0.4.8  0.5.1 CANNOT RENDER ORPHEUS - `mlx_audio/lm/generate.py`
+#                     `_eos_ids` does `set(tokenizer.eos_token_ids)` on an int
+#                     (128009) under transformers 5.x and raises TypeError on
+#                     EVERY generate. 0.3.x drags mlx-lm below the fast-path
+#                     pin. 0.4.8 is the one version that works, and it only
+#                     requires mlx>=0.31.1, so it coexists with the mlx pin.
+#   mlx>=0.32.0       `mx.new_thread_unsafe_stream`, which decode overlap needs;
+#                     below it the engine degrades to serial decode (loudly).
+#
+# NO torchaudio, NO torchcodec, NO ffmpeg: with the soundfile writer (PORT_NOTES
+# 12.8a) nothing on the Mac render path writes through torchaudio any more.
+# torch itself is still needed - `trim_audio` (the chars/sec guard) and
+# `_cleanup_memory` use it - so it stays, but it is the CPU/MPS wheel with no
+# media stack attached.
+orpheus-mlx = [
+    "mlx>=0.32.0",
+    "mlx-lm==0.31.3",
+    "mlx-audio==0.4.8",
+    "torch>=2.5",
+    "snac==1.2.1",
+    "transformers>=4.57",
+]
+
+# WSL `higgs`: python 3.11, torch 2.6.0+cu124, transformers 5.16.1, numpy 2.4.6.
+# NB that env carries numpy 2.x while narrator's own pin is 1.26.4 (Orpheus's
+# vLLM needs it); narrator's engine code is 1.x/2.x-clean, and the conflict is
+# why these are separate envs and separate groups rather than one install.
+# `higgs-audio-v2-generation-3B-base` has no python package of its own - the
+# model class ships inside transformers.
+higgs-v2-scaffold = [
+    "torch==2.6.0",
+    "torchaudio==2.6.0",
+    "transformers==5.16.1",
+    "accelerate>=1.14",
+    "librosa>=0.11",
+]
+
+# WSL `higgs3`: python 3.11, torch 2.13.0+cu130, vllm 0.28.0, vllm-omni 0.28.0.
+# The SERVED engine (higgs-v3). A third mutually exclusive group - it shares an
+# env with neither of the others.
+#
+# TWO SITE-PACKAGES PATCHES MUST BE RE-APPLIED AFTER ANY UPGRADE HERE:
+# work/patch_vllm.py (without it every voice-clone request is HTTP 400) and
+# work/patch_tail_trim.py (without it every chunk ends in ~240 ms of audible
+# garbage). pip cannot express that; see narrator/engine/PORT_NOTES.md 12.8.
+#
+# NB the v3 CLIENT needs none of this - it is numpy + soundfile + urllib, so the
+# engine can be driven from any env while the model runs in `higgs3`.
+higgs-v3-server = [
+    "torch==2.13.0",
+    "vllm==0.28.0",
+    "vllm-omni==0.28.0",
+]
+
+[project.scripts]
+narrator = "narrator.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["narrator*"]
+
+[tool.setuptools.package-data]
+narrator = ["**/*.md"]
