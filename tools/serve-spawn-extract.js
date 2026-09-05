@@ -130,10 +130,22 @@ require.cache['electron-stub'] = {
 // and every row came back as the Mac conda invocation — a capture that compares
 // equal to itself while describing an arm it never built. One process per arm (see
 // the header), so nothing is restored and nothing leaks.
+// The HOST's temp dir, read BEFORE the override: `os.tmpdir()` branches on
+// `process.platform` at CALL time, and under a forced win32 on a Mac it returns
+// `process.env.TEMP || TMP || (SystemRoot || windir) + '\\temp'` — none of which
+// exist there — i.e. the literal RELATIVE path `undefined\temp`, which the Higgs
+// voices document then mkdirs inside the repo (found by the Mac agent, 2026-09-05).
+const os = require('os');
+const HOST_TMP = os.tmpdir();
 Object.defineProperty(process, 'platform', {
   value: ARM === 'native-mac' ? 'darwin' : 'win32',
   configurable: true,
 });
+if (process.platform === 'win32') {
+  // Under the forced arm, `os.tmpdir()` reads TEMP; make it the host's real one.
+  process.env.TEMP = HOST_TMP;
+  process.env.TMP = HOST_TMP;
+}
 
 const paths = require(path.join(DIST, 'e2a-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
@@ -256,7 +268,7 @@ function canon(s) {
   // The OS temp dir is as much the host's as the repo path is: the Higgs voice
   // document is written there, and `C:/Users/<name>/AppData/Local/Temp` and
   // `/var/folders/xx/...` are the same fact about two machines.
-  const tmp = require('os').tmpdir();
+  const tmp = HOST_TMP;
   s = s
     .split(tmp).join('<TMP>')
     .split(tmp.replace(/\\/g, '/')).join('<TMP>')
