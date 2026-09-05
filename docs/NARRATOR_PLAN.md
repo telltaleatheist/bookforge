@@ -481,3 +481,30 @@ Orpheus keeps its 44 s sentence split. For Higgs v3:
    the Higgs StopPolicy, made concrete: an ALIGNMENT check, not a transcription diff.
 Design-note level; no code yet. The existing `electron/scripts/align_audiobook.py` (WhisperX,
 paragraph-aware, silence-snapped) is the natural home for the aligner.
+
+### BUILT 2026-09-05 - `python/narrator/align/` (README there carries the numbers)
+
+Points 1 and 2 were already `text/paragraph_packer.py` except for tables, which are now a
+sixth block kind: a `<table>` becomes one block per data row (e2a's own cell recipe,
+core.py:1461-1481), a text-shape detector catches the same thing in a PDF-derived block
+list, and both are walls carrying `[item]` - a new `[table]` token is in neither `TTS_SML`
+nor `SML_UNSPOKEN_PATTERN`, so the engine would read it aloud.
+
+Points 3 and 4 are `narrator align --session-dir <hash dir> [--out sentences.vtt]
+[--report coverage.json]`. `<stem>.sentences.vtt` is ADDITIVE - the chunk-level VTT is
+untouched and both are generated from one `assemble/vtt.chunk_spans`, so a sentence cue
+cannot leave its chunk's cue. The guard's thresholds are DATA in
+`assemble/engine_profiles.py` (`CoveragePolicy` per engine, enforced for `higgs-v3` and
+informational for `orpheus`) and the enforcement is `assemble/coverage_gate.py`, pure
+stdlib because assembly runs on a CPU env with no torch: it reads the REPORT, and for an
+enforced engine a missing report is a refusal.
+
+The backend is **WhisperX**, measured against torchaudio `forced_align` on ten kershaw
+chunks: identical word times (median delta 0.000 s, p95 0.020 s) and identical cost, but
+only WhisperX localizes text inside longer audio, which is what makes "audio with no text"
+detectable at all; torchaudio's API is also removed in 2.9. No automatic switching - a
+backend that fails stops the run naming the chunk. Deviation from the relayed note on
+point 1: a Higgs CHECKPOINT voice with no measured cap stays REFUSED rather than taking a
+2,000-char placeholder; the 600 is a MEASURED zero-shot number and belongs only to the
+served default. OWED: a Higgs v3 render to align (every threshold is calibrated on Orpheus
+output plus hand-built failures).

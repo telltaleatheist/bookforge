@@ -422,9 +422,12 @@ def _load_whisperx(language: str, device: str):
 
 def _whisperx_words(audio, text: str, language: str, device: str):
     """WhisperX align mode. THE SHIPPED BACKEND."""
-    import whisperx
-
+    # The loader FIRST: it is the one that turns a missing whisperx into a
+    # refusal naming the interpreter to use, rather than a bare ImportError
+    # wrapped as "the backend failed to align 53 words".
     model, meta = _load_whisperx(language, device)
+
+    import whisperx
 
     duration = audio.size / SAMPLE_RATE
     segments = [{'text': text, 'start': 0.0, 'end': duration}]
@@ -485,10 +488,10 @@ def _torchaudio_words(audio, text: str, language: str, device: str):
     torchaudio's own CTC aligner. Refuses by name for a language it has no
     bundle for, and for a torchaudio that has dropped `forced_align`.
     """
+    model, lookup, separator = _load_torchaudio(language, device)
+
     import torch
     import torchaudio.functional as functional
-
-    model, lookup, separator = _load_torchaudio(language, device)
 
     words = [w for w in text.upper().split(' ') if w]
     tokens, owner = [], []

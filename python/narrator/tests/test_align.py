@@ -396,6 +396,75 @@ class GateTest(unittest.TestCase):
             coverage_gate.load_report(r'C:\tmp\no-such-coverage-report.json')
         self.assertIn('no coverage report', str(caught.exception))
 
+    def _manifest(self, engine_id, chunks=2):
+        from narrator.manifest import (Book, Chapter, Chunk, EdgeFadeMs, Engine,
+                                       Manifest, Source, Voice)
+        return Manifest(
+            source=Source(kind='e2a-session-v1', processDir=r'C:\p',
+                          sessionId='sid', epubContentHash='h'),
+            book=Book(title='T', author='A', language='en', language3='eng'),
+            voice=Voice(engine=engine_id, fineTuned='v'),
+            sampleRate=24000, sentencesDir=r'C:\p\s',
+            engine=(Engine(id=engine_id, pads=False,
+                           edgeFadeMs=EdgeFadeMs(10.0, 25.0))
+                    if engine_id == 'higgs-v3' else None),
+            chapters=[Chapter(index=1, title='C', doc=None, chunks=[
+                Chunk(index=i, text=f't{i}', kind='prose',
+                      file=f'chapters/sentences/{i}.flac', samples=24000)
+                for i in range(chunks)])])
+
+    def test_an_enforced_engine_with_no_report_refuses_the_assembly(self):
+        lines = []
+        with self.assertRaises(coverage_gate.CoverageRefusal) as caught:
+            coverage_gate.check(self._manifest('higgs-v3'),
+                                r'C:\tmp\no-such-report.json', lines.append)
+        self.assertIn('no coverage report', str(caught.exception))
+
+    def test_an_unenforced_engine_with_no_report_assembles(self):
+        lines = []
+        self.assertIsNone(
+            coverage_gate.check(self._manifest('orpheus'), None, lines.append))
+
+    def test_a_report_for_another_book_is_refused(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'coverage.json')
+            document = self._document(chunks=9)
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(document, handle)
+            with self.assertRaises(coverage_gate.CoverageRefusal) as caught:
+                coverage_gate.check(self._manifest('higgs-v3', chunks=2),
+                                    path, lambda line: None)
+            self.assertIn('9', str(caught.exception))
+
+    def test_a_chunk_nobody_aligned_is_refused_for_an_enforced_engine(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'coverage.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(self._document(chunks=2, aligned=1), handle)
+            with self.assertRaises(coverage_gate.CoverageRefusal) as caught:
+                coverage_gate.check(self._manifest('higgs-v3'), path,
+                                    lambda line: None)
+            self.assertIn('needs every chunk measured', str(caught.exception))
+
+    def test_a_marker_only_chunk_counts_as_accounted_for(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'coverage.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(self._document(chunks=2, aligned=1, skipped=1), handle)
+            coverage_gate.check(self._manifest('higgs-v3'), path,
+                                lambda line: None)
+
+    def test_a_clean_enforced_report_lets_the_assembly_through(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'coverage.json')
+            with open(path, 'w', encoding='utf-8') as handle:
+                json.dump(self._document(chunks=2), handle)
+            lines = []
+            document = coverage_gate.check(self._manifest('higgs-v3'), path,
+                                           lines.append)
+            self.assertIsNotNone(document)
+            self.assertTrue(any('[coverage]' in line for line in lines))
+
     def test_the_two_engines_carry_the_policies_the_design_asks_for(self):
         self.assertTrue(profile_for('higgs-v3').coverage.enforced)
         self.assertFalse(profile_for('orpheus').coverage.enforced)
