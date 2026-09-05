@@ -300,7 +300,28 @@ function pushVoiceArgs(args: string[], settings: ParallelTtsSettings): void {
     // with only a console warning. Fail the job instead (the streaming path
     // already refuses this case for the same reason).
     const requested = (settings.fineTuned || '').toLowerCase();
-    if (requested && !ORPHEUS_STOCK_VOICES.includes(requested)) {
+    // NO VOICE AT ALL IS THE SAME FAILURE, and until 2026-09-05 it was allowed
+    // through because e2a made it self-limiting: an absent `--fine_tuned` fell to
+    // e2a's `'internal'` sentinel and KeyError'd, so the job died loudly.
+    //
+    // narrator does not. With no `--fine_tuned`, `compat/app.py` never sets
+    // `fine_tuned`, `engine/orpheus/engine.py` takes DEFAULT_VOICE, validates
+    // 'leah' as a legal stock voice, and renders the WHOLE BOOK in it with a log
+    // line and exit 0. That is the silent wrong-voice render this whole guard
+    // exists to prevent — the same one the `requested && ...` branch below
+    // refuses when a voice IS named but is not installed.
+    //
+    // Safe to tighten to Orpheus without touching a retired engine:
+    // `narratorEngineFor` has already refused anything but orpheus/higgs before
+    // this is reached, so XTTS's genuinely voice-less case cannot arrive here.
+    if (!requested) {
+      throw new Error(
+        'No Orpheus voice was selected for this render. narrator would render the '
+        + "whole book in its default voice ('leah') and report success — refusing. "
+        + 'Pick a voice in Settings → Orpheus Voices, or pass --voice on the CLI.',
+      );
+    }
+    if (!ORPHEUS_STOCK_VOICES.includes(requested)) {
       throw new Error(
         `Orpheus voice "${settings.fineTuned}" is not installed (model folder missing or invalid). ` +
         `Reinstall it from Settings → Orpheus Voices or pick another voice — ` +

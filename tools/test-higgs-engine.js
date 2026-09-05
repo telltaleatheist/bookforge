@@ -1025,6 +1025,30 @@ check('the retake door routes Higgs to narrator instead of e2a worker.py', () =>
   assert.ok(!/worker\.py/.test(code), "e2a's worker.py is still SPAWNED by the retake door");
 });
 
+check('an Orpheus render with NO voice is refused, not defaulted', () => {
+  // narrator has no self-limiting failure here the way e2a did: with no
+  // `--fine_tuned`, `engine/orpheus/engine.py` takes DEFAULT_VOICE, validates
+  // 'leah' as a legal stock voice, and renders the whole book in it with exit 0.
+  // Asserted on the SOURCE (comments stripped) because pushVoiceArgs is
+  // module-private and its inputs are a live settings object; what must not come
+  // back is the shape where an absent voice reaches the argv builder unremarked.
+  const at = bridgeSrc.indexOf('function pushVoiceArgs');
+  assert.ok(at > 0, 'pushVoiceArgs is gone or renamed');
+  const body = bridgeSrc.slice(at, at + 6000)
+    .replace(/\/\*[\s\S]*?\*\//g, ' ')
+    .split('\n').map((l) => l.replace(/\/\/.*/, '')).join('\n');
+  assert.match(body, /if \(!requested\)\s*\{[\s\S]{0,400}throw new Error\(/,
+    'pushVoiceArgs no longer refuses an absent Orpheus voice — narrator would '
+    + "render the whole book in 'leah' and report success");
+  // And the refusal has to NAME the consequence, or it reads as a validation nit.
+  const at2 = body.indexOf('if (!requested)');
+  assert.match(bridgeSrc.slice(bridgeSrc.indexOf('if (!requested)'), bridgeSrc.indexOf('if (!requested)') + 700),
+    /leah/, 'the refusal does not name the voice the book would have been rendered in');
+  assert.ok(at2 < body.indexOf('ORPHEUS_STOCK_VOICES.includes(requested)'),
+    'the absent-voice refusal must come BEFORE the not-installed one, or an absent '
+    + 'voice falls through it');
+});
+
 check('no Higgs door calls pushVoiceArgs — that flag is Orpheus-shaped', () => {
   // Finding 10: one call site was not guarded, so a Higgs worker carried BOTH
   // `--fine_tuned default` and `--higgs_voice default`. They are a prompt TOKEN
