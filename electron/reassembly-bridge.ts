@@ -420,25 +420,26 @@ const activeRvcDirs = new Map<string, string>();
 const activeClosedDirs = new Map<string, string>();
 
 /**
- * Does the e2a we are about to run understand --encoded_chapters_dir?
+ * A recorded `tts_engine` as narrator spells it, or a refusal naming what was
+ * found.
  *
- * BookForge and ebook2audiobook are separate repos on separate release cadences,
- * and e2a exists as THREE checkouts (Windows, the WSL one Orpheus renders in, the
- * Mac one) that routinely sit at different commits. app.py parses with
- * parse_args(), so handing an older checkout a flag it does not know is not a
- * degraded run — it is an immediate exit 2 with the whole assembly lost.
- *
- * So this is checked, not assumed. When the answer is no, the pre-closed chapters
- * are simply not used and assembly does the work itself, which is the same thing
- * that happens for a session the closer never touched.
+ * ABSENT IS NOT A DEFAULT EITHER. A session with no engine recorded is one this
+ * app did not write, or wrote before it recorded one; assembling it under a name
+ * invented here would put that name into the argv and, eventually, into somebody's
+ * explanation of what they are listening to.
  */
-function e2aSupportsEncodedChapters(): boolean {
-  const argsFile = path.join(getDefaultE2aPath(), 'bookforge_ext', 'parallel', 'args.py');
-  try {
-    return fs.readFileSync(argsFile, 'utf8').includes('--encoded_chapters_dir');
-  } catch {
-    return false;
-  }
+function narratorEngineForSession(recorded: string | undefined): string {
+  const id = recorded?.trim().toLowerCase();
+  if (id === 'orpheus') return 'orpheus';
+  if (id === 'higgs') return 'higgs-v3';
+  throw new Error(
+    id
+      ? `This session was rendered by '${recorded}', which narrator cannot assemble. `
+        + 'It serves orpheus and higgs; XTTS was retired 2026-09-04 and its sessions '
+        + 'load read-only.'
+      : 'This session records no TTS engine, so there is nothing to assemble it as. '
+        + 'Re-render it, or assemble it with the app that wrote it.',
+  );
 }
 
 /**
@@ -1241,11 +1242,19 @@ export async function startReassembly(
       return { success: false, error: 'Sentence-gap normalization: cached sentences not found for this session.' };
     }
     const minChunkGapForCloser = resolveOrpheusMinChunkGap(provenance?.voice) ?? 0;
-    const closed = !e2aSupportsEncodedChapters()
-      ? (reassemblyLog.info('Pre-closed chapters not used', {
-          jobId, reason: `the e2a at ${getDefaultE2aPath()} does not support --encoded_chapters_dir`,
-        }), null)
-      : await resolveClosedSession({
+    // NO CAPABILITY PROBE. `e2aSupportsEncodedChapters()` used to grep
+    // `<e2a>/bookforge_ext/parallel/args.py` for the flag, because BookForge and
+    // ebook2audiobook were separate repos at separate commits — three checkouts
+    // (Windows, the WSL one, the Mac one) that routinely disagreed — and app.py's
+    // parse_args() turns an unknown flag into exit 2 with the whole assembly lost.
+    //
+    // narrator ships INSIDE this repo, at this commit, and ACCEPTs the flag
+    // unconditionally (compat/FLAGS.md). The probe could only be wrong now, and it
+    // was wrong in the silent direction: its `catch { return false }` meant a
+    // machine with no e2a checkout at all — which is every machine after Phase 6 —
+    // quietly stopped using pre-closed chapters and re-encoded every chapter of
+    // every book, logged as a reason nobody would read as a defect.
+    const closed = await resolveClosedSession({
       tmpRoot: getDefaultE2aTmpPath(),
       sessionId: config.sessionId,
       sentencesDir: srcSentences,
@@ -1440,19 +1449,23 @@ export async function startReassembly(
     }
   }
 
-  // The engine this session was RENDERED by, in narrator's spelling, read from
-  // the session's own state file.
+  // The engine this session was RENDERED by, in narrator's spelling, READ from the
+  // session's own state file — never guessed.
   //
-  // This door used to send the literal 'xtts' on every book including Orpheus
-  // ones, and narrator still would not care: `compat/app.py` routes
-  // `--assemble_only` before any engine resolution, so `check_engine` never sees
-  // it. What changes is that the argv and the session no longer contradict each
-  // other. A session with no readable provenance is assembled as `orpheus`, which
-  // is not a guess about the audio — nothing on this path reads the flag — but it
-  // IS the only runnable id, and inventing `higgs-v3` for an unknown session would
-  // be one.
+  // This door used to send the literal 'xtts' on every book including Orpheus ones,
+  // and narrator would not care either way: `compat/app.py` routes
+  // `--assemble_only` before any engine resolution. What changed is that the argv
+  // and the session stopped contradicting each other.
+  //
+  // THE `: 'orpheus'` THAT WAS HERE WAS A FALLBACK, and it was the wrong kind. An
+  // XTTS session — a real thing, on Owen's disk, with real audio — would have been
+  // assembled under the label `orpheus`, which is a claim about the recording that
+  // is simply false. It read as harmless because nothing on this path consumes the
+  // flag, but "nothing reads it today" is the argument that ends with somebody
+  // reading it. A session whose recorded engine is not runnable is refused BY NAME,
+  // which is the standing rule for retired engines everywhere else in the app.
   const asmProvenance = await parseSessionProvenance(config.processDir);
-  const asmEngine = asmProvenance?.ttsEngine?.toLowerCase() === 'higgs' ? 'higgs-v3' : 'orpheus';
+  const asmEngine = narratorEngineForSession(asmProvenance?.ttsEngine);
 
   return new Promise((resolve) => {
     // ASSEMBLY IS NATIVE. The `sessionInWsl` branch that stood here ran the whole

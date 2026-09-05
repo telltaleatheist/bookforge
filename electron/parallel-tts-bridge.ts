@@ -4516,7 +4516,9 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // Orpheus runs in WSL; move its output onto Windows so RVC + assembly run
     // natively (off the slow \\wsl$ 9p mount, and on the up-to-date Windows e2a
     // that supports --sentences_dir). Reuses the Windows copy the project cache
-    // just made when available. No-op for native engines or a failed copy.
+    // just made when available. A no-op for native engines; a THROW when the copy
+    // fails, because assembly is native now and the \wsl$ alternative silently
+    // mis-times a book (see normalizeWslSessionToWindows).
     await normalizeWslSessionToWindows(session, cachedSentencesDir);
 
     // Skip assembly when a separate assembly step follows in this chain.
@@ -5077,8 +5079,30 @@ async function normalizeWslSessionToWindows(
     console.log(`[PARALLEL-TTS] Orpheus session normalized to Windows: ${winSessionDir} (RVC + assembly run native)`);
     await logger.log('INFO', session.jobId, `Orpheus session normalized to Windows; RVC + assembly run native: ${winSessionDir}`);
   } catch (err) {
-    console.error('[PARALLEL-TTS] WSL→Windows normalization failed; keeping WSL paths (assembly will use WSL):', err);
-    await logger.log('WARN', session.jobId, `WSL→Windows normalization failed (assembly via WSL): ${err instanceof Error ? err.message : String(err)}`);
+    // THERE IS NO WSL ASSEMBLY FALLBACK ANY MORE, so this is not a warning.
+    //
+    // It used to be: assembly could be routed back through the guest when the copy
+    // failed, so a failed normalization cost speed and nothing else. Phase 3 made
+    // assembly native on every platform, which leaves exactly two things this
+    // function can hand it — a Windows path, or a `\\wsl$` UNC.
+    //
+    // The UNC is not an option. It is the slow 9p mount, and worse, it re-opens the
+    // MAX_PATH hazard: `\\wsl$\<distro>\home\...\ebook-<uuid>\<hash>\chapters
+    // \sentences\<n>.flac` runs past 260 characters, and mediainfo answers a
+    // too-long path with a SILENT 0.0 duration rather than an error — which is a
+    // book that assembles, reports success, and is wrong.
+    //
+    // So the session stays where it is and the job stops here, naming the copy that
+    // failed. Everything rendered is still on disk and still resumable.
+    const detail = err instanceof Error ? err.message : String(err);
+    await logger.log('ERROR', session.jobId, `WSL→Windows normalization failed: ${detail}`);
+    throw new Error(
+      'The rendered session could not be copied out of WSL onto a Windows path '
+        + `(${detail}). Assembly runs natively and will not read the \\wsl$ mount: the `
+        + 'paths there run past the 260-character limit, where mediainfo reports a '
+        + 'silent 0.0 duration and the audiobook assembles wrong instead of failing. '
+        + 'The rendered sentences are intact — resume the job once WSL is reachable.',
+    );
   }
 }
 
@@ -5207,13 +5231,11 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     let outputPath = '';
 
     // Freshness watermark: only an m4b modified at/after this instant counts as
-    // THIS run's output. The session is normalized to Windows BEFORE assembly, so
-    // in the normal (native) case e2a writes to config.outputDir through the
-    // Windows filesystem and mtimes share this clock. In the WSL fallback
-    // (session still \\wsl$), config.outputDir is still a Windows path reached
-    // via /mnt/<drive> (drvfs), so the mtime is stamped by the Windows filesystem
-    // too. A 2s slack absorbs coarse timestamp granularity — a stale m4b from a
-    // previous run is minutes/hours older, never within 2s.
+    // THIS run's output. Assembly is native and writes to config.outputDir through
+    // the Windows filesystem, so its mtimes share this clock — there is no longer a
+    // WSL arm whose drvfs timestamps had to be reasoned about separately. A 2s
+    // slack absorbs coarse timestamp granularity; a stale m4b from a previous run
+    // is minutes or hours older, never within 2s.
     const assemblyStartMs = Date.now();
     const FRESHNESS_SLACK_MS = 2000;
 

@@ -1267,11 +1267,32 @@ export function getWslCondaPath(): string {
 }
 
 /**
- * Get WSL e2a path from config
+ * The WSL-side root a guest render works under, from config.
+ *
+ * IT NAMES EVERY WSL PREP'S SESSION ROOT (`<root>/tmp/ebook-<uuid>`), and the
+ * default it used to fall back to was the literal string `/home/$USER/...` —
+ * UNEXPANDED. Nothing expands it: the value goes into a single-quoted bash word,
+ * so a machine with no `wslE2aPath` configured would have written its session to a
+ * directory literally called `$USER`, and BookForge would then have read the
+ * session from the path it MEANT and found nothing. That was survivable while the
+ * value only picked an e2a checkout that either existed or did not; it stopped
+ * being survivable when it started naming where the audio goes.
+ *
+ * So it refuses by name instead. A WSL render on an unconfigured machine is a
+ * setup problem with a one-line fix, and saying so beats writing a book into a
+ * directory named after a variable.
  */
 export function getWslE2aPath(): string {
   loadConfig();
-  return state.config.wslE2aPath || '/home/$USER/ebook2audiobook';
+  const configured = state.config.wslE2aPath?.trim();
+  if (configured) return configured;
+  throw new Error(
+    'No WSL session root is configured (`wslE2aPath` in tool-paths.json). It names '
+      + 'where a WSL render writes its session, so there is no safe default — the old '
+      + "one was the literal string '/home/$USER/ebook2audiobook', which nothing "
+      + 'expands. Set it in Settings → Add-ons, or turn off "WSL2 for Orpheus" to '
+      + 'render natively.',
+  );
 }
 
 /**

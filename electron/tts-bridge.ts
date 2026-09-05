@@ -140,21 +140,28 @@ export function setMainWindow(window: BrowserWindow | null): void {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * Check if ebook2audiobook is available
+ * CAN THIS MACHINE RENDER? Answers `tts:check-available` (main.ts -> preload ->
+ * audiobook.service.ts).
+ *
+ * It used to answer "does `<e2a>/app.py` exist", which stopped being a question
+ * about anything at the cut-over: nothing spawns app.py, and after Phase 6 there
+ * is no e2a checkout for the file to be in — so a working machine would report
+ * itself unavailable, and a machine with the file and a broken environment would
+ * report itself fine.
+ *
+ * `narratorReady()` asks the two things that decide it: the narrator package is in
+ * this checkout, and the tools env's python can import `narrator.assemble`. It
+ * caches, so this stays cheap to call from a status poll.
  */
 export async function checkAvailable(): Promise<{ available: boolean; version?: string; error?: string }> {
-  try {
-    // Check if the app.py exists
-    const appPath = path.join(getDefaultE2aPath(), 'app.py');
-    await fs.access(appPath);
-
-    // Try to get version by running with --help or checking requirements
-    // For now, just check existence
-    return { available: true, version: '1.0.0' };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : 'Unknown error';
-    return { available: false, error: `ebook2audiobook not found at ${getDefaultE2aPath()}: ${message}` };
-  }
+  const { narratorReady } = await import('./reassembly-bridge.js');
+  if (narratorReady()) return { available: true, version: '1.0.0' };
+  return {
+    available: false,
+    error: 'narrator is not ready on this machine: either python/narrator is missing from '
+      + 'this checkout, or the tools environment cannot import narrator.assemble. '
+      + 'The main-process log names which.',
+  };
 }
 
 /**
