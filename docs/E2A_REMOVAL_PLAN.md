@@ -138,7 +138,14 @@ Gate: `npm run build:electron` zero TS errors; Listen smoke; Add-ons and Voices 
 Gate: packaged Windows install + Mac dmg on clean machines: first-run completes, one book renders and
 assembles, transcription + metadata + enhance/denoise/RVC resolve their binaries. ~26 h.
 
-## Open questions (put to Owen 2026-09-05)
+## Open questions - DECIDED by Owen 2026-09-05
+1. Language learning: **A - the whole feature goes** ("it needs to be rebuilt anyway ... clean it all out").
+2. Non-English: **A - English-only for TTS** ("non-English books will be translated to English; there is
+   already a Foundry pipeline for that; we will never TTS non-English books until a new pipeline"). Stanza
+   language packs go. The bundled python env stays as the tools env; WSL keeps `orpheus_tts`.
+Original framing follows for the record.
+
+## Open questions (as put to Owen 2026-09-05)
 1. Language learning: A delete (20 h, loses German LL projects) vs B keep + refuse assembly by name (6 h).
    Recommend B.
 2. Non-English prep: narrator's prep gates on 'eng'; German projects exist. A English-only (0 h; existing
