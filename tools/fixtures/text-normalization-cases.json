@@ -50,38 +50,43 @@
   },
   {
     "id": "scripture-abbrev",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "see 2 Cor. 10:4 for the argument",
-    "want": "see Second Corinthians ten four for the argument"
+    "want": "see Second Corinthians ten, four for the argument",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-range",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "Jeremiah 44:17-19 is the passage.",
-    "want": "Jeremiah forty four seventeen through nineteen is the passage."
+    "want": "Jeremiah forty four, seventeen to nineteen is the passage.",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-full",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "see 1 Corinthians 13:4",
-    "want": "see First Corinthians thirteen four"
+    "want": "see First Corinthians thirteen, four",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-list",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "Leviticus 19:31; 20:6 forbid it.",
-    "want": "Leviticus nineteen thirty one; twenty six forbid it."
+    "want": "Leviticus nineteen, thirty one; twenty, six forbid it.",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-bare-bk",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "quoting 2 Corinthians at length",
-    "want": "quoting Second Corinthians at length"
+    "want": "quoting Second Corinthians at length",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "date-mdy",
@@ -376,35 +381,39 @@
   },
   {
     "id": "scripture-cross-chapter",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "(Col. 3:19-4:1 and parallels)",
-    "want": "(Colossians three nineteen through four one and parallels)",
-    "added_in": "n5 — SCRIPTURE_REF cross-chapter range (BOOKFORGE_HANDOFF.md Ask 2b)"
+    "want": "(Colossians three, nineteen to four, one and parallels)",
+    "added_in": "n5 — SCRIPTURE_REF cross-chapter range (BOOKFORGE_HANDOFF.md Ask 2b)",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-cross-chapter-endash",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "see Rom. 5:12–6:2 there",
-    "want": "see Romans five twelve through six two there",
-    "added_in": "n5 — the same range printed with an en dash"
+    "want": "see Romans five, twelve to six, two there",
+    "added_in": "n5 — the same range printed with an en dash",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-verse-range-plain",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "Col. 3:19-21 alone",
-    "want": "Colossians three nineteen through twenty one alone",
-    "added_in": "n5 — the other direction: a VERSE range is unchanged by the fix"
+    "want": "Colossians three, nineteen to twenty one alone",
+    "added_in": "n5 — the other direction: a VERSE range is unchanged by the fix",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "scripture-lone-ref",
-    "stage": "rules",
+    "stage": "model",
     "rule": "scripture",
     "in": "Col. 3:19 alone",
-    "want": "Colossians three nineteen alone",
-    "added_in": "n5 — the other direction: a lone reference is unchanged by the fix"
+    "want": "Colossians three, nineteen alone",
+    "added_in": "n5 — the other direction: a lone reference is unchanged by the fix",
+    "changed_in": "n6 — Owen 2026-09-05: a reference is DETECTED and left as printed; the MODEL reads it, in the form \"First Peter three, seven\". `want` is what the model must produce, and the deterministic assertion is that this stage changed nothing."
   },
   {
     "id": "archive-sigil-not-prose",
@@ -908,5 +917,45 @@
     "in": "5,000 copies in 12 crates",
     "want": "five thousand copies in twelve crates",
     "added_in": "n5 — Ask 2c, the other direction: a comma-grouped number beside a BARE one is still two numbers, and a reading that drops the bare one is refused NUMBER_DROPPED. The floor was never the defect; counting a comma as a separator between numbers was."
+  },
+  {
+    "id": "scripture-ref-abbrev-numbered-book",
+    "stage": "model",
+    "rule": "scripture",
+    "in": "to dwell with each other according to knowledge (1 Pet. 3:7).",
+    "want": "to dwell with each other according to knowledge (First Peter three, seven).",
+    "added_in": "n6 — Owen 2026-09-05, the Higgs A/B render that narrated this \"one pet three seven\". Their known_defect case, id kept. DECIDED, not provisional: the reading is \"First Peter three, seven\" — chapter, comma pause, verse. Here the assertion is that the deterministic pass leaves it ALONE with its digits intact; the reading itself is the model's and is measured in tools/fixtures/scripture-readings.json."
+  },
+  {
+    "id": "scripture-ref-abbrev-plain-book",
+    "stage": "model",
+    "rule": "scripture",
+    "in": "as it says in John 3:16 and 2 Cor. 5:17.",
+    "want": "as it says in John three, sixteen and Second Corinthians five, seventeen.",
+    "added_in": "n6 — same class as scripture-ref-abbrev-numbered-book. Two references in one sentence, which is also the case that pins the list-tail boundary: the \"2\" after \"and\" belongs to Corinthians, not to John."
+  },
+  {
+    "id": "scripture-not-a-month",
+    "stage": "leave",
+    "rule": "scripture",
+    "in": "Jan. 3:7 was the date they agreed",
+    "want": "Jan. 3:7 was the date they agreed",
+    "added_in": "n6 — Owen's must-NOT list: a month is not a book, so nothing is detected and nothing is read."
+  },
+  {
+    "id": "scripture-not-a-chapter-label",
+    "stage": "leave",
+    "rule": "scripture",
+    "in": "Chapter 3:7 begins the argument",
+    "want": "Chapter 3:7 begins the argument",
+    "added_in": "n6 — Owen's must-NOT list: \"Chapter\" is an ordinary noun in front of a colon-number, not a book."
+  },
+  {
+    "id": "scripture-book-must-precede",
+    "stage": "rules",
+    "rule": "scripture",
+    "in": "at 3:16 John left the house",
+    "want": "at three sixteen John left the house",
+    "added_in": "n6 — Owen's must-NOT list: a book name AFTER the digits is no evidence. This is the book-LESS reading, unchanged from n5 and deliberately not given the scripture comma, because the pass does not know that these digits are a verse."
   }
 ]

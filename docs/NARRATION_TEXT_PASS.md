@@ -23,7 +23,7 @@ Three stages, over every text of the book, **in this order**:
 | # | stage | what | where |
 |---|---|---|---|
 | 1 | **Punctuation** | canonical ellipsis `...`, the quote map, control characters and invisibles deleted, every space variant to U+0020, repeated spaces collapsed, `--` to an em dash, `?!!` to one mark, trailing line space trimmed. **Dashes the book printed are kept.** | `electron/tts-punctuation.ts` (spec `s1`) |
-| 2 | **The number rules** | the shapes a narrator's reading is *guaranteed*: scripture, dates, clock times, money, percent, decades, ordinals, `#N`, comma-grouped and bare integers. Citation apparatus is left as printed. | `electron/tts-number-rules.ts` |
+| 2 | **The number rules** | the shapes a narrator's reading is *guaranteed*: dates, clock times, money, percent, decades, ordinals, `#N`, comma-grouped and bare integers. Citation apparatus is left as printed — and so, since n6, is every **scripture reference**, which this stage only *detects and protects*. | `electron/tts-number-rules.ts` |
 | 3 | **The model, on EVERY block** | every judgement only the sentence can settle: number residue, abbreviations, all-caps runs, bracketed apparatus, spaced hyphens, roman numerals, footnote markers. Every edit passes a wall of validators; a rejected edit means the text stands as printed and the rejection is recorded by name. | `electron/tts-number-normalizer.ts` (`NORMALIZER_VERSION`) |
 
 > Owen, 2026-09-04: *"send every single block through to be sure. I suspect
@@ -526,7 +526,7 @@ definition are both BookForge's.
 ### Shared fixtures — and what the training side owes
 
 `tools/fixtures/text-normalization-cases.json` began as a copy of their
-`fixtures/cases.json`, case ids kept. **The two files have diverged**: 122 cases
+`fixtures/cases.json`, case ids kept. **The two files have diverged**: 127 cases
 here against 53 there, and **until their file is updated the corpora and the
 renders normalize differently** — by design, from rulings they have not mirrored,
 not by accident.
@@ -535,7 +535,9 @@ not by accident.
 |---|---|---|
 | expectations to **change** | 3 | `leave-page-cite`, `leave-doc-code`, `leave-glued` |
 | `known_defect` now **fixed** | 1 | `leave-archive` |
-| cases to **add** | 56 | every one marked `added_in` with its ruling or review row |
+| cases moved `rules` → `model` | 9 | every `scripture-*` case, from the n6 ruling: the deterministic pass no longer reads a reference, so `want` is what the MODEL must produce |
+| `known_defect` now **deferred to the model** | 2 | `scripture-ref-abbrev-numbered-book`, `scripture-ref-abbrev-plain-book` — their two 2026-09-05 cases, ids kept, at stage `model` |
+| cases to **add** | 59 | every one marked `added_in` with its ruling or review row |
 
 Those four changed expectations are exactly the four differences
 `run_fixtures.js --compare` reports. The 56 additions cover the cross-chapter
@@ -644,6 +646,147 @@ The range now admits its own chapter: *"three nineteen through four one"*. The
 keeper scans a generated matrix of every reference shape these rules claim and
 asserts no digit-adjacent colon survives.
 
+## Scripture: the rules DETECT it, the model READS it (n6)
+
+### The ruling
+
+Owen, 2026-09-05, after a Higgs A/B render of the deathstalker book narrated
+`(1 Pet. 3:7)` as *"one pet three seven"*:
+
+> **"I don't want to do it deterministically. An AI takes over. There are a
+> billion ways Bible verses are abbreviated."**
+
+Until n5 stage 2 *read* a reference from a table of book abbreviations
+(`2 Cor. 10:4` → *"Second Corinthians ten four"*). A table is the wrong
+instrument for an open set: `Pet.`, `1 Pt.`, `I Pet.`, `1 P.` and a hundred
+house styles are one book, and a table that is 95% complete does not read the
+last 5% *as printed* — it hands them to the generic integer rule, which narrates
+"one pet three seven". So the table is gone from the shipped path.
+
+### What stage 2 does now
+
+`scriptureSpans(text)` recognizes a reference and returns it as a span.
+`applyNumberRules` **closes** every such span before any rule runs, exactly as it
+closes a clock range: nothing is rewritten inside one. The digits are therefore
+still there when the model is asked, which is the only reason the model can read
+it, and the block is never `RULES_ONLY`.
+
+Detection is **shape-based and consults no book table**:
+
+| shape | detected | example |
+|---|---|---|
+| `[1-3] ` `Book` `.` ` c:v` | yes — the book token need only be capitalized | `1 Pet. 3:7`, `Zeph. 3:17`, `Qoheleth 3:1` |
+| ranges, verse letters, `ff.`, chapter-crossing | yes, inside the same span | `Jer. 44:17-19`, `Gen. 1:1a-2b`, `Matt. 5:16ff.`, `Col. 3:19-4:1` |
+| a LIST of references, bare verses included | yes, as **one** span | `Lev. 19:31; 20:6`, `Genesis 6:11, 13 and 7:1` |
+| chapter-only **with a leading volume number** | yes | `1 Pet. 3`, `2 Chron. 7` |
+| chapter-only **without** one | **no** — see below | `Gen. 3` |
+| a numbered book with no reference | yes (nine full names, John excluded) | `2 Corinthians` |
+| a book-LESS `c:v` | **no** — it is not known to be scripture | `3:16`, `5:45` |
+
+**Why detection may use a list where a reading may not.** The two have opposite
+failure modes. A missing entry in a *reading* table produces a wrong reading, out
+loud, with nothing downstream to catch it. A missing entry in a *detection* list
+only means one span is not protected — it is treated exactly as it was before —
+and a span detected in error is merely sent to the model, which is the pass that
+weighs context.
+
+### The chapter-only decision
+
+`Gen. 3` is **not** detected, and that is a decision, not an oversight. Telling
+`Gen. 3` from `Fig. 3` requires knowing that Genesis is a book and a figure is
+not, which is the table the ruling removed. A **leading volume number** is
+evidence that survives without one — English prints `1 Pet. 3` and never
+`1 Fig. 3` — so the numbered form is detected and the bare form is not. A bare
+`Gen. 3` reaches the model with its digit intact and is read there.
+
+### The must-NOT list
+
+Owen's, 2026-09-05, one keeper each in `tools/test-tts-number-rules.js`:
+
+| must not fire | why | what happens instead |
+|---|---|---|
+| `Jan. 3:7`, `Sept. 4:9` | a month is not a book | left as printed |
+| `Gen. Patton` | no reference behind it | left as printed |
+| `vs. 3:7`, `ex. 3:7` | lowercase — a book name is capitalized | left as printed |
+| `1 Pet 3` (no period) | without the period the token is just a word | the integer rule reads the digits, as before n6 |
+| `Chapter 3:7`, `Room 3:15`, `Act 3:2`, `Table 4:2` | an ordinary noun in front of a colon-number | the book-less rule reads it, or nothing does |
+| `Verses 28:7-8`, `Chapters 3:1-4:2` | the plural of an ordinary noun | as above |
+| `See 20:6`, `Read 20:6`, `Compare 20:16`, `In 20:16` | the sentence capitalized an ordinary word | as above |
+| `at 3:16 John left` | a book name AFTER the digits is no evidence | the book-less reading, *"three sixteen"*, with no scripture pause |
+| `2:00 p.m.`, `Luke 2:30 p.m.` | a meridiem says it was never a reference | the clock rule |
+| `5:30-6:00` | a clock range is not a verse range | left whole |
+
+The deny-list is a **closed set** — the months and ordinary English nouns,
+their plurals, and the sentence-initial words (`See`, `Read`, `Compare`, `In`,
+…). `Num.`, `Acts`, `Job`, `Song`, `Numbers`, `Judges`, `Kings`, `Songs` and
+`Lamentations` are the near misses and are deliberately **not** in it.
+
+The one shape kept from n5 is the **book-less `c:v`** (rule `verse-or-clock`,
+renamed from `scripture`): with no book named, the pass does not know what the
+digits are, so it reads them only where the verse and the clock readings
+coincide — a verse of ten or more — and leaves the rest to the model. It is
+deliberately **not** given the scripture pause.
+
+### The reading — measured, not chosen
+
+Whisper over the 23 scripture references carrying numbers in the deathstalker
+corpus (`E:\training\deathstalker\build\ds_ad4s\scripture_spoken_forms_report.txt`,
+2026-09-05) found:
+
+* **22 of 23** say **"verse" / "verses"**; **1** is bare; **0** say "chapter".
+* **"Psalm" singular** before a number, **4 times out of 4**.
+
+So the default the prompt asks for is **`<Book> <chapter>, verse <n>`** —
+*"First Peter three, verse seven"* — with ranges *"verses N to M"*
+(*"Matthew twelve, verses thirty-four to thirty-six"*) and lists
+*"verse N, M, and P"* (*"Psalm one hundred nineteen, verse ninety-seven, one
+hundred one, and one hundred two"*). A leading book number is an **ordinal**
+("First", "Second", "Third"), and the abbreviation is expanded to the book's full
+name. **The bare comma form is accepted** (*"First John one, nine"* — the one
+bare clip), and **"chapter" is refused**.
+
+### The validators — exactly one invariant relaxed
+
+For an edit whose span overlaps a **detected reference**, and nowhere else:
+
+* **Relaxed:** `keepsEveryWord` becomes `scriptureWordsSurvive` — the one-token
+  law the text classes already live under. At most one prose word of the find may
+  be missing, and a **name** must have arrived in its place (a number word or a
+  structural word — "verse", "to", "and following" — does not count as the name).
+  Without this, *"Pet." → "Peter"* is `WORDS_DROPPED`, which is exactly what threw
+  away 57 correct expansions on the 2026-09-02 run.
+* **Added:** `SCRIPTURE_UNREAD`, last of the number invariants so every earlier
+  one keeps its own name. It refuses a reference that came back half-read:
+  * an **abbreviation still standing** — any token ending in a period except the
+    last;
+  * the **chapter/verse boundary gone** — fewer pauses (a comma, or the word
+    "verse") than the find has printed `c:v` references;
+  * the word **"chapter"**.
+
+  The measured residue this exists for: the deathstalker corpus served
+  **"(Ps. sixty three six)"** — digits spelled out, the abbreviation intact and
+  the boundary simply gone. Every other invariant passed it.
+
+Nothing else is loosened. The same edit outside a detected span is judged exactly
+as it was in n5.
+
+### Where the book table went
+
+`tools/fixtures/scripture-readings.json` — 99 cases: the 66 books in the
+abbreviations a publisher prints, the deuterocanon, every shape, and the readings
+measured off the corpus. It is used twice:
+
+* **offline**, in `tools/test-tts-number-rules.js`: every reference must be
+  DETECTED, whole, and left as printed. A book the detector misses is a book the
+  model is never asked about.
+* **with a model**, Ollama-gated and never in the keeper sweep:
+  `node tools/test-tts-number-normalizer.js --scripture <model>` reads each one
+  through the real prompt and reports how many readings match. Without the flag
+  it does not run and nothing pretends it did.
+
+`accept` is a **list** per case, because the narrator is not uniform: the comma
+form, the "verse" form, and the default that carries both are all correct.
+
 ## What the 2026-09-04 live run settled
 
 The first run against a real model (`qwen3.8:27b-24g`, Kershaw, 68 blocks, 120 s,
@@ -716,7 +859,7 @@ and the live run measured it making it correctly.
 | file | what |
 |---|---|
 | `electron/tts-punctuation.ts` | stage 1, the shared spec (`s1`) |
-| `electron/tts-number-rules.ts` | stage 2 |
+| `electron/tts-number-rules.ts` | stage 2 — the rules, and `scriptureSpans` (detect-and-protect) |
 | `electron/tts-number-normalizer.ts` | stage 3 + the record (`NORMALIZER_VERSION`) |
 | `electron/narration-text-pass.ts` | the pass, the receipt, `narrationTextGate` |
 | `electron/narration-text-readiness.ts` | the ledger-side gate |
@@ -725,6 +868,7 @@ and the live run measured it making it correctly.
 | `electron/queue-steps/pass.ts` | `narrationTextStep` |
 | `cli/narration-text-step.js`, `cli/narration-text.js` | the CLI door and command |
 | `tools/test-text-normalization.js` | the shared fixtures + both fixes |
+| `tools/fixtures/scripture-readings.json` | the 66 books, the deuterocanon and the measured readings — evidence for the MODEL, never a rule |
 | `tools/test-narration-text-pass.js` | the pass over a real book, no GPU |
 | `tools/test-narration-text-readiness.js` | the ledger gate |
 | `tools/test-narration-text-two-family.js` | a TWO-CHAIN project, end to end, no GPU |

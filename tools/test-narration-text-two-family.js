@@ -59,7 +59,14 @@ require.cache[RUNNER_MODULE].exports.numberNormalizerModel = () => 'fake:1b';
 require.cache[RUNNER_MODULE].exports.createOllamaNormalizerRunner = () => ({
   model: 'fake:1b',
   pinContextTo() { /* no window to size */ },
-  async generate(input) { modelCalls.push(input); return '{"edits": []}'; },
+  async generate(input) {
+    modelCalls.push(input);
+    // n6: a scripture reference is protected by the rules and READ here.
+    return input.includes('Col. 3:19-4:1')
+      ? '{"edits": [{"find": "Col. 3:19-4:1", '
+        + '"replace": "Colossians three, verse nineteen to four, verse one"}]}'
+      : '{"edits": []}';
+  },
   async release() { /* nothing resident */ },
 });
 
@@ -201,7 +208,7 @@ test('the pass runs on THAT chain, end to end, and leaves the other alone', asyn
   //    scripture reference read, and it is stamped.
   const cleaned = await chapterText(result.outputPath);
   assert.ok(cleaned.startsWith('"the second edition"'), cleaned);
-  assert.ok(cleaned.includes('Colossians three nineteen through four one'), cleaned);
+  assert.ok(cleaned.includes('Colossians three, verse nineteen to four, verse one'), cleaned);
   const gate = await narrationTextPass.narrationTextGate(result.outputPath);
   assert.strictEqual(gate.ok, true, JSON.stringify(gate));
 

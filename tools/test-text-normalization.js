@@ -16,10 +16,18 @@
  *
  * ── THE TWO FILES HAVE DIVERGED, AND THIS IS THE LEDGER OF IT ───────────────
  *
- * As of 2026-09-04 this file holds **122** cases against their **53**, and until
+ * As of 2026-09-05 this file holds **127** cases against their **53**, and until
  * their `cases.json` is updated the corpora and the renders normalize
  * DIFFERENTLY — by design, from rulings they have not mirrored yet, not by
  * accident. What the training side owes:
+ *
+ *   NINE SCRIPTURE CASES MOVED from stage `rules` to stage `model`, from Owen's
+ *   ruling of 2026-09-05: the deterministic pass no longer READS a reference, it
+ *   DETECTS and protects one, and the model reads it. Their `want` is now what
+ *   the model must produce and the deterministic assertion is that this stage
+ *   changed nothing. Their own two `known_defect` cases of that day
+ *   (`scripture-ref-abbrev-numbered-book`, `scripture-ref-abbrev-plain-book`) are
+ *   here at stage `model` for the same reason, ids kept.
  *
  *   FOUR EXPECTATIONS TO CHANGE, all from Owen's ruling revising the
  *   leave-as-printed list, and all four are exactly what
@@ -120,7 +128,7 @@ for (const c of CASES) {
 test('every stage the shared file declares is actually exercised', () => {
   assert.deepStrictEqual(
     Object.keys(byStage).sort(), ['leave', 'model', 'punct', 'rules']);
-  assert.ok(CASES.length >= 53, `${CASES.length} cases — the shared set is 53 plus ours`);
+  assert.ok(CASES.length >= 127, `${CASES.length} cases — the shared set is 53 plus ours`);
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -278,37 +286,48 @@ test('the guard the rules use IS the guard the model validator uses', () => {
 
 console.log('\n── Ask 2b: the cross-chapter range ──');
 
-test('a chapter-crossing range reads both numbers', () => {
+/** The one span the detector found, or a failure naming what it found instead. */
+function onlyDetected(line) {
+  const found = rules.scriptureSpans(stagePunct(line));
+  assert.strictEqual(found.length, 1,
+    `${JSON.stringify(line)} -> ${JSON.stringify(found.map((s) => s.find))}`);
+  return found[0].find;
+}
+
+test('a chapter-crossing range is detected WHOLE and read by nobody', () => {
+  // Ask 2b, restated for n6: the failure was half a range being CLAIMED. Under
+  // detection the same defect would be half a range being PROTECTED, leaving the
+  // rest exposed — which is how "1 Pet. 3:7" became "one pet three seven". So the
+  // span is pinned character for character and the text is pinned unchanged.
+  assert.strictEqual(onlyDetected('(Col. 3:19-4:1 and parallels)'), 'Col. 3:19-4:1');
+  assert.strictEqual(onlyDetected('see Rom. 5:12–6:2 there'), 'Rom. 5:12–6:2');
+  assert.strictEqual(onlyDetected('Matt. 5:3-7:29 covers it'), 'Matt. 5:3-7:29');
   assert.strictEqual(deterministic('(Col. 3:19-4:1 and parallels)'),
-    '(Colossians three nineteen through four one and parallels)');
-  assert.strictEqual(deterministic('see Rom. 5:12–6:2 there'),
-    'see Romans five twelve through six two there');
-  assert.strictEqual(deterministic('Matt. 5:3-7:29 covers it'),
-    'Matthew five three through seven twenty nine covers it');
+    '(Col. 3:19-4:1 and parallels)');
 });
 
-test('a VERSE range and a lone reference are unchanged by the fix', () => {
-  assert.strictEqual(deterministic('Col. 3:19-21 alone'),
-    'Colossians three nineteen through twenty one alone');
-  assert.strictEqual(deterministic('Col. 3:19 alone'), 'Colossians three nineteen alone');
+test('a VERSE range and a lone reference are detected whole too', () => {
+  assert.strictEqual(onlyDetected('Col. 3:19-21 alone'), 'Col. 3:19-21');
+  assert.strictEqual(onlyDetected('Col. 3:19 alone'), 'Col. 3:19');
+  assert.strictEqual(onlyDetected('Jeremiah 44:17-19 is the passage.'), 'Jeremiah 44:17-19');
   assert.strictEqual(deterministic('Jeremiah 44:17-19 is the passage.'),
-    'Jeremiah forty four seventeen through nineteen is the passage.');
+    'Jeremiah 44:17-19 is the passage.');
 });
 
 /**
- * NO ORPHAN COLON, EVER.
+ * NO HALF A REFERENCE, EVER — the n6 form of the Ask 2b invariant.
  *
- * The Ask 2b defect was not an unconverted number, it was a MALFORMED one:
- * "Colossians three nineteen through four:1" — the rule ate the chapter and left
- * the colon and the verse standing. Nothing downstream could catch it
- * (`NUMBER_DROPPED` watches the model, not the rules; `stillHasDigits` sent the
- * wreckage to the model, which declined a fragment it could not parse). So the
- * invariant is asserted directly, over a generated matrix of every reference
- * shape these rules claim: after the deterministic pass, a scripture line holds
- * no colon with a digit on either side of it.
+ * Under n5 the failure was a MALFORMED reading: "Colossians three nineteen
+ * through four:1", the rule having eaten the chapter and left the colon
+ * standing. Under n6 no rule reads a reference at all, so the failure it could
+ * still have is that same shape one layer up — a reference detected PARTLY,
+ * leaving the rest of it exposed to the integer rule.
+ *
+ * The matrix therefore asserts both halves of the contract over every reference
+ * shape: the detected span is the WHOLE reference, character for character, and
+ * the deterministic pass returns the line byte-identical.
  */
-test('no rule output leaves a colon standing next to a digit', () => {
-  const DIGIT_COLON = /\d\s*:|:\s*\d/;
+test('every reference shape is detected whole, and left exactly as printed', () => {
   const books = ['Col.', 'Rom.', 'Matt.', 'Jeremiah', '2 Cor.', '1 Corinthians', 'Ps.'];
   const refs = [
     '3:19', '3:19a', '3:19-21', '3:19-21b', '3:19-4:1', '3:19–4:1', '3:19 - 4:1',
@@ -319,12 +338,13 @@ test('no rule output leaves a colon standing next to a digit', () => {
   for (const book of books) {
     for (const ref of refs) {
       for (const frame of frames) {
-        const line = frame.replace('%s', `${book} ${ref}`);
-        const out = deterministic(line);
+        const reference = `${book} ${ref}`;
+        const line = frame.replace('%s', reference);
         checked++;
-        if (out === line) continue;  // untouched text keeps whatever it printed
-        assert.ok(!DIGIT_COLON.test(out),
-          `${JSON.stringify(line)} -> ${JSON.stringify(out)} left a digit-adjacent colon`);
+        assert.strictEqual(onlyDetected(line), reference,
+          `${JSON.stringify(line)} was not detected whole`);
+        assert.strictEqual(deterministic(line), stagePunct(line),
+          `${JSON.stringify(line)} was rewritten by a rule`);
       }
     }
   }

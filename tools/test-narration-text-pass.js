@@ -242,7 +242,13 @@ test('a text that is already canonical produces no spans at all', () => {
 test('the three stages run, in order, over one book', async () => {
   const book = await buildBook('three-stages.epub');
   const runner = scriptedRunner({
-    'left in 1934': '{"edits": [{"find": "1934", "replace": "nineteen thirty-four"}]}',
+    // n6: the scripture reference is DETECTED and protected by stage 2, so the
+    // reading is the MODEL's. This scripted answer is what it must return, and
+    // accepting it exercises the one relaxed invariant end to end — "Col." may
+    // become "Colossians" only because the span was detected.
+    'left in 1934': '{"edits": ['
+      + '{"find": "Col. 3:19-4:1", "replace": "Colossians three, verse nineteen to four, verse one"}, '
+      + '{"find": "1934", "replace": "nineteen thirty-four"}]}',
   });
   const result = await pass.runNarrationTextPass(optionsFor(book, runner, 'three-stages'));
 
@@ -257,8 +263,8 @@ test('the three stages run, in order, over one book', async () => {
   // stood between "Mr." and "Smith" is an ordinary space by the time they read it.
   assert.strictEqual(
     await textStartingWith(result.outPath, 'Mr. Smith'),
-    'Mr. Smith and Dr. Jones read Colossians three nineteen through four one and then two '
-    + 'hundred fifty members left in nineteen thirty-four.');
+    'Mr. Smith and Dr. Jones read Colossians three, verse nineteen to four, verse one and '
+    + 'then two hundred fifty members left in nineteen thirty-four.');
 
   assert.ok(runner.released, 'the model\'s VRAM is given back before the pass returns');
 });
