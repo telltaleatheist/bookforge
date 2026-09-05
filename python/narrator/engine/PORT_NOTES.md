@@ -277,7 +277,7 @@ Measured against the BookForge regexes that read them (`grep` over `electron/`):
 | string | read by |
 |---|---|
 | `[ORPHEUS][ORPHEUS_GUARD_EVENT] {json}` | `parallel-tts-bridge.ts:111` slices this exact prefix off before `JSON.parse` |
-| `MLX batch generating: <N> rows, ~<T> tokens (step <S>/<D>), <R>/<N> rows done, batch <G>/<C>[ live <L>]` | `mlx-batch-progress.ts:94` (the within-batch progress bar) AND `parallel-tts-bridge.ts:2513` (watchdog activity) |
+| `MLX batch generating: <N> rows, ~<T> tokens (step <S>/<D>), <R>/<N> rows done, batch <G>/<C>[ live <L>]` | `mlx-batch-progress.ts:94` (the within-batch progress bar) AND `parallel-tts-bridge.ts:2513` (watchdog activity). **Emitted by BOTH MLX engines** — `[ORPHEUS]` and, since the Higgs v3 batcher landed, `[HIGGS-MLX]`. Neither reader anchors the prefix, so the wording and the field ORDER are the contract, not the engine name. |
 | `audio-token cap` | `GENERATION_ACTIVITY_RE` (watchdog) and `REPAIR_START_RE` |
 | `re-rendering split` | `GENERATION_ACTIVITY_RE` |
 | `sentence <N> hit the MLX audio-token cap` | `REPAIR_START_RE` (`parallel-tts-bridge.ts:2534`) |

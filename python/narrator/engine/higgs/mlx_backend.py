@@ -99,6 +99,7 @@ exactly as `engine/orpheus/mlx_backend.py` does it, so this module imports on a
 machine with no MLX at all (`tests/test_engine_lazy_imports.py`).
 """
 import os
+import time as _time
 from dataclasses import dataclass
 from typing import Optional
 
@@ -132,6 +133,67 @@ MLX_AUDIO_VERSION = '0.4.8'
 #: sniffed out of `config.json` + the model path. See `load_engine`.
 MLX_AUDIO_ARCH = 'higgs_audio_v3'
 
+#: THE BATCH CEILING. Unset means 1 - one row at a time, byte for byte the
+#: behaviour that shipped - so nothing widens because a machine happened to have
+#: the memory. BookForge asks for a width explicitly (electron/higgs-spawn.ts,
+#: the darwin WORKER arm only), taken from the same Orpheus memory tier that
+#: sizes the Orpheus MLX batch.
+BATCH_ENV = 'NARRATOR_HIGGS3_MLX_BATCH'
+
+#: Total unified memory ONE batch may occupy, weights and pinned buffer cache
+#: included. `_mlx_width_for_depth` narrows a deep batch to stay inside it. 42 is
+#: what BookForge's `extreme` tier hands Orpheus today.
+MEM_BUDGET_ENV = 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'
+
+#: The buffer-cache cap this backend already sets at load (`load_engine`). It is
+#: READ AGAIN by the headroom math because a pinned cache is a known constant
+#: that KV cannot have - one variable, two readers, never a second name.
+CACHE_LIMIT_ENV = 'HIGGS_MLX_CACHE_LIMIT_GB'
+CACHE_LIMIT_DEFAULT_GB = 8.0
+
+
+def _env_number(name: str, default, cast, minimum, what: str):
+    """One env variable -> a number, or a ValueError NAMING THE VARIABLE.
+
+    Garbage is never coerced and never defaulted past: a width or a budget read
+    from a typo would silently render a whole book at the wrong memory profile,
+    and "it fell back to the default" is exactly the sentence nobody can debug.
+    """
+    raw = (os.environ.get(name) or '').strip()
+    if not raw:
+        return default
+    try:
+        value = cast(raw)
+    except (TypeError, ValueError):
+        raise ValueError(
+            f'{name}={raw!r} is not a number. It is {what}; unset it for the '
+            f'default ({default:g}).') from None
+    if value < minimum:
+        raise ValueError(
+            f'{name}={raw!r} is below {minimum:g}. It is {what}; unset it for '
+            f'the default ({default:g}).')
+    return value
+
+
+def mlx_batch_ceiling() -> int:
+    """`BATCH_SIZE`: the widest batch this process will ever generate at once."""
+    return int(_env_number(BATCH_ENV, 1, int, 1,
+                           'the widest Higgs MLX batch, in rows'))
+
+
+def mlx_mem_budget_gb() -> float:
+    """`MLX_MEM_BUDGET_GB`: the whole batch's unified-memory budget."""
+    return float(_env_number(MEM_BUDGET_ENV, 42.0, float, 1.0,
+                             'the Higgs MLX batch memory budget, in GB'))
+
+
+def mlx_cache_limit_gb() -> float:
+    """The pinned MLX buffer cache, in GB. The SAME variable `load_engine` sets
+    `mx.set_cache_limit` from - read here so the headroom math subtracts the
+    memory that was actually pinned rather than a number of its own."""
+    return float(_env_number(CACHE_LIMIT_ENV, CACHE_LIMIT_DEFAULT_GB, float, 0.0,
+                             'the pinned MLX buffer cache, in GB'))
+
 
 def _log(message: str) -> None:
     """One ASCII log line, to the HOST's log stream.
@@ -145,10 +207,19 @@ def _log(message: str) -> None:
     Routed through `narrator.engine.log` so there is ONE mechanism for the whole
     engine layer rather than two. The default is stderr; the only host that
     redirects it to stdout is `narrator.compat.worker`, whose stdout
-    parallel-tts-bridge.ts parses - and none of these strings match any of that
-    bridge's five stdout-only patterns (checked: "loading Higgs v3 from ..." has
-    no "model" token for MODEL_LOAD_START_RE, and "model loaded in 2.8s" lacks
-    the "!" MODEL_LOAD_DONE_RE requires), so they are inert there.
+    parallel-tts-bridge.ts parses - and all but ONE of these strings are inert
+    there (checked: "loading Higgs v3 from ..." has no "model" token for
+    MODEL_LOAD_START_RE, and "model loaded in 2.8s" lacks the "!"
+    MODEL_LOAD_DONE_RE requires).
+
+    THE ONE EXCEPTION IS LOAD-BEARING ON PURPOSE: the batch heartbeat,
+    "MLX batch generating: <N> rows, ~<T> tokens (step <S>/<D>), <R>/<N> rows
+    done, batch <G>/<C>", is read by `parallel-tts-bridge.ts`'s
+    GENERATION_ACTIVITY_RE (liveness - a batch is otherwise silent for minutes
+    and the watchdog would kill the worker) and parsed field by field by
+    `mlx-batch-progress.ts` (the within-batch progress bar). NEITHER anchors the
+    engine prefix, so `[HIGGS-MLX]` is read exactly as `[ORPHEUS]` is; the
+    wording and the field ORDER are the contract.
     """
     log(f'[HIGGS-MLX] {message}')
 
@@ -586,11 +657,39 @@ class HiggsV3MlxEngine:
     pads = False
     edge_fade = HiggsV3Defaults.EDGE_FADE          # EdgeFade(10, 25)
     SUPPORTS_BATCH = True
-    #: One row at a time. mlx-audio HAS a `batch_generate` with a left-padded
-    #: BatchKVCache, and narrator does NOT use it: nothing here has measured it,
-    #: and the Orpheus MLX backend's mixed-length batches are a KNOWN corruption
-    #: hazard on this runtime. A measured widening is a separate change.
+    #: THE CEILING, not the width. 1 unless BookForge asks for more
+    #: (`NARRATOR_HIGGS3_MLX_BATCH`), so an unconfigured process renders exactly
+    #: as it did single-row; the instance overrides this in `__init__`.
+    #:
+    #: The batched loop is narrator's own mirror of mlx-audio's
+    #: `Model.batch_generate` - left-padded prompt embeddings behind
+    #: `BatchKVCache(left_padding)`, `_step_batch_sampler` for boc/eoc, and a
+    #: `filter(keep)` over the cache as rows retire. narrator keeps its own copy
+    #: for the three reasons the single-row loop exists (no baked-in fade, a
+    #: `should_stop`, and rows returned for the sentinel filter) plus a fourth:
+    #: `batch_generate` takes ONE `limit` for the whole batch, where narrator
+    #: caps each row at its own `cap_frames`.
+    #:
+    #: The WIDTH actually generated is `_mlx_width_for_depth`, derived from the
+    #: batch's own depth against `MLX_MEM_BUDGET_GB`; one seed is drawn per
+    #: batch (`_seed_for` of its first index), so a batch is reproducible and
+    #: two batches never share a draw.
+    #:
+    #: NOTHING HERE IS MEASURED. Owen measures throughput and audio identity on
+    #: the Mac; this side only guarantees the arithmetic and the row bookkeeping.
     BATCH_SIZE = 1
+
+    #: Resident bf16 weights, in GB. PROVENANCE: `model.safetensors` of
+    #: ds_ad4lm_prod_ckpt1080 is 8,489,897,458 bytes = 8.49 GB, and the base
+    #: checkpoint is the same architecture at the same precision.
+    MLX_WEIGHTS_GB = 8.5
+
+    #: ARITHMETIC KV bytes per generated position per row, in MB, for the v3
+    #: backbone: 36 layers x (K+V) x 8 kv heads x 128 head_dim x 2 bytes =
+    #: 147,456 B = 0.140625 MB. This is the DOCUMENTED DEFAULT; `load_engine`
+    #: recomputes it from the checkpoint's own `text_config` so a differently
+    #: shaped Higgs is budgeted as itself rather than as this one.
+    MLX_KV_MB_PER_TOKEN_ROW = 0.140625
 
     def __init__(self, config: HiggsV3MlxConfig):
         if not isinstance(config, HiggsV3MlxConfig):
@@ -608,6 +707,11 @@ class HiggsV3MlxEngine:
         self._reference_texts = None
         self._codec_obj = None
         self._budget = HiggsV3MlxBudget(config)
+        # The batch ceiling and its budget are read ONCE, here, so a mid-book
+        # environment change cannot re-shape a running render - and so a bad
+        # value refuses at construction rather than at the first batch.
+        self.BATCH_SIZE = mlx_batch_ceiling()
+        self.MLX_MEM_BUDGET_GB = mlx_mem_budget_gb()
         # Resolved ONCE, from the model directory's generation_config.json (see
         # HiggsV3MlxConfig.mlx_sampling). Re-reading the file per chunk would ask
         # the same question thousands of times a book and would let the answer
@@ -675,7 +779,7 @@ class HiggsV3MlxEngine:
         # per-chunk flush does not. The knob is the same shape as Orpheus's:
         # HIGGS_MLX_CACHE_LIMIT_GB, a documented tunable with a measured default,
         # not a fallback for a value that should have been set.
-        cache_gb = float(os.environ.get('HIGGS_MLX_CACHE_LIMIT_GB', '8'))
+        cache_gb = mlx_cache_limit_gb()
         mx.set_cache_limit(int(cache_gb * 1e9))
         _log(f'Higgs MLX buffer cache limited to {cache_gb:g} GB')
         _log(f'loading Higgs v3 from {target}')
@@ -687,6 +791,8 @@ class HiggsV3MlxEngine:
         _log(f'model loaded in {elapsed:.1f}s '
              f'(peak {mx.get_peak_memory() / 1e9:.2f} GB)')
         self._model = model
+        self._adopt_kv_coefficient(model)
+        self._announce_batch_budget()
         self._codec_obj = HiggsV3MlxCodec(
             self._decode_frames, label=f'voice {self.voice}')
         self._encode_references()
@@ -745,6 +851,67 @@ class HiggsV3MlxEngine:
                 f'Higgs v3 checkpoint declares sample rate '
                 f'{model.config.sample_rate}; narrator states '
                 f'{v3_served.SAMPLE_RATE} on the wire and in every manifest.')
+
+    def _adopt_kv_coefficient(self, model) -> None:
+        """Budget the KV cache from THIS checkpoint's shape, not from a constant.
+
+        36 layers x (K + V) x 8 kv heads x 128 head_dim x 2 bytes is 0.140625 MB
+        per position per row for the v3 backbone, and the class constant says so
+        - but the number that matters is the one the loaded model actually has,
+        and mlx-audio parses it into `config.text_config`. A checkpoint with a
+        different depth is then budgeted as itself. Anything missing leaves the
+        documented default in place and SAYS so; it is a budget input, not a
+        correctness input.
+        """
+        text_config = getattr(getattr(model, 'config', None), 'text_config', None)
+        try:
+            layers = int(text_config.num_hidden_layers)
+            kv_heads = int(text_config.num_key_value_heads)
+            head_dim = int(text_config.head_dim)
+        except (AttributeError, TypeError, ValueError):
+            _log(f'checkpoint declares no layer/head geometry; budgeting KV at the '
+                 f'documented {self.MLX_KV_MB_PER_TOKEN_ROW:g} MB per position per row')
+            return
+        # x2 for K and V, x2 bytes for bf16.
+        self.MLX_KV_MB_PER_TOKEN_ROW = (
+            layers * 2 * kv_heads * head_dim * 2) / (1024.0 * 1024.0)
+
+    def _announce_batch_budget(self) -> None:
+        """ONE line at load saying what a batch may cost, and ONE saying that no
+        one has measured it yet. Silent when the ceiling is 1: an unwidened
+        process has no batch to budget and says nothing new.
+
+        A BUDGET THAT CANNOT HOLD THE WEIGHTS TURNS BATCHING OFF, LOUDLY, and
+        does not fail the load. BookForge hands over the Orpheus memory tier's
+        budget, and Orpheus's weights are 6.9 GB against Higgs's 8.5: the small
+        tiers (13 GB at 'light') can hold this model but not a batch of it.
+        Refusing the LOAD there would break single-row rendering, which works
+        fine on that machine, over a feature it was never going to get. So the
+        FEATURE is refused, by name, in the log, once - the engine then renders
+        exactly as it did before this change.
+        """
+        width = int(self.BATCH_SIZE or 1)
+        if width <= 1:
+            return
+        try:
+            headroom = self._mlx_kv_headroom_gb()
+        except ValueError as refusal:
+            self.BATCH_SIZE = 1
+            _log(f'batched Higgs MLX rendering is OFF: {refusal} Rendering one '
+                 'row at a time, exactly as an unconfigured process does.')
+            return
+        depth = v3_served.cap_frames('x' * int(self.config.max_chars))
+        _log(f'Higgs MLX batch budget {self.MLX_MEM_BUDGET_GB:g} GB '
+             f'({headroom:.1f} GB for KV at {self.MLX_KV_MB_PER_TOKEN_ROW:.4f} MB '
+             f'per position per row -> max {self._mlx_width_for_depth(depth)} rows '
+             f'at a {depth}-frame chunk, ceiling {width})')
+        # THE CERTIFICATE IS SINGLE-ROW. The Mac's 900-char maxChars was measured
+        # one row at a time; nothing has measured what a left-padded batch does to
+        # it, and the catalog is unchanged. Say it out loud rather than letting a
+        # widened render inherit a certificate it was not given.
+        _log('batched Higgs MLX rendering is UNCERTIFIED: the voice maxChars '
+             'certificate was measured SINGLE-ROW. Owen measures the batched '
+             f'path; {BATCH_ENV}=1 restores it.')
 
     def _encode_references(self) -> None:
         """A ClipsVoice's reference audio, encoded ONCE at load.
@@ -978,6 +1145,275 @@ class HiggsV3MlxEngine:
         mx.eval(stacked)
         return np.asarray(stacked).astype(np.int64)
 
+    # ---- batch scheduling ---------------------------------------------------
+
+    @property
+    def batch_pool_size(self) -> int:
+        """How many chunks the worker accumulates before calling
+        `convert_batch`. Plain `BATCH_SIZE`: there is no continuous generator on
+        this backend, so a deeper pool would only delay the worker's per-chunk
+        progress lines without widening anything."""
+        return max(1, int(self.BATCH_SIZE or 1))
+
+    def _mlx_kv_headroom_gb(self) -> float:
+        """GB left for KV once the resident weights and the PINNED buffer cache
+        are paid for.
+
+        Refuses when the budget cannot even hold those two: there is no honest
+        width to fall back to, and running at full width anyway would defeat the
+        whole point of a budget. Called at load (`_announce_batch_budget`) so a
+        bad budget fails before any audio is rendered rather than mid-book.
+        """
+        cache_gb = mlx_cache_limit_gb()
+        headroom = self.MLX_MEM_BUDGET_GB - self.MLX_WEIGHTS_GB - cache_gb
+        if headroom <= 0:
+            raise ValueError(
+                f'{MEM_BUDGET_ENV}={self.MLX_MEM_BUDGET_GB:g} leaves no room for the KV '
+                f'cache: {self.MLX_WEIGHTS_GB:g} GB of Higgs v3 weights + {cache_gb:g} GB '
+                f'of pinned buffer cache ({CACHE_LIMIT_ENV}) already meet or exceed it. '
+                f'Raise the budget, lower the cache limit, or set {BATCH_ENV}=1 to '
+                'render one row at a time.')
+        return headroom
+
+    def _mlx_width_for_depth(self, depth: int) -> int:
+        """Widest batch whose KV stays inside the budget when every row may run
+        to `depth` positions (its prompt plus its own frame cap):
+
+            width x depth x MLX_KV_MB_PER_TOKEN_ROW
+                <= MLX_MEM_BUDGET_GB - MLX_WEIGHTS_GB - the pinned cache
+
+        Never more than `BATCH_SIZE`, never less than 1 - one row is the same
+        work the single-row path would do anyway, so it is always attemptable.
+
+        Worked example at the shipped defaults (budget 42, weights 8.5, cache 8,
+        depth 2000): headroom 25.5 GB; per-row KV = 2000 x 0.140625 / 1024 =
+        0.2747 GB; width = min(ceiling, 92).
+        """
+        width = max(1, int(self.BATCH_SIZE or 1))
+        if depth <= 0:
+            return width
+        headroom = self._mlx_kv_headroom_gb()
+        kv_gb_per_row = depth * self.MLX_KV_MB_PER_TOKEN_ROW / 1024.0
+        return max(1, min(width, int(headroom / kv_gb_per_row)))
+
+    def _mlx_batch_groups(self, entries: list) -> list:
+        """entries: `(index, text, prompt_positions, cap_frames)` in BOOK ORDER.
+        Returns `(bucket, depth)` pairs, each bucket a CONSECUTIVE slice.
+
+        No sorting and no length bucketing: mlx-audio's batch prefill LEFT-pads
+        every prompt to the longest in the batch and hands the padding to
+        `BatchKVCache(left_padding)`, so a short row batched beside a long one is
+        masked correctly rather than silently corrupted. Book order also keeps
+        chunks finishing roughly in the order the progress bar expects.
+
+        `depth` is the deepest a row in the slice can reach - its prompt
+        positions plus its own `cap_frames`, because every generated frame is one
+        more backbone position on top of the prompt. A slice of short chunks
+        therefore gets a shallow depth and, through `_mlx_width_for_depth`, buys
+        back width.
+
+        A slice too deep for its own width is split EVENLY rather than into
+        [allowed, remainder]: throughput is bought by width, so 64 rows capped at
+        50 run 32+32, not 50+14 - the same batch count with no near-solo tail.
+        """
+        width = max(1, int(self.BATCH_SIZE or 1))
+
+        def _depth(rows):
+            return max(int(e[2]) + int(e[3]) for e in rows)
+
+        groups = []
+        i, n = 0, len(entries)
+        while i < n:
+            take = min(width, n - i)
+            window = entries[i:i + take]
+            i += take
+            depth = _depth(window)
+            allowed = self._mlx_width_for_depth(depth)
+            if allowed >= take:
+                groups.append((window, depth))
+                continue
+            parts = -(-take // allowed)   # ceil: fewest equal parts that all fit
+            base, extra = divmod(take, parts)
+            _log(f'MLX batch narrowed {take} rows -> {parts} x ~{base} '
+                 f'(depth {depth} positions, cap {allowed}, budget '
+                 f'{self.MLX_MEM_BUDGET_GB:g} GB)')
+            pos = 0
+            for p in range(parts):
+                size = base + (1 if p < extra else 0)
+                sub = window[pos:pos + size]
+                pos += size
+                groups.append((sub, _depth(sub)))
+        return groups
+
+    # ---- batched generation -------------------------------------------------
+
+    def _mlx_prompts_for(self, texts: list) -> list:
+        """`(prompt_embeds, positions)` per text, built ONCE.
+
+        Positions are `prompt_embeds.shape[1]`, NOT `len(prompt.token_ids)`: an
+        audio reference expands into one backbone position per delayed code row,
+        so the token count understates the KV a reference costs - and the KV is
+        what the budget is about.
+        """
+        model = self._model
+        if model is None:
+            raise RuntimeError(
+                'HiggsV3MlxEngine: no model is loaded (cleanup() has run).')
+        import mlx.core as mx
+        references = self._references_for()
+        prompts = []
+        for text in texts:
+            prompt_embeds, _prompt_tokens = model._build_prompt_embeddings(
+                text, references)
+            mx.eval(prompt_embeds)
+            positions = int(prompt_embeds.shape[1])
+            # The SAME refusal the single-row path makes, per row, BEFORE any
+            # prefill: a prompt that already fills the window has nothing to
+            # generate into, and finding that out inside a 64-row batch would
+            # take the other 63 rows down with it.
+            self._budget.max_total_tokens(positions)
+            prompts.append((prompt_embeds, positions))
+        return prompts
+
+    def _generate_delayed_rows_batch(self, texts: list, caps: list, seed,
+                                     should_stop=None, prompts=None,
+                                     group_no: int = 1, group_count: int = 1):
+        """Generate a whole batch and return one `(steps, 8)` int64 matrix per
+        row, in row order - or None if `should_stop` went true mid-batch.
+
+        This is mlx-audio's `Model.batch_generate` loop with narrator's four
+        differences and no others: no fade (there is no waveform here - the
+        caller decodes), a `should_stop` checked every step, the rows returned as
+        emitted so the sentinel filter can run on them, and a PER-ROW cap instead
+        of one `limit` for the batch.
+
+        THE PADDING IS LEFT PADDING, and that is the whole correctness story.
+        Every prompt is padded at its FRONT to the longest in the batch and the
+        pad widths are handed to `BatchKVCache(left_padding)`, which is what
+        masks them out of attention. Right-padding would put the pad between the
+        prompt and the first generated frame, and every short row in the batch
+        would generate from garbage - the mixed-length corruption this loop is
+        written to avoid.
+
+        A row retires when its sampler says `generation_done` OR when it has
+        emitted its own `cap` rows - the same two endings the single-row loop
+        has. Retirement filters the cache by POSITION IN THE CURRENT ACTIVE LIST
+        (`keep`), never by original row index, because `filter` re-slices the
+        live batch dimension.
+        """
+        import mlx.core as mx
+        from mlx_audio.tts.models.higgs_audio_v3.generation import HiggsSamplerState
+        from mlx_lm.models.cache import BatchKVCache
+
+        model = self._model
+        if model is None:
+            raise RuntimeError(
+                'HiggsV3MlxEngine: no model is loaded (cleanup() has run).')
+        if len(caps) != len(texts):
+            raise ValueError(
+                f'HiggsV3MlxEngine._generate_delayed_rows_batch: {len(caps)} caps for '
+                f'{len(texts)} texts')
+        if not texts:
+            return []
+        # ONE SEED PER BATCH. Every row of a batch is drawn from one stream, so a
+        # batch is reproducible as a batch; the caller passes `_seed_for` of the
+        # batch's FIRST index so two batches never share a draw.
+        if seed is not None:
+            mx.random.seed(int(seed))
+
+        if prompts is None:
+            prompts = self._mlx_prompts_for(texts)
+        lengths = [positions for _embeds, positions in prompts]
+        max_prompt_length = max(lengths)
+        left_padding = [max_prompt_length - length for length in lengths]
+        padded = []
+        for (prompt_embeds, _positions), pad in zip(prompts, left_padding):
+            if pad:
+                prompt_embeds = mx.pad(prompt_embeds, [(0, 0), (pad, 0), (0, 0)])
+            padded.append(prompt_embeds)
+        prompt_batch = mx.concatenate(padded, axis=0)
+
+        batch_size = len(texts)
+        batch_cache = [BatchKVCache(left_padding) for _ in model.layers]
+        hidden = model.backbone(
+            mx.zeros((batch_size, max_prompt_length), dtype=mx.int32),
+            cache=batch_cache, input_embeddings=prompt_batch)
+        last_hidden_batch = hidden[:, -1, :]
+        mx.eval(last_hidden_batch)
+
+        samplers = [HiggsSamplerState(num_codebooks=NUM_CODEBOOKS)
+                    for _ in range(batch_size)]
+        delayed_rows = [[] for _ in range(batch_size)]
+        sampling = self._sampling
+        active = list(range(batch_size))
+        limit = max(int(c) for c in caps)
+        retired = 0
+        heartbeat_seconds = 2.0
+        last_beat = _time.time()
+
+        for stepno in range(1, limit + 1):
+            if not active:
+                break
+            if should_stop is not None and should_stop():
+                return None
+            sampled_rows = model._step_batch_sampler(
+                model._audio_logits(last_hidden_batch),
+                [samplers[i] for i in active],
+                temperature=sampling['temperature'],
+                top_p=sampling['top_p'], top_k=sampling['top_k'])
+
+            next_active, next_codes, keep_positions = [], [], []
+            for position, (row, codes) in enumerate(zip(active, sampled_rows)):
+                delayed_rows[row].append(codes)
+                # The two endings, in the single-row loop's order: the row is
+                # kept only if the sampler has not finished AND it has not
+                # reached its own frame cap.
+                if samplers[row].generation_done or len(delayed_rows[row]) >= int(caps[row]):
+                    retired += 1
+                    continue
+                keep_positions.append(position)
+                next_active.append(row)
+                next_codes.append(codes)
+
+            now = _time.time()
+            if now - last_beat >= heartbeat_seconds:
+                last_beat = now
+                # LOAD-BEARING LOG STRING - the ONLY signal inside a batch that
+                # runs for minutes. parallel-tts-bridge.ts's
+                # GENERATION_ACTIVITY_RE reads it as liveness and
+                # mlx-batch-progress.ts parses its fields into the within-batch
+                # bar; neither anchors the engine prefix, so the wording and
+                # field ORDER after "MLX batch generating:" are what matter.
+                _log(f'MLX batch generating: {batch_size} rows, ~{stepno} tokens '
+                     f'(step {stepno}/{limit}), {retired}/{batch_size} rows done, '
+                     f'batch {group_no}/{group_count}')
+
+            if not next_active:
+                break
+            if len(next_active) != len(active):
+                keep = mx.array(keep_positions, dtype=mx.int32)
+                for layer_cache in batch_cache:
+                    layer_cache.filter(keep)
+            codes_batch = mx.stack(next_codes, axis=0)
+            next_embed = model._embed_audio_codes(codes_batch)[:, None, :]
+            hidden = model.backbone(
+                mx.zeros((len(next_active), 1), dtype=mx.int32),
+                cache=batch_cache, input_embeddings=next_embed)
+            last_hidden_batch = hidden[:, -1, :]
+            active = next_active
+
+        out = []
+        for row, rows in enumerate(delayed_rows):
+            if not rows:
+                raise HiggsMlxStreamMisaligned(
+                    f'Higgs v3 MLX: the sampler emitted no rows at all for row {row} of '
+                    f'a {batch_size}-row batch ({len(texts[row])} chars, cap '
+                    f'{caps[row]} frames).')
+            stacked = mx.stack(rows, axis=0)
+            mx.eval(stacked)
+            out.append(np.asarray(stacked).astype(np.int64))
+        return out
+
     def _references_for(self):
         """The encoded reference clips as mlx-audio's `ReferenceCodes`, or ()
         for a DefaultVoice (a fine-tuned checkpoint, or the model's own voice) -
@@ -1020,21 +1456,87 @@ class HiggsV3MlxEngine:
         return os.path.join(self.config.sentences_dir,
                             f'{sentence_number}.{self.config.audio_format}')
 
-    def convert(self, sentence_number: int, sentence: str) -> bool:
-        """Render one chunk to `<sentences_dir>/<n>.<audio_format>`, EXACTLY AS
-        DECODED - no trim, no fade, no pad. The fades are the assembler's
-        (`edge_fade`) and the gaps are the manifest's."""
+    def _write_sentence(self, sentence_number: int, audio) -> bool:
+        """The chunk file, EXACTLY AS DECODED - no trim, no fade, no pad. The
+        fades are the assembler's (`edge_fade`) and the gaps are the manifest's.
+
+        ONE writer for both paths: a batched render must land byte-identically
+        to a single-row one, and two copies of `sf.write` is how a subtype or a
+        container drifts between them."""
         import soundfile as sf
         path = self._sentence_file(sentence_number)
-        audio = self.render_audio(sentence, index=sentence_number)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         sf.write(path, audio, self.SAMPLE_RATE, subtype='PCM_16',
                  format=self.config.audio_format.upper())
         return True
 
+    def convert(self, sentence_number: int, sentence: str) -> bool:
+        """Render one chunk to `<sentences_dir>/<n>.<audio_format>`."""
+        return self._write_sentence(
+            sentence_number, self.render_audio(sentence, index=sentence_number))
+
     def convert_batch(self, items) -> list:
-        """SERIAL - see BATCH_SIZE."""
-        return [self.convert(index, text) for index, text in items]
+        """Render `items` - `(index, text)` in BOOK ORDER - and answer one bool
+        per item, in that order.
+
+        SERIAL at the default ceiling of 1 (see `BATCH_SIZE`), which is what an
+        unconfigured process does. Above it the call becomes consecutive
+        memory-budgeted slices (`_mlx_batch_groups`), each generated in one
+        left-padded batch and then decoded and written per row.
+
+        A generation failure in ONE slice must not drop the others' chunks: the
+        slice is retried per item through `convert`, exactly as the Orpheus MLX
+        batcher does at bucket granularity. A row that fails again fails loudly,
+        which is the single-row behaviour.
+
+        There is no `should_stop` here: the worker owns the stop for the
+        audiobook path and drops a flush's in-flight indices itself.
+        """
+        items = [(int(index), text) for index, text in items]
+        if int(self.BATCH_SIZE or 1) <= 1 or not items:
+            return [self.convert(index, text) for index, text in items]
+
+        # The control-token allowlist, per row, BEFORE any prefill - the same
+        # refusal `render_audio` makes, made where it does not take a batch down.
+        cleaned = []
+        for index, text in items:
+            clean = (text or '').strip()
+            if not clean:
+                raise ValueError(
+                    f'HiggsV3MlxEngine.convert_batch(): chunk {index} has no text')
+            v3_served.validate_control_tokens(clean)
+            cleaned.append((index, clean))
+
+        # Built ONCE for the whole call, because the SLICING needs the prompt
+        # POSITIONS: how deep a batch can get is its prompt plus its frame cap,
+        # and a prompt carries one position per delayed reference code row.
+        prompts = self._mlx_prompts_for([clean for _index, clean in cleaned])
+        prompt_by_index = {index: prompt
+                           for (index, _clean), prompt in zip(cleaned, prompts)}
+        entries = [(index, clean, positions, self._budget.cap_frames(clean))
+                   for (index, clean), (_embeds, positions)
+                   in zip(cleaned, prompts)]
+
+        results = {}
+        groups = self._mlx_batch_groups(entries)
+        for group_no, (bucket, depth) in enumerate(groups, 1):
+            texts = [e[1] for e in bucket]
+            caps = [e[3] for e in bucket]
+            try:
+                rows_per_row = self._generate_delayed_rows_batch(
+                    texts, caps, self._seed_for(bucket[0][0]),
+                    prompts=[prompt_by_index[e[0]] for e in bucket],
+                    group_no=group_no, group_count=len(groups))
+                for entry, rows in zip(bucket, rows_per_row):
+                    results[entry[0]] = self._write_sentence(
+                        entry[0], self.codec().decode(rows))
+            except Exception as bucket_err:
+                _log(f'MLX batch of {len(bucket)} rows (depth {depth}) failed: '
+                     f'{bucket_err} - retrying those rows one at a time')
+                for entry in bucket:
+                    if entry[0] not in results:
+                        results[entry[0]] = self.convert(entry[0], entry[1])
+        return [results.get(index, False) for index, _text in items]
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:
