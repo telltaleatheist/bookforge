@@ -312,16 +312,15 @@ def route_prep(args) -> int:
             # below: the message IS the answer.
             print(f'Error: {refused}', flush=True)
             return 1
-        # THE MERGE FLOOR: the trainer's targetChars when the voice declares
-        # one, else the cap (Owen, 2026-09-05: "combine paragraphs to reach
-        # closer to the cap of 1200 ... shoot for 3 paragraphs per chunk", then
-        # "a per-model target chunk size configuration that's set by the model
-        # trainer after it trains it"). Consecutive short prose paragraphs
-        # travel together until the next would overflow the cap; walls stay
-        # walls; a paragraph already at the floor stands alone.
-        from ..engine.higgs.v3_engine import higgs_v3_prep_floor
-        optional['chunking_floor_chars'] = higgs_v3_prep_floor(
-            args.higgs_voice, optional['budget'].max_chars(args.higgs_voice))
+        # ONE NUMBER: the budget's chars is the voice's targetChars (the
+        # trainer's, or the placeholder for a zero-shot voice), and it is both
+        # the cap and the merge floor - consecutive short prose paragraphs
+        # travel together until the next would overflow it (Owen, 2026-09-05:
+        # "combine paragraphs to reach closer to the cap ... shoot for 3
+        # paragraphs per chunk"; "targetChars is used by the code directly").
+        # Walls stay walls; a paragraph already at it stands alone.
+        optional['chunking_floor_chars'] = int(
+            optional['budget'].max_chars(args.higgs_voice))
     if args.fine_tuned:
         optional['fine_tuned'] = args.fine_tuned
     if args.output_format:

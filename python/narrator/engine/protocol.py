@@ -156,15 +156,16 @@ class ClipsVoice:
     max_reference_seconds: Optional[float] = None
     max_chars: Optional[int] = None
     max_chars_source: Optional[str] = None
-    #: THE TRAINER'S TARGET CHUNK SIZE, in characters - set by whoever trained
-    #: the voice, from the training clips' text lengths, after training (Owen,
-    #: 2026-09-05: "a per-model target chunk size configuration that's set by
-    #: the model trainer after it trains it based on how big the training
-    #: chunks were"). The prep packs toward it: consecutive short paragraphs
-    #: travel together until the next would overflow the CAP, and a paragraph
-    #: already at the target stands alone. None means no target is declared and
-    #: the prep fills toward the cap instead (Owen's rule of the same day).
-    #: Never above `max_chars` - the cap is the measured safe length.
+    #: THE CHUNK SIZE THE CODE PACKS TO, in characters - set by whoever trained
+    #: the voice, after training, from the training clips' text lengths (Owen,
+    #: 2026-09-05: "maxChars is what the model was trained to do, and
+    #: targetChars can be what the system actually uses. maxChars is
+    #: informative, targetChars is used by the code directly"). The prep's cap
+    #: AND its merge floor: consecutive short paragraphs travel together until
+    #: the next would overflow it, and a paragraph already at it stands alone.
+    #: `max_chars` is the model's stated limit and only a ceiling on this
+    #: number. A fine-tune with no target cannot be prepped - the prep refuses
+    #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
     kind: str = field(default='clips', init=False)
 
@@ -219,15 +220,16 @@ class DefaultVoice:
     checkpoint_dir: Optional[str] = None
     max_chars: Optional[int] = None
     max_chars_source: Optional[str] = None
-    #: THE TRAINER'S TARGET CHUNK SIZE, in characters - set by whoever trained
-    #: the voice, from the training clips' text lengths, after training (Owen,
-    #: 2026-09-05: "a per-model target chunk size configuration that's set by
-    #: the model trainer after it trains it based on how big the training
-    #: chunks were"). The prep packs toward it: consecutive short paragraphs
-    #: travel together until the next would overflow the CAP, and a paragraph
-    #: already at the target stands alone. None means no target is declared and
-    #: the prep fills toward the cap instead (Owen's rule of the same day).
-    #: Never above `max_chars` - the cap is the measured safe length.
+    #: THE CHUNK SIZE THE CODE PACKS TO, in characters - set by whoever trained
+    #: the voice, after training, from the training clips' text lengths (Owen,
+    #: 2026-09-05: "maxChars is what the model was trained to do, and
+    #: targetChars can be what the system actually uses. maxChars is
+    #: informative, targetChars is used by the code directly"). The prep's cap
+    #: AND its merge floor: consecutive short paragraphs travel together until
+    #: the next would overflow it, and a paragraph already at it stands alone.
+    #: `max_chars` is the model's stated limit and only a ceiling on this
+    #: number. A fine-tune with no target cannot be prepped - the prep refuses
+    #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
     kind: str = field(default='default', init=False)
 

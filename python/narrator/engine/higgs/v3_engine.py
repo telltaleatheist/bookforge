@@ -850,51 +850,34 @@ def higgs_v3_prep_budget(voice_name: str):
         allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
         max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
         placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
-    cap = getattr(resolved, 'max_chars', None)
-    if cap is None:
+    # THE NUMBER THE CODE USES IS targetChars (Owen, 2026-09-05: "maxChars is
+    # informative, targetChars is used by the code directly"). The trainer
+    # sets it after training; the loader has already refused one above the
+    # arm's maxChars. A fine-tune without it cannot be packed - there is no
+    # engine-wide number that is that model's - and a zero-shot voice packs at
+    # the base model's placeholder.
+    target = getattr(resolved, 'target_chars', None)
+    if target is None:
         if getattr(resolved, 'checkpoint_dir', None):
             raise ValueError(
                 f"Higgs v3 voice '{name}' is a fine-tune "
-                f'({resolved.checkpoint_dir}) and has no maxChars. Measure the safe '
-                'chunk length for THAT model and declare it in the voice document - '
-                f"refusing to pack a book at the base model's "
-                f'{HiggsV3Defaults.MAX_CHARS}-char placeholder.')
-        cap = HiggsV3Defaults.MAX_CHARS
-    cap = int(cap)
-    if cap <= 0:
+                f'({resolved.checkpoint_dir}) and declares no targetChars. The '
+                'trainer sets it after training from the training clips\' text '
+                'lengths (electron/data/higgs-models.json, targetChars +\n'
+                'targetCharsSource); the prep packs to that number and to '
+                f"nothing else - refusing the base model's "
+                f'{HiggsV3Defaults.MAX_CHARS}-char placeholder for a fine-tune.')
+        target = HiggsV3Defaults.MAX_CHARS
+    target = int(target)
+    if target <= 0:
         raise ValueError(
-            f"Higgs v3 voice '{name}' declares maxChars {cap}, which is not a "
-            'chunk size.')
-    log(f"[HIGGS3] prep budget for '{name}': {cap} chars "
-        f'({getattr(resolved, "max_chars_source", None) or "placeholder"})',
+            f"Higgs v3 voice '{name}' declares targetChars {target}, which is not "
+            'a chunk size.')
+    log(f"[HIGGS3] prep packs '{name}' to {target} chars per chunk "
+        f'(targetChars; maxChars '
+        f'{getattr(resolved, "max_chars", None)!r} is the model\'s stated limit)',
         flush=True)
-    return CatalogBudget(chars=cap, chars_per_sec=0.0)
-
-
-def higgs_v3_prep_floor(voice_name: str, cap: int) -> int:
-    """The paragraph packer's merge floor for a Higgs voice.
-
-    THE TRAINER'S TARGET when the voice document declares `targetChars` (set
-    after training from the clips' text lengths - Owen, 2026-09-05), else THE
-    CAP: "combine paragraphs to reach closer to the cap" (Owen, the same day,
-    on a 626-chunk book packed at mean 378 against 1200). Both are his rules;
-    neither is a guess. The loader has already refused a target above the cap.
-    """
-    from .config import load_voice
-
-    resolved = load_voice(
-        (voice_name or '').strip(),
-        allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
-        max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
-        placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
-    target = getattr(resolved, 'target_chars', None)
-    if target is not None:
-        log(f"[HIGGS3] prep floor for '{resolved.name}': {int(target)} chars "
-            '(the trainer\'s targetChars)', flush=True)
-        return int(target)
-    log(f"[HIGGS3] prep floor for '{resolved.name}': {int(cap)} chars (no "
-        'targetChars declared - filling toward the cap)', flush=True)
-    return int(cap)
+    return CatalogBudget(chars=target, chars_per_sec=0.0)
 
 
 def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,

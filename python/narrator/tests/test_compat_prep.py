@@ -364,10 +364,14 @@ class HiggsEngineTest(_PrepDoorTest):
             handle.write('{"temperature": 1.0, "top_p": 0.95, "top_k": 50, '
                          '"repetition_penalty": 1.0}')
         self.voices_path = os.path.join(self.root, 'voices.json')
+        # maxChars is the model's stated limit (informative, a ceiling);
+        # targetChars is what the prep packs to.
         self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
                                        'checkpointDir': self.checkpoint,
-                                       'maxChars': 900,
-                                       'maxCharsSource': 'length-sweep'}})
+                                       'maxChars': 1200,
+                                       'maxCharsSource': 'length-sweep',
+                                       'targetChars': 900,
+                                       'targetCharsSource': 'corpus p75'}})
         self._saved_voices = os.environ.get(self.VOICES_ENV)
         os.environ[self.VOICES_ENV] = self.voices_path
         self.addCleanup(self._restore_voices)
@@ -389,7 +393,7 @@ class HiggsEngineTest(_PrepDoorTest):
                 '--tts_engine', engine, '--device', 'CUDA',
                 '--prep_only', '--higgs_voice', voice, *extra]
 
-    def test_a_higgs_prep_packs_at_the_voices_cap_never_at_orpheus_350(self):
+    def test_a_higgs_prep_packs_at_the_voices_TARGET_never_at_orpheus_350(self):
         """MEASURED BUG (2026-09-05, both arms): the route built no budget, prep
         fell through to ORPHEUS_MAX_CHARS's 350 default, and a 900/1200-certified
         voice was read in ~220-char chunks."""
@@ -414,9 +418,9 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(record['floor_chars'], record['budget']['max_chars'])
         self.assertEqual(record['floor_chars'], 900)
 
-    def test_a_trainer_set_target_is_the_floor(self):
-        """Owen, 2026-09-05: the target is set by the trainer from the training
-        chunks; the prep packs toward it, under the cap."""
+    def test_the_trainers_target_is_both_cap_and_floor(self):
+        """Owen, 2026-09-05: "maxChars is informative, targetChars is used by
+        the code directly"."""
         self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
                                        'checkpointDir': self.checkpoint,
                                        'maxChars': 900,
@@ -427,7 +431,17 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(code, 0, out)
         record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
         self.assertEqual(record['floor_chars'], 600)
-        self.assertEqual(record['budget']['max_chars'], 900)
+        self.assertEqual(record['budget']['max_chars'], 600)
+
+    def test_a_fine_tune_with_no_target_is_refused_at_prep(self):
+        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
+                                       'checkpointDir': self.checkpoint,
+                                       'maxChars': 900,
+                                       'maxCharsSource': 'length-sweep'}})
+        code, out = self._run(self._higgs_argv())
+        self.assertNotEqual(code, 0)
+        self.assertIn('targetChars', out)
+        self.assertIn('ds_ad4l', out)
 
     def test_a_target_above_the_cap_is_refused_by_name(self):
         self.write_voices({'ds_ad4l': {'kind': 'checkpoint',

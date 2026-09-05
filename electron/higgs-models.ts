@@ -444,12 +444,14 @@ export interface HiggsModel {
    */
   backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
   /**
-   * THE TRAINER'S TARGET CHUNK SIZE, in characters — set by whoever trained
-   * the voice, after training, from the training clips' text lengths (Owen,
-   * 2026-09-05). The prep packs paragraphs together toward it, under each arm's
-   * measured cap. `null` = no target declared yet: the prep fills toward the cap
-   * instead (Owen's rule of the same day). A target above an arm's `maxChars`
-   * is refused by name on both sides — the cap is the measured safe length.
+   * THE CHUNK SIZE THE CODE PACKS TO, in characters — set by whoever trained
+   * the voice, after training, from the training clips' text lengths. Owen,
+   * 2026-09-05: "maxChars is what the model was trained to do, and targetChars
+   * can be what the system actually uses. maxChars is informative, targetChars
+   * is used by the code directly." The prep's cap and merge floor in one
+   * number. `null` on a fine-tune = the prep refuses by name (the trainer has
+   * not set it). A target above an arm's `maxChars` is refused by name on both
+   * sides — the arm's certified limit is a ceiling on it.
    */
   targetChars?: number | null;
   /** Provenance of `targetChars`, in the style of `maxCharsSource`. */

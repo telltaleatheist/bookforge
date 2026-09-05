@@ -111,9 +111,9 @@
       "id": "deathstalker",
       "label": "Deathstalker (Higgs v3 fine-tune)",
       "kind": "checkpoint",
-      "targetChars": null,
-      "targetCharsSource": null,
-      "_targetCharsNote": "THE TRAINER'S TARGET CHUNK SIZE, set after training from the training clips' text lengths (Owen, 2026-09-05: 'a per-model target chunk size configuration that's set by the model trainer after it trains it based on how big the training chunks were'). The prep merges consecutive short paragraphs toward it, under each arm's maxChars; null = no target declared, and the prep fills toward the cap instead (Owen, the same day). Never above either arm's maxChars - both sides refuse that by name. The current ds_ad4lm_prod corpus measures clip text median 312 / p75 862 / p90 1259 chars; the retrain that favours longer clips states its own number here, with its method in targetCharsSource.",
+      "targetChars": 900,
+      "targetCharsSource": "interim: the MLX arm's certified length (900), the lower of the two arms, until the retrain's trainer states the model's own number",
+      "_targetCharsNote": "THE CHUNK SIZE THE CODE PACKS TO, set by the trainer after training from the training clips' text lengths. Owen, 2026-09-05: 'maxChars is what the model was trained to do, and targetChars can be what the system actually uses. maxChars is informative, targetChars is used by the code directly.' The prep's cap AND merge floor: consecutive short paragraphs travel together until the next would overflow it, a paragraph already at it stands alone, walls stay walls. Never above either arm's maxChars (the arm's certified limit) - both sides refuse that by name. A fine-tune with no targetChars cannot be prepped. The current ds_ad4lm_prod corpus measures clip text median 312 / p75 862 / p90 1259 chars; the retrain that favours longer clips states its own number here, with its method in targetCharsSource.",
       "engineVersion": "v3",
       "voice": {
         "checkpoint": {
