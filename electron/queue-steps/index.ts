@@ -8,6 +8,7 @@
  */
 import { registerStepModule } from '../queue-engine';
 
+import { alignStep } from './align';
 import { bookAnalysisStep } from './book-analysis';
 import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
@@ -29,6 +30,7 @@ export function registerAllStepModules(): void {
   registered = true;
   for (const mod of [
     ttsConversionStep,
+    alignStep,
     finalDenoiseStep,
     rvcEnhancementStep,
     reassemblyStep,

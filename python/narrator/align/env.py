@@ -30,6 +30,7 @@ import json
 import os
 import subprocess
 import sys
+import tempfile
 from typing import Optional, Sequence
 
 #: An explicit "align with this interpreter", for a machine whose component
@@ -154,13 +155,40 @@ def worker_environment(base: Optional[dict] = None) -> dict:
 
 
 def run_jobs(python_exe: str, jobs: Sequence[dict],
-             timeout: Optional[float] = None) -> list:
+             timeout: Optional[float] = None,
+             on_result=None) -> list:
     """Align `jobs` in `python_exe` and return one result document each.
 
     One process for the whole list, because loading the align model costs
     ~5.6 s warm and a book is hundreds of chunks. The protocol is
     `align/worker.py`'s: one JSON job per line in, one JSON result per line out,
     in order.
+
+    `on_result(done, total)` IS CALLED AS EACH RESULT ARRIVES, which is why this
+    streams instead of calling `subprocess.run`. It was a single blocking call
+    until BookForge grew an Align queue row: a book is hundreds of chunks and
+    minutes of CPU, and a row that cannot say how far it has got is a row a user
+    reads as hung. The results are still returned as one list, in order, and the
+    two refusals below are unchanged - this only stops the caller having to wait
+    for the last chunk to learn about the first.
+
+    ONLY STDOUT IS A PIPE. `subprocess.run(input=...)` fed stdin and drained
+    both output streams with `communicate()`, which juggles all three with
+    select/threads; a loop that reads ONE pipe while the child writes to the
+    other two deadlocks, and both other streams would reach the buffer:
+
+      stdin   a book's job list is ~500 bytes a chunk, so 1,400 chunks is ~700 kB
+              against a 64 kB pipe. Writing it inline would block this process
+              part-way, while the worker - having read the first 64 kB - fills
+              its own stdout buffer with alignments nobody is reading. Neither
+              side moves again.
+      stderr  the worker prints a model-load line and a line per failed chunk. A
+              full stderr buffer stops it writing the stdout this loop waits on.
+
+    So both are TEMPORARY FILES, which have no such limit: the payload is written
+    and rewound before the child starts (it reads to EOF and stops, exactly as it
+    did when `communicate()` closed the pipe), and stderr is read once at the end
+    for the message.
     """
     if not os.path.isfile(python_exe):
         raise FileNotFoundError(
@@ -168,22 +196,39 @@ def run_jobs(python_exe: str, jobs: Sequence[dict],
             f'the whisperx env\'s python, or install "Ebook Alignment '
             f'(WhisperX)" from Settings -> Add-ons')
     payload = '\n'.join(json.dumps(job) for job in jobs) + '\n'
-    proc = subprocess.run(
-        [python_exe, '-m', 'narrator.align.worker'],
-        input=payload.encode('utf-8'),
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-        env=worker_environment(), timeout=timeout,
-    )
-    out = proc.stdout.decode('utf-8', 'replace')
-    results = [json.loads(line) for line in out.splitlines() if line.strip()]
+    results: list = []
+    with tempfile.TemporaryFile() as infile, tempfile.TemporaryFile() as errfile:
+        infile.write(payload.encode('utf-8'))
+        infile.seek(0)
+        proc = subprocess.Popen(
+            [python_exe, '-m', 'narrator.align.worker'],
+            stdin=infile, stdout=subprocess.PIPE, stderr=errfile,
+            env=worker_environment(),
+        )
+        try:
+            for line in proc.stdout:
+                text = line.decode('utf-8', 'replace').strip()
+                if not text:
+                    continue
+                results.append(json.loads(text))
+                if on_result is not None:
+                    on_result(len(results), len(jobs))
+            proc.wait(timeout=timeout)
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            proc.stdout.close()
+        errfile.seek(0)
+        stderr = errfile.read().decode('utf-8', 'replace').strip()[-800:]
+
     if proc.returncode != 0 and len(results) != len(jobs):
         raise RuntimeError(
             f'the align worker in {python_exe} exited {proc.returncode} after '
-            f'{len(results)} of {len(jobs)} job(s): '
-            f'{proc.stderr.decode("utf-8", "replace").strip()[-800:]}')
+            f'{len(results)} of {len(jobs)} job(s): {stderr}')
     if len(results) != len(jobs):
         raise RuntimeError(
             f'the align worker in {python_exe} returned {len(results)} result(s) '
-            f'for {len(jobs)} job(s); stderr: '
-            f'{proc.stderr.decode("utf-8", "replace").strip()[-800:]}')
+            f'for {len(jobs)} job(s); stderr: {stderr}')
     return results

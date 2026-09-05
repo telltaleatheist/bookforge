@@ -122,6 +122,10 @@ import {
   type NarrationTextCleanupChoice,
 } from '../../../queue/jobs/narration-run';
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
+// The plan-time refusal for a guarded engine with no aligner installed. Imported
+// from the shared description rather than from the local mapping door, because
+// the sentence must be the same one main raises for a Foundry-pressed run.
+import { requireCoverageAligner } from '@shared/queue/narration-run';
 import {
   engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
 } from '../../../../core/models/tts-engine-registry';
@@ -1726,6 +1730,25 @@ export class NarrationModalComponent {
          */
         textCleanup,
       };
+
+      /*
+       * THE COVERAGE ALIGNER, CHECKED BEFORE ANYTHING IS QUEUED.
+       *
+       * A guarded engine's book (Higgs v3) is refused at assembly unless a
+       * forced alignment says every chunk said its text, and the run description
+       * therefore carries an Align row. That row spawns
+       * `narrator align --python <the whisperx env>`, which is the "Ebook
+       * Alignment (WhisperX)" add-on — and a machine without it can render the
+       * whole book, spend the enhancement's GPU, and then have no way to satisfy
+       * the gate.
+       *
+       * `requireCoverageAligner` throws with the add-on named and the remedy in
+       * it. It is a no-op for an engine whose policy is not enforced, so an
+       * Orpheus run never sees this question. The step is NOT skipped when the
+       * answer is no — a run that quietly dropped its own guard would be an
+       * unchecked book reported as a checked one.
+       */
+      requireCoverageAligner(settings, this.components.isInstalled('whisperx-env'));
 
       const jobs = buildNarrationJobs(book, settings, {
         narrate: this.narrate(),

@@ -156,11 +156,31 @@ narrator's own flag. Without it a Higgs v3 book through that door would have hit
 broken" rather than "run align first". For Orpheus the flag changes nothing: the
 policy is not enforced and the gate is a no-op whether it is passed or not.
 
-**OWED, and routed separately by the orchestrator: the app-side step that RUNS
-the alignment between render and assembly.** narrator can align a session and
-assembly can be told about the result, but nothing in BookForge yet spawns
-`narrator align` after a render and hands the report to the assembly spawn. That
-is a cut-over item in the bridges, not in this package.
+**THE APP-SIDE STEP LANDED 2026-09-05** (it was owed here until then, and every
+app-driven Higgs v3 book hit `CoverageRefusal` quoting a command line nobody had
+run). BookForge now composes an **Align** queue row into every narration run whose
+engine is guarded — `shared/queue/narration-run.ts:narrationAlignStep`, decided by
+`shared/queue/coverage-policy.ts`, which mirrors `enforced` out of
+`assemble/engine_profiles.py` and is asserted against it by
+`tools/test-coverage-policy-mirror.js`.
+
+The row sits **behind the render and in front of every enhancement pass**: the
+guard measures the RENDER, the thresholds below were calibrated on raw engine
+output, and a truncated chunk found before an hour of RVC is worth more than the
+same chunk found after it. It runs `python -m narrator.cli align --session-dir
+<hash dir> --report <processDir>/coverage.json --language <lang> --device cpu
+--python <whisperx env python>` in the tools env, natively on every platform
+(`electron/coverage-align-job.ts`, `electron/queue-steps/align.ts`), and both
+assembly spawns then pass `--coverage_report` for a guarded engine. It is never
+skipped because a report already exists: a resume renders more chunks, and the
+gate refuses a report written for a smaller manifest — correctly, and an hour too
+late.
+
+`run.py` reports progress as `[align] aligned <done>/<total> chunk(s)` every ten
+chunks and on the last. That wording is a **contract** with the queue row's
+progress bar, pinned by `ProgressLineTest` in `tests/test_align.py`, and
+`env.run_jobs` streams the worker's results (rather than waiting for the batch)
+so the line can be emitted at all.
 
 **ALSO OWED: a Higgs v3 render to align.** Every threshold above was calibrated
 on ORPHEUS output for its false-positive rate and on failures built by hand for

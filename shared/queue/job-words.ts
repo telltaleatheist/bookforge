@@ -37,6 +37,10 @@ export const JOB_GERUND: Record<JobType, string> = {
   'translation': 'Translating',
   'rvc-enhancement': 'Enhancing',
   'final-denoise': 'Denoising',
+  // NOT "Checking". The act is a forced alignment of every rendered chunk
+  // against its own text, and the word a person can act on when it fails is the
+  // one the failure will use.
+  'align': 'Aligning',
   'reassembly': 'Assembling',
   'bilingual-cleanup': 'Cleaning',
   'bilingual-translation': 'Translating',
@@ -62,6 +66,10 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   'translation': 'Translation',
   'rvc-enhancement': 'Voice enhancement',
   'final-denoise': 'Denoised sentences',
+  // The report, because that is the thing that outlives the step and the thing
+  // assembly reads. The sentence VTT it also writes is a by-product of the same
+  // alignment, not what the row was queued for.
+  'align': 'Coverage report',
   'reassembly': 'Audiobook',
   'bilingual-cleanup': 'Bilingual cleanup',
   'bilingual-translation': 'Bilingual translation',

@@ -125,7 +125,8 @@ export type NarratorEngineId = 'orpheus' | 'higgs';
  * pipeline; Phase 3 of the e2a removal re-points them, and they are declared here
  * so the module selection lives in ONE table rather than being invented twice.
  */
-export type NarratorPhase = 'serve' | 'prep' | 'worker' | 'assembly' | 'resume' | 'list';
+export type NarratorPhase =
+  'serve' | 'prep' | 'worker' | 'align' | 'assembly' | 'resume' | 'list';
 
 export interface NarratorSpawnRequest {
   /**
@@ -207,11 +208,21 @@ export function narratorEngineEnvId(engine: NarratorEngineId): string {
  * flags (`--prep_only`, `--assemble_only`, `--resume_session`, `--list_sessions`);
  * the worker is `compat.worker`, which is the same routing with `--worker_mode`
  * implied. See narrator's compat/FLAGS.md, "The two doors".
+ *
+ * `align` IS THE ONE PHASE THAT IS NOT A COMPAT DOOR. There is nothing to be
+ * compatible with: e2a never had a forced aligner, so `compat/app.py` has no flag
+ * that would reach one, and inventing an `--align_only` to route through a
+ * translation layer written for ebook2audiobook's spelling would be a compat
+ * door for a command e2a never had. It goes to narrator's own CLI, in narrator's
+ * own dashes-and-words spelling (`narrator align --session-dir …`), which is the
+ * interface `align/README.md` documents and the one an operator pastes by hand
+ * out of the assembly's refusal.
  */
 const PHASE_MODULE: Record<NarratorPhase, string> = {
   serve: 'narrator.serve',
   worker: 'narrator.compat.worker',
   prep: 'narrator.compat.app',
+  align: 'narrator.cli',
   assembly: 'narrator.compat.app',
   resume: 'narrator.compat.app',
   list: 'narrator.compat.app',
@@ -237,11 +248,23 @@ const PHASE_MODULE: Record<NarratorPhase, string> = {
  * `resume` and `list` are 'refused' rather than 'optional' for the same reason
  * ignoring the engine would be wrong: naming one would silently route a session
  * listing into a multi-gigabyte TTS environment that may not even be installed.
+ *
+ * ── `align` is 'refused' too, and it is worth saying why ────────────────────
+ *
+ * It is ABOUT an engine — which engine rendered the session is what decides
+ * whether it runs at all — but it does not RUN one. The alignment happens in the
+ * whisperx env, named on the command line as `--python`, and narrator's own half
+ * of it (manifest, spans, sentence cues, the report) is pure stdlib plus the
+ * tools env. Naming an engine here would route a CPU alignment into a 6 GB vLLM
+ * environment, or into WSL — and on Windows the session it reads has just been
+ * copied OUT of WSL by `normalizeWslSessionToWindows` precisely so that the
+ * post-render steps do not have to cross the 9p mount.
  */
 const PHASE_ENGINE: Record<NarratorPhase, 'required' | 'refused' | 'optional'> = {
   serve: 'required',
   prep: 'required',
   worker: 'required',
+  align: 'refused',
   assembly: 'optional',
   resume: 'refused',
   list: 'refused',

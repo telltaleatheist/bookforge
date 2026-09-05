@@ -6,7 +6,7 @@ that a change to it is a decision somebody made on purpose.
 
 | file | keeper | what it pins |
 |---|---|---|
-| `narrator-argv-base.json` | `tools/test-narrator-argv-snapshot.js` | the six narrator doors: their argv literals, and the plan (interpreter, env, cwd) each produces on wsl / native-win / native-mac |
+| `narrator-argv-base.json` | `tools/test-narrator-argv-snapshot.js` | the seven narrator doors: their argv literals, and the plan (interpreter, env, cwd) each produces on wsl / native-win / native-mac |
 | `serve-spawn-base.json` | `tools/test-serve-spawn-env.js` | the Listen server's spawn as it stood BEFORE the narrator cut-over, so the 33 preserved environment variables can be diffed against it |
 | `orpheus-argv-base.json` | *(none — historical)* | see below |
 
