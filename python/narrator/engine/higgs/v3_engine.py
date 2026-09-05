@@ -117,9 +117,13 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
 class HiggsV3Config:
     """What one HiggsV3Engine is built from.
 
-    `sampling` EMPTY means the server's own stage-0 defaults (temperature 1.0,
-    top_p 0.95, top_k 50), which is what the delivered render used and what Owen
-    asked for. Anything set rides in `extra_params`.
+    `sampling` EMPTY means THE MODEL DIRECTORY'S OWN SAMPLING - see
+    `served_sampling`. For a checkpoint voice that is the directory's
+    `generation_config.json`, which the server reads for itself and which
+    narrator has proved is there; for base weights there IS no such file in the
+    bosonai snapshot, so v3's deploy default is sent EXPLICITLY rather than
+    left to a bare `SamplingParams()` (top_p 1.0, top_k disabled - the babble
+    case, PORT_NOTES 12.8d). Anything set here rides in `extra_params` on top.
     """
     voice: ClipsVoice
     base_url: Optional[str] = None
@@ -475,9 +479,10 @@ class HiggsV3Engine:
 
     def _apply_voice_caps(self, voice: str, caps: dict) -> None:
         """Orpheus's per-voice tuning registry has no v3 counterpart - v3's
-        sampling is the server's stage-0 defaults or `extra_params`. An EMPTY
-        payload is the pool's "no catalog tuning" signal and is accepted as the
-        no-op it is; anything else is refused by name rather than looking
+        sampling comes from the MODEL DIRECTORY's `generation_config.json`
+        (12.8d), with `extra_params` the only channel that can override it. An
+        EMPTY payload is the pool's "no catalog tuning" signal and is accepted
+        as the no-op it is; anything else is refused by name rather than looking
         applied."""
         if caps:
             raise ValueError(

@@ -67,8 +67,17 @@ WHAT THE REQUEST LOOKS LIKE, and the two ways it goes silently wrong:
   * SAMPLING MUST RIDE IN `extra_params`. `temperature` / `top_p` / `top_k` are
     not fields of `OpenAICreateSpeechRequest`; pydantic drops them without a
     word, and the whole first audition therefore ran at the server default
-    while reporting 0.3. Sending NOTHING is the delivered render's choice and
-    uses the deploy defaults (temperature 1.0, top_p 0.95, top_k 50).
+    while reporting 0.3. AND "the server default" IS THE MODEL DIRECTORY:
+    sending nothing means whatever `<model dir>/generation_config.json` holds,
+    because `--generation-config` defaults to `auto` and `serve_v3.sh` passes no
+    override. A validated merged checkpoint holds temperature 1.0, top_p 0.95,
+    top_k 50, repetition_penalty 1.0; a directory WITHOUT the file - which is
+    every unmerged `bosonai/higgs-audio-v3-tts-4b` snapshot - gets a bare
+    `SamplingParams()` instead: top_p 1.0 and top_k DISABLED, the untruncated
+    1026-way codebook tail, which derails long chunks into babble. See
+    `require_generation_config` and ../PORT_NOTES.md 12.8d. So base weights are
+    sent `SERVER_DEFAULT_SAMPLING` EXPLICITLY (HiggsV3Config.served_sampling)
+    and only a checkpoint voice sends nothing.
   * A CONTROL TOKEN THAT IS NOT IN THE VOCABULARY IS READ ALOUD AS WORDS and
     derails generation into a degenerate loop - ASR coverage 0.000, pitch std
     0.28 st, speaker cosine 0.05. `<|emotion:calm|>`, `<|emotion:neutral|>`,
@@ -130,8 +139,22 @@ WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
 #: silent assumption, which is a whole book in the wrong narrator.
 CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
 
-#: `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0. Sending no
-#: `extra_params` uses these verbatim, which is what the delivered render did.
+#: `vllm_omni/deploy/higgs_multimodal_qwen3.yaml` stage 0 - THE DEPLOY DEFAULT
+#: FOR THE BASE WEIGHTS, and nothing more than that.
+#:
+#: It is NOT what a request gets by sending no `extra_params`. `vllm-omni serve`
+#: on the CLI never reads that YAML; it resolves sampling from the MODEL
+#: DIRECTORY (`--generation-config` defaults to `auto`), so an empty request
+#: gets `<model dir>/generation_config.json` - and, when the directory has no
+#: such file, a bare `SamplingParams()`: top_p 1.0, top_k DISABLED. The
+#: `bosonai/higgs-audio-v3-tts-4b` snapshot ships no such file, which is why a
+#: merged checkpoint must carry one (`require_generation_config`) and why base
+#: weights are sent these values EXPLICITLY rather than assumed
+#: (`HiggsV3Config.served_sampling`). See ../PORT_NOTES.md 12.8d.
+#:
+#: `seed` rides at the request's TOP LEVEL and never inside `extra_params`
+#: (`build_request_body` refuses the duplicate), so it is excluded wherever this
+#: mapping is used as a sampling payload.
 SERVER_DEFAULT_SAMPLING = {'temperature': 1.0, 'top_p': 0.95, 'top_k': 50,
                            'repetition_penalty': 1.0, 'seed': 42}
 
@@ -501,9 +524,14 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     own voice, or a fine-tune whose weights are the voice - no `references` key
     at all), or None (the same, unnamed).
 
-    `sampling` EMPTY OR NONE means the server's own defaults, which is what the
-    delivered render used. Anything given rides in `extra_params`, never at the
-    top level - see the module docstring.
+    `sampling` EMPTY OR NONE sends no `extra_params` at all, which means THE
+    MODEL DIRECTORY'S `generation_config.json` decides - a validated merged
+    checkpoint's four numbers, or, for a directory without the file, a bare
+    `SamplingParams()` (top_p 1.0, top_k DISABLED: the babble case, 12.8d). So
+    an empty `sampling` is only correct for a checkpoint voice; base weights
+    must state the values, and `HiggsV3Config.served_sampling` is what decides
+    which of the two this is. Anything given rides in `extra_params`, never at
+    the top level - see the module docstring.
     """
     if not (text or '').strip():
         raise ValueError('Higgs v3 request: no text')
