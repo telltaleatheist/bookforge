@@ -414,6 +414,32 @@ class HiggsEngineTest(_PrepDoorTest):
         self.assertEqual(record['floor_chars'], record['budget']['max_chars'])
         self.assertEqual(record['floor_chars'], 900)
 
+    def test_a_trainer_set_target_is_the_floor(self):
+        """Owen, 2026-09-05: the target is set by the trainer from the training
+        chunks; the prep packs toward it, under the cap."""
+        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
+                                       'checkpointDir': self.checkpoint,
+                                       'maxChars': 900,
+                                       'maxCharsSource': 'length-sweep',
+                                       'targetChars': 600,
+                                       'targetCharsSource': 'corpus p75'}})
+        code, out = self._run(self._higgs_argv())
+        self.assertEqual(code, 0, out)
+        record = self._read_state_the_way_the_bridge_does()[1]['bookforge_chunking']
+        self.assertEqual(record['floor_chars'], 600)
+        self.assertEqual(record['budget']['max_chars'], 900)
+
+    def test_a_target_above_the_cap_is_refused_by_name(self):
+        self.write_voices({'ds_ad4l': {'kind': 'checkpoint',
+                                       'checkpointDir': self.checkpoint,
+                                       'maxChars': 900,
+                                       'maxCharsSource': 'length-sweep',
+                                       'targetChars': 1500}})
+        code, out = self._run(self._higgs_argv())
+        self.assertNotEqual(code, 0)
+        self.assertIn('targetChars 1500', out)
+        self.assertIn('maxChars 900', out)
+
     def test_a_higgs_prep_never_reads_ORPHEUS_MAX_CHARS(self):
         os.environ['ORPHEUS_MAX_CHARS'] = '123'
         self.addCleanup(os.environ.pop, 'ORPHEUS_MAX_CHARS', None)

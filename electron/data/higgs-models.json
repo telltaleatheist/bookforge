@@ -111,6 +111,9 @@
       "id": "deathstalker",
       "label": "Deathstalker (Higgs v3 fine-tune)",
       "kind": "checkpoint",
+      "targetChars": null,
+      "targetCharsSource": null,
+      "_targetCharsNote": "THE TRAINER'S TARGET CHUNK SIZE, set after training from the training clips' text lengths (Owen, 2026-09-05: 'a per-model target chunk size configuration that's set by the model trainer after it trains it based on how big the training chunks were'). The prep merges consecutive short paragraphs toward it, under each arm's maxChars; null = no target declared, and the prep fills toward the cap instead (Owen, the same day). Never above either arm's maxChars - both sides refuse that by name. The current ds_ad4lm_prod corpus measures clip text median 312 / p75 862 / p90 1259 chars; the retrain that favours longer clips states its own number here, with its method in targetCharsSource.",
       "engineVersion": "v3",
       "voice": {
         "checkpoint": {

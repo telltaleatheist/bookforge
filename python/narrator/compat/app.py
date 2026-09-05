@@ -312,17 +312,16 @@ def route_prep(args) -> int:
             # below: the message IS the answer.
             print(f'Error: {refused}', flush=True)
             return 1
-        # FILL TOWARD THE CAP. Owen, 2026-09-05, on a 626-chunk book packed at
-        # mean 378 against a 1200 cap: "we should combine paragraphs to reach
-        # closer to the cap of 1200. if each paragraph is about 350 then we
-        # shoot for 3 paragraphs per chunk." The packer's merge floor is the
-        # lever - consecutive short prose paragraphs travel together until the
-        # next would overflow the cap - so for a Higgs voice the floor IS the
-        # cap. Headings, items and scene breaks stay walls; a paragraph already
-        # at the cap stands alone. (The deathstalker corpus itself: median 312
-        # chars, p75 862, p90 1259 - the model has seen every length in range.)
-        optional['chunking_floor_chars'] = int(
-            optional['budget'].max_chars(args.higgs_voice))
+        # THE MERGE FLOOR: the trainer's targetChars when the voice declares
+        # one, else the cap (Owen, 2026-09-05: "combine paragraphs to reach
+        # closer to the cap of 1200 ... shoot for 3 paragraphs per chunk", then
+        # "a per-model target chunk size configuration that's set by the model
+        # trainer after it trains it"). Consecutive short prose paragraphs
+        # travel together until the next would overflow the cap; walls stay
+        # walls; a paragraph already at the floor stands alone.
+        from ..engine.higgs.v3_engine import higgs_v3_prep_floor
+        optional['chunking_floor_chars'] = higgs_v3_prep_floor(
+            args.higgs_voice, optional['budget'].max_chars(args.higgs_voice))
     if args.fine_tuned:
         optional['fine_tuned'] = args.fine_tuned
     if args.output_format:

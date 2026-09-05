@@ -444,12 +444,25 @@ def load_voices(path: str = None, *, allowed_controls=None,
             max_chars, source = placeholder_max_chars, 'placeholder'
         else:
             max_chars, source = int(declared), entry.get('maxCharsSource', 'catalog')
+        target = entry.get('targetChars')
+        if target is not None:
+            if isinstance(target, bool) or not isinstance(target, int) or target <= 0:
+                raise ValueError(
+                    f"{path}: voice '{name}' declares targetChars {target!r}, which "
+                    'is not a positive whole number of characters.')
+            if max_chars is not None and target > int(max_chars):
+                raise ValueError(
+                    f"{path}: voice '{name}' declares targetChars {target} above its "
+                    f'maxChars {max_chars}. The cap is the MEASURED safe chunk '
+                    'length; a target above it asks for chunks the length sweep '
+                    'refused. Lower the target or re-certify the cap.')
         if not clips:
             # No reference audio in the request at all: a fine-tune whose
             # weights ARE the voice (the production shape), or the model's own.
             voices[name] = DefaultVoice(
                 name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
-                max_chars_source=None if max_chars is None else source)
+                max_chars_source=None if max_chars is None else source,
+                target_chars=target)
             continue
         voices[name] = ClipsVoice(
             clips=tuple(clips),
@@ -461,6 +474,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
                                             max_reference_seconds),
             max_chars=max_chars,
             max_chars_source=None if max_chars is None else source,
+            target_chars=target,
         )
     return voices
 

@@ -124,7 +124,8 @@ def apply_v3_voice_defaults(voice: ClipsVoice) -> ClipsVoice:
         clips=voice.clips, name=voice.name, scene=voice.scene,
         checkpoint_dir=voice.checkpoint_dir, allowed_controls=controls,
         max_reference_seconds=cap, max_chars=voice.max_chars,
-        max_chars_source=voice.max_chars_source)
+        max_chars_source=voice.max_chars_source,
+        target_chars=voice.target_chars)
 
 
 @dataclass
@@ -868,6 +869,32 @@ def higgs_v3_prep_budget(voice_name: str):
         f'({getattr(resolved, "max_chars_source", None) or "placeholder"})',
         flush=True)
     return CatalogBudget(chars=cap, chars_per_sec=0.0)
+
+
+def higgs_v3_prep_floor(voice_name: str, cap: int) -> int:
+    """The paragraph packer's merge floor for a Higgs voice.
+
+    THE TRAINER'S TARGET when the voice document declares `targetChars` (set
+    after training from the clips' text lengths - Owen, 2026-09-05), else THE
+    CAP: "combine paragraphs to reach closer to the cap" (Owen, the same day,
+    on a 626-chunk book packed at mean 378 against 1200). Both are his rules;
+    neither is a guess. The loader has already refused a target above the cap.
+    """
+    from .config import load_voice
+
+    resolved = load_voice(
+        (voice_name or '').strip(),
+        allowed_controls=HiggsV3Defaults.ALLOWED_CONTROLS,
+        max_reference_seconds=HiggsV3Defaults.MAX_REFERENCE_SECONDS,
+        placeholder_max_chars=HiggsV3Defaults.MAX_CHARS)
+    target = getattr(resolved, 'target_chars', None)
+    if target is not None:
+        log(f"[HIGGS3] prep floor for '{resolved.name}': {int(target)} chars "
+            '(the trainer\'s targetChars)', flush=True)
+        return int(target)
+    log(f"[HIGGS3] prep floor for '{resolved.name}': {int(cap)} chars (no "
+        'targetChars declared - filling toward the cap)', flush=True)
+    return int(cap)
 
 
 def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,

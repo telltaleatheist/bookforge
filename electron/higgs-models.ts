@@ -443,6 +443,17 @@ export interface HiggsModel {
    * render through different samplers. The loader picks the block by ARM.
    */
   backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
+  /**
+   * THE TRAINER'S TARGET CHUNK SIZE, in characters — set by whoever trained
+   * the voice, after training, from the training clips' text lengths (Owen,
+   * 2026-09-05). The prep packs paragraphs together toward it, under each arm's
+   * measured cap. `null` = no target declared yet: the prep fills toward the cap
+   * instead (Owen's rule of the same day). A target above an arm's `maxChars`
+   * is refused by name on both sides — the cap is the measured safe length.
+   */
+  targetChars?: number | null;
+  /** Provenance of `targetChars`, in the style of `maxCharsSource`. */
+  targetCharsSource?: string | null;
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
   note?: string;
@@ -1127,6 +1138,26 @@ export function higgsVoicesDocument(
   // Orpheus knobs arriving through the load message.
   if (caps.maxChars !== undefined && caps.maxChars !== null) entry.maxChars = caps.maxChars;
   if (caps.maxCharsSource) entry.maxCharsSource = caps.maxCharsSource;
+  // THE TRAINER'S TARGET travels beside the cap. Refused here, before the
+  // spawn, when it contradicts this arm's cap; narrator's loader refuses the
+  // same thing by name, so the two never disagree about what a target may be.
+  if (model.targetChars !== undefined && model.targetChars !== null) {
+    if (!Number.isInteger(model.targetChars) || model.targetChars <= 0) {
+      throw new Error(
+        `Higgs voice '${model.id}' declares targetChars ${JSON.stringify(model.targetChars)}, `
+        + 'which is not a positive whole number of characters.',
+      );
+    }
+    if (typeof caps.maxChars === 'number' && model.targetChars > caps.maxChars) {
+      throw new Error(
+        `Higgs voice '${model.id}' declares targetChars ${model.targetChars} above its `
+        + `${target.arm} cap of ${caps.maxChars}. The cap is the measured safe chunk length; `
+        + 'lower the target or re-certify the cap.',
+      );
+    }
+    entry.targetChars = model.targetChars;
+    if (model.targetCharsSource) entry.targetCharsSource = model.targetCharsSource;
+  }
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;
   return { [model.id]: entry };
