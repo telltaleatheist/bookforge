@@ -7,7 +7,8 @@ import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 /** One check from the Higgs doctor. Mirrors preload's HiggsDoctorResult rows. */
 interface HiggsCheck {
   id:
-    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher'
+    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha'
+    | 'narrator-deps'
     | 'toggle'
     | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
     | 'platform';

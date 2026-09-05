@@ -120,7 +120,11 @@ roster, and a voice not in it is refused by name.
     "servedModelName": "higgs-v3",
     "host": "127.0.0.1", "port": 8095,
     "endpoint": "/v1/audio/speech", "healthEndpoint": "/health",
-    "gpuMemoryUtilization": 0.6, "maxModelLen": 8192, "maxNumSeqs": 2,
+    // TWO STAGES, TWO FRACTIONS OF THE WHOLE CARD, and they ADD (~0.85).
+    "gpuMemoryUtilization": 0.6,        // stage 0, the talker
+    "codecGpuMemoryUtilization": 0.25,  // stage 1, the codec decoder
+    "maxModelLen": 8192, "maxNumSeqs": 16,
+    "deployConfig": null,               // null = vllm-omni's auto-discovered profile
     "attentionBackend": "FLASH_ATTN",
     "coldStartSeconds": 297, "readyTimeoutSeconds": 300,   // MEASURED
     "patches": [ { "id", "script", "target", "marker", "why" } ]
@@ -318,11 +322,16 @@ also **validates every clip path in the file** (`os.path.isfile` on each), so on
 voice whose reference had been moved would fail *every other voice's* render with
 an error naming a file the user never asked for. A document of one cannot do that.
 
-### The environment — all of it narrator's
+### The environment — two sets, two readers
 
 An earlier draft of this work invented a `HIGGS_*` variable set, because
 `engine/higgs/` had not landed on `feat/narrator` yet. It landed the same day
-with different names. **Every invented name is gone**; these are the real ones:
+with different names. **Every invented name is gone** — and a *real* `HIGGS_*`
+set exists, belonging to somebody else: `serve_higgs_v3.sh`, which narrator
+**runs** rather than reimplements, and which a script can only be configured
+through.
+
+**narrator's set**, read by `engine/higgs/v3_served.py` and `config.py`:
 
 | variable | value |
 |---|---|
@@ -331,6 +340,34 @@ with different names. **Every invented name is gone**; these are the real ones:
 | `NARRATOR_HIGGS3_SERVE_SCRIPT` | `<env>/bin/serve_higgs_v3.sh`, when narrator must launch |
 | `NARRATOR_HIGGS3_URL` | attach to an already-running server instead |
 | `NARRATOR_HIGGS3_WSL_DISTRO` | the distro to launch in, on Windows |
+| `NARRATOR_HIGGS3_MLX_MODEL` | the **base** weights directory, darwin only |
+
+**The launch script's set**, every value from the catalog's `serving` block
+(`higgsServingFor` → `higgsSpawnEnv`), emitted **only on the arm that launches a
+server** — except the batch width, which narrator itself reads:
+
+| variable | from | who reads it |
+|---|---|---|
+| `HIGGS_ENV` | the guest conda prefix the spawn derives | the script: `CUDA_HOME`, `PATH`, `LD_LIBRARY_PATH`, `<env>/bin/vllm-omni` |
+| `HIGGS_HOST` / `HIGGS_PORT` | `serving.host` / `serving.port` | the script binds; narrator polls `/health` at the same pair and re-exports it into the wrapper |
+| `HIGGS_GPU_MEM_UTIL` | `serving.gpuMemoryUtilization` | stage 0 (talker), via `--stage-overrides` |
+| `HIGGS_CODEC_GPU_MEM_UTIL` | `serving.codecGpuMemoryUtilization` | stage 1 (codec decoder), same flag |
+| `HIGGS_MAX_MODEL_LEN` | `serving.maxModelLen` | stage 0 context length |
+| `HIGGS_MAX_NUM_SEQS` | `serving.maxNumSeqs` | stage 0 batch width **and** narrator's own (`serve_concurrency`) — set on **every arm and every phase**, because that function refuses by name when it is unset |
+| `HIGGS_DEPLOY_CONFIG` | `serving.deployConfig` | a vllm-omni deploy profile — emitted **only** when the catalog names one; `null` means the auto-discovered `higgs_multimodal_qwen3.yaml`, which keeps stage 0 in `enforce_eager` |
+
+`HIGGS_MODEL_DIR` is the exception in the other direction: **narrator** exports it
+per voice from the document's `checkpointDir` (`_launch_exports`), unsetting it
+for the base speaker. BookForge must never set it — a second authority on which
+weights serve is a whole book in the wrong narrator.
+
+> **NONE OF THE `HIGGS_*` SET REACHED THE SCRIPT UNTIL 2026-09-05.**
+> `higgsSpawnEnv` emitted only the `NARRATOR_*` names, so the script ran on its
+> own built-in defaults and the `serving` block described a configuration nothing
+> applied — editing `maxNumSeqs` changed *nothing*, which is worse than having no
+> field. A missing or out-of-range number is now **refused by field name** rather
+> than defaulted: these land on a vllm-omni command line five minutes before
+> anything can be heard.
 
 And on the command line: `--tts_engine higgs-v3` plus **`--higgs_voice <catalog
 id>`**. Not `--fine_tuned`: narrator's `compat/flags.py` accepts both and they are
@@ -716,9 +753,36 @@ check and **never short-circuits** — every check is reported pass or fail, bec
 | `patch:vllm-negative-token-id` | grep `min_input_id != -100` in `vllm/v1/engine/input_processor.py` |
 | `patch:higgs-sentinel-filter` | grep `_filter_sentinel_frames` in `vllm_omni/.../higgs_audio_v3.py` **and** grep for the ABSENCE of `[:, :-1]` |
 | `launcher` | `test -x <env>/bin/serve_higgs_v3.sh` |
+| `launcher-sha` | `sha256sum` of the deployed copy vs the shipped `electron/scripts/higgs/serve_higgs_v3.sh`, **CR stripped on both sides** → `launcher-stale` |
+| `narrator-deps` | one `python -c` over `importlib.util.find_spec` for every module in `requirements-narrator-runtime.txt`; missing ones reported **by name, with the pip package that provides each** |
 
 A missing probe line is **not** a pass — defaulting those to ok would report green
 for a machine with no WSL.
+
+**`launcher` and `launcher-sha` are two rows because they are two problems.**
+"Absent" means the env was never finished; "stale" means it was finished against
+an older BookForge, and it happened for a structural reason: the installer used
+to deploy the script **only when it was missing**, so an env kept the launcher
+from the week it was built while every later fix (the `--stage-overrides` split
+that stopped the codec stage reserving a second 0.60 of the card,
+`HIGGS_CODEC_GPU_MEM_UTIL`, `HIGGS_DEPLOY_CONFIG`) shipped in the repo and was
+read by nobody — with `test -x` reporting ok throughout. The installer now copies
+it **every** run, and the sha is what proves the copy took. CR is stripped on both
+sides because a Windows checkout is CRLF (`core.autocrlf=true`) and the Mac/WSL
+ones are LF; hashing raw bytes would make "current" depend on which machine built
+the env.
+
+**`narrator-deps` is Owen's first Higgs prep, asked before the run.** It died with
+`ModuleNotFoundError: No module named 'bs4'` inside `higgs3`. narrator reaches that
+env over `PYTHONPATH` and is **never pip-installed into it**, so nothing resolved
+its dependency list there — the installer's explicit step is the only thing that
+does. The eleven modules were measured out of `python/narrator`'s AST (tests, the
+mutually-exclusive engine stacks, and the CJK-only lazy imports excluded) and live
+in **one** file, `electron/scripts/higgs/requirements-narrator-runtime.txt`, which
+the installer `pip install -r`s and the doctor parses to build this probe. Every
+row names the module it provides, because `beautifulsoup4`→`bs4`, `pillow`→`PIL`
+and `iso639-lang`→`iso639` — and PyPI carries two *other* packages that install a
+module called `iso639` with a different API.
 
 **The sentinel-filter row asks two questions, not one.** A marker alone answers
 "did somebody apply something here", and that is not enough: the retired
@@ -864,13 +928,23 @@ nothing. Pins captured from the reference env's own `pip freeze`:
 PyPI as a transitive dependency, and adding an index would invent a step the
 measured env never took.
 
-Steps: conda env (py 3.11) → the stack → both patches → deploy the launcher into
+Steps: conda env (py 3.11) → the stack → both patches → **narrator's runtime
+imports** (`pip install -r requirements-narrator-runtime.txt`, the same file the
+doctor's `narrator-deps` probe is built from) → deploy the launcher into
 `<env>/bin/` → the HF weights. Everything is skipped when already done, so a
-re-run after a partial failure resumes.
+re-run after a partial failure resumes — with **one deliberate exception**: the
+launcher is copied **every** run. "Only if absent" is what made an env's copy a
+snapshot of the day it was built (see `launcher-sha` above); it is our file and
+the copy is idempotent. `--check` still writes nothing and reports the deployed
+copy as `ok` / `absent` / `stale` by `cmp`.
 
-`serve_higgs_v3.sh` is transcribed from the campaign's `serve_v3.sh` with exactly
-two changes: the env prefix is a parameter, and `HIGGS_MODEL_DIR` can name a
-merged fine-tune. It **refuses** a set-but-missing `HIGGS_MODEL_DIR` rather than
+`serve_higgs_v3.sh` is transcribed from the campaign's `serve_v3.sh` with three
+changes: the env prefix is a parameter (`$HIGGS_ENV`), `HIGGS_MODEL_DIR` can name
+a merged fine-tune, and memory/concurrency/context length are passed **per stage**
+through `--stage-overrides` rather than as global flags — vllm-omni applies a
+global `--gpu-memory-utilization` to *every* stage, and this server is two, so the
+campaign's single `0.60` reserved it twice (measured 24.2 GB of a 24.5 GB card,
+2026-09-05). It **refuses** a set-but-missing `HIGGS_MODEL_DIR` rather than
 serving the base in its place — that would be a different narrator reported as
 success. FlashInfer is routed around (`VLLM_USE_FLASHINFER_SAMPLER=0`,
 `--attention-backend FLASH_ATTN`): its JIT nvcc build rejects the CUDA 13 nvcc
@@ -948,8 +1022,12 @@ path while a WSL prep derives its session dir from the WSL e2a root, and
 wsl.exe -d <distro> bash -c "export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
     NARRATOR_ENGINE=higgs-v3 \
     NARRATOR_HIGGS_VOICES=/mnt/c/.../<job>-<voice>.json \
-    NARRATOR_HIGGS3_SERVE_SCRIPT=<env>/bin/serve_higgs_v3.sh \
+    HIGGS_MAX_NUM_SEQS=16 \
     NARRATOR_HIGGS3_WSL_DISTRO=<distro> \
+    NARRATOR_HIGGS3_SERVE_SCRIPT=<env>/bin/serve_higgs_v3.sh \
+    HIGGS_ENV=<env> HIGGS_HOST=127.0.0.1 HIGGS_PORT=8095 \
+    HIGGS_GPU_MEM_UTIL=0.6 HIGGS_CODEC_GPU_MEM_UTIL=0.25 \
+    HIGGS_MAX_MODEL_LEN=8192 \
     PYTHONPATH=/mnt/c/<repo>/python \
   && cd ~ \
   && '<wslCondaPath>' run --no-capture-output -n 'higgs3' \
@@ -1076,7 +1154,7 @@ What changed here:
 
 | was (BookForge's guess) | is (narrator's contract) |
 |---|---|
-| an invented `HIGGS_*` env set | `NARRATOR_HIGGS_VOICES` (a **path**), `NARRATOR_HIGGS3_{URL,SERVE_SCRIPT,WSL_DISTRO}` |
+| an invented `HIGGS_*` env set | `NARRATOR_HIGGS_VOICES` (a **path**), `NARRATOR_HIGGS3_{URL,SERVE_SCRIPT,WSL_DISTRO}` — and a *real* `HIGGS_*` set, belonging to the launch script rather than to narrator (see §The environment) |
 | caps passed as env vars | caps do **not** travel — narrator *raises* on a `caps` payload |
 | the voice named by `--fine_tuned` | `--higgs_voice <catalog id>` (the two are not interchangeable) |
 | `voice: {kind:'adapter', path}` \| `{kind:'clips', clips}` | three kinds: `default` / `clips` / `checkpoint` |

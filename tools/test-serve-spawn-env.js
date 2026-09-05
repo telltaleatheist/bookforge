@@ -322,6 +322,108 @@ check('higgs/native-mac: NARRATOR_HIGGS3_MLX_MODEL names an existing directory',
   assert.ok(!dir.startsWith('/mnt/'), `the weights dir was guest-translated: ${dir}`);
 });
 
+// ── THE SERVING BLOCK REACHES THE LAUNCH SCRIPT ───────────────────────────
+//
+// Until 2026-09-05 it did not. `electron/data/higgs-models.json`'s `serving`
+// block declared a bind address, two memory fractions, a context length and a
+// batch width, and `higgsSpawnEnv` emitted only the NARRATOR_* set — so
+// serve_higgs_v3.sh ran on its own built-in defaults and every number in that
+// block was a description of a configuration nothing applied. Editing
+// `maxNumSeqs` changed NOTHING, which is worse than having no field: it is a
+// lever that reports success.
+//
+// These rows are why the `higgs/*: unchanged` snapshots above moved, and they
+// are the argument for it — a snapshot says "something changed", these say what
+// and hold it there.
+const catalog = JSON.parse(
+  fs.readFileSync(path.join(REPO, 'electron', 'data', 'higgs-models.json'), 'utf-8'));
+const serving = catalog.serving;
+
+check('higgs/wsl: every serving-block knob arrives as its HIGGS_* variable', () => {
+  const e = envOf(higgsRows.wsl);
+  // The mapping, asserted against the CATALOG rather than against literals, so a
+  // retune is one edit and this keeper proves it travelled.
+  assert.strictEqual(e.HIGGS_HOST, serving.host);
+  assert.strictEqual(e.HIGGS_PORT, String(serving.port));
+  assert.strictEqual(e.HIGGS_GPU_MEM_UTIL, String(serving.gpuMemoryUtilization));
+  assert.strictEqual(e.HIGGS_CODEC_GPU_MEM_UTIL, String(serving.codecGpuMemoryUtilization));
+  assert.strictEqual(e.HIGGS_MAX_MODEL_LEN, String(serving.maxModelLen));
+  assert.strictEqual(e.HIGGS_MAX_NUM_SEQS, String(serving.maxNumSeqs));
+  // HIGGS_ENV is the conda prefix the script builds CUDA_HOME, PATH,
+  // LD_LIBRARY_PATH and its own `vllm-omni` path out of. Its script-side default
+  // is a hardcoded $HOME/anaconda3/envs/higgs3 — true on the machine it was
+  // transcribed from, a wrong-env server start anywhere else.
+  assert.ok(e.HIGGS_ENV, 'the served arm names no HIGGS_ENV');
+  assert.ok(e.NARRATOR_HIGGS3_SERVE_SCRIPT.startsWith(e.HIGGS_ENV + '/bin/'),
+    `the launch script is not inside HIGGS_ENV: ${e.HIGGS_ENV} vs ${e.NARRATOR_HIGGS3_SERVE_SCRIPT}`);
+});
+
+check('higgs/wsl: the TWO memory fractions are separate, and they leave headroom', () => {
+  const e = envOf(higgsRows.wsl);
+  // vllm-omni applies a GLOBAL --gpu-memory-utilization to EVERY stage, and this
+  // server is two (talker + codec decoder), so the campaign's single 0.60
+  // reserved 0.60 twice — measured 24.2 GB of a 24.5 GB card, 2026-09-05. The
+  // launch script passes them per stage through --stage-overrides, which is only
+  // meaningful if the two variables actually differ here.
+  const talker = Number(e.HIGGS_GPU_MEM_UTIL);
+  const codec = Number(e.HIGGS_CODEC_GPU_MEM_UTIL);
+  assert.ok(talker > 0 && talker <= 1, `talker fraction out of range: ${talker}`);
+  assert.ok(codec > 0 && codec <= 1, `codec fraction out of range: ${codec}`);
+  assert.ok(talker + codec <= 0.95,
+    `the two stages together ask for ${(talker + codec).toFixed(2)} of the card, which leaves `
+    + 'nothing for anything else on it');
+});
+
+check('higgs: HIGGS_MAX_NUM_SEQS is set on BOTH arms', () => {
+  // narrator's `serve_concurrency()` reads it and REFUSES BY NAME when unset —
+  // it is both stage 0's max_num_seqs and the width of narrator's own batch. A
+  // door that renders and finds it missing dies after the session is built, so
+  // it is set everywhere rather than only where a server is started.
+  for (const arm of ['wsl', 'native-mac']) {
+    assert.strictEqual(envOf(higgsRows[arm]).HIGGS_MAX_NUM_SEQS, String(serving.maxNumSeqs),
+      `${arm} does not state the batch width`);
+  }
+});
+
+check('higgs/native-mac: NO server-launch variable comes along', () => {
+  // The Mac samples in-process. A bind address, a memory fraction or a conda
+  // prefix there would be a lever read by nothing — the same defect as the
+  // launch script and the distro, which this file already refuses.
+  const e = envOf(higgsRows['native-mac']);
+  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
+    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG']) {
+    assert.ok(!(key in e), `the darwin arm carries the served stack's ${key}`);
+  }
+});
+
+check('higgs: HIGGS_DEPLOY_CONFIG is emitted only when a profile is CHOSEN', () => {
+  // `null` in the catalog means "vllm-omni's auto-discovered profile", which
+  // keeps stage 0 in enforce_eager (no CUDA graphs on the talker). Exporting an
+  // empty string would instead make the script take the `-n` branch and pass
+  // `--deploy-config ''`.
+  assert.ok('deployConfig' in serving,
+    'the serving block no longer declares deployConfig — an absent key makes "nobody decided" '
+    + 'look like a decision');
+  const present = 'HIGGS_DEPLOY_CONFIG' in envOf(higgsRows.wsl);
+  assert.strictEqual(present, serving.deployConfig !== null,
+    `deployConfig is ${JSON.stringify(serving.deployConfig)} but HIGGS_DEPLOY_CONFIG is `
+    + `${present ? 'set' : 'unset'}`);
+});
+
+check('higgs: BookForge never sets HIGGS_MODEL_DIR', () => {
+  // narrator exports it per voice from the voice document's checkpointDir
+  // (v3_served.py `_launch_exports`). A copy from this side would be a second
+  // authority on which weights serve, and the loser is a whole book in the wrong
+  // narrator — the failure Owen hit on 2026-09-05 in its other direction.
+  for (const arm of ARMS) {
+    // native-win REFUSES rather than spawning (there is no Windows vLLM-Omni),
+    // so it has no environment to inspect — asserted above, not re-asserted here.
+    if (higgsRows[arm].refused) continue;
+    assert.ok(!('HIGGS_MODEL_DIR' in envOf(higgsRows[arm])),
+      `${arm} sets HIGGS_MODEL_DIR, which is narrator's to export per voice`);
+  }
+});
+
 check('the WSL Higgs arm sets NO MLX model var', () => {
   // It is the SERVED backend there: the weights are the launch script's argument.
   // Setting it would look like a lever and be read by nothing.
