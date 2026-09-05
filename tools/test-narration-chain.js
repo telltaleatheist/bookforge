@@ -71,6 +71,8 @@ const RVC = {
 function settings(over = {}) {
   return Object.assign({
     language: 'en',
+    // The cleanup is a question with three answers (9e1baa00): a run states it.
+    textCleanup: 'required',
     ttsEngine: 'orpheus',
     voice: 'leah',
     device: 'gpu',
