@@ -1285,6 +1285,9 @@ check('the WSL scripts are LF — a CRLF shebang is a bad interpreter', () => {
 console.log('narrator contract');
 
 const spawnMod = require(path.join(DIST, 'higgs-spawn.js'));
+// The ONE owner of the Mac's MLX tier table. The Higgs batch env is asserted
+// against it rather than against a copied number, so a tier change moves both.
+const memoryMod = require(path.join(DIST, 'orpheus-memory.js'));
 
 check('the e2a prep scaffolding is GONE — Higgs preps on narrator', () => {
   // HIGGS_PREP_ENGINE_ALIAS/-ENV_ENGINE existed to tell e2a's packer `orpheus`
@@ -1578,6 +1581,59 @@ process.on('exit', () => {
   check('assembly translates its paths too', () => {
     const leaked = asmLine.match(/[A-Za-z]:[\\\\/][^' ]*/g);
     assert.strictEqual(leaked, null, 'untranslated Windows path(s) in assembly: ' + leaked);
+  });
+
+  // ── The MLX batch budget: darwin, and the WORKER door only ────────────────
+  //
+  // narrator's Higgs MLX backend renders ONE ROW unless BookForge asks for more
+  // (NARRATOR_HIGGS3_MLX_BATCH, default 1), so these two variables are the whole
+  // ask. They are pinned here because every wrong place to put them is silent:
+  // on the WSL arm they would be read by nothing (that Higgs is a vLLM-Omni
+  // server), and on the serve/prep/assembly doors they would look configured
+  // while no batch exists to spend them on.
+  const BATCH_VARS = ['NARRATOR_HIGGS3_MLX_BATCH', 'NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB'];
+
+  check('the WSL arm gets NO MLX batch variables on any door', () => {
+    for (const text of [line, prepLine, asmLine]) {
+      for (const name of BATCH_VARS) {
+        assert.ok(!text.includes(name),
+          `${name} reached the served arm, where nothing reads it`);
+      }
+    }
+  });
+
+  check('darwin: the WORKER carries the batch ceiling and its memory budget', () => {
+    // BOTH readings are taken UNDER the forced arm: auto tier resolution reads
+    // `process.platform` itself (a Mac bands on unified RAM), so a profile read
+    // outside `onArm` answers for a different machine entirely.
+    const { env, profile } = onArm('darwin', () => ({
+      env: spawnMod.higgsMlxBatchEnv('worker'),
+      profile: memoryMod.orpheusMemoryProfile(
+        memoryMod.resolveConcreteOrpheusTier(null, null)),
+    }));
+    for (const name of BATCH_VARS) {
+      assert.ok(env[name], `the darwin worker sets no ${name}`);
+      assert.ok(Number(env[name]) > 0, `${name} is not a positive number: ${env[name]}`);
+    }
+    // The SAME numbers the Orpheus MLX arm gets: one Metal device, one unified
+    // memory pool, one answer.
+    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_BATCH, String(profile.batchSize));
+    assert.strictEqual(env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB, String(profile.mlxMemBudgetGB));
+  });
+
+  check('darwin: serve, prep and assembly carry NO batch variables', () => {
+    for (const door of ['serve', 'prep', 'assembly']) {
+      const env = onArm('darwin', () => spawnMod.higgsMlxBatchEnv(door));
+      assert.deepStrictEqual(env, {}, `the ${door} door carries a batch budget`);
+    }
+  });
+
+  check('no ORPHEUS_* name rides along with the batch variables', () => {
+    // The Higgs spawn strips Orpheus's variables deliberately; a Higgs knob
+    // SPELLED ORPHEUS_ would be stripped with them and read by nothing.
+    const env = onArm('darwin', () => spawnMod.higgsMlxBatchEnv('worker'));
+    assert.ok(!/ORPHEUS_/.test(JSON.stringify(env)),
+      'an ORPHEUS_* variable leaked into the Higgs batch env');
   });
 }
 

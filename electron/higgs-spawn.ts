@@ -75,6 +75,7 @@ import {
   type NarratorSpawnPlan,
 } from './narrator-spawn';
 import { app } from 'electron';
+import { orpheusMemoryProfile, resolveConcreteOrpheusTier } from './orpheus-memory';
 import {
   higgsCheckpointArm,
   higgsMlxBaseDir,
@@ -276,7 +277,7 @@ export function higgsEnvExtras(
   const serveScriptGuestPath =
     `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}/bin/${serving.launchScript}`;
 
-  return higgsSpawnEnv(model, {
+  return { ...higgsMlxBatchEnv(kind), ...higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
     wslDistro: viaWsl ? getWslDistro() : undefined,
@@ -288,7 +289,43 @@ export function higgsEnvExtras(
     mlxModelDir: process.platform === 'darwin'
       ? higgsMlxBaseDir(app.getPath('userData'))
       : undefined,
-  });
+  }) };
+}
+
+/**
+ * THE BATCH WIDTH A HIGGS MLX WORKER MAY USE — darwin, and the WORKER only.
+ *
+ * narrator's Higgs MLX backend renders ONE ROW AT A TIME unless it is asked for
+ * more (`NARRATOR_HIGGS3_MLX_BATCH`, default 1), so an unasked process is byte
+ * for byte what shipped. This is the ask, and it is deliberately the SAME NUMBER
+ * the Orpheus MLX arm gets: both engines batch on the one Metal device out of
+ * the one unified memory pool, so two different budgets on one machine would be
+ * two different answers to the same question. `orpheusMemoryProfile` owns the
+ * tier table; nothing here re-derives a width.
+ *
+ * WORKER-ONLY, and that is not tidiness. `serve` is the Listen path — one
+ * sentence at a time through `generate_batch_stream`, which this backend
+ * deliberately runs row by row — and `prep`/`assembly` load no model at all. A
+ * batch budget on those doors would be a lever read by nothing, which is how a
+ * knob comes to look configured when it is inert.
+ *
+ * NOT ON THE WSL/served arm at any phase: there Higgs is a vLLM-Omni server and
+ * these are the in-process MLX backend's variables.
+ *
+ * Explicit environment still wins, exactly as it does for the Orpheus pair.
+ */
+export function higgsMlxBatchEnv(kind: HiggsSpawnKind): Record<string, string> {
+  if (process.platform !== 'darwin' || kind !== 'worker') return {};
+  const profile = orpheusMemoryProfile(resolveConcreteOrpheusTier(null, null));
+  return {
+    NARRATOR_HIGGS3_MLX_BATCH:
+      process.env.NARRATOR_HIGGS3_MLX_BATCH?.trim() || String(profile.batchSize),
+    // Total unified memory one batch may occupy, weights and the pinned buffer
+    // cache included; narrator narrows a deep batch's WIDTH to stay inside it.
+    NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB:
+      process.env.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB?.trim()
+      || String(profile.mlxMemBudgetGB),
+  };
 }
 
 /**
