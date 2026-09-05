@@ -592,8 +592,51 @@ What *would* prove the patch, both halves from the fine-tuning session:
 
 | half | state |
 |---|---|
-| **(a) zero SYNC-path interior drops.** The filter logs `interior sentinel frame(s) dropped`; offline positional classification of every saved talker matrix puts interior frames at **0** on all real shapes, and the sync detector has never fired | **NOT IMPLEMENTED.** It is the server's *log*, and narrator does not have it: `start()` sends the launcher's stdout/stderr to `DEVNULL`, and in ATTACH mode the server is not even ours. **`TODO(higgs-sentinel-proof)`** — PORT_NOTES 12.9 item 6: capture the launcher's log to a file the backend can name, then assert zero interior drops per render |
+| **(a) the server's own log, READ.** Every trailing-ramp line reports exactly 2 frames, and **zero** sync-path interior drops — a frame failing the token test between two good ones, which offline classification puts at 0 on all real shapes and the detector has never fired on | **DONE 2026-09-05** — `verify_sentinel_filter`, below. `TODO(higgs-sentinel-proof)` is closed |
 | **(b) no trim code left in the stage processor** (`[:, :-1]` absent) | **ENFORCED TODAY**, statically and before any server starts — the doctor's absent-marker, above |
+
+#### The server's log is narrator's, and the proof reads it
+
+`start()` used to send the launcher's stdout **and** stderr to
+`subprocess.DEVNULL`. That threw away the only record of what the decode path
+did — which is exactly where the sentinel filter reports itself — and it also
+meant a server that died during its 55–297 s start left its reason nowhere,
+while `wait_ready`'s "check its log" pointed at nothing.
+
+Both streams now go to **one file the backend owns**, opened `wb` so each start
+overwrites — the same contract as the training side's `serve_current.log`, and
+what lets the proof say *this run* rather than *some run*.
+
+| | |
+|---|---|
+| where | `<process_dir>/higgs-v3-server.log` — the session's own directory, which already holds `session-state.json` and the Orpheus guards' rejects. narrator has no other log **file** anywhere: its engine lines go to a *stream* the host picks (`engine/log.py`), so this is a new artifact and it lives with the run |
+| with no session | a per-instance file beside the pid file (`<tmp>/narrator-higgs3-<pid>-<id>.log`) — an audition or a test. Two workers must never share one log, for the reason they must never share one pid file |
+| discoverable as | `BackendSpec.server_log`, and `serverLog` in the worker's `loaded` message. The log is **evidence**, so a tool or a ledger entry has to be able to find it without reconstructing a path |
+| ATTACH mode | narrator did not start that server and its output went wherever its operator sent it. It reads a log **only** if the operator names one in **`NARRATOR_HIGGS3_SERVER_LOG`** — *no default*, because a stale log from an earlier run would let the proof pass on evidence from a server that is no longer up. The training side tees to `E:\training\_campaigns\2026-09-01-cod-full-rebuild\higgs\v3_ft\logs\serve_current.log` (overwritten per start), which is the path to point it at — given in the form the **reading** process sees, so `/mnt/e/training/…` from inside WSL |
+| adopted server | `start()` adopts a server already on the port; that one's output is not ours either, so the spec **stops naming** our file and the proof falls back to the operator's named log or to none |
+
+`verify_sentinel_filter()` runs in `load_engine` immediately after the probe
+render — the render that has just put one chunk through the decode path — and:
+
+- **refuses if there is no log, or it cannot be read.** The proof *is* the
+  stream; "no evidence" must never read as "no problem". When narrator is
+  attached with no named log it does not call the proof at all and says
+  **UNAVAILABLE** in the run log, because "not proved" and "proved" must not
+  look the same;
+- **requires every trailing-ramp line to report exactly 2 frames.** Not zero —
+  see the instrumentation bug below. A line with any other count is a sentinel
+  the trailing-run trim did not reach, and it is refused by name, with the count
+  and the offending line quoted back;
+- **refuses one single sync-path interior drop**, and any "every frame carried a
+  stream sentinel" line;
+- returns a report (log path, lines read, ramp lines, frames per line, sync
+  interior drops) for a ledger.
+
+Matching is on the **message**, not on `file:line`. On the certified build the
+three lines are `higgs_audio_v3.py:403` (trailing ramp), `:126` (sync interior)
+and `:119` (no audio at all) — but a line number is a property of the patch's
+layout, and the queued fix below moves all three. The message text is what the
+patch owns.
 
 **The `higgs_audio_v3.py:403` warnings are not a defect in the audio.** The async
 out-of-range count is taken *before* the trailing-run trim, so it counts the

@@ -7,10 +7,14 @@ THE BUG THIS EXISTS FOR (found 2026-09-05, driving Higgs v3 through
 
 `narrator.serve`'s **stdout IS the JSON-lines protocol**. Any bare `print` from
 the engine layer lands between two protocol messages and breaks the client's
-parse. The engine had 126 of them (111 under `orpheus/`, 15 under
+parse. The engine has 129 of them (111 under `orpheus/`, 18 under
 `higgs/`) - counted by AST in
 `tests/test_engine_log_stream.py::LogCallCountTest`, which is where that
-number lives so it cannot drift apart across four docstrings again.
+number lives so it cannot drift apart across four docstrings again. It was 126
+at the migration below; the three added since are Higgs v3's server-log lines
+(`v3_served._open_log`, `verify_sentinel_filter`, and `v3_engine`'s
+"proof UNAVAILABLE"), and the count moving when the engine gains a log line is
+the test working.
 
 WHY THIS IS NOT "MOVE THEM ALL TO STDERR". One engine serves hosts with
 INCOMPATIBLE stdout contracts, and the other host parses the very lines that

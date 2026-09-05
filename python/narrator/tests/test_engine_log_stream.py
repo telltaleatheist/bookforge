@@ -57,10 +57,15 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #:   engine/orpheus/  111  adapters 4, asr_gate 1, audio 2, engine 30, guards 8,
 #:                         mlx_backend 34, sampling 1, snac 3,
 #:                         transformers_backend 4, vllm_backend 24
-#:   engine/higgs/     15  mlx_backend 1 (_log), transformers_backend 2,
-#:                         v3_served 12
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 15}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 126
+#:   engine/higgs/      18  mlx_backend 1 (_log), transformers_backend 2,
+#:                         v3_engine 1, v3_served 14
+#:
+#: higgs/ went 15 -> 18 on 2026-09-05 when the v3 server stopped writing its
+#: output to DEVNULL: v3_served gained the log-file line and the sentinel
+#: proof's report, and v3_engine gained the "proof UNAVAILABLE" line for an
+#: attached server whose operator named no log.
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 18}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 129
 
 
 def _engine_modules():

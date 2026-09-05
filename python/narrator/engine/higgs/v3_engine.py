@@ -48,6 +48,7 @@ import numpy as np
 
 from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
                         SpeechRequest, StopPolicy)
+from ..log import log
 from . import v3_served
 from .prompt import clean_text
 from .v3_served import HiggsV3ServedBackend
@@ -413,15 +414,27 @@ class HiggsV3Engine:
         # nothing. The backend learns which checkpoint is running from
         # NARRATOR_HIGGS3_CHECKPOINT (or an explicit argument) - see
         # v3_served.CHECKPOINT_ENV.
-        self.server = HiggsV3ServedBackend(base_url=config.base_url,
-                                           serve_script=config.serve_script)
+        # THE SERVER'S LOG LIVES WITH THE RUN. `process_dir` is the session's
+        # own directory - it already holds `session-state.json` and the Orpheus
+        # guards' rejects - so a server this engine launches writes beside them
+        # and the ledger can name one path for the whole run. With no session
+        # (an audition, a test) the backend falls back to a per-instance file in
+        # the temp dir and SAYS SO in its log line; what it never does is
+        # discard the stream, which is what DEVNULL used to do and what left the
+        # sentinel filter unprovable.
+        self.server = HiggsV3ServedBackend(
+            base_url=config.base_url, serve_script=config.serve_script,
+            server_log=(os.path.join(config.process_dir,
+                                     v3_served.SERVER_LOG_NAME)
+                        if config.process_dir else None))
         self.load_engine()
 
     # ---- lifecycle ----------------------------------------------------------
 
     def load_engine(self):
-        """Start the server (or adopt one), wait for health, and take the
-        sentinel-filter tail measurement.
+        """Start the server (or adopt one), wait for health, take the
+        sentinel-filter tail measurement and READ THE SERVER'S LOG for the
+        token-level sentinel proof.
 
         A server that does not come up is a hard failure here rather than at the
         first sentence: the caller is holding a GPU lock and needs to know now.
@@ -447,6 +460,21 @@ class HiggsV3Engine:
                 checkpoint_dir=self.config.checkpoint_dir)
             if self.config.probe_sentinel_filter:
                 self.server.probe_sentinel_filter()
+                # PROOF (a), on the log the probe render just wrote into. It is
+                # skipped only when there is no stream to read at all - an
+                # attached server whose operator named no log - and that is said
+                # out loud rather than passed over, because "not proved" and
+                # "proved" must never look the same in a run log.
+                if self.server.proof_log():
+                    self.server.verify_sentinel_filter()
+                else:
+                    log('[HIGGS3] token-level sentinel proof UNAVAILABLE: attached '
+                        'to a server this process did not start and no '
+                        f'{v3_served.SERVER_LOG_ENV} was named, so there is no log '
+                        'to read. The static half of the proof (no one-frame trim '
+                        'left in the stage processor) is unaffected - it is a grep '
+                        'the Higgs doctor runs before any server starts.',
+                        flush=True)
         except BaseException:
             self.server.stop()
             raise

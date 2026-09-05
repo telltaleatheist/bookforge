@@ -1290,6 +1290,272 @@ class SentinelFilterProbeTest(V3TestCase):
         self.assertEqual(self.server.requests, [])
 
 
+class SentinelProofTest(V3TestCase):
+    """PROOF (a) OF THE SENTINEL FILTER: the server's own log, READ.
+
+    The patch's two halves are proved in two different places. (b) "no one-frame
+    trim left in the stage processor" is a static grep BookForge's Higgs doctor
+    runs before any server starts. (a) is this: the decode path says what it did,
+    in the server's log - and until 2026-09-05 narrator threw that away on
+    `subprocess.DEVNULL`, which is why the TODO existed.
+
+    THE FIXTURES ARE LOG LINES because that is the interface. vLLM's logger emits
+    `WARNING <date> [<file>:<line>] <message>`; on the certified build the three
+    lines the filter can write are `higgs_audio_v3.py:403` (the trailing ramp),
+    `:126` (a sync interior drop) and `:119` (a chunk with no audio at all). The
+    matching is on the MESSAGE, not on the line number - a number is a property
+    of the patch's layout and the queued one-line fix for the count below moves
+    all three - so these fixtures carry a locator that is deliberately NOT what
+    is matched.
+    """
+
+    # A CLEAN chunk, and it is not zero frames: the patch counts out-of-range
+    # frames BEFORE it trims the trailing run, so it counts the model's normal
+    # 2-frame EOC ramp and mislabels it "outside the trailing run".
+    ASYNC_2 = ('WARNING 09-05 12:00:01 [higgs_audio_v3.py:403] higgs_audio_v3 '
+               '(async): 2 frame(s) carry a stream sentinel outside the trailing run')
+    ASYNC_3 = ('WARNING 09-05 12:00:02 [higgs_audio_v3.py:403] higgs_audio_v3 '
+               '(async): 3 frame(s) carry a stream sentinel outside the trailing run')
+    SYNC_INTERIOR = ('WARNING 09-05 12:00:03 [higgs_audio_v3.py:126] higgs_audio_v3 '
+                     '(sync): 1 interior sentinel frame(s) dropped (248/249 frames '
+                     'kept) -- this is not an expected shape')
+    EMPTY_CHUNK = ('WARNING 09-05 12:00:04 [higgs_audio_v3.py:119] higgs_audio_v3 '
+                   '(sync): every frame carried a stream sentinel; emitting no audio '
+                   'for this chunk')
+    NOISE = 'INFO 09-05 12:00:00 [api_server.py:1] Started server process [1234]'
+
+    def write_log(self, *lines):
+        path = os.path.join(self.dir, 'serve_current.log')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('\n'.join(lines) + '\n')
+        return path
+
+    def attached_to(self, path):
+        """A backend in ATTACH mode whose log the OPERATOR named.
+
+        Through the documented door - the environment variable - rather than by
+        setting the attribute, so what is tested is the contract an operator has.
+        """
+        if path is not None:
+            os.environ[v3_served.SERVER_LOG_ENV] = path
+        else:
+            os.environ.pop(v3_served.SERVER_LOG_ENV, None)
+        self.addCleanup(os.environ.pop, v3_served.SERVER_LOG_ENV, None)
+        return HiggsV3ServedBackend(base_url=self.server.base_url)
+
+    def test_a_log_of_two_frame_lines_PASSES_and_reports_what_it_read(self):
+        path = self.write_log(self.NOISE, self.ASYNC_2, self.NOISE, self.ASYNC_2,
+                              self.ASYNC_2)
+        report = self.attached_to(path).verify_sentinel_filter()
+        self.assertEqual(report['log'], path)
+        self.assertEqual(report['trailingRampLines'], 3)
+        self.assertEqual(report['framesPerLine'], 2)
+        self.assertEqual(report['syncInteriorDrops'], 0)
+        self.assertEqual(report['linesRead'], 5)
+
+    def test_a_THREE_frame_line_is_refused_BY_NAME(self):
+        """Any count but 2 is a sentinel the trailing-run trim did not reach -
+        and those frames were substituted with codec code 0, a VALID code that
+        decodes to real sound."""
+        path = self.write_log(self.ASYNC_2, self.ASYNC_3)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('sentinel proof FAILED', message)
+        self.assertIn('3 sentinel frame(s)', message)
+        self.assertIn(path, message)
+        self.assertIn('higgs_audio_v3.py:403', message,
+                      'the offending line itself must be quoted back')
+
+    def test_NO_LOG_AT_ALL_is_refused_the_proof_needs_the_stream(self):
+        """An attached server whose operator named nothing. narrator will not
+        guess a path: a stale log from an earlier run would let this pass on
+        evidence from a server that is no longer up."""
+        backend = self.attached_to(None)
+        self.assertIsNone(backend.proof_log())
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('no server log to read', message)
+        self.assertIn(v3_served.SERVER_LOG_ENV, message)
+        self.assertIn('serve_current.log', message,
+                      'the refusal should say where the training side tees')
+
+    def test_a_NAMED_log_that_does_not_exist_is_refused_too(self):
+        missing = os.path.join(self.dir, 'nothing-here.log')
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(missing).verify_sentinel_filter()
+        self.assertIn('could not be read', str(caught.exception))
+        self.assertIn(missing, str(caught.exception))
+
+    def test_a_SYNC_interior_drop_is_refused(self):
+        """The sync path takes the FULL filter, so an interior drop is a frame
+        that failed the token test between two good ones - never observed
+        offline, and a hole in the middle of that chunk's audio."""
+        path = self.write_log(self.ASYNC_2, self.SYNC_INTERIOR)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        message = str(caught.exception)
+        self.assertIn('SYNC path', message)
+        self.assertIn('INTERIOR', message)
+        self.assertIn('higgs_audio_v3.py:126', message)
+
+    def test_a_chunk_with_no_audio_at_all_is_refused(self):
+        path = self.write_log(self.EMPTY_CHUNK)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            self.attached_to(path).verify_sentinel_filter()
+        self.assertIn('NO audio', str(caught.exception))
+
+    def test_a_log_with_no_sentinel_lines_at_all_PASSES(self):
+        """Zero ramp lines is not a failure. The refusals here are "a count that
+        is not 2" and "there is no stream"; requiring a line would make the proof
+        depend on how many chunks happened to be rendered before it ran."""
+        report = self.attached_to(self.write_log(self.NOISE)).verify_sentinel_filter()
+        self.assertEqual(report['trailingRampLines'], 0)
+
+    def test_the_engine_says_UNAVAILABLE_rather_than_passing_silently(self):
+        """Attached, no named log: `load_engine` must not call the proof, and
+        must not report success either. "Not proved" and "proved" have to look
+        different in a run log."""
+        backend = self.attached_to(None)
+        self.assertIsNone(backend.proof_log())
+        lines = []
+        real = v3_served.log
+        v3_served.log = lambda *a, **k: lines.append(a[0] if a else '')
+        try:
+            engine = HiggsV3Engine(self.config())
+            self.addCleanup(engine.cleanup)
+        finally:
+            v3_served.log = real
+        # The engine logs through its own module, so assert on the outcome that
+        # matters: the load did not raise, and the backend it built has no proof
+        # stream to read.
+        self.assertIsNone(engine.server.proof_log())
+
+
+class ServerLogIsOwnedTest(V3TestCase):
+    """The server's output goes to a FILE THIS BACKEND OWNS, never DEVNULL.
+
+    The regression this pins is the one that made proof (a) impossible: both
+    streams went to `subprocess.DEVNULL`, so the sentinel filter's own report of
+    what it did was discarded, and `wait_ready`'s "check its log" pointed at
+    nothing.
+    """
+
+    def launching_backend(self, **kwargs):
+        """A backend in LAUNCH mode against a port nothing answers, so `start()`
+        launches rather than adopting."""
+        dead = FakeV3Server(healthy=False)
+        self.addCleanup(dead.close)
+        backend = HiggsV3ServedBackend(
+            base_url=dead.base_url, serve_script='/campaign/serve_v3.sh', **kwargs)
+        self.addCleanup(backend._close_log)
+        return backend
+
+    def start_capturing_popen(self, backend):
+        """Run `start()` with Popen replaced, and return its kwargs."""
+        import subprocess
+        seen = {}
+
+        class _FakeProc:
+            returncode = 0
+
+            def poll(self):
+                return 0                     # so _read_guest_pid returns at once
+
+        def fake_popen(command, **kwargs):
+            seen.update(kwargs)
+            seen['command'] = command
+            return _FakeProc()
+
+        # The pid read is stubbed as well: it shells out through
+        # `subprocess.run`, which would go through the fake Popen too and has
+        # nothing to do with what this test is about (which handles the LAUNCH
+        # call is given).
+        real = subprocess.Popen
+        subprocess.Popen = fake_popen
+        backend._read_guest_pid = lambda *a, **k: None
+        try:
+            backend.start()
+        finally:
+            subprocess.Popen = real
+        return seen
+
+    def test_both_streams_go_to_the_backends_own_file(self):
+        import subprocess
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        seen = self.start_capturing_popen(backend)
+        self.assertIsNot(seen['stdout'], subprocess.DEVNULL,
+                         'the server log went to DEVNULL again')
+        self.assertEqual(getattr(seen['stdout'], 'name', None), path)
+        self.assertIs(seen['stderr'], subprocess.STDOUT,
+                      'vLLM logs to stderr; it has to be merged into the file')
+        self.assertTrue(os.path.exists(path))
+
+    def test_the_log_is_the_one_the_session_named_and_the_spec_reports_it(self):
+        path = os.path.join(self.dir, 'higgs-v3-server.log')
+        backend = self.launching_backend(server_log=path)
+        self.assertEqual(backend.launch_log, path)
+        self.assertEqual(backend.proof_log(), path)
+        self.assertEqual(backend.spec.server_log, path)
+
+    def test_with_no_session_the_log_is_PER_INSTANCE_beside_the_pid_file(self):
+        """Two workers must never share one log, for the same reason they must
+        never share one pid file."""
+        one = self.launching_backend()
+        two = self.launching_backend()
+        self.assertNotEqual(one.launch_log, two.launch_log)
+        for backend in (one, two):
+            self.assertTrue(backend.launch_log.endswith('.log'))
+            self.assertIn('narrator-higgs3-', os.path.basename(backend.launch_log))
+
+    def test_an_ADOPTED_server_stops_claiming_our_log(self):
+        """`start()` adopts a server already on the port. That process's output
+        went wherever its own launcher sent it, so the file we would have
+        written is not the proof stream and the spec must stop naming it."""
+        os.environ.pop(v3_served.SERVER_LOG_ENV, None)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       serve_script='/campaign/serve_v3.sh')
+        self.assertEqual(backend.proof_log(), backend.launch_log)
+        backend.start()                      # the fake server is already healthy
+        self.addCleanup(backend._close_log)
+        self.assertIsNone(backend.proof_log())
+        self.assertIsNone(backend.spec.server_log)
+
+    def test_the_loaded_message_carries_the_server_log(self):
+        from narrator.serve.worker import _server_log_of
+        path = self.write_named_log()
+        engine = HiggsV3Engine(self.quiet_config())
+        self.addCleanup(engine.cleanup)
+        self.assertEqual(_server_log_of(engine), path)
+
+    def write_named_log(self):
+        path = os.path.join(self.dir, 'serve_current.log')
+        with open(path, 'w', encoding='utf-8') as handle:
+            handle.write('')
+        os.environ[v3_served.SERVER_LOG_ENV] = path
+        self.addCleanup(os.environ.pop, v3_served.SERVER_LOG_ENV, None)
+        return path
+
+    def test_an_in_process_engine_reports_no_server_log(self):
+        from narrator.engine.protocol import BackendSpec
+        from narrator.serve.worker import _server_log_of
+
+        class _InProcess:
+            def backend_spec(self):
+                return BackendSpec(kind='inprocess', name='mlx')
+
+        self.assertIsNone(_server_log_of(_InProcess()))
+        self.assertIsNone(_server_log_of(object()))
+
+    def test_an_in_process_spec_may_not_carry_a_server_log(self):
+        from narrator.engine.protocol import BackendSpec
+        with self.assertRaises(ValueError) as caught:
+            BackendSpec(kind='inprocess', name='mlx', server_log='/a/b.log')
+        self.assertIn('server_log', str(caught.exception))
+
+
 class FailedLoadReleasesTheServerTest(V3TestCase):
     """A ~14 GB vllm-omni left running is a GPU nobody can name."""
 
