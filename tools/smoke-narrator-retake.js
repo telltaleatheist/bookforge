@@ -50,7 +50,8 @@ const sessionDir = arg('session-dir');
 const indices = String(arg('indices', '3,4,5')).split(',').map((s) => Number(s.trim()));
 if (!sessionDir || !fs.existsSync(sessionDir)) {
   console.error('usage: node --require ./cli/electron-stub.js tools/smoke-narrator-retake.js --session-dir <dir> [--indices 3,4,5]');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const sha = (p) => crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex');
@@ -69,7 +70,7 @@ const procName = fs.readdirSync(sessionDir).find((n) => {
   const p = path.join(sessionDir, n);
   return fs.statSync(p).isDirectory() && fs.existsSync(path.join(p, 'session-state.json'));
 });
-if (!procName) { console.error(`no <hash>/session-state.json under ${sessionDir}`); process.exit(2); }
+if (!procName) { console.error(`no <hash>/session-state.json under ${sessionDir}`); process.exitCode = 2; return; }
 const procDir = path.join(sessionDir, procName);
 const liveSentences = path.join(procDir, 'chapters', 'sentences');
 const sessionId = path.basename(sessionDir).replace(/^ebook-/, '');
@@ -95,7 +96,8 @@ if (!settings) {
     console.error(`${procDir}/session-state.json names no fine_tuned voice — refusing to `
       + 'retake in whatever the engine defaults to. A take rendered by a different '
       + 'speaker than the book is worse than no take.');
-    process.exit(2);
+    process.exitCode = 2;
+    return;
   }
   settings = {
     ttsEngine: st.tts_engine,
@@ -108,7 +110,8 @@ if (!settings) {
 }
 if (!settings.fineTuned) {
   console.error('the resolved settings name no `fineTuned` voice — see the note above.');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 console.log('[retake] settings:', JSON.stringify(settings));
 

@@ -54,7 +54,8 @@ const workerIdx = argv.includes('--worker') ? argv[argv.indexOf('--worker') + 1]
 
 if (!logPath || !fs.existsSync(logPath)) {
   console.error('usage: node tools/smoke-narrator-watchdog-live.js <render.log> [--worker N]');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 // The matchers, read out of the bridge's source — same technique, and same reason,
@@ -97,7 +98,8 @@ console.log(`worker stdout lines: ${outLines.length}`);
 console.log(`worker stderr lines: ${errLines.length}`);
 if (!outLines.length) {
   console.error('No [WORKER n] stdout lines in that log — nothing to match against.');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 let bad = 0;

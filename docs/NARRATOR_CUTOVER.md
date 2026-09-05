@@ -432,14 +432,214 @@ Every door, and what has actually been RUN through it rather than reasoned about
 
 | door | Windows / WSL | macOS (MLX) |
 |---|---|---|
-| prep | owed (GPU) | **PROVEN** 2026-09-05 — spawn shape exactly as designed |
-| worker | owed (GPU) | **PROVEN** — 108/108 sentences, 40.3 min of 24 kHz PCM_16 in 486 s = **4.97x realtime**, one-line result JSON, session cached resume-ready |
-| retake | owed | owed |
+| prep | **PROVEN** 2026-09-05 — WSL `orpheus_tts`, spawn shape exactly as designed, `--session_dir` present | **PROVEN** 2026-09-05 — spawn shape exactly as designed |
+| worker | **PROVEN** — 133/133 chunks, 43.7 min of 24 kHz PCM_16 in 241.8 s = **10.83x realtime**, CUDA graphs captured, one-line result JSON, session cached resume-ready | **PROVEN** — 108/108 sentences, 40.3 min in 486 s = **4.97x realtime**, one-line result JSON, session cached resume-ready |
+| retake | **PROVEN** — 3 scattered indices in 76.9 s incl. model load; every take differs from the live cache and the live cache is byte-identical after | owed |
 | assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | **PROVEN** — exit 0, m4b 40.35 min, cover, tags, manifest registered, sidecars refreshed |
-| assembly (reassembly) | **PROVEN** (same door) | **PROVEN** (same door, via `cli/orpheus-audiobook-render.js --assemble-only`) |
-| resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser | n/a (native both sides) |
-| serve (Listen, Orpheus) | fake-engine smoke only; real model owed (GPU) | owed |
-| serve (Listen, Higgs) | argv/env snapshot only | refuses by name — no MLX backend yet |
+| assembly (reassembly) | **PROVEN** — live render, m4b 2619.500 s, narrator's own VTT **133 cues (1 empty), one per FLAC** | **PROVEN** (same door, via `cli/orpheus-audiobook-render.js --assemble-only`) |
+| resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser; and live: **132/133 skipped in 0.2 s** | n/a (native both sides) |
+| serve (Listen, Orpheus) | **PROVEN** — real mistborn in WSL, both stream modes, `ready -> loaded -> audio -> batch_* -> exit 0` | owed |
+| serve (Listen, Higgs) | argv/env snapshot only — **deferred** to the certified production checkpoint (Owen, 2026-09-05) | refuses by name — no MLX backend yet |
+
+### The Windows/WSL GPU window, 2026-09-05 (08:06-08:45 local, ~26 min of GPU)
+
+Everything below ran through BookForge's OWN spawn path — `cli/bookforge-tts.py
+--audiobook` (which chains `prepareNarrationInput` -> `renderRangeHeadless` ->
+`runFinalDenoise` -> `startReassembly`, the app's four calls), the bridge's own
+`regenerateSentenceIndices`, and the pool's own `buildSpawnPlan`. No python
+command line was typed by hand, with one exception noted below.
+
+Book: kershaw (`Working Towards The Fuhrer`), voice **mistborn**, into an isolated
+scratch library at `C:\tmp\narrator-smoke\wsl\lib` so the real library was never
+written to.
+
+**The prep spawn, verbatim** — compare with the Mac's, above:
+
+```
+wsl.exe -d Ubuntu bash -c 'export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
+  NARRATOR_ENGINE=orpheus ORPHEUS_MAX_CHARS=430 ORPHEUS_DISABLE_EAGER=1 \
+  VLLM_USE_V1=0 PYTHONPATH=/mnt/c/.../narrator-cutover/python \
+  && cd ~ && conda run --no-capture-output -n orpheus_tts \
+     python -u -m narrator.compat.app --headless --ebook <staged>.epub \
+     --session <uuid> --session_dir <guest tmp>/ebook-<uuid> --language en \
+     --tts_engine orpheus --device CPU --prep_only \
+     --orpheus_model_dir /home/telltale/orpheus-models/mistborn \
+     --fine_tuned mistborn'
+```
+
+Identical in shape to the Mac's, with the three arm-specific differences the
+design predicts and no others: the WSL wrapper, `ORPHEUS_DISABLE_EAGER=1` (the
+arm-aware CUDA-graph switch — this is what turns graphs ON), and `--device CPU`
+where the Mac says `MPS`. `--session_dir` is present, which is the one fix
+`compat/FLAGS.md` said the cut-over required. **`PYTHONPATH` is guest-shaped AND
+points at the WORKTREE's `python/`, not the main checkout's** — run from the
+worktree, the launcher resolves the repo it is actually in.
+
+| measurement | value |
+|---|---|
+| chunks | **133** (see below) |
+| generation | 133 converted, 0 skipped, **0 failed**, 241.8 s |
+| worker process | 297 s (generation + model load + teardown) |
+| audio | 2619.500 s = 43.66 min |
+| realtime factor | **10.83x** on generation, 8.82x on the worker process, 4.77x on the whole `--audiobook` chain (549 s, including the narration-text model pass, prep, denoise and assembly) |
+| CUDA graphs | **captured** — 35 shapes, `Graph capturing finished in 15 secs, took 0.16 GiB`, `enforce_eager=False` |
+| VRAM peak | 16.4 GB rendering (`ORPHEUS_GPU_MEM_UTIL=0.54`, batch 64); 17.6 GB on the retake (batch 96); model weights 6.18 GB |
+| retake | 3 indices, 76.9 s including a cold model load |
+| resume | 132 of 133 skipped in **0.2 s** |
+| serve, buffered | cold start 11.2 s, model load 30.5 s, batch of 2 rows = 17.02 s audio in 11.78 s = **1.45x realtime** |
+| serve, token stream | cold start 10.0 s, model load 28.1 s, **21 `batch_chunk` slices** of 0.341 s, first at **0.7 s** after the request against a 7.0 s row; batch **1.38x realtime** |
+
+#### 133 chunks, not 108, and the reason is the VOICE
+
+The Mac rendered this book in 108 chunks and this run in 133. Neither packer
+changed: `ORPHEUS_MAX_CHARS` is a per-voice registered cap, the Mac ran
+**deathstalker** (`maxChars` 520) and this ran **mistborn** (`maxChars` 430). The
+chunk count is a function of the voice, not of the platform or the port.
+
+And 133 is the number the **e2a golden** has for this book — which was also
+rendered with mistborn. So the ported packer reproduces e2a's chunking exactly,
+for the same book at the same cap, which no snapshot could have shown.
+
+#### The watchdog FIRES — not "the strings agree"
+
+`tools/smoke-narrator-watchdog-live.js` ran the bridge's five real regexes over
+the live worker's stdout, separated from its stderr by the bridge's own tags:
+
+| matcher | on stdout | on stderr |
+|---|---|---|
+| `PROGRESS_LINE_RE` | **133** | 0 |
+| `MODEL_LOAD_START_RE` | **2** (`Loading Orpheus TTS with voice 'mistborn'...`, `Loading Orpheus model with vLLM: …`) | 0 |
+| `MODEL_LOAD_DONE_RE` | **1** (`Orpheus TTS Loaded!`) | 0 |
+| `GENERATION_ACTIVITY_RE` | 0 | 0 |
+| `REPAIR_START_RE` | 0 | 0 |
+
+The two zeroes are the correct answer, not a gap: the keeper already asserts that
+a healthy vLLM batch emits nothing `GENERATION_ACTIVITY_RE` matches, and this book
+needed no repairs. The three that matter all fired, **on stdout**, which is the
+only stream the bridge parses. The live progress line's capture groups were read
+back as `(index, total, percent)` and checked for internal consistency.
+
+That `MODEL_LOAD_DONE_RE` hit is the one that had to be seen rather than reasoned
+about: `engine/log.py` now routes every engine line to a stream the HOST chooses,
+and `compat/worker.py` opting into stdout is what puts `Orpheus TTS Loaded!` where
+the bridge can see it. It does.
+
+#### `normalizeWslSessionToWindows` ran, and assembly was native
+
+The copy ran inside the guest (`wsl.exe … cp -r /home/telltale/… /mnt/c/…`),
+`session-state.json`'s paths were rewritten to the Windows tree, the GPU lock was
+released, and assembly then ran in the native tools env:
+
+```
+conda run --no-capture-output -p <e2a>\python_env python -u -m narrator.compat.app \
+  --headless --ebook <staged>.epub --output_dir <staging> --session <uuid> \
+  --session_dir <windows process dir> --device CPU --language en \
+  --tts_engine orpheus --assemble_only --no_split \
+  --sentences_dir <windows process dir>\chapters\sentences-denoised
+```
+
+Note `--tts_engine orpheus`: the hard-coded `xtts` literal is gone, and the value
+comes from `narratorEngineId()` as Phase 3 designed.
+
+#### Cue count: narrator writes 133, the pipeline ships 132 — on Windows too
+
+Assembled to a scratch output dir, **narrator's own VTT has 133 cues, exactly one
+of which is empty** — one cue per sentence FLAC, and the same shape as the golden
+`reference.vtt`. The shipped `.m4b.vtt` has **132**.
+
+This is the `mov_text` round-trip loss already documented above from the Mac,
+reproduced independently on Windows on a different render. It is not narrator's
+assembler and it is not the cut-over; it remains Owen's call.
+
+#### The empty chunk is also the one that never resumes
+
+Chunk 132 is a `[break]`-only silence chunk: 99 bytes, 0.100 s. On the resume run
+the log says `resume: 133 cached sentence(s) found` and then
+`resume: seeded 132/133` — BookForge's own seeding step drops it, so it is
+re-rendered on every resume. It costs 0.2 s and nothing else, and it is the SAME
+chunk the sidecar round-trip drops. Worth knowing that the two "off by one"s in
+this book are one chunk, not two problems.
+
+#### The serve door, with a real model
+
+`tools/smoke-serve-spawn.js --real` runs the plan `buildSpawnPlan()` actually
+returns — the WSL arm, no `--fake-engine` — and sends the load message
+`resolveLoadPlan()` builds. Both are the pool's; the default of that tool stays
+fake, because a GPU-free smoke is what it was written to be.
+
+```
+wsl.exe -d Ubuntu bash -c 'export PYTHONUNBUFFERED=1 PYTHONIOENCODING=utf-8 \
+  NARRATOR_ENGINE=orpheus VLLM_USE_V1=0 ORPHEUS_STREAM_BATCH=16 \
+  ORPHEUS_STREAM_WARM_MAX=16 ORPHEUS_STREAM_RAMP=8 ORPHEUS_DISABLE_EAGER=1 \
+  PYTHONPATH=/mnt/c/.../narrator-cutover/python \
+  && cd ~ && conda run --no-capture-output -n orpheus_tts python -u -m narrator.serve'
+```
+
+`loaded` carried `backend: "vllm"`, `engine: "orpheus"`, `sampleRate: 24000`,
+`pads: true`, `edgeFadeMs: {in: 0, out: 0}`, `voice: "mistborn"` — so
+`activeSampleRate()` is reading a real engine's answer, not a default. CUDA graphs
+captured here too (13 s, 0.16 GiB). Exit 0 both runs.
+
+**Rate against speech.** A single short row runs at 0.61-0.65x realtime — below
+speech — while a two-row batch runs at 1.38-1.45x. That is the shape the fast-start
+design predicts: one row alone is dominated by per-request overhead, and the reader
+only gets ahead by batching. What closes the gap for a listener is the token
+stream: the first `batch_chunk` arrives **0.7 s** after the request on a row that
+takes 7.0 s to finish, so playback starts at a tenth of the row's duration and the
+remaining 20 slices arrive faster than they play.
+
+### Deferred, not owed
+
+**Higgs v3 served on Listen** was cut from this window by Owen: the training
+session needed the card back, and the run will be made against the CERTIFIED
+production checkpoint rather than `/home/telltale/higgs_v3_merged/ds_ad4lm`. The
+argv/env snapshot remains its only proof. It is still the FIRST live Higgs-on-Listen
+anywhere when it happens.
+
+### Three more bugs the live proofs caught
+
+The four in "Three bugs the live proofs caught" and the Mac's assembly-door
+refusal were found the same way. These are this window's, and none of them is
+visible without a running model.
+
+1. **`smoke-serve-spawn.js` could never have executed the WSL arm.** Its inline
+   Electron stub answered the repo path for EVERY `app.getPath`, including
+   `userData` — where `tool-paths.json` lives. So `shouldUseWsl2ForOrpheus()` read
+   false, `buildSpawnPlan()` took the NATIVE arm, and on Windows that refuses for
+   want of an Orpheus env. Harmless while `--fake-engine` was forced (nothing read
+   userData) and fatal the moment `--real` existed, which is the trap: the tool
+   agreed with itself. It now borrows `USER_DATA` from `cli/electron-stub.js` so
+   there is one answer.
+
+2. **A hand-rolled load message is not the pool's load message, and narrator said
+   so.** `{action: 'load', voice: 'mistborn'}` was refused BY NAME — *"Refusing to
+   substitute 'leah'"* — because a custom voice needs `modelDir` (guest-shaped on
+   the WSL arm), the voice TOKEN rather than the catalog id, and its per-voice
+   caps. That refusal is the correct behaviour working: the alternative is a whole
+   Listen session in the wrong speaker with no error. `resolveLoadPlan` is now
+   exported and the tool calls it, so the smoke cannot drift from what Listen
+   sends.
+
+3. **`pushVoiceArgs` does not refuse an ABSENT voice.** Its "voice is not
+   installed" guard reads `if (requested && !ORPHEUS_STOCK_VOICES.includes(requested))`,
+   so an UNDEFINED `settings.fineTuned` skips the refusal, pushes no `--fine_tuned`
+   at all, and the render proceeds in whatever the engine defaults to. The retake
+   smoke hit this on its first run — it had guessed the settings field names — and
+   the spawn line that came out carried no voice arguments and no complaint.
+   Inherited rather than introduced by the cut-over, and left alone here because
+   the blast radius (XTTS's genuinely voice-less case) belongs to Phase 5. Recorded
+   because a silent wrong-voice render is the failure this file exists to prevent.
+
+### Still owed after this window
+
+- **Listen playback in the app**, on either machine. The pool's spawn, load,
+  buffered batch and token stream are proven; a browser extension actually
+  playing them is not.
+- **The Mac has run nothing of Phase 3** — retake and the serve door there.
+- **Higgs on Listen**, deferred above.
+- The `--real` serve runs drove the protocol directly rather than through
+  `orpheus-worker-pool`'s own `startSession`/`loadVoice`/`generateSentence`. The
+  spawn and the load message are the pool's; the message pump is the tool's.
 
 **ALL THREE narrator doors are now proven live on the Mac**, through BookForge's
 own bridge rather than by hand: prep and worker via `cli/bookforge-tts.py`, and

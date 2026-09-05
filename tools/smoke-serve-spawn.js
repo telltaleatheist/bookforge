@@ -68,10 +68,23 @@ Module._resolveFilename = function (r, ...a) {
   if (r === 'electron') return 'estub';
   return orig.call(this, r, ...a);
 };
+// `userData` is the REAL one, not the repo. `tool-paths.json` lives there and it is
+// what `shouldUseWsl2ForOrpheus()` reads; a stub that answers the repo for every
+// getPath makes that config invisible, the toggle read false, and `buildSpawnPlan`
+// take the NATIVE arm — which on Windows has no Orpheus env and refuses. That is
+// harmless while `--fake-engine` is forced (nothing reads userData), and it is
+// exactly the arm `--real` exists to execute, so the two cannot share a lie.
+// `cli/electron-stub.js` already computes it per platform; borrowed rather than
+// re-derived, so there is one answer.
+const { USER_DATA } = require(path.join(REPO, 'cli', 'electron-stub.js'));
 require.cache['estub'] = {
   id: 'estub', filename: 'estub', loaded: true,
   exports: {
-    app: { getAppPath: () => REPO, getPath: () => REPO, isPackaged: false },
+    app: {
+      getAppPath: () => REPO,
+      getPath: (name) => (name === 'userData' ? USER_DATA : REPO),
+      isPackaged: false,
+    },
     BrowserWindow: class {},
   },
 };
@@ -86,7 +99,8 @@ const VOICE = argOf('voice', REAL ? null : 'leah');
 const TIMEOUT_MS = Number(argOf('timeout', REAL ? 900 : 180)) * 1000;
 if (REAL && !VOICE) {
   console.error('--real needs --voice <id>: a real load must name the weights it is loading.');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const paths = require(path.join(DIST, 'e2a-paths.js'));
@@ -141,6 +155,16 @@ rl.on('line', (line) => {
   if (!line.startsWith('{')) { if (line) console.log('non-json: ' + line.slice(0, 120)); return; }
   const r = JSON.parse(line);
   seen.push(r.type);
+  // A refusal before `loaded` means nothing after it can happen. Quit rather than
+  // sitting on the timeout: a smoke that hangs a quarter of an hour on an answer
+  // it already has is a smoke nobody runs twice — and under --real that quarter
+  // hour is a GPU somebody else is waiting for.
+  if (r.type === 'error' && step < 4) {
+    console.log('REFUSED : ' + (r.message || JSON.stringify(r)));
+    step = 4;
+    send({ action: 'quit' });
+    return;
+  }
   const brief = { type: r.type };
   for (const k of ['device', 'backend', 'engine', 'sampleRate', 'pads', 'edgeFadeMs', 'voice', 'message', 'duration', 'i', 'count', 'seq']) {
     if (r[k] !== undefined) brief[k] = r[k];
@@ -159,7 +183,23 @@ rl.on('line', (line) => {
     marks.ready = Date.now();
     console.log(`TIMING  : cold start (spawn -> ready) ${((marks.ready - T0) / 1000).toFixed(1)} s`);
     step = 1;
-    send({ action: 'load', voice: VOICE, warm: false });
+    // THE LOAD MESSAGE IS THE POOL'S, not a hand-rolled one. A bare
+    // `{voice: 'mistborn'}` is refused by name — narrator's allowlist is the eight
+    // stock voices and it will not substitute `leah` for a fine-tune it cannot
+    // resolve, which is correct and is exactly what this tool hit on its first real
+    // run. A custom voice needs `modelDir` (or `adapterDir` + `baseDir`), the voice
+    // TOKEN rather than the catalog id, its per-voice caps, and — on the WSL arm —
+    // those directories in GUEST form. `resolveLoadPlan` does all four, and
+    // borrowing it means the smoke cannot drift from what Listen sends.
+    const load = pool.resolveLoadPlan(VOICE);
+    console.log('LOAD    : ' + JSON.stringify(load));
+    send({
+      action: 'load', warm: false, voice: load.token,
+      ...(load.modelDir ? { modelDir: load.modelDir } : {}),
+      ...(load.adapterDir ? { adapterDir: load.adapterDir } : {}),
+      ...(load.baseDir ? { baseDir: load.baseDir } : {}),
+      caps: load.caps,
+    });
   } else if (r.type === 'loaded' && step === 1) {
     marks.loaded = Date.now();
     console.log(`TIMING  : model load (load -> loaded) ${((marks.loaded - marks.ready) / 1000).toFixed(1)} s`);
@@ -212,5 +252,5 @@ child.on('close', (code) => {
 setTimeout(() => {
   console.log('TIMEOUT — asking the worker to quit');
   try { send({ action: 'quit' }); } catch { /* stdin already gone */ }
-  setTimeout(() => { console.log('TIMEOUT — worker did not exit; terminating'); child.kill('SIGTERM'); process.exit(1); }, 30000);
+  setTimeout(() => { console.log('TIMEOUT — worker did not exit; terminating'); child.kill('SIGTERM'); process.exit(1); /* abort-path */ }, 30000);
 }, TIMEOUT_MS);

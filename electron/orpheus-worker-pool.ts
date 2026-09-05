@@ -1086,7 +1086,7 @@ interface LoadPlan {
  * decides what to send — two implementations of the key would eventually disagree,
  * and the disagreement would be silent.
  */
-function resolveLoadPlan(voice: string): LoadPlan {
+export function resolveLoadPlan(voice: string): LoadPlan {
   // ── HIGGS: the load carries the VOICE NAME AND NOTHING ELSE ──────────────
   //
   // narrator refuses the rest BY NAME, field by field
