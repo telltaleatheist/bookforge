@@ -28,6 +28,9 @@ import shutil
 import sys
 
 REL = "vllm/v1/engine/input_processor.py"
+#: What the doctor greps for. Kept identical to HIGGS_PATCHES in
+#: electron/tool-paths.ts; a keeper asserts this script writes it.
+MARKER = "min_input_id != -100"
 
 
 def target_path() -> str:
@@ -71,17 +74,32 @@ NEW = """            # PATCH (bookforge 2026-09-04): vllm-omni's higgs_audio_v3 
 
 def main():
     P = target_path()
-    if not os.path.exists(P + ".orig"):
-        shutil.copy2(P, P + ".orig")
-    src = open(P + ".orig").read()
-    if OLD not in src:
-        # Not "already patched" — the .orig is by construction the pristine file,
-        # so a missing anchor means vLLM changed this code and the patch needs
-        # re-deriving against the new version. Failing loud is the point: a
-        # silently-skipped patch means every clone request returns HTTP 400.
+    live = open(P).read()
+
+    # ALREADY PATCHED? Ask the LIVE file, by the same marker the doctor greps
+    # for. Idempotent, and it is what makes re-running the installer safe.
+    if MARKER in live:
+        print("ALREADY_PATCHED " + P)
+        return
+
+    # PATCH FROM THE LIVE FILE, never from `.orig`.
+    #
+    # This used to read `.orig`, which was written once and never refreshed —
+    # so after a pip UPGRADE in the env, `.orig` held the PREVIOUS version's
+    # source, and re-running the installer wrote that old content back over the
+    # new site-packages file. The doctor's marker grep then certified stale code
+    # as patched, all-green, silently. `.orig` is now a snapshot of whatever was
+    # live just before this patch, kept for reference and never read back.
+    if OLD not in live:
+        # Not "already patched" — the marker check above ruled that out. A missing
+        # anchor means upstream changed this code and the patch must be re-derived
+        # against the new version. Failing loud is the point: a silently-skipped
+        # patch is an engine that looks installed and does not work.
         print("ANCHOR_NOT_FOUND", file=sys.stderr)
         sys.exit(2)
-    open(P, "w").write(src.replace(OLD, NEW))
+
+    shutil.copy2(P, P + ".orig")
+    open(P, "w").write(live.replace(OLD, NEW))
     print("PATCHED " + P)
 
 

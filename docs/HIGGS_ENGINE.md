@@ -594,6 +594,15 @@ New keepers:
   backed by an assertion that `prepEngineFor` is the identity for every non-Higgs
   engine — not by a regenerated baseline.
 
-Known unrelated flake: `test-bookshelf-stream-teardown` passes in the runner and
-fails standalone on a timing-dependent idle-release assertion. This branch touches
-**zero** bookshelf files.
+Known unrelated flake: `test-bookshelf-stream-teardown`, on *a pinned session
+releases its descriptor when idle, and re-pins on return* ("the snapshot outlived
+the descriptor that held it").
+
+**It is INTERMITTENT, and both earlier descriptions of it were wrong.** An
+earlier version of this document said it passes in the runner and fails
+standalone; the review measured it failing in both of its runner passes. Measured
+again on 2026-09-05 over three runner passes: **1 failure, 2 green**. So neither
+"passes in the runner" nor "fails in the runner" is true — it is timing
+dependent, which is what makes it a flake rather than a state.
+
+Not this branch's either way: the diff touches **zero** bookshelf files.

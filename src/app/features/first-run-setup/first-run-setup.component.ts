@@ -8,6 +8,7 @@ import { LanguagesPanelComponent } from '../settings/components/languages-panel.
 import { AddOnsPanelComponent } from '../settings/components/add-ons-panel.component';
 import { RvcEnhancementPanelComponent } from '../settings/components/rvc-enhancement-panel.component';
 import { OrpheusVoicesPanelComponent } from '../settings/components/orpheus-voices-panel.component';
+import { HiggsVoicesPanelComponent } from '../settings/components/higgs-voices-panel.component';
 import { MultiWorkerToggleComponent } from '../../components/multi-worker-toggle/multi-worker-toggle.component';
 import { AiService } from '../../core/services/ai.service';
 import { RuntimeService } from '../../core/services/runtime.service';
@@ -18,7 +19,7 @@ import { ElectronService } from '../../core/services/electron.service';
 import { StudioService } from '../studio/services/studio.service';
 
 interface SetupStep {
-  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'rvc' | 'tools' | 'download';
+  id: 'library' | 'ai' | 'xtts' | 'orpheus' | 'higgs' | 'rvc' | 'tools' | 'download';
   title: string;
   subtitle: string;
 }
@@ -40,6 +41,7 @@ interface SetupStep {
     AddOnsPanelComponent,
     RvcEnhancementPanelComponent,
     OrpheusVoicesPanelComponent,
+    HiggsVoicesPanelComponent,
     MultiWorkerToggleComponent
   ],
   template: `
@@ -170,6 +172,12 @@ interface SetupStep {
             }
             @case ('orpheus') {
               <app-orpheus-voices-panel />
+            }
+            @case ('higgs') {
+              <!-- The doctor and the voice catalog, the same panel Settings shows.
+                   Its own first section is the environment check, which is the
+                   only thing a first run can usefully act on. -->
+              <app-higgs-voices-panel />
             }
             @case ('rvc') {
               <app-rvc-enhancement-panel />
@@ -691,6 +699,16 @@ export class FirstRunSetupComponent {
       title: 'Orpheus — the narration engine',
       subtitle:
         'The engine BookForge narrates with. Install it and its voice models here; add more voice sources anytime.'
+    },
+    {
+      // The second narration engine, beside Orpheus rather than buried in
+      // Settings. There is still no engine PICKER in this wizard — both steps
+      // are set-up pages — so a machine can arrive with both, one, or neither
+      // and the narration modal offers whichever the doctor says can run.
+      id: 'higgs',
+      title: 'Higgs (optional)',
+      subtitle:
+        'A second narration engine, served from WSL. Research/non-commercial licence — personal use. Check the environment here and install it if you want it.'
     },
     {
       // The step id stays 'xtts' because it is also the Settings SECTION key that

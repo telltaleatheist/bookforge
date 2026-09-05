@@ -65,7 +65,7 @@ import {
   getWslCondaPath,
   getWslHiggsCondaEnv,
   shouldUseWsl2ForHiggs,
-  checkWslHiggsSetup,
+  checkWslHiggsSetupAsync,
 } from './tool-paths';
 import {
   getPythonInvocation,
@@ -170,43 +170,52 @@ export function narratorPythonRoot(): string {
 }
 
 /**
- * Refuse a Higgs job that cannot possibly succeed, BEFORE it is queued.
+ * Is the Higgs ENVIRONMENT usable? Asked ONCE PER JOB, asynchronously.
  *
- * Called from the narration modal's queue path and again at spawn time. Twice on
- * purpose: the first call is what turns a doomed run into a sentence someone can
- * read while they still have the dialog open, and the second is what stops a job
- * that was queued when the environment was fine and started after a pip upgrade
- * reverted a patch.
+ * Returns the refusal text, or null.
  *
- * ORDER MATTERS. The environment is checked before the voice, because "there is
- * no Higgs environment" explains "this voice cannot render" and not the reverse,
- * and being told about the voice first sends people to the wrong page.
+ * ── Why this is separate from the voice check, and why it is async ──────────
+ *
+ * It used to live inside `higgsPreflight`, which is called from four places: the
+ * prep spawn, EVERY worker start, assembly and retake. That made a ~1 s
+ * `execSync` WSL round trip a PER-RANGE health check — on the main thread, which
+ * the bookshelf server shares — for a resource that cannot change between the
+ * workers of one job.
+ *
+ * So the environment is checked once, in `prepareSession`, which is already an
+ * async context, through the spawn-based doctor. The per-worker calls keep the
+ * VOICE check, which is pure and touches no filesystem. A worker starting after
+ * the environment broke mid-job is caught by the spawn itself failing — which is
+ * the honest place for it, since no amount of pre-checking closes that window.
+ */
+export async function higgsEnvironmentRefusal(): Promise<string | null> {
+  if (process.platform === 'win32' && !shouldUseWsl2ForHiggs()) {
+    return 'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" in '
+      + 'Settings → Higgs and install the environment there.';
+  }
+  if (process.platform !== 'win32') return null;
+
+  const doctor = await checkWslHiggsSetupAsync();
+  if (doctor.valid) return null;
+  const failed = doctor.checks.filter((c) => !c.ok);
+  return `The Higgs environment is not ready (${failed.length} of ${doctor.checks.length} checks failed):\n`
+    + failed.map((c) => `  • ${c.label}: ${c.detail ?? 'failed'}`).join('\n')
+    + '\nRun Install/Repair on Settings → Higgs.';
+}
+
+/**
+ * The voice this job will render in, or a throw naming what is wrong with it.
+ *
+ * PURE: catalog lookup and validation only, no filesystem and no WSL, so it is
+ * free to call at every spawn site. The ENVIRONMENT half moved to
+ * `higgsEnvironmentRefusal` — see its header.
+ *
+ * Refuses an unknown voice, a voice whose artifact has not landed, a reference
+ * clip with no transcript or no declared duration, more than one clip, a
+ * reference over the 30 s cap, and a fine-tune with no measured `maxChars`.
  */
 export function higgsPreflight(voiceId: string | undefined | null): HiggsModel {
-  if (process.platform === 'win32' && !shouldUseWsl2ForHiggs()) {
-    throw new Error(
-      'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" in ' +
-        'Settings → Higgs and install the environment there.',
-    );
-  }
-
-  if (process.platform === 'win32') {
-    const doctor = checkWslHiggsSetup();
-    if (!doctor.valid) {
-      const failed = doctor.checks.filter((c) => !c.ok);
-      throw new Error(
-        `The Higgs environment is not ready (${failed.length} of ${doctor.checks.length} checks failed):\n` +
-          failed.map((c) => `  • ${c.label}: ${c.detail ?? 'failed'}`).join('\n') +
-          '\nRun Install/Repair on Settings → Higgs.',
-      );
-    }
-  }
-
-  // Throws by name for an unknown voice, a voice whose artifact has not landed,
-  // and a reference clip with no transcript.
-  const model = resolveHiggsModel(voiceId);
-
-  return model;
+  return resolveHiggsModel(voiceId);
 }
 
 /**

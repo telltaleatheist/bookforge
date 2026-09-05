@@ -202,6 +202,7 @@ import {
   HIGGS_NARRATOR_ENGINE,
   HIGGS_VOICE_FLAG,
   buildHiggsSpawn,
+  higgsEnvironmentRefusal,
   higgsPreflight,
   higgsRunsInWsl,
 } from './higgs-spawn';
@@ -3185,6 +3186,16 @@ export async function prepareSession(
 ): Promise<PrepInfo> {
   const appPath = path.join(getDefaultE2aPath(), 'app.py');
   const sessionId = crypto.randomUUID();
+
+  // The Higgs ENVIRONMENT, checked ONCE for this job — not once per worker.
+  // The doctor is a WSL round trip; running it per range put a ~1 s blocking
+  // call on the main thread (the one the bookshelf server shares) for a resource
+  // that cannot change between the workers of one job. Here it is awaited, in an
+  // async context, before anything spawns.
+  if (isHiggsJob(settings)) {
+    const envRefusal = await higgsEnvironmentRefusal();
+    if (envRefusal) throw new Error(envRefusal);
+  }
 
   // When using WSL for Orpheus, the session is created in WSL's filesystem
   // We need to use the WSL path for session directory and convert to Windows UNC for reading

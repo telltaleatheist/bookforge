@@ -13,7 +13,7 @@
 import * as os from 'os';
 import * as path from 'path';
 import * as fs from 'fs';
-import { execSync } from 'child_process';
+import { execSync, spawn } from 'child_process';
 import { app } from 'electron';
 import { getActiveBundledEnvPath, getActiveBundledE2aPath, relocatableBinaryPath } from './e2a-env-bootstrap';
 import { getManagedBinaryPath } from './update/managed-bins';
@@ -907,7 +907,13 @@ export interface WslHiggsSetupResult {
  * catalog here would make `tool-paths.ts` — which every path resolution in the
  * app goes through — depend on a JSON file it has no other reason to read, and
  * would make a malformed catalog break WSL detection. The two are kept in step by
- * `tools/test-higgs-doctor.js`, which asserts the ids and markers match.
+ * `tools/test-higgs-engine.js`, which asserts the ids and markers match AND
+ * that the checked-in patch scripts actually write the markers this greps for.
+ *
+ * The grep names the EXACT target file, so a `.orig` sitting beside it is never
+ * matched — which matters, because a stale `.orig` was the one way this doctor
+ * could have reported green over unpatched code (the patch scripts now read the
+ * LIVE file for the same reason).
  *
  * `marker` is a string the patch INTRODUCES that the pristine file cannot
  * contain, so grepping for it answers "is this patch applied" without diffing.
@@ -944,67 +950,29 @@ export const HIGGS_PATCHES: ReadonlyArray<{
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
 
 /**
- * Is the Higgs v3 serving stack actually usable in WSL?
- *
- * ONE `wsl.exe` ROUND TRIP, not five. Each spawn of `wsl.exe` costs the better
- * part of a second on a cold VM, and a doctor that takes five seconds is a doctor
- * nobody runs. The probe emits one `key=value` line per check and this parses
- * them, so adding a check is a line in the script and a row in the result rather
- * than another spawn.
- *
- * EVERY CHECK IS REPORTED, PASS OR FAIL — the probe never short-circuits. "The
- * env exists, vllm-omni imports, the tail-trim patch is missing" is a different
- * problem from "there is no env", and a doctor that stopped at the first failure
- * would make them look the same.
+ * The Higgs doctor's probe script and its result parsing, shared by the sync and
+ * async entry points so the two can never disagree about what "green" means.
  */
-export function checkWslHiggsSetup(config: {
-  distro?: string;
-  condaPath?: string;
-  higgsCondaEnv?: string;
-} = {}): WslHiggsSetupResult {
-  if (os.platform() !== 'win32') {
-    return {
-      valid: false,
-      checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
-    };
-  }
-
-  const distro = config.distro || getWslDistro();
-  const condaPath = config.condaPath || getWslCondaPath();
-  const envName = config.higgsCondaEnv || getWslHiggsCondaEnv();
-  // `<base>/bin/conda` → `<base>/envs/<name>`. The same derivation
-  // checkWslOrpheusSetup does from the same setting, so the two doctors cannot
-  // disagree about where conda keeps its environments.
-  const condaBase = condaPath.replace(/\/bin\/conda$/, '');
-  const envPrefix = `${condaBase}/envs/${envName}`;
-
-  const distroArg = distro ? `-d ${distro}` : '';
+function higgsProbeScript(envPrefix: string): string {
   const patchProbe = HIGGS_PATCHES.map(
     (p) =>
       `f=$(ls ${envPrefix}/lib/python*/site-packages/${p.relPath} 2>/dev/null | head -1); ` +
       `if [ -n "$f" ] && grep -q '${p.marker}' "$f"; then echo 'patch:${p.id}=ok'; ` +
       `elif [ -n "$f" ]; then echo 'patch:${p.id}=unpatched'; else echo 'patch:${p.id}=absent'; fi`,
   ).join('; ');
-
-  const script = [
+  return [
     `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
     `${envPrefix}/bin/python -c 'import vllm_omni' >/dev/null 2>&1 && echo 'omni=ok' || echo 'omni=absent'`,
     patchProbe,
     `test -x ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} && echo 'launcher=ok' || echo 'launcher=absent'`,
   ].join('; ');
+}
 
-  let out = '';
-  let probeError: string | null = null;
-  try {
-    out = execSync(`wsl.exe ${distroArg} bash -c "${script.replace(/"/g, '\\"')}"`, {
-      encoding: 'utf8',
-      timeout: 30000,
-      windowsHide: true,
-    });
-  } catch (err) {
-    probeError = err instanceof Error ? err.message : String(err);
-  }
-
+/** Turn the probe's `key=value` lines into the reported check list. */
+function higgsChecksFrom(
+  out: string, probeError: string | null, distro: string | undefined,
+  envName: string, envPrefix: string,
+): HiggsCheck[] {
   const seen = new Map<string, string>();
   for (const line of out.split('\n')) {
     const m = line.replace(/\0/g, '').trim().match(/^([^=]+)=(.+)$/);
@@ -1012,7 +980,6 @@ export function checkWslHiggsSetup(config: {
   }
 
   const checks: HiggsCheck[] = [];
-
   checks.push(
     probeError
       ? {
@@ -1067,7 +1034,123 @@ export function checkWslHiggsSetup(config: {
     ok: launcherOk,
     detail: launcherOk ? undefined : `Not executable at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}.`,
   });
+  return checks;
+}
 
+/** Where the doctor looks, derived once so both entry points agree. */
+function higgsDoctorTarget(config: { distro?: string; condaPath?: string; higgsCondaEnv?: string }) {
+  const distro = config.distro || getWslDistro();
+  const condaPath = config.condaPath || getWslCondaPath();
+  const envName = config.higgsCondaEnv || getWslHiggsCondaEnv();
+  // `<base>/bin/conda` → `<base>/envs/<name>`. The same derivation
+  // checkWslOrpheusSetup does from the same setting, so the two doctors cannot
+  // disagree about where conda keeps its environments.
+  const condaBase = condaPath.replace(/\/bin\/conda$/, '');
+  return { distro, envName, envPrefix: `${condaBase}/envs/${envName}` };
+}
+
+/**
+ * The doctor, ASYNCHRONOUSLY — the entry point everything on the main thread
+ * should use.
+ *
+ * `checkWslHiggsSetup` below is `execSync`, roughly a second against a cold WSL
+ * VM, and the main thread is the one the bookshelf server shares. The review
+ * caught it being run at prep, at EVERY worker start, at assembly and at retake:
+ * a per-range health check on a resource that cannot change between the workers
+ * of one job. The environment check now happens ONCE PER JOB, in `prepareSession`,
+ * which is already an async context — and it happens through this.
+ */
+export function checkWslHiggsSetupAsync(config: {
+  distro?: string;
+  condaPath?: string;
+  higgsCondaEnv?: string;
+} = {}): Promise<WslHiggsSetupResult> {
+  if (os.platform() !== 'win32') {
+    return Promise.resolve({
+      valid: false,
+      checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
+    });
+  }
+  const { distro, envName, envPrefix } = higgsDoctorTarget(config);
+  const args = distro
+    ? ['-d', distro, 'bash', '-c', higgsProbeScript(envPrefix)]
+    : ['bash', '-c', higgsProbeScript(envPrefix)];
+
+  return new Promise((resolve) => {
+    let out = '';
+    let done = false;
+    const finish = (probeError: string | null) => {
+      if (done) return;
+      done = true;
+      const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
+      resolve({ valid: checks.every((c) => c.ok), checks, envPrefix });
+    };
+    let proc: ReturnType<typeof spawn>;
+    try {
+      proc = spawn('wsl.exe', args, { windowsHide: true });
+    } catch (err) {
+      finish(err instanceof Error ? err.message : String(err));
+      return;
+    }
+    const timer = setTimeout(() => {
+      try { proc.kill(); } catch { /* already gone */ }
+      finish('the WSL probe did not answer within 30 s');
+    }, 30000);
+    proc.stdout?.on('data', (c: Buffer) => { out += c.toString('utf8'); });
+    proc.on('error', (err) => { clearTimeout(timer); finish(err.message); });
+    proc.on('close', () => { clearTimeout(timer); finish(null); });
+  });
+}
+
+/**
+ * Is the Higgs v3 serving stack actually usable in WSL? (SYNCHRONOUS.)
+ *
+ * PREFER `checkWslHiggsSetupAsync`. This one blocks the calling thread for about
+ * a second against a cold VM, and on the main thread that is the thread the
+ * bookshelf server shares. It is kept because the Settings panel's own IPC and
+ * the installer's `--check` both want a straight-line answer, and because
+ * deleting it would leave two probe implementations to drift — the two share
+ * `higgsProbeScript` and `higgsChecksFrom` precisely so they cannot.
+ *
+ * ONE `wsl.exe` ROUND TRIP, not five. Each spawn of `wsl.exe` costs the better
+ * part of a second on a cold VM, and a doctor that takes five seconds is a doctor
+ * nobody runs. The probe emits one `key=value` line per check and this parses
+ * them, so adding a check is a line in the script and a row in the result rather
+ * than another spawn.
+ *
+ * EVERY CHECK IS REPORTED, PASS OR FAIL — the probe never short-circuits. "The
+ * env exists, vllm-omni imports, the tail-trim patch is missing" is a different
+ * problem from "there is no env", and a doctor that stopped at the first failure
+ * would make them look the same.
+ */
+export function checkWslHiggsSetup(config: {
+  distro?: string;
+  condaPath?: string;
+  higgsCondaEnv?: string;
+} = {}): WslHiggsSetupResult {
+  if (os.platform() !== 'win32') {
+    return {
+      valid: false,
+      checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
+    };
+  }
+  const { distro, envName, envPrefix } = higgsDoctorTarget(config);
+  const distroArg = distro ? `-d ${distro}` : '';
+  const script = higgsProbeScript(envPrefix);
+
+  let out = '';
+  let probeError: string | null = null;
+  try {
+    out = execSync(`wsl.exe ${distroArg} bash -c "${script.replace(/"/g, '\\"')}"`, {
+      encoding: 'utf8',
+      timeout: 30000,
+      windowsHide: true,
+    });
+  } catch (err) {
+    probeError = err instanceof Error ? err.message : String(err);
+  }
+
+  const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
   return { valid: checks.every((c) => c.ok), checks, envPrefix };
 }
 

@@ -7870,8 +7870,10 @@ function setupIpcHandlers(): void {
   // pass or fail (see checkWslHiggsSetup for why it never short-circuits).
   ipcMain.handle('higgs:doctor', async () => {
     try {
-      const { checkWslHiggsSetup } = await import('./tool-paths.js');
-      return { success: true, data: checkWslHiggsSetup() };
+      // ASYNC: this handler runs on the main thread and the sync probe blocks it
+      // for about a second against a cold VM.
+      const { checkWslHiggsSetupAsync } = await import('./tool-paths.js');
+      return { success: true, data: await checkWslHiggsSetupAsync() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

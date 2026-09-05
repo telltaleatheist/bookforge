@@ -38,6 +38,9 @@ import shutil
 import sys
 
 REL = "vllm_omni/model_executor/stage_input_processors/higgs_audio_v3.py"
+#: What the doctor greps for. Kept identical to HIGGS_PATCHES in
+#: electron/tool-paths.ts; a keeper asserts this script writes it.
+MARKER = "_trim_trailing_sentinel_frames"
 
 
 def target_path() -> str:
@@ -100,9 +103,23 @@ ASYNC_NEW = """    if finished and window_row_end_exclusive == n_rows and de_del
 
 def main():
     P = target_path()
-    if not os.path.exists(P + ".orig"):
-        shutil.copy2(P, P + ".orig")
-    src = open(P + ".orig").read()
+    src = open(P).read()
+
+    # ALREADY PATCHED? Ask the LIVE file, by the same marker the doctor greps
+    # for. Idempotent, and it is what makes re-running the installer safe.
+    if MARKER in src:
+        print("ALREADY_PATCHED " + P)
+        return
+
+    # PATCH FROM THE LIVE FILE, never from `.orig`.
+    #
+    # This used to read `.orig`, which was written once and never refreshed — so
+    # after a pip UPGRADE in the env, `.orig` held the PREVIOUS version's source,
+    # and re-running the installer wrote that old content back over the new
+    # site-packages file. The doctor's marker grep then certified stale code as
+    # patched, all-green, silently. `.orig` is now a snapshot of whatever was live
+    # just before this patch, kept for reference and never read back.
+    shutil.copy2(P, P + ".orig")
 
     # NOTE: the sentinel substitution must happen AFTER the trim, otherwise the
     # sentinels are already 0 and invisible. Both call sites substitute first,
