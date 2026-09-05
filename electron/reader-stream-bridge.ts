@@ -228,7 +228,7 @@ export class ReaderStreamBridge {
       return;
     }
 
-    const { splitForTts } = await import('./bilingual-processor.js');
+    const { splitForTts } = await import('./text-ai.js');
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
     // audiobook path reads for ORPHEUS_MAX_CHARS.
     const maxChars = (await import('./orpheus-models.js')).orpheusStreamMaxChars(voice);

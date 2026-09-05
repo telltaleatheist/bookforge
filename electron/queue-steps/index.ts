@@ -8,7 +8,6 @@
  */
 import { registerStepModule } from '../queue-engine';
 
-import { bilingualAssemblyStep, bilingualCleanupStep, bilingualTranslationStep } from './bilingual';
 import { bookAnalysisStep } from './book-analysis';
 import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
@@ -37,9 +36,6 @@ export function registerAllStepModules(): void {
     videoAssemblyStep,
     vlmConvertStep,
     foundryJobStep,
-    bilingualCleanupStep,
-    bilingualTranslationStep,
-    bilingualAssemblyStep,
     simplifyStep,
     translatePassStep,
     footnoteRefsStep,

@@ -123,9 +123,9 @@ import {
 import { narrationVideoStep, type VideoResolution } from '@shared/queue/narration-video';
 import {
   engineCaps, selectableEngines, isRunnableTtsEngine, TTS_ENGINES,
-} from '../../../language-learning/models/tts-engine-registry';
+} from '../../../../core/models/tts-engine-registry';
 import type { NarrationEntryContext } from '../../services/narration-dialog.service';
-import type { TTSEngine } from '../../../language-learning/models/language-learning.types';
+import type { TTSEngine } from '@shared/tts/engine-caps';
 
 /**
  * The sentences this project already has on disk, as main reports them.

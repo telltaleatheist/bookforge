@@ -513,7 +513,6 @@ export interface ManifestPipeline {
   cleanup?: CleanupStage;
   translations?: Record<string, TranslationStage>;
   tts?: Record<string, TTSStage>;
-  bilingualAssembly?: Record<string, BilingualAssemblyStage>;
 }
 
 export interface CleanupStage {
@@ -551,15 +550,11 @@ export interface TTSSettings {
   workerCount?: number;
 }
 
-export interface BilingualAssemblyStage {
-  status: PipelineStageStatus;
-  completedAt?: string;
-  error?: string;
-  sourceLang: string;
-  targetLang: string;
-  pauseDuration?: number;
-  gapDuration?: number;
-}
+// `pipeline.bilingualAssembly` and its `BilingualAssemblyStage` were declared here
+// until 2026-09-05, when the language-learning feature was removed. A manifest
+// written before then still HAS the key on disk and still loads: the manifest is
+// parsed into a plain object and written back from it, so an undeclared key rides
+// through untouched. What is gone is any code that writes or reads one.
 
 export interface ManifestOutputs {
   audiobook?: AudiobookOutput;

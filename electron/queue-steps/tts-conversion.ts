@@ -130,7 +130,6 @@ interface TtsConfig {
   outputDir?: string;
   parallelWorkers?: number;
   parallelMode?: 'sentences' | 'chapters';
-  bilingual?: { enabled: boolean; pauseDuration?: number; gapDuration?: number };
   skipAssembly?: boolean;
   resumeInfo?: Record<string, unknown>;
   missingRanges?: unknown;
@@ -219,7 +218,6 @@ export const ttsConversionStep: StepModule = {
         coverPath: config.metadata?.coverPath,
         outputFilename: config.metadata?.outputFilename || config.outputFilename,
       },
-      bilingual: config.bilingual,
       skipAssembly: config.skipAssembly,
       bfpPath: projectDir || undefined,
       isArticle: config.isArticle,

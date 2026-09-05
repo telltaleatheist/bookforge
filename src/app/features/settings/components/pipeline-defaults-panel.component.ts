@@ -5,7 +5,7 @@ import { FormsModule } from '@angular/forms';
 import { SettingsService, PipelineDefaults } from '../../../core/services/settings.service';
 import { ComponentService } from '../../../core/services/component.service';
 import { NarrationVoicesService } from '../../queue/jobs/narration-voices.service';
-import { selectableEngines, type TtsEngineCaps } from '../../language-learning/models/tts-engine-registry';
+import { selectableEngines, type TtsEngineCaps } from '../../../core/models/tts-engine-registry';
 import {
   AIProvider,
   DEFAULT_AI_CONFIG,

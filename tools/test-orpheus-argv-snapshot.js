@@ -18,6 +18,24 @@
  * prep, retake, the lightweight worker, the app.py worker, assembly. Comments and
  * whitespace are normalised away, so reformatting passes and a moved flag fails.
  *
+ * ── THE BASELINE MOVED ONCE, DELIBERATELY (2026-09-05) ──────────────────────
+ *
+ * The `assembly` row lost its last four tokens:
+ *
+ *     ...(config.bilingual?.enabled
+ *       ? ['--bilingual', '--bilingual_pause', …, '--bilingual_gap', …]
+ *       : [])
+ *
+ * The language-learning / bilingual feature was removed from the app on Owen's
+ * ruling ("it needs to be rebuilt anyway ... clean it all out"), and with it the
+ * only writer of `config.bilingual`. The tail was therefore already unreachable
+ * for every job the app can queue — an ORPHEUS assembly took the `: []` arm on
+ * every run, before and after — so this is a change to the argv's TEXT and not to
+ * any Orpheus job's argv. Every other row is still byte-for-byte `01a3799b`.
+ *
+ * This is the only licensed regeneration. Anything else that turns this red is a
+ * diff to read, not a baseline to refresh.
+ *
  * ── If this fails ───────────────────────────────────────────────────────────
  *
  * It is not automatically a bug — an Orpheus argv is allowed to change. What is

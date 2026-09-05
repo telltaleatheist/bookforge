@@ -429,7 +429,6 @@ export interface ManifestPipeline {
   cleanup?: CleanupStage;
   translations?: Record<string, TranslationStage>;  // Keyed by language code
   tts?: Record<string, TTSStage>;                   // Keyed by language code
-  bilingualAssembly?: Record<string, BilingualAssemblyStage>;  // Keyed by lang pair
   analysis?: AnalysisStage;
 }
 
@@ -481,15 +480,10 @@ export interface TTSSettings {
   workerCount?: number;
 }
 
-export interface BilingualAssemblyStage {
-  status: PipelineStageStatus;
-  completedAt?: string;
-  error?: string;
-  sourceLang: string;
-  targetLang: string;
-  pauseDuration?: number;     // Pause between source/target in ms
-  gapDuration?: number;       // Gap between sentence pairs in ms
-}
+// `pipeline.bilingualAssembly` and its `BilingualAssemblyStage` were declared here
+// until 2026-09-05, when the language-learning feature was removed. A manifest
+// written before then still HAS the key on disk and still loads — nothing narrows
+// the parsed object — but nothing reads or writes one any more.
 
 export interface AnalysisStage {
   status: PipelineStageStatus;

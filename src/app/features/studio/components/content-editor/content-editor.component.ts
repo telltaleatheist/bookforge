@@ -1,6 +1,6 @@
 import { Component, input, output, inject, ViewChild } from '@angular/core';
 import { CommonModule } from '@angular/common';
-import { ArticlePreviewComponent } from '../../../language-learning/components/article-preview/article-preview.component';
+import { ArticlePreviewComponent } from '../article-preview/article-preview.component';
 import { StudioItem, EditAction } from '../../models/studio.types';
 import { StudioService } from '../../services/studio.service';
 import { ElectronService } from '../../../../core/services/electron.service';

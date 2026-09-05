@@ -25,7 +25,7 @@ import { spawn } from 'child_process';
 import { getActiveEngine, getDefaultStreamVoice, getSelectedEngineName } from './streaming-engine';
 import { getProjectPath, registerAudiobookOutput } from './manifest-service';
 import { embedAndVerifyVtt } from './metadata-tools';
-import { splitForTts } from './bilingual-processor';
+import { splitForTts } from './text-ai';
 import { getFfmpegPath } from './tool-paths';
 
 // ─── Plan + state on disk ─────────────────────────────────────────────────────

@@ -7,7 +7,6 @@ import { ElectronService } from '../../../../core/services/electron.service';
 import { StudioItem, SUPPORTED_LANGUAGES } from '../../models/studio.types';
 import { ResolvedProjectVariant } from '../../../../core/models/manifest.types';
 import { AudiobookPlayerComponent } from '../audiobook-player/audiobook-player.component';
-import { BilingualPlayerComponent } from '../../../language-learning/components/bilingual-player/bilingual-player.component';
 import { PlayViewComponent } from '../../../audiobook/components/play-view/play-view.component';
 import { ListenSourcePickerComponent, ListenSource } from '../listen-source-picker/listen-source-picker.component';
 import { ListenProfilePickerComponent } from '../listen-profile-picker/listen-profile-picker.component';
@@ -25,7 +24,7 @@ import { ReaderService } from '../../../../core/services/reader.service';
 @Component({
   selector: 'app-listen-window',
   standalone: true,
-  imports: [CommonModule, AudiobookPlayerComponent, BilingualPlayerComponent, PlayViewComponent, ListenSourcePickerComponent, ListenProfilePickerComponent],
+  imports: [CommonModule, AudiobookPlayerComponent, PlayViewComponent, ListenSourcePickerComponent, ListenProfilePickerComponent],
   template: `
     <div class="listen-window">
       <!-- A failed variant read is reported, never quietly turned into "this book has
@@ -96,18 +95,6 @@ import { ReaderService } from '../../../../core/services/reader.service';
                   <app-listen-profile-picker listen-profile />
                 </app-audiobook-player>
               }
-            } @else {
-              <!-- Bilingual player has no shared chrome top bar, so the pickers
-                   stay as a standalone bar above it. -->
-              <div class="bilingual-source-bar">
-                <app-listen-source-picker
-                  [audioSources]="audioSources()" [epubSources]="epubSources()"
-                  [selectedId]="selectedId()" (select)="selectSource($event)" />
-                <app-listen-profile-picker />
-              </div>
-              @if (bilingualAudioData(); as audio) {
-                <app-bilingual-player [audiobook]="audio" />
-              }
             }
           }
         </div>
@@ -121,7 +108,6 @@ import { ReaderService } from '../../../../core/services/reader.service';
       flex: 1; min-height: 0;
       background: var(--bg-base);
     }
-    .bilingual-source-bar { padding: 8px 12px; flex-shrink: 0; }
     .error-banner {
       flex-shrink: 0; padding: 8px 12px;
       background: color-mix(in srgb, var(--warning) 16%, transparent);
@@ -203,9 +189,10 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
     const mono: Array<{ source: ListenSource; mtime: number }> = [];
     const coveredNames = new Set<string>();
 
-    // One source per registered audiobook variant. Bilingual variants
-    // (id `bilingual:<pair>`) are handled below via bilingualOutputs, which
-    // carries the extra sentence-pairs data the bilingual player needs.
+    // One source per registered audiobook variant. A LEGACY `bilingual:<pair>`
+    // variant is skipped rather than listed: the bilingual player was removed with
+    // the language-learning feature on 2026-09-05, so there is nothing that can
+    // play one. The manifest entry is left alone — the project still loads.
     for (const v of this.variants()) {
       if (v.kind !== 'audiobook' || v.id.startsWith('bilingual:')) continue;
       // main resolved this against the project it read the variant FROM, so it
@@ -261,17 +248,6 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
     mono.sort((a, b) => b.mtime - a.mtime);
     for (const { source } of mono) sources.push(source);
 
-    for (const [key, output] of Object.entries(it.bilingualOutputs ?? {})) {
-      if (!output.audioPath || !output.vttPath) continue;
-      sources.push({
-        id: `m4b:${key}`,
-        type: 'bilingual-m4b',
-        label: `Bilingual ${key.toUpperCase().replace('-', '–')}`,
-        sublabel: this.basename(output.audioPath),
-        stale: isStale(output.audioPath),
-        pairKey: key,
-      });
-    }
     return sources;
   });
 
@@ -322,23 +298,6 @@ export class ListenWindowComponent implements OnInit, OnDestroy {
       audiobookPath: src.audiobookPath,
       vttPath: src.vttPath,
       epubPath: it.epubPath,
-    };
-  });
-
-  readonly bilingualAudioData = computed(() => {
-    const it = this.item();
-    const key = this.selectedSource()?.pairKey;
-    if (!it?.bilingualOutputs || !key) return null;
-    const output = it.bilingualOutputs[key];
-    if (!output?.audioPath || !output.vttPath) return null;
-    return {
-      id: it.id,
-      title: it.title,
-      sourceLang: output.sourceLang,
-      targetLang: output.targetLang,
-      audiobookPath: output.audioPath,
-      vttPath: output.vttPath,
-      sentencePairsPath: output.sentencePairsPath,
     };
   });
 

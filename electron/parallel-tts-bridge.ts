@@ -2061,15 +2061,10 @@ export interface ParallelConversionConfig {
     coverPath?: string;  // Path to cover image file
     outputFilename?: string;  // Custom filename (without path)
   };
-  // Bilingual mode for language learning audiobooks
-  bilingual?: {
-    enabled: boolean;
-    pauseDuration?: number;  // Seconds between source and target (default 0.3)
-    gapDuration?: number;    // Seconds between pairs (default 1.0)
-  };
-  // Skip assembly phase - returns sentences directory path for external assembly
-  // Used for dual-voice bilingual workflows where assembly happens after both
-  // source and target TTS jobs complete
+  // Skip the assembly phase — return the sentences directory instead, for an
+  // assembly STEP that follows in the same chain (see narration-run's
+  // `assembleAfter`). This also served the dual-voice bilingual workflow, which
+  // was removed on 2026-09-05; the mono pipeline's use of it is the live one.
   skipAssembly?: boolean;
   // Clean session - delete any existing e2a sessions for this epub before starting
   // Used for language learning jobs which should always start fresh (no resume)
@@ -4648,7 +4643,7 @@ async function checkAllWorkersComplete(session: ConversionSession): Promise<void
     // just made when available. No-op for native engines or a failed copy.
     await normalizeWslSessionToWindows(session, cachedSentencesDir);
 
-    // Check if we should skip assembly (for dual-voice bilingual workflows)
+    // Skip assembly when a separate assembly step follows in this chain.
     if (session.config.skipAssembly) {
       const sentencesDir = session.prepInfo?.chaptersDirSentences || session.prepInfo?.chaptersDir;
       await logger.log('INFO', session.jobId, `skipAssembly mode - sentences at: ${sentencesDir}`);
@@ -5314,12 +5309,6 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--no_split',       // Don't split into multiple parts - create single file
     // Per-voice post-render filter (Orpheus voices only) — applied at e2a's final encode.
     ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
-    // Bilingual mode for language learning audiobooks
-    ...(config.bilingual?.enabled ? [
-      '--bilingual',
-      '--bilingual_pause', String(config.bilingual.pauseDuration ?? 0.3),
-      '--bilingual_gap', String(config.bilingual.gapDuration ?? 1.0)
-    ] : [])
   ];
 
   console.log('[PARALLEL-TTS] Running assembly:', args.join(' '));
@@ -5937,8 +5926,8 @@ function buildTtsStages(
       assembling || opts.convertPct >= 100 ? 'complete' : (converting ? 'running' : 'pending')),
   ];
 
-  // Dual-voice bilingual workflows hand assembly to a separate bilingual-assembly
-  // job, so showing a bar that can only ever read 0% would be a lie.
+  // When a separate assembly STEP follows in the chain, this job never assembles —
+  // showing a bar that can only ever read 0% would be a lie.
   if (!session.config.skipAssembly) {
     const pct = opts.assemblyPct ?? 0;
     stages.push(stage('assembling', 'Assembling audiobook', pct,

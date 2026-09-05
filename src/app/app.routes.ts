@@ -80,10 +80,5 @@ export const routes: Routes = [
     loadComponent: () => import(
       './features/epub-viewer/epub-viewer-harness.component'
     ).then(m => m.EpubViewerHarnessComponent)
-  },
-  {
-    // Sentence alignment - opens in separate Electron window
-    path: 'alignment',
-    loadComponent: () => import('./features/language-learning/components/sentence-alignment/sentence-alignment.component').then(m => m.SentenceAlignmentComponent)
   }
 ];
