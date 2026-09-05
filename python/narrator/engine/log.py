@@ -7,7 +7,7 @@ THE BUG THIS EXISTS FOR (found 2026-09-05, driving Higgs v3 through
 
 `narrator.serve`'s **stdout IS the JSON-lines protocol**. Any bare `print` from
 the engine layer lands between two protocol messages and breaks the client's
-parse. The engine has 129 of them (111 under `orpheus/`, 18 under
+parse. The engine has 135 of them (111 under `orpheus/`, 24 under
 `higgs/`) - counted by AST in
 `tests/test_engine_log_stream.py::LogCallCountTest`, which is where that
 number lives so it cannot drift apart across four docstrings again. It was 126

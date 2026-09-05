@@ -64,8 +64,8 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #: output to DEVNULL: v3_served gained the log-file line and the sentinel
 #: proof's report, and v3_engine gained the "proof UNAVAILABLE" line for an
 #: attached server whose operator named no log.
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 18}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 129
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 24}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 135
 
 
 def _engine_modules():

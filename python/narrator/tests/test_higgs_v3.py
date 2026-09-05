@@ -128,8 +128,14 @@ class FakeV3Handler(BaseHTTPRequestHandler):
                 # Something is listening, but it is not an OpenAI-shaped server.
                 self.send_error(404)
                 return
-            payload = json.dumps(
-                {'data': [{'id': m} for m in self.server.models]}).encode()
+            rows = []
+            for m in self.server.models:
+                row = {'id': m}
+                if self.server.model_root is not None:
+                    # vllm-omni 0.28 reports the model path it was started on.
+                    row['root'] = self.server.model_root
+                rows.append(row)
+            payload = json.dumps({'data': rows}).encode()
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', str(len(payload)))
@@ -164,6 +170,23 @@ class FakeV3Handler(BaseHTTPRequestHandler):
         self.wfile.write(audio)
 
 
+#: The path a base-weights server reports as its root (measured shape).
+BASE_SNAPSHOT_ROOT = ('/home/telltale/.cache/huggingface/hub/'
+                      'models--bosonai--higgs-audio-v3-tts-4b/snapshots/239f63fb')
+
+
+def state_concurrency(case, value='2'):
+    """`HIGGS_MAX_NUM_SEQS` for the duration of one test - the contract
+    variable every engine and every launching backend reads."""
+    previous = os.environ.get(v3_served.SERVE_MAX_NUM_SEQS_ENV)
+    os.environ[v3_served.SERVE_MAX_NUM_SEQS_ENV] = value
+    if previous is None:
+        case.addCleanup(os.environ.pop, v3_served.SERVE_MAX_NUM_SEQS_ENV, None)
+    else:
+        case.addCleanup(os.environ.__setitem__,
+                        v3_served.SERVE_MAX_NUM_SEQS_ENV, previous)
+
+
 class FakeV3Server:
     """The fake, on a real port, in a thread."""
 
@@ -177,6 +200,9 @@ class FakeV3Server:
         self.httpd.channels = channels
         self.httpd.models = ['higgs-v3']
         self.httpd.models_broken = False
+        # What a server started WITHOUT HIGGS_MODEL_DIR reports: the base
+        # snapshot out of the HF cache. Tests for fine-tunes set their own.
+        self.httpd.model_root = BASE_SNAPSHOT_ROOT
         self.httpd.tail_burst_dbfs = None
         self.thread = threading.Thread(target=self.httpd.serve_forever,
                                        daemon=True)
@@ -227,6 +253,7 @@ class V3TestCase(unittest.TestCase):
         self.clip = a_wav(os.path.join(self.dir, 'ref_x2.wav'), seconds=1.0)
         self.server = FakeV3Server()
         self.addCleanup(self.server.close)
+        state_concurrency(self)
 
     def _rmtree(self):
         import shutil
@@ -469,24 +496,29 @@ class CheckpointVoiceTest(V3TestCase):
 
     def test_a_server_on_another_checkpoint_is_refused(self):
         """The failure this prevents is silent: a leftover server for ANOTHER
-        voice answers /health and /v1/models identically."""
+        voice answers /health identically. /v1/models does not: it reports the
+        directory the server was started on, and that is what is compared."""
+        self.server.httpd.model_root = '/models/theirs'
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
                                        checkpoint_dir='/models/ours')
         with self.assertRaises(HiggsV3ServerError) as caught:
-            backend.check_serves_expected_model(checkpoint_dir='/models/theirs')
+            backend.check_serves_expected_model()
         message = str(caught.exception)
         self.assertIn('/models/ours', message)
         self.assertIn('/models/theirs', message)
         self.assertIn('RESTARTING', message)
 
     def test_a_matching_checkpoint_passes(self):
+        self.server.httpd.model_root = '/models/ours/'     # trailing slash: ls -d
         backend = HiggsV3ServedBackend(base_url=self.server.base_url,
                                        checkpoint_dir='/models/ours')
-        backend.check_serves_expected_model(checkpoint_dir='/models/ours')
+        self.assertEqual(backend.running_checkpoint(), '/models/ours')
+        backend.check_serves_expected_model()
 
-    def test_an_unstated_checkpoint_is_refused_naming_the_variable(self):
-        """It cannot be discovered - /v1/models reports the served NAME and
-        serve_v3.sh execs a hard-coded snapshot - so it has to be stated."""
+    def test_a_server_that_reports_no_root_is_refused_naming_the_variable(self):
+        """A server build whose model list carries no root cannot be
+        identified; the operator's assertion is the only other source."""
+        self.server.httpd.model_root = None
         previous = os.environ.pop(v3_served.CHECKPOINT_ENV, None)
         if previous is not None:
             self.addCleanup(os.environ.__setitem__,
@@ -495,19 +527,40 @@ class CheckpointVoiceTest(V3TestCase):
         with self.assertRaises(HiggsV3ServerError) as caught:
             backend.check_serves_expected_model(checkpoint_dir='/models/ours')
         self.assertIn(v3_served.CHECKPOINT_ENV, str(caught.exception))
+        self.assertIn('root', str(caught.exception))
 
-    def test_the_environment_can_state_it(self):
+    def test_the_environment_can_state_it_when_the_server_cannot(self):
+        self.server.httpd.model_root = None
         os.environ[v3_served.CHECKPOINT_ENV] = '/models/ours'
         self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
         backend = HiggsV3ServedBackend(base_url=self.server.base_url)
         self.assertEqual(backend.running_checkpoint(), '/models/ours')
         backend.check_serves_expected_model(checkpoint_dir='/models/ours')
 
+    def test_a_reported_root_is_a_fact_and_the_variable_does_not_override_it(self):
+        self.server.httpd.model_root = '/models/theirs'
+        os.environ[v3_served.CHECKPOINT_ENV] = '/models/ours'
+        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url,
+                                       checkpoint_dir='/models/ours')
+        self.assertEqual(backend.running_checkpoint(), '/models/theirs')
+        with self.assertRaises(HiggsV3ServerError):
+            backend.check_serves_expected_model()
+
+    def test_a_base_voice_refuses_a_server_running_a_fine_tune(self):
+        """The wrong-voice failure in the OTHER direction: a base request
+        against a leftover fine-tune server."""
+        self.server.httpd.model_root = '/home/t/higgs_v3_merged/ds_prod'
+        backend = HiggsV3ServedBackend(base_url=self.server.base_url)
+        with self.assertRaises(HiggsV3ServerError) as caught:
+            backend.check_serves_expected_model()
+        self.assertIn('BASE', str(caught.exception))
+        self.assertIn('/home/t/higgs_v3_merged/ds_prod', str(caught.exception))
+
     def test_a_voice_change_on_a_live_engine_names_the_restart(self):
         from narrator.engine.protocol import DefaultVoice
         merged = self.merged_checkpoint()
-        os.environ[v3_served.CHECKPOINT_ENV] = merged
-        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        self.server.httpd.model_root = merged
         voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
@@ -524,8 +577,7 @@ class CheckpointVoiceTest(V3TestCase):
         """THE PRODUCTION PATH: no `references` key at all."""
         from narrator.engine.protocol import DefaultVoice
         merged = self.merged_checkpoint()
-        os.environ[v3_served.CHECKPOINT_ENV] = merged
-        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        self.server.httpd.model_root = merged
         voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         engine = HiggsV3Engine(HiggsV3Config(voice=voice,
@@ -704,8 +756,7 @@ class ServedSamplingTest(V3TestCase):
         # Which checkpoint the server is running cannot be discovered, so it is
         # STATED - the engine refuses a checkpoint voice against a server that
         # says nothing (CheckpointVoiceTest covers that refusal itself).
-        os.environ[v3_served.CHECKPOINT_ENV] = merged
-        self.addCleanup(os.environ.pop, v3_served.CHECKPOINT_ENV, None)
+        self.server.httpd.model_root = merged
         voice = DefaultVoice(name='ds-ft', checkpoint_dir=merged,
                              max_chars=500, max_chars_source='catalog')
         kwargs.setdefault('base_url', self.server.base_url)
@@ -1011,7 +1062,9 @@ class EngineTest(V3TestCase):
         policy = higgs_v3_stop_policy(self.config(sampling={'temperature': 0.7}))
         self.assertEqual(policy.levers['temperature'], 0.7)
 
-    def test_a_batch_renders_serially_and_answers_every_row(self):
+    def test_a_batch_answers_every_row_as_it_retires(self):
+        """Rows retire in COMPLETION order, not index order: the batch is N
+        concurrent requests and the serve worker keys every callback by row."""
         engine = HiggsV3Engine(self.config())
         self.addCleanup(engine.cleanup)
         rows = []
@@ -1019,8 +1072,38 @@ class EngineTest(V3TestCase):
         engine.generate_batch_stream(['One.', 'Two.'], None, {1},
                                      lambda i, seq, pcm: chunks.append((i, seq)),
                                      lambda i, pcm: rows.append(i))
-        self.assertEqual(rows, [0, 1])
+        self.assertEqual(sorted(rows), [0, 1])
         self.assertEqual(chunks, [(1, 0)], 'a streamed row arrives whole, once')
+
+    def test_the_batch_width_is_the_servers_admission_width(self):
+        state_concurrency(self, '5')
+        engine = HiggsV3Engine(self.config())
+        self.addCleanup(engine.cleanup)
+        self.assertEqual(engine.BATCH_SIZE, 5)
+        self.assertEqual(engine.batch_pool_size, 10)
+        self.assertEqual(engine.server.concurrency, 5)
+
+    def test_an_unstated_width_is_refused_by_name(self):
+        os.environ.pop(v3_served.SERVE_MAX_NUM_SEQS_ENV, None)
+        with self.assertRaises(ValueError) as caught:
+            HiggsV3Engine(self.config())
+        self.assertIn(v3_served.SERVE_MAX_NUM_SEQS_ENV, str(caught.exception))
+
+    def test_convert_batch_answers_every_item_in_order(self):
+        engine = HiggsV3Engine(self.config(sentences_dir=self.dir))
+        self.addCleanup(engine.cleanup)
+        items = [(7, 'Seven.'), (8, 'Eight.'), (9, 'Nine.'), (10, 'Ten.')]
+        results = engine.convert_batch(items)
+        self.assertEqual(results, [True] * 4)
+        for index, _ in items:
+            self.assertTrue(os.path.isfile(engine._sentence_file(index)))
+
+    def test_a_dead_server_ends_the_flush_instead_of_failing_every_row(self):
+        engine = HiggsV3Engine(self.config(sentences_dir=self.dir))
+        self.addCleanup(engine.cleanup)
+        self.server.close()
+        with self.assertRaises(v3_served.HiggsV3ServerDown):
+            engine.convert_batch([(1, 'One.'), (2, 'Two.'), (3, 'Three.')])
 
     def test_a_stop_abandons_the_rest_without_an_on_row(self):
         engine = HiggsV3Engine(self.config())
@@ -1713,7 +1796,9 @@ class SeedRuleTest(V3TestCase):
         self.addCleanup(engine.cleanup)
         engine.generate_batch_stream(['One.', 'Two.', 'Three.'], None, None, None,
                                      lambda i, pcm: None)
-        seeds = [r['seed'] for r in self.server.requests]
+        # Requests are concurrent, so the ORDER the fake saw them in is not the
+        # row order; the seed-per-row rule is what is asserted.
+        seeds = sorted(r['seed'] for r in self.server.requests)
         self.assertEqual(seeds, [1234, 1235, 1236])
 
     def test_convert_seeds_by_sentence_number(self):
@@ -1741,6 +1826,7 @@ class _LaunchTestBase(unittest.TestCase):
         import tempfile
         self.dir = tempfile.mkdtemp(prefix='narrator-H-launch-')
         self.addCleanup(_shutil.rmtree, self.dir, True)
+        state_concurrency(self)
         self.fake_wsl = os.path.join(self.dir, 'wsl.exe')
         with open(self.fake_wsl, 'w', encoding='utf-8') as handle:
             handle.write('')
@@ -1752,11 +1838,24 @@ class _LaunchTestBase(unittest.TestCase):
     def assert_wrapper(self, wrapper, backend, script_in_guest):
         self.assertIn(script_in_guest, wrapper,
                       'the script path must be the one the GUEST sees')
+        self.assertIn('setsid bash', wrapper,
+                      'the server must lead its own process group, so a stop '
+                      'reaches its stage engines')
         self.assertIn('echo $!', wrapper,
                       "serve_v3.sh execs vllm-omni, so $! IS the server's pid")
         self.assertIn(backend.pid_file(), wrapper)
         self.assertIn('wait $!', wrapper,
                       'the launcher must live as long as the server')
+        # The launch script's knobs, STATED. Concurrency and the bind address
+        # always; the checkpoint when the voice has one, else an explicit unset.
+        self.assertIn(f'{v3_served.SERVE_MAX_NUM_SEQS_ENV}=2', wrapper)
+        self.assertIn(f'{v3_served.SERVE_PORT_ENV}=', wrapper)
+        self.assertIn(f'{v3_served.SERVE_HOST_ENV}=', wrapper)
+        if backend.checkpoint_dir:
+            self.assertIn(f'{v3_served.SERVE_MODEL_DIR_ENV}=', wrapper)
+            self.assertNotIn(f'unset {v3_served.SERVE_MODEL_DIR_ENV}', wrapper)
+        else:
+            self.assertIn(f'unset {v3_served.SERVE_MODEL_DIR_ENV}', wrapper)
 
 
 @unittest.skipUnless(sys.platform == 'win32', 'the Windows launch arm')
@@ -1821,9 +1920,21 @@ class WindowsLaunchTest(_LaunchTestBase):
             v3_served.subprocess.run = real_run
         self.assertTrue(calls, 'stop() must escalate to a guest-side signal')
         self.assertTrue(calls[0][0].endswith('wsl.exe'), calls[0])
-        self.assertEqual(calls[0][1:3], ['-d', 'Ubuntu'])
-        self.assertIn('4242', calls[0])
+        self.assertEqual(calls[0][1:4], ['-d', 'Ubuntu', '--exec'])
         self.assertIn('kill', calls[0])
+        self.assertIn('-4242', calls[0],
+                      'the process GROUP (-<pid>), not the pid alone')
+        self.assertNotIn('-KILL', calls[0], 'never a KILL on a GPU holder')
+        self.assertNotIn('-9', calls[0])
+
+    def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR_in_guest_form(self):
+        backend = HiggsV3ServedBackend(
+            serve_script=r'C:\campaign\serve_v3.sh', wsl_distro='Ubuntu',
+            checkpoint_dir=r'\\wsl$\Ubuntu\home\t\higgs_v3_merged\ds')
+        wrapper = backend.launch_command()[6]
+        self.assert_wrapper(wrapper, backend, '/mnt/c/campaign/serve_v3.sh')
+        self.assertIn(f'{v3_served.SERVE_MODEL_DIR_ENV}=/home/t/higgs_v3_merged/ds',
+                      wrapper)
 
 
 @unittest.skipIf(sys.platform == 'win32', 'the POSIX launch arm')
@@ -1852,26 +1963,44 @@ class PosixLaunchTest(_LaunchTestBase):
                                        serve_script='/campaign/serve_v3.sh')
         backend._guest_pid = 4242
         signalled = []
-        real_kill = v3_served.os.kill
-        v3_served.os.kill = lambda pid, sig: signalled.append((pid, sig))
+        real_killpg = v3_served.os.killpg
+        v3_served.os.killpg = lambda pid, sig: signalled.append((pid, sig))
         try:
             backend._verify_gone(timeout=2)
         finally:
-            v3_served.os.kill = real_kill
-        self.assertTrue(signalled, 'stop() must escalate to the server pid')
+            v3_served.os.killpg = real_killpg
+        self.assertTrue(signalled, 'stop() must escalate to the server group')
         self.assertEqual(signalled[0][0], 4242)
+        self.assertEqual({sig for _, sig in signalled},
+                         {v3_served.signal.SIGTERM},
+                         'TERM only - a KILL on a GPU holder inside WSL wedges '
+                         'the VM')
+
+    def test_a_checkpoint_voice_exports_HIGGS_MODEL_DIR(self):
+        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh',
+                                       checkpoint_dir='/home/t/higgs_v3_merged/ds')
+        wrapper = backend.launch_command()[2]
+        self.assert_wrapper(wrapper, backend, '/campaign/serve_v3.sh')
+        self.assertIn(f'{v3_served.SERVE_MODEL_DIR_ENV}=/home/t/higgs_v3_merged/ds',
+                      wrapper)
+
+    def test_KILL_is_refused_by_name(self):
+        backend = HiggsV3ServedBackend(serve_script='/campaign/serve_v3.sh')
+        with self.assertRaises(ValueError) as caught:
+            backend._signal_guest(4242, 'KILL')
+        self.assertIn('wedges', str(caught.exception))
 
     def test_it_never_kills_a_server_it_did_not_launch(self):
         server = FakeV3Server()
         self.addCleanup(server.close)
         backend = HiggsV3ServedBackend(base_url=server.base_url)
         signalled = []
-        real_kill = v3_served.os.kill
-        v3_served.os.kill = lambda pid, sig: signalled.append(pid)
+        real_killpg = v3_served.os.killpg
+        v3_served.os.killpg = lambda pid, sig: signalled.append(pid)
         try:
             backend._verify_gone(timeout=2)
         finally:
-            v3_served.os.kill = real_kill
+            v3_served.os.killpg = real_killpg
         self.assertEqual(signalled, [],
                          'no recorded pid means it is not ours to kill')
 

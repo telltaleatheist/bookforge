@@ -39,8 +39,21 @@ WHAT IS DIFFERENT FROM ORPHEUS
                 `/v1/audio/speech/stream`, which narrator does NOT use: nothing
                 here has been measured against it. `generate_batch_stream`
                 therefore emits per row at retirement, and says so.
+  batching      CONCURRENT REQUESTS, `BATCH_SIZE` of them at once. The server
+                is a continuous batcher: stage 0 admits up to `max_num_seqs`
+                sequences and schedules them together, and vllm-omni's own
+                `/v1/audio/speech/batch` is an `asyncio.gather` over the items
+                and nothing more (measured 2026-09-05). So the batch IS N
+                in-flight POSTs, N = `HIGGS_MAX_NUM_SEQS` (`serve_concurrency`),
+                the same number the launch script passes the server. The
+                render worker's flush hands `convert_batch` a pool twice that
+                wide so a retired slot is refilled while the slowest row is
+                still decoding; `generate_batch_stream` retires rows AS THEY
+                COMPLETE, not in index order - the serve worker keys every
+                callback by row and the batch-stream contract permits it.
 """
 import os
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import Optional
 
@@ -395,6 +408,8 @@ class HiggsV3Engine:
     pads = False
     edge_fade = HiggsV3Defaults.EDGE_FADE
     SUPPORTS_BATCH = True
+    #: Class-level floor; the INSTANCE sets its own from `serve_concurrency()`
+    #: (the render worker reads the attribute off the instance).
     BATCH_SIZE = 1
 
     def __init__(self, config: HiggsV3Config):
@@ -409,11 +424,19 @@ class HiggsV3Engine:
         self._codec = HiggsV3Codec()
         self._budget = HiggsV3Budget(config)
         self.params = {'samplerate': self.SAMPLE_RATE}
-        # NOT handed config.checkpoint_dir: the backend's own record is what the
-        # voice is CHECKED AGAINST, and a value compared with itself checks
-        # nothing. The backend learns which checkpoint is running from
-        # NARRATOR_HIGGS3_CHECKPOINT (or an explicit argument) - see
-        # v3_served.CHECKPOINT_ENV.
+        # THE WIDTH OF THE BATCH = the server's admission width, one variable.
+        # Resolved before the backend exists because a launch exports it.
+        self.BATCH_SIZE = v3_served.serve_concurrency()
+        # Twice the width per flush: the executor keeps BATCH_SIZE requests in
+        # flight and refills a retired slot from the rest of the pool, so the
+        # server is not left idling on the slowest row of every flush. A
+        # cooperative stop discards at most one pool of finished work.
+        self.batch_pool_size = 2 * self.BATCH_SIZE
+        # THE CHECKPOINT GOES TO THE BACKEND: in launch mode it is exported as
+        # HIGGS_MODEL_DIR so the server comes up ON this voice (it used not to
+        # be, and the launcher served the base snapshot - Owen's first in-app
+        # render, 2026-09-05); in both modes it is what the RUNNING server, as
+        # reported by /v1/models, is held to in check_serves_expected_model.
         # THE SERVER'S LOG LIVES WITH THE RUN. `process_dir` is the session's
         # own directory - it already holds `session-state.json` and the Orpheus
         # guards' rejects - so a server this engine launches writes beside them
@@ -424,6 +447,8 @@ class HiggsV3Engine:
         # sentinel filter unprovable.
         self.server = HiggsV3ServedBackend(
             base_url=config.base_url, serve_script=config.serve_script,
+            checkpoint_dir=config.checkpoint_dir,
+            concurrency=self.BATCH_SIZE,
             server_log=(os.path.join(config.process_dir,
                                      v3_served.SERVER_LOG_NAME)
                         if config.process_dir else None))
@@ -663,11 +688,40 @@ class HiggsV3Engine:
                  format=self.config.audio_format.upper())
         return True
 
+    def _convert_one(self, index: int, text: str) -> bool:
+        """`convert`, with the per-row failure policy of a batch.
+
+        A refusal of ONE chunk (an HTTP 400 for its text, a decode failure) is
+        that chunk's False, logged by name, and the batch goes on - the same
+        policy as Orpheus's per-item path. A DEAD SERVER is not one chunk's
+        failure: it propagates and ends the flush, because every remaining row
+        would fail the same way and the worker would mark the whole book failed
+        one sentence at a time.
+        """
+        try:
+            return self.convert(index, text)
+        except v3_served.HiggsV3ServerDown:
+            raise
+        except Exception as exc:
+            log(f'[HIGGS3] sentence {index} failed: {exc}', flush=True)
+            return False
+
     def convert_batch(self, items) -> list:
-        """SERIAL. The server is launched with `--max-num-seqs 2` and the
-        endpoint used is the buffered one; batching v3 means the
-        `/v1/audio/speech/batch` endpoint, which nothing here has measured."""
-        return [self.convert(index, text) for index, text in items]
+        """`BATCH_SIZE` requests in flight at once over `items`; results aligned
+        to `items`. See the module docstring's `batching` entry for why N
+        concurrent POSTs are the batch on this backend."""
+        items = list(items)
+        if not items:
+            return []
+        width = min(self.BATCH_SIZE, len(items))
+        with ThreadPoolExecutor(max_workers=width,
+                                thread_name_prefix='higgs3-render') as pool:
+            futures = [pool.submit(self._convert_one, index, text)
+                       for index, text in items]
+            # `result()` re-raises a HiggsV3ServerDown from any row; the
+            # executor's __exit__ then waits for the rows already in flight,
+            # which fail fast against a dead port.
+            return [future.result() for future in futures]
 
     def generate_batch_stream(self, texts, voices, stream_rows, on_chunk, on_row,
                               should_stop=None) -> None:
@@ -707,13 +761,40 @@ class HiggsV3Engine:
                 f'HiggsV3Engine.generate_batch_stream: row(s) {blank} have no text '
                 'after cleaning.')
 
-        for i, text in enumerate(texts):
+        def render(i: int, text: str):
+            # Checked at the moment the row would be POSTed, not at submission:
+            # rows queued behind the in-flight ones must not start once the
+            # caller has asked for a stop. An abandoned row gets no on_row at
+            # all, which is what the contract requires.
             if should_stop is not None and should_stop():
-                return
-            audio = self.render_audio(text, index=i)
-            if i in stream_rows:
-                on_chunk(i, 0, audio.copy())
-            on_row(i, audio)
+                return i, None, True
+            return i, self.render_audio(text, index=i), False
+
+        width = min(self.BATCH_SIZE, len(texts))
+        with ThreadPoolExecutor(max_workers=width,
+                                thread_name_prefix='higgs3-stream') as pool:
+            futures = [pool.submit(render, i, text)
+                       for i, text in enumerate(texts)]
+            # Callbacks run HERE, on the caller's thread, as rows retire - the
+            # serve worker's callbacks take their own locks but were written
+            # for one caller at a time, and this keeps that true.
+            for future in as_completed(futures):
+                try:
+                    i, audio, abandoned = future.result()
+                except v3_served.HiggsV3ServerDown:
+                    raise
+                except Exception as exc:
+                    # Which row is not recoverable from the exception; find the
+                    # future's index and report that row failed.
+                    i = futures.index(future)
+                    log(f'[HIGGS3] row {i} failed: {exc}', flush=True)
+                    on_row(i, None)
+                    continue
+                if abandoned:
+                    continue
+                if i in stream_rows:
+                    on_chunk(i, 0, audio.copy())
+                on_row(i, audio)
 
 
 def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None,

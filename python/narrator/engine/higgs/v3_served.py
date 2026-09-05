@@ -21,13 +21,19 @@ THE ENVIRONMENT (owens-pc, WSL Ubuntu, RTX 3090 Ti)
 
     env      /home/telltale/anaconda3/envs/higgs3 (python 3.11,
              torch 2.13.0+cu130, vllm 0.28.0, vllm-omni 0.28.0)
-    launch   <campaign>/serve_v3.sh - vllm-omni serve <snapshot>
-             --served-model-name higgs-v3 --host 127.0.0.1 --port 8095
-             --trust-remote-code --gpu-memory-utilization 0.60
-             --max-model-len 8192 --max-num-seqs 2
+    launch   BookForge's serve_higgs_v3.sh (transcribed from the campaign's
+             serve_v3.sh) - vllm-omni serve <model dir> --served-model-name
+             higgs-v3 --host/--port --trust-remote-code --stage-overrides
+             <per-stage memory / max_num_seqs / max_model_len>
              --attention-backend FLASH_ATTN --omni, with CUDA_HOME pointed at
              the pip CUDA 13 wheel, VLLM_USE_FLASHINFER_SAMPLER=0,
-             VLLM_DISABLE_FLASHINFER_PREFILL=1, TORCH_CUDA_ARCH_LIST=8.6
+             VLLM_DISABLE_FLASHINFER_PREFILL=1, TORCH_CUDA_ARCH_LIST=8.6.
+             The model dir, the bind address and the concurrency come from
+             the HIGGS_* variables narrator exports (`_launch_exports`).
+             PER-STAGE, not the global flags the campaign used: vllm-omni
+             applies a global --gpu-memory-utilization to EVERY stage, and
+             this server is two of them (talker + codec), so 0.60 reserved
+             1.2 cards - measured 24.2 of 24.5 GB on 2026-09-05.
     cost     COLD START 55-297 s to health=200 (measured on this box, same
              script, same env: 55 s warm page cache, 146 s, and 297 s cold, in
              narrator's own smoke). The spread is disk and first-run
@@ -144,17 +150,51 @@ SERVE_SCRIPT_ENV = 'NARRATOR_HIGGS3_SERVE_SCRIPT'
 BASE_URL_ENV = 'NARRATOR_HIGGS3_URL'
 #: The WSL distro to run the launch script in, on Windows.
 WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
-#: WHICH MERGED CHECKPOINT the server on that URL is running.
+#: WHICH MERGED CHECKPOINT an ATTACHED server is running, when the server
+#: cannot say so itself.
 #:
-#: It has to be told, and it cannot be discovered: vllm-omni's `/v1/models`
-#: reports the SERVED NAME (`higgs-v3`) and not the directory, and
-#: `serve_v3.sh` `exec`s a hard-coded snapshot path, so narrator can neither
-#: read the running server's checkpoint nor choose one at launch. For a
-#: fine-tuned voice the operator therefore starts the server on that checkpoint
-#: and states it here. It is an ASSERTION, not a verification - but a stated
-#: assertion that can be checked against the voice is worth far more than a
-#: silent assumption, which is a whole book in the wrong narrator.
+#: Normally it CAN: vllm-omni 0.28's `/v1/models` carries `"root": <the model
+#: path the server was started on>` beside the served name (measured on
+#: owens-pc 2026-09-05: root = the base snapshot path when the launcher was
+#: started without HIGGS_MODEL_DIR), and `running_checkpoint()` reads it. This
+#: variable is the operator's assertion for a server build whose model list
+#: does NOT carry a root; it is consulted only then, and never overrides a root
+#: the server reports - a reported path is a fact and an env var is a claim.
 CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
+#: THE LAUNCH SCRIPT'S OWN KNOBS (`serve_higgs_v3.sh`), exported into the
+#: wrapper's environment by narrator at launch. narrator states every one of
+#: them rather than inheriting whatever the worker's environment happens to
+#: hold, because each is a place the two sides can silently disagree:
+#:   HIGGS_MODEL_DIR    the merged checkpoint the server comes up ON. Left
+#:                      unset, the script serves the base snapshot - a
+#:                      different speaker - and `check_serves_expected_model`
+#:                      then (correctly) refuses after a 55-297 s launch.
+#:                      That was Owen's first in-app Higgs render (2026-09-05).
+#:   HIGGS_HOST/PORT    where the script binds, which must be where narrator
+#:                      polls `/health` and posts renders.
+#:   HIGGS_MAX_NUM_SEQS how many sequences stage 0 admits at once - and
+#:                      therefore how wide narrator's own batch is
+#:                      (`serve_concurrency`). One number, stated once.
+SERVE_MODEL_DIR_ENV = 'HIGGS_MODEL_DIR'
+SERVE_HOST_ENV = 'HIGGS_HOST'
+SERVE_PORT_ENV = 'HIGGS_PORT'
+SERVE_MAX_NUM_SEQS_ENV = 'HIGGS_MAX_NUM_SEQS'
+#: The launch script's own bind defaults, mirrored so that a launch with
+#: neither variable set polls the port the script binds. Not a fallback that
+#: hides a bug: both sides read the same two literals, and narrator EXPORTS
+#: the pair it chose into the wrapper, so they cannot drift apart.
+SERVE_DEFAULT_HOST = '127.0.0.1'
+SERVE_DEFAULT_PORT = 8095
+#: How the base snapshot is recognised in a reported model root: the HF cache
+#: directory name of `bosonai/higgs-audio-v3-tts-4b`. A server whose root
+#: carries this is serving the BASE weights; any other root is a fine-tune.
+BASE_SNAPSHOT_MARKER = 'models--bosonai--higgs-audio-v3-tts-4b'
+#: Where launch wrappers record the server's pid, in the GUEST filesystem.
+#: One file per backend instance; the glob is what `_own_servers_on_port`
+#: scans to recognise a server narrator itself left behind.
+PID_FILE_DIR = '/tmp'
+PID_FILE_PREFIX = 'narrator-higgs3-'
+
 #: WHERE AN ATTACHED SERVER'S LOG IS, named by the operator. NO DEFAULT.
 #:
 #: In LAUNCH mode narrator owns the server's output and writes it itself (see
@@ -287,6 +327,71 @@ class HiggsV3ServerError(RuntimeError):
     vocabulary" when the vLLM patch is missing) and paraphrasing them loses the
     one thing a reader needs.
     """
+
+
+class HiggsV3ServerDown(HiggsV3ServerError):
+    """Nothing answered at all: the server is not there.
+
+    Distinct from a refusal so a BATCH can tell the two apart. A 400 on one
+    chunk (an over-long reference, a bad control token) is that chunk's
+    failure and the rest of the batch proceeds; a connection refused is the
+    whole server gone, and rendering the remaining thousand chunks against it
+    would mark every one of them failed one at a time.
+    """
+
+
+def serve_concurrency() -> int:
+    """How many requests the server admits at once - `HIGGS_MAX_NUM_SEQS`.
+
+    THE ONE NUMBER BEHIND BATCHING on the served arm. vllm-omni's continuous
+    batcher schedules up to stage 0's `max_num_seqs` sequences together, and its
+    own `/v1/audio/speech/batch` endpoint is nothing more than an
+    `asyncio.gather` over the items (serving_speech.py:create_speech_batch,
+    measured 2026-09-05) - so N concurrent POSTs to the plain endpoint ARE the
+    batch, and there is nothing to be gained from the batch endpoint except a
+    response that arrives when the slowest item does.
+
+    Read from the environment because the same variable is what the launch
+    script passes as `max_num_seqs`: BookForge sets it from the catalog's
+    serving block, narrator exports it into the wrapper at launch and sizes
+    `BATCH_SIZE` from it. Refused by name when absent - a guessed width is
+    either a server idling at 1 or a queue the render never asked for.
+    """
+    raw = (os.environ.get(SERVE_MAX_NUM_SEQS_ENV) or '').strip()
+    if not raw:
+        raise ValueError(
+            f'Higgs v3: {SERVE_MAX_NUM_SEQS_ENV} is not set. It is the number of '
+            'sequences the server admits at once (the launch script passes it as '
+            'stage 0 max_num_seqs) and the width of narrator\'s batch; BookForge '
+            "sets it from the catalog's serving block. There is no default.")
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(
+            f'Higgs v3: {SERVE_MAX_NUM_SEQS_ENV}={raw!r} is not an integer.') from None
+    if value < 1:
+        raise ValueError(
+            f'Higgs v3: {SERVE_MAX_NUM_SEQS_ENV}={value} must be at least 1.')
+    return value
+
+
+def launch_base_url() -> str:
+    """Where a server narrator LAUNCHES will answer: the `HIGGS_HOST` /
+    `HIGGS_PORT` pair the launch script binds, from the environment when
+    BookForge stated them and the script's own literals otherwise. The pair is
+    exported into the wrapper too, so the script binds exactly what this
+    returns."""
+    host = (os.environ.get(SERVE_HOST_ENV) or '').strip() or SERVE_DEFAULT_HOST
+    raw_port = (os.environ.get(SERVE_PORT_ENV) or '').strip()
+    if raw_port:
+        try:
+            port = int(raw_port)
+        except ValueError:
+            raise ValueError(
+                f'Higgs v3: {SERVE_PORT_ENV}={raw_port!r} is not a port number.') from None
+    else:
+        port = SERVE_DEFAULT_PORT
+    return f'http://{host}:{port}'
 
 
 # ---------------------------------------------------------------------------
@@ -772,7 +877,8 @@ class HiggsV3ServedBackend:
 
     def __init__(self, base_url: str = None, serve_script: str = None,
                  wsl_distro: str = None, extra_args=None,
-                 checkpoint_dir: str = None, server_log: str = None):
+                 checkpoint_dir: str = None, server_log: str = None,
+                 concurrency: int = None):
         base_url = (base_url or os.environ.get(BASE_URL_ENV) or '').strip()
         serve_script = (serve_script
                         or os.environ.get(SERVE_SCRIPT_ENV) or '').strip()
@@ -789,8 +895,21 @@ class HiggsV3ServedBackend:
                 'Either the script gains a "$@" passthrough (their file, not ours), '
                 'or launch the server by hand with those arguments and point '
                 f'{BASE_URL_ENV} at it.')
-        self.base_url = base_url or DEFAULT_BASE_URL
+        # ATTACH: the URL names the server. LAUNCH: the server will bind
+        # whatever HIGGS_HOST/HIGGS_PORT the wrapper exports, and that pair is
+        # decided HERE so the poll and the bind cannot name different ports.
+        self.base_url = base_url or launch_base_url()
         self.serve_script = serve_script
+        # THE WIDTH OF THE BATCH, and stage 0's max_num_seqs. Required for a
+        # launch (the wrapper exports it); optional for an attach, where the
+        # engine states it from the same variable.
+        if concurrency is not None and int(concurrency) < 1:
+            raise ValueError(f'Higgs v3: concurrency {concurrency} must be >= 1.')
+        if concurrency is None and serve_script:
+            # A launching backend must state it (the wrapper exports it); the
+            # one source is the contract variable, which refuses when unset.
+            concurrency = serve_concurrency()
+        self.concurrency = int(concurrency) if concurrency else None
         self.wsl_distro = (wsl_distro or os.environ.get(WSL_DISTRO_ENV)
                            or 'Ubuntu')
         # THE SERVER'S OUTPUT IS EVIDENCE, so it goes to a file this backend
@@ -828,10 +947,11 @@ class HiggsV3ServedBackend:
         # THE SERVER IS KEYED ON THIS. A fine-tuned Higgs voice is a merged
         # checkpoint the server runs ON, so "which voice is up" and "which
         # directory is up" are the same question - and a request for another one
-        # is a restart, not a message.
-        self.checkpoint_dir = (checkpoint_dir
-                               or (os.environ.get(CHECKPOINT_ENV) or '').strip()
-                               or None)
+        # is a restart, not a message. In LAUNCH mode this is the directory the
+        # wrapper exports as HIGGS_MODEL_DIR; in either mode it is what
+        # `check_serves_expected_model` holds the RUNNING server to. None means
+        # the base weights.
+        self.checkpoint_dir = (checkpoint_dir or '').strip() or None
         self._proc = None
         self._guest_pid = None
         self._pid_file = None
@@ -843,24 +963,77 @@ class HiggsV3ServedBackend:
         sees the path. One per backend instance, so two workers never read each
         other's."""
         if self._pid_file is None:
-            self._pid_file = f'/tmp/narrator-higgs3-{os.getpid()}-{id(self):x}.pid'
+            self._pid_file = (f'{PID_FILE_DIR}/{PID_FILE_PREFIX}'
+                              f'{os.getpid()}-{id(self):x}.pid')
         return self._pid_file
+
+    def _launch_exports(self) -> str:
+        """The `export ...` prefix of the wrapper: every launch-script knob
+        narrator has an opinion about, stated explicitly.
+
+        HIGGS_MODEL_DIR is exported for a checkpoint voice and UNSET for the
+        base weights - unset, not left alone, because the worker's own
+        environment may carry one from a caller and inheriting it would start a
+        fine-tune under a request for the base speaker.
+        """
+        host_port = self.base_url.split('://', 1)[-1].rstrip('/')
+        host, _, port = host_port.rpartition(':')
+        exports = [
+            f'{SERVE_HOST_ENV}={shlex.quote(host)}',
+            f'{SERVE_PORT_ENV}={shlex.quote(port)}',
+            f'{SERVE_MAX_NUM_SEQS_ENV}={self.concurrency}',
+        ]
+        if self.checkpoint_dir:
+            target = (_to_wsl(self.checkpoint_dir) if sys.platform == 'win32'
+                      else self.checkpoint_dir)
+            exports.append(f'{SERVE_MODEL_DIR_ENV}={shlex.quote(target)}')
+            model = ''
+        else:
+            model = f'unset {SERVE_MODEL_DIR_ENV}; '
+        return f'{model}export {" ".join(exports)}; '
 
     def _wrapper(self) -> str:
         """The shell the launcher actually runs.
 
         `serve_v3.sh` ends in `exec vllm-omni ...`, so backgrounding it with `&`
-        makes `$!` THE SERVER'S OWN PID - not a shell's. Recording it is what
-        lets `stop()` signal the server BY PID inside the distro instead of
-        pattern-killing `vllm-omni serve`, which would take another agent's
-        server with it. `wait` then keeps this shell alive for exactly as long
-        as the server, so the launcher process still tracks it.
+        makes `$!` THE SERVER'S OWN PID - not a shell's. `setsid` puts that
+        process at the head of ITS OWN PROCESS GROUP (pgid == pid: a
+        backgrounded child of a non-interactive bash is not a group leader, so
+        setsid(2) succeeds in place and no fork intervenes), and vllm-omni's
+        stage engines - the two `VLLM::StageEngineCoreProc` children that hold
+        the actual GPU memory - are born into that group. Recording the pid is
+        therefore recording the GROUP, and `stop()` signals the group
+        (`kill -TERM -- -<pid>`) inside the distro instead of pattern-killing
+        `vllm-omni serve`, which would take another agent's server with it.
+
+        Measured 2026-09-05 (Owen's first in-app render): signalling the pid
+        alone left the server up - the pid files held the wrapper shells
+        (53079, 54060) while `vllm-omni serve` ran on as 54688 holding 24 GB,
+        and it took a by-hand SIGTERM to release the card. The group is what
+        was missing.
+
+        `wait` keeps this shell alive for exactly as long as the server, so the
+        launcher process still tracks it; the exports before it are the launch
+        script's own knobs (`_launch_exports`).
         """
         script = (_to_wsl(self.serve_script) if sys.platform == 'win32'
                   else self.serve_script)
         pid_file = self.pid_file()
-        return (f'bash {shlex.quote(script)} & '
+        return (f'{self._launch_exports()}'
+                f'setsid bash {shlex.quote(script)} & '
                 f'echo $! > {shlex.quote(pid_file)}; wait $!')
+
+    def _guest_argv(self, argv: list) -> list:
+        """`argv`, run INSIDE the distro on Windows and directly elsewhere.
+
+        `--exec` on the Windows arm for the same reason `launch_command`
+        gives: without it wsl.exe hands the line to the distro's default
+        shell, which expands `$` before the program sees it.
+        """
+        if sys.platform != 'win32':
+            return list(argv)
+        wsl = shutil.which('wsl.exe') or 'wsl.exe'
+        return [wsl, '-d', self.wsl_distro, '--exec'] + list(argv)
 
     def launch_command(self) -> list:
         """The command `start()` runs. Public so a test and a log line can see
@@ -890,11 +1063,7 @@ class HiggsV3ServedBackend:
 
     def _read_guest_pid(self, timeout: float = 30.0):
         """Read the pid the wrapper wrote, once it exists."""
-        if sys.platform == 'win32':
-            wsl = shutil.which('wsl.exe') or 'wsl.exe'
-            read = [wsl, '-d', self.wsl_distro, 'cat', self.pid_file()]
-        else:
-            read = ['cat', self.pid_file()]
+        read = self._guest_argv(['cat', self.pid_file()])
         deadline = time.time() + timeout
         while time.time() < deadline:
             try:
@@ -927,20 +1096,29 @@ class HiggsV3ServedBackend:
             # server from another model, another adapter or another agent's
             # session would otherwise render a whole book in the wrong voice
             # while every message here said the right one.
-            # check_serves_expected_model raises by name if it is the wrong
-            # server; that is better than starting a second one, which would
-            # fail to bind after paying a 55-297 s launch and ~14 GB.
-            self.check_serves_expected_model()
-            # ADOPTED, NOT LAUNCHED: that process's output goes wherever its own
-            # launcher sent it, so the file we would have written is not the
-            # proof stream and the spec must stop claiming it is.
-            self._log_is_ours = False
-            self.server_log = self._named_log
-            self.spec = dataclasses.replace(self.spec, server_log=self.server_log)
-            log(f'[HIGGS3] adopting the server already on {self.base_url}; its log '
-                f'is {self.server_log or "not named (see " + SERVER_LOG_ENV + ")"}',
-                flush=True)
-            return
+            try:
+                self.check_serves_expected_model()
+            except HiggsV3ServerError as wrong:
+                # The wrong server. If NARRATOR left it there (a refused start,
+                # a crashed worker, a stop that never reached the group), it is
+                # ours to take down and replace; anything else on the port is
+                # somebody else's and the refusal stands. Never a second launch
+                # onto a busy port - that pays 55-297 s and ~20 GB to fail to
+                # bind, which is exactly the "retrying" loop Owen's first
+                # render fell into.
+                self._reclaim_port(wrong)
+            else:
+                # ADOPTED, NOT LAUNCHED: that process's output goes wherever
+                # its own launcher sent it, so the file we would have written
+                # is not the proof stream and the spec must stop claiming it is.
+                self._log_is_ours = False
+                self.server_log = self._named_log
+                self.spec = dataclasses.replace(self.spec, server_log=self.server_log)
+                log(f'[HIGGS3] adopting the server already on {self.base_url}; '
+                    f'its log is '
+                    f'{self.server_log or "not named (see " + SERVER_LOG_ENV + ")"}',
+                    flush=True)
+                return
         command = self.launch_command()
         log(f'[HIGGS3] launching: {" ".join(command)}', flush=True)
         # BOTH STREAMS INTO ONE FILE, opened 'wb' so each start overwrites -
@@ -949,9 +1127,134 @@ class HiggsV3ServedBackend:
         # merged into stdout because vLLM logs to stderr and the ordering
         # between the two only means anything interleaved.
         self._open_log()
+        # `start_new_session` on POSIX: the wrapper shell leads its own session,
+        # so a stop can never reach back into the worker's own group. The server
+        # itself gets a further group of its own from the wrapper's `setsid`.
         self._proc = subprocess.Popen(command, stdout=self._log_handle,
-                                      stderr=subprocess.STDOUT)
+                                      stderr=subprocess.STDOUT,
+                                      start_new_session=(sys.platform != 'win32'))
         self._read_guest_pid()
+
+    #: The scan `_own_servers_on_port` runs INSIDE the distro. Plain python3,
+    #: stdlib only, so it runs on the guest's system interpreter without the
+    #: higgs3 env: for every narrator pid file, drop it if its pid is dead, and
+    #: report it if any process in that pid's GROUP is a server bound to the
+    #: port asked for (its argv carries `--port <port>`, which the launch script
+    #: passes verbatim). Prints one JSON list.
+    _OWN_SERVERS_SCAN = r"""
+import glob, json, os, sys
+port = sys.argv[1].encode()
+found = []
+for path in sorted(glob.glob(sys.argv[2])):
+    try:
+        pid = int(open(path).read().strip())
+    except (OSError, ValueError):
+        try: os.remove(path)
+        except OSError: pass
+        continue
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        try: os.remove(path)
+        except OSError: pass
+        continue
+    except PermissionError:
+        pass
+    hit = False
+    for entry in os.listdir('/proc'):
+        if not entry.isdigit():
+            continue
+        try:
+            stat = open('/proc/%s/stat' % entry).read()
+            pgrp = int(stat[stat.rindex(')') + 2:].split()[2])
+            if pgrp != pid:
+                continue
+            argv = open('/proc/%s/cmdline' % entry, 'rb').read().split(b'\0')
+        except (OSError, ValueError):
+            continue
+        for i, a in enumerate(argv):
+            if a == b'--port' and i + 1 < len(argv) and argv[i + 1] == port:
+                hit = True
+        if hit:
+            break
+    if hit:
+        found.append({'pid': pid, 'pidFile': path})
+print(json.dumps(found))
+"""
+
+    def _own_servers_on_port(self) -> list:
+        """Every server NARRATOR started that is bound to our port, as
+        `[{'pid', 'pidFile'}]`, from the pid files in the guest's /tmp. Stale
+        files (dead pids) are removed on the way. Raises if the scan itself
+        cannot run - an unanswerable ownership question is not a "no"."""
+        port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
+        pattern = f'{PID_FILE_DIR}/{PID_FILE_PREFIX}*.pid'
+        argv = self._guest_argv(['python3', '-c', self._OWN_SERVERS_SCAN,
+                                 port, pattern])
+        try:
+            out = subprocess.run(argv, capture_output=True, text=True, timeout=60)
+        except (OSError, subprocess.SubprocessError) as exc:
+            raise HiggsV3ServerError(
+                f'Higgs v3: could not scan for narrator\'s own servers on port '
+                f'{port} ({exc}); refusing to decide whether the server already '
+                'there is ours.') from exc
+        if out.returncode != 0:
+            raise HiggsV3ServerError(
+                f'Higgs v3: the ownership scan for port {port} failed (exit '
+                f'{out.returncode}): {out.stderr.strip()[:400]}')
+        try:
+            return json.loads(out.stdout.strip() or '[]')
+        except ValueError as exc:
+            raise HiggsV3ServerError(
+                f'Higgs v3: the ownership scan for port {port} printed '
+                f'{out.stdout[:200]!r}, not JSON.') from exc
+
+    def _reclaim_port(self, wrong: HiggsV3ServerError,
+                      timeout: float = 180.0) -> None:
+        """The server on our port is the wrong one. Take it down IF IT IS OURS,
+        cooperatively, and wait for the port to free; otherwise re-raise the
+        refusal, now saying whose it is not.
+
+        Cooperative means SIGTERM to the process group and patience: a vLLM
+        that is mid-teardown holds CUDA state, and a SIGKILL to a process
+        holding the GPU inside WSL wedges the whole VM until a Windows reboot
+        (memory: wsl-wedge-proofing). So there is no KILL here, only a longer
+        wait and then a refusal that names the pid.
+        """
+        owned = self._own_servers_on_port()
+        if not owned:
+            raise HiggsV3ServerError(
+                f'{wrong} No pid file of narrator\'s names a server on that port, '
+                'so it is not one this program started and it will not be '
+                'stopped from here. Stop it yourself, or point '
+                f'{BASE_URL_ENV} at a server running the right checkpoint.') from wrong
+        for row in owned:
+            log(f'[HIGGS3] the server on {self.base_url} is the wrong checkpoint '
+                f'and it is OURS (pid {row["pid"]}, {row["pidFile"]}); stopping '
+                'it before launching', flush=True)
+            self._signal_guest(row['pid'], 'TERM')
+        deadline = time.time() + float(timeout)
+        while time.time() < deadline:
+            if not self.ping():
+                break
+            time.sleep(1.0)
+        else:
+            raise HiggsV3ServerError(
+                f'Higgs v3: narrator\'s own server on {self.base_url} (pid(s) '
+                f'{", ".join(str(r["pid"]) for r in owned)}) is still answering '
+                f'{timeout:.0f}s after SIGTERM. It is NOT being killed: a KILL to '
+                'a process holding the GPU inside WSL wedges the VM. Wait for it, '
+                'or stop it by hand, then retry.')
+        for row in owned:
+            self._remove_guest_file(row['pidFile'])
+        log(f'[HIGGS3] port {self.base_url.rsplit(":", 1)[-1]} reclaimed', flush=True)
+
+    def _remove_guest_file(self, path: str) -> None:
+        try:
+            subprocess.run(self._guest_argv(['rm', '-f', path]), timeout=30,
+                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.SubprocessError) as exc:
+            log(f'[HIGGS3] could not remove {path}: {exc}', flush=True)
 
     def _open_log(self) -> None:
         """Open (and truncate) the launch log. Failure is LOUD.
@@ -1087,8 +1390,8 @@ class HiggsV3ServedBackend:
             'syncInteriorDrops': 0,
         }
 
-    def served_models(self) -> list:
-        """The model ids `/v1/models` reports. Raises if it cannot be read."""
+    def _models_payload(self) -> list:
+        """The rows of `/v1/models`. Raises if it cannot be read."""
         try:
             with urllib.request.urlopen(self.base_url + MODELS_PATH,
                                         timeout=10) as response:
@@ -1099,20 +1402,46 @@ class HiggsV3ServedBackend:
                 'Something is listening on that port but it does not answer the '
                 'OpenAI model list, so it cannot be identified - refusing to send a '
                 'render to it.') from exc
-        return [row.get('id') for row in (payload.get('data') or [])]
+        rows = payload.get('data') if isinstance(payload, dict) else None
+        return [row for row in (rows or []) if isinstance(row, dict)]
+
+    def served_models(self) -> list:
+        """The model ids `/v1/models` reports. Raises if it cannot be read."""
+        return [row.get('id') for row in self._models_payload()]
+
+    def running_checkpoint(self):
+        """The model path the server on this URL was started on, or None.
+
+        DISCOVERED: vllm-omni's `/v1/models` row for the served name carries
+        `"root": <model path>` - the directory `vllm-omni serve` was pointed at,
+        which for a fine-tune is the merged checkpoint and for the base weights
+        is the HF-cache snapshot (measured 2026-09-05; see CHECKPOINT_ENV).
+        When the row has no root - another server build - the operator's
+        `NARRATOR_HIGGS3_CHECKPOINT` is taken as their assertion, and with
+        neither the answer is None, which every caller treats as "unknown",
+        never as "fine".
+        """
+        for row in self._models_payload():
+            if row.get('id') != SERVED_MODEL_NAME:
+                continue
+            root = row.get('root')
+            if isinstance(root, str) and root.strip():
+                return root.strip().rstrip('/') or root.strip()
+            break
+        asserted = (os.environ.get(CHECKPOINT_ENV) or '').strip()
+        return asserted or None
 
     def check_serves_expected_model(self, checkpoint_dir: str = None) -> None:
         """Prove the server on this port is OURS before anything is sent to it.
 
         `/health` answering 200 says only that SOMETHING is listening. This
-        checks `/v1/models` carries `higgs-v3`, and - when this voice is a
-        fine-tune - that the running server is the one started ON ITS
-        CHECKPOINT. The second check is why the backend records
-        `checkpoint_dir` at all: every Higgs voice is a whole merged checkpoint
-        and one server serves exactly one of them, so a leftover server from
-        ANOTHER voice answers `/health` and `/v1/models` identically and would
-        render a whole book in the wrong narrator while every log line here
-        named the right one.
+        checks `/v1/models` carries `higgs-v3`, and that the model the server
+        was started on is the one this voice needs: the merged checkpoint for a
+        fine-tune, the base snapshot for the base voice. Every Higgs voice is a
+        whole merged checkpoint and one server serves exactly one of them, so a
+        leftover server from ANOTHER voice answers `/health` and `/v1/models`
+        identically and would render a whole book in the wrong narrator while
+        every log line here named the right one - in either direction.
         """
         checkpoint_dir = checkpoint_dir or self.checkpoint_dir
         models = self.served_models()
@@ -1123,35 +1452,38 @@ class HiggsV3ServedBackend:
                 "else's server (or one left over from another model) on this port - "
                 'refusing to render against it. Stop it, or point '
                 'NARRATOR_HIGGS3_URL somewhere else.')
+        running = self.running_checkpoint()
+        if running is None:
+            raise HiggsV3ServerError(
+                f'Higgs v3: the server at {self.base_url} does not report which '
+                f'model it was started on ({MODELS_PATH} carries no "root" for '
+                f"'{SERVED_MODEL_NAME}'), and {CHECKPOINT_ENV} is not set. This "
+                'voice is '
+                + (f'the merged checkpoint {checkpoint_dir}' if checkpoint_dir
+                   else 'the base weights')
+                + ', and an unidentified server would render the whole book in '
+                'whatever narrator it happens to hold. If this is your own server, '
+                f'state its model directory in {CHECKPOINT_ENV}.')
         if checkpoint_dir:
-            running = self.running_checkpoint()
-            if running is None:
-                raise HiggsV3ServerError(
-                    f'Higgs v3: this voice is the merged checkpoint {checkpoint_dir}, '
-                    f'but nothing says which checkpoint the server at {self.base_url} '
-                    f'is running. Set {CHECKPOINT_ENV} to the directory it was '
-                    'started on. It cannot be discovered: /v1/models reports the '
-                    'SERVED NAME, not the path, and serve_v3.sh execs a hard-coded '
-                    'snapshot - so narrator can neither read it nor choose it. '
-                    'Unchecked, a server left running for another voice would render '
-                    'this whole book in that narrator.')
             if os.path.normpath(running) != os.path.normpath(checkpoint_dir):
-                # Both are stated; they disagree, which is decidable and fatal.
+                # Both are known; they disagree, which is decidable and fatal.
                 raise HiggsV3ServerError(
                     f'Higgs v3: the server at {self.base_url} is running on '
                     f'{running}, but this voice is {checkpoint_dir}. vllm-omni cannot '
                     'load a voice into a running server - it has no adapter flags and '
                     'its talker does not implement SupportsLoRA - so serving another '
                     'voice means RESTARTING on that checkpoint.')
-        if checkpoint_dir:
-            log(f'[HIGGS3] serving checkpoint {checkpoint_dir} (asserted, not '
-                  'discovered - see CHECKPOINT_ENV)', flush=True)
-
-    def running_checkpoint(self):
-        """Which merged checkpoint the server on this URL is running - as
-        recorded at construction or through `NARRATOR_HIGGS3_CHECKPOINT`, never
-        discovered. See CHECKPOINT_ENV for why it cannot be discovered."""
-        return self.checkpoint_dir
+            log(f'[HIGGS3] serving checkpoint {checkpoint_dir} (reported by the '
+                'server)', flush=True)
+        else:
+            if BASE_SNAPSHOT_MARKER not in running:
+                raise HiggsV3ServerError(
+                    f'Higgs v3: this voice is the BASE weights, but the server at '
+                    f'{self.base_url} is running on {running}, which is a merged '
+                    f'fine-tune (no {BASE_SNAPSHOT_MARKER!r} in its path). Serving '
+                    'the base means RESTARTING on the base snapshot.')
+            log(f'[HIGGS3] serving the base snapshot {running} (reported by the '
+                'server)', flush=True)
 
     #: The sentinel-filter tail measurement: RMS in dBFS over the last 300 ms
     #: of a one-word render.
@@ -1306,19 +1638,29 @@ class HiggsV3ServedBackend:
             return
         proc = self._proc
         self._proc = None
+        if proc is None and self._guest_pid is None:
+            # Never launched (start() adopted, or refused before Popen).
+            self._close_log()
+            return
+        # THE SERVER FIRST, BY GROUP. Signalling the wrapper shell was the
+        # orphan bug: bash does not forward SIGTERM to a backgrounded child, so
+        # the shell died, `proc.poll()` reported a tidy exit, and vllm-omni ran
+        # on with the GPU. The group signal reaches the server and its stage
+        # engines; the wrapper's `wait $!` then returns on its own.
+        if self._guest_pid is not None:
+            self._signal_guest(self._guest_pid, 'TERM')
         if proc is not None and proc.poll() is None:
-            try:
-                proc.send_signal(signal.SIGTERM)
-            except (OSError, ValueError):
-                pass
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                log('[HIGGS3] launcher did not stop on SIGTERM; killing', flush=True)
-                proc.kill()
+                # The wrapper outlived the server's own teardown window. It is a
+                # shell, not a GPU holder: terminating IT is safe.
+                log('[HIGGS3] launch wrapper still up after the server was '
+                    'signalled; terminating the wrapper', flush=True)
                 try:
+                    proc.terminate()
                     proc.wait(timeout=30)
-                except subprocess.TimeoutExpired:
+                except (OSError, subprocess.TimeoutExpired):
                     pass
         self._verify_gone(timeout=timeout)
         # Closed LAST, so the server's own shutdown lines are in the file the
@@ -1327,7 +1669,14 @@ class HiggsV3ServedBackend:
         self._close_log()
 
     def _verify_gone(self, timeout: float = 60.0) -> None:
-        """Poll the port until nothing answers; escalate to a guest-side signal.
+        """Poll the port until nothing answers, then drop the pid file.
+
+        NO KILL, EVER. A SIGKILL to a process holding the GPU inside WSL wedges
+        the whole VM until a Windows reboot (memory: wsl-wedge-proofing), so
+        the escalation after a second SIGTERM is a loud warning that names the
+        pid - and the pid file is LEFT IN PLACE, which is what lets the next
+        `start()` recognise the survivor as ours and reclaim the port
+        cooperatively instead of refusing it as a stranger's.
 
         Only ever runs for a server WE launched (`_guest_pid` is set at launch),
         so an attached server is left alone even if it is still up.
@@ -1335,6 +1684,7 @@ class HiggsV3ServedBackend:
         deadline = time.time() + float(timeout)
         while time.time() < deadline:
             if not self.ping():
+                self._forget_pid_file()
                 return
             time.sleep(1.0)
         if self._guest_pid is None:
@@ -1343,32 +1693,50 @@ class HiggsV3ServedBackend:
                   'alone rather than killing a server it may not own.', flush=True)
             return
         log(f'[HIGGS3] server still up after the launcher exited; signalling '
-              f'guest pid {self._guest_pid}', flush=True)
+              f'guest process group {self._guest_pid} again', flush=True)
         self._signal_guest(self._guest_pid, 'TERM')
-        deadline = time.time() + 30.0
+        deadline = time.time() + 120.0
         while time.time() < deadline:
             if not self.ping():
+                self._forget_pid_file()
                 return
             time.sleep(1.0)
-        log(f'[HIGGS3] guest pid {self._guest_pid} ignored TERM; sending KILL', flush=True)
-        self._signal_guest(self._guest_pid, 'KILL')
+        log(f'[HIGGS3] WARNING: guest process group {self._guest_pid} is still '
+            f'serving {self.base_url} after two SIGTERMs. NOT killing it - a KILL '
+            'on a GPU holder inside WSL wedges the VM. Its pid file '
+            f'{self.pid_file()} stays so the next start reclaims it.', flush=True)
+
+    def _forget_pid_file(self) -> None:
+        """The server is gone; its pid file no longer names anything."""
+        if self._guest_pid is not None:
+            self._remove_guest_file(self.pid_file())
+        self._guest_pid = None
 
     def _signal_guest(self, pid: int, signame: str) -> None:
-        """Signal one pid INSIDE the distro, by pid, never by pattern."""
+        """Signal one process GROUP inside the distro, by its leader's pid,
+        never by pattern. The wrapper's `setsid` made the server that leader,
+        so `-<pid>` reaches the server and its stage-engine children together.
+        `KILL` is refused by name: see `_verify_gone`."""
+        if signame != 'TERM':
+            raise ValueError(
+                f'Higgs v3: refusing to send SIG{signame} to a server process. '
+                'A KILL on a process holding the GPU inside WSL wedges the VM; '
+                'only TERM is sent, and a server that ignores it is reported, '
+                'not killed.')
         if sys.platform != 'win32':
             try:
-                os.kill(int(pid), signal.SIGKILL if signame == 'KILL'
-                        else signal.SIGTERM)
+                os.killpg(int(pid), signal.SIGTERM)
             except OSError as exc:
-                log(f'[HIGGS3] could not signal {pid}: {exc}', flush=True)
+                log(f'[HIGGS3] could not signal process group {pid}: {exc}',
+                    flush=True)
             return
-        wsl = shutil.which('wsl.exe') or 'wsl.exe'
         try:
-            subprocess.run([wsl, '-d', self.wsl_distro, 'kill', f'-{signame}',
-                            str(pid)], timeout=30, stdout=subprocess.DEVNULL,
+            subprocess.run(self._guest_argv(['kill', '-TERM', '--', f'-{int(pid)}']),
+                           timeout=30, stdout=subprocess.DEVNULL,
                            stderr=subprocess.DEVNULL)
         except (OSError, subprocess.SubprocessError) as exc:
-            log(f'[HIGGS3] could not signal guest pid {pid}: {exc}', flush=True)
+            log(f'[HIGGS3] could not signal guest process group {pid}: {exc}',
+                flush=True)
 
     # -- use -----------------------------------------------------------------
 
@@ -1414,7 +1782,7 @@ class HiggsV3ServedBackend:
             raise HiggsV3ServerError(
                 f'Higgs v3 HTTP {exc.code}: {detail}') from exc
         except urllib.error.URLError as exc:
-            raise HiggsV3ServerError(
+            raise HiggsV3ServerDown(
                 f'Higgs v3 server at {self.base_url} is unreachable: {exc.reason}. '
                 'Is it started (serve_v3.sh; cold start measured 55-297 s) and are '
                 'both site-packages patches applied?') from exc
