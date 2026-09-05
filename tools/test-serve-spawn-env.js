@@ -118,13 +118,25 @@ function hostNeutral(value) {
 }
 
 const base = hostNeutral(JSON.parse(fs.readFileSync(BASE, 'utf-8')));
+
+/** One arm's capture, PARSED but not yet host-neutralised. */
+function capture(arm, engine) {
+  return JSON.parse(execFileSync(
+    process.execPath,
+    [path.join(__dirname, 'serve-spawn-extract.js'), arm, ...(engine ? [engine] : [])],
+    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
+  ));
+}
+
+// RAW and neutralised are kept apart, and it matters. `hostNeutral` deletes every
+// backslash it can find, so the separator check below — the whole reason the
+// extractor canonicalises at all — was walking data with the evidence already
+// removed from it and could not fail. It walks `raw` now.
+const nowRaw = {};
 const now = {};
 for (const arm of ARMS) {
-  now[arm] = hostNeutral(JSON.parse(execFileSync(
-    process.execPath,
-    [path.join(__dirname, 'serve-spawn-extract.js'), arm],
-    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-  )));
+  nowRaw[arm] = capture(arm);
+  now[arm] = hostNeutral(nowRaw[arm]);
 }
 
 /** The environment an arm sends the worker, whichever arm shape it has. */
@@ -227,13 +239,11 @@ console.log('the Higgs serve spawn, per arm');
 // ONE POOL, TWO ENGINES: which one answers is `NARRATOR_ENGINE` in the spawn. These
 // rows pin what a Higgs Listen session starts, and — on the two native arms — that
 // it REFUSES rather than starting something that cannot run.
+const higgsRowsRaw = {};
 const higgsRows = {};
 for (const arm of ARMS) {
-  higgsRows[arm] = hostNeutral(JSON.parse(execFileSync(
-    process.execPath,
-    [path.join(__dirname, 'serve-spawn-extract.js'), arm, 'higgs'],
-    { encoding: 'utf-8', stdio: ['ignore', 'pipe', 'ignore'] },
-  )));
+  higgsRowsRaw[arm] = capture(arm, 'higgs');
+  higgsRows[arm] = hostNeutral(higgsRowsRaw[arm]);
 }
 
 for (const arm of ARMS) {
@@ -311,25 +321,39 @@ check('the WSL Higgs arm sets NO MLX model var', () => {
 });
 
 console.log('the capture says the same thing on Windows and on a Mac');
+/** Every string in `v` that still contains a backslash, with the path that reached it. */
+function hostSeparatorsIn(v, at = '', offenders = []) {
+  // WALKS THE VALUES, not `JSON.stringify` of them: serialising re-introduces
+  // backslashes of its own for every escaped quote, and the native-win Higgs
+  // refusal quotes \"WSL2 for Higgs\" — which would fail a check that is supposed
+  // to be about path separators. After JSON.parse those are plain quote characters.
+  if (typeof v === 'string') {
+    if (v.includes(String.fromCharCode(92))) offenders.push(`${at} = ${v}`);
+  } else if (Array.isArray(v)) v.forEach((x, i) => hostSeparatorsIn(x, `${at}[${i}]`, offenders));
+  else if (v && typeof v === 'object') {
+    for (const [k, x] of Object.entries(v)) hostSeparatorsIn(x, `${at}.${k}`, offenders);
+  }
+  return offenders;
+}
+
 check('no captured value carries a host path separator', () => {
   // The exact shape of the failure a macOS host reported: `path.join` gives
   // `<REPO>\python` on Windows and `<REPO>/python` on a Mac, so an un-normalised
   // capture can never match across the two. Checkable from one host.
-  // WALKS THE VALUES, not `JSON.stringify` of them: serialising re-introduces
-  // backslashes of its own for every escaped quote, and a refusal message quoting
-  // \"WSL2 for Higgs\" would fail a check that is supposed to be about path
-  // separators.
-  const offenders = [];
-  const walk = (v, at) => {
-    if (typeof v === 'string') {
-      if (v.includes(String.fromCharCode(92))) offenders.push(`${at} = ${v}`);
-    } else if (Array.isArray(v)) v.forEach((x, i) => walk(x, `${at}[${i}]`));
-    else if (v && typeof v === 'object') {
-      for (const [k, x] of Object.entries(v)) walk(x, `${at}.${k}`);
-    }
-  };
-  walk({ now, higgsRows }, '');
+  //
+  // The RAW captures, deliberately. This check used to walk the hostNeutral'd ones,
+  // which have had `.replace(/\\/g, '/')` applied to every string — so it was
+  // asking whether a function that removes backslashes had left a backslash behind.
+  // It passed on every machine and would have passed with canon() deleted entirely.
+  const offenders = hostSeparatorsIn({ now: nowRaw, higgsRows: higgsRowsRaw }, '');
   assert.deepStrictEqual(offenders, [], 'a host path separator survived canon()');
+});
+check('MUTATION: the separator walk catches a Windows path when there is one', () => {
+  // A keeper that cannot fail is worth nothing, and the row above spent this whole
+  // branch unable to. This is what the un-canonicalised capture looked like.
+  const offenders = hostSeparatorsIn({ env: { PYTHONPATH: 'C:\\repo\\python' } }, '');
+  assert.strictEqual(offenders.length, 1,
+    'the walk did not see a backslash in a Windows path — the check above proves nothing');
 });
 check('the extractor forces the platform per fixture arm', () => {
   // Cannot be observed from a Windows host for the two win32 arms, so it is
