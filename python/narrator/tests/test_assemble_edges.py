@@ -21,6 +21,7 @@ from narrator.assemble import edges as E
 from narrator.assemble.chapters import plan_chapters
 from narrator.assemble.engine_profiles import PROFILES, profile_for
 from narrator.assemble.ffmpeg_tools import FfmpegError, resolve_binary
+from narrator.assemble import vtt
 from narrator.assemble.vtt import vtt_duration
 from narrator.render.flac_header import read_streaminfo
 from narrator.tests import synthetic
@@ -510,6 +511,227 @@ class TestGapSidecarInterop(unittest.TestCase):
         )
         self.assertEqual(sum(p.samples for p in plans), chunk_samples + gap_samples)
         self.assertGreater(gap_samples, 0)
+
+
+class MixedEncodingCase(unittest.TestCase):
+    """A book rendered across machines: WSL PCM_16/2304, Mac MLX PCM_24/2304,
+    Windows soundfile PCM_16/4096. The audio is fine; only the container framing
+    and declared depth disagree."""
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp(prefix="narrator-mixed-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+        self.session = os.path.join(self.tmp, "session")
+        os.makedirs(self.session)
+        self.work = os.path.join(self.tmp, "work")
+        os.makedirs(self.work)
+        self.lines = []
+
+    def write_chunk(self, index: int, seconds: float, subtype: str,
+                    blocksize: int | None = None, rate: int = RATE,
+                    channels: int = 1) -> int:
+        """One chunk, at a chosen bit depth and (where asked) blocksize.
+
+        libsndfile picks its own FLAC blocksize, so a 2304 set - what both WSL
+        and the Mac produce - is made with ffmpeg, which exposes -frame_size.
+        """
+        n = int(round(seconds * rate))
+        rng = np.random.default_rng(index + 1)
+        data = (rng.random((n, channels)) * 2.0 - 1.0) * 0.4
+        path = os.path.join(self.session, f"{index}.flac")
+        if blocksize is None:
+            sf.write(path, data, rate, subtype=subtype, format="FLAC")
+        else:
+            if FFMPEG is None:
+                self.skipTest("ffmpeg is needed to write a chosen FLAC blocksize")
+            import subprocess
+            raw = os.path.join(self.tmp, f"raw{index}.wav")
+            sf.write(raw, data, rate, subtype=subtype)
+            depth = {"PCM_16": "s16", "PCM_24": "s32"}[subtype]
+            bits = {"PCM_16": "16", "PCM_24": "24"}[subtype]
+            subprocess.run(
+                [FFMPEG, "-hide_banner", "-v", "error", "-y", "-i", raw,
+                 "-c:a", "flac", "-sample_fmt", depth,
+                 "-bits_per_raw_sample", bits,
+                 "-frame_size", str(blocksize), path],
+                check=True, capture_output=True,
+            )
+            os.remove(raw)
+        return read_streaminfo(path).samples
+
+    def manifest_for(self, counts: list[int]) -> M.Manifest:
+        chunks = [
+            M.Chunk(index=i, text=f"Line {i}.", kind="prose",
+                    file=os.path.join(self.session, f"{i}.flac"),
+                    samples=n)
+            for i, n in enumerate(counts)
+        ]
+        return M.Manifest(
+            source=M.Source(kind="synthetic", processDir=self.session,
+                            sessionId="s", epubContentHash="h"),
+            book=M.Book(epubPath=None, title="T", author="A", year=None,
+                        language="en", language3="eng", cover=None),
+            voice=M.Voice(engine="orpheus", fineTuned="v", modelDir=None,
+                          adapterDir=None, baseDir=None),
+            sampleRate=RATE,
+            sentencesDir=self.session,
+            chapters=[M.Chapter(index=1, title="T", doc=None, chunks=chunks)],
+        )
+
+
+class TestMixedEncodingIsRewritten(MixedEncodingCase):
+    def build_mixed(self) -> list[int]:
+        """The three machines, in one chapter."""
+        return [
+            self.write_chunk(0, 0.50, "PCM_16", blocksize=2304),   # WSL
+            self.write_chunk(1, 0.75, "PCM_24", blocksize=2304),   # Mac MLX
+            self.write_chunk(2, 0.60, "PCM_16"),                   # Windows (4096)
+        ]
+
+    def test_the_set_really_is_mixed(self):
+        self.build_mixed()
+        infos = [read_streaminfo(os.path.join(self.session, f"{i}.flac"))
+                 for i in range(3)]
+        self.assertEqual([i.bits_per_sample for i in infos], [16, 24, 16])
+        self.assertEqual({i.max_blocksize for i in infos}, {2304, 4096})
+        # and the old guard would have refused it
+        with self.assertRaises(ValueError):
+            from narrator.render.flac_header import assert_concat_homogeneous
+            assert_concat_homogeneous(infos)
+
+    def test_it_is_rewritten_rather_than_refused(self):
+        counts = self.build_mixed()
+        m = self.manifest_for(counts)
+        plan = plan_chapters(m, self.work, self.lines.append)[0]
+
+        # every path now points into the work dir, and the set is homogeneous
+        for path in plan.paths:
+            self.assertTrue(path.startswith(self.work), path)
+        self.assertEqual(len({i.max_blocksize for i in plan.infos}), 1)
+        self.assertEqual(len({i.bits_per_sample for i in plan.infos}), 1)
+
+    def test_the_assembled_length_is_the_sample_sum(self):
+        counts = self.build_mixed()
+        m = self.manifest_for(counts)
+        plan = plan_chapters(m, self.work, self.lines.append)[0]
+        self.assertEqual(plan.samples, sum(counts))
+        self.assertEqual([i.samples for i in plan.infos], counts)
+
+    def test_the_rewrite_is_lossless(self):
+        counts = self.build_mixed()
+        m = self.manifest_for(counts)
+        plan = plan_chapters(m, self.work, self.lines.append)[0]
+        # widest depth in the set wins, so the 24-bit chunk keeps its bits
+        self.assertEqual({i.bits_per_sample for i in plan.infos}, {24})
+        for i, dst in enumerate(plan.paths):
+            src = os.path.join(self.session, f"{i}.flac")
+            a, _ = sf.read(src, dtype="float64", always_2d=True)
+            b, _ = sf.read(dst, dtype="float64", always_2d=True)
+            with self.subTest(chunk=i):
+                np.testing.assert_array_equal(a, b)
+
+    def test_the_vtt_is_unchanged_by_the_rewrite(self):
+        counts = self.build_mixed()
+        m = self.manifest_for(counts)
+        before = vtt.build_vtt(m)
+        plan_chapters(m, self.work, self.lines.append)
+        self.assertEqual(vtt.build_vtt(m), before)
+        # the transcript's own total still matches the audio
+        self.assertAlmostEqual(vtt_duration(m), sum(counts) / RATE, places=9)
+
+    def test_exactly_one_log_line_names_the_mix(self):
+        counts = self.build_mixed()
+        plan_chapters(self.manifest_for(counts), self.work, self.lines.append)
+        self.assertEqual(len(self.lines), 1, self.lines)
+        line = self.lines[0]
+        self.assertIn("Chapter 1", line)
+        self.assertIn("mixed FLAC encodings", line)
+        self.assertIn("bit depth", line)
+        self.assertIn("max-blocksize", line)
+        self.assertIn("PCM_24", line)
+        line.encode("ascii")
+
+    def test_the_session_is_never_touched(self):
+        counts = self.build_mixed()
+        before = {}
+        for i in range(len(counts)):
+            with open(os.path.join(self.session, f"{i}.flac"), "rb") as f:
+                before[i] = f.read()
+        plan_chapters(self.manifest_for(counts), self.work, self.lines.append)
+        for i in range(len(counts)):
+            with open(os.path.join(self.session, f"{i}.flac"), "rb") as f:
+                self.assertEqual(f.read(), before[i], f"chunk {i} was modified")
+
+    def test_a_bit_depth_mix_alone_is_enough(self):
+        counts = [
+            self.write_chunk(0, 0.50, "PCM_16"),
+            self.write_chunk(1, 0.50, "PCM_24"),
+        ]
+        plan = plan_chapters(self.manifest_for(counts), self.work,
+                             self.lines.append)[0]
+        self.assertEqual(len(self.lines), 1)
+        self.assertIn("bit depth", self.lines[0])
+        self.assertEqual(plan.samples, sum(counts))
+
+    def test_a_missing_work_dir_is_refused_by_name(self):
+        counts = self.build_mixed()
+        with self.assertRaisesRegex(ValueError, "no working directory"):
+            plan_chapters(self.manifest_for(counts), None, self.lines.append)
+
+
+class TestHomogeneousSetsNeverRewrite(MixedEncodingCase):
+    def test_the_work_dir_stays_empty(self):
+        """The invariant the golden parity tests rest on."""
+        counts = [self.write_chunk(i, 0.5, "PCM_16") for i in range(3)]
+        m = self.manifest_for(counts)
+        plan = plan_chapters(m, self.work, self.lines.append)[0]
+        self.assertEqual(os.listdir(self.work), [])
+        self.assertEqual(self.lines, [])
+        # and the concat list is still the session's own files
+        self.assertEqual(
+            plan.paths,
+            [os.path.join(self.session, f"{i}.flac") for i in range(3)],
+        )
+
+    def test_a_uniform_24_bit_set_is_also_left_alone(self):
+        counts = [self.write_chunk(i, 0.5, "PCM_24") for i in range(3)]
+        plan = plan_chapters(self.manifest_for(counts), self.work,
+                             self.lines.append)[0]
+        self.assertEqual(os.listdir(self.work), [])
+        self.assertEqual(plan.samples, sum(counts))
+
+
+class TestFatalMismatchesStillRefuse(MixedEncodingCase):
+    def test_a_sample_rate_mismatch_refuses(self):
+        self.write_chunk(0, 0.5, "PCM_16")
+        n1 = int(round(0.5 * 48000))
+        sf.write(os.path.join(self.session, "1.flac"),
+                 np.zeros((n1, 1)) + 0.1, 48000, subtype="PCM_16", format="FLAC")
+        m = self.manifest_for([read_streaminfo(
+            os.path.join(self.session, f"{i}.flac")).samples for i in range(2)])
+        # read_expected catches the rate before the homogeneity question arises
+        with self.assertRaisesRegex(ValueError, "sample rate is 48000"):
+            plan_chapters(m, self.work, self.lines.append)
+        self.assertEqual(self.lines, [])
+
+    def test_a_channel_mismatch_refuses(self):
+        self.write_chunk(0, 0.5, "PCM_16")
+        self.write_chunk(1, 0.5, "PCM_16", channels=2)
+        m = self.manifest_for([read_streaminfo(
+            os.path.join(self.session, f"{i}.flac")).samples for i in range(2)])
+        with self.assertRaisesRegex(ValueError, "2 channel"):
+            plan_chapters(m, self.work, self.lines.append)
+        self.assertEqual(self.lines, [])
+
+    def test_the_fatal_and_fixable_split(self):
+        from narrator.render import flac_header as FH
+
+        self.write_chunk(0, 0.5, "PCM_16")
+        self.write_chunk(1, 0.5, "PCM_24")
+        infos = [read_streaminfo(os.path.join(self.session, f"{i}.flac"))
+                 for i in range(2)]
+        self.assertIsNone(FH.fatal_inhomogeneity(infos))
+        self.assertIn("bit depth", FH.fixable_inhomogeneity(infos))
 
 
 if __name__ == "__main__":

@@ -184,14 +184,55 @@ the table exists at all.)
 
 ---
 
-## 2. THE HOMOGENEITY GUARD (the Witnesses incident)
+## 2. THE HOMOGENEITY GUARD (the Witnesses incident), AND THE MIXED-MACHINE FIX
 
 ffmpeg's concat demuxer silently drops every FLAC frame whose blocksize exceeds
 the **first** list entry's STREAMINFO max-blocksize, **and still exits 0**. A
 mixed-encoder sentence set therefore produces a shorter audiobook with no error
-anywhere. `render/flac_header.py:assert_concat_homogeneous` refuses a set whose
-max-blocksize, sample rate or channel count is not uniform - ported from e2a
-`lib/core.py:4079-4105`.
+anywhere. That is the Witnesses incident, and e2a's answer
+(`lib/core.py:4079-4105`) was to refuse the set.
+
+**Refusing was right about the danger and wrong about the remedy.** The three
+machines that render these books do not agree on how they write a FLAC:
+
+| machine | subtype | max-blocksize |
+|---|---|---|
+| WSL (Linux) | PCM_16 | 2304 |
+| Mac (MLX) | PCM_24 | 2304 |
+| Windows (soundfile) | PCM_16 | 4096 |
+
+So a book rendered on one and RESUMED on another has a mixed set through no
+fault of its audio - every sample in it is correct, and the disagreement is
+entirely in the container's framing and declared depth. Refusing it strands a
+finished render.
+
+The guard is therefore split in two (`render/flac_header.py`):
+
+- **`fatal_inhomogeneity`** - sample rate, channel count. No rewrite can
+  reconcile these: they say the audio is not what the session claims it is. A
+  chunk at the wrong rate plays at the wrong speed; a stereo chunk in a mono set
+  makes the demuxer drop frames. **These still refuse.**
+- **`fixable_inhomogeneity`** - max-blocksize, bit depth. Container-only. On the
+  padded path `assemble/chapters.py:_normalize_mixed` re-encodes that chapter's
+  chunks through ONE writer into the work dir, logs a single line naming the
+  mix, and proceeds. The session is never touched.
+
+**The rewrite targets the WIDEST depth in the set, not PCM_16.** Measured
+2026-09-04: re-encoding a real PCM_24 chunk as PCM_16 moves its samples by up to
+one 16-bit LSB (1.53e-05 full-scale). Sample-EXACT and LOSSLESS are two
+different claims and this fix owes both - it is reconciling a container
+mismatch, and it may not quietly cost the Mac's renders 8 bits on the way. FLAC
+is a lossless codec, so decoding and re-encoding at a depth at least as wide as
+the source returns the identical PCM; the tests assert that sample by sample.
+
+**A homogeneous set never reaches any of this.** Every book rendered on one
+machine - which is all three golden books - goes into the concat list as the
+session's own files, and the work dir stays empty. That invariant is what the
+golden parity numbers rest on, and it is asserted directly
+(`TestHomogeneousSetsNeverRewrite`).
+
+`assert_concat_homogeneous` remains as the last-line check on whatever actually
+goes into the list; anything still inhomogeneous there is a bug in the rewrite.
 
 ---
 

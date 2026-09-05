@@ -217,7 +217,7 @@ def assemble(
     log(f"[ASSEMBLE] Assembling all {len(manifest.chapters)} chapters...")
     # work_dir is where an unpadded engine's faded chunks and generated
     # silence go; a padded engine never touches it.
-    plans = plan_chapters(manifest, work_dir)
+    plans = plan_chapters(manifest, work_dir, log)
     for plan in plans:
         log(
             f"[ASSEMBLE] Chapter {plan.index}: sentences "

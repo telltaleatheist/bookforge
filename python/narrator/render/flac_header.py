@@ -145,37 +145,101 @@ def read_expected(path: str, sample_rate: int, channels: int = 1) -> StreamInfo:
     return info
 
 
+#: Properties whose mismatch is a REAL ERROR: no rewrite can reconcile them,
+#: because they change what the audio MEANS.
+FATAL_PROPERTIES = (
+    ("sample_rate", "samplerate"),
+    ("channels", "channel count"),
+)
+
+#: Properties whose mismatch only breaks the CONTAINER, not the audio. A
+#: lossless rewrite through one encoder fixes them, and `assemble/chapters.py`
+#: does exactly that rather than refusing the book.
+FIXABLE_PROPERTIES = (
+    ("max_blocksize", "max-blocksize"),
+    ("bits_per_sample", "bit depth"),
+)
+
+
+def _describe_groups(infos: list[StreamInfo], attr: str, label: str) -> str | None:
+    groups: dict[int, list[str]] = {}
+    for info in infos:
+        groups.setdefault(getattr(info, attr), []).append(info.path)
+    if len(groups) <= 1:
+        return None
+    parts = []
+    for value in sorted(groups):
+        paths = groups[value]
+        parts.append(
+            f"{label} {value}: {len(paths)} file(s) "
+            f"(e.g. {os.path.basename(paths[0])})"
+        )
+    return "; ".join(parts)
+
+
+def fatal_inhomogeneity(infos: list[StreamInfo]) -> str | None:
+    """A mismatch no rewrite can fix, or None.
+
+    A chunk at the wrong sample rate plays at the wrong speed; a stereo chunk in
+    a mono set makes the concat demuxer drop frames while still exiting 0.
+    Neither is a container detail - each says the audio is not what the session
+    claims it is - so these still refuse.
+    """
+    if not infos:
+        raise ValueError("fatal_inhomogeneity(): nothing to concatenate")
+    for attr, label in FATAL_PROPERTIES:
+        described = _describe_groups(infos, attr, label)
+        if described:
+            return described
+    return None
+
+
+def fixable_inhomogeneity(infos: list[StreamInfo]) -> str | None:
+    """A mismatch a lossless rewrite fixes, or None.
+
+    MEASURED across the three machines that render these books (2026-09-04):
+
+        WSL (Linux)        PCM_16, max-blocksize 2304
+        Mac (MLX)          PCM_24, max-blocksize 2304
+        Windows soundfile  PCM_16, max-blocksize 4096
+
+    A book rendered partly on one and resumed on another therefore has a mixed
+    set, through no fault of the audio. ffmpeg's concat demuxer silently drops
+    every FLAC frame whose blocksize exceeds the FIRST list entry's, and a mixed
+    bit depth changes the stream's declared parameters mid-list - so the set
+    cannot go to the demuxer as it is. But every sample in it is correct, and
+    re-encoding FLAC is lossless, so refusing the book was the wrong answer.
+    """
+    if not infos:
+        raise ValueError("fixable_inhomogeneity(): nothing to concatenate")
+    described = []
+    for attr, label in FIXABLE_PROPERTIES:
+        one = _describe_groups(infos, attr, label)
+        if one:
+            described.append(one)
+    return "; ".join(described) if described else None
+
+
 def assert_concat_homogeneous(infos: list[StreamInfo]) -> None:
     """Refuse a set that ffmpeg's concat demuxer would silently damage.
 
     Ported from ebook2audiobook@9daab0ba lib/core.py:combine_audio_sentences.
 
-    The demuxer drops every FLAC frame whose block size exceeds the FIRST list
-    entry's STREAMINFO max-blocksize, AND STILL EXITS 0. A mixed-encoder sentence
-    set (say, a book part re-rendered by a different backend) therefore produces a
-    shorter audiobook with no error anywhere. A mixed sample rate corrupts timing
-    the same way. Both are checked here, before a single byte is handed to ffmpeg.
+    This is the LAST-LINE check, run on whatever actually goes into the concat
+    list. `assemble/chapters.py` calls `fixable_inhomogeneity` first and rewrites
+    rather than reaching this for a bit-depth or blocksize mix; anything still
+    inhomogeneous here is a bug in that rewrite.
     """
     if not infos:
         raise ValueError("assert_concat_homogeneous(): nothing to concatenate")
 
-    for attr, label in (
-        ("max_blocksize", "max-blocksize"),
-        ("sample_rate", "samplerate"),
-        ("channels", "channel count"),
-    ):
-        groups: dict[int, list[str]] = {}
-        for info in infos:
-            groups.setdefault(getattr(info, attr), []).append(info.path)
-        if len(groups) > 1:
-            lines = [
-                f"FLAC {label} is not homogeneous - ffmpeg concat would silently drop "
-                f"frames or corrupt timing:"
-            ]
-            for value in sorted(groups):
-                paths = groups[value]
-                lines.append(
-                    f"  {label} {value}: {len(paths)} file(s) "
-                    f"(e.g. {os.path.basename(paths[0])})"
-                )
-            raise ValueError("\n".join(lines))
+    problems = []
+    for attr, label in FATAL_PROPERTIES + FIXABLE_PROPERTIES:
+        described = _describe_groups(infos, attr, label)
+        if described:
+            problems.append(
+                f"FLAC {label} is not homogeneous - ffmpeg concat would silently "
+                f"drop frames or corrupt timing: {described}"
+            )
+    if problems:
+        raise ValueError("\n".join(problems))

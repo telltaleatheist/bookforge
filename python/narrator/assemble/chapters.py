@@ -48,6 +48,8 @@ from ..manifest import Chapter, Manifest, chunk_path
 from ..render.flac_header import (
     StreamInfo,
     assert_concat_homogeneous,
+    fatal_inhomogeneity,
+    fixable_inhomogeneity,
     read_expected,
     read_streaminfo,
 )
@@ -101,8 +103,65 @@ def _resolve_profile(manifest: Manifest) -> EngineProfile:
     )
 
 
-def _plan_padded(manifest: Manifest, chapter: Chapter) -> tuple[list[str], list[StreamInfo]]:
-    """The original path: the session's own FLACs, untouched."""
+def _normalize_mixed(paths: list[str], infos: list[StreamInfo], chapter_index: int,
+                     sample_rate: int, work_dir: str | None,
+                     mix: str, log) -> tuple[list[str], list[StreamInfo]]:
+    """Re-encode a chapter's chunks through ONE writer, losslessly.
+
+    A book rendered partly on one machine and resumed on another has a mixed
+    FLAC set through no fault of its audio - WSL writes PCM_16/2304, the Mac's
+    MLX run PCM_24/2304, Windows soundfile PCM_16/4096. Refusing that book was
+    the wrong answer: every sample in it is correct, FLAC re-encoding is
+    lossless, and the mismatch is purely in the container's framing and declared
+    depth.
+
+    The target depth is the WIDEST in the set, so the rewrite cannot cost the
+    Mac's 24-bit renders 8 bits (see `edges.target_subtype`). Output goes to the
+    work dir; the session is never touched.
+    """
+    if not work_dir:
+        raise ValueError(
+            f"chapter {chapter_index} mixes FLAC encodings ({mix}) and must be "
+            f"rewritten through one encoder to be concatenated - but plan_chapters() "
+            f"was given no working directory to write into"
+        )
+    subtype = edges.target_subtype(max(i.bits_per_sample for i in infos))
+    log(
+        f"[assembly] Chapter {chapter_index}: mixed FLAC encodings across the "
+        f"rendered set ({mix}); re-encoding {len(paths)} chunk(s) losslessly to "
+        f"{subtype} so ffmpeg's concat demuxer cannot drop frames"
+    )
+
+    out_dir = edges.edge_dir(work_dir, chapter_index)
+    new_paths: list[str] = []
+    new_infos: list[StreamInfo] = []
+    for src, info in zip(paths, infos):
+        dst = os.path.join(out_dir, os.path.basename(src))
+        written = edges.write_normalized_chunk(src, dst, sample_rate, subtype)
+        if written != info.samples:
+            raise AssertionError(
+                f"re-encoding {src} changed it from {info.samples} to {written} samples"
+            )
+        rewritten = read_streaminfo(dst)
+        if rewritten.samples != info.samples:
+            raise AssertionError(
+                f"re-encoded {dst} holds {rewritten.samples} samples, the source held "
+                f"{info.samples}"
+            )
+        new_paths.append(dst)
+        new_infos.append(rewritten)
+    return new_paths, new_infos
+
+
+def _plan_padded(manifest: Manifest, chapter: Chapter, work_dir: str | None,
+                 log) -> tuple[list[str], list[StreamInfo]]:
+    """The original path: the session's own FLACs, untouched.
+
+    The ONE exception is a set that mixes bit depth or blocksize because the
+    book was rendered across machines - see `_normalize_mixed`. A homogeneous
+    set (every book rendered on one machine, which is all of them today) never
+    reaches it and nothing is written at all.
+    """
     paths: list[str] = []
     infos: list[StreamInfo] = []
     for chunk in chapter.chunks:
@@ -126,6 +185,20 @@ def _plan_padded(manifest: Manifest, chapter: Chapter) -> tuple[list[str], list[
                 f"{chunk.samples} samples but the file holds {infos[-1].samples} - the "
                 f"audio changed after the manifest was built ({path})"
             )
+
+    # A sample-rate or channel mismatch says the audio is not what the session
+    # claims; no rewrite can reconcile that, so it still refuses.
+    fatal = fatal_inhomogeneity(infos)
+    if fatal:
+        raise ValueError(
+            f"chapter {chapter.index}: FLAC {fatal}. This is not a container "
+            f"mismatch - the audio itself disagrees with the session."
+        )
+    mix = fixable_inhomogeneity(infos)
+    if mix:
+        return _normalize_mixed(
+            paths, infos, chapter.index, manifest.sampleRate, work_dir, mix, log
+        )
     return paths, infos
 
 
@@ -206,7 +279,7 @@ def _check_chunk(manifest: Manifest, chapter: Chapter, chunk) -> str:
 
 
 def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
-              work_dir: str | None) -> ChapterPlan:
+              work_dir: str | None, log) -> ChapterPlan:
     if profile.needs_processing:
         if not work_dir:
             raise ValueError(
@@ -216,7 +289,7 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
             )
         paths, infos = _plan_unpadded(manifest, chapter, profile, work_dir)
     else:
-        paths, infos = _plan_padded(manifest, chapter)
+        paths, infos = _plan_padded(manifest, chapter, work_dir, log)
 
     # ffmpeg's concat demuxer drops every FLAC frame whose blocksize exceeds the
     # FIRST list entry's STREAMINFO max-blocksize AND STILL EXITS 0, so a mixed
@@ -235,7 +308,8 @@ def _plan_one(manifest: Manifest, chapter: Chapter, profile: EngineProfile,
     )
 
 
-def plan_chapters(manifest: Manifest, work_dir: str | None = None) -> list[ChapterPlan]:
+def plan_chapters(manifest: Manifest, work_dir: str | None = None,
+                  log=None) -> list[ChapterPlan]:
     """Resolve every chapter to files + sample counts, running all the guards.
 
     This happens BEFORE a single ffmpeg is spawned: a book that is going to fail
@@ -249,8 +323,11 @@ def plan_chapters(manifest: Manifest, work_dir: str | None = None) -> list[Chapt
     if not manifest.chapters:
         raise ValueError("plan_chapters(): the manifest has no chapters")
     profile = _resolve_profile(manifest)
+    if log is None:
+        def log(line):
+            print(line, flush=True)
     return [
-        _plan_one(manifest, chapter, profile, work_dir)
+        _plan_one(manifest, chapter, profile, work_dir, log)
         for chapter in manifest.chapters
     ]
 

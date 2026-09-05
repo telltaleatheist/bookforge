@@ -50,9 +50,32 @@ import os
 import numpy as np
 import soundfile as sf
 
-#: What every file this module writes is encoded as. One writer, one setting, so
-#: the concat list it produces cannot be non-homogeneous.
+#: Default encoding for files this module writes. One writer, one setting, so
+#: the concat list it produces cannot be non-homogeneous. Overridden per chapter
+#: by `target_subtype()` when the source set is wider than 16 bits.
 SUBTYPE = "PCM_16"
+
+#: FLAC bit depth -> soundfile subtype. FLAC itself allows 4..32 bits; these are
+#: the three libsndfile will write.
+_SUBTYPE_FOR_BITS = ((16, "PCM_16"), (24, "PCM_24"), (32, "PCM_32"))
+
+
+def target_subtype(bits_per_sample: int) -> str:
+    """The narrowest subtype that holds `bits_per_sample` WITHOUT LOSS.
+
+    This is why the rewrite is not simply "everything to PCM_16". Measured
+    2026-09-04: re-encoding a real PCM_24 chunk as PCM_16 changes its samples by
+    up to one 16-bit LSB (1.53e-05 full-scale). Sample-EXACT is not the same
+    claim as LOSSLESS, and the mixed-machine rewrite has to be both - it is
+    fixing a container mismatch, and it may not quietly cost the Mac's renders
+    8 bits of depth on the way.
+    """
+    for bits, subtype in _SUBTYPE_FOR_BITS:
+        if bits_per_sample <= bits:
+            return subtype
+    raise ValueError(
+        f"no FLAC subtype for {bits_per_sample} bits per sample (max 32)"
+    )
 
 
 def raised_cosine_in(n: int) -> np.ndarray:
@@ -102,7 +125,8 @@ def apply_edge_fades(data: np.ndarray, fade_in_n: int, fade_out_n: int) -> np.nd
 
 
 def write_faded_chunk(src: str, dst: str, sample_rate: int,
-                      fade_in_ms: float, fade_out_ms: float) -> int:
+                      fade_in_ms: float, fade_out_ms: float,
+                      subtype: str = SUBTYPE) -> int:
     """Read `src`, fade both edges, write `dst`. Returns the sample count.
 
     The sample count is asserted to be unchanged: a fade that altered a length
@@ -123,11 +147,33 @@ def write_faded_chunk(src: str, dst: str, sample_rate: int,
     )
     if data.shape[0] != before:
         raise AssertionError(f"edge fade changed the length of {src}")
-    sf.write(dst, data, sample_rate, subtype=SUBTYPE, format="FLAC")
+    sf.write(dst, data, sample_rate, subtype=subtype, format="FLAC")
     return before
 
 
-def write_silence(path: str, frames: int, sample_rate: int, channels: int = 1) -> int:
+def write_normalized_chunk(src: str, dst: str, sample_rate: int,
+                           subtype: str) -> int:
+    """Re-encode `src` to `dst` with no change to a single sample.
+
+    The lossless half of the mixed-machine fix. FLAC is a lossless codec, so
+    decoding and re-encoding at a bit depth AT LEAST as wide as the source
+    returns the identical PCM; only the container's framing (blocksize) and its
+    declared depth change, which is exactly what had to be reconciled.
+
+    Reading as float64 is exact for every depth libsndfile writes here: a
+    float64 mantissa is 53 bits and the widest source is 32.
+    """
+    data, rate = sf.read(src, dtype="float64", always_2d=True)
+    if rate != sample_rate:
+        raise ValueError(
+            f"chunk is {rate} Hz, the manifest says the book is {sample_rate} Hz: {src}"
+        )
+    sf.write(dst, data, sample_rate, subtype=subtype, format="FLAC")
+    return data.shape[0]
+
+
+def write_silence(path: str, frames: int, sample_rate: int, channels: int = 1,
+                  subtype: str = SUBTYPE) -> int:
     """Write `frames` samples of digital silence, with the same encoder settings
     every other file in the concat list is written with."""
     if frames <= 0:
@@ -136,7 +182,7 @@ def write_silence(path: str, frames: int, sample_rate: int, channels: int = 1) -
         path,
         np.zeros((frames, channels), dtype=np.float64),
         sample_rate,
-        subtype=SUBTYPE,
+        subtype=subtype,
         format="FLAC",
     )
     return frames
