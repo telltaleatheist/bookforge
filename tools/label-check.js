@@ -50,7 +50,8 @@ const TRAINING = '/Volumes/Callisto/training/rubric';
 if (book && corpus) {
   console.error('label-check: give --book (an epub-derived book) or --corpus (a labelled ' +
     'corpus book), not both.');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 
 /**
@@ -70,7 +71,8 @@ function loadCorpusRows(slug) {
   const file = path.join(dir, 'labels.json');
   if (!fs.existsSync(file)) {
     console.error(`label-check: no labels.json in ${dir}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return null;
   }
   const s = JSON.parse(fs.readFileSync(file, 'utf-8'));
   const dims = s.pageDimensions || [];
@@ -104,6 +106,9 @@ const rows = corpus
   ? loadCorpusRows(corpus)
   : fs.readFileSync(path.join(TRAINING, 'epub-derived', label, 'dataset.jsonl'), 'utf-8')
       .split('\n').filter(Boolean).map(JSON.parse);
+// loadCorpusRows reports its own error and returns null rather than exiting —
+// stop here rather than run the rules over a null book.
+if (rows === null) return;
 
 /**
  * `[Image 630x948]` is the extractor's PLACEHOLDER for a block with no text —

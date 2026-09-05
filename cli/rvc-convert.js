@@ -73,10 +73,10 @@ async function main() {
     },
   });
   console.log(`[rvc] done in ${((Date.now() - t0) / 1000).toFixed(0)}s -> ${outPath}`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[rvc] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

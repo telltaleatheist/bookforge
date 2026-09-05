@@ -46,7 +46,10 @@ if (!process.versions.electron) {
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
   });
-  process.exit(result.status === null ? 1 : result.status);
+  // stdio: 'inherit' — the child writes straight to this process's own stdout/
+  // stderr fds, so nothing here is buffered and there is nothing to drain.
+  process.exitCode = result.status === null ? 1 : result.status;
+  return;
 }
 
 const { app } = require('electron');
@@ -71,7 +74,8 @@ Quire.registerScheme();
 const books = process.argv.slice(process.argv.indexOf(__filename) + 1).filter(a => !a.startsWith('--'));
 if (books.length === 0) {
   console.error('usage: node tools/phasec-gesture-matrix.js <book.epub> [more.epub ...]');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 let failures = 0;

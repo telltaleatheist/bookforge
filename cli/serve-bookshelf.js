@@ -152,13 +152,13 @@ function preflightMediaTools(toolPaths) {
     stopping = true;
     console.log(`\n[serve-bookshelf] ${signal} — stopping`);
     bookshelfServer.stop().then(
-      () => process.exit(0),
-      (err) => { console.error(`[serve-bookshelf] stop failed: ${err.message}`); process.exit(1); },
+      () => process.exit(0),  // abort-path: SIGINT/SIGTERM teardown
+      (err) => { console.error(`[serve-bookshelf] stop failed: ${err.message}`); process.exit(1); },  // abort-path: SIGINT/SIGTERM teardown
     );
   };
   process.on('SIGINT', () => shutdown('SIGINT'));
   process.on('SIGTERM', () => shutdown('SIGTERM'));
 })().catch((err) => {
   console.error(`[serve-bookshelf] ${err.message}`);
-  process.exit(1);
+  process.exitCode = 1;
 });

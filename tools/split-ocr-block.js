@@ -52,23 +52,23 @@ function usage(msg) {
     '  --cats      category per resulting part, in order (default: keep the original)\n' +
     '  --text-at   split the stored text before this substring instead of guessing\n' +
     '              by character-proportion (strongly preferred — exact)');
-  process.exit(msg ? 1 : 0);
+  process.exitCode = msg ? 1 : 0;
 }
-if (flag('help') || flag('h') || !argv.length) usage();
+if (flag('help') || flag('h') || !argv.length) { usage(); return; }
 
 const projectDir = opt('project');
 const blockId = opt('block');
 const at = Number(opt('at'));
-if (!projectDir) usage('--project <dir> is required');
-if (!blockId) usage('--block <id> is required');
-if (!Number.isInteger(at) || at < 1) usage('--at wants the 0-based index of the line starting part 2 (>=1)');
+if (!projectDir) { usage('--project <dir> is required'); return; }
+if (!blockId) { usage('--block <id> is required'); return; }
+if (!Number.isInteger(at) || at < 1) { usage('--at wants the 0-based index of the line starting part 2 (>=1)'); return; }
 const cats = (opt('cats', '') || '').split(',').map(s => s.trim()).filter(Boolean);
 const textAt = opt('text-at', null);
 const dryRun = flag('dry-run');
 
 const projectPath = path.resolve(projectDir);
 const manifestPath = path.join(projectPath, 'manifest.json');
-if (!fs.existsSync(manifestPath)) usage(`no manifest at ${manifestPath}`);
+if (!fs.existsSync(manifestPath)) { usage(`no manifest at ${manifestPath}`); return; }
 
 // Editor state is a per-project sidecar (`editor-state.json`), read and written
 // through the ONE module that owns it — electron/editor-state-store.ts, compiled.
@@ -78,18 +78,20 @@ const storePath = path.join(REPO_ROOT, 'dist', 'electron', 'editor-state-store.j
 if (!fs.existsSync(storePath)) {
   console.error(`split-ocr-block: ${storePath} is not built. Compile first:`);
   console.error('  npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 const editorStateStore = require(storePath);
 const editorState = editorStateStore.peekEditorStateSync(projectPath);
 const blocks = editorState && editorState.ocrBlocks;
-if (!Array.isArray(blocks) || !blocks.length) usage(`${projectPath} has no editor ocrBlocks`);
+if (!Array.isArray(blocks) || !blocks.length) { usage(`${projectPath} has no editor ocrBlocks`); return; }
 
 const idx = blocks.findIndex(b => b.id === blockId);
-if (idx < 0) usage(`no block ${blockId} in this manifest`);
+if (idx < 0) { usage(`no block ${blockId} in this manifest`); return; }
 const block = blocks[idx];
 if (block.line_count <= at) {
   usage(`block ${blockId} has ${block.line_count} line(s); --at ${at} is out of range`);
+  return;
 }
 
 // ── recover the line boxes by re-OCRing this one page ────────────────────────
@@ -97,7 +99,7 @@ const archiveDir = path.join(path.resolve(projectDir), 'archive');
 const pdf = fs.existsSync(archiveDir)
   ? fs.readdirSync(archiveDir).filter(f => f.toLowerCase().endsWith('.pdf')).map(f => path.join(archiveDir, f))[0]
   : null;
-if (!pdf) usage(`no PDF in ${archiveDir} — cannot recover line geometry`);
+if (!pdf) { usage(`no PDF in ${archiveDir} — cannot recover line geometry`); return; }
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'split-ocr-'));
 console.log(`[split] re-OCR page ${block.page} of ${path.basename(pdf)} for line geometry…`);
@@ -118,12 +120,14 @@ if (!near || near.d > 12) {
   console.error(`[split] could not find the same block in the re-OCR (closest was ${near ? near.d.toFixed(1) : 'none'} pt away).`);
   console.error('        The stored blocks may predate the OCR_RENDER_SCALE fix, in which case');
   console.error('        their geometry does not correspond to a current OCR pass at all.');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 const lineBoxes = near.b.lineBoxes || [];
 if (lineBoxes.length <= at) {
   console.error(`[split] the re-OCR found ${lineBoxes.length} line(s) here, so --at ${at} has no boundary.`);
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 console.log(`[split] matched (${near.d.toFixed(1)} pt away), ${lineBoxes.length} line boxes`);
 
@@ -135,7 +139,8 @@ if (textAt) {
   if (cut <= 0) {
     console.error(`[split] --text-at ${JSON.stringify(textAt)} not found in the stored text (or at position 0):`);
     console.error(`        ${JSON.stringify(block.text)}`);
-    process.exit(1);
+    process.exitCode = 1;
+    return;
   }
   textParts = [block.text.slice(0, cut).trim(), block.text.slice(cut).trim()];
 } else {
@@ -180,7 +185,7 @@ for (const p of parts) {
   console.log(`      ${JSON.stringify(p.text)}`);
 }
 
-if (dryRun) { console.log('\n[split] --dry-run, nothing written'); process.exit(0); }
+if (dryRun) { console.log('\n[split] --dry-run, nothing written'); process.exitCode = 0; return; }
 
 blocks.splice(idx, 1, ...parts);
 

@@ -29,7 +29,10 @@ if (!process.versions.electron) {
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
   });
-  process.exit(result.status === null ? 1 : result.status);
+  // stdio: 'inherit' — the child writes straight to this process's own stdout/
+  // stderr fds, so nothing here is buffered and there is nothing to drain.
+  process.exitCode = result.status === null ? 1 : result.status;
+  return;
 }
 
 const { app, BrowserWindow } = require('electron');
@@ -50,7 +53,8 @@ for (let i = 0; i < argv.length; i++) {
 }
 if (!bookPath) {
   console.error('usage: node tools/epub-viewer-harness.js <book.epub> [--port 4266] [--measure out.json]');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 const ms = (n) => Math.round(n * 10) / 10;

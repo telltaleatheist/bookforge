@@ -54,7 +54,8 @@ const REPO = path.resolve(__dirname, '..');
 const MIGRATION = path.join(REPO, 'dist', 'electron', 'bookshelf-id-migration.js');
 if (!fs.existsSync(MIGRATION)) {
   console.error('Compile first: npx tsc -p tsconfig.electron.json');
-  process.exit(1);
+  process.exitCode = 1;
+  return;
 }
 // The migration reaches manifest-service to resolve a path to its variant, and
 // that module's dependency graph reaches the component catalog, which
@@ -85,15 +86,18 @@ if (!LIBRARY) {
     'Say which library to sweep:\n'
     + '  node tools/migrate-bookshelf-ids.js "E:\\Bookforge"          (dry run — writes nothing)\n'
     + '  node tools/migrate-bookshelf-ids.js "E:\\Bookforge" --apply  (rekeys what it found)');
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 if (!fs.existsSync(path.join(LIBRARY, 'projects'))) {
   console.error(`${LIBRARY} has no projects/ folder, so it is not a BookForge library.`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 if (!fs.existsSync(path.join(LIBRARY, '.bookshelf'))) {
   console.error(`${LIBRARY} has no .bookshelf folder — nothing has ever been read from this library.`);
-  process.exit(2);
+  process.exitCode = 2;
+  return;
 }
 
 // ── BookForge must not be running ────────────────────────────────────────────
@@ -115,7 +119,8 @@ if (APPLY && bookforgeRunning()) {
   console.error(
     'BookForge is running. Close it and run this again: this rewrites the very stores its bookshelf '
     + 'server is reading and writing. Nothing was done.');
-  process.exit(3);
+  process.exitCode = 3;
+  return;
 }
 
 // ── The sweep ────────────────────────────────────────────────────────────────

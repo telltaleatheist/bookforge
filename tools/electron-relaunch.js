@@ -22,6 +22,15 @@ function relaunchUnderElectron(entryFile) {
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
   });
+  // abort-path: process-replacement, not a normal completion. stdio: 'inherit'
+  // means the child wrote straight to this process's own stdout/stderr fds, so
+  // there is nothing buffered here to drain. A hard exit is also REQUIRED, not
+  // just harmless: every caller invokes this as `relaunchUnderElectron(...)` at
+  // its own top level and relies on the process dying right here when not
+  // under Electron — turning this into `exitCode` + a plain `return` would
+  // hand control back to the caller's own top-level code, which would then run
+  // a second time (outside Electron, against a real electron require) instead
+  // of never running at all.
   process.exit(result.status === null ? 1 : result.status);
 }
 

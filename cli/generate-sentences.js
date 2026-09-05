@@ -302,7 +302,7 @@ async function main() {
       stopping = true;
       console.log(`\n[sentences] ${sig} — aborting transcription...`);
       controller.abort();
-      setTimeout(() => process.exit(130), 1500);
+      setTimeout(() => process.exit(130), 1500);  // abort-path: SIGINT/SIGTERM teardown
     };
     process.on('SIGINT', () => stopAndExit('SIGINT'));
     process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -358,10 +358,10 @@ async function main() {
   }
 
   console.log(`[sentences] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[sentences] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -131,9 +131,9 @@ async function main() {
     bridge.stopParallelConversion(jobId)
       .then((stopped) => {
         console.log(stopped ? '[batch] worker stopped cleanly' : '[batch] no active session (already done)');
-        process.exit(130);
+        process.exit(130);  // abort-path: SIGINT/SIGTERM teardown
       })
-      .catch((e) => { console.error('[batch] teardown error:', e && e.message); process.exit(130); });
+      .catch((e) => { console.error('[batch] teardown error:', e && e.message); process.exit(130); });  // abort-path: SIGINT/SIGTERM teardown
   };
   process.on('SIGINT', () => stopAndExit('SIGINT'));
   process.on('SIGTERM', () => stopAndExit('SIGTERM'));
@@ -227,10 +227,10 @@ async function main() {
   console.log(`[batch] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
 
   if (tempInput) { try { fs.unlinkSync(tempInput); } catch { /* temp text — best-effort */ } }
-  process.exit(0);
+  process.exitCode = 0;
 }
 
 main().catch((e) => {
   console.error('\n[batch] ERROR:', e && e.message ? e.message : e);
-  process.exit(1);
+  process.exitCode = 1;
 });

@@ -36,7 +36,10 @@ if (!process.versions.electron) {
     stdio: 'inherit',
     env: { ...process.env, ELECTRON_DISABLE_SECURITY_WARNINGS: '1' },
   });
-  process.exit(result.status === null ? 1 : result.status);
+  // stdio: 'inherit' — the child writes straight to this process's own stdout/
+  // stderr fds, so nothing here is buffered and there is nothing to drain.
+  process.exitCode = result.status === null ? 1 : result.status;
+  return;
 }
 
 const { app } = require('electron');

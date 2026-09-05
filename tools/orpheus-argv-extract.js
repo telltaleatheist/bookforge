@@ -118,7 +118,8 @@ if (require.main === module) {
   const file = process.argv[2];
   if (!file) {
     console.error('usage: orpheus-argv-extract.js <parallel-tts-bridge.ts>');
-    process.exit(64);
+    process.exitCode = 64;
+    return;
   }
   console.log(JSON.stringify(extract(fs.readFileSync(file, 'utf-8')), null, 2));
 }
