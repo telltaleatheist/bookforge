@@ -53,7 +53,7 @@
  * allowlist is a list of variables somebody remembered, and the ones that matter
  * are the ones nobody did.
  *
- * **Native**: the same four and `envExtras`, ON TOP OF `buildCondaSpawnEnv`,
+ * **Native**: the same four and `envExtras`, ON TOP OF `buildToolsSpawnEnv`,
  * which spreads `process.env` and then adds three things of its own:
  *
  *   `E2A_TMP_DIR`   the sessions root, always set (from the configured scratch,
@@ -103,14 +103,13 @@ import {
 } from './tool-paths';
 import {
   getPythonInvocation,
-  getDefaultE2aPath,
   getCondaPath,
   getNarratorMlxEnv,
   windowsToWslPath,
   toUnpackedPath,
-  buildCondaSpawnEnv,
+  buildToolsSpawnEnv,
   type PythonInvocation,
-} from './e2a-paths';
+} from './narrator-paths';
 
 /** The engines narrator can actually RUN. `xtts` is retired and is not one. */
 export type NarratorEngineId = 'orpheus' | 'higgs';
@@ -441,7 +440,7 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
   return {
     command: py.command,
     args: nativeArgs,
-    env: buildCondaSpawnEnv({ ...baseEnv, PYTHONPATH: pythonRoot }),
+    env: buildToolsSpawnEnv({ ...baseEnv, PYTHONPATH: pythonRoot }),
     cwd: req.cwdHint ?? app.getPath('userData'),
     viaWsl: false,
     shell: false,
@@ -488,7 +487,7 @@ export function narratorNativePython(engine: NarratorEngineId | undefined): Pyth
   // Orpheus (managed env on Windows-without-WSL and on Linux), the Higgs seam
   // (which refuses on Windows without the WSL toggle, by name), and the bundled
   // env for the tools phases.
-  return getPythonInvocation(getDefaultE2aPath(), engine);
+  return getPythonInvocation(engine);
 }
 
 /**

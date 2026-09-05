@@ -15,7 +15,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { execSync, spawn } from 'child_process';
 import { app } from 'electron';
-import { getActiveBundledEnvPath, getActiveBundledE2aPath, relocatableBinaryPath } from './e2a-env-bootstrap';
+import { getActiveToolsEnvPath, relocatableBinaryPath, relocatablePythonPath } from './tools-env-bootstrap';
 import { getManagedBinaryPath } from './update/managed-bins';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -79,12 +79,30 @@ export interface ToolPathsConfig {
   // Conda/Python
   condaPath?: string;
 
-  // ebook2audiobook
-  e2aPath?: string;
+  /**
+   * The Python environment that runs the ENGINE-AGNOSTIC doors: audiobook
+   * assembly, session resume/list, whisper, the metadata tools, plus the
+   * ffmpeg/ffprobe/sox binaries beside them.
+   *
+   * Normally ABSENT. BookForge downloads and unpacks its own relocatable env
+   * into `<userData>/runtime/tools-env` (tools-env-bootstrap.ts) and that is what
+   * every install uses. This key exists for the machine that already has a
+   * suitable env and does not want a second 1.8 GB copy — and it is what the
+   * one-time Phase 6 migration writes when it adopts the environment that used
+   * to be resolved as `<ebook2audiobook>/python_env`.
+   *
+   * Set-but-missing is an ERROR, not a skip (narrator-paths.ts:resolveToolsEnv).
+   */
+  toolsEnvPath?: string;
 
-  // TTS scratch dir: where in-progress e2a sessions are written before being
-  // cached into the project. Empty = derived sibling of the library root.
-  ttsScratchPath?: string;
+  /**
+   * Where in-progress narrator sessions are written before being cached into the
+   * project — the value of `NARRATOR_SESSIONS_ROOT`. Empty = `<library>/tmp`.
+   *
+   * Called `ttsScratchPath` until Phase 6; `migrateLegacyConfigKeys()` renames a
+   * stored value once, on load, so there are never two live spellings.
+   */
+  narratorScratchPath?: string;
 
   // FFmpeg
   ffmpegPath?: string;
@@ -149,7 +167,23 @@ export interface ToolPathsConfig {
   useWsl2ForOrpheus?: boolean;    // Master toggle to use WSL2 for Orpheus (legacy, superseded by useWsl2ForAllTts)
   wslDistro?: string;              // WSL distro name (e.g., "Ubuntu")
   wslCondaPath?: string;           // Conda path inside WSL (e.g., "/home/user/anaconda3/bin/conda")
-  wslE2aPath?: string;             // e2a path inside WSL (e.g., "/home/user/ebook2audiobook")
+  /**
+   * The GUEST-SIDE sessions root: where a WSL render writes `ebook-<uuid>`.
+   *
+   * Empty = `<guest home>/bookforge-sessions`, derived from `wslCondaPath` (see
+   * getWslSessionsRoot). It replaced `wslE2aPath`, which named the ebook2audiobook
+   * CHECKOUT inside the guest and put the sessions in its `tmp/` — so deleting
+   * that checkout took every in-flight render with it, and BookForge's scratch
+   * lived inside somebody else's repository.
+   */
+  wslSessionsRoot?: string;
+  /**
+   * DEAD KEY, read only to refuse. Pre-Phase-6 this named the guest's
+   * ebook2audiobook checkout and `<wslE2aPath>/tmp` was the sessions root.
+   * Sessions still sitting there are named in a refusal rather than silently
+   * scanned alongside the new root — see legacyGuestSessionsRoot().
+   */
+  wslE2aPath?: string;
   wslOrpheusCondaEnv?: string;     // Conda env name for Orpheus in WSL (default: "orpheus_tts")
 
   // Higgs Audio v3, served from WSL. The same shape as the Orpheus pair above and
@@ -270,7 +304,105 @@ export function loadConfig(): ToolPathsConfig {
   }
 
   state.loaded = true;
+  migrateLegacyConfigKeys();
   return state.config;
+}
+
+/**
+ * ONE-TIME, ON LOAD: rename the keys Phase 6 retired, so there is never a moment
+ * when two spellings are both live.
+ *
+ * `ttsScratchPath` → `narratorScratchPath` is a pure rename: same meaning, same
+ * value, an e2a-era name for a narrator directory. It is rewritten to disk
+ * immediately, because a value that is only renamed in memory is a value the
+ * Settings panel will helpfully save back under the old name.
+ *
+ * `wslE2aPath` is NOT migrated. It named a checkout, not a sessions root, and
+ * carrying it forward would keep writing BookForge's scratch into somebody
+ * else's git repository. It is left in the file, unread except by the refusal
+ * that names it (see legacyGuestSessionsRoot).
+ *
+ * Deliberately NOT wrapped in a try that swallows: if the rewrite fails, the
+ * failure is the same one `saveConfig` reports for any other write, and hiding
+ * it here would leave the app running on an in-memory rename nobody can see.
+ */
+function migrateLegacyConfigKeys(): void {
+  const raw = state.config as Record<string, unknown>;
+  const legacyScratch = raw['ttsScratchPath'];
+  if (typeof legacyScratch !== 'string') return;
+  delete raw['ttsScratchPath'];
+  if (legacyScratch.trim() && !state.config.narratorScratchPath) {
+    state.config.narratorScratchPath = legacyScratch.trim();
+  }
+  if (state.loadFailed) return; // writes are disabled; the rename stays in memory
+  console.log(
+    `[TOOL-PATHS] Migrated ttsScratchPath -> narratorScratchPath (${legacyScratch.trim() || 'empty, dropped'})`,
+  );
+  saveConfig({ ...state.config });
+}
+
+/**
+ * ONE-TIME, AT STARTUP: adopt the environment that used to be resolved as
+ * `<ebook2audiobook>/python_env` (or the conda env literally named
+ * `ebook2audiobook`) as an explicit `toolsEnvPath`.
+ *
+ * Before Phase 6 the tools env was DERIVED from the e2a checkout: dev resolved
+ * `<e2a>/python_env`, and a Mac with no prefix env resolved the named conda env
+ * `ebook2audiobook`. Nothing in either is an e2a artifact any more — the contents
+ * are numpy/soundfile/mutagen/whisper/ffmpeg — but the LOCATION was, and Owen's
+ * ruling was to make the mechanism narrator's rather than to move gigabytes.
+ *
+ * So the path is RECORDED once, in tool-paths.json, and from then on it is a
+ * stated setting like any other. After this runs, nothing resolves a python by
+ * asking where ebook2audiobook is. Deleting the checkout afterwards is a broken
+ * `toolsEnvPath` that says exactly which directory went missing, instead of a
+ * silent re-derivation onto some other machine's layout.
+ *
+ * Runs only when there is nothing else to use: no `toolsEnvPath`, and no managed
+ * `runtime/tools-env`. Called from main.ts after the legacy-directory rename.
+ */
+export function adoptLegacyToolsEnv(legacyE2aRoots: string[]): void {
+  loadConfig();
+  if (state.config.toolsEnvPath) return;
+  if (getActiveToolsEnvPath()) return;
+
+  const candidates: string[] = [];
+  for (const root of legacyE2aRoots) {
+    if (root && root.trim()) candidates.push(path.join(root.trim(), 'python_env'));
+  }
+  // The Mac's shape: a conda env named `ebook2audiobook` with no prefix folder in
+  // the checkout. Recorded by PREFIX, not by name, so the stored value is a path
+  // like every other tools env and `conda run -p` is the only invocation form.
+  const condaExe = getCondaPath();
+  const envsDirs: string[] = [];
+  if (condaExe && condaExe !== 'conda' && fs.existsSync(condaExe)) {
+    envsDirs.push(path.join(path.dirname(path.dirname(condaExe)), 'envs'));
+  }
+  envsDirs.push(path.join(os.homedir(), '.conda', 'envs'));
+  for (const d of envsDirs) candidates.push(path.join(d, 'ebook2audiobook'));
+
+  for (const candidate of candidates) {
+    if (!fs.existsSync(relocatablePythonPath(candidate))) continue;
+    console.log(
+      `[TOOL-PATHS] Adopting ${candidate} as the tools environment (toolsEnvPath). ` +
+        'It is recorded in tool-paths.json from now on — nothing resolves a python ' +
+        'from an ebook2audiobook path any more.',
+    );
+    updateConfig({ toolsEnvPath: candidate });
+    return;
+  }
+  console.warn(
+    '[TOOL-PATHS] No tools environment is installed and none could be adopted. Assembly, ' +
+      'resume/list, whisper and the metadata tools will refuse by name until one exists ' +
+      '(first-run setup downloads it; Settings can point at an existing one).',
+  );
+}
+
+/** The stated tools environment, or undefined when none is configured. */
+export function getConfiguredToolsEnvPath(): string | undefined {
+  loadConfig();
+  const stated = state.config.toolsEnvPath?.trim();
+  return stated && stated.length > 0 ? stated : undefined;
 }
 
 /**
@@ -466,13 +598,17 @@ function getFfmpegCandidates(): string[] {
 }
 
 /**
- * Get common e2a installation paths for current platform
+ * Where an ebook2audiobook checkout used to be looked for.
+ *
+ * The ONLY caller left is `adoptLegacyToolsEnv`, the one-time migration that
+ * records `<checkout>/python_env` as `toolsEnvPath`. Nothing resolves a path to
+ * run from here — after the migration this list is never consulted again, and
+ * on a machine that has a managed tools env it is never consulted at all.
  */
-function getE2aCandidates(): string[] {
+export function legacyE2aCandidates(): string[] {
   const platform = os.platform();
   const homeDir = os.homedir();
 
-  // Common project directories
   const projectDirs = [
     path.join(homeDir, 'Projects'),
     path.join(homeDir, 'projects'),
@@ -483,17 +619,12 @@ function getE2aCandidates(): string[] {
   ];
 
   const candidates: string[] = [];
-
+  if (process.env.EBOOK2AUDIOBOOK_PATH) candidates.push(process.env.EBOOK2AUDIOBOOK_PATH);
   for (const dir of projectDirs) {
-    // Check -latest first (typically more up-to-date)
     candidates.push(path.join(dir, 'ebook2audiobook-latest'));
     candidates.push(path.join(dir, 'ebook2audiobook'));
   }
-
-  if (platform === 'win32') {
-    candidates.push('C:\\ebook2audiobook');
-  }
-
+  if (platform === 'win32') candidates.push('C:\\ebook2audiobook');
   return candidates;
 }
 
@@ -555,7 +686,7 @@ export function getFfmpegPath(): string {
   // 3. Bundled relocatable env (packaged builds / BOOKFORGE_E2A_ENV override).
   // The env tarball ships ffmpeg, so a clean target machine needs no system
   // install — BookForge's own ffmpeg calls use the same binary e2a does.
-  const bundledEnv = getActiveBundledEnvPath();
+  const bundledEnv = getActiveToolsEnvPath();
   if (bundledEnv) {
     const bundledFfmpeg = relocatableBinaryPath(bundledEnv, 'ffmpeg');
     if (bundledFfmpeg) {
@@ -595,7 +726,7 @@ export function getFfprobePath(): string {
   }
 
   // 3. Bundled relocatable env (packaged builds) — same env that carries ffmpeg.
-  const bundledEnv = getActiveBundledEnvPath();
+  const bundledEnv = getActiveToolsEnvPath();
   if (bundledEnv) {
     const bundledFfprobe = relocatableBinaryPath(bundledEnv, 'ffprobe');
     if (bundledFfprobe) {
@@ -618,48 +749,6 @@ export function getFfprobePath(): string {
   return 'ffprobe';
 }
 
-/**
- * Get ebook2audiobook installation path
- * Priority: config > env var > bundled runtime copy > auto-detect
- */
-export function getE2aPath(): string {
-  loadConfig();
-
-  // 1. Check configured path
-  if (state.config.e2aPath && fs.existsSync(state.config.e2aPath)) {
-    return state.config.e2aPath;
-  }
-
-  // 2. Check environment variable. Set-but-missing is an ERROR, not a skip: this is
-  // the seam the headless CLI exposes (--orpheus-install), and silently falling
-  // through to a different install renders with the wrong code (NO FALLBACKS).
-  if (process.env.EBOOK2AUDIOBOOK_PATH) {
-    if (!fs.existsSync(process.env.EBOOK2AUDIOBOOK_PATH)) {
-      throw new Error(
-        `EBOOK2AUDIOBOOK_PATH is set but does not exist: ${process.env.EBOOK2AUDIOBOOK_PATH}`
-      );
-    }
-    return process.env.EBOOK2AUDIOBOOK_PATH;
-  }
-
-  // 3. Bundled e2a (packaged builds): the shipped snapshot copied to a
-  // writable runtime dir by ensureBundledE2a() on first run.
-  const bundledE2a = getActiveBundledE2aPath();
-  if (bundledE2a) {
-    return bundledE2a;
-  }
-
-  // 4. Auto-detect
-  const detected = findExistingPath(getE2aCandidates());
-  if (detected) {
-    return detected;
-  }
-
-  // 5. Return a reasonable default (may not exist)
-  const homeDir = os.homedir();
-  return path.join(homeDir, 'Projects', 'ebook2audiobook');
-}
-
 // ─────────────────────────────────────────────────────────────────────────────
 // Detection Status (for UI)
 // ─────────────────────────────────────────────────────────────────────────────
@@ -678,7 +767,7 @@ export function getToolStatus(): Record<string, ToolStatus> {
 
   const condaPath = getCondaPath();
   const ffmpegPath = getFfmpegPath();
-  const e2aPath = getE2aPath();
+  const toolsEnv = getConfiguredToolsEnvPath() ?? getActiveToolsEnvPath() ?? '';
 
   return {
     conda: {
@@ -691,10 +780,10 @@ export function getToolStatus(): Record<string, ToolStatus> {
       detected: ffmpegPath !== 'ffmpeg' && fs.existsSync(ffmpegPath),
       path: ffmpegPath,
     },
-    e2a: {
-      configured: !!state.config.e2aPath,
-      detected: fs.existsSync(e2aPath),
-      path: e2aPath,
+    toolsEnv: {
+      configured: !!state.config.toolsEnvPath,
+      detected: !!toolsEnv && fs.existsSync(relocatablePythonPath(toolsEnv)),
+      path: toolsEnv,
     },
   };
 }
@@ -714,7 +803,8 @@ export interface WslDetectionResult {
 export interface WslOrpheusSetupResult {
   valid: boolean;
   condaFound: boolean;
-  e2aFound: boolean;
+  /** The GUEST sessions root exists (or its parent does, so it can be created). */
+  sessionsRootFound: boolean;
   orpheusEnvFound: boolean;
   errors: string[];
 }
@@ -796,7 +886,7 @@ export function detectWslAvailability(): WslDetectionResult {
 export function checkWslOrpheusSetup(config: {
   distro?: string;
   condaPath?: string;
-  e2aPath?: string;
+  sessionsRoot?: string;
   orpheusCondaEnv?: string;
 }): WslOrpheusSetupResult {
   // Only works on Windows
@@ -804,7 +894,7 @@ export function checkWslOrpheusSetup(config: {
     return {
       valid: false,
       condaFound: false,
-      e2aFound: false,
+      sessionsRootFound: false,
       orpheusEnvFound: false,
       errors: ['WSL is only available on Windows'],
     };
@@ -820,11 +910,15 @@ export function checkWslOrpheusSetup(config: {
 
   // Default paths if not specified
   const condaPath = config.condaPath || '/home/$USER/anaconda3/bin/conda';
-  const e2aPath = config.e2aPath || '/home/$USER/ebook2audiobook';
+  // The sessions root is CREATED by a render, so the question the doctor asks is
+  // whether its PARENT exists — a guest home that is there means the derived root
+  // is writable, and demanding the directory itself would report a machine that
+  // has simply not rendered yet as broken.
+  const sessionsRoot = config.sessionsRoot || getWslSessionsRoot();
   const orpheusCondaEnv = config.orpheusCondaEnv || getWslOrpheusCondaEnv();
 
   let condaFound = false;
-  let e2aFound = false;
+  let sessionsRootFound = false;
   let orpheusEnvFound = false;
 
   try {
@@ -842,17 +936,18 @@ export function checkWslOrpheusSetup(config: {
   }
 
   try {
-    // Check e2a directory exists
-    const e2aCheck = execSync(
-      `wsl.exe ${wslPrefix} "test -d ${e2aPath} && echo 'found' || echo 'not found'"`,
+    // The sessions root, or the directory it will be created in.
+    const parent = sessionsRoot.replace(/\/+[^/]+\/*$/, '') || '/';
+    const rootCheck = execSync(
+      `wsl.exe ${wslPrefix} "test -d ${sessionsRoot} -o -d ${parent} && echo 'found' || echo 'not found'"`,
       { encoding: 'utf8', timeout: 10000, windowsHide: true }
     ).trim();
-    e2aFound = e2aCheck.includes('found');
-    if (!e2aFound) {
-      errors.push(`ebook2audiobook not found at ${e2aPath}`);
+    sessionsRootFound = rootCheck.includes('found');
+    if (!sessionsRootFound) {
+      errors.push(`The WSL sessions root ${sessionsRoot} cannot be created (${parent} does not exist)`);
     }
   } catch (err) {
-    errors.push(`Failed to check e2a: ${err instanceof Error ? err.message : String(err)}`);
+    errors.push(`Failed to check the WSL sessions root: ${err instanceof Error ? err.message : String(err)}`);
   }
 
   try {
@@ -872,9 +967,9 @@ export function checkWslOrpheusSetup(config: {
   }
 
   return {
-    valid: condaFound && e2aFound && orpheusEnvFound,
+    valid: condaFound && sessionsRootFound && orpheusEnvFound,
     condaFound,
-    e2aFound,
+    sessionsRootFound,
     orpheusEnvFound,
     errors,
   };
@@ -1402,33 +1497,59 @@ export function getWslCondaPath(): string {
   return state.config.wslCondaPath || '/home/$USER/miniconda3/bin/conda';
 }
 
+/** The default guest sessions directory name, under the guest's home. */
+const WSL_SESSIONS_DIRNAME = 'bookforge-sessions';
+
 /**
- * The WSL-side root a guest render works under, from config.
+ * THE GUEST-SIDE SESSIONS ROOT — where a WSL render writes `ebook-<uuid>`.
  *
- * IT NAMES EVERY WSL PREP'S SESSION ROOT (`<root>/tmp/ebook-<uuid>`), and the
- * default it used to fall back to was the literal string `/home/$USER/...` —
- * UNEXPANDED. Nothing expands it: the value goes into a single-quoted bash word,
- * so a machine with no `wslE2aPath` configured would have written its session to a
- * directory literally called `$USER`, and BookForge would then have read the
- * session from the path it MEANT and found nothing. That was survivable while the
- * value only picked an e2a checkout that either existed or did not; it stopped
- * being survivable when it started naming where the audio goes.
+ * It used to be `<wslE2aPath>/tmp`, i.e. the `tmp/` directory of the guest's
+ * ebook2audiobook CHECKOUT: BookForge's scratch lived inside somebody else's git
+ * repository, and `git clean` or deleting the checkout took every in-flight
+ * render with it. Phase 6 moves it to a directory that is BookForge's.
  *
- * So it refuses by name instead. A WSL render on an unconfigured machine is a
- * setup problem with a one-line fix, and saying so beats writing a book into a
- * directory named after a variable.
+ * Stated wins; otherwise it is DERIVED from the guest home, which is read off
+ * `wslCondaPath` — the one guest path a WSL render already cannot run without.
+ * The derivation is deliberately narrow: `/home/<user>/…` only, and only from a
+ * value the user actually configured.
+ *
+ * IT REFUSES RATHER THAN GUESSING, for the reason the old default failed. That
+ * default was the literal string `/home/$USER/ebook2audiobook` — UNEXPANDED, and
+ * nothing expands it, because the value goes into a single-quoted bash word. A
+ * machine with nothing configured wrote its session into a directory literally
+ * named `$USER` and BookForge then read from the path it MEANT and found nothing.
  */
-export function getWslE2aPath(): string {
+export function getWslSessionsRoot(): string {
   loadConfig();
-  const configured = state.config.wslE2aPath?.trim();
+  const configured = state.config.wslSessionsRoot?.trim();
   if (configured) return configured;
+
+  const conda = state.config.wslCondaPath?.trim();
+  const home = conda?.match(/^(\/home\/[^/$]+)\//)?.[1];
+  if (home) return `${home}/${WSL_SESSIONS_DIRNAME}`;
+
   throw new Error(
-    'No WSL session root is configured (`wslE2aPath` in tool-paths.json). It names '
-      + 'where a WSL render writes its session, so there is no safe default — the old '
-      + "one was the literal string '/home/$USER/ebook2audiobook', which nothing "
-      + 'expands. Set it in Settings → Add-ons, or turn off "WSL2 for Orpheus" to '
-      + 'render natively.',
+    'No WSL sessions root is configured. It names where a WSL render writes its '
+      + 'session, so there is no safe default: BookForge derives it from the guest home '
+      + `in "WSL Conda Path" (<home>/${WSL_SESSIONS_DIRNAME}), and that setting is either `
+      + "empty or not a /home/<user>/… path. Set \"WSL Sessions Root\" in Settings → "
+      + 'Add-ons, or turn off "WSL2 for Orpheus" to render natively.',
   );
+}
+
+/**
+ * The PRE-PHASE-6 guest sessions root, or null when the dead key is absent.
+ *
+ * Returned ONLY so a caller can REFUSE BY NAME. Sessions that were in flight
+ * when this machine upgraded are still sitting in `<wslE2aPath>/tmp`, and the
+ * two things BookForge must not do with them are equally bad: scan both roots
+ * (try-A-then-B, and a resume that silently reads a directory nothing writes any
+ * more), or say nothing and start the book again from sentence 0.
+ */
+export function legacyGuestSessionsRoot(): string | null {
+  loadConfig();
+  const legacy = state.config.wslE2aPath?.trim();
+  return legacy ? `${legacy}/tmp` : null;
 }
 
 /**
@@ -1520,7 +1641,7 @@ export const toolPaths = {
   getEnhanceConfig,
   getCondaPath,
   getFfmpegPath,
-  getE2aPath,
+  getConfiguredToolsEnvPath,
   getToolStatus,
   // WSL2 functions
   detectWslAvailability,
@@ -1531,7 +1652,8 @@ export const toolPaths = {
   shouldUseWsl2ForHiggs,
   getWslDistro,
   getWslCondaPath,
-  getWslE2aPath,
+  getWslSessionsRoot,
+  legacyGuestSessionsRoot,
   getWslOrpheusCondaEnv,
   getWslHiggsCondaEnv,
   wslPathToWindows,

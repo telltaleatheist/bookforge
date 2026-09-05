@@ -26,7 +26,7 @@ import { WHISPER_ENV_ID, installWhisperEnv, isWhisperEnvInstalled, uninstallWhis
 import { ensureRvcVoice, removeRvcVoice, isRvcVoiceInstalled, rvcVoiceModelDir } from '../rvc-models';
 import { downloadWhisperModel, deleteWhisperModel, isWhisperModelPresent, whisperModelDir } from '../whisper-models';
 import { whisperModelIdFromComponentId } from './whisper-model-components';
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv } from '../e2a-paths';
+import { getPythonInvocation, buildToolsSpawnEnv } from '../narrator-paths';
 import { shouldUseWsl2ForOrpheus } from '../tool-paths';
 import type {
   IComponentManager,

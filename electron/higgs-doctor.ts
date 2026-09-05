@@ -46,7 +46,7 @@ import {
   type HiggsCheck,
   type HiggsSetupResult,
 } from './tool-paths';
-import { buildCondaSpawnEnv } from './e2a-paths';
+import { buildToolsSpawnEnv } from './narrator-paths';
 import { narratorNativePython, narratorPythonRoot } from './narrator-spawn';
 import {
   higgsCheckpointDirFor,
@@ -287,7 +287,7 @@ export function checkDarwinHiggsSetupAsync(): Promise<HiggsSetupResult> {
   }
   const pythonRoot = root.value;
 
-  const spawnEnv = buildCondaSpawnEnv({
+  const spawnEnv = buildToolsSpawnEnv({
     PYTHONUNBUFFERED: '1',
     PYTHONIOENCODING: 'utf-8',
     PYTHONPATH: pythonRoot,

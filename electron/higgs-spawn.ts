@@ -64,7 +64,7 @@ import {
   shouldUseWsl2ForHiggs,
 } from './tool-paths';
 import { higgsDoctor } from './higgs-doctor';
-import { windowsToWslPath } from './e2a-paths';
+import { windowsToWslPath } from './narrator-paths';
 import {
   buildNarratorSpawn,
   narratorEngineEnvId,

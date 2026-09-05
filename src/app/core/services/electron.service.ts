@@ -3275,13 +3275,13 @@ export class ElectronService {
   async wslCheckOrpheusSetup(config: {
     distro?: string;
     condaPath?: string;
-    e2aPath?: string;
+    sessionsRoot?: string;
   }): Promise<{
     success: boolean;
     data?: {
       valid: boolean;
       condaFound: boolean;
-      e2aFound: boolean;
+      sessionsRootFound: boolean;
       orpheusEnvFound: boolean;
       errors: string[];
     };
@@ -3525,16 +3525,20 @@ export class ElectronService {
   // ─────────────────────────────────────────────────────────────────────────────
 
   /**
-   * Configure ebook2audiobook paths (e2a installation and conda executable)
-   * Called on app startup with values from settings
+   * State the conda executable and the narrator scratch folder in the main
+   * process. Called on app startup with values from settings.
+   *
+   * The "ebook2audiobook Path" field this used to carry is GONE with Phase 6:
+   * nothing resolves a python or a scratch directory from an e2a checkout any
+   * more, so a path to one had nothing left to decide.
    */
-  async configureE2aPaths(config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }): Promise<boolean> {
-    if (this.isElectron && (window as any).electron.e2a) {
+  async configureNarratorPaths(config: { condaPath?: string; narratorScratchPath?: string }): Promise<boolean> {
+    if (this.isElectron && (window as any).electron.narrator) {
       try {
-        const result = await (window as any).electron.e2a.configurePaths(config);
+        const result = await (window as any).electron.narrator.configurePaths(config);
         return result.success;
       } catch (err) {
-        console.error('[ElectronService] Failed to configure e2a paths:', err);
+        console.error('[ElectronService] Failed to configure narrator paths:', err);
         return false;
       }
     }

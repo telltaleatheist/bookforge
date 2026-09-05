@@ -112,7 +112,7 @@ import {
 // it, preload carries it and the renderer opens on it.
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
-import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
+import { setNarratorScratchRoot, narratorScratchRoot } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
 // TYPE ONLY — the module itself stays behind the dynamic imports in the orpheus:* IPC
@@ -805,9 +805,8 @@ async function startTtsApiServerOnce(): Promise<void> {
 
 async function doRuntimeSetup(): Promise<boolean> {
   const {
-    ensureBundledEnv, ensureBundledE2a, ensureEnglishStanza,
-    beginSetupDownload, setupDownloadProgress,
-  } = await import('./e2a-env-bootstrap.js');
+    ensureToolsEnv, beginSetupDownload, setupDownloadProgress,
+  } = await import('./tools-env-bootstrap.js');
 
   const logger = getMainLogger();
   beginSetupDownload();
@@ -818,9 +817,15 @@ async function doRuntimeSetup(): Promise<boolean> {
 
   setRuntimeStatus({ state: 'preparing', message: 'Updating BookForge — installing components…' });
 
-  // Independent steps: a failure in one must not block the others; the first
-  // error is surfaced at the end. Order matters — the e2a code snapshot creates
-  // the runtime dir the voice + language pack extract into.
+  // ONE STEP NOW. Until Phase 6 there were three: the e2a code snapshot, the
+  // python env, and the English Stanza pack. The snapshot shipped an
+  // ebook2audiobook source tree the app could not run (the packager EXCLUDED its
+  // `python_env`, which was the only thing anything resolved out of it), and the
+  // Stanza pack existed for that tree's `lib/core.py` pipeline — narrator records
+  // in `text/sentences.py` that stanza is never consulted, and
+  // `test_text_paragraph_packer.py` asserts the packer cannot even import it.
+  // The error is still latched rather than thrown so the shape survives a second
+  // step returning.
   let firstError: string | null = null;
   const step = async (label: string, fn: () => Promise<unknown>) => {
     try {
@@ -832,9 +837,7 @@ async function doRuntimeSetup(): Promise<boolean> {
     }
   };
 
-  await step('Bundled e2a code setup', () => ensureBundledE2a(emit));
-  await step('Python env setup', () => ensureBundledEnv(emit));
-  await step('English language pack setup', () => ensureEnglishStanza(emit));
+  await step('Tools Python env setup', () => ensureToolsEnv(emit));
 
   if (firstError) {
     setRuntimeStatus({ state: 'error', message: 'Setup of the audiobook engine failed.', error: firstError });
@@ -2283,24 +2286,29 @@ async function openFoundryWindowAndReconcileOnClose(
 }
 
 /**
- * Point e2a's temp/session storage at <library>/tmp — a plain tmp folder INSIDE
+ * Point narrator's session scratch at <library>/tmp — a plain tmp folder INSIDE
  * the library (not a separate sibling). It's on the library volume (so caching a
  * finished session into the library is a same-volume clone) and is swept
- * religiously (cleanE2aTmpDir at startup; sessions also removed once cached), so
- * it never accumulates. Called at startup and whenever the library root changes.
+ * religiously (cleanNarratorScratchRoot at startup; sessions also removed once
+ * cached), so it never accumulates. Called at startup and whenever the library
+ * root changes.
+ *
+ * THE ONE OWNER of the value `NARRATOR_SESSIONS_ROOT` carries. The CLI states the
+ * same two rules (cli/narrator-sessions-root.js), because a headless run that
+ * resolved it differently names a session directory the app never looks in.
  *
  * NOTE: if the library is Syncthing-synced, add `tmp/` to its .stignore so the
  * transient per-sentence churn isn't synced.
  */
-function applyE2aScratchDir(): void {
+function applyNarratorScratchRoot(): void {
   // A user-configured scratch path wins; otherwise use <library>/tmp. loadConfig()
   // is safe before app-ready (it only reads a JSON file under userData).
-  const override = loadToolPathsConfig().ttsScratchPath;
+  const override = loadToolPathsConfig().narratorScratchPath;
   if (typeof override === 'string' && override.trim()) {
-    setE2aScratchDir(override.trim());
+    setNarratorScratchRoot(override.trim());
     return;
   }
-  setE2aScratchDir(path.join(getLibraryRoot(), 'tmp'));
+  setNarratorScratchRoot(path.join(getLibraryRoot(), 'tmp'));
 }
 
 /**
@@ -2429,8 +2437,8 @@ async function liveStepIds(): Promise<Set<string>> {
   return ids;
 }
 
-async function cleanE2aTmpDir(): Promise<void> {
-  await sweepDirContents(getDefaultE2aTmpPath());
+async function cleanNarratorScratchRoot(): Promise<void> {
+  await sweepDirContents(narratorScratchRoot());
 
   // WSL Orpheus runs the WSL-native e2a, which writes sessions to its own
   // <wslE2a>/tmp (not <library>/tmp) — sweep that too so it doesn't accumulate.
@@ -2438,13 +2446,13 @@ async function cleanE2aTmpDir(): Promise<void> {
   // \\wsl$ with a wedged VM strands the readdir/rm promises forever (and used to
   // contribute to the boot hang).
   try {
-    const { shouldUseWsl2ForOrpheus, getWslE2aPath, wslPathToWindows } = await import('./tool-paths.js');
+    const { shouldUseWsl2ForOrpheus, getWslSessionsRoot, wslPathToWindows } = await import('./tool-paths.js');
     if (shouldUseWsl2ForOrpheus()) {
       const { isWslAlive } = await import('./wsl-lifecycle.js');
       if (await isWslAlive()) {
-        await sweepDirContents(wslPathToWindows(`${getWslE2aPath()}/tmp`));
+        await sweepDirContents(wslPathToWindows(getWslSessionsRoot()));
       } else {
-        console.warn('[MAIN] Skipping WSL e2a tmp sweep — WSL is not responding');
+        console.warn('[MAIN] Skipping the WSL sessions-root sweep — WSL is not responding');
       }
     }
   } catch {
@@ -4838,7 +4846,7 @@ function setupIpcHandlers(): void {
 
     customLibraryRoot = libraryPath;
     persistLibraryRoot(libraryPath);
-    applyE2aScratchDir();
+    applyNarratorScratchRoot();
     // Sync to manifest service
     manifestService.setLibraryBasePath(libraryPath);
     // Re-point the audiobook job log at the new root's logs/ — it holds an
@@ -6847,20 +6855,17 @@ function setupIpcHandlers(): void {
     return memoryTierReply();
   });
 
-  ipcMain.handle('e2a:configure-paths', async (_event, config: { e2aPath?: string; condaPath?: string; ttsScratchPath?: string }) => {
+  ipcMain.handle('narrator:configure-paths', async (_event, config: { condaPath?: string; narratorScratchPath?: string }) => {
     try {
-      const { setCondaPath, setE2aPath } = await import('./e2a-paths.js');
-      if (config.e2aPath !== undefined) {
-        setE2aPath(config.e2aPath || null);
-      }
+      const { setCondaPath } = await import('./narrator-paths.js');
       if (config.condaPath !== undefined) {
         setCondaPath(config.condaPath || null);
       }
-      if (config.ttsScratchPath !== undefined) {
+      if (config.narratorScratchPath !== undefined) {
         const { updateConfig } = await import('./tool-paths.js');
-        updateConfig({ ttsScratchPath: config.ttsScratchPath || undefined });
-        // Re-resolve the scratch dir so the override (or its removal) applies now.
-        applyE2aScratchDir();
+        updateConfig({ narratorScratchPath: config.narratorScratchPath || undefined });
+        // Re-resolve the scratch root so the override (or its removal) applies now.
+        applyNarratorScratchRoot();
       }
       return { success: true };
     } catch (err) {
@@ -6891,8 +6896,8 @@ function setupIpcHandlers(): void {
   // tool row when conda is irrelevant.
   ipcMain.handle('runtime:using-bundled-env', async () => {
     try {
-      const { getActiveBundledEnvPath } = await import('./e2a-env-bootstrap.js');
-      return { success: true, data: !!getActiveBundledEnvPath() };
+      const { getActiveToolsEnvPath } = await import('./tools-env-bootstrap.js');
+      return { success: true, data: !!getActiveToolsEnvPath() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7110,7 +7115,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('wsl:check-orpheus-setup', async (_event, config: {
     distro?: string;
     condaPath?: string;
-    e2aPath?: string;
+    sessionsRoot?: string;
   }) => {
     try {
       const { checkWslOrpheusSetup } = await import('./tool-paths.js');
@@ -7812,7 +7817,7 @@ function setupIpcHandlers(): void {
         };
       }
       const { getWslDistro, getWslCondaPath, getWslHiggsCondaEnv } = await import('./tool-paths.js');
-      const { windowsToWslPath } = await import('./e2a-paths.js');
+      const { windowsToWslPath } = await import('./narrator-paths.js');
       const { spawn } = await import('child_process');
       const pathMod = await import('path');
       const fsMod = await import('fs');
@@ -7823,7 +7828,7 @@ function setupIpcHandlers(): void {
       if (!fsMod.existsSync(scriptDir)) {
         scriptDir = pathMod.join(__dirname, 'scripts', 'higgs');
       }
-      const { toUnpackedPath } = await import('./e2a-paths.js');
+      const { toUnpackedPath } = await import('./narrator-paths.js');
       const scriptWsl = windowsToWslPath(toUnpackedPath(scriptDir));
 
       const distro = getWslDistro();
@@ -9749,8 +9754,8 @@ ipcMain.handle('narration:text-readiness', async (
 
   ipcMain.handle('reassembly:scan-sessions', async (_event, customTmpPath?: string) => {
     try {
-      const { scanE2aTmpFolder } = await import('./reassembly-bridge.js');
-      const result = await scanE2aTmpFolder(customTmpPath);
+      const { scanNarratorScratchRoot } = await import('./reassembly-bridge.js');
+      const result = await scanNarratorScratchRoot(customTmpPath);
       return { success: true, data: result };
     } catch (err) {
       console.error('[MAIN] reassembly:scan-sessions error:', err);
@@ -11474,6 +11479,29 @@ app.whenReady().then(async () => {
   await initializeLoggers();
   const logger = getMainLogger();
 
+  // PHASE 6, FIRST THING: relocate the tools environment out from under
+  // ebook2audiobook, before anything resolves a python.
+  //
+  // Two moves, both one-time and both idempotent. The RENAME turns
+  // `<userData>/runtime/e2a-env` into `<userData>/runtime/tools-env` — the same
+  // 1.8 GB unpack under a name that is true of it. The ADOPTION is for the dev
+  // machine that never ran a packaged build and whose tools env therefore IS
+  // `<ebook2audiobook>/python_env` (or, on the Mac, the conda env literally named
+  // `ebook2audiobook`): its path is written into tool-paths.json as
+  // `toolsEnvPath`, so from that moment it is a stated setting rather than a
+  // derivation from where a checkout happens to live.
+  //
+  // Ordered: the rename first, because adoption skips itself when a managed env
+  // is already resolvable and the renamed directory IS one.
+  try {
+    const { migrateLegacyToolsEnvDir } = await import('./tools-env-bootstrap.js');
+    const { adoptLegacyToolsEnv, legacyE2aCandidates } = await import('./tool-paths.js');
+    migrateLegacyToolsEnvDir();
+    adoptLegacyToolsEnv(legacyE2aCandidates());
+  } catch (err) {
+    logger.error('Tools-environment migration failed', { error: (err as Error).message });
+  }
+
   // The live-DOM EPUB viewer's opening channel. The scheme it needs was
   // registered at module scope above; this is only the two handles.
   setupQuireViewerIpc();
@@ -11532,7 +11560,7 @@ app.whenReady().then(async () => {
   // stale e2a TTS sessions (e2a never garbage-collects in headless mode, so
   // failed/cancelled sessions accumulate forever). Delayed so the sweeps' disk
   // I/O doesn't compete with app launch, which also guarantees this runs after
-  // applyE2aScratchDir() below has resolved the active scratch dir.
+  // applyNarratorScratchRoot() below has resolved the active scratch dir.
   setTimeout(() => {
     void (async () => {
       try {
@@ -11587,7 +11615,7 @@ app.whenReady().then(async () => {
       };
 
       try {
-        const tmpDir = getDefaultE2aTmpPath();
+        const tmpDir = narratorScratchRoot();
         const STALE_MS = 7 * 24 * 60 * 60 * 1000;
         const now = Date.now();
         let entries: import('fs').Dirent[] = [];
@@ -11683,7 +11711,7 @@ app.whenReady().then(async () => {
   // until the runtime is actually usable. The TTS API server start is folded in
   // here so external clients (browser extension) never hit a half-ready runtime.
   void (async () => {
-    const { bundledRuntimeReady } = await import('./e2a-env-bootstrap.js');
+    const { bundledRuntimeReady } = await import('./tools-env-bootstrap.js');
 
     // bundledRuntimeReady() validates EVERY mandatory piece (Python env + e2a code
     // snapshot + default voice + English language pack) against its ready-marker,
@@ -11731,7 +11759,7 @@ app.whenReady().then(async () => {
     manifestService.setLibraryBasePath(persistedRoot);
     console.log('[Startup] Restored persisted library root:', persistedRoot);
   }
-  applyE2aScratchDir();
+  applyNarratorScratchRoot();
   /*
    * Clear the e2a tmp dir, EXCEPT what the queue still has plans for.
    *
@@ -11744,7 +11772,7 @@ app.whenReady().then(async () => {
    * sites are seventy lines apart and an ordering nobody names is an ordering
    * somebody moves (bookforge-mac-2's review, 2026-08-20).
    */
-  void cleanE2aTmpDir();
+  void cleanNarratorScratchRoot();
 
   // ── Mount the hosted Foundry ─────────────────────────────────────────────
   //

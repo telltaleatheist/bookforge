@@ -7,7 +7,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, spawnSync, ChildProcess } from 'child_process';
 import { BrowserWindow } from 'electron';
-import { getDefaultE2aPath, getDefaultE2aTmpPath, wslToWindowsPath, buildCondaSpawnEnv } from './e2a-paths';
+import { narratorScratchRoot, wslToWindowsPath, buildToolsSpawnEnv } from './narrator-paths';
 import { buildNarratorSpawn, narratorPythonRoot } from './narrator-spawn';
 import * as os from 'os';
 import { getMetadataToolPath, applyMetadata, AudiobookMetadata, optimizeCoverForM4b, embedAndVerifyVtt, deleteSidecarsForM4b, probeAudio, isEmbedTempFileName } from './metadata-tools';
@@ -57,8 +57,6 @@ function isWslPath(p: string): boolean {
   return /^\/\/wsl[\$.](?:localhost)?\//.test(normalized);
 }
 
-// The e2a app path (uses cross-platform detection)
-const E2A_APP_PATH = getDefaultE2aPath();
 
 /**
  * project.json metadata that can be linked to e2a sessions
@@ -141,14 +139,6 @@ async function getProjectJsonMetadataFromSourcePath(sourceEpubPath: string | und
   }
 }
 
-// Derive the e2a app path from the tmp path (parent directory)
-// Falls back to E2A_APP_PATH if the derived path doesn't have the assembly features
-function getE2aAppPath(tmpPath: string): string {
-  // Always use the app path that supports --title/--author/--cover
-  // The tmp path may be different (e.g., ebook2audiobook-latest/tmp)
-  return E2A_APP_PATH;
-}
-
 // Format seconds as human-readable ETA (e.g., "2m 30s")
 function formatEta(seconds: number): string {
   if (seconds < 60) return `${Math.round(seconds)}s`;
@@ -167,7 +157,7 @@ function escapeShellArg(arg: string): string {
 }
 
 // Types
-export interface E2aSession {
+export interface NarratorSession {
   sessionId: string;
   sessionDir: string;
   processDir: string;
@@ -216,7 +206,6 @@ export interface ReassemblyConfig {
   sessionDir: string;
   processDir: string;
   outputDir: string;
-  e2aTmpPath?: string;  // Path to e2a tmp folder from settings - app path is derived from this
   totalChapters?: number;  // Total chapters for progress display (excluding excluded ones)
   metadata: {
     title: string;
@@ -570,11 +559,11 @@ function cleanupStagingDir(jobId: string): void {
 /**
  * Scan the e2a tmp folder for incomplete sessions
  * project.json metadata is extracted from each session's source_epub_path
- * @param customTmpPath - Optional custom path to the e2a tmp folder
+ * @param customTmpPath - Optional sessions root to scan instead of the configured one
  */
-export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessions: E2aSession[]; tmpPath: string }> {
-  const sessions: E2aSession[] = [];
-  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
+export async function scanNarratorScratchRoot(customTmpPath?: string): Promise<{ sessions: NarratorSession[]; tmpPath: string }> {
+  const sessions: NarratorSession[] = [];
+  const tmpPath = customTmpPath || narratorScratchRoot();
 
   // Scan e2a tmp folder for active sessions (async I/O to avoid blocking main process)
   try {
@@ -607,7 +596,7 @@ export async function scanE2aTmpFolder(customTmpPath?: string): Promise<{ sessio
  * Parse a single session directory
  * project.json metadata is extracted from source_epub_path in the session state
  */
-async function parseSession(sessionId: string, sessionDir: string): Promise<E2aSession | null> {
+async function parseSession(sessionId: string, sessionDir: string): Promise<NarratorSession | null> {
   // Find the hash subfolder (async)
   const subEntries = await fs.promises.readdir(sessionDir, { withFileTypes: true });
   const hashDir = subEntries.find(e => e.isDirectory());
@@ -691,7 +680,7 @@ async function parseSession(sessionId: string, sessionDir: string): Promise<E2aS
   // Get project.json metadata from source_epub_path
   const projectJsonMetadata = await getProjectJsonMetadataFromSourcePath(sessionState?.source_epub_path);
 
-  let metadata: E2aSession['metadata'];
+  let metadata: NarratorSession['metadata'];
   if (projectJsonMetadata) {
     metadata = {
       title: projectJsonMetadata.title,
@@ -829,10 +818,10 @@ async function parseChapterSentences(processDir: string): Promise<any | null> {
  * Get full details for a specific session
  * project.json metadata is extracted from the session's source_epub_path
  * @param sessionId - The session ID (UUID part after ebook-)
- * @param customTmpPath - Optional custom path to the e2a tmp folder
+ * @param customTmpPath - Optional sessions root to scan instead of the configured one
  */
-export async function getSession(sessionId: string, customTmpPath?: string): Promise<E2aSession | null> {
-  const tmpPath = customTmpPath || getDefaultE2aTmpPath();
+export async function getSession(sessionId: string, customTmpPath?: string): Promise<NarratorSession | null> {
+  const tmpPath = customTmpPath || narratorScratchRoot();
   const sessionDir = path.join(tmpPath, `ebook-${sessionId}`);
 
   try {
@@ -849,7 +838,7 @@ export async function getSession(sessionId: string, customTmpPath?: string): Pro
  * If the directory doesn't exist, returns true (already gone = success).
  */
 export async function deleteSession(sessionId: string, customTmpPath?: string): Promise<boolean> {
-  const targetDir = path.join(customTmpPath || getDefaultE2aTmpPath(), `ebook-${sessionId}`);
+  const targetDir = path.join(customTmpPath || narratorScratchRoot(), `ebook-${sessionId}`);
 
   try {
     await fs.promises.access(targetDir);
@@ -1064,8 +1053,7 @@ export async function startReassembly(
   }
 
   // Derive e2a app path from tmp path (parent directory)
-  const tmpPath = config.e2aTmpPath || getDefaultE2aTmpPath();
-  const e2aPath = getE2aAppPath(tmpPath);
+  const tmpPath = narratorScratchRoot();
 
   reassemblyLog.info('Starting reassembly', {
     jobId,
@@ -1079,7 +1067,6 @@ export async function startReassembly(
     jobId,
     sessionId: config.sessionId,
     outputDir: config.outputDir,
-    e2aPath,
     tmpPath,
     excludedChapters: config.excludedChapters
   });
@@ -1347,7 +1334,7 @@ export async function startReassembly(
     // quietly stopped using pre-closed chapters and re-encoded every chapter of
     // every book, logged as a reason nobody would read as a defect.
     const closed = await resolveClosedSession({
-      tmpRoot: getDefaultE2aTmpPath(),
+      tmpRoot: narratorScratchRoot(),
       sessionId: config.sessionId,
       sentencesDir: srcSentences,
       gapSeconds: resolvedGap,
@@ -1465,7 +1452,7 @@ export async function startReassembly(
     if (!fs.existsSync(srcSentences)) {
       return { success: false, error: 'RVC enhancement: cached sentences not found for this session.' };
     }
-    const tmpDir = path.join(getDefaultE2aTmpPath(), `rvc-${jobId}`);
+    const tmpDir = path.join(narratorScratchRoot(), `rvc-${jobId}`);
     // Re-points the merge-and-delete tracker at the RVC scratch. THIS set is
     // genuinely anonymous — an inline pass named after a job id, not the durable
     // per-voice set the `rvc-enhancement` step writes — so it is disposed of.
@@ -1616,7 +1603,6 @@ export async function startReassembly(
       phase: 'assembly',
       args: appArgs,
       envExtras: {},
-      cwdHint: e2aPath,
     });
     console.log('[REASSEMBLY] Assembly → narrator:', asmPlan.describe());
 
@@ -2767,10 +2753,10 @@ export function narratorReady(_customTmpPath?: string): boolean {
 
 /**
  * Get a cached TTS session from a single project's audiobook folder.
- * Much faster than scanE2aTmpFolder() since it only checks one book.
+ * Much faster than scanNarratorScratchRoot() since it only checks one book.
  * @param projectDir - Absolute project directory
  */
-export async function getBfpCachedSession(projectDir: string): Promise<E2aSession | null> {
+export async function getBfpCachedSession(projectDir: string): Promise<NarratorSession | null> {
   // Canonical location: stages/03-tts/sessions/{lang}/ebook-{uuid}/
   const stagesSessionDir = path.join(projectDir, 'stages', '03-tts', 'sessions');
   try {
