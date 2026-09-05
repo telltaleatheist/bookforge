@@ -881,8 +881,20 @@ export function checkWslOrpheusSetup(config: {
 
 /** One thing the doctor looked at, and what it found. */
 export interface HiggsCheck {
-  /** Stable id, so a UI can key on it without matching prose. */
-  id: 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher';
+  /**
+   * Stable id, so a UI can key on it without matching prose.
+   *
+   * THE IDS OF BOTH ARMS LIVE IN ONE UNION, because one renderer displays both:
+   * `distro`/`vllm-omni`/`patch`/`launcher` can only come from the WSL doctor,
+   * `python`/`mlx`/`mlx-audio`/`narrator`/`weights` only from the MLX one, `env`
+   * from either (each arm has an environment), and `toggle`/`platform` from the
+   * dispatcher that chooses between them.
+   */
+  id:
+    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher'
+    | 'toggle'
+    | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
+    | 'platform';
   /** What a person reads. Patch rows carry the patch's own id here. */
   label: string;
   ok: boolean;
@@ -890,12 +902,42 @@ export interface HiggsCheck {
   detail?: string;
 }
 
-export interface WslHiggsSetupResult {
+/**
+ * WHICH HIGGS BACKEND this machine would render on — the thing the checks are
+ * checks OF. 'none' is a real answer: Linux has neither the WSL route nor an MLX
+ * one, and reporting that as a failed WSL doctor (which is what happened before
+ * the darwin arm existed) told a Mac user to install WSL.
+ */
+export type HiggsArm = 'wsl' | 'mlx' | 'none';
+
+export interface HiggsSetupResult {
   valid: boolean;
+  /** Which backend was examined. See HiggsArm. */
+  arm: HiggsArm;
+  /**
+   * WHAT TO DO ABOUT A FAILURE, ON THIS ARM — one sentence, always present.
+   *
+   * It travels WITH the result because the renderer must not decide it: the
+   * narration modal used to append "Set it up in Settings → Higgs" to every
+   * failure, which on a Mac named a panel that only offers the WSL installer.
+   * The doctor knows which arm it ran; the modal does not.
+   */
+  remedy: string;
   checks: HiggsCheck[];
+  /**
+   * Lines that are TRUE BUT NOT PASS/FAIL — the catalog voices this arm could
+   * load, say. They never touch `valid`: a machine with a green environment and
+   * no installed fine-tune is a working Higgs installation.
+   */
+  notes?: string[];
   /** The env prefix the probe resolved, for error messages and the installer. */
   envPrefix?: string;
 }
+
+/** What a WSL-arm failure is fixed by. One copy, used by every WSL return. */
+export const WSL_HIGGS_REMEDY =
+  'Run Install/Repair on Settings → Higgs, which builds the WSL environment and re-applies '
+  + 'the site-packages patches.';
 
 /**
  * The two site-packages patches the Higgs v3 stack does not work without.
@@ -1064,10 +1106,15 @@ export function checkWslHiggsSetupAsync(config: {
   distro?: string;
   condaPath?: string;
   higgsCondaEnv?: string;
-} = {}): Promise<WslHiggsSetupResult> {
+} = {}): Promise<HiggsSetupResult> {
   if (os.platform() !== 'win32') {
+    // Reachable only by calling this WSL-specific function directly. `higgsDoctor()`
+    // in higgs-doctor.ts routes darwin to the MLX doctor and names any other
+    // platform, so nobody arrives here by asking "is Higgs ready".
     return Promise.resolve({
       valid: false,
+      arm: 'wsl',
+      remedy: WSL_HIGGS_REMEDY,
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     });
   }
@@ -1083,7 +1130,9 @@ export function checkWslHiggsSetupAsync(config: {
       if (done) return;
       done = true;
       const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
-      resolve({ valid: checks.every((c) => c.ok), checks, envPrefix });
+      resolve({
+        valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
+      });
     };
     let proc: ReturnType<typeof spawn>;
     try {
@@ -1127,10 +1176,12 @@ export function checkWslHiggsSetup(config: {
   distro?: string;
   condaPath?: string;
   higgsCondaEnv?: string;
-} = {}): WslHiggsSetupResult {
+} = {}): HiggsSetupResult {
   if (os.platform() !== 'win32') {
     return {
       valid: false,
+      arm: 'wsl',
+      remedy: WSL_HIGGS_REMEDY,
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     };
   }
@@ -1151,7 +1202,9 @@ export function checkWslHiggsSetup(config: {
   }
 
   const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix);
-  return { valid: checks.every((c) => c.ok), checks, envPrefix };
+  return {
+    valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
+  };
 }
 
 /**

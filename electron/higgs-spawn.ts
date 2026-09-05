@@ -62,8 +62,8 @@ import {
   getWslDistro,
   getWslHiggsCondaEnv,
   shouldUseWsl2ForHiggs,
-  checkWslHiggsSetupAsync,
 } from './tool-paths';
+import { higgsDoctor } from './higgs-doctor';
 import { windowsToWslPath } from './e2a-paths';
 import {
   buildNarratorSpawn,
@@ -153,18 +153,18 @@ export type HiggsSpawnPlan = NarratorSpawnPlan;
  * the honest place for it, since no amount of pre-checking closes that window.
  */
 export async function higgsEnvironmentRefusal(): Promise<string | null> {
-  if (process.platform === 'win32' && !shouldUseWsl2ForHiggs()) {
-    return 'Higgs runs on vLLM-Omni, which has no Windows build. Turn on "WSL2 for Higgs" in '
-      + 'Settings → Higgs and install the environment there.';
-  }
-  if (process.platform !== 'win32') return null;
-
-  const doctor = await checkWslHiggsSetupAsync();
+  // EVERY PLATFORM GOES THROUGH THE DOCTOR. Until 2026-09-05 this returned `null`
+  // on anything that was not Windows — an UNCHECKED PASS, and the exact mirror of
+  // the modal's "WSL distribution" defect on the Mac: one arm refused a working
+  // machine, the other waved a broken one through to fail an hour later inside a
+  // worker. `higgsDoctor()` knows which arm this machine is and reports its
+  // checks; the toggle refusal is one of the rows it returns on Windows.
+  const doctor = await higgsDoctor();
   if (doctor.valid) return null;
   const failed = doctor.checks.filter((c) => !c.ok);
   return `The Higgs environment is not ready (${failed.length} of ${doctor.checks.length} checks failed):\n`
     + failed.map((c) => `  • ${c.label}: ${c.detail ?? 'failed'}`).join('\n')
-    + '\nRun Install/Repair on Settings → Higgs.';
+    + `\n${doctor.remedy}`;
 }
 
 /**

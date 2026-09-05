@@ -7736,14 +7736,19 @@ function setupIpcHandlers(): void {
     }
   });
 
-  // Is the Higgs serving stack usable? One WSL round trip; every check reported
-  // pass or fail (see checkWslHiggsSetup for why it never short-circuits).
+  // Is the Higgs stack usable ON THIS MACHINE? One round trip; every check
+  // reported pass or fail (see higgs-doctor.ts for why neither arm short-circuits).
+  //
+  // DISPATCHED BY PLATFORM, not hard-wired to WSL. This handler called
+  // `checkWslHiggsSetupAsync` directly until 2026-09-05, so on the Mac — where
+  // Higgs renders in-process on mlx-audio — the narration modal reported "WSL
+  // distribution" as the reason a perfectly good machine could not narrate.
   ipcMain.handle('higgs:doctor', async () => {
     try {
-      // ASYNC: this handler runs on the main thread and the sync probe blocks it
+      // ASYNC: this handler runs on the main thread and a sync probe blocks it
       // for about a second against a cold VM.
-      const { checkWslHiggsSetupAsync } = await import('./tool-paths.js');
-      return { success: true, data: await checkWslHiggsSetupAsync() };
+      const { higgsDoctor } = await import('./higgs-doctor.js');
+      return { success: true, data: await higgsDoctor() };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }
@@ -7761,6 +7766,20 @@ function setupIpcHandlers(): void {
    */
   ipcMain.handle('higgs:install-env', async (event, opts?: { check?: boolean }) => {
     try {
+      // WINDOWS ONLY, BY NAME. This installer builds the WSL vLLM-Omni env and
+      // nothing else; on a Mac (where Higgs is the in-process MLX backend) it
+      // would spawn `wsl.exe` and fail with ENOENT, which reads as a broken app
+      // rather than as a button that does not apply. The Settings panel hides it
+      // off the WSL arm; this is the door refusing on its own account.
+      if (process.platform !== 'win32') {
+        return {
+          success: false,
+          error: `The Higgs installer builds a WSL environment and only runs on Windows (this is `
+            + `${process.platform}). On macOS Higgs renders in-process on mlx-audio: create the `
+            + 'narrator-mlx environment from packaging/env/narrator-mlx.yml and put the base '
+            + 'weights in place — Settings → Higgs lists exactly what is missing.',
+        };
+      }
       const { getWslDistro, getWslCondaPath, getWslHiggsCondaEnv } = await import('./tool-paths.js');
       const { windowsToWslPath } = await import('./e2a-paths.js');
       const { spawn } = await import('child_process');
