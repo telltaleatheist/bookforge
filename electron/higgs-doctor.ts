@@ -201,7 +201,15 @@ function mlxVoiceNotes(baseDirOk: boolean, userDataDir: string): string[] {
           + 'it, so its fine-tuned weights are on the other machine. Staging a copy here is a '
           + "NEW certificate: this arm's maxChars must be measured, not carried across.";
       }
-      const dir = higgsCheckpointDirFor(m, 'darwin', userDataDir);
+      // THROUGH `attempt`, because a malformed staged path (absolute, or climbing
+      // out of userData) is a REFUSAL, and a doctor that lets one escape is a
+      // modal with no rows in it — the same reason the env resolutions above are
+      // wrapped. The refusal's own sentence is the note; there is nothing better
+      // to say, and paraphrasing it here would let the doctor and the loader
+      // describe the same catalog differently.
+      const resolved = attempt(() => higgsCheckpointDirFor(m, 'darwin', userDataDir));
+      if ('error' in resolved) return `${m.id}: ${resolved.error}`;
+      const dir = resolved.value;
       return fs.existsSync(dir)
         ? `${m.id}: loadable — fine-tuned weights at ${dir}.`
         : `${m.id}: staged path missing on disk — the catalog names ${dir}, which is not on `

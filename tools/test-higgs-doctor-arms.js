@@ -530,6 +530,20 @@ check('a fine-tune staged in the catalog but absent on disk says exactly that', 
       'the note does not name the absolute directory the copy must land in: ' + note);
   }));
 
+check('a MALFORMED staged path is a NOTE, not a doctor that throws', () =>
+  onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
+    // A doctor that throws is a modal with no rows in it. The refusal's own
+    // sentence becomes the note — never a paraphrase, or the doctor and the
+    // loader would describe the same catalog differently.
+    const res = await withCatalog(
+      [checkpointRow({ darwin: '/Users/someone-else/Library/Application Support/BookForge/x' })],
+      () => doctorMod.higgsDoctor(),
+    );
+    const note = res.notes.find((n) => n.startsWith('ft:'));
+    assert.match(note, /is absolute/);
+    assert.strictEqual(res.valid, true, 'a bad catalog row failed the ENVIRONMENT');
+  }));
+
 check('a fine-tune that is really there reads "loadable", with the directory', () =>
   onPlatform({ platform: 'darwin', probe: MLX_GREEN, weights: 'present' }, async () => {
     const dir = path.join(FIXTURE, 'runtime', 'higgs-models', 'ds_staged');

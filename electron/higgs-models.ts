@@ -238,15 +238,31 @@ export interface HiggsVoiceRef {
 }
 
 /**
- * The measured knobs a Higgs voice declares for the SERVED backend.
+ * The measured knobs a Higgs voice declares for ONE BACKEND.
  *
  * Absent means absent — there is no invented default here, exactly as
  * `OrpheusVoiceCaps` documents. The one difference in spirit: on Orpheus an
  * absent cap means "let e2a apply its own documented default", while here an
- * absent cap means "the served stack's own shipped default applies", and both
- * are real answers rather than a fallback.
+ * absent cap means "that backend's own shipped default applies", and both are
+ * real answers rather than a fallback.
+ *
+ * ── A CERTIFICATE IS PER (DIRECTORY, BACKEND) ───────────────────────────────
+ *
+ * There is one of these per backend and they do NOT share numbers, because a cap
+ * is produced by RENDERING: the served figure was measured by driving vllm-omni
+ * on one merged directory with one patched stage processor, and the MLX arm is a
+ * different sampler over a different runtime — mlx-audio's top-k/top-p and
+ * vLLM's are different implementations, so feeding both the same three numbers
+ * makes the CONFIGURATION identical and not the draws (PORT_NOTES 13.11).
+ * Nothing has yet compared a Mac render against a WSL one at all, and their seeds
+ * are not even comparable (`mx.random.seed` vs vLLM's).
+ *
+ * So copying the merged directory to the Mac copies the weights and NOT the
+ * certificate. Until the MLX arm's own length sweep runs, `mlx.maxChars` is
+ * `null` — a DECLARED absence — and `refuseUnmeasuredAdapter` refuses the voice
+ * on darwin exactly as the served `null` refuses it on WSL.
  */
-export interface HiggsServedCaps {
+export interface HiggsBackendCaps {
   /**
    * The PREP packing cap, in characters. Consumed by BookForge, never sent to
    * narrator (see the header on why caps do not travel).
@@ -348,7 +364,13 @@ export interface HiggsModel {
   commercialUse: boolean;
   sampleRate: number;
   addedAt: string;
-  backends?: { served?: HiggsServedCaps };
+  /**
+   * THE MEASURED KNOBS, PER BACKEND — `served` is vllm-omni behind WSL, `mlx` is
+   * the in-process mlx-audio sampler on the Mac. See `HiggsBackendCaps`: they do
+   * not share numbers, because a cap is measured by rendering and the two arms
+   * render through different samplers. The loader picks the block by ARM.
+   */
+  backends?: { served?: HiggsBackendCaps; mlx?: HiggsBackendCaps };
   /** Present ⇒ the voice's artifact is not installed yet and it is REFUSED. */
   _pendingNote?: string;
   note?: string;
@@ -463,9 +485,10 @@ export function higgsVoiceUnavailableReason(model: HiggsModel): string | null {
     refuseRetiredCheckpointDir(model);
     refuseMalformedVoice(model);
     refuseUntranscribedClips(model);
+    const arm = thisMachineArm();
     refuseUnstagedCheckpoint(model);
-    refuseUnmeasuredAdapter(model);
-    refuseOversizedReference(model);
+    refuseUnmeasuredAdapter(model, arm);
+    refuseOversizedReference(model, arm);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
@@ -527,8 +550,9 @@ export function resolveHiggsModel(id: string | undefined | null): HiggsModel {
   refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
   refuseUnstagedCheckpoint(model);
-  refuseUnmeasuredAdapter(model);
-  refuseOversizedReference(model);
+  const arm = thisMachineArm();
+  refuseUnmeasuredAdapter(model, arm);
+  refuseOversizedReference(model, arm);
   return model;
 }
 
@@ -645,6 +669,23 @@ function refuseMalformedVoice(model: HiggsModel): void {
 
 /** The arms a checkpoint may be staged on. The catalog's whole key vocabulary. */
 const CHECKPOINT_ARMS = ['wsl', 'darwin'] as const;
+
+/**
+ * WHICH `backends` BLOCK EACH ARM RENDERS THROUGH — the ONE place the two
+ * vocabularies meet.
+ *
+ * They are different words because they answer different questions. An ARM is a
+ * FILESYSTEM: which machine's disk the 8.5 GB of weights sit on. A BACKEND is a
+ * RUNTIME: `served` is vllm-omni answering HTTP, `mlx` is mlx-audio sampling in
+ * this process. They are 1:1 today and might not always be (vLLM-Omni installs
+ * natively on Linux in principle, which would be a third arm on the `served`
+ * backend), which is exactly why the mapping is a table and not a coincidence
+ * two files each rely on separately.
+ */
+const BACKEND_FOR_ARM: Record<HiggsCheckpointArm, 'served' | 'mlx'> = {
+  wsl: 'served',
+  darwin: 'mlx',
+};
 
 /**
  * THE SHAPE OF ONE ARM'S PATH, checked whether or not this machine is that arm.
@@ -821,7 +862,7 @@ function refuseUntranscribedClips(model: HiggsModel): void {
  * The 30 s cap is the server's own (42 s returns HTTP 400 "Reference audio too
  * long"), and the declared `seconds` are what make it checkable before launch.
  */
-function refuseOversizedReference(model: HiggsModel): void {
+function refuseOversizedReference(model: HiggsModel, arm: HiggsCheckpointArm): void {
   const clips = model.voice.clips ?? [];
   if (clips.length > 1) {
     throw new Error(
@@ -830,7 +871,7 @@ function refuseOversizedReference(model: HiggsModel): void {
         `transcripts joined in the same order, and declare that one clip.`,
     );
   }
-  const cap = higgsVoiceCapsForModel(model).referenceSecondsCap;
+  const cap = higgsVoiceCapsForModel(model, arm).referenceSecondsCap;
   if (cap === undefined || clips.length === 0) return;
   const total = clips.reduce((sum, c) => sum + c.seconds, 0);
   if (total > cap) {
@@ -858,13 +899,18 @@ function refuseOversizedReference(model: HiggsModel): void {
  * A duration ratio in particular is not a coverage proxy on this family — a v3
  * render measured ratio 0.99 while dropping 22 % of its text.
  */
-function refuseUnmeasuredAdapter(model: HiggsModel): void {
+function refuseUnmeasuredAdapter(model: HiggsModel, arm: HiggsCheckpointArm): void {
   if (model.kind !== 'checkpoint') return;
-  const caps = higgsVoiceCapsForModel(model);
+  const backend = BACKEND_FOR_ARM[arm];
+  const caps = higgsVoiceCapsForModel(model, arm);
   if (typeof caps.maxChars === 'number' && caps.maxChars > 0 && caps.maxCharsSource) return;
   throw new Error(
-    `Higgs fine-tune "${model.id}" has no MEASURED maxChars (got ` +
-      `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}). ` +
+    `Higgs fine-tune "${model.id}" has no MEASURED maxChars on the ${backend} backend (got ` +
+      `${JSON.stringify(caps.maxChars ?? null)}, source ${JSON.stringify(caps.maxCharsSource ?? null)}, ` +
+      `from backends.${backend}). A CERTIFICATE IS PER (DIRECTORY, BACKEND): the number measured ` +
+      `on the other backend does not transfer, because the two arms sample through different ` +
+      `implementations of top-k/top-p over different runtimes — the same three numbers make the ` +
+      `configuration identical, not the draws. ` +
       `A fine-tune's stop length follows its TRAINING CLIP LENGTH, not the text — one trained ` +
       `on 8-22 s clips stops after ~6-10 s on any prompt over ~150 chars — so the zero-shot ` +
       `600 would silently lose most of every chunk. Run a length sweep on this model, verify ` +
@@ -908,10 +954,13 @@ export function higgsServingSpec(): HiggsServingSpec {
  * Absent fields stay absent. A caller can tell "this voice declares nothing"
  * from "this voice declares 600".
  */
-export function higgsVoiceCapsForModel(model: HiggsModel): HiggsServedCaps {
-  const served = model.backends?.served;
+export function higgsVoiceCapsForModel(
+  model: HiggsModel,
+  arm: HiggsCheckpointArm = thisMachineArm(),
+): HiggsBackendCaps {
+  const served = model.backends?.[BACKEND_FOR_ARM[arm]];
   if (!served) return {};
-  const caps: HiggsServedCaps = {};
+  const caps: HiggsBackendCaps = {};
   if (served.maxChars !== undefined) caps.maxChars = served.maxChars;
   if (served.maxCharsSource !== undefined) caps.maxCharsSource = served.maxCharsSource;
   if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
@@ -988,7 +1037,12 @@ export function higgsVoicesDocument(
   }
   if (model.voice.scene) entry.scene = model.voice.scene;
 
-  const caps = higgsVoiceCapsForModel(model);
+  // THE ARM'S OWN CAPS. A certificate is per (directory, backend), so the
+  // document for the darwin arm carries the MLX block's cap and never the
+  // served one — and a null there means no `maxChars` is emitted at all, which
+  // narrator's `load_voices` refuses for a checkpoint entry BY NAME. Two
+  // independent refusals of one unmeasured arm.
+  const caps = higgsVoiceCapsForModel(model, target.arm);
   // THE CAP TRAVELS IN THE DOCUMENT, and this is the fix for the branch's worst
   // near-miss. narrator's `load_voices` raises for an adapter entry with no
   // `maxChars`, so `refuseUnmeasuredAdapter` was guarding a number that never
@@ -1097,8 +1151,13 @@ export function higgsSpawnEnv(
   refuseMalformedVoice(model);
   refuseUntranscribedClips(model);
   refuseUnstagedCheckpoint(model);
-  refuseOversizedReference(model);
-  refuseUnmeasuredAdapter(model);
+  // The spawn's arm IS this machine's arm: `checkpointArmForSpawn` in
+  // higgs-spawn.ts derives it from `narratorRunsInWsl` and refuses the one case
+  // where they could differ (Windows with the WSL toggle off, which has no arm at
+  // all) before this is ever reached.
+  const spawnArm = thisMachineArm();
+  refuseOversizedReference(model, spawnArm);
+  refuseUnmeasuredAdapter(model, spawnArm);
 
   const env: Record<string, string> = {
     NARRATOR_HIGGS_VOICES: opts.voicesPath,

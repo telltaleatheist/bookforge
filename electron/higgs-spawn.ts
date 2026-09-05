@@ -76,6 +76,7 @@ import {
 } from './narrator-spawn';
 import { app } from 'electron';
 import {
+  higgsCheckpointArm,
   higgsMlxBaseDir,
   resolveHiggsModel,
   higgsSpawnEnv,
@@ -299,23 +300,25 @@ export function higgsEnvExtras(
  * into the guest, the checkpoint named in the document is the guest's copy, and
  * nothing else can be true at the same time.
  *
- * Windows with the "WSL2 for Higgs" toggle OFF reaches the else-branch and is
- * REFUSED here rather than silently handed the guest path: there is no native
- * Windows Higgs arm at all (vLLM-Omni has no Windows build), so the honest answer
- * is that this spawn has no weights location. `higgsEnvironmentRefusal()` reaches
- * the same conclusion earlier and more helpfully, through the doctor's toggle
- * row; this is the backstop for a caller that skipped it.
+ * WINDOWS WITH THE TOGGLE OFF IS STILL THE `wsl` ARM, and that is deliberate
+ * rather than sloppy: there is no NATIVE Windows Higgs arm to be, so the guest is
+ * the only filesystem a Windows checkpoint could live on. The toggle being off is
+ * an ENVIRONMENT failure, and it already has two good refusals — the doctor's
+ * toggle row (through `higgsEnvironmentRefusal`) and `narratorNativePython`'s
+ * own, which names the installer. Refusing again here only replaced a better
+ * sentence with a worse one, which is exactly what
+ * `tools/test-serve-spawn-env.js`'s `higgs/native-win` snapshot caught.
+ *
+ * Linux and everything else is refused BY PLATFORM NAME: no arm exists, so there
+ * is no directory to name and nothing to be vague about.
  */
 function checkpointArmForSpawn(viaWsl: boolean): HiggsCheckpointArm {
   if (viaWsl) return 'wsl';
-  if (process.platform === 'darwin') return 'darwin';
+  const arm = higgsCheckpointArm();
+  if (arm) return arm;
   throw new Error(
-    process.platform === 'win32'
-      ? 'A Higgs spawn on Windows must go through WSL — vLLM-Omni has no Windows build — but '
-        + '"WSL2 for Higgs" is off, so this job has no arm and no checkpoint location. Turn it '
-        + 'on in Settings → Higgs.'
-      : `Higgs has no backend on ${process.platform}: a vLLM-Omni server reached through WSL on `
-        + 'Windows, and an in-process mlx-audio backend on macOS, are the two BookForge builds.',
+    `Higgs has no backend on ${process.platform}: a vLLM-Omni server reached through WSL on `
+    + 'Windows, and an in-process mlx-audio backend on macOS, are the two BookForge builds.',
   );
 }
 

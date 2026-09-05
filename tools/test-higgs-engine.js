@@ -845,6 +845,57 @@ check('the PICKER and Listen show a checkpoint voice only on an arm that has it'
   }
 });
 
+/**
+ * Run `fn` against a catalog with `extra` rows appended, then put the shipped one
+ * back.
+ *
+ * THROUGH THE REAL FILE, because that is the only seam there is: the loader reads
+ * `<dist>/electron/data/higgs-models.json` fresh on every call (deliberately — so
+ * editing tuning and re-running takes effect without an app restart), and
+ * `listRenderableHiggsModels` calls `listHiggsModels` directly rather than through
+ * the module object, so there is nothing to stub.
+ *
+ * Needed because every row the catalog SHIPS is pending on both arms today, so a
+ * picker that ignored the arm entirely would still agree with `resolveHiggsModel`
+ * over the shipped file — the mutation would pass. A renderable-on-one-arm row is
+ * what makes the arm-awareness observable.
+ */
+const CATALOG_FILE = path.join(DIST, 'data', 'higgs-models.json');
+function withExtraVoices(extra, fn) {
+  const shipped = fs.readFileSync(CATALOG_FILE, 'utf-8');
+  const parsed = JSON.parse(shipped);
+  parsed.models = [...parsed.models, ...extra];
+  fs.writeFileSync(CATALOG_FILE, JSON.stringify(parsed, null, 2), 'utf-8');
+  try { return fn(); } finally { fs.writeFileSync(CATALOG_FILE, shipped, 'utf-8'); }
+}
+
+check('a fine-tune certified on ONE arm is renderable there and greyed on the other', () => {
+  const wslOnly = {
+    id: 'wslonly', label: 'WSL-only fine-tune', kind: 'checkpoint', engineVersion: 'v3',
+    voice: { checkpoint: { wsl: '/home/telltale/higgs_v3_merged/wslonly' } },
+    license: 'x', commercialUse: false, sampleRate: 24000, addedAt: '2026-09-05',
+    backends: { served: { maxChars: 1200, maxCharsSource: 'length-sweep' } },
+  };
+  withExtraVoices([wslOnly], () => {
+    onArm('wsl', () => {
+      assert.ok(higgs.listRenderableHiggsModels().some((m) => m.id === 'wslonly'),
+        'the arm that has the weights and the certificate cannot render it');
+      const row = higgs.higgsNarrationVoices().find((v) => v.value === 'wslonly');
+      assert.ok(row && !row.unavailable, 'it is offered as unavailable on its own arm');
+      assert.strictEqual(higgs.resolveHiggsModel('wslonly').id, 'wslonly');
+    });
+    onArm('darwin', () => {
+      assert.ok(!higgs.listRenderableHiggsModels().some((m) => m.id === 'wslonly'),
+        'the Mac lists a voice whose weights are in the WSL guest');
+      const row = higgs.higgsNarrationVoices().find((v) => v.value === 'wslonly');
+      assert.ok(row, 'the voice vanished from the dropdown instead of being greyed');
+      assert.match(row.label, /not on this machine/);
+      assert.match(row.unavailable, /is not staged for the Mac/);
+      assert.throws(() => higgs.resolveHiggsModel('wslonly'), /is not staged for the Mac/);
+    });
+  });
+});
+
 check('the reason the picker shows is the REFUSAL, not a second description of it', () => {
   const m = stagedVoice({ wsl: '/home/telltale/higgs_v3_merged/ds' });
   const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m));
@@ -852,6 +903,168 @@ check('the reason the picker shows is the REFUSAL, not a second description of i
   assert.match(reason, /is not staged for the Mac/);
   assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m)), null,
     'the arm that has the weights was told it does not');
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5b. A CERTIFICATE IS PER (DIRECTORY, BACKEND)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The served cap was measured by driving vllm-omni on ONE merged directory with
+// ONE patched stage processor. The MLX arm is a different sampler over a
+// different runtime — mlx-audio's top-k/top-p and vLLM's are different
+// implementations, so the same three numbers make the CONFIGURATION identical and
+// not the draws (PORT_NOTES 13.11), and the seeds are not even comparable. So
+// copying the merged directory to the Mac copies the weights and NOT the
+// certificate: `backends.mlx` carries its own cap, null until it is measured.
+console.log('per-backend certificates');
+
+check('caps come from the ARM\'s own block, and never from the other one', () => {
+  const m = probeVoice({
+    id: 'twoarm', kind: 'checkpoint',
+    voice: { checkpoint: { wsl: '/home/t/merged', darwin: 'runtime/higgs-models/merged' } },
+    backends: {
+      served: { maxChars: 1200, maxCharsSource: 'length-sweep' },
+      mlx: { maxChars: 800, maxCharsSource: 'length-sweep' },
+    },
+  });
+  assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'wsl').maxChars, 1200);
+  assert.strictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').maxChars, 800);
+  // And the document carries the arm's own number, because that is what sizes the
+  // prep packer for the render this document describes.
+  assert.strictEqual(higgs.higgsVoicesDocument(m, WSL_DOC).twoarm.maxChars, 1200);
+  assert.strictEqual(higgs.higgsVoicesDocument(m, MAC_DOC).twoarm.maxChars, 800);
+});
+
+check('a null MLX cap REFUSES on darwin while the served cap still loads on WSL', () => {
+  // The shape deathstalker ships in the moment its served sweep lands: staged on
+  // both arms, certified on one. The refusal must be per arm, or the Mac renders
+  // a book packed for a cap nobody measured on its sampler.
+  const m = probeVoice({
+    id: 'halfway', kind: 'checkpoint',
+    voice: { checkpoint: { wsl: '/home/t/merged', darwin: 'runtime/higgs-models/merged' } },
+    backends: {
+      served: { maxChars: 1200, maxCharsSource: 'length-sweep' },
+      mlx: { maxChars: null, maxCharsSource: null },
+    },
+  });
+
+  const doc = onArm('wsl', () => higgs.higgsVoicesDocument(m, WSL_DOC));
+  assert.strictEqual(doc.halfway.maxChars, 1200, 'the CERTIFIED arm was refused');
+  assert.ok(onArm('wsl', () => higgs.higgsSpawnEnv(m, { voicesPath: DOC_PATH })));
+
+  let threw = null;
+  try { onArm('darwin', () => higgs.higgsSpawnEnv(m, { voicesPath: DOC_PATH })); }
+  catch (err) { threw = err; }
+  assert.ok(threw, 'an unmeasured MLX arm was accepted because the served arm was measured');
+  assert.match(threw.message, /no MEASURED maxChars on the mlx backend/);
+  assert.match(threw.message, /backends\.mlx/);
+  assert.match(threw.message, /CERTIFICATE IS PER \(DIRECTORY, BACKEND\)/);
+  assert.match(threw.message, /does not transfer/);
+
+  // And the picker agrees: offered on WSL, greyed on the Mac, same reason text.
+  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m)), null);
+  assert.match(onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m)),
+    /no MEASURED maxChars on the mlx backend/);
+
+  // A MISSING mlx BLOCK is the same answer as a null one — "this backend has no
+  // certificate" — and never the served block by default.
+  const noBlock = probeVoice({
+    id: 'halfway', kind: 'checkpoint',
+    voice: { checkpoint: { wsl: '/home/t/merged', darwin: 'runtime/higgs-models/merged' } },
+    backends: { served: { maxChars: 1200, maxCharsSource: 'length-sweep' } },
+  });
+  assert.throws(() => onArm('darwin', () => higgs.higgsSpawnEnv(noBlock, { voicesPath: DOC_PATH })),
+    /no MEASURED maxChars on the mlx backend/,
+    'an absent mlx block silently inherited the served certificate');
+});
+
+check("the shipped deathstalker is UNCERTIFIED on BOTH arms, each saying so itself", () => {
+  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  for (const backend of ['served', 'mlx']) {
+    assert.strictEqual(m.backends[backend].maxChars, null, `${backend}: cap is not a declared null`);
+    assert.strictEqual(m.backends[backend].maxCharsSource, null, `${backend}: it names a source`);
+  }
+  // The MLX note must brief the sweep that has to be run, not just say "null":
+  // the ladder, the seed count, the scorer and the rule.
+  const note = m.backends.mlx._maxCharsNote;
+  assert.match(note, /4 seeds per length/i, 'the MLX note does not say how many seeds');
+  assert.match(note, /ASR alignment/, 'the MLX note does not name the scorer');
+  assert.match(note, /NEVER by duration ratio/i);
+  assert.match(note, /600 \/ 900 \/ 1200 \/ 1500/, 'the MLX note does not give the ladder');
+  assert.match(note, /ds_ad4lm_prod_ckpt1080/, 'the MLX note does not name the directory to sweep');
+  assert.match(note, /WILL NOT TRANSFER|does not transfer/i,
+    'nothing says the served cap will not become this one');
+});
+
+check("EVERY backend block states its cap — measured, or null, with a KNOWN source", () => {
+  // The catalog-wide rule, over every block of every fine-tune, so a voice added
+  // later cannot ship one arm certified and the other silently blank.
+  const KNOWN_SOURCES = ['catalog', 'placeholder', 'length-sweep'];
+  for (const m of higgs.listHiggsModels()) {
+    for (const [backend, caps] of Object.entries(m.backends)) {
+      if (m.kind === 'checkpoint' && caps.maxChars === null) {
+        assert.strictEqual(caps.maxCharsSource, null,
+          `${m.id}/${backend}: an unmeasured cap names a source`);
+        continue;
+      }
+      assert.ok(Number.isInteger(caps.maxChars) && caps.maxChars > 0,
+        `${m.id}/${backend}: maxChars is ${JSON.stringify(caps.maxChars)}`);
+      // narrator VALIDATES this vocabulary (protocol.MAX_CHARS_SOURCES) and the
+      // value travels in the voice document, so a prose provenance string here
+      // is a render refused at load_voices.
+      assert.ok(KNOWN_SOURCES.includes(caps.maxCharsSource),
+        `${m.id}/${backend}: maxCharsSource ${JSON.stringify(caps.maxCharsSource)} is not one of `
+        + KNOWN_SOURCES.join(' | '));
+    }
+  }
+});
+
+check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json', () => {
+  // THE FILE IS THE AUTHORITY on both arms — vllm-omni resolves sampling from the
+  // model directory, and on the Mac narrator reads the same file itself because
+  // mlx-audio reads none. The catalog block is a MIRROR, kept so a reader can see
+  // what a voice samples at without opening a directory inside WSL, and a mirror
+  // nobody checks is how two copies of a number diverge.
+  //
+  // Driven against a FIXTURE directory, because the shipped voice's directory is
+  // inside the WSL guest (and on the Mac) and this process can open neither. What
+  // is under test is the RULE; the shipped values are asserted separately below.
+  const dir = path.join(MAC_USER_DATA, 'runtime', 'higgs-models', 'mirrored');
+  fs.mkdirSync(dir, { recursive: true });
+  const file = { temperature: 0.7, top_p: 0.8, top_k: 20, repetition_penalty: 1.0 };
+  fs.writeFileSync(path.join(dir, 'generation_config.json'), JSON.stringify(file), 'utf-8');
+
+  const mirrorOf = (doc) => ({ temperature: doc.temperature, topP: doc.top_p, topK: doc.top_k });
+  const m = probeVoice({
+    id: 'mirrored', kind: 'checkpoint',
+    voice: { checkpoint: { darwin: 'runtime/higgs-models/mirrored' } },
+    backends: { mlx: { maxChars: 900, maxCharsSource: 'length-sweep', sampling: mirrorOf(file) } },
+  });
+  const onDisk = JSON.parse(
+    fs.readFileSync(path.join(higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA),
+                              'generation_config.json'), 'utf-8'));
+  assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').sampling, mirrorOf(onDisk),
+    'the catalog block does not mirror the directory it points at');
+
+  // MUTATION: change the file and the mirror is wrong — which is what makes this
+  // a check rather than a restatement.
+  fs.writeFileSync(path.join(dir, 'generation_config.json'),
+    JSON.stringify({ ...file, top_k: 50 }), 'utf-8');
+  const drifted = JSON.parse(fs.readFileSync(path.join(dir, 'generation_config.json'), 'utf-8'));
+  assert.notDeepStrictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').sampling, mirrorOf(drifted));
+});
+
+check('both of deathstalker\'s blocks mirror the SAME file, so both arms sample alike', () => {
+  // One directory, one generation_config.json, read by vllm-omni on one arm and
+  // by narrator itself on the other. If the two blocks disagreed, one of them
+  // would be describing a file that does not exist.
+  const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  assert.deepStrictEqual(m.backends.mlx.sampling, m.backends.served.sampling);
+  assert.deepStrictEqual(m.backends.mlx.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.match(m.backends.mlx._samplingNote, /DIRECTORY is still the authority/i);
+  // And the Mac arm must say who APPLIES it, because there the answer is narrator
+  // rather than the server: mlx-audio reads no generation_config.json at all.
+  assert.match(m.backends.mlx._samplingNote, /require_generation_config/);
 });
 
 check('a checkpoint document carries checkpointDir AND its measured cap AND kind', () => {
