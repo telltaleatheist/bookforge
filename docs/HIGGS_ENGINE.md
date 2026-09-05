@@ -344,7 +344,10 @@ and in the catalog's `_checkpointDirNote`, and a change to any part of it means 
 | `/home/telltale/higgs_v3_merged/ds_ad4lm_prod` | **ALTERNATE.** ckpt-480, the rule-picked checkpoint. Kept on disk | **`max_chars` 1200**, certified 2026-09-05 against this directory and the patched stage processor `0b36f650…` |
 
 Both are **frozen**: a re-merge or a recipe change writes a new directory name and
-re-certifies.
+re-certifies, and since 2026-09-05 a merged directory may not be **renamed**
+either (see the provenance correction below). Certification asserts that a
+directory's `merge_manifest.out` names *itself*, so a checkpoint whose manifest
+points somewhere else cannot be certified at all.
 
 #### The ckpt-480 certificate — the method every sweep repeats
 
@@ -382,13 +385,43 @@ Its own sweep has not been run, so its cap is `null` and the voice is refused �
 by the `_pendingNote` *and*, independently, by `refuseUnmeasuredAdapter`. Copying
 1200 across would be a cap nobody measured for those weights.
 
-> **Observed and recorded rather than tidied:** the ckpt-1080 directory's
-> `merge_manifest.json` gives `"out": ".../ds_ad4lm_prod"` — its *sibling's* path —
-> and its `generation_config.json` says `"_written_by": "backfilled 2026-09-05 for
-> ds_ad4lm_prod"`. What identifies it is the lora it names,
-> `runs/ds_ad4lm_prod/ckpt-1080`, on snapshot `239f63fb…`. Nothing else inside the
-> directory distinguishes it from its sibling, so **the path in the catalog is the
-> only thing that says which weights render.**
+#### A provenance correction, and the two guards it bought
+
+**Found 2026-09-05.** The ckpt-1080 directory's `merge_manifest.json` gave
+`"out": ".../ds_ad4lm_prod"` — its *sibling's* path — and its
+`generation_config.json` said `"_written_by": "backfilled 2026-09-05 for
+ds_ad4lm_prod"`. Recorded rather than tidied away, because a stale path string is
+exactly how two merged directories stop being distinguishable.
+
+**Cause.** It was merged *to* the path `ds_ad4lm_prod` and **renamed** to
+`ds_ad4lm_prod_ckpt1080` when ckpt-480 took the `ds_ad4lm_prod` name. The path
+strings were stale, and only the path strings.
+
+**Corrected in place 2026-09-05T10:35:56** by the training side: both files now
+name this directory, each carries a timestamped `provenance_correction` recording
+the rename, and the original value is **kept** rather than overwritten
+(`out_original_at_merge_time`).
+
+**Confirmed** by re-reading both files read-only:
+
+| | |
+|---|---|
+| `merge_manifest.out` | `/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` ✓ |
+| `generation_config._written_by` | `merge_for_serving.py for ds_ad4lm_prod_ckpt1080 (from runs/ds_ad4lm_prod/generation_config.override.json)` ✓ |
+| `lora` | `runs/ds_ad4lm_prod/ckpt-1080` — unchanged |
+| snapshot | `239f63fb…` — unchanged |
+| sampling | `1.0 / 0.95 / 50 / 1.0` — unchanged |
+| `model.safetensors` mtime | **08:08, unchanged** against the two JSONs' 10:35 — the weights were not touched |
+
+**And it cannot happen again**, which is the part a certificate cares about:
+
+1. the **immutability rule** now forbids renaming a merged directory at all — a
+   re-merge writes a new name;
+2. **certification asserts `merge_manifest.out` equals the directory being
+   certified**, so a stale path cannot reach a certificate in the first place.
+
+The catalog path is still what says which weights render — but it is no longer
+the *only* thing: the directory now names itself.
 
 ### ⚠ A checkpoint's `generation_config.json` is a REQUIRED FILE
 

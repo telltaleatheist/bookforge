@@ -235,6 +235,30 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
   assert.ok(m._checkpointDirNote, 'nothing says why this is not the higgs-models convention');
 });
 
+check('a checkpoint NOTE describes the directory its row actually points at', () => {
+  // THIS CAUGHT A REAL ONE. Re-pointing deathstalker from ckpt-480 to ckpt-1080
+  // moved `checkpointDir` and nulled the cap, but left the previous note in
+  // place — so the entry shipped saying "THE CERTIFIED CAP IS BOUND TO THIS
+  // EXACT DIRECTORY: the 1200 below was measured against .../ds_ad4lm_prod"
+  // beside a checkpointDir of .../ds_ad4lm_prod_ckpt1080 and a maxChars of null.
+  // Every other check passed, because they all asked whether the note EXISTED.
+  //
+  // Two rules, both about the note agreeing with its own row:
+  //   1. it must NAME the directory the row points at;
+  //   2. a row with no cap may not claim a certificate — that sentence belongs
+  //      only to a row that carries the measured number.
+  for (const m of higgs.listHiggsModels().filter((v) => v.kind === 'checkpoint')) {
+    const note = m._checkpointDirNote;
+    assert.ok(note, `${m.id}: a checkpoint voice off the staging convention needs a note`);
+    assert.ok(note.includes(m.voice.checkpointDir),
+      `${m.id}: the note never names ${m.voice.checkpointDir}, the directory this row serves`);
+    if (m.backends.served.maxChars === null) {
+      assert.ok(!/CERTIFIED CAP IS BOUND/.test(note),
+        `${m.id}: maxChars is null, but the note claims a certified cap for this directory`);
+    }
+  }
+});
+
 check('the shape must match the kind — all six malformed pairings refused', () => {
   const cases = [
     ['default with clips', { kind: 'default',
