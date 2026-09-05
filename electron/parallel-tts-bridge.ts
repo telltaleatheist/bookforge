@@ -1280,12 +1280,30 @@ export async function scanProjectSessions(
  */
 const SESSION_OWNER_FILE = 'bookforge-session.json';
 
-interface SessionOwnerInfo {
+export interface SessionOwnerInfo {
   jobId: string;
   bfpPath?: string;
   language: string;
   epubPath: string;
   createdAt: string;
+  /**
+   * WHICH MACHINE IS RENDERING THIS. The scratch dir is `<library>/tmp`, and the
+   * library is a share both machines mount (Z: on Windows, /Volumes/iO on the
+   * Mac), so "this scratch dir" is not "this computer's scratch dir". The startup
+   * sweep's licence — "nothing is converting yet at startup, so everything here is
+   * from a dead run" — is only ever true of THIS host's sessions.
+   *
+   * MEASURED, 2026-09-05: Windows started while the Mac was 8 minutes into a
+   * render, swept `Z:\bookforge\tmp\ebook-83fa5cb8-…` out from under it, and took
+   * `session-state.json` and this sidecar with it. The Mac kept rendering into the
+   * gutted directory and later cached a session with audio and no text.
+   *
+   * Absent on sidecars written before this field existed; those are treated as
+   * this host's, which is the behaviour they had.
+   */
+  host?: string;
+  /** The rendering process, for a log line that can be checked by hand. */
+  pid?: number;
 }
 
 /** Write (or refresh) the ownership sidecar for a session. Best-effort, never throws. */
@@ -1298,6 +1316,8 @@ async function writeSessionOwner(session: ConversionSession): Promise<void> {
     language: session.config.settings.language || 'en',
     epubPath: session.config.epubPath,
     createdAt: new Date().toISOString(),
+    host: os.hostname(),
+    pid: process.pid,
   };
   try {
     await fs.writeFile(path.join(sessionDir, SESSION_OWNER_FILE), JSON.stringify(owner, null, 2));
@@ -1307,7 +1327,7 @@ async function writeSessionOwner(session: ConversionSession): Promise<void> {
 }
 
 /** Read the ownership sidecar from a scratch session dir. Returns null when absent/unreadable. */
-async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
+export async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | null> {
   try {
     const raw = await fs.readFile(path.join(sessionDir, SESSION_OWNER_FILE), 'utf-8');
     const parsed = JSON.parse(raw) as SessionOwnerInfo;
@@ -1316,6 +1336,20 @@ async function readSessionOwner(sessionDir: string): Promise<SessionOwnerInfo | 
   } catch {
     return null;
   }
+}
+
+/**
+ * The name of the machine that owns this scratch session, when it is NOT this one.
+ *
+ * `null` means "ours to sweep, rescue and delete": either the sidecar names this
+ * host, or there is no sidecar (a pre-sidecar session, or a run that never reached
+ * prep — both of which the sweep has always treated as leftovers).
+ */
+export async function foreignSessionHost(sessionDir: string): Promise<string | null> {
+  const owner = await readSessionOwner(sessionDir);
+  const host = owner?.host;
+  if (!host || host === os.hostname()) return null;
+  return host;
 }
 
 /**
@@ -1376,6 +1410,19 @@ export async function rescueOrphanedScratchSessions(scratchDir: string): Promise
     const sessionDir = path.join(scratchDir, entry.name);
 
     try {
+      // ANOTHER MACHINE'S RENDER IS NOT AN ORPHAN. The library scratch dir is
+      // shared, so a session here may be mid-render on the Mac while this host
+      // starts up. Promoting it would publish a partial render over a complete
+      // cache, and the sweep that follows this pass would delete the live session
+      // out from under the renderer.
+      const foreign = await foreignSessionHost(sessionDir);
+      if (foreign) {
+        ttsLog.info('Scratch session belongs to another machine — leaving it alone', {
+          sessionDir, host: foreign,
+        });
+        continue;
+      }
+
       const owner = await readSessionOwner(sessionDir);
       const ours = await countRenderedSentencesInSessionDir(sessionDir);
 
