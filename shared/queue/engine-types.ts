@@ -51,6 +51,22 @@ export type JobType =
    * contend for the cpu pool while the GPU moves on.
    */
   | 'final-denoise'
+  /**
+   * FORCE-ALIGN THE RENDERED CHUNKS AGAINST THE TEXT THEY WERE GIVEN, and write
+   * the coverage report assembly refuses a book without.
+   *
+   * A row of its own for the reason the denoise is: it is a distinct act with a
+   * distinct duration (CPU minutes, RTF ~0.08 — a five-hour book is a few
+   * minutes) and its own way of failing, and a run that folded it into the
+   * render would report "narrating" while it aligned.
+   *
+   * It exists because an ENFORCED engine — Higgs v3 — has no duration guard
+   * worth the name: a chunk measured a duration ratio of 0.99 while dropping
+   * 22 % of its text. `assemble/coverage_gate.py` refuses such a book, and
+   * refuses just as loudly when nobody checked. This is the step that checks.
+   * See `shared/queue/coverage-policy.ts` for which engines it runs for.
+   */
+  | 'align'
   | 'reassembly'
   | 'bilingual-cleanup'
   | 'bilingual-translation'

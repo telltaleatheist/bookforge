@@ -3,8 +3,9 @@
     "prep": "[ '--headless', '--ebook', ebookArgPath, '--session', sessionId, '--session_dir', sessionDir, '--language', settings.language, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), '--device', deviceArg, '--prep_only' ]",
     "retake": "[ '--session', sessionId, '--session_dir', sessionDirArg, '--sentences_dir', targetSentencesDir, '--device', deviceArg, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), ]",
     "worker": "[ '--session', prepInfo.sessionId, '--session_dir', prepInfo.sessionDir, '--sentences_dir', prepInfo.chaptersDirSentences, '--device', deviceArg, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), ]",
-    "assembly-render": "[ '--headless', ...(config.epubPath ? ['--ebook', config.epubPath] : []), '--output_dir', asmOutputDir, '--session', prepInfo.sessionId, '--session_dir', prepInfo.processDir, ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : session.denoisedSentencesDir ? ['--sentences_dir', session.denoisedSentencesDir] : []), '--device', asmDeviceArg, '--language', settings.language, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), '--assemble_only', '--no_split', ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]",
-    "assembly-reassembly": "[ '--headless', '--ebook', epubPath, '--output_dir', stagingDir, '--session', config.sessionId, '--session_dir', config.processDir, '--device', 'CPU', '--language', language, '--tts_engine', asmEngine, '--assemble_only', '--no_split', ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []), ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []), ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]"
+    "assembly-render": "[ '--headless', ...(config.epubPath ? ['--ebook', config.epubPath] : []), '--output_dir', asmOutputDir, '--session', prepInfo.sessionId, '--session_dir', prepInfo.processDir, ...(session.rvcSentencesDir ? ['--sentences_dir', session.rvcSentencesDir] : session.denoisedSentencesDir ? ['--sentences_dir', session.denoisedSentencesDir] : []), '--device', asmDeviceArg, '--language', settings.language, '--tts_engine', narratorEngineId(narratorEngineFor(settings)), '--assemble_only', '--no_split', ...(coverageEnforcedFor(settings.ttsEngine) ? ['--coverage_report', coverageReportPath(prepInfo.processDir)] : []), ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]",
+    "assembly-reassembly": "[ '--headless', '--ebook', epubPath, '--output_dir', stagingDir, '--session', config.sessionId, '--session_dir', config.processDir, '--device', 'CPU', '--language', language, '--tts_engine', asmEngine, '--assemble_only', '--no_split', ...(coverageEnforcedFor(asmEngine) ? ['--coverage_report', coverageReportPath(config.processDir)] : []), ...(rvcSentencesDir ? ['--sentences_dir', rvcSentencesDir] : []), ...(encodedChaptersDir ? ['--encoded_chapters_dir', encodedChaptersDir] : []), ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []), ]",
+    "align": "[ 'align', '--session-dir', config.processDir, '--report', reportPath, '--language', config.language, '--device', 'cpu', '--python', python, ]"
   },
   "plans": {
     "wsl": {
@@ -95,6 +96,34 @@
             "C:/out",
             "--assemble_only",
             "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "align": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.cli",
+            "align",
+            "--session-dir",
+            "C:/lib/tmp/ebook-abc",
+            "--report",
+            "C:/lib/tmp/ebook-abc/coverage.json",
+            "--language",
+            "en",
+            "--device",
+            "cpu",
+            "--python",
+            "C:/FAKE/whisperx/python.exe"
           ],
           "env": {
             "PROBE_PATH": "C:/lib/rejects",
@@ -243,6 +272,34 @@
             "C:/out",
             "--assemble_only",
             "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "align": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.cli",
+            "align",
+            "--session-dir",
+            "C:/lib/tmp/ebook-abc",
+            "--report",
+            "C:/lib/tmp/ebook-abc/coverage.json",
+            "--language",
+            "en",
+            "--device",
+            "cpu",
+            "--python",
+            "C:/FAKE/whisperx/python.exe"
           ],
           "env": {
             "PROBE_PATH": "C:/lib/rejects",
@@ -406,6 +463,34 @@
             "C:/out",
             "--assemble_only",
             "--no_split"
+          ],
+          "env": {
+            "PROBE_PATH": "C:/lib/rejects",
+            "PROBE_PLAIN": "x",
+            "PYTHONIOENCODING": "utf-8",
+            "PYTHONPATH": "<REPO>/python",
+            "PYTHONUNBUFFERED": "1"
+          },
+          "cwd": "C:/FAKE/userData"
+        },
+        "align": {
+          "command": "C:/FAKE/e2a/python_env/python.exe",
+          "viaWsl": false,
+          "args": [
+            "-u",
+            "-m",
+            "narrator.cli",
+            "align",
+            "--session-dir",
+            "C:/lib/tmp/ebook-abc",
+            "--report",
+            "C:/lib/tmp/ebook-abc/coverage.json",
+            "--language",
+            "en",
+            "--device",
+            "cpu",
+            "--python",
+            "C:/FAKE/whisperx/python.exe"
           ],
           "env": {
             "PROBE_PATH": "C:/lib/rejects",

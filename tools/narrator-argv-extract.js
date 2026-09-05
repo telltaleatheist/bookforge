@@ -3,7 +3,7 @@
  * The narrator command lines BookForge builds — the FLAGS from source, and the
  * PLAN (interpreter, env, cwd) from the real spawn builder.
  *
- *   node tools/narrator-argv-extract.js flags    # the six argv literals
+ *   node tools/narrator-argv-extract.js flags    # the seven argv literals
  *   node tools/narrator-argv-extract.js plan <arm>   # wsl | native-win | native-mac
  *
  * ── Two halves, because two different things can break ─────────────────────
@@ -30,14 +30,15 @@
 'use strict';
 
 // ─────────────────────────────────────────────────────────────────────────────
-// Half one: the six argv literals
+// Half one: the seven argv literals
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// SIX DOORS, because "the argv did not move" is a claim that a door left out of
+// SEVEN DOORS, because "the argv did not move" is a claim that a door left out of
 // the snapshot does not cover. The e2a snapshot had five; `assembly-reassembly`
 // is the sixth, and it is in a different FILE, which is exactly why it was the
 // door that kept its `--tts_engine xtts` literal for a year after the render path
-// stopped needing one.
+// stopped needing one. `align` is the seventh, in a file of its own again, and it
+// is the one door narrator refuses a Higgs book for the absence of.
 const ANCHORS = [
   { name: 'prep', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    '--ebook', ebookArgPath," },
   { name: 'retake', file: 'electron/parallel-tts-bridge.ts', start: "args = [\n      '--session', sessionId," },
@@ -48,6 +49,13 @@ const ANCHORS = [
   { name: 'worker', file: 'electron/parallel-tts-bridge.ts', start: "= [\n    '--session', prepInfo.sessionId," },
   { name: 'assembly-render', file: 'electron/parallel-tts-bridge.ts', start: "const args = [\n    '--headless',\n    // Only include --ebook" },
   { name: 'assembly-reassembly', file: 'electron/reassembly-bridge.ts', start: "const appArgs = [\n      '--headless',\n      '--ebook', epubPath," },
+  // SEVEN NOW. The align door is the coverage guard's own spawn, and it is the
+  // one door in narrator's OWN spelling (dashes-and-words) rather than e2a's —
+  // which is exactly why it is worth pinning: a flag renamed on either side
+  // silently stops producing the report, and the only symptom is an assembly
+  // refusing a Higgs book for a reason that reads like the report was never
+  // asked for.
+  { name: 'align', file: 'electron/coverage-align-job.ts', start: "const args = [\n    'align',\n    '--session-dir', config.processDir," },
   // resume and list are single-line arrays inside their spawn call, so they are
   // pinned by the plan half rather than by a literal walk.
 ];
@@ -237,6 +245,13 @@ if (require.main === module) {
              '--sentences_dir', 'C:\\lib\\sent', '--device', 'CUDA'],
     assembly: ['--headless', '--session', 'abc', '--session_dir', WIN_SESSION,
                '--output_dir', 'C:\\out', '--assemble_only', '--no_split'],
+    // narrator's own spelling, and a Windows path for `--python` so the capture
+    // shows that the align door does NOT cross into the guest: it runs natively
+    // on the session `normalizeWslSessionToWindows` has already copied out.
+    align: ['align', '--session-dir', WIN_SESSION,
+            '--report', WIN_SESSION + '\\coverage.json',
+            '--language', 'en', '--device', 'cpu',
+            '--python', 'C:\\FAKE\\whisperx\\python.exe'],
     resume: ['--headless', '--resume_session', WIN_SESSION],
     list: ['--headless', '--list_sessions'],
   };
@@ -249,6 +264,7 @@ if (require.main === module) {
     { name: 'worker', engine: 'orpheus', phase: 'worker' },
     { name: 'retake', engine: 'orpheus', phase: 'worker' },
     { name: 'assembly', engine: undefined, phase: 'assembly' },
+    { name: 'align', engine: undefined, phase: 'align' },
     { name: 'resume', engine: undefined, phase: 'resume' },
     { name: 'list', engine: undefined, phase: 'list' },
   ];

@@ -315,7 +315,7 @@ export type ProcessingPassJobConfig = PassJobConfig & {
 export type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 import type { VlmConvertJobConfig } from '../jobs/vlm-convert-job';
 
-export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | FinalDenoiseJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
+export type JobConfig = ProcessingPassJobConfig | TtsConversionConfig | TranslationJobConfig | AlignJobConfig | FinalDenoiseJobConfig | RvcEnhancementJobConfig | ReassemblyJobConfig | BilingualCleanupJobConfig | BilingualTranslationJobConfig | BilingualAssemblyJobConfig | VideoAssemblyJobConfig | AudiobookJobConfig | BookAnalysisConfig | GenerateSentencesJobConfig | VlmConvertJobConfig;
 
 // Deleted block example for detailed cleanup mode
 export interface DeletedBlockExample {
@@ -502,6 +502,30 @@ export interface RvcEnhancementJobConfig {
    *  i.e. when it is the first enhancement pass. Absent when a denoise runs in
    *  front of it — that pass owns the gap. See electron/sentence-gap.ts. */
   sentenceGap?: number;
+}
+
+/**
+ * THE COVERAGE ALIGNMENT as its own job — force-align every rendered chunk
+ * against the text it was given and write `<processDir>/coverage.json`, which
+ * `python/narrator/assemble/coverage_gate.py` refuses a guarded engine's book
+ * without.
+ *
+ * Queued only for an engine whose coverage policy is ENFORCED
+ * (`@shared/queue/coverage-policy.ts` — Higgs v3 today, never Orpheus), and
+ * always directly behind the narration: it measures the RENDER, and its
+ * thresholds were calibrated on raw engine output.
+ *
+ * `session*` may be empty at creation and discovered at runtime, exactly like
+ * reassembly and the denoise. The field that must NOT be empty is `language` —
+ * the aligner loads a different acoustic model for each, and a guess there
+ * refuses books that were read correctly.
+ */
+export interface AlignJobConfig {
+  type: 'align';
+  sessionId: string;
+  sessionDir: string;
+  processDir: string;
+  language: string;
 }
 
 /**

@@ -165,6 +165,28 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
     return {'document': document, 'cues': cues}
 
 
+#: How often the pass says how far it has got, in chunks. One line per chunk is
+#: hundreds of lines in a job log for a measurement whose whole point is that it
+#: is fast; one line per ten is a bar that moves visibly on a 130-chunk book and
+#: costs nothing on a 1,400-chunk one. The LAST chunk always reports, so the
+#: count a reader ends on is the real one rather than the last multiple of ten.
+PROGRESS_EVERY = 10
+
+
+def _progress_reporter(log):
+    """`on_result(done, total)` -> the one line BookForge's Align row parses.
+
+    The wording is a CONTRACT, not a log message: `electron/coverage-align-job.ts`
+    matches `[align] aligned <done>/<total> chunk(s)` to move the row's bar and
+    to give it a rate-based ETA. Changing the words silently stops the bar,
+    which is why they are written down in both places.
+    """
+    def report(done: int, total: int) -> None:
+        if done % PROGRESS_EVERY == 0 or done == total:
+            log(f'[align] aligned {done}/{total} chunk(s)')
+    return report
+
+
 def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
     """Align every job, here or in another interpreter.
 
@@ -175,9 +197,10 @@ def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
     is a batch protocol and finishes its list either way; `align_session` still
     raises on the first bad result there.
     """
+    progress = _progress_reporter(log)
     if python_exe:
         log(f'[align] running the aligner in {python_exe}')
-        return align_env.run_jobs(python_exe, jobs)
+        return align_env.run_jobs(python_exe, jobs, on_result=progress)
 
     if not align_env.backend_importable(backend):
         found = align_env.discover_align_python()
@@ -206,7 +229,9 @@ def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
             out.append({'ok': False, 'index': job['index'],
                         'error': str(refused)})
             if not continue_on_error:
+                progress(len(out), len(jobs))
                 return out
+        progress(len(out), len(jobs))
     return out
 
 

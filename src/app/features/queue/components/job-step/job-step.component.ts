@@ -531,6 +531,9 @@ export class JobStepComponent {
       case 'tts-conversion': return 'TTS';
       case 'rvc-enhancement': return 'Voice Enhancement';
       case 'final-denoise': return 'Denoise';
+      // The forced-alignment coverage check. One word, like Denoise, because it
+      // is one act — and the word the failure will use.
+      case 'align': return 'Align';
       case 'reassembly': return 'Reassembly';
       case 'bilingual-cleanup': return 'AI Cleanup';
       case 'bilingual-translation': return 'Translation';

@@ -587,6 +587,49 @@ class EnvTest(unittest.TestCase):
         self.assertTrue(env['PYTHONPATH'].endswith(os.pathsep + 'X'))
 
 
+class ProgressLineTest(unittest.TestCase):
+    """The one line BookForge's Align queue row parses.
+
+    It is a CONTRACT, not a log message: `electron/coverage-align-job.ts` matches
+    `[align] aligned <done>/<total> chunk(s)` to move the row's bar and to give
+    it a rate-based ETA. Reword it and the bar silently stops - a book that takes
+    minutes then looks hung, which is the failure a progress bar exists to
+    prevent. Asserted here so the wording cannot drift out from under it.
+    """
+
+    def _lines(self, total):
+        out = []
+        report = R._progress_reporter(out.append)
+        for done in range(1, total + 1):
+            report(done, total)
+        return out
+
+    def test_the_wording_is_what_the_app_parses(self):
+        self.assertEqual(self._lines(10)[-1], '[align] aligned 10/10 chunk(s)')
+
+    def test_it_reports_every_ten_and_ALWAYS_on_the_last(self):
+        # Every chunk would be hundreds of lines in a job log for a pass whose
+        # whole point is that it is fast; every tenth moves visibly on a 130-chunk
+        # book. The last one always reports, so the count a reader ends on is the
+        # real one rather than the last multiple of ten.
+        lines = self._lines(133)
+        self.assertEqual(lines[0], '[align] aligned 10/133 chunk(s)')
+        self.assertEqual(lines[-1], '[align] aligned 133/133 chunk(s)')
+        self.assertEqual(len(lines), 133 // R.PROGRESS_EVERY + 1)
+
+    def test_a_book_shorter_than_the_interval_still_reports_once(self):
+        self.assertEqual(self._lines(3), ['[align] aligned 3/3 chunk(s)'])
+
+    def test_run_jobs_takes_the_callback_by_name(self):
+        """`on_result` is a keyword argument of `run_jobs`, because `run.py`
+        passes it as one and a positional rename would silently become the
+        `timeout`."""
+        import inspect
+        params = inspect.signature(E.run_jobs).parameters
+        self.assertIn('on_result', params)
+        self.assertIsNone(params['on_result'].default)
+
+
 class CliTest(unittest.TestCase):
 
     def test_align_is_a_subcommand_with_the_documented_flags(self):

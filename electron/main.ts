@@ -112,6 +112,9 @@ import {
 // it, preload carries it and the renderer opens on it.
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
+// Which engines' books are refused at assembly without a coverage report — the
+// one table, shared with the run description and both assembly spawns.
+import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
 import { setE2aScratchDir, getDefaultE2aTmpPath } from './e2a-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -1874,6 +1877,60 @@ function narrationStepOf(job: QueueJob): QueueStep {
  * IT MAY QUEUE TWO STEPS, not one — a denoise in front of the conversion when the
  * narration asked for one. See the note at that branch.
  */
+/**
+ * THE COVERAGE GUARD'S ROW, WHEN A FOUNDRY PRESS CHAINS ONTO A GUARDED RUN.
+ *
+ * Both follow-on doors below build a chain behind a narration, and both of them
+ * end — sooner or later — at an assembly that `assemble/coverage_gate.py` will
+ * refuse without a report. The narration dialog composes the Align row itself
+ * (`shared/queue/narration-run.ts`); a run chained together from Foundry's tree
+ * never went through it, so this is where the same row gets added.
+ *
+ * Returns the id the NEXT step should be parented to: the align row when one was
+ * queued, and the narration itself otherwise. Idempotent by inspection — a job
+ * that already carries an align row gets no second one, which is what lets
+ * Enhance and Assemble be pressed in either order on the same run.
+ *
+ * IT MUST SIT DIRECTLY BEHIND THE NARRATION. `alignStep` declares
+ * `consumes: 'audio-session'`, so a row queued behind an enhancement is refused
+ * at compose time — deliberately, because the guard measures the RENDER and its
+ * thresholds were calibrated on raw engine output. That is why this takes the
+ * narration step rather than "the step that was pressed".
+ */
+function coverageGuardedRun(narrate: QueueStep): boolean {
+  const engine = narrate.config['ttsEngine'];
+  if (typeof engine !== 'string' || engine.trim() === '') {
+    throw new Error(
+      'That narration does not record which engine rendered it, so BookForge cannot say whether '
+      + 'the book has to be forced-aligned before it is assembled. Assemble it from BookForge\'s '
+      + 'own narration dialog, where the engine is known.');
+  }
+  return coverageEnforcedFor(engine);
+}
+
+function chainCoverageAlign(job: QueueJob, narrate: QueueStep): string {
+  const existing = job.steps.find((s) => s.type === 'align');
+  if (existing) return existing.id;
+  if (!coverageGuardedRun(narrate)) return narrate.id;
+  const language = narrate.config['language'];
+  if (typeof language !== 'string' || language.trim() === '') {
+    throw new Error(
+      'That narration does not record the language it was rendered in, and the aligner loads a '
+      + 'different acoustic model for each. Assemble it from BookForge\'s own narration dialog.');
+  }
+  return queueEngine.appendStep(job.id, {
+    type: 'align',
+    label: 'Align',
+    parentStepId: narrate.id,
+    config: {
+      // Blank on purpose, exactly as the rows below: the engine resolves the
+      // session from the parent's OUTPUT when it lands.
+      sessionId: '', sessionDir: '', processDir: '',
+      language,
+    } as unknown as Record<string, unknown>,
+  }).id;
+}
+
 async function invokeFoundryEnhance(
   _projectDir: string,
   nodeId: string,
@@ -1920,18 +1977,21 @@ async function invokeFoundryEnhance(
    * this door can infer (the narration's config records that a denoise was
    * wanted, not where in the chain the user would have put it).
    */
+  // The coverage guard first, when this run's engine is guarded — it measures
+  // the render and must sit in front of every pass that touches the audio.
+  const enhanceParent = chainCoverageAlign(job, narrate);
   const wantsDenoise = narrate.config['finalDenoise'] === true;
   const conversionParent = wantsDenoise
     ? queueEngine.appendStep(job.id, {
         type: 'final-denoise',
         label: 'Denoise',
-        parentStepId: step.id,
+        parentStepId: enhanceParent,
         config: {
           // Blank on purpose, exactly as below.
           sessionId: '', sessionDir: '', processDir: '',
         } as unknown as Record<string, unknown>,
       }).id
-    : step.id;
+    : enhanceParent;
   queueEngine.appendStep(job.id, {
     type: 'rvc-enhancement',
     label: 'Voice conversion',
@@ -2005,6 +2065,34 @@ async function invokeFoundryAssemble(
       + 'Assemble it from BookForge\'s versions page, where the book\'s details are known.');
   }
   /*
+   * THE COVERAGE GUARD, when this run's engine is guarded and nothing in the run
+   * has already queued it.
+   *
+   * Pressed on the NARRATION, the row goes in front of everything, which is
+   * where it belongs — it measures the render, not what a pass made of it.
+   *
+   * Pressed on an ENHANCEMENT with no align row in the job, there is no correct
+   * place left to put one: `alignStep` reads an audio-session, so it cannot be
+   * chained behind the conversion, and hanging it off the narration as a second
+   * branch would race the assembly it is supposed to gate — the report might or
+   * might not exist when ffmpeg starts, which is the one answer a guard must
+   * never give. So it refuses, by name, and says where the run can be composed
+   * whole.
+   */
+  if (step.type !== 'tts-conversion'
+      && coverageGuardedRun(narrate)
+      && !job.steps.some((s) => s.type === 'align')) {
+    throw new Error(
+      `${narrate.label} was rendered by an engine whose books are checked by forced alignment `
+      + 'before they are assembled, and this run has no alignment step. It cannot be added behind '
+      + 'an enhancement — the check measures the narration itself. Queue the assembly from '
+      + "BookForge's narration dialog, which composes the whole run, or press Assemble on the "
+      + 'narration row.');
+  }
+  const chainHead = step.type === 'tts-conversion'
+    ? chainCoverageAlign(job, narrate)
+    : step.id;
+  /*
    * The denoise goes in FRONT of the assembly, on its own row, and only when the
    * pressed step is the narration: pressing Assemble on a CONVERSION means the
    * Enhance door already chained a denoise ahead of it (`invokeFoundryEnhance`),
@@ -2016,14 +2104,14 @@ async function invokeFoundryAssemble(
     ? queueEngine.appendStep(job.id, {
         type: 'final-denoise',
         label: 'Denoise',
-        parentStepId: step.id,
+        parentStepId: chainHead,
         config: {
           // Blank on purpose: the engine resolves the session from the parent's
           // OUTPUT when it lands, exactly as the enhancement row does.
           sessionId: '', sessionDir: '', processDir: '',
         } as unknown as Record<string, unknown>,
       }).id
-    : step.id;
+    : chainHead;
   queueEngine.appendStep(job.id, {
     type: 'reassembly',
     label: 'Assemble',

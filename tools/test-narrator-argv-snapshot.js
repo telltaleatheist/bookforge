@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 /**
- * THE SIX NARRATOR DOORS: their flags, and the plan each one produces per arm.
+ * THE SEVEN NARRATOR DOORS: their flags, and the plan each one produces per arm.
  *
  *   npx tsc -p tsconfig.electron.json && node tools/test-narrator-argv-snapshot.js
  *
@@ -137,6 +137,22 @@ const REQUIRED = {
   retake: ['--session', '--session_dir', '--sentences_dir', '--tts_engine'],
   'assembly-render': ['--session', '--session_dir', '--output_dir', '--assemble_only'],
   'assembly-reassembly': ['--session', '--session_dir', '--output_dir', '--assemble_only'],
+  /*
+   * THE COVERAGE GUARD'S OWN DOOR, and every flag on it is load-bearing:
+   *
+   *   --session-dir  what to align. narrator refuses without it.
+   *   --report       WHERE the report goes. Without it narrator defaults to
+   *                  coverage.json beside the session, which happens to be the
+   *                  same file — and "happens to be" is how the two halves of a
+   *                  gate drift apart.
+   *   --language     the acoustic model. A wrong one scores every word badly and
+   *                  refuses a book that was read correctly.
+   *   --device       cpu, by contract: the card belongs to the renders.
+   *   --python       the whisperx env. Absent, narrator refuses BY NAME rather
+   *                  than picking an interpreter — which is the behaviour we
+   *                  want and the one thing this door must not leave to chance.
+   */
+  align: ['--session-dir', '--report', '--language', '--device', '--python'],
 };
 for (const [door, must] of Object.entries(REQUIRED)) {
   check(`${door}: carries ${must.join(' ')}`, () => {
@@ -161,11 +177,29 @@ check('no door sends a flag narrator files under IGNORE as XTTS-only', () => {
   }
 });
 
+check('the align door names no engine at all', () => {
+  // It is ABOUT an engine — which one rendered the session is what decides
+  // whether it runs — but it does not RUN one, and narrator's `align` subcommand
+  // has no --tts_engine to take: `align_session` reads the engine off the
+  // manifest. A door that started sending one would be naming a value nothing
+  // reads, which is the shape the DEAD-flag check above exists to catch.
+  assert.ok(!flags.align.includes("'--tts_engine'"),
+    'the align door sends --tts_engine; narrator align has no such flag');
+  assert.ok(!flags.align.includes("'--assemble_only'"),
+    'the align door sends a compat-door flag; it spawns narrator.cli, not compat.app');
+});
+
 check('no door names an ENGINE_NEAR_MISS', () => {
   // 'higgs', 'higgs-v2', 'higgs-v2-scaffold', 'higgs_v3' are refused by name on
   // the routes that resolve an engine. Every door builds its value through
   // narratorEngineId(), which is the only place the mapping lives.
+  //
+  // ALIGN IS EXEMPT AND ONLY ALIGN, by the check above rather than by a skip
+  // here: it is asserted to carry NO --tts_engine, so the "passes when the thing
+  // it tests is absent" shape this loop was rewritten to avoid cannot come back
+  // through the exemption.
   for (const [door, argv] of Object.entries(flags)) {
+    if (door === 'align') continue;
     const at = argv.indexOf("'--tts_engine',");
     // NOT `continue`. A door with no --tts_engine at all would have skipped this
     // check silently — the "passes when the thing it tests is absent" shape. The
@@ -199,14 +233,14 @@ for (const arm of ARMS) {
       assert.strictEqual(envOf(doors[d]).NARRATOR_ENGINE, 'orpheus',
         `${d} does not name its engine`);
     }
-    for (const d of ['assembly', 'resume', 'list']) {
+    for (const d of ['assembly', 'align', 'resume', 'list']) {
       assert.ok(!('NARRATOR_ENGINE' in envOf(doors[d])),
         `${d} names an engine — it is engine-agnostic and runs in the tools env`);
     }
   });
 
   check(`${arm}: the tools doors are NEVER routed through WSL`, () => {
-    for (const d of ['assembly', 'resume', 'list']) {
+    for (const d of ['assembly', 'align', 'resume', 'list']) {
       assert.strictEqual(doors[d].viaWsl, false,
         `${d} was routed through WSL; assembly reads a session normalised onto `
         + 'Windows and the 9p mount would dominate the job');
@@ -215,7 +249,12 @@ for (const arm of ARMS) {
 
   check(`${arm}: every door reaches a narrator module, never a script path`, () => {
     for (const [name, row] of Object.entries(doors)) {
-      assert.match(runOf(row), /-m narrator\.(compat\.(app|worker)|serve)\b/,
+      // `narrator.cli` is the align door and only the align door: e2a never had
+      // a forced aligner, so there is no compat flag that would reach one, and
+      // routing narrator's own subcommand through a translation layer written
+      // for ebook2audiobook's spelling would be a compat door for a command e2a
+      // never had.
+      assert.match(runOf(row), /-m narrator\.(compat\.(app|worker)|serve|cli)\b/,
         `${name} does not spawn a narrator module: ${runOf(row)}`);
       assert.ok(!/\.py(?:'|"|\s|$)/.test(runOf(row)),
         `${name} still names a python SCRIPT: ${runOf(row)}`);

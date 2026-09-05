@@ -71,7 +71,19 @@ export function cancelEpubAlign(jobId: string): void {
   activeAlignChildren.delete(jobId);
 }
 
-/** Resolve the python executable inside a conda env root (mirrors component-manager's envPython). */
+/**
+ * Resolve the python executable inside a conda env root (mirrors
+ * component-manager's envPython).
+ *
+ * EXPORTED for `coverage-align-job.ts`, which spawns `narrator align --python
+ * <this>` and must name the same interpreter this bridge does. A second copy of
+ * the resolution there would be a second answer to "where is WhisperX" — and the
+ * one that goes stale is always the copy, not the original.
+ */
+export function whisperxEnvPython(envRoot: string): string {
+  return envPython(envRoot);
+}
+
 function envPython(envRoot: string): string {
   if (os.platform() === 'win32') {
     const direct = path.join(envRoot, 'python.exe');
@@ -89,8 +101,13 @@ function envPython(envRoot: string): string {
  *   2. WHISPERX_ENV_PATH (explicit dev override),
  *   3. a local `whisperx` conda env auto-detected on disk (dev convenience).
  * Each candidate is only accepted if its python actually exists.
+ *
+ * EXPORTED for `coverage-align-job.ts` — see `whisperxEnvPython`. The two align
+ * paths (this bridge's whole-m4b alignment, and narrator's per-chunk coverage
+ * pass) must find the SAME env, including the dev auto-detect, or a machine that
+ * can do one can mysteriously not do the other.
  */
-function resolveWhisperxEnvRoot(): string | null {
+export function resolveWhisperxEnvRoot(): string | null {
   const managed = componentManager.resolveEntry(WHISPERX_ENV_ID);
   if (managed && fs.existsSync(envPython(managed))) return managed;
 

@@ -227,6 +227,8 @@ import {
   gpuOwnershipOverrideNote,
   ALLOW_SHARED_GPU_ENV,
 } from '../shared/tts/gpu-ownership';
+import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
+import { coverageReportPath } from './coverage-align-job';
 
 /**
  * Append the voice/fine-tune CLI args for the selected voice. Centralizes the
@@ -5544,6 +5546,18 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
     '--no_split',       // Don't split into multiple parts - create single file
+    // THE COVERAGE REPORT, for an engine whose policy is ENFORCED.
+    //
+    // `assemble/coverage_gate.py` refuses a Higgs v3 book unless a report says
+    // every chunk was measured, because v3 has no duration guard worth the name
+    // — a chunk scored a duration ratio of 0.99 while dropping 22 % of its text.
+    // The Align step wrote it beside the session; this is the flag that hands it
+    // over. For Orpheus nothing is passed: its policy is not enforced, the gate
+    // is a no-op either way, and naming a file no Align step produced would be a
+    // refusal for a book that has no guard.
+    ...(coverageEnforcedFor(settings.ttsEngine)
+      ? ['--coverage_report', coverageReportPath(prepInfo.processDir)]
+      : []),
     // Per-voice post-render filter (Orpheus voices only) — applied at the final encode.
     ...(postRenderFilter ? ['--post_render_filter', postRenderFilter] : []),
   ];
