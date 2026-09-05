@@ -31,6 +31,7 @@ import unittest
 from narrator.align import aligner as A
 from narrator.align import coverage as C
 from narrator.align import env as E
+from narrator.align import run as R
 from narrator.align import sentences as S
 from narrator.assemble import coverage_gate
 from narrator.assemble.engine_profiles import (HIGGS_V3_COVERAGE,
@@ -615,6 +616,286 @@ class CliTest(unittest.TestCase):
             ['assemble', '--session-dir', 'D', '--output-dir', 'O',
              '--coverage-report', 'c.json'])
         self.assertEqual(args.coverage_report, 'c.json')
+
+
+# =============================================================================
+# Pure: the orchestrator, on a real session layout with a fake aligner
+# =============================================================================
+
+class AlignSessionTest(unittest.TestCase):
+    """`align/run.align_session` - the function that wires every proven piece
+    together, and the one the first round of this work left untested (review
+    finding B1).
+
+    NO MODEL AND NO AUDIO. The session layout is real - a manifest built by
+    hand with the same dataclasses `render/session_v1` produces - and the
+    ALIGNER is faked at `_BACKEND_FUNCTIONS`, which is the seam `align_chunk`
+    dispatches through, so everything from `chunk_spans` down through the
+    coverage document is the shipped code. Audio is faked one layer up, at
+    `decode_audio`, because a chunk's audio only has to have the right LENGTH
+    for this: what the words say is the fake backend's business.
+
+    Why it matters, in the reviewer's words: a regression that quietly turned a
+    FAILED chunk into a SKIPPED one would pass the whole suite and would then
+    pass the enforced gate, because `aligned + skipped` would still equal
+    `chunks`.
+    """
+
+    SAMPLES = 24000  # 1.0 s per chunk at the manifest's 24 kHz
+
+    def _manifest(self, texts, engine='higgs-v3'):
+        from narrator.manifest import (Book, Chapter, Chunk, EdgeFadeMs, Engine,
+                                       Manifest, Source, Voice)
+        chunks = [
+            Chunk(index=i, text=text,
+                  kind='heading' if '[heading]' in text else 'prose',
+                  file=f'chapters/sentences/{i}.flac', samples=self.SAMPLES)
+            for i, text in enumerate(texts)
+        ]
+        return Manifest(
+            source=Source(kind='e2a-session-v1', processDir=self.tmp,
+                          sessionId='sid', epubContentHash='h'),
+            book=Book(title='T', author='A', language='en', language3='eng'),
+            voice=Voice(engine=engine, fineTuned='v'),
+            sampleRate=24000, sentencesDir=os.path.join(self.tmp, 'chapters'),
+            engine=Engine(id=engine, pads=False,
+                          edgeFadeMs=EdgeFadeMs(10.0, 25.0)),
+            chapters=[Chapter(index=1, title='C', doc=None, chunks=chunks)])
+
+    def setUp(self):
+        import numpy as np
+
+        self.tmp = tempfile.mkdtemp(prefix='narrator-align-session-')
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+        # One second of "audio" per chunk, matching the manifest's samples.
+        self._audio = np.zeros(A.SAMPLE_RATE, dtype='float32')
+        self._patch(A, 'decode_audio', lambda path, ffmpeg=None: self._audio)
+        self._patch(A, 'detect_silences',
+                    lambda audio, noise_db=None, min_s=None: ())
+        # This interpreter has no whisperx, and `_run` refuses (correctly)
+        # rather than guessing an interpreter - so the fake has to stand in for
+        # BOTH halves: "yes, importable here" and the model load.
+        self._patch(E, 'backend_importable', lambda backend: True)
+        A._BACKEND_LOADERS['whisperx'] = lambda language, device: (None, None)
+        self.addCleanup(A._BACKEND_LOADERS.__setitem__, 'whisperx',
+                        A._load_whisperx)
+        # The fake aligner. `self.behaviour` decides, per chunk text, what it
+        # does; the default places every word evenly with a good score.
+        self.behaviour = {}
+        A._BACKEND_FUNCTIONS['whisperx'] = self._fake
+        self.addCleanup(A._BACKEND_FUNCTIONS.__setitem__, 'whisperx',
+                        A._whisperx_words)
+
+    def _patch(self, module, name, value):
+        old = getattr(module, name)
+        setattr(module, name, value)
+        self.addCleanup(setattr, module, name, old)
+
+    def _fake(self, audio, text, language, device):
+        """words -> (word, start, end, score), evenly spread over the second."""
+        how = self.behaviour.get(text, 'ok')
+        if how == 'explode':
+            raise RuntimeError('the fake aligner refuses this chunk')
+        words = [w for w in text.split(' ') if w]
+        step = (audio.size / A.SAMPLE_RATE) / max(1, len(words))
+        score = 0.02 if how == 'weak' else 0.9
+        return [(w, i * step, (i + 1) * step, score)
+                for i, w in enumerate(words)]
+
+    # ---- the stop-on-failure rule ------------------------------------------
+
+    def test_a_failed_chunk_stops_the_run_and_names_it(self):
+        texts = ['One two. Three four.', 'Five six. Seven eight.',
+                 'Nine ten. Eleven twelve.']
+        self.behaviour[texts[1]] = 'explode'
+        with self.assertRaises(A.AlignerError) as caught:
+            R.align_session(self._manifest(texts), progress=lambda line: None)
+        message = str(caught.exception)
+        self.assertIn('chunk 1', message)
+        self.assertIn('the fake aligner refuses this chunk', message)
+        self.assertIn('--continue-on-error', message)
+
+    def test_the_stopped_run_writes_nothing(self):
+        texts = ['One two.', 'Three four.']
+        self.behaviour[texts[0]] = 'explode'
+        vtt = os.path.join(self.tmp, 'out.sentences.vtt')
+        report = os.path.join(self.tmp, 'coverage.json')
+        with self.assertRaises(A.AlignerError):
+            result = R.align_session(self._manifest(texts),
+                                     progress=lambda line: None)
+            R.write_outputs(result, vtt_path=vtt, report_path=report)
+        self.assertFalse(os.path.exists(vtt))
+        self.assertFalse(os.path.exists(report))
+
+    def test_in_process_the_run_stops_at_the_failing_chunk(self):
+        """Review finding 10: a chunk-3 failure must not cost the whole pass."""
+        seen = []
+        real = self._fake
+
+        def counting(audio, text, language, device):
+            seen.append(text)
+            return real(audio, text, language, device)
+
+        A._BACKEND_FUNCTIONS['whisperx'] = counting
+        texts = [f'Word{i} word. Other{i} word.' for i in range(6)]
+        self.behaviour[texts[1]] = 'explode'
+        with self.assertRaises(A.AlignerError):
+            R.align_session(self._manifest(texts), progress=lambda line: None)
+        self.assertEqual(len(seen), 2, seen)
+
+    # ---- the sweep ---------------------------------------------------------
+
+    def test_continue_on_error_finishes_and_records_the_failure(self):
+        texts = ['One two. Three four.', 'Five six. Seven eight.',
+                 'Nine ten. Eleven twelve.']
+        self.behaviour[texts[1]] = 'explode'
+        result = R.align_session(self._manifest(texts), continue_on_error=True,
+                                 progress=lambda line: None)
+        document = result['document']
+        self.assertEqual(document['summary']['chunksAligned'], 2)
+        self.assertEqual(document['summary']['errors'], 1)
+        errors = document['errors']
+        self.assertEqual([e['index'] for e in errors], [1])
+        self.assertEqual(errors[0]['stage'], 'align')
+        self.assertIn('the fake aligner refuses this chunk', errors[0]['error'])
+        # The two good chunks still produced their cues.
+        self.assertEqual(sorted({c.chunk_index for c in result['cues']}), [0, 2])
+
+    def test_a_swept_report_with_a_hole_is_then_REFUSED_by_the_gate(self):
+        """The sweep is for auditing, not for shipping: a report missing a
+        chunk must not let an enforced engine assemble."""
+        texts = ['One two.', 'Three four.', 'Five six.']
+        self.behaviour[texts[1]] = 'explode'
+        manifest = self._manifest(texts)
+        result = R.align_session(manifest, continue_on_error=True,
+                                 progress=lambda line: None)
+        path = os.path.join(self.tmp, 'coverage.json')
+        R.write_outputs(result, vtt_path=None, report_path=path,
+                        log=lambda line: None)
+        with self.assertRaises(coverage_gate.CoverageRefusal) as caught:
+            coverage_gate.check(manifest, path, lambda line: None)
+        self.assertIn('needs every chunk measured', str(caught.exception))
+
+    # ---- marker-only chunks, and the accounting the gate rests on ----------
+
+    def test_a_marker_only_chunk_is_skipped_not_failed(self):
+        texts = ['One two. Three four.', '[break]', 'Five six.']
+        result = R.align_session(self._manifest(texts),
+                                 progress=lambda line: None)
+        summary = result['document']['summary']
+        self.assertEqual(summary['chunksAligned'], 2)
+        self.assertEqual(summary['chunksSkipped'], 1)
+        self.assertEqual(summary['errors'], 0)
+        self.assertEqual([s['index'] for s in result['document']['skipped']], [1])
+        self.assertEqual(result['document']['skipped'][0]['reason'],
+                         'no spoken text')
+
+    def test_aligned_plus_skipped_accounts_for_every_manifest_chunk(self):
+        """THE INVARIANT the enforced gate rests on, asserted end to end."""
+        texts = ['One two. Three four.', '[break]', 'Five six.', '[break]']
+        manifest = self._manifest(texts)
+        result = R.align_session(manifest, progress=lambda line: None)
+        summary = result['document']['summary']
+        self.assertEqual(summary['chunksAligned'] + summary['chunksSkipped'],
+                         len(texts))
+        self.assertEqual(result['document']['chunksInManifest'], len(texts))
+        path = os.path.join(self.tmp, 'coverage.json')
+        R.write_outputs(result, vtt_path=None, report_path=path,
+                        log=lambda line: None)
+        # ...and the gate accepts exactly that report.
+        document = coverage_gate.check(manifest, path, lambda line: None)
+        self.assertIsNotNone(document)
+
+    def test_a_failed_chunk_is_never_mistaken_for_a_skipped_one(self):
+        """The regression the reviewer named: if a failure were recorded as a
+        skip, aligned+skipped would still equal chunks and the gate would pass
+        a book nobody measured."""
+        texts = ['One two.', 'Three four.', 'Five six.']
+        self.behaviour[texts[1]] = 'explode'
+        result = R.align_session(self._manifest(texts), continue_on_error=True,
+                                 progress=lambda line: None)
+        summary = result['document']['summary']
+        self.assertEqual(summary['chunksSkipped'], 0)
+        self.assertEqual(summary['errors'], 1)
+        self.assertLess(summary['chunksAligned'] + summary['chunksSkipped'],
+                        len(texts))
+
+    # ---- the cues stage ----------------------------------------------------
+
+    def test_a_cue_refusal_is_recorded_under_its_own_stage(self):
+        """A chunk that aligns but cannot be cut into cues is a DIFFERENT
+        failure from one that would not align, and the report says which."""
+        texts = ['One two. Three four.', 'Five six.']
+        manifest = self._manifest(texts)
+        # Make the manifest disagree with the audio for chunk 0 only: the cue
+        # builder refuses a span that does not match what was decoded.
+        manifest.chapters[0].chunks[0].samples = self.SAMPLES * 9
+        result = R.align_session(manifest, continue_on_error=True,
+                                 progress=lambda line: None)
+        errors = result['document']['errors']
+        self.assertEqual([e['stage'] for e in errors], ['cues'])
+        self.assertEqual(errors[0]['index'], 0)
+        self.assertIn('come apart', errors[0]['error'])
+        # It still counts as ALIGNED - the alignment happened; the cues did not.
+        self.assertEqual(result['document']['summary']['chunksAligned'], 2)
+        self.assertEqual(sorted({c.chunk_index for c in result['cues']}), [1])
+
+    # ---- outputs -----------------------------------------------------------
+
+    def test_write_outputs_refuses_an_empty_transcript(self):
+        result = {'cues': [], 'document': {'summary': {}}}
+        with self.assertRaises(A.AlignerError) as caught:
+            R.write_outputs(result, vtt_path=os.path.join(self.tmp, 'x.vtt'),
+                            report_path=None, log=lambda line: None)
+        self.assertIn('empty transcript', str(caught.exception))
+
+    def test_the_written_vtt_and_report_are_what_the_run_produced(self):
+        texts = ['One two. Three four.', 'Five six.']
+        result = R.align_session(self._manifest(texts),
+                                 progress=lambda line: None)
+        vtt = os.path.join(self.tmp, 'out.sentences.vtt')
+        report = os.path.join(self.tmp, 'coverage.json')
+        written = R.write_outputs(result, vtt_path=vtt, report_path=report,
+                                  log=lambda line: None)
+        self.assertEqual(written, {'vtt': vtt, 'report': report})
+        with open(vtt, encoding='utf-8') as handle:
+            document = handle.read()
+        self.assertTrue(document.startswith('WEBVTT\n\n'))
+        self.assertEqual(document.count(' --> '), len(result['cues']))
+        with open(report, encoding='utf-8') as handle:
+            self.assertEqual(json.load(handle), result['document'])
+
+    def test_indices_align_a_subset_and_the_report_says_so(self):
+        texts = ['One two.', 'Three four.', 'Five six.']
+        result = R.align_session(self._manifest(texts), indices=[2],
+                                 progress=lambda line: None)
+        self.assertEqual(result['document']['summary']['chunksAligned'], 1)
+        self.assertEqual([c.chunk_index for c in result['cues']], [2])
+        # A partial report cannot satisfy an enforced engine.
+        self.assertEqual(result['document']['chunksInManifest'], 3)
+
+    def test_an_index_that_is_not_in_the_session_is_refused(self):
+        with self.assertRaises(A.AlignerError) as caught:
+            R.align_session(self._manifest(['One two.']), indices=[7],
+                            progress=lambda line: None)
+        self.assertIn('7', str(caught.exception))
+
+    # ---- the engine seam ---------------------------------------------------
+
+    def test_the_engines_policy_is_the_one_that_judges(self):
+        texts = ['One two. Three four.']
+        self.behaviour[texts[0]] = 'weak'
+        higgs = R.align_session(self._manifest(texts, engine='higgs-v3'),
+                                progress=lambda line: None)
+        self.assertTrue(higgs['document']['enforced'])
+        self.assertEqual(higgs['document']['summary']['chunksFailed'], 1)
+
+        orpheus = R.align_session(self._manifest(texts, engine='orpheus'),
+                                  progress=lambda line: None)
+        self.assertFalse(orpheus['document']['enforced'])
+        # Same measurement, same failure count - the difference is enforcement.
+        self.assertEqual(orpheus['document']['summary']['chunksFailed'], 1)
 
 
 # =============================================================================
