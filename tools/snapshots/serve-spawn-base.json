@@ -1,0 +1,72 @@
+{
+  "wsl": {
+    "arm": "wsl",
+    "command": "wsl.exe",
+    "viaWsl": true,
+    "args": [
+      "-d",
+      "Ubuntu",
+      "bash",
+      "-c"
+    ],
+    "bash": {
+      "exports": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "ORPHEUS_DISABLE_EAGER": "1",
+        "VLLM_USE_V1": "0",
+        "ORPHEUS_GPU_MEM_UTIL": "0.62",
+        "ORPHEUS_STREAM_BATCH": "16",
+        "ORPHEUS_STREAM_RAMP": "8",
+        "ORPHEUS_STREAM_WARM_MAX": "16",
+        "EBOOK2AUDIOBOOK_PATH": "/home/fake/ebook2audiobook"
+      },
+      "cd": "cd '/home/fake/ebook2audiobook'",
+      "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'orpheus_tts' python -u '<REPO-WSL>/electron/scripts/orpheus_stream.py'"
+    },
+    "env": "(inherited process.env — nothing crosses into the guest)",
+    "cwd": "(process.cwd)"
+  },
+  "native-win": {
+    "arm": "native-win",
+    "command": "C:\\FAKE\\e2a\\python_env\\python.exe",
+    "viaWsl": false,
+    "args": [
+      "-u",
+      "<REPO>\\electron\\scripts\\orpheus_stream.py"
+    ],
+    "env": {
+      "EBOOK2AUDIOBOOK_PATH": "C:\\FAKE\\e2a",
+      "ORPHEUS_GPU_MEM_UTIL": "0.62",
+      "ORPHEUS_STREAM_BATCH": "16",
+      "ORPHEUS_STREAM_RAMP": "8",
+      "ORPHEUS_STREAM_WARM_MAX": "16",
+      "PYTHONIOENCODING": "utf-8",
+      "PYTHONUNBUFFERED": "1",
+      "VLLM_USE_V1": "0"
+    },
+    "cwd": "C:\\FAKE\\e2a"
+  },
+  "native-mac": {
+    "arm": "native-mac",
+    "command": "C:\\FAKE\\e2a\\python_env\\python.exe",
+    "viaWsl": false,
+    "args": [
+      "-u",
+      "<REPO>\\electron\\scripts\\orpheus_stream.py"
+    ],
+    "env": {
+      "EBOOK2AUDIOBOOK_PATH": "C:\\FAKE\\e2a",
+      "ORPHEUS_GPU_MEM_UTIL": "0.62",
+      "ORPHEUS_MLX_CACHE_LIMIT_GB": "8",
+      "ORPHEUS_MLX_MEM_BUDGET_GB": "24",
+      "ORPHEUS_STREAM_BATCH": "16",
+      "ORPHEUS_STREAM_RAMP": "8",
+      "ORPHEUS_STREAM_WARM_MAX": "16",
+      "PYTHONIOENCODING": "utf-8",
+      "PYTHONUNBUFFERED": "1",
+      "VLLM_USE_V1": "0"
+    },
+    "cwd": "C:\\FAKE\\e2a"
+  }
+}

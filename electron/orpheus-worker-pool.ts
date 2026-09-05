@@ -504,7 +504,17 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, "'\\''")}'`;
 }
 
-function resolveScriptPath(): string {
+/**
+ * EXPORTED FOR ONE REASON: `tools/test-serve-spawn-env.js`.
+ *
+ * The cut-over from `orpheus_stream.py` to `python -m narrator.serve` has to
+ * change FOUR things about this spawn and nothing else — 33 environment
+ * variables keep their names, values and precedence (PORT_NOTES section 9.4).
+ * The only way to prove "nothing else" is to capture the plan this function
+ * builds, for a fixed configuration, on both sides of the change. That capture
+ * needs to CALL it, so it is exported; nothing in the app imports it.
+ */
+export function resolveScriptPath(): string {
   const appPath = app.getAppPath();
   let scriptPath = path.join(appPath, 'electron', 'scripts', 'orpheus_stream.py');
   if (!fs.existsSync(scriptPath)) {
@@ -517,7 +527,7 @@ function resolveScriptPath(): string {
   return toUnpackedPath(scriptPath);
 }
 
-interface SpawnPlan {
+export interface SpawnPlan {
   command: string;
   args: string[];
   env: NodeJS.ProcessEnv;
@@ -528,7 +538,7 @@ interface SpawnPlan {
 /** Build the spawn for the persistent Orpheus worker. `gpuUtil`, when set, is the
  *  free-VRAM-sized vLLM gpu_memory_utilization (see doStartSession) — forwarded so the
  *  Listen server can't over-commit a shared desktop GPU into a WDDM spill / freeze. */
-function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
+export function buildSpawnPlan(scriptPath: string, gpuUtil?: number): SpawnPlan {
   const utilExport = gpuUtil ? ` ORPHEUS_GPU_MEM_UTIL=${shellQuote(String(gpuUtil))}` : '';
   if (process.platform === 'win32' && shouldUseWsl2ForOrpheus()) {
     // WSL: run orpheus_stream.py inside the WSL orpheus_tts conda env. The script
