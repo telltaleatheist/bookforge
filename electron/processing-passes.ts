@@ -1031,23 +1031,28 @@ async function runNarrationTextPass(
   }
 
   const produced = path.join(stageDir, 'narration-text.epub');
-  const outcome = await cleanTextEpub({
-    epubPath: readable,
-    outPath: produced,
-    onProgress: (done, total, label) => {
-      // The same `queue:progress` bridge event the row's step module is already
-      // listening on (electron/queue-steps/pass.ts), so the bar this draws is
-      // the bar every other pass draws.
-      publishBridgeEvent('queue:progress', {
-        jobId,
-        message: label,
-        progress: total > 0 ? Math.round((done / total) * 100) : 0,
-      });
-    },
-  });
-  // The packed copy has served its one purpose. Left behind it would be a second
-  // place this book lives, inside a stage directory the user can open.
-  if (readable !== bookPath) await removeEpubContainer(readable);
+  let outcome;
+  try {
+    outcome = await cleanTextEpub({
+      epubPath: readable,
+      outPath: produced,
+      onProgress: (done, total, label) => {
+        // The same `queue:progress` bridge event the row's step module is already
+        // listening on (electron/queue-steps/pass.ts), so the bar this draws is
+        // the bar every other pass draws.
+        publishBridgeEvent('queue:progress', {
+          jobId,
+          message: label,
+          progress: total > 0 ? Math.round((done / total) * 100) : 0,
+        });
+      },
+    });
+  } finally {
+    // The packed copy has served its one purpose, and a REFUSED run must not
+    // leave it either: a second whole copy of the book, inside a stage directory
+    // the user can open, is a book somebody could take for the real one.
+    if (readable !== bookPath) await removeEpubContainer(readable);
+  }
 
   // The model tag is the ENGINE'S, read back off the receipt rather than
   // guessed at from settings: the settings say what was asked for, the receipt
