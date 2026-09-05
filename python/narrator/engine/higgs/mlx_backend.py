@@ -1718,7 +1718,16 @@ class HiggsV3MlxEngine:
         # take a batch down mid-prefill.
         cleaned = {}
         for row in read_ahead:
-            clean = texts[row].strip()
+            # THE SAME STRIP AS EVERY OTHER RENDER ENTRY - the packer's markers
+            # ([break]/[heading]/[item]/[pause:X]) are stripped at the model
+            # boundary here too; the solo and serial rungs get it through
+            # render_audio, and a rung that built its prompt from the raw text
+            # would read the markers aloud on the read-ahead alone.
+            clean = self._clean_sentence_for_tts(texts[row])
+            if not clean:
+                raise ValueError(
+                    f'HiggsV3MlxEngine.generate_batch_stream: row {row} has no '
+                    f'spoken text after the marker strip: {texts[row]!r}')
             v3_served.validate_control_tokens(clean)
             cleaned[row] = clean
 
