@@ -348,7 +348,7 @@ def prep_session(epub_path: str, session_dir: str,
     """Prepare one book into `session_dir` (the `ebook-<uuid>` directory).
 
     e2a derived `session_dir` itself as `<tmp_dir>/ebook-<session_id>`, where
-    `tmp_dir` is `$E2A_TMP_DIR`. narrator takes the directory it is GIVEN, exactly
+    `tmp_dir` is `$NARRATOR_SESSIONS_ROOT`. narrator takes the directory it is GIVEN, exactly
     as every other narrator reader does ("the reader takes the directory it was
     given and derives everything from it" - CONTRACTS.md); `compat/app.py` builds
     it from `session_store.sessions_root()` when a caller does not pass

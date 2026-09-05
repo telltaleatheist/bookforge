@@ -31,7 +31,7 @@ import * as readline from 'readline';
 import {
   shouldUseWsl2ForOrpheus,
   windowsToWslPath,
-} from './e2a-paths';
+} from './narrator-paths';
 import {
   buildNarratorSpawn,
   narratorRunsInWsl,
@@ -775,7 +775,14 @@ export function buildSpawnPlan(gpuUtil?: number): SpawnPlan {
       engine: 'higgs',
       phase: 'serve',
       args: [],
-      envExtras: higgsEnvExtras(higgsPreflight(voice), `listen-${voice}`, 'serve'),
+      // THE CEILING IS THE POOL'S, HANDED OVER. `streamBatchCeiling()` is this
+      // module's — the same number Orpheus gets as ORPHEUS_STREAM_BATCH and the
+      // extension gets as `deviceWorkers` — and higgs-spawn cannot import it
+      // back (this module imports higgs-spawn; that is a require cycle). So the
+      // one place that already knows it passes it, and higgs-spawn REFUSES a
+      // serve door built without it rather than inventing a width.
+      envExtras: higgsEnvExtras(
+        higgsPreflight(voice), `listen-${voice}`, 'serve', streamBatchCeiling()),
       cwdHint: app.getPath('userData'),
     });
   }

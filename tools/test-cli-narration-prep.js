@@ -73,13 +73,13 @@ require(path.join(REPO, 'cli', 'electron-stub.js'));
 const norm = require(path.join(DIST, 'electron', 'tts-number-normalizer.js'));
 const { ZipWriter } = require(path.join(DIST, 'electron', 'epub-processor.js'));
 const { openEpubSource } = require(path.join(DIST, 'electron', 'epub-container.js'));
-const e2aPaths = require(path.join(DIST, 'electron', 'e2a-paths.js'));
+const narratorPathsModule = require(path.join(DIST, 'electron', 'narrator-paths.js'));
 
 // Every copy the door writes lands under <scratch>/narration-cuts. Pointed at
 // the temp root so a keeper run never writes into the machine's real e2a tmp —
 // and so the reuse assertions below are about THIS run's files.
 const SCRATCH = path.join(ROOT, 'scratch');
-e2aPaths.setE2aScratchDir(SCRATCH);
+narratorPathsModule.setNarratorScratchRoot(SCRATCH);
 const CUTS = path.join(SCRATCH, 'narration-cuts');
 
 const bridge = require(path.join(DIST, 'electron', 'parallel-tts-bridge.js'));

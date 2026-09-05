@@ -37,7 +37,7 @@ import {
   EngineState,
   LoadVoiceOptions,
 } from './orpheus-worker-pool';
-import { shouldUseWsl2ForOrpheus } from './e2a-paths';
+import { shouldUseWsl2ForOrpheus } from './narrator-paths';
 import { higgsMlxBackendPresent, narratorNativePython } from './narrator-spawn';
 import { listRenderableHiggsModels } from './higgs-models';
 import { shouldUseWsl2ForHiggs } from './tool-paths';

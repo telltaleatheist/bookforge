@@ -227,14 +227,14 @@ class RoutingTest(unittest.TestCase):
         self.process_dir = synthetic.build_session(self.session_dir)
         self.sentences_dir = os.path.join(self.process_dir, 'chapters', 'sentences')
         self.engines = []
-        self._saved_root = os.environ.get('E2A_TMP_DIR')
-        os.environ['E2A_TMP_DIR'] = self.root
+        self._saved_root = os.environ.get('NARRATOR_SESSIONS_ROOT')
+        os.environ['NARRATOR_SESSIONS_ROOT'] = self.root
 
     def tearDown(self):
         if self._saved_root is None:
-            os.environ.pop('E2A_TMP_DIR', None)
+            os.environ.pop('NARRATOR_SESSIONS_ROOT', None)
         else:
-            os.environ['E2A_TMP_DIR'] = self._saved_root
+            os.environ['NARRATOR_SESSIONS_ROOT'] = self._saved_root
 
     def factory(self, config):
         engine = FakeRenderEngine(FakeEngineConfig(

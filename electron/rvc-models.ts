@@ -13,7 +13,7 @@
  * Each asset is a tar.gz published as a GitHub release asset (assets tag on
  * telltaleatheist/bookforge) whose internal layout is rooted at `rvc/…`, so it
  * extracts straight into the rvc-models dir. Download → sha256-verify → extract
- * → per-asset ready-marker, mirroring ensureRuntimeAsset() in e2a-env-bootstrap.
+ * → per-asset ready-marker, mirroring the retired ensureRuntimeAsset() in e2a-env-bootstrap.
  *
  * The base models are REQUIRED for any conversion; the voices are the
  * user-facing "enhancement voices" offered on the configuration page. A voice

@@ -34,7 +34,7 @@ import * as fs from 'fs';
 
 import { componentManager } from './components/component-manager';
 import { RVC_ENV_ID } from './components/rvc-env';
-import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
+import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootstrap';
 import { getRvcModelsDir, rvcBaseModelsReady } from './rvc-models';
 
 /**

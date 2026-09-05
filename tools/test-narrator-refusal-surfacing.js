@@ -50,7 +50,7 @@ require.cache['estub'] = {
     BrowserWindow: class {},
   },
 };
-const paths = require(path.join(DIST, 'e2a-paths.js'));
+const paths = require(path.join(DIST, 'narrator-paths.js'));
 const toolPaths = require(path.join(DIST, 'tool-paths.js'));
 
 /**
@@ -69,7 +69,7 @@ function stub(mod, name, fn) {
   else mod[name] = fn;
 }
 stub(toolPaths, 'shouldUseWsl2ForOrpheus', () => false);
-const toolsPython = paths.getPythonInvocation(paths.getDefaultE2aPath());
+const toolsPython = paths.getPythonInvocation();
 stub(paths, 'getPythonInvocation', () => toolsPython);
 
 const spawnMod = require(path.join(DIST, 'narrator-spawn.js'));
@@ -110,7 +110,7 @@ const SCRATCH = fs.mkdtempSync(path.join(os.tmpdir(), 'bf-refusal-'));
 /** Run a narrator door through the app's own plan builder and capture both streams. */
 function refuse(what, { phase, engine, args }) {
   const plan = spawnMod.buildNarratorSpawn({
-    engine, phase, args, envExtras: { E2A_TMP_DIR: SCRATCH }, cwdHint: REPO,
+    engine, phase, args, envExtras: { NARRATOR_SESSIONS_ROOT: SCRATCH }, cwdHint: REPO,
   });
   const r = spawnSync(plan.command, plan.args, {
     cwd: plan.cwd, env: plan.env, encoding: 'utf-8', timeout: 180000,

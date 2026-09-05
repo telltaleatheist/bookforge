@@ -400,46 +400,75 @@ def calculate_missing_ranges(missing_indices: list) -> list:
 # Listing and resume
 # =============================================================================
 
-SESSIONS_ROOT_ENV = 'E2A_TMP_DIR'
+SESSIONS_ROOT_ENV = 'NARRATOR_SESSIONS_ROOT'
+
+#: The pre-Phase-6 spelling. REFUSED rather than honoured - see
+#: `refuse_legacy_sessions_root_env`.
+LEGACY_SESSIONS_ROOT_ENV = 'E2A_TMP_DIR'
+
+
+def refuse_legacy_sessions_root_env() -> None:
+    """Refuse `E2A_TMP_DIR` BY NAME if anything still sets it.
+
+    It was this variable's name until 2026-09-05, when BookForge moved the
+    session scratch out of the ebook2audiobook checkout. Accepting it as an alias
+    would let a stale shell export, a CI job or an old launcher keep working by
+    accident while every other name in the system said narrator - and the first
+    time the two disagreed, the render would write a book into a directory
+    nothing else looks in and report success.
+
+    Called from `sessions_root()` and from both compat entry points, so it fires
+    on every door rather than only on the two that read the root.
+    """
+    stale = os.environ.get(LEGACY_SESSIONS_ROOT_ENV, '').strip()
+    if stale:
+        raise SessionStateError(
+            f'{LEGACY_SESSIONS_ROOT_ENV} is set ({stale}). It was renamed to '
+            f'{SESSIONS_ROOT_ENV} when the session scratch stopped being an '
+            f'ebook2audiobook directory. It is refused rather than honoured so '
+            f'that nothing keeps working by accident - unset it, and set '
+            f'{SESSIONS_ROOT_ENV} instead.')
 
 
 def sessions_root() -> str:
     """The directory `--list_sessions` walks, and the base a bare session id is
     resolved under.
 
-    e2a used `lib/conf.tmp_dir` = `E2A_TMP_DIR` when set, `<e2a_root>/tmp`
-    otherwise. narrator has no e2a root, so the environment variable is the whole
-    interface - and WHICH SPAWNS ACTUALLY SET IT MATTERS:
+    The environment variable is the whole interface - and WHICH SPAWNS ACTUALLY
+    SET IT MATTERS:
 
-    - **Native spawns: yes.** `buildCondaSpawnEnv` sets it unconditionally
-      (`electron/e2a-paths.ts:448`,
-      `env.E2A_TMP_DIR = extra.E2A_TMP_DIR || getDefaultE2aTmpPath()`), so the
-      native worker, the native assembly and the `--list_sessions` /
-      `--resume_session` probes all carry it.
-    - **WSL spawns: NO.** `spawnWithWslSupport` does not hand the Windows
-      environment to the guest at all; it re-exports a fixed `forwardKeys` list
-      inside the bash command (`parallel-tts-bridge.ts:1590-1601`) and that list
-      is the `ORPHEUS_*` tuning vars plus the two owner-pid vars. `E2A_TMP_DIR`
-      is not in it, so inside WSL this variable is simply absent - and the
-      Orpheus render path is exactly the one that goes through WSL.
+    - **Native spawns: yes.** `buildToolsSpawnEnv` sets it from the stated
+      scratch root (`electron/narrator-paths.ts`), so the native worker, the
+      native assembly and the `--list_sessions` / `--resume_session` probes all
+      carry it. It is OMITTED, never substituted, when the scratch volume is not
+      mounted - which is what brings a caller here to be refused instead of
+      quietly writing somewhere else.
+    - **WSL spawns: NO.** `buildNarratorSpawn`'s guest arm exports exactly the
+      caller's `envExtras` plus four variables of its own, and this is not one of
+      them. Inside WSL it is simply absent - and the Orpheus render path is
+      exactly the one that goes through WSL. (It could not usefully cross anyway:
+      it holds a HOST path, while a guest render's session dir is derived from
+      the guest sessions root.)
 
     That is survivable because **every live render and retake spawn passes
-    `--session_dir` explicitly** (`parallel-tts-bridge.ts:3896-3938`, `:3609`),
-    which is the path that never reaches this function. What a WSL spawn cannot
-    do is omit `--session_dir` and expect a session id to resolve.
+    `--session_dir` explicitly**, which is the path that never reaches this
+    function. What a WSL spawn cannot do is omit `--session_dir` and expect a
+    session id to resolve.
 
     Unset is an error, not a guessed directory: listing or resolving under the
     wrong root would report "no session" for a machine full of them, and the
     caller would start fresh over existing rendered audio.
     """
+    refuse_legacy_sessions_root_env()
     root = os.environ.get(SESSIONS_ROOT_ENV, '').strip()
     if not root:
         raise SessionStateError(
             f'{SESSIONS_ROOT_ENV} is not set, so there is no sessions root to '
-            f'resolve a session id under - pass --session_dir. (e2a defaulted '
-            f'this to <e2a_root>/tmp; narrator has no e2a root and will not '
-            f'guess. Note that a WSL spawn never carries this variable: '
-            f'spawnWithWslSupport re-exports only its forwardKeys list.)')
+            f'resolve a session id under - pass --session_dir. (narrator has no '
+            f'default sessions root and will not guess. Note that a WSL spawn '
+            f'never carries this variable: the guest arm exports only the '
+            f"caller's envExtras plus PYTHONUNBUFFERED / PYTHONIOENCODING / "
+            f'PYTHONPATH / NARRATOR_ENGINE.)')
     return root
 
 

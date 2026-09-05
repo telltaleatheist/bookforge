@@ -14,7 +14,7 @@
 
 import { publishBridgeEvent } from './bridge-events';
 import { spawn, ChildProcess, execSync, exec, spawnSync } from 'child_process';
-import { BrowserWindow, powerSaveBlocker } from 'electron';
+import { app, BrowserWindow, powerSaveBlocker } from 'electron';
 import * as path from 'path';
 import * as fs from 'fs/promises';
 import * as fsSync from 'fs';
@@ -773,7 +773,7 @@ async function stageSessionStateForWsl(
     );
   }
 
-  const guestSessionDir = `${getWslE2aPath()}/tmp/staged-session-${crypto.randomUUID()}`;
+  const guestSessionDir = `${getWslSessionsRoot()}/staged-session-${crypto.randomUUID()}`;
   const stagedUnc = wslPathToWindows(guestSessionDir);
   // load_session_state looks for <session_dir>/<process>/session-state.json — one level
   // down, always — so the state is staged under a process dir even when the source kept
@@ -2275,27 +2275,27 @@ export interface ParallelConversionResult {
 // ─────────────────────────────────────────────────────────────────────────────
 
 import {
-  getDefaultE2aPath,
-  getDefaultE2aTmpPath,
+  narratorScratchRoot,
   getPythonInvocation,
   PythonInvocation,
   shouldUseWsl2ForAllTts,
   shouldUseWsl2ForOrpheus,
   getWslDistro,
   getWslCondaPath,
-  getWslE2aPath,
+  getWslSessionsRoot,
   getWslOrpheusCondaEnv,
   windowsToWslPath,
   wslPathToWindows,
   wslToWindowsPath,
   shellEscapeArgs,
-  buildCondaSpawnEnv,
-} from './e2a-paths';
+  buildToolsSpawnEnv,
+} from './narrator-paths';
+import { legacyGuestSessionsRoot } from './tool-paths';
 
-// Helper to resolve the Python invocation - always uses fresh e2aPath from centralized config
-// Pass ttsEngine to use the correct environment (orpheus_tts for Orpheus in WSL, python_env for others)
+// Helper to resolve the Python invocation — the tools env when no engine is named,
+// the engine's own env otherwise (a guest marker for Orpheus/Higgs in WSL).
 function pythonInvocation(ttsEngine?: string): PythonInvocation {
-  return getPythonInvocation(getDefaultE2aPath(), ttsEngine);
+  return getPythonInvocation(ttsEngine);
 }
 
 /**
@@ -2361,7 +2361,7 @@ function buildJobSpawn(opts: {
     return buildHiggsSpawn(opts.phase, {
       model: higgsPreflight(opts.settings.fineTuned),
       args: opts.args,
-      cwd: opts.cwdHint ?? getDefaultE2aPath(),
+      cwd: opts.cwdHint ?? app.getPath('userData'),
       jobId: opts.jobId,
       envExtras: opts.envExtras,
     });
@@ -2463,7 +2463,7 @@ function maybeStartChapterCloser(session: ConversionSession): void {
       sentenceStart: c.sentenceStart,
       sentenceEnd: c.sentenceEnd,
     })),
-    tmpRoot: getDefaultE2aTmpPath(),
+    tmpRoot: narratorScratchRoot(),
     gapSeconds,
     minGapSeconds,
     // Mono, because e2a's default_output_channel is 'mono' and BookForge never
@@ -3094,17 +3094,6 @@ function stopStateSaveTimer(session: ConversionSession): void {
 // Configuration Functions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export function setE2aPath(newPath: string): void {
-  // Delegate to centralized e2a-paths module
-  const { setE2aPath: setCentralE2aPath } = require('./e2a-paths');
-  setCentralE2aPath(newPath);
-}
-
-export function getE2aPath(): string {
-  // Always get fresh from centralized config
-  return getDefaultE2aPath();
-}
-
 export function setMainWindow(window: BrowserWindow | null): void {
   mainWindow = window;
 }
@@ -3295,9 +3284,11 @@ export async function prepareSession(
   let stagedEbookUnc: string | null = null;
 
   if (useWsl) {
-    // Session will be created in WSL's e2a path
-    const wslE2aPath = getWslE2aPath();
-    sessionDir = `${wslE2aPath}/tmp/ebook-${sessionId}`;
+    // The session is created in the GUEST sessions root — BookForge's own
+    // directory inside WSL (`<guest home>/bookforge-sessions`), not the `tmp/`
+    // of an ebook2audiobook checkout, which is where it went until Phase 6.
+    const guestRoot = getWslSessionsRoot();
+    sessionDir = `${guestRoot}/ebook-${sessionId}`;
     // Convert to Windows UNC path for reading from Node.js
     sessionDirForReading = wslPathToWindows(sessionDir);
     console.log(`[PARALLEL-TTS] WSL session dir: ${sessionDir} -> ${sessionDirForReading}`);
@@ -3305,17 +3296,17 @@ export async function prepareSession(
     // Stage the ebook where WSL can read it. Prep copies it into the session
     // dir immediately (prepare_dirs), so the staged file is deleted again the
     // moment prep settles — see the finally below.
-    const stagedWsl = `${wslE2aPath}/tmp/staged-${sessionId}${path.extname(epubPath)}`;
+    const stagedWsl = `${guestRoot}/staged-${sessionId}${path.extname(epubPath)}`;
     stagedEbookUnc = wslPathToWindows(stagedWsl);
     await fs.mkdir(path.dirname(stagedEbookUnc), { recursive: true });
     await fs.copyFile(epubPath, stagedEbookUnc);
     ebookArgPath = stagedWsl;
     console.log(`[PARALLEL-TTS] Staged ebook for WSL: ${epubPath} -> ${stagedWsl}`);
   } else {
-    // Native session dir — the configured scratch, or <e2a>/tmp by default.
-    // Must match where the spawned e2a writes it (buildCondaSpawnEnv passes
-    // the same resolution as E2A_TMP_DIR).
-    sessionDir = path.join(getDefaultE2aTmpPath(), `ebook-${sessionId}`);
+    // Native session dir — the "Narrator scratch folder" setting, or <library>/tmp.
+    // Must match where the spawned narrator writes it (buildToolsSpawnEnv passes
+    // the same resolution as NARRATOR_SESSIONS_ROOT).
+    sessionDir = path.join(narratorScratchRoot(), `ebook-${sessionId}`);
     sessionDirForReading = sessionDir;
   }
 
@@ -3335,11 +3326,11 @@ export async function prepareSession(
   // `--session_dir` IS MANDATORY, and it is the one flag that was NOT here
   // before. e2a survived without it because `lib/conf.py` fell back to
   // `<e2a_root>/tmp`, which happened to be the directory this function had
-  // already computed. narrator has no e2a root: `session_store.sessions_root()`
-  // reads `$E2A_TMP_DIR` and otherwise refuses to guess. Forwarding E2A_TMP_DIR
-  // is NOT an alternative — it holds a WINDOWS path while a WSL prep derives its
-  // session dir from the guest's filesystem, so the two would disagree exactly
-  // where it matters.
+  // already computed. narrator has no default sessions root:
+  // `session_store.sessions_root()` reads `$NARRATOR_SESSIONS_ROOT` and otherwise
+  // refuses to guess. Forwarding that variable is NOT an alternative — it holds a
+  // HOST path while a WSL prep derives its session dir from the guest's
+  // filesystem, so the two would disagree exactly where it matters.
   const args = [
     '--headless',
     '--ebook', ebookArgPath,
@@ -3441,7 +3432,6 @@ export async function prepareSession(
           : { VLLM_DISABLE_CUDA_GRAPH: '1', VLLM_NO_CUDA_GRAPH: '1' }),
         VLLM_USE_V1: '0',
       },
-      cwdHint: getDefaultE2aPath(),
     });
     console.log('[PARALLEL-TTS] Prep → narrator:', prepPlan.describe());
 
@@ -3832,7 +3822,7 @@ export async function regenerateSentenceIndices(
 
   const voiceCaps = orpheusVoiceCaps(settings);
   // The door's environment, as a plain record: buildNarratorSpawn applies
-  // buildCondaSpawnEnv on the native arm and writes an explicit export line on the
+  // buildToolsSpawnEnv on the native arm and writes an explicit export line on the
   // WSL one, so building the merged process env here would have it merged twice
   // natively and dropped entirely in the guest.
   const env: Record<string, string> = {
@@ -3914,7 +3904,6 @@ export async function regenerateSentenceIndices(
       phase: 'worker',
       args,
       jobId: sessionId,
-      cwdHint: getDefaultE2aPath(),
       envExtras: env,
     });
     console.log('[PARALLEL-TTS] Retake → narrator:', retakePlan.describe());
@@ -4196,7 +4185,6 @@ function startWorker(
     phase: 'worker',
     args,
     jobId: session.jobId,
-    cwdHint: getDefaultE2aPath(),
     envExtras: {
       // PYTHONUNBUFFERED / PYTHONIOENCODING are set by buildNarratorSpawn for
       // every narrator spawn; they were repeated here when this call site built
@@ -4204,7 +4192,7 @@ function startWorker(
       // WHO THIS WORKER BELONGS TO — and why ppid is not enough.
       //
       // On darwin, Orpheus resolves to a `prefix` env unconditionally
-      // (e2a-paths.ts resolveCondaEnv returns early for orpheus/voxtral/f5), so
+      // (narrator-paths.ts getPythonInvocation routes a named engine through conda), so
       // pythonInvocation gives us `conda run --no-capture-output -p <env> python`.
       // Measured chain from a real spawn: node -> Miniforge3/bin/python (`conda
       // run`) -> /bin/bash (activation) -> python worker.py. The worker's PARENT
@@ -5350,7 +5338,7 @@ async function normalizeWslSessionToWindows(
     } else {
       // No reusable Windows copy — make one in the Windows e2a tmp cache.
       const folderName = path.basename(prep.sessionDir); // ebook-{id}
-      const destParent = getDefaultE2aTmpPath();          // Windows NTFS
+      const destParent = narratorScratchRoot();          // Windows NTFS
       winSessionDir = path.join(destParent, folderName);
       await fs.rm(winSessionDir, { recursive: true, force: true }).catch(() => {});
       console.log(`[PARALLEL-TTS] Normalizing Orpheus session WSL→Windows: ${prep.sessionDir} -> ${winSessionDir}`);
@@ -5602,7 +5590,6 @@ async function runAssembly(session: ConversionSession): Promise<string> {
         // No ORPHEUS_* and no CUDA pins: nothing here loads vLLM or MLX.
         VLLM_USE_V1: '0',
       },
-      cwdHint: getDefaultE2aPath(),
     });
     console.log('[PARALLEL-TTS] Assembly → narrator:', asmPlan.describe());
 
@@ -7527,7 +7514,7 @@ async function cutCaptionsAndNotes(epubPath: string, jobId: string): Promise<str
 
   const bytes = await fs.readFile(epubPath);
   const sha16 = crypto.createHash('sha256').update(bytes).digest('hex').slice(0, 16);
-  const cutDir = path.join(getDefaultE2aTmpPath(), 'narration-cuts');
+  const cutDir = path.join(narratorScratchRoot(), 'narration-cuts');
   // `.v2`: the rule grew (footnote asides out, sup markers stripped — Owen's
   // 2026-08-30 ruling), so a v1 cut on disk describes a rule this door no
   // longer applies and must not be reused.
@@ -7640,7 +7627,7 @@ async function normalizeTextNumbersFor(
  * pass paying for a model call the door had already paid for.
  */
 export function narrationCutsDir(): string {
-  return path.join(getDefaultE2aTmpPath(), 'narration-cuts');
+  return path.join(narratorScratchRoot(), 'narration-cuts');
 }
 
 /** The caller's runner, or the live Ollama one built from the Settings tag. */
@@ -8722,40 +8709,74 @@ function normalizePathForComparison(p: string): string {
 }
 
 /**
- * Get all e2a tmp directories to search for sessions.
- * Returns the Windows e2a tmp dir, plus the WSL e2a tmp dir (via UNC) when WSL is enabled.
+ * THE PRE-PHASE-6 GUEST ROOT, CHECKED ONCE, ONLY TO REFUSE.
+ *
+ * Sessions that were in flight when a machine upgraded are still sitting in
+ * `<wslE2aPath>/tmp` inside the guest. Scanning both roots would be try-A-then-B
+ * over a directory nothing writes any more; scanning neither and saying nothing
+ * would restart a half-rendered book at sentence 0 with no explanation. So the
+ * old root is looked at ONCE per process and, if it still holds sessions, the
+ * scan REFUSES and names it.
+ *
+ * Cached because it is a UNC listing on the main thread and the answer cannot
+ * change without a person moving files. `null` means "nothing there" and is the
+ * normal answer on every machine that has rendered since the move.
+ */
+let legacyGuestSessions: string | null | undefined;
+
+function refuseLegacyGuestSessions(): void {
+  if (legacyGuestSessions === undefined) {
+    legacyGuestSessions = null;
+    const legacy = legacyGuestSessionsRoot();
+    if (legacy) {
+      try {
+        const unc = wslPathToWindows(legacy);
+        const stale = fsSync.readdirSync(unc).filter((n) => n.startsWith('ebook-'));
+        if (stale.length) legacyGuestSessions = `${legacy} (${stale.length} session(s))`;
+      } catch {
+        /* the old root is gone, or WSL cannot read it — nothing to refuse */
+      }
+    }
+  }
+  if (legacyGuestSessions) {
+    throw new Error(
+      `Unfinished WSL render sessions are still in the OLD guest sessions root: ` +
+        `${legacyGuestSessions}. BookForge now writes guest sessions to ` +
+        `${getWslSessionsRoot()}, and it will not read two roots — a resume that quietly ` +
+        'found a session in a directory nothing writes any more is how a book gets ' +
+        'half-rendered twice. Move those directories to the new root to resume them, ' +
+        'or delete them to start clean; then clear `wslE2aPath` from tool-paths.json.',
+    );
+  }
+}
+
+/**
+ * Every sessions root to search: the host scratch, plus the WSL guest root (via
+ * UNC) when WSL is enabled.
  */
 function getSessionTmpDirs(): string[] {
   const dirs: string[] = [];
 
-  // The active tmp dir (configured scratch, or <e2a>/tmp)
-  const nativeTmp = getDefaultE2aTmpPath();
+  // The host scratch root: the "Narrator scratch folder" setting, or <library>/tmp.
+  const nativeTmp = narratorScratchRoot();
   dirs.push(nativeTmp);
 
-  // Also search the legacy <e2a>/tmp so sessions created before the scratch
-  // dir was configured stay resumable
-  const legacyTmp = path.join(getDefaultE2aPath(), 'tmp');
-  if (legacyTmp !== nativeTmp) {
-    dirs.push(legacyTmp);
-  }
-
-  // On Windows, also include the WSL e2a tmp dir if WSL TTS is enabled — but only
-  // when WSL is actually responding: async fs against \\wsl$ with a wedged VM never
-  // settles (strands the resume-check promises + libuv threadpool slots). When WSL is
-  // down, resume checks degrade to the durable Windows project cache, which is the
-  // primary resume source anyway.
+  // On Windows, also include the guest sessions root if WSL TTS is enabled — but
+  // only when WSL is actually responding: async fs against \\wsl$ with a wedged VM
+  // never settles (strands the resume-check promises + libuv threadpool slots).
+  // When WSL is down, resume checks degrade to the durable Windows project cache,
+  // which is the primary resume source anyway.
   if (os.platform() === 'win32' && (shouldUseWsl2ForAllTts() || shouldUseWsl2ForOrpheus())) {
     if (isWslAliveCached()) {
-      const wslE2aPath = getWslE2aPath();
-      const wslTmpDir = `${wslE2aPath}/tmp`;
+      refuseLegacyGuestSessions();
       // Convert WSL path to Windows UNC so Node.js can read it
-      const uncTmpDir = wslPathToWindows(wslTmpDir);
+      const uncTmpDir = wslPathToWindows(getWslSessionsRoot());
       // Only add if it's a different path than the native one
       if (uncTmpDir !== nativeTmp) {
         dirs.push(uncTmpDir);
       }
     } else {
-      console.warn('[PARALLEL-TTS] Skipping WSL tmp dir in session scan — WSL is not responding');
+      console.warn('[PARALLEL-TTS] Skipping the WSL sessions root in the session scan — WSL is not responding');
     }
   }
 
@@ -9378,7 +9399,6 @@ export async function checkResumeStatus(sessionOrEpubPath: string): Promise<Resu
     phase: 'resume',
     args: ['--headless', '--resume_session', sessionPath],
     envExtras: {},
-    cwdHint: getDefaultE2aPath(),
   });
 
   console.log('[PARALLEL-TTS] Checking resume status:', sessionPath, '→', plan.describe());
@@ -9477,7 +9497,6 @@ export async function listResumableSessions(): Promise<Array<{
     phase: 'list',
     args: ['--headless', '--list_sessions'],
     envExtras: {},
-    cwdHint: getDefaultE2aPath(),
   });
 
   console.log('[PARALLEL-TTS] Listing resumable sessions');
@@ -10087,8 +10106,6 @@ export function buildResumeInfo(prepInfo: PrepInfo, settings: ParallelTtsSetting
 // ─────────────────────────────────────────────────────────────────────────────
 
 export const parallelTtsBridge = {
-  setE2aPath,
-  getE2aPath,
   setMainWindow,
   initializeLogger,
   detectRecommendedWorkerCount,

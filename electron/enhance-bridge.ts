@@ -65,10 +65,10 @@ import {
   EnhanceParams,
   EnhanceLaunchMode,
 } from './tool-paths';
-import { toUnpackedPath } from './e2a-paths';
+import { toUnpackedPath } from './narrator-paths';
 import { getRvcEnvRoot, getRvcPython, convertFileRvc, rvcEnhancementReady } from './rvc-bridge';
 import { getRvcVoiceById, isRvcVoiceInstalled } from './rvc-models';
-import { relocatableEnvBinDirs, relocatableBinaryPath } from './e2a-env-bootstrap';
+import { relocatableEnvBinDirs, relocatableBinaryPath } from './tools-env-bootstrap';
 import { componentManager } from './components/component-manager';
 import { RESEMBLE_ENV_ID } from './components/resemble-env';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';

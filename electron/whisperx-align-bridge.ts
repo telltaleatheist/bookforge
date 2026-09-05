@@ -25,7 +25,7 @@ import { loadEpubForComparison, HEADING_MARKER } from './epub-processor.js';
 import { componentManager } from './components/component-manager.js';
 import { namedCondaEnvCandidates } from './components/conda-env-detect.js';
 import * as manifestService from './manifest-service.js';
-import { toUnpackedPath } from './e2a-paths.js';
+import { toUnpackedPath } from './narrator-paths.js';
 import { getFfmpegPath } from './tool-paths.js';
 import { GenerateSentencesConfig, sendProgress, glog, gerror } from './generate-sentences-bridge.js';
 import { StageTracker, type StageSpec } from './job-stages.js';

@@ -55,7 +55,6 @@ import * as path from 'path';
 
 import { publishBridgeEvent } from './bridge-events';
 import { buildNarratorSpawn } from './narrator-spawn';
-import { getDefaultE2aPath } from './e2a-paths';
 import { resolveWhisperxEnvRoot, whisperxEnvPython } from './whisperx-align-bridge';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
 
@@ -196,7 +195,8 @@ export async function runCoverageAlign(
     phase: 'align',
     args,
     envExtras: { TORCH_HOME: torchHome },
-    cwdHint: getDefaultE2aPath(),
+    // No cwdHint: narrator reads cwd for nothing, every path in this argv is
+    // absolute, and the default (userData) always exists and is always writable.
   });
   console.log('[COVERAGE-ALIGN] →', plan.describe());
 

@@ -77,10 +77,10 @@ function run(phase, args) {
   const plan = spawnMod.buildNarratorSpawn({
     phase,
     args,
-    // E2A_TMP_DIR is what `session_store.sessions_root()` reads. The app sets it
-    // through buildCondaSpawnEnv from the configured scratch; here it is pointed
+    // NARRATOR_SESSIONS_ROOT is what `session_store.sessions_root()` reads. The app sets it
+    // through buildToolsSpawnEnv from the configured scratch; here it is pointed
     // at the fixture so the door has a root that is not the developer's library.
-    envExtras: { E2A_TMP_DIR: ROOT },
+    envExtras: { NARRATOR_SESSIONS_ROOT: ROOT },
     cwdHint: REPO,
   });
   console.log(`\n=== ${phase} ===`);

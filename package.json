@@ -208,10 +208,6 @@
           ]
         },
         {
-          "from": "resources/e2a",
-          "to": "e2a"
-        },
-        {
           "from": "packaging/seed-books",
           "to": "seed-books"
         }
@@ -235,10 +231,6 @@
           "filter": [
             "*.dll"
           ]
-        },
-        {
-          "from": "resources/e2a",
-          "to": "e2a"
         },
         {
           "from": "packaging/seed-books",

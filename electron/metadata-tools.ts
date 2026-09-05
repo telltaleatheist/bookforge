@@ -31,7 +31,7 @@ import * as os from 'os';
 import * as fs from 'fs';
 import { app } from 'electron';
 import { getFfmpegPath, getFfprobePath } from './tool-paths';
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
+import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
 import { renameWithRetry, unlinkWithRetry, LARGE_FILE_RETRY_DELAYS_MS } from './fs-retry';
 
 /**
@@ -359,8 +359,8 @@ function writeM4bTagsInPlace(
     if (!fs.existsSync(filePath)) { reject(new Error(`File not found: ${filePath}`)); return; }
 
     const script = resolveM4bTagScript();
-    const py = getPythonInvocation(getDefaultE2aPath());
-    const env = buildCondaSpawnEnv();
+    const py = getPythonInvocation();
+    const env = buildToolsSpawnEnv();
     const args = [...py.args, '-u', script];
     const payload = JSON.stringify({ file: filePath, tags, cover: coverPath ?? null });
     console.log(`[METADATA-TOOLS] mutagen tag write: ${py.command} ${script}`);

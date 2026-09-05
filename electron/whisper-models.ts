@@ -22,7 +22,7 @@ import * as path from 'path';
 import * as fs from 'fs';
 import { spawn } from 'child_process';
 
-import { getDefaultE2aPath, getPythonInvocation, buildCondaSpawnEnv, toUnpackedPath } from './e2a-paths';
+import { getPythonInvocation, buildToolsSpawnEnv, toUnpackedPath } from './narrator-paths';
 import { getHfToken } from './orpheus-hf-catalog';
 
 // ── Catalog ────────────────────────────────────────────────────────────────
@@ -231,8 +231,8 @@ function runWhisperModelDownload(
   const scriptPath = resolveDownloadScript();
   const token = getHfToken();
 
-  const py = getPythonInvocation(getDefaultE2aPath());
-  const env = buildCondaSpawnEnv(token ? { HF_TOKEN: token } : {});
+  const py = getPythonInvocation();
+  const env = buildToolsSpawnEnv(token ? { HF_TOKEN: token } : {});
 
   return new Promise((resolve) => {
     const child = spawn(py.command, [...py.args, '-u', scriptPath, def.hfRepo, dest], {

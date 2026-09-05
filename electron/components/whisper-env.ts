@@ -30,8 +30,8 @@ import * as path from 'path';
 import { spawn, spawnSync } from 'child_process';
 import { app } from 'electron';
 
-import { getActiveBundledEnvPath } from '../e2a-env-bootstrap';
-import { getDefaultE2aPath, getEnvPathForEngine } from '../e2a-paths';
+import { getActiveToolsEnvPath } from '../tools-env-bootstrap';
+import { getEnvPathForEngine } from '../narrator-paths';
 import type { OptionalComponent, InstallProgress } from './component-types';
 
 // ── Pins ──────────────────────────────────────────────────────────────────────
@@ -85,17 +85,17 @@ export function whisperEnvComponent(): OptionalComponent {
  * The env dir the overlay installs into — the SAME env the transcribe bridge
  * spawns (resolveCondaEnv's order): the bundled relocatable env when it's
  * active (packaged, or BOOKFORGE_E2A_ENV in dev), else — dev only — the e2a
- * checkout's prefix env (./python_env). getActiveBundledEnvPath is null in a
+ * checkout's prefix env (./python_env). getActiveToolsEnvPath is null in a
  * plain dev run, so without the dev branch the install button threw
  * immediately AND would have targeted a different env than transcription
  * uses. Packaged installs never touch a machine-local env, mirroring
  * resolveCondaEnv's no-fallback rule.
  */
 function activeWhisperEnvDir(): string | null {
-  const bundled = getActiveBundledEnvPath();
+  const bundled = getActiveToolsEnvPath();
   if (bundled) return bundled;
   if (app.isPackaged) return null;
-  const prefix = getEnvPathForEngine(undefined, getDefaultE2aPath());
+  const prefix = getEnvPathForEngine();
   return fs.existsSync(prefix) ? prefix : null;
 }
 
