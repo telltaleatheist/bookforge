@@ -305,11 +305,90 @@ Therefore:
 - a zero-shot `kind: 'clips'` voice may carry the engine placeholder 600 with
   `maxCharsSource: "zero-shot placeholder"`.
 
-The seeded **deathstalker** entry therefore has `maxChars: null`,
-`maxCharsSource: null` and a `_pendingNote` — it is refused until the training
-session sends the measured number. **The narration dropdown still shows it**,
-greyed, carrying that note: a voice everyone is waiting for should not silently be
-absent from the list.
+The **deathstalker** entry therefore has `maxChars: null`, `maxCharsSource: null`
+and a `_pendingNote` — it is refused until *this directory's* sweep sends the
+number. **The narration dropdown still shows it**, greyed, carrying that note: a
+voice everyone is waiting for should not silently be absent from the list.
+
+`maxCharsSource` stays a **token**, not a sentence. It travels into narrator's
+voice document, where `protocol.MAX_CHARS_SOURCES` is a closed vocabulary —
+`catalog` | `placeholder` | `length-sweep` — and anything else is refused by name
+at `load_voices`. So the method's *name* rides the wire and the measurement
+itself lives in `_maxCharsNote`, which never leaves this side.
+
+<a id="certificates-a-cap-belongs-to-a-directory"></a>
+
+### Certificates: a cap belongs to a DIRECTORY, not to a voice
+
+A cap is produced by rendering against **one merged directory** on **one patched
+server**. So what is certified is a triple, and every part of it is load-bearing:
+
+> **certificate = (checkpoint directory, stage-processor patch sha256, max_chars)**
+
+- change the **directory** — a re-merge, a different checkpoint of the same run,
+  a copy staged elsewhere — and the weights or their sampling file may differ;
+- change the **patch** — even the one-line fix queued for the `:403` counting bug
+  — and the decode path that produced the measurement is not the one running;
+- and `max_chars` is the only number in the triple that can be *read* rather than
+  measured, which is exactly why it must never be inherited.
+
+Nothing compares two directories byte for byte. The binding is **stated**, here
+and in the catalog's `_checkpointDirNote`, and a change to any part of it means a
+**new certificate**, not a promotion.
+
+#### What is on disk, 2026-09-05
+
+| directory | what it is | certificate |
+|---|---|---|
+| `/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080` | **PRODUCTION.** ckpt-1080, the lowest-loss checkpoint, chosen by Owen after an ear test. What `electron/data/higgs-models.json` names | **none yet** — staged, not served-certified. `maxChars` is null and the loader refuses the voice |
+| `/home/telltale/higgs_v3_merged/ds_ad4lm_prod` | **ALTERNATE.** ckpt-480, the rule-picked checkpoint. Kept on disk | **`max_chars` 1200**, certified 2026-09-05 against this directory and the patched stage processor `0b36f650…` |
+
+Both are **frozen**: a re-merge or a recipe change writes a new directory name and
+re-certifies.
+
+#### The ckpt-480 certificate — the method every sweep repeats
+
+Measured 2026-09-05 by the Higgs fine-tuning session
+(`E:\training\_campaigns\2026-09-01-cod-full-rebuild\higgs`), on the **served**
+path: `vllm-omni` started on the directory, with that directory's
+`generation_config.json` in place. **4 seeds per length**, scored by **ASR
+alignment** and never by duration ratio.
+
+**The rule.** The certified cap is the largest length carrying **zero babble
+across every seed** *and* **≥ 90 % coverage on every seed**, **contiguous from the
+shortest** — one good seed at a longer length does not extend it.
+
+| chunk length | worst-seed ASR coverage | babble |
+|---|---|---|
+| 600 | **98.5 %** | 0/4 |
+| 900 | **97.7 %** | 0/4 |
+| **1200** | **95.5 %** | 0/4 → **certified** |
+| 1500 | **87.2 %** | 0/4 → **fails on coverage** |
+
+**1500 fails on coverage, not on babble.** Babble was **0/16** across the whole
+sweep once the directory's `generation_config.json` restored `top_k 50` — which is
+what identified the babble class as **untruncated sampling**, not length. That is
+the same finding the required-file section above rests on.
+
+**Provenance of the directory itself**, from `merge_manifest.json` beside the
+weights: lora `runs/ds_ad4lm_prod/ckpt-480`, base snapshot `239f63fb…`,
+`generation_config.json` written as an **OVERRIDE** from
+`runs/ds_ad4lm_prod/generation_config.override.json` (`{temperature 1.0, top_p
+0.95, top_k 50, repetition_penalty 1.0}`), 252 merged matrices, `model.safetensors`
+8.49 GB.
+
+**And why 1200 is not on the production entry.** ckpt-1080 is different weights.
+Its own sweep has not been run, so its cap is `null` and the voice is refused —
+by the `_pendingNote` *and*, independently, by `refuseUnmeasuredAdapter`. Copying
+1200 across would be a cap nobody measured for those weights.
+
+> **Observed and recorded rather than tidied:** the ckpt-1080 directory's
+> `merge_manifest.json` gives `"out": ".../ds_ad4lm_prod"` — its *sibling's* path —
+> and its `generation_config.json` says `"_written_by": "backfilled 2026-09-05 for
+> ds_ad4lm_prod"`. What identifies it is the lora it names,
+> `runs/ds_ad4lm_prod/ckpt-1080`, on snapshot `239f63fb…`. Nothing else inside the
+> directory distinguishes it from its sibling, so **the path in the catalog is the
+> only thing that says which weights render.**
 
 ### ⚠ A checkpoint's `generation_config.json` is a REQUIRED FILE
 
@@ -418,7 +497,7 @@ the toggle **throws** rather than falling through to the bundled env, which has 
 **ONE `wsl.exe` round trip** (each spawn costs most of a second on a cold VM, and
 a five-second doctor is a doctor nobody runs). The probe emits one `key=value` per
 check and **never short-circuits** — every check is reported pass or fail, because
-"the tail-trim patch is missing" and "there is no WSL distro" are both
+"the sentinel-filter patch is missing" and "there is no WSL distro" are both
 `valid: false` and have nothing else in common.
 
 | check | how |
@@ -427,11 +506,28 @@ check and **never short-circuits** — every check is reported pass or fail, bec
 | `env` | `test -d <conda-base>/envs/<name>` |
 | `vllm-omni` | `<env>/bin/python -c 'import vllm_omni'` |
 | `patch:vllm-negative-token-id` | grep `min_input_id != -100` in `vllm/v1/engine/input_processor.py` |
-| `patch:higgs-tail-trim` | grep `_trim_trailing_sentinel_frames` in `vllm_omni/.../higgs_audio_v3.py` |
+| `patch:higgs-sentinel-filter` | grep `_filter_sentinel_frames` in `vllm_omni/.../higgs_audio_v3.py` **and** grep for the ABSENCE of `[:, :-1]` |
 | `launcher` | `test -x <env>/bin/serve_higgs_v3.sh` |
 
 A missing probe line is **not** a pass — defaulting those to ok would report green
 for a machine with no WSL.
+
+**The sentinel-filter row asks two questions, not one.** A marker alone answers
+"did somebody apply something here", and that is not enough: the retired
+`patch_tail_trim.py` wrote one of the same helpers
+(`_trim_trailing_sentinel_frames`, which the live patch also writes for the
+streaming path), so grepping for it would certify a band-aided file as patched.
+The marker is therefore `_filter_sentinel_frames` — the string only the live
+recipe produces — and it is paired with an **absent-marker**, `[:, :-1]`:
+upstream's one-frame trim, which occurs **twice** in the pristine
+`higgs_audio_v3.py` and **zero** times after the patch (measured on the
+certifying box, vllm-omni 0.28.0, 2026-09-05). Marker-present **and**
+trim-absent is exactly *"the token-identity filter is in and no trim code
+remains"*. A file that satisfies one and not the other reports
+`patch:...=trim-survived` — half-applied or stacked, which is not patched. Both
+greps are `-F` (fixed string): `[:, :-1]` as a basic regular expression is a
+bracket expression matching a single character, and would report every
+environment broken.
 
 The patches get their own rows **because pip reverts them silently**: any upgrade
 in the env replaces the site-packages file and the patch is gone with no error.
@@ -442,7 +538,71 @@ Marker-grepping is what makes "is it applied" answerable without a diff.
 | patch | without it |
 |---|---|
 | `patch_vllm.py` | vLLM 0.28's blanket negative-token-id rejection fires on vllm-omni's `AUDIO_PLACEHOLDER_ID` (-100). **Every voice-clone request returns HTTP 400** and only the default speaker can serve. |
-| `patch_tail_trim.py` | the ramp-down BOC/EOC sentinels are substituted with codec code **0 — a valid code that decodes to real sound** — and only one frame (40 ms) is trimmed, leaving ~240 ms of audible garbage at the end of **every chunk**. Owen heard it as "a stray syllable or sound after each sentence". Measured effect of the fix on the terminal burst peak: −29.8→−46.2, −31.9→−43.4, −31.6→−52.8, −29.9→−49.1 dB. |
+| `patch_sentinel_filter.py` | the ramp-down BOC/EOC sentinels are substituted with codec code **0 — a valid code that decodes to real sound** — and only one frame (40 ms) is trimmed, leaving ~240 ms of audible garbage at the end of **every chunk**. Owen heard it as "a stray syllable or sound after each sentence". |
+
+#### `patch_sentinel_filter.py` supersedes `patch_tail_trim.py` (2026-09-05)
+
+The band-aid is **deleted** from `electron/scripts/higgs/`, not kept beside its
+replacement: the two edit the same file, must never stack, and a retired script
+next to the live one is how a retirement gets undone by somebody tidying up.
+
+| | `patch_tail_trim.py` (retired) | `patch_sentinel_filter.py` (live) |
+|---|---|---|
+| decides by | **position** — walk back from the end while frames are bad | **token identity** — keep a frame iff all 8 codebooks are in [0, 1023] |
+| the 0-substitution | kept, for every sentinel outside the trailing run | **gone**: nothing out of range reaches the codec at all |
+| sync path (`talker2code2wav`) | trailing run only | full filter — leading, interior and trailing |
+| streaming path (`async_chunk`) | trailing run | trailing run **only**, deliberately: Stage 1 trims `left_context_size`/`right_holdback_size` **by frame count**, so dropping a leading or interior frame would desync those trims and cut real speech |
+| interior sentinels | reached the codec as code 0 | dropped **and logged** — a gate is a defect sensor, not a silent repair |
+| measured effect on the terminal burst peak (band-aid vs unpatched) | −29.8→−46.2, −31.9→−43.4, −31.6→−52.8, −29.9→−49.1 dB | — |
+
+**The shipped script is a transcription, and the transcription is measured.**
+Every anchor, helper and replacement in `electron/scripts/higgs/patch_sentinel_filter.py`
+is byte-identical to the campaign's `work/patch_sentinel_filter.py`; only the
+target path (resolved from the env prefix, so it ships) and the supersession
+handling differ. Verified 2026-09-05 against the pristine file read out of WSL:
+
+| | sha256 |
+|---|---|
+| pristine `higgs_audio_v3.py` (vllm-omni 0.28.0) | `376ca5647773cb191634b266b03bfefe490c080ef9f75aed045f1f31c9a19fb4` |
+| patched, on the certifying box | `0b36f6507dd11653253bbebb278c3657e5d17a2a52f78018cd0bddd45a7ac210` |
+| patched by the repo script, from pristine | **the same** `0b36f650…` |
+| patched by the repo script, from a band-aided file via its `.orig` | **the same** `0b36f650…` |
+
+A band-aided file with **no** `.orig`, or an `.orig` that is itself patched, is
+refused by name (`SUPERSEDED_NO_ORIG` / `ORIG_NOT_PRISTINE`, exit 1) rather than
+guessed at — writing unknown bytes into the file whose sha256 a certificate names
+is the one thing this script must never do.
+
+#### The readiness probe is a SENSOR now, not a gate
+
+`probe_tail_trim` rendered one fixed-seed word at load and **refused** a server
+whose last 300 ms measured above **−45 dBFS**. That was valid while an unpatched
+tail was ~250 ms of decoded sentinels at about −30 dB against a patched −62.4 dB.
+
+**The sentinel filter invalidates it.** The filter *removes* those frames rather
+than quieting them, so the window now holds the model's own audio: the certifying
+box measured **−35 to −38 dBFS on BOTH builds** (2026-09-05). No level separates
+them, so no threshold — looser or tighter — can decide this question. The method
+is renamed `probe_sentinel_filter`, **reports** the level against that measured
+band, and refuses only a 200 that carries no audio at all. A narrator test
+asserts no `*MAX_DBFS` constant comes back, because a retired gate returns as a
+new constant.
+
+What *would* prove the patch, both halves from the fine-tuning session:
+
+| half | state |
+|---|---|
+| **(a) zero SYNC-path interior drops.** The filter logs `interior sentinel frame(s) dropped`; offline positional classification of every saved talker matrix puts interior frames at **0** on all real shapes, and the sync detector has never fired | **NOT IMPLEMENTED.** It is the server's *log*, and narrator does not have it: `start()` sends the launcher's stdout/stderr to `DEVNULL`, and in ATTACH mode the server is not even ours. **`TODO(higgs-sentinel-proof)`** — PORT_NOTES 12.9 item 6: capture the launcher's log to a file the backend can name, then assert zero interior drops per render |
+| **(b) no trim code left in the stage processor** (`[:, :-1]` absent) | **ENFORCED TODAY**, statically and before any server starts — the doctor's absent-marker, above |
+
+**The `higgs_audio_v3.py:403` warnings are not a defect in the audio.** The async
+out-of-range count is taken *before* the trailing-run trim, so it counts the
+normal 2-frame EOC ramp and prints "outside the trailing run" wrongly — an
+instrumentation bug in the patch, measured equally in sequential and concurrent
+renders. **Expect exactly `2 frame(s)` per chunk: count them and report the
+count**, never read them as contamination. The one-line fix changes this file's
+bytes and therefore lands as a **new server build with its own certificate**, not
+under a cap certified against the current one.
 
 ### The installer — `electron/scripts/higgs/install_higgs_env.sh`
 
@@ -473,6 +633,15 @@ would otherwise make a fresh checkout's `#!/bin/bash\r` a bad interpreter.
 Orpheus keeps voices at `/home/<user>/orpheus-models/<voice>`; Higgs mirrors it at
 `/home/<user>/higgs-models/<voice>`, WSL-native so weights load off ext4 rather
 than the slow `/mnt/c` 9p mount. Catalog paths are WSL paths, like Orpheus's.
+
+**That is where a voice MAY be staged, and it is not where the deathstalker
+fine-tune is.** Its merged directories live under `/home/telltale/higgs_v3_merged/`,
+where the merge wrote them, and the catalog names one of those directly — because
+**a cap is certified against a directory, not against a voice** (see
+[Certificates](#certificates-a-cap-belongs-to-a-directory) below). Moving or
+copying a certified checkpoint to the convention path would produce a directory
+whose cap nobody measured, and nothing in BookForge, narrator or vllm-omni
+compares two directories byte for byte.
 
 ---
 
@@ -714,16 +883,27 @@ voices within a render, or a cheap per-request voice cast.
 
 Still owed:
 
-3. **The deathstalker checkpoint.** What exists is a **quick 300-step r32 LoRA**
-   at `…/higgs/v3_ft/runs/quick30_r32/final`; the full 12.4 h ds_ad4 corpus run
-   has not been started, and the LoRA must be **merged into a full checkpoint**
-   before it can serve at all. Stage the merged result at
-   `/home/<user>/higgs-models/deathstalker/` and remove the `_pendingNote`.
-4. **Its `maxChars` must be MEASURED by a length sweep on the merged
-   checkpoint**, recorded with a `maxCharsSource`. This is the one the loader
-   hard-refuses on: a fine-tune's stop length follows its **training clip
-   length**, so the zero-shot 600 would silently lose most of every chunk.
-   Verify by ASR alignment, never by duration ratio.
+3. ~~**The deathstalker checkpoint.**~~ **DONE 2026-09-05.** The quick 300-step
+   r32 LoRA is history; the ds_ad4lm run trained, and two merged checkpoints are
+   on disk — `ds_ad4lm_prod_ckpt1080` (production, chosen by ear) and
+   `ds_ad4lm_prod` (ckpt-480, the alternate). Both carry the full required file
+   set including `generation_config.json`. They are **not** at
+   `/home/<user>/higgs-models/deathstalker/`, and deliberately so: see
+   [Certificates](#certificates-a-cap-belongs-to-a-directory).
+4. **`maxChars` for `ds_ad4lm_prod_ckpt1080` — STILL OPEN.** ckpt-480 is
+   certified at **1200** (method and figures above); ckpt-1080 has no certificate
+   and the catalog's `maxChars` is `null`, so the loader refuses the voice. The
+   cap is per directory and may not be inherited. Run the same sweep on the
+   production directory, then set `maxChars` + `maxCharsSource: "length-sweep"`
+   and delete the `_pendingNote` — that is the whole promotion.
+5. **No BookForge-side render has gone end to end against a Higgs checkpoint
+   yet.** Every number here was taken by the training side's harness on the same
+   served stack, which is not the same as a narration or Listen run through this
+   app.
+6. **The MLX arm has no copy of either directory.** They are WSL-only, so a Mac
+   render of this voice refuses at `require_generation_config` — correctly, and
+   by name — until a checkpoint is staged there. Staging one is a **new
+   certification**, not an inheritance.
 
 ### Decisions to confirm with Owen
 
