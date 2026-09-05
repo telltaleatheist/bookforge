@@ -160,9 +160,13 @@ byte-identical either way because `normalize()` already collapses all whitespace
 
 ### NOT verified — owed
 
-- **The WSL arm has never been run.** The GPU is held by the training session's
-  `external-gpu-job.lock`, so no vLLM model was loaded and PORT_NOTES 9.5 steps
-  2-5 against a real model are outstanding on Windows/WSL.
+- ~~**The WSL arm has never been run.**~~ **RESOLVED 2026-09-05** — see "The
+  Windows/WSL GPU window" in the proof ledger. `buildSpawnPlan()`'s WSL arm ran as
+  written, a real mistborn loaded on vLLM with CUDA graphs, and PORT_NOTES 9.5
+  steps 2-4 completed against it in both streaming modes (buffered `batch_item`s
+  and 21 fast-start `batch_chunk` slices), exit 0 each time. Step 5 — a `cancel`
+  mid-batch against a real model — is still owed; it is covered against the fake
+  by `tests/test_engine_serve_protocol.py`.
 - **The macOS arm has not been run FROM THE POOL.** The `narrator-mlx` env is
   real and proven (a full kershaw render at 5.14x realtime, 2026-09-04), so the
   environment half is verified; what is outstanding is BookForge's own spawn
@@ -309,13 +313,23 @@ to `narratorRunsInWsl`, which is what the spawn itself asks.
 
 ### NOT verified — owed to the GPU window
 
-- **The prep and worker doors have never been RUN.** They are GPU-bound; the
-  training session holds `external-gpu-job.lock`. Owed: a WSL prep + render of a
-  short book, and the kershaw golden resumed end to end.
-- The `GENERATION_ACTIVITY_RE` / `REPAIR_START_RE` matchers are pinned against
-  narrator's SOURCE strings, not against a live worker's stderr. A live render is
-  what turns that from "the strings agree" into "the watchdog fires".
-- The Mac has run nothing of Phase 3.
+**The GPU window happened on 2026-09-05.** See "The Windows/WSL GPU window" in the
+proof ledger for the numbers; what each item below turned into:
+
+- ~~**The prep and worker doors have never been RUN.**~~ **RESOLVED** — kershaw
+  prepped and rendered end to end in WSL (133/133, 0 failed, 10.83x realtime), then
+  resumed (132/133 skipped in 0.2 s).
+- ~~The `GENERATION_ACTIVITY_RE` / `REPAIR_START_RE` matchers are pinned against
+  narrator's SOURCE strings~~ **RESOLVED, and the answer needed both halves.** The
+  bridge's five matchers were run over the live worker's STDOUT by
+  `tools/smoke-narrator-watchdog-live.js`: the progress line and both model-load
+  lines fired there and nowhere else. The two repair matchers fired ZERO times —
+  which is the correct answer for a book that needed no repairs, and is what the
+  keeper already asserts about a healthy vLLM batch. So "the watchdog fires" is
+  proven for the three that must, and the repair ladder remains covered only by
+  string agreement until a book actually needs one.
+- **The Mac has run nothing of Phase 3** — still true for retake and serve; prep,
+  worker and assembly are proven there (see the ledger).
 
 ---
 
@@ -424,7 +438,21 @@ render perfectly well.
 Nothing about Higgs streaming has been RUN. The WSL serve spawn is pinned by
 snapshot (`higgs:wsl` in `serve-spawn-base.json`) and the two native arms are
 pinned as refusals, but no Higgs Listen session has started, loaded a voice or
-produced audio. That needs the GPU.
+produced audio.
+
+**DEFERRED, not merely owed (Owen, 2026-09-05).** It was scheduled into the
+Windows GPU window of 2026-09-05 and cut from it: the training session needed the
+card back, and the run is to be made against the CERTIFIED PRODUCTION CHECKPOINT
+rather than `/home/telltale/higgs_v3_merged/ds_ad4lm`. So the next attempt is
+waiting on a checkpoint, not on a GPU. It is still the first live Higgs-on-Listen
+anywhere whenever it happens — the Mac's has not run either.
+
+One thing the same window DID settle for Higgs, without loading it: the darwin
+availability row. `feat/narrator-higgs-mlx` merged in `bbe845b8`, so
+`higgsMlxBackendPresent()` now reads TRUE by itself and the Mac's Higgs answer is
+decided by the `narrator-mlx` environment like Orpheus's, not by a missing
+backend. `test-stream-engine-availability.js` failed loudly on exactly the case it
+said it would and has been rewritten to pin the new question.
 
 ## The proof ledger
 
