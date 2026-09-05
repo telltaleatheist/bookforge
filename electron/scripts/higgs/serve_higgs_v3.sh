@@ -43,9 +43,13 @@ HIGGS_ENV="${HIGGS_ENV:-$HOME/anaconda3/envs/higgs3}"
 HIGGS_PORT="${HIGGS_PORT:-8095}"
 HIGGS_HOST="${HIGGS_HOST:-127.0.0.1}"
 # Stage 0, the talker: weights + KV cache. Stage 1, the codec decoder: no KV
-# cache. Both are FRACTIONS OF THE WHOLE CARD, and they add.
-HIGGS_GPU_MEM_UTIL="${HIGGS_GPU_MEM_UTIL:-0.60}"
-HIGGS_CODEC_GPU_MEM_UTIL="${HIGGS_CODEC_GPU_MEM_UTIL:-0.25}"
+# cache. Both are FRACTIONS OF THE WHOLE CARD, and they add - and the sum must
+# leave room for three CUDA contexts. MEASURED 2026-09-05 at 0.60 + 0.25 on the
+# 24.5 GB card: 24,274 MiB in use, the WDDM driver paging into shared system RAM,
+# the render falling from ~8 to ~2 chunks/min and the host left with 2 GB free.
+# 0.55 + 0.15 = 17.2 GB reserved + contexts ~ 19 GB, ~5 GB headroom.
+HIGGS_GPU_MEM_UTIL="${HIGGS_GPU_MEM_UTIL:-0.55}"
+HIGGS_CODEC_GPU_MEM_UTIL="${HIGGS_CODEC_GPU_MEM_UTIL:-0.15}"
 HIGGS_MAX_MODEL_LEN="${HIGGS_MAX_MODEL_LEN:-8192}"
 HIGGS_MAX_NUM_SEQS="${HIGGS_MAX_NUM_SEQS:-16}"
 HIGGS_DEPLOY_CONFIG="${HIGGS_DEPLOY_CONFIG:-}"
