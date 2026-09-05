@@ -82,7 +82,21 @@ export type NarrationTextReadiness =
   | { ok: false; state: 'missing' | 'stale'; reason: string };
 
 /**
- * THE PROJECT-LEVEL FLAG: has the narration text cleanup ever been run here?
+ * HAS THE NARRATION TEXT CLEANUP EVER BEEN RUN ON THIS CHAIN?
+ *
+ * ── DERIVED, NEVER STORED ───────────────────────────────────────────────────
+ *
+ * There is no "cleanup done" field on a project, deliberately (the Foundry
+ * agent's point, 2026-09-05, and it is right): a stored flag answers a question
+ * about the PROJECT, and what a narration reads is a FILE — so a stored flag
+ * would skip the offer exactly when the user narrates a reading that predates
+ * the cleanup. This is computed, per call, from the ledger the pass already
+ * writes.
+ *
+ * And it is the SECOND source, not the first. The Narrate offer asks the FILE
+ * being narrated — the OPF stamp `narrationTextGate` reads, which travels with
+ * every export cut after the pass — and asks this only when the file cannot
+ * answer at all. See `narration-modal.component.ts`.
  *
  * ── Owen's ruling, 2026-09-05 ───────────────────────────────────────────────
  *
@@ -95,16 +109,12 @@ export type NarrationTextReadiness =
  * isn't set, ask the user if they want to run cleanup on the document when they
  * hit the narrate button."*
  *
- * So this is that flag, and it is deliberately the simplest possible reading of
- * the ledger: the pass RECORDS ITSELF as a `narration-text` entry when it
- * completes, and this says whether such an entry exists. Nothing unsets it —
- * not a later simplify, not a translate, not the blocks the user struck out
- * afterwards. The cleanup is carried along by everything done after it, exactly
- * as translate and simplify are, so a later edit is not a reason to ask again.
- *
- * NO SEPARATE FLAG IN THE MANIFEST. The ledger already records the pass, in one
- * read (`readAppliedPasses`), and a second place to write "cleanup done" is a
- * second thing that can disagree with the ledger the user can see.
+ * It is deliberately the simplest possible reading of the ledger: the pass
+ * RECORDS ITSELF as a `narration-text` entry when it completes, and this says
+ * whether such an entry exists. Nothing unsets it — not a later simplify, not a
+ * translate, not the blocks the user struck out afterwards. The cleanup is
+ * carried along by everything done after it, exactly as translate and simplify
+ * are, so a later edit is not a reason to ask again.
  *
  * It is NOT {@link narrationTextReadiness}, which asks the sharper question —
  * "is the cleanup still the last word on this text, at this build's rule
@@ -206,14 +216,18 @@ export function narrationTextReadiness(
 export interface NarrationTextReadinessAnswer {
   success: boolean;
   /**
-   * THE FLAG the Narrate button gates on: has this project's chain ever been
-   * through the cleanup? See {@link narrationTextCleanupDone}.
+   * The CHAIN's answer to "has the cleanup ever run here" — derived from the
+   * ledger on every call, never stored. See {@link narrationTextCleanupDone}.
    *
-   * FALSE when the chain could not be named at all — a project with several
-   * book chains and a pressed version belonging to none of them by name. A
-   * project that cannot say it has been cleaned has not been cleaned as far as
-   * this question goes, and the answer to that is the same offer everybody else
-   * gets rather than a dead end with nothing on it to press.
+   * The Narrate offer consults it only when `fileState` is null, i.e. when the
+   * file being narrated could not be read to ask for its stamp; the file is the
+   * authority whenever it can answer, because what a narration reads is a file.
+   *
+   * FALSE when the chain could not be named at all — a project with several book
+   * chains and a pressed version belonging to none of them by name. A project
+   * that cannot say it has been cleaned has not been cleaned as far as this
+   * question goes, and the answer to that is the same offer everybody else gets
+   * rather than a dead end with nothing on it to press.
    */
   cleanupDone?: boolean;
   /** The CHAIN's answer, or null when this project's chains cannot name one. */

@@ -1538,7 +1538,7 @@ export class NarrationModalComponent {
    * half in the queue cannot be retried without double-queueing it.
    */
   /**
-   * Say the cleanup has never run on this book, and offer the three answers.
+   * Say this file has not been cleaned, and offer the three answers.
    *
    * ── Owen's ruling, 2026-09-05 ─────────────────────────────────────────────
    *
@@ -1555,16 +1555,18 @@ export class NarrationModalComponent {
    * Its own method because the sentence is the user's whole understanding of why
    * a button they pressed asked them a question first.
    */
-  private async offerCleanup(book: NarrationRunBook): Promise<'run' | 'skip' | 'cancel'> {
+  private async offerCleanup(
+    book: NarrationRunBook,
+    /** Why this file is not cleaned, in the words of whichever gate said so. */
+    why: string,
+  ): Promise<'run' | 'skip' | 'cancel'> {
     // The row the user pressed, named in the dialog, because on "Yes" the file
     // this run ends up reading is NOT that row's file and saying so is the whole
     // of the honesty here (the second adversarial review's Finding 4, partial).
     const pressed = book.epubPath.split(/[\\/]/).pop() ?? 'this version';
     const answer = await this.electron.showChoiceDialog({
       title: 'Narration text cleanup',
-      message: `${book.title || 'This book'} has not been through the narration text cleanup, so `
-        + 'its punctuation is whatever the book printed and its numbers are still digits. '
-        + 'Run it before narrating?',
+      message: `${why} Run it before narrating?`,
       detail: `You pressed ${pressed}. Yes runs the cleanup on this book first and queues this `
         + 'narration behind it, reading the book the cleanup produced rather than the file on the '
         + 'row you pressed — minutes of model time over the whole book, once, and everything you '
@@ -1607,11 +1609,20 @@ export class NarrationModalComponent {
        * flag isnt set, ask the user if they want to run cleanup on the document
        * when they hit the narrate button. yes/no/cancel."*
        *
-       * So the gate is ONE project-level flag — has the cleanup ever run on this
-       * book's chain (`narrationTextCleanupDone`, read over the readiness IPC) —
-       * and nothing unsets it. Blocks struck out afterwards, a later simplify, an
-       * export made before the pass: none of them ask again, because the cleanup
-       * is carried along by everything done after it exactly as a translate is.
+       * So there is a "cleanup done" signal and it is DERIVED, never stored — a
+       * stored project flag would skip the offer exactly when the user narrates
+       * a reading that predates the cleanup (the Foundry agent's point, and it
+       * is right). What answers is the FILE this run will read: the OPF
+       * narration-text stamp, the same one the render door reads, which travels
+       * with every export cut after the pass. Blocks struck out afterwards, a
+       * later simplify, a translate: none of them ask again, because the cut
+       * they export still carries the stamp — the cleanup is carried along by
+       * everything done after it exactly as a translate is.
+       *
+       * The CHAIN's own answer (`cleanupDone`, the ledger's `narration-text`
+       * entry) is asked only when the file could not be read to ask for its
+       * stamp. Two sources, in that order, and neither of them a fallback for a
+       * bug: a file that can speak for itself always does.
        *
        * The answer travels with the run as `textCleanup`, stated always, and the
        * render door reads it by name. This decision is made BEFORE the settings
@@ -1640,8 +1651,17 @@ export class NarrationModalComponent {
             `This book's history was read, but the answer did not say whether the narration `
             + 'text cleanup has run, so there is nothing to ask you about. Nothing was queued.');
         }
-        if (!readiness.cleanupDone) {
-          const answer = await this.offerCleanup(book);
+        const file = readiness.fileState ?? null;
+        const cleaned = file === null ? readiness.cleanupDone : file.ok;
+        if (!cleaned) {
+          // The gate's OWN sentence, because "it has never been cleaned" and
+          // "it was cleaned by rules this build no longer reads by" are
+          // different things to a user who believes they already did it.
+          const why = file !== null && !file.ok
+            ? file.reason
+            : `${book.title || 'This book'} has not been through the narration text cleanup, so `
+              + 'its punctuation is whatever the book printed and its numbers are still digits.';
+          const answer = await this.offerCleanup(book, why);
           if (answer === 'cancel') {
             this.error.set(
               'Nothing was queued. Run "Clean text…" on this book when you are ready, or press '
