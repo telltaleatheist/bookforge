@@ -23,10 +23,10 @@
 'use strict';
 const fs = require('fs');
 const path = require('path');
-const crypto = require('crypto');
 const { USER_DATA } = require('./electron-stub.js');
 const { applyNarratorSessionsRoot } = require('./narrator-sessions-root.js');
 const { runNarrationTextStep } = require('./narration-text-step.js');
+const { runProjectPass } = require('./processing-pass-step.js');
 
 function parseArgs(argv) {
   const a = {};
@@ -57,66 +57,12 @@ function parseArgs(argv) {
  * project around it.
  */
 async function cleanProject(projectDir, model, familyArg) {
-  const { planProcessingChain } = require('../dist/electron/processing-chain.js');
-  const { runProcessingPass } = require('../dist/electron/processing-passes.js');
-  const manifestService = require('../dist/electron/manifest-service.js');
-
-  // ── WHICH CHAIN, when the project holds more than one ────────────────────
-  //
-  // A project with two archive EPUBs has two chains and every resolver refuses
-  // to guess between them, so `--project` alone could not clean one at all (the
-  // third adversarial review, 2026-09-04). `--family` names it, by id or by the
-  // stem of the file it was minted from, and a project that needs one and was
-  // not given one is told which are there.
-  const families = (await manifestService.readProjectManifest(projectDir)).families ?? [];
-  let sourcePath;
-  if (families.length > 1) {
-    const wanted = typeof familyArg === 'string' ? familyArg.toLowerCase() : null;
-    const stemOf = (f) => path.basename(f.source.path).replace(/\.[^.]+$/, '');
-    const chosen = wanted === null ? null : families.find((f) =>
-      f.id.toLowerCase() === wanted || stemOf(f).toLowerCase() === wanted);
-    if (chosen === null || chosen === undefined) {
-      const list = families.map((f) => `  ${f.id}    ${stemOf(f)}`).join('\n');
-      throw new Error(
-        `${path.basename(projectDir)} holds ${families.length} book chains, and nothing can `
-        + 'guess which one to clean. Name it with --family <id|stem>:\n' + list
-        + (wanted === null ? '' : `\n(no chain answers to "${familyArg}")`));
-    }
-    const book = await manifestService.ensureBookEpub(projectDir, chosen.id);
-    sourcePath = book.absPath;
-    console.log(`[narration-text] chain: ${chosen.id} (${stemOf(chosen)})`);
-  } else if (typeof familyArg === 'string') {
-    console.log('[narration-text] note: --family is ignored; this project has one chain.');
+  if (model) {
+    console.log('[narration-text] note: --model is ignored for a project run; the app '
+      + 'reads its model from Settings so the pass and the app agree.');
   }
-
-  const plan = await planProcessingChain({
-    projectDir,
-    ...(sourcePath === undefined ? {} : { sourcePath }),
-    passes: [{ kind: 'narration-text' }],
-  });
-  if (plan.jobs.length !== 1) {
-    throw new Error(`the planner produced ${plan.jobs.length} jobs for one pass`);
-  }
-  console.log(`[narration-text] project book: ${plan.bookEpubPath}`);
-  console.log(`[narration-text] stage: ${plan.jobs[0].config.stageRelDir}`);
-  if (model) console.log(`[narration-text] note: --model is ignored for a project run; `
-    + 'the app reads its model from Settings so the pass and the app agree.');
-
-  const jobId = `cli-narration-text-${crypto.randomUUID()}`;
-  const t0 = Date.now();
-  const result = await runProcessingPass(jobId, plan.jobs[0].config, null);
-  console.log(`[narration-text] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
-  if (!result.success) throw new Error(result.error || 'the pass failed and gave no reason');
-  console.log(`[narration-text] book:    ${result.outputPath}`);
-  if (result.narrationInputPath) {
-    console.log(`[narration-text] to narrate: ${result.narrationInputPath}`);
-  }
-  console.log(`[narration-text] ${result.summary}`);
-  if (result.ledgerEntryId) console.log(`[narration-text] ledger: ${result.ledgerEntryId}`);
-  if (result.ledgerRefusal) console.log(`[narration-text] ledger: ${result.ledgerRefusal}`);
-  if (result.narrationCarryNote) {
-    console.log(`[narration-text] strikes: ${result.narrationCarryNote}`);
-  }
+  await runProjectPass(projectDir, { kind: 'narration-text' },
+    { family: familyArg, label: 'narration-text' });
 }
 
 async function main() {

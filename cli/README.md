@@ -123,6 +123,178 @@ Requires `dist/electron/{parallel-tts-bridge,reassembly-bridge,manifest-service}
 (build with `npx tsc -p tsconfig.electron.json`). The library root is derived from the
 project path, so the manifest cover/metadata resolve exactly as they do in the app.
 
+## Assembly on its own — `--assemble`
+
+The app's **Assemble** over a cached session, headless: no TTS, just the two calls
+`--audiobook` makes after generation — `denoise-job.runFinalDenoise` then
+`reassembly-bridge.startReassembly` — over the project's cached sentence set in
+`stages/03-tts/sessions/`. It is the door for reproducing an assembly or denoise
+defect without paying for a nine-hour render first, and because the denoised set is
+**durable** (a sibling of the raw cache with a manifest saying what it was derived
+from), a second run over the same session reuses it and costs minutes.
+
+It is the SAME adapter as `--audiobook`, run with `--assemble-only`. There is no
+second assembly implementation, deliberately.
+
+```
+# Assemble what is already rendered (the denoise answer is required):
+python cli/bookforge-tts.py --assemble --project "<dir>" --final-denoise
+
+# With the voice's de-ring filter and a 0.7s inter-sentence gap, no denoise:
+python cli/bookforge-tts.py --assemble --project "<dir>" \
+    --de-ring --assembly-gap 0.7 --no-final-denoise
+
+python cli/bookforge-tts.py --assemble --project "<dir>" --dry-run
+```
+
+`--voice`, `--input`, `--fresh` and `--skip-text-cleanup` are **refused by name**
+here: nothing is generated and nothing is narrated, so a value that changes nothing
+about the run is an error rather than a silent no-op.
+
+**Higgs.** narrator's assembly gate is `enforced` for `higgs-v3` and wants the
+`--coverage_report` that `narrator align` writes. `reassembly-bridge` passes it
+itself for an enforced engine, reading the path from the same `coverageReportPath()`
+the align step writes to — so the recipe is `--align` first, then `--assemble`, and
+no extra flag. `--engine` is **not read** on this door at all: the assembly resolves
+the engine from the session's own `session-state.json` and refuses one whose two
+records disagree.
+
+**`--final-denoise` or `--no-final-denoise` is REQUIRED here.** Whether the denoise
+ran is a fact about the chain that produced these sentences — its own queue row in
+the app — and this door reads no engine flag to infer it from. Guessing would either
+re-derive an hour of roformer nobody asked for or silently assemble the raw set.
+
+## Coverage alignment — `--align`
+
+The queue row between render and assembly. It force-aligns every rendered chunk
+and writes `<processDir>/coverage.json`: text with no aligned audio is a
+truncation, audio with no text is an insertion. `assemble/coverage_gate.py`
+**refuses** a book from an engine whose policy is enforced (`higgs-v3`) when no
+report is there — Higgs v3 has no duration guard worth the name.
+
+It drives `coverage-align-job.runCoverageAlign`, the one function
+`electron/queue-steps/align.ts` calls. **Nothing about the spawn lives in the
+CLI**: `narrator align` is invoked by that job through `buildNarratorSpawn` and
+the whisperx-env interpreter it resolves, and the report lands where
+`coverageReportPath()` says — the same place both assembly spawns look for it. So
+an alignment run from here satisfies an assembly run from anywhere.
+
+```
+python cli/bookforge-tts.py --align --project "<dir>" --align-language en
+python cli/bookforge-tts.py --align --process-dir "<session>/<hash>" --align-language de
+```
+
+**`--align-language`, not `--language`, and it is required.** The aligner loads a
+per-language wav2vec2 checkpoint; one pointed at the wrong language scores every
+word badly, which the guard reads as *"the audio did not say the text"* and uses
+to refuse a book that was read correctly. `--language` carries a render default
+(`en`), so align gets its own flag rather than laundering that default into a
+measurement. The app's own step refuses an absent language for the same reason.
+
+CPU only, by design: `align/aligner.py` refuses CUDA by name while
+`%APPDATA%\BookForge\external-gpu-job.lock` exists, and it does not want it —
+RTF 0.082, a book in minutes. The whisperx add-on must be installed
+(Settings → Add-ons); an absent one is refused here **before** the job starts,
+which is the same plan-time check the narration dialog makes.
+
+## The two enhancement passes — `--denoise`, `--rvc-enhance`
+
+Each is its own queue row in the app, run between generation and assembly, and each
+takes exactly one thing: a session's `processDir`. Name it with `--process-dir`, or
+give `--project` and the project's **cached** session is resolved through
+`reassembly-bridge.getBfpCachedSession` — the same fallback the app's own steps use.
+A project with no cached render is refused by name, never approximated by scanning
+the scratch root.
+
+| Command | App function | What it writes |
+|---|---|---|
+| `--denoise` | `denoise-job.runFinalDenoise` (`queue-steps/final-denoise.ts`) | `chapters/sentences-denoised/` — gap-normalized, then the block roformer |
+| `--rvc-enhance` | `rvc-job.runRvcEnhancement` (`queue-steps/rvc-enhancement.ts`) | `chapters/sentences-rvc-<voice>/` — the session's sentences through an RVC voice |
+
+```
+python cli/bookforge-tts.py --denoise --project "<dir>" [--sentence-gap 0.6]
+python cli/bookforge-tts.py --rvc-enhance --project "<dir>" \
+    --rvc-voice-id builtin:deathstalker-sigma --enhance-index-rate 0.3 \
+    --enhance-protect-rate 0.1
+```
+
+`--sentences-dir` is one pass reading the OTHER's output (the "convert first, then
+denoise" order and its mirror). The jobs **refuse** it alongside a gap value rather
+than ignoring one of them: the gap can only be applied to raw audio, so a call
+stating both is a composition bug.
+
+**`--rvc-enhance` is not `--rvc`.** `--rvc` is
+`rvc-bridge.convertFileRvcChunked` over ONE finished audio file — the memory-safe
+whole-book reconstruction. `--rvc-enhance` is the pass over a session's
+per-sentence cache, whose output assembly then reads via `--sentences_dir`. Two
+different jobs; both are named rather than one standing in for the other. Their
+tuning flags are spelled differently for the same reason (`--rvc-voice-id`,
+`--enhance-index-rate`, `--enhance-protect-rate`, `--enhance-f0-method`), so an
+unset value stays unset and urvc's own default applies, exactly as in the app.
+
+## Correct Sentences — `--retake`
+
+The app's Correct Sentences panel, headless: the same five exported functions its
+five IPC handlers call. `--retake-action` picks one.
+
+| action | app function | what it does |
+|---|---|---|
+| `list` (default) | `getCorrectSentencesSession` | the cache, cue by cue, with engine/voice and sample_fmt |
+| `retake` | `generateCandidates` | renders N fresh takes per `--indices` into scratch |
+| `commit` | `commitSentence` | swaps one take into the cache (original backed up once) |
+| `revert` | `revertSentence` | restores from `.orig-backup/` |
+| `cleanup` | `cleanupCandidates` | drops the candidate scratch |
+
+```
+python cli/bookforge-tts.py --retake --project "<dir>"                       # list
+python cli/bookforge-tts.py --retake --project "<dir>" --index 120 --count 40
+python cli/bookforge-tts.py --retake --project "<dir>" --retake-action retake \
+    --indices 12,40 --takes 3
+python cli/bookforge-tts.py --retake --project "<dir>" --retake-action commit \
+    --index 12 --take "<scratch>/take2/12.flac"
+python cli/bookforge-tts.py --retake --project "<dir>" --retake-action revert --index 12
+```
+
+`--sentence-text` re-renders (or commits) a sentence with DIFFERENT words; it
+round-trips through the bridge's `storedTextForCorrection`, so the chunk keeps its
+`[heading]` / `[item]` markers. Omitting it means the words did not change — a
+different act from changing them to the same string. Every take is
+sample_fmt-matched to the book's existing FLACs, so it drops into the cache without
+breaking the concat. Ctrl+C aborts through the CLI's own `AbortController`, which is
+what the app's IPC layer does too.
+
+## Processing passes — `--pass`
+
+Simplify, translate and footnote-refs as **project acts**: planned by
+`processing-chain.planProcessingChain` and run by
+`processing-passes.runProcessingPass`, the same pair `queue-steps/pass.ts` calls.
+So the run stages, records its ledger row, writes provenance and promotes a working
+copy — exactly as pressing the button does.
+
+```
+python cli/bookforge-tts.py --pass --project "<dir>" --kind footnote-refs
+
+python cli/bookforge-tts.py --pass --project "<dir>" --kind simplify \
+    --simplify-mode learner --provider ollama --model gemma3:12b
+
+python cli/bookforge-tts.py --pass --project "<dir>" --kind translate \
+    --source-lang en --target-lang de --provider claude --model claude-sonnet-4-5
+```
+
+`--family <id|stem>` names which book chain, and is required only when the project
+holds more than one (a project with two archive EPUBs has two chains and nothing
+guesses between them). The API key travels in the process env, never argv.
+
+**Not `--ai-simplify`.** That drives `ai-bridge.cleanupEpub` over a LOOSE epub and
+writes `simplified.epub` beside it — file in, file out, no project record.
+`--pass --kind simplify` is the project act. **Not Foundry's "Clean text"** either:
+that is ordered inside the hosted Foundry window and cannot be reached headlessly —
+see `docs/CLI_PARITY_AUDIT.md` §8.
+
+The fourth pass kind, `narration-text`, has its own command (`--narration-text`)
+because it also has a bare-EPUB door. Both go through the same
+`cli/processing-pass-step.js`.
+
 ## Narration prep — `--prep`
 
 The **narration door**, on its own: the step every queued audiobook already walks
@@ -208,7 +380,13 @@ proposed, and what became of it (`APPLIED_RULE` naming the rule that read it, `A
 - `--tier {auto,extreme,fast,moderate,light}` — force the GPU memory tier
   (env `ORPHEUS_MEMORY_TIER`; default auto, safe-sized to free VRAM). Works in both modes.
 - `--sentence-gap <sec>` — deterministic inter-clip gap on the **tts** path
-  (env `ORPHEUS_SENTENCE_GAP`; default 0.6). Forwarded into the WSL worker.
+  (env `ORPHEUS_SENTENCE_GAP`; default 0.6). Forwarded into the WSL worker, so it is
+  the gap **baked into each FLAC at render time**. `--denoise`/`--rvc-enhance` pass it
+  to the job as `FinalDenoiseConfig.sentenceGap` / `RvcEnhancementConfig.sentenceGap`,
+  which is the same measurement re-laid on the raw cached sentences.
+  **Not `--assembly-gap`**, which is the gap the pass in front of `--assemble`/
+  `--audiobook`'s reassembly re-lays. Two passes at two different times; one flag for
+  both would mean a value whose meaning depended on which command read it.
 - `--model-dir <path>` — explicit model directory, bypassing `models.json` resolution.
   Use the spawn target's namespace (a `/home/...` WSL path, or a `\\wsl$` / `C:\` path
   the bridge will translate). *Not needed for a registered voice like `rohan`.*
@@ -645,8 +823,25 @@ Docker files for the NAS live in `deploy/bookshelf-server/`.
 
 ## Extending
 
-`COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`, `prep`,
-`ai-cleanup`).
+`COMMANDS` in `bookforge-tts.py` is a registry — one entry per job (`tts`,
+`audiobook`, `assemble`, `denoise`, `rvc-enhance`, `retake`, `pass`, `prep`,
+`align`, `narration-text`, `ai-cleanup`, `ai-simplify`, `generate-sentences`,
+`generate-epub`, `rvc`).
+
+**Which app actions have a command, which do not, and why:**
+`docs/CLI_PARITY_AUDIT.md`. It is the table `tools/test-cli-parity.js` defends —
+every adapter must require the COMPILED bridge and call the exact symbol the app's
+queue step calls, and that symbol must really be exported by the compiled module.
+
+Three adapters keep grammars of their own and are run directly, because wrapping
+them in this flat flag namespace would mean inventing a second spelling for every
+option they already have (they are named in the `--help` epilog):
+
+```
+node cli/library.js --list | --import-epub | --add-version | --set-primary | ...
+node cli/clipforge-process.js [speakers|narration|verify|merge|split|sentences] ...
+node cli/serve-bookshelf.js
+```
 Add a `cmd_*` handler and a registry line; a `--<name>` selector flag is generated
 automatically. Engine adapters live beside it (`orpheus-batch-render.js`,
 `orpheus-render.js`) and load under `electron-stub.js`, which shims the tiny Electron
