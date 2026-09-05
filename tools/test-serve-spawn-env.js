@@ -261,16 +261,54 @@ check('higgs/wsl: the voice document is named in the GUEST filesystem', () => {
   assert.ok(!/^[A-Za-z]:/.test(doc), `the voice document crossed as a Windows path: ${doc}`);
 });
 
-for (const arm of ['native-win', 'native-mac']) {
-  check(`higgs/${arm}: refuses BY NAME rather than spawning`, () => {
-    // v3's only backend is a vLLM-Omni server: no Windows build without the WSL
-    // toggle, and no macOS build at all. A refusal here is the correct behaviour
-    // and is pinned so that it changing is a decision.
-    assert.ok(higgsRows[arm].refused,
-      `${arm} built a Higgs spawn it cannot run: ${JSON.stringify(higgsRows[arm]).slice(0, 200)}`);
-    assert.match(higgsRows[arm].refused, /Higgs/);
-  });
-}
+check('higgs/native-win: refuses BY NAME rather than spawning', () => {
+  // The SERVED backend is vLLM-Omni and there is no Windows build. Pinned so that
+  // it changing is a decision.
+  assert.ok(higgsRows['native-win'].refused,
+    `native-win built a Higgs spawn it cannot run: ${JSON.stringify(higgsRows['native-win']).slice(0, 200)}`);
+  assert.match(higgsRows['native-win'].refused, /Higgs/);
+});
+
+check('higgs/native-mac: runs IN PROCESS in narrator-mlx, not the served stack', () => {
+  const row = higgsRows['native-mac'];
+  assert.ok(!row.refused, `the darwin arm refused: ${row.refused}`);
+  assert.ok(!row.viaWsl, 'the darwin arm routed through WSL');
+  // narrator-mlx, NOT the `higgs-env` component: that is the SERVED stack's
+  // environment and has no macOS build, so resolving it would refuse a Mac that
+  // can render perfectly well. Same env the Orpheus MLX arm uses.
+  assert.match(cmdOf(row), /narrator-mlx/, `the mac Higgs arm does not name narrator-mlx: ${cmdOf(row)}`);
+  assert.strictEqual(envOf(row).NARRATOR_ENGINE, 'higgs-v3');
+  // The served arm's variables must NOT come along: there is no launch script and
+  // no distro on a Mac, and either one present would mean the wrong backend.
+  assert.ok(!('NARRATOR_HIGGS3_SERVE_SCRIPT' in envOf(row)),
+    'the darwin arm carries the SERVED launch script');
+  assert.ok(!('NARRATOR_HIGGS3_WSL_DISTRO' in envOf(row)),
+    'the darwin arm carries a WSL distro');
+});
+
+check('higgs/native-mac: NARRATOR_HIGGS3_MLX_MODEL names an existing directory', () => {
+  // `mlx_backend.model_dir_from_env()` refuses BY NAME when this is unset — "no
+  // default and no search", because an engine that guesses where its weights are
+  // can render a whole book in the wrong model and report success. So the spawn
+  // must name it, and the fixture provisions the directory so "does it exist" is a
+  // question about the PATH DERIVATION rather than about the fixture.
+  const row = higgsRows['native-mac'];
+  const dir = envOf(row).NARRATOR_HIGGS3_MLX_MODEL;
+  assert.ok(dir, 'the darwin arm sets no NARRATOR_HIGGS3_MLX_MODEL — narrator would refuse');
+  assert.match(dir, /runtime\/higgs-models\/base$/,
+    `not the base weights dir narrator's own refusal message points at: ${dir}`);
+  assert.strictEqual(row.mlxModelDirExists, true,
+    'the directory BookForge named does not exist even in the fixture');
+  // HOST-NATIVE: there is no guest on a Mac, so nothing is translated.
+  assert.ok(!dir.startsWith('/mnt/'), `the weights dir was guest-translated: ${dir}`);
+});
+
+check('the WSL Higgs arm sets NO MLX model var', () => {
+  // It is the SERVED backend there: the weights are the launch script's argument.
+  // Setting it would look like a lever and be read by nothing.
+  assert.ok(!('NARRATOR_HIGGS3_MLX_MODEL' in envOf(higgsRows.wsl)),
+    'the served arm carries the in-process backend\'s weights variable');
+});
 
 console.log('the capture says the same thing on Windows and on a Mac');
 check('no captured value carries a host path separator', () => {

@@ -374,13 +374,50 @@ the model's own speaker — 12% of the narrator's ECAPA ceiling, a different per
 
 `higgsMlxBackendPresent()` DETECTS the in-process MLX backend landing, by content
 under `engine/higgs/` (the filename is the other builder's to choose), rather than
-hard-coding a `false` somebody has to remember to flip. It reads false today:
-`feat/narrator-higgs-mlx` currently contains a plan document and no backend.
+hard-coding a `false` somebody has to remember to flip.
 
-**So the Mac half of Owen's request is blocked on narrator, not on the app.** When
-that branch lands, the picker turns Higgs on by itself and
-`test-stream-engine-availability.js` fails loudly — its darwin case asserts the
-detector is still false, and says in its message that the case must be rewritten.
+**THE BACKEND IS REAL.** `feat/narrator-higgs-mlx` shipped it in `59549b91`
+("Higgs v3 runs IN THIS PROCESS on the Mac - mlx-audio, no server"), with
+`engine/higgs/mlx_backend.py` and its own tests. An earlier draft of this section
+called that branch a plan document; that read predated the commit and was wrong.
+
+It is not merged into THIS branch yet, so the detector still reads false here and
+the darwin row still refuses. When the merge lands, the picker turns Higgs on by
+itself and `test-stream-engine-availability.js` fails loudly — its darwin case
+asserts the detector is still false and says in its message that the case must be
+rewritten.
+
+### `NARRATOR_HIGGS3_MLX_MODEL`, and the one thing the summary got backwards
+
+The in-process backend loads weights from a directory this variable names, and
+`model_dir_from_env()` refuses BY NAME when it is unset: *"no default and no
+search"*, because an engine that guesses where its weights are can render a whole
+book in the wrong model and report success. So the darwin spawn sets it, host-
+native (there is no guest on a Mac), beside `NARRATOR_HIGGS_VOICES`.
+
+**It is ALWAYS THE BASE CHECKPOINT, never a voice's own merged directory.** The
+brief described it as "the merged checkpoint dir for a checkpoint voice, or the
+base dir for `default`", and narrator's own code says otherwise:
+
+```python
+# higgs_v3_mlx_config_from_worker_kwargs
+checkpoint = getattr(resolved, 'checkpoint_dir', None)
+return HiggsV3MlxConfig(voice=resolved,
+                        model_dir=checkpoint or model_dir_from_env())
+```
+
+A `checkpoint` voice's weights come from `checkpointDir` IN THE VOICE DOCUMENT and
+this variable is not read at all; a `default` or `clips` voice loads the base from
+it. Setting it per-voice would therefore be ignored exactly where it looked
+meaningful, and would load a fine-tune as "the base" where it was not. BookForge
+sets `<userData>/runtime/higgs-models/base` — which on macOS IS
+`~/Library/Application Support/BookForge/runtime/higgs-models/base`, the path
+narrator's own refusal message points at, rather than a second convention.
+
+The Mac also resolves Higgs to the **`narrator-mlx`** env, the same one the Orpheus
+MLX arm uses — NOT the `higgs-env` component, which is the SERVED stack's
+environment and has no macOS build. Resolving that would refuse a Mac that can
+render perfectly well.
 
 ### What is NOT proven
 
@@ -398,14 +435,24 @@ Every door, and what has actually been RUN through it rather than reasoned about
 | prep | owed (GPU) | **PROVEN** 2026-09-05 — spawn shape exactly as designed |
 | worker | owed (GPU) | **PROVEN** — 108/108 sentences, 40.3 min of 24 kHz PCM_16 in 486 s = **4.97x realtime**, one-line result JSON, session cached resume-ready |
 | retake | owed | owed |
-| assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | owed (the refusal below fired first) |
-| assembly (reassembly) | **PROVEN** (same door) | owed |
+| assembly (render) | **PROVEN** — kershaw golden, 2615.4 s, 133 cues, VTT byte-identical to reference | **PROVEN** — exit 0, m4b 40.35 min, cover, tags, manifest registered, sidecars refreshed |
+| assembly (reassembly) | **PROVEN** (same door) | **PROVEN** (same door, via `cli/orpheus-audiobook-render.js --assemble-only`) |
 | resume / list | **PROVEN** — real doors, fixture session, read by the bridge's own parser | n/a (native both sides) |
 | serve (Listen, Orpheus) | fake-engine smoke only; real model owed (GPU) | owed |
 | serve (Listen, Higgs) | argv/env snapshot only | refuses by name — no MLX backend yet |
 
-The Mac's run 4 (via `cli/bookforge-tts.py`, MLX, deathstalker) is the first live
-proof that the cut-over renders a book. Its prep spawn, verbatim:
+**ALL THREE narrator doors are now proven live on the Mac**, through BookForge's
+own bridge rather than by hand: prep and worker via `cli/bookforge-tts.py`, and
+assembly via `cli/orpheus-audiobook-render.js --assemble-only`.
+
+One thing that run recorded which the Windows side cannot: the Mac's tools env is
+the NAMED conda env `ebook2audiobook`, not a `python_env` prefix, because that Mac
+has no prefix env to find. Both resolve through the same
+`getPythonInvocation`/`resolveCondaEnv` seam, so the assembly door works either
+way — and it is one more reason Phase 6 is a relocation rather than a rename: the
+env's NAME is as machine-specific as its location.
+
+The prep spawn, verbatim:
 
 ```
 conda run -p narrator-mlx python -u -m narrator.compat.app --headless \
@@ -425,6 +472,41 @@ Two things that run found which nothing else could have:
    prep). See "Three bugs the live proofs caught" — this is the fourth, and the
    only one a snapshot could never have found, because both files exist and on the
    machine the sidecar is written on it is always there.
+
+### The shipped sidecar has one cue fewer than the book has chunks
+
+The Mac's m4b shipped a `.m4b.vtt` with **107 cues for 108 FLACs**. The missing one
+is chunk #107, a 0.10 s `[break]`-only silence chunk — an EMPTY cue.
+
+**It is not narrator's assembler.** Measured locally on the kershaw golden pair,
+same book, both files on disk:
+
+| file | cues | empty |
+|---|---|---|
+| `reference.vtt` (narrator's assembler) | **133** | **1** |
+| `shipped.m4b.vtt` (what the pipeline shipped) | **132** | 0 |
+
+133 − 1 = 132. The round-trip drops exactly the empty cue, and nothing else.
+
+**It is the sidecar round-trip, and it is pre-existing.** `reassembly-bridge.ts`
+embeds narrator's VTT into the m4b as a `mov_text` track, and on a successful embed
+*deletes the staging copy* (`deleteSidecarsForM4b`, `sealVttSource = undefined`).
+The bound sidecar is then re-EXTRACTED from that track:
+`regenerateBoundSidecars` → `migrateVariant` → `extractVttFromM4b(m4bAbs)` first,
+with `externalVttPath` used only when the extract yields nothing. `mov_text` has no
+representation for a cue with no text, so the empty cue does not survive.
+
+So the shipped sidecar is a lossy derivative of a lossless file the pipeline
+deliberately deletes. That predates the cut-over — the golden builder measured the
+same thing on e2a's outputs — and the audio, the durations and the embedded track
+are all unaffected; only the sidecar's cue COUNT is.
+
+**Worth changing, and not by me unannounced.** Training and debug tools want cue ↔
+FLAC 1:1, and `migrateVariant` already takes an `externalVttPath`: passing
+narrator's VTT as `opts.vttPath` and preferring it over the extract is a small
+change. But it changes what the sidecar IS for every book, and the embed-only
+doctrine (the embedded track is the truth) was a deliberate decision — so it is
+Owen's call, not a cleanup.
 
 ## What is left after Phase 3
 

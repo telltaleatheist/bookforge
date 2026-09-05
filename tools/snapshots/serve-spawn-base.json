@@ -104,6 +104,27 @@
   "higgs:native-mac": {
     "arm": "native-mac",
     "engine": "higgs",
-    "refused": "Higgs TTS environment not found. Install or locate it in Settings → Higgs."
+    "command": "/fake/miniconda/bin/conda",
+    "viaWsl": false,
+    "args": [
+      "run",
+      "--no-capture-output",
+      "-p",
+      "/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx",
+      "python",
+      "-u",
+      "-m",
+      "narrator.serve"
+    ],
+    "mlxModelDirExists": true,
+    "env": {
+      "NARRATOR_ENGINE": "higgs-v3",
+      "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
+      "NARRATOR_HIGGS3_MLX_MODEL": "<REPO>/.fake-userdata/runtime/higgs-models/base",
+      "PYTHONIOENCODING": "utf-8",
+      "PYTHONPATH": "<REPO>/python",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "cwd": "<REPO>/.fake-userdata"
   }
 }

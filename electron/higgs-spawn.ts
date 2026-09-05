@@ -74,7 +74,9 @@ import {
   type NarratorPhase,
   type NarratorSpawnPlan,
 } from './narrator-spawn';
+import { app } from 'electron';
 import {
+  higgsMlxBaseDir,
   resolveHiggsModel,
   higgsSpawnEnv,
   higgsVoiceCapsForModel,
@@ -268,6 +270,14 @@ export function higgsEnvExtras(
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,
     serveScriptPath: viaWsl ? serveScriptGuestPath : undefined,
     wslDistro: viaWsl ? getWslDistro() : undefined,
+    // darwin ONLY: the in-process MLX backend loads its weights from a directory
+    // this variable names, and refuses BY NAME when it is unset ("no default and
+    // no search"). Host-native — there is no guest on a Mac, so nothing is
+    // translated. The served arm (Windows/WSL) never reads it: there the weights
+    // are the launch script's argument.
+    mlxModelDir: process.platform === 'darwin'
+      ? higgsMlxBaseDir(app.getPath('userData'))
+      : undefined,
   });
 }
 

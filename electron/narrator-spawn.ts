@@ -468,10 +468,17 @@ export function buildNarratorSpawn(req: NarratorSpawnRequest): NarratorSpawnPlan
  * say so.
  */
 export function narratorNativePython(engine: NarratorEngineId | undefined): PythonInvocation {
-  if (engine === 'orpheus' && process.platform === 'darwin') {
-    // Mac Orpheus is MLX, and MLX is not in the bundled env or in any vLLM env.
-    // Phase 6 ships a component installer for this; until then it is resolved
-    // where the installer will put it and refused BY NAME when it is not there.
+  // ONE MLX ENVIRONMENT, BOTH ENGINES, on the Mac.
+  //
+  // Orpheus has always resolved here: MLX is in neither the bundled env nor any
+  // vLLM env. Higgs joins it because its darwin backend is the same kind of
+  // thing — `engine/higgs/mlx_backend.py` is IN-PROCESS mlx-audio, not a server,
+  // so it needs mlx/mlx-lm/mlx-audio and nothing that a vLLM-Omni env would have.
+  //
+  // Higgs must NOT go to `getEnvPathForEngine('higgs')` here: that resolves the
+  // `higgs-env` component, which is the SERVED stack's environment and has no
+  // macOS build at all. It would refuse a Mac that is perfectly able to render.
+  if ((engine === 'orpheus' || engine === 'higgs') && process.platform === 'darwin') {
     return {
       command: getCondaPath(),
       args: ['run', '--no-capture-output', '-p', getNarratorMlxEnv(), 'python'],

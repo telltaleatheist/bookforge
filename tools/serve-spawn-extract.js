@@ -35,10 +35,15 @@
  */
 'use strict';
 const path = require('path');
+const fs = require('fs');
 const Module = require('module');
 
 const REPO = path.resolve(__dirname, '..');
 const DIST = path.join(REPO, 'dist', 'electron');
+
+/** The fixture's userData. A real directory, because the darwin Higgs row
+ *  reports whether the weights dir BookForge names actually exists. */
+const FAKE_USER_DATA = path.join(REPO, '.fake-userdata');
 
 const ARM = process.argv[2];
 if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
@@ -78,14 +83,21 @@ const GPU_UTIL = 0.62;
 // runs it. What the mac row proves is which variables that branch adds, not what
 // a real Mac's path separators look like.
 const FAKE = {
-  e2a: process.platform === 'win32' ? 'C:\\FAKE\\e2a' : '/fake/e2a',
+  // FIXED LITERALS, NEVER `process.platform`. These two used to branch on the real
+  // host - and worse, they are evaluated at module scope, BEFORE the arm's platform
+  // is forced below, so they read the machine whichever fixture was asked for. A Mac
+  // host therefore captured `/fake/e2a/python_env/bin/python` where the baseline
+  // holds `C:/FAKE/e2a/python_env/python.exe`, and the keeper reported
+  // "native-win's interpreter changed" on a tree where nothing had.
+  //
+  // A fixture's shape is not supposed to be the host's. Windows-shaped throughout
+  // (canon() normalises the separators), so every machine captures the same bytes.
+  e2a: 'C:\\FAKE\\e2a',
   wslE2a: '/home/fake/ebook2audiobook',
   wslConda: '/home/fake/anaconda3/bin/conda',
   orpheusEnv: 'orpheus_tts',
   distro: 'Ubuntu',
-  python: process.platform === 'win32'
-    ? 'C:\\FAKE\\e2a\\python_env\\python.exe'
-    : '/fake/e2a/python_env/bin/python',
+  python: 'C:\\FAKE\\e2a\\python_env\\python.exe',
   // The macOS arm resolves its own env rather than going through
   // getPythonInvocation, so it needs its own two fakes. Their APPEARANCE in a
   // capture is the point: it is how the mac row shows that Orpheus moved off the
@@ -107,7 +119,7 @@ require.cache['electron-stub'] = {
   filename: 'electron-stub',
   loaded: true,
   exports: {
-    app: { getAppPath: () => REPO, getPath: () => path.join(REPO, '.fake-userdata'), isPackaged: false },
+    app: { getAppPath: () => REPO, getPath: () => FAKE_USER_DATA, isPackaged: false },
     BrowserWindow: class {},
   },
 };
@@ -192,6 +204,15 @@ if (ENGINE === 'higgs') {
   const DEFAULT_MODEL = higgsModels.resolveHiggsModel('default');
   stub(higgsModels, 'listRenderableHiggsModels', () => [DEFAULT_MODEL]);
   stub(toolPaths, 'getWslHiggsCondaEnv', () => 'higgs3');
+  // A PROVISIONED MAC, as far as the weights go. The darwin backend loads from
+  // whatever `NARRATOR_HIGGS3_MLX_MODEL` names and refuses when it is unset, so the
+  // row is worth little unless the directory BookForge names is real - and "is it
+  // real" is only a question worth asking against a userData that has been set up.
+  //
+  // What that proves is the PATH DERIVATION (userData/runtime/higgs-models/base),
+  // not that a real Mac has 8.5 GB of weights sitting there; installing them is
+  // Phase 6's job.
+  fs.mkdirSync(path.join(FAKE_USER_DATA, 'runtime', 'higgs-models', 'base'), { recursive: true });
 }
 
 const pool = require(path.join(DIST, 'orpheus-worker-pool.js'));
@@ -306,6 +327,11 @@ if (plan.viaWsl) {
   out.cwd = '(process.cwd)';
 } else {
   out.args = plan.args.map(canon);
+  // Reported from the REAL path, before canon() turns it into a token: the
+  // keeper's question is whether the directory BookForge named is there.
+  if (plan.env.NARRATOR_HIGGS3_MLX_MODEL) {
+    out.mlxModelDirExists = fs.existsSync(plan.env.NARRATOR_HIGGS3_MLX_MODEL);
+  }
   out.env = Object.fromEntries(
     Object.entries(plan.env).sort(([a], [b]) => a.localeCompare(b)).map(([k, v]) => [k, canon(v)]),
   );
