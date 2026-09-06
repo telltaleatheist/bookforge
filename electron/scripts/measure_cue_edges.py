@@ -108,12 +108,28 @@ def rms_db(audio_path):
     return 20.0 * np.log10(np.maximum(r, 1e-9)), n
 
 
-def matched_flag(notes):
-    """direct | interpolated | None, read off the cue's `NOTE align` block."""
+def tag_value(notes, key):
+    """Read `key=value` out of a cue NOTE align block, or None."""
+    pat = key + '=([A-Za-z0-9_.+-]+)'
     for ln in notes or ():
-        m = re.search(r'\bmatched=(\w+)', ln)
+        m = re.search(pat, ln)
         if m: return m.group(1)
     return None
+
+
+def matched_flag(notes):
+    """direct | interpolated | None."""
+    return tag_value(notes, 'matched')
+
+
+def clock_flag(notes):
+    """wav2vec2 | whisper-revert | drift-fix | None - WHICH CLOCK placed the cue.
+
+    wav2vec2 is the CTC frame (~10 ms). The other two are substitutions back onto
+    the rough transcript word times (~+-0.5 s, and known to run late on some
+    narrators), made to rescue multi-second drift. Splitting on this answers
+    whether a coarser CLOCK, rather than the rough MODEL, carries the edge error."""
+    return tag_value(notes, 'time')
 
 
 def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start, keep=None):
@@ -231,6 +247,11 @@ def main():
     ap.add_argument('--by-match', action='store_true',
                     help='also score direct-only and interpolated-only subsets, '
                          'read from each cue NOTE align tag')
+    # Splits the DIRECT cues by which clock placed them. If whisper-revert /
+    # drift-fix carry the excess, the fault is the substitution, not the rough model.
+    ap.add_argument('--by-clock', action='store_true',
+                    help='also score direct cues split by NOTE align time= '
+                         '(wav2vec2 / whisper-revert / drift-fix)')
     ap.add_argument('--json', default='')
     a = ap.parse_args()
 
@@ -245,6 +266,19 @@ def main():
         texts[name] = [c[2] for c in cues]
         out[name] = measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start)
         out[name]['vtt'] = path
+        if a.by_clock:
+            mf = [matched_flag(c[3]) for c in cues]
+            cf = [clock_flag(c[3]) for c in cues]
+            byc = {}
+            for k in ('wav2vec2', 'whisper-revert', 'drift-fix'):
+                keep = [i for i in range(len(cues)) if mf[i] == 'direct' and cf[i] == k]
+                if keep:
+                    byc[k] = measure(cues, db, nframes, a.speech_db, a.onset_db,
+                                     a.tol, a.tol_start, keep=keep)
+            out[name]['byClock'] = byc
+            if not byc:
+                print('  [by-clock] this VTT carries no time= tags '
+                      '(written before the clock instrumentation); re-align to get them)')
         if a.by_match:
             flags = [matched_flag(c[3]) for c in cues]
             out[name]['byMatch'] = {
@@ -271,6 +305,14 @@ def main():
     print(f'{"metric":<{w}}' + ''.join(f'{c:>14}' for c in cols))
     for k in keys:
         print(f'{k:<{w}}' + ''.join(f'{str(out[c].get(k)):>14}' for c in cols))
+    if a.by_clock:
+        for name, _p in sets:
+            for kind, mm in (out[name].get('byClock') or {}).items():
+                print(f'  [{name}/direct/{kind}] cues={mm["cues"]} '
+                      f'midWordEdge={mm["midWordEdgePct"]}% '
+                      f'endInSpeech={mm["endInSpeechPct"]}% '
+                      f'endAtNext={mm["endAtNextOnsetPct"]}% '
+                      f'startNoLead={mm["startAtOwnOnsetPct"]}%')
     if a.by_match:
         for name, _p in sets:
             bm = out[name].get('byMatch') or {}

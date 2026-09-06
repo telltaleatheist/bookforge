@@ -68,7 +68,7 @@ speech, ends on the next onset, starts with no lead-in).
   S.json: ["sentence 1", "sentence 2", ...]  (epub sentences, in reading order)
      or: [{"text": "...", "kind": "prose"|"heading"}, ...]  — `kind` tags the cue
 """
-import argparse, bisect, json, os, re, subprocess, sys, tempfile, threading, time
+import argparse, bisect, hashlib, json, os, re, subprocess, sys, tempfile, threading, time
 import multiprocessing as mp
 
 DEVICE = "cpu"   # module default; the real device is resolved per-run and propagated to
@@ -602,7 +602,8 @@ def coarse_align(sents, W, failed_ranges=()):
         prev = rough[i]
     return rough, first_idx, last_idx, dropped, rate, direct
 
-def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
+def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5,
+                silences=None, sil_starts=None):
     """Post-alignment self-check against the rough transcript (audio truth).
 
     For each narrated sentence, hunt for a strong, UNAMBIGUOUS trigram-confirmed
@@ -628,6 +629,9 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         return m
 
     checked = 0; fixed = 0; ambiguous = 0
+    kept_ctc = 0          # CTC time contradicted but landing in a real pause
+    applied = []          # cues whose start was ACTUALLY replaced by the rough clock
+    suspect = set()       # contradicted AND mid-speech: refuse to guess
     abs_offsets = []; residual_offsets = []; offenders = []
     # per-sentence measured offset (PRE-fix), so every cue can carry its own
     # audio-truth agreement into the VTT NOTE and the report instead of the run
@@ -658,8 +662,22 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         if abs(off) > fix_thresh:
             offenders.append({"sentenceIndex": i, "cueTime": t0,
                               "measuredTime": measured, "offsetSeconds": off})
+            # SUBSTITUTION IS A DOWNGRADE (2026-09-06). `measured` comes from the
+            # rough transcript: +-0.5 s, and on this narrator it runs 0.3-1.0 s LATE,
+            # whereas the cue time it would replace is a wav2vec2 phoneme boundary
+            # good to ~10 ms. So substitute only when there is no silence map to
+            # check against. With a map: keep the CTC time when it lands in a real
+            # pause, else refuse to guess and mark the cue SUSPECT so a corpus cutter
+            # drops it - a confident-looking wrong time is worse than an admitted one.
+            if silences:
+                if onset_in_pause(t0, silences, sil_starts):
+                    kept_ctc += 1
+                else:
+                    suspect.add(i)
+                residual_offsets.append(abs(off))
+                continue
             sent_start[i] = measured
-            fixed += 1
+            fixed += 1; applied.append(i)
             # Post-correction this cue now sits AT `measured`, so its residual
             # offset vs the audio-truth word time is ~0. Uncorrected cues keep
             # their measured offset. Same checked set, no re-measurement — this
@@ -682,8 +700,13 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         "residualP95Abs": residual_offsets[int(0.95 * (nr - 1))] if nr else 0.0,
         "residualMaxAbs": residual_offsets[-1] if nr else 0.0,
         "fixThreshold": fix_thresh, "windowS": window,
+        "keptCtc": kept_ctc, "suspect": sorted(suspect),
         "worst": offenders[:10],
         "offsets": per_index,
+        # every corrected sentence, not just the worst 10 in `worst`: a corrected
+        # cue's start came from the ROUGH transcript clock, and a consumer needs to
+        # know that about its own cue.
+        "fixedIndices": applied,
     }
 
 
@@ -797,6 +820,47 @@ def detect_silences_autoeditor(src, thr, min_s, total_dur, exe="auto-editor"):
     return iv
 
 
+def align_fingerprint(sents, rough_model, chunk_s, lang):
+    """Identity of an align result: the exact sentence list plus every input that
+    changes the CTC output. A cache written under a different fingerprint is a
+    different alignment and must never be silently reused."""
+    h = hashlib.sha256()
+    h.update(("\u0000".join(sents)).encode("utf-8"))
+    h.update(f"|{rough_model}|{chunk_s}|{lang}".encode("utf-8"))
+    return h.hexdigest()
+
+
+def load_align_cache(path, fingerprint, n):
+    """Cached per-sentence CTC output -> (sent_start, sent_span), or None.
+
+    THE POINT: the align stage is the expensive one (a 7 h book is ~40 min of GPU),
+    but everything downstream of it - the whisper-authority rule, drift, cue edges,
+    the VTT - is pure arithmetic over its output. Caching that boundary makes
+    iterating on cue TIMING free, instead of re-transcribing and re-aligning a book
+    to change a threshold."""
+    try:
+        c = json.load(open(path, encoding="utf-8"))
+    except Exception as e:
+        log(f"align cache unreadable ({e}); realigning")
+        return None
+    if c.get("fingerprint") != fingerprint:
+        log("align cache is for a different sentence list / rough model / chunk size; realigning")
+        return None
+    ss, sp = c.get("sentStart"), c.get("sentSpan")
+    if not (isinstance(ss, list) and isinstance(sp, list) and len(ss) == n and len(sp) == n):
+        log(f"align cache has {len(ss) if isinstance(ss, list) else '?'} entries, expected {n}; realigning")
+        return None
+    return ss, sp
+
+
+def write_align_cache(path, fingerprint, sent_start, sent_span):
+    tmp = path + ".tmp"
+    json.dump({"fingerprint": fingerprint, "sentStart": sent_start, "sentSpan": sent_span},
+              open(tmp, "w", encoding="utf-8"))
+    os.replace(tmp, path)
+    log(f"wrote align cache: {path}")
+
+
 # Cue length bounds, module-level so the regression suite exercises THE SHIPPED
 # LOOP rather than a copy of it (an earlier suite reimplemented build_events in the
 # test file, so main()'s actual loop was never executed by any test).
@@ -879,6 +943,17 @@ def _pause_after(silences, sil_starts, word_end, limit):
             if z > a2: return (a2, z)
         k += 1
     return None
+
+
+def onset_in_pause(t, silences, sil_starts):
+    """True when time `t` sits at a real sentence boundary per the silence map:
+    a detected pause ends within PAUSE_TOUCH_S of it.
+
+    Uses the SAME rule build_events uses to place a cue start, so "the CTC time is
+    fine" here means exactly "the start snap would find a pause to sit in"."""
+    if not silences:
+        return False
+    return _pause_before(silences, sil_starts, t, -1e18) is not None
 
 
 def build_events(sent_start, narr, sents, kinds, dur, sent_span=None,
@@ -1219,6 +1294,10 @@ def main():
     # A PRE-COMPUTED map (autoeditor_silences.py's JSON, or a bare [[s, e], ...]).
     # Skips the scan entirely — the analysis of a 12 h book is worth caching.
     ap.add_argument("--silence-map", default="")
+    # Cache of the ALIGN stage's per-sentence CTC output. With this plus
+    # --rough-cache and --silence-map, a re-run skips transcribe AND alignment and
+    # only recomputes cue timing - seconds instead of tens of minutes per book.
+    ap.add_argument("--align-cache", default="")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
     args = ap.parse_args()
     if args.hole_min_s < 0:
@@ -1416,6 +1495,9 @@ def main():
                 f"and were truncated — coarse alignment is likely off: {ranges}")
         log(f"{len(chunks)} chunks")
 
+        align_fp = align_fingerprint(sents, args.rough_model, args.chunk_s, lang)
+        cached = (load_align_cache(args.align_cache, align_fp, N)
+                  if (args.align_cache and os.path.exists(args.align_cache)) else None)
         sent_start = list(rough)  # default to rough; refine with WhisperX
         # wav2vec2 span (last word end - first word start) per sentence, or None
         # when the aligner never confirmed the sentence. Held as a SPAN, not an
@@ -1433,6 +1515,11 @@ def main():
         # Pending is always derived from `completed`, so a chunk dispatched to a
         # terminated worker but never finished is simply re-run (idempotent —
         # sent_start assignment overwrites).
+        if cached is not None:
+            sent_start, sent_span = list(cached[0]), list(cached[1])
+            log(f"align cache hit: reusing CTC output for {sum(1 for v in sent_span if v is not None)} "
+                f"sentence(s); skipping the align pool")
+            completed = set(c[0] for c in chunks)
         while len(completed) < len(chunks):
             pending = [by_ci[ci] for ci in by_ci if ci not in completed]
             shrink = False
@@ -1470,6 +1557,8 @@ def main():
                             break
             if not shrink:
                 break
+        if args.align_cache and cached is None:
+            write_align_cache(args.align_cache, align_fp, sent_start, sent_span)
     finally:
         # The silence scan reads the wav — it must finish before the file goes.
         # BOUNDED: this finally also runs on the error path, and an ffmpeg wedged
@@ -1522,15 +1611,32 @@ def main():
     # whatever the align stage gave them — whisper had no word to anchor them.
     WV_TRUST_S = 1.0
     reverted = 0; max_revert = 0.0
+    reverted_idx = set()   # cues whose start now comes from the ROUGH clock
+    kept_ctc = 0           # contradicted, but CTC lands in a real pause -> trusted
+    suspect_idx = set()    # contradicted AND mid-speech -> not guessed, tagged
+    sil_starts = [a for a, _ in silences] if silences else None
     for i in narr:
         if matched_direct[i] and rough[i] is not None:
             d = abs(sent_start[i] - rough[i])
             if d > WV_TRUST_S:
-                sent_start[i] = rough[i]; reverted += 1; max_revert = max(max_revert, d)
-    if reverted:
-        log(f"whisper-authority: reverted {reverted} directly-matched cue(s) to the "
-            f"transcript word time where wav2vec2 drifted > {WV_TRUST_S:.1f}s "
-            f"(worst was {max_revert:.1f}s off)")
+                max_revert = max(max_revert, d)
+                # Same reasoning as drift_audit: the rough word time is the COARSER
+                # clock, so swapping it in for a CTC phoneme boundary trades a small
+                # error for a bigger one. Keep CTC when the silence map says it lands
+                # in a real pause; otherwise mark suspect rather than guess.
+                if silences and silence_ok:
+                    if onset_in_pause(sent_start[i], silences, sil_starts):
+                        kept_ctc += 1
+                    else:
+                        suspect_idx.add(i)
+                    continue
+                sent_start[i] = rough[i]; reverted += 1
+                reverted_idx.add(i)
+    if reverted or kept_ctc or suspect_idx:
+        log(f"whisper-authority: {kept_ctc} cue(s) kept their wav2vec2 time (it lands in "
+            f"a detected pause), {len(suspect_idx)} marked SUSPECT (contradicted and "
+            f"mid-speech), {reverted} substituted with the transcript word time (no "
+            f"silence map to check against); worst disagreement {max_revert:.1f}s")
 
     prev = None
     for i in narr:
@@ -1540,7 +1646,9 @@ def main():
     # Drift self-check: verify the final cue times against the rough transcript
     # and correct multi-second local drift it can unambiguously confirm (the
     # forced aligner can't recover when the true audio fell outside its chunk).
-    drift = drift_audit(sents, narr, sent_start, W, narr_rate)
+    drift = drift_audit(sents, narr, sent_start, W, narr_rate,
+                        silences=(silences if silence_ok else None), sil_starts=sil_starts)
+    suspect_idx |= set(drift.get("suspect", ()))
     if drift["checked"]:
         log(f"drift check: {drift['checked']} cue(s) verified against the rough transcript; "
             f"|offset| median {drift['medianAbs']:.2f}s p95 {drift['p95Abs']:.2f}s max {drift['maxAbs']:.2f}s; "
@@ -1571,18 +1679,35 @@ def main():
     # latter. `offsetSeconds` is drift_audit's PRE-fix measured disagreement with
     # the rough transcript for this cue (null = the audit could not confirm it).
     drift_offsets = drift.get("offsets", {})
+    # WHICH CLOCK placed this cue. wav2vec2 = the CTC frame (fine, ~10 ms).
+    # whisper-revert / drift-fix = the ROUGH transcript word time, good to only
+    # ~+-0.5 s. Both substitutions exist to rescue multi-second drift, but they hand
+    # the cue a COARSER clock, so anything measuring edge quality must be able to
+    # separate them from cues wav2vec2 placed.
+    drift_fixed = set(drift.get("fixedIndices", ()))
     edge_counts = {"startWord": 0, "startSilence": 0,
                    "endWord": 0, "endSilence": 0, "endNextOnset": 0}
-    interpolated_cues = 0
+    interpolated_cues = 0; suspect_cues = 0
+    time_sources = {"wav2vec2": 0, "whisper-revert": 0, "drift-fix": 0}
     for ev in events:
         m = ev[4]; i = m["sentenceIndex"]
-        m["matched"] = "direct" if matched_direct[i] else "interpolated"
+        m["matched"] = ("suspect" if i in suspect_idx
+                        else "direct" if matched_direct[i] else "interpolated")
+        m["timeSource"] = ("drift-fix" if i in drift_fixed
+                           else "whisper-revert" if i in reverted_idx
+                           else "wav2vec2")
         if m["matched"] == "interpolated": interpolated_cues += 1
+        if m["matched"] == "suspect": suspect_cues += 1
+        time_sources[m["timeSource"]] = time_sources.get(m["timeSource"], 0) + 1
         off = drift_offsets.get(i)
         m["offsetSeconds"] = round(off, 3) if off is not None else None
         edge_counts["startSilence" if m["startSource"] == "silence" else "startWord"] += 1
         edge_counts["endSilence" if m["endSource"] == "silence"
                     else ("endWord" if m["endSource"] == "word" else "endNextOnset")] += 1
+    log(f"cue confidence: {interpolated_cues} interpolated, {suspect_cues} suspect "
+        f"(both are cues a corpus cutter should drop)")
+    log(f"cue clocks: wav2vec2={time_sources['wav2vec2']} "
+        f"whisper-revert={time_sources['whisper-revert']} drift-fix={time_sources['drift-fix']}")
     log(f"cue edges: end word={edge_counts['endWord']} silence={edge_counts['endSilence']} "
         f"next-onset={edge_counts['endNextOnset']}; start word={edge_counts['startWord']} "
         f"silence={edge_counts['startSilence']}; {interpolated_cues} interpolated cue(s)")
@@ -1706,8 +1831,9 @@ def main():
     # timestamps and payload text are byte-identical to a run without NOTEs.
     def _align_note(m):
         off = m.get("offsetSeconds")
-        return (f"NOTE align matched={m['matched']} start={m['startSource']} "
-                f"end={m['endSource']} offset={'none' if off is None else format(off, '+.3f')}")
+        return (f"NOTE align matched={m['matched']} time={m['timeSource']} "
+                f"start={m['startSource']} end={m['endSource']} "
+                f"offset={'none' if off is None else format(off, '+.3f')}")
     tagged = [(c[0], c[1], c[2], "heading" if c[3] == "heading" else None, _align_note(c[4]))
               for c in events] \
            + [(s, e, txt, "asr-fallback", None) for s, e, txt in fallback]
@@ -1816,7 +1942,9 @@ def main():
                 "headingCues": heading_cues,
                 "contiguousCues": bool(args.contiguous_cues),
                 "interpolatedCues": interpolated_cues,
+                "suspectCues": suspect_cues,
                 "cueEdgeSources": edge_counts,
+                "cueTimeSources": time_sources,
                 # null, NOT 0, when there was no silence map to measure against —
                 # "nobody looked" and "looked and found nothing" are different facts.
                 "lowSpeechCues": low_speech_total,
@@ -1834,6 +1962,7 @@ def main():
                 "offsetSeconds": c[4]["offsetSeconds"],
                 "startSource": c[4]["startSource"],
                 "endSource": c[4]["endSource"],
+                "timeSource": c[4]["timeSource"],
                 "kind": c[3],
             } for c in events],
             # Cues whose audio is mostly silence — measured against the silence map,
@@ -1912,7 +2041,9 @@ def main():
                                  "totalBoundaries": snap_stats["considered"],
                                  "contiguousCues": bool(args.contiguous_cues),
                                  "interpolatedCues": interpolated_cues,
+                                 "suspectCues": suspect_cues,
                                  "cueEdgeSources": edge_counts,
+                                 "cueTimeSources": time_sources,
                                  "headingCues": heading_cues}))
 
 if __name__ == "__main__":

@@ -315,6 +315,7 @@ def main():
         rep_p = os.path.join(a.out_dir, stem + ".report.json")
         edg_p = os.path.join(a.out_dir, stem + ".edges.json")
         rough_p = os.path.join(a.out_dir, stem + ".roughcache.json")
+        alignc_p = os.path.join(a.out_dir, stem + ".aligncache.json")
         sil_p = os.path.join(a.out_dir, stem + ".silences.json")
 
         sents = [s for i in mapping[stem] for s in chapters[i]["sentences"]]
@@ -326,6 +327,7 @@ def main():
         else:
             cmd = [a.python, ALIGNER, "--audio", audio, "--sentences", sents_p,
                    "--out", vtt_p, "--report", rep_p, "--rough-cache", rough_p,
+                   "--align-cache", alignc_p,
                    "--device", a.device, "--workers", str(workers), "--lang", a.lang,
                    "--rough-model", a.rough_model]
             if a.reuse_silences:
