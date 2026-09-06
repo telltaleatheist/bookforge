@@ -2236,7 +2236,50 @@ export async function startReassembly(
         // it remains if export never reached the move).
         let sealVttSource: string | undefined;
         if (outputPath) {
-          const vttSearchDirs = [stagingDir, config.processDir].filter((d): d is string => !!d);
+          /*
+           * THE SENTENCE TRANSCRIPT IS THE ONE PLAYERS GET. Owen, 2026-09-06:
+           * "the VTT file shows chunk start position, but chunks are huge.
+           * theyre whole paragraphs now ... so we have a sentence-by-sentence
+           * VTT file." narrator already writes one: `<stem>.sentences.vtt` in
+           * the PROCESS dir — the Align row's, with measured word timings over
+           * the book-exact text (and proportional, NOTE-marked estimates for the
+           * chunks it could not place), or assembly's all-estimated one when no
+           * Align row ran. Every reader of the sidecar — the three players,
+           * the analysis canonical parser, training's slicer (which already
+           * assumes sentence cues) — skips NOTE blocks. So when that file
+           * exists it is what gets embedded and bound; the chunk-level
+           * `<stem>.vtt` still rides promotion into output as the loose file it
+           * always was, and the retake door keeps reading it from the process
+           * dir. Exactly one such file is expected; two is a session that was
+           * assembled under two stems, and that is refused by name rather than
+           * guessed between.
+           */
+          if (config.processDir) {
+            let sentenceVtts: string[] = [];
+            try {
+              sentenceVtts = fs.readdirSync(config.processDir)
+                .filter(f => f.toLowerCase().endsWith('.sentences.vtt') && !f.startsWith('._'));
+            } catch (scanErr) {
+              console.warn(`[REASSEMBLY] Could not scan ${config.processDir} for the sentence transcript:`, scanErr);
+            }
+            if (sentenceVtts.length > 1) {
+              throw new Error(
+                `The session at ${config.processDir} holds ${sentenceVtts.length} sentence transcripts ` +
+                `(${sentenceVtts.join(', ')}); one book has one. Remove the stale one before assembling.`,
+              );
+            }
+            if (sentenceVtts.length === 1) {
+              sealVttSource = path.join(config.processDir, sentenceVtts[0]);
+              console.log('[REASSEMBLY] Binding the SENTENCE transcript to the audiobook:', sealVttSource);
+            } else {
+              console.warn(
+                '[REASSEMBLY] No sentence transcript (<stem>.sentences.vtt) in the process dir; ' +
+                'the chunk-level transcript will be bound instead. narrator writes the sentence file at ' +
+                'align or at assembly, so this is a session assembled by something else (e2a).',
+              );
+            }
+          }
+          const vttSearchDirs = sealVttSource ? [] : [stagingDir, config.processDir].filter((d): d is string => !!d);
           for (const dir of vttSearchDirs) {
             let found: string[];
             try {
