@@ -227,7 +227,6 @@ import {
   gpuOwnershipOverrideNote,
   ALLOW_SHARED_GPU_ENV,
 } from '../shared/tts/gpu-ownership';
-import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
 import { coverageReportPath } from './coverage-align-job';
 
 /**
@@ -5534,16 +5533,17 @@ async function runAssembly(session: ConversionSession): Promise<string> {
     '--tts_engine', narratorEngineId(narratorEngineFor(settings)),
     '--assemble_only',  // Skip TTS, just combine existing sentence audio files
     '--no_split',       // Don't split into multiple parts - create single file
-    // THE COVERAGE REPORT, for an engine whose policy is ENFORCED.
+    // THE COVERAGE REPORT — WHENEVER THE FILE IS THERE, whatever the engine.
     //
-    // `assemble/coverage_gate.py` refuses a Higgs v3 book unless a report says
-    // every chunk was measured, because v3 has no duration guard worth the name
-    // — a chunk scored a duration ratio of 0.99 while dropping 22 % of its text.
-    // The Align step wrote it beside the session; this is the flag that hands it
-    // over. For Orpheus nothing is passed: its policy is not enforced, the gate
-    // is a no-op either way, and naming a file no Align step produced would be a
-    // refusal for a book that has no guard.
-    ...(coverageEnforcedFor(settings.ttsEngine)
+    // `assemble/coverage_gate.py` no longer refuses a book on it (Owen,
+    // 2026-09-05: "assembly will never function, ever, if we expect it to come
+    // out the other side flawless"). It READS it out — every chunk whose audio
+    // did not say its text, the words it dropped, the retake command — and then
+    // assembles. So the question is no longer "is this engine guarded" but "did
+    // anybody measure this book": a report that exists gets read, and an Orpheus
+    // book somebody chose to align is read out too. Absent, assembly says so and
+    // estimates the sentence cues.
+    ...(fsSync.existsSync(coverageReportPath(prepInfo.processDir))
       ? ['--coverage_report', coverageReportPath(prepInfo.processDir)]
       : []),
     // Per-voice post-render filter (Orpheus voices only) — applied at the final encode.

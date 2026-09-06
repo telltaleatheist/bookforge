@@ -14,16 +14,30 @@ One pass over the manifest's chunks:
 
 WHAT COMES OUT. `<stem>.sentences.vtt` (additive - the chunk-level `<stem>.vtt`
 is untouched and stays what training and the bridges read) and `coverage.json`,
-which `assemble()` consults for an engine whose policy is enforced.
+which `assemble()` reports on. BOTH ARE WRITTEN EVERY TIME.
 
-A CHUNK THAT FAILS TO ALIGN STOPS THE RUN, naming the chunk (Owen's ruling,
-2026-09-05). No second attempt, no other backend, and no partial VTT written on
-top of a failure. `continue_on_error=True` (`--continue-on-error`) is the
-deliberate opposite for a sweep: it records every failure in the report's
-`errors` with its index and the aligner's own message and finishes the pass, so
-an operator auditing a 1,400-chunk book sees all of them once instead of one per
-run. Neither mode invents anything for a failed chunk - it contributes no
-sentence cues either way.
+THE RUN ALWAYS AUDITS THE WHOLE BOOK. Owen's ruling, 2026-09-05:
+
+    there will always be truncations or errors of some sort. thats the nature of
+    tts. nothing is going to come out perfect. we try our best to detect and
+    reduce the number of errors but assembly will never function, ever, if we
+    expect it to come out the other side flawless. we need to base assembly on
+    the expected text and the actual real length of the audio.
+
+So a chunk the aligner cannot place no longer stops the pass and no longer costs
+the book its transcript. It is RECORDED in the report's `errors` with its index
+and the aligner's own message, and its sentences are cued by
+`assemble/sentence_vtt.proportional_cues` - the expected text spread over the
+chunk's real audio span, every cue MARKED as an estimate in the VTT itself. Same
+for a chunk that aligned but whose measured cues had to be refused (a sentence
+with no placed word): the refusal is named under stage `cues` and the chunk is
+estimated. Nothing is invented silently; the report names the chunk and the file
+says the cue is a guess.
+
+An earlier design stopped at the first failure and wrote nothing, with
+`--continue-on-error` as the opt-in sweep. That made a 50-chunk book with 5
+unplaceable chunks unassemblable, which is the thing the ruling forbids. The
+sweep is now the only behaviour and the flag is a no-op that says so.
 """
 
 from __future__ import annotations
@@ -33,6 +47,8 @@ import os
 from typing import Optional, Sequence
 
 from ..assemble.engine_profiles import profile_for
+from ..assemble.sentence_vtt import (SENTENCE_VTT_SUFFIX, SentenceVttError,
+                                     count_estimated, proportional_cues)
 from ..assemble.vtt import chunk_spans
 from ..manifest import Manifest
 from ..text.paragraph_packer import spoken
@@ -45,9 +61,11 @@ from .sentences import sentence_cues, write_sentence_vtt
 #: What the report is called when the caller does not name one, and what
 #: `assemble()` looks for beside a session. A constant, not a search.
 DEFAULT_REPORT_NAME = 'coverage.json'
-#: The sentence VTT's suffix. `<stem>.vtt` is the chunk-level file; this sits
-#: beside it and never replaces it.
-SENTENCE_VTT_SUFFIX = '.sentences.vtt'
+#: The sentence VTT's suffix - re-exported from `assemble/sentence_vtt.py`, where
+#: it has to live because assembly writes the same file when no report exists and
+#: assembly may not import this package. `cli.py` and the tests import it here.
+__all__ = ['DEFAULT_REPORT_NAME', 'SENTENCE_VTT_SUFFIX', 'align_session',
+           'engine_id_of', 'write_outputs']
 
 
 def engine_id_of(manifest: Manifest) -> str:
@@ -67,7 +85,6 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                   python_exe: Optional[str] = None,
                   ffmpeg: Optional[str] = None,
                   indices: Optional[Sequence[int]] = None,
-                  continue_on_error: bool = False,
                   progress=None) -> dict:
     """Align a rendered session. Returns `(document, cues)` as a dict.
 
@@ -111,28 +128,20 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
 
     log(f'[align] {len(jobs)} chunk(s) to align, {len(skipped)} marker-only '
         f'chunk(s) skipped; engine {engine}, backend {backend}, '
-        f'device {device}, enforced={policy.enforced}')
+        f'device {device}, audited={policy.audited}')
     if not jobs:
         raise AlignerError('every selected chunk is marker-only; there is '
                            'nothing to align')
 
-    results = _run(jobs, python_exe, backend, log,
-                   continue_on_error=continue_on_error)
+    results = _run(jobs, python_exe, backend, log)
 
     cues = []
     coverages = []
     errors = []
     for (chunk, start, end), result in zip(aligned_spans, results):
         if not result['ok']:
-            if not continue_on_error:
-                raise AlignerError(
-                    f'chunk {chunk.index} failed to align, so the run stops '
-                    f'here and writes nothing: {result["error"]}\n'
-                    f'Pass --continue-on-error to audit the whole book and '
-                    f'collect every failure in the report instead.')
-            errors.append({'index': chunk.index, 'stage': 'align',
-                           'error': result['error']})
-            log(f'[align] chunk {chunk.index} FAILED to align: {result["error"]}')
+            _estimate(chunk, start, end, stage='align',
+                      message=result['error'], cues=cues, errors=errors, log=log)
             continue
         alignment = alignment_from_dict(result['alignment'])
         coverages.append(evaluate_chunk(alignment, policy, index=chunk.index))
@@ -142,14 +151,15 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
                 chunk_end_s=end, is_heading=chunk.kind == 'heading',
                 text=chunk.text))
         except AlignerError as refused:
-            if not continue_on_error:
-                raise AlignerError(
-                    f'chunk {chunk.index} produced no sentence cues, so the run '
-                    f'stops here and writes nothing: {refused}\n'
-                    f'Pass --continue-on-error to audit the whole book instead.')
-            errors.append({'index': chunk.index, 'stage': 'cues',
-                           'error': str(refused)})
-            log(f'[align] chunk {chunk.index} produced no sentence cues: {refused}')
+            _estimate(chunk, start, end, stage='cues', message=str(refused),
+                      cues=cues, errors=errors, log=log)
+
+    # The cues come out in the order the chunks were walked, which is manifest
+    # order for a whole-book pass - but `--indices` walks a subset and an
+    # estimated chunk contributes its cues from a different branch, so the sort
+    # is what guarantees `build_sentence_vtt`'s monotonicity check is a check
+    # rather than a coin toss.
+    cues.sort(key=lambda cue: (cue.start_s, cue.chunk_index, cue.sentence_index))
 
     document = coverage_document(
         coverages, engine_id=engine, policy=policy, backend=backend,
@@ -162,7 +172,40 @@ def align_session(manifest: Manifest, *, backend: str = DEFAULT_BACKEND,
         f'{summary["chunksFailed"]} failed coverage, {summary["errors"]} error(s); '
         f'median ratio {summary["alignedRatioMedian"]}, '
         f'median {summary["secondsPerChunkMedian"]}s/chunk')
+    estimated = count_estimated(cues)
+    if estimated:
+        log(f'[align] {estimated} of {len(cues)} sentence cue(s) are ESTIMATES '
+            f'- expected text over the chunk\'s real audio, marked in the VTT')
     return {'document': document, 'cues': cues}
+
+
+def _estimate(chunk, start: float, end: float, *, stage: str, message: str,
+              cues: list, errors: list, log) -> None:
+    """Record one chunk's failure BY NAME and cue it from its own audio anyway.
+
+    The ruling of 2026-09-05 made concrete. Two things happen and both are
+    visible: the report gains an `errors` row naming the chunk, the stage and
+    the message the aligner gave, and the transcript gains cues that say - in
+    the file - that they are proportional estimates rather than measurements.
+
+    A failure to lay even the estimate (a chunk whose manifest span is zero, so
+    there is no audio to spread anything over) is recorded as its own `estimate`
+    stage rather than swallowed: that is a broken manifest, not a bad render.
+    """
+    errors.append({'index': chunk.index, 'stage': stage, 'error': message})
+    log(f'[align] chunk {chunk.index} FAILED at {stage}: {message}')
+    try:
+        estimated = proportional_cues(
+            chunk_index=chunk.index, chunk_start_s=start, chunk_end_s=end,
+            text=chunk.text, is_heading=chunk.kind == 'heading')
+    except SentenceVttError as refused:
+        errors.append({'index': chunk.index, 'stage': 'estimate',
+                       'error': str(refused)})
+        log(f'[align] chunk {chunk.index} could not even be estimated: {refused}')
+        return
+    cues.extend(estimated)
+    log(f'[align] chunk {chunk.index}: {len(estimated)} ESTIMATED cue(s) over '
+        f'its {end - start:.2f}s of audio')
 
 
 #: How often the pass says how far it has got, in chunks. One line per chunk is
@@ -187,15 +230,14 @@ def _progress_reporter(log):
     return report
 
 
-def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
+def _run(jobs, python_exe, backend, log):
     """Align every job, here or in another interpreter.
 
-    IN PROCESS, a failure stops the loop AT THAT CHUNK when the caller is not
-    sweeping (review finding 10): the contract already held - `align_session`
-    raised afterwards and nothing was written - but a chunk-3 failure on a
-    1,400-chunk book still cost the whole pass first. The out-of-process worker
-    is a batch protocol and finishes its list either way; `align_session` still
-    raises on the first bad result there.
+    EVERY JOB, EITHER WAY. The out-of-process worker was always a batch protocol
+    that finished its list; the in-process loop used to stop at the first bad
+    chunk, which is the half of the old stop-on-failure design that lived here.
+    Both now audit the whole book: a failed chunk is a RESULT with `ok: False`,
+    and `align_session` turns it into a named error plus estimated cues.
     """
     progress = _progress_reporter(log)
     if python_exe:
@@ -228,9 +270,6 @@ def _run(jobs, python_exe, backend, log, continue_on_error: bool = False):
         except AlignerError as refused:
             out.append({'ok': False, 'index': job['index'],
                         'error': str(refused)})
-            if not continue_on_error:
-                progress(len(out), len(jobs))
-                return out
         progress(len(out), len(jobs))
     return out
 
@@ -243,10 +282,22 @@ def write_outputs(result: dict, *, vtt_path: Optional[str],
     if vtt_path:
         cues = result['cues']
         if not cues:
+            # Not "some chunks failed" - a failed chunk is ESTIMATED now, so an
+            # empty cue list means not one chunk in the book had a span to lay
+            # even an estimate over. That is a broken manifest.
             raise AlignerError(
-                f'no chunk produced a sentence cue, so {vtt_path} would be an '
-                f'empty transcript; see the report for why')
-        write_sentence_vtt(cues, vtt_path)
+                f'no chunk produced a sentence cue, not even an estimated one, '
+                f'so {vtt_path} would be an empty transcript; see the report\'s '
+                f'"errors" for why')
+        try:
+            write_sentence_vtt(cues, vtt_path)
+        except SentenceVttError as bad:
+            # The writer lives in `assemble/` (assembly writes this file too) and
+            # raises its own type. `align`'s callers - the CLI, the queue's align
+            # job - catch AlignerError and nothing else, so the boundary is
+            # translated HERE rather than left to leak a traceback out of a door
+            # whose whole contract is "refusals are named".
+            raise AlignerError(str(bad)) from bad
         written['vtt'] = vtt_path
         log(f'[align] {len(cues)} sentence cue(s) -> {vtt_path}')
     if report_path:

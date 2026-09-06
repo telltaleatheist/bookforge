@@ -465,11 +465,11 @@ def cmd_assemble(args):
     without paying for a nine-hour render first — and, because the denoised set
     is durable, a second run over the same session reuses it and costs minutes.
 
-    NOTE for Higgs: narrator's assembly door takes a `--coverage_report` that its
-    coverage gate REQUIRES for an engine guarded by post-render forced alignment
-    (Higgs v3). Nothing in BookForge builds that flag yet — no TypeScript spawns
-    `narrator align` — so this command is Orpheus-only for the same reason the
-    app is. See docs/CLI_PARITY_AUDIT.md, row "align".
+    NOTE on coverage: narrator's assembly door takes a `--coverage_report`, and
+    `reassembly-bridge` passes it whenever `narrator align` has left one beside
+    the session. It is an AUDIT and never blocks (Owen, 2026-09-05): assembly
+    logs every chunk whose audio did not say its text plus the retake command,
+    and assembles the book. Run `--align` first if you want the measurement.
     """
     return _audiobook_spawn(args, assemble_only=True)
 

@@ -90,12 +90,11 @@ class TableTest(unittest.TestCase):
             'naming a fine-tuned adapter or a set of reference clips. e2a never '
             'had a Higgs engine, so it never had this flag.',
         '--coverage_report':
-            'The report `narrator align --report` writes. An engine guarded by '
-            'post-render forced alignment (higgs-v3) refuses to assemble '
-            'without one, and this door had no way to supply it, so a v3 book '
-            'through --assemble_only would have read as "assembly is broken" '
-            'rather than "run align first". e2a had no such guard and so no '
-            'such flag. A no-op for orpheus.',
+            'The report `narrator align --report` writes. An AUDIT of a '
+            'rendered book: assembly reads it, logs every chunk whose audio did '
+            'not say its text together with the retake command, and assembles '
+            'the book anyway (Owen, 2026-09-05). e2a had no post-render forced '
+            'alignment and so no such flag.',
     }
 
     def test_the_table_adds_no_flag_e2a_never_had_except_the_declared_ones(self):

@@ -151,11 +151,14 @@ python cli/bookforge-tts.py --assemble --project "<dir>" --dry-run
 here: nothing is generated and nothing is narrated, so a value that changes nothing
 about the run is an error rather than a silent no-op.
 
-**Higgs.** narrator's assembly gate is `enforced` for `higgs-v3` and wants the
-`--coverage_report` that `narrator align` writes. `reassembly-bridge` passes it
-itself for an enforced engine, reading the path from the same `coverageReportPath()`
-the align step writes to — so the recipe is `--align` first, then `--assemble`, and
-no extra flag. `--engine` is **not read** on this door at all: the assembly resolves
+**Higgs.** `higgs-v3` books are `audited` — force-aligned after the render — and
+assembly reads the `--coverage_report` that `narrator align` writes. It does not
+REQUIRE one: assembly logs whatever the audit found (failed chunks, dropped text,
+the retake command) and assembles the book either way, and with no report at all
+it says so and estimates the sentence cues. `reassembly-bridge` passes the flag
+whenever the report FILE exists, reading the path from the same
+`coverageReportPath()` the align step writes to — so the recipe is `--align`
+first, then `--assemble`, and no extra flag. `--engine` is **not read** on this door at all: the assembly resolves
 the engine from the session's own `session-state.json` and refuses one whose two
 records disagree.
 
@@ -168,9 +171,12 @@ re-derive an hour of roformer nobody asked for or silently assemble the raw set.
 
 The queue row between render and assembly. It force-aligns every rendered chunk
 and writes `<processDir>/coverage.json`: text with no aligned audio is a
-truncation, audio with no text is an insertion. `assemble/coverage_gate.py`
-**refuses** a book from an engine whose policy is enforced (`higgs-v3`) when no
-report is there — Higgs v3 has no duration guard worth the name.
+truncation, audio with no text is an insertion. It audits the WHOLE book and
+always writes both outputs — a chunk it cannot place is recorded by name and its
+sentences are cued proportionally over the chunk's real audio, marked as
+estimates in the VTT. It exits 0 whenever the run happened.
+`assemble/coverage_gate.py` **reports** what the file says and refuses nothing on
+it (Owen, 2026-09-05); a missing report does not block assembly either.
 
 It drives `coverage-align-job.runCoverageAlign`, the one function
 `electron/queue-steps/align.ts` calls. **Nothing about the spawn lives in the

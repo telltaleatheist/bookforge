@@ -1,10 +1,15 @@
 /**
  * align — force-align the rendered chunks and write the coverage report.
  *
- * The row that was missing. `assemble/coverage_gate.py` refuses an ENFORCED
- * engine's book without a report — Higgs v3 has no duration guard worth the
- * name — and until this step existed nothing in BookForge produced one, so every
- * app-driven v3 book ended at assembly quoting a command line by hand.
+ * The row that measures the render. Higgs v3 has no duration guard worth the
+ * name — a chunk scored a duration ratio of 0.99 while dropping 22 % of its
+ * text — so without this nobody knows which chunks came out wrong.
+ *
+ * IT REPORTS AND SUCCEEDS. Owen, 2026-09-05: an imperfect render is the nature
+ * of TTS and must not stop an assembly. So a pass that found fourteen doubtful
+ * chunks and five it could not place is a SUCCESSFUL row that says so — counts
+ * and retake list on the card and in the artifact detail — and the assembly runs
+ * behind it. Only a run that could not happen fails the row.
  *
  * ── It reads a SESSION and it writes a SESSION ──────────────────────────────
  *
@@ -131,9 +136,26 @@ export const alignStep: StepModule = {
       const result = await runCoverageAlign(
         ctx.stepId, { processDir, language }, queueMainWindow(),
       );
+      /*
+       * THE ROW FAILS ONLY WHEN THE RUN COULD NOT HAPPEN — no session, no
+       * aligner, a dead worker. A pass that measured every chunk and doubted
+       * fourteen of them did its job; failing on that skipped the assembly and
+       * left an operator with 36 minutes of good audio and no audiobook, which
+       * is the thing Owen's 2026-09-05 ruling forbids.
+       */
       if (!result.success) {
         throw new Error(result.error || 'The alignment failed and gave no reason.');
       }
+      /*
+       * WHAT IT FOUND, SAID ONCE ON THE ROW. The card's live message is the
+       * bar's; this is the sentence that stays after the row completes, and it
+       * is the same sentence the assembly repeats on the finished book.
+       */
+      const retake = result.retakeIndices ?? [];
+      const summary = `${result.chunksAligned ?? 0} aligned, ${result.chunksFailed ?? 0} failed `
+        + `coverage, ${result.chunksErrored ?? 0} could not be placed`
+        + (retake.length > 0 ? ` — retake: ${retake.join(',')}` : '');
+      ctx.report({ percent: 100, message: summary });
       /*
        * THE PARENT'S ARTIFACT, PASSED THROUGH — this step changes no audio.
        *
@@ -156,6 +178,9 @@ export const alignStep: StepModule = {
           ...(ctx.input.detail ?? {}),
           coverageReport: result.reportPath,
           chunksAligned: result.chunksAligned,
+          chunksFailedCoverage: result.chunksFailed,
+          chunksNotPlaced: result.chunksErrored,
+          retakeIndices: retake,
         },
       };
     } finally {

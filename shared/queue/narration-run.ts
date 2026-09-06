@@ -51,7 +51,7 @@
  */
 
 import type { ArtifactRef } from './engine-types';
-import { alignerMissingRefusal, coverageEnforcedFor } from './coverage-policy';
+import { alignerMissingRefusal, coverageAuditedFor } from './coverage-policy';
 
 /** The RVC pass, when the user asked for one. */
 export interface NarrationRvcSettings {
@@ -678,7 +678,7 @@ export function narrationAlignStep(
   settings: NarrationRunSettings,
 ): NarrationStepPlan | null {
   requireNarrationRun(book, settings);
-  if (!coverageEnforcedFor(settings.ttsEngine)) return null;
+  if (!coverageAuditedFor(settings.ttsEngine)) return null;
   return {
     type: 'align',
     bfpPath: book.projectDir,
@@ -712,7 +712,7 @@ export function requireCoverageAligner(
   settings: NarrationRunSettings,
   installed: boolean,
 ): void {
-  if (!coverageEnforcedFor(settings.ttsEngine)) return;
+  if (!coverageAuditedFor(settings.ttsEngine)) return;
   if (installed) return;
   throw new Error(alignerMissingRefusal(settings.ttsEngine));
 }

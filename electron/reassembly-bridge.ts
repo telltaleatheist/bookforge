@@ -25,8 +25,7 @@ import { regenerateBoundSidecars } from './sidecar-migration';
 import { resolveClosedSession } from './chapter-closer';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
-import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
-import { coverageReportPath } from './coverage-align-job';
+import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 
 /**
  * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
@@ -1531,6 +1530,25 @@ export async function startReassembly(
   }
 
 
+  /*
+   * THE AUDIT, REPEATED ON THE FINISHED BOOK.
+   *
+   * The Align row already said this on its own card, hours and several steps
+   * ago. An operator looking at a completed audiobook is looking at THIS row, so
+   * the retake list is said once more here — Owen's ruling assembles the book
+   * whatever the audit found, which only works if what it found stays visible.
+   *
+   * IN THE BRIDGE, not only in the queue step: the CLI's `--assemble` door comes
+   * through here too, and a summary that only existed in `queue-steps/` would be
+   * a thing the app says and the command line does not. The queue CARD gets the
+   * same sentence from `queue-steps/reassembly.ts`, which reports it once the
+   * row is done rather than into a live progress bar it would reset.
+   */
+  const audit = summarizeCoverageReport(coverageReportPath(config.processDir));
+  if (audit && audit.retakeIndices.length > 0) {
+    console.log(`[REASSEMBLY] Coverage audit: ${audit.line}`);
+  }
+
   return new Promise((resolve) => {
     // ASSEMBLY IS NATIVE. The `sessionInWsl` branch that stood here ran the whole
     // thing back through `wsl.exe` whenever the session lived on ext4, because
@@ -1573,16 +1591,16 @@ export async function startReassembly(
       '--tts_engine', asmEngine,
       '--assemble_only',
       '--no_split',
-      // THE COVERAGE REPORT, for an engine whose policy is ENFORCED.
+      // THE COVERAGE REPORT — WHENEVER THE FILE IS THERE, whatever the engine.
       //
-      // Keyed off `asmEngine`, which is the SESSION's own record of what
-      // rendered it (`narratorEngineForSession`) rather than anything this row
-      // carries — a reassembly row can outlive the dialog that composed it, and
-      // the only trustworthy answer to "is this book guarded" is what the
-      // session says rendered it. The Align step wrote the report beside the
-      // session; this hands it over. For Orpheus nothing is passed: the gate is
-      // a no-op there whether it is named or not.
-      ...(coverageEnforcedFor(asmEngine)
+      // It used to be keyed off the session's engine, because the report was a
+      // GATE an enforced engine had to satisfy. It is an AUDIT now (Owen,
+      // 2026-09-05): assembly logs every chunk whose audio did not say its text
+      // together with the retake command and assembles the book either way. So
+      // the only question left is whether a report EXISTS — an engine that does
+      // not queue an Align row never has one, and an Orpheus book somebody chose
+      // to align does, and both answers come from the disk rather than a table.
+      ...(fs.existsSync(coverageReportPath(config.processDir))
         ? ['--coverage_report', coverageReportPath(config.processDir)]
         : []),
       // When an RVC pass ran, assemble the ENHANCED sentence set from the tmp dir

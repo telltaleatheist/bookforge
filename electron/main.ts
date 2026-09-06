@@ -112,9 +112,10 @@ import {
 // it, preload carries it and the renderer opens on it.
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
-// Which engines' books are refused at assembly without a coverage report — the
-// one table, shared with the run description and both assembly spawns.
-import { coverageEnforcedFor } from '../shared/queue/coverage-policy';
+// Which engines' books are force-aligned after every render — the one table,
+// shared with the run description and the narration dialog. (The assembly spawns
+// no longer ask: they pass the report whenever the file exists.)
+import { coverageAuditedFor } from '../shared/queue/coverage-policy';
 import { setNarratorScratchRoot, narratorScratchRoot } from './narrator-paths';
 import { getOrpheusBatchConfig, setOrpheusMaxBatch } from './orpheus-batch';
 import { getOrpheusMemoryTier, setOrpheusMemoryTier, orpheusMemoryProfile, resolveConcreteOrpheusTier, fitOrpheusTier, getOrpheusAutoCeiling, type OrpheusMemoryTier } from './orpheus-memory';
@@ -2033,10 +2034,10 @@ function coverageGuardedRun(narrate: QueueStep): boolean {
   if (typeof engine !== 'string' || engine.trim() === '') {
     throw new Error(
       'That narration does not record which engine rendered it, so BookForge cannot say whether '
-      + 'the book has to be forced-aligned before it is assembled. Assemble it from BookForge\'s '
+      + 'the book is force-aligned after the render. Assemble it from BookForge\'s '
       + 'own narration dialog, where the engine is known.');
   }
-  return coverageEnforcedFor(engine);
+  return coverageAuditedFor(engine);
 }
 
 function chainCoverageAlign(job: QueueJob, narrate: QueueStep): string {

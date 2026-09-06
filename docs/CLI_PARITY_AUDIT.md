@@ -84,7 +84,7 @@ refactors, and Owen's brief for this pass was explicitly not to refactor.
 | 2.4b | Assemble a session from ANY engine | `reassembly-bridge.ts:456 narratorEngineForSession` reads it from `session-state.json` | `--assemble` reads no `--engine` | **Yes** | **PARITY** — the engine is a render choice; the assembly resolves it from the session and refuses one whose two records disagree |
 | 2.5 | Stop an assembly | `reassembly-bridge.ts:2633 stopReassembly` | NONE | — | **MISSING** — the adapter's SIGINT tears down the render, not the assembly. Mechanical, but it needs the adapter to hold the running step id; noted rather than half-done. |
 | 2.6 | Save session metadata / cover | `reassembly-bridge.ts:869 saveSessionMetadata` | NONE | — | **MISSING** (headless-capable) |
-| 2.7 | Higgs assembly with the coverage gate satisfied | `reassembly-bridge.ts:1585` passes `--coverage_report` for an enforced engine | `--assemble` (automatic), after `--align` | **Yes** | **PARITY** — see §3 |
+| 2.7 | Higgs assembly with the coverage report read out | `reassembly-bridge.ts` passes `--coverage_report` whenever the report file exists | `--assemble` (automatic), after `--align` | **Yes** | **PARITY** — see §3 |
 
 ## 3. Align (post-render forced alignment)
 
@@ -93,7 +93,7 @@ refactors, and Owen's brief for this pass was explicitly not to refactor.
 | 3.1 | Align a rendered session, write `coverage.json` (queue row `align`) | `electron/queue-steps/align.ts:run` → `coverage-align-job.ts:141 runCoverageAlign` | **`--align` (new)** | **Yes** | **PARITY** |
 | 3.2 | Stop an alignment | `coverage-align-job.ts:335 stopCoverageAlign` | `--align` SIGINT | **Yes** | **PARITY** |
 | 3.3 | Refuse a guarded run whose aligner is missing, before queueing | `coverage-align-job.ts:130 coverageAlignPython` | `--align` (checked before the job starts) | **Yes** | **PARITY** |
-| 3.4 | Pass the report to assembly for an ENFORCED engine | `reassembly-bridge.ts:1585` — `coverageEnforcedFor(asmEngine)` → `--coverage_report coverageReportPath(processDir)` | automatic in `--assemble` / `--audiobook` | **Yes** | **PARITY** |
+| 3.4 | Pass the report to assembly whenever one EXISTS | `reassembly-bridge.ts` — `fs.existsSync(coverageReportPath(processDir))` → `--coverage_report coverageReportPath(processDir)` | automatic in `--assemble` / `--audiobook` | **Yes** | **PARITY** |
 
 **This was MISSING when the audit was written, and it was recorded as a gap
 rather than closed.** `narrator align` was finished on the Python side but

@@ -69,13 +69,19 @@ class CoveragePolicy:
     tail puts 94-100 % there. So the score is the discriminator and the RUN
     LENGTH is what keeps the two apart.
 
-    enforced             True when a failed chunk REFUSES assembly. Higgs v3 has
-                         no duration guard worth the name, so this is its only
-                         proof the book was read. Orpheus keeps its chars/sec
-                         guard and its resplit ladder, so coverage there is
-                         measured and REPORTED and never blocks - turning it on
-                         for Orpheus would re-litigate a guard that already
-                         works, on a corpus nobody has swept.
+    audited              True when this engine's books are force-aligned after
+                         the render as a matter of course - BookForge queues an
+                         Align row for them and the report is expected beside the
+                         session. It was called `enforced` and it meant "a failed
+                         chunk REFUSES assembly"; nothing refuses assembly any
+                         more (Owen, 2026-09-05: "assembly will never function,
+                         ever, if we expect it to come out the other side
+                         flawless"), so what is left of the flag is whether the
+                         book is MEASURED. Higgs v3 has no duration guard worth
+                         the name, so it is audited. Orpheus keeps its chars/sec
+                         guard and its resplit ladder, so an alignment there is
+                         something an operator asks for rather than something
+                         every book pays for.
     min_word_score       below this an aligned word is not credible.
     min_aligned_ratio    the fraction of a chunk's words that must clear it.
     min_uncredible_words how many words must be non-credible before the RATIO
@@ -100,7 +106,7 @@ class CoveragePolicy:
                          counts. A pause is silent; an inserted word is not.
     """
 
-    enforced: bool
+    audited: bool
     min_word_score: float
     min_aligned_ratio: float
     min_uncredible_words: int
@@ -110,11 +116,11 @@ class CoveragePolicy:
     max_inserted_speech_fraction: float
 
 
-#: Orpheus: MEASURED AND REPORTED, never blocking. The thresholds are the same
-#: measured numbers, so the report reads the same on both engines and a sweep
-#: can compare them.
+#: Orpheus: not audited by default - measured only when somebody asks for it.
+#: The thresholds are the same measured numbers, so a report reads the same on
+#: both engines and a sweep can compare them.
 ORPHEUS_COVERAGE = CoveragePolicy(
-    enforced=False,
+    audited=False,
     min_word_score=0.4,
     min_aligned_ratio=0.90,
     min_uncredible_words=3,
@@ -124,10 +130,10 @@ ORPHEUS_COVERAGE = CoveragePolicy(
     max_inserted_speech_fraction=0.35,
 )
 
-#: Higgs v3: the guard. `StopPolicy.coverage_check == 'asr'` made concrete - an
-#: ALIGNMENT check, not a transcription diff.
+#: Higgs v3: audited every time. `StopPolicy.coverage_check == 'asr'` made
+#: concrete - an ALIGNMENT check, not a transcription diff.
 HIGGS_V3_COVERAGE = CoveragePolicy(
-    enforced=True,
+    audited=True,
     min_word_score=0.4,
     min_aligned_ratio=0.90,
     min_uncredible_words=3,
@@ -152,7 +158,7 @@ class EngineProfile:
     #: Fade applied to the tail of every chunk, in milliseconds.
     fade_out_ms: float
     #: What a post-render forced alignment must show before a chunk counts as
-    #: spoken, and whether a failure refuses the book.
+    #: spoken, and whether this engine's books are aligned as a matter of course.
     coverage: CoveragePolicy = ORPHEUS_COVERAGE
 
     @property

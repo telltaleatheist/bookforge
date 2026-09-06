@@ -22,9 +22,15 @@ judges against a policy it is handed.
 WHAT ASSEMBLY SEES. Nothing of this module: it reads the JSON `coverage_document`
 writes. The aligner needs torch and the whisperx env; assembly runs on a CPU env
 with neither, spawned by the reassembly bridge with `--tts_engine xtts`. So the
-gate is: `narrator align --report coverage.json` first, `narrator assemble
---coverage-report coverage.json` second, and for an engine whose policy is
-`enforced` a MISSING report is a refusal, not a pass.
+order is: `narrator align --report coverage.json` first, `narrator assemble
+--coverage-report coverage.json` second.
+
+THE REPORT DOES NOT BLOCK (Owen, 2026-09-05). It is an AUDIT: assembly reads it,
+logs every failing chunk with the text the audio did not say and the retake
+command, and then assembles the book. A missing report does not block either.
+The refusals that remain are integrity ones - a report about a different book,
+a different engine or an older render is refused BY NAME, because believing it
+would be reporting on a book nobody measured.
 """
 
 from __future__ import annotations
@@ -33,7 +39,7 @@ from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
 from ..assemble.coverage_gate import (SUPPORTED_REPORT_VERSION,
-                                      CoverageRefusal, refuse_on_failures)
+                                      CoverageRefusal, report_failures)
 from ..assemble.engine_profiles import CoveragePolicy
 from .aligner import Alignment, AudioSpan, TextSpan
 
@@ -44,7 +50,7 @@ from .aligner import Alignment, AudioSpan, TextSpan
 REPORT_VERSION = SUPPORTED_REPORT_VERSION
 
 __all__ = ['ChunkCoverage', 'CoverageRefusal', 'REPORT_VERSION',
-           'coverage_document', 'evaluate_chunk', 'refuse_on_failures']
+           'coverage_document', 'evaluate_chunk', 'report_failures']
 
 
 @dataclass(frozen=True)
@@ -169,8 +175,14 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
 
     `skipped` is the marker-only chunks - `[break]` rows that speak nothing, so
     there is no alignment to make. They are listed rather than dropped, because
-    assembly checks that ALIGNED + SKIPPED accounts for every chunk: a chunk
-    nobody looked at must never pass for a chunk that was measured.
+    assembly REPORTS that ALIGNED + SKIPPED + ERRORS accounts for every chunk: a
+    chunk nobody looked at must never pass for a chunk that was measured, and
+    saying which is which is what makes the audit worth reading.
+
+    `errorIndices` sits beside `failedIndices` because the two are the operator's
+    RETAKE LIST and they are different failures - one chunk said the wrong words,
+    the other could not be placed at all - and BookForge's Align row quotes both
+    on the queue card.
     """
     failed = [c for c in coverages if c.failed]
     ratios = sorted(c.aligned_ratio for c in coverages)
@@ -183,7 +195,11 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
         'sessionId': session_id,
         'processDir': process_dir,
         'chunksInManifest': chunks_in_manifest,
-        'enforced': policy.enforced,
+        # `audited`, not `enforced`: the report is an audit and no longer blocks
+        # anything (Owen, 2026-09-05). Nothing READS this key any more - the
+        # gate reports on every report it is given - so it is here for the
+        # operator and for a reader of an old report, which still loads.
+        'audited': policy.audited,
         'policy': {
             'minWordScore': policy.min_word_score,
             'minAlignedRatio': policy.min_aligned_ratio,
@@ -205,6 +221,7 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
                                       if seconds else None),
             'secondsPerChunkMax': round(seconds[-1], 3) if seconds else None,
             'errors': len(errors or ()),
+            'errorIndices': sorted({e['index'] for e in (errors or ())}),
         },
         'chunks': [c.as_dict() for c in coverages],
         'errors': list(errors or ()),
@@ -212,6 +229,6 @@ def coverage_document(coverages: Sequence[ChunkCoverage], *, engine_id: str,
     }
 
 
-# `refuse_on_failures` is imported from `assemble/coverage_gate.py` and
-# re-exported above: the refusal is ASSEMBLY's, and it must be reachable from an
+# `report_failures` is imported from `assemble/coverage_gate.py` and re-exported
+# above: the reporting is ASSEMBLY's, and it must be reachable from an
 # interpreter with no torch in it.
