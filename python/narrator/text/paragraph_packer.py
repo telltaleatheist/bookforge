@@ -277,6 +277,22 @@ def is_label_line(text: str) -> bool:
     return not _HAS_LOWER_RE.search(text)
 
 
+def continues_lowercase(blocks: Sequence[Block], index: int) -> bool:
+    """True when the block after `index` is a PARAGRAPH whose first letter is
+    lower-case: the continuation of a line a page break cut, not a new
+    paragraph. Whitespace and opening quotes/brackets are looked past."""
+    if index + 1 >= len(blocks):
+        return False
+    nxt = blocks[index + 1]
+    if nxt.kind != PARAGRAPH:
+        return False
+    match = _FIRST_LETTER_RE.search(nxt.text or '')
+    return bool(match) and match.group(0).islower()
+
+
+_FIRST_LETTER_RE = re.compile(r'\p{L}')
+
+
 def join_provisional_fragments(blocks: Sequence[Block]) -> list:
     """TIER 2. Join every PARAGRAPH block that does not end a thought to the
     block that follows it, before any floor or wall logic sees them.
@@ -299,7 +315,7 @@ def join_provisional_fragments(blocks: Sequence[Block]) -> list:
     """
     out: list = []
     pending: list = []
-    for block in blocks:
+    for index, block in enumerate(blocks):
         if pending:
             merged_text = ' '.join(p.text for p in pending) + ' ' + block.text
             block = Block(text=merged_text, kind=pending[0].kind,
@@ -307,6 +323,16 @@ def join_provisional_fragments(blocks: Sequence[Block]) -> list:
             pending = []
         if (block.kind == PARAGRAPH and block.text and not ends_a_thought(block.text)
                 and not is_label_line(block.text)):
+            pending.append(block)
+            continue
+        if (block.kind == ITEM and block.text and not ends_a_thought(block.text)
+                and not is_label_line(block.text)
+                and continues_lowercase(blocks, index)):
+            # A BULLET CUT BY A PAGE BREAK. An item is a complete thought by
+            # Owen's refinement even when it is one word - but a paragraph that
+            # BEGINS WITH A LOWER-CASE LETTER is not a paragraph start, it is the
+            # rest of the line above it. Only that tell joins an item; an item
+            # with no terminal mark followed by a real paragraph stands alone.
             pending.append(block)
             continue
         if block.kind == PARAGRAPH and block.text and is_label_line(block.text) \
@@ -559,6 +585,18 @@ def _chunk_kind(kind: str) -> str:
     return {HEADING: 'heading', ITEM: 'item', TABLE: 'item'}.get(kind, 'prose')
 
 
+def _closed_block_text(block: Block) -> str:
+    """An item's text with the period it needs so TTS stops at its end - added
+    HERE, when the item becomes a chunk, and not at extraction, so that
+    `join_provisional_fragments` can still see a bullet a page break cut in
+    two. Headings and table rows get theirs at extraction (they are never
+    fragments); a label line got its own in the join."""
+    text = block.text.strip()
+    if block.kind == ITEM and text and not ends_a_thought(text):
+        return text + '.'
+    return text
+
+
 def pack_paragraphs(blocks: Sequence[Block], budget, *,
                     floor_chars: int = DEFAULT_FLOOR_CHARS,
                     walls: Iterable[str] = DEFAULT_WALLS,
@@ -693,7 +731,7 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
                 marker = _marker_for(block.kind)
                 lead = sml_token('break') if lead_break else ''
                 report.chunks.append(Chunk(
-                    text=f'{lead}{marker}{block.text.strip()}',
+                    text=f'{lead}{marker}{_closed_block_text(block)}',
                     kind=_chunk_kind(block.kind), blocks=(block.index,)))
             continue
         run.append(block)
@@ -855,8 +893,16 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 inner = [c for c in child.children
                          if isinstance(c, Tag) and c.name.lower() in ('ul', 'ol')]
                 if text:
-                    if not ends_a_thought(text):
-                        text += '.'
+                    # NO PERIOD HERE. An item is recorded as the book set it;
+                    # the period an item needs so TTS stops is added where the
+                    # item becomes a chunk (`pack_paragraphs`), AFTER the
+                    # fragment join has had its look. Measured 2026-09-05
+                    # (Working Towards the Fuhrer, PDF-derived): a bullet cut
+                    # by a page break arrived as the item "... the 'creature of
+                    # his party', who" and the paragraph "became a despot ...";
+                    # the period appended here made "who." end a thought, the
+                    # join never saw a fragment, and the narrator read a
+                    # sentence that stops at "who".
                     blocks.append(Block(text=text, kind=ITEM, doc=doc_name,
                                         index=counter))
                     counter += 1

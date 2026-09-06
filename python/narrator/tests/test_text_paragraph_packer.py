@@ -646,7 +646,31 @@ class ExtractBlocksTest(unittest.TestCase):
             '"Why Me?"',
             'six. He is a Muslim. (By the way, Muslims are not very tolerant to Christianity.)',
             'ten. Dan Quayle wants to become a regular on the "Murphy Brown Show."',
-            'a bare item.',
+            'a bare item',      # an item's period is added when it becomes a chunk
+        ])
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        self.assertEqual([c.text for c in report.chunks if c.kind == 'item'][-1].split(']')[-1],
+                         'a bare item.')
+
+    def test_a_bullet_cut_by_a_page_break_rejoins_its_lower_case_continuation(self):
+        """Measured 2026-09-05 (Working Towards the Fuhrer, PDF-derived): the
+        list item "... the 'creature of his party', who" on page 3 continued as
+        the paragraph "became a despot ..." on page 4. A paragraph that begins
+        with a lower-case letter is the rest of the line above it."""
+        blocks = [
+            pp.Block(text="Stalin came up through the party, the 'creature of his party', who",
+                     kind=pp.ITEM, doc='d', index=0),
+            pp.Block(text='became a despot by controlling the power at the heart of the party.',
+                     kind=pp.PARAGRAPH, doc='d', index=1),
+            pp.Block(text='fourteen', kind=pp.ITEM, doc='d', index=2),
+            pp.Block(text='More prose.', kind=pp.PARAGRAPH, doc='d', index=3),
+        ]
+        joined = pp.join_provisional_fragments(blocks)
+        self.assertEqual([(b.kind, b.text) for b in joined], [
+            (pp.ITEM, "Stalin came up through the party, the 'creature of his party', who "
+                      'became a despot by controlling the power at the heart of the party.'),
+            (pp.ITEM, 'fourteen'),          # a real one-word item stands, uppercase follows
+            (pp.PARAGRAPH, 'More prose.'),
         ])
 
     def test_a_decorative_paragraph_with_no_word_in_it_is_a_scene_break(self):
