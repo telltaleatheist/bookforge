@@ -207,7 +207,23 @@ function translateModelDirForSpawn(dir: string): string {
 const STREAM_BATCH_CEILING_DEFAULT = 16;
 let streamBatchCeilingCache: number | null = null;
 
+// HIGGS STREAMS IN FIXED GROUPS OF 4 — Owen's ruling of 2026-09-06 ("it's
+// significantly faster than Orpheus, so I don't know that we need the batching
+// ladder; set batching to 4 and render it in groups"). This ONE number is the
+// scheduler's in-flight depth (getMaxConcurrentSentences), the pool's dispatch
+// width (batchWidth = min(STREAM_RAMP_WIDTH, ceiling)), the serve door's
+// NARRATOR_HIGGS3_MLX_BATCH (the read-ahead group width in
+// HiggsV3MlxEngine.generate_batch_stream) and the `deviceWorkers` the extension is
+// shown — so a Higgs Listen session renders the row being waited on solo and
+// everything behind it in groups of at most 4. Not tier-derived: a Higgs row at
+// the deathstalker 900-char target is ~3,300 positions deep, and the memory
+// budgeter would narrow a wide ask anyway; 4 is a latency choice, not a memory one.
+export const HIGGS_STREAM_BATCH_WIDTH = 4;
+
 function streamBatchCeiling(): number {
+  // Per ENGINE, before the cache: the selection can change at runtime (Settings,
+  // the extension's config.set), and the cached number below is Orpheus's tier.
+  if (serveEngine() === 'higgs') return HIGGS_STREAM_BATCH_WIDTH;
   if (streamBatchCeilingCache !== null) return streamBatchCeilingCache;
   let ceiling = STREAM_BATCH_CEILING_DEFAULT;
   if (process.platform === 'darwin') {
@@ -374,6 +390,13 @@ interface Worker {
 let worker: Worker | null = null;
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
+// THE VOICE THE LIVE HIGGS WORKER WAS SPAWNED ON — the id whose voice document
+// buildSpawnPlan wrote — or null when no Higgs worker is up. This, not
+// `currentVoice`, is what decides whether a Higgs load needs a RESTART: a v3
+// server is started on its voice, so a worker spawned on deathstalker can load
+// deathstalker in place, whether or not that load has happened yet. Cleared with
+// the rest of the engine facts in forgetLoadedEngine().
+let spawnedHiggsVoice: string | null = null;
 let lastVoice: string | null = null;
 let detectedDevice: 'cuda' | 'mlx' | 'cpu' | null = null;
 
@@ -473,6 +496,7 @@ function noteLoadedEngine(response: OrpheusResponse): void {
 
 /** The loaded engine died with its process; the next load re-reports all of it. */
 function forgetLoadedEngine(): void {
+  spawnedHiggsVoice = null;
   loadedEngineId = null;
   loadedSampleRate = null;
   loadedPads = null;
@@ -701,6 +725,30 @@ export function setServeEngineProbe(probe: () => StreamEngineId): void {
   serveEngineProbe = probe;
 }
 
+/**
+ * The voice the user PERSISTED for the active engine (tts-engine.json's
+ * `voices[engine]`), or null when none is recorded. Injected for the same reason
+ * as the engine probe: the file is streaming-engine.ts's, and this module cannot
+ * import it back.
+ *
+ * WHY THE POOL NEEDS IT: a Higgs server is STARTED ON its voice, and every start
+ * path calls `startSession()` BEFORE `loadVoice(getDefaultStreamVoice())`
+ * (tts-api-server's ensureEngine, the reader bridge, the render service). With
+ * nothing loaded yet, `getDefaultVoice()` answered the catalog's FIRST renderable
+ * voice — "default", the zero-shot base — so a cold Listen start loaded the base
+ * checkpoint, was then told the user wanted deathstalker, and restarted to load
+ * that one: two checkpoint loads in series in front of the first sentence, on
+ * every cold start, for a voice nobody asked for. Measured 2026-09-06 on the Mac
+ * (smoke-serve-spawn --real: spawn wrote listen-default-default.json, the
+ * deathstalker load was refused by name, as it should be). Optional: a pool
+ * driven without it (the keeper suite) keeps the catalog-first answer.
+ */
+let persistedVoiceProbe: (() => string | null) | null = null;
+
+export function setPersistedVoiceProbe(probe: () => string | null): void {
+  persistedVoiceProbe = probe;
+}
+
 /** The engine a spawn/load is FOR. */
 function serveEngine(): StreamEngineId {
   if (!serveEngineProbe) {
@@ -771,6 +819,7 @@ export function buildSpawnPlan(gpuUtil?: number): SpawnPlan {
   // spawn time because a v3 server is STARTED ON its voice — see loadVoice.
   if (engine === 'higgs') {
     const voice = getDefaultVoice();
+    spawnedHiggsVoice = higgsPreflight(voice).id;
     return buildNarratorSpawn({
       engine: 'higgs',
       phase: 'serve',
@@ -1275,16 +1324,34 @@ export async function loadVoice(
   if (serveEngine() === 'higgs') {
     const wantHiggs = higgsPreflight(voice || getDefaultVoice()).id;
     if (currentVoice === wantHiggs) return { success: true };
-    console.log(
-      `[Orpheus Pool] Higgs voice change '${currentVoice ?? '(none)'}' → '${wantHiggs}': `
-      + 'restarting the worker (a v3 server is started ON its voice and cannot swap one in place)',
-    );
-    // Set BEFORE the restart: buildSpawnPlan reads getDefaultVoice() to decide
-    // which voice document to write, and currentVoice is about to be cleared.
-    lastVoice = wantHiggs;
-    await endSession({ keepServiceArmed: true });
-    const restarted = await startSession();
-    if (!restarted.success) return { success: false, error: restarted.error };
+    // A LOAD OF THIS VOICE ALREADY IN FLIGHT IS JOINED, before anything below can
+    // tear the worker down. The inFlightLoad check further down came too late for
+    // Higgs: each of the extension's prefetch speaks arriving during the ~40 s
+    // cold load reached this branch, saw no voice loaded, and RESTARTED the worker
+    // that was loading it — killing the load, failing every queued sentence with
+    // "Model not loaded", and spawning again for the next prefetch to kill
+    // (2026-09-06, the first Higgs Listen on the Mac: a whole article failed in
+    // one second).
+    if (inFlightLoad && inFlightLoad.voice === wantHiggs) {
+      console.log(`[Orpheus Pool] Higgs voice '${wantHiggs}' is already loading — joining that load`);
+      return inFlightLoad.promise;
+    }
+    // A RESTART ONLY WHEN THE WORKER WAS SPAWNED ON A DIFFERENT VOICE. The old
+    // test was `currentVoice !== wantHiggs`, which is also true of a freshly
+    // spawned worker that has not loaded anything yet — so every cold start
+    // restarted its own worker once before loading (two spawns, one wasted).
+    if (spawnedHiggsVoice !== wantHiggs) {
+      console.log(
+        `[Orpheus Pool] Higgs voice change '${currentVoice ?? '(none)'}' → '${wantHiggs}': `
+        + 'restarting the worker (a v3 server is started ON its voice and cannot swap one in place)',
+      );
+      // Set BEFORE the restart: buildSpawnPlan reads getDefaultVoice() to decide
+      // which voice document to write, and currentVoice is about to be cleared.
+      lastVoice = wantHiggs;
+      await endSession({ keepServiceArmed: true });
+      const restarted = await startSession();
+      if (!restarted.success) return { success: false, error: restarted.error };
+    }
   }
 
   const v = serveEngine() === 'higgs'
@@ -1966,18 +2033,30 @@ export function getDefaultVoice(): string {
   if (currentVoice) return currentVoice;
   if (lastVoice) return lastVoice;
   if (serveEngine() === 'higgs') {
-    // The catalog's first renderable voice. NOT a hard-coded id: which Higgs
-    // voices exist is a per-machine fact (an artifact is installed or it is not),
-    // and naming one that is not there would be refused at the spawn — after the
-    // picker had already offered it.
-    const first = getAvailableVoices()[0];
-    if (!first) {
+    const available = getAvailableVoices();
+    if (available.length === 0) {
       throw new Error(
         'No Higgs voice is installed on this machine, so there is nothing to stream. '
         + 'Install one in Settings → Higgs, or switch the streaming engine to Orpheus.',
       );
     }
-    return first;
+    // THE PERSISTED VOICE FIRST — the one the spawn is about to be started on, so
+    // the server that comes up is the one `loadVoice` will then ask for (see
+    // setPersistedVoiceProbe). Same rule as streaming-engine's
+    // getDefaultStreamVoice: a persisted voice that is not renderable here is
+    // passed over, and the catalog's first renderable voice stands in. NOT a
+    // hard-coded id: which Higgs voices exist is a per-machine fact (an artifact
+    // is installed or it is not), and naming one that is not there would be
+    // refused at the spawn — after the picker had already offered it.
+    const persisted = persistedVoiceProbe?.() ?? null;
+    if (persisted && available.includes(persisted)) return persisted;
+    if (persisted) {
+      console.warn(
+        `[Orpheus Pool] Persisted Higgs voice '${persisted}' is not renderable on this `
+        + `machine (renderable: ${available.join(', ')}); starting on '${available[0]}'`,
+      );
+    }
+    return available[0];
   }
   return ORPHEUS_DEFAULT_VOICE;
 }

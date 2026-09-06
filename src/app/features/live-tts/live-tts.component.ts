@@ -7,7 +7,7 @@ import {
   DesktopSelectOption,
 } from '../../creamsicle-desktop';
 import { DialogService } from '../../creamsicle-desktop/services/dialog.service';
-import { ElectronService, StreamSchedulerEvent } from '../../core/services/electron.service';
+import { ElectronService, StreamEngineName, StreamSchedulerEvent } from '../../core/services/electron.service';
 import { WorkerConfigService } from '../../core/services/worker-config.service';
 import { TtsServerService } from '../../core/services/tts-server.service';
 import { PlayTextService } from '../audiobook/services/play-text.service';
@@ -346,7 +346,7 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
   private captureSampleRate = 24000;
   private captureText = '';
   private captureSettings: PlaySettings = { voice: '', speed: 1 };
-  private captureEngine: 'orpheus' = 'orpheus';
+  private captureEngine: StreamEngineName = 'orpheus';
 
   ngOnInit(): void {
     this.unsubscribeStreamEvents = this.electron.onStreamEvent(e => this.handleStreamEvent(e));
@@ -360,7 +360,7 @@ export class LiveTtsComponent implements OnInit, OnDestroy {
   }
 
   // ── Settings handlers (persist through WorkerConfigService, engine-aware) ──
-  setEngine(engine: 'orpheus'): void { void this.workerCfg.setEngine(engine); }
+  setEngine(engine: StreamEngineName): void { void this.workerCfg.setEngine(engine); }
   onVoiceChange(voice: string): void { void this.workerCfg.setVoice(voice); }
   onDeviceChange(pref: string): void { void this.workerCfg.setDevicePref(pref as 'auto' | 'cpu' | 'gpu' | 'mps'); }
 

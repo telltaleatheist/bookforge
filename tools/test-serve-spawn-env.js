@@ -655,14 +655,20 @@ check('higgs/native-mac: the serve door carries the batch ceiling and its budget
     assert.ok(e[name], `the darwin Higgs serve door sets no ${name}`);
     assert.ok(Number(e[name]) > 0, `${name} is not a positive number: ${e[name]}`);
   }
-  // The fixture pins orpheusMemoryProfile to batchSize 16 / mlxMemBudgetGB 24,
-  // and streamBatchCeiling() floors the width at 16 — so this row states the
-  // POOL's ceiling, which is the number the Orpheus row states as
-  // ORPHEUS_STREAM_BATCH. Asserted against that row rather than against a
-  // literal, so a tier change moves both or fails here.
-  assert.strictEqual(e.NARRATOR_HIGGS3_MLX_BATCH,
+  // HIGGS IS NOT ORPHEUS'S TIER. Since 2026-09-06 the pool's streamBatchCeiling()
+  // answers HIGGS_STREAM_BATCH_WIDTH (4) for a Higgs serve — Owen's ruling: Higgs
+  // renders fast enough that the Listen path runs fixed groups of 4 instead of
+  // the Orpheus ladder. The fixture still pins the Orpheus tier at batchSize 16 /
+  // mlxMemBudgetGB 24, and the Orpheus row states THAT as ORPHEUS_STREAM_BATCH;
+  // this row must state the Higgs width instead, and the two must differ — a
+  // Higgs row carrying Orpheus's number is the per-engine branch dropped.
+  // A literal, because the plan arrives from the extractor child and the pool's
+  // export is not in the capture; it is the same 4 the snapshot pins.
+  assert.strictEqual(e.NARRATOR_HIGGS3_MLX_BATCH, '4',
+    'the Higgs serve width is not the pool\'s HIGGS_STREAM_BATCH_WIDTH (4)');
+  assert.notStrictEqual(e.NARRATOR_HIGGS3_MLX_BATCH,
     envOf(now['native-mac']).ORPHEUS_STREAM_BATCH,
-    'the Higgs serve ceiling is not the pool ceiling Orpheus gets');
+    'the Higgs serve row carries Orpheus\'s tier ceiling — the per-engine ceiling branch is gone');
   assert.strictEqual(e.NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB,
     envOf(now['native-mac']).ORPHEUS_MLX_MEM_BUDGET_GB,
     'the two MLX engines are budgeting different amounts of ONE memory pool');

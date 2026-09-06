@@ -9,6 +9,7 @@
  */
 
 import { PlaySettings } from '../audiobook/models/play.types';
+import type { StreamEngineName } from '../../core/services/electron.service';
 
 /** One rendered take kept in the session take list. */
 export interface LiveTake {
@@ -22,7 +23,7 @@ export interface LiveTake {
   sampleRate: number;
   durationSec: number;
   /** Snapshot of the engine/voice/settings used, for A/B comparison. */
-  engine: 'orpheus';
+  engine: StreamEngineName;
   settings: PlaySettings;
   createdAt: number;
 }
