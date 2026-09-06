@@ -492,23 +492,35 @@ check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () =
   }
 });
 
-check("deathstalker's sampling MIRRORS its checkpoint dir's generation_config.json", () => {
-  // The directory is the authority: vllm-omni resolves sampling from the model
-  // directory and OpenAICreateSpeechRequest carries no sampling fields, so
-  // nothing per-request can correct it. This block is a mirror kept so a reader
-  // can see what the voice samples at without opening a directory inside WSL —
-  // and a mirror nobody checks is how two copies of a number diverge. These are
-  // the values read out of
+check("deathstalker's served sampling: top_p/top_k MIRROR its checkpoint dir's file, temperature is the 0.7 ruling", () => {
+  // top_p/top_k are the values read out of
   // /home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080/generation_config.json
-  // on 2026-09-05 and recorded in docs/HIGGS_ENGINE.md. (Its sibling ckpt-480
-  // dir holds the same four numbers — both were written from the same recorded
-  // per-run override — so this check does not distinguish the directories; the
-  // path assertion above is what does.)
+  // on 2026-09-05 and recorded in docs/HIGGS_ENGINE.md — a mirror kept so a
+  // reader can see them without opening a directory inside WSL, and a mirror
+  // nobody checks is how two copies of a number diverge. The TEMPERATURE is not
+  // a mirror: since 2026-09-06 the block rides in the voice document and the
+  // served builder hands it to the config (e31c7db5), so 0.7 is what renders,
+  // over the file's 1.0 — Owen's rule for every Higgs voice (next check).
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.deepStrictEqual(m.backends.served.sampling,
-    { temperature: 1, topP: 0.95, topK: 50 });
+    { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.ok(m.backends.served._samplingNote,
-    'nothing records that the directory, not this block, is the authority');
+    'nothing records that the directory, not this block, is the authority for top_p/top_k');
+});
+
+check("EVERY Higgs voice samples at temperature 0.7 on BOTH arms - Owen's rule, not a per-voice tweak", () => {
+  // "i dont want it set to 1.0. it babbles when its at 1.0" (2026-09-06). A
+  // block carrying 1.0 would render babble under a catalog that looks tuned;
+  // each block's note must carry the ruling so the number is never read as a
+  // mirror of the checkpoint file it deviates from.
+  for (const m of higgs.listHiggsModels()) {
+    for (const [arm, block] of Object.entries(m.backends)) {
+      assert.strictEqual(block.sampling && block.sampling.temperature, 0.7,
+        `${m.id}/${arm}: temperature ${JSON.stringify(block.sampling)} is not the 0.7 ruling`);
+      assert.match(block._samplingNote || '', /0\.7 is OWEN'S RULING/,
+        `${m.id}/${arm}: the note does not state the 0.7 ruling`);
+    }
+  }
 });
 
 check('the pending rule still holds over whatever the catalog ships', () => {
@@ -715,7 +727,7 @@ check('the measured caps come through, with their provenance', () => {
   assert.strictEqual(c.maxChars, 600, 'the measured zero-shot cap moved');
   assert.strictEqual(c.maxCharsSource, 'placeholder');
   assert.deepStrictEqual(c.edgeFadeMs, { in: 10, out: 25 });
-  assert.deepStrictEqual(c.sampling, { temperature: 1.0, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(c.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.strictEqual(c.referenceSecondsCap, 30);
   assert.deepStrictEqual(c.allowedControls, []);
 });
@@ -1102,17 +1114,18 @@ check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json',
   assert.notDeepStrictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').sampling, mirrorOf(drifted));
 });
 
-check('deathstalker\'s two blocks share the FILE\'s top_p/top_k; the Mac temperature is Owen\'s STATED override', () => {
+check('deathstalker\'s two blocks share the FILE\'s top_p/top_k; the temperature is Owen\'s STATED override', () => {
   // One directory, one generation_config.json, read by vllm-omni on one arm and
   // by narrator itself on the other — so top_p and top_k mirror that file on
-  // both blocks. The Mac TEMPERATURE does not: 0.7 is Owen's ruling of
-  // 2026-09-06 ("lets try a temp of 0.7") when the file's 1.0 babbled on Listen,
-  // and since that day the block's sampling RIDES IN THE VOICE DOCUMENT and is
-  // applied by narrator over the file. A deviation from the file must be stated
+  // both blocks. The TEMPERATURE does not: 0.7 is Owen's ruling of 2026-09-06
+  // ("lets try a temp of 0.7" on Mac Listen, then "i dont want it set to 1.0"
+  // for every voice) when the file's 1.0 babbled, and since that day the
+  // block's sampling RIDES IN THE VOICE DOCUMENT and is applied over the file
+  // on both arms. A deviation from the file must be stated
   // in the note, with the ruling — a number that renders is never inherited
   // invisibly (see the block's own _samplingNote).
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.deepStrictEqual(m.backends.served.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(m.backends.served.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.deepStrictEqual(m.backends.mlx.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.strictEqual(m.backends.mlx.sampling.topP, m.backends.served.sampling.topP);
   assert.strictEqual(m.backends.mlx.sampling.topK, m.backends.served.sampling.topK);

@@ -159,7 +159,7 @@ roster, and a voice not in it is refused by name.
         "maxChars": 600,        // null on an unmeasured fine-tune => REFUSED
         "maxCharsSource": "placeholder",   // catalog | placeholder | length-sweep
         "edgeFadeMs": { "in": 10, "out": 25 },
-        "sampling": { "temperature": 1.0, "topP": 0.95, "topK": 50 },
+        "sampling": { "temperature": 0.7, "topP": 0.95, "topK": 50 },   // 0.7 = Owen's rule, EVERY voice, BOTH arms (2026-09-06: 1.0 babbles); rides in the voice document and renders
         "referenceSecondsCap": 30,
         "allowedControls": []
       },

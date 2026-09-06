@@ -104,11 +104,11 @@
           },
           "_edgeFadeNote": "WHO APPLIES THIS: narrator's assembler, and as of narrator 4854aae4 it DOES — assemble/engine_profiles.py declares higgs-v3 as pads=false with 10/25 ms fades, assemble/edges.py applies them as RAISED-COSINE windows (zero slope at both ends, so the join has no discontinuity in the first derivative either), and _plan_unpadded realizes the manifest gapBefore/gapAfter as generated silence through one FLAC writer so the concat stays homogeneous. Prep writes the gaps.json sidecar these read, and session_v1 REFUSES a pads=false session without it. An earlier draft of parallel-tts-bridge.ts justified routing Higgs assembly to narrator by claiming narrator already read this field when neither side did; it does now, and the number is here because the catalog is where per-voice tuning lives. WHY THE FADE IS NEEDED AT ALL: Higgs emits NO lead/trail silence of its own — unlike Orpheus, which bakes pads into each chunk FLAC — and the patched server already trims its own sentinel tail, so what reaches the assembler ends at a hard sample boundary: a step discontinuity, i.e. a click. 25 ms out / 10 ms in removes it, taking a chunk edge from about -30 dB to -45..-48 dB. Applied at ASSEMBLY and never baked into the per-chunk wav, so the raw model output stays inspectable. This is also why the manifest gapBefore/gapAfter are LIVE for Higgs where they are inert for Orpheus.",
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "The server's OWN shipped defaults (vllm_omni/deploy/higgs_multimodal_qwen3.yaml, stage 0 default_sampling_params), and the delivered render sends NO extra_params at all so they apply verbatim. Written down here anyway so the value that renders is stated rather than inherited invisibly from a yaml inside site-packages. TWO TRAPS: (1) temperature/top_p/top_k are NOT fields of OpenAICreateSpeechRequest — sent at the request top level pydantic DROPS them silently and the render runs at 1.0/0.95/50 regardless, which is exactly how the first audition reported 0.3 while running at 1.0; they must ride inside `extra_params`. (2) Deviations were measured (temp 0.3/0.7/1.0 at top_p 0.95 gave cosine 0.653/0.675/0.642 at 368 chars) and the spread is INSIDE single-seed noise — two seeds of the same setting differ by 0.04 — so one seed per cell cannot rank them and none beat the default enough to leave it.",
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. The server's OWN shipped defaults (vllm_omni/deploy/higgs_multimodal_qwen3.yaml, stage 0 default_sampling_params), and the delivered render sends NO extra_params at all so they apply verbatim. Written down here anyway so the value that renders is stated rather than inherited invisibly from a yaml inside site-packages. TWO TRAPS: (1) temperature/top_p/top_k are NOT fields of OpenAICreateSpeechRequest — sent at the request top level pydantic DROPS them silently and the render runs at 1.0/0.95/50 regardless, which is exactly how the first audition reported 0.3 while running at 1.0; they must ride inside `extra_params`. (2) Deviations were measured (temp 0.3/0.7/1.0 at top_p 0.95 gave cosine 0.653/0.675/0.642 at 368 chars) and the spread is INSIDE single-seed noise — two seeds of the same setting differ by 0.04 — so one seed per cell cannot rank them and none beat the default enough to leave it.",
           "referenceSecondsCap": 30,
           "allowedControls": [],
           "_allowedControlsNote": "EMPTY ON PURPOSE, and it is a safety rule rather than a preference. An inline control token that is NOT in get_added_vocab() is split into 7-10 ordinary text pieces and READ ALOUD, which derails generation into a degenerate loop: ASR coverage 0.000, pitch std collapsing to 0.28 st, speaker cosine 0.05. A typo is not ignored — it destroys the render. v3 also has NO scene-description mechanism (<|scene_desc_start|> is a v2 chat role, absent from v3's vocabulary) and no `neutral`/`calm` emotion. At default sampling no control token beat plain text on speaker cosine, and the one candidate (<|prosody:long_pause|>) did not change measured pause density. The delivered render uses none. An empty allowlist means no engine ever has to get the validation right."
@@ -124,11 +124,11 @@
           },
           "_edgeFadeNote": "SAME CODEC, SAME NUMBERS, and applied by the same code: narrator's assembler (assemble/engine_profiles.py declares higgs-v3 as pads=false with 10/25 ms raised-cosine fades) runs on whichever arm rendered. The fade is a property of the DECODED WAVEFORM's hard sample boundary, not of the sampler that produced the tokens, so unlike maxChars it genuinely does not vary by backend.",
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "STATED, NOT MIRRORED — because there is no file to mirror. The bosonai/higgs-audio-v3-tts-4b snapshot ships NO generation_config.json (verified on the WSL HF cache and on the Mac's runtime/higgs-models/base, 2026-09-05), which is the whole reason a MERGED directory has to carry one. So for BASE weights the authority is v3's documented deploy default, v3_served.SERVER_DEFAULT_SAMPLING, which is what narrator's HiggsV3MlxConfig.mlx_sampling() applies here and what the served arm sends in extra_params for the same weights. mlx-audio itself reads no such file and its Model.generate defaults top_p/top_k to None -- i.e. the untruncated codebook tail -- so narrator passing these three is the only thing that makes the two arms render the base model alike.",
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. STATED, NOT MIRRORED — because there is no file to mirror. The bosonai/higgs-audio-v3-tts-4b snapshot ships NO generation_config.json (verified on the WSL HF cache and on the Mac's runtime/higgs-models/base, 2026-09-05), which is the whole reason a MERGED directory has to carry one. So for BASE weights the authority is v3's documented deploy default, v3_served.SERVER_DEFAULT_SAMPLING, which is what narrator's HiggsV3MlxConfig.mlx_sampling() applies here and what the served arm sends in extra_params for the same weights. mlx-audio itself reads no such file and its Model.generate defaults top_p/top_k to None -- i.e. the untruncated codebook tail -- so narrator passing these three is the only thing that makes the two arms render the base model alike.",
           "referenceSecondsCap": 30,
           "_referenceSecondsCapNote": "The vllm-omni server's 30 s HTTP limit is enforced on THIS arm too, by narrator: HiggsV3MlxConfig calls v3_served.check_reference_budget, and HiggsV3Defaults.MAX_REFERENCE_SECONDS is 30.0 for both. Stated rather than omitted so a clips voice auditioned on the Mac is refused at the same length the server would refuse it at.",
           "allowedControls": []
@@ -172,11 +172,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "A MIRROR, AND THE DIRECTORY IS THE AUTHORITY. What answers every request is /home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080/generation_config.json — vllm-omni resolves sampling from the MODEL DIRECTORY (--generation-config defaults to auto) and OpenAICreateSpeechRequest carries no sampling fields, so nothing per-request can correct it; narrator PROVES that file is there (v3_served.require_generation_config) and never writes one. Read on 2026-09-05 it holds {\"temperature\": 1.0, \"top_p\": 0.95, \"top_k\": 50, \"repetition_penalty\": 1.0, \"_source\": \"stage-0 default_sampling_params from higgs_multimodal_qwen3.yaml\"} — the same four numbers as the ckpt-480 directory, which is expected: both were written from the same recorded per-run override. The three are mirrored here so a reader can see what this voice samples at without opening a directory inside WSL, and tools/test-higgs-engine.js asserts the mirror still matches — a mirror nobody checks is how two copies of a number diverge. If they ever disagree, the DIRECTORY wins and this block is what is wrong.",
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. A MIRROR, AND THE DIRECTORY IS THE AUTHORITY. What answers every request is /home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080/generation_config.json — vllm-omni resolves sampling from the MODEL DIRECTORY (--generation-config defaults to auto) and OpenAICreateSpeechRequest carries no sampling fields, so nothing per-request can correct it; narrator PROVES that file is there (v3_served.require_generation_config) and never writes one. Read on 2026-09-05 it holds {\"temperature\": 1.0, \"top_p\": 0.95, \"top_k\": 50, \"repetition_penalty\": 1.0, \"_source\": \"stage-0 default_sampling_params from higgs_multimodal_qwen3.yaml\"} — the same four numbers as the ckpt-480 directory, which is expected: both were written from the same recorded per-run override. The three are mirrored here so a reader can see what this voice samples at without opening a directory inside WSL, and tools/test-higgs-engine.js asserts the mirror still matches — a mirror nobody checks is how two copies of a number diverge. If they ever disagree, the DIRECTORY wins and this block is what is wrong.",
           "referenceSecondsCap": 30,
           "allowedControls": [],
           "_maxCharsSourceNote": "`length-sweep` is a TOKEN, not the provenance. maxCharsSource TRAVELS into narrator's voice document, where `protocol.MAX_CHARS_SOURCES` is a CLOSED vocabulary — catalog | placeholder | length-sweep — and anything else is refused by name at load_voices. So the method's NAME rides the wire and the measurement itself stays here, in _maxCharsNote, which narrator never sees."
@@ -197,7 +197,7 @@
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "0.7 is OWEN'S RULING of 2026-09-06 for the Mac arm, set when the checkpoint's shipped 1.0 (top_p 0.95, top_k 50, and mlx-audio has NO repetition penalty) babbled on Listen - 'lets try a temp of 0.7'. Until that day this block was documentary: the voice document never carried it and the MLX arm rendered at the checkpoint's generation_config.json regardless. Now it rides in the document (higgsVoicesDocument -> load_voices -> HiggsV3MlxConfig.sampling) and IS the value that renders. Not yet measured against 1.0 on this arm; the Whisper-WER table is on the Mac side. THE REST OF THIS NOTE PREDATES THAT: top_p and top_k are still a mirror of the same file the served block mirrors, and the DIRECTORY is still the authority for them -- but on this arm narrator is what applies it. mlx-audio 0.4.8 does not read generation_config.json at all (measured: `grep -rn generation_config tts/models/higgs_audio_v3/` finds nothing, while three other model packages in the same release do read it) and its Model.generate defaults top_p/top_k to None, so narrator's HiggsV3MlxConfig.mlx_sampling() reads <checkpointDir>/generation_config.json itself, through the same v3_served.require_generation_config the served arm uses. The Mac copy carries the same file as the WSL directory: {temperature 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0}. A repetition_penalty other than 1.0 would be REFUSED here rather than dropped, because mlx-audio has no such lever and honouring the file is impossible on this runtime. tools/test-higgs-engine.js checks this mirror against a fixture generation_config.json -- a mirror nobody checks is how two copies of a number diverge; if they ever disagree, the DIRECTORY wins and this block is what is wrong.",
+          "_samplingNote": "0.7 is OWEN'S RULING of 2026-09-06 for the Mac arm FIRST (the rule for every voice and both arms followed the same night), set when the checkpoint's shipped 1.0 (top_p 0.95, top_k 50, and mlx-audio has NO repetition penalty) babbled on Listen - 'lets try a temp of 0.7'. Until that day this block was documentary: the voice document never carried it and the MLX arm rendered at the checkpoint's generation_config.json regardless. Now it rides in the document (higgsVoicesDocument -> load_voices -> HiggsV3MlxConfig.sampling) and IS the value that renders. Not yet measured against 1.0 on this arm; the Whisper-WER table is on the Mac side. THE REST OF THIS NOTE PREDATES THAT: top_p and top_k are still a mirror of the same file the served block mirrors, and the DIRECTORY is still the authority for them -- but on this arm narrator is what applies it. mlx-audio 0.4.8 does not read generation_config.json at all (measured: `grep -rn generation_config tts/models/higgs_audio_v3/` finds nothing, while three other model packages in the same release do read it) and its Model.generate defaults top_p/top_k to None, so narrator's HiggsV3MlxConfig.mlx_sampling() reads <checkpointDir>/generation_config.json itself, through the same v3_served.require_generation_config the served arm uses. The Mac copy carries the same file as the WSL directory: {temperature 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0}. A repetition_penalty other than 1.0 would be REFUSED here rather than dropped, because mlx-audio has no such lever and honouring the file is impossible on this runtime. tools/test-higgs-engine.js checks this mirror against a fixture generation_config.json -- a mirror nobody checks is how two copies of a number diverge; if they ever disagree, the DIRECTORY wins and this block is what is wrong.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -248,11 +248,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
           "referenceSecondsCap": 30,
           "allowedControls": [],
           "_maxCharsSourceNote": "`length-sweep` is a TOKEN, not the provenance. maxCharsSource TRAVELS into narrator's voice document, where `protocol.MAX_CHARS_SOURCES` is a CLOSED vocabulary — catalog | placeholder | length-sweep — and anything else is refused by name at load_voices. So the method's NAME rides the wire and the measurement itself stays here, in _maxCharsNote, which narrator never sees."
@@ -269,11 +269,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
-          "_samplingNote": "A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -325,10 +325,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -342,10 +343,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -383,10 +385,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -400,10 +403,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -441,10 +445,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -458,10 +463,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
@@ -499,10 +505,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         },
@@ -516,10 +523,11 @@
             "out": 25
           },
           "sampling": {
-            "temperature": 1,
+            "temperature": 0.7,
             "topP": 0.95,
             "topK": 50
           },
+          "_samplingNote": "TEMPERATURE 0.7 is OWEN'S RULING of 2026-09-06 for EVERY Higgs voice on BOTH arms (\"i dont want it set to 1.0. it babbles when its at 1.0\" - first heard on Mac Listen, then made the rule). It rides in the voice document (higgsVoicesDocument -> load_voices -> the arm's config `sampling` override, 13dc0e66 MLX / e31c7db5 served) and IS what renders; top_p and top_k here still mirror the checkpoint file / deploy default. No file to mirror for a zero-shot voice: base weights render at the deploy default's top_p/top_k (v3_served.SERVER_DEFAULT_SAMPLING).",
           "referenceSecondsCap": 30,
           "allowedControls": []
         }
