@@ -1440,7 +1440,9 @@ export function higgsExpectations(stack: HiggsStack): HiggsExpectations {
   };
 }
 
-function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string {
+function higgsProbeScript(
+  envPrefix: string, expect: HiggsExpectations, narratorEnvPrefix: string,
+): string {
   // `grep -qF`, fixed-string: `absentMarker` is `[:, :-1]`, which as a BASIC
   // REGULAR EXPRESSION is a bracket expression matching one character out of a
   // set — it would match almost every line of the file and report every env as
@@ -1518,17 +1520,24 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
     `if [ -e ${cu13}/lib64 ] && [ -e ${cu13}/lib/libcudart.so ]; ` +
     `then echo 'cuda-links=ok'; else echo 'cuda-links=absent'; fi`;
 
-  // NARRATOR'S OWN IMPORTS. narrator is NOT pip-installed into this env — it
-  // arrives over PYTHONPATH — so nothing ever resolved its dependency list here,
-  // and Owen's first in-app Higgs prep died on `No module named 'bs4'`.
-  // `find_spec` answers "is it importable" without paying the import, and the
-  // module names come from the same file the installer pip-installs.
+  // NARRATOR'S OWN IMPORTS, ASKED OF NARRATOR'S OWN ENV. narrator is NOT
+  // pip-installed anywhere — it arrives over PYTHONPATH — so nothing else
+  // resolves its dependency list into an env, and Owen's first in-app Higgs prep
+  // died on `No module named 'bs4'`. `find_spec` answers "is it importable"
+  // without paying the import, and the module names come from the same file the
+  // installer pip-installs.
+  //
+  // `narratorEnvPrefix`, NOT `envPrefix`, and on the SGLang stack they differ:
+  // the server runs in `sglomni` and narrator runs in `higgs3`
+  // (`narrator-spawn.ts` puts every Higgs door in `getWslHiggsCondaEnv()`, on
+  // both stacks). Asking this of the server's env after the flip would report a
+  // green doctor for a machine whose prep cannot start.
   //
   // The names are single-quoted INSIDE a double-quoted python program so the
   // sync entry point's `"` → `\"` escaping has nothing of its own to trip on.
   const modules = expect.deps.map((d) => d.module).join(' ');
   const depsProbe =
-    `${envPrefix}/bin/python -c ` +
+    `${narratorEnvPrefix}/bin/python -c ` +
     `'import importlib.util as u,sys;print("narrator-deps=" + (",".join(` +
     `[m for m in sys.argv[1:] if u.find_spec(m) is None]) or "ok"))' ` +
     `${modules} 2>/dev/null || echo 'narrator-deps=probe-failed'`;
@@ -1557,6 +1566,7 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
 function higgsChecksFrom(
   out: string, probeError: string | null, distro: string | undefined,
   envName: string, envPrefix: string, expect: HiggsExpectations,
+  narratorEnvPrefix: string,
 ): HiggsCheck[] {
   const seen = new Map<string, string>();
   for (const line of out.split('\n')) {
@@ -1750,16 +1760,17 @@ function higgsChecksFrom(
       detail: probeError
         ? `The probe did not run: ${probeError}`
         : depsAnswer === undefined || depsAnswer === 'probe-failed'
-          ? `${envPrefix}/bin/python could not answer which of narrator's runtime imports are `
-            + `present. The env's interpreter is not usable as it stands; the modules it needs `
-            + `are ${listed}.`
+          ? `${narratorEnvPrefix}/bin/python could not answer which of narrator's runtime `
+            + `imports are present. That is the env NARRATOR runs in (not necessarily the one `
+            + `the SERVER runs in — on the sglang-omni stack they differ), and its interpreter `
+            + `is not usable as it stands; the modules it needs are ${listed}.`
           : `MISSING: ${depsAnswer.split(',').map((m) => {
               const dep = expect.deps.find((d) => d.module === m);
               return dep ? `${m} (pip install ${dep.requirement})` : m;
-            }).join(', ')}. narrator's prep, worker and assembly doors import these at run time `
-            + 'and narrator is not pip-installed into this env — it is reached over PYTHONPATH — '
-            + 'so only the Higgs installer puts them here. Re-run it (Settings → Higgs), which '
-            + 'pip-installs requirements-narrator-runtime.txt.',
+            }).join(', ')}, in ${narratorEnvPrefix}. narrator's prep, worker and assembly doors `
+            + 'import these at run time and narrator is not pip-installed into that env — it is '
+            + 'reached over PYTHONPATH — so only the Higgs installer puts them there. Re-run it '
+            + '(Settings → Higgs), which pip-installs requirements-narrator-runtime.txt.',
     }),
   });
   return checks;
@@ -1795,7 +1806,29 @@ function higgsDoctorTarget(config: HiggsDoctorConfig) {
   // checkWslOrpheusSetup does from the same setting, so the two doctors cannot
   // disagree about where conda keeps its environments.
   const condaBase = condaPath.replace(/\/bin\/conda$/, '');
-  return { distro, envName, envPrefix: `${condaBase}/envs/${envName}` };
+  // ── TWO ENVIRONMENTS ON THE SGLang STACK, AND THEY ARE DIFFERENT QUESTIONS ──
+  //
+  // The SERVER runs in the env the launcher names (`sglomni`). NARRATOR — the
+  // client that packs the book, POSTs the chunks and writes the files — runs in
+  // whatever `narrator-spawn.ts` puts it in, which is `getWslHiggsCondaEnv()`
+  // (`higgs3`) on BOTH stacks. That is also the configuration every night-3
+  // measurement was taken in: the probe client ran out of higgs3 against a server
+  // on 8200.
+  //
+  // So "is `sglang_omni` importable" and "can narrator import bs4" are questions
+  // about DIFFERENT DIRECTORIES the moment the stack is flipped, and asking both
+  // of the server's env would report a green doctor for a machine whose prep dies
+  // on `No module named 'bs4'` — the exact failure the narrator-deps row was
+  // added for (Owen's first in-app Higgs prep). On vllm-omni the two are the same
+  // env and this collapses to what it always was.
+  const narratorEnvName = getWslHiggsCondaEnv();
+  return {
+    distro,
+    envName,
+    envPrefix: `${condaBase}/envs/${envName}`,
+    narratorEnvName,
+    narratorEnvPrefix: `${condaBase}/envs/${narratorEnvName}`,
+  };
 }
 
 /**
@@ -1821,13 +1854,14 @@ export function checkWslHiggsSetupAsync(config: HiggsDoctorConfig): Promise<Higg
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     });
   }
-  const { distro, envName, envPrefix } = higgsDoctorTarget(config);
+  const { distro, envName, envPrefix, narratorEnvPrefix } = higgsDoctorTarget(config);
   // READ BEFORE THE PROBE, AND ALLOWED TO THROW. These come out of this build's
   // own shipped files; if they cannot be read there is nothing to compare the
   // env against, and the honest failure is that sentence rather than two checks
   // quietly not being asked.
   const expect = higgsExpectations(config.stack);
-  const args = wslScriptArgs(distro, higgsProbeScript(envPrefix, expect));
+  const args = wslScriptArgs(
+    distro, higgsProbeScript(envPrefix, expect, narratorEnvPrefix));
 
   return new Promise((resolve) => {
     let out = '';
@@ -1835,7 +1869,8 @@ export function checkWslHiggsSetupAsync(config: HiggsDoctorConfig): Promise<Higg
     const finish = (probeError: string | null) => {
       if (done) return;
       done = true;
-      const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix, expect);
+      const checks = higgsChecksFrom(
+        out, probeError, distro, envName, envPrefix, expect, narratorEnvPrefix);
       resolve({
         valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
       });
@@ -1887,12 +1922,12 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     };
   }
-  const { distro, envName, envPrefix } = higgsDoctorTarget(config);
+  const { distro, envName, envPrefix, narratorEnvPrefix } = higgsDoctorTarget(config);
   const expect = higgsExpectations(config.stack);
   // The SAME argv the async doctor builds, joined for execSync's command string.
   // Built from wslScriptArgs so the two forms cannot drift on the one flag that
   // decides whether the probe works at all — see that function.
-  const script = higgsProbeScript(envPrefix, expect);
+  const script = higgsProbeScript(envPrefix, expect, narratorEnvPrefix);
   const syncArgv = wslScriptArgs(distro, script)
     .slice(0, -1)
     .join(' ');
@@ -1909,7 +1944,8 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
     probeError = err instanceof Error ? err.message : String(err);
   }
 
-  const checks = higgsChecksFrom(out, probeError, distro, envName, envPrefix, expect);
+  const checks = higgsChecksFrom(
+    out, probeError, distro, envName, envPrefix, expect, narratorEnvPrefix);
   return {
     valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
   };

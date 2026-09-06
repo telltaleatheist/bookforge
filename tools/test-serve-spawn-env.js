@@ -119,19 +119,24 @@ function hostNeutral(value) {
 
 const base = hostNeutral(JSON.parse(fs.readFileSync(BASE, 'utf-8')));
 
-/** One arm's capture, PARSED but not yet host-neutralised. */
-function capture(arm, engine) {
+/**
+ * One arm's capture, PARSED but not yet host-neutralised.
+ *
+ * `stack` is a Higgs FIXTURE — the serving stack to build the spawn against,
+ * rather than whatever `serving.stack` happens to say today. See the Higgs
+ * section below for why every row is captured against both.
+ */
+function capture(arm, engine, stack) {
   // STDERR IS KEPT — see the note in test-narrator-argv-snapshot.js. An extractor
   // that fails because a door moved has a diagnostic worth reading; `stdio: 'ignore'`
   // replaced it with `Command failed`.
-  const r = spawnSync(
-    process.execPath,
-    [path.join(__dirname, 'serve-spawn-extract.js'), arm, ...(engine ? [engine] : [])],
-    { encoding: 'utf-8' },
-  );
+  const argv = [path.join(__dirname, 'serve-spawn-extract.js'), arm];
+  if (engine) argv.push(engine);
+  if (stack) argv.push(stack);
+  const r = spawnSync(process.execPath, argv, { encoding: 'utf-8' });
   if (r.status !== 0) {
     throw new Error(
-      `serve-spawn-extract.js ${arm}${engine ? ` ${engine}` : ''} exited ${r.status}:\n`
+      `serve-spawn-extract.js ${argv.slice(1).join(' ')} exited ${r.status}:\n`
       + `${(r.stderr || '(no stderr)').trim()}`);
   }
   return JSON.parse(r.stdout);
@@ -244,83 +249,222 @@ for (const arm of ARMS) {
   });
 }
 
-console.log('the Higgs serve spawn, per arm');
+console.log('the Higgs serve spawn, per arm AND per serving stack');
 // ONE POOL, TWO ENGINES: which one answers is `NARRATOR_ENGINE` in the spawn. These
 // rows pin what a Higgs Listen session starts, and — on the two native arms — that
 // it REFUSES rather than starting something that cannot run.
-const higgsRowsRaw = {};
-const higgsRows = {};
-for (const arm of ARMS) {
-  higgsRowsRaw[arm] = capture(arm, 'higgs');
-  higgsRows[arm] = hostNeutral(higgsRowsRaw[arm]);
+//
+// ── AND SINCE 2026-09-06, TWO SERVING STACKS ────────────────────────────────
+//
+// Higgs v3 is served by vllm-omni 0.28.0 or by SGLang-Omni 0.1.4, and the
+// catalog's `serving.stack` picks one. It shipped as vllm-omni and FLIPPED to
+// sglang-omni on 2026-09-06, on Owen's ruling, on the night-3 measurements (same
+// 50 chunks, same checkpoint, one seed: vllm-omni at 16 in flight gives 4 early
+// stops / 13 damaged / 6 sustained voice switches at 10,752 chars/min; SGLang
+// gives 0 / 5 / 0 at 26,666).
+//
+// SO EVERY ROW HERE IS CAPTURED FOR **BOTH** STACKS, EVERY RUN, against an
+// explicit fixture rather than against whatever the catalog happens to say. That
+// is the whole correction this file needed: written the other way, the checks
+// asserted vllm-omni facts about "the shipped catalog", so the flip turned them
+// red — and, worse, would have stopped testing whichever stack was not shipped
+// exactly when a regression in it could go unnoticed. The shipped value now
+// decides only ONE thing: which of the two rows is additionally asserted to be
+// what the app will really do (`higgs: the SHIPPED stack …` below).
+//
+// The fixture is `serve-spawn-extract.js <arm> higgs <stack>`: the catalog's own
+// serving block with `stack` replaced, carried as the model's own `serving`
+// override. Nothing is walked past — engineVersion, the patches and every number
+// are still the catalog's.
+const STACKS = ['vllm-omni', 'sglang-omni'];
+const higgsRowsByStack = {};
+// RAW AND NEUTRALISED ARE KEPT APART, for the same reason the Orpheus rows keep
+// both: `hostNeutral` deletes every backslash it finds, so the "no host path
+// separator" check below has to walk data that still HAS the evidence in it, or
+// it is asking whether a function that removes backslashes left one behind.
+const higgsRowsRawByStack = {};
+for (const stack of STACKS) {
+  higgsRowsByStack[stack] = {};
+  higgsRowsRawByStack[stack] = {};
+  for (const arm of ARMS) {
+    const raw = capture(arm, 'higgs', stack);
+    higgsRowsRawByStack[stack][arm] = raw;
+    higgsRowsByStack[stack][arm] = hostNeutral(raw);
+  }
 }
 
-for (const arm of ARMS) {
-  check(`higgs/${arm}: unchanged`, () => {
-    assert.deepStrictEqual(higgsRows[arm], base[`higgs:${arm}`]);
+const catalog = JSON.parse(
+  fs.readFileSync(path.join(REPO, 'electron', 'data', 'higgs-models.json'), 'utf-8'));
+const serving = catalog.serving;
+/** The stack the app will actually use, read from the catalog rather than assumed. */
+const SHIPPED_STACK = serving.stack;
+/** The rows for it — what "the Higgs serve spawn" means on this build. */
+const higgsRows = higgsRowsByStack[SHIPPED_STACK];
+
+check('higgs: the catalog names a stack this suite has rows for', () => {
+  // A `stack` outside the two would silently mean `higgsRows` is undefined and
+  // every row below throws on a property of undefined, which is a bad way to
+  // learn that the catalog grew a third stack nobody wrote fixtures for.
+  assert.ok(higgsRows, `serving.stack is ${JSON.stringify(SHIPPED_STACK)}, which this suite `
+    + `captures no rows for. Known: ${STACKS.join(', ')}.`);
+});
+
+// THE SNAPSHOT IS KEYED BY STACK, so a flip changes which stored row is the
+// shipped one and never which rows exist. Both are compared on every run, so
+// flipping back is a one-word edit to the catalog and nothing here at all.
+for (const stack of STACKS) {
+  for (const arm of ARMS) {
+    check(`higgs/${arm}@${stack}: unchanged`, () => {
+      assert.deepStrictEqual(higgsRowsByStack[stack][arm], base[`higgs:${arm}@${stack}`]);
+    });
+  }
+}
+
+/** The variables `serve_higgs_v3.sh` reads, and nothing else may carry. */
+const VLLM_LAUNCH_VARS = [
+  'HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
+  'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG',
+  'NARRATOR_HIGGS3_SERVE_SCRIPT',
+];
+/** The variables `serve_higgs_sgl.sh` reads. A DIFFERENT SET, not a subset. */
+const SGL_LAUNCH_VARS = [
+  'HIGGS_SGL_ENV', 'HIGGS_SGL_HOST', 'HIGGS_SGL_PORT', 'HIGGS_SGL_MEM_FRACTION',
+  'HIGGS_SGL_CUDA_GRAPH_MAX_BS', 'HIGGS_SGL_MAX_NEW_TOKENS',
+  'NARRATOR_HIGGS_SGL_SERVE_SCRIPT',
+];
+
+const vllmWsl = () => envOf(higgsRowsByStack['vllm-omni'].wsl);
+const sglWsl = () => envOf(higgsRowsByStack['sglang-omni'].wsl);
+
+
+// ── WHAT IS TRUE ON EVERY STACK ────────────────────────────────────────────
+//
+// These rows are about the ENGINE and the ARM, not about which server answers,
+// so they run against both fixtures. A row that only ever saw the shipped stack
+// would stop testing the other one the moment somebody flipped `serving.stack`.
+for (const stack of STACKS) {
+  const rows = higgsRowsByStack[stack];
+
+  check(`higgs/wsl@${stack}: starts narrator.serve as higgs-v3`, () => {
+    const row = rows.wsl;
+    assert.ok(!row.refused, `the WSL arm refused: ${row.refused}`);
+    assert.ok(row.viaWsl, 'the WSL arm did not route through WSL');
+    // NARRATOR'S OWN ENV, WHICH IS `higgs3` ON BOTH STACKS. It is NOT the env the
+    // SERVER runs in: `narrator-spawn.ts` puts every Higgs door in
+    // `getWslHiggsCondaEnv()`, while the launcher starts the server out of
+    // whatever HIGGS_ENV / HIGGS_SGL_ENV names. On sglang-omni those are two
+    // different directories (`higgs3` and `sglomni`), and that is also the
+    // configuration every night-3 measurement was taken in — the probe client ran
+    // out of higgs3 against a server on 8200.
+    assert.match(row.bash.run, /-n 'higgs3' python -u -m narrator\.serve$/,
+      `not a higgs3 serve spawn: ${row.bash.run}`);
+    // `higgs-v3`, never `higgs`: compat/flags.py lists the latter under
+    // ENGINE_NEAR_MISSES and refuses it by name.
+    assert.strictEqual(row.bash.exports.NARRATOR_ENGINE, 'higgs-v3');
+    assert.ok(!/ORPHEUS_/.test(JSON.stringify(row)),
+      'an ORPHEUS_* variable leaked into a Higgs spawn');
+  });
+
+  check(`higgs/wsl@${stack}: the voice document is named in the GUEST filesystem`, () => {
+    const doc = rows.wsl.bash.exports.NARRATOR_HIGGS_VOICES;
+    assert.ok(doc, 'no NARRATOR_HIGGS_VOICES — the engine would have no voice to resolve');
+    assert.ok(!/^[A-Za-z]:/.test(doc), `the voice document crossed as a Windows path: ${doc}`);
+  });
+
+  check(`higgs/wsl@${stack}: HIGGS_STACK states which server the client is talking to`, () => {
+    // narrator's `served_common.serving_stack()` REFUSES BY NAME when it is
+    // unset, because the two stacks place sampling differently, size the frame
+    // cap against different context windows (8192 against a hard-coded 4096) and
+    // disagree about what an empty sampling means. A door that renders and finds
+    // it missing dies after the session is already built.
+    assert.strictEqual(rows.wsl.bash.exports.HIGGS_STACK, stack);
+  });
+
+  check(`higgs/native-win@${stack}: refuses BY NAME rather than spawning`, () => {
+    // The SERVED backend has no Windows build on either stack. Pinned so that it
+    // changing is a decision.
+    assert.ok(rows['native-win'].refused,
+      `native-win built a Higgs spawn it cannot run: ${JSON.stringify(rows['native-win']).slice(0, 200)}`);
+    assert.match(rows['native-win'].refused, /Higgs/);
+  });
+
+  check(`higgs/native-mac@${stack}: runs IN PROCESS in narrator-mlx, not the served stack`, () => {
+    const row = rows['native-mac'];
+    assert.ok(!row.refused, `the darwin arm refused: ${row.refused}`);
+    assert.ok(!row.viaWsl, 'the darwin arm routed through WSL');
+    // narrator-mlx, NOT a served env: neither serving stack has a macOS build, so
+    // resolving one would refuse a Mac that can render perfectly well. Same env
+    // the Orpheus MLX arm uses.
+    assert.match(cmdOf(row), /narrator-mlx/,
+      `the mac Higgs arm does not name narrator-mlx: ${cmdOf(row)}`);
+    assert.strictEqual(envOf(row).NARRATOR_ENGINE, 'higgs-v3');
+    // NEITHER stack's launch variables may come along: there is no launch script
+    // and no distro on a Mac, and either one present would mean the wrong backend.
+    for (const key of ['NARRATOR_HIGGS3_SERVE_SCRIPT', 'NARRATOR_HIGGS_SGL_SERVE_SCRIPT',
+      'NARRATOR_HIGGS3_WSL_DISTRO']) {
+      assert.ok(!(key in envOf(row)), `the darwin arm carries ${key}`);
+    }
+  });
+
+  check(`higgs/native-mac@${stack}: NARRATOR_HIGGS3_MLX_MODEL names an existing directory`, () => {
+    // `mlx_backend.model_dir_from_env()` refuses BY NAME when this is unset — "no
+    // default and no search", because an engine that guesses where its weights are
+    // can render a whole book in the wrong model and report success. So the spawn
+    // must name it, and the fixture provisions the directory so "does it exist" is
+    // a question about the PATH DERIVATION rather than about the fixture.
+    const row = rows['native-mac'];
+    const dir = envOf(row).NARRATOR_HIGGS3_MLX_MODEL;
+    assert.ok(dir, 'the darwin arm sets no NARRATOR_HIGGS3_MLX_MODEL — narrator would refuse');
+    assert.match(dir, /runtime\/higgs-models\/base$/,
+      `not the base weights dir narrator's own refusal message points at: ${dir}`);
+    assert.strictEqual(row.mlxModelDirExists, true,
+      'the directory BookForge named does not exist even in the fixture');
+    // HOST-NATIVE: there is no guest on a Mac, so nothing is translated.
+    assert.ok(!dir.startsWith('/mnt/'), `the weights dir was guest-translated: ${dir}`);
+  });
+
+  check(`higgs/native-mac@${stack}: NO server-launch variable comes along`, () => {
+    // The Mac samples in-process. A bind address, a memory fraction or a conda
+    // prefix there would be a lever read by nothing — the same defect as the
+    // launch script and the distro, which this file already refuses. Asserted for
+    // BOTH stacks' variable sets, because "the served arm's variables" is now two
+    // different lists.
+    const e = envOf(rows['native-mac']);
+    for (const key of [...VLLM_LAUNCH_VARS, ...SGL_LAUNCH_VARS]) {
+      assert.ok(!(key in e), `the darwin arm carries the served stack's ${key}`);
+    }
+  });
+
+  check(`higgs@${stack}: BookForge never sets HIGGS_MODEL_DIR`, () => {
+    // narrator exports it per voice from the voice document's checkpointDir
+    // (v3_served.py / sgl_served.py `_launch_exports`). A copy from this side
+    // would be a second authority on which weights serve, and the loser is a
+    // whole book in the wrong narrator — the failure Owen hit on 2026-09-05 in
+    // its other direction. It matters MORE on sglang-omni, where that variable is
+    // also the only way to tell which checkpoint a running server holds.
+    for (const arm of ARMS) {
+      // native-win REFUSES rather than spawning, so it has no environment to
+      // inspect — asserted above, not re-asserted here.
+      if (rows[arm].refused) continue;
+      assert.ok(!('HIGGS_MODEL_DIR' in envOf(rows[arm])),
+        `${arm} sets HIGGS_MODEL_DIR, which is narrator's to export per voice`);
+    }
+  });
+
+  check(`higgs@${stack}: the concurrency is ONE variable, set on every arm`, () => {
+    // narrator's `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS on BOTH stacks
+    // and REFUSES BY NAME when unset — it is the server's admission width AND the
+    // width of narrator's own batch. Its SOURCE differs (stage 0's max_num_seqs
+    // against --tts_engine.factory.max_running_requests) and its NAME must not,
+    // or the server comes up at one width and the client batches at another.
+    const want = String(stack === 'sglang-omni'
+      ? serving.sglang.maxRunningRequests : serving.maxNumSeqs);
+    for (const arm of ['wsl', 'native-mac']) {
+      assert.strictEqual(envOf(rows[arm]).HIGGS_MAX_NUM_SEQS, want,
+        `${arm} does not state the batch width`);
+    }
   });
 }
-
-check('higgs/wsl: starts narrator.serve in the higgs3 env as higgs-v3', () => {
-  const row = higgsRows.wsl;
-  assert.ok(!row.refused, `the WSL arm refused: ${row.refused}`);
-  assert.ok(row.viaWsl, 'the WSL arm did not route through WSL');
-  assert.match(row.bash.run, /-n 'higgs3' python -u -m narrator\.serve$/,
-    `not a higgs3 serve spawn: ${row.bash.run}`);
-  // `higgs-v3`, never `higgs`: compat/flags.py lists the latter under
-  // ENGINE_NEAR_MISSES and refuses it by name.
-  assert.strictEqual(row.bash.exports.NARRATOR_ENGINE, 'higgs-v3');
-  assert.ok(!/ORPHEUS_/.test(JSON.stringify(row)),
-    'an ORPHEUS_* variable leaked into a Higgs spawn');
-});
-
-check('higgs/wsl: the voice document is named in the GUEST filesystem', () => {
-  const doc = higgsRows.wsl.bash.exports.NARRATOR_HIGGS_VOICES;
-  assert.ok(doc, 'no NARRATOR_HIGGS_VOICES — the engine would have no voice to resolve');
-  assert.ok(!/^[A-Za-z]:/.test(doc), `the voice document crossed as a Windows path: ${doc}`);
-});
-
-check('higgs/native-win: refuses BY NAME rather than spawning', () => {
-  // The SERVED backend is vLLM-Omni and there is no Windows build. Pinned so that
-  // it changing is a decision.
-  assert.ok(higgsRows['native-win'].refused,
-    `native-win built a Higgs spawn it cannot run: ${JSON.stringify(higgsRows['native-win']).slice(0, 200)}`);
-  assert.match(higgsRows['native-win'].refused, /Higgs/);
-});
-
-check('higgs/native-mac: runs IN PROCESS in narrator-mlx, not the served stack', () => {
-  const row = higgsRows['native-mac'];
-  assert.ok(!row.refused, `the darwin arm refused: ${row.refused}`);
-  assert.ok(!row.viaWsl, 'the darwin arm routed through WSL');
-  // narrator-mlx, NOT the `higgs-env` component: that is the SERVED stack's
-  // environment and has no macOS build, so resolving it would refuse a Mac that
-  // can render perfectly well. Same env the Orpheus MLX arm uses.
-  assert.match(cmdOf(row), /narrator-mlx/, `the mac Higgs arm does not name narrator-mlx: ${cmdOf(row)}`);
-  assert.strictEqual(envOf(row).NARRATOR_ENGINE, 'higgs-v3');
-  // The served arm's variables must NOT come along: there is no launch script and
-  // no distro on a Mac, and either one present would mean the wrong backend.
-  assert.ok(!('NARRATOR_HIGGS3_SERVE_SCRIPT' in envOf(row)),
-    'the darwin arm carries the SERVED launch script');
-  assert.ok(!('NARRATOR_HIGGS3_WSL_DISTRO' in envOf(row)),
-    'the darwin arm carries a WSL distro');
-});
-
-check('higgs/native-mac: NARRATOR_HIGGS3_MLX_MODEL names an existing directory', () => {
-  // `mlx_backend.model_dir_from_env()` refuses BY NAME when this is unset — "no
-  // default and no search", because an engine that guesses where its weights are
-  // can render a whole book in the wrong model and report success. So the spawn
-  // must name it, and the fixture provisions the directory so "does it exist" is a
-  // question about the PATH DERIVATION rather than about the fixture.
-  const row = higgsRows['native-mac'];
-  const dir = envOf(row).NARRATOR_HIGGS3_MLX_MODEL;
-  assert.ok(dir, 'the darwin arm sets no NARRATOR_HIGGS3_MLX_MODEL — narrator would refuse');
-  assert.match(dir, /runtime\/higgs-models\/base$/,
-    `not the base weights dir narrator's own refusal message points at: ${dir}`);
-  assert.strictEqual(row.mlxModelDirExists, true,
-    'the directory BookForge named does not exist even in the fixture');
-  // HOST-NATIVE: there is no guest on a Mac, so nothing is translated.
-  assert.ok(!dir.startsWith('/mnt/'), `the weights dir was guest-translated: ${dir}`);
-});
 
 // ── THE SERVING BLOCK REACHES THE LAUNCH SCRIPT ───────────────────────────
 //
@@ -332,15 +476,11 @@ check('higgs/native-mac: NARRATOR_HIGGS3_MLX_MODEL names an existing directory',
 // `maxNumSeqs` changed NOTHING, which is worse than having no field: it is a
 // lever that reports success.
 //
-// These rows are why the `higgs/*: unchanged` snapshots above moved, and they
-// are the argument for it — a snapshot says "something changed", these say what
-// and hold it there.
-const catalog = JSON.parse(
-  fs.readFileSync(path.join(REPO, 'electron', 'data', 'higgs-models.json'), 'utf-8'));
-const serving = catalog.serving;
+// EACH STACK'S SET IS ASSERTED AGAINST ITS OWN FIXTURE ROW, so both are held
+// whichever one is shipped.
 
-check('higgs/wsl: every serving-block knob arrives as its HIGGS_* variable', () => {
-  const e = envOf(higgsRows.wsl);
+check('higgs/wsl@vllm-omni: every serving-block knob arrives as its HIGGS_* variable', () => {
+  const e = vllmWsl();
   // The mapping, asserted against the CATALOG rather than against literals, so a
   // retune is one edit and this keeper proves it travelled.
   assert.strictEqual(e.HIGGS_HOST, serving.host);
@@ -356,10 +496,11 @@ check('higgs/wsl: every serving-block knob arrives as its HIGGS_* variable', () 
   assert.ok(e.HIGGS_ENV, 'the served arm names no HIGGS_ENV');
   assert.ok(e.NARRATOR_HIGGS3_SERVE_SCRIPT.startsWith(e.HIGGS_ENV + '/bin/'),
     `the launch script is not inside HIGGS_ENV: ${e.HIGGS_ENV} vs ${e.NARRATOR_HIGGS3_SERVE_SCRIPT}`);
+  assert.match(e.NARRATOR_HIGGS3_SERVE_SCRIPT, /serve_higgs_v3\.sh$/);
 });
 
-check('higgs/wsl: the TWO memory fractions are separate, and they leave headroom', () => {
-  const e = envOf(higgsRows.wsl);
+check('higgs/wsl@vllm-omni: the TWO memory fractions are separate, and they leave headroom', () => {
+  const e = vllmWsl();
   // vllm-omni applies a GLOBAL --gpu-memory-utilization to EVERY stage, and this
   // server is two (talker + codec decoder), so the campaign's single 0.60
   // reserved 0.60 twice — measured 24.2 GB of a 24.5 GB card, 2026-09-05. The
@@ -374,29 +515,7 @@ check('higgs/wsl: the TWO memory fractions are separate, and they leave headroom
     + 'nothing for anything else on it');
 });
 
-check('higgs: HIGGS_MAX_NUM_SEQS is set on BOTH arms', () => {
-  // narrator's `serve_concurrency()` reads it and REFUSES BY NAME when unset —
-  // it is both stage 0's max_num_seqs and the width of narrator's own batch. A
-  // door that renders and finds it missing dies after the session is built, so
-  // it is set everywhere rather than only where a server is started.
-  for (const arm of ['wsl', 'native-mac']) {
-    assert.strictEqual(envOf(higgsRows[arm]).HIGGS_MAX_NUM_SEQS, String(serving.maxNumSeqs),
-      `${arm} does not state the batch width`);
-  }
-});
-
-check('higgs/native-mac: NO server-launch variable comes along', () => {
-  // The Mac samples in-process. A bind address, a memory fraction or a conda
-  // prefix there would be a lever read by nothing — the same defect as the
-  // launch script and the distro, which this file already refuses.
-  const e = envOf(higgsRows['native-mac']);
-  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
-    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG']) {
-    assert.ok(!(key in e), `the darwin arm carries the served stack's ${key}`);
-  }
-});
-
-check('higgs: HIGGS_DEPLOY_CONFIG is emitted only when a profile is CHOSEN', () => {
+check('higgs/wsl@vllm-omni: HIGGS_DEPLOY_CONFIG is emitted only when a profile is CHOSEN', () => {
   // `null` in the catalog means "vllm-omni's auto-discovered profile", which
   // keeps stage 0 in enforce_eager (no CUDA graphs on the talker). Exporting an
   // empty string would instead make the script take the `-n` branch and pass
@@ -404,13 +523,13 @@ check('higgs: HIGGS_DEPLOY_CONFIG is emitted only when a profile is CHOSEN', () 
   assert.ok('deployConfig' in serving,
     'the serving block no longer declares deployConfig — an absent key makes "nobody decided" '
     + 'look like a decision');
-  const present = 'HIGGS_DEPLOY_CONFIG' in envOf(higgsRows.wsl);
+  const present = 'HIGGS_DEPLOY_CONFIG' in vllmWsl();
   assert.strictEqual(present, serving.deployConfig !== null,
     `deployConfig is ${JSON.stringify(serving.deployConfig)} but HIGGS_DEPLOY_CONFIG is `
     + `${present ? 'set' : 'unset'}`);
 });
 
-check('higgs/wsl: a bare profile FILE NAME is resolved to the installer\'s copy', () => {
+check('higgs/wsl@vllm-omni: a bare profile FILE NAME is resolved to the installer\'s copy', () => {
   // vllm-omni resolves a bare file name against its OWN deploy/ directory inside
   // site-packages, which is not where the installer puts ours: the profile is
   // copied into <env>/bin/, beside the launcher. So the name alone would either
@@ -419,7 +538,7 @@ check('higgs/wsl: a bare profile FILE NAME is resolved to the installer\'s copy'
   // carries is the FRAME CEILING (stage 0 max_tokens 7500 = 300 s against the
   // auto profile's 2048 = 81.92 s), which does not crash, it truncates audio.
   if (serving.deployConfig === null) return; // nothing chosen; the check above owns that case
-  const e = envOf(higgsRows.wsl);
+  const e = vllmWsl();
   const bare = !serving.deployConfig.includes('/') && !serving.deployConfig.includes('\\');
   assert.strictEqual(e.HIGGS_DEPLOY_CONFIG,
     bare ? `${e.HIGGS_ENV}/bin/${serving.deployConfig}` : serving.deployConfig,
@@ -435,141 +554,84 @@ check('higgs/wsl: a bare profile FILE NAME is resolved to the installer\'s copy'
   }
 });
 
-check('higgs: BookForge never sets HIGGS_MODEL_DIR', () => {
-  // narrator exports it per voice from the voice document's checkpointDir
-  // (v3_served.py `_launch_exports`). A copy from this side would be a second
-  // authority on which weights serve, and the loser is a whole book in the wrong
-  // narrator — the failure Owen hit on 2026-09-05 in its other direction.
-  for (const arm of ARMS) {
-    // native-win REFUSES rather than spawning (there is no Windows vLLM-Omni),
-    // so it has no environment to inspect — asserted above, not re-asserted here.
-    if (higgsRows[arm].refused) continue;
-    assert.ok(!('HIGGS_MODEL_DIR' in envOf(higgsRows[arm])),
-      `${arm} sets HIGGS_MODEL_DIR, which is narrator's to export per voice`);
-  }
-});
-
-// ── WHICH SERVING STACK, AND WHETHER ITS KNOBS TRAVEL ─────────────────────
-//
-// A SECOND STACK landed on 2026-09-06: SGLang-Omni 0.1.4 beside vllm-omni
-// 0.28.0. Measured on the same 50 packed chunks, the same merged checkpoint and
-// one seed (HIGGS_FIELD_NOTES §4n): vllm-omni at 16 in flight gave 4 early
-// stops, 13/50 damaged and 6 sustained voice switches at 10,752 chars/min;
-// SGLang-Omni at 16 gave 0, 5 and 0 at 26,666. vllm-omni's damage is its batched
-// talker — the same build at width 1 is clean.
-//
-// The catalog's `serving.stack` picks one. These rows hold the two properties
-// that make the switch a switch rather than a hope: the choice REACHES narrator
-// (which refuses by name without it), and each stack's own knobs reach ITS
-// launcher with none of the other's along for the ride.
-const higgsModels = require(path.join(REPO, 'dist', 'electron', 'higgs-models.js'));
-
-check('higgs: HIGGS_STACK is the catalog\'s, on every arm', () => {
-  // The same contract as HIGGS_MAX_NUM_SEQS: `served_common.serving_stack()`
-  // refuses BY NAME when it is unset, because the two stacks place sampling
-  // differently, size the frame cap against different context windows, and
-  // disagree about whether an empty sampling means "the checkpoint's own
-  // numbers" or "the untruncated codebook tail". A door that renders and finds
-  // it missing dies after the session is already built.
-  assert.ok('stack' in serving,
-    'the serving block no longer declares `stack` — an absent key would make "nobody '
-    + 'decided" look exactly like "we chose vllm-omni"');
-  for (const arm of ARMS) {
-    if (higgsRows[arm].refused) continue;
-    assert.strictEqual(envOf(higgsRows[arm]).HIGGS_STACK, serving.stack,
-      `${arm} does not state the serving stack`);
-  }
-});
-
-check('higgs: a serving block with NO stack is refused BY NAME', () => {
-  assert.throws(
-    () => higgsModels.higgsServingStack({ engineVersion: 'v3' }),
-    /declares no `stack`/,
-    'a catalog that never decided which stack to serve on was accepted');
-  assert.throws(
-    () => higgsModels.higgsServingStack({ stack: 'tensorrt' }),
-    /not a stack BookForge serves/,
-    'an unknown stack name was accepted');
-});
-
-check('higgs: the sglang block is validated, not read on faith', () => {
-  const good = JSON.parse(JSON.stringify(serving.sglang));
-  assert.ok(good, 'the catalog carries no sglang block to validate');
-  higgsModels.higgsSglangFor({ sglang: good });          // does not throw
-  for (const [field, bad] of [['condaEnvName', ''], ['launchScript', null],
-    ['port', 0], ['maxRunningRequests', 1.5], ['memFractionStatic', 1]]) {
-    assert.throws(
-      () => higgsModels.higgsSglangFor({ sglang: { ...good, [field]: bad } }),
-      new RegExp(`sglang\\.${field}`),
-      `sglang.${field} = ${JSON.stringify(bad)} was accepted`);
-  }
-});
-
-// THE SGLang ARM'S OWN ENVIRONMENT, built by calling the real `higgsSpawnEnv`
-// with a model that declares that stack. It is driven directly rather than
-// through the extractor because the SHIPPED catalog is deliberately still
-// `vllm-omni` (behaviour is unchanged until somebody flips one word), and a
-// keeper that could only see the shipped value would prove nothing about the
-// arm the measurements argue for.
-const SGL_MODEL = {
-  id: 'sgl-probe',
-  label: 'SGLang probe',
-  kind: 'default',
-  engineVersion: 'v3',
-  voice: {},
-  license: serving.model,
-  commercialUse: false,
-  sampleRate: 24000,
-  addedAt: '2026-09-06',
-  serving: { ...serving, stack: 'sglang-omni' },
-};
-const SGL_ENV = higgsModels.higgsSpawnEnv(SGL_MODEL, {
-  voicesPath: '/mnt/c/tmp/voices.json',
-  serveScriptPath: '/home/t/anaconda3/envs/sglomni/bin/serve_higgs_sgl.sh',
-  condaEnvPrefix: '/home/t/anaconda3/envs/sglomni',
-  wslDistro: 'Ubuntu',
-});
-
-check('higgs/sglang: every sglang knob arrives as its HIGGS_SGL_* variable', () => {
+check('higgs/wsl@sglang-omni: every sglang knob arrives as its HIGGS_SGL_* variable', () => {
+  const e = sglWsl();
   const sgl = serving.sglang;
-  assert.strictEqual(SGL_ENV.HIGGS_STACK, 'sglang-omni');
-  assert.strictEqual(SGL_ENV.HIGGS_SGL_HOST, sgl.host);
-  assert.strictEqual(SGL_ENV.HIGGS_SGL_PORT, String(sgl.port));
-  assert.strictEqual(SGL_ENV.HIGGS_SGL_MEM_FRACTION, String(sgl.memFractionStatic));
-  assert.strictEqual(SGL_ENV.HIGGS_SGL_CUDA_GRAPH_MAX_BS, String(sgl.cudaGraphMaxBs));
-  assert.strictEqual(SGL_ENV.HIGGS_SGL_MAX_NEW_TOKENS, String(sgl.maxNewTokens));
-  assert.ok(SGL_ENV.HIGGS_SGL_ENV, 'the sglang arm names no HIGGS_SGL_ENV');
-  assert.ok(SGL_ENV.NARRATOR_HIGGS_SGL_SERVE_SCRIPT.startsWith(SGL_ENV.HIGGS_SGL_ENV + '/bin/'),
+  assert.strictEqual(e.HIGGS_SGL_HOST, sgl.host);
+  assert.strictEqual(e.HIGGS_SGL_PORT, String(sgl.port));
+  assert.strictEqual(e.HIGGS_SGL_MEM_FRACTION, String(sgl.memFractionStatic));
+  assert.strictEqual(e.HIGGS_SGL_CUDA_GRAPH_MAX_BS, String(sgl.cudaGraphMaxBs));
+  assert.strictEqual(e.HIGGS_SGL_MAX_NEW_TOKENS, String(sgl.maxNewTokens));
+  assert.ok(e.HIGGS_SGL_ENV, 'the sglang arm names no HIGGS_SGL_ENV');
+  assert.ok(e.NARRATOR_HIGGS_SGL_SERVE_SCRIPT.startsWith(e.HIGGS_SGL_ENV + '/bin/'),
     'the launch script is not inside HIGGS_SGL_ENV');
+  assert.match(e.NARRATOR_HIGGS_SGL_SERVE_SCRIPT,
+    new RegExp(`${sgl.launchScript.replace('.', '\\.')}$`));
+  // THE ENV IS THE CATALOG'S, NOT THE SETTING'S. `wslHiggsCondaEnv` names the
+  // vllm-omni env (its default is literally `higgs3`) and the fixture pins it to
+  // exactly that, so a spawn that read the setting here would name higgs3 and the
+  // server would start out of an env with no sgl-omni in it.
+  assert.match(e.HIGGS_SGL_ENV, new RegExp(`/envs/${sgl.condaEnvName}$`),
+    `the sglang server env is not the catalog's: ${e.HIGGS_SGL_ENV}`);
 });
 
-check('higgs/sglang: the concurrency is ONE variable, from the sglang block', () => {
-  // `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS on BOTH stacks, and on this
-  // one the number is `--tts_engine.factory.max_running_requests`. Two names for
-  // one question is how the server ends up at one width and narrator's batch at
-  // another.
-  assert.strictEqual(SGL_ENV.HIGGS_MAX_NUM_SEQS,
-    String(serving.sglang.maxRunningRequests));
+check('higgs/wsl@sglang-omni: port 8200, never vllm-omni\'s 8095', () => {
+  // Two stacks answering the same shaped endpoints on one port is how a leftover
+  // server renders a whole book against the wrong client. The ports differ by
+  // design and the catalog says so.
+  const e = sglWsl();
+  assert.strictEqual(e.HIGGS_SGL_PORT, '8200');
+  assert.notStrictEqual(String(serving.sglang.port), String(serving.port));
 });
 
-check('higgs/sglang: NONE of the vllm-omni stack\'s variables come along', () => {
-  // Each would be a lever read by nothing — serve_higgs_sgl.sh reads none of
-  // them — and NARRATOR_HIGGS3_SERVE_SCRIPT in particular would be read by the
-  // WRONG BACKEND: `HiggsSglServedBackend` looks at NARRATOR_HIGGS_SGL_* and
+check('higgs/wsl: NEITHER stack carries the OTHER stack\'s variables', () => {
+  // Each would be a lever read by nothing — the launchers read disjoint sets —
+  // and the two SERVE_SCRIPT names in particular would be read by the WRONG
+  // BACKEND: `HiggsSglServedBackend` looks at NARRATOR_HIGGS_SGL_* and
   // `HiggsV3ServedBackend` at NARRATOR_HIGGS3_*, which is what stops a stale
   // variable pointing one stack's client at the other stack's server.
-  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
-    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG',
-    'NARRATOR_HIGGS3_SERVE_SCRIPT']) {
-    assert.ok(!(key in SGL_ENV), `the sglang arm carries the vllm-omni stack's ${key}`);
+  for (const key of SGL_LAUNCH_VARS) {
+    assert.ok(!(key in vllmWsl()), `the vllm-omni arm carries the sglang stack's ${key}`);
+  }
+  for (const key of VLLM_LAUNCH_VARS) {
+    assert.ok(!(key in sglWsl()), `the sglang arm carries the vllm-omni stack's ${key}`);
   }
 });
 
-check('higgs/sglang: BookForge still never sets HIGGS_MODEL_DIR', () => {
-  // narrator exports it per voice, and on THIS stack it is also the only way to
-  // tell which checkpoint a running server holds (/v1/models reports the served
-  // NAME as its root). A second authority for it would be worse here, not better.
-  assert.ok(!('HIGGS_MODEL_DIR' in SGL_ENV));
+// ── AND WHAT THE APP WILL ACTUALLY DO ─────────────────────────────────────
+//
+// Everything above is about a stack. This is about THE CATALOG: whichever stack
+// it names, the shipped spawn must carry that stack's set and none of the
+// other's. It is the row that would have caught the flip breaking the app rather
+// than only breaking the tests.
+check(`higgs: the SHIPPED stack (${SHIPPED_STACK}) gets the matching variable set`, () => {
+  const e = envOf(higgsRows.wsl);
+  const sgl = SHIPPED_STACK === 'sglang-omni';
+  assert.strictEqual(e.HIGGS_STACK, SHIPPED_STACK);
+  for (const key of sgl ? SGL_LAUNCH_VARS : VLLM_LAUNCH_VARS) {
+    // deployConfig may legitimately be null, and then its variable is absent.
+    if (key === 'HIGGS_DEPLOY_CONFIG' && serving.deployConfig === null) continue;
+    assert.ok(key in e, `the shipped ${SHIPPED_STACK} spawn is missing ${key}`);
+  }
+  for (const key of sgl ? VLLM_LAUNCH_VARS : SGL_LAUNCH_VARS) {
+    assert.ok(!(key in e), `the shipped ${SHIPPED_STACK} spawn carries ${key}`);
+  }
+  // AND THE SHIPPED ROW IS THE FIXTURE ROW. Belt and braces: if these two ever
+  // disagreed it would mean the fixture is not exercising the same code path the
+  // catalog does, which would make every row above worthless.
+  assert.deepStrictEqual(higgsRows, higgsRowsByStack[SHIPPED_STACK]);
+});
+
+check('higgs: the catalog names launcher and installer files that SHIP', () => {
+  // A launcher or installer named in the catalog that is not in
+  // electron/scripts/higgs is a spawn that dies inside the guest with "No such
+  // file" — after the session is built, with no useful diagnosis.
+  const dir = path.join(REPO, 'electron', 'scripts', 'higgs');
+  for (const name of [serving.launchScript, serving.sglang.launchScript,
+    serving.sglang.installScript, 'install_higgs_env.sh']) {
+    assert.ok(fs.existsSync(path.join(dir, name)),
+      `the catalog names ${name}, which this build does not ship`);
+  }
 });
 
 // ── THE MLX BATCH BUDGET REACHES THE LISTEN SERVER ────────────────────────
@@ -657,7 +719,10 @@ check('no captured value carries a host path separator', () => {
   // which have had `.replace(/\\/g, '/')` applied to every string — so it was
   // asking whether a function that removes backslashes had left a backslash behind.
   // It passed on every machine and would have passed with canon() deleted entirely.
-  const offenders = hostSeparatorsIn({ now: nowRaw, higgsRows: higgsRowsRaw }, '');
+  // BOTH STACKS' raw captures, so a separator that only appears on the arm that
+  // is not currently shipped is caught too.
+  const offenders = hostSeparatorsIn(
+    { now: nowRaw, higgsRows: higgsRowsRawByStack }, '');
   assert.deepStrictEqual(offenders, [], 'a host path separator survived canon()');
 });
 check('MUTATION: the separator walk catches a Windows path when there is one', () => {
