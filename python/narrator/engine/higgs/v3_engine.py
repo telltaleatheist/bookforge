@@ -1171,6 +1171,13 @@ def higgs_v3_config_from_worker_kwargs(voice=None, model_dir=None, base_dir=None
         # Retained as a refusal, not a switch: the only strategy is 'checkpoint'
         # and the retired names say why in their own message.
         v3_served.check_strategy(strategy)
+    # THE VOICE'S OWN SAMPLING, when the document states one, rides as the
+    # config's override (`served_sampling` merges it over the checkpoint's file
+    # or the deploy default; on SGLang `applied_sampling` does the same). The
+    # MLX arm took this key on 2026-09-06 (13dc0e66); until this line the served
+    # arm read the same document and dropped it, so the catalog's served block
+    # was documentary here the way the MLX block had been on the Mac.
     return HiggsV3Config(
         voice=resolved,
-        checkpoint_dir=getattr(resolved, 'checkpoint_dir', None))
+        checkpoint_dir=getattr(resolved, 'checkpoint_dir', None),
+        sampling=getattr(resolved, 'sampling', None))

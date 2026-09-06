@@ -2404,6 +2404,34 @@ class VoiceDocumentShapesTest(V3TestCase):
         self.assertEqual(len(body['references']), 1)
         self.assertEqual(body['references'][0]['text'], X2_TEXT)
 
+    # ---- the document's sampling block reaches the served arm -------------
+
+    def test_a_document_sampling_block_rides_as_the_served_override(self):
+        """The catalog's per-backend `sampling` is written into the voice
+        document (higgsVoicesDocument) and `load_voices` parses it; the served
+        BUILDER must hand it to the config, or the block is documentary and the
+        server renders at the checkpoint file / deploy default while the
+        catalog states another number - exactly what the MLX arm did until
+        13dc0e66. Through the REAL loader and the REAL builder."""
+        from unittest import mock
+        from narrator.engine.higgs import higgs_v3_config_from_worker_kwargs
+        path = os.path.join(self.dir, 'voices-sampling.json')
+        with open(path, 'w', encoding='utf-8') as handle:
+            json.dump({'default': {'kind': 'default',
+                                   'sampling': {'temperature': 0.7, 'topK': 40}},
+                       'plain': {'kind': 'default'}}, handle)
+        with mock.patch.dict(os.environ, {v3_config.VOICES_ENV: path,
+                                          'NARRATOR_HIGGS3_URL': self.server.base_url}):
+            config = higgs_v3_config_from_worker_kwargs(voice='default')
+            plain = higgs_v3_config_from_worker_kwargs(voice='plain')
+        self.assertEqual(config.sampling, {'temperature': 0.7, 'top_k': 40})
+        sent = config.served_sampling()
+        self.assertEqual(sent['temperature'], 0.7)
+        self.assertEqual(sent['top_k'], 40)
+        self.assertEqual(sent['top_p'], 0.95, 'a key the block leaves out keeps the default')
+        self.assertIsNone(plain.sampling)
+        self.assertEqual(plain.served_sampling()['temperature'], 1.0)
+
     # ---- shape 2: the model's own voice ------------------------------------
 
     def test_a_default_voice_loads_and_sends_no_references(self):
