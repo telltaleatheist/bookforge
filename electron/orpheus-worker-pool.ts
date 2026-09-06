@@ -207,7 +207,23 @@ function translateModelDirForSpawn(dir: string): string {
 const STREAM_BATCH_CEILING_DEFAULT = 16;
 let streamBatchCeilingCache: number | null = null;
 
+// HIGGS STREAMS IN FIXED GROUPS OF 4 — Owen's ruling of 2026-09-06 ("it's
+// significantly faster than Orpheus, so I don't know that we need the batching
+// ladder; set batching to 4 and render it in groups"). This ONE number is the
+// scheduler's in-flight depth (getMaxConcurrentSentences), the pool's dispatch
+// width (batchWidth = min(STREAM_RAMP_WIDTH, ceiling)), the serve door's
+// NARRATOR_HIGGS3_MLX_BATCH (the read-ahead group width in
+// HiggsV3MlxEngine.generate_batch_stream) and the `deviceWorkers` the extension is
+// shown — so a Higgs Listen session renders the row being waited on solo and
+// everything behind it in groups of at most 4. Not tier-derived: a Higgs row at
+// the deathstalker 900-char target is ~3,300 positions deep, and the memory
+// budgeter would narrow a wide ask anyway; 4 is a latency choice, not a memory one.
+export const HIGGS_STREAM_BATCH_WIDTH = 4;
+
 function streamBatchCeiling(): number {
+  // Per ENGINE, before the cache: the selection can change at runtime (Settings,
+  // the extension's config.set), and the cached number below is Orpheus's tier.
+  if (serveEngine() === 'higgs') return HIGGS_STREAM_BATCH_WIDTH;
   if (streamBatchCeilingCache !== null) return streamBatchCeilingCache;
   let ceiling = STREAM_BATCH_CEILING_DEFAULT;
   if (process.platform === 'darwin') {

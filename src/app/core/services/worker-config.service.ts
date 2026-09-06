@@ -1,6 +1,6 @@
 import { Injectable, computed, inject, signal } from '@angular/core';
 
-import { ElectronService, StreamWorkerConfig } from './electron.service';
+import { ElectronService, StreamEngineName, StreamWorkerConfig } from './electron.service';
 import { ComponentService } from './component.service';
 
 /** Hardware-based recommendation about whether multiple workers will help. */
@@ -183,13 +183,15 @@ export class WorkerConfigService {
    *  worker-count/device controls it gates were a multi-worker-pool concept and
    *  do not apply to it. */
   readonly isOrpheus = computed(() => this.engine() === 'orpheus');
+  /** True when Higgs is the active streaming engine (a voice change is a server restart there). */
+  readonly isHiggs = computed(() => this.engine() === 'higgs');
 
   /**
    * Switch the streaming engine. Persists and applies on the next engine start;
    * the main process stops the previously-active engine so the next play warms
    * the newly-chosen one.
    */
-  async setEngine(engine: 'orpheus'): Promise<void> {
+  async setEngine(engine: StreamEngineName): Promise<void> {
     const result = await this.electron.ttsStreamSetWorkerConfig({ engine });
     if (result.success && result.data) {
       this.config.set(result.data);

@@ -66,6 +66,12 @@ export interface StreamSchedulerEvent {
 }
 
 /** Multi-worker capability + topology for the streaming TTS engine. */
+/** The streaming engines main can select — mirrors `StreamEngineName` in
+ *  `electron/streaming-engine.ts` (the renderer cannot import it). Main still
+ *  refuses a name it does not have, by name, so this union is a picker's
+ *  vocabulary, not a guarantee. */
+export type StreamEngineName = 'orpheus' | 'higgs';
+
 export interface StreamWorkerConfig {
   /** Multi-worker capability toggle (off ⇒ always 1 CPU worker) */
   enabled: boolean;
@@ -81,10 +87,12 @@ export interface StreamWorkerConfig {
   activeWorkers: number;
   /** The streaming engine backing the Listen feature. Persisted; applies on the
    *  next engine start. */
-  engine?: 'orpheus';
-  /** Which engines are usable on this machine (Orpheus when its env
-   *  / WSL is set up). Drives the engine chooser's availability. */
-  engines?: { id: 'orpheus'; name: string; available: boolean; reason?: string }[];
+  engine?: StreamEngineName;
+  /** Every engine this build streams, each with whether THIS machine can run it
+   *  (Orpheus when its env / WSL is set up; Higgs when a voice checkpoint is
+   *  installed and its backend exists for the platform). Drives the engine
+   *  chooser: an unavailable engine is offered disabled with its `reason`. */
+  engines?: { id: StreamEngineName; name: string; available: boolean; reason?: string }[];
   /** Voices the active engine can use (for the voice picker). */
   voices?: string[];
   /** The persisted default voice the server warms on start. */
@@ -3203,7 +3211,7 @@ export class ElectronService {
     return { success: false, error: 'Not running in Electron' };
   }
 
-  async ttsStreamSetWorkerConfig(updates: { engine?: 'orpheus'; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
+  async ttsStreamSetWorkerConfig(updates: { engine?: StreamEngineName; enabled?: boolean; count?: number; devicePref?: 'auto' | 'cpu' | 'gpu' | 'mps'; voice?: string }): Promise<{ success: boolean; data?: StreamWorkerConfig; error?: string }> {
     if (this.isElectron) {
       return (window as any).electron.ttsStream.setWorkerConfig(updates);
     }

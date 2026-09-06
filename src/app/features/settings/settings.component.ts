@@ -4,7 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { Router, ActivatedRoute } from '@angular/router';
 import { SettingsService, SettingsSection, SettingField } from '../../core/services/settings.service';
 import { PluginService, PluginInfo } from '../../core/services/plugin.service';
-import { ElectronService, OrpheusBatchConfig } from '../../core/services/electron.service';
+import { ElectronService, OrpheusBatchConfig, StreamEngineName } from '../../core/services/electron.service';
 import { LibraryService } from '../../core/services/library.service';
 import { DesktopButtonComponent, DesktopSelectComponent, DesktopSelectItems } from '../../creamsicle-desktop';
 import { AddOnsPanelComponent } from './components/add-ons-panel.component';
@@ -409,25 +409,40 @@ import { RemoveAllDataComponent } from '../../shared/remove-all-data.component';
                 <div class="settings-group">
                   <h4>Voice Engine</h4>
                   <p class="field-description">
-                    The TTS engine used for streaming playback. <strong>Orpheus</strong>
-                    has the most natural prosody and runs a single GPU worker. Applies the
-                    next time the engine starts. It is the only streaming engine this
-                    build has — XTTS was removed on 2026-09-05.
+                    The TTS engine used for streaming playback — the in-app Listen tab,
+                    the TTS API server and the browser extension. <strong>Orpheus</strong>
+                    switches voices for free; <strong>Higgs</strong> renders faster and
+                    its voice is the checkpoint the server starts on, so a voice change
+                    restarts it. Applies the next time the engine starts.
                   </p>
+                  <!-- One button per engine main reports, never a hand-written list:
+                       an engine this machine cannot run is offered disabled with
+                       main's own reason on hover, and selecting one main refuses
+                       surfaces that refusal. -->
                   <div class="worker-options">
-                    <button
-                      class="worker-btn"
-                      [class.selected]="workerCfg.engine() === 'orpheus'"
-                      [disabled]="streamEngineInfo('orpheus')?.available === false"
-                      [title]="streamEngineInfo('orpheus')?.available === false ? (streamEngineInfo('orpheus')?.reason || 'Orpheus is not set up on this machine') : 'High-prosody neural TTS (single GPU worker)'"
-                      (click)="setStreamEngine('orpheus')"
-                    >Orpheus</button>
+                    @for (eng of workerCfg.engines(); track eng.id) {
+                      <button
+                        class="worker-btn"
+                        [class.selected]="workerCfg.engine() === eng.id"
+                        [disabled]="eng.available === false"
+                        [title]="eng.available === false ? (eng.reason || (eng.name + ' is not set up on this machine')) : streamEngineBlurb(eng.id)"
+                        (click)="setStreamEngine(eng.id)"
+                      >{{ eng.name }}</button>
+                    }
                   </div>
-                  @if (streamEngineInfo('orpheus')?.available === false) {
-                    <span class="hint">Orpheus isn't set up yet — install/locate it in Settings → Add-ons (or enable WSL2 for Orpheus on Windows).</span>
+                  @for (eng of workerCfg.engines(); track eng.id) {
+                    @if (eng.available === false) {
+                      <span class="hint">{{ eng.name }} can't stream on this machine: {{ eng.reason || 'not set up' }}</span>
+                    }
+                  }
+                  @if (streamEngineError(); as err) {
+                    <span class="hint warn-text">{{ err }}</span>
                   }
                   @if (workerCfg.isOrpheus()) {
                     <span class="hint">Orpheus runs one worker on the GPU, so the device and worker-count options below have nothing to act on.</span>
+                  }
+                  @if (workerCfg.isHiggs()) {
+                    <span class="hint">Higgs streams in fixed groups of {{ HIGGS_STREAM_GROUP }} sentences on the GPU; the device and worker-count options below have nothing to act on.</span>
                   }
                 </div>
 
@@ -2224,8 +2239,14 @@ export class SettingsComponent implements OnInit {
   /** Choose which TTS engine backs the Listen feature (applies on next start).
    *  One engine, one button — the parameter stays because main still refuses an
    *  engine name it does not have, and this is where a second one would arrive. */
-  setStreamEngine(engine: 'orpheus'): void {
-    void this.workerCfg.setEngine(engine);
+  setStreamEngine(engine: StreamEngineName): void {
+    this.streamEngineError.set(null);
+    void this.workerCfg.setEngine(engine).catch((err: unknown) => {
+      // Main REFUSES an engine it cannot run, by name, with the reason the
+      // picker would have shown; that refusal belongs on the page, not in the
+      // console — the button just clicked would otherwise do nothing visible.
+      this.streamEngineError.set(err instanceof Error ? err.message : String(err));
+    });
   }
 
   /** desktop-select options for the streaming voice picker (value = voice id). */
@@ -2242,7 +2263,18 @@ export class SettingsComponent implements OnInit {
   }
 
   /** Availability of a given streaming engine on this machine (for the chooser). */
-  streamEngineInfo(id: 'orpheus'): { id: 'orpheus'; name: string; available: boolean; reason?: string } | undefined {
+  /** Refusal from the last engine switch, shown under the chooser. */
+  readonly streamEngineError = signal<string | null>(null);
+  /** The Higgs Listen group width the pool uses (orpheus-worker-pool HIGGS_STREAM_BATCH_WIDTH). */
+  readonly HIGGS_STREAM_GROUP = 4;
+
+  streamEngineBlurb(id: StreamEngineName): string {
+    return id === 'higgs'
+      ? 'Faster renders; the voice is the checkpoint the server starts on'
+      : 'High-prosody neural TTS (single GPU worker)';
+  }
+
+  streamEngineInfo(id: StreamEngineName): { id: StreamEngineName; name: string; available: boolean; reason?: string } | undefined {
     return this.workerCfg.engines().find((e) => e.id === id);
   }
 
