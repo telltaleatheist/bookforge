@@ -390,6 +390,13 @@ interface Worker {
 let worker: Worker | null = null;
 let mainWindow: BrowserWindow | null = null;
 let currentVoice: string | null = null;
+// THE VOICE THE LIVE HIGGS WORKER WAS SPAWNED ON — the id whose voice document
+// buildSpawnPlan wrote — or null when no Higgs worker is up. This, not
+// `currentVoice`, is what decides whether a Higgs load needs a RESTART: a v3
+// server is started on its voice, so a worker spawned on deathstalker can load
+// deathstalker in place, whether or not that load has happened yet. Cleared with
+// the rest of the engine facts in forgetLoadedEngine().
+let spawnedHiggsVoice: string | null = null;
 let lastVoice: string | null = null;
 let detectedDevice: 'cuda' | 'mlx' | 'cpu' | null = null;
 
@@ -489,6 +496,7 @@ function noteLoadedEngine(response: OrpheusResponse): void {
 
 /** The loaded engine died with its process; the next load re-reports all of it. */
 function forgetLoadedEngine(): void {
+  spawnedHiggsVoice = null;
   loadedEngineId = null;
   loadedSampleRate = null;
   loadedPads = null;
@@ -811,6 +819,7 @@ export function buildSpawnPlan(gpuUtil?: number): SpawnPlan {
   // spawn time because a v3 server is STARTED ON its voice — see loadVoice.
   if (engine === 'higgs') {
     const voice = getDefaultVoice();
+    spawnedHiggsVoice = higgsPreflight(voice).id;
     return buildNarratorSpawn({
       engine: 'higgs',
       phase: 'serve',
@@ -1315,16 +1324,34 @@ export async function loadVoice(
   if (serveEngine() === 'higgs') {
     const wantHiggs = higgsPreflight(voice || getDefaultVoice()).id;
     if (currentVoice === wantHiggs) return { success: true };
-    console.log(
-      `[Orpheus Pool] Higgs voice change '${currentVoice ?? '(none)'}' → '${wantHiggs}': `
-      + 'restarting the worker (a v3 server is started ON its voice and cannot swap one in place)',
-    );
-    // Set BEFORE the restart: buildSpawnPlan reads getDefaultVoice() to decide
-    // which voice document to write, and currentVoice is about to be cleared.
-    lastVoice = wantHiggs;
-    await endSession({ keepServiceArmed: true });
-    const restarted = await startSession();
-    if (!restarted.success) return { success: false, error: restarted.error };
+    // A LOAD OF THIS VOICE ALREADY IN FLIGHT IS JOINED, before anything below can
+    // tear the worker down. The inFlightLoad check further down came too late for
+    // Higgs: each of the extension's prefetch speaks arriving during the ~40 s
+    // cold load reached this branch, saw no voice loaded, and RESTARTED the worker
+    // that was loading it — killing the load, failing every queued sentence with
+    // "Model not loaded", and spawning again for the next prefetch to kill
+    // (2026-09-06, the first Higgs Listen on the Mac: a whole article failed in
+    // one second).
+    if (inFlightLoad && inFlightLoad.voice === wantHiggs) {
+      console.log(`[Orpheus Pool] Higgs voice '${wantHiggs}' is already loading — joining that load`);
+      return inFlightLoad.promise;
+    }
+    // A RESTART ONLY WHEN THE WORKER WAS SPAWNED ON A DIFFERENT VOICE. The old
+    // test was `currentVoice !== wantHiggs`, which is also true of a freshly
+    // spawned worker that has not loaded anything yet — so every cold start
+    // restarted its own worker once before loading (two spawns, one wasted).
+    if (spawnedHiggsVoice !== wantHiggs) {
+      console.log(
+        `[Orpheus Pool] Higgs voice change '${currentVoice ?? '(none)'}' → '${wantHiggs}': `
+        + 'restarting the worker (a v3 server is started ON its voice and cannot swap one in place)',
+      );
+      // Set BEFORE the restart: buildSpawnPlan reads getDefaultVoice() to decide
+      // which voice document to write, and currentVoice is about to be cleared.
+      lastVoice = wantHiggs;
+      await endSession({ keepServiceArmed: true });
+      const restarted = await startSession();
+      if (!restarted.success) return { success: false, error: restarted.error };
+    }
   }
 
   const v = serveEngine() === 'higgs'
