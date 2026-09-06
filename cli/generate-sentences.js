@@ -119,10 +119,22 @@ function printCoverageSummary(reportPath) {
   }
   if (s.headingCues != null) console.log(`[sentences]   headings: ${s.headingCues} cue(s) tagged NOTE heading`);
   const bs = rep.boundarySnap;
-  if (bs && bs.windowSeconds > 0) {
+  if (bs && bs.windowSeconds > 0 && s.contiguousCues) {
     console.log(`[sentences]   boundary snap: ${bs.seamsSnapped}/${bs.seamsConsidered} seam(s) moved onto a silence ` +
       `(window ${bs.windowSeconds}s, ${bs.silenceIntervals} silence intervals; ` +
       `|move| median ${bs.medianAbsMoveSeconds}s max ${bs.maxAbsMoveSeconds}s)`);
+  } else if (bs && bs.windowSeconds > 0) {
+    // Non-contiguous cues share no seam; each EDGE is placed independently, so the
+    // number that means something is where those edges came from.
+    const es = s.cueEdgeSources || {};
+    console.log(`[sentences]   cue edges: ${es.endSilence || 0} end(s) + ${es.startSilence || 0} start(s) ` +
+      `placed in a detected pause, ${es.endWord || 0} end(s) off the word, ` +
+      `${es.endNextOnset || 0} inferred from the next onset ` +
+      `(${bs.silenceIntervals} intervals from ${bs.silenceSource || 'unknown'})`);
+  }
+  if (s.interpolatedCues) {
+    console.log(`[sentences]   ${s.interpolatedCues} cue(s) interpolated — never confirmed in the audio; ` +
+      `tagged NOTE align matched=interpolated`);
   }
   const MAX_LIST = 12;
   const bigRuns = rep.epubNotInAudio.filter((r) => r.count >= 3);

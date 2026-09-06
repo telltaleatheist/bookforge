@@ -21,14 +21,26 @@ Pipeline (all inside the whisperx conda env):
      correct multi-second local drift it can unambiguously confirm (music
      bridges / recap montages can strand a chunk past the true audio, where
      forced alignment cannot recover).
-  4b. Boundary snap (--snap-silence-s, default 0.6, 0 = off): pull each cue SEAM
-     onto the middle of the nearest detected silence within that window. Forced
-     alignment puts the seam at a CTC frame, which lands a couple hundred ms
-     early or late; the narrator's pause is where a corpus cutter must cut. The
-     silence map is scanned off the already-decoded 16 kHz wav on a background
-     thread during the align stage, so it costs no wall clock.
+  4b. Cue EDGES (2026-09-06). A cue is its own sentence's speech: it starts a
+     little before its first word and ends a little after its LAST word, and the
+     narrator's pause is left BETWEEN cues. Cues are therefore NOT contiguous.
+     With --snap-silence-s > 0 (default 0.6) each edge is additionally placed
+     INDEPENDENTLY inside the pause the silence map actually found, bounded by that
+     window. --contiguous-cues restores the old gapless build (cue N ends at cue
+     N+1's onset, seams snapped by snap_boundaries) for a consumer that needs it.
+     The silence map comes from auto-editor's loudness analysis when its binary is
+     on PATH (--silence-source, --ae-threshold, --ae-min-silence-s), else ffmpeg
+     silencedetect off the already-decoded 16 kHz wav; --silence-map <json> takes a
+     pre-computed one (autoeditor_silences.py's shape, or a bare [[s, e], ...]).
+     Either scan runs on a background thread during the align stage, so it costs no
+     wall clock. auto-editor is the default because it MEASURES better at word
+     edges: on a 148-cue sample it halved the mid-word edge rate (2.36% -> 1.01%)
+     against silencedetect, mostly by seeing the 0.04-0.25 s pauses silencedetect's
+     duration floor hides.
   5. Emit a sentence VTT (epub text + precise times). Cues from heading blocks
-     carry `NOTE heading`; whisper-fallback cues carry `NOTE asr-fallback`.
+     carry `NOTE heading`; whisper-fallback cues carry `NOTE asr-fallback`; every
+     book cue carries `NOTE align matched=… start=… end=… offset=…` (per-cue
+     confidence, mirrored in --report's `cues` array).
 
 Default CPU. --device mps runs the align workers on Metal — measured safe and
 ~2.5x faster with 150 s chunks when torch.mps.empty_cache() runs after each
@@ -46,8 +58,13 @@ Usage:
   align_audiobook.py --audio A.m4b --sentences S.json --out O.vtt
                      [--workers N] [--chunk-s 300] [--rough-model base]
                      [--lang en] [--tmp DIR] [--rough-cache C.json]
-                     [--device cpu|mps] [--snap-silence-s 0.6]
+                     [--device cpu|mps] [--snap-silence-s 0.6] [--contiguous-cues]
+                     [--silence-source auto|ffmpeg|auto-editor] [--silence-map M.json]
                      [--report-hole-min-s 3]
+
+Cue-edge quality is measured, not asserted: electron/scripts/measure_cue_edges.py
+scores a VTT's edges against the audio's own envelope (mid-word edges, ends inside
+speech, ends on the next onset, starts with no lead-in).
   S.json: ["sentence 1", "sentence 2", ...]  (epub sentences, in reading order)
      or: [{"text": "...", "kind": "prose"|"heading"}, ...]  — `kind` tags the cue
 """
@@ -113,6 +130,38 @@ def _winit(wav_path, lang, device):
     _WAV = wav_path; _LANG = lang; _DEVICE = device
     _MODEL, _META = whisperx.load_align_model(language_code=lang, device=device)
 
+# How far ahead the sentence walker may look for the next epub token before it
+# declares that token un-emitted. SMALL ON PURPOSE: the aligned word stream IS
+# this chunk's epub text, so a sentence's next token is normally the very next
+# word. A wide look-ahead is exactly how the old count-based cursor over-ran on
+# repeated tokens ("...of the sea. Of the..."), which would now hand a sentence
+# the END TIME of a word belonging to a later one.
+CONSUME_LOOK = 3
+
+
+def _consume_sentence(words, j, tk):
+    """Walk the chunk's aligned word stream from index `j` over one sentence's
+    tokens `tk`. Returns (last_word_end, next_cursor).
+
+    The old code never did this: it kept word STARTS only and advanced the cursor
+    by a token COUNT (`wi = k + len(tk) - need`), an estimate. Walking the tokens
+    gives the sentence's real last-word end AND an exact cursor for the next
+    sentence, and the tight look-ahead is the repeated-token guard."""
+    p = j; last_end = None; last_hit = j - 1
+    for t in tk:
+        q = p; hit = None
+        while q < min(len(words), p + CONSUME_LOOK + 1):
+            if words[q][2] == t:
+                hit = q; break
+            q += 1
+        if hit is None:
+            continue                      # token the aligner never emitted — hold the cursor
+        if words[hit][1] is not None:
+            last_end = words[hit][1]
+        last_hit = hit; p = hit + 1
+    return last_end, min(max(p, last_hit + 1), len(words))
+
+
 def _align_chunk(args):
     ci, idxs, a, b, texts = args
     import whisperx
@@ -127,10 +176,13 @@ def _align_chunk(args):
         if _DEVICE == "mps":  # release Metal buffers per chunk — keeps wired memory flat
             import torch
             if hasattr(torch, "mps") and hasattr(torch.mps, "empty_cache"): torch.mps.empty_cache()
+        # KEEP THE WORD ENDS. Until 2026-09-06 this discarded w["end"], so a
+        # sentence had no end of its own and every cue was forced to run to the
+        # NEXT sentence's onset — see build_events.
         words = []
         for sg in res["segments"]:
             for w in sg.get("words", []):
-                words.append((w.get("start"), _norm(w.get("word", ""))))
+                words.append((w.get("start"), w.get("end"), _norm(w.get("word", ""))))
         # Walk the aligned words in order, accepting a sentence only when its
         # opening tokens confirm as an ordered run inside a tight window. The old
         # rule (first token found ANYWHERE ahead) let a single common word like
@@ -144,16 +196,14 @@ def _align_chunk(args):
             need = min(len(tk), 4)
             j = wi
             while j < len(words):
-                if words[j][1] == tk[0] and words[j][0] is not None:
+                if words[j][2] == tk[0] and words[j][0] is not None:
                     m = 1; k = j + 1
                     while k < min(len(words), j + 12) and m < need:
-                        if words[k][1] == tk[m]: m += 1
+                        if words[k][2] == tk[m]: m += 1
                         k += 1
                     if m >= (need if need <= 2 else need - 1):  # tolerate 1 miss when 3+
-                        out[si] = words[j][0] + a
-                        # skip roughly the rest of this sentence's words so the
-                        # next sentence's scan can't false-match inside its tail
-                        wi = min(k + max(0, len(tk) - need), len(words))
+                        end, wi = _consume_sentence(words, j, tk)
+                        out[si] = (words[j][0] + a, (end + a) if end is not None else None)
                         break
                 j += 1
         return (ci, out)
@@ -579,6 +629,10 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
 
     checked = 0; fixed = 0; ambiguous = 0
     abs_offsets = []; residual_offsets = []; offenders = []
+    # per-sentence measured offset (PRE-fix), so every cue can carry its own
+    # audio-truth agreement into the VTT NOTE and the report instead of the run
+    # only publishing aggregates.
+    per_index = {}
     for i in narr:
         tk = toks(sents[i])
         if len(tk) < 3: continue
@@ -600,7 +654,7 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         j, o = found
         measured = max(0.0, WT[j] - o / rate)
         off = measured - t0
-        checked += 1; abs_offsets.append(abs(off))
+        checked += 1; abs_offsets.append(abs(off)); per_index[i] = off
         if abs(off) > fix_thresh:
             offenders.append({"sentenceIndex": i, "cueTime": t0,
                               "measuredTime": measured, "offsetSeconds": off})
@@ -629,6 +683,7 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5):
         "residualMaxAbs": residual_offsets[-1] if nr else 0.0,
         "fixThreshold": fix_thresh, "windowS": window,
         "worst": offenders[:10],
+        "offsets": per_index,
     }
 
 
@@ -665,54 +720,314 @@ def detect_silences(wav_path, noise_db, min_s):
     return iv
 
 
+# auto-editor's audio timebase is EXACTLY 30 fps for audio-only input. NEVER derive
+# it as frames/duration: auto-editor drops the trailing partial chunk, so the frame
+# count is short by 1-2 s worth, and dividing smears that deficit across the whole
+# timeline as a linear stretch (+1.5 s by the end of a 12 h book) — which is how
+# snapped boundaries ended up mid-sentence in orpheus-finetune's cutter.
+AE_FPS = 30.0
+
+
+def load_silence_map(path):
+    """External silence map -> sorted [(start, end)].
+
+    Accepts autoeditor_silences.py's shape ({"silences": [[s, e], ...], "fps", "thr",
+    "duration"}) or a bare [[s, e], ...]. Raises on anything else rather than
+    silently running with an empty map — a caller that passed --silence-map asked
+    for THAT map, and falling back to "no snapping" would look like success."""
+    d = json.load(open(path, encoding="utf-8"))
+    raw = d.get("silences") if isinstance(d, dict) else d
+    if not isinstance(raw, list):
+        raise ValueError(f"{path}: expected a list of [start, end] pairs "
+                         f"(or {{'silences': [...]}}), got {type(raw).__name__}")
+    iv = []
+    for k, p in enumerate(raw):
+        if not (isinstance(p, (list, tuple)) and len(p) >= 2):
+            raise ValueError(f"{path}: entry {k} is not a [start, end] pair: {p!r}")
+        a, z = float(p[0]), float(p[1])
+        if z > a: iv.append((a, z))
+    iv.sort()
+    return iv
+
+
+def detect_silences_autoeditor(src, thr, min_s, total_dur, exe="auto-editor"):
+    """auto-editor's per-frame loudness analysis -> sorted [(start, end)].
+
+    Owen's asset for exactly this job, and the same analysis autoeditor_silences.py
+    wraps. It beats ffmpeg silencedetect at cue edges for two reasons measured on
+    the chapter-0 sample: it is a normalized LOUDNESS envelope rather than a fixed
+    dB gate, and it can be asked for pauses well under silencedetect's practical
+    floor — the 0.15-0.25 s inter-sentence pauses that silencedetect at 0.25 s
+    cannot see at all, which is where the aligner was placing its worst edges.
+
+    Returns [] (and logs) on any failure: a silence map is an improvement pass."""
+    p = subprocess.run([exe, "levels", src, "--edit", "audio"],
+                       capture_output=True, text=True, errors="replace")
+    if p.returncode != 0:
+        log(f"auto-editor levels failed (exit {p.returncode}): {p.stderr.strip()[-400:]}")
+        return []
+    vals = []; started = False
+    for line in p.stdout.splitlines():
+        s = line.strip()
+        if not s: continue
+        if s.startswith("@"):
+            started = started or s == "@start"
+            continue
+        if started:
+            try: vals.append(float(s))
+            except ValueError: pass
+    if not vals:
+        log("auto-editor levels produced no values")
+        return []
+    expected = total_dur * AE_FPS
+    if abs(len(vals) - expected) > 90:   # >3 s: not just the trailing chunk
+        log(f"auto-editor frame count {len(vals)} vs expected {expected:.0f} differs by "
+            f"{abs(len(vals) - expected) / AE_FPS:.1f}s — refusing a stretched timeline")
+        return []
+    iv = []; i = 0; n = len(vals)
+    while i < n:
+        if vals[i] < thr:
+            j = i
+            while j < n and vals[j] < thr: j += 1
+            a, z = i / AE_FPS, j / AE_FPS
+            if z - a >= min_s: iv.append((a, z))
+            i = j
+        else:
+            i += 1
+    return iv
+
+
 # Cue length bounds, module-level so the regression suite exercises THE SHIPPED
 # LOOP rather than a copy of it (an earlier suite reimplemented build_events in the
 # test file, so main()'s actual loop was never executed by any test).
 MAX_CUE_S = 120.0
 MIN_CUE_S = 0.4
 
+# ---- cue EDGE geometry (2026-09-06) -----------------------------------------
+# THE DEFECT this replaces: cues were contiguous BY CONSTRUCTION — cue N's end was
+# cue N+1's onset — so the whole inter-sentence pause lived inside cue N and the
+# next sentence's first syllable sat at every cue end. Measured on a shipped VTT:
+# 74% of clips cut with a +0.2 s pad contained the next sentence's first syllable.
+# Starts had the mirror problem: the raw CTC onset of word 1 with zero pre-roll,
+# and CTC onsets run late on plosives and breaths (7% of cues started within 20 ms
+# of, or after, their own speech onset).
+#
+# Now each cue covers ITS OWN speech: [first word start - START_PAD,
+# last word end + END_PAD], each edge clamped off its neighbour by EDGE_GAP and,
+# when a silence map exists, placed INSIDE the narrator's actual pause.
+END_PAD_S = 0.25        # air kept after the sentence's last word
+START_PAD_S = 0.15      # pre-roll before the sentence's first word
+EDGE_GAP_S = 0.04       # a cue edge never comes closer than this to a neighbour
+# When the pause is too SHORT to give both neighbours their full pad, the two
+# edges share it in proportion instead of one of them being clamped flat against
+# the other. Clamping was measured to be the single biggest remaining defect: a
+# pause under END_PAD+EDGE_GAP pinned cue N's end at `next_onset - 0.04`, which
+# then pinned cue N+1's start at `prev_end + 0.04` — i.e. exactly on its own first
+# syllable, with no lead-in at all. (Chapter-0 measurement: 12.8% of starts and
+# 8.8% of ends, every one of them a short-pause pair.)
+END_SHARE = END_PAD_S / (END_PAD_S + START_PAD_S)      # 0.625
+START_SHARE = START_PAD_S / (END_PAD_S + START_PAD_S)  # 0.375
+# Ties/inversions only. main()'s monotonic clamps pin an out-of-order start EQUAL
+# to its predecessor; without a floor that leaves a zero-length cue. A genuine
+# 0.3 s gap between two short sentences is left alone.
+MIN_START_GAP_S = 0.12
 
-def build_events(sent_start, narr, sents, kinds, dur):
-    """Narrated sentences -> [[start, end, text, kind]] cues.
 
-    Dropped (non-narrated) sentences get no cue at all: their text occupies no
-    audio, so the preceding cue correctly runs to the next narrated start — capped
-    at MAX_CUE_S so a long unaligned stretch can't become one hour-long stale cue
-    (which also overflowed the mp4 muxer's 32-bit packet duration).
+# A silence "belongs to" a sentence onset when it ends within this of it — the
+# slack absorbs a breath and a CTC onset that fires a frame or two early.
+PAUSE_TOUCH_S = 0.25
 
-    MIN_CUE_S is also the fix for a long-standing overlap defect. Both monotonic
-    clamps in main() use a strict `<`, so an out-of-order start is pinned EQUAL to
-    its predecessor rather than after it; when two cues then share a start, the
-    length floor used to push the earlier cue's end MIN_CUE_S PAST the later cue's
-    start, emitting an overlapping pair (present at the end of every McKinley VTT,
-    before and after the 2026-09-03 work). Pushing the NEXT start out by the same
-    amount is what keeps the timeline sorted, and the shift propagates naturally
-    through further ties because `sent_start` is what the next iteration reads for
-    its `s`. The suite scores this loop against a pre-fix copy over 20,000
-    randomized tie-heavy start-sets: 35,034 overlapping pairs -> 0 (the reviewer's
-    independent corpus, differently seeded, scored 35,065 -> 0).
 
-    MUTATES `sent_start`, deliberately — that propagation is the mechanism.
+def _pause_before(silences, sil_starts, target, floor):
+    """The narrator's pause immediately before the onset `target`: the last silence
+    interval that starts before `target`, ends within PAUSE_TOUCH_S of it, and
+    starts after `floor`. Returns (start, end-clipped-to-target) or None.
+
+    THIS, not the aligner's word end, is where a sentence's speech actually stops.
+    wav2vec2's final word routinely runs straight THROUGH the pause to the next
+    onset — CTC keeps the last token active over the trailing blank — and a span
+    that reaches the next onset makes every "end = last word + pad" rule collapse
+    onto the next sentence's first syllable. Measured on the chapter-0 sample: all
+    10 remaining bad ends had a word end within 0.11 s of the next onset while the
+    audio held a 0.2-0.9 s pause. Reading the pause instead fixes both edges at
+    once, and reading it ONCE per boundary is what guarantees the two cues cannot
+    collide over it."""
+    k = bisect.bisect_left(sil_starts, target) - 1
+    if k < 0:
+        return None
+    a, z = silences[k]
+    if a <= floor or z < target - PAUSE_TOUCH_S:
+        return None
+    z2 = min(z, target)
+    return (a, z2) if z2 > a else None
+
+
+def _pause_after(silences, sil_starts, word_end, limit):
+    """The first pause at or after `word_end` and starting before `limit`.
+
+    The end's second chance. `_pause_before` answers "where did the narrator stop
+    before the next sentence", which is the right question at a normal boundary but
+    the wrong one when unmatched audio (a footnote read, a sting) sits between the
+    two sentences: that pause is seconds away and belongs to the foreign audio, not
+    to this cue. The pause immediately after our own last word does belong to us."""
+    k = bisect.bisect_left(sil_starts, word_end)
+    if k > 0: k -= 1
+    while k < len(silences) and silences[k][0] < limit:
+        a, z = silences[k]
+        if z > word_end:
+            a2 = max(a, word_end)
+            if z > a2: return (a2, z)
+        k += 1
+    return None
+
+
+def build_events(sent_start, narr, sents, kinds, dur, sent_span=None,
+                 silences=None, snap_window=0.0, contiguous=False):
+    """Narrated sentences -> [[start, end, text, kind, meta]] cues.
+
+    DEFAULT (non-contiguous): a cue is its own sentence's speech plus a small,
+    bounded margin. `sent_span[i]` is the wav2vec2 span (last word end - first word
+    start) for sentence i, or None when the aligner never confirmed it — those cues
+    fall back to the old "run to the next onset" end and SAY SO in their meta
+    (endSource == "next-onset"), so a downstream cutter can tell a measured edge
+    from an inferred one.
+
+      end   = min(last_word_end + END_PAD_S, next_onset - EDGE_GAP_S)
+      start = max(first_word_start - START_PAD_S, prev_end + EDGE_GAP_S)
+
+    then, when a silence map is available (`snap_window` > 0), each edge is snapped
+    INDEPENDENTLY into the pause that is actually there — the end END_PAD_S into
+    the silence that follows the last word, the start no earlier than the start of
+    the silence that precedes the first word. An edge may not move more than
+    `snap_window` from its word-derived position, so a coarse silence map can
+    correct a CTC frame but never manufacture drift.
+
+    `contiguous=True` restores the pre-2026-09-06 behaviour (cue N ends at cue N+1's
+    onset) for any consumer that needs a gapless timeline. It is OFF by default:
+    the gaps are the point — the pause belongs to neither sentence.
+
+    Dropped (non-narrated) sentences get no cue at all. MAX_CUE_S caps a cue so a
+    long unaligned stretch can't become one hour-long stale cue (which also
+    overflowed the mp4 muxer's 32-bit packet duration).
+
+    MUTATES `sent_start` on ties, deliberately: an out-of-order start is pushed out
+    so the timeline stays strictly sorted, and the shift must be visible to the
+    report (which reads `sent_start`) as well as to the VTT.
     """
+    n = len(narr)
+    if contiguous:
+        events = []
+        for x, i in enumerate(narr):
+            s = sent_start[i]
+            e = sent_start[narr[x + 1]] if x + 1 < n else min(s + 4, dur)
+            e = min(e, s + MAX_CUE_S)
+            if e <= s:
+                e = s + MIN_CUE_S
+                if x + 1 < n: sent_start[narr[x + 1]] = e
+            events.append([s, e, sents[i], kinds[i],
+                           {"sentenceIndex": i, "startSource": "word",
+                            "endSource": "next-onset"}])
+        return events
+
+    if n == 0:
+        return []
+    # de-tie first, so every cue has room to exist
+    starts = [sent_start[i] for i in narr]
+    for x in range(1, n):
+        if starts[x] < starts[x - 1] + MIN_START_GAP_S:
+            starts[x] = starts[x - 1] + MIN_START_GAP_S
+            sent_start[narr[x]] = starts[x]
+
+    sil = silences if (silences and snap_window > 0) else None
+    sil_starts = [a for a, _ in sil] if sil else None
+
+    # wav2vec2 last-word ends, clamped off the next onset. Treated as EVIDENCE, not
+    # truth: see _pause_before for the CTC trailing-blank over-run.
+    wends = []
+    for x in range(n):
+        sp = sent_span[narr[x]] if sent_span is not None else None
+        nxt = starts[x + 1] if x + 1 < n else dur
+        wends.append(min(starts[x] + sp, nxt) if (sp is not None and sp > 0) else None)
+
+    def split(x, target, floor):
+        """ONE decision per boundary: (end of cue x, start of the cue at `target`,
+        end source, start source). Both edges come out of the same pause, so they
+        are always at least EDGE_GAP_S apart and can never be placed in conflict.
+        `x` is -1 for the boundary before the first cue (no cue ends there)."""
+        w = wends[x] if x >= 0 else None
+
+        def place(a, z):
+            """Share one pause between the cue ending in it and the cue starting
+            after it. The two shares plus the reserved gap sum to the pause, so the
+            edges stay >= EDGE_GAP_S apart however short it is."""
+            r = max(0.0, z - a - EDGE_GAP_S)
+            return (a + min(END_PAD_S, END_SHARE * r),
+                    z - min(START_PAD_S, START_SHARE * r))
+
+        # 1. the pause the next sentence begins out of — the normal case, and the
+        #    only evidence that survives wav2vec2 running its last word through it.
+        p = _pause_before(sil, sil_starts, target, floor) if sil else None
+        s = None; s_src = "word"
+        if p is not None:
+            pe, ps = place(*p)
+            if abs(ps - (target - START_PAD_S)) <= snap_window:
+                s, s_src = ps, "silence"
+                # The END may follow that pause only when the pause is plausibly
+                # OURS. One seconds past our last word belongs to whatever was read
+                # in between — a footnote, a sting, audio the epub does not cover.
+                if w is None or p[0] <= w + snap_window:
+                    return (pe, s, "silence", s_src)
+        if w is None:
+            # No measured end for this cue. The pre-roll still gets its pad — the
+            # next sentence's onset is known — and the unmeasured end yields to it:
+            # losing 0.19 s off an end nobody measured beats leaving the next
+            # sentence's first syllable inside this clip. Flagged `next-onset`.
+            if s is None: s = target - START_PAD_S
+            return (min(s, target - START_PAD_S) - EDGE_GAP_S, s, "next-onset", s_src)
+        # 2. failing that, the pause immediately after OUR last word.
+        q = _pause_after(sil, sil_starts, w, target) if sil else None
+        if q is not None and q[0] <= w + END_PAD_S + snap_window:
+            return (place(*q)[0],
+                    s if s is not None else target - min(START_PAD_S,
+                        START_SHARE * max(0.0, target - w - EDGE_GAP_S)),
+                    "silence", s_src)
+        # 3. no pause the detector can see: share the room with the next onset.
+        r = max(0.0, target - w - EDGE_GAP_S)
+        return (w + min(END_PAD_S, END_SHARE * r),
+                s if s is not None else target - min(START_PAD_S, START_SHARE * r),
+                "word", s_src)
+
+    ends = [0.0] * n; esrc = ["next-onset"] * n
+    sts = [0.0] * n; ssrc = ["word"] * n
+    _e0, sts[0], _es0, ssrc[0] = split(-1, starts[0], -1e18)
+    sts[0] = max(0.0, sts[0])
+    for x in range(n):
+        target = starts[x + 1] if x + 1 < n else dur
+        e, s, es, ss = split(x, target, starts[x])
+        ceiling = min(target - EDGE_GAP_S, starts[x] + MAX_CUE_S, dur)
+        ends[x] = max(min(e, ceiling), min(starts[x] + MIN_CUE_S, ceiling))
+        esrc[x] = es
+        if x + 1 < n:
+            sts[x + 1] = max(s, ends[x] + EDGE_GAP_S, 0.0); ssrc[x + 1] = ss
+
     events = []
-    for x, i in enumerate(narr):
-        s = sent_start[i]
-        e = sent_start[narr[x + 1]] if x + 1 < len(narr) else min(s + 4, dur)
-        e = min(e, s + MAX_CUE_S)
-        if e <= s:
-            e = s + MIN_CUE_S
-            if x + 1 < len(narr): sent_start[narr[x + 1]] = e
-        events.append([s, e, sents[i], kinds[i]])
+    for x in range(n):
+        i = narr[x]
+        s = sts[x]
+        if s >= ends[x]:                 # degenerate; keep the cue non-empty
+            s = max(0.0, min(starts[x], ends[x] - 1e-3))
+        events.append([s, ends[x], sents[i], kinds[i],
+                       {"sentenceIndex": i, "startSource": ssrc[x], "endSource": esrc[x]}])
     return events
 
 
 def speech_coverage(events, silences, min_dur=3.0, max_speech=0.30, cap=40):
     """Cues that are mostly SILENCE — the honest "audio with no narration" signal.
 
-    find_holes cannot answer this. Cues are contiguous, so there is no literal gap
-    between them; it infers one by comparing a cue's span against how long a slow
-    reading of its text would take, which is a guess about reading speed, not a
-    measurement of the audio. This is a measurement: intersect each cue's span with
+    Still the honest measure even now that cues are non-contiguous: find_holes then
+    reports the literal gaps between cues, but a stretch of dead air INSIDE a cue
+    (a sting the aligner smeared a sentence over) is invisible to it either way.
+    This is a measurement: intersect each cue's span with
     the detected silence intervals and report the fraction that is actually spoken.
 
     A cue at least `min_dur` long whose span is `max_speech` or less speech is
@@ -729,7 +1044,8 @@ def speech_coverage(events, silences, min_dur=3.0, max_speech=0.30, cap=40):
         return [], 0
     sil_starts = [a for a, _ in silences]
     out = []
-    for s, e, txt, _kind in events:
+    for c in events:                      # index, not unpack: events carry a meta dict
+        s, e, txt = c[0], c[1], c[2]
         span = e - s
         if span < min_dur:
             continue
@@ -754,7 +1070,12 @@ def speech_coverage(events, silences, min_dur=3.0, max_speech=0.30, cap=40):
 def snap_boundaries(starts, ends, silences, window, min_gap=0.05):
     """Pull each cue SEAM onto the middle of a nearby silence.
 
-    In this pipeline cues are contiguous — cue i ends exactly where cue i+1 begins
+    CONTIGUOUS MODE ONLY since 2026-09-06 (`--contiguous-cues`). The default build
+    has no seams to snap: each cue's two edges are placed independently inside the
+    pause by build_events, which is strictly better — a shared seam has to be one
+    compromise time for two cues, and the pause belongs to neither sentence.
+
+    In contiguous mode cues share a boundary — cue i ends exactly where cue i+1 begins
     — so a "boundary" is ONE time shared by two cues, and it is precisely the seam
     a training-corpus cutter cuts on. Forced alignment puts it at the CTC frame
     where the model thinks the last phone ended, which routinely lands a couple
@@ -858,17 +1179,46 @@ def main():
     # For genuinely unnarrated audio see `lowSpeechCues`, which uses the silence
     # map rather than a reading-speed guess.
     ap.add_argument("--report-hole-min-s", type=float, default=None)
-    # Boundary snapping (2026-09-03): a cue seam belongs in the narrator's pause,
-    # not a few hundred ms into the next word. Pull each seam onto the middle of
-    # the nearest detected silence within this window; 0 disables. Bounded so a
-    # snap can only ever make a small correction — it cannot rescue real drift,
-    # and must not be able to manufacture it.
+    # Silence snapping. SEMANTICS CHANGED 2026-09-06: cues are no longer
+    # contiguous, so this no longer moves a shared seam — it snaps each cue's START
+    # and END independently into the narrator's real pause (end END_PAD_S into the
+    # silence after the last word; start no earlier than the start of the silence
+    # before the first word). The number is still a bound: an edge may not move
+    # further than this from its word-derived position, so a coarse map can correct
+    # a CTC frame but can never manufacture drift. 0 disables snapping (raw
+    # word-edge times). Under --contiguous-cues it keeps its old seam meaning.
     ap.add_argument("--snap-silence-s", type=float, default=0.6)
+    # Escape hatch for a consumer that needs a gapless timeline: cue N ends at cue
+    # N+1's onset, the pre-2026-09-06 behaviour, with seam snapping. OFF by
+    # default — that construction is the defect this run fixes (the whole
+    # inter-sentence pause, and the next sentence's first syllable, lived inside
+    # cue N, which is what a training-corpus cutter then cut).
+    ap.add_argument("--contiguous-cues", action="store_true")
     # silencedetect parameters for the snap map. -45 dB / 0.25 s is the pause
     # between sentences in a mastered audiobook; d must stay well BELOW a typical
     # sentence pause or the map misses the very seams we are trying to land in.
     ap.add_argument("--snap-noise-db", type=float, default=-45.0)
     ap.add_argument("--snap-min-silence-s", type=float, default=0.25)
+    # Where the silence map comes from. auto-editor is the default when its binary
+    # is on PATH: measured on the chapter-0 sample it halves the mid-word edge rate
+    # against ffmpeg silencedetect, because it is a normalized loudness envelope and
+    # it can report the 0.10-0.25 s inter-sentence pauses silencedetect's duration
+    # floor hides. `ffmpeg` forces the old scanner; `auto` falls back to it when
+    # auto-editor is missing or its analysis fails.
+    ap.add_argument("--silence-source", default="auto",
+                    choices=["auto", "ffmpeg", "auto-editor"])
+    ap.add_argument("--auto-editor-bin", default="auto-editor")
+    ap.add_argument("--ae-threshold", type=float, default=0.03,
+                    help="auto-editor normalized loudness below this counts as silence")
+    # 0.04 s, not autoeditor_silences.py's 0.10: a cue EDGE only needs somewhere
+    # quiet to land, and the sub-0.10 s gaps are exactly the boundaries that were
+    # being cut mid-word. Swept on the chapter-0 sample (mid-word edge rate):
+    # 0.10 -> 1.69%, 0.067 -> 1.35%, 0.04 -> 1.01%; thr 0.02 -> 1.69%,
+    # 0.03 -> 1.01%, 0.05 -> 1.35%.
+    ap.add_argument("--ae-min-silence-s", type=float, default=0.04)
+    # A PRE-COMPUTED map (autoeditor_silences.py's JSON, or a bare [[s, e], ...]).
+    # Skips the scan entirely — the analysis of a 12 h book is worth caching.
+    ap.add_argument("--silence-map", default="")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
     args = ap.parse_args()
     if args.hole_min_s < 0:
@@ -942,7 +1292,8 @@ def main():
     # slices from the original audio itself), so decode it on a background
     # thread overlapped with transcribe; joined before the align pool starts.
     fd, wav = tempfile.mkstemp(suffix=".wav"); os.close(fd)
-    silences = []      # (start, end) pauses for boundary snapping — filled on a bg thread
+    silences = []      # (start, end) pauses for edge snapping — filled on a bg thread
+    sil_src = []       # ...and which scanner produced them (for the log + the report)
     sil_t = None       # ...which the finally below must join before the wav is deleted
     silence_ok = True  # False = the map is absent or untrustworthy; consumers must skip
                        # it rather than read a list a stranded thread may still write to
@@ -1011,7 +1362,27 @@ def main():
         if args.snap_silence_s > 0:
             def _bg_silences():
                 try:
+                    if args.silence_map:
+                        silences.extend(load_silence_map(args.silence_map))
+                        sil_src.append(f"file:{os.path.basename(args.silence_map)}")
+                        return
+                    if args.silence_source in ("auto", "auto-editor"):
+                        # auto-editor reads the ORIGINAL master, not our 16 kHz wav:
+                        # its timebase is anchored to the file's own duration, and a
+                        # re-decode is exactly the timeline risk this run had to rule
+                        # out. (Verified sample-exact both ways on this sample.)
+                        iv = detect_silences_autoeditor(args.audio, args.ae_threshold,
+                                                        args.ae_min_silence_s, DUR,
+                                                        args.auto_editor_bin)
+                        if iv:
+                            silences.extend(iv); sil_src.append("auto-editor"); return
+                        if args.silence_source == "auto-editor":
+                            log("auto-editor produced no silence map and was demanded "
+                                "explicitly; snapping disabled this run")
+                            return
+                        log("auto-editor unavailable/failed; falling back to ffmpeg silencedetect")
                     silences.extend(detect_silences(wav, args.snap_noise_db, args.snap_min_silence_s))
+                    sil_src.append("ffmpeg-silencedetect")
                 except Exception as e:
                     # leaves `silences` empty, which every consumer already treats
                     # as "no map" — see the `and silences` guards below
@@ -1046,6 +1417,12 @@ def main():
         log(f"{len(chunks)} chunks")
 
         sent_start = list(rough)  # default to rough; refine with WhisperX
+        # wav2vec2 span (last word end - first word start) per sentence, or None
+        # when the aligner never confirmed the sentence. Held as a SPAN, not an
+        # absolute end, on purpose: every later stage (whisper-authority revert,
+        # the monotonic clamps, drift correction) moves a cue's START, and a span
+        # rides along with it instead of being silently left behind.
+        sent_span = [None] * N
         ctx = mp.get_context("spawn")
         completed = set()          # chunk indices (chunks[k][0]) that have finished
         failed_chunks = set()      # chunks whose align errored (kept coarse timing)
@@ -1077,7 +1454,9 @@ def main():
                         failed_chunks.add(ci)
                     else:
                         failed_chunks.discard(ci)
-                        for si, t in out.items(): sent_start[si] = t
+                        for si, (t, te) in out.items():
+                            sent_start[si] = t
+                            sent_span[si] = (te - t) if (te is not None and te > t) else None
                     progress(42 + int(56 * len(completed) / max(1, len(chunks))))
                     subprogress("align", int(100 * len(completed) / max(1, len(chunks))))
                     if len(completed) % 3 == 0 and workers > 1:
@@ -1115,8 +1494,8 @@ def main():
             try: os.remove(wav)
             except OSError: pass
     if args.snap_silence_s > 0:
-        log(f"silence map: {len(silences)} interval(s) at {args.snap_noise_db:g}dB / "
-            f"{args.snap_min_silence_s:g}s")
+        log(f"silence map: {len(silences)} interval(s) from "
+            f"{sil_src[0] if sil_src else 'nothing'}")
 
     if failed_chunks:
         log(f"align: {len(failed_chunks)}/{len(chunks)} chunk(s) FAILED — their sentences "
@@ -1177,18 +1556,41 @@ def main():
             prev = sent_start[i]
 
     stage("write")
-    # Dropped (non-narrated) sentences get no cue at all: their text occupies no
-    # audio, so the preceding cue correctly runs to the next narrated start —
-    # capped at MAX_CUE_S so a long unaligned stretch can't become one hour-long
-    # stale cue (which also overflowed the mp4 muxer's 32-bit packet duration).
-    events = build_events(sent_start, narr, sents, kinds, DUR)
+    # Cue EDGES, not seams: each cue covers its own sentence's speech, with the
+    # narrator's pause left BETWEEN cues. Dropped (non-narrated) sentences get no
+    # cue at all. See build_events for the geometry and the defect it replaces.
+    usable_sil = silences if (silence_ok and args.snap_silence_s > 0) else None
+    events = build_events(sent_start, narr, sents, kinds, DUR,
+                          sent_span=sent_span, silences=usable_sil,
+                          snap_window=args.snap_silence_s,
+                          contiguous=args.contiguous_cues)
 
-    # Boundary snapping. Runs BEFORE hole detection and fallback so every
-    # downstream consumer sees the final times. Only touches seams (cue i's end ==
-    # cue i+1's start) and only within --snap-silence-s, so it cannot reorder cues,
-    # empty one, or move anything far enough to count as drift.
+    # Per-cue confidence. `matched` says whether the sentence's own opening was
+    # found in audio truth (direct) or its time came from interpolating between
+    # neighbours (interpolated) — a downstream cutter must be able to drop the
+    # latter. `offsetSeconds` is drift_audit's PRE-fix measured disagreement with
+    # the rough transcript for this cue (null = the audit could not confirm it).
+    drift_offsets = drift.get("offsets", {})
+    edge_counts = {"startWord": 0, "startSilence": 0,
+                   "endWord": 0, "endSilence": 0, "endNextOnset": 0}
+    interpolated_cues = 0
+    for ev in events:
+        m = ev[4]; i = m["sentenceIndex"]
+        m["matched"] = "direct" if matched_direct[i] else "interpolated"
+        if m["matched"] == "interpolated": interpolated_cues += 1
+        off = drift_offsets.get(i)
+        m["offsetSeconds"] = round(off, 3) if off is not None else None
+        edge_counts["startSilence" if m["startSource"] == "silence" else "startWord"] += 1
+        edge_counts["endSilence" if m["endSource"] == "silence"
+                    else ("endWord" if m["endSource"] == "word" else "endNextOnset")] += 1
+    log(f"cue edges: end word={edge_counts['endWord']} silence={edge_counts['endSilence']} "
+        f"next-onset={edge_counts['endNextOnset']}; start word={edge_counts['startWord']} "
+        f"silence={edge_counts['startSilence']}; {interpolated_cues} interpolated cue(s)")
+
+    # Contiguous mode only: cues share a seam, so snap the seam. The default build
+    # has already placed both edges independently and has nothing to snap here.
     snap_stats = {"considered": 0, "snapped": 0, "movedSeconds": []}
-    if args.snap_silence_s > 0 and silence_ok and silences and events:
+    if args.contiguous_cues and args.snap_silence_s > 0 and silence_ok and silences and events:
         _s = [c[0] for c in events]; _e = [c[1] for c in events]
         _ns, _ne, snap_stats = snap_boundaries(_s, _e, silences, args.snap_silence_s)
         for x in range(len(events)):
@@ -1211,12 +1613,18 @@ def main():
     def est_end(x):  # plausible end of event x's narration (~2.5 tokens/s + margin)
         return events[x][0] + min(MAX_CUE_S, 1.0 + 0.45 * len(events[x][2].split()))
     def find_holes(min_s):
+        # NON-CONTIGUOUS (default): a cue now ends at its own last word, so the gap
+        # to the next cue IS the literal unmatched audio — measured, not guessed.
+        # The reading-speed estimate below is only needed in --contiguous-cues
+        # mode, where cues have no gaps by construction and est_end() is the only
+        # way to infer one. (est_end is still a floor in that mode: a cue whose
+        # measured end is EARLIER than a slow reading would take is trusted.)
         h = []  # (lo, hi, index of preceding event or None)
         if not events:
             return [(0.0, DUR, None)]
         if events[0][0] > min_s: h.append((0.0, events[0][0], None))
         for x in range(len(events)):
-            lo = min(events[x][1], est_end(x))
+            lo = min(events[x][1], est_end(x)) if args.contiguous_cues else events[x][1]
             hi = events[x + 1][0] if x + 1 < len(events) else DUR
             if hi - lo > min_s: h.append((lo, hi, x))
         return h
@@ -1268,6 +1676,8 @@ def main():
                 if first is None: first = cs
             if ev_x is not None and first is not None and first < events[ev_x][1]:
                 events[ev_x][1] = max(events[ev_x][0] + 0.4, first)
+                # the edge is no longer where the word/silence evidence put it
+                events[ev_x][4]["endSource"] = "asr-hole"
         if fallback:
             log(f"whisper-fallback: {len(fallback)} cue(s) fill {len(holes)} unaligned hole(s)")
 
@@ -1286,14 +1696,29 @@ def main():
     # the following prose. A training-corpus cutter wants those DROPPED (a title
     # announcement is not narration of the sentence it precedes), and reading a tag
     # beats every consumer re-deriving "looks like a heading" from the text.
-    tagged = [(s, e, txt, "heading" if kind == "heading" else None) for s, e, txt, kind in events] \
-           + [(s, e, txt, "asr-fallback") for s, e, txt in fallback]
+    #
+    # PER-CUE CONFIDENCE (2026-09-06). Every book cue also carries its own
+    # `NOTE align ...` block — matched=direct|interpolated, the drift audit's
+    # measured offset, and where each EDGE came from (word / silence /
+    # next-onset / asr-hole). A training-corpus cutter must be able to drop
+    # interpolated cues and treat a next-onset end as untrusted, and the VTT is
+    # the artifact it actually has. Same NOTE mechanism, same guarantee: cue ids,
+    # timestamps and payload text are byte-identical to a run without NOTEs.
+    def _align_note(m):
+        off = m.get("offsetSeconds")
+        return (f"NOTE align matched={m['matched']} start={m['startSource']} "
+                f"end={m['endSource']} offset={'none' if off is None else format(off, '+.3f')}")
+    tagged = [(c[0], c[1], c[2], "heading" if c[3] == "heading" else None, _align_note(c[4]))
+              for c in events] \
+           + [(s, e, txt, "asr-fallback", None) for s, e, txt in fallback]
     lines = ["WEBVTT", ""]; n = 0; heading_cues = 0
-    for s, e, txt, note in sorted(tagged, key=lambda c: c[0]):
+    for s, e, txt, note, anote in sorted(tagged, key=lambda c: c[0]):
         n += 1
         if note:
             lines += [f"NOTE {note}", ""]
             if note == "heading": heading_cues += 1
+        if anote:
+            lines += [anote, ""]
         lines += [str(n), f"{ts(s)} --> {ts(e)}", txt, ""]
     if n == 0:
         # A bare WEBVTT is not a transcript — refuse to write it and claim success.
@@ -1389,10 +1814,28 @@ def main():
                 "reportHoleThresholdSeconds": args.report_hole_min_s,
                 "reportedRanges": len(report_holes),
                 "headingCues": heading_cues,
+                "contiguousCues": bool(args.contiguous_cues),
+                "interpolatedCues": interpolated_cues,
+                "cueEdgeSources": edge_counts,
                 # null, NOT 0, when there was no silence map to measure against —
                 # "nobody looked" and "looked and found nothing" are different facts.
                 "lowSpeechCues": low_speech_total,
             },
+            # PER-CUE CONFIDENCE, in VTT cue order for the book cues (ASR-fallback
+            # cues are not listed — they are tagged NOTE asr-fallback and carry no
+            # epub sentence). `matched` and `endSource` are the two fields a
+            # training-corpus cutter needs: an interpolated cue was never confirmed
+            # in audio, and a "next-onset" end is inferred, not measured.
+            "cues": [{
+                "sentenceIndex": c[4]["sentenceIndex"],
+                "audioStart": round(c[0], 3),
+                "audioEnd": round(c[1], 3),
+                "matched": c[4]["matched"],
+                "offsetSeconds": c[4]["offsetSeconds"],
+                "startSource": c[4]["startSource"],
+                "endSource": c[4]["endSource"],
+                "kind": c[3],
+            } for c in events],
             # Cues whose audio is mostly silence — measured against the silence map,
             # not guessed from reading speed. This is the short-unnarrated-audio
             # signal that lowering --report-hole-min-s was reaching for.
@@ -1411,8 +1854,11 @@ def main():
             # not that the alignment is bad.
             "boundarySnap": {
                 "windowSeconds": args.snap_silence_s,
+                "silenceSource": (sil_src[0] if sil_src else None),
                 "noiseDb": args.snap_noise_db,
                 "minSilenceSeconds": args.snap_min_silence_s,
+                "aeThreshold": args.ae_threshold,
+                "aeMinSilenceSeconds": args.ae_min_silence_s,
                 "silenceIntervals": len(silences) if silence_ok else 0,
                 "seamsConsidered": snap_stats["considered"],
                 "seamsSnapped": snap_stats["snapped"],
@@ -1464,6 +1910,9 @@ def main():
                                  "driftFixed": drift["fixed"],
                                  "snappedBoundaries": snap_stats["snapped"],
                                  "totalBoundaries": snap_stats["considered"],
+                                 "contiguousCues": bool(args.contiguous_cues),
+                                 "interpolatedCues": interpolated_cues,
+                                 "cueEdgeSources": edge_counts,
                                  "headingCues": heading_cues}))
 
 if __name__ == "__main__":
