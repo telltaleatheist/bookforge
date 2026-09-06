@@ -182,6 +182,15 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
 
     return {
         'cues': n,
+        # Raw counts, not only rates: a per-chapter rate cannot be averaged into a
+        # book-wide one (chapters here differ in cue count by 25x), so anything
+        # pooling several runs must ADD these. The sorted per-cue lists are here for
+        # the same reason - a pooled median needs the values, not fifteen medians.
+        'counts': {'cues': n, 'edges': 2 * n, 'midWordStart': mid_start,
+                   'midWordEnd': mid_end, 'endInSpeech': end_in_speech,
+                   'endAtNextOnset': end_at_next, 'startAtOwnOnset': start_at_own},
+        'trailingPausesS': [round(v, 4) for v in sorted(trailing)],
+        'leadInsS': [round(v, 4) for v in sorted(lead)],
         'midWordEdgePct': round(100.0 * (mid_start + mid_end) / (2 * n), 2) if n else 0.0,
         'midWordStartPct': round(pct(mid_start), 2),
         'midWordEndPct': round(pct(mid_end), 2),
