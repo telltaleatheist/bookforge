@@ -82,6 +82,26 @@ HIGGS_MAX_MODEL_LEN="${HIGGS_MAX_MODEL_LEN:-8192}"
 HIGGS_MAX_NUM_SEQS="${HIGGS_MAX_NUM_SEQS:-16}"
 HIGGS_DEPLOY_CONFIG="${HIGGS_DEPLOY_CONFIG:-}"
 
+# WHICH STACK THE CALLER THINKS IT IS STARTING, asserted rather than assumed.
+#
+# BookForge sets HIGGS_STACK from the catalog's `serving.stack` on every door,
+# and narrator refuses to render without it (served_common.serving_stack) because
+# the two stacks want different request bodies, different frame caps and
+# different sampling. THIS is the other half of that contract: a job configured
+# for SGLang-Omni that somehow reached the vllm-omni launcher would come up on a
+# server whose requests the client is not building — which is not a crash, it is
+# a book rendered at whatever the dropped fields defaulted to. Refuse in two
+# seconds instead of 297.
+#
+# Unset is accepted: this script is also run by hand, and by an operator who has
+# chosen it by typing its name.
+if [ -n "${HIGGS_STACK:-}" ] && [ "$HIGGS_STACK" != "vllm-omni" ]; then
+  echo "HIGGS_STACK is '$HIGGS_STACK' but this is the vllm-omni launcher." >&2
+  echo "Start serve_higgs_sgl.sh for the sglang-omni stack, or fix serving.stack in" >&2
+  echo "electron/data/higgs-models.json — the client and the server must agree." >&2
+  exit 6
+fi
+
 # The CUDA 13 toolkit that ships INSIDE the pip wheel. vllm-omni's stack is built
 # against it and the system CUDA (if any) is the wrong version.
 export CUDA_HOME="$HIGGS_ENV/lib/python3.11/site-packages/nvidia/cu13"

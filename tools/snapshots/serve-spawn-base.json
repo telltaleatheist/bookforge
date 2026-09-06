@@ -87,6 +87,7 @@
         "NARRATOR_ENGINE": "higgs-v3",
         "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
         "HIGGS_MAX_NUM_SEQS": "16",
+        "HIGGS_STACK": "vllm-omni",
         "NARRATOR_HIGGS3_WSL_DISTRO": "Ubuntu",
         "NARRATOR_HIGGS3_SERVE_SCRIPT": "/home/fake/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh",
         "HIGGS_ENV": "/home/fake/anaconda3/envs/higgs3",
@@ -127,6 +128,7 @@
     "mlxModelDirExists": true,
     "env": {
       "HIGGS_MAX_NUM_SEQS": "16",
+      "HIGGS_STACK": "vllm-omni",
       "NARRATOR_ENGINE": "higgs-v3",
       "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
       "NARRATOR_HIGGS3_MLX_BATCH": "16",

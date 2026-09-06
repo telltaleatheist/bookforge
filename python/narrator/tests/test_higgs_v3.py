@@ -175,6 +175,26 @@ BASE_SNAPSHOT_ROOT = ('/home/telltale/.cache/huggingface/hub/'
                       'models--bosonai--higgs-audio-v3-tts-4b/snapshots/239f63fb')
 
 
+def state_stack(case, value=None):
+    """`HIGGS_STACK` for the duration of one test.
+
+    A SECOND CONTRACT VARIABLE, of exactly the same kind as HIGGS_MAX_NUM_SEQS:
+    `served_common.serving_stack()` refuses BY NAME when it is unset, because
+    the two serving stacks place sampling differently, size the frame cap
+    against different context windows, and disagree about what an empty sampling
+    means. Every test in this module drives the VLLM-OMNI stack unless it says
+    otherwise; `tests/test_higgs_sgl.py` is the other one's.
+    """
+    value = value or v3_served.served_common.STACK_VLLM_OMNI
+    previous = os.environ.get(v3_served.served_common.STACK_ENV)
+    os.environ[v3_served.served_common.STACK_ENV] = value
+    if previous is None:
+        case.addCleanup(os.environ.pop, v3_served.served_common.STACK_ENV, None)
+    else:
+        case.addCleanup(os.environ.__setitem__,
+                        v3_served.served_common.STACK_ENV, previous)
+
+
 def state_concurrency(case, value='2'):
     """`HIGGS_MAX_NUM_SEQS` for the duration of one test - the contract
     variable every engine and every launching backend reads."""
@@ -254,6 +274,7 @@ class V3TestCase(unittest.TestCase):
         self.server = FakeV3Server()
         self.addCleanup(self.server.close)
         state_concurrency(self)
+        state_stack(self)
 
     def _rmtree(self):
         import shutil
@@ -1873,6 +1894,7 @@ class _LaunchTestBase(unittest.TestCase):
         self.dir = tempfile.mkdtemp(prefix='narrator-H-launch-')
         self.addCleanup(_shutil.rmtree, self.dir, True)
         state_concurrency(self)
+        state_stack(self)
         self.fake_wsl = os.path.join(self.dir, 'wsl.exe')
         with open(self.fake_wsl, 'w', encoding='utf-8') as handle:
             handle.write('')

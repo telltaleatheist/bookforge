@@ -1,13 +1,32 @@
-"""HiggsV3Engine - Higgs TTS 3 over a served vllm-omni backend.
+"""HiggsV3Engine - Higgs TTS 3 over a served backend, on EITHER serving stack.
 
 Registry id `higgs-v3`. THE second engine (Owen, 2026-09-04 evening); Higgs v2
 stayed only as interface scaffolding (`higgs-v2-scaffold`) because "it's
 basically just Orpheus and we know Orpheus better".
 
+TWO STACKS SERVE THE SAME MODEL, and `HIGGS_STACK` says which (BookForge sets it
+from the catalog's `serving.stack`; `served_common.serving_stack()` refuses by
+name when it is unset):
+
+  `vllm-omni`    v3_served.py  - env higgs3, port 8095, 8192-token window,
+                 sampling in `extra_params`, two required site-packages patches.
+  `sglang-omni`  sgl_served.py - env sglomni, port 8200, a HARD-CODED 4096-token
+                 window, sampling at the request TOP LEVEL and MANDATORY, no
+                 patches, no reference clips. Measured 2026-09-05 on the same 50
+                 chunks and the same checkpoint: 0 early stops and 0 sustained
+                 voice switches at 16 in flight against vllm-omni's 4 and 6, at
+                 2.5x the throughput. See that module's docstring.
+
 The HTTP facts, the launch, the patches, the control-token allowlist, the 30 s
-reference cap and the request/response shapes all live in `v3_served.py`. This
-module is the `Engine` surface over them: codec geometry, budget, stop policy,
-and the render calls.
+reference cap and the request/response shapes live in those two modules; what is
+shared between them (ownership, the /proc listener scan, the watchdog, TERM-only
+teardown) is `served_common.py`. This module is the `Engine` surface over all
+three: codec geometry, budget, stop policy, and the render calls.
+
+THE THREE PLACES THE STACK CHANGES WHAT THIS MODULE DOES, and nowhere else:
+`HiggsV3Config.served_sampling` (empty vs the checkpoint's own numbers),
+`HiggsV3Config.cap_frames` (which context window bounds the frame cap), and
+which backend class `__init__` builds.
 
 WHAT IS DIFFERENT FROM ORPHEUS
 
@@ -63,8 +82,12 @@ import numpy as np
 from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
                         SpeechRequest, StopPolicy)
 from ..log import log
+from . import served_common
+from . import sgl_served
 from . import v3_served
 from .prompt import clean_text
+from .served_common import STACK_SGLANG_OMNI, STACK_VLLM_OMNI
+from .sgl_served import HiggsSglServedBackend
 from .v3_served import HiggsV3ServedBackend
 
 
@@ -142,6 +165,12 @@ class HiggsV3Config:
     case, PORT_NOTES 12.8d). Anything set here rides in `extra_params` on top.
     """
     voice: ClipsVoice
+    #: WHICH SERVING STACK. `None` means "read `HIGGS_STACK`", which
+    #: `__post_init__` does once and stores here, so everything downstream reads
+    #: ONE resolved answer rather than the environment at four different moments.
+    #: Refused by name when the variable is unset - see
+    #: `served_common.serving_stack`.
+    stack: Optional[str] = None
     base_url: Optional[str] = None
     serve_script: Optional[str] = None
     checkpoint_dir: Optional[str] = None
@@ -164,6 +193,16 @@ class HiggsV3Config:
     probe_sentinel_filter: bool = True
 
     def __post_init__(self):
+        # THE STACK, RESOLVED ONCE. Everything that differs between the two
+        # serving stacks - where sampling rides, whether an empty sampling is
+        # correct, how a frame cap is sized, which backend class is built - reads
+        # this field and never the environment again.
+        if self.stack is None:
+            self.stack = served_common.serving_stack()
+        elif self.stack not in served_common.STACKS:
+            raise ValueError(
+                f'HiggsV3Config(stack={self.stack!r}): the serving stacks are '
+                f"{', '.join(served_common.STACKS)}.")
         if not isinstance(self.voice, (ClipsVoice, DefaultVoice)):
             raise ValueError(
                 'HiggsV3Config(voice=...) takes a ClipsVoice (a reference clip with '
@@ -175,6 +214,11 @@ class HiggsV3Config:
         # carry v2's empty control allowlist and no reference cap. Stamp v3's on
         # it here so there is exactly ONE place a v3 voice acquires v3's rules.
         self.voice = apply_v3_voice_defaults(self.voice)
+        if self.stack == STACK_SGLANG_OMNI:
+            # A reference-clone voice cannot be rendered on SGLang-Omni at all.
+            # Refused HERE as well as at the request, so nobody pays a ~110 s
+            # server start and a GPU allocation to be told.
+            sgl_served.refuse_clips_voice(self.voice)
         # The 30 s cap and the one-reference rule, checked before a server is
         # ever started rather than after a 55 s launch and an HTTP 400.
         if isinstance(self.voice, ClipsVoice):
@@ -231,7 +275,25 @@ class HiggsV3Config:
 
         `sampling` is a named per-config override and is merged on top of
         either.
+
+        ── AND ON SGLang-Omni IT IS NEVER EMPTY ────────────────────────────────
+
+        The branch above is vllm-omni's, and it is right THERE and wrong on the
+        other stack. SGLang-Omni reads no `generation_config.json` at all
+        (`--generation-config` is a vLLM flag; this stack has no deploy profile
+        either) and `build_sglang_higgs_request` sets top_p/top_k on the
+        SamplingParams only when the REQUEST carried them - so "send nothing"
+        means top_k disabled and the untruncated 1026-way codebook tail.
+        MEASURED 2026-09-05: without top_k one chunk ran to the cap with 80 s of
+        silence.
+
+        So on that stack this returns `applied_sampling()` - what the model will
+        actually sample at, read out of the checkpoint's own file by narrator
+        instead of by the server. Same numbers, carried a different way, which is
+        exactly the difference between the two stacks.
         """
+        if self.stack == STACK_SGLANG_OMNI:
+            return self.applied_sampling()
         # `self.checkpoint_dir` and not `self.voice.checkpoint_dir`: this is the
         # config's resolved answer to "which directory is this server running
         # on", which __post_init__ takes from the voice when the voice names one
@@ -267,6 +329,26 @@ class HiggsV3Config:
                         for k in self.EXTRA_PARAM_KEYS}
         resolved.update(self.sampling or {})
         return resolved
+
+    def cap_frames(self, text: str) -> int:
+        """`max_new_tokens` for one chunk, SIZED FOR THIS STACK.
+
+        THE ONE SEAM where the two windows differ. vllm-omni serves an
+        8,192-position window and `v3_served.cap_frames`' generous ceiling
+        (2.0x the expected duration + 150 frames) costs nothing inside it.
+        SGLang-Omni's Higgs builder hard-codes `context_length = 4096` with no
+        flag, and prompt tokens + `max_new_tokens` over 4,095 is an HTTP 500 from
+        inside the scheduler - not a shorter render - so `sgl_served.frame_cap`
+        sends the smaller of the two ceilings and REFUSES BY NAME when what the
+        context leaves would fall inside real speech.
+
+        Every caller that sizes a request goes through here: `HiggsV3Budget
+        .cap_frames` (which is what `render_audio` uses) and
+        `higgs_v3_stop_policy` (which is what the manifest records).
+        """
+        if self.stack == STACK_SGLANG_OMNI:
+            return sgl_served.frame_cap(text)
+        return v3_served.cap_frames(text)
 
 
 class HiggsV3Codec:
@@ -377,7 +459,9 @@ class HiggsV3Budget:
         return window
 
     def cap_frames(self, text: str) -> int:
-        return v3_served.cap_frames(text)
+        """The config's, so the frame cap is sized for the stack that will serve
+        it - see `HiggsV3Config.cap_frames`."""
+        return self._config.cap_frames(text)
 
 
 def higgs_v3_stop_policy(config: HiggsV3Config) -> StopPolicy:
@@ -393,7 +477,9 @@ def higgs_v3_stop_policy(config: HiggsV3Config) -> StopPolicy:
     """
     sampling = config.applied_sampling()
     return StopPolicy(
-        max_new_tokens=v3_served.cap_frames('x' * int(config.max_chars)),
+        # The STACK'S cap for a full-length chunk - 4096 is a much lower ceiling
+        # than 8192 and the manifest must record the one that applied.
+        max_new_tokens=config.cap_frames('x' * int(config.max_chars)),
         eos_reliable=True,
         resplit_on_cap=False,
         max_chars_per_sec=float(config.max_chars_per_sec),
@@ -432,7 +518,10 @@ class HiggsV3Engine:
                 'HiggsV3Engine(config) takes a narrator.engine.higgs.HiggsV3Config; '
                 f'got {type(config).__name__}.')
         self.config = config
-        self.backend = 'vllm-omni'
+        # THE STACK IS THE BACKEND'S NAME, and the config resolved it once (from
+        # HIGGS_STACK, refused by name when unset). Reporting it here is what
+        # puts the right one in the manifest and in every log line.
+        self.backend = config.stack
         self.voice_ref = config.voice
         self.voice = config.voice.name
         self._codec = HiggsV3Codec()
@@ -459,13 +548,35 @@ class HiggsV3Engine:
         # the temp dir and SAYS SO in its log line; what it never does is
         # discard the stream, which is what DEVNULL used to do and what left the
         # sentinel filter unprovable.
-        self.server = HiggsV3ServedBackend(
-            base_url=config.base_url, serve_script=config.serve_script,
-            checkpoint_dir=config.checkpoint_dir,
-            concurrency=self.BATCH_SIZE,
-            server_log=(os.path.join(config.process_dir,
-                                     v3_served.SERVER_LOG_NAME)
-                        if config.process_dir else None))
+        #
+        # WHICH BACKEND CLASS, decided by the stack and nothing else. The two
+        # take the same constructor keywords on purpose - `base_url`,
+        # `serve_script`, `checkpoint_dir`, `concurrency`, `server_log` - because
+        # everything that differs between them is BELOW this line, inside the
+        # class, and a caller that had to branch on the stack to build one would
+        # be a second place the choice is made.
+        #
+        # `base_url` / `serve_script` fall through to the stack's OWN attach and
+        # launch-script variables when the config states neither (each backend's
+        # `__init__` reads them and refuses when both are absent), so a
+        # NARRATOR_HIGGS3_URL cannot silently attach an SGLang engine to a
+        # vllm-omni server: the names differ per stack.
+        if config.stack == STACK_SGLANG_OMNI:
+            self.server = HiggsSglServedBackend(
+                base_url=config.base_url, serve_script=config.serve_script,
+                checkpoint_dir=config.checkpoint_dir,
+                concurrency=self.BATCH_SIZE,
+                server_log=(os.path.join(config.process_dir,
+                                         sgl_served.SERVER_LOG_NAME)
+                            if config.process_dir else None))
+        else:
+            self.server = HiggsV3ServedBackend(
+                base_url=config.base_url, serve_script=config.serve_script,
+                checkpoint_dir=config.checkpoint_dir,
+                concurrency=self.BATCH_SIZE,
+                server_log=(os.path.join(config.process_dir,
+                                         v3_served.SERVER_LOG_NAME)
+                            if config.process_dir else None))
         self.load_engine()
 
     # ---- lifecycle ----------------------------------------------------------
@@ -502,7 +613,19 @@ class HiggsV3Engine:
                 self.server._record_server()
             self.server.check_serves_expected_model(
                 checkpoint_dir=self.config.checkpoint_dir)
-            if self.config.probe_sentinel_filter:
+            # THE SENTINEL PROOF IS vllm-omni'S, BOTH HALVES. The patch is a
+            # site-packages fix to `vllm_omni/model_executor/
+            # stage_input_processors/higgs_audio_v3.py`; SGLang-Omni has its own
+            # stage processor, is not patched, and has no such line to read. So
+            # the probe and the log proof are skipped on that stack - and said
+            # out loud, because "not applicable" and "not proved" must not look
+            # the same in a run log.
+            if self.config.stack == STACK_SGLANG_OMNI:
+                log('[HIGGSSGL] no sentinel-filter proof on this stack: the '
+                    'patch is a vllm-omni site-packages fix and SGLang-Omni has '
+                    'its own stage processor. Nothing here is unproved - there '
+                    'is nothing of that kind to prove.', flush=True)
+            elif self.config.probe_sentinel_filter:
                 self.server.probe_sentinel_filter()
                 # PROOF (a), on the log the probe render just wrote into. It is
                 # skipped only when there is no stream to read at all - an
@@ -530,7 +653,14 @@ class HiggsV3Engine:
 
     @classmethod
     def detect_backend(cls) -> str:
-        return 'vllm-omni'
+        """THE SERVING STACK, from `HIGGS_STACK` - refused by name when unset.
+
+        A CLASS METHOD ASKED BEFORE ANY ENGINE EXISTS (`serve/worker.py` reports
+        it in its `ready` message), which is why it reads the environment rather
+        than a config. It answers the same question `HiggsV3Config.stack` does
+        and reads the same variable, so the two cannot disagree.
+        """
+        return served_common.serving_stack()
 
     @classmethod
     def resolve_load_voice(cls, voice, model_dir=None, adapter_dir=None,
@@ -619,11 +749,13 @@ class HiggsV3Engine:
                if self.config.checkpoint_dir else '')
             + f", and a load for '{want}'"
             + (f' (checkpoint {adapter_dir})' if adapter_dir else '')
-            + ' needs a NEW server. vllm-omni cannot load a voice into a running '
-              'one: it has no adapter flags and its talker does not implement '
-              'SupportsLoRA, so every fine-tuned voice is a whole merged checkpoint '
-              'the server runs ON. Quit this worker and start one for that voice '
-              '(~55 s warm, up to ~300 s cold).')
+            + f' needs a NEW server. Neither stack can load a voice into a running '
+              f'one ({self.config.stack} here): vllm-omni has no adapter flags and '
+              'its talker does not implement SupportsLoRA, and SGLang-Omni serves '
+              'the one --model-path it was started on. Every fine-tuned voice is a '
+              'whole merged checkpoint the server runs ON. Quit this worker and '
+              'start one for that voice (~55 s warm, up to ~300 s cold on '
+              'vllm-omni; ~110 s on SGLang-Omni).')
 
     def _apply_voice_caps(self, voice: str, caps: dict) -> None:
         """Orpheus's per-voice tuning registry has no v3 counterpart - v3's
