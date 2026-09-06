@@ -771,8 +771,10 @@ export class TtsApiServer {
     // same quotes an audiobook does. The other two are minutes of model time over
     // a book and are a PASS the user runs, not something to do to a paragraph
     // somebody is waiting to hear.
-    const { canonicalizePunctuationText } = await import('./tts-punctuation.js');
-    const speakable = canonicalizePunctuationText(text);
+    // The ONE deterministic Listen normalizer — punctuation, number rules, number
+    // expansion, acronyms — see listen-text.ts for the ruling and the order.
+    const { speakableListenText } = await import('./listen-text.js');
+    const speakable = speakableListenText(text);
     // Orpheus packs to ITS OWN voice's cap — the same voice-manifest channel the
     // audiobook path reads for ORPHEUS_MAX_CHARS. Unconditional since 2026-09-05:
     // the ternary that guarded it fell back to splitForTts's XTTS default for any

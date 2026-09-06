@@ -10,6 +10,7 @@
  */
 
 import { EMPTY_RUN, PlaybackStatus, RuntimeMessage, Settings, UiState, loadSettings } from './messages';
+import { isFootnoteMarkerSupText } from '../../shared/text/sup-markers';
 
 declare global {
   interface Window { __bfrInjected?: boolean; }
@@ -135,7 +136,7 @@ function detectBlocks(): { id: string; el: HTMLElement }[] {
   const candidates = Array.from(document.querySelectorAll<HTMLElement>(SELECTOR));
   const kept = candidates.filter((el) => {
     if (el.closest(EXCLUDE)) return false;
-    const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+    const text = blockText(el);
     const min = /^H[1-6]$/.test(el.tagName) ? 12 : 60;
     if (text.length < min) return false;
     const r = el.getBoundingClientRect();
@@ -321,7 +322,7 @@ function looksLikeBlock(node: HTMLElement | null): boolean {
   let el = node;
   while (el && el !== document.body) {
     if (!root.contains(el) && el.matches(SELECTOR) && !el.closest(EXCLUDE)) {
-      const text = (el.innerText || '').replace(/\s+/g, ' ').trim();
+      const text = blockText(el);
       const min = /^H[1-6]$/.test(el.tagName) ? 12 : 60;
       if (text.length >= min) return true;
     }
@@ -350,8 +351,29 @@ function updateBlockMinus(group: HTMLDivElement, id: string): void {
   minus.classList.toggle('bfr-restore', ex);
 }
 
+/**
+ * The text of a block as the narrator should be handed it: the element's
+ * rendered text with every FOOTNOTE-REFERENCE superscript removed first.
+ *
+ * Removed HERE, at the DOM, because it is the last place the superscript is an
+ * element: `innerText` glues "word<sup>12</sup>" into "word12", and no string
+ * rule downstream can tell that from a real "word12". The predicate is the
+ * shared one the TTS export applies to a book (shared/text/sup-markers.ts):
+ * digits, separators and whitespace only, at least one digit — so "<sup>th</sup>"
+ * in "the 28<sup>th</sup>" stays, as it must. Owen's ruling, 2026-09-06: "any
+ * <sup> reference numbers should be pulled out."
+ *
+ * A CLONE is read, never the page: the page is the reader's, and the clone is
+ * off-document, so `innerText` on it falls back to text content — which is why
+ * the whitespace collapse below does the line-break work `innerText` did.
+ */
 function blockText(el: HTMLElement): string {
-  return (el.innerText || '').replace(/\s+/g, ' ').trim();
+  if (!el.querySelector('sup')) return (el.innerText || '').replace(/\s+/g, ' ').trim();
+  const clone = el.cloneNode(true) as HTMLElement;
+  for (const sup of Array.from(clone.querySelectorAll('sup'))) {
+    if (isFootnoteMarkerSupText((sup.textContent || '').trim())) sup.remove();
+  }
+  return (clone.textContent || '').replace(/\s+/g, ' ').trim();
 }
 
 // ─── Continuous "play from here" + exclusions ──────────────────────────────────
@@ -1101,6 +1123,37 @@ function volumeLabel(v: number): string {
 const BAR_EXIT_MS = 260;
 let barVisible = false;
 let barHideTimer: number | null = null;
+
+/**
+ * SPACEBAR PAUSES WHILE THE BAR IS UP — always, and it never scrolls the page.
+ *
+ * Owen's ruling, 2026-09-06: "if i hit spacebar when the controls are open, it
+ * should always pause. sometimes if the control bar isn't in focus it jumps
+ * halfway down the page instead. it should never jump down the page. if i hit
+ * spacebar and the controls are up it's because i want to pause."
+ *
+ * Before this the only spacebar handling was the browser's own: a focused bar
+ * button took Space as a click, and an unfocused page took it as page-down. So
+ * the SAME key did opposite things depending on where focus had wandered.
+ *
+ * CAPTURE phase on the document, so the page's own handlers and the default
+ * scroll never see it. Two things are left to the browser: a key pressed while
+ * TYPING (an input, a textarea, contenteditable — Space is a character there),
+ * and a key pressed with the bar's own control focused, where the button's
+ * native activation already pauses and a second toggle would un-pause it.
+ */
+document.addEventListener('keydown', (e) => {
+  if (!barVisible) return;
+  if (e.code !== 'Space' && e.key !== ' ') return;
+  if (e.ctrlKey || e.metaKey || e.altKey) return;
+  const target = e.target as HTMLElement | null;
+  if (target && (target.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(target.tagName))) return;
+  if (bar && e.composedPath().includes(bar)) return;
+  e.preventDefault();
+  e.stopPropagation();
+  if (e.repeat) return;
+  send({ target: 'background', cmd: 'transport', op: 'toggle-pause' });
+}, true);
 
 function showBar(): void {
   if (barHideTimer !== null) { clearTimeout(barHideTimer); barHideTimer = null; }

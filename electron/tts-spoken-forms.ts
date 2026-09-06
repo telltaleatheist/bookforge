@@ -254,7 +254,7 @@ export function abbreviationContextRefusal(
  */
 export const SPOKEN_AS_WORD: ReadonlySet<string> = new Set([
   'nasa', 'nato', 'unesco', 'unicef', 'opec', 'aids', 'laser', 'radar', 'scuba', 'nafta',
-  'ascii', 'gestapo', 'gulag', 'interpol',
+  'ascii', 'gestapo', 'gulag', 'interpol', 'covid',
 ]);
 
 /**
@@ -336,7 +336,7 @@ export type ReadingRefusal = string | null;
  */
 let englishWords: ReadonlySet<string> | null = null;
 
-function loadEnglishWords(): ReadonlySet<string> {
+export function loadEnglishWords(): ReadonlySet<string> {
   if (englishWords !== null) return englishWords;
   const fs = require('fs') as typeof import('fs');
   const path = require('path') as typeof import('path');
