@@ -1102,13 +1102,21 @@ check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json',
   assert.notDeepStrictEqual(higgs.higgsVoiceCapsForModel(m, 'darwin').sampling, mirrorOf(drifted));
 });
 
-check('both of deathstalker\'s blocks mirror the SAME file, so both arms sample alike', () => {
+check('deathstalker\'s two blocks share the FILE\'s top_p/top_k; the Mac temperature is Owen\'s STATED override', () => {
   // One directory, one generation_config.json, read by vllm-omni on one arm and
-  // by narrator itself on the other. If the two blocks disagreed, one of them
-  // would be describing a file that does not exist.
+  // by narrator itself on the other — so top_p and top_k mirror that file on
+  // both blocks. The Mac TEMPERATURE does not: 0.7 is Owen's ruling of
+  // 2026-09-06 ("lets try a temp of 0.7") when the file's 1.0 babbled on Listen,
+  // and since that day the block's sampling RIDES IN THE VOICE DOCUMENT and is
+  // applied by narrator over the file. A deviation from the file must be stated
+  // in the note, with the ruling — a number that renders is never inherited
+  // invisibly (see the block's own _samplingNote).
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.deepStrictEqual(m.backends.mlx.sampling, m.backends.served.sampling);
-  assert.deepStrictEqual(m.backends.mlx.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(m.backends.served.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(m.backends.mlx.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
+  assert.strictEqual(m.backends.mlx.sampling.topP, m.backends.served.sampling.topP);
+  assert.strictEqual(m.backends.mlx.sampling.topK, m.backends.served.sampling.topK);
+  assert.match(m.backends.mlx._samplingNote, /0\.7 is OWEN'S RULING/);
   assert.match(m.backends.mlx._samplingNote, /DIRECTORY is still the authority/i);
   // And the Mac arm must say who APPLIES it, because there the answer is narrator
   // rather than the server: mlx-audio reads no generation_config.json at all.
@@ -2388,6 +2396,16 @@ check('a measured pace becomes the length band in the document; a malformed pace
     backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } } });
   const bareDoc = higgs.higgsVoicesDocument(bare, WSL_DOC).probe;
   assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc));
+  // THE BLOCK'S SAMPLING RIDES IN THE DOCUMENT, per arm: the Mac document carries
+  // the mlx block's, the WSL document the served block's, and a block without one
+  // writes none (the engine then renders at the checkpoint's own file). Owen's
+  // 0.7 for deathstalker (2026-09-06) is carried by exactly this line.
+  const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
+    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 1, topP: 0.95, topK: 50 } },
+                mlx: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.7, topP: 0.95, topK: 50 } } } });
+  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
+  assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, WSL_DOC).probe.sampling, { temperature: 1, topP: 0.95, topK: 50 });
+  assert.ok(!('sampling' in bareDoc), 'a block with no sampling must write none');
   // Malformed: out of order, or missing provenance.
   for (const [why, bad] of [
     ['out of order', { ...pace, p05: 19 }],

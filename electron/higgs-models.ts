@@ -1705,6 +1705,13 @@ export function higgsVoicesDocument(
   }
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;
+  // THE BLOCK'S SAMPLING RIDES IN THE DOCUMENT. It was in the catalog and in
+  // this caps object and went no further: on the Mac the MLX arm rendered at the
+  // checkpoint's own generation_config.json (temperature 1.0) while the catalog
+  // stated the same numbers as if they were its choice — invisible until Owen
+  // asked for 0.7 (2026-09-06) and nothing could carry it. narrator's
+  // load_voices reads it onto the voice; the MLX config takes it as an override.
+  if (caps.sampling !== undefined) entry.sampling = caps.sampling;
   // THE LENGTH BAND, derived from the voice's measured pace (one per voice,
   // both arms) and written as the pair narrator's `load_voices` reads
   // (`_length_band`); a voice with no pace gets no band and renders at the

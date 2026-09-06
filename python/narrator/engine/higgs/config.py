@@ -457,6 +457,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
                     'length; a target above it asks for chunks the length sweep '
                     'refused. Lower the target or re-certify the cap.')
         band = _length_band(path, name, entry)
+        sampling = _voice_sampling(path, name, entry)
         if not clips:
             # No reference audio in the request at all: a fine-tune whose
             # weights ARE the voice (the production shape), or the model's own.
@@ -464,7 +465,7 @@ def load_voices(path: str = None, *, allowed_controls=None,
                 name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
                 max_chars_source=None if max_chars is None else source,
                 target_chars=target, max_chars_per_sec=band[0],
-                min_chars_per_sec=band[1])
+                min_chars_per_sec=band[1], sampling=sampling)
             continue
         voices[name] = ClipsVoice(
             clips=tuple(clips),
@@ -479,8 +480,45 @@ def load_voices(path: str = None, *, allowed_controls=None,
             target_chars=target,
             max_chars_per_sec=band[0],
             min_chars_per_sec=band[1],
+            sampling=sampling,
         )
     return voices
+
+
+#: The document's sampling keys (the catalog's camelCase) -> the engine's.
+_SAMPLING_KEYS = {'temperature': 'temperature', 'topP': 'top_p', 'topK': 'top_k'}
+
+
+def _voice_sampling(path: str, name: str, entry: dict):
+    """The voice's own `sampling` block, or None when the document carries
+    none (the engine then renders at the checkpoint's own generation_config).
+    Any subset of temperature / topP / topK; each a positive number, top_k a
+    whole one; an unknown key is refused by name - a misspelled lever would
+    otherwise render at the file's value while the catalog states another."""
+    block = entry.get('sampling')
+    if block is None:
+        return None
+    if not isinstance(block, dict) or not block:
+        raise ValueError(
+            f"{path}: voice '{name}' declares sampling {block!r}; expected an object "
+            "with any of temperature / topP / topK.")
+    unknown = sorted(set(block) - set(_SAMPLING_KEYS))
+    if unknown:
+        raise ValueError(
+            f"{path}: voice '{name}' declares sampling keys {unknown}; the levers are "
+            f"{sorted(_SAMPLING_KEYS)}.")
+    out = {}
+    for key, value in block.items():
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(
+                f"{path}: voice '{name}' declares sampling {key} {value!r}, which is "
+                'not a positive number.')
+        if key == 'topK' and int(value) != value:
+            raise ValueError(
+                f"{path}: voice '{name}' declares sampling topK {value!r}; top_k is a "
+                'whole number of candidates.')
+        out[_SAMPLING_KEYS[key]] = int(value) if key == 'topK' else float(value)
+    return out
 
 
 def _length_band(path: str, name: str, entry: dict):

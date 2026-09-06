@@ -457,6 +457,32 @@ class MlxConfigTest(unittest.TestCase):
         from narrator.engine.higgs import higgs_v3_mlx_config_from_worker_kwargs
         return higgs_v3_mlx_config_from_worker_kwargs(voice=voice, **kwargs)
 
+    def test_a_voice_document_sampling_block_overrides_the_checkpoint_file(self):
+        """Owen set deathstalker's Mac arm to temperature 0.7 (2026-09-06) when
+        the checkpoint's shipped 1.0 babbled on Listen. The catalog's per-backend
+        `sampling` rides in the voice document and IS what renders; a key the
+        document leaves out keeps the file's value; a misspelled lever is
+        refused by name rather than rendering at the file's value."""
+        import json
+        with open(self.doc, encoding='utf-8') as handle:
+            document = json.load(handle)
+        document['ft7'] = dict(document['ft'], sampling={'temperature': 0.7})
+        with open(self.doc, 'w', encoding='utf-8') as handle:
+            json.dump(document, handle)
+        config = self._build('ft7')
+        self.assertEqual(config.voice.sampling, {'temperature': 0.7})
+        resolved = config.mlx_sampling()
+        self.assertEqual(resolved['temperature'], 0.7)
+        self.assertEqual(resolved['top_k'], self._build('ft').mlx_sampling()['top_k'])
+        self.assertIsNone(self._build('ft').voice.sampling)
+        # A misspelled lever poisons the whole document, by name.
+        document['ftbad'] = dict(document['ft'], sampling={'temperatur': 0.7})
+        with open(self.doc, 'w', encoding='utf-8') as handle:
+            json.dump(document, handle)
+        with self.assertRaises(ValueError) as caught:
+            self._build('ftbad')
+        self.assertIn('temperatur', str(caught.exception))
+
     def test_a_checkpoint_voice_loads_its_own_merged_weights(self):
         """A fine-tune's WEIGHTS are the voice, so the model loaded IS the
         voice's directory - not the base plus something."""
