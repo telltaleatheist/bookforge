@@ -11,7 +11,7 @@
 const assert = require('assert');
 const path = require('path');
 const DIST = path.join(__dirname, '..', 'dist', 'electron');
-const { speakableListenText, spellAcronyms, acronymReading } = require(path.join(DIST, 'listen-text.js'));
+const { speakableListenText, spellAcronyms, acronymReading, foldCapsRun } = require(path.join(DIST, 'listen-text.js'));
 const { isFootnoteMarkerSupText } = require(path.join(__dirname, '..', 'dist', 'shared', 'text', 'sup-markers.js'));
 
 let failed = 0;
@@ -53,6 +53,24 @@ check('a token glued to letters or digits is not an acronym', () => {
 check('the whole pipeline: numbers first, then acronyms', () => {
   assert.strictEqual(speakableListenText('  The  GOP won 312 seats in 2024 (per CNN). '),
     'The G O P won three hundred twelve seats in twenty twenty-four (per C N N).');
+});
+
+console.log('caps headings fold to Title Case, acronyms kept (narrator fold_caps_run mirrored)');
+check('a whole-caps heading folds; an acronym in it is kept for spelling', () => {
+  assert.strictEqual(foldCapsRun('DOES GOD HOLD CHILDREN RESPONSIBLE?'), 'Does God Hold Children Responsible?');
+  assert.strictEqual(speakableListenText('THE FBI FILES ON KELSIER'), 'The F B I Files On Kelsier');
+  // Inside a caps run the guard is narrator's (allowlist or vowelless), so an
+  // UNLISTED vowelled initialism folds like a name would — the same "Usa" trap the
+  // packer states, fixed by listing it, never by spelling every unknown caps word.
+  assert.strictEqual(speakableListenText('THE FBI FILES ON TPUSA'), 'The F B I Files On Tpusa');
+  assert.strictEqual(speakableListenText('The FBI files on TPUSA.'), 'The F B I files on T P U S A.');
+  assert.strictEqual(foldCapsRun('INTRODUCTION.'), 'Introduction.');
+});
+check('a single caps word at the head of a sentence, or a shout mid-sentence, is left alone', () => {
+  assert.strictEqual(foldCapsRun('I went home.'), 'I went home.');
+  assert.strictEqual(foldCapsRun('WHY did he say that? NEVER again.'), 'WHY did he say that? NEVER again.');
+  assert.strictEqual(foldCapsRun('"KELSIER\'S," she said.'), '"KELSIER\'S," she said.');
+  assert.strictEqual(foldCapsRun('"WHY NOT," she said.'), '"Why Not," she said.');
 });
 
 console.log('the shared footnote-marker predicate the extension strips with');

@@ -33,7 +33,9 @@
  *   3. the number EXPANDER (number-expansion) for what the rules left: years
  *      read as years ("2025" → "twenty twenty-five"), the ambiguous shapes
  *      (5:30, 1914-1918, COVID-19) left as printed.
- *   4. ACRONYMS spelled out (below) — after the numbers, so "MI5" is never seen
+ *   4. a CAPS HEADING folded to Title Case (a mirror of narrator's packer fold,
+ *      below), acronyms kept as printed for the next stage.
+ *   5. ACRONYMS spelled out (below) — after the numbers, so "MI5" is never seen
  *      as letters.
  *
  * Scripture references with a book name ("Jeremiah 44:17-19") are the one shape
@@ -113,6 +115,64 @@ function isCapitalizedWord(token: string): boolean {
   return false;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Caps headings — a mirror of narrator's `fold_caps_run` (paragraph_packer.py)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// A caps heading is a WORD problem, not an acronym problem: "DOES GOD HOLD
+// CHILDREN RESPONSIBLE" reached the book model in capitals and came back "dues"
+// (Owen's ruling behind main fcb3c95e, the packer's fold). Listen text never
+// passes through the packer, and `acronymReading` rightly leaves each of those
+// tokens alone — they are English words — so the heading shape stayed untreated
+// here until the PC pointed at it (2026-09-06). Same rule, same guard: the whole
+// text when every word is caps, or a LEADING RUN of two or more caps words, is
+// folded word by word to Title Case; a word that reads as letters (the acronym
+// tests above) is kept as printed for `spellAcronyms` to take next.
+
+const HAS_UPPER = /\p{Lu}/u;
+const HAS_LOWER = /\p{Ll}/u;
+
+/** All the token's letters are capitals; punctuation and digits ride along. */
+function isCapsWord(token: string): boolean {
+  return HAS_UPPER.test(token) && !HAS_LOWER.test(token);
+}
+
+/** The token's letters, as the acronym tests read them. */
+function lettersOf(token: string): string {
+  return token.replace(/[^A-Za-z]/g, '');
+}
+
+/** Lower the token and capitalise its first LETTER: `KELSIER'S,` → `Kelsier's,`. */
+function titleCase(token: string): string {
+  const lowered = token.toLowerCase();
+  const i = lowered.search(/\p{L}/u);
+  return i < 0 ? lowered : lowered.slice(0, i) + lowered[i].toUpperCase() + lowered.slice(i + 1);
+}
+
+/**
+ * `text` with its leading run of caps words (or all of it) folded to Title
+ * Case, acronyms kept. A run of ONE caps word is folded only when it is the
+ * whole text (a one-word heading such as `INTRODUCTION.`); one caps word at the
+ * head of a longer sentence ("I", "A", a shouted word) is left alone.
+ */
+export function foldCapsRun(text: string): string {
+  const tokens = (text || '').split(' ');
+  let run = 0;
+  while (run < tokens.length && (tokens[run] === '' || isCapsWord(tokens[run]))) run++;
+  const capsWords = tokens.slice(0, run).filter((t) => t).length;
+  if (capsWords === 0) return text;
+  const whole = run === tokens.length;
+  if (capsWords < 2 && !whole) return text;
+  const keep = (t: string): boolean => {
+    const letters = lettersOf(t);
+    if (!letters) return true;
+    const upper = letters.toUpperCase();
+    return READ_AS.has(upper) || LETTERED_ACRONYMS.has(upper) || !VOWEL.test(upper);
+  };
+  const folded = tokens.slice(0, run).map((t) => (!t || keep(t) ? t : titleCase(t)));
+  return [...folded, ...tokens.slice(run)].join(' ');
+}
+
 /** Spell out every standalone initialism in a span of text. */
 export function spellAcronyms(text: string): string {
   return text.replace(CAPS_TOKEN, (whole, token: string) => acronymReading(token) ?? whole);
@@ -124,5 +184,5 @@ export function speakableListenText(raw: string): string {
   if (!collapsed) return '';
   const punctuated = canonicalizePunctuationText(collapsed);
   const ruled = applyNumberRules(punctuated, [punctuated.length]).text;
-  return spellAcronyms(expandNumbersEn(ruled));
+  return spellAcronyms(foldCapsRun(expandNumbersEn(ruled)));
 }
