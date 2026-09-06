@@ -652,6 +652,29 @@ class ExtractBlocksTest(unittest.TestCase):
         self.assertEqual([c.text for c in report.chunks if c.kind == 'item'][-1].split(']')[-1],
                          'a bare item.')
 
+    def test_a_block_ending_in_a_citation_page_reference_is_not_a_fragment(self):
+        """Measured 2026-09-05 (Working Towards the Fuhrer): the footnote tail
+        "... Diaries (Munich: Piper, 1992), iii. 1281-2" has no period and was
+        welded onto the next page's first paragraph."""
+        blocks = [
+            pp.Block(text='for November tenth, 1938 is available in Ralf Georg Reuth, ed., '
+                          'Joseph Goebbels. Diaries (Munich: Piper, 1992), iii. 1281-2',
+                     kind=pp.PARAGRAPH, doc='d', index=0),
+            pp.Block(text='What had once seemed impossible suddenly became possible.',
+                     kind=pp.PARAGRAPH, doc='d', index=1),
+            pp.Block(text='the column ran out after pp', kind=pp.PARAGRAPH, doc='d', index=2),
+            pp.Block(text='and picked up again.', kind=pp.PARAGRAPH, doc='d', index=3),
+        ]
+        joined = pp.join_provisional_fragments(blocks)
+        self.assertEqual(len(joined), 3)
+        self.assertTrue(joined[0].text.endswith('iii. 1281-2'))
+        self.assertEqual(joined[1].text, 'What had once seemed impossible suddenly became possible.')
+        self.assertEqual(joined[2].text, 'the column ran out after pp and picked up again.')
+        for tail in ('see pp. 51-2', 'as in II. 45', '(vol. 3, p. 7)', 'fol. 128'):
+            self.assertTrue(pp.ends_a_citation(tail), tail)
+        for prose in ('he did. 45', 'the civil. 90 percent', 'mild. 12 degrees', 'and then'):
+            self.assertFalse(pp.ends_a_citation(prose), prose)
+
     def test_a_bullet_cut_by_a_page_break_rejoins_its_lower_case_continuation(self):
         """Measured 2026-09-05 (Working Towards the Fuhrer, PDF-derived): the
         list item "... the 'creature of his party', who" on page 3 continued as

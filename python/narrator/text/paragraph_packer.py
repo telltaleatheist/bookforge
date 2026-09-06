@@ -257,6 +257,35 @@ _HAS_LETTER_RE = re.compile(r'\p{L}')
 _HAS_LOWER_RE = re.compile(r'\p{Ll}')
 
 
+#: A block that ENDS IN A CITATION'S PAGE REFERENCE has ended, whatever its
+#: last character is: a volume-and-pages tail (`iii. 1281-2`, `II. 45`) or a
+#: page lead with its number (`pp. 51-2`, `p. 7`, `fol. 128`), optionally
+#: inside a closing bracket. MEASURED 2026-09-05 (Working Towards the Fuhrer,
+#: PDF-derived): the footnote tail "... Joseph Goebbels. Diaries (Munich:
+#: Piper, 1992), iii. 1281-2" at the foot of page 13 carries no period, so the
+#: fragment join welded it onto the next page's first paragraph, and the
+#: narrator produced 20 s of gibberish before the prose. The roman-numeral
+#: grammar is the strict one the number rules use (thousands, hundreds, tens,
+#: units), so ordinary prose ending "... he did. 45" cannot match.
+_CITATION_TAIL_RE = re.compile(
+    r'(?:\b(?:m{0,3}(?:cm|cd|d?c{0,3})(?:xc|xl|l?x{0,3})(?:ix|iv|v?i{0,3}))\.\s*\d+(?:[-–]\d+)?'
+    r'|\b(?:pp?|fol|vol|no)\.\s*\d+(?:[-–]\d+)?)'
+    r'[)\]]?\s*$', re.IGNORECASE)
+
+
+def ends_a_citation(text: str) -> bool:
+    """True when the block's tail is a citation page reference (see the
+    constant): the block has ended even though no period closes it."""
+    stripped = (text or '').rstrip()
+    match = _CITATION_TAIL_RE.search(stripped)
+    if not match:
+        return False
+    # The roman alternative admits the empty numeral ("" + ". 45"); require
+    # at least one numeral letter or a page lead before the period.
+    head = stripped[match.start():].split('.')[0]
+    return bool(re.search(r'\p{L}', head))
+
+
 def is_label_line(text: str) -> bool:
     """A short all-capitals line is a label, not the front half of a sentence.
 
@@ -322,7 +351,7 @@ def join_provisional_fragments(blocks: Sequence[Block]) -> list:
                           doc=pending[0].doc, index=pending[0].index)
             pending = []
         if (block.kind == PARAGRAPH and block.text and not ends_a_thought(block.text)
-                and not is_label_line(block.text)):
+                and not is_label_line(block.text) and not ends_a_citation(block.text)):
             pending.append(block)
             continue
         if (block.kind == ITEM and block.text and not ends_a_thought(block.text)
