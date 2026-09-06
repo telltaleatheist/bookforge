@@ -53,6 +53,10 @@ def _engine(*, ceiling: int, budget: float = 42.0,
     engine.BATCH_SIZE = ceiling
     engine.MLX_MEM_BUDGET_GB = budget
     engine.MLX_KV_MB_PER_TOKEN_ROW = kv_mb
+    # ...plus the two the truncation ladder reads off the config on every
+    # convert: the chunk's seed rule and the chars-per-second guard.
+    from types import SimpleNamespace
+    engine.config = SimpleNamespace(seed=None, max_chars_per_sec=20.0, min_chars_per_sec=14.5)
     return engine
 
 
@@ -299,10 +303,20 @@ class ConvertBatchRoutingTest(unittest.TestCase):
         # which is only guaranteed while there is one `sf.write` call site.
         engine = _engine(ceiling=1, budget=42.0)
         written = []
-        engine.render_audio = lambda text, index=0: f'audio for {text} @ {index}'
+        calls = []
+        # An IN-BAND take (7 chars at ~17 chars/s), which the length ladder
+        # passes through untouched and never renders a second time; the stub
+        # takes the ladder's `seed`. Five seconds for seven characters would be
+        # a run-on and the ladder would - correctly - re-roll it.
+        import numpy as np
+        take = np.zeros(int(len('a chunk') / 17.0 * 24000), dtype=np.float32)
+        engine.render_audio = lambda text, seed=None, index=0: calls.append((text, seed, index)) or take
         engine._write_sentence = lambda number, audio: written.append((number, audio)) or True
         self.assertTrue(engine.convert(7, 'a chunk'))
-        self.assertEqual(written, [(7, 'audio for a chunk @ 7')])
+        self.assertEqual(calls, [('a chunk', None, 7)])
+        self.assertEqual(len(written), 1)
+        self.assertEqual(written[0][0], 7)
+        self.assertIs(written[0][1], take)
 
 
 # ---------------------------------------------------------------------------

@@ -114,7 +114,7 @@ import numpy as np
 
 from ..log import log
 from ..protocol import BackendSpec, ClipsVoice, DefaultVoice, StopPolicy
-from . import v3_served
+from . import truncation, v3_served
 from .prompt import clean_text
 from .v3_engine import HiggsV3Defaults, apply_v3_voice_defaults
 
@@ -389,6 +389,7 @@ class HiggsV3MlxConfig:
     audio_format: str = 'flac'
     max_chars: int = HiggsV3Defaults.MAX_CHARS
     max_chars_per_sec: float = HiggsV3Defaults.MAX_CHARS_PER_SEC
+    min_chars_per_sec: float = HiggsV3Defaults.MIN_CHARS_PER_SEC
     context_tokens: int = HiggsV3Defaults.CONTEXT_TOKENS
 
     #: The sampling keys mlx-audio's `step()` actually takes.
@@ -646,6 +647,7 @@ def higgs_v3_mlx_stop_policy(config: HiggsV3MlxConfig) -> StopPolicy:
         eos_reliable=True,
         resplit_on_cap=False,
         max_chars_per_sec=float(config.max_chars_per_sec),
+        min_chars_per_sec=float(config.min_chars_per_sec),
         levers={k: float(v) for k, v in config.mlx_sampling().items()},
         coverage_check='asr',
     )
@@ -1516,9 +1518,27 @@ class HiggsV3MlxEngine:
         return True
 
     def convert(self, sentence_number: int, sentence: str) -> bool:
-        """Render one chunk to `<sentences_dir>/<n>.<audio_format>`."""
+        """Render one chunk to `<sentences_dir>/<n>.<audio_format>`, through
+        the truncation ladder (`truncation.render_guarded`, shared with the
+        served arm)."""
         return self._write_sentence(
-            sentence_number, self.render_audio(sentence, index=sentence_number))
+            sentence_number, self._render_guarded(sentence_number, sentence))
+
+    def _render_guarded(self, index: int, text: str, first_take=None):
+        """`render_audio` under the truncation ladder - see `truncation.py`.
+        `first_take` is the batch path's already-decoded row, so a row that
+        passes the guard is never rendered twice."""
+        clean = self._clean_sentence_for_tts(text)
+        return truncation.render_guarded(
+            lambda part, seed: self.render_audio(part, seed=seed, index=index),
+            clean, index, sample_rate=self.SAMPLE_RATE,
+            # THE VOICE'S OWN BAND when the catalog measured its pace (Owen,
+            # 2026-09-06: the guard uses the recorded chars-per-second), else
+            # the engine default band - which is itself a measurement (Fuhrer,
+            # deathstalker), not a guess. `truncation.band_for` states which.
+            **truncation.band_for(self.voice_ref, float(self.config.max_chars_per_sec),
+                                  float(self.config.min_chars_per_sec)),
+            base_seed=self.config.seed, first_take=first_take)
 
     def convert_batch(self, items) -> list:
         """Render `items` - `(index, text)` in BOOK ORDER - and answer one bool
@@ -1585,8 +1605,13 @@ class HiggsV3MlxEngine:
             except Exception as bucket_err:
                 raise self._batch_failure(bucket, depth, bucket_err) from bucket_err
             for entry, rows in zip(bucket, rows_per_row):
+                # The batched take is take 0 of the ladder; a row that passes
+                # the guard is written as decoded, a row that stopped early is
+                # re-rolled and, if need be, split - serially, in its own
+                # voice, exactly as `convert` would have done it.
                 results[entry[0]] = self._write_sentence(
-                    entry[0], self.codec().decode(rows))
+                    entry[0], self._render_guarded(
+                        entry[0], entry[1], first_take=self.codec().decode(rows)))
         return [results.get(index, False) for index, _text in items]
 
     @staticmethod

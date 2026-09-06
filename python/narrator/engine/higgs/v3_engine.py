@@ -84,6 +84,7 @@ from ..protocol import (BackendSpec, ClipsVoice, DefaultVoice, EdgeFade,
 from ..log import log
 from . import served_common
 from . import sgl_served
+from . import truncation
 from . import v3_served
 from .prompt import clean_text
 from .served_common import STACK_SGLANG_OMNI, STACK_VLLM_OMNI
@@ -101,9 +102,16 @@ class HiggsV3Defaults:
     CONTEXT_TOKENS = v3_served.CONTEXT_TOKENS
     # <= 600 chars is the measured safe zone; the delivered render used 300.
     MAX_CHARS = v3_served.MAX_CHARS
-    # The measured render sat at ~16.5 chars/s against the narrator's 15.0;
-    # 20.0 leaves headroom. ADVISORY - coverage_check is the real gate.
+    # THE LENGTH BAND, ENFORCED since 2026-09-06 by `truncation.render_guarded`
+    # on every chunk of both arms (it was advisory before that, and Fuhrer
+    # chunk 19 shipped 3 s of a 1,127-character paragraph). Measured book pace
+    # on deathstalker: 17.2 chars/s (5.83 s / 100 chars), every clean chunk
+    # 0.94x-1.10x of it. Above MAX the take is too SHORT (an early stop:
+    # 20.0 = ~0.86x); below MIN it is too LONG (a run-on tail: 14.5 = ~1.19x,
+    # inside three of the four measured run-ons at 1.24x-1.54x, outside the
+    # 1.11x one, which is the coverage audit's). See truncation.py.
     MAX_CHARS_PER_SEC = 20.0
+    MIN_CHARS_PER_SEC = 14.5
     EDGE_FADE = EdgeFade(v3_served.EDGE_FADE_IN_MS,
                         v3_served.EDGE_FADE_OUT_MS)
     MAX_REFERENCE_SECONDS = v3_served.MAX_REFERENCE_SECONDS
@@ -181,6 +189,7 @@ class HiggsV3Config:
     audio_format: str = 'flac'
     max_chars: int = HiggsV3Defaults.MAX_CHARS
     max_chars_per_sec: float = HiggsV3Defaults.MAX_CHARS_PER_SEC
+    min_chars_per_sec: float = HiggsV3Defaults.MIN_CHARS_PER_SEC
     context_tokens: int = HiggsV3Defaults.CONTEXT_TOKENS
     ready_timeout: float = HiggsV3Defaults.READY_TIMEOUT_SECONDS
     #: Run the sentinel-filter tail MEASUREMENT after /health (see
@@ -480,6 +489,7 @@ def higgs_v3_stop_policy(config: HiggsV3Config) -> StopPolicy:
         eos_reliable=True,
         resplit_on_cap=False,
         max_chars_per_sec=float(config.max_chars_per_sec),
+        min_chars_per_sec=float(config.min_chars_per_sec),
         levers={k: float(v) for k, v in sampling.items()},
         coverage_check='asr',
     )
@@ -773,6 +783,20 @@ class HiggsV3Engine:
         the engine before it renders, so it is part of the surface."""
         return clean_text(sentence)
 
+    def _render_guarded(self, index: int, text: str, first_take=None):
+        """`render_audio` under the truncation ladder - see `truncation.py`."""
+        clean = self._clean_sentence_for_tts(text)
+        return truncation.render_guarded(
+            lambda part, seed: self.render_audio(part, seed=seed, index=index),
+            clean, index, sample_rate=self.SAMPLE_RATE,
+            # THE VOICE'S OWN BAND when the catalog measured its pace (Owen,
+            # 2026-09-06: the guard uses the recorded chars-per-second), else
+            # the engine default band - which is itself a measurement (Fuhrer,
+            # deathstalker), not a guess. `truncation.band_for` states which.
+            **truncation.band_for(self.voice_ref, float(self.config.max_chars_per_sec),
+                                  float(self.config.min_chars_per_sec)),
+            base_seed=self.config.seed, first_take=first_take)
+
     def _seed_for(self, index: int):
         """THE seed rule, one place: chunk i renders with `seed + i`.
 
@@ -838,10 +862,16 @@ class HiggsV3Engine:
         """Render one chunk to `<sentences_dir>/<n>.<audio_format>`, EXACTLY AS
         DECODED - no trim, no fade, no pad. The server already trimmed the
         sentinel tail; the fades are the assembler's (`edge_fade`), and the
-        gaps are the manifest's."""
+        gaps are the manifest's.
+
+        THROUGH THE TRUNCATION LADDER (`truncation.render_guarded`): a take
+        whose audio is too short for its text is re-rolled at another seed,
+        then split at a sentence boundary and re-rendered - the Orpheus
+        practice, asked for by Owen on 2026-09-06 after Fuhrer chunk 19
+        shipped 3 s of a 1,127-character paragraph."""
         import soundfile as sf
         path = self._sentence_file(sentence_number)
-        audio = self.render_audio(sentence, index=sentence_number)
+        audio = self._render_guarded(sentence_number, sentence)
         os.makedirs(os.path.dirname(path), exist_ok=True)
         # PCM_16, stated - the same writer contract every narrator chunk uses.
         # See engine/orpheus/audio.py:write_chunk_file for why the bit depth is

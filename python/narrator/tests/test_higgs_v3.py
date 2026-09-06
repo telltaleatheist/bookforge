@@ -1869,11 +1869,18 @@ class SeedRuleTest(V3TestCase):
         self.assertEqual(seeds, [1234, 1235, 1236])
 
     def test_convert_seeds_by_sentence_number(self):
+        # An IN-BAND take for the six characters of 'Hello.' (~17 chars/s), so
+        # the length guard passes take 0 through and the ONE request carries the
+        # chunk's own seed. (At the fake's default 1.0 s, 6 chars/s is a run-on
+        # and the guard - correctly - re-rolls at another seed.)
+        srv = self.server
+        (srv.httpd if hasattr(srv, 'httpd') else srv).seconds = 0.35
         engine = HiggsV3Engine(self.config(probe_sentinel_filter=False,
                                            sentences_dir=self.dir))
         self.addCleanup(engine.cleanup)
         engine.convert(7, 'Hello.')
-        self.assertEqual(self.server.requests[-1]['seed'], 1241)
+        self.assertEqual(len(self.server.requests), 1)
+        self.assertEqual(self.server.requests[0]['seed'], 1241)
 
     def test_a_seed_in_extra_params_is_refused(self):
         """One place carries the seed: the top-level field. vllm-omni copies

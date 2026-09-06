@@ -109,10 +109,16 @@ function writeWorkerLog(line: string): void {
  * Returned so it can reach the JOB log. worker-output.log is truncated on every
  * start, so it is not where a defect count for a finished book can live.
  */
+/** The two engines' guard-event prefixes. Both are LOAD-BEARING: narrator's
+ *  `engine/orpheus/guards.py` and `engine/higgs/truncation.py` print exactly
+ *  these before one JSON object, and this is the only parser. */
+const GUARD_EVENT_PREFIXES = ['[ORPHEUS][ORPHEUS_GUARD_EVENT]', '[HIGGS3][HIGGS_GUARD_EVENT]'] as const;
+
 function parseOrpheusGuardEvent(line: string): Record<string, unknown> | null {
-  const at = line.indexOf('[ORPHEUS][ORPHEUS_GUARD_EVENT]');
-  if (at < 0) return null;
-  const json = line.slice(at + '[ORPHEUS][ORPHEUS_GUARD_EVENT]'.length).trim();
+  const prefix = GUARD_EVENT_PREFIXES.find((p) => line.includes(p));
+  if (!prefix) return null;
+  const at = line.indexOf(prefix);
+  const json = line.slice(at + prefix.length).trim();
   try {
     const parsed = JSON.parse(json);
     return parsed && typeof parsed === 'object' ? parsed : null;

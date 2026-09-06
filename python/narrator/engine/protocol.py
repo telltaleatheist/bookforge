@@ -167,6 +167,15 @@ class ClipsVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
+    #: THE LENGTH GUARD'S BAND FOR THIS VOICE, chars of text per second of
+    #: audio, derived by the catalog from the voice's MEASURED pace (Owen,
+    #: 2026-09-06: a Higgs voice's chars-per-second is recorded in the
+    #: configuration as part of the normal ladder, like an Orpheus voice's,
+    #: and the guard uses it): `max` = p99 x 1.15 (above it the take is too
+    #: SHORT), `min` = p05 / 1.15 (below it the take ran ON). None = the voice
+    #: has no measured pace yet and the engine's own default band applies.
+    max_chars_per_sec: Optional[float] = None
+    min_chars_per_sec: Optional[float] = None
     kind: str = field(default='clips', init=False)
 
     def __post_init__(self):
@@ -231,6 +240,15 @@ class DefaultVoice:
     #: number. A fine-tune with no target cannot be prepped - the prep refuses
     #: by name; a zero-shot voice packs at the engine placeholder.
     target_chars: Optional[int] = None
+    #: THE LENGTH GUARD'S BAND FOR THIS VOICE, chars of text per second of
+    #: audio, derived by the catalog from the voice's MEASURED pace (Owen,
+    #: 2026-09-06: a Higgs voice's chars-per-second is recorded in the
+    #: configuration as part of the normal ladder, like an Orpheus voice's,
+    #: and the guard uses it): `max` = p99 x 1.15 (above it the take is too
+    #: SHORT), `min` = p05 / 1.15 (below it the take ran ON). None = the voice
+    #: has no measured pace yet and the engine's own default band applies.
+    max_chars_per_sec: Optional[float] = None
+    min_chars_per_sec: Optional[float] = None
     kind: str = field(default='default', init=False)
 
     def __post_init__(self):
@@ -353,6 +371,12 @@ class StopPolicy:
     max_chars_per_sec: float
     levers: Mapping[str, float] = field(default_factory=dict)
     coverage_check: Optional[str] = None
+    #: The LONG side of the length guard - text characters per second of audio
+    #: BELOW which the audio ran on past its text (a run-on / babble tail).
+    #: 0 disables. Higgs v3 sets it (measured 2026-09-06: four run-on tails of
+    #: 7-27 s shipped in one book); Orpheus leaves it 0 - its EOS floor and
+    #: cap ladder are the run-on story there.
+    min_chars_per_sec: float = 0.0
 
 
 # ---------------------------------------------------------------------------
