@@ -8062,9 +8062,29 @@ function setupIpcHandlers(): void {
 
       const distro = getWslDistro();
       const conda = getWslCondaPath();
-      const envName = getWslHiggsCondaEnv();
+      // ── WHICH INSTALLER, AND WHICH ENV: THE CATALOG'S STACK DECIDES ────────
+      //
+      // The two stacks are two conda environments and two installers, and they
+      // are not variants of one: `install_higgs_env.sh` builds python 3.11 +
+      // vllm 0.28.0 and applies two site-packages patches, while
+      // `install_sglomni.sh` builds python 3.12 + torch 2.13.0+cu130 + sglang
+      // 0.5.18, makes the two flashinfer CUDA symlinks, and applies no patches
+      // (SGLang-Omni has its own stage processor and needs none).
+      //
+      // The env NAME follows the same rule the doctor and the spawn follow: the
+      // `wslHiggsCondaEnv` setting names the vllm-omni env, and the SGLang one is
+      // the catalog's `serving.sglang.condaEnvName`. All three read the same two
+      // values, so Install/Repair, the doctor, and the render cannot end up
+      // talking about different environments.
+      const { higgsServingSpec, higgsServingStack, higgsSglangFor } =
+        await import('./higgs-models.js');
+      const serving = higgsServingSpec();
+      const sglang = higgsServingStack(serving) === 'sglang-omni'
+        ? higgsSglangFor(serving) : null;
+      const envName = sglang ? sglang.condaEnvName : getWslHiggsCondaEnv();
+      const installer = sglang ? sglang.installScript : 'install_higgs_env.sh';
       const bash =
-        `bash ${JSON.stringify(`${scriptWsl}/install_higgs_env.sh`)} ` +
+        `bash ${JSON.stringify(`${scriptWsl}/${installer}`)} ` +
         `--env-name ${JSON.stringify(envName)} --conda ${JSON.stringify(conda)}` +
         (opts?.check ? ' --check' : '');
       const args = distro ? ['-d', distro, 'bash', '-lc', bash] : ['bash', '-lc', bash];

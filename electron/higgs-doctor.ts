@@ -52,6 +52,9 @@ import {
   higgsCheckpointDirFor,
   higgsCheckpointStagedOn,
   higgsMlxBaseDir,
+  higgsServingSpec,
+  higgsServingStack,
+  higgsSglangFor,
   listHiggsModels,
 } from './higgs-models';
 
@@ -517,7 +520,27 @@ function weightsCheck(baseDir: string): HiggsCheck {
 export async function higgsDoctor(): Promise<HiggsSetupResult> {
   if (process.platform === 'win32') {
     const toggleOn = shouldUseWsl2ForHiggs();
-    const wsl = await checkWslHiggsSetupAsync();
+    // ── THE STACK COMES FROM THE CATALOG, AND SO DOES ITS ENV ───────────────
+    //
+    // `tool-paths.ts` deliberately reads no catalog (a malformed JSON file must
+    // not break WSL detection), so THIS module — which already reads it — hands
+    // the doctor the stack and, on the SGLang arm, the env name. The
+    // `wslHiggsCondaEnv` setting names the vllm-omni env; SGLang-Omni lives in
+    // its own (python 3.12 + torch 2.13.0+cu130 cannot share one with python
+    // 3.11 + vllm 0.28.0), and that name is written down in exactly one place:
+    // the catalog's `serving.sglang.condaEnvName`.
+    //
+    // The consequence is that the doctor examines THE ENV THE SPAWN WILL USE —
+    // `higgsEnvExtras` derives its prefix from the same two values — which is
+    // rule 4 of this module's header applied to the second stack.
+    const serving = higgsServingSpec();
+    const stack = higgsServingStack(serving);
+    const wsl = await checkWslHiggsSetupAsync({
+      stack,
+      ...(stack === 'sglang-omni'
+        ? { higgsCondaEnv: higgsSglangFor(serving).condaEnvName }
+        : {}),
+    });
     const toggle: HiggsCheck = {
       id: 'toggle',
       label: '"WSL2 for Higgs" enabled',

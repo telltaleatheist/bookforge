@@ -57,15 +57,27 @@ _LOG_HELPER = os.path.join(_ENGINE, 'log.py')
 #:   engine/orpheus/  111  adapters 4, asr_gate 1, audio 2, engine 30, guards 8,
 #:                         mlx_backend 34, sampling 1, snac 3,
 #:                         transformers_backend 4, vllm_backend 24
-#:   engine/higgs/      18  mlx_backend 1 (_log), transformers_backend 2,
-#:                         v3_engine 1, v3_served 14
+#:   engine/higgs/      28  mlx_backend 1 (_log), served_common 14,
+#:                         sgl_served 2, transformers_backend 2, v3_engine 5,
+#:                         v3_served 4
 #:
 #: higgs/ went 15 -> 18 on 2026-09-05 when the v3 server stopped writing its
 #: output to DEVNULL: v3_served gained the log-file line and the sentinel
 #: proof's report, and v3_engine gained the "proof UNAVAILABLE" line for an
 #: attached server whose operator named no log.
-LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 25}
-LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 136
+#:
+#: 25 -> 28 on 2026-09-06, THE SECOND SERVING STACK. Most of the movement is a
+#: MOVE and not growth: v3_served's lifecycle (the ownership scan, the watchdog,
+#: the group signal, adoption, teardown) was extracted into `served_common.py`,
+#: which both stacks now share, so 14 of its lines moved there and none of them
+#: was written a second time. The three genuinely NEW lines each say what the
+#: second stack does differently: sgl_served's two identity lines (which
+#: checkpoint is up, read from the server's own environ because /v1/models
+#: reports the served NAME as its root and can never say), and v3_engine's line
+#: stating that the sentinel proof does not APPLY on that stack - so "not
+#: applicable" and "not proved" never look the same in a run log.
+LOG_CALLS_BY_PACKAGE = {'orpheus': 111, 'higgs': 28}
+LOG_CALLS_TOTAL = sum(LOG_CALLS_BY_PACKAGE.values())          # 139
 
 
 def _engine_modules():

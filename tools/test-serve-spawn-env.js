@@ -449,6 +449,129 @@ check('higgs: BookForge never sets HIGGS_MODEL_DIR', () => {
   }
 });
 
+// ── WHICH SERVING STACK, AND WHETHER ITS KNOBS TRAVEL ─────────────────────
+//
+// A SECOND STACK landed on 2026-09-06: SGLang-Omni 0.1.4 beside vllm-omni
+// 0.28.0. Measured on the same 50 packed chunks, the same merged checkpoint and
+// one seed (HIGGS_FIELD_NOTES §4n): vllm-omni at 16 in flight gave 4 early
+// stops, 13/50 damaged and 6 sustained voice switches at 10,752 chars/min;
+// SGLang-Omni at 16 gave 0, 5 and 0 at 26,666. vllm-omni's damage is its batched
+// talker — the same build at width 1 is clean.
+//
+// The catalog's `serving.stack` picks one. These rows hold the two properties
+// that make the switch a switch rather than a hope: the choice REACHES narrator
+// (which refuses by name without it), and each stack's own knobs reach ITS
+// launcher with none of the other's along for the ride.
+const higgsModels = require(path.join(REPO, 'dist', 'electron', 'higgs-models.js'));
+
+check('higgs: HIGGS_STACK is the catalog\'s, on every arm', () => {
+  // The same contract as HIGGS_MAX_NUM_SEQS: `served_common.serving_stack()`
+  // refuses BY NAME when it is unset, because the two stacks place sampling
+  // differently, size the frame cap against different context windows, and
+  // disagree about whether an empty sampling means "the checkpoint's own
+  // numbers" or "the untruncated codebook tail". A door that renders and finds
+  // it missing dies after the session is already built.
+  assert.ok('stack' in serving,
+    'the serving block no longer declares `stack` — an absent key would make "nobody '
+    + 'decided" look exactly like "we chose vllm-omni"');
+  for (const arm of ARMS) {
+    if (higgsRows[arm].refused) continue;
+    assert.strictEqual(envOf(higgsRows[arm]).HIGGS_STACK, serving.stack,
+      `${arm} does not state the serving stack`);
+  }
+});
+
+check('higgs: a serving block with NO stack is refused BY NAME', () => {
+  assert.throws(
+    () => higgsModels.higgsServingStack({ engineVersion: 'v3' }),
+    /declares no `stack`/,
+    'a catalog that never decided which stack to serve on was accepted');
+  assert.throws(
+    () => higgsModels.higgsServingStack({ stack: 'tensorrt' }),
+    /not a stack BookForge serves/,
+    'an unknown stack name was accepted');
+});
+
+check('higgs: the sglang block is validated, not read on faith', () => {
+  const good = JSON.parse(JSON.stringify(serving.sglang));
+  assert.ok(good, 'the catalog carries no sglang block to validate');
+  higgsModels.higgsSglangFor({ sglang: good });          // does not throw
+  for (const [field, bad] of [['condaEnvName', ''], ['launchScript', null],
+    ['port', 0], ['maxRunningRequests', 1.5], ['memFractionStatic', 1]]) {
+    assert.throws(
+      () => higgsModels.higgsSglangFor({ sglang: { ...good, [field]: bad } }),
+      new RegExp(`sglang\\.${field}`),
+      `sglang.${field} = ${JSON.stringify(bad)} was accepted`);
+  }
+});
+
+// THE SGLang ARM'S OWN ENVIRONMENT, built by calling the real `higgsSpawnEnv`
+// with a model that declares that stack. It is driven directly rather than
+// through the extractor because the SHIPPED catalog is deliberately still
+// `vllm-omni` (behaviour is unchanged until somebody flips one word), and a
+// keeper that could only see the shipped value would prove nothing about the
+// arm the measurements argue for.
+const SGL_MODEL = {
+  id: 'sgl-probe',
+  label: 'SGLang probe',
+  kind: 'default',
+  engineVersion: 'v3',
+  voice: {},
+  license: serving.model,
+  commercialUse: false,
+  sampleRate: 24000,
+  addedAt: '2026-09-06',
+  serving: { ...serving, stack: 'sglang-omni' },
+};
+const SGL_ENV = higgsModels.higgsSpawnEnv(SGL_MODEL, {
+  voicesPath: '/mnt/c/tmp/voices.json',
+  serveScriptPath: '/home/t/anaconda3/envs/sglomni/bin/serve_higgs_sgl.sh',
+  condaEnvPrefix: '/home/t/anaconda3/envs/sglomni',
+  wslDistro: 'Ubuntu',
+});
+
+check('higgs/sglang: every sglang knob arrives as its HIGGS_SGL_* variable', () => {
+  const sgl = serving.sglang;
+  assert.strictEqual(SGL_ENV.HIGGS_STACK, 'sglang-omni');
+  assert.strictEqual(SGL_ENV.HIGGS_SGL_HOST, sgl.host);
+  assert.strictEqual(SGL_ENV.HIGGS_SGL_PORT, String(sgl.port));
+  assert.strictEqual(SGL_ENV.HIGGS_SGL_MEM_FRACTION, String(sgl.memFractionStatic));
+  assert.strictEqual(SGL_ENV.HIGGS_SGL_CUDA_GRAPH_MAX_BS, String(sgl.cudaGraphMaxBs));
+  assert.strictEqual(SGL_ENV.HIGGS_SGL_MAX_NEW_TOKENS, String(sgl.maxNewTokens));
+  assert.ok(SGL_ENV.HIGGS_SGL_ENV, 'the sglang arm names no HIGGS_SGL_ENV');
+  assert.ok(SGL_ENV.NARRATOR_HIGGS_SGL_SERVE_SCRIPT.startsWith(SGL_ENV.HIGGS_SGL_ENV + '/bin/'),
+    'the launch script is not inside HIGGS_SGL_ENV');
+});
+
+check('higgs/sglang: the concurrency is ONE variable, from the sglang block', () => {
+  // `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS on BOTH stacks, and on this
+  // one the number is `--tts_engine.factory.max_running_requests`. Two names for
+  // one question is how the server ends up at one width and narrator's batch at
+  // another.
+  assert.strictEqual(SGL_ENV.HIGGS_MAX_NUM_SEQS,
+    String(serving.sglang.maxRunningRequests));
+});
+
+check('higgs/sglang: NONE of the vllm-omni stack\'s variables come along', () => {
+  // Each would be a lever read by nothing — serve_higgs_sgl.sh reads none of
+  // them — and NARRATOR_HIGGS3_SERVE_SCRIPT in particular would be read by the
+  // WRONG BACKEND: `HiggsSglServedBackend` looks at NARRATOR_HIGGS_SGL_* and
+  // `HiggsV3ServedBackend` at NARRATOR_HIGGS3_*, which is what stops a stale
+  // variable pointing one stack's client at the other stack's server.
+  for (const key of ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
+    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'HIGGS_DEPLOY_CONFIG',
+    'NARRATOR_HIGGS3_SERVE_SCRIPT']) {
+    assert.ok(!(key in SGL_ENV), `the sglang arm carries the vllm-omni stack's ${key}`);
+  }
+});
+
+check('higgs/sglang: BookForge still never sets HIGGS_MODEL_DIR', () => {
+  // narrator exports it per voice, and on THIS stack it is also the only way to
+  // tell which checkpoint a running server holds (/v1/models reports the served
+  // NAME as its root). A second authority for it would be worse here, not better.
+  assert.ok(!('HIGGS_MODEL_DIR' in SGL_ENV));
+});
+
 // ── THE MLX BATCH BUDGET REACHES THE LISTEN SERVER ────────────────────────
 //
 // The darwin Higgs serve door batches its READ-AHEAD (the row being listened to

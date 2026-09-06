@@ -63,6 +63,27 @@
  *                             path — a bare file name in the catalog is
  *                             resolved to `<HIGGS_ENV>/bin/<file>`
  *
+ * ── AND SINCE 2026-09-06, A SECOND STACK WITH ITS OWN SET ───────────────────
+ *
+ * `serving.stack` selects between vllm-omni and SGLang-Omni (see
+ * `HiggsServingStack` for the measurements that produced the second one). The
+ * stack itself travels as `HIGGS_STACK` on EVERY arm and EVERY phase, exactly
+ * as `HIGGS_MAX_NUM_SEQS` does and for the same reason: narrator refuses by name
+ * when it is unset, because the two stacks are not interchangeable.
+ *
+ * On the SGLang arm the launch script is `serve_higgs_sgl.sh` and its knobs are
+ * a DIFFERENT SET, not a subset:
+ *
+ *   NARRATOR_HIGGS_SGL_SERVE_SCRIPT  the launcher (its own name, so a stale
+ *                                    NARRATOR_HIGGS3_* cannot cross the stacks)
+ *   HIGGS_SGL_ENV                    the `sglomni` conda prefix
+ *   HIGGS_SGL_HOST / HIGGS_SGL_PORT  where it binds (8200, never 8095)
+ *   HIGGS_SGL_MEM_FRACTION           ONE fraction for the whole engine
+ *   HIGGS_SGL_CUDA_GRAPH_MAX_BS      the graph capture budget
+ *   HIGGS_SGL_MAX_NEW_TOKENS         the engine's own generation ceiling
+ *   HIGGS_MAX_NUM_SEQS               shared: `max_running_requests` AND
+ *                                    narrator's batch width
+ *
  * Every one of them comes from the catalog's `serving` block (`higgsServingFor`)
  * and NONE of them reached the script until 2026-09-05: the block declared a
  * configuration and the server ran on the script's built-in defaults. The one
@@ -366,8 +387,124 @@ export interface HiggsBackendCaps {
  * about (HIGGS_HOST, HIGGS_PORT, HIGGS_MAX_NUM_SEQS) into the wrapper it
  * launches, so the pair that binds and the pair that is polled cannot drift.
  */
+/**
+ * WHICH SERVING STACK a catalog's `serving` block selects.
+ *
+ * TWO NOW, and the second one exists because of a measurement rather than a
+ * preference. Same 50 packed chunks of a real book, same merged checkpoint
+ * (ckpt-1080), same sampling, one seed, scored by ASR coverage / skipped words /
+ * insertion rate / early stop, with 3 s ECAPA windows for mid-chunk voice
+ * switches (training side, 2026-09-05, HIGGS_FIELD_NOTES §4n):
+ *
+ *   engine, in flight       early stops  damaged/50  sustained switches  chars/min
+ *   vllm-omni 0.28.0, 1          0            5              0             1,064
+ *   vllm-omni 0.28.0, 16         4           13              6            10,752
+ *   SGLang-Omni 0.1.4, 16        0            5              0            26,666
+ *   SGLang-Omni 0.1.4, 1         1            7              0             2,636
+ *
+ * vllm-omni's damage is its BATCHED TALKER: at width 1 the same build is clean,
+ * and the corruption lands on the newest batch row. The truncations Owen heard,
+ * the gibberish, and the sustained voice switches are all that one defect.
+ * SGLang-Omni is clean at 16 wide and 2.5x the throughput.
+ *
+ * THE FIELD IS REQUIRED AND HAS NO DEFAULT. `higgsServingStack` refuses a block
+ * that does not carry it. A default would make "nobody decided" and "we chose
+ * vllm-omni" the same catalog — and the two stacks are not interchangeable in
+ * any of the places it matters (sampling placement, the frame-cap field, an
+ * 8192- vs a hard-coded 4096-token context, whether reference clips work at
+ * all), so the decision has to be written down.
+ */
+export type HiggsServingStack = 'vllm-omni' | 'sglang-omni';
+
+/** The stacks, as a value, for validation and for messages that list them. */
+export const HIGGS_SERVING_STACKS: readonly HiggsServingStack[] =
+  ['vllm-omni', 'sglang-omni'] as const;
+
+/**
+ * THE SGLang-Omni HALF of a serving block — its own env, its own port, its own
+ * knobs. Present alongside the vllm-omni fields rather than instead of them, so
+ * flipping `stack` is a one-word edit and neither stack's measured
+ * configuration is lost when the other is selected.
+ *
+ * EVERY FIELD REACHES `serve_higgs_sgl.sh`, as a `HIGGS_SGL_*` variable (except
+ * the concurrency, which is `HIGGS_MAX_NUM_SEQS` — see `maxRunningRequests`).
+ * That is the lesson the vllm-omni block learned the hard way: until 2026-09-05
+ * its numbers reached nothing and editing them reported success while changing
+ * the server not at all.
+ */
+export interface HiggsSglangSpec {
+  /** The conda env prefix name. A SEPARATE env from `higgs3` and it must be: */
+  /* python 3.12 + torch 2.13.0+cu130 + sglang 0.5.18 cannot share an
+   * environment with python 3.11 + vllm 0.28.0. */
+  condaEnvName: string;
+  /** The launcher the installer deploys into `<env>/bin/`. */
+  launchScript: string;
+  /** The installer that builds that env (Settings → Higgs runs it). */
+  installScript: string;
+  /**
+   * `--model-name`, the `model` field of every request, and the id
+   * `/v1/models` reports. DELIBERATELY NOT vllm-omni's `higgs-v3`: a name that
+   * differs is one more way a leftover server on the wrong port is caught.
+   */
+  servedModelName: string;
+  host: string;
+  /** 8200, so a server on this stack is never confused with vllm-omni's 8095. */
+  port: number;
+  /**
+   * `--mem-fraction-static`. ONE FRACTION, NOT TWO: sgl-omni takes a single
+   * number for the whole engine, where vllm-omni is two vLLM stages that each
+   * apply the global flag (hence this catalog's separate
+   * `gpuMemoryUtilization` / `codecGpuMemoryUtilization` pair). MEASURED: 0.60
+   * holds ~19 GB of a 24.5 GB card at 16 in flight, healthy in ~110 s, CUDA
+   * graphs captured on sm_86.
+   */
+  memFractionStatic: number;
+  /**
+   * `--tts_engine.factory.max_running_requests`, AND the width of narrator's own
+   * batch. It travels as `HIGGS_MAX_NUM_SEQS` — the same variable the vllm-omni
+   * arm uses — because `serve_concurrency()` reads exactly that name and there
+   * must be ONE answer to "how wide is this render" per job.
+   */
+  maxRunningRequests: number;
+  /**
+   * `--tts_engine.factory.cuda_graph_max_bs`. A CAPTURE budget, not a scheduling
+   * limit: graphs are captured up to this size at startup and cost VRAM. Ships
+   * equal to `maxRunningRequests` (that is what was measured) and is a separate
+   * field because they are separate things.
+   */
+  cudaGraphMaxBs: number;
+  /**
+   * `--tts_engine.factory.max_new_tokens`, applied by the scheduler adapter as
+   * `min(request, this)`. NOT the effective per-request cap: the real ceiling is
+   * `contextTokens`, and narrator sizes every request against it.
+   */
+  maxNewTokens: number;
+  /**
+   * THE HARD CONTEXT, recorded so a refusal can cite it. `sglang_omni/models/
+   * higgs_tts/engine_builder.py` sets `HiggsTtsEngineBuilder.context_length =
+   * 4096` as a class attribute; there is no flag and no config path. Prompt
+   * tokens + `max_new_tokens` over 4,095 is an HTTP 500 from inside the
+   * scheduler, so narrator refuses a chunk that cannot fit BY NAME before
+   * sending (python/narrator/engine/higgs/sgl_served.py `frame_cap`).
+   *
+   * It is in the catalog and not only in the python because BookForge is where
+   * a voice's `targetChars` is chosen, and this is the number that bounds it.
+   */
+  contextTokens: number;
+  /** Measured launch-to-health on owens-pc: ~110 s. */
+  coldStartSeconds: number;
+}
+
 export interface HiggsServingSpec {
   engineVersion: string;
+  /**
+   * WHICH STACK SERVES THIS MODEL. Required — see `HiggsServingStack`.
+   * `higgsServingStack()` is the only reader, and it refuses a block without it
+   * rather than assuming the older one.
+   */
+  stack: HiggsServingStack;
+  /** The SGLang-Omni half, read when `stack` is `'sglang-omni'`. */
+  sglang?: HiggsSglangSpec;
   model: string;
   env: string;
   condaEnvName: string;
@@ -1053,6 +1190,97 @@ export function higgsServingSpec(): HiggsServingSpec {
   return loadCatalog().serving;
 }
 
+/**
+ * WHICH SERVING STACK a block selects — or a refusal naming the block.
+ *
+ * REQUIRED, WITH NO DEFAULT. An absent key would make "nobody has decided" look
+ * exactly like "we chose vllm-omni", and the choice is not cosmetic: the two
+ * stacks place sampling differently (vllm-omni inside `extra_params`, SGLang at
+ * the request top level, where a missing top_k means the untruncated codebook
+ * tail), size the frame cap against an 8192- or a hard-coded 4096-token context,
+ * name the cap field differently, and disagree about whether a reference-clone
+ * voice can render at all. Reading the wrong one is a book at sampling nobody
+ * chose, or an HTTP 500 per chunk.
+ */
+export function higgsServingStack(serving: HiggsServingSpec): HiggsServingStack {
+  const value = (serving as { stack?: unknown }).stack;
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(
+      'The Higgs serving block declares no `stack`. It names the serving stack the '
+      + `server runs on — one of ${HIGGS_SERVING_STACKS.join(', ')} — and there is no `
+      + 'default, because the two are not interchangeable: they place sampling in '
+      + 'different parts of the request, size the frame cap against different context '
+      + 'windows (8192 vs a hard-coded 4096), and only one of them can render a '
+      + 'reference-clone voice. Write it in electron/data/higgs-models.json.',
+    );
+  }
+  if (!(HIGGS_SERVING_STACKS as readonly string[]).includes(value)) {
+    throw new Error(
+      `The Higgs serving block's stack is ${JSON.stringify(value)}, which is not a stack `
+      + `BookForge serves. The stacks are ${HIGGS_SERVING_STACKS.join(' and ')}.`,
+    );
+  }
+  return value as HiggsServingStack;
+}
+
+/**
+ * The SGLang half of a serving block, VALIDATED — or a refusal naming the field.
+ *
+ * Asked only when `stack` selects it. Every number here lands on an `sgl-omni`
+ * command line inside a WSL guest, roughly two minutes before anything can be
+ * heard, so a missing one is refused here rather than defaulted: a substituted
+ * `maxRunningRequests` is a server that comes up at the wrong width and renders
+ * a whole book that way, and narrator sizes its own batch from the same number.
+ */
+export function higgsSglangFor(serving: HiggsServingSpec): HiggsSglangSpec {
+  const block = serving.sglang;
+  if (!block || typeof block !== 'object') {
+    throw new Error(
+      'The Higgs serving block selects the sglang-omni stack but carries no `sglang` '
+      + 'block. That block is where its conda env, launcher, bind address, memory '
+      + 'fraction, batch width and context window live, and every one of them reaches '
+      + 'serve_higgs_sgl.sh as a HIGGS_SGL_* variable. Fix it in '
+      + 'electron/data/higgs-models.json.',
+    );
+  }
+  for (const field of ['condaEnvName', 'launchScript', 'installScript',
+                       'servedModelName', 'host'] as const) {
+    const value = block[field];
+    if (typeof value !== 'string' || !value.trim()) {
+      throw new Error(
+        `The Higgs serving block's sglang.${field} is ${JSON.stringify(value)}, which is `
+        + 'not a name. There is no default here — a guessed env, launcher or served '
+        + 'model name is a server started somewhere nobody looked.',
+      );
+    }
+  }
+  for (const field of ['port', 'maxRunningRequests', 'cudaGraphMaxBs', 'maxNewTokens',
+                       'contextTokens', 'coldStartSeconds'] as const) {
+    const value = block[field];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value <= 0) {
+      throw new Error(
+        `The Higgs serving block's sglang.${field} is ${JSON.stringify(value)}, which is `
+        + 'not a positive integer. Fix it in electron/data/higgs-models.json.',
+      );
+    }
+  }
+  if (block.port > 65535) {
+    throw new Error(`The Higgs serving block's sglang.port is ${block.port}, which is not a port number.`);
+  }
+  const fraction = block.memFractionStatic;
+  if (typeof fraction !== 'number' || !Number.isFinite(fraction)
+      || fraction <= 0 || fraction >= 1) {
+    throw new Error(
+      `The Higgs serving block's sglang.memFractionStatic is ${JSON.stringify(fraction)}, `
+      + 'which is not a fraction in (0, 1). It is `--mem-fraction-static`, ONE number for '
+      + 'the whole engine (unlike vllm-omni, which is two stages that each apply the '
+      + 'global flag), and sgl-omni refuses a value outside that range itself. 0.60 is '
+      + 'the measured value: ~19 GB of a 24.5 GB card at 16 in flight.',
+    );
+  }
+  return block;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Caps and the spawn environment
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1394,6 +1622,8 @@ export function higgsSpawnEnv(
   refuseUnmeasuredAdapter(model, spawnArm);
 
   const serving = higgsServingFor(model);
+  const stack = higgsServingStack(serving);
+  const sglang = stack === 'sglang-omni' ? higgsSglangFor(serving) : null;
 
   const env: Record<string, string> = {
     NARRATOR_HIGGS_VOICES: opts.voicesPath,
@@ -1401,16 +1631,35 @@ export function higgsSpawnEnv(
 
   // ── ON EVERY ARM AND EVERY PHASE ──────────────────────────────────────────
   //
-  // `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS and REFUSES BY NAME when it is
-  // unset — it is both stage 0's `max_num_seqs` and the width of narrator's own
-  // batch, and narrator declines to guess it. So it is set on prep, worker,
-  // assembly, retake and serve alike: the doors that do not render read it for
-  // nothing, which costs nothing, while a door that DOES render and finds it
-  // missing dies after the session is already built.
-  env.HIGGS_MAX_NUM_SEQS = String(servingCount(serving, 'maxNumSeqs'));
+  // TWO CONTRACT VARIABLES, and narrator refuses BY NAME when either is unset.
+  //
+  // `serving_stack()` reads HIGGS_STACK: it decides where sampling rides in the
+  // request, which context window the frame cap is sized against, and which
+  // backend class is built. `serve_concurrency()` reads HIGGS_MAX_NUM_SEQS: it
+  // is the server's admission width AND the width of narrator's own batch.
+  //
+  // Both are set on prep, worker, assembly, retake and serve alike. The doors
+  // that do not render read them for nothing, which costs nothing, while a door
+  // that DOES render and finds one missing dies after the session is already
+  // built.
+  env.HIGGS_STACK = stack;
+  // ONE VARIABLE, TWO SOURCES, because it is one question. On vllm-omni the
+  // width is stage 0's `max_num_seqs`; on SGLang-Omni it is
+  // `--tts_engine.factory.max_running_requests`. narrator's `serve_concurrency()`
+  // reads exactly this name on both, so a job cannot end up with the server at
+  // one width and the client at another.
+  env.HIGGS_MAX_NUM_SEQS = String(
+    sglang ? sglang.maxRunningRequests : servingCount(serving, 'maxNumSeqs'));
 
   if (opts.mlxModelDir) env.NARRATOR_HIGGS3_MLX_MODEL = opts.mlxModelDir;
-  if (opts.baseUrl) env.NARRATOR_HIGGS3_URL = opts.baseUrl;
+  // ATTACH, PER STACK. The two backends read DIFFERENT variables on purpose:
+  // pointing an SGLang engine at a vllm-omni server would find `/health` and
+  // `/v1/models` in the right shapes and then send a body that stack drops
+  // fields from. One name per stack means a leftover variable cannot do that.
+  if (opts.baseUrl) {
+    env[sglang ? 'NARRATOR_HIGGS_SGL_URL' : 'NARRATOR_HIGGS3_URL'] = opts.baseUrl;
+  }
+  // ONE DISTRO VARIABLE: one machine, one guest, and both stacks launch into it.
   if (opts.wslDistro) env.NARRATOR_HIGGS3_WSL_DISTRO = opts.wslDistro;
 
   // ── THE LAUNCH SCRIPT'S OWN KNOBS ─────────────────────────────────────────
@@ -1421,17 +1670,44 @@ export function higgsSpawnEnv(
   // address or a memory fraction to mean anything to. Setting them there would
   // be five variables that look like levers and are read by nothing.
   if (opts.serveScriptPath) {
-    env.NARRATOR_HIGGS3_SERVE_SCRIPT = opts.serveScriptPath;
     const prefix = (opts.condaEnvPrefix ?? '').trim();
     if (!prefix) {
       throw new Error(
         'A Higgs spawn that names the launch script must also name the conda env prefix it runs ' +
-          'out of (HIGGS_ENV). serve_higgs_v3.sh builds CUDA_HOME, PATH, LD_LIBRARY_PATH and the ' +
-          'path to the vllm-omni binary from it, and its own fallback is a hardcoded ' +
-          '$HOME/anaconda3/envs/higgs3 — right on one machine and a wrong-env server start ' +
+          'out of (HIGGS_ENV on the vllm-omni stack, HIGGS_SGL_ENV on the SGLang one). Either ' +
+          'launcher builds CUDA_HOME, PATH, LD_LIBRARY_PATH and the path to its server binary ' +
+          'from it, and each has a hardcoded $HOME/anaconda3/envs/<name> of its own to fall back ' +
+          'on — right on the machine it was transcribed from and a wrong-env server start ' +
           'anywhere else. Pass condaEnvPrefix (see higgsEnvExtras).',
       );
     }
+
+    // ── THE SGLang-OMNI ARM ─────────────────────────────────────────────────
+    //
+    // A DIFFERENT VARIABLE SET, not a subset of the other one, because it
+    // configures a different program. NARRATOR_HIGGS_SGL_SERVE_SCRIPT rather
+    // than NARRATOR_HIGGS3_SERVE_SCRIPT is load-bearing: each backend reads its
+    // OWN attach/launch names, so a stale NARRATOR_HIGGS3_URL in an environment
+    // can never silently point an SGLang engine at a vllm-omni server.
+    //
+    // NOTHING FROM THE vllm-omni HALF COMES ALONG. No HIGGS_ENV (that names the
+    // higgs3 prefix), no HIGGS_GPU_MEM_UTIL / HIGGS_CODEC_GPU_MEM_UTIL (sgl-omni
+    // takes one fraction for the whole engine), no HIGGS_MAX_MODEL_LEN (the
+    // context is hard-coded at 4096 and no flag changes it), and no
+    // HIGGS_DEPLOY_CONFIG (there is no deploy profile on this stack — which is
+    // also why sampling MUST ride on every request).
+    if (sglang) {
+      env.NARRATOR_HIGGS_SGL_SERVE_SCRIPT = opts.serveScriptPath;
+      env.HIGGS_SGL_ENV = prefix;
+      env.HIGGS_SGL_HOST = sglang.host;
+      env.HIGGS_SGL_PORT = String(sglang.port);
+      env.HIGGS_SGL_MEM_FRACTION = String(sglang.memFractionStatic);
+      env.HIGGS_SGL_CUDA_GRAPH_MAX_BS = String(sglang.cudaGraphMaxBs);
+      env.HIGGS_SGL_MAX_NEW_TOKENS = String(sglang.maxNewTokens);
+      return env;
+    }
+
+    env.NARRATOR_HIGGS3_SERVE_SCRIPT = opts.serveScriptPath;
     env.HIGGS_ENV = prefix;
     const host = (serving.host || '').trim();
     if (!host) {

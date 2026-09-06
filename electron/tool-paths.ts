@@ -986,14 +986,21 @@ export interface HiggsCheck {
    * Stable id, so a UI can key on it without matching prose.
    *
    * THE IDS OF BOTH ARMS LIVE IN ONE UNION, because one renderer displays both:
-   * `distro`/`vllm-omni`/`patch`/`launcher`/`launcher-sha`/`profile-sha` can only
-   * come from the WSL doctor,
+   * `distro`/`vllm-omni`/`sglang-omni`/`patch`/`cuda-links`/`launcher`/
+   * `launcher-sha`/`profile-sha` can only come from the WSL doctor,
    * `python`/`mlx`/`mlx-audio`/`narrator`/`weights` only from the MLX one, `env`
    * from either (each arm has an environment), and `toggle`/`platform` from the
    * dispatcher that chooses between them.
+   *
+   * WITHIN THE WSL DOCTOR THE IDS ARE PER STACK, and that is the point of them
+   * being separate: `vllm-omni` and `patch`/`profile-sha` only ever come from a
+   * vllm-omni env, `sglang-omni` and `cuda-links` only from an SGLang one. A UI
+   * keying on `vllm-omni` and finding nothing is looking at the other stack, not
+   * at a check that failed to run.
    */
   id:
-    | 'distro' | 'env' | 'vllm-omni' | 'patch' | 'launcher' | 'launcher-sha' | 'profile-sha'
+    | 'distro' | 'env' | 'vllm-omni' | 'sglang-omni' | 'patch' | 'cuda-links'
+    | 'launcher' | 'launcher-sha' | 'profile-sha'
     | 'narrator-deps'
     | 'toggle'
     | 'python' | 'mlx' | 'mlx-audio' | 'narrator' | 'weights'
@@ -1117,8 +1124,32 @@ export const HIGGS_PATCHES: ReadonlyArray<{
   },
 ];
 
+/**
+ * WHICH SERVING STACK the doctor is examining.
+ *
+ * MIRRORED FROM `higgs-models.ts`'s `HiggsServingStack`, and the duplication is
+ * the same deliberate one `HIGGS_PATCHES` is: this module is what every path
+ * resolution in the app goes through, and importing the catalog here would make
+ * a malformed JSON file break WSL detection. The CALLER (higgs-doctor.ts, which
+ * already reads the catalog) passes the stack in; `tools/test-higgs-doctor-arms.js`
+ * asserts the two vocabularies agree.
+ */
+export type HiggsStack = 'vllm-omni' | 'sglang-omni';
+
 /** The launcher the installer deploys INTO the env, so the stack is self-contained. */
 export const HIGGS_LAUNCH_SCRIPT = 'serve_higgs_v3.sh';
+
+/**
+ * The SGLang-Omni launcher, deployed into ITS env by `install_sglomni.sh`.
+ *
+ * A SECOND FILE rather than a parameterised one: the two launch lines have
+ * almost nothing in common (`vllm-omni serve` with a two-stage
+ * `--stage-overrides` JSON and a deploy profile, against `sgl-omni serve` with
+ * one `--mem-fraction-static` and three `--tts_engine.factory.*` flags), and a
+ * script that branched on which server to start would be the one place a wrong
+ * branch is invisible until 110 s in.
+ */
+export const HIGGS_SGL_LAUNCH_SCRIPT = 'serve_higgs_sgl.sh';
 
 /**
  * THE vllm-omni DEPLOY PROFILE the installer deploys beside the launcher.
@@ -1359,17 +1390,50 @@ export function wslScriptArgs(distro: string | undefined, script: string): strin
  * dropping two checks.
  */
 export interface HiggsExpectations {
+  /** Which stack the env is being examined AS. Every branch below reads it. */
+  stack: HiggsStack;
+  /** The launcher file name for that stack. */
+  launcherName: string;
   /** sha256 of the shipped launcher, CR-stripped. See `shippedHiggsLauncherSha256`. */
   launcherSha: string;
-  /** sha256 of the shipped deploy profile, CR-stripped. See `shippedHiggsProfileSha256`. */
-  profileSha: string;
+  /**
+   * sha256 of the shipped deploy profile, CR-stripped — vllm-omni ONLY.
+   *
+   * `undefined` on the SGLang arm, and that is a fact rather than a skipped
+   * check: `--deploy-config` is a vllm-omni flag, there is no profile in the
+   * SGLang launch line, and the frame ceiling that profile exists to raise is
+   * not how that stack caps a render (it takes a per-request `max_new_tokens`,
+   * bounded by a hard-coded 4096-token context). A row asking about a file that
+   * has no reader is a row that goes red for no reason.
+   */
+  profileSha?: string;
   /** The rows of `requirements-narrator-runtime.txt`. See `narratorRuntimeDeps`. */
   deps: ReadonlyArray<NarratorRuntimeDep>;
 }
 
-/** The expectations, read off this build's own shipped files. */
-export function higgsExpectations(): HiggsExpectations {
+/**
+ * The expectations, read off this build's own shipped files, FOR ONE STACK.
+ *
+ * The stack is a parameter rather than a lookup because this module does not
+ * read the catalog (see `HiggsStack`); `higgsDoctor()` passes the one the
+ * catalog's `serving.stack` names.
+ */
+export function higgsExpectations(stack: HiggsStack): HiggsExpectations {
+  if (stack === 'sglang-omni') {
+    return {
+      stack,
+      launcherName: HIGGS_SGL_LAUNCH_SCRIPT,
+      launcherSha: shippedHiggsFileSha256(
+        HIGGS_SGL_LAUNCH_SCRIPT,
+        'It is what install_sglomni.sh copies into the sglomni env and what the doctor '
+        + "compares the env's copy against, so without it there is no way to tell a current "
+        + 'launcher from one built before the SGLang stack was configurable.'),
+      deps: narratorRuntimeDeps(),
+    };
+  }
   return {
+    stack,
+    launcherName: HIGGS_LAUNCH_SCRIPT,
     launcherSha: shippedHiggsLauncherSha256(),
     profileSha: shippedHiggsProfileSha256(),
     deps: narratorRuntimeDeps(),
@@ -1382,7 +1446,16 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
   // set — it would match almost every line of the file and report every env as
   // broken. The markers have no metacharacters today, but they are greppd the
   // same way so that adding one later cannot quietly change what is being asked.
-  const patchProbe = HIGGS_PATCHES.map(
+  // ── THE PATCH ROWS ARE vllm-omni'S ALONE ────────────────────────────────
+  //
+  // Both patches edit files in `vllm/` and `vllm_omni/`. The SGLang-Omni env
+  // contains neither package, so grepping for them there would report `absent`
+  // on a perfectly healthy env and send someone to run an installer that would
+  // not touch the thing they were told about. SGLang-Omni has its own stage
+  // processor and needs no patch at all — an EMPTY list here is a fact about
+  // that stack, not a check nobody got around to writing.
+  const patches = expect.stack === 'sglang-omni' ? [] : HIGGS_PATCHES;
+  const patchProbe = patches.map(
     (p) =>
       `f=$(ls ${envPrefix}/lib/python*/site-packages/${p.relPath} 2>/dev/null | head -1); ` +
       `if [ -z "$f" ]; then echo 'patch:${p.id}=absent'; ` +
@@ -1407,7 +1480,7 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
   // (core.autocrlf=true) and the Mac/WSL checkouts are LF, so raw bytes would
   // make "current" depend on which machine built the env — see
   // `shippedHiggsLauncherSha256`.
-  const launcherPath = `${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}`;
+  const launcherPath = `${envPrefix}/bin/${expect.launcherName}`;
   const launcherProbe =
     `if [ ! -x ${launcherPath} ]; then echo 'launcher=absent'; ` +
     `else echo 'launcher=ok'; ` +
@@ -1426,9 +1499,24 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
   // "present but not ours" and "absent" are the same remedy — re-run the
   // installer — and a second row would be a distinction with no different act.
   const profilePath = `${envPrefix}/bin/${HIGGS_DEPLOY_PROFILE}`;
-  const profileProbe =
+  const profileProbe = expect.profileSha === undefined ? '' :
     `if [ ! -f ${profilePath} ]; then echo 'profile-sha=absent'; ` +
     `else echo "profile-sha=$(tr -d '\\r' < ${profilePath} | sha256sum | cut -c1-64)"; fi`;
+
+  // ── THE TWO CUDA SYMLINKS, SGLang ONLY ──────────────────────────────────
+  //
+  // flashinfer JIT-builds its attention kernels with nvcc, and the only nvcc in
+  // that env is the CUDA 13 one inside the pip wheel. It compiles, but only once
+  // the wheel's directory looks like a toolkit: `lib64 -> lib` (the build looks
+  // for lib64; the wheel ships lib) and `libcudart.so -> libcudart.so.13` (the
+  // linker wants the unversioned name). install_sglomni.sh makes both. Without
+  // them the server either starts slowly on fallback kernels or does not start,
+  // ~110 s after somebody pressed render — which is exactly the class of failure
+  // a doctor exists to move earlier.
+  const cu13 = `${envPrefix}/lib/python3.12/site-packages/nvidia/cu13`;
+  const cudaLinksProbe = expect.stack !== 'sglang-omni' ? '' :
+    `if [ -e ${cu13}/lib64 ] && [ -e ${cu13}/lib/libcudart.so ]; ` +
+    `then echo 'cuda-links=ok'; else echo 'cuda-links=absent'; fi`;
 
   // NARRATOR'S OWN IMPORTS. narrator is NOT pip-installed into this env — it
   // arrives over PYTHONPATH — so nothing ever resolved its dependency list here,
@@ -1445,14 +1533,24 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
     `[m for m in sys.argv[1:] if u.find_spec(m) is None]) or "ok"))' ` +
     `${modules} 2>/dev/null || echo 'narrator-deps=probe-failed'`;
 
+  // THE SERVING PACKAGE, per stack. `vllm_omni` and `sglang_omni` are the two
+  // things "the serving stack is installed here" can mean, and they are never
+  // both in one env — python 3.12 + torch 2.13.0+cu130 + sglang 0.5.18 do not
+  // share an environment with python 3.11 + vllm 0.28.0.
+  const servingModule = expect.stack === 'sglang-omni' ? 'sglang_omni' : 'vllm_omni';
+  const servingProbe =
+    `${envPrefix}/bin/python -c 'import ${servingModule}' >/dev/null 2>&1 `
+    + `&& echo 'omni=ok' || echo 'omni=absent'`;
+
   return [
     `test -d ${envPrefix} && echo 'env=ok' || echo 'env=absent'`,
-    `${envPrefix}/bin/python -c 'import vllm_omni' >/dev/null 2>&1 && echo 'omni=ok' || echo 'omni=absent'`,
+    servingProbe,
     patchProbe,
+    cudaLinksProbe,
     launcherProbe,
     profileProbe,
     depsProbe,
-  ].join('; ');
+  ].filter((line) => line).join('; ');
 }
 
 /** Turn the probe's `key=value` lines into the reported check list. */
@@ -1489,17 +1587,42 @@ function higgsChecksFrom(
     detail: envOk ? undefined : `Not found at ${envPrefix}. Install it from Settings → Higgs.`,
   });
 
+  const sgl = expect.stack === 'sglang-omni';
+  const servingModule = sgl ? 'sglang_omni' : 'vllm_omni';
   const omniOk = seen.get('omni') === 'ok';
   checks.push({
-    id: 'vllm-omni',
-    label: 'vllm-omni importable',
+    id: sgl ? 'sglang-omni' : 'vllm-omni',
+    label: `${expect.stack} importable`,
     ok: omniOk,
     detail: omniOk
       ? undefined
-      : `${envPrefix}/bin/python could not import vllm_omni — the serving stack is not installed in this env.`,
+      : `${envPrefix}/bin/python could not import ${servingModule} — the serving stack is `
+        + 'not installed in this env.'
+        + (sgl
+          ? ' It is a SEPARATE conda env from higgs3 and cannot be the same one (python 3.12 '
+            + '+ torch 2.13.0+cu130 + sglang 0.5.18 against python 3.11 + vllm 0.28.0); build '
+            + 'it from Settings → Higgs, which runs install_sglomni.sh.'
+          : ''),
   });
 
-  for (const p of HIGGS_PATCHES) {
+  // ── THE TWO CUDA SYMLINKS, SGLang ONLY ────────────────────────────────────
+  if (sgl) {
+    const linksOk = seen.get('cuda-links') === 'ok';
+    checks.push({
+      id: 'cuda-links',
+      label: 'flashinfer CUDA links (lib64, libcudart.so)',
+      ok: linksOk,
+      detail: linksOk ? undefined
+        : `${envPrefix}/lib/python3.12/site-packages/nvidia/cu13 is missing \`lib64 -> lib\` `
+          + 'or `libcudart.so -> libcudart.so.13`. flashinfer JIT-builds its attention kernels '
+          + "with the CUDA 13 nvcc inside that wheel, and the build looks for lib64 and for the "
+          + 'unversioned libcudart. Without them the server starts slowly on fallback kernels or '
+          + 'not at all — ~110 s after somebody pressed render. Re-run the Higgs installer, '
+          + 'which creates both.',
+    });
+  }
+
+  for (const p of (sgl ? [] : HIGGS_PATCHES)) {
     const state = seen.get(`patch:${p.id}`);
     checks.push({
       id: 'patch',
@@ -1526,9 +1649,9 @@ function higgsChecksFrom(
   const launcherOk = seen.get('launcher') === 'ok';
   checks.push({
     id: 'launcher',
-    label: HIGGS_LAUNCH_SCRIPT,
+    label: expect.launcherName,
     ok: launcherOk,
-    detail: launcherOk ? undefined : `Not executable at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT}.`,
+    detail: launcherOk ? undefined : `Not executable at ${envPrefix}/bin/${expect.launcherName}.`,
   });
 
   // ── IS IT THE LAUNCHER THIS BUILD SHIPS? ────────────────────────────────
@@ -1544,7 +1667,7 @@ function higgsChecksFrom(
   const shaOk = !probeError && envSha === expect.launcherSha;
   checks.push({
     id: 'launcher-sha',
-    label: `${HIGGS_LAUNCH_SCRIPT} matches this build`,
+    label: `${expect.launcherName} matches this build`,
     ok: shaOk,
     ...(shaOk ? {} : {
       detail: probeError
@@ -1554,8 +1677,8 @@ function higgsChecksFrom(
             ? 'The probe printed no sha for the deployed launcher, which means sha256sum is not '
               + `available in ${distro ? `"${distro}"` : 'the distro'} — the env's copy cannot be `
               + 'told apart from the shipped one.'
-            : `There is no launcher at ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} to compare.`
-          : `launcher-stale: ${envPrefix}/bin/${HIGGS_LAUNCH_SCRIPT} is sha256 ${envSha.slice(0, 16)}… `
+            : `There is no launcher at ${envPrefix}/bin/${expect.launcherName} to compare.`
+          : `launcher-stale: ${envPrefix}/bin/${expect.launcherName} is sha256 ${envSha.slice(0, 16)}… `
             + `while this build ships ${expect.launcherSha.slice(0, 16)}… (compared with CR stripped, `
             + 'so line endings are not the difference). The deployed copy is where the serving '
             + 'configuration is actually realised — the per-stage memory split, the codec '
@@ -1575,9 +1698,16 @@ function higgsChecksFrom(
   // max_tokens, so every longer chunk is cut mid-sentence while the request
   // reports success. This row is the only place that failure is visible before
   // someone listens to the book.
+  //
+  // NOT ASKED ON THE SGLang ARM. `--deploy-config` is a vllm-omni flag; the
+  // SGLang launch line has no profile, and the frame ceiling this file exists to
+  // raise is not how that stack caps a render (it takes a per-request
+  // `max_new_tokens`, bounded by a hard-coded 4096-token context that narrator
+  // sizes every request against). A row about a file with no reader would be red
+  // for no reason and would send someone to an installer that would not fix it.
   const profileSha = seen.get('profile-sha');
   const profileOk = !probeError && profileSha === expect.profileSha;
-  checks.push({
+  if (expect.profileSha !== undefined) checks.push({
     id: 'profile-sha',
     label: `${HIGGS_DEPLOY_PROFILE} matches this build`,
     ok: profileOk,
@@ -1635,8 +1765,29 @@ function higgsChecksFrom(
   return checks;
 }
 
+/**
+ * What the two Higgs doctors are configured with.
+ *
+ * `stack` is REQUIRED and comes from the CALLER, because this module does not
+ * read the voice catalog (see `HiggsStack`) and there is no sensible default:
+ * examining a `sglomni` env for vllm-omni's two site-packages patches would
+ * report a healthy machine as broken, and examining a `higgs3` env as SGLang
+ * would report the wrong launcher stale.
+ *
+ * `higgsCondaEnv` likewise comes from the caller on the SGLang arm: the
+ * `wslHiggsCondaEnv` SETTING names the vllm-omni env (its default is literally
+ * `higgs3`), and the SGLang env name is the catalog's
+ * `serving.sglang.condaEnvName`.
+ */
+export interface HiggsDoctorConfig {
+  stack: HiggsStack;
+  distro?: string;
+  condaPath?: string;
+  higgsCondaEnv?: string;
+}
+
 /** Where the doctor looks, derived once so both entry points agree. */
-function higgsDoctorTarget(config: { distro?: string; condaPath?: string; higgsCondaEnv?: string }) {
+function higgsDoctorTarget(config: HiggsDoctorConfig) {
   const distro = config.distro || getWslDistro();
   const condaPath = config.condaPath || getWslCondaPath();
   const envName = config.higgsCondaEnv || getWslHiggsCondaEnv();
@@ -1658,11 +1809,7 @@ function higgsDoctorTarget(config: { distro?: string; condaPath?: string; higgsC
  * of one job. The environment check now happens ONCE PER JOB, in `prepareSession`,
  * which is already an async context — and it happens through this.
  */
-export function checkWslHiggsSetupAsync(config: {
-  distro?: string;
-  condaPath?: string;
-  higgsCondaEnv?: string;
-} = {}): Promise<HiggsSetupResult> {
+export function checkWslHiggsSetupAsync(config: HiggsDoctorConfig): Promise<HiggsSetupResult> {
   if (os.platform() !== 'win32') {
     // Reachable only by calling this WSL-specific function directly. `higgsDoctor()`
     // in higgs-doctor.ts routes darwin to the MLX doctor and names any other
@@ -1679,7 +1826,7 @@ export function checkWslHiggsSetupAsync(config: {
   // own shipped files; if they cannot be read there is nothing to compare the
   // env against, and the honest failure is that sentence rather than two checks
   // quietly not being asked.
-  const expect = higgsExpectations();
+  const expect = higgsExpectations(config.stack);
   const args = wslScriptArgs(distro, higgsProbeScript(envPrefix, expect));
 
   return new Promise((resolve) => {
@@ -1731,11 +1878,7 @@ export function checkWslHiggsSetupAsync(config: {
  * problem from "there is no env", and a doctor that stopped at the first failure
  * would make them look the same.
  */
-export function checkWslHiggsSetup(config: {
-  distro?: string;
-  condaPath?: string;
-  higgsCondaEnv?: string;
-} = {}): HiggsSetupResult {
+export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult {
   if (os.platform() !== 'win32') {
     return {
       valid: false,
@@ -1745,7 +1888,7 @@ export function checkWslHiggsSetup(config: {
     };
   }
   const { distro, envName, envPrefix } = higgsDoctorTarget(config);
-  const expect = higgsExpectations();
+  const expect = higgsExpectations(config.stack);
   // The SAME argv the async doctor builds, joined for execSync's command string.
   // Built from wslScriptArgs so the two forms cannot drift on the one flag that
   // decides whether the probe works at all — see that function.

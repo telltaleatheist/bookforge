@@ -275,6 +275,56 @@ const WSL_MISSING_DEPS = {
   exit: 'close',
 };
 
+// ── THE SGLang-OMNI ARM ─────────────────────────────────────────────────────
+//
+// A SECOND SERVING STACK, selected by the catalog's `serving.stack` (measured
+// 2026-09-05: vllm-omni at 16 in flight gives 4 early stops, 13/50 damaged and 6
+// sustained voice switches; SGLang-Omni at 16 gives 0, 5 and 0, at 2.5x the
+// throughput). It is a DIFFERENT ENV with DIFFERENT ROWS, and the fixtures below
+// are what a healthy one of those answers.
+//
+// The three differences that matter to a doctor, each of which would be a false
+// red or a false green if it were got wrong:
+//
+//   * `sglang_omni`, not `vllm_omni`. The two never live in one env (python 3.12
+//     + torch 2.13.0+cu130 against python 3.11 + vllm 0.28.0).
+//   * NO PATCH ROWS. Both patches edit files in `vllm/` and `vllm_omni/`, which
+//     this env does not contain. Asking would report a healthy machine broken.
+//   * NO PROFILE ROW, and a `cuda-links` row instead. `--deploy-config` is a
+//     vllm-omni flag; what THIS stack cannot start without is the pair of
+//     symlinks flashinfer's nvcc build needs inside the pip CUDA 13 wheel.
+const FAKE_SGL_ENV = 'sglomni';
+
+// THE REAL READERS, CAPTURED BEFORE ANYTHING STUBS THEM. `sglServingSpec` is
+// installed AS `higgsServingSpec`, so calling the module property from inside it
+// would call itself.
+const realServingSpec = higgsModels.higgsServingSpec;
+const realSglangFor = higgsModels.higgsSglangFor;
+
+/** The catalog, with its stack flipped — the one word that selects all of this. */
+function sglServingSpec() {
+  return { ...realServingSpec(), stack: 'sglang-omni' };
+}
+
+const SGL_GREEN = {
+  stdout: [
+    'env=ok',
+    'omni=ok',
+    'cuda-links=ok',
+    'launcher=ok',
+    `launcher-sha=${toolPaths.higgsExpectations('sglang-omni').launcherSha}`,
+    'narrator-deps=ok',
+    '',
+  ].join('\n'),
+  exit: 'close',
+};
+
+/** The same env, with the flashinfer CUDA symlinks never made. */
+const SGL_NO_CUDA_LINKS = {
+  stdout: SGL_GREEN.stdout.replace('cuda-links=ok', 'cuda-links=absent'),
+  exit: 'close',
+};
+
 /**
  * Rows are COLLECTED and then run ONE AT A TIME.
  *
@@ -469,6 +519,167 @@ check('a Windows failure names the WINDOWS remedy', () => onPlatform(
       'the Windows arm is telling someone to build a Mac environment');
   },
 ));
+
+// ─────────────────────────────────────────────────────────────────────────────
+section('win32 + serving.stack "sglang-omni" → the SGLang arm of the WSL doctor');
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// `higgsServingSpec` is stubbed rather than the catalog edited: the SHIPPED
+// catalog is deliberately still `vllm-omni` (behaviour is unchanged until
+// somebody flips one word), and a keeper that could only see the shipped value
+// would prove nothing about the arm the measurements argue for.
+
+check('the probe examines the sglomni env and asks about sglang_omni', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  async () => {
+    const undo = [
+      stub(higgsModels, 'higgsServingSpec', sglServingSpec),
+      stub(higgsModels, 'higgsSglangFor', () => ({
+        ...realSglangFor(realServingSpec()),
+        condaEnvName: FAKE_SGL_ENV,
+      })),
+    ];
+    try {
+      const res = await doctorMod.higgsDoctor();
+      const script = lastSpawn.args.join(' ');
+      assert.match(script, /import sglang_omni/,
+        'the probe still asks about vllm_omni on the SGLang stack');
+      assert.doesNotMatch(script, /import vllm_omni/);
+      // THE ENV THE SPAWN WILL USE. `wslHiggsCondaEnv` names the vllm-omni env
+      // (its default is literally `higgs3`); the SGLang env name lives in the
+      // catalog's own block, and `higgsEnvExtras` derives the spawn's prefix from
+      // exactly the same value.
+      assert.match(script, new RegExp(`envs/${FAKE_SGL_ENV}`),
+        `the probe looked at some env other than ${FAKE_SGL_ENV}`);
+      assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
+      assert.ok(res.checks.some((c) => c.id === 'sglang-omni'),
+        'no sglang-omni row at all');
+    } finally {
+      undo.reverse().forEach((u) => u());
+    }
+  },
+));
+
+check('NO patch rows and NO deploy-profile row on this stack', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  async () => {
+    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
+    try {
+      const res = await doctorMod.higgsDoctor();
+      const script = lastSpawn.args.join(' ');
+      // Both patches edit files in vllm/ and vllm_omni/, which this env does not
+      // contain: grepping for them here would report a healthy machine as broken
+      // and send someone to an installer that would not touch what they were told
+      // about. SGLang-Omni has its own stage processor and needs no patch.
+      for (const p of toolPaths.HIGGS_PATCHES) {
+        assert.ok(!script.includes(p.relPath),
+          `the probe greps for ${p.id} in an env that has no vllm_omni`);
+        assert.ok(!res.checks.some((c) => c.id === 'patch' && c.label.includes(p.id)),
+          `a ${p.id} row was reported for the SGLang stack`);
+      }
+      // `--deploy-config` is a vllm-omni flag. There is no profile in the SGLang
+      // launch line, and the frame ceiling it exists to raise is not how this
+      // stack caps a render (per-request max_new_tokens, bounded by a hard-coded
+      // 4096-token context).
+      assert.ok(!script.includes(toolPaths.HIGGS_DEPLOY_PROFILE),
+        'the probe hashes a deploy profile that this stack never reads');
+      assert.ok(!res.checks.some((c) => c.id === 'profile-sha'),
+        'a profile-sha row was reported for the SGLang stack');
+      assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
+    } finally {
+      undo();
+    }
+  },
+));
+
+check('the launcher row is serve_higgs_sgl.sh, hashed like the other one', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  async () => {
+    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
+    try {
+      const res = await doctorMod.higgsDoctor();
+      const script = lastSpawn.args.join(' ');
+      assert.ok(script.includes(toolPaths.HIGGS_SGL_LAUNCH_SCRIPT),
+        'the probe does not look at this stack\'s launcher');
+      assert.ok(!script.includes(toolPaths.HIGGS_LAUNCH_SCRIPT),
+        'the probe still looks at the vllm-omni launcher');
+      const row = res.checks.find((c) => c.id === 'launcher-sha');
+      assert.ok(row && row.ok, JSON.stringify(row));
+      assert.strictEqual(res.checks.find((c) => c.id === 'launcher').label,
+        toolPaths.HIGGS_SGL_LAUNCH_SCRIPT);
+    } finally {
+      undo();
+    }
+  },
+));
+
+check('missing flashinfer CUDA symlinks fail BY NAME, with what they cost', () => onPlatform(
+  { platform: 'win32', wslHiggs: true, probe: SGL_NO_CUDA_LINKS },
+  async () => {
+    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
+    try {
+      const res = await doctorMod.higgsDoctor();
+      assert.strictEqual(res.valid, false, 'an env without the CUDA links passed the doctor');
+      const row = res.checks.find((c) => c.id === 'cuda-links');
+      assert.ok(row, 'no cuda-links row at all');
+      assert.strictEqual(row.ok, false);
+      assert.match(row.detail, /lib64/, 'the row does not name the first symlink');
+      assert.match(row.detail, /libcudart\.so/, 'the row does not name the second');
+      assert.match(row.detail, /installer/i, 'the row does not name the remedy');
+    } finally {
+      undo();
+    }
+  },
+));
+
+check('a stale sglang launcher is launcher-stale, not ok', () => onPlatform(
+  {
+    platform: 'win32',
+    wslHiggs: true,
+    probe: {
+      stdout: SGL_GREEN.stdout.replace(
+        `launcher-sha=${toolPaths.higgsExpectations('sglang-omni').launcherSha}`,
+        'launcher-sha=' + '0'.repeat(64)),
+      exit: 'close',
+    },
+  },
+  async () => {
+    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
+    try {
+      const res = await doctorMod.higgsDoctor();
+      assert.strictEqual(res.valid, false, 'a stale launcher passed the doctor');
+      const row = res.checks.find((c) => c.id === 'launcher-sha');
+      assert.match(row.detail, /launcher-stale/);
+      assert.match(row.detail, new RegExp(toolPaths.HIGGS_SGL_LAUNCH_SCRIPT));
+    } finally {
+      undo();
+    }
+  },
+));
+
+check('the two stacks are the SAME vocabulary in tool-paths and the catalog', () => {
+  // `tool-paths.ts` mirrors `HiggsServingStack` rather than importing the
+  // catalog (a malformed JSON file must not break WSL detection), so the two
+  // copies are kept in step here — the same rule `HIGGS_PATCHES` is held to.
+  const catalogStacks = [...higgsModels.HIGGS_SERVING_STACKS].sort();
+  assert.deepStrictEqual(catalogStacks, ['sglang-omni', 'vllm-omni']);
+  for (const stack of catalogStacks) {
+    const expect = toolPaths.higgsExpectations(stack);
+    assert.strictEqual(expect.stack, stack,
+      `tool-paths does not know the stack ${stack}`);
+    assert.ok(expect.launcherSha, `no launcher sha for ${stack}`);
+  }
+  // AND THE CATALOG'S OWN NAMES ARE THE FILES THAT SHIP. A launcher or installer
+  // named in the catalog that is not in electron/scripts/higgs is a spawn that
+  // fails inside the guest with "No such file", ~0 s of useful diagnosis.
+  const sgl = higgsModels.higgsSglangFor(higgsModels.higgsServingSpec());
+  for (const name of [sgl.launchScript, sgl.installScript]) {
+    assert.ok(fs.existsSync(path.join(toolPaths.higgsScriptsDir(), name)),
+      `the catalog names ${name}, which this build does not ship`);
+  }
+  assert.strictEqual(sgl.launchScript, toolPaths.HIGGS_SGL_LAUNCH_SCRIPT,
+    'the catalog and tool-paths disagree about the SGLang launcher');
+});
 
 // ─────────────────────────────────────────────────────────────────────────────
 section('darwin → the MLX doctor');

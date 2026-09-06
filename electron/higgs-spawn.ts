@@ -83,6 +83,8 @@ import {
   resolveHiggsModel,
   higgsSpawnEnv,
   higgsServingFor,
+  higgsServingStack,
+  higgsSglangFor,
   writeHiggsVoicesDocument,
   type HiggsCheckpointArm,
   type HiggsModel,
@@ -289,9 +291,23 @@ export function higgsEnvExtras(
   // the profile that runs is provably the copy beside the launcher, and not
   // whatever a relative name would find in vllm-omni's own deploy directory.
   // The prefix is derived HERE, once, and everything under it is named from it.
+  //
+  // ── AND THE ENV IS THE STACK'S, NOT THE SETTING'S, ON THE SGLang ARM ──────
+  //
+  // `wslHiggsCondaEnv` (Settings → Add-ons) names the vllm-omni env — its
+  // default is literally `higgs3` — and SGLang-Omni cannot live in it: python
+  // 3.12 + torch 2.13.0+cu130 + sglang 0.5.18 do not share an environment with
+  // python 3.11 + vllm 0.28.0. So when the catalog selects that stack, the env
+  // name and the launcher come from the catalog's own `sglang` block, which is
+  // the only place that pair is written down. There is no second setting to
+  // drift from it.
+  const stack = higgsServingStack(serving);
+  const sglang = stack === 'sglang-omni' ? higgsSglangFor(serving) : null;
   const higgsEnvGuestPrefix =
-    `${wslCondaBase(getWslCondaPath())}/envs/${getWslHiggsCondaEnv()}`;
-  const serveScriptGuestPath = `${higgsEnvGuestPrefix}/bin/${serving.launchScript}`;
+    `${wslCondaBase(getWslCondaPath())}/envs/`
+    + `${sglang ? sglang.condaEnvName : getWslHiggsCondaEnv()}`;
+  const serveScriptGuestPath =
+    `${higgsEnvGuestPrefix}/bin/${sglang ? sglang.launchScript : serving.launchScript}`;
 
   return { ...higgsMlxBatchEnv(kind, streamBatchCeiling), ...higgsSpawnEnv(model, {
     voicesPath: viaWsl ? windowsToWslPath(voicesHostPath) : voicesHostPath,

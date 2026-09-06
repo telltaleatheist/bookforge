@@ -62,6 +62,8 @@ from .v3_engine import (HiggsV3Budget, HiggsV3Codec, HiggsV3Config,
                         higgs_v3_config_from_worker_kwargs,
                         higgs_v3_stop_policy)
 from .v3_served import HiggsV3ServedBackend, HiggsV3ServerError
+from .sgl_served import HiggsSglServedBackend
+from .served_common import serving_stack
 
 __all__ = [
     'HiggsBudget',
@@ -81,9 +83,11 @@ __all__ = [
     'HiggsV3MlxEngine',
     'HiggsMlxStreamMisaligned',
     'FrameFilterReport',
+    'HiggsSglServedBackend',
     'HiggsV3ServedBackend',
     'HiggsV3ServerError',
     'build_conversation',
+    'serving_stack',
     'higgs_v3_config_from_worker_kwargs',
     'higgs_v3_mlx_config_from_worker_kwargs',
     'higgs_v3_mlx_stop_policy',

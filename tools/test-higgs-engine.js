@@ -1176,6 +1176,46 @@ check('narrator is addressed by NARRATOR_*, and the LAUNCH SCRIPT by HIGGS_*', (
   }
 });
 
+check('the SGLang launcher reads every HIGGS_* variable its spawn sets', () => {
+  // THE SAME ALLOWLIST, FOR THE OTHER STACK. A variable BookForge sets that
+  // `serve_higgs_sgl.sh` never reads is a lever that reports success — which is
+  // exactly what the whole vllm-omni serving block was until 2026-09-05.
+  //
+  // Driven directly rather than off the shipped catalog because the shipped
+  // `stack` is deliberately still `vllm-omni` (behaviour is unchanged until
+  // somebody flips one word), and a keeper that could only see the shipped value
+  // would prove nothing about the arm the measurements argue for.
+  const sglPrefix = '/home/t/anaconda3/envs/sglomni';
+  const sglModel = {
+    ...defaultVoice,
+    serving: { ...higgs.higgsServingSpec(), stack: 'sglang-omni' },
+  };
+  const sglEnv = higgs.higgsSpawnEnv(sglModel, {
+    voicesPath: DOC_PATH,
+    serveScriptPath: `${sglPrefix}/bin/serve_higgs_sgl.sh`,
+    condaEnvPrefix: sglPrefix,
+    wslDistro: 'Ubuntu',
+  });
+  const script = fs.readFileSync(
+    path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_sgl.sh'), 'utf-8');
+  const set = Object.keys(sglEnv).filter((k) => /^HIGGS_/.test(k));
+  assert.ok(set.length >= 6, `only ${set.length} HIGGS_* variables reached the SGLang launcher`);
+  for (const key of set) {
+    assert.ok(script.includes(`${key}=`) || script.includes(`$${key}`),
+      `${key} is set by BookForge and read nowhere in serve_higgs_sgl.sh`);
+  }
+  // AND THE LAUNCHER REFUSES THE WRONG STACK. HIGGS_STACK is narrator's contract
+  // variable, and both launchers assert it: a job configured for one stack that
+  // reached the other's launcher would come up on a server whose requests the
+  // client is not building, which is a rendered book rather than a crash.
+  assert.match(script, /HIGGS_STACK.*sglang-omni/s,
+    'serve_higgs_sgl.sh does not assert which stack it is');
+  assert.match(
+    fs.readFileSync(path.join(REPO, 'electron', 'scripts', 'higgs', 'serve_higgs_v3.sh'), 'utf-8'),
+    /HIGGS_STACK.*vllm-omni/s,
+    'serve_higgs_v3.sh does not assert which stack it is');
+});
+
 check('HIGGS_MODEL_DIR is narrator\'s to export, never BookForge\'s', () => {
   // The server is keyed on it — it is which merged checkpoint comes up — and
   // narrator exports it per voice from the voice document (v3_served.py

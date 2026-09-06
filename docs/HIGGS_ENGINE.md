@@ -384,6 +384,125 @@ accepting them would suggest they applied. Higgs's caps are BookForge's own two
 jobs: sizing the prep packer (`maxChars`) and fading at assembly (`edgeFadeMs`).
 They stay on this side, and a keeper asserts none of them leaks into the spawn env.
 
+### ⚠ TWO SERVING STACKS — `serving.stack` (2026-09-06)
+
+Everything above describes **vllm-omni**, and it is still what the catalog ships.
+There is now a second stack beside it, **SGLang-Omni 0.1.4**, and the catalog's
+`serving.stack` selects between them. `HIGGS_SERVING_STACKS` is the vocabulary;
+`higgsServingStack()` **refuses a block that does not carry the key**, and
+narrator refuses a spawn whose `HIGGS_STACK` is unset — the same contract
+`HIGGS_MAX_NUM_SEQS` has, for the same reason.
+
+**Why there is a second one.** Measured by the training session on the night of
+2026-09-05 (`orpheus-finetune/HIGGS_FIELD_NOTES.md` §4n, scripts under
+`<campaign>/higgs/night3/sgl/`): the same 50 packed chunks of *Working Towards
+the Führer*, the same merged checkpoint (`ds_ad4lm_prod_ckpt1080`), the same
+sampling, one seed, scored by `higgs_ladder.py score` (whisper coverage,
+`max_skip_words`, insert rate, early stop) plus 3 s ECAPA windows every 1.5 s for
+mid-chunk voice switches.
+
+| engine, in flight | early stops | damaged/50 | sustained voice switches | chars/min |
+|---|---|---|---|---|
+| vllm-omni 0.28.0, 1 | 0 | 5 | 0 | 1,064 |
+| vllm-omni 0.28.0, 16 | **4** | **13** | **6** | 10,752 |
+| **SGLang-Omni 0.1.4, 16** | **0** | **5** | **0** | **26,666** |
+| SGLang-Omni 0.1.4, 1 | 1 | 7 | 0 | 2,636 |
+
+vllm-omni's damage at width is **its batched talker**, not the model and not the
+text: the same build at 1 in flight is clean, and the corruption lands on the
+**newest batch row** — the request that prefills while others decode, which is
+the row vLLM's condense moves when an earlier row retires. Upstream knows half of
+it (issue #6418; PR #6422's request-id-keyed state pool is in the installed
+talker and does not fix it). The truncations Owen heard, the gibberish, and the
+sustained voice switches are all that one defect. What stays damaged on every
+clean engine (~10 %) is text-domain — em-dashes missing from the corpus, a
+footnote welded onto a chunk head, umlauts — and is fixed elsewhere.
+
+**The two are not interchangeable**, which is why the key has no default:
+
+| | vllm-omni 0.28.0 | SGLang-Omni 0.1.4 |
+|---|---|---|
+| conda env | `higgs3` (py 3.11, vllm 0.28.0) | `sglomni` (py 3.12, torch 2.13.0+cu130, sglang 0.5.18, flashinfer 0.6.17) |
+| port | 8095 | 8200 |
+| launcher | `serve_higgs_v3.sh` | `serve_higgs_sgl.sh` |
+| installer | `install_higgs_env.sh` | `install_sglomni.sh` |
+| served model name | `higgs-v3` | `higgs-v3-ds` |
+| memory | two stage fractions, `--stage-overrides` | one `--mem-fraction-static` (0.60 ⇒ ~19 GB, healthy in ~110 s) |
+| sampling | inside `extra_params`; an EMPTY mapping is correct for a checkpoint voice (the server reads the dir's `generation_config.json`) | **at the request TOP LEVEL, and it must be SENT** — this stack reads no such file, and `build_sglang_higgs_request` applies `top_p`/`top_k` only when the request carried them. Measured: without `top_k` one chunk ran to the cap with 80 s of silence |
+| frame cap field | `max_tokens` is ignored; the deploy profile is the ceiling | `max_new_tokens`, per request |
+| context | 8192 (`--max-model-len`) | **4096, hard-coded** (`HiggsTtsEngineBuilder.context_length`; no flag) |
+| site-packages patches | two, required | **none** — its own stage processor |
+| reference clips | yes, one, as a `data:` URI | **refused by name** |
+
+**The context is the one that changes how a book is packed.** Prompt tokens +
+`max_new_tokens` over **4,095** is an HTTP 500 from inside the scheduler, not a
+shorter render — and `v3_served.cap_frames`' generous ceiling (2.0× expected +
+150 frames) passes it on its own at about **1,150 characters**, so this is the
+ordinary case rather than a corner one. `sgl_served.frame_cap()` sends the
+**smaller of the two ceilings** and **refuses by name** when what the context
+leaves drops under 1.2× the chunk's expected length — at the measured book pace
+(5.82 s / 100 chars) that boundary is around 1,900 characters, above every
+certified `targetChars`. The prompt bound is `3 + ceil(len/3.0)`: the 3 is exact
+(`[tts_id] + encode(text) + [text_id] + [audio_id]`, read off
+`HiggsTokenizerAdapter.build_prompt`), and 3.0 chars/token is a **floor** measured
+at 3.25 worst-case over those 50 chunks with ckpt-1080's tokenizer.
+
+**Reference clips are refused on this stack**, for two independent reasons: a
+clip's ~330 placeholder tokens come out of the same 4,096 (measured to push the
+13 longest chunks over it at a 3,500-frame cap, §4n.10), and
+`references[].audio_path` is read *by the server*, which needs
+`--allowed-local-media-path` — a flag `serve_higgs_sgl.sh` deliberately does not
+pass. `sgl_served.refuse_clips_voice()` fires at `HiggsV3Config.__post_init__`
+and again at `build_request_body`, so no path reaches the wire around it.
+
+**Identity is not in `/v1/models`.** `sglang_omni/serve/openai_api.py`'s
+`_register_models` answers `ModelCard(id=model_name, root=model_name)` — the
+served *name* in both fields — so unlike vllm-omni 0.28 it never reports the model
+path. `running_checkpoint()` reads `HIGGS_MODEL_DIR` out of
+`/proc/<listener pid>/environ` instead: what our own launch wrapper exported into
+that process, which is a **fact** about the running server. An attached server
+nobody here launched falls back to the operator's `NARRATOR_HIGGS3_CHECKPOINT`
+assertion, and with neither the server is **refused as unidentified**.
+
+**The environment**, emitted by `higgsSpawnEnv` when `stack` is `sglang-omni`:
+
+| variable | from | who reads it |
+|---|---|---|
+| `HIGGS_STACK` | `serving.stack` | **narrator** (`served_common.serving_stack`, refuses when unset) on **every arm and every phase**, and both launchers, which refuse the other stack's name |
+| `NARRATOR_HIGGS_SGL_SERVE_SCRIPT` | the guest launcher path | `HiggsSglServedBackend` |
+| `NARRATOR_HIGGS_SGL_URL` | attach to a running server | ditto |
+| `HIGGS_SGL_ENV` | `<conda base>/envs/<sglang.condaEnvName>` | the script: `CUDA_HOME`, `PATH`, `LD_LIBRARY_PATH`, `<env>/bin/sgl-omni` |
+| `HIGGS_SGL_HOST` / `HIGGS_SGL_PORT` | `sglang.host` / `sglang.port` | the script binds; narrator polls the same pair |
+| `HIGGS_SGL_MEM_FRACTION` | `sglang.memFractionStatic` | `--mem-fraction-static` |
+| `HIGGS_SGL_CUDA_GRAPH_MAX_BS` | `sglang.cudaGraphMaxBs` | `--tts_engine.factory.cuda_graph_max_bs` |
+| `HIGGS_SGL_MAX_NEW_TOKENS` | `sglang.maxNewTokens` | `--tts_engine.factory.max_new_tokens` |
+| `HIGGS_MAX_NUM_SEQS` | `sglang.maxRunningRequests` | `--tts_engine.factory.max_running_requests` **and** narrator's batch width — one variable, because it is one question |
+
+**None of the vllm-omni set comes along**, and the attach/launch variables differ
+per stack on purpose: a stale `NARRATOR_HIGGS3_URL` must not point an SGLang
+client at a vllm-omni server, which would answer `/health` and `/v1/models` in the
+right shapes and then drop half of every request body.
+
+**The doctor is stack-aware**: it probes `sglang_omni` rather than `vllm_omni`, in
+the `sglomni` prefix (from the catalog, *not* the `wslHiggsCondaEnv` setting, which
+names the vllm-omni env), reports **no patch rows** and **no `profile-sha` row**,
+and adds a **`cuda-links`** row for the two symlinks flashinfer's nvcc build needs
+inside the pip CUDA 13 wheel (`lib64 -> lib`, `libcudart.so -> libcudart.so.13`).
+
+**The env is built by `install_sglomni.sh`** — a separate script, because the two
+environments cannot be one. It creates python 3.12, `uv pip install
+--prerelease=allow sglang-omni==0.1.4`, the `flashinfer-jit-cache==0.6.17` cu130
+wheel from `https://flashinfer.ai/whl/cu130/`, the two symlinks, narrator's
+runtime imports, and the launcher. Settings → Install/Repair runs whichever
+installer the catalog's `stack` names.
+
+> **TO FLIP THE APP TO SGLang-Omni: change `serving.stack` in
+> `electron/data/higgs-models.json` from `"vllm-omni"` to `"sglang-omni"`, build
+> the env from Settings → Higgs, and restart.** Everything else follows from that
+> one word. It is deliberately NOT flipped in this commit: the code is the change
+> the measurements call for, and which stack ships is a decision, not a
+> consequence.
+
 ### The five refusals
 
 `resolveHiggsModel()` / `higgsSpawnEnv()` throw, by name, for:

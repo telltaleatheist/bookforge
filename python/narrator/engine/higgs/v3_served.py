@@ -116,16 +116,13 @@ LICENCE: Boson Higgs TTS 3 Research and Non-Commercial. Fine for personal use
 and, under the Creator Use Grant, for credited creator content; production
 deployment or embedding in a product needs separate licensing.
 """
-import dataclasses
 import io
 import json
 import os
 import re
 import shlex
 import shutil
-import signal
 import subprocess
-import tempfile
 import sys
 import time
 import urllib.error
@@ -135,6 +132,8 @@ import numpy as np
 
 from ..protocol import BackendSpec, ClipsVoice, DefaultVoice
 from ..log import log
+from . import served_common
+from .served_common import GuestOwnedServer
 
 MODEL_ID = 'bosonai/higgs-audio-v3-tts-4b'
 SERVED_MODEL_NAME = 'higgs-v3'
@@ -160,7 +159,7 @@ WSL_DISTRO_ENV = 'NARRATOR_HIGGS3_WSL_DISTRO'
 #: variable is the operator's assertion for a server build whose model list
 #: does NOT carry a root; it is consulted only then, and never overrides a root
 #: the server reports - a reported path is a fact and an env var is a claim.
-CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
+CHECKPOINT_ENV = served_common.CHECKPOINT_ENV
 #: THE LAUNCH SCRIPT'S OWN KNOBS (`serve_higgs_v3.sh`), exported into the
 #: wrapper's environment by narrator at launch. narrator states every one of
 #: them rather than inheriting whatever the worker's environment happens to
@@ -175,7 +174,7 @@ CHECKPOINT_ENV = 'NARRATOR_HIGGS3_CHECKPOINT'
 #:   HIGGS_MAX_NUM_SEQS how many sequences stage 0 admits at once - and
 #:                      therefore how wide narrator's own batch is
 #:                      (`serve_concurrency`). One number, stated once.
-SERVE_MODEL_DIR_ENV = 'HIGGS_MODEL_DIR'
+SERVE_MODEL_DIR_ENV = served_common.SERVE_MODEL_DIR_ENV
 SERVE_HOST_ENV = 'HIGGS_HOST'
 SERVE_PORT_ENV = 'HIGGS_PORT'
 SERVE_MAX_NUM_SEQS_ENV = 'HIGGS_MAX_NUM_SEQS'
@@ -211,11 +210,11 @@ BASE_SNAPSHOT_MARKER = 'models--bosonai--higgs-audio-v3-tts-4b'
 #: like 10 minutes." These are wedge detectors, not budgets: a WSL VM that takes
 #: a minute to answer under load is slow, not gone, and a 30 s ceiling turned
 #: slow into "could not scan" on a healthy machine.
-GUEST_COMMAND_TIMEOUT_SECONDS = 10 * 60
+GUEST_COMMAND_TIMEOUT_SECONDS = served_common.GUEST_COMMAND_TIMEOUT_SECONDS
 
-OWNER_ENV = 'NARRATOR_HIGGS3_OWNER'
+OWNER_ENV = served_common.OWNER_ENV
 #: How long the guest-side watchdog sleeps between looks at the owner.
-WATCHDOG_INTERVAL_SECONDS = 3
+WATCHDOG_INTERVAL_SECONDS = served_common.WATCHDOG_INTERVAL_SECONDS
 
 #: WHERE AN ATTACHED SERVER'S LOG IS, named by the operator. NO DEFAULT.
 #:
@@ -340,26 +339,18 @@ ALLOWED_CONTROL_TOKENS = frozenset((
 _CONTROL_TOKEN_RE = re.compile(r'<\|[^|>]{1,64}\|>')
 
 
-class HiggsV3ServerError(RuntimeError):
-    """The server refused a request, or would not come up.
-
-    Always carries the server's own message: vllm-omni's 400s say exactly what
-    is wrong ("Reference audio too long (42.0s). Maximum 30s supported",
-    "'references' only supports a single reference", "Token id -100 is out of
-    vocabulary" when the vLLM patch is missing) and paraphrasing them loses the
-    one thing a reader needs.
-    """
-
-
-class HiggsV3ServerDown(HiggsV3ServerError):
-    """Nothing answered at all: the server is not there.
-
-    Distinct from a refusal so a BATCH can tell the two apart. A 400 on one
-    chunk (an over-long reference, a bad control token) is that chunk's
-    failure and the rest of the batch proceeds; a connection refused is the
-    whole server gone, and rendering the remaining thousand chunks against it
-    would mark every one of them failed one at a time.
-    """
+#: THE SERVER ERRORS, AND THEY BELONG TO BOTH STACKS.
+#:
+#: These are ALIASES of `served_common.HiggsServerError` / `HiggsServerDown`
+#: rather than v3-only subclasses, and that is load-bearing rather than tidy.
+#: `HiggsV3Engine` runs against EITHER stack and its per-row failure policy is
+#: written as `except v3_served.HiggsV3ServerDown: raise` - the one exception
+#: that must end a whole take instead of failing one chunk. A separate SGLang
+#: class would slip past that clause and every remaining row of a book would be
+#: marked failed one at a time against a dead port, which is exactly the
+#: behaviour `convert_many` exists to refuse.
+HiggsV3ServerError = served_common.HiggsServerError
+HiggsV3ServerDown = served_common.HiggsServerDown
 
 
 def serve_concurrency() -> int:
@@ -881,8 +872,14 @@ def decode_response(body: bytes, content_type: str = None):
 # ---------------------------------------------------------------------------
 
 
-class HiggsV3ServedBackend:
-    """`narrator.engine.protocol.ServedBackend` for Higgs v3.
+class HiggsV3ServedBackend(GuestOwnedServer):
+    """`narrator.engine.protocol.ServedBackend` for Higgs v3 under **vllm-omni**.
+
+    The SIBLING STACK is `sgl_served.HiggsSglServedBackend` (SGLang-Omni 0.1.4),
+    and everything the two share - the ownership marker, the /proc listener scan,
+    the watchdog, adoption, TERM-only teardown - is `served_common`. What is here
+    is vllm-omni's: the launch line, `extra_params` sampling, the sentinel-filter
+    proof, and `/v1/models`' `root` as the model identity.
 
     Two modes, chosen by what it is given:
 
@@ -896,6 +893,14 @@ class HiggsV3ServedBackend:
     narrator never writes its own launch line: the script carries the CUDA_HOME
     and flashinfer workarounds without which the server does not start at all.
     """
+
+    HEALTH_PATH = HEALTH_PATH
+    LOG_TAG = '[HIGGS3]'
+    SERVER_LOG_ENV = SERVER_LOG_ENV
+    READY_FAILURE_HINT = (
+        'The usual causes are the flashinfer JIT (needs CUDA_HOME + '
+        'VLLM_USE_FLASHINFER_SAMPLER=0) and OOM at a gpu-memory-utilization the '
+        'card cannot honour.')
 
     def __init__(self, base_url: str = None, serve_script: str = None,
                  wsl_distro: str = None, extra_args=None,
@@ -951,9 +956,8 @@ class HiggsV3ServedBackend:
         #   named_log   what an OPERATOR says an ATTACHED server writes to. No
         #               default - see SERVER_LOG_ENV.
         self._named_log = (os.environ.get(SERVER_LOG_ENV) or '').strip() or None
-        self.launch_log = (server_log or '').strip() or os.path.join(
-            tempfile.gettempdir(),
-            f'narrator-higgs3-{os.getpid()}-{id(self):x}.log')
+        self.launch_log = ((server_log or '').strip()
+                           or self.default_launch_log('narrator-higgs3'))
         # Which of the two is the PROOF stream is decided by which mode this
         # backend is in, and `start()` corrects it if it adopts a server that
         # was already up (that server's output is not ours either).
@@ -978,13 +982,11 @@ class HiggsV3ServedBackend:
         self._guest_pid = None
 
     # -- lifecycle -----------------------------------------------------------
-
-    def owner_id(self) -> str:
-        """The value the server's environment carries in OWNER_ENV: this
-        process's pid. On the Windows arm it is a HOST pid the guest cannot
-        watch, and it is prefixed to say so, so the watchdog knows not to."""
-        pid = os.getpid()
-        return f'win32:{pid}' if sys.platform == 'win32' else str(pid)
+    #
+    # `owner_id`, `start`, `stop`, `ping`, `wait_ready`, the /proc listener scan,
+    # the watchdog, the group signal and the log handling are `served_common
+    # .GuestOwnedServer`'s - they are the same problem on both stacks and were
+    # solved once. What is below is vllm-omni's own launch line.
 
     def _launch_exports(self) -> str:
         """The `export ...` prefix of the wrapper: every launch-script knob
@@ -1044,126 +1046,10 @@ class HiggsV3ServedBackend:
         """
         script = (_to_wsl(self.serve_script) if sys.platform == 'win32'
                   else self.serve_script)
-        port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
-        parts = [self._launch_exports(),
-                 f'setsid bash {shlex.quote(script)} & ']
-        if sys.platform != 'win32':
-            parts.append(
-                f'setsid python3 -c {shlex.quote(self._WATCHDOG)} '
-                f'{os.getpid()} {shlex.quote(port)} {WATCHDOG_INTERVAL_SECONDS} '
-                f'>/dev/null 2>&1 < /dev/null & ')
-        parts.append('wait')
-        return ''.join(parts)
-
-    #: Shared by the watchdog and the ownership scan: the pids LISTENING on a
-    #: TCP port, from /proc/net/tcp{,6} and every process's fd table. No `ss`,
-    #: no `lsof` - both are optional packages in a distro; /proc is not.
-    _LISTENERS_PY = r"""
-import os
-def listeners(port):
-    inodes = set()
-    for table in ('/proc/net/tcp', '/proc/net/tcp6'):
-        try:
-            rows = open(table).read().splitlines()[1:]
-        except OSError:
-            continue
-        for row in rows:
-            f = row.split()
-            if len(f) < 10 or f[3] != '0A':
-                continue
-            if int(f[1].rsplit(':', 1)[1], 16) == port:
-                inodes.add(f[9])
-    pids = []
-    if not inodes:
-        return pids
-    for entry in os.listdir('/proc'):
-        if not entry.isdigit():
-            continue
-        try:
-            fds = os.listdir('/proc/%s/fd' % entry)
-        except OSError:
-            continue
-        for fd in fds:
-            try:
-                target = os.readlink('/proc/%s/fd/%s' % (entry, fd))
-            except OSError:
-                continue
-            if target.startswith('socket:[') and target[8:-1] in inodes:
-                pids.append(int(entry))
-                break
-    return pids
-def owner_of(pid):
-    try:
-        env = open('/proc/%d/environ' % pid, 'rb').read().split(b'\0')
-    except OSError:
-        return None
-    for item in env:
-        if item.startswith(b'NARRATOR_HIGGS3_OWNER='):
-            return item.split(b'=', 1)[1].decode('utf-8', 'replace')
-    return None
-def pgid_of(pid):
-    stat = open('/proc/%d/stat' % pid).read()
-    return int(stat[stat.rindex(')') + 2:].split()[2])
-"""
-
-    #: `_own_servers_on_port`'s program: one JSON list of the marked listeners.
-    _OWN_SERVERS_SCAN = _LISTENERS_PY + r"""
-import json, sys
-port = int(sys.argv[1])
-found = []
-for pid in listeners(port):
-    owner = owner_of(pid)
-    if owner is None:
-        continue
-    try:
-        pgid = pgid_of(pid)
-    except (OSError, ValueError):
-        continue
-    found.append({'pid': pid, 'pgid': pgid, 'owner': owner})
-print(json.dumps(found))
-"""
-
-    #: The watchdog's program (see `_wrapper`, item 3).
-    _WATCHDOG = _LISTENERS_PY + r"""
-import signal, sys, time
-owner = int(sys.argv[1]); port = int(sys.argv[2]); every = float(sys.argv[3])
-mark = str(owner)
-def ours():
-    return [p for p in listeners(port) if owner_of(p) == mark]
-started = time.time()
-while True:
-    time.sleep(every)
-    if os.path.exists('/proc/%d' % owner):
-        continue
-    # The owner is gone. Take down what it launched, by group, TERM only.
-    groups = set()
-    for p in ours():
-        try:
-            groups.add(pgid_of(p))
-        except (OSError, ValueError):
-            pass
-    for g in groups:
-        try:
-            os.killpg(g, signal.SIGTERM)
-        except OSError:
-            pass
-    deadline = time.time() + 180
-    while time.time() < deadline and ours():
-        time.sleep(1)
-    break
-"""
-
-    def _guest_argv(self, argv: list) -> list:
-        """`argv`, run INSIDE the distro on Windows and directly elsewhere.
-
-        `--exec` on the Windows arm for the same reason `launch_command`
-        gives: without it wsl.exe hands the line to the distro's default
-        shell, which expands `$` before the program sees it.
-        """
-        if sys.platform != 'win32':
-            return list(argv)
-        wsl = shutil.which('wsl.exe') or 'wsl.exe'
-        return [wsl, '-d', self.wsl_distro, '--exec'] + list(argv)
+        return ''.join([self._launch_exports(),
+                        f'setsid bash {shlex.quote(script)} & ',
+                        self._watchdog_clause(),
+                        'wait'])
 
     def launch_command(self) -> list:
         """The command `start()` runs. Public so a test and a log line can see
@@ -1190,184 +1076,6 @@ while True:
             return [wsl, '-d', self.wsl_distro, '--exec', 'bash', '-c',
                     self._wrapper()]
         return ['bash', '-c', self._wrapper()]
-
-    def _server_on_port(self):
-        """The server listening on our port that carries OUR marker (any
-        narrator's - the owner value is not compared here), as
-        `{'pid', 'pgid', 'owner'}`, or None. Raises if the scan cannot run:
-        an unanswerable ownership question is not a "no"."""
-        rows = self._own_servers_on_port()
-        return rows[0] if rows else None
-
-    def _record_server(self) -> None:
-        """After `/health` answers: find the listener with our marker and
-        remember its pid. Its GROUP is read again at signal time, never
-        remembered - a group id is a property of the moment."""
-        row = self._server_on_port()
-        if row is None:
-            log(f'[HIGGS3] WARNING: {self.base_url} answers but no listener on '
-                f'its port carries {OWNER_ENV}; stop() will have nothing of ours '
-                'to signal.', flush=True)
-            self._guest_pid = None
-            return
-        self._guest_pid = int(row['pid'])
-        log(f'[HIGGS3] server pid {row["pid"]} (group {row["pgid"]}, owner '
-            f'{row["owner"]})', flush=True)
-
-    def start(self) -> None:
-        """Launch the server. Idempotent: a second call while it is up does
-        nothing, and never a second process on the same port."""
-        if not self.serve_script:
-            return                     # attach mode: somebody else owns it
-        if self._proc is not None and self._proc.poll() is None:
-            return
-        if self.ping():
-            # Already serving on that port. ADOPT IT ONLY IF IT SERVES WHAT WE
-            # ASKED FOR - port 8095 is not proof of identity, and a leftover
-            # server from another model, another adapter or another agent's
-            # session would otherwise render a whole book in the wrong voice
-            # while every message here said the right one.
-            try:
-                self.check_serves_expected_model()
-            except HiggsV3ServerError as wrong:
-                # The wrong server. If NARRATOR left it there (a refused start,
-                # a crashed worker, a stop that never reached the group), it is
-                # ours to take down and replace; anything else on the port is
-                # somebody else's and the refusal stands. Never a second launch
-                # onto a busy port - that pays 55-297 s and ~20 GB to fail to
-                # bind, which is exactly the "retrying" loop Owen's first
-                # render fell into.
-                self._reclaim_port(wrong)
-            else:
-                # ADOPTED, NOT LAUNCHED: that process's output goes wherever
-                # its own launcher sent it, so the file we would have written
-                # is not the proof stream and the spec must stop claiming it is.
-                self._log_is_ours = False
-                self.server_log = self._named_log
-                self.spec = dataclasses.replace(self.spec, server_log=self.server_log)
-                log(f'[HIGGS3] adopting the server already on {self.base_url}; '
-                    f'its log is '
-                    f'{self.server_log or "not named (see " + SERVER_LOG_ENV + ")"}',
-                    flush=True)
-                return
-        command = self.launch_command()
-        log(f'[HIGGS3] launching: {" ".join(command)}', flush=True)
-        # BOTH STREAMS INTO ONE FILE, opened 'wb' so each start overwrites -
-        # the same contract as the training side's serve_current.log, and the
-        # reason the proof can say "this run" rather than "some run". stderr is
-        # merged into stdout because vLLM logs to stderr and the ordering
-        # between the two only means anything interleaved.
-        self._open_log()
-        # `start_new_session` on POSIX: the wrapper shell leads its own session,
-        # so a stop can never reach back into the worker's own group. The server
-        # itself gets a further group of its own from the wrapper's `setsid`.
-        self._proc = subprocess.Popen(command, stdout=self._log_handle,
-                                      stderr=subprocess.STDOUT,
-                                      start_new_session=(sys.platform != 'win32'))
-
-    def _own_servers_on_port(self) -> list:
-        """Every server NARRATOR started that is listening on our port, as
-        `[{'pid', 'pgid', 'owner'}]`: the listeners whose environment carries
-        OWNER_ENV. A listener without it is somebody else's. Raises if the
-        scan itself cannot run - an unanswerable ownership question is not a
-        "no"."""
-        port = self.base_url.rsplit(':', 1)[-1].rstrip('/')
-        argv = self._guest_argv(['python3', '-c', self._OWN_SERVERS_SCAN, port])
-        try:
-            out = subprocess.run(argv, capture_output=True, text=True,
-                                 timeout=GUEST_COMMAND_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError) as exc:
-            raise HiggsV3ServerError(
-                f'Higgs v3: could not scan for narrator\'s own servers on port '
-                f'{port} ({exc}); refusing to decide whether the server already '
-                'there is ours.') from exc
-        if out.returncode != 0:
-            raise HiggsV3ServerError(
-                f'Higgs v3: the ownership scan for port {port} failed (exit '
-                f'{out.returncode}): {out.stderr.strip()[:400]}')
-        try:
-            return json.loads(out.stdout.strip() or '[]')
-        except ValueError as exc:
-            raise HiggsV3ServerError(
-                f'Higgs v3: the ownership scan for port {port} printed '
-                f'{out.stdout[:200]!r}, not JSON.') from exc
-
-    def _reclaim_port(self, wrong: HiggsV3ServerError,
-                      timeout: float = 180.0) -> None:
-        """The server on our port is the wrong one. Take it down IF IT IS OURS,
-        cooperatively, and wait for the port to free; otherwise re-raise the
-        refusal, now saying whose it is not.
-
-        Cooperative means SIGTERM to the process group and patience: a vLLM
-        that is mid-teardown holds CUDA state, and a SIGKILL to a process
-        holding the GPU inside WSL wedges the whole VM until a Windows reboot
-        (memory: wsl-wedge-proofing). So there is no KILL here, only a longer
-        wait and then a refusal that names the pid.
-        """
-        owned = self._own_servers_on_port()
-        if not owned:
-            raise HiggsV3ServerError(
-                f'{wrong} The listener on that port carries no {OWNER_ENV}, so it '
-                'is not a server narrator started and it will not be stopped '
-                f'from here. Stop it yourself, or point {BASE_URL_ENV} at a server '
-                'running the right checkpoint.') from wrong
-        for row in owned:
-            log(f'[HIGGS3] the server on {self.base_url} is the wrong checkpoint '
-                f'and it is narrator\'s (pid {row["pid"]}, group {row["pgid"]}, '
-                f'launched by {row["owner"]}); stopping it before launching',
-                flush=True)
-            self._signal_guest(row['pid'], 'TERM')
-        deadline = time.time() + float(timeout)
-        while time.time() < deadline:
-            if not self.ping():
-                break
-            time.sleep(1.0)
-        else:
-            raise HiggsV3ServerError(
-                f'Higgs v3: narrator\'s own server on {self.base_url} (pid(s) '
-                f'{", ".join(str(r["pid"]) for r in owned)}) is still answering '
-                f'{timeout:.0f}s after SIGTERM. It is NOT being killed: a KILL to '
-                'a process holding the GPU inside WSL wedges the VM. Wait for it, '
-                'or stop it by hand, then retry.')
-        log(f'[HIGGS3] port {self.base_url.rsplit(":", 1)[-1]} reclaimed', flush=True)
-
-    def _open_log(self) -> None:
-        """Open (and truncate) the launch log. Failure is LOUD.
-
-        A log we cannot open is not a cosmetic loss: it is the sentinel proof's
-        only stream, and starting a 14 GB server whose evidence goes nowhere is
-        the state this change exists to end.
-        """
-        directory = os.path.dirname(self.launch_log)
-        try:
-            if directory:
-                os.makedirs(directory, exist_ok=True)
-            self._log_handle = open(self.launch_log, 'wb')
-        except OSError as exc:
-            raise HiggsV3ServerError(
-                f'Higgs v3: could not open the server log {self.launch_log} '
-                f'({exc}). That file is where this server\'s stdout and stderr go '
-                'and it is the stream the sentinel-filter proof reads '
-                '(verify_sentinel_filter), so a server started without it would '
-                'render with no evidence of what its decode path did.') from exc
-        log(f'[HIGGS3] server log: {self.launch_log}', flush=True)
-
-    def _close_log(self) -> None:
-        handle, self._log_handle = self._log_handle, None
-        if handle is not None:
-            try:
-                handle.close()
-            except OSError:
-                pass
-
-    def proof_log(self):
-        """The log `verify_sentinel_filter` reads, or None.
-
-        Ours when we launched the server; the operator's named file when we
-        attached to (or adopted) somebody else's. None when neither - which is
-        an honest answer and not a path to guess at.
-        """
-        return self.launch_log if self._log_is_ours else self._named_log
 
     def verify_sentinel_filter(self) -> dict:
         """PROOF (a) OF THE SENTINEL FILTER: read the server's own log.
@@ -1653,177 +1361,6 @@ while True:
             'of the stage processor.', flush=True)
         return dbfs
 
-    def ping(self) -> bool:
-        """True when the health endpoint answers 200."""
-        try:
-            with urllib.request.urlopen(self.base_url + HEALTH_PATH,
-                                        timeout=3) as response:
-                return response.status == 200
-        except (urllib.error.URLError, OSError):
-            return False
-
-    def wait_ready(self, timeout: float) -> bool:
-        """Poll `/health` until it answers, or `timeout` seconds pass.
-
-        Returns False on timeout rather than raising - a slow start is the
-        caller's decision, and MEASURED COLD STARTS RANGE 55-297 s on this box
-        (page cache and first-run compilation), so patience has to be generous.
-        RAISES if the
-        process we launched has DIED, naming its exit status: waiting out a
-        timeout on a corpse is the failure mode this exists to avoid.
-        """
-        deadline = time.time() + float(timeout)
-        while time.time() < deadline:
-            if self._proc is not None and self._proc.poll() is not None:
-                raise HiggsV3ServerError(
-                    f'Higgs v3 server exited with status {self._proc.returncode} '
-                    'before becoming ready. Its log is wherever the launch script '
-                    'sends it; the usual causes are the flashinfer JIT (needs '
-                    'CUDA_HOME + VLLM_USE_FLASHINFER_SAMPLER=0) and OOM at a '
-                    'gpu-memory-utilization the card cannot honour.')
-            if self.ping():
-                return True
-            time.sleep(1.0)
-        return False
-
-    def stop(self, timeout: float = 60.0) -> None:
-        """Terminate the server we launched, and VERIFY it is gone.
-
-        Idempotent, and it never kills a process it did not start: in ATTACH
-        mode (`NARRATOR_HIGGS3_URL`) it returns at once, leaving the server
-        running and unpolled.
-
-        THE WINDOWS PROBLEM. On Linux the child IS `vllm-omni` (serve_v3.sh
-        `exec`s it), so SIGTERM reaches the server. On Windows the child is
-        `wsl.exe`, and terminating it kills the Windows-side relay - the guest
-        process may keep running, holding ~14 GB of VRAM, invisible to
-        `proc.poll()`, which now reports a tidy exit. So the port is polled
-        after the terminate, and if something is still serving there the guest
-        process is signalled BY PID inside the distro. The pid is the one
-        `launch_command()` recorded at launch (the wrapper prints it), never a
-        pkill pattern: `pkill -f "vllm-omni serve"` would kill another agent's
-        server too.
-        """
-        if not self.serve_script:
-            # ATTACH MODE: this backend never launched anything, so there is
-            # nothing of ours to terminate and nothing to wait for. Returning
-            # immediately is not a shortcut - polling the port here would block
-            # on somebody else's healthy server for the whole timeout and then
-            # report it as a leak.
-            return
-        proc = self._proc
-        self._proc = None
-        if proc is None and self._guest_pid is None:
-            # Never launched (start() adopted, or refused before Popen).
-            self._close_log()
-            return
-        if self._guest_pid is None and self.ping():
-            # Launched, but the server was never recorded (a load that failed
-            # before health, say). Find it now by its marker rather than leave
-            # it running.
-            self._record_server()
-        # THE SERVER FIRST, BY GROUP. Signalling the wrapper shell was the
-        # orphan bug: bash does not forward SIGTERM to a backgrounded child, so
-        # the shell died, `proc.poll()` reported a tidy exit, and vllm-omni ran
-        # on with the GPU. The group signal reaches the server and its stage
-        # engines; the wrapper's `wait $!` then returns on its own.
-        if self._guest_pid is not None:
-            self._signal_guest(self._guest_pid, 'TERM')
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.wait(timeout=timeout)
-            except subprocess.TimeoutExpired:
-                # The wrapper outlived the server's own teardown window. It is a
-                # shell, not a GPU holder: terminating IT is safe.
-                log('[HIGGS3] launch wrapper still up after the server was '
-                    'signalled; terminating the wrapper', flush=True)
-                try:
-                    proc.terminate()
-                    proc.wait(timeout=30)
-                except (OSError, subprocess.TimeoutExpired):
-                    pass
-        self._verify_gone(timeout=timeout)
-        # Closed LAST, so the server's own shutdown lines are in the file the
-        # proof reads. The file stays: it is the run's evidence, and a ledger
-        # entry naming it must still resolve after the worker exits.
-        self._close_log()
-
-    def _verify_gone(self, timeout: float = 60.0) -> None:
-        """Poll the port until nothing answers, then drop the pid file.
-
-        NO KILL, EVER. A SIGKILL to a process holding the GPU inside WSL wedges
-        the whole VM until a Windows reboot (memory: wsl-wedge-proofing), so
-        the escalation after a second SIGTERM is a loud warning that names the
-        pid - and the pid file is LEFT IN PLACE, which is what lets the next
-        `start()` recognise the survivor as ours and reclaim the port
-        cooperatively instead of refusing it as a stranger's.
-
-        Only ever runs for a server WE launched (`_guest_pid` is set at launch),
-        so an attached server is left alone even if it is still up.
-        """
-        deadline = time.time() + float(timeout)
-        while time.time() < deadline:
-            if not self.ping():
-                self._guest_pid = None
-                return
-            time.sleep(1.0)
-        if self._guest_pid is None:
-            log(f'[HIGGS3] WARNING: something is still serving {self.base_url} '
-                  'and this process did not record a guest pid for it; leaving it '
-                  'alone rather than killing a server it may not own.', flush=True)
-            return
-        log(f'[HIGGS3] server still up after the launcher exited; signalling '
-              f'guest process group {self._guest_pid} again', flush=True)
-        self._signal_guest(self._guest_pid, 'TERM')
-        deadline = time.time() + 120.0
-        while time.time() < deadline:
-            if not self.ping():
-                self._guest_pid = None
-                return
-            time.sleep(1.0)
-        log(f'[HIGGS3] WARNING: server pid {self._guest_pid} is still serving '
-            f'{self.base_url} after two SIGTERMs. NOT killing it - a KILL on a GPU '
-            'holder inside WSL wedges the VM. It still carries our marker, so the '
-            'next start reclaims it.', flush=True)
-
-    #: `_signal_guest`'s program: SIGTERM the process GROUP of one pid, the
-    #: group read at this moment. Prints the pgid it signalled.
-    _SIGNAL_GROUP = r"""
-import os, signal, sys
-pid = int(sys.argv[1])
-stat = open('/proc/%d/stat' % pid).read()
-pgid = int(stat[stat.rindex(')') + 2:].split()[2])
-os.killpg(pgid, signal.SIGTERM)
-print(pgid)
-"""
-
-    def _signal_guest(self, pid: int, signame: str) -> None:
-        """SIGTERM the process GROUP of `pid`, inside the distro, the group
-        read off /proc at this moment - never a remembered one, and never a
-        pattern. vllm-omni's stage engines share the listener's group
-        (measured), so one signal reaches all three. `KILL` is refused by name:
-        see `_verify_gone`."""
-        if signame != 'TERM':
-            raise ValueError(
-                f'Higgs v3: refusing to send SIG{signame} to a server process. '
-                'A KILL on a process holding the GPU inside WSL wedges the VM; '
-                'only TERM is sent, and a server that ignores it is reported, '
-                'not killed.')
-        argv = self._guest_argv(['python3', '-c', self._SIGNAL_GROUP, str(int(pid))])
-        try:
-            out = subprocess.run(argv, capture_output=True, text=True,
-                                 timeout=GUEST_COMMAND_TIMEOUT_SECONDS)
-        except (OSError, subprocess.SubprocessError) as exc:
-            log(f'[HIGGS3] could not signal the group of pid {pid}: {exc}',
-                flush=True)
-            return
-        if out.returncode != 0:
-            log(f'[HIGGS3] could not signal the group of pid {pid}: '
-                f'{out.stderr.strip()[:300]}', flush=True)
-        else:
-            log(f'[HIGGS3] SIGTERM sent to process group {out.stdout.strip()} '
-                f'(pid {pid})', flush=True)
-
     # -- use -----------------------------------------------------------------
 
     def speak(self, request):
@@ -1874,28 +1411,7 @@ print(pgid)
                 'both site-packages patches applied?') from exc
 
 
-def _to_wsl(path: str) -> str:
-    r"""A Windows path -> the path WSL sees.
-
-        C:\x\y                    -> /mnt/c/x/y
-        \\wsl$\Ubuntu\home\t        -> /home/t   (already INSIDE the distro)
-        \\wsl.localhost\Ubuntu\opt  -> /opt
-        /already/posix             -> unchanged
-
-    The UNC forms matter and are not theoretical: a script living in the
-    distro's own filesystem is reached from Windows as `\\wsl$\<distro>\...`,
-    and running that through the drive-letter rule would produce a path with no
-    meaning on either side - the launch would fail with a confusing "No such
-    file" from bash rather than from here.
-    """
-    path = (path or '').replace('\\', '/')
-    lowered = path.lower()
-    for prefix in ('//wsl$/', '//wsl.localhost/'):
-        if lowered.startswith(prefix):
-            # Drop the prefix AND the distro name; what remains is an absolute
-            # path in the guest.
-            _distro, _, tail = path[len(prefix):].partition('/')
-            return '/' + tail
-    if len(path) > 1 and path[1] == ':':
-        return '/mnt/' + path[0].lower() + path[2:]
-    return path
+#: A Windows path -> the path WSL sees. `served_common.to_wsl`, kept under this
+#: name because both stacks' launch paths and every test that checks the UNC
+#: forms reach for it here.
+_to_wsl = served_common.to_wsl
