@@ -52,23 +52,19 @@ import { canonicalizePunctuationText } from './tts-punctuation';
 import { applyNumberRules } from './tts-number-rules';
 import { expandNumbersEn } from './number-expansion';
 import { SPOKEN_AS_WORD, loadEnglishWords, spacedLetters } from './tts-spoken-forms';
+// THE ONE ACRONYM LIST, narrator's file (python/narrator/text/caps_acronyms.json):
+// a relative import so tsc emits the JSON into dist beside the compiled module
+// and the packaged app carries it; narrator loads the same file standalone.
+import capsAcronyms from '../python/narrator/text/caps_acronyms.json';
 
 /**
  * Capitalized tokens that are read as LETTERS despite carrying a vowel — the
- * same list narrator's packer keeps (`paragraph_packer.CAPS_ACRONYMS`), for the
- * same reason: stated rather than dictionary-backed, extended when a text
- * teaches us one. A miss reads "USA" as a word, which is a defect to fix HERE.
+ * `lettered` half of THE ONE acronym list (python/narrator/text/
+ * caps_acronyms.json), which narrator's caps fold reads too. It was a second
+ * copy for one day (2026-09-06) and diverged that day. A miss reads "USA" as a
+ * word: fix it in the JSON, and both readers move together.
  */
-export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set([
-  'USA', 'UK', 'EU', 'UN', 'US', 'CIA', 'DNA', 'RNA', 'TV', 'DVD', 'CD', 'PC',
-  'AI', 'IQ', 'UFO', 'FAQ', 'AM', 'PM', 'AD', 'BC', 'BCE', 'CE',
-  'IBM', 'CEO', 'CFO', 'MBA', 'PHD', 'ESPN', 'NBA', 'NFL', 'MLB', 'NCAA', 'ROTC',
-  'IRS', 'ATM', 'GPS', 'HIV', 'EPA', 'FDA', 'NRA', 'ACLU', 'PTA', 'GPA',
-  'OK', 'USSR', 'UAE', 'RSVP', 'ASAP', 'DIY', 'IOU', 'UPS', 'AOL', 'ABC',
-  'FBI', 'KGB', 'CBI', 'NYPD', 'LAPD', 'NYC', 'CID', 'ID', 'IT',
-  'NBC', 'CBS', 'BBC', 'PBS', 'HBO', 'MTV', 'CNN', 'ESP', 'ER', 'ICU', 'EMT',
-  'GOP', 'DNC', 'RNC', 'DOJ', 'DOD', 'DHS', 'ICE', 'SCOTUS', 'POTUS', 'AOC', 'DEI',
-]);
+export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set(capsAcronyms.lettered);
 
 /** Capitalized tokens with their own spoken reading, neither letters nor a word. */
 const READ_AS: ReadonlyMap<string, string> = new Map([

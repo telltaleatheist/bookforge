@@ -253,8 +253,11 @@ export function abbreviationContextRefusal(
  * change nobody asked for in the direction the prompt forbids.
  */
 export const SPOKEN_AS_WORD: ReadonlySet<string> = new Set([
-  'nasa', 'nato', 'unesco', 'unicef', 'opec', 'aids', 'laser', 'radar', 'scuba', 'nafta',
-  'ascii', 'gestapo', 'gulag', 'interpol', 'covid',
+  // From THE ONE acronym list (python/narrator/text/caps_acronyms.json,
+  // `spokenAsWord`), lower-cased for this table's callers; narrator's caps fold
+  // reads the same entries. Extend the JSON, not this line.
+  ...(require('../python/narrator/text/caps_acronyms.json') as { spokenAsWord: string[] })
+    .spokenAsWord.map((w) => w.toLowerCase()),
 ]);
 
 /**

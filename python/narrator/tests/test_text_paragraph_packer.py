@@ -622,6 +622,17 @@ class CapsFoldTest(unittest.TestCase):
     to Title Case before TTS; guard acronyms. Measured: `DOES GOD HOLD ...`
     read "dues" then stalled."""
 
+    def test_the_acronym_list_is_the_shared_json(self):
+        """ONE list for narrator's fold and Listen's acronym reading."""
+        import json
+        with open(pp.CAPS_ACRONYMS_PATH, encoding='utf-8') as handle:
+            doc = json.load(handle)
+        self.assertEqual(pp.CAPS_ACRONYMS, frozenset(doc['lettered']) | frozenset(doc['spokenAsWord']))
+        self.assertIn('FBI', pp.CAPS_ACRONYMS)
+        self.assertIn('SCOTUS', pp.CAPS_ACRONYMS, "Listen's additions reach narrator")
+        self.assertIn('NASA', pp.CAPS_ACRONYMS)
+        self.assertEqual(pp.fold_caps_run('THE SCOTUS RULING'), 'The SCOTUS Ruling')
+
     def test_a_whole_caps_heading_folds_to_title_case(self):
         self.assertEqual(
             pp.fold_caps_run('DOES GOD HOLD CHILDREN ACCOUNTABLE FOR THEIR PARENTS ACTIONS?'),

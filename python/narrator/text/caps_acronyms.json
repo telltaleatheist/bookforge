@@ -1,0 +1,17 @@
+{
+  "_comment": "THE ONE ACRONYM LIST, read by THREE code paths so they can never drift (2026-09-06, after narrator's CAPS_ACRONYMS and Listen's LETTERED_ACRONYMS were found diverging the day they were both written). `lettered` = capitalised tokens read as LETTERS despite carrying a vowel (FBI, USA, DNA): narrator's caps fold keeps them as printed inside an all-caps run; Listen's acronym reading SPELLS them (F B I). `spokenAsWord` = acronyms pronounced as a word (NASA, NATO, COVID): narrator keeps them as printed; Listen leaves them alone (never spelled). A vowelless token needs no entry - both readers treat it as letters by rule. Extend when a text teaches us one: a miss reads 'Usa' as a word in a book, or spells 'N A S A' on Listen. Lives under python/narrator/text so narrator can load it standalone; electron imports it relatively (resolveJsonModule) and tsc emits it into dist.",
+  "lettered": [
+    "USA", "UK", "EU", "UN", "US", "CIA", "DNA", "RNA", "TV", "DVD", "CD", "PC",
+    "AI", "IQ", "UFO", "FAQ", "AM", "PM", "AD", "BC", "BCE", "CE",
+    "IBM", "CEO", "CFO", "MBA", "PHD", "ESPN", "NBA", "NFL", "MLB", "NCAA", "ROTC",
+    "IRS", "ATM", "GPS", "HIV", "EPA", "FDA", "NRA", "ACLU", "PTA", "GPA",
+    "OK", "USSR", "UAE", "RSVP", "ASAP", "DIY", "IOU", "UPS", "AOL", "ABC",
+    "FBI", "KGB", "CBI", "NYPD", "LAPD", "NYC", "MI5", "MI6", "CID", "ID", "IT",
+    "NBC", "CBS", "BBC", "PBS", "HBO", "MTV", "CNN", "ESP", "ER", "ICU", "EMT",
+    "GOP", "DNC", "RNC", "DOJ", "DOD", "DHS", "ICE", "SCOTUS", "POTUS", "AOC", "DEI"
+  ],
+  "spokenAsWord": [
+    "NASA", "NATO", "UNESCO", "UNICEF", "OPEC", "AIDS", "LASER", "RADAR", "SCUBA", "NAFTA",
+    "ASCII", "GESTAPO", "GULAG", "INTERPOL", "COVID"
+  ]
+}

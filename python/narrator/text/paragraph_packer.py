@@ -277,18 +277,33 @@ def strip_unspoken_glyphs(text: str) -> str:
 #     read as letters (USA, CIA, DNA, TV ...).
 # Anything else in a caps run is a WORD ("GOD", "THE", "PARENTS") and folds.
 
-#: Caps words that are read as letters despite carrying a vowel. Extend when a
-#: book teaches us one; a miss reads "Usa" as a word, which is a defect to fix
-#: here and not a reason to stop folding "PARENTS".
-CAPS_ACRONYMS = frozenset((
-    'USA', 'UK', 'EU', 'UN', 'US', 'CIA', 'DNA', 'RNA', 'TV', 'DVD', 'CD', 'PC',
-    'AI', 'IQ', 'UFO', 'NASA', 'NATO', 'FAQ', 'AM', 'PM', 'AD', 'BC', 'BCE', 'CE',
-    'IBM', 'CEO', 'CFO', 'MBA', 'PHD', 'ESPN', 'NBA', 'NFL', 'MLB', 'NCAA', 'ROTC',
-    'IRS', 'ATM', 'GPS', 'HIV', 'AIDS', 'EPA', 'FDA', 'NRA', 'ACLU', 'PTA', 'GPA',
-    'OK', 'USSR', 'UAE', 'OPEC', 'RSVP', 'ASAP', 'DIY', 'IOU', 'UPS', 'AOL', 'ABC',
-    'FBI', 'KGB', 'CBI', 'NYPD', 'LAPD', 'NYC', 'MI5', 'MI6', 'CID', 'ID', 'IT',
-    'NBC', 'CBS', 'BBC', 'PBS', 'HBO', 'MTV', 'CNN', 'ESP', 'ER', 'ICU', 'EMT',
-))
+#: Caps tokens that are acronyms despite carrying a vowel - kept as printed
+#: inside a caps run. ONE LIST, `caps_acronyms.json` beside this module, read
+#: by this fold, by Listen's acronym reading (electron/listen-text.ts, which
+#: SPELLS the `lettered` ones) and by Listen's spoken-forms table; it was two
+#: lists for one day (2026-09-06) and they diverged that day. Both categories
+#: are acronyms to THIS rule: a lettered one (FBI) and a word-like one (NASA)
+#: are both kept as printed. Extend the JSON when a book teaches us one.
+CAPS_ACRONYMS_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                  'caps_acronyms.json')
+
+
+def _load_caps_acronyms(path: str = CAPS_ACRONYMS_PATH) -> frozenset:
+    import json
+    with open(path, 'r', encoding='utf-8') as handle:
+        document = json.load(handle)
+    for key in ('lettered', 'spokenAsWord'):
+        rows = document.get(key)
+        if not isinstance(rows, list) or not rows or not all(
+                isinstance(r, str) and r and r == r.upper() for r in rows):
+            raise ValueError(
+                f'{path}: "{key}" must be a non-empty list of upper-case tokens; '
+                'this is the one acronym list three code paths read, and a '
+                'malformed entry would silently change what a caps run folds to.')
+    return frozenset(document['lettered']) | frozenset(document['spokenAsWord'])
+
+
+CAPS_ACRONYMS = _load_caps_acronyms()
 
 _CAPS_WORD_RE = re.compile(r'\p{Lu}')
 _VOWEL_RE = re.compile(r'[AEIOUY]')

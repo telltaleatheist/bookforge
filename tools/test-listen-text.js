@@ -12,6 +12,18 @@ const assert = require('assert');
 const path = require('path');
 const DIST = path.join(__dirname, '..', 'dist', 'electron');
 const { speakableListenText, spellAcronyms, acronymReading, foldCapsRun } = require(path.join(DIST, 'listen-text.js'));
+const { LETTERED_ACRONYMS } = require(path.join(DIST, 'listen-text.js'));
+const { SPOKEN_AS_WORD } = require(path.join(DIST, 'tts-spoken-forms.js'));
+const fs = require('fs');
+{
+  // THE ONE ACRONYM LIST: both Listen sets are exactly the JSON narrator reads.
+  const json = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'python', 'narrator', 'text', 'caps_acronyms.json'), 'utf-8'));
+  assert.deepStrictEqual([...LETTERED_ACRONYMS].sort(), [...json.lettered].sort(), 'LETTERED_ACRONYMS drifted from caps_acronyms.json');
+  for (const w of json.spokenAsWord) assert.ok(SPOKEN_AS_WORD.has(w.toLowerCase()), `${w} missing from SPOKEN_AS_WORD`);
+  assert.strictEqual(acronymReading('SCOTUS'), 'S C O T U S');
+  assert.strictEqual(acronymReading('COVID'), null);
+  console.log('  ok    the acronym sets are the shared JSON');
+}
 const { isFootnoteMarkerSupText } = require(path.join(__dirname, '..', 'dist', 'shared', 'text', 'sup-markers.js'));
 
 let failed = 0;
