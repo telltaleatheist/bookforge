@@ -145,6 +145,10 @@ roster, and a voice not in it is refused by name.
         "darwin": "runtime/higgs-models/<dir>"              // relative to userData
       }
     },
+    "source": { "type": "hf", "ref": "owenmorgan/deathstalker-higgs-v3" },
+                                  // checkpoint voices only: the PRIVATE HF repo
+                                  // Settings -> Higgs downloads into THIS arm's
+                                  // voice.checkpoint path (higgs-hf-install.ts)
     "license": "boson-higgs-tts-3-research-noncommercial",
     "commercialUse": false,
     "sampleRate": 24000,
@@ -220,6 +224,39 @@ identity to the plain-trained fine-tune: ECAPA 0.86 with and without, field note
   ::ClipsVoiceReferenceTest`.
 - **Expect** the fine-tunes' ~1-in-10 retake rate or worse (stochastic run-ons
   and early stops); chunk-to-chunk identity drift is UNMEASURED for zero-shot.
+
+### Mirrored from HuggingFace — `source` and the Settings download (2026-09-06)
+
+Owen: *"send the deathstalker model to huggingface as well, and make it
+downloadable in the setup/settings page of bookforge, mirrored from
+huggingface."* The merged checkpoint `ds_ad4lm_prod_ckpt1080` is at
+**`owenmorgan/deathstalker-higgs-v3`**, a PRIVATE repo like the Orpheus voice
+repos (read with the token `getHfToken()` resolves). It carries the weights,
+config, tokenizer, chat template, `generation_config.json`, `merge_manifest.json`,
+Boson's `LICENSE`, and — because the licence requires them of any distributed
+derivative (§IV(a)) — a `NOTICE` with the attribution line and a model card
+stating "Derived from Higgs TTS 3, licensed from Boson AI USA, Inc." Research and
+non-commercial use only; flipping the repo public is Owen's call and needs
+nothing else added.
+
+- The catalog names the repo in `source: {type: "hf", ref}` on the checkpoint
+  voice; `refuseMalformedSource` refuses a half-written one or a source on a
+  non-checkpoint kind.
+- **Settings → Higgs** shows, per fine-tune, whether its directory is staged on
+  THIS arm (`higgs:checkpoint-status` — the guest's disk on Windows, asked once
+  per page load) and a **Download from HuggingFace** button
+  (`higgs:install-checkpoint` → `installHiggsCheckpoint`). Windows downloads
+  inside WSL in the `higgs3` env into the catalog's `wsl` path (ext4, where the
+  launcher looks); the Mac downloads natively with narrator's interpreter into
+  the `darwin` path under userData. Progress streams on the env installer's
+  channel.
+- `electron/scripts/higgs/higgs_download.py` validates the copy — config,
+  weights, tokenizer files, chat template and **`generation_config.json`** with
+  usable sampling — and DELETES an incomplete download rather than leave one for
+  the picker to report as staged.
+- The certificate travels with the bytes: the repo holds the ckpt-1080 merge
+  the caps were certified for. Re-uploading a different merge under this ref
+  without re-certifying would make the catalog's caps a lie.
 
 ### One checkpoint per ARM, and one certificate per BACKEND
 

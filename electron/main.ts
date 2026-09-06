@@ -8125,6 +8125,39 @@ function setupIpcHandlers(): void {
 
   // The full Higgs catalog entries, for the Settings → Higgs voices panel (the
   // narration picker only needs value/label, above).
+  ipcMain.handle('higgs:checkpoint-status', async (_event, id: string) => {
+    try {
+      const { higgsCheckpointStatus } = await import('./higgs-hf-install.js');
+      return { success: true, data: await higgsCheckpointStatus(id) };
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
+  /**
+   * Download a Higgs checkpoint voice from its catalog `source` into this arm's
+   * directory. ~8.5 GB, so it starts because a person pressed Download and it
+   * streams the downloader's progress on the same channel the env installer
+   * uses (the panel already listens there).
+   */
+  ipcMain.handle('higgs:install-checkpoint', async (event, id: string) => {
+    try {
+      const { installHiggsCheckpoint } = await import('./higgs-hf-install.js');
+      const result = await installHiggsCheckpoint(id, (text) => {
+        if (!event.sender.isDestroyed()) event.sender.send('higgs:install-progress', text);
+      });
+      if (result.success) {
+        // The narration picker and the Listen voice list read the disk now
+        // (refuseAbsentArtifact), so a fresh install shows up on their next read
+        // without a restart — nothing cached to invalidate.
+        event.sender.send('higgs:install-progress', `\nInstalled ${id} at ${result.dest}\n`);
+      }
+      return result;
+    } catch (err) {
+      return { success: false, error: (err as Error).message };
+    }
+  });
+
   ipcMain.handle('higgs:list-catalog', async () => {
     try {
       const { listHiggsModels } = await import('./higgs-models.js');

@@ -2346,6 +2346,30 @@ check('a darwin checkpoint the catalog names but the disk lacks is offered DISAB
   }
 });
 
+check('the deathstalker fine-tune names its HuggingFace source, and a malformed source is refused', () => {
+  // Owen, 2026-09-06: "send the deathstalker model to huggingface ... make it
+  // downloadable in the setup/settings page ... mirrored from huggingface".
+  // The catalog names the repo; Settings → Higgs downloads it into THIS arm's
+  // voice.checkpoint path (electron/higgs-hf-install.ts + scripts/higgs/higgs_download.py).
+  const ds = higgs.listHiggsModels().find((m) => m.id === 'deathstalker');
+  assert.deepStrictEqual(ds.source, { type: 'hf', ref: 'owenmorgan/deathstalker-higgs-v3' });
+  assert.ok(fs.existsSync(path.join(REPO, 'electron', 'scripts', 'higgs', 'higgs_download.py')),
+    'the downloader script is missing from electron/scripts/higgs');
+  for (const [why, source] of [
+    ['blank ref', { type: 'hf', ref: '' }],
+    ['not a user/repo', { type: 'hf', ref: 'deathstalker-higgs-v3' }],
+    ['unknown type', { type: 'url', ref: 'owenmorgan/x' }],
+  ]) {
+    const m = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+      backends: { served: { maxChars: 600, maxCharsSource: 'catalog' } }, source });
+    assert.match(higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA) || '', /malformed source/,
+      `a source with ${why} was accepted`);
+  }
+  // Only a merged checkpoint is downloaded: the base ships with the env, a clip lives in refs/.
+  const clone = probeVoice({ kind: 'default', source: { type: 'hf', ref: 'owenmorgan/x' } });
+  assert.match(higgs.higgsVoiceUnavailableReason(clone, PICKER_USER_DATA) || '', /names a download source/);
+});
+
 check('the certified voice is offered SELECTABLE, with no warning attached', () => {
   // Finding 11 was the opposite state: a pending voice offered label-only and
   // fully selectable, so it queued a run that died at preflight. Now that

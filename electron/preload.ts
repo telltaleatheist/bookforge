@@ -845,6 +845,8 @@ export interface HiggsModelDto {
     mlx?: HiggsBackendCapsDto;
   };
   _pendingNote?: string;
+  /** The HF repo a checkpoint voice can be downloaded from, when the catalog names one. */
+  source?: { type: 'hf'; ref: string };
   note?: string;
 }
 
@@ -1251,7 +1253,19 @@ export interface ElectronAPI {
      *  Long-running; output arrives on `onInstallProgress`. */
     installEnv: (opts?: { check?: boolean }) =>
       Promise<{ success: boolean; code?: number; output?: string; error?: string }>;
-    /** Live installer output. Returns its own unsubscribe. */
+    /** Is a checkpoint voice's directory staged on THIS arm (the guest's disk on
+     *  Windows)? Settings → Higgs asks once per page load. */
+    checkpointStatus: (id: string) => Promise<{
+      success: boolean;
+      data?: { id: string; arm: 'wsl' | 'darwin' | null; dir: string | null;
+               staged: boolean; source: string | null; reason: string | null };
+      error?: string;
+    }>;
+    /** Download a checkpoint voice from its catalog `source` (a private HF repo)
+     *  into this arm's directory. ~8.5 GB; progress on `onInstallProgress`. */
+    installCheckpoint: (id: string) =>
+      Promise<{ success: boolean; dest?: string; bytes?: number; error?: string }>;
+    /** Live installer/downloader output. Returns its own unsubscribe. */
     onInstallProgress: (cb: (text: string) => void) => () => void;
   };
   orpheusModels: {
@@ -2649,6 +2663,13 @@ const electronAPI: ElectronAPI = {
       ipcRenderer.invoke('higgs:doctor'),
     installEnv: (opts?: { check?: boolean }) =>
       ipcRenderer.invoke('higgs:install-env', opts),
+    /** Is this checkpoint voice's directory staged on THIS arm? (asks the guest on WSL) */
+    checkpointStatus: (id: string) =>
+      ipcRenderer.invoke('higgs:checkpoint-status', id),
+    /** Download a checkpoint voice from its catalog `source` into this arm's directory.
+     *  Progress streams on the same 'higgs:install-progress' channel the env installer uses. */
+    installCheckpoint: (id: string) =>
+      ipcRenderer.invoke('higgs:install-checkpoint', id),
     onInstallProgress: (cb: (text: string) => void) => {
       const listener = (_e: unknown, text: string) => cb(text);
       ipcRenderer.on('higgs:install-progress', listener);

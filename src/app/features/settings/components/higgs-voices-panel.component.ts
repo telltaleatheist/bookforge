@@ -4,6 +4,16 @@ import {
 import { CommonModule } from '@angular/common';
 import { DesktopButtonComponent } from '../../../creamsicle-desktop';
 
+/** Mirrors electron/higgs-hf-install's HiggsCheckpointStatus. */
+interface HiggsCheckpointStatus {
+  id: string;
+  arm: 'wsl' | 'darwin' | null;
+  dir: string | null;
+  staged: boolean;
+  source: string | null;
+  reason: string | null;
+}
+
 /** One check from the Higgs doctor. Mirrors preload's HiggsDoctorResult rows. */
 interface HiggsCheck {
   id:
@@ -192,6 +202,38 @@ interface HiggsCatalogVoice {
             </div>
             @if (v._pendingNote) { <p class="voice-note pending-note">{{ v._pendingNote }}</p> }
             @else if (v.note) { <p class="voice-note">{{ v.note }}</p> }
+            <!--
+              THE DOWNLOAD DOOR, for a fine-tune the catalog names a source for.
+              The status is THIS ARM's disk (the guest's, on Windows), asked
+              once per page load; the button downloads into this arm's own
+              directory and streams the downloader's progress into the log
+              above. ~8.5 GB, so it never starts on its own.
+            -->
+            @if (v.kind === 'checkpoint') {
+              @if (status()[v.id]; as st) {
+                <div class="voice-install">
+                  @if (st.staged) {
+                    <span class="voice-badge installed">installed on this machine</span>
+                    <span class="voice-dir">{{ st.dir }}</span>
+                  } @else if (st.reason) {
+                    <span class="voice-badge">not on this machine</span>
+                    <span class="voice-dir">{{ st.reason }}</span>
+                  } @else {
+                    <span class="voice-badge">not on this machine</span>
+                    <span class="voice-dir">{{ st.dir }}</span>
+                  }
+                  @if (st.source) {
+                    <desktop-button size="sm" [variant]="st.staged ? 'secondary' : 'primary'"
+                                    [disabled]="busy()" (clicked)="installCheckpoint(v.id)">
+                      {{ downloading() === v.id ? 'Downloading…' : (st.staged ? 'Re-download' : 'Download from HuggingFace') }}
+                    </desktop-button>
+                    <span class="voice-source">{{ st.source }}</span>
+                  }
+                </div>
+              } @else {
+                <p class="muted">Checking this machine…</p>
+              }
+            }
           </div>
         }
         @if (voices().length === 0 && !voicesError()) {
@@ -249,6 +291,12 @@ interface HiggsCatalogVoice {
     .env-prefix { font-size: 0.6875rem; color: var(--text-tertiary); margin: 0.25rem 0 0; font-family: monospace; }
     .muted { font-size: 0.75rem; color: var(--text-tertiary); margin: 0; }
 
+    .voice-install {
+      display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem;
+      margin-top: 0.375rem; font-size: 0.75rem; color: var(--text-secondary);
+    }
+    .voice-badge.installed { background: var(--success-bg, var(--bg-sunken)); color: var(--success, inherit); }
+    .voice-dir, .voice-source { font-family: var(--font-mono); font-size: 0.6875rem; word-break: break-all; }
     .install-log {
       max-height: 14rem;
       overflow: auto;
@@ -299,8 +347,12 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   readonly checking = signal(false);
   readonly installing = signal(false);
   readonly log = signal<string | null>(null);
+  /** Per checkpoint voice: is it on THIS arm, where, and from which repo. */
+  readonly status = signal<Record<string, HiggsCheckpointStatus>>({});
+  /** The voice id a checkpoint download is running for, or null. */
+  readonly downloading = signal<string | null>(null);
 
-  readonly busy = computed(() => this.checking() || this.installing());
+  readonly busy = computed(() => this.checking() || this.installing() || this.downloading() !== null);
 
   /**
    * WHICH ARM THIS MACHINE IS — from the host, not from the doctor's reply.
@@ -369,9 +421,45 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
       const res = await api.listCatalog();
       if (!res?.success) throw new Error(res?.error || 'The catalog returned no result.');
       this.voices.set(res.data as HiggsCatalogVoice[]);
+      await this.refreshStatus();
     } catch (err) {
       this.voices.set([]);
       this.voicesError.set(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  /** Ask this arm's disk (the guest's, on Windows) about every checkpoint voice. */
+  private async refreshStatus(): Promise<void> {
+    const api = (window as any).electron?.higgsModels;
+    if (!api?.checkpointStatus) return;
+    const next: Record<string, HiggsCheckpointStatus> = {};
+    for (const v of this.voices()) {
+      if (v.kind !== 'checkpoint') continue;
+      const res = await api.checkpointStatus(v.id);
+      next[v.id] = res?.success
+        ? (res.data as HiggsCheckpointStatus)
+        : { id: v.id, arm: null, dir: null, staged: false, source: null,
+            reason: res?.error || 'the status check returned no result' };
+    }
+    this.status.set(next);
+  }
+
+  /**
+   * Download a checkpoint voice into this arm's directory. Manual, with a fresh
+   * log — it is ~8.5 GB and it overwrites the voice's directory on completion.
+   */
+  async installCheckpoint(id: string): Promise<void> {
+    this.downloading.set(id);
+    this.log.set('');
+    try {
+      const api = (window as any).electron?.higgsModels;
+      const res = await api.installCheckpoint(id);
+      if (!res?.success) {
+        this.log.set((this.log() ?? '') + `\n[failed] ${res?.error || 'no result'}\n`);
+      }
+    } finally {
+      this.downloading.set(null);
+      await this.refreshStatus();
     }
   }
 
@@ -400,15 +488,15 @@ export class HiggsVoicesPanelComponent implements OnInit, OnDestroy {
   }
 
   kindLabel(v: HiggsCatalogVoice): string {
-    // 'clips' is labelled as the diagnostic it is: the panel LISTS every catalog
-    // entry (it is the page you go to to find out what exists), while the
-    // narration dropdown offers only fine-tunes and the served default.
+    // A 'clips' voice is a zero-shot clone: the base weights plus one
+    // reference clip from the models area. Offered in the narration dropdown
+    // since 2026-09-06 (labelled "Zero-shot" there too).
     if (v.kind === 'checkpoint') return 'fine-tune (merged checkpoint)';
     if (v.kind === 'default') return "the model's own voice (no reference)";
     const secs = v.voice.clips?.[0]?.seconds;
     return secs === undefined
-      ? 'zero-shot clone · diagnostic only'
-      : `zero-shot clone · ${secs.toFixed(1)} s reference · diagnostic only`;
+      ? 'zero-shot clone (base weights + reference clip)'
+      : `zero-shot clone · ${secs.toFixed(1)} s reference on the base weights`;
   }
 
   /**

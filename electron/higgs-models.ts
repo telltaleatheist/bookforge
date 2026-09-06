@@ -657,6 +657,20 @@ export interface HiggsModel {
   note?: string;
   /** A model may declare its own serving block, used INSTEAD of the shared one. */
   serving?: HiggsServingSpec;
+  /**
+   * WHERE A MACHINE CAN DOWNLOAD A `checkpoint` VOICE FROM — a HuggingFace repo,
+   * private under Owen's account like the Orpheus voice repos. Settings → Higgs
+   * offers a Download for every checkpoint voice that names one, into THIS
+   * ARM's `voice.checkpoint` path (`higgs-hf-install.ts`). Absent = the
+   * artifact is staged by hand, and the panel says so.
+   */
+  source?: HiggsSource;
+}
+
+export interface HiggsSource {
+  type: 'hf';
+  /** `<user>/<repo>` on huggingface.co. */
+  ref: string;
 }
 
 interface HiggsCatalog {
@@ -929,6 +943,7 @@ function refuseUnstagedCheckpoint(model: HiggsModel): void {
  * the wire format.
  */
 function refuseMalformedVoice(model: HiggsModel): void {
+  refuseMalformedSource(model);
   const { clips, checkpoint } = model.voice;
   const has = (n: number | undefined) => n !== undefined && n > 0;
   const staged = Object.entries(checkpoint ?? {}).filter(([, p]) => (p || '').trim());
@@ -991,6 +1006,30 @@ function refuseMalformedVoice(model: HiggsModel): void {
     );
   }
   for (const clip of clips ?? []) refuseMisshapedClipPath(model, clip);
+}
+
+/**
+ * A `source` is well-formed or absent — never half-written. Checked with the
+ * shape because a source with a blank ref is a Download button that fails
+ * after the token prompt rather than a catalog that fails to load.
+ */
+function refuseMalformedSource(model: HiggsModel): void {
+  const source = model.source;
+  if (source === undefined) return;
+  if (!source || typeof source !== 'object' || source.type !== 'hf'
+      || typeof source.ref !== 'string' || !/^[\w.-]+\/[\w.-]+$/.test(source.ref.trim())) {
+    throw new Error(
+      `Higgs voice "${model.id}" has a malformed source ${JSON.stringify(source)}. The shape is ` +
+        '{type: "hf", ref: "<user>/<repo>"}.',
+    );
+  }
+  if (model.kind !== 'checkpoint') {
+    throw new Error(
+      `Higgs voice "${model.id}" is kind '${model.kind}' and names a download source. Only a ` +
+        'merged checkpoint is downloaded; the base weights ship with the environment and a ' +
+        'reference clip lives in the models area.',
+    );
+  }
 }
 
 /**
