@@ -8117,7 +8117,7 @@ function setupIpcHandlers(): void {
   ipcMain.handle('higgs:list-models', async () => {
     try {
       const { higgsNarrationVoices } = await import('./higgs-models.js');
-      return { success: true, data: higgsNarrationVoices() };
+      return { success: true, data: higgsNarrationVoices(app.getPath('userData')) };
     } catch (err) {
       return { success: false, error: (err as Error).message };
     }

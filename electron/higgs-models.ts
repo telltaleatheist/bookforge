@@ -212,7 +212,8 @@ export interface HiggsReferenceClip {
    * time, before any server is started, naming the folder to copy into. (The
    * picker checks the SHAPE only, the same as it does for a darwin checkpoint:
    * the catalog module imports no Electron and does not know where userData
-   * is.) An ABSOLUTE path is written through as given and narrator's own
+   * is — except through `refuseAbsentArtifact`, which the app calls WITH it.)
+   * An ABSOLUTE path is written through as given and narrator's own
    * `load_voices` is what refuses a missing one (`os.path.isfile` on every
    * clip, at engine load, before any server is launched) — the host has
    * nothing to add to that refusal but a second copy of it.
@@ -759,7 +760,7 @@ function thisMachineArm(): HiggsCheckpointArm {
  * exactly how a dropdown ends up offering a voice the run then refuses (which is
  * what `_pendingNote` was already guarding against, one reason at a time).
  */
-export function higgsVoiceUnavailableReason(model: HiggsModel): string | null {
+export function higgsVoiceUnavailableReason(model: HiggsModel, userDataDir: string): string | null {
   if (model._pendingNote) return model._pendingNote;
   try {
     refuseRetiredCheckpointDir(model);
@@ -769,9 +770,53 @@ export function higgsVoiceUnavailableReason(model: HiggsModel): string | null {
     refuseUnstagedCheckpoint(model);
     refuseUnmeasuredAdapter(model, arm);
     refuseOversizedReference(model, arm);
+    refuseAbsentArtifact(model, arm, userDataDir);
     return null;
   } catch (err) {
     return err instanceof Error ? err.message : String(err);
+  }
+}
+
+/**
+ * THE ARTIFACT MUST BE ON THE DISK, not just in the catalog. Found on the Mac,
+ * 2026-09-06: the mistborn fine-tune names a darwin checkpoint the copy of
+ * which had not landed, and the picker offered it as available — every check
+ * above asks what the catalog SAYS, and none asked whether the directory is
+ * there. The row was selectable and the render died at document write, which
+ * is exactly the "offered then refused" pair the picker exists to prevent.
+ *
+ * WHAT THIS CAN SEE. The host's own filesystem: a darwin checkpoint under
+ * userData, and a models-area clip (`higgsRefsDir`) on either arm. A WSL
+ * checkpoint lives in the guest's ext4, which the host cannot stat without a
+ * `wsl.exe` round trip — a picker is not the place for one, so that arm's
+ * existence is the doctor's question and narrator's refusal at launch. Stated
+ * rather than approximated.
+ */
+function refuseAbsentArtifact(
+  model: HiggsModel,
+  arm: HiggsCheckpointArm,
+  userDataDir: string,
+): void {
+  if (!userDataDir || !userDataDir.trim()) {
+    throw new Error(
+      `Higgs voice "${model.id}": the picker was asked whether this voice is on this machine ` +
+        "with no userData directory. Pass app.getPath('userData') — the darwin checkpoints " +
+        'and the reference clips are resolved under it, and without it nothing can be checked.',
+    );
+  }
+  if (model.kind === 'clips') {
+    refuseMissingReferenceClip(model, userDataDir);
+    return;
+  }
+  if (model.kind === 'checkpoint' && arm === 'darwin') {
+    const dir = higgsCheckpointDirFor(model, arm, userDataDir);
+    if (!fs.existsSync(dir)) {
+      throw new Error(
+        `Higgs voice "${model.id}" is staged for the Mac at ${dir} in the catalog, but that ` +
+          'directory is not there — the copy of the merged checkpoint has not landed on this ' +
+          'machine. Offering it would start a render that dies at the voice document.',
+      );
+    }
   }
 }
 
@@ -785,8 +830,8 @@ export function higgsVoiceUnavailableReason(model: HiggsModel): string | null {
  * and offering it there would serve the model's own speaker, 12 % of the
  * narrator's ECAPA ceiling.
  */
-export function listRenderableHiggsModels(): HiggsModel[] {
-  return listHiggsModels().filter((m) => higgsVoiceUnavailableReason(m) === null);
+export function listRenderableHiggsModels(userDataDir: string): HiggsModel[] {
+  return listHiggsModels().filter((m) => higgsVoiceUnavailableReason(m, userDataDir) === null);
 }
 
 /** True when this id names a catalog voice at all (pending included). */
@@ -1878,7 +1923,7 @@ export function higgsSpawnEnv(
  * Mirrors `mergeOrpheusVoices`' output shape so the modal's dropdown code is the
  * same for both engines.
  */
-export function higgsNarrationVoices(): {
+export function higgsNarrationVoices(userDataDir: string): {
   value: string; label: string; unavailable?: string;
 }[] {
   // Every kind, since 2026-09-06 (see SELECTABLE_VOICE_KINDS for the ruling
@@ -1903,7 +1948,7 @@ export function higgsNarrationVoices(): {
       // anywhere" — wait for the training side. Anything else this returns is
       // "it exists and this MACHINE cannot render it", which since 2026-09-05
       // is most often "the merged directory is staged on the other arm".
-      const reason = higgsVoiceUnavailableReason(m);
+      const reason = higgsVoiceUnavailableReason(m, userDataDir);
       if (!reason) return { value: m.id, label: m.label };
       // The picker renders this as a DISABLED option with the reason as its
       // tooltip. It used to be label-only, which meant the one voice the catalog

@@ -116,6 +116,14 @@ function onArm(arm, fn) {
 const WSL_DOC = { arm: 'wsl' };
 const MAC_USER_DATA = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-userdata-'));
 const MAC_DOC = { arm: 'darwin', userDataDir: MAC_USER_DATA };
+
+// THE PICKER'S userData. `higgsVoiceUnavailableReason` and the two lists over it
+// check the DISK for what the host owns the location of — darwin checkpoints
+// under userData, models-area clips on either arm — so the keeper stages an
+// empty stand-in for everything the shipped catalog names there. A test that
+// wants "not landed" uses its own bare directory.
+const PICKER_USER_DATA = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-picker-userdata-'));
+process.on('exit', () => { try { fs.rmSync(PICKER_USER_DATA, { recursive: true, force: true }); } catch {} });
 process.on('exit', () => {
   try { fs.rmSync(MAC_USER_DATA, { recursive: true, force: true }); } catch {}
 });
@@ -235,6 +243,19 @@ check('an unknown engine THROWS rather than defaulting into another list', () =>
 // 3. The Higgs catalog loader
 // ─────────────────────────────────────────────────────────────────────────────
 const higgs = require(path.join(DIST, 'higgs-models.js'));
+(function stagePickerUserData() {
+  for (const m of higgs.listHiggsModels()) {
+    const darwin = (m.voice.checkpoint && m.voice.checkpoint.darwin || '').trim();
+    if (darwin) fs.mkdirSync(path.join(PICKER_USER_DATA, ...darwin.split(/[\\/]/)), { recursive: true });
+    for (const c of (m.voice.clips || [])) {
+      if (!path.isAbsolute(c.path)) {
+        const refs = higgs.higgsRefsDir(PICKER_USER_DATA);
+        fs.mkdirSync(refs, { recursive: true });
+        fs.writeFileSync(path.join(refs, c.path), '');
+      }
+    }
+  }
+})();
 
 console.log('higgs catalog');
 
@@ -495,8 +516,8 @@ check('the pending rule still holds over whatever the catalog ships', () => {
   // voice ships pending today (deathstalker was promoted 2026-09-05), so this
   // asserts the RULE over every row rather than over one row that happens to be
   // in one of the two states.
-  const renderable = new Set(higgs.listRenderableHiggsModels().map((m) => m.id));
-  const offered = new Map(higgs.higgsNarrationVoices().map((v) => [v.value, v]));
+  const renderable = new Set(higgs.listRenderableHiggsModels(PICKER_USER_DATA).map((m) => m.id));
+  const offered = new Map(higgs.higgsNarrationVoices(PICKER_USER_DATA).map((v) => [v.value, v]));
   for (const m of higgs.listHiggsModels()) {
     if (m._pendingNote) {
       assert.ok(!renderable.has(m.id), `${m.id} is pending but in the renderable set`);
@@ -823,8 +844,8 @@ check('the PICKER and Listen show a checkpoint voice only on an arm that has it'
   // both, so it is offered-and-disabled either way — which is the honest pair.
   for (const arm of ['wsl', 'darwin']) {
     onArm(arm, () => {
-      const offered = new Map(higgs.higgsNarrationVoices().map((v) => [v.value, v]));
-      const renderable = new Set(higgs.listRenderableHiggsModels().map((m) => m.id));
+      const offered = new Map(higgs.higgsNarrationVoices(PICKER_USER_DATA).map((v) => [v.value, v]));
+      const renderable = new Set(higgs.listRenderableHiggsModels(PICKER_USER_DATA).map((m) => m.id));
       for (const m of higgs.listHiggsModels()) {
         const row = offered.get(m.id);
         if (!row) continue;
@@ -872,16 +893,16 @@ check('a fine-tune certified on ONE arm is renderable there and greyed on the ot
   };
   withExtraVoices([wslOnly], () => {
     onArm('wsl', () => {
-      assert.ok(higgs.listRenderableHiggsModels().some((m) => m.id === 'wslonly'),
+      assert.ok(higgs.listRenderableHiggsModels(PICKER_USER_DATA).some((m) => m.id === 'wslonly'),
         'the arm that has the weights and the certificate cannot render it');
-      const row = higgs.higgsNarrationVoices().find((v) => v.value === 'wslonly');
+      const row = higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'wslonly');
       assert.ok(row && !row.unavailable, 'it is offered as unavailable on its own arm');
       assert.strictEqual(higgs.resolveHiggsModel('wslonly').id, 'wslonly');
     });
     onArm('darwin', () => {
-      assert.ok(!higgs.listRenderableHiggsModels().some((m) => m.id === 'wslonly'),
+      assert.ok(!higgs.listRenderableHiggsModels(PICKER_USER_DATA).some((m) => m.id === 'wslonly'),
         'the Mac lists a voice whose weights are in the WSL guest');
-      const row = higgs.higgsNarrationVoices().find((v) => v.value === 'wslonly');
+      const row = higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'wslonly');
       assert.ok(row, 'the voice vanished from the dropdown instead of being greyed');
       assert.match(row.label, /not on this machine/);
       assert.match(row.unavailable, /is not staged for the Mac/);
@@ -892,10 +913,10 @@ check('a fine-tune certified on ONE arm is renderable there and greyed on the ot
 
 check('the reason the picker shows is the REFUSAL, not a second description of it', () => {
   const m = stagedVoice({ wsl: '/home/telltale/higgs_v3_merged/ds' });
-  const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m));
+  const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA));
   assert.ok(reason, 'a voice with no copy on this arm was reported as available');
   assert.match(reason, /is not staged for the Mac/);
-  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m)), null,
+  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)), null,
     'the arm that has the weights was told it does not');
 });
 
@@ -956,8 +977,8 @@ check('a null MLX cap REFUSES on darwin while the served cap still loads on WSL'
   assert.match(threw.message, /does not transfer/);
 
   // And the picker agrees: offered on WSL, greyed on the Mac, same reason text.
-  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m)), null);
-  assert.match(onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m)),
+  assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)), null);
+  assert.match(onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)),
     /no MEASURED maxChars on the mlx backend/);
 
   // A MISSING mlx BLOCK is the same answer as a null one — "this backend has no
@@ -2188,7 +2209,7 @@ check('the dropdown offers every kind, and a clone SAYS it is one', () => {
   // deathstalker and mistborn fine-tunes. So `clips` IS offered, and the 09-04
   // concern is answered by the LABEL: every clone says "Zero-shot", and the
   // picker refuses a catalog whose clone does not.
-  const offered = new Map(higgs.higgsNarrationVoices().map((v) => [v.value, v]));
+  const offered = new Map(higgs.higgsNarrationVoices(PICKER_USER_DATA).map((v) => [v.value, v]));
   const byId = new Map(higgs.listHiggsModels().map((m) => [m.id, m]));
   for (const [id, row] of offered) {
     const kind = byId.get(id).kind;
@@ -2229,8 +2250,8 @@ check('the four shipped zero-shot voices: base weights + one ~15 s clip in the M
       assert.strictEqual(caps.targetChars, 600);
       assert.strictEqual(caps.referenceSecondsCap, 30);
     }
-    assert.strictEqual(higgs.higgsVoiceUnavailableReason(m), null,
-      `${id} is offered disabled: ${higgs.higgsVoiceUnavailableReason(m)}`);
+    assert.strictEqual(higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA), null,
+      `${id} is offered disabled: ${higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)}`);
   }
 });
 
@@ -2279,7 +2300,7 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
       kind: 'clips',
       voice: { clips: [{ path: bad, transcript: 'a line', seconds: 12 }] },
     });
-    assert.ok(higgs.higgsVoiceUnavailableReason(m),
+    assert.ok(higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA),
       'clip path ' + JSON.stringify(bad) + ' was accepted by the picker');
     assert.throws(() => higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA }),
       /bare file name|no path/, 'clip path ' + JSON.stringify(bad) + ' reached the document');
@@ -2295,17 +2316,47 @@ check('a relative clip with a directory in it, or an empty path, is REFUSED as m
   assert.strictEqual(doc.clips[0].path, abs);
 });
 
+check('a darwin checkpoint the catalog names but the disk lacks is offered DISABLED, naming the dir', () => {
+  // bookforge-mac-1, 2026-09-06: mistborn was offered as available on the Mac
+  // while runtime/higgs-models/mb_h2lm_prod had not landed — the picker checked
+  // that the catalog names a path and never that the directory exists.
+  const bare = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-bare-userdata-'));
+  try {
+    const m = higgs.listHiggsModels().find((v) => v.id === 'mistborn');
+    const reason = onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, bare));
+    assert.ok(reason, 'a fine-tune with no directory on this machine was reported as available');
+    assert.match(reason, /has not landed/);
+    assert.ok(reason.includes(path.join(bare, 'runtime', 'higgs-models', 'mb_h2lm_prod')),
+      'the refusal does not name the directory it looked at: ' + reason);
+    const row = onArm('darwin', () => higgs.higgsNarrationVoices(bare)).find((v) => v.value === 'mistborn');
+    assert.ok(row.unavailable, 'the dropdown row is not disabled');
+    assert.match(row.label, /not on this machine/);
+    // Staged on disk: available again, same catalog.
+    assert.strictEqual(onArm('darwin', () => higgs.higgsVoiceUnavailableReason(m, PICKER_USER_DATA)), null);
+    // The WSL arm cannot stat the guest's ext4 from here: that arm's existence is
+    // the doctor's question, and the picker says so by NOT refusing on it.
+    assert.strictEqual(onArm('wsl', () => higgs.higgsVoiceUnavailableReason(m, bare)), null);
+    // A zero-shot clip missing from the models area is the same answer.
+    const zs = higgs.listHiggsModels().find((v) => v.id === 'zeroshot-mistborn');
+    assert.match(higgs.higgsVoiceUnavailableReason(zs, bare), /runtime\/higgs-models\/refs/);
+    // And the picker refuses to answer with no userData at all, rather than guessing.
+    assert.match(higgs.higgsVoiceUnavailableReason(m, ''), /userData/);
+  } finally {
+    fs.rmSync(bare, { recursive: true, force: true });
+  }
+});
+
 check('the certified voice is offered SELECTABLE, with no warning attached', () => {
   // Finding 11 was the opposite state: a pending voice offered label-only and
   // fully selectable, so it queued a run that died at preflight. Now that
   // deathstalker renders, the row must carry no `unavailable` at all — a row
   // marked unavailable is rendered DISABLED by the picker, which would hide the
   // one production fine-tune behind a note that is no longer true.
-  const row = higgs.higgsNarrationVoices().find((v) => v.value === 'deathstalker');
+  const row = higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'deathstalker');
   assert.ok(row, 'the production fine-tune is not listed at all');
   assert.ok(!row.unavailable, 'the certified voice is still offered as unavailable');
   assert.ok(!/not installed/.test(row.label), 'the label still says not installed');
-  const ok = higgs.higgsNarrationVoices().find((v) => v.value === 'default');
+  const ok = higgs.higgsNarrationVoices(PICKER_USER_DATA).find((v) => v.value === 'default');
   assert.ok(!ok.unavailable, 'a renderable voice was marked unavailable');
 });
 

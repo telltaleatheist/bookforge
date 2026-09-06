@@ -479,7 +479,7 @@ function higgsAvailability(): EngineInfo {
 
   let voices: string[];
   try {
-    voices = listRenderableHiggsModels().map((m) => m.id);
+    voices = listRenderableHiggsModels(app.getPath('userData')).map((m) => m.id);
   } catch (err) {
     return unavailable(err instanceof Error ? err.message : 'Higgs voice catalog unreadable');
   }

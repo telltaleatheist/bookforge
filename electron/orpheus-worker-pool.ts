@@ -1889,7 +1889,7 @@ export function getAvailableVoices(): string[] {
     // user to install something they already have. `streaming-engine.ts` catches this
     // same call and surfaces the message as the engine's `reason`, which is where an
     // unreadable catalog belongs.
-    return listRenderableHiggsModels().map((m) => m.id);
+    return listRenderableHiggsModels(app.getPath('userData')).map((m) => m.id);
   }
   // Built-ins + folder-discovered custom voices (each custom id is its folder name;
   // selecting one routes through resolveOrpheusModel in loadVoice). Failures in
