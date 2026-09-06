@@ -80,7 +80,19 @@ function pruneOldSessions(projectDir, language, keepName) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const voice = args.voice;
-  if (!voice) throw new Error('--voice <id> is required (a voice in BookForge models.json)');
+  // THE VOICE IS A RENDER CHOICE. --assemble-only reads the cached sentences the
+  // render already made and resolves the engine from the session itself
+  // (reassembly-bridge.narratorEngineForSession); the wrapper refuses --voice on
+  // that door by name. Demanding it here anyway (as this adapter did until
+  // 2026-09-05) made the two doors contradict each other and left every
+  // headless assembly of a Higgs book unrunnable: "--voice is required" without
+  // it, "drop --voice" with it.
+  if (!args['assemble-only'] && !voice) {
+    throw new Error('--voice <id> is required (a voice in BookForge models.json)');
+  }
+  if (args['assemble-only'] && voice) {
+    throw new Error('--assemble-only reads the cached sentences; the voice was decided when they were rendered. Drop --voice.');
+  }
   if (!args.project) throw new Error('--project <projectDir> is required');
 
   const projectDir = path.resolve(args.project);

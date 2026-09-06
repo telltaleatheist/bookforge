@@ -434,7 +434,9 @@ def _audiobook_spawn(args, assemble_only):
         print("  env overrides:", overrides or "(none)")
         return 0
 
-    print(f"[bookforge-tts] {label}/orpheus ->", " ".join(cmd), flush=True)
+    # The adapter file is named for Orpheus, but --assemble resolves the engine
+    # from the session; naming one here (as this line did) was a false claim.
+    print(f"[bookforge-tts] {label}{'' if assemble_only else '/orpheus'} ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 
