@@ -59,7 +59,7 @@ Usage:
                      [--workers N] [--chunk-s 300] [--rough-model base]
                      [--lang en] [--tmp DIR] [--rough-cache C.json]
                      [--device cpu|mps] [--snap-silence-s 0.6] [--contiguous-cues]
-                     [--silence-source auto|ffmpeg|auto-editor] [--silence-map M.json]
+                     --silence-source ffmpeg|auto-editor [--silence-map M.json]
                      [--report-hole-min-s 3]
 
 Cue-edge quality is measured, not asserted: electron/scripts/measure_cue_edges.py
@@ -1199,14 +1199,19 @@ def main():
     # sentence pause or the map misses the very seams we are trying to land in.
     ap.add_argument("--snap-noise-db", type=float, default=-45.0)
     ap.add_argument("--snap-min-silence-s", type=float, default=0.25)
-    # Where the silence map comes from. auto-editor is the default when its binary
-    # is on PATH: measured on the chapter-0 sample it halves the mid-word edge rate
-    # against ffmpeg silencedetect, because it is a normalized loudness envelope and
-    # it can report the 0.10-0.25 s inter-sentence pauses silencedetect's duration
-    # floor hides. `ffmpeg` forces the old scanner; `auto` falls back to it when
-    # auto-editor is missing or its analysis fails.
-    ap.add_argument("--silence-source", default="auto",
-                    choices=["auto", "ffmpeg", "auto-editor"])
+    # Where the silence map comes from - STATED BY THE CALLER, no default and no
+    # `auto`. auto-editor halves the mid-word edge rate against ffmpeg
+    # silencedetect (measured on the chapter-0 sample: it is a normalized loudness
+    # envelope and reports the 0.10-0.25 s inter-sentence pauses silencedetect's
+    # duration floor hides), so it is what a machine that has it should use; but a
+    # run that silently dropped to silencedetect when the binary was missing would
+    # ship the 2.4 % edge rate under the 1.0 % label. The bridge decides per
+    # machine and says which (whisperx-align-bridge.ts: silenceSourceFor), and a
+    # source that was demanded and then fails is a failed run, not the other
+    # source.
+    ap.add_argument("--silence-source", required=True,
+                    choices=["ffmpeg", "auto-editor"],
+                    help="which silence scanner places the cue edges; the caller states it")
     ap.add_argument("--auto-editor-bin", default="auto-editor")
     ap.add_argument("--ae-threshold", type=float, default=0.03,
                     help="auto-editor normalized loudness below this counts as silence")
@@ -1294,6 +1299,7 @@ def main():
     fd, wav = tempfile.mkstemp(suffix=".wav"); os.close(fd)
     silences = []      # (start, end) pauses for edge snapping — filled on a bg thread
     sil_src = []       # ...and which scanner produced them (for the log + the report)
+    sil_error = []     # a scanner failure, re-raised once the thread is joined
     sil_t = None       # ...which the finally below must join before the wav is deleted
     silence_ok = True  # False = the map is absent or untrustworthy; consumers must skip
                        # it rather than read a list a stranded thread may still write to
@@ -1366,7 +1372,7 @@ def main():
                         silences.extend(load_silence_map(args.silence_map))
                         sil_src.append(f"file:{os.path.basename(args.silence_map)}")
                         return
-                    if args.silence_source in ("auto", "auto-editor"):
+                    if args.silence_source == "auto-editor":
                         # auto-editor reads the ORIGINAL master, not our 16 kHz wav:
                         # its timebase is anchored to the file's own duration, and a
                         # re-decode is exactly the timeline risk this run had to rule
@@ -1374,19 +1380,22 @@ def main():
                         iv = detect_silences_autoeditor(args.audio, args.ae_threshold,
                                                         args.ae_min_silence_s, DUR,
                                                         args.auto_editor_bin)
-                        if iv:
-                            silences.extend(iv); sil_src.append("auto-editor"); return
-                        if args.silence_source == "auto-editor":
-                            log("auto-editor produced no silence map and was demanded "
-                                "explicitly; snapping disabled this run")
-                            return
-                        log("auto-editor unavailable/failed; falling back to ffmpeg silencedetect")
+                        if not iv:
+                            raise RuntimeError(
+                                "auto-editor produced no silence map (see the lines above "
+                                "for its own error). It was the stated silence source, so "
+                                "this run cannot place cue edges; fix auto-editor or run "
+                                "with --silence-source ffmpeg and know the edges are coarser.")
+                        silences.extend(iv); sil_src.append("auto-editor"); return
                     silences.extend(detect_silences(wav, args.snap_noise_db, args.snap_min_silence_s))
                     sil_src.append("ffmpeg-silencedetect")
                 except Exception as e:
-                    # leaves `silences` empty, which every consumer already treats
-                    # as "no map" — see the `and silences` guards below
-                    log(f"silence detection failed ({e}); boundary snapping disabled this run")
+                    # A failed scan is a FAILED RUN: the cue edges are the point of
+                    # this script now, and edges placed with no silence map are the
+                    # pre-2026-09-06 build under a new label. Recorded here; raised
+                    # by the join below, once the thread has stopped.
+                    sil_error.append(e)
+                    log(f"silence detection failed ({e})")
             sil_t = threading.Thread(target=_bg_silences, daemon=True); sil_t.start()
 
         # chunk over the NARRATED sentences at gaps ~every chunk-s. rough=None
@@ -1479,6 +1488,14 @@ def main():
         if sil_t is not None and sil_t.is_alive():
             log("waiting on background silence detection")
             sil_t.join(timeout=SILENCE_SCAN_TIMEOUT_S)
+        if sil_error:
+            # The STATED scanner failed. Not swapped for the other one - the run
+            # goes on with no map, every cue edge says so in its NOTE (matched /
+            # startSource / endSource) and the report carries the error, so the
+            # degraded edges are never mistaken for placed ones.
+            silence_ok = False
+            log(f"silence source {args.silence_source} FAILED ({sil_error[0]}); cue edges "
+                "fall on word times this run - see the report's silenceError")
             if sil_t.is_alive():
                 # DO NOT clear `silences` here. The abandoned thread is still alive
                 # and will extend() that same list when its ffmpeg finally returns,
@@ -1855,6 +1872,7 @@ def main():
             "boundarySnap": {
                 "windowSeconds": args.snap_silence_s,
                 "silenceSource": (sil_src[0] if sil_src else None),
+                "silenceError": (str(sil_error[0]) if sil_error else None),
                 "noiseDb": args.snap_noise_db,
                 "minSilenceSeconds": args.snap_min_silence_s,
                 "aeThreshold": args.ae_threshold,

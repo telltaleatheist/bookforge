@@ -123,6 +123,35 @@ export function resolveWhisperxEnvRoot(): string | null {
   return null;
 }
 
+/**
+ * WHICH SILENCE SCANNER PLACES THE CUE EDGES on this machine - decided HERE,
+ * once per run, and said out loud; never a fallback inside the script.
+ *
+ * auto-editor's loudness envelope halves the mid-word cue-edge rate against
+ * ffmpeg silencedetect (fix/align-cue-edges, measured on God's People ch.0:
+ * 1.01 % vs 2.4 %), so it is the scanner a machine that has it uses. It is NOT
+ * in the packaged whisperx-env (Owen's PC has 29.3.1 on PATH from the system
+ * python; the Mac has none), so a machine without it runs silencedetect - and
+ * the log and the report's `silenceSource` both say so, with the remedy. That
+ * is a STATED STOPGAP until the whisperx-env recipe carries auto-editor, at
+ * which point this probe is what makes every machine take the better path
+ * with no code change.
+ */
+export function silenceSourceFor(spawnPath: string): 'auto-editor' | 'ffmpeg' {
+  const exe = process.platform === 'win32' ? 'auto-editor.exe' : 'auto-editor';
+  const onPath = spawnPath.split(path.delimiter)
+    .filter((d) => d.trim())
+    .some((d) => { try { return fs.existsSync(path.join(d, exe)); } catch { return false; } });
+  if (onPath) {
+    glog('[epub-align] silence source: auto-editor (on PATH)');
+    return 'auto-editor';
+  }
+  glog("[epub-align] silence source: ffmpeg silencedetect - auto-editor is not on this machine's PATH, "
+    + 'so cue edges land at the coarser 2.4 % mid-word rate instead of 1.0 %. '
+    + 'Remedy: add auto-editor to the whisperx-env (or `pip install auto-editor` beside it).');
+  return 'ffmpeg';
+}
+
 /** Locate align_audiobook.py in dev (electron/scripts) or packaged (dist/electron/scripts, asarUnpack'd). */
 function resolveAlignScript(): string {
   const candidates = [
@@ -586,6 +615,8 @@ export async function runEpubAlignOnFiles(
         '--lang', langCode,
       ];
       if (reportPath) args.push('--report', reportPath);
+      // THE SILENCE SOURCE, stated. align_audiobook.py has no default for it.
+      args.push('--silence-source', silenceSourceFor(spawnPath));
       // Explicit compute device (cpu|mps|cuda|auto). Absent -> align_audiobook.py
       // auto-selects (CUDA -> MPS -> CPU). Pass 'cpu' to keep align off a busy GPU.
       if (opts?.device) args.push('--device', opts.device);
