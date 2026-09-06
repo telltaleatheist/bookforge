@@ -805,12 +805,23 @@ class HiggsV3MlxEngine:
         self._codec_obj = HiggsV3MlxCodec(
             self._decode_frames, label=f'voice {self.voice}')
         self._encode_references()
-        _log(f'sampling {self._sampling} from ' + (
-            os.path.join(self.config.voice.checkpoint_dir,
-                         v3_served.GENERATION_CONFIG_FILE)
-            if self.config.voice.checkpoint_dir
-            else "v3's deploy default (the base weights carry no "
-                 'generation_config.json)'))
+        # WHERE THE NUMBERS CAME FROM, honestly: since 2026-09-06 the voice
+        # document can carry `sampling` (the catalog's engine-level block, or a
+        # per-voice one with a stated reason), and it overrides the file. A
+        # line that named the file while the document decided would be the
+        # exact inherited-invisibly trap the document exists to end.
+        if self.config.sampling:
+            source = ('the voice document (catalog sampling), over ' + (
+                os.path.join(self.config.voice.checkpoint_dir,
+                             v3_served.GENERATION_CONFIG_FILE)
+                if self.config.voice.checkpoint_dir else "v3's deploy default"))
+        elif self.config.voice.checkpoint_dir:
+            source = os.path.join(self.config.voice.checkpoint_dir,
+                                  v3_served.GENERATION_CONFIG_FILE)
+        else:
+            source = ("v3's deploy default (the base weights carry no "
+                      'generation_config.json)')
+        _log(f'sampling {self._sampling} from {source}')
         return model
 
     @staticmethod
