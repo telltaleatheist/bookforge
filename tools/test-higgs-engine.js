@@ -2400,7 +2400,7 @@ check('a measured pace becomes the length band in the document; a malformed pace
   // the mlx block's, the WSL document the served block's, and a block without one
   // writes none (the engine then renders at the checkpoint's own file). Owen's
   // 0.7 for deathstalker (2026-09-06) is carried by exactly this line.
-  const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+  const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
     backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 1, topP: 0.95, topK: 50 } },
                 mlx: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.7, topP: 0.95, topK: 50 } } } });
   assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
