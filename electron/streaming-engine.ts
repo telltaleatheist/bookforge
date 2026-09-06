@@ -27,7 +27,7 @@ import { app } from 'electron';
 import * as fs from 'fs';
 import * as path from 'path';
 
-import { orpheusWorkerPool, setServeEngineProbe } from './orpheus-worker-pool';
+import { orpheusWorkerPool, setPersistedVoiceProbe, setServeEngineProbe } from './orpheus-worker-pool';
 import {
   PlaySettings,
   AudioChunk,
@@ -130,6 +130,12 @@ export interface StreamingEngine {
 // `buildSpawnPlan` asks the probe for the engine AND, for Higgs, for the voice
 // whose document it is about to write.
 setServeEngineProbe(() => getSelectedEngineName());
+// And the voice the user persisted for it, so a Higgs spawn — which is STARTED ON
+// its voice — comes up on the voice `loadVoice` is about to ask for, rather than
+// on the catalog's first entry and then restarting (see the pool's
+// setPersistedVoiceProbe). Reads the file directly: getDefaultStreamVoice() asks
+// the pool's getDefaultVoice(), which is the caller here — a cycle.
+setPersistedVoiceProbe(() => readPersisted().voices?.[getSelectedEngineName()] ?? null);
 
 // Compile-time proof the pool satisfies the contract.
 //

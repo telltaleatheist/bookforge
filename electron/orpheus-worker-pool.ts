@@ -717,6 +717,30 @@ export function setServeEngineProbe(probe: () => StreamEngineId): void {
   serveEngineProbe = probe;
 }
 
+/**
+ * The voice the user PERSISTED for the active engine (tts-engine.json's
+ * `voices[engine]`), or null when none is recorded. Injected for the same reason
+ * as the engine probe: the file is streaming-engine.ts's, and this module cannot
+ * import it back.
+ *
+ * WHY THE POOL NEEDS IT: a Higgs server is STARTED ON its voice, and every start
+ * path calls `startSession()` BEFORE `loadVoice(getDefaultStreamVoice())`
+ * (tts-api-server's ensureEngine, the reader bridge, the render service). With
+ * nothing loaded yet, `getDefaultVoice()` answered the catalog's FIRST renderable
+ * voice — "default", the zero-shot base — so a cold Listen start loaded the base
+ * checkpoint, was then told the user wanted deathstalker, and restarted to load
+ * that one: two checkpoint loads in series in front of the first sentence, on
+ * every cold start, for a voice nobody asked for. Measured 2026-09-06 on the Mac
+ * (smoke-serve-spawn --real: spawn wrote listen-default-default.json, the
+ * deathstalker load was refused by name, as it should be). Optional: a pool
+ * driven without it (the keeper suite) keeps the catalog-first answer.
+ */
+let persistedVoiceProbe: (() => string | null) | null = null;
+
+export function setPersistedVoiceProbe(probe: () => string | null): void {
+  persistedVoiceProbe = probe;
+}
+
 /** The engine a spawn/load is FOR. */
 function serveEngine(): StreamEngineId {
   if (!serveEngineProbe) {
@@ -1982,18 +2006,30 @@ export function getDefaultVoice(): string {
   if (currentVoice) return currentVoice;
   if (lastVoice) return lastVoice;
   if (serveEngine() === 'higgs') {
-    // The catalog's first renderable voice. NOT a hard-coded id: which Higgs
-    // voices exist is a per-machine fact (an artifact is installed or it is not),
-    // and naming one that is not there would be refused at the spawn — after the
-    // picker had already offered it.
-    const first = getAvailableVoices()[0];
-    if (!first) {
+    const available = getAvailableVoices();
+    if (available.length === 0) {
       throw new Error(
         'No Higgs voice is installed on this machine, so there is nothing to stream. '
         + 'Install one in Settings → Higgs, or switch the streaming engine to Orpheus.',
       );
     }
-    return first;
+    // THE PERSISTED VOICE FIRST — the one the spawn is about to be started on, so
+    // the server that comes up is the one `loadVoice` will then ask for (see
+    // setPersistedVoiceProbe). Same rule as streaming-engine's
+    // getDefaultStreamVoice: a persisted voice that is not renderable here is
+    // passed over, and the catalog's first renderable voice stands in. NOT a
+    // hard-coded id: which Higgs voices exist is a per-machine fact (an artifact
+    // is installed or it is not), and naming one that is not there would be
+    // refused at the spawn — after the picker had already offered it.
+    const persisted = persistedVoiceProbe?.() ?? null;
+    if (persisted && available.includes(persisted)) return persisted;
+    if (persisted) {
+      console.warn(
+        `[Orpheus Pool] Persisted Higgs voice '${persisted}' is not renderable on this `
+        + `machine (renderable: ${available.join(', ')}); starting on '${available[0]}'`,
+      );
+    }
+    return available[0];
   }
   return ORPHEUS_DEFAULT_VOICE;
 }
