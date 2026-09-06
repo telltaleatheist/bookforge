@@ -496,12 +496,40 @@ wheel from `https://flashinfer.ai/whl/cu130/`, the two symlinks, narrator's
 runtime imports, and the launcher. Settings → Install/Repair runs whichever
 installer the catalog's `stack` names.
 
-> **TO FLIP THE APP TO SGLang-Omni: change `serving.stack` in
-> `electron/data/higgs-models.json` from `"vllm-omni"` to `"sglang-omni"`, build
-> the env from Settings → Higgs, and restart.** Everything else follows from that
-> one word. It is deliberately NOT flipped in this commit: the code is the change
-> the measurements call for, and which stack ships is a decision, not a
-> consequence.
+> **FLIPPED 2026-09-06.** `serving.stack` ships as `"sglang-omni"`, on Owen's
+> ruling, on the measurements above. **TO FLIP BACK it is the same one word**
+> (`"vllm-omni"`) — the env, the launcher, the port, the memory fraction, the
+> batch width, the request shape, the frame cap, the installer Settings runs and
+> the rows the doctor reports all follow from it, and nothing else in the catalog
+> changes either way. Build the env from Settings → Higgs and restart.
+>
+> **The keepers test BOTH stacks, always**, against explicit fixture catalogs, and
+> separately assert that whichever stack is shipped gets the matching variable
+> set. That is not decoration: written the other way — asserting vllm-omni facts
+> about "the shipped catalog" — they went red on the flip AND stopped testing the
+> stack that was no longer shipped, which is exactly when a regression in it would
+> go unnoticed. So a flip moves which row is the shipped one and never which rows
+> exist.
+
+### ⚠ TWO ENVIRONMENTS ON THE SGLang STACK — the server's and narrator's
+
+They are not the same directory, and the difference decides where the doctor has
+to look.
+
+| runs | where | needs |
+|---|---|---|
+| the **server** (`sgl-omni serve`) | `sglomni` — from `serving.sglang.condaEnvName`, via the launcher | sglang-omni 0.1.4, the flashinfer CUDA links, `serve_higgs_sgl.sh` |
+| **narrator** — the client that packs the book, POSTs the chunks, writes the files | `higgs3` — `getWslHiggsCondaEnv()`, which `narrator-spawn.ts` uses for every Higgs door on **both** stacks | narrator's runtime imports (bs4, ebooklib, regex, …) |
+
+That is also the configuration every night-3 measurement was taken in: the probe
+client ran out of `higgs3` against a server on 8200.
+
+So `higgsProbeScript` asks the `find_spec` question of **narrator's** prefix and
+everything else of the **server's**. Asking both of the server's env — which is
+what a naive stack-aware doctor does — would report a green doctor for a machine
+whose prep dies on `No module named 'bs4'`, the exact failure that row was added
+for. On vllm-omni the two prefixes are one directory and this collapses to what it
+always was; `tools/test-higgs-doctor-arms.js` holds both halves.
 
 ### The five refusals
 

@@ -63,7 +63,38 @@ if (!['wsl', 'native-win', 'native-mac'].includes(ARM)) {
  */
 const ENGINE = process.argv[3] || 'orpheus';
 if (!['orpheus', 'higgs'].includes(ENGINE)) {
-  console.error('usage: serve-spawn-extract.js <arm> [orpheus|higgs]');
+  console.error('usage: serve-spawn-extract.js <arm> [orpheus|higgs] [stack]');
+  process.exitCode = 64;
+  return;
+}
+
+/**
+ * WHICH SERVING STACK the Higgs capture is taken against — a FIXTURE, not the
+ * shipped catalog.
+ *
+ * Higgs v3 is served by two stacks (vllm-omni 0.28.0 and SGLang-Omni 0.1.4) and
+ * `serving.stack` picks one. That value is a DECISION somebody makes and changes:
+ * it shipped as vllm-omni, and flipped to sglang-omni on 2026-09-06 when the
+ * measurements came in. A capture pinned to whatever it happens to say today is a
+ * capture that goes stale on a one-word edit — and worse, it means the OTHER
+ * stack's spawn stops being tested the moment it stops being shipped, which is
+ * exactly when a regression in it would go unnoticed.
+ *
+ * So the stack is a parameter. `tools/test-serve-spawn-env.js` captures BOTH,
+ * every run, and compares each against its own stored row; the shipped value only
+ * decides which of the two is additionally asserted to be what the app will
+ * actually do.
+ *
+ * The fixture is the catalog's own `serving` block with ONE FIELD replaced, and
+ * it is handed to the model as `model.serving` — the per-model override the
+ * catalog already supports (`higgsServingFor` returns it in preference to the
+ * shared block). Nothing is walked past by doing it this way: `engineVersion`,
+ * the patches and every number are still the catalog's, so the guard that refuses
+ * a voice served on the wrong stack still applies.
+ */
+const STACK = process.argv[4] || null;
+if (STACK !== null && !['vllm-omni', 'sglang-omni'].includes(STACK)) {
+  console.error(`usage: serve-spawn-extract.js <arm> higgs [vllm-omni|sglang-omni]`);
   process.exitCode = 64;
   return;
 }
@@ -218,8 +249,31 @@ stub(memory, 'fitOrpheusTier', (t) => ({ tier: t, steppedDown: false }));
 // past.
 if (ENGINE === 'higgs') {
   const higgsModels = require(path.join(DIST, 'higgs-models.js'));
-  const DEFAULT_MODEL = higgsModels.resolveHiggsModel('default');
+  const REAL_MODEL = higgsModels.resolveHiggsModel('default');
+  // THE STACK FIXTURE, when one was asked for: the catalog's own serving block
+  // with `stack` replaced, carried on the MODEL. See the STACK constant above for
+  // why this is a parameter and not a read of the shipped value.
+  const DEFAULT_MODEL = STACK === null ? REAL_MODEL : {
+    ...REAL_MODEL,
+    serving: { ...higgsModels.higgsServingSpec(), stack: STACK },
+  };
   stub(higgsModels, 'listRenderableHiggsModels', () => [DEFAULT_MODEL]);
+  // AND THE ONE THE POOL ACTUALLY BUILDS THE SPAWN FROM. `listRenderable…` only
+  // decides which voice ID the pool picks; `higgsPreflight` then re-resolves that
+  // ID against the catalog and it is THAT object `higgsEnvExtras` reads the
+  // serving block off. Stubbing only the list left the fixture stack unused and
+  // captured the shipped one twice — a row that compares equal to itself while
+  // describing a stack it never built, which is the same defect the arm-forcing
+  // note above records.
+  stub(higgsModels, 'resolveHiggsModel', (id) => {
+    if ((id || '').trim() !== DEFAULT_MODEL.id) {
+      throw new Error(`the fixture serves only '${DEFAULT_MODEL.id}'; got ${JSON.stringify(id)}`);
+    }
+    return DEFAULT_MODEL;
+  });
+  // The vllm-omni env NAME, which is a per-machine setting. The SGLang env name
+  // is not a setting at all — it is the catalog's `sglang.condaEnvName`, so that
+  // arm needs no stub and is deterministic on every machine.
   stub(toolPaths, 'getWslHiggsCondaEnv', () => 'higgs3');
   // A PROVISIONED MAC, as far as the weights go. The darwin backend loads from
   // whatever `NARRATOR_HIGGS3_MLX_MODEL` names and refuses when it is unset, so the
@@ -251,7 +305,8 @@ pool.setServeEngineProbe(() => ENGINE);
  */
 function captureRefusal(err) {
   process.stdout.write(JSON.stringify({
-    arm: ARM, engine: ENGINE, refused: canon(err instanceof Error ? err.message : String(err)),
+    arm: ARM, engine: ENGINE, ...(STACK ? { stack: STACK } : {}),
+    refused: canon(err instanceof Error ? err.message : String(err)),
   }, null, 2) + '\n');
   // NOT a hard exit call: the whole capture has just gone to a PIPE, and an
   // undrained tail here is a refusal message the keeper reads as truncated JSON.
@@ -338,7 +393,10 @@ function main() {
  * agree across the two. `<REPO-WSL>` collapses into `<REPO>` for the same reason:
  * on a Mac host the repo has no drive letter to translate.
  */
-const out = { arm: ARM, engine: ENGINE, command: canon(plan.command), viaWsl: !!plan.viaWsl };
+const out = {
+  arm: ARM, engine: ENGINE, ...(STACK ? { stack: STACK } : {}),
+  command: canon(plan.command), viaWsl: !!plan.viaWsl,
+};
 if (plan.viaWsl) {
   const bash = plan.args[plan.args.length - 1];
   out.args = plan.args.slice(0, -1).map(canon);

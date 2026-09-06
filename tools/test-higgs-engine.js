@@ -1128,12 +1128,58 @@ check('the default document carries its cap too, so nothing is inferred', () => 
 });
 
 const HIGGS3_PREFIX = '/home/t/anaconda3/envs/higgs3';
-const env = higgs.higgsSpawnEnv(defaultVoice, {
-  voicesPath: '/mnt/c/tmp/voices.json',
-  serveScriptPath: `${HIGGS3_PREFIX}/bin/serve_higgs_v3.sh`,
-  condaEnvPrefix: HIGGS3_PREFIX,
-  wslDistro: 'Ubuntu',
-});
+const SGLOMNI_PREFIX = '/home/t/anaconda3/envs/sglomni';
+
+// ── EVERY STACK ROW RUNS AGAINST AN EXPLICIT FIXTURE ───────────────────────
+//
+// Higgs v3 is served by two stacks and `serving.stack` picks one. It shipped as
+// vllm-omni and FLIPPED to sglang-omni on 2026-09-06, on the night-3
+// measurements (same 50 chunks, same checkpoint, one seed: vllm-omni at 16 in
+// flight gives 4 early stops / 13 damaged / 6 sustained voice switches; SGLang
+// gives 0 / 5 / 0, at 2.5x the throughput).
+//
+// The rows below used to build ONE env from the shipped catalog and assert
+// vllm-omni facts about it. That is two mistakes in one: the flip turned them
+// red, and — worse — whichever stack was not shipped stopped being tested at
+// exactly the moment a regression in it could go unnoticed. So each stack gets
+// its own fixture model (the catalog's own serving block with `stack` replaced,
+// carried as the per-model override the catalog already supports), BOTH are
+// always exercised, and the SHIPPED value is asserted separately, on its own row.
+const STACKS = ['vllm-omni', 'sglang-omni'];
+const SHIPPED_STACK = higgs.higgsServingSpec().stack;
+
+/** `defaultVoice`, pinned to one stack. */
+function voiceOnStack(stack) {
+  return Object.assign({}, defaultVoice, {
+    serving: Object.assign({}, higgs.higgsServingSpec(), { stack }),
+  });
+}
+/** The guest conda prefix each stack's launcher runs out of. */
+const PREFIX_FOR_STACK = {
+  'vllm-omni': HIGGS3_PREFIX,
+  'sglang-omni': SGLOMNI_PREFIX,
+};
+/** The launcher file name each stack deploys into that prefix. */
+const LAUNCHER_FOR_STACK = {
+  'vllm-omni': higgs.higgsServingSpec().launchScript,
+  'sglang-omni': higgs.higgsServingSpec().sglang.launchScript,
+};
+/** A launching spawn env for one stack. */
+function envOnStack(stack) {
+  const prefix = PREFIX_FOR_STACK[stack];
+  return higgs.higgsSpawnEnv(voiceOnStack(stack), {
+    voicesPath: '/mnt/c/tmp/voices.json',
+    serveScriptPath: `${prefix}/bin/${LAUNCHER_FOR_STACK[stack]}`,
+    condaEnvPrefix: prefix,
+    wslDistro: 'Ubuntu',
+  });
+}
+const envByStack = Object.fromEntries(STACKS.map((s) => [s, envOnStack(s)]));
+
+// `env` stays the name the rows below use for the vllm-omni one — that is the
+// stack the `HIGGS_*` / deploy-profile rows are ABOUT, and they say so now.
+const env = envByStack['vllm-omni'];
+const sglEnv = envByStack['sglang-omni'];
 
 check('narrator is addressed by NARRATOR_*, and the LAUNCH SCRIPT by HIGGS_*', () => {
   // TWO SETS, TWO READERS, AND THE DISTINCTION IS THE WHOLE POINT.
@@ -1258,7 +1304,12 @@ check('a serving block with a bad number is REFUSED by field name', () => {
   // These land on a vllm-omni command line inside a guest, five minutes before
   // anything can be heard. A substituted "plausible" value is a server that
   // comes up at the wrong width and renders a whole book that way.
-  const spec = higgs.higgsServingSpec();
+  //
+  // PINNED TO vllm-omni, because every field it patches is that stack's. Read off
+  // the SHIPPED catalog instead, these silently stopped asserting anything the
+  // day the stack flipped: `higgsSpawnEnv` returns the SGLang set before it ever
+  // looks at `gpuMemoryUtilization`, so `assert.throws` had nothing to catch.
+  const spec = Object.assign({}, higgs.higgsServingSpec(), { stack: 'vllm-omni' });
   const withServing = (patch) => probeVoice({
     id: 'bad', kind: 'default', voice: {},
     serving: Object.assign({}, spec, patch),
@@ -1311,7 +1362,7 @@ check('a serving block with a bad number is REFUSED by field name', () => {
     'a null deployConfig exported something — vllm-omni would take the -n branch');
 });
 
-check('the SHIPPED catalog names the profile that raises the frame ceiling', () => {
+check('the catalog names the profile that raises the frame ceiling (vllm-omni)', () => {
   // The served speech endpoint IGNORES a per-request max_tokens, so stage 0's
   // default_sampling_params.max_tokens in the deploy profile is a hard ceiling on
   // every render: vllm-omni's auto profile sets 2048 frames = 81.92 s and cuts
@@ -1324,8 +1375,54 @@ check('the SHIPPED catalog names the profile that raises the frame ceiling', () 
   assert.ok(fs.existsSync(path.join(REPO, 'electron', 'scripts', 'higgs', spec.deployConfig)),
     `the catalog names ${spec.deployConfig} but this build ships no such file — the installer `
     + 'would have nothing to copy and --deploy-config would point at a missing path');
+  // ON THE vllm-omni FIXTURE, because that is the only stack `--deploy-config`
+  // exists on. SGLang-Omni has no deploy profile at all — which is also why
+  // sampling MUST ride on every request there — so asserting this of the shipped
+  // env would fail the day the stack flipped, for a reason that has nothing to do
+  // with the frame ceiling.
   assert.strictEqual(env.HIGGS_DEPLOY_CONFIG, `${HIGGS3_PREFIX}/bin/${spec.deployConfig}`,
-    "the shipped catalog's profile did not resolve to the installer's copy");
+    "the catalog's profile did not resolve to the installer's copy");
+  // AND IT IS KEPT IN THE CATALOG EVEN WHILE THE OTHER STACK IS SHIPPED. The two
+  // blocks sit side by side precisely so neither stack's measured configuration
+  // is lost while the other is selected, and a flip back is one word.
+  assert.ok(!('HIGGS_DEPLOY_CONFIG' in sglEnv),
+    'the sglang arm carries a deploy profile, which that stack has no flag for');
+});
+
+check(`the SHIPPED stack (${SHIPPED_STACK}) gets the matching variable set`, () => {
+  // The one row here that is about THE CATALOG rather than about a stack. It is
+  // what would catch a flip breaking the app rather than only breaking the tests:
+  // whichever stack `serving.stack` names, the spawn must carry that stack's
+  // launcher variables and none of the other's.
+  assert.ok(STACKS.includes(SHIPPED_STACK),
+    `serving.stack is ${JSON.stringify(SHIPPED_STACK)}, which this suite has no fixture for`);
+  // `defaultVoice` — the REAL catalog entry with no `serving` override — so this
+  // reads `serving.stack` through the same path the app does. Same voicesPath as
+  // `envOnStack` so the deep-equal below is about the STACK and not about a
+  // fixture string.
+  const shipped = higgs.higgsSpawnEnv(defaultVoice, {
+    voicesPath: '/mnt/c/tmp/voices.json',
+    serveScriptPath: `${PREFIX_FOR_STACK[SHIPPED_STACK]}/bin/${LAUNCHER_FOR_STACK[SHIPPED_STACK]}`,
+    condaEnvPrefix: PREFIX_FOR_STACK[SHIPPED_STACK],
+    wslDistro: 'Ubuntu',
+  });
+  assert.strictEqual(shipped.HIGGS_STACK, SHIPPED_STACK);
+  // The shipped env IS the fixture env for that stack. If these ever disagreed it
+  // would mean the fixtures are not exercising the path the catalog takes, which
+  // would make every stack row in this file worthless.
+  assert.deepStrictEqual(shipped, envByStack[SHIPPED_STACK]);
+  const V = ['HIGGS_ENV', 'HIGGS_HOST', 'HIGGS_PORT', 'HIGGS_GPU_MEM_UTIL',
+    'HIGGS_CODEC_GPU_MEM_UTIL', 'HIGGS_MAX_MODEL_LEN', 'NARRATOR_HIGGS3_SERVE_SCRIPT'];
+  const S = ['HIGGS_SGL_ENV', 'HIGGS_SGL_HOST', 'HIGGS_SGL_PORT', 'HIGGS_SGL_MEM_FRACTION',
+    'HIGGS_SGL_CUDA_GRAPH_MAX_BS', 'HIGGS_SGL_MAX_NEW_TOKENS',
+    'NARRATOR_HIGGS_SGL_SERVE_SCRIPT'];
+  const sgl = SHIPPED_STACK === 'sglang-omni';
+  for (const key of sgl ? S : V) {
+    assert.ok(key in shipped, `the shipped ${SHIPPED_STACK} spawn is missing ${key}`);
+  }
+  for (const key of sgl ? V : S) {
+    assert.ok(!(key in shipped), `the shipped ${SHIPPED_STACK} spawn carries ${key}`);
+  }
 });
 
 check('the CAPS do not travel — narrator refuses a caps payload by name', () => {
@@ -1344,12 +1441,32 @@ check('every env value is a STRING — a number would arrive as undefined', () =
   }
 });
 
-check('NARRATOR_HIGGS3_URL is emitted only when a server is already up', () => {
-  assert.ok(!('NARRATOR_HIGGS3_URL' in env));
-  const attached = higgs.higgsSpawnEnv(defaultVoice, {
-    voicesPath: DOC_PATH, baseUrl: 'http://127.0.0.1:8095',
-  });
-  assert.strictEqual(attached.NARRATOR_HIGGS3_URL, 'http://127.0.0.1:8095');
+check('the ATTACH url is emitted only when a server is already up — and per STACK', () => {
+  // ONE VARIABLE PER STACK, and that is load-bearing rather than tidy. Each
+  // backend reads only its own name (`HiggsSglServedBackend` looks at
+  // NARRATOR_HIGGS_SGL_URL, `HiggsV3ServedBackend` at NARRATOR_HIGGS3_URL), so a
+  // stale variable from the other stack cannot point one stack's client at the
+  // other stack's server — which would answer /health and /v1/models in the right
+  // shapes and then drop half of every request body.
+  const NAME = {
+    'vllm-omni': 'NARRATOR_HIGGS3_URL',
+    'sglang-omni': 'NARRATOR_HIGGS_SGL_URL',
+  };
+  for (const stack of STACKS) {
+    const url = `http://127.0.0.1:${stack === 'sglang-omni' ? 8200 : 8095}`;
+    // Not emitted when nothing was attached to: narrator would otherwise skip
+    // starting a server and poll a port with nothing on it.
+    assert.ok(!(NAME[stack] in envByStack[stack]),
+      `${NAME[stack]} is set on a launching spawn`);
+    const attached = higgs.higgsSpawnEnv(voiceOnStack(stack), {
+      voicesPath: DOC_PATH, baseUrl: url,
+    });
+    assert.strictEqual(attached[NAME[stack]], url);
+    // AND THE OTHER STACK'S NAME IS NOT SET, on either.
+    const other = STACKS.find((s) => s !== stack);
+    assert.ok(!(NAME[other] in attached),
+      `attaching on ${stack} also set ${NAME[other]}`);
+  }
 });
 
 check('NO adapter-strategy variable is emitted, ever — there is no LoRA path', () => {

@@ -69,9 +69,10 @@
     },
     "cwd": "C:\\FAKE\\e2a"
   },
-  "higgs:wsl": {
+  "higgs:wsl@vllm-omni": {
     "arm": "wsl",
     "engine": "higgs",
+    "stack": "vllm-omni",
     "command": "wsl.exe",
     "viaWsl": true,
     "args": [
@@ -86,8 +87,8 @@
         "PYTHONIOENCODING": "utf-8",
         "NARRATOR_ENGINE": "higgs-v3",
         "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
-        "HIGGS_MAX_NUM_SEQS": "16",
         "HIGGS_STACK": "vllm-omni",
+        "HIGGS_MAX_NUM_SEQS": "16",
         "NARRATOR_HIGGS3_WSL_DISTRO": "Ubuntu",
         "NARRATOR_HIGGS3_SERVE_SCRIPT": "/home/fake/anaconda3/envs/higgs3/bin/serve_higgs_v3.sh",
         "HIGGS_ENV": "/home/fake/anaconda3/envs/higgs3",
@@ -105,14 +106,16 @@
     "env": "(inherited process.env — nothing crosses into the guest)",
     "cwd": "(process.cwd)"
   },
-  "higgs:native-win": {
+  "higgs:native-win@vllm-omni": {
     "arm": "native-win",
     "engine": "higgs",
+    "stack": "vllm-omni",
     "refused": "Higgs runs on vLLM-Omni, which has no Windows build. Enable \"WSL2 for Higgs\" in Settings → Higgs and install the Higgs environment there."
   },
-  "higgs:native-mac": {
+  "higgs:native-mac@vllm-omni": {
     "arm": "native-mac",
     "engine": "higgs",
+    "stack": "vllm-omni",
     "command": "/fake/miniconda/bin/conda",
     "viaWsl": false,
     "args": [
@@ -129,6 +132,79 @@
     "env": {
       "HIGGS_MAX_NUM_SEQS": "16",
       "HIGGS_STACK": "vllm-omni",
+      "NARRATOR_ENGINE": "higgs-v3",
+      "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
+      "NARRATOR_HIGGS3_MLX_BATCH": "16",
+      "NARRATOR_HIGGS3_MLX_MEM_BUDGET_GB": "24",
+      "NARRATOR_HIGGS3_MLX_MODEL": "<REPO>/.fake-userdata/runtime/higgs-models/base",
+      "PYTHONIOENCODING": "utf-8",
+      "PYTHONPATH": "<REPO>/python",
+      "PYTHONUNBUFFERED": "1"
+    },
+    "cwd": "<REPO>/.fake-userdata"
+  },
+  "higgs:wsl@sglang-omni": {
+    "arm": "wsl",
+    "engine": "higgs",
+    "stack": "sglang-omni",
+    "command": "wsl.exe",
+    "viaWsl": true,
+    "args": [
+      "-d",
+      "Ubuntu",
+      "bash",
+      "-c"
+    ],
+    "bash": {
+      "exports": {
+        "PYTHONUNBUFFERED": "1",
+        "PYTHONIOENCODING": "utf-8",
+        "NARRATOR_ENGINE": "higgs-v3",
+        "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
+        "HIGGS_STACK": "sglang-omni",
+        "HIGGS_MAX_NUM_SEQS": "16",
+        "NARRATOR_HIGGS3_WSL_DISTRO": "Ubuntu",
+        "NARRATOR_HIGGS_SGL_SERVE_SCRIPT": "/home/fake/anaconda3/envs/sglomni/bin/serve_higgs_sgl.sh",
+        "HIGGS_SGL_ENV": "/home/fake/anaconda3/envs/sglomni",
+        "HIGGS_SGL_HOST": "127.0.0.1",
+        "HIGGS_SGL_PORT": "8200",
+        "HIGGS_SGL_MEM_FRACTION": "0.6",
+        "HIGGS_SGL_CUDA_GRAPH_MAX_BS": "16",
+        "HIGGS_SGL_MAX_NEW_TOKENS": "7500",
+        "PYTHONPATH": "<REPO>/python"
+      },
+      "cd": "cd ~",
+      "run": "'/home/fake/anaconda3/bin/conda' run --no-capture-output -n 'higgs3' python -u -m narrator.serve"
+    },
+    "env": "(inherited process.env — nothing crosses into the guest)",
+    "cwd": "(process.cwd)"
+  },
+  "higgs:native-win@sglang-omni": {
+    "arm": "native-win",
+    "engine": "higgs",
+    "stack": "sglang-omni",
+    "refused": "Higgs runs on vLLM-Omni, which has no Windows build. Enable \"WSL2 for Higgs\" in Settings → Higgs and install the Higgs environment there."
+  },
+  "higgs:native-mac@sglang-omni": {
+    "arm": "native-mac",
+    "engine": "higgs",
+    "stack": "sglang-omni",
+    "command": "/fake/miniconda/bin/conda",
+    "viaWsl": false,
+    "args": [
+      "run",
+      "--no-capture-output",
+      "-p",
+      "/opt/homebrew/Caskroom/miniconda/base/envs/narrator-mlx",
+      "python",
+      "-u",
+      "-m",
+      "narrator.serve"
+    ],
+    "mlxModelDirExists": true,
+    "env": {
+      "HIGGS_MAX_NUM_SEQS": "16",
+      "HIGGS_STACK": "sglang-omni",
       "NARRATOR_ENGINE": "higgs-v3",
       "NARRATOR_HIGGS_VOICES": "<TMP>/bookforge-higgs-voices/listen-default-default.json",
       "NARRATOR_HIGGS3_MLX_BATCH": "16",

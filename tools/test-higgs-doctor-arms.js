@@ -158,6 +158,25 @@ function stub(mod, name, fn) {
  * that it probes THE ENVIRONMENT THE RENDER WILL USE. Stubbing them would test
  * the keeper's idea of that instead.
  */
+/**
+ * WHICH CONDA ENV runs the probe command containing `marker`.
+ *
+ * NOT `script.split(';')`: the probes are `python -c '<program>'` and the
+ * programs carry semicolons of their own, so splitting on them cuts a command in
+ * half and the half holding `find_spec` no longer holds its interpreter. This
+ * walks BACK from the marker to the nearest `/bin/python` and reads the env name
+ * off the prefix in front of it, which is the question actually being asked.
+ */
+function envRunning(script, marker) {
+  const at = script.indexOf(marker);
+  assert.notStrictEqual(at, -1, `the probe contains no ${marker}`);
+  const before = script.slice(0, at);
+  const py = before.lastIndexOf('/bin/python');
+  assert.notStrictEqual(py, -1, `no interpreter precedes ${marker}`);
+  const prefix = before.slice(0, py);
+  return prefix.slice(prefix.lastIndexOf('/envs/') + '/envs/'.length);
+}
+
 function onPlatform(opts, fn) {
   const platformDesc = Object.getOwnPropertyDescriptor(process, 'platform');
   Object.defineProperty(process, 'platform', { value: opts.platform, configurable: true });
@@ -175,6 +194,30 @@ function onPlatform(opts, fn) {
     // machine's PATH or its ffmpeg.
     stub(narratorPathsModule, 'buildToolsSpawnEnv', (extra) => ({ ...extra })),
   ];
+  // ── WHICH SERVING STACK, AS A FIXTURE ─────────────────────────────────────
+  //
+  // `higgsDoctor()` reads `serving.stack` from the catalog to decide which env to
+  // examine, which package to import-probe, whether to ask about the two
+  // site-packages patches and the deploy profile, and whether to ask about the
+  // flashinfer CUDA links. That value is a DECISION somebody makes and changes —
+  // it shipped as vllm-omni and flipped to sglang-omni on 2026-09-06 — so a row
+  // that read it would (a) go red on a one-word catalog edit and (b) stop testing
+  // whichever stack was not shipped, at exactly the moment a regression in it
+  // could go unnoticed.
+  //
+  // So every stack row states its stack, both are exercised on every run, and the
+  // SHIPPED value is asserted on its own row instead.
+  if (opts.stack) {
+    undo.push(stub(higgsModels, 'higgsServingSpec',
+      () => ({ ...realServingSpec(), stack: opts.stack })));
+    if (opts.stack === 'sglang-omni') {
+      // The SGLang env name is the catalog's, not the `wslHiggsCondaEnv` setting
+      // (whose default is literally `higgs3`). Pinned so the probe's target is a
+      // fixture rather than this machine's conda layout.
+      undo.push(stub(higgsModels, 'higgsSglangFor',
+        () => ({ ...realSglangFor(realServingSpec()), condaEnvName: FAKE_SGL_ENV })));
+    }
+  }
   // `os.platform()` is what tool-paths reads (not `process.platform`), so the WSL
   // doctor's own guard has to see the fixture's platform too.
   const realOsPlatform = os.platform;
@@ -295,16 +338,14 @@ const WSL_MISSING_DEPS = {
 //     symlinks flashinfer's nvcc build needs inside the pip CUDA 13 wheel.
 const FAKE_SGL_ENV = 'sglomni';
 
-// THE REAL READERS, CAPTURED BEFORE ANYTHING STUBS THEM. `sglServingSpec` is
-// installed AS `higgsServingSpec`, so calling the module property from inside it
-// would call itself.
+// THE REAL READERS, CAPTURED BEFORE ANYTHING STUBS THEM. `onPlatform`'s stack
+// fixture is installed AS `higgsServingSpec`, so reading the module property from
+// inside it would call itself.
 const realServingSpec = higgsModels.higgsServingSpec;
 const realSglangFor = higgsModels.higgsSglangFor;
 
-/** The catalog, with its stack flipped — the one word that selects all of this. */
-function sglServingSpec() {
-  return { ...realServingSpec(), stack: 'sglang-omni' };
-}
+/** Whichever stack the app will actually use. Asserted on its own row below. */
+const SHIPPED_STACK = realServingSpec().stack;
 
 const SGL_GREEN = {
   stdout: [
@@ -349,7 +390,7 @@ section('win32 → the WSL doctor');
 // ─────────────────────────────────────────────────────────────────────────────
 
 check('the probe goes to wsl.exe, and it is the vllm-omni probe', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(lastSpawn.command, 'wsl.exe', 'the Windows arm did not probe WSL');
@@ -362,7 +403,7 @@ check('the probe goes to wsl.exe, and it is the vllm-omni probe', () => onPlatfo
 ));
 
 check('the "WSL2 for Higgs" toggle is a REPORTED ROW, not an early return', () => onPlatform(
-  { platform: 'win32', wslHiggs: false, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: false, probe: WSL_GREEN },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(res.valid, false, 'a Windows machine with the toggle off cannot render Higgs');
@@ -378,7 +419,7 @@ check('the "WSL2 for Higgs" toggle is a REPORTED ROW, not an early return', () =
 ));
 
 check('the WSL probe asks for the launcher\'s SHA and narrator\'s imports', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
   async () => {
     await doctorMod.higgsDoctor();
     const script = lastSpawn.args.join(' ');
@@ -404,7 +445,7 @@ check('the WSL probe asks for the launcher\'s SHA and narrator\'s imports', () =
 ));
 
 check('a launcher from an older BookForge is launcher-stale, not ok', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_STALE_LAUNCHER },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_STALE_LAUNCHER },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(res.valid, false, 'a stale launcher passed the doctor');
@@ -421,7 +462,7 @@ check('a launcher from an older BookForge is launcher-stale, not ok', () => onPl
 ));
 
 check('the WSL probe hashes the DEPLOY PROFILE as well as the launcher', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
   async () => {
     const res = await doctorMod.higgsDoctor();
     const script = lastSpawn.args.join(' ');
@@ -435,7 +476,7 @@ check('the WSL probe hashes the DEPLOY PROFILE as well as the launcher', () => o
 ));
 
 check('a deploy profile from an older BookForge is profile-stale, not ok', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_STALE_PROFILE },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_STALE_PROFILE },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(res.valid, false, 'a stale deploy profile passed the doctor');
@@ -447,7 +488,7 @@ check('a deploy profile from an older BookForge is profile-stale, not ok', () =>
 ));
 
 check('an env with NO deploy profile says what it costs, not just "missing"', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_NO_PROFILE },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_NO_PROFILE },
   async () => {
     // This is every env built before the profile shipped, and its failure mode is
     // silent: vllm-omni auto-discovers its own profile, stage 0's max_tokens is
@@ -464,7 +505,7 @@ check('an env with NO deploy profile says what it costs, not just "missing"', ()
 ));
 
 check('a missing narrator import is reported BY NAME with its pip requirement', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_MISSING_DEPS },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_MISSING_DEPS },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(res.valid, false, "an env that cannot import bs4 cannot prep");
@@ -480,7 +521,7 @@ check('a missing narrator import is reported BY NAME with its pip requirement', 
 ));
 
 check('the doctor probes exactly the list the installer installs', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
   async () => {
     // ONE LIST, TWO READERS. install_higgs_env.sh pip-installs
     // requirements-narrator-runtime.txt and the doctor builds its probe from the
@@ -510,7 +551,7 @@ check('the doctor probes exactly the list the installer installs', () => onPlatf
 ));
 
 check('a Windows failure names the WINDOWS remedy', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: { stdout: 'env=absent\n', exit: 'close' } },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: { stdout: 'env=absent\n', exit: 'close' } },
   async () => {
     const res = await doctorMod.higgsDoctor();
     assert.strictEqual(res.valid, false);
@@ -524,22 +565,17 @@ check('a Windows failure names the WINDOWS remedy', () => onPlatform(
 section('win32 + serving.stack "sglang-omni" → the SGLang arm of the WSL doctor');
 // ─────────────────────────────────────────────────────────────────────────────
 //
-// `higgsServingSpec` is stubbed rather than the catalog edited: the SHIPPED
-// catalog is deliberately still `vllm-omni` (behaviour is unchanged until
-// somebody flips one word), and a keeper that could only see the shipped value
-// would prove nothing about the arm the measurements argue for.
+// THE STACK IS A FIXTURE ON EVERY ROW (`onPlatform`'s `stack`), not a read of the
+// catalog. `serving.stack` shipped as vllm-omni and flipped to sglang-omni on
+// 2026-09-06; a suite that read it would go red on that one-word edit and — worse
+// — would stop testing whichever stack was not shipped, exactly when a regression
+// in it could go unnoticed. Both arms run on every machine, every run, and what
+// the catalog actually says is asserted on its own row at the end of this
+// section.
 
 check('the probe examines the sglomni env and asks about sglang_omni', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  { stack: 'sglang-omni', platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
   async () => {
-    const undo = [
-      stub(higgsModels, 'higgsServingSpec', sglServingSpec),
-      stub(higgsModels, 'higgsSglangFor', () => ({
-        ...realSglangFor(realServingSpec()),
-        condaEnvName: FAKE_SGL_ENV,
-      })),
-    ];
-    try {
       const res = await doctorMod.higgsDoctor();
       const script = lastSpawn.args.join(' ');
       assert.match(script, /import sglang_omni/,
@@ -554,17 +590,12 @@ check('the probe examines the sglomni env and asks about sglang_omni', () => onP
       assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
       assert.ok(res.checks.some((c) => c.id === 'sglang-omni'),
         'no sglang-omni row at all');
-    } finally {
-      undo.reverse().forEach((u) => u());
-    }
   },
 ));
 
 check('NO patch rows and NO deploy-profile row on this stack', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  { stack: 'sglang-omni', platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
   async () => {
-    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
-    try {
       const res = await doctorMod.higgsDoctor();
       const script = lastSpawn.args.join(' ');
       // Both patches edit files in vllm/ and vllm_omni/, which this env does not
@@ -586,17 +617,12 @@ check('NO patch rows and NO deploy-profile row on this stack', () => onPlatform(
       assert.ok(!res.checks.some((c) => c.id === 'profile-sha'),
         'a profile-sha row was reported for the SGLang stack');
       assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
-    } finally {
-      undo();
-    }
   },
 ));
 
 check('the launcher row is serve_higgs_sgl.sh, hashed like the other one', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  { stack: 'sglang-omni', platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
   async () => {
-    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
-    try {
       const res = await doctorMod.higgsDoctor();
       const script = lastSpawn.args.join(' ');
       assert.ok(script.includes(toolPaths.HIGGS_SGL_LAUNCH_SCRIPT),
@@ -607,17 +633,12 @@ check('the launcher row is serve_higgs_sgl.sh, hashed like the other one', () =>
       assert.ok(row && row.ok, JSON.stringify(row));
       assert.strictEqual(res.checks.find((c) => c.id === 'launcher').label,
         toolPaths.HIGGS_SGL_LAUNCH_SCRIPT);
-    } finally {
-      undo();
-    }
   },
 ));
 
 check('missing flashinfer CUDA symlinks fail BY NAME, with what they cost', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: SGL_NO_CUDA_LINKS },
+  { stack: 'sglang-omni', platform: 'win32', wslHiggs: true, probe: SGL_NO_CUDA_LINKS },
   async () => {
-    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
-    try {
       const res = await doctorMod.higgsDoctor();
       assert.strictEqual(res.valid, false, 'an env without the CUDA links passed the doctor');
       const row = res.checks.find((c) => c.id === 'cuda-links');
@@ -626,14 +647,12 @@ check('missing flashinfer CUDA symlinks fail BY NAME, with what they cost', () =
       assert.match(row.detail, /lib64/, 'the row does not name the first symlink');
       assert.match(row.detail, /libcudart\.so/, 'the row does not name the second');
       assert.match(row.detail, /installer/i, 'the row does not name the remedy');
-    } finally {
-      undo();
-    }
   },
 ));
 
 check('a stale sglang launcher is launcher-stale, not ok', () => onPlatform(
   {
+    stack: 'sglang-omni',
     platform: 'win32',
     wslHiggs: true,
     probe: {
@@ -644,15 +663,82 @@ check('a stale sglang launcher is launcher-stale, not ok', () => onPlatform(
     },
   },
   async () => {
-    const undo = stub(higgsModels, 'higgsServingSpec', sglServingSpec);
-    try {
       const res = await doctorMod.higgsDoctor();
       assert.strictEqual(res.valid, false, 'a stale launcher passed the doctor');
       const row = res.checks.find((c) => c.id === 'launcher-sha');
       assert.match(row.detail, /launcher-stale/);
       assert.match(row.detail, new RegExp(toolPaths.HIGGS_SGL_LAUNCH_SCRIPT));
-    } finally {
-      undo();
+  },
+));
+
+check(`the SHIPPED stack (${SHIPPED_STACK}) is the one the doctor examines`, () => onPlatform(
+  // NO `stack` FIXTURE: this row is the one that reads the catalog, because it is
+  // the one about what the app will actually report. Everything above is about a
+  // stack; this is about the decision.
+  {
+    platform: 'win32',
+    wslHiggs: true,
+    probe: SHIPPED_STACK === 'sglang-omni' ? SGL_GREEN : WSL_GREEN,
+  },
+  async () => {
+    const res = await doctorMod.higgsDoctor();
+    const script = lastSpawn.args.join(' ');
+    const sgl = SHIPPED_STACK === 'sglang-omni';
+    // The serving package, the patch rows and the profile row all follow from the
+    // one word — asserted here so a flip that broke the doctor could not hide
+    // behind fixtures that pin the stack themselves.
+    assert.match(script, sgl ? /import sglang_omni/ : /import vllm_omni/,
+      `the shipped stack is ${SHIPPED_STACK} but the probe imports the other package`);
+    assert.strictEqual(res.checks.some((c) => c.id === 'profile-sha'), !sgl,
+      `profile-sha row present=${!sgl ? 'expected' : 'unexpected'} for ${SHIPPED_STACK}`);
+    assert.strictEqual(res.checks.some((c) => c.id === 'cuda-links'), sgl,
+      `cuda-links row present=${sgl ? 'expected' : 'unexpected'} for ${SHIPPED_STACK}`);
+    assert.strictEqual(res.checks.some((c) => c.id === 'patch'), !sgl,
+      `patch rows present=${!sgl ? 'expected' : 'unexpected'} for ${SHIPPED_STACK}`);
+    assert.ok(res.checks.some((c) => c.id === (sgl ? 'sglang-omni' : 'vllm-omni')),
+      `no ${SHIPPED_STACK} row at all`);
+    assert.strictEqual(res.valid, true, JSON.stringify(res.checks.filter((c) => !c.ok)));
+  },
+));
+
+check('narrator\'s imports are probed in NARRATOR\'s env, not the server\'s', () => onPlatform(
+  // TWO ENVIRONMENTS THE MOMENT THE STACK IS FLIPPED, and they answer different
+  // questions. The SERVER runs in whatever the launcher names (`sglomni`);
+  // NARRATOR — the client that packs the book, POSTs the chunks and writes the
+  // files — runs in `getWslHiggsCondaEnv()` (`higgs3`) on BOTH stacks, because
+  // that is where `narrator-spawn.ts` puts every Higgs door. It is also the
+  // configuration every night-3 measurement was taken in: the probe client ran
+  // out of higgs3 against a server on 8200.
+  //
+  // Asking "can narrator import bs4" of the SERVER's env would report a green
+  // doctor for a machine whose prep dies on `No module named 'bs4'` — which is
+  // the exact failure this row was added for (Owen's first in-app Higgs prep).
+  { stack: 'sglang-omni', platform: 'win32', wslHiggs: true, probe: SGL_GREEN },
+  async () => {
+    await doctorMod.higgsDoctor();
+    const script = lastSpawn.args.join(' ');
+    // The find_spec probe — and ONLY it — runs out of narrator's env.
+    assert.strictEqual(envRunning(script, 'find_spec'), FAKE.higgsEnv,
+      "the deps probe does not run in narrator's own env");
+    // …and the serving-package probe runs out of the SERVER's.
+    assert.strictEqual(envRunning(script, 'import sglang_omni'), FAKE_SGL_ENV,
+      "the serving-package probe does not run in the server's env");
+    // The two really are different directories on this stack — otherwise the row
+    // above would be asserting a distinction that does not exist.
+    assert.notStrictEqual(FAKE.higgsEnv, FAKE_SGL_ENV);
+  },
+));
+
+check('on vllm-omni the two envs are ONE, so nothing changed there', () => onPlatform(
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  async () => {
+    await doctorMod.higgsDoctor();
+    const script = lastSpawn.args.join(' ');
+    // Both probes name the same prefix — the split above is a property of the
+    // SGLang stack, not a new indirection on this one.
+    for (const marker of ['find_spec', 'import vllm_omni']) {
+      assert.strictEqual(envRunning(script, marker), FAKE.higgsEnv,
+        `${marker} does not run in ${FAKE.higgsEnv}`);
     }
   },
 ));
@@ -981,7 +1067,7 @@ check('no check fails without a detail, on any arm', async () => {
   // detail-less row would leave someone with nowhere to go.
   const results = [];
   results.push(await onPlatform(
-    { platform: 'win32', wslHiggs: false, probe: { stdout: '', exit: 'error' } },
+    { stack: 'vllm-omni', platform: 'win32', wslHiggs: false, probe: { stdout: '', exit: 'error' } },
     () => doctorMod.higgsDoctor()));
   results.push(await onPlatform(
     { platform: 'darwin', weights: 'absent', probe: { stdout: '', exit: 'error' } },
@@ -1025,7 +1111,7 @@ check('darwin, everything green → null, and only then', () => onPlatform(
 ));
 
 check('win32 with the toggle off → refused, naming the toggle', () => onPlatform(
-  { platform: 'win32', wslHiggs: false, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: false, probe: WSL_GREEN },
   async () => {
     const refusal = await spawnMod.higgsEnvironmentRefusal();
     assert.ok(refusal, 'Windows without the toggle was waved through');
@@ -1034,7 +1120,7 @@ check('win32 with the toggle off → refused, naming the toggle', () => onPlatfo
 ));
 
 check('win32, everything green with the toggle on → null', () => onPlatform(
-  { platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
+  { stack: 'vllm-omni', platform: 'win32', wslHiggs: true, probe: WSL_GREEN },
   async () => {
     assert.strictEqual(await spawnMod.higgsEnvironmentRefusal(), null);
   },
