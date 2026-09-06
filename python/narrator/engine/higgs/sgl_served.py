@@ -50,16 +50,24 @@ silently wrong:
      4096`; there is no flag. Prompt tokens + `max_new_tokens` must fit it or the
      request is an HTTP 500. See `frame_cap`, which refuses BY NAME before
      anything is sent.
-  4. NO REFERENCE CLIPS. Two independent reasons, either sufficient:
-     the reference's ~330 placeholder tokens come out of the same 4096 and
-     measurably pushed the 13 longest chunks over it at a 3,500-frame cap
-     (field notes 4n.10); and `references[].audio_path` is read BY THE SERVER
-     from its own filesystem, which needs `--allowed-local-media-path` - a flag
-     `serve_higgs_sgl.sh` deliberately does not pass, because handing a server a
-     directory to read is not something a launcher should do quietly. A clips
-     voice is therefore REFUSED BY NAME on this stack rather than rendered
-     without its reference, which would be the model's own speaker at 12 % of the
-     narrator's ceiling.
+  4. THE REFERENCE RIDES IN THE BODY, AS BASE64. `CreateSpeechRequest
+     .references[]` is a `SpeechReference` with a `data` field (raw base64, no
+     `data:` prefix) beside `media_type` and `text`; `speech_service.py
+     ._normalize_reference` takes that branch FIRST and never touches the
+     server's filesystem, so no `--allowed-local-media-path` is needed and
+     `serve_higgs_sgl.sh` still hands the server no directory. (`audio_path`
+     is the other branch - a server-local path or a `file://` URL - and this
+     module never sends it.) The reference is charged to the context: one
+     AUDIO_PLACEHOLDER per DELAYED reference row (`build_prompt(num_ref_tokens=
+     delayed.shape[0])`, and `apply_delay_pattern` makes T frames T + 7 rows at
+     8 codebooks) plus `ref_text_id`, the transcript's tokens and
+     `ref_audio_id` - see `reference_token_bound`. A 30 s clip is ~760 of the
+     4,096 positions, which at the zero-shot chunk length (600 chars, the
+     measured wall - 900 drops the tail) leaves the frame cap its full 2.0x
+     ceiling. Until 2026-09-06 a clips voice was refused on this stack outright,
+     on the belief that `audio_path` was the only way in; the `data` branch was
+     read off sglang-omni 0.1.4's own `serve/speech_service.py` and
+     `models/higgs_tts/utils.py:load_audio_to_24k`.
   5. NO SENTINEL PATCH. That patch is a vllm-omni site-packages fix; SGLang-Omni
      has its own stage processor and `HIGGS_PATCHES` applies only to the other
      stack. There is therefore no `verify_sentinel_filter` here and BookForge's
@@ -181,10 +189,22 @@ MAX_CONTEXT_POSITIONS = CONTEXT_TOKENS - 1
 #: .build_prompt`: for a zero-shot request the ids are
 #: `[tts_id] + encode(text) + [text_id] + [audio_id]`. Not an estimate - the
 #: three are literal `ids.append(...)` calls with no branch a text-only request
-#: can take. (The reference branch adds `ref_text_id`, the reference transcript,
-#: `ref_audio_id` and one AUDIO_PLACEHOLDER per reference frame; this stack
-#: refuses reference voices, so that branch is unreachable from here.)
+#: can take. The reference branch is bounded separately - see
+#: `reference_token_bound`.
 PROMPT_SCAFFOLD_TOKENS = 3
+
+#: THE REFERENCE BRANCH'S OWN SCAFFOLD, EXACTLY TWO TOKENS: `ref_text_id` before
+#: the transcript and `ref_audio_id` before the placeholders, read off the same
+#: `build_prompt` (`if reference_text and num_ref_tokens > 0: ids.append(
+#: self.ref_text_id) ...; if num_ref_tokens > 0: ids.append(self.ref_audio_id)`).
+REFERENCE_SCAFFOLD_TOKENS = 2
+
+#: THE DELAY PATTERN'S EXTRA ROWS. `num_ref_tokens` is `delayed.shape[0]`
+#: (`stages.py`, both the preprocessing and the GPU path), and
+#: `utils.apply_delay_pattern` turns `[T, N]` raw codes into `[T + N - 1, N]` -
+#: so a clip of T frames costs T + 7 placeholder positions at Higgs's 8
+#: codebooks (`codec.py`'s `(batch, seq, 8)`).
+REFERENCE_DELAY_ROWS = 7
 
 #: CHARACTERS PER TOKEN, AS A **FLOOR**, so `prompt_token_bound` is an upper
 #: bound on the prompt and never an average.
@@ -228,8 +248,31 @@ CHARS_PER_TOKEN_FLOOR = 3.0
 MIN_CAP_SLACK = 1.2
 
 
-def prompt_token_bound(text: str) -> int:
-    """An UPPER BOUND on the prompt tokens SGLang-Omni will build for `text`.
+def reference_token_bound(voice) -> int:
+    """An UPPER BOUND on the prompt positions `voice`'s reference costs; 0 for a
+    voice with no reference (a DefaultVoice, or None).
+
+    Per `build_prompt`'s reference branch: `REFERENCE_SCAFFOLD_TOKENS`, the
+    transcript at `CHARS_PER_TOKEN_FLOOR`, and one placeholder per delayed
+    reference row - the clip's DECLARED seconds at the codec's
+    `v3_served.FRAMES_PER_SECOND` (25), rounded up, plus `REFERENCE_DELAY_ROWS`.
+    The seconds come from the clip's declaration, never from opening the file,
+    for the same reason `v3_served.reference_seconds` reads them that way; a
+    clip that declares none is refused there BY NAME.
+    """
+    if not isinstance(voice, ClipsVoice):
+        return 0
+    seconds = v3_served.reference_seconds(voice)
+    transcript_chars = sum(len(clip.transcript or '') for clip in voice.clips)
+    rows = int(math.ceil(seconds * v3_served.FRAMES_PER_SECOND)) + REFERENCE_DELAY_ROWS
+    return (REFERENCE_SCAFFOLD_TOKENS
+            + int(math.ceil(transcript_chars / CHARS_PER_TOKEN_FLOOR))
+            + rows)
+
+
+def prompt_token_bound(text: str, voice=None) -> int:
+    """An UPPER BOUND on the prompt tokens SGLang-Omni will build for `text` in
+    `voice` (the reference, when the voice carries one - `reference_token_bound`).
 
     `PROMPT_SCAFFOLD_TOKENS` (exact, read off the builder) plus the text at
     `CHARS_PER_TOKEN_FLOOR` characters per token (a measured floor - see that
@@ -238,7 +281,9 @@ def prompt_token_bound(text: str) -> int:
     reason about, and the two would disagree exactly where it matters.
     """
     chars = len(text or '')
-    return PROMPT_SCAFFOLD_TOKENS + int(math.ceil(chars / CHARS_PER_TOKEN_FLOOR))
+    return (PROMPT_SCAFFOLD_TOKENS
+            + int(math.ceil(chars / CHARS_PER_TOKEN_FLOOR))
+            + reference_token_bound(voice))
 
 
 def expected_frames(text: str) -> int:
@@ -248,8 +293,9 @@ def expected_frames(text: str) -> int:
     return int(len(text or '') / 15.0 * v3_served.FRAMES_PER_SECOND)
 
 
-def frame_cap(text: str) -> int:
+def frame_cap(text: str, voice=None) -> int:
     """`max_new_tokens` for one chunk on this stack, or a refusal BY NAME.
+    `voice` is charged for its reference, when it carries one.
 
     THE TWO CEILINGS. `v3_served.cap_frames(text)` is narrator's own generous one
     (2.0x expected + 150). `MAX_CONTEXT_POSITIONS - prompt_token_bound(text)` is
@@ -265,22 +311,83 @@ def frame_cap(text: str) -> int:
     """
     if not (text or '').strip():
         raise ValueError('Higgs SGLang: no text to size a frame cap for.')
-    bound = prompt_token_bound(text)
+    bound = prompt_token_bound(text, voice)
     headroom = MAX_CONTEXT_POSITIONS - bound
     expected = expected_frames(text)
     if headroom < expected * MIN_CAP_SLACK:
+        reference = reference_token_bound(voice)
         raise ValueError(
             f'Higgs SGLang-Omni: a {len(text)}-character chunk does not fit this '
             f"stack's context. SGLang-Omni's Higgs builder hard-codes "
             f'context_length {CONTEXT_TOKENS} (engine_builder.py, no flag), so '
             f'prompt + max_new_tokens must be at most {MAX_CONTEXT_POSITIONS}; '
-            f'this prompt is at most {bound} tokens, leaving {headroom} frames '
+            f'this prompt is at most {bound} tokens'
+            + (f' ({reference} of them the reference clip and its transcript)'
+               if reference else '')
+            + f', leaving {headroom} frames '
             f'against an expected {expected} - under the {MIN_CAP_SLACK}x slack '
             'below which the cap would land inside real speech and cut the chunk '
             'while the request reported success. Lower this voice\'s targetChars '
             'in electron/data/higgs-models.json, or render it on the vllm-omni '
             'stack, whose window is 8192.')
     return min(v3_served.cap_frames(text), headroom)
+
+
+# ---------------------------------------------------------------------------
+# The reference
+# ---------------------------------------------------------------------------
+
+#: The one media type this module declares for a reference. The clip is read as
+#: bytes and the server decodes them by THIS label (`load_audio_to_24k` ->
+#: `io.load_base64(media_type, data)`), so a clip that is not a wav would be
+#: decoded as one - refused by extension instead, see `reference_for`.
+REFERENCE_MEDIA_TYPE = 'audio/wav'
+
+
+def reference_for(voice: ClipsVoice) -> dict:
+    """The single `references` entry for `voice`, in `SpeechReference`'s shape:
+    `{data, media_type, text}` - raw base64 in `data`, NO `data:` prefix
+    (`_normalize_reference` hands it straight to `load_base64`; a prefixed
+    string fails its base64 validation).
+
+    The one-clip rule and the 30 s budget are `v3_served.reference_for`'s, and
+    they are the same rule here: sglang-omni's own reference ceiling is 100 s
+    (`stages._MAX_REF_AUDIO_SEC`), but the measured zero-shot behaviour, the
+    catalog's `referenceSecondsCap` and the MLX arm all speak the 30 s number,
+    and a stack-specific budget is a voice that renders on one machine and is
+    refused on the other.
+    """
+    if not isinstance(voice, ClipsVoice):
+        raise ValueError(
+            f'Higgs SGLang reference_for takes a ClipsVoice; got '
+            f'{type(voice).__name__}.')
+    v3_served.check_reference_budget(voice)
+    if len(voice.clips) != 1:
+        raise ValueError(
+            f"Higgs SGLang voice '{voice.name}' has {len(voice.clips)} reference "
+            'clips. One reference per request, the same rule as vllm-omni: '
+            'several clips must be pre-joined into one wav (clips separated by '
+            f'{v3_served.REFERENCE_JOIN_SECONDS} s of silence) with the '
+            'transcripts joined in the same order.')
+    clip = voice.clips[0]
+    if not os.path.isfile(clip.path):
+        raise ValueError(f'Higgs SGLang reference clip does not exist: {clip.path}')
+    if os.path.splitext(clip.path)[1].lower() != '.wav':
+        raise ValueError(
+            f"Higgs SGLang reference clip {clip.path} is not a .wav. The request "
+            f'declares the bytes as {REFERENCE_MEDIA_TYPE} and the server decodes '
+            'them as that; convert the clip rather than mislabel it.')
+    if not (clip.transcript or '').strip():
+        raise ValueError(
+            f"Higgs SGLang voice '{voice.name}': reference clip {clip.path} has no "
+            'transcript. The server frames the clone prompt as <|ref_text|> '
+            'transcript <|ref_audio|> clip, and a clip without its book-exact text '
+            'conditions every chunk on words it never heard.')
+    import base64
+    with open(clip.path, 'rb') as handle:
+        encoded = base64.b64encode(handle.read()).decode('ascii')
+    return {'data': encoded, 'media_type': REFERENCE_MEDIA_TYPE,
+            'text': clip.transcript}
 
 
 # ---------------------------------------------------------------------------
@@ -307,8 +414,8 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     """The POST body for one chunk, as `higgs_ladder.py render` sends it.
 
     `voice` is a DefaultVoice (the model's own speaker, or a fine-tune whose
-    weights ARE the voice - either way no `references` key) or None. A
-    ClipsVoice is REFUSED BY NAME: see the module docstring, item 4.
+    weights ARE the voice - either way no `references` key), a ClipsVoice (one
+    `references` entry, base64 in the body - `reference_for`), or None.
 
     `sampling` is REQUIRED and non-empty. That is the opposite of
     `v3_served.build_request_body`, where an empty mapping correctly means "the
@@ -318,12 +425,12 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     if not (text or '').strip():
         raise ValueError('Higgs SGLang request: no text')
     v3_served.validate_control_tokens(text)
-    refuse_clips_voice(voice)
-    if voice is not None and not isinstance(voice, DefaultVoice):
+    if voice is not None and not isinstance(voice, (DefaultVoice, ClipsVoice)):
         raise ValueError(
-            f'Higgs SGLang-Omni got a {type(voice).__name__} voice. This stack '
-            'renders TEXT-ONLY: the voice is the merged checkpoint the server '
-            'was started on.')
+            f'Higgs SGLang-Omni got a {type(voice).__name__} voice. A voice here '
+            'is a DefaultVoice (the merged checkpoint the server was started on, '
+            "or the base model's own speaker) or a ClipsVoice (a reference clip "
+            'in the request).')
     if not sampling:
         raise ValueError(
             'Higgs SGLang-Omni request carries no sampling. '
@@ -365,29 +472,12 @@ def build_request_body(text: str, voice, max_new_tokens: int, seed=None,
     for key in SAMPLING_KEYS:
         if key in sampling:
             body[key] = sampling[key]
-    return body
-
-
-def refuse_clips_voice(voice) -> None:
-    """A reference-clone voice cannot be rendered on this stack. Refused BY NAME
-    at BOTH boundaries - `HiggsV3Config.__post_init__`, so nobody pays a ~110 s
-    server start to find out, and `build_request_body`, so no code path can
-    reach the wire around it."""
     if isinstance(voice, ClipsVoice):
-        raise ValueError(
-            f"Higgs SGLang-Omni cannot render the reference-clone voice "
-            f"'{voice.name}'. TWO reasons, either sufficient. (1) CONTEXT: the "
-            f'reference rides in the prompt as ~330 placeholder tokens plus its '
-            f'transcript, out of a hard-coded {CONTEXT_TOKENS}-token window, and '
-            'that measurably pushed the 13 longest chunks of a real book over it '
-            'at a 3,500-frame cap (HIGGS_FIELD_NOTES 4n.10). (2) FILESYSTEM: '
-            'references[].audio_path is read BY THE SERVER, which needs '
-            '--allowed-local-media-path, and serve_higgs_sgl.sh does not hand a '
-            'server a directory to read. Render a clips voice on the vllm-omni '
-            'stack (serving.stack "vllm-omni"), which takes a data: URI and has '
-            'an 8192-token window. Refusing to drop the reference and render in '
-            "the model's own speaker, which is a different narrator at 12 % of "
-            "the fine-tune's ECAPA ceiling.")
+        # The reference, base64 in the body. A DefaultVoice sends NO
+        # `references` key at all - the absence is what "the model's own
+        # speaker" / "the checkpoint's speaker" looks like on the wire.
+        body['references'] = [reference_for(voice)]
+    return body
 
 
 # ---------------------------------------------------------------------------
@@ -647,16 +737,17 @@ class HiggsSglServedBackend(GuestOwnedServer):
         cap that breaches it is an HTTP 500 and this is the last place before the
         wire.
         """
-        self._check_context(request.text, request.max_new_tokens)
+        self._check_context(request.text, request.max_new_tokens, request.voice)
         body = build_request_body(request.text, request.voice,
                                   request.max_new_tokens, seed=request.seed,
                                   sampling=request.sampling)
         payload, content_type = self.post_speech(body, with_content_type=True)
         return v3_served.decode_response(payload, content_type)
 
-    def _check_context(self, text: str, max_new_tokens: int) -> None:
-        """prompt + cap <= 4,095, refused by name before the wire."""
-        bound = prompt_token_bound(text)
+    def _check_context(self, text: str, max_new_tokens: int, voice=None) -> None:
+        """prompt + cap <= 4,095, refused by name before the wire. The voice's
+        reference, when it has one, is part of the prompt."""
+        bound = prompt_token_bound(text, voice)
         total = bound + int(max_new_tokens)
         if total > MAX_CONTEXT_POSITIONS:
             raise ValueError(

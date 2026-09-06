@@ -214,11 +214,6 @@ class HiggsV3Config:
         # carry v2's empty control allowlist and no reference cap. Stamp v3's on
         # it here so there is exactly ONE place a v3 voice acquires v3's rules.
         self.voice = apply_v3_voice_defaults(self.voice)
-        if self.stack == STACK_SGLANG_OMNI:
-            # A reference-clone voice cannot be rendered on SGLang-Omni at all.
-            # Refused HERE as well as at the request, so nobody pays a ~110 s
-            # server start and a GPU allocation to be told.
-            sgl_served.refuse_clips_voice(self.voice)
         # The 30 s cap and the one-reference rule, checked before a server is
         # ever started rather than after a 55 s launch and an HTTP 400.
         if isinstance(self.voice, ClipsVoice):
@@ -347,7 +342,9 @@ class HiggsV3Config:
         `higgs_v3_stop_policy` (which is what the manifest records).
         """
         if self.stack == STACK_SGLANG_OMNI:
-            return sgl_served.frame_cap(text)
+            # The voice is charged for its reference clip, which rides in the
+            # same 4,096 positions the cap has to fit under.
+            return sgl_served.frame_cap(text, self.voice)
         return v3_served.cap_frames(text)
 
 

@@ -137,7 +137,9 @@ roster, and a voice not in it is refused by name.
     "kind": "clips",              // BookForge'''s RULE selector, not the wire format
     "engineVersion": "v3",
     "voice": {
-      "clips": [],                //   [{path, transcript, seconds}] - ONE at most
+      "clips": [],                //   [{path, transcript, seconds}] - ONE at most;
+                                  //   `path` = a NAME under <userData>/runtime/
+                                  //   higgs-models/refs/, or an absolute host path
       "checkpoint": {             //   a MERGED fine-tune dir (~8.5 GB), ONE PER ARM
         "wsl":    "/home/telltale/higgs_v3_merged/<dir>",   // guest-absolute
         "darwin": "runtime/higgs-models/<dir>"              // relative to userData
@@ -162,6 +164,62 @@ roster, and a voice not in it is refused by name.
   }]
 }
 ```
+
+### Zero-shot voices — kind `clips` (2026-09-06)
+
+Owen: *"give me a zero shot option on the higgs/narration modal"*, and *"ref
+clips can be saved permanently in the same area where models are saved."* Four
+ship: `zeroshot-thirdreich`, `zeroshot-owen-morgan`, `zeroshot-deathstalker`,
+`zeroshot-mistborn`. Each is the **BASE weights plus one reference clip** in every
+request — thirdreich and owen-morgan have no Higgs fine-tune, so this is their
+only Higgs route; for deathstalker and mistborn it is a *different product* from
+the fine-tune, not a second route to it (training measured that a clip adds no
+identity to the plain-trained fine-tune: ECAPA 0.86 with and without, field notes
+4n.10).
+
+- **The dropdown offers them**, labelled `Zero-shot · …`, and the picker refuses
+  a catalog whose clips voice does not say so. `SELECTABLE_VOICE_KINDS` is now
+  all three kinds; the 2026-09-04 "fine-tunes only" ruling is answered by the
+  label rather than by hiding the kind.
+- **The clip lives in the models area**: `<userData>/runtime/higgs-models/refs/
+  <name>.wav` — `%APPDATA%\BookForge\runtime\higgs-models\refs` on Windows,
+  `~/Library/Application Support/BookForge/runtime/higgs-models/refs` on the Mac
+  — beside `runtime/higgs-models/base` and next to `runtime/orpheus-models`. The
+  catalog names it by a **bare file name** (`higgsReferenceClipPath` resolves it
+  with the userData the app passes in, exactly as a darwin checkpoint is
+  resolved); an absolute path is the other spelling, host-native. NOT in the
+  repo: a clip is a voice artifact staged per machine. A relative name with a
+  directory in it is malformed (`refuseMisshapedClipPath`); a name whose file is
+  not there is refused when the document is written, before any server starts
+  (`refuseMissingReferenceClip`), naming the folder to copy into.
+- **Training's picks**: one clean TREATED corpus clip each (denoised,
+  bed-normalized — the clone copies whatever noise the clip carries), ~15 s,
+  book-exact transcript with no digits or quotes. Length guidance 12–16 s (HIGH
+  that it works; MEDIUM that it is optimal — not swept). Sources are recorded in
+  each clip's `_source`.
+- **Chunk length 600** on both arms (`placeholder`; the measured zero-shot wall —
+  ≤600 keeps its text, 900 drops the tail, cloned or not; HIGH on vllm-omni,
+  MEDIUM on SGLang where base + clip has not been re-measured).
+- **Sampling** on the served arm is narrator's `SERVER_DEFAULT_SAMPLING`
+  (T 1.0 / top_p 0.95 / top_k 50 — the base snapshot ships no
+  `generation_config.json`, so there is nothing to read); the catalog's
+  `sampling` block mirrors it for the reader. Training's LOW-confidence
+  preference for T 0.8 on base is recorded, not applied.
+- **On SGLang-Omni the reference rides in the body**: `references: [{data:
+  <base64 wav>, media_type: "audio/wav", text}]` — `SpeechReference`'s `data`
+  branch, which `speech_service._normalize_reference` takes FIRST and which
+  never touches the server's filesystem (no `--allowed-local-media-path`). It is
+  charged to the hard 4096 context by `sgl_served.reference_token_bound`: two
+  scaffold tokens, the transcript at the 3 chars/token floor, and one placeholder
+  per DELAYED row — the declared seconds × 25 fps + 7 (the delay pattern at 8
+  codebooks). A 15 s clip is ~430 positions; at 600 chars the frame cap keeps its
+  full 2.0× ceiling. Until 2026-09-06 narrator refused a clips voice on this
+  stack outright, on the belief that `audio_path` (server-local, needs the flag)
+  was the only way in. On vllm-omni it is one `data:` URI; on the Mac's MLX arm
+  the clip is encoded once at load. The wire is `test_higgs_sgl.py
+  ::ClipsVoiceReferenceTest`.
+- **Expect** the fine-tunes' ~1-in-10 retake rate or worse (stochastic run-ons
+  and early stops); chunk-to-chunk identity drift is UNMEASURED for zero-shot.
 
 ### One checkpoint per ARM, and one certificate per BACKEND
 

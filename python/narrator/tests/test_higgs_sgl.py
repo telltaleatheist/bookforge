@@ -21,7 +21,9 @@ render's status:
      `v3_served.cap_frames`' 2.0x ceiling reaches on its own at ~1,150
      characters, so it is not a corner case;
   4. a reference-clone voice rendered without its reference, which is the
-     model's own speaker at 12 % of a fine-tune's ECAPA ceiling.
+     model's own speaker at 12 % of a fine-tune's ECAPA ceiling - or with its
+     reference unaccounted for in the 4,096 positions, which is failure 3 again
+     wearing a clip.
 
 WHAT IS FIXTURE AND WHAT IS CAPTURE. The expected request body is built from the
 training side's `higgs_ladder.py render` (which drove every night-3 measurement)
@@ -296,33 +298,107 @@ class RequestShapeTest(SglTestCase):
                                           sampling=CHECKPOINT_SAMPLING)
 
 
-class ClipsVoiceRefusalTest(SglTestCase):
-    """A reference-clone voice cannot render on this stack, and is refused at
-    BOTH boundaries rather than rendered without its reference."""
+class ClipsVoiceReferenceTest(SglTestCase):
+    """A reference-clone (zero-shot) voice renders on this stack: the clip rides
+    in the body as base64 `data` - the `SpeechReference` branch that never
+    touches the server's filesystem - and it is charged to the context."""
 
-    def test_the_request_refuses_a_clips_voice_by_name(self):
+    def _b64(self, path):
+        import base64
+        with open(path, 'rb') as handle:
+            return base64.b64encode(handle.read()).decode('ascii')
+
+    def test_a_clips_voice_sends_ONE_reference_as_base64_data(self):
+        voice = self.clips_voice()
+        body = sgl_served.build_request_body('hello there', voice, 300,
+                                             sampling=CHECKPOINT_SAMPLING)
+        self.assertEqual(body['references'], [{
+            'data': self._b64(voice.clips[0].path),
+            'media_type': 'audio/wav',
+            'text': X2_TEXT,
+        }])
+        # NOT the path route: `audio_path` is read by the server from its own
+        # disk and needs --allowed-local-media-path, which the launcher does not
+        # pass. And no `data:` prefix - `_normalize_reference` hands `data`
+        # straight to base64 validation.
+        self.assertNotIn('audio_path', body['references'][0])
+        self.assertFalse(body['references'][0]['data'].startswith('data:'))
+
+    def test_the_config_accepts_a_clips_voice_on_this_stack(self):
+        config = HiggsV3Config(voice=self.clips_voice(), base_url=self.server.base_url)
+        self.assertEqual(config.stack, served_common.STACK_SGLANG_OMNI)
+        self.assertIsNone(config.checkpoint_dir, 'a zero-shot voice is the BASE weights')
+
+    def test_the_reference_is_charged_to_the_prompt_bound(self):
+        """`build_prompt`'s reference branch: ref_text_id + transcript +
+        ref_audio_id + one placeholder per DELAYED row (T + 7 at 8 codebooks),
+        T being the DECLARED seconds at 25 fps. 14 s -> 350 + 7 rows."""
+        voice = self.clips_voice()
+        without = sgl_served.prompt_token_bound('hello there')
+        with_ref = sgl_served.prompt_token_bound('hello there', voice)
+        expected = (sgl_served.REFERENCE_SCAFFOLD_TOKENS
+                    + -(-len(X2_TEXT) // 3)
+                    + 350 + sgl_served.REFERENCE_DELAY_ROWS)
+        self.assertEqual(with_ref - without, expected)
+        self.assertEqual(sgl_served.reference_token_bound(voice), expected)
+        self.assertEqual(sgl_served.reference_token_bound(None), 0)
+        self.assertEqual(sgl_served.reference_token_bound(self.checkpoint_voice()), 0)
+
+    def test_the_frame_cap_leaves_room_for_the_reference(self):
+        """At the zero-shot chunk length (600) a 14 s reference still leaves
+        cap_frames its full 2.0x ceiling; at the fine-tunes' 1200 the context
+        is the ceiling and the reference comes out of it."""
+        voice = self.clips_voice()
+        text = 'x' * 600
+        self.assertEqual(sgl_served.frame_cap(text, voice), v3_served.cap_frames(text))
+        long = 'x' * 1200
+        cap = sgl_served.frame_cap(long, voice)
+        self.assertLess(cap, sgl_served.frame_cap(long))
+        self.assertLessEqual(cap + sgl_served.prompt_token_bound(long, voice),
+                             sgl_served.MAX_CONTEXT_POSITIONS)
+        config = HiggsV3Config(voice=voice, base_url=self.server.base_url)
+        self.assertEqual(config.cap_frames(long), cap,
+                         "the config's cap charges the config's own voice")
+
+    def test_a_chunk_the_reference_pushes_out_is_refused_naming_the_clip(self):
+        voice = self.clips_voice()
         with self.assertRaises(ValueError) as caught:
-            sgl_served.build_request_body('hello there', self.clips_voice(), 300,
-                                          sampling=CHECKPOINT_SAMPLING)
-        message = str(caught.exception)
-        self.assertIn('clone', message)
-        self.assertIn('4096', message, 'the refusal must name the context')
-        self.assertIn('allowed-local-media-path', message,
-                      'and the other independent reason')
-        self.assertIn('vllm-omni', message, 'and where the voice CAN render')
+            sgl_served.frame_cap('x' * 2200, voice)
+        self.assertIn('reference clip', str(caught.exception))
 
-    def test_the_config_refuses_a_clips_voice_before_any_server_starts(self):
+    def test_the_backend_checks_the_context_WITH_the_reference(self):
+        """`speak` re-checks prompt + cap at the wire; a cap sized without the
+        clip is refused there rather than becoming an HTTP 500."""
+        voice = self.clips_voice()
+        backend = HiggsSglServedBackend(base_url=self.server.base_url)
+        text = 'x' * 1200
+        with self.assertRaises(ValueError):
+            backend.speak(SpeechRequest(
+                text=text, voice=voice, max_new_tokens=sgl_served.frame_cap(text),
+                sampling=CHECKPOINT_SAMPLING))
+        self.assertEqual(self.server.requests, [], 'nothing reached the wire')
+
+    def test_a_non_wav_clip_is_refused_rather_than_mislabelled(self):
+        flac = os.path.join(self.dir, 'ref.flac')
+        with open(flac, 'wb') as handle:
+            handle.write(b'fLaC')
+        voice = ClipsVoice(clips=(ReferenceClip(flac, X2_TEXT, seconds=14.0),),
+                           name='clone')
         with self.assertRaises(ValueError) as caught:
-            HiggsV3Config(voice=self.clips_voice(), base_url=self.server.base_url)
-        self.assertIn('clone', str(caught.exception))
+            sgl_served.reference_for(voice)
+        self.assertIn('.wav', str(caught.exception))
 
-    def test_the_same_voice_is_accepted_on_the_vllm_omni_stack(self):
-        """The refusal is the STACK's, not the voice's - stated as a test so
-        nobody 'fixes' it by dropping clips support everywhere."""
-        config = HiggsV3Config(voice=self.clips_voice(),
-                               stack=served_common.STACK_VLLM_OMNI,
-                               base_url=self.server.base_url)
-        self.assertEqual(config.stack, served_common.STACK_VLLM_OMNI)
+    def test_two_clips_and_an_over_budget_clip_are_refused(self):
+        clip = a_wav(os.path.join(self.dir, 'ref2.wav'), seconds=1.0)
+        two = ClipsVoice(clips=(ReferenceClip(clip, X2_TEXT, seconds=10.0),
+                                ReferenceClip(clip, X2_TEXT, seconds=10.0)),
+                         name='two')
+        with self.assertRaises(ValueError):
+            sgl_served.reference_for(two)
+        over = ClipsVoice(clips=(ReferenceClip(clip, X2_TEXT, seconds=42.0),),
+                          name='over')
+        with self.assertRaises(ValueError):
+            sgl_served.reference_for(over)
 
 
 # ---------------------------------------------------------------------------

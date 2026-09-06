@@ -2176,30 +2176,123 @@ check('the CLI accepts higgs for --mode tts and refuses it for streaming', () =>
     'the batch adapter still hardcodes the engine');
 });
 
-check('the dropdown offers FINE-TUNES and the default — never a clone', () => {
-  // Owen, 2026-09-04: production is fine-tuned voices only. A clone recovers 92 %
-  // of the narrator's speaker identity and none of his phrasing (2.01 pauses per
-  // 100 chars against his 1.39; pitch std 5.17 st against 4.36) — which is the
-  // gap a fine-tune exists to close — so listing one beside a fine-tune invites
-  // picking it for a book.
+check('the dropdown offers every kind, and a clone SAYS it is one', () => {
+  // Owen, 2026-09-04: production is fine-tuned voices only — a clone recovers
+  // 92 % of the narrator's speaker identity and none of his phrasing, so listing
+  // one beside a fine-tune invites picking it for a book. That kept `clips` out
+  // of the dropdown.
   //
-  // The `clips` SHAPE stays fully supported below the picker: the loader
-  // validates it, the document emits it, and the narrator cross-check drives
-  // narrator's real loader with one. It is simply never offered.
-  const offered = higgs.higgsNarrationVoices().map((v) => v.value);
+  // Owen, 2026-09-06: "give me a zero shot option on the higgs/narration modal"
+  // — base Higgs v3 plus one reference clip, for the voices with no Higgs
+  // fine-tune (thirdreich, owen-morgan) and, as a different product, beside the
+  // deathstalker and mistborn fine-tunes. So `clips` IS offered, and the 09-04
+  // concern is answered by the LABEL: every clone says "Zero-shot", and the
+  // picker refuses a catalog whose clone does not.
+  const offered = new Map(higgs.higgsNarrationVoices().map((v) => [v.value, v]));
   const byId = new Map(higgs.listHiggsModels().map((m) => [m.id, m]));
-  for (const id of offered) {
+  for (const [id, row] of offered) {
     const kind = byId.get(id).kind;
-    assert.ok(kind === 'checkpoint' || kind === 'default',
+    assert.ok(['checkpoint', 'default', 'clips'].includes(kind),
       `the dropdown offers "${id}", which is kind '${kind}'`);
+    if (kind === 'clips') {
+      assert.match(row.label, /zero-shot/i, `clone "${id}" is offered without saying so: ${row.label}`);
+    }
   }
-  // And the catalog is still ABLE to hold a clone — this is a policy about the
-  // picker, not a hole in the shape support.
-  assert.doesNotThrow(() => higgs.higgsVoicesDocument(probeVoice({
-    id: 'diag', kind: 'clips',
-    voice: { clips: [{ path: '/a.wav', transcript: 'a line', seconds: 12 }] },
+  const clones = [...byId.values()].filter((m) => m.kind === 'clips').map((m) => m.id);
+  assert.ok(clones.length > 0, 'the catalog ships no zero-shot voice at all');
+  for (const id of clones) assert.ok(offered.has(id), `zero-shot voice "${id}" is not offered`);
+});
+
+check('the four shipped zero-shot voices: base weights + one ~15 s clip in the MODELS AREA', () => {
+  // Training's picks (2026-09-06): one clean TREATED corpus clip each, 12-16 s,
+  // book-exact transcript. Owen: "ref clips can be saved permanently in the same
+  // area where models are saved" — so the catalog names each by a bare file
+  // name, resolved under <userData>/runtime/higgs-models/refs/, never in the repo.
+  const want = ['zeroshot-thirdreich', 'zeroshot-owen-morgan', 'zeroshot-deathstalker', 'zeroshot-mistborn'];
+  const byId = new Map(higgs.listHiggsModels().map((m) => [m.id, m]));
+  for (const id of want) {
+    const m = byId.get(id);
+    assert.ok(m, `${id} is not in the catalog`);
+    assert.strictEqual(m.kind, 'clips');
+    assert.match(m.label, /^Zero-shot/, `${id}'s label does not lead with Zero-shot`);
+    assert.ok(!m.voice.checkpoint, `${id} names a checkpoint — a zero-shot voice is the BASE weights`);
+    assert.strictEqual(m.voice.clips.length, 1, `${id} must carry exactly one clip`);
+    const clip = m.voice.clips[0];
+    assert.strictEqual(clip.path, path.basename(clip.path), `${id}'s clip is not a bare name: ${clip.path}`);
+    assert.ok(!path.isAbsolute(clip.path));
+    assert.ok(clip.seconds >= 12 && clip.seconds <= 16, `${id}'s clip is ${clip.seconds} s, outside training's 12-16 s`);
+    assert.ok(clip.transcript && !/[0-9"]/.test(clip.transcript), `${id}'s transcript carries digits or quotes`);
+    for (const arm of ['served', 'mlx']) {
+      const caps = m.backends[arm];
+      assert.strictEqual(caps.maxChars, 600, `${id} ${arm}: the zero-shot wall is 600`);
+      assert.strictEqual(caps.maxCharsSource, 'placeholder');
+      assert.strictEqual(caps.targetChars, 600);
+      assert.strictEqual(caps.referenceSecondsCap, 30);
+    }
+    assert.strictEqual(higgs.higgsVoiceUnavailableReason(m), null,
+      `${id} is offered disabled: ${higgs.higgsVoiceUnavailableReason(m)}`);
+  }
+});
+
+const ZS_USER_DATA = fs.mkdtempSync(path.join(HOST_TMP, 'bf-higgs-zs-userdata-'));
+process.on('exit', () => { try { fs.rmSync(ZS_USER_DATA, { recursive: true, force: true }); } catch {} });
+const ZS_REFS = higgs.higgsRefsDir(ZS_USER_DATA);
+
+check('a clip NAME resolves under <userData>/runtime/higgs-models/refs, and is REFUSED when absent', () => {
+  assert.strictEqual(ZS_REFS.replace(/\\/g, '/'), (ZS_USER_DATA + '/runtime/higgs-models/refs').replace(/\\/g, '/'));
+  const m = higgs.listHiggsModels().find((v) => v.id === 'zeroshot-thirdreich');
+  // No userData at all: refused by name, never guessed — the darwin checkpoint rule.
+  assert.throws(() => higgs.higgsVoicesDocument(m, { arm: 'wsl' }), /userData/,
+    'a bare clip name was resolved with no userData directory');
+  // userData given, clip not staged there: refused naming the folder to copy into.
+  let threw = null;
+  try { higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA }); } catch (err) { threw = err; }
+  assert.ok(threw, 'a missing clip was written into the document');
+  assert.match(threw.message, /thirdreich\.wav/);
+  assert.match(threw.message, /runtime\/higgs-models\/refs/, 'the refusal does not say where the clip goes');
+  // Staged: the document carries THIS MACHINE's absolute path, translated for the arm.
+  fs.mkdirSync(ZS_REFS, { recursive: true });
+  for (const v of higgs.listHiggsModels().filter((x) => x.kind === 'clips')) {
+    fs.writeFileSync(path.join(ZS_REFS, v.voice.clips[0].path), '');
+  }
+  const doc = higgs.higgsVoicesDocument(m, {
+    arm: 'wsl', userDataDir: ZS_USER_DATA, translatePath: (p) => 'GUEST:' + p.replace(/\\/g, '/'),
+  })['zeroshot-thirdreich'];
+  assert.strictEqual(doc.kind, 'clips');
+  assert.strictEqual(doc.clips.length, 1);
+  assert.strictEqual(doc.clips[0].path,
+    'GUEST:' + path.join(ZS_REFS, 'thirdreich.wav').replace(/\\/g, '/'),
+    'the document path is not the staged clip translated for the guest');
+  assert.strictEqual(doc.clips[0].seconds, 15);
+  assert.strictEqual(doc.maxChars, 600);
+  assert.strictEqual(doc.targetChars, 600);
+  assert.strictEqual(doc.maxReferenceSeconds, 30);
+  assert.ok(!('checkpointDir' in doc), 'a zero-shot document must not name a checkpoint');
+  // The Mac arm resolves the SAME name under its own userData.
+  const mac = higgs.higgsVoicesDocument(m, { arm: 'darwin', userDataDir: ZS_USER_DATA })['zeroshot-thirdreich'];
+  assert.strictEqual(mac.clips[0].path, path.join(ZS_REFS, 'thirdreich.wav'));
+});
+
+check('a relative clip with a directory in it, or an empty path, is REFUSED as malformed', () => {
+  for (const bad of ['sub/a.wav', '../a.wav', '', '  ']) {
+    const m = probeVoice({
+      kind: 'clips',
+      voice: { clips: [{ path: bad, transcript: 'a line', seconds: 12 }] },
+    });
+    assert.ok(higgs.higgsVoiceUnavailableReason(m),
+      'clip path ' + JSON.stringify(bad) + ' was accepted by the picker');
+    assert.throws(() => higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA }),
+      /bare file name|no path/, 'clip path ' + JSON.stringify(bad) + ' reached the document');
+  }
+  // An ABSOLUTE path is host-native and needs no userData — the other spelling.
+  const abs = path.join(ZS_REFS, 'thirdreich.wav');
+  const m = probeVoice({
+    kind: 'clips',
+    voice: { clips: [{ path: abs, transcript: 'a line', seconds: 12 }] },
     backends: { served: { maxChars: 600, maxCharsSource: 'catalog', referenceSecondsCap: 30, allowedControls: [] } },
-  }), WSL_DOC));
+  });
+  const doc = higgs.higgsVoicesDocument(m, WSL_DOC).probe;
+  assert.strictEqual(doc.clips[0].path, abs);
 });
 
 check('the certified voice is offered SELECTABLE, with no warning attached', () => {
@@ -2384,6 +2477,24 @@ if (skipWhy) {
       '/Users/fake/Library/Application Support/BookForge/runtime/higgs-models/ds_ad4lm_prod_ckpt1080');
     assert.strictEqual(macGot.max_chars, 900,
       "the Mac document carries the served arm's cap — a certificate is per (directory, backend)");
+  });
+
+  check('narrator ACCEPTS the SHIPPED zero-shot documents, clip and cap', () => {
+    // The four zeroshot-* entries, resolved against a userData whose models
+    // area holds (empty) files by the catalog's names — load_voices checks
+    // os.path.isfile on every clip and reads nothing else at load.
+    for (const m of higgs.listHiggsModels().filter((v) => v.kind === 'clips')) {
+      const doc = higgs.higgsVoicesDocument(m, { arm: 'wsl', userDataDir: ZS_USER_DATA });
+      const r = runLoad(doc);
+      assert.strictEqual(r.status, 0, `narrator refused ${m.id}:\n` + (r.stderr || '').trim());
+      const got = JSON.parse(r.stdout.trim().split('\n').pop());
+      assert.strictEqual(got.name, m.id);
+      assert.strictEqual(got.cls, 'ClipsVoice', `${m.id} did not load as a reference clone`);
+      assert.strictEqual(got.clips, 1);
+      assert.strictEqual(got.checkpoint, null, `${m.id} loaded with a checkpoint — it is the BASE weights`);
+      assert.strictEqual(got.max_chars, 600);
+      assert.strictEqual(got.source, 'placeholder');
+    }
   });
 
   check('narrator REFUSES a checkpoint with no cap — the refusal we mirror', () => {

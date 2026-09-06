@@ -139,11 +139,12 @@ import * as fs from 'fs';
  *                 — a different person, which is why it is named not implied.
  *   'checkpoint'  a MERGED fine-tune directory, prompted TEXT-ONLY. The
  *                 production shape (see `higgsNarrationVoices`).
- *   'clips'       a zero-shot clone. AT LEAST ONE clip, at most one (vllm-omni
- *                 takes exactly one reference), each with a book-exact
- *                 transcript and a declared duration. DIAGNOSTIC ONLY — kept
- *                 because the document shape is real and worth being able to
- *                 hand narrator, never offered in the narration dropdown.
+ *   'clips'       a zero-shot clone: the BASE weights plus one reference clip
+ *                 (both stacks take exactly one), with its book-exact transcript
+ *                 and a declared duration. OFFERED since 2026-09-06, labelled
+ *                 "Zero-shot" so it is never mistaken for a fine-tune; the four
+ *                 shipped ones read their clip from the models area,
+ *                 `<userData>/runtime/higgs-models/refs/`.
  *
  * WHY 'checkpoint' AND NOT 'adapter'. It was `adapter`/`adapterDir` until
  * 2026-09-04, which named the artifact we TRAIN rather than the artifact that
@@ -157,21 +158,27 @@ import * as fs from 'fs';
 export type HiggsVoiceKind = 'default' | 'clips' | 'checkpoint';
 
 /**
- * The kinds the narration dropdown offers.
+ * The kinds the narration dropdown offers: all three.
  *
- * Owen, 2026-09-04: **production is fine-tuned voices only.** A clone is a
- * diagnostic — it recovers 92 % of the narrator's speaker identity and none of
- * his phrasing (2.01 pauses/100 chars against his 1.39; pitch std 5.17 st
- * against 4.36), which is the gap a fine-tune exists to close. Offering one in
- * the same list as a fine-tune invites picking it for a book.
+ * Owen, 2026-09-04, ruled production fine-tuned voices only — a clone recovers
+ * 92 % of the narrator's speaker identity and none of his phrasing (2.01
+ * pauses/100 chars against his 1.39; pitch std 5.17 st against 4.36), which is
+ * the gap a fine-tune exists to close — and `clips` was kept out of this set so
+ * a clone was never picked for a book by accident.
+ *
+ * Owen, 2026-09-06, asked for a ZERO-SHOT OPTION on the narration modal: base
+ * Higgs v3 plus one reference clip, for the two voices that have no Higgs
+ * fine-tune at all (thirdreich, owen-morgan) and, as a different product beside
+ * the fine-tune, for deathstalker and mistborn. So `clips` is offered — with the
+ * word "Zero-shot" in every such label, which is what keeps the 09-04 concern
+ * honest: the dropdown says what it is, rather than hiding it.
  *
  * `default` stays because it is the one voice that needs nothing staged, so it
  * is what a machine auditions the serving stack with before any checkpoint
- * exists. The `clips` shape stays fully supported everywhere BELOW this line —
- * the loader validates it, the document emits it, the keeper drives narrator's
- * real loader with it — it is simply never offered.
+ * exists.
  */
-const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> = new Set(['default', 'checkpoint']);
+const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> =
+  new Set(['default', 'checkpoint', 'clips']);
 
 /**
  * One reference clip, in narrator's document spelling.
@@ -183,11 +190,32 @@ const SELECTABLE_VOICE_KINDS: ReadonlySet<HiggsVoiceKind> = new Set(['default', 
  */
 export interface HiggsReferenceClip {
   /**
-   * HOST-NATIVE path to the wav — the form the machine BookForge is running on
-   * uses. It is translated for the guest at document-write time, per spawn arm
-   * (`higgsVoicesDocument`), not stored pre-translated: a WSL-native path is
-   * right on the Windows+WSL arm by accident and meaningless on macOS/Linux,
-   * where there is no guest for it to be native to.
+   * The wav. TWO SPELLINGS, told apart by `path.isAbsolute`:
+   *
+   *   RELATIVE — a file NAME in the models area, `<userData>/runtime/higgs-models/
+   *     refs/` (`higgsRefsDir`), beside `runtime/higgs-models/base` and the
+   *     Mac's checkpoints, and next door to `runtime/orpheus-models`. Owen,
+   *     2026-09-06: "ref clips can be saved permanently in the same area where
+   *     models are saved." NOT in the repo: a clip is a voice artifact, staged
+   *     per machine like a checkpoint, and the catalog names it the way it
+   *     names a darwin checkpoint — relative, resolved with the userData
+   *     directory the app passes in. No `..` and no separators: a name, not a
+   *     path — `refuseMisshapedClipPath`.
+   *   ABSOLUTE — HOST-NATIVE, the form the machine BookForge is running on
+   *     uses. For a clip that lives anywhere else.
+   *
+   * Either way it is translated for the guest at document-write time, per
+   * spawn arm (`higgsVoicesDocument`), not stored pre-translated: a WSL-native
+   * path is right on the Windows+WSL arm by accident and meaningless on
+   * macOS/Linux, where there is no guest for it to be native to. A NAME must
+   * EXIST in the models area — `refuseMissingReferenceClip`, at document-write
+   * time, before any server is started, naming the folder to copy into. (The
+   * picker checks the SHAPE only, the same as it does for a darwin checkpoint:
+   * the catalog module imports no Electron and does not know where userData
+   * is.) An ABSOLUTE path is written through as given and narrator's own
+   * `load_voices` is what refuses a missing one (`os.path.isfile` on every
+   * clip, at engine load, before any server is launched) — the host has
+   * nothing to add to that refusal but a second copy of it.
    */
   path: string;
   /**
@@ -917,6 +945,86 @@ function refuseMalformedVoice(model: HiggsModel): void {
         `fine-tune.`,
     );
   }
+  for (const clip of clips ?? []) refuseMisshapedClipPath(model, clip);
+}
+
+/**
+ * WHERE THE REFERENCE CLIPS LIVE: the models area. `runtime/higgs-models/refs`
+ * under the app's userData, beside `runtime/higgs-models/base` (the Mac's base
+ * weights) and the Mac's checkpoints, and next to `runtime/orpheus-models`.
+ * Owen, 2026-09-06: "ref clips can be saved permanently in the same area where
+ * models are saved."
+ */
+export function higgsRefsDir(userDataDir: string): string {
+  return path.join(userDataDir, 'runtime', 'higgs-models', 'refs');
+}
+
+/**
+ * A relative clip path is a NAME under `higgsRefsDir()` — nothing else. A
+ * relative path with a directory in it would resolve somewhere that is not
+ * the models area and still "work" on the machine that happened to have the
+ * file, which is the cross-machine failure the one folder exists to remove.
+ */
+function refuseMisshapedClipPath(model: HiggsModel, clip: HiggsReferenceClip): void {
+  const raw = (clip.path || '').trim();
+  if (!raw) {
+    throw new Error(`Higgs voice "${model.id}" has a reference clip with no path.`);
+  }
+  if (path.isAbsolute(raw)) return;
+  if (raw !== path.basename(raw) || raw === '.' || raw === '..') {
+    throw new Error(
+      `Higgs voice "${model.id}" names reference clip ${JSON.stringify(raw)}, which is ` +
+        `relative but not a bare file name. A relative clip is a file in the models area ` +
+        `(<userData>/runtime/higgs-models/refs/) and is written as its name alone; a clip ` +
+        `anywhere else is an absolute, host-native path.`,
+    );
+  }
+}
+
+/**
+ * The clip's path ON THIS MACHINE: a name resolved against `higgsRefsDir`, an
+ * absolute path as written. `userDataDir` is REQUIRED for a name and refused
+ * as missing rather than guessed — the same rule as `higgsCheckpointDirFor`.
+ */
+export function higgsReferenceClipPath(
+  model: HiggsModel,
+  clip: HiggsReferenceClip,
+  userDataDir?: string,
+): string {
+  const raw = (clip.path || '').trim();
+  if (path.isAbsolute(raw)) return raw;
+  if (!userDataDir || !userDataDir.trim()) {
+    throw new Error(
+      `Higgs voice "${model.id}": reference clip ${JSON.stringify(raw)} is a name in the ` +
+        "models area (<userData>/runtime/higgs-models/refs/), and no userData directory " +
+        "was given. Pass app.getPath('userData') — there is no default and no search.",
+    );
+  }
+  return path.join(higgsRefsDir(userDataDir), raw);
+}
+
+/**
+ * A clip NAMED in the models area must be THERE. narrator's `load_voices`
+ * checks every clip (`os.path.isfile`) at engine load, before any server is
+ * launched — but in the guest, against the translated path, with a message
+ * that names the translated path and nothing about where the file belongs.
+ * This is the host's refusal for the one spelling the host owns the location
+ * of: it names the folder to copy into. An absolute path is narrator's to
+ * refuse; the host would only be repeating it.
+ */
+function refuseMissingReferenceClip(model: HiggsModel, userDataDir?: string): void {
+  for (const clip of model.voice.clips ?? []) {
+    if (path.isAbsolute((clip.path || '').trim())) continue;
+    const resolved = higgsReferenceClipPath(model, clip, userDataDir);
+    if (!fs.existsSync(resolved)) {
+      throw new Error(
+        `Higgs voice "${model.id}" names reference clip ${clip.path}, which is not on this ` +
+          `machine (looked at ${resolved}). Copy the clip into the models area, ` +
+          "runtime/higgs-models/refs/ under the app's userData — it is a voice artifact " +
+          'staged per machine, like a checkpoint.',
+      );
+    }
+  }
 }
 
 /** The arms a checkpoint may be staged on. The catalog's whole key vocabulary. */
@@ -1351,7 +1459,8 @@ export interface HiggsDocumentTarget {
   arm: HiggsCheckpointArm;
   /**
    * The app's userData directory. REQUIRED on the darwin arm, where a
-   * checkpoint's catalog path is relative to it; unused on the WSL arm.
+   * checkpoint's catalog path is relative to it, and on EVERY arm for a clips
+   * voice whose clip is a name in the models area (`higgsRefsDir`).
    */
   userDataDir?: string;
   /** Guest translation, on the arm that has a guest. Identity by default. */
@@ -1369,8 +1478,13 @@ export function higgsVoicesDocument(
   const entry: Record<string, unknown> = { kind: model.kind };
 
   if (model.kind === 'clips') {
+    // The name becomes this machine's absolute path FIRST (models area +
+    // userData), is proved to exist, and only then gets the guest's spelling:
+    // narrator opens the file itself (base64 into the request), so the document
+    // must name it as the SPAWN sees it.
+    refuseMissingReferenceClip(model, target.userDataDir);
     entry.clips = (model.voice.clips ?? []).map((c) => ({
-      path: translatePath(c.path),
+      path: translatePath(higgsReferenceClipPath(model, c, target.userDataDir)),
       transcript: c.transcript,
       seconds: c.seconds,
     }));
@@ -1767,12 +1881,21 @@ export function higgsSpawnEnv(
 export function higgsNarrationVoices(): {
   value: string; label: string; unavailable?: string;
 }[] {
-  // FINE-TUNED VOICES ONLY (plus the served default). Owen, 2026-09-04: a clone
-  // is a diagnostic, and listing one beside a fine-tune invites picking it for a
-  // book. The `clips` shape stays supported everywhere else — the loader
-  // validates it, the document emits it, the narrator cross-check drives it —
-  // it is simply not on offer here.
+  // Every kind, since 2026-09-06 (see SELECTABLE_VOICE_KINDS for the ruling
+  // and the one it superseded). A clips voice's LABEL says "Zero-shot", and the
+  // catalog is refused if it does not: the 2026-09-04 concern was a clone taken
+  // for a fine-tune, and the label is what answers it.
   return listHiggsModels()
+    .map((m) => {
+      if (m.kind === 'clips' && !/zero-shot/i.test(m.label)) {
+        throw new Error(
+          `Higgs voice "${m.id}" is a zero-shot clone but its label (${JSON.stringify(m.label)}) ` +
+            'does not say "Zero-shot". The dropdown lists clones beside fine-tunes, and the ' +
+            'label is the one thing that tells a person which is which.',
+        );
+      }
+      return m;
+    })
     .filter((m) => SELECTABLE_VOICE_KINDS.has(m.kind))
     .map((m) => {
       // TWO WAYS TO BE UNAVAILABLE, said differently, because they send a person

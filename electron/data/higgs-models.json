@@ -263,6 +263,238 @@
       },
       "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train; dip checkpoint 920). Promoted 2026-09-06 on Owen's ruling ('promote the mistborn model to the catalog'): Owen judged all three mistborn renders flawless by ear; on paper mb2 is the best (damaged 6/50 vs 11 for the first train, run-ons 3 vs 8, 0 early stops, 0 gibberish on SGLang at 16 wide, the 50 Fuhrer chunks packed at 1200 chars). Served exactly like deathstalker ckpt-1080: same launcher, max_running_requests 16, max_new_tokens 7500. No eosFloor tuning.",
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
+    },
+    {
+      "id": "zeroshot-thirdreich",
+      "label": "Zero-shot · Third Reich (reference clip on base Higgs v3)",
+      "kind": "clips",
+      "engineVersion": "v3",
+      "voice": {
+        "clips": [
+          {
+            "path": "thirdreich.wav",
+            "transcript": "Almost every aspect of political, social and associational life was affected, at every level from the nation to the village. The Nazi takeover of the federated states provided a key component in this process.",
+            "seconds": 15.0,
+            "_source": "E:\\training\\thirdreich\\build\\tr_6h1\\wavs\\thirdreich_00002337.wav (training corpus, read-only; copied into the PC's runtime/higgs-models/refs 2026-09-06)"
+          }
+        ]
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-06",
+      "_zeroShotNote": "ZERO-SHOT: the BASE Higgs v3 weights (bosonai/higgs-audio-v3-tts-4b, the HF-cache snapshot the launcher falls back to when HIGGS_MODEL_DIR is unset - the same server a `default` voice runs on) conditioned by ONE reference clip in every request. Asked for by Owen 2026-09-06 ('give me a zero shot option on the higgs/narration modal'). THE CLIP lives PERMANENTLY in the models area - <userData>/runtime/higgs-models/refs/<path> on every machine (Windows: %APPDATA%\\BookForge\\runtime\\higgs-models\\refs; Mac: ~/Library/Application Support/BookForge/runtime/higgs-models/refs), beside runtime/higgs-models/base and next to runtime/orpheus-models; a bare file name here resolves against that folder (higgsReferenceClipPath) and is refused by name if the file is not there. Owen, 2026-09-06: 'ref clips can be saved permanently in the same area where models are saved.' NOT in the repo - it is a voice artifact staged per machine like a checkpoint. Chosen by the training session from its TREATED corpus (denoised, bed-normalized: the clone copies whatever noise the clip carries), one clean ~15 s clip rather than two joined; its transcript is the corpus row's book-exact text (no digits, no quotes). Training's length guidance: 12-16 s (HIGH that it works - a 13.2 s clip drove a whole 37-chunk subset on SGLang; MEDIUM that it is optimal, length not swept). COST: ~25 placeholder positions per second of reference plus the transcript, charged to SGLang-Omni's hard 4096 context by narrator's sgl_served.reference_token_bound; at 600 chars the frame cap keeps its full 2.0x ceiling. HOW IT RIDES: on SGLang-Omni as `references: [{data: <base64 wav>, media_type, text}]` - the SpeechReference `data` branch, which never touches the server's filesystem (no --allowed-local-media-path); on vllm-omni as one data: URI; on the Mac's MLX arm encoded once at load. SAMPLING on the served arm is narrator's SERVER_DEFAULT_SAMPLING (T 1.0 / top_p 0.95 / top_k 50 - the numbers every training run used; the base snapshot ships NO generation_config.json, so there is nothing to read); the `sampling` block below is a MIRROR of that for the reader, not a source. Training's LOW-confidence preference for T 0.8 on base is recorded here and not applied - unmeasured. EXPECT the fine-tunes' ~1-in-10 retake rate or worse (run-ons and early stops are stochastic per render); chunk-to-chunk identity drift is UNMEASURED for zero-shot. Identity of a clone against the narrator: ~0.68 cosine one clip vs 0.766 self-ceiling (see _referenceComment), i.e. 92 % of the fine-tune's identity and none of its phrasing.",
+      "_relationNote": "no Higgs fine-tune exists for this voice; base + clip is its only Higgs route",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        },
+        "mlx": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      }
+    },
+    {
+      "id": "zeroshot-owen-morgan",
+      "label": "Zero-shot · Owen Morgan (reference clip on base Higgs v3)",
+      "kind": "clips",
+      "engineVersion": "v3",
+      "voice": {
+        "clips": [
+          {
+            "path": "owen-morgan.wav",
+            "transcript": "He had no career, no diploma, no friends, and no plan. The war gave him all of those things at once - a cause, a community, a structure, and a role. The regiment became his home, and it would remain the only real home he ever had.",
+            "seconds": 15.12,
+            "_source": "E:\\training\\owen\\build\\owen_sel2h\\wavs\\owen_00000241.wav (training corpus, read-only; copied into the PC's runtime/higgs-models/refs 2026-09-06)"
+          }
+        ]
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-06",
+      "_zeroShotNote": "ZERO-SHOT: the BASE Higgs v3 weights (bosonai/higgs-audio-v3-tts-4b, the HF-cache snapshot the launcher falls back to when HIGGS_MODEL_DIR is unset - the same server a `default` voice runs on) conditioned by ONE reference clip in every request. Asked for by Owen 2026-09-06 ('give me a zero shot option on the higgs/narration modal'). THE CLIP lives PERMANENTLY in the models area - <userData>/runtime/higgs-models/refs/<path> on every machine (Windows: %APPDATA%\\BookForge\\runtime\\higgs-models\\refs; Mac: ~/Library/Application Support/BookForge/runtime/higgs-models/refs), beside runtime/higgs-models/base and next to runtime/orpheus-models; a bare file name here resolves against that folder (higgsReferenceClipPath) and is refused by name if the file is not there. Owen, 2026-09-06: 'ref clips can be saved permanently in the same area where models are saved.' NOT in the repo - it is a voice artifact staged per machine like a checkpoint. Chosen by the training session from its TREATED corpus (denoised, bed-normalized: the clone copies whatever noise the clip carries), one clean ~15 s clip rather than two joined; its transcript is the corpus row's book-exact text (no digits, no quotes). Training's length guidance: 12-16 s (HIGH that it works - a 13.2 s clip drove a whole 37-chunk subset on SGLang; MEDIUM that it is optimal, length not swept). COST: ~25 placeholder positions per second of reference plus the transcript, charged to SGLang-Omni's hard 4096 context by narrator's sgl_served.reference_token_bound; at 600 chars the frame cap keeps its full 2.0x ceiling. HOW IT RIDES: on SGLang-Omni as `references: [{data: <base64 wav>, media_type, text}]` - the SpeechReference `data` branch, which never touches the server's filesystem (no --allowed-local-media-path); on vllm-omni as one data: URI; on the Mac's MLX arm encoded once at load. SAMPLING on the served arm is narrator's SERVER_DEFAULT_SAMPLING (T 1.0 / top_p 0.95 / top_k 50 - the numbers every training run used; the base snapshot ships NO generation_config.json, so there is nothing to read); the `sampling` block below is a MIRROR of that for the reader, not a source. Training's LOW-confidence preference for T 0.8 on base is recorded here and not applied - unmeasured. EXPECT the fine-tunes' ~1-in-10 retake rate or worse (run-ons and early stops are stochastic per render); chunk-to-chunk identity drift is UNMEASURED for zero-shot. Identity of a clone against the narrator: ~0.68 cosine one clip vs 0.766 self-ceiling (see _referenceComment), i.e. 92 % of the fine-tune's identity and none of its phrasing.",
+      "_relationNote": "no Higgs fine-tune exists for this voice; base + clip is its only Higgs route",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        },
+        "mlx": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      }
+    },
+    {
+      "id": "zeroshot-deathstalker",
+      "label": "Zero-shot · Deathstalker (reference clip on base Higgs v3)",
+      "kind": "clips",
+      "engineVersion": "v3",
+      "voice": {
+        "clips": [
+          {
+            "path": "deathstalker.wav",
+            "transcript": "Freedom from anxiety is characterized by three inner attitudes. If what we have we receive as a gift, and if what we have is to be cared for by God, and if what we have is available to others, then we will possess freedom from anxiety.",
+            "seconds": 15.09,
+            "_source": "E:\\training\\deathstalker\\build\\ds_ad5s\\wavs\\cd_cd_00000918.wav (training corpus, read-only; copied into the PC's runtime/higgs-models/refs 2026-09-06)"
+          }
+        ]
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-06",
+      "_zeroShotNote": "ZERO-SHOT: the BASE Higgs v3 weights (bosonai/higgs-audio-v3-tts-4b, the HF-cache snapshot the launcher falls back to when HIGGS_MODEL_DIR is unset - the same server a `default` voice runs on) conditioned by ONE reference clip in every request. Asked for by Owen 2026-09-06 ('give me a zero shot option on the higgs/narration modal'). THE CLIP lives PERMANENTLY in the models area - <userData>/runtime/higgs-models/refs/<path> on every machine (Windows: %APPDATA%\\BookForge\\runtime\\higgs-models\\refs; Mac: ~/Library/Application Support/BookForge/runtime/higgs-models/refs), beside runtime/higgs-models/base and next to runtime/orpheus-models; a bare file name here resolves against that folder (higgsReferenceClipPath) and is refused by name if the file is not there. Owen, 2026-09-06: 'ref clips can be saved permanently in the same area where models are saved.' NOT in the repo - it is a voice artifact staged per machine like a checkpoint. Chosen by the training session from its TREATED corpus (denoised, bed-normalized: the clone copies whatever noise the clip carries), one clean ~15 s clip rather than two joined; its transcript is the corpus row's book-exact text (no digits, no quotes). Training's length guidance: 12-16 s (HIGH that it works - a 13.2 s clip drove a whole 37-chunk subset on SGLang; MEDIUM that it is optimal, length not swept). COST: ~25 placeholder positions per second of reference plus the transcript, charged to SGLang-Omni's hard 4096 context by narrator's sgl_served.reference_token_bound; at 600 chars the frame cap keeps its full 2.0x ceiling. HOW IT RIDES: on SGLang-Omni as `references: [{data: <base64 wav>, media_type, text}]` - the SpeechReference `data` branch, which never touches the server's filesystem (no --allowed-local-media-path); on vllm-omni as one data: URI; on the Mac's MLX arm encoded once at load. SAMPLING on the served arm is narrator's SERVER_DEFAULT_SAMPLING (T 1.0 / top_p 0.95 / top_k 50 - the numbers every training run used; the base snapshot ships NO generation_config.json, so there is nothing to read); the `sampling` block below is a MIRROR of that for the reader, not a source. Training's LOW-confidence preference for T 0.8 on base is recorded here and not applied - unmeasured. EXPECT the fine-tunes' ~1-in-10 retake rate or worse (run-ons and early stops are stochastic per render); chunk-to-chunk identity drift is UNMEASURED for zero-shot. Identity of a clone against the narrator: ~0.68 cosine one clip vs 0.766 self-ceiling (see _referenceComment), i.e. 92 % of the fine-tune's identity and none of its phrasing.",
+      "_relationNote": "a DIFFERENT PRODUCT from the `deathstalker` fine-tune, not a second route to it: base weights + this clip. The training session measured that adding a clip to the plain-trained fine-tune buys no identity (ECAPA 0.86 with and without, HIGGS_FIELD_NOTES 4n.10), so the fine-tune stays text-only and this entry is the clone",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        },
+        "mlx": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      }
+    },
+    {
+      "id": "zeroshot-mistborn",
+      "label": "Zero-shot · Mistborn (reference clip on base Higgs v3)",
+      "kind": "clips",
+      "engineVersion": "v3",
+      "voice": {
+        "clips": [
+          {
+            "path": "mistborn.wav",
+            "transcript": "That he should be the one who finally discovered the great Hero of Terris prophecy is a matter that would cause me to laugh, had events turned out just a little differently.",
+            "seconds": 14.87,
+            "_source": "E:\\training\\mistborn\\build\\mb_h1s\\wavs\\mb_mb_00000472.wav (training corpus, read-only; copied into the PC's runtime/higgs-models/refs 2026-09-06)"
+          }
+        ]
+      },
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-06",
+      "_zeroShotNote": "ZERO-SHOT: the BASE Higgs v3 weights (bosonai/higgs-audio-v3-tts-4b, the HF-cache snapshot the launcher falls back to when HIGGS_MODEL_DIR is unset - the same server a `default` voice runs on) conditioned by ONE reference clip in every request. Asked for by Owen 2026-09-06 ('give me a zero shot option on the higgs/narration modal'). THE CLIP lives PERMANENTLY in the models area - <userData>/runtime/higgs-models/refs/<path> on every machine (Windows: %APPDATA%\\BookForge\\runtime\\higgs-models\\refs; Mac: ~/Library/Application Support/BookForge/runtime/higgs-models/refs), beside runtime/higgs-models/base and next to runtime/orpheus-models; a bare file name here resolves against that folder (higgsReferenceClipPath) and is refused by name if the file is not there. Owen, 2026-09-06: 'ref clips can be saved permanently in the same area where models are saved.' NOT in the repo - it is a voice artifact staged per machine like a checkpoint. Chosen by the training session from its TREATED corpus (denoised, bed-normalized: the clone copies whatever noise the clip carries), one clean ~15 s clip rather than two joined; its transcript is the corpus row's book-exact text (no digits, no quotes). Training's length guidance: 12-16 s (HIGH that it works - a 13.2 s clip drove a whole 37-chunk subset on SGLang; MEDIUM that it is optimal, length not swept). COST: ~25 placeholder positions per second of reference plus the transcript, charged to SGLang-Omni's hard 4096 context by narrator's sgl_served.reference_token_bound; at 600 chars the frame cap keeps its full 2.0x ceiling. HOW IT RIDES: on SGLang-Omni as `references: [{data: <base64 wav>, media_type, text}]` - the SpeechReference `data` branch, which never touches the server's filesystem (no --allowed-local-media-path); on vllm-omni as one data: URI; on the Mac's MLX arm encoded once at load. SAMPLING on the served arm is narrator's SERVER_DEFAULT_SAMPLING (T 1.0 / top_p 0.95 / top_k 50 - the numbers every training run used; the base snapshot ships NO generation_config.json, so there is nothing to read); the `sampling` block below is a MIRROR of that for the reader, not a source. Training's LOW-confidence preference for T 0.8 on base is recorded here and not applied - unmeasured. EXPECT the fine-tunes' ~1-in-10 retake rate or worse (run-ons and early stops are stochastic per render); chunk-to-chunk identity drift is UNMEASURED for zero-shot. Identity of a clone against the narrator: ~0.68 cosine one clip vs 0.766 self-ceiling (see _referenceComment), i.e. 92 % of the fine-tune's identity and none of its phrasing.",
+      "_relationNote": "a DIFFERENT PRODUCT from the `mistborn` fine-tune (see the deathstalker zero-shot entry for the measurement); base weights + this clip",
+      "backends": {
+        "served": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot wall (Owen 2026-09-06, 'get it working'): <= 600 chars keeps its text, 900 drops the tail reproducibly, cloned or not - HIGH on vllm-omni where it was measured, MEDIUM on SGLang (training has not re-measured base + clip there). See the `default` entry's _maxCharsNote for the measurement.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        },
+        "mlx": {
+          "maxChars": 600,
+          "maxCharsSource": "placeholder",
+          "targetChars": 600,
+          "targetCharsSource": "the zero-shot placeholder, UNMEASURED on the MLX arm for this clip (the same placeholder the `default` entry carries there)",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      }
     }
   ],
   "_checkpointShapeComment": "A CHECKPOINT VOICE NAMES ITS MERGED DIRECTORY ONCE PER ARM: `voice.checkpoint: { \"wsl\": \"<absolute guest path>\", \"darwin\": \"<path relative to the app's userData>\" }`. The single `voice.checkpointDir` string it replaced (retired 2026-09-05) is REFUSED by name if it reappears — one string can only be one machine's path, and it was the WSL guest's, so a Mac render was handed a /home/telltale/... directory that does not exist there and died inside narrator. The keys are the FILESYSTEM the weights sit on, which is why they are not the doctor's HiggsArm vocabulary ('wsl' | 'mlx' | 'none'): that answers which BACKEND was examined, and its third member is a machine no checkpoint can be staged on at all. The two are 1:1 today (wsl<->wsl, darwin<->mlx) and electron/higgs-models.ts is the one place that says so. A MISSING ARM MEANS NOT LOADABLE THERE — never the other arm's path, never a search of the disk: `listRenderableHiggsModels()` and `resolveHiggsModel()` are arm-aware, so the narration dropdown and Listen show a checkpoint voice as loadable only on a machine the catalog stages it for, and higgsVoicesDocument() writes the ONE path for the arm being spawned.",
