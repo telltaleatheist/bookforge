@@ -59,6 +59,11 @@ check('lettered allowlist, spoken-as-word set, roman numerals, capitalised words
   assert.strictEqual(acronymReading('CNN'), 'C N N');
   assert.strictEqual(acronymReading('WWII'), 'World War Two');
 });
+check('a long unlisted capitalised token is a NAME, read as printed (REUTERS)', () => {
+  assert.strictEqual(spellAcronyms('(Photos by Gage Skidmore and REUTERS/Angel Juarex)'), '(Photos by Gage Skidmore and REUTERS/Angel Juarex)');
+  assert.strictEqual(acronymReading('MARRIOT'), null);
+  assert.strictEqual(acronymReading('SCOTUS'), 'S C O T U S');
+});
 check('a token glued to letters or digits is not an acronym', () => {
   assert.strictEqual(spellAcronyms('MI5 and iPHONE and NASDAQ100'), 'MI5 and iPHONE and NASDAQ100');
 });

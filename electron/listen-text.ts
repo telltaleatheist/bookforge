@@ -92,6 +92,13 @@ export function acronymReading(token: string): string | null {
   if (LETTERED_ACRONYMS.has(token)) return spacedLetters(token);
   if (SPOKEN_AS_WORD.has(token.toLowerCase())) return null;
   if (ROMAN.test(token)) return null;
+  // AN UNLISTED TOKEN LONGER THAN FIVE LETTERS IS A WORD, not an initialism.
+  // "REUTERS" in a photo credit went out as "R E U T E R S" and the engine went
+  // off the rails on it (Owen, 2026-09-06, the TPUSA summit caption) — a
+  // name in capitals is far likelier at that length than an initialism nobody
+  // listed, and seven spelled letters is the exact shape an LLM-TTS babbles on.
+  // Listed ones (SCOTUS, NASDAQ) are answered above; the rest read as printed.
+  if (token.length > 5) return null;
   if (!VOWEL.test(token)) return spacedLetters(token);
   if (isCapitalizedWord(token)) return null;
   return spacedLetters(token);
