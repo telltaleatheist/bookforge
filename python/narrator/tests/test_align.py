@@ -269,6 +269,34 @@ class BackendSelectionTest(unittest.TestCase):
         self.assertFalse(hasattr(A, '_torchaudio_words'))
         self.assertFalse(hasattr(A, '_load_torchaudio'))
 
+    def test_a_word_whisperx_split_at_a_sentence_end_is_rejoined_by_exact_concatenation(self):
+        """Measured 2026-09-05/06 (witches x8, Fuhrer chunk 6, SGLang chunk 5):
+        whisperx splits the text into sentences first, so `grown!'"?` comes
+        back as two words. They are rejoined only when their concatenation is
+        exactly our word; anything else is still the refusal."""
+        raw = [('the', 0.0, 0.1, 0.9), ("grown!'", 0.2, 0.5, 0.8), ('\'"?', 0.5, 0.55, 0.3),
+               ('Yes.', 0.6, 0.8, 0.95)]
+        expected = ('the', 'grown!\'"?', 'Yes.')
+        self.assertEqual(A._rejoin_split_words(raw, expected), [
+            ('the', 0.0, 0.1, 0.9), ('grown!\'"?', 0.2, 0.55, 0.3), ('Yes.', 0.6, 0.8, 0.95)])
+        # A piece that is not a prefix of the word it should complete: refused.
+        self.assertIsNone(A._rejoin_split_words(
+            [('the', 0.0, 0.1, 0.9), ('grown', 0.2, 0.5, 0.8), ('up', 0.5, 0.6, 0.8)],
+            ('the', 'grown!', 'up')))
+        # Fewer words than ours cannot be explained by a split either.
+        self.assertIsNone(A._rejoin_split_words([('the', 0.0, 0.1, 0.9)], ('the', 'end.')))
+        # And through align_chunk with a faked backend the count no longer refuses.
+        import numpy as np
+        real = A._BACKEND_FUNCTIONS['whisperx']
+        A._BACKEND_FUNCTIONS['whisperx'] = lambda audio, text, language, device: raw
+        try:
+            audio = np.zeros(int(A.SAMPLE_RATE * 1.0), dtype=np.float32)
+            alignment = A.align_chunk('one.flac', 'the grown!\'"? Yes.', backend='whisperx', audio=audio)
+        finally:
+            A._BACKEND_FUNCTIONS['whisperx'] = real
+        self.assertEqual([w.word for w in alignment.words], ['the', 'grown!\'"?', 'Yes.'])
+        self.assertEqual(alignment.words[1].end_s, 0.55)
+
     def test_a_backend_that_returns_no_words_names_the_truncated_render(self):
         """whisperx returns NO words when the audio cannot carry the text
         (measured: 138 words in 6.5 s). That is a truncated render, and the

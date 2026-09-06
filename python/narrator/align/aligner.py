@@ -624,10 +624,13 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
             f'({rate:.0f} words per second). The render stopped early or does not '
             f'say this text. Re-render this chunk and align again.')
     if len(raw) != len(expected):
-        raise AlignerError(
-            f'{audio_path}: backend {backend!r} returned {len(raw)} word(s) for '
-            f'a {len(expected)}-word chunk. The word lists must line up index '
-            f'for index or every sentence cue after the difference is wrong.')
+        rejoined = _rejoin_split_words(raw, expected)
+        if rejoined is None:
+            raise AlignerError(
+                f'{audio_path}: backend {backend!r} returned {len(raw)} word(s) for '
+                f'a {len(expected)}-word chunk. The word lists must line up index '
+                f'for index or every sentence cue after the difference is wrong.')
+        raw = rejoined
 
     words = []
     for index, ((word, start, end, score), mine) in enumerate(zip(raw, expected)):
@@ -650,6 +653,63 @@ def align_chunk(audio_path: str, text: str, *, language: str = 'en',
         unaligned_text_spans=text_spans, unaligned_audio_spans=audio_spans,
         silences=silences, elapsed_s=elapsed,
     )
+
+
+def _rejoin_split_words(raw, expected):
+    """Put back together a word whisperx split at a sentence boundary.
+
+    whisperx splits the segment text into SENTENCES before it splits words,
+    so one of our words that carries a sentence end inside it comes back as
+    two: `grown!'"?` as `grown!'` + `'"?`, `Christianity.).` as
+    `Christianity.)` + `).` (MEASURED 2026-09-05/06: witches chunks 109, 117,
+    205, 214, 259, 282, 302, 325 and Fuhrer chunk 6 / SGLang chunk 5 - the
+    whole "returned N+1 word(s)" class). The pieces are substrings of our
+    word in order, overlapping by the ONE closing character whisperx keeps on
+    both sides of its sentence split; they are rejoined by exact concatenation
+    with that overlap admitted and nothing else: the merged word spans the
+    first placed start to the last placed end and carries the lowest of its
+    pieces' scores. Any piece that does not complete the word it belongs to
+    returns None and the caller refuses as before - a count that cannot be
+    explained is still a refusal.
+    """
+    out = []
+    i = 0
+    for mine in expected:
+        if i >= len(raw):
+            return None
+        word, start, end, score = raw[i]
+        i += 1
+        if word == mine:
+            out.append((word, start, end, score))
+            continue
+        pieces = [(word, start, end, score)]
+        joined = word
+        while joined != mine and mine.startswith(joined) and i < len(raw):
+            piece = raw[i]
+            i += 1
+            pieces.append(piece)
+            # THE PIECES OVERLAP BY ONE CHARACTER: whisperx's sentence split
+            # keeps the closing quote or bracket on BOTH sides, so `grown!'"?`
+            # comes back as `grown!'` + `'"?` (measured on the real audio,
+            # SGLang chunk 5, 2026-09-06). The overlap is admitted only when
+            # the exact join is not a prefix and the one-char-shorter join is.
+            text = piece[0]
+            if not mine.startswith(joined + text) and text and joined \
+                    and text[0] == joined[-1] and mine.startswith(joined + text[1:]):
+                text = text[1:]
+            joined += text
+        if joined != mine:
+            return None
+        starts = [p[1] for p in pieces if p[1] is not None]
+        ends = [p[2] for p in pieces if p[2] is not None]
+        scores = [p[3] for p in pieces if p[3] is not None]
+        out.append((mine,
+                    starts[0] if starts else None,
+                    ends[-1] if ends else None,
+                    min(scores) if scores else None))
+    if i != len(raw):
+        return None
+    return out
 
 
 def _number(value, field: str, index: int, word: str, audio_path: str,
