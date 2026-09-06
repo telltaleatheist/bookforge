@@ -124,7 +124,7 @@ from __future__ import annotations
 
 import os
 import re as _stdlib_re  # noqa: F401  (documented below; regex is the engine used)
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import TYPE_CHECKING, Iterable, Sequence
 
 import regex as re
@@ -245,6 +245,93 @@ def strip_unspoken_glyphs(text: str) -> str:
     """`text` with every `chars_remove` glyph replaced by a space (the caller
     collapses whitespace)."""
     return (text or '').translate(_UNSPOKEN_GLYPHS)
+
+
+# =============================================================================
+# ALL-CAPS runs -> Title Case (a TTS-only fold, at packing)
+# =============================================================================
+#
+# MEASURED 2026-09-06 (witches, deathstalker Higgs on the Mac): the heading
+# chunk `DOES GOD HOLD CHILDREN ACCOUNTABLE FOR THEIR PARENTS ACTIONS?` came out
+# "dues" for "does", then a ~1 s stall, then the rest. Training's answer the
+# same day: the corpus carries all-caps only as chapter-opening lead-ins inside
+# prose (40 of 791 mistborn rows, "IN KELSIER'S OPINION, THE CITY OF Luthadel
+# ..."), never as a standalone caps heading, and nothing in the training text
+# path folds case - so a caps heading is a token shape the model has almost
+# never seen as a chunk of its own. Speech does not encode case, so folding
+# costs nothing acoustically. Owen's ruling (2026-09-06): fold to Title Case;
+# guard acronyms.
+#
+# WHERE: at PACKING, in `pack_paragraphs`, on every block - not at extraction,
+# because `is_label_line` (the fragment join's byline rule) reads the caps and
+# runs BEFORE packing on PDF-derived books. And TTS-ONLY: the reading copy keeps
+# the book's capitals; only the chunk text the model gets is folded.
+#
+# WHAT: a block whose every word is caps, or a LEADING RUN of two or more caps
+# words (the lead-in shape above), is folded word by word to Title Case. A caps
+# word inside the run is kept as printed when it is an ACRONYM by one of two
+# tests, and this is the whole guard, stated rather than dictionary-backed:
+#   - it has no vowel letter, Y included (CNN, NHS, MTV) - Y counts because
+#     WHY, MY, GYM and SKY are words, so a Y-only token is one too; or
+#   - it is on `CAPS_ACRONYMS`, the short allowlist of vowelled acronyms that
+#     read as letters (USA, CIA, DNA, TV ...).
+# Anything else in a caps run is a WORD ("GOD", "THE", "PARENTS") and folds.
+
+#: Caps words that are read as letters despite carrying a vowel. Extend when a
+#: book teaches us one; a miss reads "Usa" as a word, which is a defect to fix
+#: here and not a reason to stop folding "PARENTS".
+CAPS_ACRONYMS = frozenset((
+    'USA', 'UK', 'EU', 'UN', 'US', 'CIA', 'DNA', 'RNA', 'TV', 'DVD', 'CD', 'PC',
+    'AI', 'IQ', 'UFO', 'NASA', 'NATO', 'FAQ', 'AM', 'PM', 'AD', 'BC', 'BCE', 'CE',
+    'IBM', 'CEO', 'CFO', 'MBA', 'PHD', 'ESPN', 'NBA', 'NFL', 'MLB', 'NCAA', 'ROTC',
+    'IRS', 'ATM', 'GPS', 'HIV', 'AIDS', 'EPA', 'FDA', 'NRA', 'ACLU', 'PTA', 'GPA',
+    'OK', 'USSR', 'UAE', 'OPEC', 'RSVP', 'ASAP', 'DIY', 'IOU', 'UPS', 'AOL', 'ABC',
+    'FBI', 'KGB', 'CBI', 'NYPD', 'LAPD', 'NYC', 'MI5', 'MI6', 'CID', 'ID', 'IT',
+    'NBC', 'CBS', 'BBC', 'PBS', 'HBO', 'MTV', 'CNN', 'ESP', 'ER', 'ICU', 'EMT',
+))
+
+_CAPS_WORD_RE = re.compile(r'\p{Lu}')
+_VOWEL_RE = re.compile(r'[AEIOUY]')
+
+
+def _is_caps_word(token: str) -> bool:
+    """A token whose letters are all upper-case (at least one letter, no
+    lower-case one). Punctuation and digits ride along: `KELSIER'S,` is caps."""
+    return bool(_CAPS_WORD_RE.search(token)) and not _HAS_LOWER_RE.search(token)
+
+
+def _is_acronym(token: str) -> bool:
+    letters = ''.join(ch for ch in token if ch.isalpha())
+    return letters.upper() in CAPS_ACRONYMS or not _VOWEL_RE.search(letters.upper())
+
+
+def _title_case(token: str) -> str:
+    """Lower the token and capitalise its first LETTER (`KELSIER'S,` ->
+    `Kelsier's,`; `"WHY` -> `"Why`)."""
+    lowered = token.lower()
+    for i, ch in enumerate(lowered):
+        if ch.isalpha():
+            return lowered[:i] + ch.upper() + lowered[i + 1:]
+    return lowered
+
+
+def fold_caps_run(text: str) -> str:
+    """`text` with its leading run of caps words (or all of it) folded to Title
+    Case, acronyms kept. A run of ONE caps word is folded only when it is the
+    whole text (a one-word heading such as `INTRODUCTION.`); one caps word at
+    the head of a longer sentence ("I", "A", a shouted word) is left alone."""
+    tokens = (text or '').split(' ')
+    run = 0
+    while run < len(tokens) and (tokens[run] == '' or _is_caps_word(tokens[run])):
+        run += 1
+    caps_words = sum(1 for t in tokens[:run] if t)
+    if caps_words == 0:
+        return text
+    whole = run == len(tokens)
+    if caps_words < 2 and not whole:
+        return text
+    folded = [t if (not t or _is_acronym(t)) else _title_case(t) for t in tokens[:run]]
+    return ' '.join(folded + tokens[run:])
 
 
 def spoken(text: str) -> str:
@@ -698,6 +785,9 @@ def pack_paragraphs(blocks: Sequence[Block], budget, *,
         blocks = classify_table_blocks(blocks)
     if PARAGRAPH in walls:
         raise ValueError('paragraph cannot be a wall: nothing would ever merge')
+    # THE CAPS FOLD, on every block, here and nowhere earlier: the fragment join
+    # (which reads caps to recognise a label line) has already run.
+    blocks = [replace(b, text=fold_caps_run(b.text)) for b in blocks]
     if floor_chars < 0:
         raise ValueError(f'floor_chars must be >= 0, got {floor_chars}')
     cap = effective_cap(budget, voice, audio_budget_s)

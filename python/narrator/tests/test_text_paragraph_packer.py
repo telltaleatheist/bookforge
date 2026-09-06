@@ -617,6 +617,49 @@ class _FixtureDoc:
         return self._name
 
 
+class CapsFoldTest(unittest.TestCase):
+    """Owen, 2026-09-06: fold all-caps chunks (and a leading run of caps words)
+    to Title Case before TTS; guard acronyms. Measured: `DOES GOD HOLD ...`
+    read "dues" then stalled."""
+
+    def test_a_whole_caps_heading_folds_to_title_case(self):
+        self.assertEqual(
+            pp.fold_caps_run('DOES GOD HOLD CHILDREN ACCOUNTABLE FOR THEIR PARENTS ACTIONS?'),
+            'Does God Hold Children Accountable For Their Parents Actions?')
+        self.assertEqual(pp.fold_caps_run('INTRODUCTION.'), 'Introduction.')
+        self.assertEqual(pp.fold_caps_run('"WHY ME?"'), '"Why Me?"')
+
+    def test_a_leading_caps_run_folds_and_the_rest_is_untouched(self):
+        self.assertEqual(
+            pp.fold_caps_run("IN KELSIER'S OPINION, THE CITY OF Luthadel was dark."),
+            "In Kelsier's Opinion, The City Of Luthadel was dark.")
+
+    def test_acronyms_keep_their_capitals(self):
+        self.assertEqual(pp.fold_caps_run('THE FBI RAIDED THE NASA LAB.'),
+                         'The FBI Raided The NASA Lab.')
+        self.assertEqual(pp.fold_caps_run('CNN AND THE USA'), 'CNN And The USA')
+
+    def test_ordinary_text_and_a_single_caps_word_are_left_alone(self):
+        for text in ('A normal sentence.', 'I said no.', 'STOP right there.',
+                     'He shouted "NO" and left.', '', 'Mixed Case Heading'):
+            self.assertEqual(pp.fold_caps_run(text), text)
+
+    def test_the_fold_reaches_every_chunk_kind_at_packing(self):
+        html = ('<h1>DOES GOD HOLD CHILDREN ACCOUNTABLE?</h1>'
+                '<ul><li>FOURTEEN SECRETS WITCHES HOPE PARENTS NEVER FIND OUT</li></ul>'
+                "<p>IN KELSIER'S OPINION, THE CITY OF Luthadel was dark, and it stayed that way.</p>")
+        blocks = pp.extract_blocks(_FixtureDoc(html), 'text/c0004.xhtml')
+        # Extraction keeps the book's capitals - the fragment join reads them.
+        self.assertTrue(blocks[0].text.startswith('DOES'))
+        report = pp.pack_paragraphs(blocks, ORPHEUS_DEATHSTALKER, floor_chars=300)
+        texts = [spoken(c.text) for c in report.chunks]
+        self.assertEqual(texts, [
+            'Does God Hold Children Accountable?',
+            'Fourteen Secrets Witches Hope Parents Never Find Out.',
+            "In Kelsier's Opinion, The City Of Luthadel was dark, and it stayed that way.",
+        ])
+
+
 class ExtractBlocksTest(unittest.TestCase):
 
     def setUp(self):
