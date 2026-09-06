@@ -494,26 +494,35 @@ check("EVERY kind:'checkpoint' voice states its cap — measured, or null", () =
 
 
 
-check('NO Higgs voice carries a sampling block: the DEFAULT renders everywhere (Owen, 2026-09-06)', () => {
-  // "set temp/top p/top k to default across the board, for everything
-  // everywhere. we shouldnt deviate from the default unless we have a very good
-  // reason. and we dont." The default is the checkpoint directory's own
-  // generation_config.json (or the deploy profile for base weights); a catalog
-  // block RENDERS since 13dc0e66/e31c7db5, so its absence is what keeps every
-  // voice at the default. A future block must state its reason in a
-  // _samplingNote beside it, or it is refused here.
-  assert.ok(/very good reason/.test(higgs.higgsCatalogSamplingRule()),
-    'the catalog no longer states the sampling rule');
+
+check('ONE engine-level sampling - 0.8 / 0.95 / 50 - reaches EVERY Higgs voice on BOTH arms (Owen, 2026-09-06)', () => {
+  // "temperature should be .8 everywhere, as it's the boson default" — for
+  // Higgs specifically, Listen streaming and book renders alike (both spawn
+  // through higgs-spawn, which writes the document this rides in). Stated ONCE
+  // at the catalog top with its reason; a per-block deviation must carry a
+  // reason too or it is refused, so 14 copies of a number can never drift.
+  const engine = higgs.higgsEngineSampling();
+  assert.deepStrictEqual(engine, { temperature: 0.8, topP: 0.95, topK: 50 });
+  assert.ok(/very good reason|boson default/i.test(higgs.higgsCatalogSamplingRule()));
   for (const m of higgs.listHiggsModels()) {
+    for (const arm of ['wsl', 'darwin']) {
+      if (!m.backends[arm === 'wsl' ? 'served' : 'mlx']) continue;
+      const caps = higgs.higgsVoiceCapsForModel(m, arm);
+      assert.deepStrictEqual(caps.sampling, engine, `${m.id}/${arm}: does not render at the engine sampling`);
+    }
     for (const [arm, block] of Object.entries(m.backends)) {
-      if (block.sampling === undefined) {
-        assert.ok(block._samplingNote === undefined, `${m.id}/${arm}: a note with no block`);
-        continue;
-      }
-      assert.ok(typeof block._samplingNote === 'string' && /reason/i.test(block._samplingNote),
-        `${m.id}/${arm}: a sampling block ${JSON.stringify(block.sampling)} with no stated reason`);
+      assert.ok(block.sampling === undefined, `${m.id}/${arm}: a per-block sampling - the shipped catalog has one number`);
     }
   }
+  // A block that deviates WITHOUT a reason is refused by name.
+  const silent = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.5 } } } });
+  assert.throws(() => higgs.higgsVoiceCapsForModel(silent, 'wsl'), /REASON/);
+  // With one, it rides instead of the engine's.
+  const stated = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.5 },
+                          _samplingNote: 'REASON: keeper fixture' } } });
+  assert.deepStrictEqual(higgs.higgsVoiceCapsForModel(stated, 'wsl').sampling, { temperature: 0.5 });
 });
 
 check('the pending rule still holds over whatever the catalog ships', () => {
@@ -720,7 +729,7 @@ check('the measured caps come through, with their provenance', () => {
   assert.strictEqual(c.maxChars, 600, 'the measured zero-shot cap moved');
   assert.strictEqual(c.maxCharsSource, 'placeholder');
   assert.deepStrictEqual(c.edgeFadeMs, { in: 10, out: 25 });
-  assert.strictEqual(c.sampling, undefined, 'the default voice must carry no sampling block (the rule)');
+  assert.deepStrictEqual(c.sampling, higgs.higgsEngineSampling(), 'the default voice renders at the engine-level sampling');
   assert.strictEqual(c.referenceSecondsCap, 30);
   assert.deepStrictEqual(c.allowedControls, []);
 });
@@ -1091,7 +1100,7 @@ check('the SAMPLING MIRROR equals the checkpoint dir\'s generation_config.json',
   const m = probeVoice({
     id: 'mirrored', kind: 'checkpoint',
     voice: { checkpoint: { darwin: 'runtime/higgs-models/mirrored' } },
-    backends: { mlx: { maxChars: 900, maxCharsSource: 'length-sweep', sampling: mirrorOf(file) } },
+    backends: { mlx: { maxChars: 900, maxCharsSource: 'length-sweep', sampling: mirrorOf(file), _samplingNote: 'REASON: keeper mirror fixture' } },
   });
   const onDisk = JSON.parse(
     fs.readFileSync(path.join(higgs.higgsCheckpointDirFor(m, 'darwin', MAC_USER_DATA),
@@ -2381,16 +2390,15 @@ check('a measured pace becomes the length band in the document; a malformed pace
     backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } } });
   const bareDoc = higgs.higgsVoicesDocument(bare, WSL_DOC).probe;
   assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc));
-  // THE BLOCK'S SAMPLING RIDES IN THE DOCUMENT, per arm: the Mac document carries
-  // the mlx block's, the WSL document the served block's, and a block without one
-  // writes none (the engine then renders at the checkpoint's own file). Owen's
-  // 0.7 for deathstalker (2026-09-06) is carried by exactly this line.
+  // SAMPLING RIDES IN THE DOCUMENT, per arm: a block's own (with its reason)
+  // for that arm, the ENGINE-LEVEL one for a block that states none - so no
+  // document is ever written without the number that renders.
   const sampled = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
-    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 1, topP: 0.95, topK: 50 } },
-                mlx: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.7, topP: 0.95, topK: 50 } } } });
+    backends: { served: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 1, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' },
+                mlx: { maxChars: 600, maxCharsSource: 'catalog', sampling: { temperature: 0.7, topP: 0.95, topK: 50 }, _samplingNote: 'REASON: fixture' } } });
   assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, MAC_DOC).probe.sampling, { temperature: 0.7, topP: 0.95, topK: 50 });
   assert.deepStrictEqual(higgs.higgsVoicesDocument(sampled, WSL_DOC).probe.sampling, { temperature: 1, topP: 0.95, topK: 50 });
-  assert.ok(!('sampling' in bareDoc), 'a block with no sampling must write none');
+  assert.deepStrictEqual(bareDoc.sampling, higgs.higgsEngineSampling(), 'a block with no sampling writes the engine-level one');
   // Malformed: out of order, or missing provenance.
   for (const [why, bad] of [
     ['out of order', { ...pace, p05: 19 }],

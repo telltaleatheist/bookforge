@@ -159,7 +159,9 @@ roster, and a voice not in it is refused by name.
         "maxChars": 600,        // null on an unmeasured fine-tune => REFUSED
         "maxCharsSource": "placeholder",   // catalog | placeholder | length-sweep
         "edgeFadeMs": { "in": 10, "out": 25 },
-        "sampling": { "temperature": 0.7, "topP": 0.95, "topK": 50 },   // 0.7 = Owen's rule, EVERY voice, BOTH arms (2026-09-06: 1.0 babbles); rides in the voice document and renders
+        // no per-block "sampling": the catalog-top ENGINE-LEVEL one (0.8 / 0.95 / 50,
+        // Owen 2026-09-06 "the boson default") rides in every document and renders on
+        // both arms; a per-block deviation needs a _samplingNote with its REASON.
         "referenceSecondsCap": 30,
         "allowedControls": []
       },

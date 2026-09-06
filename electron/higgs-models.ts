@@ -441,6 +441,8 @@ export interface HiggsBackendCaps {
   edgeFadeMs?: { in: number; out: number };
   /** Sampling, sent inside `extra_params` — NEVER at the request top level. */
   sampling?: { temperature?: number; topP?: number; topK?: number };
+  /** REQUIRED beside a per-backend `sampling`: the REASON it deviates from the engine-level one. */
+  _samplingNote?: string;
   /** Hard server limit on total reference audio, in seconds. */
   referenceSecondsCap?: number;
   /**
@@ -751,9 +753,15 @@ export interface HiggsSource {
 interface HiggsCatalog {
   version: number;
   engine: string;
+  /** THE ENGINE-LEVEL SAMPLING every voice renders at — see higgsEngineSampling. */
+  sampling: HiggsSampling;
+  _samplingNote?: string;
+  _samplingRule?: string;
   serving: HiggsServingSpec;
   models: HiggsModel[];
 }
+
+export interface HiggsSampling { temperature: number; topP: number; topK: number }
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Loading
@@ -818,11 +826,40 @@ export function listHiggsModels(): HiggsModel[] {
  * test.
  */
 export function higgsCatalogSamplingRule(): string {
-  const rule = (loadCatalog() as HiggsCatalog & { _samplingRule?: unknown })._samplingRule;
+  const rule = loadCatalog()._samplingRule;
   if (typeof rule !== 'string' || !rule.trim()) {
-    throw new Error('Higgs voice catalog states no `_samplingRule`; the rule that every voice renders at the default must be written where the voices are.');
+    throw new Error('Higgs voice catalog states no `_samplingRule`; the rule that every voice renders at one engine-level sampling must be written where the voices are.');
   }
   return rule;
+}
+
+/**
+ * THE ONE SAMPLING every Higgs voice renders at, on both arms, for Listen
+ * streaming and book renders alike — Owen, 2026-09-06: "temperature should be
+ * .8 everywhere, as it's the boson default". Stated ONCE at the catalog's top
+ * with its reason in `_samplingNote`, written into every voice document by
+ * `higgsVoiceCapsForModel`, and applied by narrator over the checkpoint's own
+ * generation_config.json (which says 1.0 and was not chosen). Refused, not
+ * defaulted, when the catalog lacks it: the number that renders is written
+ * here or nowhere.
+ */
+export function higgsEngineSampling(): HiggsSampling {
+  const cat = loadCatalog();
+  const s = cat.sampling as Partial<HiggsSampling> | undefined;
+  const ok = !!s && typeof s === 'object'
+    && typeof s.temperature === 'number' && s.temperature > 0
+    && typeof s.topP === 'number' && s.topP > 0 && s.topP <= 1
+    && Number.isInteger(s.topK) && (s.topK as number) > 0;
+  if (!ok) {
+    throw new Error(
+      `Higgs voice catalog carries no valid engine-level sampling (${JSON.stringify(s)}); `
+      + 'expected {temperature > 0, topP in (0,1], topK a positive integer} at the catalog top. '
+      + 'Every voice renders at it, so it must be written.');
+  }
+  if (typeof cat._samplingNote !== 'string' || !/reason/i.test(cat._samplingNote)) {
+    throw new Error("Higgs voice catalog's engine-level sampling has no `_samplingNote` stating its REASON; a number that deviates from the checkpoint's own file must say why.");
+  }
+  return { temperature: s.temperature as number, topP: s.topP as number, topK: s.topK as number };
 }
 
 /**
@@ -1602,7 +1639,20 @@ export function higgsVoiceCapsForModel(
   if (served.targetChars !== undefined) caps.targetChars = served.targetChars;
   if (served.targetCharsSource !== undefined) caps.targetCharsSource = served.targetCharsSource;
   if (served.edgeFadeMs !== undefined) caps.edgeFadeMs = served.edgeFadeMs;
-  if (served.sampling !== undefined) caps.sampling = served.sampling;
+  // SAMPLING: the engine-level one (higgsEngineSampling), for every voice on
+  // every arm. A block may override it only with its reason written beside it.
+  if (served.sampling !== undefined) {
+    if (typeof served._samplingNote !== 'string' || !/reason/i.test(served._samplingNote)) {
+      throw new Error(
+        `Higgs voice '${model.id}' (${BACKEND_FOR_ARM[arm]}) carries its own sampling `
+        + `${JSON.stringify(served.sampling)} with no _samplingNote stating the REASON it deviates `
+        + "from the engine-level sampling. Owen's rule (2026-09-06): one default everywhere; "
+        + 'a deviation says why or is refused.');
+    }
+    caps.sampling = served.sampling;
+  } else {
+    caps.sampling = higgsEngineSampling();
+  }
   if (served.referenceSecondsCap !== undefined) caps.referenceSecondsCap = served.referenceSecondsCap;
   if (served.allowedControls !== undefined) caps.allowedControls = served.allowedControls;
   return caps;
