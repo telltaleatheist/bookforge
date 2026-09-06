@@ -200,6 +200,69 @@
       "note": "The deathstalker narrator as a merged Higgs v3 fine-tune. WHY A FINE-TUNE RATHER THAN REFERENCE CLIPS: zero-shot cloning already recovers 92% of the narrator's speaker-identity ceiling (cosine 0.7037 of 0.7656, from a 27.4 s two-clip same-book reference), so TIMBRE is largely solved without training. What cloning does NOT recover is PHRASING — the render places 2.01 pauses per 100 chars against the narrator's 1.39 and runs pitch std 5.17 st against his 4.36, i.e. it performs the text rather than reading it, and no reference, sampling setting or control token moved either number. Only a fine-tune on his phrasing closes that gap, which is what this entry is for — and it is also why Owen ruled on 2026-09-04 that production narration is fine-tuned voices ONLY.",
       "_cloneFallbackNote": "There is deliberately no clips-based deathstalker entry standing in for this one. The measured best zero-shot configuration is a 27.4 s join of cd_cd_00001100.wav + cd_cd_00001951.wav from the ds_ad4s cut with their book-exact transcripts, and it renders well — but those clips live under E:\\training and are not a deployable artifact location, so an entry pointing at them would be a voice that works on exactly one machine, which is the failure this catalog exists to prevent. To add one: join the clips to a single wav (0.35 s of silence between them), join the transcripts in the same order, stage both under /home/<user>/higgs-models/<voice>/refs/, and declare ONE clip here with its measured `seconds`.",
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
+    },
+    {
+      "id": "mistborn",
+      "label": "Mistborn (Higgs v3 fine-tune)",
+      "kind": "checkpoint",
+      "_targetCharsNote": "THE CHUNK SIZE THE CODE PACKS TO, PER ARM (backends.served.targetChars / backends.mlx.targetChars), set by the trainer after training from the training clips' text lengths. Owen, 2026-09-05: 'maxChars is what the model was trained to do, and targetChars can be what the system actually uses. maxChars is informative, targetChars is used by the code directly.' The prep's cap AND merge floor: consecutive short paragraphs travel together until the next would overflow it, a paragraph already at it stands alone, walls stay walls. Never above the arm's maxChars - both sides refuse that by name. A fine-tune with no targetChars cannot be prepped. INTERIM VALUES (Owen, 2026-09-05 evening: 'set it to deathstalker's theoretical maximum of about 80 seconds'): each arm's certified maximum - served 1200 (~71 s at the measured 5.9 audio-s per 100 chars; the served sweep dropped text at 1500), MLX 900 (its sweep dropped text at 1200). MEASURED the same evening on both arms: this checkpoint ENDS ITSELF at ~1,980 frames (~79-82 s) whatever the server ceiling - a 2,173-char render on the Mac gave 79 s with the middle skipped (coverage 0.306) - so no target above ~1,350 chars can work on this checkpoint; the retrain that favours longer clips states its own numbers here, with the method in targetCharsSource.",
+      "engineVersion": "v3",
+      "voice": {
+        "checkpoint": {
+          "wsl": "/home/telltale/higgs_v3_merged/mb_h2lm_prod",
+          "darwin": "runtime/higgs-models/mb_h2lm_prod"
+        }
+      },
+      "_checkpointArmNote": "TWO ARMS, TWO COPIES. wsl: the merged HF directory the training session wrote on the PC (mb_h2lm dip checkpoint 920, holdout 3.738, 8.0 GB, generation_config.json T1.0/top_p 0.95/top_k 50 written at run creation). darwin: the SAME directory once it is copied to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/mb_h2lm_prod) - NOT copied yet as of 2026-09-06 12:30; an ~8 GB copy to the Mac needs Owen's explicit go, and until it lands the MLX arm refuses this voice by name (the directory is absent), which is the honest state.",
+      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/mb_h2lm_prod is what the served arm renders; darwin: runtime/higgs-models/mb_h2lm_prod (under the Mac app-support dir) is what the MLX arm will render once the copy lands. The served assertion and the mlx block bind to THESE directories; a re-merge under the same name is a different model and re-measures.",
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-06",
+      "backends": {
+        "served": {
+          "maxChars": 1200,
+          "maxCharsSource": "catalog",
+          "targetChars": 1200,
+          "targetCharsSource": "interim (Owen, 2026-09-06): the length the training session's mb2 measurement was taken at (50 Fuhrer chunks packed at 1200, 0 early stops, 0 gibberish, 6/50 damaged, SGLang 16 wide); no length sweep has been run for this voice, so maxCharsSource is `catalog`, an assertion backed by that one measurement rather than a sweep",
+          "_maxCharsNote": "1200, ASSERTED for /home/telltale/higgs_v3_merged/mb_h2lm_prod from the training session's night-3/4 measurement on SGLang-Omni at 16 wide; a proper length sweep on this directory would turn the source into `length-sweep`.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "_samplingNote": "A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
+          "referenceSecondsCap": 30,
+          "allowedControls": [],
+          "_maxCharsSourceNote": "`length-sweep` is a TOKEN, not the provenance. maxCharsSource TRAVELS into narrator's voice document, where `protocol.MAX_CHARS_SOURCES` is a CLOSED vocabulary — catalog | placeholder | length-sweep — and anything else is refused by name at load_voices. So the method's NAME rides the wire and the measurement itself stays here, in _maxCharsNote, which narrator never sees."
+        },
+        "mlx": {
+          "_comment": "THE MAC'S OWN BLOCK FOR THIS FINE-TUNE, UNMEASURED: the directory is not on the Mac yet. 900 mirrors deathstalker's MLX certificate (its sweep dropped text at 1200) as the conservative number for the same architecture; `placeholder` says nobody has measured THIS voice on this arm. When the copy lands and the Mac sweep runs, replace both numbers and the source.",
+          "maxChars": 900,
+          "maxCharsSource": "placeholder",
+          "targetChars": 900,
+          "targetCharsSource": "interim (2026-09-06): deathstalker's MLX certificate maximum, borrowed for the same architecture until this voice is swept on the Mac",
+          "_maxCharsNote": "900, a PLACEHOLDER borrowed from deathstalker's MLX certificate; not measured on mb_h2lm_prod.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "sampling": {
+            "temperature": 1,
+            "topP": 0.95,
+            "topK": 50
+          },
+          "_samplingNote": "A MIRROR of /home/telltale/higgs_v3_merged/mb_h2lm_prod/generation_config.json (T 1.0, top_p 0.95, top_k 50, repetition_penalty 1.0), which is the authority; read 2026-09-06.",
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      },
+      "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train; dip checkpoint 920). Promoted 2026-09-06 on Owen's ruling ('promote the mistborn model to the catalog'): Owen judged all three mistborn renders flawless by ear; on paper mb2 is the best (damaged 6/50 vs 11 for the first train, run-ons 3 vs 8, 0 early stops, 0 gibberish on SGLang at 16 wide, the 50 Fuhrer chunks packed at 1200 chars). Served exactly like deathstalker ckpt-1080: same launcher, max_running_requests 16, max_new_tokens 7500. No eosFloor tuning.",
+      "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
     }
   ],
   "_checkpointShapeComment": "A CHECKPOINT VOICE NAMES ITS MERGED DIRECTORY ONCE PER ARM: `voice.checkpoint: { \"wsl\": \"<absolute guest path>\", \"darwin\": \"<path relative to the app's userData>\" }`. The single `voice.checkpointDir` string it replaced (retired 2026-09-05) is REFUSED by name if it reappears — one string can only be one machine's path, and it was the WSL guest's, so a Mac render was handed a /home/telltale/... directory that does not exist there and died inside narrator. The keys are the FILESYSTEM the weights sit on, which is why they are not the doctor's HiggsArm vocabulary ('wsl' | 'mlx' | 'none'): that answers which BACKEND was examined, and its third member is a machine no checkpoint can be staged on at all. The two are 1:1 today (wsl<->wsl, darwin<->mlx) and electron/higgs-models.ts is the one place that says so. A MISSING ARM MEANS NOT LOADABLE THERE — never the other arm's path, never a search of the disk: `listRenderableHiggsModels()` and `resolveHiggsModel()` are arm-aware, so the narration dropdown and Listen show a checkpoint voice as loadable only on a machine the catalog stages it for, and higgsVoicesDocument() writes the ONE path for the arm being spawned.",
