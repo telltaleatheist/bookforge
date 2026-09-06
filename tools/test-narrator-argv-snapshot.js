@@ -46,6 +46,27 @@
  *   node -e "..."  # see the generator in the Phase 3 commit, or:
  *   node tools/narrator-argv-extract.js flags
  *   node tools/narrator-argv-extract.js plan wsl|native-win|native-mac
+ *
+ * ── Re-baselines, and what each one was for ─────────────────────────────────
+ *
+ * 2026-09-06, the TWO ASSEMBLY DOORS, for **159a3d13** ("Merge coverage audit
+ * rebuild: assembly reports, never refuses" — Owen's ruling, 2026-09-05). Both
+ * doors moved from
+ *
+ *     ...(coverageEnforcedFor(<engine>) ? ['--coverage_report', <path>] : [])
+ * to
+ *     ...(fs.existsSync(coverageReportPath(<dir>)) ? ['--coverage_report', <path>] : [])
+ *
+ * i.e. assembly passes `--coverage_report` whenever the report file is actually
+ * THERE, rather than whenever the engine is one that enforces coverage. That is
+ * the ruling: assembly REPORTS coverage and never refuses on it, so the flag
+ * follows the artifact and not the engine table.
+ *
+ * Nothing else in either argv moved, and that was checked rather than assumed
+ * before the bytes were rewritten: the regeneration masked the coverage predicate
+ * on both sides and required the remainder to compare EQUAL, so a second change
+ * riding along would have failed the re-baseline instead of being absorbed by it.
+ * That is the only way a snapshot survives being regenerated.
  */
 'use strict';
 const assert = require('assert');
