@@ -223,38 +223,71 @@ SYNC_NEW = """        # Step 2+3 (PATCHED, patch_sentinel_filter.py): decide by 
         codes_qt = _filter_sentinel_frames(codes_qt, " (sync)")"""
 
 # ---- async path: trailing-only, and keep the count bookkeeping -------------
-ASYNC_OLD = """    if finished and window_row_end_exclusive == n_rows and de_delayed.shape[-1] >= 2:
-        de_delayed = de_delayed[:, :-1]
-        actual_chunk = max(actual_chunk - 1, 0)"""
-
-ASYNC_NEW = """    if finished and window_row_end_exclusive == n_rows and de_delayed.shape[-1] >= 2:
-        # PATCHED: drop the WHOLE trailing sentinel run, not one frame. Only the
-        # trailing run: Stage 1 trims left_context_size/right_holdback_size by
-        # FRAME COUNT, so removing a leading or interior frame here would desync
-        # those trims and cut real speech.
-        _before = de_delayed.shape[-1]
-        de_delayed = _trim_trailing_sentinel_frames(de_delayed)
-        actual_chunk = max(actual_chunk - (_before - de_delayed.shape[-1]), 0)"""
-
-ASYNC_SUB_OLD = """    de_delayed = torch.where(
-        (de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0),
-        torch.zeros_like(de_delayed),
-        de_delayed,
-    )"""
-
-ASYNC_SUB_NEW = """    # PATCHED: the trailing run is removed below by token identity. Any
-    # remaining out-of-range value sits in the left-context region Stage 1
-    # discards, so substituting is harmless there -- but it is logged, because
-    # a sentinel outside the trailing run is not an expected shape.
-    _oor = int(((de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0)).any(dim=0).sum())
-    if _oor:
-        logger.warning("higgs_audio_v3 (async): %d frame(s) carry a stream "
-                       "sentinel outside the trailing run", _oor)
+ASYNC_OLD = """    # Replace BOC=1024/EOC=1025 (and any negative pads) with 0; matches the
+    # sync-path substitution. Clamp would turn 1025 into 1023 which is a
+    # VALID codec code and decodes to audible artifacts.
     de_delayed = torch.where(
         (de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0),
         torch.zeros_like(de_delayed),
         de_delayed,
-    )"""
+    )
+
+    # On the FINAL chunk only: trim the trailing residual frame (the last
+    # de-delayed frame still carries EOC-substituted codes from ramp-down
+    # which decode to a brief noise artifact). Mirrors the sync-path trim.
+    if finished and window_row_end_exclusive == n_rows and de_delayed.shape[-1] >= 2:
+        de_delayed = de_delayed[:, :-1]
+        actual_chunk = max(actual_chunk - 1, 0)"""
+
+# v2 (2026-09-05). v1 of this patch replaced the substitution and the trim as
+# two separate anchors and left them in upstream's ORDER: substitute first,
+# trim second. The trim decides by token identity, so by the time it ran every
+# sentinel was already code 0 and it found nothing - the two EOC ramp frames
+# reached the codec as a valid code and decoded as the "electronic syllable"
+# Owen heard at the end of every chunk of his first in-app render (397 of 401
+# requests logged "2 frame(s) carry a stream sentinel outside the trailing
+# run" - the trailing run itself, counted before it was trimmed). v1 even
+# asserted that order as an invariant. v2 replaces the contiguous upstream
+# block as ONE anchor: identity trim of the trailing run FIRST, then count,
+# warn about and substitute whatever remains. Ported from training's
+# patch_sentinel_filter.py v2 (E:\training\_campaigns\2026-09-01-cod-full-rebuild
+# \higgs\work\, with test_sentinel_patch_v2.py) - this copy takes an env prefix.
+ASYNC_NEW = """    # PATCHED (patch_sentinel_filter.py v2). Order matters and v1 had it
+    # backwards: the trailing sentinel run must be removed BY TOKEN IDENTITY
+    # *before* any substitution, or the substitution turns it into code 0 and
+    # the trim has nothing left to find.
+    #
+    # (1) FINAL window only: drop the WHOLE trailing sentinel run (EOC ramp,
+    #     smeared over up to Q-1 frames by the delay pattern), not one frame.
+    #     Only the trailing run: Stage 1 trims left_context_size /
+    #     right_holdback_size by FRAME COUNT, so removing a leading or interior
+    #     frame here would desync those trims and cut real speech.
+    if finished and window_row_end_exclusive == n_rows and de_delayed.shape[-1] >= 2:
+        _before = de_delayed.shape[-1]
+        de_delayed = _trim_trailing_sentinel_frames(de_delayed)
+        actual_chunk = max(actual_chunk - (_before - de_delayed.shape[-1]), 0)
+
+    # (2) Anything out of range that REMAINS is not the trailing run. On a
+    #     non-final window it can only be the left-context region Stage 1
+    #     discards, so substituting is harmless there -- but it is logged,
+    #     because a sentinel outside the trailing run is not an expected shape
+    #     (a gate is a defect sensor, not a silent repair).
+    _oor_mask = ((de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0)).any(dim=0)
+    _oor = int(_oor_mask.sum())
+    if _oor:
+        logger.warning("higgs_audio_v3 (async): %d frame(s) carry a stream "
+                       "sentinel outside the trailing run (final=%s, window=%d frames)",
+                       _oor, finished, int(_oor_mask.numel()))
+        de_delayed = torch.where(
+            (de_delayed >= _NUM_REAL_CODES) | (de_delayed < 0),
+            torch.zeros_like(de_delayed),
+            de_delayed,
+        )"""
+
+#: What a v2-patched file carries that a v1-patched one does not: the warning's
+#: `final=` field. The doctor greps for it (tool-paths.ts HIGGS_PATCHES
+#: `staleMarker`) so a v1 env is reported as STALE rather than ok.
+V2_MARKER = "final=%s, window=%d frames"
 
 
 def base_source(path: str, orig: str) -> str:
@@ -313,9 +346,12 @@ def main():
         return
 
     live = read(path)
-    if MARKER in live:
+    if MARKER in live and V2_MARKER in live:
         print("ALREADY_PATCHED " + path)
         return
+    if MARKER in live:
+        # A v1-patched file: rebuild from .orig so the async order is fixed.
+        print("STALE_V1_PATCH " + path + " - re-applying as v2")
 
     src = base_source(path, orig)
 
@@ -326,17 +362,24 @@ def main():
     src = src.replace(marker, HELPER.strip("\n") + "\n\n\n" + marker, 1)
 
     for old, new, label in ((SYNC_OLD, SYNC_NEW, "sync"),
-                            (ASYNC_SUB_OLD, ASYNC_SUB_NEW, "async-sub"),
-                            (ASYNC_OLD, ASYNC_NEW, "async-trim")):
+                            (ASYNC_OLD, ASYNC_NEW, "async")):
         if old not in src:
             print("ANCHOR_NOT_FOUND:" + label, file=sys.stderr)
             sys.exit(2)
         src = src.replace(old, new, 1)
 
-    # the async substitution must run BEFORE the trailing trim it now precedes;
-    # verify the resulting order rather than trusting the anchors.
-    if src.index(ASYNC_SUB_NEW) > src.index(ASYNC_NEW):
-        print("ORDER_ERROR: async substitution ended up after the trim",
+    # v2 invariant: in the async arm the identity trim must come BEFORE the
+    # substitution. v1 had this backwards and asserted the backwards order -
+    # verify the resulting order on the bytes rather than trusting the anchors.
+    a = src.index("de_delayed = _trim_trailing_sentinel_frames(de_delayed)")
+    b = src.index("torch.zeros_like(de_delayed)",
+                  src.index("def talker2code2wav_async_chunk("))
+    if a > b:
+        print("ORDER_ERROR: async substitution precedes the identity trim",
+              file=sys.stderr)
+        sys.exit(3)
+    if V2_MARKER not in src:
+        print("V2_MARKER_MISSING: the async warning does not carry the v2 fields",
               file=sys.stderr)
         sys.exit(3)
 
@@ -353,7 +396,7 @@ def main():
     py_compile.compile(path, doraise=True)
     print("PATCHED " + path)
     print("  sync  : full token-identity filter (_filter_sentinel_frames)")
-    print("  async : trailing-run filter + warning on any other sentinel")
+    print("  async : identity trim of the trailing run FIRST, then warn+substitute the rest (v2)")
     print("  revert: python patch_sentinel_filter.py <env-prefix> --revert")
 
 

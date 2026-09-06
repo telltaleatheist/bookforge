@@ -1082,6 +1082,8 @@ export const HIGGS_PATCHES: ReadonlyArray<{
    * remains".
    */
   absentMarker?: string;
+  /** Present only in the CURRENT version of the patch; its absence with `marker` present = stale. */
+  staleMarker?: string;
   why: string;
 }> = [
   {
@@ -1101,6 +1103,11 @@ export const HIGGS_PATCHES: ReadonlyArray<{
     // band-aided file as patched.
     marker: '_filter_sentinel_frames',
     absentMarker: '[:, :-1]',
+    // v2 of the patch (2026-09-05): v1 substituted sentinels with 0 BEFORE the
+    // identity trim, so the trim found nothing and every chunk ended in an
+    // audible burst. v2's async warning carries these fields; a file with the
+    // marker but without them is a v1 env and is reported STALE.
+    staleMarker: 'final=%s, window=%d frames',
     why:
       'Without it every rendered chunk ends with ~240 ms of audible garbage — the ' +
       'ramp-down sentinels are substituted with codec code 0, which is a VALID code ' +
@@ -1383,6 +1390,9 @@ function higgsProbeScript(envPrefix: string, expect: HiggsExpectations): string 
       (p.absentMarker
         ? `elif grep -qF '${p.absentMarker}' "$f"; then echo 'patch:${p.id}=trim-survived'; `
         : '') +
+      (p.staleMarker
+        ? `elif ! grep -qF '${p.staleMarker}' "$f"; then echo 'patch:${p.id}=stale'; `
+        : '') +
       `else echo 'patch:${p.id}=ok'; fi`,
   ).join('; ');
   // THE LAUNCHER'S IDENTITY, not just its presence. `test -x` answered "somebody
@@ -1505,7 +1515,11 @@ function higgsChecksFrom(
                 `"${p.absentMarker}", which the patch removes. That is a half-applied or ` +
                 `stacked state, not a patched one. Restore the file (reinstall the package) and ` +
                 `re-run the Higgs installer.`
-              : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
+              : state === 'stale'
+                ? `${p.relPath} carries an OLDER version of this patch (v1: it substitutes the ` +
+                  `sentinels before it trims them, so every chunk still ends in an audible burst). ` +
+                  `Re-run the Higgs installer, which applies v2.`
+                : `${p.relPath} was not found in ${envPrefix}. ${p.why}`,
     });
   }
 
