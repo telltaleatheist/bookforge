@@ -311,8 +311,15 @@ def _audiobook_spawn(args, assemble_only):
     # refuses a session whose two records disagree), so --assemble reads nothing
     # here rather than pretending to decide it.
     if not assemble_only:
-        _require(args.engine == "orpheus",
-                 f"--engine '{args.engine}' not wired yet (only 'orpheus')")
+        # Both narrator engines render a PROJECT through this door. Until
+        # 2026-09-06 it refused 'higgs' ("not wired yet") while --tts wanted an
+        # EPUB path and a .wav, so a Higgs render of a project had NO headless
+        # door at all - found by the training agent running the SGLang
+        # validation runbook. The engine rides to the adapter, which puts it
+        # in ParallelTtsSettings.ttsEngine exactly as the app's queue does
+        # (shared/queue/narration-run.ts); the bridge routes by isHiggsJob.
+        _require(args.engine in ("orpheus", "higgs"),
+                 f"--engine '{args.engine}' is not a narrator engine (orpheus or higgs)")
     _require(bool(args.project), "--project <projectDir> is required")
     _require(bool(shutil.which("node")), "node not found on PATH")
     _require(ORPHEUS_AUDIOBOOK.is_file(), f"missing engine adapter {ORPHEUS_AUDIOBOOK}")
@@ -342,7 +349,7 @@ def _audiobook_spawn(args, assemble_only):
         cmd += ["--assemble-only"]
     else:
         _require(bool(args.voice), "--voice <id> is required for --audiobook")
-        cmd += ["--voice", args.voice]
+        cmd += ["--engine", args.engine, "--voice", args.voice]
         if args.input:
             cmd += ["--input", str(Path(args.input).resolve())]
         if args.fresh:
@@ -436,7 +443,7 @@ def _audiobook_spawn(args, assemble_only):
 
     # The adapter file is named for Orpheus, but --assemble resolves the engine
     # from the session; naming one here (as this line did) was a false claim.
-    print(f"[bookforge-tts] {label}{'' if assemble_only else '/orpheus'} ->", " ".join(cmd), flush=True)
+    print(f"[bookforge-tts] {label}{'' if assemble_only else '/' + args.engine} ->", " ".join(cmd), flush=True)
     return subprocess.call(cmd, cwd=str(REPO_ROOT), env=env)
 
 

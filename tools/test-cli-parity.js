@@ -337,7 +337,10 @@ test('--assemble states the denoise rather than inferring it from an engine flag
   const py = read('cli/bookforge-tts.py');
   assert.ok(/elif assemble_only:[\s\S]{0,600}--assemble needs --final-denoise or --no-final-denoise/
     .test(py), '--assemble refuses to default the denoise');
-  assert.ok(/if not assemble_only:\s*\n\s*_require\(args\.engine == "orpheus"/.test(py),
+  // Both narrator engines render through this door since 2026-09-06 (a Higgs
+  // project had no headless render door before); the check is still the render
+  // path's alone — comment lines may sit between the `if` and the guard.
+  assert.ok(/if not assemble_only:\s*\n(?:\s*#[^\n]*\n)*\s*_require\(args\.engine in \("orpheus", "higgs"\)/.test(py),
     'and the engine check is the render path\'s alone');
   assert.ok(read('electron/reassembly-bridge.ts').includes('narratorEngineForSession'),
     'because the assembly resolves the engine from the session');

@@ -93,6 +93,19 @@ async function main() {
   if (args['assemble-only'] && voice) {
     throw new Error('--assemble-only reads the cached sentences; the voice was decided when they were rendered. Drop --voice.');
   }
+  // THE ENGINE IS A RENDER CHOICE, and this adapter used to hard-code
+  // `ttsEngine: 'orpheus'` — a Higgs project had no headless render door.
+  // Required on the render branch (no default: a missing flag rendering as
+  // Orpheus would be a silent substitution), refused on --assemble-only, where
+  // reassembly-bridge resolves the engine from the session it assembles.
+  const engine = args.engine;
+  if (!args['assemble-only']) {
+    if (engine !== 'orpheus' && engine !== 'higgs') {
+      throw new Error(`--engine <orpheus|higgs> is required for a render (got ${engine === undefined ? 'nothing' : JSON.stringify(engine)})`);
+    }
+  } else if (engine !== undefined) {
+    throw new Error('--assemble-only reads the cached sentences; the engine was decided when they were rendered. Drop --engine.');
+  }
   if (!args.project) throw new Error('--project <projectDir> is required');
 
   const projectDir = path.resolve(args.project);
@@ -233,12 +246,17 @@ async function main() {
   const settings = {
     device: 'auto',
     language: args.language || 'en',
-    ttsEngine: 'orpheus',
+    ttsEngine: engine,
+    // Orpheus: the prompt token. Higgs: the catalog voice id — the same field
+    // the app's queue fills from the modal (narration-run.ts `fineTuned`).
     fineTuned: voice,
     speed: 1.0,
     enableTextSplitting: false,
   };
-  if (args['model-dir']) settings.orpheusModelDir = args['model-dir'];
+  if (args['model-dir']) {
+    if (engine !== 'orpheus') throw new Error('--model-dir names an Orpheus model directory; a Higgs voice is a catalog checkpoint');
+    settings.orpheusModelDir = args['model-dir'];
+  }
 
   const t0 = Date.now();
 

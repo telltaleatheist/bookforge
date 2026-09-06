@@ -42,7 +42,7 @@ import { app } from 'electron';
 import {
   checkWslHiggsSetupAsync,
   shouldUseWsl2ForHiggs,
-  WSL_HIGGS_REMEDY,
+  wslHiggsRemedy,
   type HiggsCheck,
   type HiggsSetupResult,
 } from './tool-paths';
@@ -551,7 +551,7 @@ export async function higgsDoctor(): Promise<HiggsSetupResult> {
       }),
     };
     const checks = [toggle, ...wsl.checks];
-    return { ...wsl, valid: checks.every((c) => c.ok), checks, remedy: WSL_HIGGS_REMEDY };
+    return { ...wsl, valid: checks.every((c) => c.ok), checks, remedy: wslHiggsRemedy(stack) };
   }
   if (process.platform === 'darwin') return checkDarwinHiggsSetupAsync();
   return {

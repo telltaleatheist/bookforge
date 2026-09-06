@@ -1044,7 +1044,27 @@ export interface HiggsSetupResult {
   envPrefix?: string;
 }
 
-/** What a WSL-arm failure is fixed by. One copy, used by every WSL return. */
+/**
+ * What a WSL-arm failure is fixed by, PER STACK. One sentence for the vllm-omni
+ * env (which needs its two site-packages patches re-applied) and another for
+ * the SGLang-Omni env, which has no patches and whose installer never touches
+ * higgs3 — the vllm-omni sentence on a sglang-omni failure told the training
+ * agent (2026-09-06) that the fix would rebuild an env it must not touch, so
+ * a red launcher row went unfixed.
+ */
+export function wslHiggsRemedy(stack: HiggsStack): string {
+  if (stack === 'sglang-omni') {
+    return 'Run Install/Repair on Settings → Higgs. On the SGLang-Omni stack that runs '
+      + 'install_sglomni.sh: it creates the sglomni env only if absent, installs only the '
+      + 'missing pins, makes the two CUDA symlinks, and copies the launcher into the env — '
+      + 'it never touches higgs3 and applies no site-packages patches. The launcher alone is '
+      + 'the same copy by hand: install -m 755 <bookforge>/electron/scripts/higgs/'
+      + 'serve_higgs_sgl.sh <env>/bin/.';
+  }
+  return WSL_HIGGS_REMEDY;
+}
+
+/** The vllm-omni sentence; `wslHiggsRemedy(stack)` is what every WSL return uses. */
 export const WSL_HIGGS_REMEDY =
   'Run Install/Repair on Settings → Higgs, which builds the WSL environment and re-applies '
   + 'the site-packages patches.';
@@ -1850,7 +1870,7 @@ export function checkWslHiggsSetupAsync(config: HiggsDoctorConfig): Promise<Higg
     return Promise.resolve({
       valid: false,
       arm: 'wsl',
-      remedy: WSL_HIGGS_REMEDY,
+      remedy: wslHiggsRemedy(config.stack),
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     });
   }
@@ -1872,7 +1892,7 @@ export function checkWslHiggsSetupAsync(config: HiggsDoctorConfig): Promise<Higg
       const checks = higgsChecksFrom(
         out, probeError, distro, envName, envPrefix, expect, narratorEnvPrefix);
       resolve({
-        valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
+        valid: checks.every((c) => c.ok), arm: 'wsl', remedy: wslHiggsRemedy(config.stack), checks, envPrefix,
       });
     };
     let proc: ReturnType<typeof spawn>;
@@ -1918,7 +1938,7 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
     return {
       valid: false,
       arm: 'wsl',
-      remedy: WSL_HIGGS_REMEDY,
+      remedy: wslHiggsRemedy(config.stack),
       checks: [{ id: 'distro', label: 'WSL distribution', ok: false, detail: 'WSL is only available on Windows' }],
     };
   }
@@ -1947,7 +1967,7 @@ export function checkWslHiggsSetup(config: HiggsDoctorConfig): HiggsSetupResult 
   const checks = higgsChecksFrom(
     out, probeError, distro, envName, envPrefix, expect, narratorEnvPrefix);
   return {
-    valid: checks.every((c) => c.ok), arm: 'wsl', remedy: WSL_HIGGS_REMEDY, checks, envPrefix,
+    valid: checks.every((c) => c.ok), arm: 'wsl', remedy: wslHiggsRemedy(config.stack), checks, envPrefix,
   };
 }
 
