@@ -197,7 +197,12 @@ def run(cmd, **kw):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("audio_dir")
+    # A DIRECTORY of per-chapter audio, or a SINGLE whole-book master file. The
+    # second case is not a special pipeline, just a different unit of work: one
+    # "chapter" whose text is the whole epub. The aligner already trims epub text
+    # the narrator never reached at either end, which is what makes a master
+    # covering only part of a book (a day-batch, a compact master) work here.
+    ap.add_argument("audio_dir", metavar="AUDIO_DIR_OR_FILE")
     ap.add_argument("epub")
     ap.add_argument("out_dir")
     ap.add_argument("--python", default=sys.executable,
@@ -237,6 +242,9 @@ def main():
                          "use base on CPU)")
     ap.add_argument("--ext", default=".wav")
     ap.add_argument("--only", default="")
+    # Single-file mode: which epub chapters make up this master's text.
+    # "" = all of them (let the aligner trim). Accepts "0,4,6-19".
+    ap.add_argument("--chapters", default="")
     ap.add_argument("--skip-existing", action="store_true")
     ap.add_argument("--measure-only", action="store_true")
     ap.add_argument("--reuse-silences", action="store_true")
@@ -244,7 +252,9 @@ def main():
 
     for p in (ALIGNER, MEASURE, SPLITTER, STUB):
         if not os.path.exists(p): die(f"missing {p}")
-    if not os.path.isdir(a.audio_dir): die(f"no audio dir {a.audio_dir}")
+    single = os.path.isfile(a.audio_dir)
+    if not single and not os.path.isdir(a.audio_dir):
+        die(f"no audio dir or file {a.audio_dir}")
     if not os.path.exists(a.epub): die(f"no epub {a.epub}")
     os.makedirs(a.out_dir, exist_ok=True)
     old_vtt_dir = a.old_vtt_dir or a.audio_dir
@@ -276,30 +286,53 @@ def main():
     chapters = book["chapters"]
 
     # ---- 2. which audio file is which chapter
-    stems = sorted(os.path.splitext(os.path.basename(p))[0]
-                   for p in glob.glob(os.path.join(a.audio_dir, "*" + a.ext)))
-    # a whole-book decode living beside the chapters is not a chapter
-    stems = [s for s in stems if not re.fullmatch(r"(gp_)?all|.*_all", s)]
-    if a.only:
-        want = set(x.strip() for x in a.only.split(","))
-        stems = [s for s in stems if s in want]
-        if not stems: die(f"--only matched no audio stem in {a.audio_dir}")
-    mapping, mreport = map_audio_to_chapters(stems, chapters, old_vtt_dir)
-    log(f"{len(stems)} audio file(s); mapped {len(mapping)} to epub chapters")
-    for stem, ci, score, why in mreport:
-        if ci is None:
-            log(f"  SKIP {stem!r}: {why} (best score {score:.0%})")
+    if single:
+        stem = os.path.splitext(os.path.basename(a.audio_dir))[0]
+        if a.chapters:
+            want = set()
+            for part in a.chapters.split(","):
+                part = part.strip()
+                if "-" in part:
+                    lo, hi = part.split("-", 1); want |= set(range(int(lo), int(hi) + 1))
+                elif part:
+                    want.add(int(part))
+            bad = sorted(i for i in want if i >= len(chapters))
+            if bad: die(f"--chapters names {bad}, but the epub has {len(chapters)} chapters")
+            idxs = sorted(want)
         else:
-            idxs = mapping[stem]
-            titles = " + ".join(chapters[i]["title"] for i in idxs)
-            n = sum(len(chapters[i]["sentences"]) for i in idxs)
-            log(f"  {stem!r} -> [{','.join(map(str, idxs))}] {titles!r} "
-                f"({n} sentences, cue match {score:.0%})")
-    unclaimed = [c["title"] for i, c in enumerate(chapters)
-                 if i not in set(x for v in mapping.values() for x in v)]
-    if unclaimed:
-        log(f"  epub chapters with no audio: {', '.join(repr(t) for t in unclaimed)}")
-    stems = [s for s in stems if s in mapping]
+            idxs = list(range(len(chapters)))
+        mapping = {stem: idxs}
+        n = sum(len(chapters[i]["sentences"]) for i in idxs)
+        log(f"single master {stem!r}: {len(idxs)} epub chapter(s), {n} sentences "
+            f"(the aligner trims whatever this master does not reach)")
+        stems = [stem]
+        audio_of = {stem: a.audio_dir}
+    else:
+        stems = sorted(os.path.splitext(os.path.basename(p))[0]
+                       for p in glob.glob(os.path.join(a.audio_dir, "*" + a.ext)))
+        # a whole-book decode living beside the chapters is not a chapter
+        stems = [s for s in stems if not re.fullmatch(r"(gp_)?all|.*_all", s)]
+        if a.only:
+            want = set(x.strip() for x in a.only.split(","))
+            stems = [s for s in stems if s in want]
+            if not stems: die(f"--only matched no audio stem in {a.audio_dir}")
+        mapping, mreport = map_audio_to_chapters(stems, chapters, old_vtt_dir)
+        audio_of = {s: os.path.join(a.audio_dir, s + a.ext) for s in stems}
+        log(f"{len(stems)} audio file(s); mapped {len(mapping)} to epub chapters")
+        for stem, ci, score, why in mreport:
+            if ci is None:
+                log(f"  SKIP {stem!r}: {why} (best score {score:.0%})")
+            else:
+                idxs = mapping[stem]
+                titles = " + ".join(chapters[i]["title"] for i in idxs)
+                n = sum(len(chapters[i]["sentences"]) for i in idxs)
+                log(f"  {stem!r} -> [{','.join(map(str, idxs))}] {titles!r} "
+                    f"({n} sentences, cue match {score:.0%})")
+        unclaimed = [c["title"] for i, c in enumerate(chapters)
+                     if i not in set(x for v in mapping.values() for x in v)]
+        if unclaimed:
+            log(f"  epub chapters with no audio: {', '.join(repr(t) for t in unclaimed)}")
+        stems = [s for s in stems if s in mapping]
     if not stems: die("no audio file could be mapped to an epub chapter")
 
     log(f"rough model {a.rough_model!r}")
@@ -309,7 +342,7 @@ def main():
     # ---- 3. align + measure, chapter by chapter
     rows = []
     for k, stem in enumerate(stems, 1):
-        audio = os.path.join(a.audio_dir, stem + a.ext)
+        audio = audio_of[stem]
         sents_p = os.path.join(a.out_dir, stem + ".sentences.json")
         vtt_p = os.path.join(a.out_dir, stem + ".vtt")
         rep_p = os.path.join(a.out_dir, stem + ".report.json")
@@ -348,7 +381,9 @@ def main():
                 rows.append({"stem": stem, "error": err or "align failed"})
                 continue
             for line in r.stderr.splitlines():
-                if "cue edges:" in line or "silence map:" in line or "drift check" in line:
+                if ("cue edges:" in line or "silence map:" in line or "drift check" in line
+                        or "cue confidence:" in line or "cue clocks:" in line
+                        or "whisper-authority:" in line):
                     log("  " + line.split("] ", 1)[-1])
         align_s = time.time() - t0
 
@@ -365,6 +400,8 @@ def main():
             "audioSeconds": summ.get("audioDurationSeconds"),
             "cues": e["cues"], "counts": e["counts"],
             "interpolatedCues": summ.get("interpolatedCues"),
+            "suspectCues": summ.get("suspectCues"),
+            "cueTimeSources": summ.get("cueTimeSources"),
             "edgeSources": summ.get("cueEdgeSources"),
             "silenceSource": (rep.get("boundarySnap") or {}).get("silenceSource"),
             "trailingPausesS": e["trailingPausesS"], "leadInsS": e["leadInsS"],
@@ -378,7 +415,8 @@ def main():
         log(f"  {e['cues']} cues, mid-word {e['midWordEdgePct']}%, "
             f"end-in-speech {e['endInSpeechPct']}%, end-at-next {e['endAtNextOnsetPct']}%, "
             f"start-no-lead {e['startAtOwnOnsetPct']}%, "
-            f"interpolated {r0['interpolatedCues']}, {align_s / 60:.1f} min")
+            f"interpolated {r0['interpolatedCues']}, suspect {r0['suspectCues']}, "
+            f"{align_s / 60:.1f} min")
 
     # ---- 4. summary, pooled from counts
     ok = [r for r in rows if "error" not in r]
@@ -397,13 +435,18 @@ def main():
         "medianTrailingPauseS": round(all_tp[len(all_tp) // 2], 3) if all_tp else None,
         "medianLeadInS": round(all_li[len(all_li) // 2], 3) if all_li else None,
         "interpolatedCues": sum(r["interpolatedCues"] or 0 for r in ok),
+        "suspectCues": sum(r["suspectCues"] or 0 for r in ok),
+        # cues a corpus cutter should DROP: never confirmed in audio, or confirmed
+        # and then contradicted with no quiet place to put the edge.
+        "droppableCues": sum((r["interpolatedCues"] or 0) + (r["suspectCues"] or 0) for r in ok),
         "audioSeconds": round(sum(r["audioSeconds"] or 0 for r in ok), 1),
         "cueSeconds": round(sum(r["totalCueSeconds"] for r in ok), 1),
         "wallSeconds": round(time.time() - t_start, 1),
         "workers": workers, "device": a.device,
     }
     hdr = (f"{'chapter':34}{'cues':>6}{'mid-word%':>10}{'endSpch%':>9}"
-           f"{'endNext%':>9}{'startNL%':>9}{'medTrail':>9}{'interp':>7}{'align_min':>10}")
+           f"{'endNext%':>9}{'startNL%':>9}{'medTrail':>9}{'interp':>7}{'susp':>6}"
+           f"{'align_min':>10}")
     print("\n" + hdr)
     print("-" * len(hdr))
     for r in rows:
@@ -413,14 +456,17 @@ def main():
         print(f"{r['stem'][:33]:34}{r['cues']:>6}{r['midWordEdgePct']:>10}"
               f"{r['endInSpeechPct']:>9}{r['endAtNextOnsetPct']:>9}{r['startAtOwnOnsetPct']:>9}"
               f"{r['medianTrailingPauseS']:>9}{r['interpolatedCues']:>7}"
+              f"{(r['suspectCues'] if r['suspectCues'] is not None else 0):>6}"
               f"{r['alignSeconds'] / 60:>10.1f}")
     print("-" * len(hdr))
     print(f"{'POOLED (' + str(pooled['chapters']) + ' chapters)':34}{pooled['cues']:>6}"
           f"{pooled['midWordEdgePct']:>10}{pooled['endInSpeechPct']:>9}"
           f"{pooled['endAtNextOnsetPct']:>9}{pooled['startAtOwnOnsetPct']:>9}"
           f"{pooled['medianTrailingPauseS']:>9}{pooled['interpolatedCues']:>7}"
-          f"{pooled['wallSeconds'] / 60:>10.1f}")
-    print(f"\naudio {pooled['audioSeconds'] / 3600:.2f} h, cue span "
+          f"{pooled['suspectCues']:>6}{pooled['wallSeconds'] / 60:>10.1f}")
+    print(f"\ndroppable (interpolated + suspect): {pooled['droppableCues']} of "
+          f"{pooled['cues']} cues ({100.0 * pooled['droppableCues'] / max(1, pooled['cues']):.1f}%)")
+    print(f"audio {pooled['audioSeconds'] / 3600:.2f} h, cue span "
           f"{pooled['cueSeconds'] / 3600:.2f} h, wall {pooled['wallSeconds'] / 3600:.2f} h "
           f"({pooled['workers']} worker(s), {pooled['device']})")
 
