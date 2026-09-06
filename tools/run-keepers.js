@@ -94,6 +94,7 @@ const SUITES = [
   // silent in the worst way: a book with 36 minutes of good audio becomes
   // unassemblable again because one row decided to fail on what it found.
   'test-coverage-audit-reports',
+  'test-narration-modal-voice-never-substituted',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
   'test-assembly-after-wsl-normalize',

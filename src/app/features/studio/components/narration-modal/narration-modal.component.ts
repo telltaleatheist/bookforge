@@ -345,6 +345,7 @@ function fileName(fullPath: string): string {
                   [disabled]="!narrate()"
                   [ngModel]="voice()"
                   (ngModelChange)="voice.set($event)"
+                  placeholder="Choose a voice"
                 />
               </div>
 
@@ -1298,6 +1299,10 @@ export class NarrationModalComponent {
     if (!preset) return;
     this.engine.set(preset.ttsEngine);
     this.voice.set(preset.ttsVoice);
+    // A preset is a voice PAIR, but its voice can still be one this machine's
+    // catalog no longer lists under that engine; validated the same way an
+    // engine switch is, never substituted (see `selectEngine`).
+    this.dropVoiceUnlessItBelongs(preset.ttsEngine);
     this.device.set(preset.ttsDevice);
     this.speed.set(preset.ttsSpeed);
     // A preset states the CONVERSION, which is one of the two enhancement
@@ -1343,11 +1348,28 @@ export class NarrationModalComponent {
     this.engine.set(id);
     // A voice belongs to an engine. Keeping the old one across a change would
     // send Orpheus an XTTS reference clip, which fails inside the job rather
-    // than here — so the first voice this engine HAS is selected instead.
-    const available = this.voices.voicesFor(id);
+    // than here. Until 2026-09-05 this SILENTLY SELECTED THE FIRST VOICE THE
+    // ENGINE HAS instead — and the Higgs catalog's first entry is "default",
+    // the base model's own speaker, a real renderable voice. Owen's Mac render
+    // of Working Towards the Fuhrer (job step_mtp5pveg, 2026-09-06 01:52Z)
+    // went out as that speaker: the modal opened on the saved Orpheus voice,
+    // the engine card switched to Higgs, the picker moved to Default with no
+    // log line, and nothing downstream had a reason to refuse. Measured by
+    // the training agent: ECAPA cosine 0.17 against deathstalker vs 0.89 for
+    // the PC renders. Owen's rule: a voice that does not belong is REFUSED by
+    // name, never replaced. The choice is cleared and `stageRefusal` says so.
+    this.dropVoiceUnlessItBelongs(id);
+  }
+
+  /**
+   * Clear the voice when it is not one of `engine`'s. The picker then shows
+   * its placeholder and `stageRefusal` names the gap; no engine's first entry
+   * is ever chosen on the user's behalf (see `selectEngine`).
+   */
+  private dropVoiceUnlessItBelongs(engine: TTSEngine): void {
+    const available = this.voices.voicesFor(engine);
     if (!available.some((v) => v.value === this.voice())) {
-      const first = available[0];
-      this.voice.set(first ? first.value : '');
+      this.voice.set('');
     }
   }
 
@@ -1419,6 +1441,25 @@ export class NarrationModalComponent {
     if (this.narrate() && this.engine() === 'higgs') {
       const why = this.higgsBlocked();
       if (why) return why;
+    }
+    // NO VOICE, OR A VOICE THAT DOES NOT BELONG TO THIS ENGINE. The first is
+    // what `selectEngine` leaves behind on purpose; the second is a saved
+    // default or preset from another engine that the picker never touched.
+    // Both are refused by name — never resolved to the engine's first entry
+    // (the base speaker), which is how a Higgs book was narrated in the wrong
+    // voice on 2026-09-06. The list may still be loading when the dialog
+    // opens; an empty list is not evidence either way, so only a non-empty
+    // list that lacks the voice refuses.
+    if (this.narrate()) {
+      const engineName = this.engine() === 'higgs' ? 'Higgs' : 'Orpheus';
+      if (!this.voice()) {
+        return `No ${engineName} voice is chosen. Pick one on the Reading tab.`;
+      }
+      const listed = this.voices.voicesFor(this.engine());
+      if (listed.length > 0 && !listed.some((v) => v.value === this.voice())) {
+        return `"${this.voice()}" is not a ${engineName} voice on this machine. Pick one on the `
+          + 'Reading tab — the choice is never replaced with another voice.';
+      }
     }
     // A voice the catalog lists but cannot render — an artifact that has not
     // landed. The picker disables it, so reaching here means it arrived from a
