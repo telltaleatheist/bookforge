@@ -810,6 +810,22 @@ export function listHiggsModels(): HiggsModel[] {
 }
 
 /**
+ * The catalog's stated SAMPLING RULE (its top-level `_samplingRule`): no voice
+ * carries a `sampling` block, because temperature / top_p / top_k are THE
+ * DEFAULT everywhere — Owen, 2026-09-06: "we shouldnt deviate from the default
+ * unless we have a very good reason. and we dont." Exposed so the keeper can
+ * hold the catalog to the rule it states, not to a rule that lives only in a
+ * test.
+ */
+export function higgsCatalogSamplingRule(): string {
+  const rule = (loadCatalog() as HiggsCatalog & { _samplingRule?: unknown })._samplingRule;
+  if (typeof rule !== 'string' || !rule.trim()) {
+    throw new Error('Higgs voice catalog states no `_samplingRule`; the rule that every voice renders at the default must be written where the voices are.');
+  }
+  return rule;
+}
+
+/**
  * THIS MACHINE'S CHECKPOINT ARM, or `null` where Higgs has no backend at all.
  *
  * A PLATFORM QUESTION, NOT AN INSTALLATION ONE. On Windows the only Higgs arm
