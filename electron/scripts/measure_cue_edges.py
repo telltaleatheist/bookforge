@@ -108,7 +108,17 @@ def rms_db(audio_path):
     return 20.0 * np.log10(np.maximum(r, 1e-9)), n
 
 
-def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
+def matched_flag(notes):
+    """direct | interpolated | None, read off the cue's `NOTE align` block."""
+    for ln in notes or ():
+        m = re.search(r'\bmatched=(\w+)', ln)
+        if m: return m.group(1)
+    return None
+
+
+def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start, keep=None):
+    """`keep` = indices to SCORE. Neighbours are still read from the full cue list,
+    so filtering to one subset never changes what "the next cue's onset" means."""
     import numpy as np
     speech = db > onset_db          # frame grid used for onsets/offsets
     fi = lambda t: max(0, min(nframes - 1, int(t * SR) // FRAME))
@@ -141,12 +151,15 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
         lo, hi = band_db(max(0.0, t - half), t), band_db(t, t + half)
         return lo is not None and hi is not None and lo > onset_db and hi > onset_db
 
-    n = len(cues)
+    total = len(cues)
+    idx = range(total) if keep is None else sorted(keep)
+    n = len(idx)
     end_in_speech = end_at_next = start_at_own = 0
     mid_start = mid_end = 0
     trailing = []
     lead = []
-    for x, (s, e, _txt, _no) in enumerate(cues):
+    for x in idx:
+        s, e = cues[x][0], cues[x][1]
         # (e) mid-word edges — the acceptance criterion
         if mid_word(s): mid_start += 1
         if mid_word(e): mid_end += 1
@@ -158,7 +171,7 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
             if 20.0 * math.log10(max(lin, 1e-9)) > speech_db:
                 end_in_speech += 1
         # (b) the end sits at the next cue's speech onset
-        if x + 1 < n:
+        if x + 1 < total:
             no = next_speech(cues[x + 1][0])
             if no is not None and abs(no - e) <= tol:
                 end_at_next += 1
@@ -199,8 +212,8 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
         'startAtOwnOnsetPct': round(pct(start_at_own), 2),
         'medianTrailingPauseS': round(med(trailing), 3) if trailing else None,
         'medianLeadInS': round(med(lead), 3) if lead else None,
-        'medianCueS': round(med([e - s for s, e, _t, _n in cues]), 3) if cues else None,
-        'totalCueSeconds': round(sum(e - s for s, e, _t, _n in cues), 1),
+        'medianCueS': round(med([cues[x][1] - cues[x][0] for x in idx]), 3) if n else None,
+        'totalCueSeconds': round(sum(cues[x][1] - cues[x][0] for x in idx), 1),
     }
 
 
@@ -213,6 +226,11 @@ def main():
     ap.add_argument('--onset-db', type=float, default=-38.0)
     ap.add_argument('--tol', type=float, default=0.040)
     ap.add_argument('--tol-start', type=float, default=0.020)
+    # Direct-only is the number that matters for corpus work: it is what a cutter
+    # that honours `matched=interpolated` and drops those cues actually gets.
+    ap.add_argument('--by-match', action='store_true',
+                    help='also score direct-only and interpolated-only subsets, '
+                         'read from each cue NOTE align tag')
     ap.add_argument('--json', default='')
     a = ap.parse_args()
 
@@ -227,6 +245,14 @@ def main():
         texts[name] = [c[2] for c in cues]
         out[name] = measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start)
         out[name]['vtt'] = path
+        if a.by_match:
+            flags = [matched_flag(c[3]) for c in cues]
+            out[name]['byMatch'] = {
+                k: measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start,
+                           keep=[i for i, f in enumerate(flags) if f == k])
+                for k in ('direct', 'interpolated')
+                if any(f == k for f in flags)
+            }
 
     if a.compare:
         # the payload text must be untouched — only NOTE lines may differ
@@ -245,6 +271,13 @@ def main():
     print(f'{"metric":<{w}}' + ''.join(f'{c:>14}' for c in cols))
     for k in keys:
         print(f'{k:<{w}}' + ''.join(f'{str(out[c].get(k)):>14}' for c in cols))
+    if a.by_match:
+        for name, _p in sets:
+            bm = out[name].get('byMatch') or {}
+            for kind, mm in bm.items():
+                print(f'  [{name}/{kind}] cues={mm["cues"]} midWordEdge={mm["midWordEdgePct"]}% '
+                      f'endInSpeech={mm["endInSpeechPct"]}% endAtNext={mm["endAtNextOnsetPct"]}% '
+                      f'startNoLead={mm["startAtOwnOnsetPct"]}%')
     if a.compare:
         print(f'{"cue text identical":<{w}}{str(out["textIdentical"]):>14}'
               + (f'  ({out["textDiffCues"]} cue(s) differ)' if not out['textIdentical'] else ''))

@@ -206,7 +206,35 @@ def main():
     ap.add_argument("--dist", default="")
     ap.add_argument("--old-vtt-dir", default="")
     ap.add_argument("--workers", type=int, default=0)
+    # cpu | cuda | mps. On a GPU align_audiobook.py forces a single worker (one
+    # process owns the device), so --workers stops meaning anything there and the
+    # RAM clamp below is irrelevant — the bill moves to VRAM.
+    ap.add_argument("--device", default="cpu", choices=["cpu", "cuda", "mps", "auto"])
     ap.add_argument("--lang", default="en")
+    # The ROUGH transcript model. It never supplies a word of cue text - it only
+    # anchors epub sentences to audio time in coarse_align - but a sentence it
+    # fails to anchor falls back to token-weighted INTERPOLATION between its
+    # neighbours, and an interpolated cue's two edges inherit that guess. So this
+    # sets how much of the corpus a cutter that honours `matched=interpolated`
+    # has to throw away.
+    #
+    # DEFAULT medium.en, NOT align_audiobook.py's `base`. Measured on God's People
+    # chapter 10 (2590 s, GPU), same everything else:
+    #
+    #     model       interpolated   mid-word  endInSpeech  endAtNext  startNoLead  wall
+    #     base        149 (30.1%)      4.55%       7.68%       3.84%       5.05%    5.2m
+    #     small.en     69 (14.0%)      4.37%       7.32%       3.66%       4.47%    8.5m
+    #     medium.en    53 (10.8%)      3.76%       6.30%       3.25%       3.86%    8.8m
+    #
+    # Cue TEXT is unchanged by this: small.en and medium.en emit byte-identical
+    # text, and differ from base only by dropping 3 cues base could not anchor and
+    # smeared over real audio (a photo caption the narrator never read). So a bigger
+    # rough model removes false cues and interpolated ones; it never rewrites prose.
+    # On a GPU it costs ~3.6 min per chapter, which is nothing against re-cutting a
+    # corpus. On CPU it is NOT nearly free - pass --rough-model base there.
+    ap.add_argument("--rough-model", default="medium.en",
+                    help="rough anchor model (default medium.en, tuned for corpus work; "
+                         "use base on CPU)")
     ap.add_argument("--ext", default=".wav")
     ap.add_argument("--only", default="")
     ap.add_argument("--skip-existing", action="store_true")
@@ -221,7 +249,14 @@ def main():
     os.makedirs(a.out_dir, exist_ok=True)
     old_vtt_dir = a.old_vtt_dir or a.audio_dir
 
-    workers, cores, by_ram = (a.workers, physical_cores(), None) if a.workers > 0 else default_workers()
+    if a.device in ("cuda", "mps"):
+        # one GPU worker owns the device; anything else is a lie the aligner would
+        # override anyway (and it logs the override)
+        workers, cores, by_ram = (a.workers or 1), physical_cores(), None
+    elif a.workers > 0:
+        workers, cores, by_ram = a.workers, physical_cores(), None
+    else:
+        workers, cores, by_ram = default_workers()
     t_start = time.time()
 
     # ---- 1. split (the app's own splitter, once for the book)
@@ -267,8 +302,9 @@ def main():
     stems = [s for s in stems if s in mapping]
     if not stems: die("no audio file could be mapped to an epub chapter")
 
+    log(f"rough model {a.rough_model!r}")
     log(f"workers={workers} (physical cores {cores}"
-        + (f", RAM allows {by_ram}" if by_ram is not None else "") + f"), device=cpu")
+        + (f", RAM allows {by_ram}" if by_ram is not None else "") + f"), device={a.device}")
 
     # ---- 3. align + measure, chapter by chapter
     rows = []
@@ -290,7 +326,8 @@ def main():
         else:
             cmd = [a.python, ALIGNER, "--audio", audio, "--sentences", sents_p,
                    "--out", vtt_p, "--report", rep_p, "--rough-cache", rough_p,
-                   "--device", "cpu", "--workers", str(workers), "--lang", a.lang]
+                   "--device", a.device, "--workers", str(workers), "--lang", a.lang,
+                   "--rough-model", a.rough_model]
             if a.reuse_silences:
                 if not os.path.exists(sil_p): write_silence_cache(audio, sil_p)
                 cmd += ["--silence-map", sil_p]
@@ -361,7 +398,7 @@ def main():
         "audioSeconds": round(sum(r["audioSeconds"] or 0 for r in ok), 1),
         "cueSeconds": round(sum(r["totalCueSeconds"] for r in ok), 1),
         "wallSeconds": round(time.time() - t_start, 1),
-        "workers": workers, "device": "cpu",
+        "workers": workers, "device": a.device,
     }
     hdr = (f"{'chapter':34}{'cues':>6}{'mid-word%':>10}{'endSpch%':>9}"
            f"{'endNext%':>9}{'startNL%':>9}{'medTrail':>9}{'interp':>7}{'align_min':>10}")
@@ -383,7 +420,7 @@ def main():
           f"{pooled['wallSeconds'] / 60:>10.1f}")
     print(f"\naudio {pooled['audioSeconds'] / 3600:.2f} h, cue span "
           f"{pooled['cueSeconds'] / 3600:.2f} h, wall {pooled['wallSeconds'] / 3600:.2f} h "
-          f"({pooled['workers']} workers, cpu)")
+          f"({pooled['workers']} worker(s), {pooled['device']})")
 
     out = {"epub": os.path.abspath(a.epub), "audioDir": os.path.abspath(a.audio_dir),
            "outDir": os.path.abspath(a.out_dir), "pooled": pooled,
