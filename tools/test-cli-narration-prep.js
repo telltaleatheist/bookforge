@@ -726,12 +726,43 @@ test('both --prep and --audiobook resolve a project book through the app\'s RECO
   // the old ladder narrated it while the app's record said "no book".
   fs.writeFileSync(path.join(projectDir, 'source', 'exported.epub'), 'x');
   const rootsSeen = [];
+  const variantDoor = (variants) => ({
+    readProjectManifest: async () => ({ variants }),
+    getVariants: (m) => ({ variants: m.variants }),
+    foundryProvenanceOf: (v) => v.foundrySource ?? v.promotedFrom,
+  });
   const noRecord = {
     setLibraryBasePath: (root) => rootsSeen.push(root),
     bookForAct: async () => null,
+    ...variantDoor([{ id: 'p', kind: 'ebook', format: 'pdf', path: 'archive/Book.pdf' }]),
   };
   await assert.rejects(() => resolveInputEpub(projectDir, noRecord), /records no book/,
     'no record ⇒ refused by name, whatever sits under source/');
+  // THE SECOND DOOR: a Foundry-exported EPUB variant is the book the app's
+  // Narrate button reads (2026-09-06, the Kershaw project — no working chain,
+  // one exported variant, refused as "no book" by the chain door alone).
+  const exportedOne = {
+    setLibraryBasePath: () => {},
+    bookForAct: async () => null,
+    ...variantDoor([
+      { id: 'p', kind: 'ebook', format: 'pdf', path: 'archive/Book.pdf' },
+      { id: 'e', kind: 'ebook', format: 'epub', path: 'output/Book (2).epub',
+        foundrySource: { projectKey: 'k', fileName: 'Book (2).epub' } },
+    ]),
+  };
+  assert.strictEqual(await resolveInputEpub(projectDir, exportedOne),
+    path.join(projectDir, 'output', 'Book (2).epub'),
+    'one Foundry-exported EPUB variant is the book');
+  const exportedTwo = {
+    setLibraryBasePath: () => {},
+    bookForAct: async () => null,
+    ...variantDoor([
+      { id: 'e1', kind: 'ebook', format: 'epub', path: 'output/Book.epub', foundrySource: { projectKey: 'k', fileName: 'Book.epub' } },
+      { id: 'e2', kind: 'ebook', format: 'epub', path: 'output/Book (2).epub', promotedFrom: { projectKey: 'k', fileName: 'Book (2).epub' } },
+    ]),
+  };
+  await assert.rejects(() => resolveInputEpub(projectDir, exportedTwo), /records 2 exported EPUBs/,
+    'two exported EPUBs ⇒ refused by name, the version row decides');
   assert.deepStrictEqual(rootsSeen, [path.join(ROOT, 'library')],
     'the library root is stated before the door is opened, two levels above the project');
   const recorded = {

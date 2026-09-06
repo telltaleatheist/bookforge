@@ -47,13 +47,42 @@ async function resolveInputEpub(projectDir, manifestService) {
   // orpheus-audiobook-render.js has always done for reassembly.
   service.setLibraryBasePath(path.dirname(path.dirname(projectDir)));
   const book = await service.bookForAct(projectDir);
-  if (book === null) {
+  if (book !== null) return book.absPath;
+
+  // THE SECOND DOOR THE APP HAS. A book that came out of the hosted Foundry
+  // window is not on a working chain: it is recorded as an EPUB VARIANT with
+  // Foundry provenance (manifest.variants[].foundrySource / promotedFrom), and
+  // the app's Narrate button on that version row narrates exactly that file
+  // (electron/main.ts narrationTargetOf, over `exportedEpubs()` =
+  // getVariants(...).variants filtered to epub + foundryProvenanceOf). Until
+  // 2026-09-06 this resolver asked only the chain door, so a Foundry-exported
+  // project was refused as "records no book" while the app narrated it fine —
+  // found by the training agent running the SGLang validation runbook. One
+  // exported EPUB is the book; several is a choice the app makes on the version
+  // row and this door refuses to guess.
+  if (typeof service.readProjectManifest !== 'function'
+      || typeof service.getVariants !== 'function'
+      || typeof service.foundryProvenanceOf !== 'function') {
     throw new Error(
-      `${path.basename(projectDir)} records no book (manifest outputs/families carry no EPUB). `
-      + 'An unrecorded file under source/ is not adopted — export the book in the app first, '
-      + 'or pass --input to narrate a file by hand.');
+      'compiled manifest-service missing readProjectManifest/getVariants/foundryProvenanceOf — '
+      + 'rebuild (npx tsc -p tsconfig.electron.json)');
   }
-  return book.absPath;
+  const manifest = await service.readProjectManifest(projectDir);
+  const exported = service.getVariants(manifest).variants.filter((v) =>
+    typeof v.format === 'string' && v.format.toLowerCase() === 'epub'
+    && service.foundryProvenanceOf(v) !== undefined
+    && typeof v.path === 'string' && v.path.length > 0);
+  if (exported.length === 1) return path.join(projectDir, exported[0].path);
+  if (exported.length > 1) {
+    throw new Error(
+      `${path.basename(projectDir)} records ${exported.length} exported EPUBs `
+      + `(${exported.map((v) => path.basename(v.path)).join('; ')}). The app's version row `
+      + 'decides which one a narration reads; pass --input <that file> here.');
+  }
+  throw new Error(
+    `${path.basename(projectDir)} records no book (no working-chain EPUB and no Foundry-exported `
+    + 'EPUB variant). An unrecorded file under source/ is not adopted — export the book in the '
+    + 'app first, or pass --input to narrate a file by hand.');
 }
 
 module.exports = { resolveInputEpub };
