@@ -132,13 +132,45 @@ function idFor(el: HTMLElement): string {
   return id;
 }
 
+/** The length a block must reach to count as prose ON ITS OWN. */
+function lengthFloor(el: HTMLElement): number {
+  return /^H[1-6]$/.test(el.tagName) ? 12 : 60;
+}
+
+/**
+ * Is this element a block the narrator should read?
+ *
+ * Long enough on its own, OR short but sitting beside a sibling that is. The
+ * 60-character floor exists to skip navigation chrome, and it skipped article
+ * prose with it: "She added:" and "Wait, there's more." — the connective
+ * one-liners between an article's quotes — were left unread, and the listener
+ * heard the quotes with no one introducing them (Owen, 2026-09-06, two
+ * screenshots). A short block whose PARENT also holds a block that passes the
+ * floor on its own is part of that flow, not chrome: a nav's short items have
+ * short neighbours, an article's short paragraph has long ones. The rule reads
+ * siblings only — never the whole document — so a lone "Share" line in a
+ * sidebar the EXCLUDE list missed still has nothing long beside it and stays
+ * skipped.
+ */
+function isReadableBlock(el: HTMLElement): boolean {
+  const text = blockText(el);
+  if (text.length >= lengthFloor(el)) return true;
+  if (!text) return false;
+  const parent = el.parentElement;
+  if (!parent) return false;
+  for (const sibling of Array.from(parent.children)) {
+    if (sibling === el || !(sibling instanceof HTMLElement)) continue;
+    if (!sibling.matches(SELECTOR) || sibling.closest(EXCLUDE)) continue;
+    if (blockText(sibling).length >= lengthFloor(sibling)) return true;
+  }
+  return false;
+}
+
 function detectBlocks(): { id: string; el: HTMLElement }[] {
   const candidates = Array.from(document.querySelectorAll<HTMLElement>(SELECTOR));
   const kept = candidates.filter((el) => {
     if (el.closest(EXCLUDE)) return false;
-    const text = blockText(el);
-    const min = /^H[1-6]$/.test(el.tagName) ? 12 : 60;
-    if (text.length < min) return false;
+    if (!isReadableBlock(el)) return false;
     const r = el.getBoundingClientRect();
     return r.width > 0 || r.height > 0;
   });
@@ -322,9 +354,7 @@ function looksLikeBlock(node: HTMLElement | null): boolean {
   let el = node;
   while (el && el !== document.body) {
     if (!root.contains(el) && el.matches(SELECTOR) && !el.closest(EXCLUDE)) {
-      const text = blockText(el);
-      const min = /^H[1-6]$/.test(el.tagName) ? 12 : 60;
-      if (text.length >= min) return true;
+      if (isReadableBlock(el)) return true;
     }
     el = el.parentElement;
   }
