@@ -472,11 +472,12 @@ def route_assemble(args) -> int:
     exactly as e2a's handlers did, so nothing is printed twice here.
 
     `--coverage_report` is narrator's addition and reaches `assemble()`
-    unchanged. For Orpheus it is a no-op whether given or not; for an engine
-    guarded by forced alignment it is how the guard is satisfied, and its
-    absence is a refusal that says so. A `CoverageRefusal` comes out of the
+    unchanged. It is an AUDIT and never blocks: assembly logs every chunk that
+    failed coverage with the retake command and assembles the book (Owen,
+    2026-09-05). Absent, assembly says so and estimates the sentence cues. The
+    one `CoverageRefusal` left - a report about ANOTHER book - comes out of the
     `except Exception` below as a RESULT the bridge can read, exactly like every
-    other assembly failure - never as a bare traceback.
+    other assembly failure, never as a bare traceback.
     """
     from ..assemble import assemble
     from ..render.session_v1 import build_manifest

@@ -27,16 +27,22 @@ snap_boundaries does it and for the same reason: forced alignment puts a seam at
 the CTC frame where it thinks the last phone ended, which lands a couple of
 hundred milliseconds early or late, while the narrator's actual pause is a
 silence and its middle is the safest place to cut.
+
+THIS MODULE IS THE MEASURED HALF ONLY. The cue TYPE, the file writer and the
+ESTIMATED cue - expected text laid over the chunk's real audio when there is no
+alignment to measure with (Owen, 2026-09-05) - live in
+`assemble/sentence_vtt.py`, because assembly needs them too and may not import
+this package. They are re-exported here so `align.sentences` still names the
+whole vocabulary its callers know it by.
 """
 
 from __future__ import annotations
 
-import os
-from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
 
-from ..assemble.vtt import format_timestamp
-from ..text.paragraph_packer import spoken, split_sentences
+from ..assemble.sentence_vtt import (SentenceCue, SentenceVttError,  # noqa: F401
+                                     build_sentence_vtt, proportional_cues,
+                                     split_chunk_sentences, write_sentence_vtt)
 from .aligner import Alignment, AlignerError
 
 #: How far a seam may move from the middle of the inter-word gap to land in a
@@ -56,28 +62,6 @@ MIN_CUE_S = 0.05
 #: come apart - a re-render that never updated `samples`, or a sentences-dir
 #: override pointing at a different set.
 SPAN_TOLERANCE_S = 0.05
-
-
-@dataclass(frozen=True)
-class SentenceCue:
-    """One sentence of one chunk, in the BOOK's timeline (seconds)."""
-
-    chunk_index: int
-    sentence_index: int
-    start_s: float
-    end_s: float
-    text: str
-    is_heading: bool = False
-
-
-def split_chunk_sentences(text: str) -> Tuple[str, ...]:
-    """A chunk's text -> its sentences, using the packer's own splitter.
-
-    Takes text with or without markers: `spoken()` strips them first, which is
-    the same reading the aligner was given, so the sentences partition exactly
-    the words the alignment carries.
-    """
-    return tuple(split_sentences(spoken(text)))
 
 
 def sentence_word_ranges(sentences: Sequence[str],
@@ -156,9 +140,12 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
     exactly as `assemble/vtt.build_vtt` computes it, so the sentence cues and
     the chunk cue cannot drift apart.
 
-    Refuses when a sentence has no placed word at all: cues for it would be
-    invented, and a chunk in that state is one the coverage guard has already
-    failed. The caller records the refusal against the chunk and carries on.
+    Refuses when a sentence has no placed word at all: a cue built from this
+    function is a MEASUREMENT, and a sentence with nothing placed has nothing to
+    measure. The caller records the refusal against the chunk by name and then
+    lays `proportional_cues` over the chunk instead, marked as estimates - which
+    is the ruling of 2026-09-05: expected text over the real length of the audio,
+    said out loud rather than pretended.
     """
     span = chunk_end_s - chunk_start_s
     if span <= 0:
@@ -234,47 +221,3 @@ def sentence_cues(alignment: Alignment, *, chunk_index: int,
     return tuple(cues)
 
 
-def build_sentence_vtt(cues: Sequence[SentenceCue]) -> str:
-    """The `.sentences.vtt` document, as a string.
-
-    Same shape as `assemble/vtt.build_vtt` writes - `WEBVTT`, a blank line,
-    then `HH:MM:SS.mmm --> HH:MM:SS.mmm` and the cue text, no identifiers and no
-    NOTE blocks - and the SAME `format_timestamp`, imported rather than copied,
-    so a sentence cue and its chunk cue round the same number the same way.
-    A heading cue is bold, exactly as the chunk-level file bolds it.
-    """
-    if not cues:
-        raise AlignerError('build_sentence_vtt(): no cues to write')
-    previous_end = None
-    blocks = []
-    for cue in cues:
-        if cue.end_s < cue.start_s:
-            raise AlignerError(
-                f'chunk {cue.chunk_index} sentence {cue.sentence_index}: cue '
-                f'ends {cue.end_s:.3f}s before it starts {cue.start_s:.3f}s')
-        if previous_end is not None and cue.start_s < previous_end - 1e-6:
-            raise AlignerError(
-                f'chunk {cue.chunk_index} sentence {cue.sentence_index}: cue '
-                f'starts {cue.start_s:.3f}s, before the previous cue ended '
-                f'{previous_end:.3f}s')
-        previous_end = cue.end_s
-        text = f'<b>{cue.text}</b>' if cue.is_heading and cue.text else cue.text
-        blocks.append(
-            f'{format_timestamp(cue.start_s)} --> {format_timestamp(cue.end_s)}'
-            f'\n{text}\n')
-    return 'WEBVTT\n\n' + '\n'.join(blocks)
-
-
-def write_sentence_vtt(cues: Sequence[SentenceCue], path: str) -> str:
-    """Write the sentence VTT to `path` (UTF-8, LF), and return the path.
-
-    LF on every platform, the same declared deviation `assemble/vtt.write_vtt`
-    makes and for the same reasons.
-    """
-    content = build_sentence_vtt(cues)
-    parent = os.path.dirname(os.path.abspath(path))
-    if not os.path.isdir(parent):
-        raise AlignerError(f'write_sentence_vtt(): {parent} is not a directory')
-    with open(path, 'w', encoding='utf-8', newline='') as handle:
-        handle.write(content)
-    return path

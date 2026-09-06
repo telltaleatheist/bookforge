@@ -95,10 +95,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_assemble.add_argument(
         "--coverage-report", metavar="FILE",
-        help="the report `narrator align --report` wrote. REQUIRED for an "
-             "engine guarded by post-render forced alignment (Higgs v3); its "
-             "absence refuses the assembly. Default for such an engine: "
-             "coverage.json beside the session.",
+        help="the report `narrator align --report` wrote. An AUDIT: assembly "
+             "logs every chunk that failed coverage, quotes the text the audio "
+             "did not say and the retake command, and assembles the book "
+             "anyway. Absent, assembly says so and cues the sentence transcript "
+             "proportionally instead. Default: coverage.json beside the session.",
     )
 
     # ---- align -------------------------------------------------------------
@@ -144,9 +145,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_align.add_argument(
         "--continue-on-error", action="store_true",
-        help="finish the pass and record every failed chunk in the report "
-             "instead of stopping at the first one. Default is to STOP, naming "
-             "the chunk, and write nothing",
+        help="ACCEPTED AND IGNORED. The pass always audits the whole book and "
+             "always writes both outputs (Owen, 2026-09-05); the flag used to "
+             "opt into that and is kept only so an old command line still runs",
     )
 
     # ---- render / retake / sessions ---------------------------------------
@@ -436,6 +437,13 @@ def _run_align(args, manifest) -> int:
     `assemble/coverage_gate.py` looks for, and `<book stem>.sentences.vtt`,
     whose stem is the one `assemble/run.final_name` will give the m4b, so the
     sentence transcript binds to the book the same way the chunk-level one does.
+
+    THE EXIT CODE SAYS WHETHER THE RUN HAPPENED, not whether the book was
+    perfect (Owen, 2026-09-05). A pass that audited every chunk exits 0 even when
+    fourteen of them failed coverage and five could not be placed: those are in
+    the report, they are on stdout, and the book they describe is assemblable.
+    Non-zero is reserved for a run that could not happen at all - no session, no
+    interpreter that can import the backend, a worker that died.
     """
     from .align.aligner import AlignerError
     from .align.run import (DEFAULT_REPORT_NAME, SENTENCE_VTT_SUFFIX,
@@ -457,21 +465,29 @@ def _run_align(args, manifest) -> int:
         os.path.splitext(final_name(manifest))[0] + SENTENCE_VTT_SUFFIX)
     report = args.report or os.path.join(process_dir, DEFAULT_REPORT_NAME)
 
+    if args.continue_on_error:
+        print("[align] --continue-on-error is accepted and ignored: the pass "
+              "always audits the whole book now.", flush=True)
+
     try:
         result = align_session(
             manifest, language=args.language, device=args.device,
-            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices,
-            continue_on_error=args.continue_on_error)
+            python_exe=args.python, ffmpeg=args.ffmpeg, indices=indices)
         write_outputs(result, vtt_path=out, report_path=report)
     except AlignerError as refused:
         print(f"Error: {refused}", flush=True)
         return 1
 
     summary = result["document"]["summary"]
+    retake = sorted(set(summary["failedIndices"]) | set(summary["errorIndices"]))
     print(f"[align] {summary['chunksAligned']} chunk(s) aligned, "
-          f"{summary['chunksFailed']} failed coverage, {summary['errors']} error(s)",
-          flush=True)
-    return 0 if not (summary["chunksFailed"] or summary["errors"]) else 1
+          f"{summary['chunksFailed']} failed coverage, "
+          f"{summary['errors']} could not be placed", flush=True)
+    if retake:
+        print("[align] retake: " + ",".join(str(i) for i in retake), flush=True)
+    # 0 - the run completed and both outputs are on disk. What the chunks said is
+    # in the report and on the two lines above.
+    return 0
 
 
 def main(argv: list[str] | None = None) -> int:

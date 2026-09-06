@@ -16,6 +16,13 @@ The shared stem is load-bearing: the bridge pairs the sidecar to the audiobook b
 stem (`stemOf(s.wanted) === m4bStem`, L2392) and renames them together. A VTT with
 a different stem is promoted under its own name and never binds to the book.
 Working files go in a SUBDIRECTORY, which the bridge's `isFile()` filter skips.
+
+THE SENTENCE TRANSCRIPT IS NOT AN output_dir FILE, for exactly that reason: a
+third file at the top level would be promoted into the user's audiobook folder
+beside the m4b as a stray. When no coverage report exists - the Align row never
+ran - assembly writes `<stem>.sentences.vtt` BESIDE THE SESSION, in the process
+dir, which is where `narrator align` writes the measured one. Same name, same
+place, one of them measured and one of them estimated and saying so.
 """
 
 from __future__ import annotations
@@ -32,6 +39,8 @@ from . import coverage_gate
 from . import encode as encode_mod
 from .chapters import ChapterPlan, plan_chapters, total_duration
 from .ffmpeg_tools import FfmpegError, probe_duration, resolve_binary
+from .sentence_vtt import (SENTENCE_VTT_SUFFIX, SentenceVttError,
+                           estimated_cues_for_manifest, write_sentence_vtt)
 from .vtt import write_vtt
 
 #: The work subdirectory inside output_dir. A directory, so the reassembly
@@ -157,6 +166,47 @@ def _remove_work_dir(work_dir: str, log) -> None:
         )
 
 
+def write_estimated_sentence_vtt(manifest: Manifest, stem: str, log) -> str | None:
+    """The sentence transcript for a book NOBODY ALIGNED, beside the session.
+
+    Owen's ruling, 2026-09-05: "we need to base assembly on the expected text and
+    the actual real length of the audio". With no coverage report there is no
+    alignment to place words with, so every cue is proportional - each sentence
+    gets its character share of its own chunk's real audio - and every cue says
+    so in the file (`sentence_vtt.build_sentence_vtt` writes a `NOTE estimated
+    chunk <i>` block). The spans come from `vtt.chunk_spans`, the same running
+    sum of sample counts the chunk-level VTT is built from, so a sentence cue can
+    never fall outside its own chunk's cue.
+
+    IT NEVER OVERWRITES A MEASURED ONE. A `<stem>.sentences.vtt` already beside
+    the session was written by `narrator align` from real word timings, and a
+    guess must not replace a measurement.
+
+    IT NEVER STOPS THE ASSEMBLY. A chunk with no audio to spread text over is a
+    broken manifest and is named in the log, but the audiobook is the deliverable
+    and a derived transcript is not worth refusing one for.
+    """
+    path = os.path.join(manifest.source.processDir, stem + SENTENCE_VTT_SUFFIX)
+    if os.path.isfile(path):
+        log(f"[coverage] a sentence transcript is already beside the session "
+            f"({path}); leaving the measured one alone")
+        return None
+    try:
+        cues = estimated_cues_for_manifest(manifest, where="assemble")
+        if not cues:
+            log("[coverage] this book has no spoken chunk to cue, so no sentence "
+                "transcript was written")
+            return None
+        write_sentence_vtt(cues, path)
+    except SentenceVttError as refused:
+        log(f"[coverage] the estimated sentence transcript could not be written "
+            f"({refused}). The audiobook is unaffected.")
+        return None
+    log(f"[coverage] {len(cues)} ESTIMATED sentence cue(s) -> {path} "
+        f"(expected text over each chunk's real audio; nothing aligned this book)")
+    return path
+
+
 def assemble(
     manifest: Manifest,
     output_dir: str,
@@ -178,18 +228,20 @@ def assemble(
     see `assemble/README.md` for which regex each one satisfies - so a cut-over
     needs no bridge change.
 
-    `coverage_report` is the report `narrator align` wrote. For an engine whose
-    `CoveragePolicy` is ENFORCED (Higgs v3) it is REQUIRED, and its absence -
-    like a failed chunk in it - refuses the assembly by name: see
-    `assemble/coverage_gate.py`. Orpheus keeps its own guards and reads a report
-    only if one is named.
+    `coverage_report` is the report `narrator align` wrote. It is an AUDIT and it
+    BLOCKS NOTHING (Owen, 2026-09-05): every failed chunk is logged with the text
+    the audio did not say and the retake command, and the book is assembled. Its
+    absence is logged too, and then the sentence transcript is written from the
+    manifest's own text over the real audio durations instead of from measured
+    cues. Only a report about ANOTHER book is refused - see
+    `assemble/coverage_gate.py`.
     """
     log = progress if progress is not None else (lambda line: print(line, flush=True))
 
     validate(manifest)
-    # BEFORE a single ffmpeg is spawned, and before the VTT is written: a book
-    # that dropped a fifth of a chunk's text must not reach an encoder.
-    coverage_gate.check(manifest, coverage_report, log)
+    # BEFORE a single ffmpeg is spawned, so the operator reads what the audit
+    # found at the top of the job log rather than after an hour of encoding.
+    coverage = coverage_gate.check(manifest, coverage_report, log)
     ffmpeg_bin = resolve_binary("ffmpeg", ffmpeg)
     ffprobe_bin = resolve_binary("ffprobe", ffprobe)
 
@@ -274,6 +326,8 @@ def assemble(
 
     log("[ASSEMBLE] Creating VTT subtitle file...")
     write_vtt(manifest, vtt_path)
+    if coverage is None:
+        write_estimated_sentence_vtt(manifest, stem, log)
 
     # ------------------------------------------------------------------
     # Chapter atoms, then the audio.

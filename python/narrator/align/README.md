@@ -9,14 +9,52 @@ narrator align --session-dir <hash dir> [--out sentences.vtt] [--report coverage
                [--python <whisperx env python>] [--indices 3,4,5] [--ffmpeg PATH]
 ```
 
-Two things come out of ONE forced alignment of each rendered chunk:
+Two things come out of ONE forced alignment of each rendered chunk, and BOTH
+ARE WRITTEN EVERY TIME:
 
 * **`<stem>.sentences.vtt`** - a cue per sentence, placed inside its chunk's
-  span. The model exposes no text-to-time mapping, so the times can only come
-  from an aligner.
-* **`coverage.json`** - the guard. Text with no aligned audio is dropped or
+  span. The model exposes no text-to-time mapping, so a MEASURED time can only
+  come from an aligner; a chunk the aligner could not place is cued
+  proportionally over its own real audio and says so in the file.
+* **`coverage.json`** - the audit. Text with no aligned audio is dropped or
   truncated; audio with no text is an insertion. It replaces the duration-ratio
   guard for Higgs v3, which cannot see a measured 22 % text loss.
+
+## THE AUDIT REPORTS. IT DOES NOT BLOCK. (Owen, 2026-09-05)
+
+> there will always be truncations or errors of some sort. thats the nature of
+> tts. nothing is going to come out perfect. we try our best to detect and reduce
+> the number of errors but assembly will never function, ever, if we expect it to
+> come out the other side flawless. we need to base assembly on the expected text
+> and the actual real length of the audio. with orpheus, for truncations, we
+> split at sentence boundaries and re-rendered. but the goal is to have zero
+> truncations.
+
+Three things follow, and they are the whole design of this package now.
+
+**The pass always audits the whole book.** A chunk that will not align is
+recorded in the report's `errors` with its index and the aligner's own message,
+and the pass carries on. `narrator align` exits **0** whenever the run happened,
+whatever the chunks said; non-zero is reserved for a run that could not happen at
+all (no session, no interpreter, a dead worker). `--continue-on-error` is
+accepted and ignored - it used to opt into this and there is nothing left to opt
+into.
+
+**Every chunk gets sentence cues.** For a chunk the aligner placed they are its
+word timings. For one it could not place - or one whose measured cues were
+refused because a sentence had no placed word - they are laid over the chunk's
+REAL audio span in proportion to each sentence's character share, and each run of
+them carries a `NOTE estimated chunk <i>` block in the VTT
+(`assemble/sentence_vtt.py` owns that geometry, the marker and the writer;
+assembly uses the same code when there is no report at all). Nothing is invented
+silently: the report names the chunk and the file says the cue is a guess.
+
+**Assembly never refuses on coverage.** `assemble/coverage_gate.py` reads the
+report, logs every failing chunk with the text the audio did not say and the
+`narrator retake --indices ...` line that fixes it, and assembles the book. A
+missing report is logged too and blocks nothing. What is still refused, by name,
+is a report about ANOTHER book - another engine, another session, an older
+render - because reporting on the wrong book is worse than reporting on none.
 
 ## What this does NOT change
 
@@ -30,8 +68,9 @@ sentence cue cannot fall outside its own chunk's cue (verified over kershaw's
 302 sentence cues against its 133 chunk cues: 0 escapes, 0 overlaps).
 
 Orpheus behaviour is unchanged everywhere: same 44 s sentence split, same caps,
-same guards. Its coverage policy is `enforced=False` - measured and reported,
-blocking nothing.
+same guards. Its coverage policy is `audited=False` - which now means only that a
+narration run of that engine carries no Align row, not that its report would be
+treated differently. A report that exists is read out whatever wrote it.
 
 ## The aligner: WhisperX ships, and it is the only one in the package
 
@@ -77,17 +116,16 @@ Point 4's "audio with no text" is undetectable with the second behaviour - it
 reports no insertion because it has claimed the insertion as text. That, plus
 the deprecation, is why WhisperX ships.
 
-**A failure stops the run.** There is no "try A then B" path and nothing to
-try: `align_chunk` raises `AlignerError` naming the chunk, and `narrator align`
-stops there and writes nothing. The test that guards this now MAKES the one
-backend fail and checks that the refusal names the chunk, instead of grepping
-the source for a loop shape that a `try/except: run(other)` would have slipped
-past.
+**A failure is recorded, not retried.** There is no "try A then B" path and
+nothing to try: `align_chunk` raises `AlignerError` naming the chunk, the run
+records it under stage `align`, estimates that chunk's cues from its own audio,
+and carries on to the next one. The test that guards this MAKES the one backend
+fail and checks that the report names the chunk, instead of grepping the source
+for a loop shape that a `try/except: run(other)` would have slipped past.
 
-`--continue-on-error` is the deliberate opposite, for auditing: it finishes the
-pass and records every failure in the report's `errors`, so a 1,400-chunk book
-can be swept once instead of once per bad chunk. It invents nothing either way -
-a failed chunk contributes no sentence cues in either mode.
+(It used to STOP there and write nothing, with `--continue-on-error` as the
+opt-in sweep. On a real 50-chunk book with 5 unplaceable chunks that produced no
+report, no transcript and no audiobook - see the ruling above.)
 
 ## How a coverage failure is actually detected
 
@@ -149,20 +187,22 @@ writing the tests). The two lists answer different questions.
 ## The app's door, and what is still owed there
 
 `compat/app.py --assemble_only` - the door `reassembly-bridge.ts` and
-`parallel-tts-bridge.ts` spawn - now takes **`--coverage_report <path>`**, passed
+`parallel-tts-bridge.ts` spawn - takes **`--coverage_report <path>`**, passed
 straight to `assemble(coverage_report=...)` and listed in `compat/FLAGS.md` as
-narrator's own flag. Without it a Higgs v3 book through that door would have hit
-`CoverageRefusal` with no CLI surface to satisfy it, and read as "assembly is
-broken" rather than "run align first". For Orpheus the flag changes nothing: the
-policy is not enforced and the gate is a no-op whether it is passed or not.
+narrator's own flag. Both spawns pass it **whenever the report file EXISTS**,
+whatever the engine: it is an audit to be read out, not a gate to be satisfied,
+so the question is "did anybody measure this book" and the disk answers it.
 
 **THE APP-SIDE STEP LANDED 2026-09-05** (it was owed here until then, and every
 app-driven Higgs v3 book hit `CoverageRefusal` quoting a command line nobody had
-run). BookForge now composes an **Align** queue row into every narration run whose
-engine is guarded — `shared/queue/narration-run.ts:narrationAlignStep`, decided by
-`shared/queue/coverage-policy.ts`, which mirrors `enforced` out of
-`assemble/engine_profiles.py` and is asserted against it by
-`tools/test-coverage-policy-mirror.js`.
+run). BookForge composes an **Align** queue row into every narration run whose engine
+is audited — `shared/queue/narration-run.ts:narrationAlignStep`, decided by
+`shared/queue/coverage-policy.ts:coverageAuditedFor`, which mirrors `audited` out
+of `assemble/engine_profiles.py` and is asserted against it by
+`tools/test-coverage-policy-mirror.js`. The row REPORTS: it succeeds whenever the
+run happened and puts the counts and the retake list on its card
+(`tools/test-coverage-audit-reports.js`), and the assembly behind it repeats that
+list once on the finished book.
 
 The row sits **behind the render and in front of every enhancement pass**: the
 guard measures the RENDER, the thresholds below were calibrated on raw engine
@@ -171,10 +211,10 @@ same chunk found after it. It runs `python -m narrator.cli align --session-dir
 <hash dir> --report <processDir>/coverage.json --language <lang> --device cpu
 --python <whisperx env python>` in the tools env, natively on every platform
 (`electron/coverage-align-job.ts`, `electron/queue-steps/align.ts`), and both
-assembly spawns then pass `--coverage_report` for a guarded engine. It is never
-skipped because a report already exists: a resume renders more chunks, and the
-gate refuses a report written for a smaller manifest — correctly, and an hour too
-late.
+assembly spawns then pass `--coverage_report` when the file is there. It is never
+skipped because a report already exists: a resume renders more chunks, and a
+report written for a smaller manifest is refused by name — correctly, and an hour
+too late.
 
 `run.py` reports progress as `[align] aligned <done>/<total> chunk(s)` every ten
 chunks and on the last. That wording is a **contract** with the queue row's
@@ -235,7 +275,7 @@ the sample.
 | file | what |
 |---|---|
 | `aligner.py` | `align_chunk`, `Alignment`/`AlignedWord`/`TextSpan`/`AudioSpan`, the two backends, audio decode, the silence map, the CUDA refusal |
-| `sentences.py` | the packer's splitter, sentence -> word ranges, seam snapping, `<stem>.sentences.vtt` |
+| `sentences.py` | the MEASURED cues: sentence -> word ranges, seam snapping. The cue type, the estimated cue and the `<stem>.sentences.vtt` writer live in `assemble/sentence_vtt.py` (assembly writes that file too and may not import this package) and are re-exported here |
 | `coverage.py` | `evaluate_chunk`, the report document |
 | `run.py` | `narrator align`'s body: manifest -> jobs -> cues + report |
 | `env.py` | finding the whisperx interpreter, and driving it |

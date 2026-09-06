@@ -522,17 +522,42 @@ nor `SML_UNSPOKEN_PATTERN`, so the engine would read it aloud.
 Points 3 and 4 are `narrator align --session-dir <hash dir> [--out sentences.vtt]
 [--report coverage.json]`. `<stem>.sentences.vtt` is ADDITIVE - the chunk-level VTT is
 untouched and both are generated from one `assemble/vtt.chunk_spans`, so a sentence cue
-cannot leave its chunk's cue. The guard's thresholds are DATA in
-`assemble/engine_profiles.py` (`CoveragePolicy` per engine, enforced for `higgs-v3` and
-informational for `orpheus`) and the enforcement is `assemble/coverage_gate.py`, pure
-stdlib because assembly runs on a CPU env with no torch: it reads the REPORT, and for an
-enforced engine a missing report is a refusal.
+cannot leave its chunk's cue. The thresholds are DATA in `assemble/engine_profiles.py`
+(`CoveragePolicy` per engine, `audited` for `higgs-v3` and not for `orpheus`) and the
+reading is `assemble/coverage_gate.py`, pure stdlib because assembly runs on a CPU env
+with no torch.
+
+#### THE AUDIT REPORTS. IT DOES NOT BLOCK. (Owen, 2026-09-05)
+
+> there will always be truncations or errors of some sort. thats the nature of tts.
+> nothing is going to come out perfect. we try our best to detect and reduce the number of
+> errors but assembly will never function, ever, if we expect it to come out the other side
+> flawless. we need to base assembly on the expected text and the actual real length of the
+> audio. with orpheus, for truncations, we split at sentence boundaries and re-rendered.
+> but the goal is to have zero truncations.
+
+Point 4 as BUILT, therefore:
+
+* `narrator align` audits the WHOLE book and always writes both outputs. A chunk it cannot
+  place is recorded in the report's `errors` by index and message; the run exits 0 whenever
+  it happened. `--continue-on-error` is accepted and ignored.
+* EVERY chunk gets sentence cues. Measured ones where the aligner placed the words;
+  otherwise the expected text spread over the chunk's REAL audio span by character share,
+  each run marked `NOTE estimated chunk <i>` in the VTT. The geometry, the marker and the
+  writer live in `assemble/sentence_vtt.py`, so assembly can lay the same cues when there
+  is no report at all.
+* `coverage_gate.check()` LOGS what the report found - every failed index, the dropped text,
+  the `narrator retake --indices ...` line - and assembles. A missing report is logged and
+  assembles too. The only refusals left are integrity ones: a report about another engine,
+  another session or an older render.
+* BookForge's Align queue row succeeds whenever the run happened and carries the counts and
+  the retake list on its card; the assembly row repeats that list once on the finished book.
 
 The backend is **WhisperX**, measured against torchaudio `forced_align` on ten kershaw
 chunks: identical word times (median delta 0.000 s, p95 0.020 s) and identical cost, but
 only WhisperX localizes text inside longer audio, which is what makes "audio with no text"
 detectable at all; torchaudio's API is also removed in 2.9. No automatic switching - a
-backend that fails stops the run naming the chunk. Deviation from the relayed note on
+backend that fails records the chunk by name and the pass moves on. Deviation from the relayed note on
 point 1: a Higgs CHECKPOINT voice with no measured cap stays REFUSED rather than taking a
 2,000-char placeholder; the 600 is a MEASURED zero-shot number and belongs only to the
 served default. OWED: a Higgs v3 render to align (every threshold is calibrated on Orpheus

@@ -13,9 +13,10 @@ from .aligner import (BACKENDS, DEFAULT_BACKEND, AlignedWord, Alignment,
                       AlignerError, AudioSpan, TextSpan, align_chunk,
                       decode_audio, detect_silences)
 from .coverage import (ChunkCoverage, CoverageRefusal, coverage_document,
-                       evaluate_chunk, refuse_on_failures)
-from .sentences import (SentenceCue, build_sentence_vtt, sentence_cues,
-                        split_chunk_sentences, write_sentence_vtt)
+                       evaluate_chunk, report_failures)
+from .sentences import (SentenceCue, build_sentence_vtt, proportional_cues,
+                        sentence_cues, split_chunk_sentences,
+                        write_sentence_vtt)
 
 __all__ = [
     'AlignedWord',
@@ -34,7 +35,8 @@ __all__ = [
     'decode_audio',
     'detect_silences',
     'evaluate_chunk',
-    'refuse_on_failures',
+    'proportional_cues',
+    'report_failures',
     'sentence_cues',
     'split_chunk_sentences',
     'write_sentence_vtt',

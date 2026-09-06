@@ -237,7 +237,15 @@ export async function getCorrectSentencesSession(projectDir: string): Promise<Co
   let vttPath: string | undefined;
   try {
     const procFiles = await fs.promises.readdir(processDir);
-    const vtt = procFiles.find((f) => f.toLowerCase().endsWith('.vtt'));
+    // NOT `.sentences.vtt`. That file is the SENTENCE-level transcript the
+    // aligner (or, with no report, assembly) writes beside the chunk-level one,
+    // and it has a cue per sentence rather than a cue per rendered chunk. This
+    // view binds a cue to a chunk FLAC, so picking it up would pair the wrong
+    // rows with the wrong files — and readdir sorts `X.sentences.vtt` BEFORE
+    // `X.vtt`, so it would win the `find` every time.
+    const vtt = procFiles.find(
+      (f) => f.toLowerCase().endsWith('.vtt') && !f.toLowerCase().endsWith('.sentences.vtt'),
+    );
     if (vtt) vttPath = path.join(processDir, vtt);
   } catch { /* optional */ }
 

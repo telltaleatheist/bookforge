@@ -17,6 +17,7 @@
  * parent's output KIND says, so double-processing is not expressible.
  */
 import { onBridgeEvent } from '../bridge-events';
+import { coverageReportPath, summarizeCoverageReport } from '../coverage-align-job';
 import { getBfpCachedSession, startReassembly, stopReassembly } from '../reassembly-bridge';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
@@ -173,6 +174,20 @@ export const reassemblyStep: StepModule = {
 
       if (!result.success || !result.outputPath) {
         throw new Error(result.error || 'Assembly failed and gave no reason.');
+      }
+      /*
+       * THE AUDIT, ONCE MORE ON THE FINISHED BOOK.
+       *
+       * The Align row said this hours ago on a card the operator has scrolled
+       * past. Owen's ruling (2026-09-05) assembles the book whatever the audit
+       * found, which only works if what it found stays visible — so the row that
+       * produced the m4b repeats the retake list. Reported AFTER the assembly
+       * rather than before it, so it lands as the row's resting message instead
+       * of being overwritten by the next progress event.
+       */
+      const audit = summarizeCoverageReport(coverageReportPath(processDir));
+      if (audit && audit.retakeIndices.length > 0) {
+        ctx.report({ percent: 100, message: `Assembled. Coverage audit: ${audit.line}` });
       }
       return { kind: 'm4b', path: result.outputPath, detail: { sessionId, sessionDir } };
     } finally {

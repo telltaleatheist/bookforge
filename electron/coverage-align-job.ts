@@ -4,18 +4,24 @@
  *
  * ── The hole this fills ─────────────────────────────────────────────────────
  *
- * `python/narrator/assemble/coverage_gate.py` refuses an ENFORCED engine's book
- * when there is no coverage report, and it is right to: Higgs v3 has no duration
- * guard worth the name — a chunk measured a duration ratio of 0.99 while dropping
- * 22 % of its text — so "nobody checked" and "it is fine" are the same book. The
- * refusal even names the command to run:
+ * Higgs v3 has no duration guard worth the name — a chunk measured a duration
+ * ratio of 0.99 while dropping 22 % of its text — so "nobody checked" and "it is
+ * fine" are the same book, and only one of them is honest. This row is what
+ * checks. It force-aligns every rendered chunk against the text it was given and
+ * writes `coverage.json` beside the session.
  *
- *     narrator align --session-dir <hash dir> --report <that coverage.json>
+ * ── IT REPORTS. IT DOES NOT BLOCK ───────────────────────────────────────────
  *
- * Nothing in BookForge ran it. Every app-driven Higgs v3 book therefore rendered
- * for hours, spent whatever GPU the enhancement passes wanted, and stopped at
- * assembly quoting a command line to a user who had no reason to know what it
- * meant. The golden sessions were aligned by hand. This is the hand.
+ * Owen's ruling, 2026-09-05: "there will always be truncations or errors of some
+ * sort. thats the nature of tts... assembly will never function, ever, if we
+ * expect it to come out the other side flawless." So this row SUCCEEDS whenever
+ * the run happened, whatever the chunks said, and carries the counts and the
+ * retake list on its card. The assembly behind it runs, reads the same report,
+ * and repeats the retake list on the finished book.
+ *
+ * It fails only when the run could not happen at all — the session is not on
+ * disk, the aligner is not installed, the worker died. Then there is no report,
+ * assembly says so, and the book is still assembled from what was rendered.
  *
  * ── Two environments, one command line ──────────────────────────────────────
  *
@@ -84,11 +90,27 @@ export interface CoverageAlignProgress {
 }
 
 export interface CoverageAlignResult {
+  /**
+   * TRUE WHEN THE RUN HAPPENED, not when the book was perfect.
+   *
+   * Owen's ruling, 2026-09-05: "there will always be truncations or errors of
+   * some sort. thats the nature of tts... assembly will never function, ever, if
+   * we expect it to come out the other side flawless." A pass that measured
+   * every chunk and doubted fourteen of them SUCCEEDED — it did exactly what it
+   * was queued to do, and its answer is on the row. False is reserved for a run
+   * that could not happen: no session, no aligner, a worker that died.
+   */
   success: boolean;
   /** The coverage report, on success. */
   reportPath?: string;
   /** Chunks the aligner measured, for the job log. */
   chunksAligned?: number;
+  /** Chunks it measured and doubted. */
+  chunksFailed?: number;
+  /** Chunks it could not place at all. */
+  chunksErrored?: number;
+  /** Those two together — what `narrator retake --indices` should be given. */
+  retakeIndices?: number[];
   error?: string;
   wasStopped?: boolean;
 }
@@ -110,6 +132,86 @@ const stoppedSteps = new Set<string>();
  */
 export function coverageReportPath(processDir: string): string {
   return path.join(processDir, COVERAGE_REPORT_NAME);
+}
+
+/** What a coverage report says, in the shape a queue row can show. */
+export interface CoverageSummary {
+  /** Chunks the aligner measured. */
+  chunksAligned: number;
+  /** Chunks it measured and doubted — the audio did not say the text. */
+  chunksFailed: number;
+  /** Chunks it could not place at all. */
+  chunksErrored: number;
+  /** Both of those, sorted and de-duplicated: the retake list. */
+  retakeIndices: number[];
+  /** One line for the card and the log. */
+  line: string;
+}
+
+/**
+ * How many indices the one-line summary spells before it stops counting.
+ *
+ * A 1,400-chunk book can put hundreds of indices on this list, and a queue card
+ * is one line high. The REPORT holds all of them; this says how many and where
+ * to look.
+ */
+const RETAKE_INDICES_IN_LINE = 40;
+
+/**
+ * Read a coverage report and say what it found — or null when there is none.
+ *
+ * NOT A GATE, AND NOT A GUESS. `python/narrator/assemble/coverage_gate.py` owns
+ * the refusals (a report about another book) and the full read-out; this is the
+ * one line the Align row and the assembly row put on the card so an operator
+ * sees the retake list without opening a JSON file.
+ *
+ * Returns null when the file is absent — which is a normal state, not an error:
+ * an Orpheus book carries no Align row. An unreadable one is logged by name and
+ * also returns null: this function's job is to SAY something, and saying nothing
+ * about a broken file is better than inventing counts from it.
+ */
+export function summarizeCoverageReport(reportPath: string): CoverageSummary | null {
+  if (!fs.existsSync(reportPath)) return null;
+  let document: {
+    summary?: { chunksAligned?: number };
+    chunks?: { index?: number; failed?: boolean }[];
+    errors?: { index?: number }[];
+  };
+  try {
+    document = JSON.parse(fs.readFileSync(reportPath, 'utf-8'));
+  } catch (err) {
+    console.log(`[COVERAGE-ALIGN] ${reportPath} could not be read: ${(err as Error).message}`);
+    return null;
+  }
+  // Counted from the ARRAYS, not from the summary's own totals: the arrays are
+  // what carry the indices this line exists to print, and a document whose
+  // counts disagreed with its own arrays would print a count for one set and
+  // the indices of another.
+  const failed = (document.chunks ?? [])
+    .filter((c) => c.failed === true)
+    .map((c) => c.index)
+    .filter((i): i is number => typeof i === 'number');
+  const errored = (document.errors ?? [])
+    .map((e) => e.index)
+    .filter((i): i is number => typeof i === 'number');
+  const retakeIndices = [...new Set([...failed, ...errored])].sort((a, b) => a - b);
+  const chunksAligned = typeof document.summary?.chunksAligned === 'number'
+    ? document.summary.chunksAligned : 0;
+
+  const shown = retakeIndices.slice(0, RETAKE_INDICES_IN_LINE).join(',');
+  const more = retakeIndices.length > RETAKE_INDICES_IN_LINE
+    ? `,… (+${retakeIndices.length - RETAKE_INDICES_IN_LINE} more)` : '';
+  const line = `${chunksAligned} aligned, ${failed.length} failed coverage, `
+    + `${errored.length} could not be placed`
+    + (retakeIndices.length > 0 ? ` — retake: ${shown}${more}` : '');
+
+  return {
+    chunksAligned,
+    chunksFailed: failed.length,
+    chunksErrored: errored.length,
+    retakeIndices,
+    line,
+  };
 }
 
 function sendProgress(
@@ -295,33 +397,51 @@ export async function runCoverageAlign(
       }
 
       if (code === 0 && fs.existsSync(reportPath)) {
+        /*
+         * THE ROW REPORTS; IT DOES NOT FAIL. `narrator align` now audits the
+         * whole book and exits 0 whatever the chunks said, so the counts and the
+         * retake list are what this row has to carry — on the card, so an
+         * operator sees them without opening a JSON file, and in the result, so
+         * the step can put them in its artifact detail.
+         */
+        const found = summarizeCoverageReport(reportPath);
+        const message = found
+          ? `Alignment complete — ${found.line}`
+          : `Alignment complete — ${aligned} chunk(s) checked.`;
+        console.log(`[COVERAGE-ALIGN] ${message}`);
         sendProgress(mainWindow, stepId, {
-          phase: 'complete', percentage: 100, processed: aligned, total,
-          message: `Alignment complete — ${aligned} chunk(s) checked.`,
+          phase: 'complete', percentage: 100, processed: aligned, total, message,
         });
-        resolve({ success: true, reportPath, chunksAligned: aligned });
+        resolve({
+          success: true,
+          reportPath,
+          chunksAligned: found ? found.chunksAligned : aligned,
+          chunksFailed: found?.chunksFailed,
+          chunksErrored: found?.chunksErrored,
+          retakeIndices: found?.retakeIndices,
+        });
         return;
       }
 
       /*
-       * A NON-ZERO EXIT IS NOT ONE THING, and the two it can be need different
-       * sentences. `narrator align` exits 1 when a chunk FAILED TO ALIGN (it
-       * stops there and writes nothing) and also when every chunk aligned but
-       * one or more FAILED COVERAGE — in which case the report IS written, and
-       * it names every failing chunk and quotes the text the audio did not say.
-       * Pointing the operator at it is the whole point of the guard.
+       * A NON-ZERO EXIT IS NOW ONE THING: THE RUN DID NOT HAPPEN.
+       *
+       * It used to be two — a chunk that would not align (the pass stopped and
+       * wrote nothing) and a book that aligned but failed coverage (the report
+       * WAS written, and the row failed on it anyway, which is what made a
+       * 50-chunk book with 14 doubtful chunks unassemblable). Neither is an exit
+       * code any more: both are audited, reported and exit 0. What is left here
+       * is a session that is not on disk, an interpreter that cannot import the
+       * backend, or a worker that died — and none of those has a report.
        */
       // BOTH streams. The stdout tail alone won here on 2026-09-05 and the
       // card showed six [ASSEMBLE] lines and no traceback; the traceback was
       // on stderr, dropped by the `||`.
       const detail = ([tail.trim(), stderr.trim()].filter((s) => s !== '').join('\n')
         || `exit ${code}`).slice(-1600);
-      const error = fs.existsSync(reportPath)
-        ? 'The forced alignment found chunk(s) whose audio did not say their text, so this book '
-          + 'is not ready to assemble. The report names every one of them and quotes the dropped '
-          + `text: ${reportPath}. Re-render those chunks (narrator retake --indices …) and align `
-          + `again.\n${detail}`
-        : `The forced alignment did not finish, so no coverage report was written.\n${detail}`;
+      const error = `The forced alignment did not finish, so no coverage report was written. `
+        + `The rendered audio is intact and can still be assembled — what is missing is the `
+        + `measurement of it.\n${detail}`;
       sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
       resolve({ success: false, error });
     });

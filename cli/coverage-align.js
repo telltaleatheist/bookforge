@@ -15,10 +15,11 @@
  * `coverageReportPath()` says, which is also where both assembly spawns look for
  * it, so an alignment run from here satisfies an assembly run from anywhere.
  *
- * WHY IT MATTERS: `assemble/coverage_gate.py` REFUSES a book from an engine
- * whose policy is enforced (higgs-v3) when no report is there. Without this
- * command the only headless way to satisfy that gate was to render the book
- * again through a chain that carried an Align row.
+ * WHY IT MATTERS: it is the only headless way to MEASURE a rendered book. The
+ * report does not gate assembly (Owen, 2026-09-05 — assembly assembles whatever
+ * was rendered and reports what the audit found), but without it nothing says
+ * which chunks came out wrong, and the sentence transcript is proportional
+ * estimates rather than real word timings.
  *
  *   node --require ./cli/electron-stub.js cli/coverage-align.js \
  *        --project "<projectDir>" --language en
@@ -105,10 +106,18 @@ async function main() {
   const t0 = Date.now();
   const result = await job.runCoverageAlign(stepId, { processDir, language }, null);
   off();
+  // FAILURE HERE MEANS THE RUN COULD NOT HAPPEN — no session, no aligner, a dead
+  // worker. A pass that measured every chunk and doubted some of them succeeded
+  // and says so on the next line.
   if (!result || !result.success) {
     throw new Error(`alignment failed: ${result && result.error ? result.error : 'unknown'}`);
   }
-  console.log(`[align] ${result.chunksAligned} chunk(s) aligned -> ${result.reportPath}`);
+  console.log(`[align] ${result.chunksAligned} chunk(s) aligned, `
+    + `${result.chunksFailed ?? 0} failed coverage, `
+    + `${result.chunksErrored ?? 0} could not be placed -> ${result.reportPath}`);
+  if (result.retakeIndices && result.retakeIndices.length > 0) {
+    console.log(`[align] retake: ${result.retakeIndices.join(',')}`);
+  }
   console.log(`[align] done in ${((Date.now() - t0) / 1000).toFixed(0)}s`);
   process.exitCode = 0;
 }

@@ -506,10 +506,13 @@ export interface RvcEnhancementJobConfig {
 /**
  * THE COVERAGE ALIGNMENT as its own job — force-align every rendered chunk
  * against the text it was given and write `<processDir>/coverage.json`, which
- * `python/narrator/assemble/coverage_gate.py` refuses a guarded engine's book
- * without.
+ * `python/narrator/assemble/coverage_gate.py` reads out at assembly.
  *
- * Queued only for an engine whose coverage policy is ENFORCED
+ * IT REPORTS AND NEVER BLOCKS (Owen, 2026-09-05). The row succeeds whenever the
+ * run happened and carries the counts and the retake list; the assembly behind
+ * it assembles whatever was rendered and repeats that list on the finished book.
+ *
+ * Queued only for an engine whose coverage policy is AUDITED
  * (`@shared/queue/coverage-policy.ts` — Higgs v3 today, never Orpheus), and
  * always directly behind the narration: it measures the RENDER, and its
  * thresholds were calibrated on raw engine output.

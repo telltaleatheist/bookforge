@@ -434,6 +434,28 @@ HH:MM:SS.mmm --> HH:MM:SS.mmm<LF>
   accumulated with e2a's own float arithmetic so the two cannot differ by a
   rounding step
 
+### The SENTENCE transcript — `sentence_vtt.py`, and it is not an `output_dir` file
+
+`<stem>.vtt` above is the CHUNK-level file and is unchanged. `sentence_vtt.py`
+owns the sentence-level one: the cue type, the writer, and the **estimated** cue —
+a sentence's character share of its own chunk's real audio span, used when there
+is no alignment to measure with (Owen's ruling, 2026-09-05: "we need to base
+assembly on the expected text and the actual real length of the audio"). Each run
+of estimated cues carries one `NOTE estimated chunk <i>` block, which is the one
+place a `NOTE` appears in anything narrator writes.
+
+It lives here rather than in `align/` because two callers need it and assembly
+may not import the aligner: `align/run.py` estimates the chunks it could not
+place, and `assemble/run.write_estimated_sentence_vtt` estimates the whole book
+when `coverage_gate.check()` found no report at all. Both spans come from
+`vtt.chunk_spans`.
+
+It is written **beside the session, in the process dir** — never into
+`output_dir`. The reassembly bridge promotes every regular file at the top level
+of its staging directory into the user's audiobook folder, so a third file there
+would arrive beside the m4b as a stray, and several `.vtt` finders in `electron/`
+pick "any `.vtt` in the folder".
+
 ### Line endings: a declared deviation
 
 e2a opens the VTT with `open(vtt_path, 'w', encoding='utf-8')` and no `newline=`

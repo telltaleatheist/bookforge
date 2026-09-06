@@ -87,9 +87,13 @@ const SUITES = [
   'test-no-e2a-doors',
   // The coverage policy is declared in two languages — narrator's
   // engine_profiles.py and shared/queue/coverage-policy.ts — and a divergence is
-  // silent in the direction that matters: BookForge queues no Align row, passes
-  // no report, and the book stops dead at assembly after hours of render.
+  // silent in the direction that matters: BookForge queues no Align row and
+  // nothing ever measures a book whose engine has no duration guard.
   'test-coverage-policy-mirror',
+  // The audit REPORTS and never blocks (Owen, 2026-09-05). A regression here is
+  // silent in the worst way: a book with 36 minutes of good audio becomes
+  // unassemblable again because one row decided to fail on what it found.
+  'test-coverage-audit-reports',
   'test-stream-engine-availability',
   'test-session-engine-provenance',
   'test-assembly-after-wsl-normalize',

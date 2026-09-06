@@ -1736,19 +1736,19 @@ export class NarrationModalComponent {
       /*
        * THE COVERAGE ALIGNER, CHECKED BEFORE ANYTHING IS QUEUED.
        *
-       * A guarded engine's book (Higgs v3) is refused at assembly unless a
-       * forced alignment says every chunk said its text, and the run description
+       * An audited engine's book (Higgs v3) is force-aligned after the render so
+       * the queue can say which chunks came out wrong, and the run description
        * therefore carries an Align row. That row spawns
        * `narrator align --python <the whisperx env>`, which is the "Ebook
        * Alignment (WhisperX)" add-on — and a machine without it can render the
-       * whole book, spend the enhancement's GPU, and then have no way to satisfy
-       * the gate.
+       * whole book, spend the enhancement's GPU, and have nothing to check it
+       * with.
        *
        * `requireCoverageAligner` throws with the add-on named and the remedy in
-       * it. It is a no-op for an engine whose policy is not enforced, so an
-       * Orpheus run never sees this question. The step is NOT skipped when the
-       * answer is no — a run that quietly dropped its own guard would be an
-       * unchecked book reported as a checked one.
+       * it. It is a no-op for an engine that is not audited, so an Orpheus run
+       * never sees this question. The step is NOT skipped when the answer is
+       * no — a run that quietly dropped its own audit would be an unchecked book
+       * reported as a checked one.
        */
       requireCoverageAligner(settings, this.components.isInstalled('whisperx-env'));
 

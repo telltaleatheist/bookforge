@@ -7,22 +7,22 @@
  * ── Why there are two ───────────────────────────────────────────────────────
  *
  * `python/narrator/assemble/engine_profiles.py` owns the coverage policy: the
- * thresholds, and the `enforced` flag that decides whether a failed chunk stops
- * a book. Assembly reads it and refuses.
+ * thresholds, and the `audited` flag that says whether an engine's books are
+ * force-aligned after every render. Assembly reads the report and REPORTS on it;
+ * since 2026-09-05 it refuses nothing on coverage.
  *
  * BookForge has to know the same yes/no BEFORE any of that happens — the run
- * description decides whether a run carries an Align row at all, the narration
- * dialog refuses a guarded run whose aligner is not installed, and both assembly
- * spawns decide whether to pass `--coverage_report`. None of those can import a
- * Python module, and `shared/queue/` may not even touch a disk.
+ * description decides whether a run carries an Align row at all, and the
+ * narration dialog refuses an audited run whose aligner is not installed. None
+ * of those can import a Python module, and `shared/queue/` may not even touch a
+ * disk.
  *
  * ── What a divergence costs ─────────────────────────────────────────────────
  *
- * It is silent in the direction that matters. If Python enforces an engine that
- * TypeScript thinks is unguarded, BookForge queues no Align row and passes no
- * report, and every book of that engine renders for hours and then stops dead at
- * assembly quoting a command line — which is the exact bug the Align row was
- * written to remove, reintroduced by a one-line edit in the other language.
+ * It is silent in the direction that matters. If Python audits an engine that
+ * TypeScript thinks is unaudited, BookForge queues no Align row, nothing ever
+ * measures a book whose engine has no duration guard worth the name, and the
+ * first anybody hears of a truncated chunk is a listener.
  *
  * So the mirror is asserted rather than trusted. This reads the Python source
  * (no interpreter needed — it is a table of literals) and compares it with the
@@ -43,7 +43,7 @@ if (!fs.existsSync(TS)) {
   process.exit(1);
 }
 
-const { coverageEnforcedFor } = require(TS);
+const { coverageAuditedFor } = require(TS);
 // LINE ENDINGS FIRST: this repo is core.autocrlf=true, so every working file is
 // CRLF on Windows, and a pattern written with `\n` matches nothing on a tree
 // where nothing has moved. The same trap `narrator-argv-extract.js` records.
@@ -61,7 +61,7 @@ function check(name, fn) {
 }
 
 /**
- * `enforced=` out of each `CoveragePolicy(...)` constant, by the name it is
+ * `audited=` out of each `CoveragePolicy(...)` constant, by the name it is
  * bound to. A `dict` of literals parsed by regex rather than by running Python:
  * this keeper has to work on a machine with no narrator environment, which is
  * every machine that only builds the app.
@@ -71,9 +71,9 @@ function policiesFromPython(text) {
   const re = /^([A-Z][A-Z0-9_]*)\s*=\s*CoveragePolicy\(([\s\S]*?)^\)/gm;
   let hit;
   while ((hit = re.exec(text)) !== null) {
-    const enforced = /\benforced\s*=\s*(True|False)\b/.exec(hit[2]);
-    assert.ok(enforced, `${hit[1]} does not state \`enforced\``);
-    out[hit[1]] = enforced[1] === 'True';
+    const audited = /\baudited\s*=\s*(True|False)\b/.exec(hit[2]);
+    assert.ok(audited, `${hit[1]} does not state \`audited\``);
+    out[hit[1]] = audited[1] === 'True';
   }
   return out;
 }
@@ -121,13 +121,14 @@ check('the Python table was actually read', () => {
 
 check('every engine narrator profiles has the same answer in BookForge', () => {
   for (const [engine, policyName] of Object.entries(PROFILES)) {
-    const enforced = POLICIES[policyName];
-    assert.strictEqual(typeof enforced, 'boolean',
+    const audited = POLICIES[policyName];
+    assert.strictEqual(typeof audited, 'boolean',
       `${engine} names policy ${policyName}, which was not parsed`);
-    assert.strictEqual(coverageEnforcedFor(engine), enforced,
-      `narrator says enforced=${enforced} for '${engine}' and shared/queue/coverage-policy.ts `
-      + `says ${coverageEnforcedFor(engine)}. A book of that engine would be queued without the `
-      + 'Align row and refused at assembly, or aligned for a guard that does not exist.');
+    assert.strictEqual(coverageAuditedFor(engine), audited,
+      `narrator says audited=${audited} for '${engine}' and shared/queue/coverage-policy.ts `
+      + `says ${coverageAuditedFor(engine)}. A book of that engine would be queued without the `
+      + 'Align row and assembled with nothing having checked it, or aligned for an audit its '
+      + 'engine does not declare.');
   }
 });
 
@@ -137,9 +138,9 @@ check("BookForge's own picker spelling maps onto narrator's", () => {
   // reach the same policy, because the two assembly spawns key off DIFFERENT
   // ones (the render door has the picker id, the reassembly door reads the
   // session's).
-  assert.strictEqual(coverageEnforcedFor('higgs'), coverageEnforcedFor('higgs-v3'));
-  assert.strictEqual(coverageEnforcedFor('orpheus'), false);
-  assert.strictEqual(coverageEnforcedFor('higgs'), true);
+  assert.strictEqual(coverageAuditedFor('higgs'), coverageAuditedFor('higgs-v3'));
+  assert.strictEqual(coverageAuditedFor('orpheus'), false);
+  assert.strictEqual(coverageAuditedFor('higgs'), true);
 });
 
 check('an engine BookForge knows and narrator does not is a failure', () => {
@@ -152,9 +153,9 @@ check('an engine BookForge knows and narrator does not is a failure', () => {
 });
 
 check('an unknown engine is REFUSED, not answered', () => {
-  assert.throws(() => coverageEnforcedFor('xtts'),
+  assert.throws(() => coverageAuditedFor('xtts'),
     /No coverage policy is declared for TTS engine 'xtts'/);
-  assert.throws(() => coverageEnforcedFor('higgs-v2'), /No coverage policy is declared/);
+  assert.throws(() => coverageAuditedFor('higgs-v2'), /No coverage policy is declared/);
 });
 
 console.log(failures === 0

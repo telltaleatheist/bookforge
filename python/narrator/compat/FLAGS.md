@@ -70,7 +70,7 @@ nothing downstream can tell; what changes is that a caller who used
 | `--sentences_dir` | `:3896`, `:3938`, `:3609` (retake scratch), `:5199` (assembly source) | the authoritative sentence store: written and skip-checked in worker mode, the sentence SOURCE in assembly |
 | `--encoded_chapters_dir` | `reassembly-bridge.ts` | pre-encoded `<N>.m4a` chapters, each held to the 0.06 s duration guard |
 | `--output_dir` | `:3919`, `:3931`, `:5187` | where assembly writes the m4b and the VTT |
-| `--coverage_report` | nothing today | **narrator's own flag** - the report `narrator align --report` wrote, passed straight to `assemble(coverage_report=...)`. REQUIRED for an engine guarded by post-render forced alignment (Higgs v3), where its absence is a refusal by name; a no-op for Orpheus, whose `CoveragePolicy` is not enforced. See `align/README.md` and `assemble/coverage_gate.py` |
+| `--coverage_report` | nothing today | **narrator's own flag** - the report `narrator align --report` wrote, passed straight to `assemble(coverage_report=...)`. An AUDIT: assembly logs every chunk that failed coverage, quotes the dropped text and the retake command, and assembles the book anyway; absent, it says so and estimates the sentence cues. Only a report about ANOTHER book is refused. See `align/README.md` and `assemble/coverage_gate.py` |
 | `--sentence_start` / `--sentence_end` | `:3915-3918` | the contiguous 0-based inclusive range |
 | `--chapter_start` / `--chapter_end` | `:3911-3914` (chapter mode) | 1-based inclusive; converted to a sentence range |
 | `--chapters` | nothing today | assembly's chapter selection; must be a contiguous run from 1 (`assemble/README.md` s8) |

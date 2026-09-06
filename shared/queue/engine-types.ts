@@ -53,7 +53,9 @@ export type JobType =
   | 'final-denoise'
   /**
    * FORCE-ALIGN THE RENDERED CHUNKS AGAINST THE TEXT THEY WERE GIVEN, and write
-   * the coverage report assembly refuses a book without.
+   * the coverage report assembly reads out. It REPORTS — the row succeeds
+   * whatever the chunks said, and the assembly behind it runs (Owen,
+   * 2026-09-05).
    *
    * A row of its own for the reason the denoise is: it is a distinct act with a
    * distinct duration (CPU minutes, RTF ~0.08 — a five-hour book is a few
