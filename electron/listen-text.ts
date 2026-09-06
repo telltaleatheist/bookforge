@@ -34,9 +34,17 @@
  *      read as years ("2025" → "twenty twenty-five"), the ambiguous shapes
  *      (5:30, 1914-1918, COVID-19) left as printed.
  *   4. a CAPS HEADING folded to Title Case (a mirror of narrator's packer fold,
- *      below), acronyms kept as printed for the next stage.
- *   5. ACRONYMS spelled out (below) — after the numbers, so "MI5" is never seen
- *      as letters.
+ *      below), acronyms kept as printed.
+ *
+ * ACRONYMS ARE NOT SPELLED OUT. There was a stage 5 for one evening
+ * (2026-09-06): "TPUSA" → "T P U S A", with an allowlist, a word test and a
+ * length rule behind it. It was removed the same evening on Owen's ruling —
+ * "i think lowering temperature resolved the tpusa problem. lets remove the
+ * deterministic fixes for acronyms like tpusa. just let the system read it as
+ * is and see how it does" — after the sampling change (0.8/0.95/50, the Boson
+ * default) landed. A capitalised token now reaches the engine as printed; the
+ * one thing the caps fold still needs to know is which caps words NOT to
+ * title-case, and that is the shared list below.
  *
  * Scripture references with a book name ("Jeremiah 44:17-19") are the one shape
  * that stays as digits here: the rules close them for the MODEL, and Listen has
@@ -51,7 +59,6 @@
 import { canonicalizePunctuationText } from './tts-punctuation';
 import { applyNumberRules } from './tts-number-rules';
 import { expandNumbersEn } from './number-expansion';
-import { SPOKEN_AS_WORD, loadEnglishWords, spacedLetters } from './tts-spoken-forms';
 // THE ONE ACRONYM LIST, narrator's file (python/narrator/text/caps_acronyms.json):
 // a relative import so tsc emits the JSON into dist beside the compiled module
 // and the packaged app carries it; narrator loads the same file standalone.
@@ -66,57 +73,11 @@ import capsAcronyms from '../python/narrator/text/caps_acronyms.json';
  */
 export const LETTERED_ACRONYMS: ReadonlySet<string> = new Set(capsAcronyms.lettered);
 
-/** Capitalized tokens with their own spoken reading, neither letters nor a word. */
-const READ_AS: ReadonlyMap<string, string> = new Map([
-  ['WWI', 'World War One'],
-  ['WWII', 'World War Two'],
-]);
+/** Capitalised tokens the caps fold keeps as printed although they carry a vowel
+ *  and are not on the lettered list — their spoken reading is their own. */
+const KEEP_AS_PRINTED: ReadonlySet<string> = new Set(['WWI', 'WWII']);
 
-const ROMAN = /^[IVXLCDM]+$/;
 const VOWEL = /[AEIOUY]/;
-/** A standalone run of 2–8 capitals; digits or letters on either side disqualify it. */
-const CAPS_TOKEN = /(?<![A-Za-z0-9])([A-Z]{2,8})(?![A-Za-z0-9])/g;
-
-/**
- * How a standalone ALL-CAPS token is read, or null to leave it as printed.
- *
- * In order: a listed reading ("WWII"); the lettered allowlist; the spoken-as-word
- * set (NASA, NATO); a roman numeral (II, XIV) stays; no vowel (Y included, as
- * narrator counts it) is letters (CNN, TPUSA has vowels — see next); an English
- * WORD printed in capitals stays ("GOD", "PARENTS" in a heading); anything else
- * is an initialism nobody has a word for, and is spelled ("TPUSA" → "T P U S A").
- */
-export function acronymReading(token: string): string | null {
-  const listed = READ_AS.get(token);
-  if (listed) return listed;
-  if (LETTERED_ACRONYMS.has(token)) return spacedLetters(token);
-  if (SPOKEN_AS_WORD.has(token.toLowerCase())) return null;
-  if (ROMAN.test(token)) return null;
-  // AN UNLISTED TOKEN LONGER THAN FIVE LETTERS IS A WORD, not an initialism.
-  // "REUTERS" in a photo credit went out as "R E U T E R S" and the engine went
-  // off the rails on it (Owen, 2026-09-06, the TPUSA summit caption) — a
-  // name in capitals is far likelier at that length than an initialism nobody
-  // listed, and seven spelled letters is the exact shape an LLM-TTS babbles on.
-  // Listed ones (SCOTUS, NASDAQ) are answered above; the rest read as printed.
-  if (token.length > 5) return null;
-  if (!VOWEL.test(token)) return spacedLetters(token);
-  if (isCapitalizedWord(token)) return null;
-  return spacedLetters(token);
-}
-
-/**
- * Is this capitalised token an English WORD printed in capitals? The word list
- * carries base forms, so a regular plural is tried too: "PARENTS" is a word
- * because "parent" is, and a heading that shouts it must not be spelled.
- */
-function isCapitalizedWord(token: string): boolean {
-  const words = loadEnglishWords();
-  const lower = token.toLowerCase();
-  if (words.has(lower)) return true;
-  if (lower.endsWith('es') && words.has(lower.slice(0, -2))) return true;
-  if (lower.endsWith('s') && words.has(lower.slice(0, -1))) return true;
-  return false;
-}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Caps headings — a mirror of narrator's `fold_caps_run` (paragraph_packer.py)
@@ -125,12 +86,12 @@ function isCapitalizedWord(token: string): boolean {
 // A caps heading is a WORD problem, not an acronym problem: "DOES GOD HOLD
 // CHILDREN RESPONSIBLE" reached the book model in capitals and came back "dues"
 // (Owen's ruling behind main fcb3c95e, the packer's fold). Listen text never
-// passes through the packer, and `acronymReading` rightly leaves each of those
+// passes through the packer, and a word test rightly leaves each of those
 // tokens alone — they are English words — so the heading shape stayed untreated
 // here until the PC pointed at it (2026-09-06). Same rule, same guard: the whole
 // text when every word is caps, or a LEADING RUN of two or more caps words, is
 // folded word by word to Title Case; a word that reads as letters (the acronym
-// tests above) is kept as printed for `spellAcronyms` to take next.
+// tests) is kept as printed.
 
 const HAS_UPPER = /\p{Lu}/u;
 const HAS_LOWER = /\p{Ll}/u;
@@ -170,15 +131,10 @@ export function foldCapsRun(text: string): string {
     const letters = lettersOf(t);
     if (!letters) return true;
     const upper = letters.toUpperCase();
-    return READ_AS.has(upper) || LETTERED_ACRONYMS.has(upper) || !VOWEL.test(upper);
+    return KEEP_AS_PRINTED.has(upper) || LETTERED_ACRONYMS.has(upper) || !VOWEL.test(upper);
   };
   const folded = tokens.slice(0, run).map((t) => (!t || keep(t) ? t : titleCase(t)));
   return [...folded, ...tokens.slice(run)].join(' ');
-}
-
-/** Spell out every standalone initialism in a span of text. */
-export function spellAcronyms(text: string): string {
-  return text.replace(CAPS_TOKEN, (whole, token: string) => acronymReading(token) ?? whole);
 }
 
 /** The text a Listen client sent, as the render server should be handed it. */
@@ -187,5 +143,5 @@ export function speakableListenText(raw: string): string {
   if (!collapsed) return '';
   const punctuated = canonicalizePunctuationText(collapsed);
   const ruled = applyNumberRules(punctuated, [punctuated.length]).text;
-  return spellAcronyms(foldCapsRun(expandNumbersEn(ruled)));
+  return foldCapsRun(expandNumbersEn(ruled));
 }
