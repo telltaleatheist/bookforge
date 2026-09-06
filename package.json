@@ -50,6 +50,7 @@
     "test:narration-text-readiness": "npx tsc -p tsconfig.electron.json && node tools/test-narration-text-readiness.js",
     "test:narration-text-pass": "npx tsc -p tsconfig.electron.json && node tools/test-narration-text-pass.js",
     "test:text-normalization": "npx tsc -p tsconfig.electron.json && node tools/test-text-normalization.js",
+    "test:listen-text": "npx tsc -p tsconfig.electron.json && node tools/test-listen-text.js",
     "test:retired-passes": "npx tsc -p tsconfig.electron.json && node tools/test-retired-passes.js",
     "test:document-binding": "npx tsc -p tsconfig.electron.json && node tools/test-document-binding.js",
     "test:processing-chain": "npx tsc -p tsconfig.electron.json && node tools/test-processing-chain.js",
