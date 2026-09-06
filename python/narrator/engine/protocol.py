@@ -176,6 +176,14 @@ class ClipsVoice:
     #: has no measured pace yet and the engine's own default band applies.
     max_chars_per_sec: Optional[float] = None
     min_chars_per_sec: Optional[float] = None
+    #: The voice's OWN sampling, from the catalog's per-backend block
+    #: (`temperature` / `top_p` / `top_k`, any subset), or None for the
+    #: checkpoint's own generation_config.json. A stated per-voice override:
+    #: Owen set deathstalker's Mac arm to 0.7 on 2026-09-06 when the checkpoint's
+    #: shipped 1.0 babbled on Listen, and a number that renders must be written
+    #: where it can be read, not inherited invisibly from a file inside the
+    #: model directory.
+    sampling: Optional[dict] = None
     kind: str = field(default='clips', init=False)
 
     def __post_init__(self):
@@ -249,6 +257,14 @@ class DefaultVoice:
     #: has no measured pace yet and the engine's own default band applies.
     max_chars_per_sec: Optional[float] = None
     min_chars_per_sec: Optional[float] = None
+    #: The voice's OWN sampling, from the catalog's per-backend block
+    #: (`temperature` / `top_p` / `top_k`, any subset), or None for the
+    #: checkpoint's own generation_config.json. A stated per-voice override:
+    #: Owen set deathstalker's Mac arm to 0.7 on 2026-09-06 when the checkpoint's
+    #: shipped 1.0 babbled on Listen, and a number that renders must be written
+    #: where it can be read, not inherited invisibly from a file inside the
+    #: model directory.
+    sampling: Optional[dict] = None
     kind: str = field(default='default', init=False)
 
     def __post_init__(self):

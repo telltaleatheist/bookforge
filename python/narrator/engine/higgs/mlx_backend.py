@@ -1824,5 +1824,8 @@ def higgs_v3_mlx_config_from_worker_kwargs(voice=None, model_dir=None,
     checkpoint = getattr(resolved, 'checkpoint_dir', None)
     if checkpoint:
         v3_served.checkpoint_serve_target(checkpoint, resolved.name)
+    # THE VOICE'S OWN SAMPLING, when the document states one, over the
+    # checkpoint file's - see `mlx_sampling`. None keeps the file's values.
     return HiggsV3MlxConfig(voice=resolved,
-                            model_dir=checkpoint or model_dir_from_env())
+                            model_dir=checkpoint or model_dir_from_env(),
+                            sampling=getattr(resolved, 'sampling', None))
