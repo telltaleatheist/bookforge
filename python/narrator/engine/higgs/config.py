@@ -456,13 +456,15 @@ def load_voices(path: str = None, *, allowed_controls=None,
                     f'maxChars {max_chars}. The cap is the MEASURED safe chunk '
                     'length; a target above it asks for chunks the length sweep '
                     'refused. Lower the target or re-certify the cap.')
+        band = _length_band(path, name, entry)
         if not clips:
             # No reference audio in the request at all: a fine-tune whose
             # weights ARE the voice (the production shape), or the model's own.
             voices[name] = DefaultVoice(
                 name=name, checkpoint_dir=checkpoint_dir, max_chars=max_chars,
                 max_chars_source=None if max_chars is None else source,
-                target_chars=target)
+                target_chars=target, max_chars_per_sec=band[0],
+                min_chars_per_sec=band[1])
             continue
         voices[name] = ClipsVoice(
             clips=tuple(clips),
@@ -475,8 +477,36 @@ def load_voices(path: str = None, *, allowed_controls=None,
             max_chars=max_chars,
             max_chars_source=None if max_chars is None else source,
             target_chars=target,
+            max_chars_per_sec=band[0],
+            min_chars_per_sec=band[1],
         )
     return voices
+
+
+def _length_band(path: str, name: str, entry: dict):
+    """The voice's `maxCharsPerSec` / `minCharsPerSec` (the length guard's
+    band, derived by the catalog from the measured pace), as a (max, min) pair
+    of floats or Nones. Both or neither: a band with one edge is a pace nobody
+    finished writing, and is refused by name. Positive, and min below max."""
+    hi = entry.get('maxCharsPerSec')
+    lo = entry.get('minCharsPerSec')
+    if hi is None and lo is None:
+        return (None, None)
+    if hi is None or lo is None:
+        raise ValueError(
+            f"{path}: voice '{name}' declares only one edge of its length band "
+            f'(maxCharsPerSec={hi!r}, minCharsPerSec={lo!r}). The band comes from '
+            'the measured pace as a pair; write both or neither.')
+    for label, value in (('maxCharsPerSec', hi), ('minCharsPerSec', lo)):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            raise ValueError(
+                f"{path}: voice '{name}' declares {label} {value!r}, which is not a "
+                'positive number of characters per second.')
+    if float(lo) >= float(hi):
+        raise ValueError(
+            f"{path}: voice '{name}' declares minCharsPerSec {lo} at or above "
+            f'maxCharsPerSec {hi}; the band is min < pace < max.')
+    return (float(hi), float(lo))
 
 
 def load_voice(name: str, path: str = None, **engine_defaults) -> ClipsVoice:

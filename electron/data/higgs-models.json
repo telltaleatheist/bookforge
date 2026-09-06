@@ -202,6 +202,18 @@
           "allowedControls": []
         }
       },
+      "pace": {
+        "median": 17.11,
+        "mean": 16.91,
+        "p05": 14.66,
+        "p95": 18.11,
+        "p99": 18.27,
+        "n": 71,
+        "method": "chars = len(s1-normalized bank text, no markers); seconds = full wav duration as written, no trim; temperature 1.0, top-k 50, top-p 0.95",
+        "source": "served arm: ladder runs night3/sgl/f50_c16_par + f50_c1_par (Fuhrer-50 bank, 100 renders, 71 clean, chars median 882). MLX arm measured separately at median 17.05 / p05 14.39 / p99 18.34 (n 38, night3/mac/f50_1080) - the two arms pace the same on this voice, so the served numbers stand for both. Whole-book cross-check: the 49-chunk PC render of 2026-09-06 paced 17.2.",
+        "measuredOn": "2026-09-06"
+      },
+      "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S BAND IS DERIVED FROM IT WITH HEADROOM, never from the median (Owen: 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11'): maxCharsPerSec = p99 x 1.15 = 21.01 (above it a take is too SHORT - an early stop) and minCharsPerSec = p05 / 1.15 = 12.75 (below it a take RAN ON - a babble tail); the Orpheus p99 x 1.15 rule on both edges. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker).",
       "note": "The deathstalker narrator as a merged Higgs v3 fine-tune. WHY A FINE-TUNE RATHER THAN REFERENCE CLIPS: zero-shot cloning already recovers 92% of the narrator's speaker-identity ceiling (cosine 0.7037 of 0.7656, from a 27.4 s two-clip same-book reference), so TIMBRE is largely solved without training. What cloning does NOT recover is PHRASING — the render places 2.01 pauses per 100 chars against the narrator's 1.39 and runs pitch std 5.17 st against his 4.36, i.e. it performs the text rather than reading it, and no reference, sampling setting or control token moved either number. Only a fine-tune on his phrasing closes that gap, which is what this entry is for — and it is also why Owen ruled on 2026-09-04 that production narration is fine-tuned voices ONLY.",
       "_cloneFallbackNote": "There is deliberately no clips-based deathstalker entry standing in for this one. The measured best zero-shot configuration is a 27.4 s join of cd_cd_00001100.wav + cd_cd_00001951.wav from the ds_ad4s cut with their book-exact transcripts, and it renders well — but those clips live under E:\\training and are not a deployable artifact location, so an entry pointing at them would be a voice that works on exactly one machine, which is the failure this catalog exists to prevent. To add one: join the clips to a single wav (0.35 s of silence between them), join the transcripts in the same order, stage both under /home/<user>/higgs-models/<voice>/refs/, and declare ONE clip here with its measured `seconds`.",
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
@@ -266,6 +278,18 @@
           "allowedControls": []
         }
       },
+      "pace": {
+        "median": 15.16,
+        "mean": 15.0,
+        "p05": 13.38,
+        "p95": 16.48,
+        "p99": 16.73,
+        "n": 42,
+        "method": "as deathstalker",
+        "source": "served arm: night3/prod/mb2/f50_c16 + night3/prod/mb2/shape (96 renders, 42 clean, chars median 884). No MLX renders exist yet (the Mac copy awaits Owen's go); the served numbers stand for both arms as they do for deathstalker.",
+        "measuredOn": "2026-09-06"
+      },
+      "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S BAND IS DERIVED FROM IT WITH HEADROOM, never from the median (Owen: 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11'): maxCharsPerSec = p99 x 1.15 = 19.24 (above it a take is too SHORT - an early stop) and minCharsPerSec = p05 / 1.15 = 11.63 (below it a take RAN ON - a babble tail); the Orpheus p99 x 1.15 rule on both edges. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker). NOTE: mistborn paces 11 % slower than deathstalker (p05 13.38 sits UNDER the 14.5 default long edge), which is why the band is per voice.",
       "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train; dip checkpoint 920). Promoted 2026-09-06 on Owen's ruling ('promote the mistborn model to the catalog'): Owen judged all three mistborn renders flawless by ear; on paper mb2 is the best (damaged 6/50 vs 11 for the first train, run-ons 3 vs 8, 0 early stops, 0 gibberish on SGLang at 16 wide, the 50 Fuhrer chunks packed at 1200 chars). Served exactly like deathstalker ckpt-1080: same launcher, max_running_requests 16, max_new_tokens 7500. No eosFloor tuning.",
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
     },

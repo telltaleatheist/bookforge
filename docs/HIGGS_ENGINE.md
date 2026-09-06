@@ -164,7 +164,13 @@ roster, and a voice not in it is refused by name.
         "allowedControls": []
       },
       "mlx": { ... }            //   darwin -> in-process mlx-audio. ITS OWN cap.
-    }
+    },
+    // THE MEASURED PACE (chars/s over the ladder's clean renders), ONE PER
+    // VOICE for both arms; the document gets maxCharsPerSec = p99 x 1.15 and
+    // minCharsPerSec = p05 / 1.15 - the length guard's band, with headroom
+    // over the median. Absent = narrator's default band (20 / 14.5).
+    "pace": { "median": 17.11, "mean": 16.91, "p05": 14.66, "p95": 18.11, "p99": 18.27,
+              "n": 71, "method": "...", "source": "...", "measuredOn": "2026-09-06" }
   }]
 }
 ```
@@ -898,6 +904,51 @@ against the three that could, all in `parallel-tts-bridge.ts`:
 **No change was needed** — but they clear it by minutes, not by an order of
 magnitude, so a keeper reads all three out of the source and fails if one is
 tightened below the recorded cold start.
+
+### The length guard — early stops AND run-ons, Orpheus-style (2026-09-06)
+
+Owen: *"watch for truncations from higgs the same way we do in orpheus and
+re-render the split sentences if one appears"* and, after the whole-book
+coverage report, *"deterministic solutions are not the right shape for this
+… detect the expected length and if it steps outside those bounds then we
+split at sentence boundaries and re-render. same as orpheus."*
+
+`python/narrator/engine/higgs/truncation.py`, shared by both arms and wired
+into `convert` (served, MLX) and the MLX batch path:
+
+- **The band comes from the voice's MEASURED PACE** (Owen, 2026-09-06, via
+  training: recorded in the catalog as part of the normal ladder, like an
+  Orpheus voice's, and the guard uses it): the entry's `pace` (ONE per voice,
+  both arms — Owen: "the same setting for both mac and windows") holds median /
+  p05 / p99 / n / method / source, and the voice document carries the derived
+  `maxCharsPerSec` = p99 × 1.15 and `minCharsPerSec` = p05 / 1.15 (both edges
+  by the Orpheus rule; `higgsLengthBand`, `load_voices._length_band`,
+  `truncation.band_for`). The headroom is the point: the guard sits at the
+  ladder's p99 × 1.15 and p05 / 1.15, never at the median, so a book paced 17.6
+  on a 17.1 voice is well inside. Shipped: deathstalker 17.11 (mlx measured
+  17.05 — same voice, same pace; band 12.7–21.0), mistborn 15.16 (band
+  11.6–19.2, 11 % slower — the reason the band is per voice). A voice with no pace block
+  renders at the engine default band: `StopPolicy.max_chars_per_sec` 20.0
+  (above = too SHORT, an early stop) and `min_chars_per_sec` 14.5 (below =
+  too LONG, a run-on). Book
+  pace on deathstalker is 17.2 chars/s; every clean chunk of the measured
+  render sat at 0.94×–1.10× of expectation, the early stops at 0.05× and
+  0.84×, the run-ons at 1.11×–1.54× (three of four inside the band's long
+  side; the 1.11× one is the coverage audit's).
+- **The ladder**: re-roll at `seed + index + 100003` (an early stop REPRODUCES
+  at the chunk's own seed — training's live validation flagged the same
+  chunk 19), then split at the sentence boundary nearest the middle and run
+  each half through the same ladder (depth 3, halves joined with 0.35 s),
+  then accept the take nearest the expected length and say so. Never refuses.
+- **Reported**: `[HIGGS3][HIGGS_GUARD_EVENT] {json}` per fire — actions
+  `short`/`long`, `rerolled`, `resplit`, `accepted-off-length` — every event
+  carrying the take-0 verdict; `parallel-tts-bridge.ts` parses both engines'
+  prefixes.
+- **What it cannot see**: a chunk that repeats a section and drops the rest
+  lands near the expected length. That is the coverage audit's (`align/`).
+- Measured on the Fuhrer render that motivated it: 6 of 48 chunks failed the
+  audit — chunk 19 (3 s stub), 32 (last 25 words unspoken), 2 (6 words dropped
+  on an em-dash), and run-on tails of 27, 26, 9 and 7 s on 48/35/26/41.
 
 ### The frame ceiling
 

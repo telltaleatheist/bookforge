@@ -2370,6 +2370,44 @@ check('the deathstalker fine-tune names its HuggingFace source, and a malformed 
   assert.match(higgs.higgsVoiceUnavailableReason(clone, PICKER_USER_DATA) || '', /names a download source/);
 });
 
+check('a measured pace becomes the length band in the document; a malformed pace is refused', () => {
+  // Owen, 2026-09-06: the guard uses the voice's recorded chars-per-second.
+  const pace = { median: 17.2, mean: 17.1, p05: 15.6, p95: 18.3, p99: 18.9, n: 42,
+    method: 'spoken chars / chunk flac seconds', source: 'ladder night-4', measuredOn: '2026-09-06' };
+  const m = probeVoice({
+    kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged', darwin: 'runtime/higgs-models/x' } },
+    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' },
+                mlx: { maxChars: 900, maxCharsSource: 'catalog' } }, pace,
+  });
+  const doc = higgs.higgsVoicesDocument(m, WSL_DOC).probe;
+  assert.strictEqual(doc.maxCharsPerSec, Math.round(18.9 * 1.15 * 100) / 100);
+  assert.strictEqual(doc.minCharsPerSec, Math.round(15.6 / 1.15 * 100) / 100);
+  assert.deepStrictEqual(higgs.higgsLengthBand(pace), { maxCharsPerSec: doc.maxCharsPerSec, minCharsPerSec: doc.minCharsPerSec });
+  // No pace: no band in the document (the engine default applies).
+  const bare = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } } });
+  const bareDoc = higgs.higgsVoicesDocument(bare, WSL_DOC).probe;
+  assert.ok(!('maxCharsPerSec' in bareDoc) && !('minCharsPerSec' in bareDoc));
+  // Malformed: out of order, or missing provenance.
+  for (const [why, bad] of [
+    ['out of order', { ...pace, p05: 19 }],
+    ['no method', { ...pace, method: '' }],
+    ['no n', { ...pace, n: 0 }],
+  ]) {
+    const mm = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+      backends: { served: { maxChars: 1200, maxCharsSource: 'catalog' } }, pace: bad });
+    assert.match(higgs.higgsVoiceUnavailableReason(mm, PICKER_USER_DATA) || '', /pace/, `${why} was accepted`);
+  }
+  // ONE PER VOICE: a pace on a backend block is refused, not read.
+  const perArm = probeVoice({ kind: 'checkpoint', voice: { checkpoint: { wsl: '/home/x/merged' } },
+    backends: { served: { maxChars: 1200, maxCharsSource: 'catalog', pace } } });
+  assert.match(higgs.higgsVoiceUnavailableReason(perArm, PICKER_USER_DATA) || '', /ONE PER VOICE/);
+  // The Mac's document carries the same band as the WSL one.
+  const mac = higgs.higgsVoicesDocument(m, MAC_DOC).probe;
+  assert.strictEqual(mac.maxCharsPerSec, doc.maxCharsPerSec);
+  assert.strictEqual(mac.minCharsPerSec, doc.minCharsPerSec);
+});
+
 check('the certified voice is offered SELECTABLE, with no warning attached', () => {
   // Finding 11 was the opposite state: a pending voice offered label-only and
   // fully selectable, so it queued a run that died at preflight. Now that

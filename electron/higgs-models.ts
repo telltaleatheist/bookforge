@@ -340,6 +340,61 @@ export interface HiggsVoiceRef {
  * `null` — a DECLARED absence — and `refuseUnmeasuredAdapter` refuses the voice
  * on darwin exactly as the served `null` refuses it on WSL.
  */
+export interface HiggsPace {
+  /** Chars of text per second of audio over the clean renders. */
+  median: number;
+  mean?: number;
+  p05: number;
+  p95?: number;
+  p99: number;
+  /** Chunks the numbers came from. */
+  n: number;
+  /** How chars and seconds were counted — stated, so two paces can be compared. */
+  method: string;
+  /** The renders / ladder run the numbers came from. */
+  source: string;
+  measuredOn: string;
+}
+
+/**
+ * The Orpheus rule for the guard's distance from the pace: p99 × 1.15 sits
+ * above every healthy render and below a truncation, which roughly doubles the
+ * rate (orpheus-models.json `_rateNote`s). The same factor divides p05 for the
+ * long side.
+ */
+export const PACE_GUARD_FACTOR = 1.15;
+
+/** The length band a measured pace derives. */
+export function higgsLengthBand(pace: HiggsPace): { maxCharsPerSec: number; minCharsPerSec: number } {
+  return {
+    maxCharsPerSec: Math.round(pace.p99 * PACE_GUARD_FACTOR * 100) / 100,
+    minCharsPerSec: Math.round(pace.p05 / PACE_GUARD_FACTOR * 100) / 100,
+  };
+}
+
+/** A pace is well-formed or absent — numbers positive, p05 ≤ median ≤ p99. */
+function refuseMalformedPace(model: HiggsModel, arm: string, pace: unknown): void {
+  if (pace === undefined) return;
+  const p = pace as Partial<HiggsPace> | null;
+  const num = (v: unknown) => typeof v === 'number' && Number.isFinite(v) && v > 0;
+  if (!p || typeof p !== 'object' || !num(p.median) || !num(p.p05) || !num(p.p99)
+      || !Number.isInteger(p.n) || (p.n as number) <= 0
+      || typeof p.method !== 'string' || !p.method.trim()
+      || typeof p.source !== 'string' || !p.source.trim()
+      || typeof p.measuredOn !== 'string' || !p.measuredOn.trim()) {
+    throw new Error(
+      `Higgs voice "${model.id}" (${arm}) has a malformed pace ${JSON.stringify(pace)}. The shape ` +
+        'is {median, p05, p99, n, method, source, measuredOn} (mean, p95 optional), all positive.',
+    );
+  }
+  if (!((p.p05 as number) <= (p.median as number) && (p.median as number) <= (p.p99 as number))) {
+    throw new Error(
+      `Higgs voice "${model.id}" (${arm}) declares a pace with p05 ${p.p05}, median ${p.median}, ` +
+        `p99 ${p.p99} out of order.`,
+    );
+  }
+}
+
 export interface HiggsBackendCaps {
   /**
    * The PREP packing cap, in characters. Consumed by BookForge, never sent to
@@ -658,6 +713,26 @@ export interface HiggsModel {
   /** A model may declare its own serving block, used INSTEAD of the shared one. */
   serving?: HiggsServingSpec;
   /**
+   * THE VOICE'S MEASURED PACE, chars of text per second of audio. ONE PER
+   * VOICE, shared by both arms — Owen, 2026-09-06: "it can be the same setting
+   * for both mac and windows since theyre the same voice and theyre pretty
+   * close" (deathstalker measured 17.11 served / 17.05 mlx). Recorded here as
+   * part of the normal ladder, the way Orpheus voices are, and THE LENGTH GUARD
+   * USES IT: the voice document carries the derived band, both rules stated:
+   *   maxCharsPerSec = p99 × PACE_GUARD_FACTOR   (above it: too SHORT)
+   *   minCharsPerSec = p05 / PACE_GUARD_FACTOR   (below it: ran ON)
+   * The headroom is the point (Owen: "if its set to 17.11 chars/s, and one book
+   * averages 17.6/s, it shouldnt split and re-render everything over 17.11"):
+   * the guard sits at the ladder's p99 × 1.15 and p05 / 1.15, not at the
+   * median, so a book paced 17.6 on a 17.1 voice is well inside. Orpheus keeps
+   * only the derived guard in its catalog and the pace in prose; Higgs keeps
+   * the pace as data. Measured by the training ladder on clean renders
+   * (coverage ≥ 0.95, no early stop, no run-on). Absent = unmeasured:
+   * narrator's default band applies (20 / 14.5, the Fuhrer whole-book
+   * measurement on deathstalker).
+   */
+  pace?: HiggsPace;
+  /**
    * WHERE A MACHINE CAN DOWNLOAD A `checkpoint` VOICE FROM — a HuggingFace repo,
    * private under Owen's account like the Orpheus voice repos. Settings → Higgs
    * offers a Download for every checkpoint voice that names one, into THIS
@@ -944,6 +1019,16 @@ function refuseUnstagedCheckpoint(model: HiggsModel): void {
  */
 function refuseMalformedVoice(model: HiggsModel): void {
   refuseMalformedSource(model);
+  if (model.pace !== undefined) refuseMalformedPace(model, 'voice', model.pace);
+  for (const arm of ['served', 'mlx'] as const) {
+    if (model.backends?.[arm] && 'pace' in (model.backends[arm] as object)) {
+      throw new Error(
+        `Higgs voice "${model.id}" puts a pace on backends.${arm}. The pace is ONE PER VOICE ` +
+          '(Owen, 2026-09-06: the same setting for both Mac and Windows) — move it to the ' +
+          "entry's top-level `pace`.",
+      );
+    }
+  }
   const { clips, checkpoint } = model.voice;
   const has = (n: number | undefined) => n !== undefined && n > 0;
   const staged = Object.entries(checkpoint ?? {}).filter(([, p]) => (p || '').trim());
@@ -1620,6 +1705,16 @@ export function higgsVoicesDocument(
   }
   if (caps.allowedControls !== undefined) entry.allowedControls = caps.allowedControls;
   if (caps.referenceSecondsCap !== undefined) entry.maxReferenceSeconds = caps.referenceSecondsCap;
+  // THE LENGTH BAND, derived from the voice's measured pace (one per voice,
+  // both arms) and written as the pair narrator's `load_voices` reads
+  // (`_length_band`); a voice with no pace gets no band and renders at the
+  // engine's default one.
+  if (model.pace !== undefined) {
+    refuseMalformedPace(model, 'voice', model.pace);
+    const band = higgsLengthBand(model.pace);
+    entry.maxCharsPerSec = band.maxCharsPerSec;
+    entry.minCharsPerSec = band.minCharsPerSec;
+  }
   return { [model.id]: entry };
 }
 
