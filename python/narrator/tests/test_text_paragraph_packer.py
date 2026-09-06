@@ -652,6 +652,29 @@ class ExtractBlocksTest(unittest.TestCase):
         self.assertEqual([c.text for c in report.chunks if c.kind == 'item'][-1].split(']')[-1],
                          'a bare item.')
 
+    def test_unspoken_glyphs_never_reach_a_block(self):
+        """Measured 2026-09-06 (witches, Higgs on the Mac): the introduction's
+        list came through as `<li>* Understanding which witch is which</li>` and
+        the model read the asterisk as a stray syllable. e2a's `chars_remove`
+        table (which the parity path applies in `normalize_text`) is applied at
+        extraction here, so both paths hand the model the same text."""
+        html = ('<ul><li>* Understanding which witch is which</li>'
+                '<li>*  Is there a difference in white and black magic?</li></ul>'
+                '<p>A footnote mark* sits on this word here | and a ©backslash\ too.</p>'
+                '<p>* * *</p>'
+                '<p>After the rule.</p>')
+        blocks = pp.extract_blocks(_FixtureDoc(html), 'text/c0003.xhtml')
+        self.assertEqual([(b.kind, b.text) for b in blocks], [
+            (pp.ITEM, 'Understanding which witch is which'),
+            (pp.ITEM, 'Is there a difference in white and black magic?'),
+            (pp.PARAGRAPH, 'A footnote mark sits on this word here and a backslash too.'),
+            (pp.SCENE_BREAK, ''),
+            (pp.PARAGRAPH, 'After the rule.'),
+        ])
+        for b in blocks:
+            for ch in pp.chars_remove:
+                self.assertNotIn(ch, b.text)
+
     def test_a_block_ending_in_a_citation_page_reference_is_not_a_fragment(self):
         """Measured 2026-09-05 (Working Towards the Fuhrer): the footnote tail
         "... Diaries (Munich: Piper, 1992), iii. 1281-2" has no period and was

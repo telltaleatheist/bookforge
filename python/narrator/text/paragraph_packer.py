@@ -129,7 +129,7 @@ from typing import TYPE_CHECKING, Iterable, Sequence
 
 import regex as re
 
-from .lang import abbreviations_mapping, punctuation_split_hard_set
+from .lang import abbreviations_mapping, chars_remove, punctuation_split_hard_set
 from .sml import SML_UNSPOKEN_PATTERN, sml_token, strip_escaped_sml  # noqa: F401
 
 if TYPE_CHECKING:  # pragma: no cover - typing only, never imported at runtime
@@ -224,6 +224,27 @@ class PackReport:
     merges: int = 0
     dropped_join_tokens: int = 0
     over_budget_sentences: int = 0
+
+
+#: GLYPHS NO NARRATOR READS ALOUD, mapped to a space: e2a's `chars_remove`
+#: (`\ | © ® ™ * `` and the non-breaking space), the one table both text paths
+#: share. The parity path applies it inside `normalize_text`; the block policy
+#: applies it here, at extraction, so a chunk's text never carries one.
+#:
+#: MEASURED 2026-09-06 (witches, Higgs on the Mac): the introduction's list items
+#: came through the VLM conversion as `<li>* Understanding which witch is which</li>`
+#: and the block policy handed the model `[item]* Understanding …` - the asterisk
+#: was read as a stray syllable. `normalize_text` would have removed it and did,
+#: on the parity path; this path never called it. A footnote star (`word*`) and
+#: a rule of asterisks (`* * *`, already a scene break for having no word) go the
+#: same way.
+_UNSPOKEN_GLYPHS = str.maketrans({ch: ' ' for ch in chars_remove})
+
+
+def strip_unspoken_glyphs(text: str) -> str:
+    """`text` with every `chars_remove` glyph replaced by a space (the caller
+    collapses whitespace)."""
+    return (text or '').translate(_UNSPOKEN_GLYPHS)
 
 
 def spoken(text: str) -> str:
@@ -781,6 +802,12 @@ _PARAGRAPH_TAGS = {'p', 'div', 'blockquote', 'pre'}
 TABLE_CELL_JOIN = ' — '
 
 
+def collapse_cell(text: str) -> str:
+    """A table cell's text with the unspoken glyphs dropped and its whitespace
+    (nbsp included - it is in `chars_remove`) collapsed."""
+    return re.sub(r'\s+', ' ', strip_unspoken_glyphs(text)).strip()
+
+
 def table_rows(table) -> list:
     """One `<table>` element -> one spoken line per DATA row.
 
@@ -800,10 +827,10 @@ def table_rows(table) -> list:
     rows = table.find_all('tr')
     if not rows:
         return []
-    headers = [c.get_text(strip=True) for c in rows[0].find_all(['td', 'th'])]
+    headers = [collapse_cell(c.get_text(strip=True)) for c in rows[0].find_all(['td', 'th'])]
     lines = []
     for row in rows[1:]:
-        cells = [c.get_text(strip=True).replace('\xa0', ' ')
+        cells = [collapse_cell(c.get_text(strip=True))
                  for c in row.find_all('td')]
         if not cells:
             continue
@@ -883,7 +910,7 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
         return ''.join(parts)
 
     def block_text(tag) -> str:
-        return collapse(raw_block_text(tag))
+        return collapse(strip_unspoken_glyphs(raw_block_text(tag)))
 
     def collapse(text: str) -> str:
         return re.sub(r'\s+', ' ', text).strip()
@@ -956,10 +983,17 @@ def extract_blocks(doc, doc_name: str = '', start_index: int = 0,
                 continue
             if name in _PARAGRAPH_TAGS and not has_block_child(child):
                 raw = raw_block_text(child)
-                text = collapse(raw)
-                if not text:
+                # WHAT THE BLOCK IS is decided on the text AS PRINTED: a rule of
+                # asterisks is a scene break because it has no word in it, and
+                # it must stay one after the asterisks (unspoken glyphs) are
+                # dropped from the text the model gets. `raw` stays as
+                # extracted for the shape detector below (it reads whitespace
+                # runs).
+                printed = collapse(raw)
+                if not printed:
                     continue
-                if not re.search(r'\w', text):
+                text = collapse(strip_unspoken_glyphs(raw))
+                if not re.search(r'\w', printed):
                     kind = SCENE_BREAK
                 elif source_kind == PDF_DERIVED and looks_table_like(raw):
                     # Tested on `raw`, stored as `text`: see the docstring.
