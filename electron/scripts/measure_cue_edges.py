@@ -108,7 +108,33 @@ def rms_db(audio_path):
     return 20.0 * np.log10(np.maximum(r, 1e-9)), n
 
 
-def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
+def tag_value(notes, key):
+    """Read `key=value` out of a cue NOTE align block, or None."""
+    pat = key + '=([A-Za-z0-9_.+-]+)'
+    for ln in notes or ():
+        m = re.search(pat, ln)
+        if m: return m.group(1)
+    return None
+
+
+def matched_flag(notes):
+    """direct | interpolated | None."""
+    return tag_value(notes, 'matched')
+
+
+def clock_flag(notes):
+    """wav2vec2 | whisper-revert | drift-fix | None - WHICH CLOCK placed the cue.
+
+    wav2vec2 is the CTC frame (~10 ms). The other two are substitutions back onto
+    the rough transcript word times (~+-0.5 s, and known to run late on some
+    narrators), made to rescue multi-second drift. Splitting on this answers
+    whether a coarser CLOCK, rather than the rough MODEL, carries the edge error."""
+    return tag_value(notes, 'time')
+
+
+def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start, keep=None):
+    """`keep` = indices to SCORE. Neighbours are still read from the full cue list,
+    so filtering to one subset never changes what "the next cue's onset" means."""
     import numpy as np
     speech = db > onset_db          # frame grid used for onsets/offsets
     fi = lambda t: max(0, min(nframes - 1, int(t * SR) // FRAME))
@@ -141,12 +167,15 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
         lo, hi = band_db(max(0.0, t - half), t), band_db(t, t + half)
         return lo is not None and hi is not None and lo > onset_db and hi > onset_db
 
-    n = len(cues)
+    total = len(cues)
+    idx = range(total) if keep is None else sorted(keep)
+    n = len(idx)
     end_in_speech = end_at_next = start_at_own = 0
     mid_start = mid_end = 0
     trailing = []
     lead = []
-    for x, (s, e, _txt, _no) in enumerate(cues):
+    for x in idx:
+        s, e = cues[x][0], cues[x][1]
         # (e) mid-word edges — the acceptance criterion
         if mid_word(s): mid_start += 1
         if mid_word(e): mid_end += 1
@@ -158,7 +187,7 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
             if 20.0 * math.log10(max(lin, 1e-9)) > speech_db:
                 end_in_speech += 1
         # (b) the end sits at the next cue's speech onset
-        if x + 1 < n:
+        if x + 1 < total:
             no = next_speech(cues[x + 1][0])
             if no is not None and abs(no - e) <= tol:
                 end_at_next += 1
@@ -182,6 +211,15 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
 
     return {
         'cues': n,
+        # Raw counts, not only rates: a per-chapter rate cannot be averaged into a
+        # book-wide one (chapters here differ in cue count by 25x), so anything
+        # pooling several runs must ADD these. The sorted per-cue lists are here for
+        # the same reason - a pooled median needs the values, not fifteen medians.
+        'counts': {'cues': n, 'edges': 2 * n, 'midWordStart': mid_start,
+                   'midWordEnd': mid_end, 'endInSpeech': end_in_speech,
+                   'endAtNextOnset': end_at_next, 'startAtOwnOnset': start_at_own},
+        'trailingPausesS': [round(v, 4) for v in sorted(trailing)],
+        'leadInsS': [round(v, 4) for v in sorted(lead)],
         'midWordEdgePct': round(100.0 * (mid_start + mid_end) / (2 * n), 2) if n else 0.0,
         'midWordStartPct': round(pct(mid_start), 2),
         'midWordEndPct': round(pct(mid_end), 2),
@@ -190,8 +228,8 @@ def measure(cues, db, nframes, speech_db, onset_db, tol, tol_start):
         'startAtOwnOnsetPct': round(pct(start_at_own), 2),
         'medianTrailingPauseS': round(med(trailing), 3) if trailing else None,
         'medianLeadInS': round(med(lead), 3) if lead else None,
-        'medianCueS': round(med([e - s for s, e, _t, _n in cues]), 3) if cues else None,
-        'totalCueSeconds': round(sum(e - s for s, e, _t, _n in cues), 1),
+        'medianCueS': round(med([cues[x][1] - cues[x][0] for x in idx]), 3) if n else None,
+        'totalCueSeconds': round(sum(cues[x][1] - cues[x][0] for x in idx), 1),
     }
 
 
@@ -204,6 +242,16 @@ def main():
     ap.add_argument('--onset-db', type=float, default=-38.0)
     ap.add_argument('--tol', type=float, default=0.040)
     ap.add_argument('--tol-start', type=float, default=0.020)
+    # Direct-only is the number that matters for corpus work: it is what a cutter
+    # that honours `matched=interpolated` and drops those cues actually gets.
+    ap.add_argument('--by-match', action='store_true',
+                    help='also score direct-only and interpolated-only subsets, '
+                         'read from each cue NOTE align tag')
+    # Splits the DIRECT cues by which clock placed them. If whisper-revert /
+    # drift-fix carry the excess, the fault is the substitution, not the rough model.
+    ap.add_argument('--by-clock', action='store_true',
+                    help='also score direct cues split by NOTE align time= '
+                         '(wav2vec2 / whisper-revert / drift-fix)')
     ap.add_argument('--json', default='')
     a = ap.parse_args()
 
@@ -218,6 +266,27 @@ def main():
         texts[name] = [c[2] for c in cues]
         out[name] = measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start)
         out[name]['vtt'] = path
+        if a.by_clock:
+            mf = [matched_flag(c[3]) for c in cues]
+            cf = [clock_flag(c[3]) for c in cues]
+            byc = {}
+            for k in ('wav2vec2', 'whisper-revert', 'drift-fix'):
+                keep = [i for i in range(len(cues)) if mf[i] == 'direct' and cf[i] == k]
+                if keep:
+                    byc[k] = measure(cues, db, nframes, a.speech_db, a.onset_db,
+                                     a.tol, a.tol_start, keep=keep)
+            out[name]['byClock'] = byc
+            if not byc:
+                print('  [by-clock] this VTT carries no time= tags '
+                      '(written before the clock instrumentation); re-align to get them)')
+        if a.by_match:
+            flags = [matched_flag(c[3]) for c in cues]
+            out[name]['byMatch'] = {
+                k: measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start,
+                           keep=[i for i, f in enumerate(flags) if f == k])
+                for k in ('direct', 'interpolated', 'suspect')
+                if any(f == k for f in flags)
+            }
 
     if a.compare:
         # the payload text must be untouched — only NOTE lines may differ
@@ -236,6 +305,21 @@ def main():
     print(f'{"metric":<{w}}' + ''.join(f'{c:>14}' for c in cols))
     for k in keys:
         print(f'{k:<{w}}' + ''.join(f'{str(out[c].get(k)):>14}' for c in cols))
+    if a.by_clock:
+        for name, _p in sets:
+            for kind, mm in (out[name].get('byClock') or {}).items():
+                print(f'  [{name}/direct/{kind}] cues={mm["cues"]} '
+                      f'midWordEdge={mm["midWordEdgePct"]}% '
+                      f'endInSpeech={mm["endInSpeechPct"]}% '
+                      f'endAtNext={mm["endAtNextOnsetPct"]}% '
+                      f'startNoLead={mm["startAtOwnOnsetPct"]}%')
+    if a.by_match:
+        for name, _p in sets:
+            bm = out[name].get('byMatch') or {}
+            for kind, mm in bm.items():
+                print(f'  [{name}/{kind}] cues={mm["cues"]} midWordEdge={mm["midWordEdgePct"]}% '
+                      f'endInSpeech={mm["endInSpeechPct"]}% endAtNext={mm["endAtNextOnsetPct"]}% '
+                      f'startNoLead={mm["startAtOwnOnsetPct"]}%')
     if a.compare:
         print(f'{"cue text identical":<{w}}{str(out["textIdentical"]):>14}'
               + (f'  ({out["textDiffCues"]} cue(s) differ)' if not out['textIdentical'] else ''))
