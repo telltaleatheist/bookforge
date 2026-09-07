@@ -11,7 +11,7 @@
 const assert = require('assert');
 const path = require('path');
 const DIST = path.join(__dirname, '..', 'dist', 'electron');
-const { speakableListenText, foldCapsRun } = require(path.join(DIST, 'listen-text.js'));
+const { speakableListenText, foldCapsRun, stripUnspokenGlyphs } = require(path.join(DIST, 'listen-text.js'));
 const { LETTERED_ACRONYMS } = require(path.join(DIST, 'listen-text.js'));
 const { SPOKEN_AS_WORD } = require(path.join(DIST, 'tts-spoken-forms.js'));
 const fs = require('fs');
@@ -54,6 +54,18 @@ check('(TPUSA), REUTERS, FBI and CNN are left exactly as written', () => {
 check('the whole pipeline: punctuation, number rules, expander, caps fold', () => {
   assert.strictEqual(speakableListenText('  The  GOP won 312 seats in 2024 (per CNN). '),
     'The GOP won three hundred twelve seats in twenty twenty-four (per CNN).');
+});
+
+console.log('unspoken glyphs are dropped (Owen, 2026-09-06: "it doesnt know how to read asterisks")');
+check('asterisks, bullets, daggers, arrows, pilcrows, backticks and emoji go; words never fuse', () => {
+  assert.strictEqual(speakableListenText('* Understanding which witch is which*'), 'Understanding which witch is which');
+  assert.strictEqual(speakableListenText('word*word • item → next † note ¶ `code` ^ ~ #1'), 'word word item next note code one');
+  assert.strictEqual(speakableListenText('Great news 🎉🎉 for everyone 👍🏽!'), 'Great news for everyone !');
+  assert.strictEqual(stripUnspokenGlyphs('a\u00a0b'), 'a b');
+});
+check('what a narrator does read is kept: percent, dollars, ampersand, degree, section, slash, brackets, quotes, dashes', () => {
+  assert.strictEqual(speakableListenText('50% of $5 & 20° in §3, a/b [sic] "yes" — no.'),
+    'fifty percent of five dollars & twenty° in §three, a/b [sic] "yes" — no.');
 });
 
 console.log('caps headings fold to Title Case, acronyms kept (narrator fold_caps_run mirrored)');

@@ -26,6 +26,9 @@
  * a pure string→string rewrite that either knows a shape or leaves it byte for
  * byte; the reasons each stage refuses are its own file's. The order matters:
  *
+ *   0. UNSPOKEN GLYPHS dropped (below) — asterisks, bullets, daggers, arrows,
+ *      box drawing, emoji: the decoration a web page carries that no narrator
+ *      reads and an LLM-TTS tries to pronounce.
  *   1. punctuation canonicalization (tts-punctuation) — quotes, ellipses, runs.
  *   2. the GUARANTEED number shapes (tts-number-rules) — clocks, pages, dates,
  *      money, percents, decades, ordinals, grouped and bare integers — with the
@@ -137,9 +140,44 @@ export function foldCapsRun(text: string): string {
   return [...folded, ...tokens.slice(run)].join(' ');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Unspoken glyphs — narrator's `strip_unspoken_glyphs`, widened for web pages
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// Owen, 2026-09-06, listening to an article: "lets also remove asterisks or
+// other special characters you sometimes find in website text. it doesnt know
+// how to read asterisks and tries to pronounce it." The book path already drops
+// e2a's `chars_remove` set at extraction (narrator paragraph_packer
+// .strip_unspoken_glyphs, main 39316c35, after a VLM `<li>*` was read as a
+// stray syllable). Listen text is a web page, which carries more decoration
+// than a book does, so that set is the FIRST half of this one and the second
+// half is what pages add: list bullets, daggers, arrows, box drawing, the
+// pilcrow, backticks and carets, and emoji (narrator's `normalize_text` strips
+// those on its path too). Every one maps to a SPACE, never to nothing, so
+// "word*word" cannot fuse; the pipeline's whitespace collapse takes the rest.
+//
+// NOT here, on purpose: anything a narrator does read — `%`, `$`, `&`, `°`,
+// `§`, `/`, brackets, quotes, hyphens and dashes — and the digits/letters
+// themselves. Stripping is a loss, so the set is enumerated, not "everything
+// odd".
+
+/** e2a `chars_remove` (python/narrator/text/lang.py) — the book path's set. */
+const NARRATOR_CHARS_REMOVE = '\\|©®™*`\u00a0';
+/** What web pages add: bullets, geometric markers, daggers, arrows, pilcrow, box drawing. */
+const WEB_DECORATION = '\u2022\u25e6\u25aa\u25ab\u25a0\u25a1\u25cf\u25cb\u2605\u2606\u25ba\u25b6\u25c4\u25c0\u25b2\u25bc'
+  + '\u2192\u2190\u2191\u2193\u21d2\u21d0\u2020\u2021\u00b6\u2500-\u257f\u2580-\u259f^~_#';
+const UNSPOKEN_GLYPHS = new RegExp(`[${NARRATOR_CHARS_REMOVE}${WEB_DECORATION}]`, 'g');
+/** Emoji, with the joiners and selectors that ride with them. */
+const EMOJI = /\p{Extended_Pictographic}[\ufe0e\ufe0f]?|\u200d|[\u{1F3FB}-\u{1F3FF}]/gu;
+
+/** `text` with every unspoken glyph replaced by a space (the caller collapses). */
+export function stripUnspokenGlyphs(text: string): string {
+  return (text || '').replace(EMOJI, ' ').replace(UNSPOKEN_GLYPHS, ' ');
+}
+
 /** The text a Listen client sent, as the render server should be handed it. */
 export function speakableListenText(raw: string): string {
-  const collapsed = (raw || '').replace(/\s+/g, ' ').trim();
+  const collapsed = stripUnspokenGlyphs(raw).replace(/\s+/g, ' ').trim();
   if (!collapsed) return '';
   const punctuated = canonicalizePunctuationText(collapsed);
   const ruled = applyNumberRules(punctuated, [punctuated.length]).text;
