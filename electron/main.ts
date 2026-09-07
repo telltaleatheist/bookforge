@@ -1672,16 +1672,28 @@ async function foundryMintMetaFor(projectDir: string): Promise<HostMintMeta | nu
       if (fsSync.existsSync(abs)) coverPath = abs;
     }
 
-    return {
+    const answer: HostMintMeta = {
       ...(m.title && m.title.trim() ? { title: m.title.trim() } : {}),
       ...(contributors === undefined ? {} : { contributors }),
       ...(m.year ? { year: String(m.year) } : {}),
       ...(m.language ? { language: m.language } : {}),
       ...(coverPath === undefined ? {} : { coverPath }),
     };
+    // The answering branch says what it answered, like every refusing branch
+    // above says why it refused: a mint form with a year and no author rows
+    // (Mac, 2026-09-07) could not be traced because the one branch that
+    // mattered was the silent one. Foundry's dialog swallows a host throw into
+    // "no host", so this line is the only record the host was asked at all.
+    console.log(
+      `[foundry-host] mint metadata for "${key}" (asked with ${projectDir}): answered from `
+      + `${projectId} — title ${answer.title === undefined ? 'none' : JSON.stringify(answer.title)}, `
+      + `${contributors === undefined ? 'no contributors' : `${contributors.length} contributor(s)`}, `
+      + `year ${answer.year ?? 'none'}, language ${answer.language ?? 'none'}, `
+      + `cover ${coverPath === undefined ? 'none' : 'yes'}.`);
+    return answer;
   } catch (err) {
     console.warn(
-      `[foundry-host] mint metadata for "${key}" could not be answered `
+      `[foundry-host] mint metadata for "${key}" (asked with ${projectDir}) could not be answered `
       + `(${(err as Error).message}); the modal starts from Foundry's own record.`);
     return null;
   }
