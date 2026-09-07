@@ -83,10 +83,14 @@ async function awaitAlign(
     if (peek === null) return 'none';
     if (peek.status === 'done') return 'done';
     if (peek.status === 'failed') return 'failed';
-    // 'held' is a user stop on a resumable row. It is terminal for THIS wait:
-    // the run has been paused by a person, and holding an assembly against a
-    // decision they made is not a thing to do quietly.
-    if (peek.status === 'cancelled' || peek.status === 'held') return 'cancelled';
+    // `held` means two things, and only one of them is terminal for THIS wait.
+    // With `wasInterrupted` a person STOPPED the align row, and holding an
+    // assembly against a decision they made is not a thing to do quietly.
+    // Without it the row is merely staged — the queue was paused, or Start has
+    // not been pressed since the assembly claimed its slot — and that is what
+    // the start-grace timer below is for: it keeps waiting, and gives up by name.
+    if (peek.status === 'cancelled') return 'cancelled';
+    if (peek.status === 'held' && peek.wasInterrupted) return 'cancelled';
     if (peek.status === 'running') everRan = true;
     else if (!everRan && Date.now() - openedAt > ALIGN_START_GRACE_MS) {
       onWait(

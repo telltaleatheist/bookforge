@@ -1040,6 +1040,8 @@ export function noteStepStopped(stepId: string): void {
  */
 export function peekStep(stepId: string): {
   status: StepStatus; label: string; percent: number | undefined;
+  /** `held` + this = a person STOPPED the row; `held` alone = staged, not yet started. */
+  wasInterrupted: boolean;
 } | null {
   const found = findStep(stepId);
   if (!found) return null;
@@ -1047,6 +1049,7 @@ export function peekStep(stepId: string): {
     status: found.step.status,
     label: found.step.label,
     percent: found.step.progress.percent,
+    wasInterrupted: found.step.wasInterrupted === true,
   };
 }
 
