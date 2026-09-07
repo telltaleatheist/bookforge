@@ -2124,9 +2124,7 @@ export async function startReassembly(
     // arms a bounded wait for whatever the pipes still owe, and the finalize
     // runs once from whichever event reaches it first.
     let finalized = false;
-    const finalizeOnce = async (code: number | null): Promise<void> => {
-      if (finalized) return;
-      finalized = true;
+    const finalizeBody = async (code: number | null): Promise<void> => {
       clearInterval(heartbeatInterval);
       activeHeartbeats.delete(jobId);
 
@@ -2653,6 +2651,44 @@ export async function startReassembly(
           stdoutTail: stdoutTrim.slice(-4000),
         });
         resolve({ success: false, error: errorMsg });
+      }
+    };
+
+    /*
+     * EVERY PATH OUT OF THE FINALIZE RESOLVES THE PROMISE. THIS WRAPPER IS WHY.
+     *
+     * `finalizeBody` is async and both callers below discard what it returns
+     * (`void finalizeOnce(code)`), so a throw inside it rejected a promise
+     * nobody was holding: `startReassembly`'s promise was never settled, the
+     * queue row stayed `running` with no process alive, and the only trace was
+     * whatever progress message happened to be last. That is the Mutineer's Moon
+     * hang of 2026-09-07 — step_mtrdtous_ce0c6133, stuck on "Renaming to … 70%"
+     * from 14:14 onward: the sentence-transcript scan found two
+     * `.sentences.vtt` files and threw, four lines after the rename.
+     *
+     * A throw here is a DEFECT, not a shape of failure the callers know how to
+     * read, so it becomes the shape they do know — with the stack in the log and
+     * the staging dir KEPT, because staging holds the only copy of the finished
+     * m4b (the rule `promotionFailed` already follows).
+     */
+    const finalizeOnce = async (code: number | null): Promise<void> => {
+      if (finalized) return;
+      finalized = true;
+      try {
+        await finalizeBody(code);
+      } catch (err) {
+        const detail = (err as Error)?.message || String(err);
+        const message = 'The audiobook was assembled but BookForge failed while finishing it: '
+          + `${detail} Nothing was promoted; everything this run built is preserved in: ${stagingDir}`;
+        reassemblyLog.error('Reassembly finalize threw — staging kept, the row is failed', {
+          jobId, stagingDir, outputPath, error: detail, stack: (err as Error)?.stack,
+        });
+        console.error('[REASSEMBLY] Finalize threw:', err);
+        // Do NOT cleanupStagingDir — see the note above.
+        activeReassemblies.delete(jobId);
+        activeStagingDirs.delete(jobId);
+        sendProgress(mainWindow, jobId, { phase: 'error', percentage: 0, error: message });
+        resolve({ success: false, error: message });
       }
     };
 
