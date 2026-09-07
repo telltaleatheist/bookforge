@@ -193,7 +193,7 @@ import { ensureServer, isLocalVllmEndpoint, noteQueueBusy, noteQueueIdle } from 
  * only content would be four `await` lines.
  */
 import { planCleanup, planExport, planSimplification, planTranslation } from './workspace';
-import { exportNodeId } from '../shared/host-ops';
+import { exportNodeId, type HostMintMeta } from '../shared/host-ops';
 import { ancestry, REWRITE_LABELS } from '../shared/ledger';
 import { inheritMintMeta, type MintMeta } from '../shared/mint-meta';
 import { fold } from '../shared/original';
@@ -780,7 +780,17 @@ async function inheritedMintMetaFor(dir: string): Promise<MintMeta | null> {
   } catch {
     stored = undefined;
   }
-  return inheritMintMeta(stored ?? null, await hostMintMeta(dir));
+  let seed: HostMintMeta | null;
+  try {
+    seed = await hostMintMeta(dir);
+  } catch (err) {
+    // The export is made and filed whatever the host says; what is lost is
+    // the author on the package, which is worth a named line and not a
+    // failed job (the modal's door lets the same throw reach the form).
+    console.error(`[queue] ${path.basename(dir)}: ${err instanceof Error ? err.message : String(err)}`);
+    seed = null;
+  }
+  return inheritMintMeta(stored ?? null, seed);
 }
 
 async function chainLanguageOf(

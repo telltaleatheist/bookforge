@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **f761f8a** — *feat(mount): foundryWindow() is exported through the seam — a host tests the focused window against the fact, not a capture* |
+| Source sha | **5a6f7d9** — *fix(app): a host that cannot say who a book is says so under the form, instead of a blank one* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive f761f8a app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 5a6f7d9 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -958,3 +958,11 @@ refreshed, byte-identical to `be61db0:docs/`). 9 files, 139 blobs hash-verified,
 BookForge's darwin Edit menu now tests `BrowserWindow.getFocusedWindow()` against it instead of
 against a `browser-window-created` capture that was right only while Foundry opens one window.
 1 file, 139 blobs hash-verified, no IPC change, no dep movement.
+**5a6f7d9 (copied 2026-09-07) — a host seed failure is a sentence under the mint form, not a
+blank one.** `hostMintMeta` no longer swallows a `mintMetaFor` throw: the `meta:mint-host` door
+rejects in the host's words ("The host could not say who this book is: …"), the modal shows it as
+its problem line and still opens for typing, and the export settle catches the same throw itself
+and logs by name, so an export never fails on a seed. Host counterpart: BookForge 22e8af61 (the
+answering branch of `foundryMintMetaFor` logs key, projectDir, projectId and counts). IPC-CHANNELS.md
+wording for `meta:mint-host` changed; no channel added. 4 files, 139 blobs hash-verified, no dep
+movement.

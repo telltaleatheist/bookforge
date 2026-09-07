@@ -468,7 +468,7 @@ cannot report a failure. They are registered in one function, `registerIpc`
 | `library:set` | Move the library. Refuses while hosted. |
 | `llm:defaults` | The model and the ollama URL the three language dialogs open with. |
 | `llm:set-model` | Set the default model. Answers with the tag AS STORED — a name main clamped comes back changed. |
-| `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone and on any host failure. |
+| `meta:mint-host` | The HOST's record of who this book is (`FoundryHost.mintMetaFor`), or null — the hosted mint modal's seed. Null standalone; a host that throws REJECTS in its own words so the form can say so. |
 | `meta:mint-read` | The project's mint metadata block (shared/mint-meta.ts), or null for a project that has never confirmed one. |
 | `meta:mint-stamp` | The whole block onto ONE finished export, in place — the metadata tile's Save over an EPUB. Tray-gated like the flat writer. |
 | `meta:mint-write` | Replace that block — what the mint modal saves, and what the next mint pre-fills from. |

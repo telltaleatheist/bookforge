@@ -421,7 +421,17 @@ export class MintMetaDialogComponent {
        * spellings of "whose title wins" is how a modal and an auto-export come
        * to stamp two different books from one project.
        */
-      const host = await api.meta.hostSeed(ask.projectDir).catch(() => null);
+      /*
+       * A HOST THAT FAILS SAYS SO UNDER THE FORM. `.catch(() => null)` stood
+       * here and turned a broken host into a blank form with no line anywhere
+       * (2026-09-07); the seam now throws in the host's own words, and the
+       * sentence goes where the person is looking. The form still opens —
+       * they can type what the host could not say.
+       */
+      const host = await api.meta.hostSeed(ask.projectDir).catch((err: unknown) => {
+        this.problem.set(`${err instanceof Error ? err.message : String(err)} Fill in the fields yourself.`);
+        return null;
+      });
       let planLanguage: string | undefined;
       if (ask.mode === 'mint') {
         this.plan = await api.workspace.planExport(ask.inputPath, 'epub');

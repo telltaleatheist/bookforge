@@ -2018,7 +2018,8 @@ export function registerIpc(): void {
   /*
    * The HOST's answer for who this book is — the hosted modal's seed (Owen:
    * "it should inherit the parent document's metadata. ill fill out whatever
-   * is missing"). Null standalone and null on any host failure; the DIALOG
+   * is missing"). Null standalone; a host that THROWS rejects here in the
+   * host's own words, so the form can say so (2026-09-07); the DIALOG
    * merges, because the precedence (stored block wins per-field, host fills
    * the gaps, the position feeds the language) reads two other facts only the
    * renderer holds.

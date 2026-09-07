@@ -309,19 +309,25 @@ export function hostedLibraryDir(): string | null {
 
 /**
  * The host's answer for who this book is, or null — standalone, no callback
- * registered, the host answered null, or the host threw. The swallow is the
- * announcement posture (`onExport`'s), not the button posture: a seed the
- * modal cannot get is a blank form, which is exactly what the modal was
- * before this seam existed.
+ * registered, or the host answered null.
+ *
+ * A HOST THAT THROWS IS A SENTENCE, NOT A NULL. This swallowed the throw into
+ * "no record" with a console line for one build, on the announcement posture
+ * — and a person on a Mac then watched a form open blank over a book whose
+ * shelf knew the author, with nothing anywhere saying the host had failed
+ * (bookforge-mac-1, 2026-09-07). Null and "the host broke" are two different
+ * facts and only one of them is a blank form. So the throw travels, in the
+ * host's own words with this seam's name on it: the modal's door lets it
+ * reach the form as the problem line, and the one caller that must not fail
+ * on a seed — the export settle — catches it itself and says so in its log.
  */
 export async function hostMintMeta(projectDir: string): Promise<HostMintMeta | null> {
   if (host?.mintMetaFor === undefined) return null;
   try {
     return await host.mintMetaFor(projectDir);
   } catch (err) {
-    console.error(
-      `[host] mintMetaFor threw for ${projectDir}: ${err instanceof Error ? err.message : String(err)}`,
+    throw new Error(
+      `The host could not say who this book is: ${err instanceof Error ? err.message : String(err)}`,
     );
-    return null;
   }
 }
