@@ -150,12 +150,16 @@ const api: FoundryApi = {
   workspace: {
     planReading: (inputPath, asked) =>
       ipcRenderer.invoke('workspace:plan-reading', inputPath, asked),
-    planExport: (inputPath, kind) => ipcRenderer.invoke('workspace:plan-export', inputPath, kind),
-    planTranslation: (inputPath, targetLanguage) =>
-      ipcRenderer.invoke('workspace:plan-translation', inputPath, targetLanguage),
-    planSimplification: (inputPath, mode) =>
-      ipcRenderer.invoke('workspace:plan-simplify', inputPath, mode),
-    planCleanup: (inputPath) => ipcRenderer.invoke('workspace:plan-clean', inputPath),
+    // `from` IS THE ROW THE PRESS NAMED, and `undefined` crosses as `undefined` —
+    // which is what every caller that does not send one has always sent. See
+    // `FoundryApi.workspace.planExport`.
+    planExport: (inputPath, kind, from) =>
+      ipcRenderer.invoke('workspace:plan-export', inputPath, kind, from),
+    planTranslation: (inputPath, targetLanguage, from) =>
+      ipcRenderer.invoke('workspace:plan-translation', inputPath, targetLanguage, from),
+    planSimplification: (inputPath, mode, from) =>
+      ipcRenderer.invoke('workspace:plan-simplify', inputPath, mode, from),
+    planCleanup: (inputPath, from) => ipcRenderer.invoke('workspace:plan-clean', inputPath, from),
     planAnalysis: (inputPath, categories) =>
       ipcRenderer.invoke('workspace:plan-analysis', inputPath, categories),
     readAnalysis: (projectDir, stepId) =>

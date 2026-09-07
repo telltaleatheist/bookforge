@@ -107,6 +107,49 @@ export type JobKind =
 export type ConversionKind = 'epub' | 'txt' | 'pdf';
 
 /**
+ * THIS RUN WAS ORDERED FROM A STEP THAT DOES NOT EXIST YET — the plan's own
+ * admission, and the whole of what makes a chain of promises schedulable.
+ *
+ * ── The ruling ──────────────────────────────────────────────────────────────
+ *
+ * Owen, 2026-09-07: *"i click the grayed out row and hit the export epub tile …
+ * i can click the grayed out exported epub and click narrate."* Everything in that
+ * sentence is ordered from a position that has not landed, and the two halves of
+ * the app that hear about it need two different things.
+ *
+ * THE PLAN NEEDS `from`, because a plan made under a step the ledger does not hold
+ * cannot materialise a book: `materializeBook` replays the chain from a step, and
+ * there is no step. So the plan composes everything DETERMINISTIC now — the records
+ * path, the step id, the stamp path, the export's own name in `final/` — and leaves
+ * every materialised field absent, saying so here.
+ *
+ * THE SCHEDULER NEEDS `after`, which is a ROW id rather than a step id and is the
+ * reason both fields exist instead of one. A step id says what this work will be
+ * made from; a row id says what it has to wait for, and what taking that row out of
+ * the queue takes with it. They are minted by different parties at different
+ * moments — the step id at the plan, the row id at the enqueue — and folding them
+ * into one field would mean the queue looking up a step id in a list of rows on
+ * every pass (see `Job.after`).
+ *
+ * ── RE-PLANNED AT SPAWN AND NEVER BEFORE ────────────────────────────────────
+ *
+ * A deferred request is not a special kind of run. When its `after` row lands, the
+ * step named here is a step of the ledger, and the same plan function is asked the
+ * same question with the real row in hand; what comes back is merged in and the job
+ * proceeds as an ordinary one (`materializeDeferred`, electron/job-queue.ts). If
+ * the step never lands the job fails by name, which is the last line of the
+ * cascade — a promise whose parent was lost must not quietly run against the
+ * position instead.
+ */
+export interface DeferredPlan {
+  /**
+   * The step this work is to be made FROM — a step id no ledger holds yet, minted
+   * by the plan of the row that is going to land it (`Job.mints`).
+   */
+  from: string;
+}
+
+/**
  * Where a job is, and `held` is the one that needed adding.
  *
  * NOTHING EXPENSIVE STARTS BY BEING ENQUEUED. Reading a book is hours of GPU
@@ -467,6 +510,25 @@ export interface GenerateRequest {
    * is read and leaves the ordinary case looking ordinary.
    */
   export?: true;
+  /**
+   * THIS EXPORT IS OF A STEP THAT HAS NOT LANDED — see `DeferredPlan`, which is
+   * where the whole argument lives.
+   *
+   * On a Generate it is always absent and always will be: what a person defers is
+   * an EXPORT ordered from a pending row (Owen's own sentence names it), and a
+   * cast is made by a landing rather than pressed for. Nothing refuses the pairing
+   * because nothing composes it — `planExport` is the one plan that sets this.
+   */
+  deferred?: DeferredPlan;
+  /**
+   * THE QUEUE ROW THIS ONE WAITS BEHIND — see `Job.after`, which is where it lands
+   * and where the scheduling rule is written.
+   *
+   * Composed by main at the enqueue rather than by the window that pressed:
+   * `deferred.from` is a step id, and the row that will land it is a fact about a
+   * queue the renderer only mirrors. See `chainedBehind`, electron/job-queue.ts.
+   */
+  after?: string;
 }
 
 /*
@@ -560,8 +622,18 @@ export interface TranslateRequest {
    * SCRATCH, AND THE QUEUE'S TO SWEEP: a uuid in the OS temp directory, made when
    * the button was pressed and remade for nothing whenever it is wanted again
    * (`sweepDerivedBook`).
+   *
+   * ── OPTIONAL, AND ABSENT MEANS "NOT YET" RATHER THAN "NONE" ────────────────
+   *
+   * A run ordered from a step that has not landed cannot have one: there is no
+   * chain to replay and no book to write out. Such a request carries `deferred`
+   * instead, and the file is materialised at SPAWN by re-asking the same plan with
+   * the now-real step (`DeferredPlan`). So this is absent for exactly as long as
+   * the promise is a promise, and `argsFor` refuses a run that reaches the command
+   * line without it — by name, because a `translate` with no `--book` is a job
+   * about no book at all.
    */
-  bookPath: string;
+  bookPath?: string;
   /**
    * `--records`: WHERE THE ANSWERS GO, and the whole product of this job.
    *
@@ -688,6 +760,17 @@ export interface TranslateRequest {
    * Optional because a job enqueued by a build that predates this carries none.
    */
   stepId?: string;
+  /**
+   * THIS PASS IS MADE FROM A STEP THAT HAS NOT LANDED — `DeferredPlan`, which
+   * carries the whole argument, and which is what makes `bookPath` above absent.
+   */
+  deferred?: DeferredPlan;
+  /**
+   * THE QUEUE ROW THIS ONE WAITS BEHIND — `Job.after`, composed by main at the
+   * enqueue. See `GenerateRequest.after`, which says the same thing about the same
+   * field one shape up.
+   */
+  after?: string;
 }
 
 /**
@@ -769,8 +852,12 @@ export interface CleanRequest {
    * replayed in by main (`materializeBook`). `TranslateRequest.bookPath`, verbatim
    * and for its reasons — most of all that a struck row is simply not in it, so
    * nothing about a strike crosses the boundary.
+   *
+   * OPTIONAL ON THAT FIELD'S OWN RULE: a cleanup ordered from a step that has not
+   * landed carries `deferred` and no book, and the file is materialised at spawn
+   * when the step is real. See `TranslateRequest.bookPath`.
    */
-  bookPath: string;
+  bookPath?: string;
   /**
    * `--records`: where the cleaned paragraphs go, and the whole product of this
    * job. It is the step's payload when this lands and it is also the job's
@@ -816,6 +903,10 @@ export interface CleanRequest {
    * `TranslateRequest.stepId`, for its reason.
    */
   stepId?: string;
+  /** Made from a step that has not landed. `TranslateRequest.deferred`. */
+  deferred?: DeferredPlan;
+  /** The row this one waits behind. `TranslateRequest.after`, and `Job.after`. */
+  after?: string;
 }
 
 /**
@@ -1138,6 +1229,75 @@ export interface Job {
    * is a filename, which is not a thing this app reads facts out of.
    */
   forStep?: string;
+  /**
+   * THE NODE THIS ROW WILL PUT IN THE TREE WHEN IT LANDS — the whole of what a
+   * pending card is derived from.
+   *
+   * ── Owen's ruling, and why the row is the only place this can live ──────────
+   *
+   * *"if i queue cleanup, i want a grayed out step to appear where the item will be
+   * when it finishes."* Where it will be is decided at the PRESS: a text pass mints
+   * its step id in the plan (`TranslateRequest.stepId`, which argues at length why
+   * an id has to exist before the step does) and an export's file has a
+   * deterministic name in `final/`. So both answers are already settled when the
+   * row is minted, and putting the answer on the row is what lets the tree draw the
+   * promise without asking main anything and without storing a byte.
+   *
+   * NOTHING PENDING IS EVER WRITTEN DOWN, which is the architecture rather than a
+   * detail (shared/pending.ts holds the argument). The queue rows ARE the record;
+   * a row that leaves the queue takes its promise off the screen in the same
+   * repaint, and the cascade Owen asked for falls out of the derivation instead of
+   * being maintained.
+   *
+   * ── TWO SPELLINGS, TOLD APART BY `exportOfNodeId` ──────────────────────────
+   *
+   * A TEXT PASS lands a STEP, so this is the step id the landing will append. An
+   * EXPORT lands a FILE in the tray, so this is `exportNodeId('final/<name>')` —
+   * the same id an export row already hands the host (shared/host-ops.ts), so a
+   * narration chained onto a promised export and one chained onto the landed file
+   * name the same parent and the tree needs no second join.
+   *
+   * ── ABSENT IS THE ORDINARY ROW, AND THAT IS THE FILTER ─────────────────────
+   *
+   * A reading, an analysis, a mint, an environment install and a per-step cast all
+   * leave this unset, and every one of them has a surface of its own — the shelf's
+   * progress, the hits panel, the light table. A promise drawn for them in the tree
+   * would be a second place saying the same news. Main is the side that decides,
+   * because main is the only one that can see `export: true` on a request.
+   */
+  mints?: string;
+  /**
+   * THE ROW THIS ONE WAITS BEHIND, and whose loss takes it with it.
+   *
+   * ── Both halves of Owen's sentence, in one field ────────────────────────────
+   *
+   * *"then send narration and assembly to the queue. if i then remove the cleanup
+   * step from the queue, or it otherwise gets lost along the way, everything under
+   * that grayed out chain also gets removed."*
+   *
+   * SCHEDULING: a row whose `after` is not `done` never starts. Not "waits behind
+   * in the list" — the board is a set of lanes and a CPU export would otherwise
+   * step straight past the GPU cleanup it is an export OF, run against the position
+   * instead, and file a book nobody asked for (`nextStartable`).
+   *
+   * CASCADE: a row whose `after` failed, was cancelled or was removed is cancelled
+   * and removed itself, transitively, with the reason named in its own `error`.
+   * That is the half the derivation cannot do: taking a promise off the screen is
+   * free, and stopping an engine that is about to spawn is not.
+   *
+   * ── A ROW ID AND NOT A STEP ID ─────────────────────────────────────────────
+   *
+   * `deferred.from` already names the step. This names the row, because the two
+   * are different questions with different owners: the step id is minted by a plan
+   * and outlives the queue, the row id is minted by whoever is scheduling and dies
+   * with it. Hosted they are not even minted by the same PROGRAM — the step id is
+   * Foundry's and the row id is BookForge's — so one field could not have carried
+   * both.
+   *
+   * ABSENT IS EVERY ROW THIS QUEUE HAS EVER HELD but the promised ones, and absent
+   * means "start when the board has room", exactly as before.
+   */
+  after?: string;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -1157,6 +1317,23 @@ export interface Job {
  * Foundry's own queue, and a host reading `Job` in its own file would reasonably
  * ask whose job. This name says whose. Nothing is added and nothing is optional
  * that was not — a widening here would be a widening of the shelf.
+ *
+ * ── THE TWO FIELDS A HOST HAS TO COPY, AS OF 2026-09-07 ────────────────────
+ *
+ * `Job` grew `mints` and `after` for the pending-node feature, and because this is
+ * the same type they are on a host's rows by DECLARATION. That is not the same as
+ * being on them in FACT: a host mints its own row out of the request
+ * (`FoundryHostQueue.enqueue`), so it has to carry them across itself. A row pushed
+ * back without `mints` takes a promise off the tree; a row pushed back without
+ * `after` lets a chained export start before the cleanup it is an export OF.
+ *
+ * BOTH COME OFF THE REQUEST VERBATIM. `mints` is what the row will land — the
+ * plan's `stepId` for a text pass, `exportNodeId('final/<name>')` for an export —
+ * and `after` is `request.after`, which Foundry composed before it handed the
+ * request over. A host that also refuses an `after` naming a row it does not hold
+ * (or one already failed or cancelled) and cascades its own removals transitively
+ * has implemented the whole of the contract; docs/BOOKFORGE-HANDOFF.md §8 carries
+ * the list.
  */
 export type FoundryJobRow = Job;
 
@@ -1621,6 +1798,24 @@ export interface WorkspacePlan {
    * pointed at a missing file would fail the export.
    */
   narrationStamp?: string;
+  /**
+   * THIS EXPORT IS OF A STEP THAT HAS NOT LANDED — see `DeferredPlan`.
+   *
+   * WHAT SURVIVES IS EVERYTHING DETERMINISTIC. `key`, `sourcePath`, `outputPath`
+   * and `readingsPath` are the same answers whichever row on this chain the export
+   * is finally made from: the pixels are the project's archived original, the bank
+   * is the reading the chain hangs under, and the file lands in `final/` under the
+   * BOOK's own name rather than a step's (`planRendering` argues that at length).
+   * So they are composed now, at the nearest LANDED ancestor, and they are the
+   * paths the re-plan will compose again.
+   *
+   * WHAT GOES IS `bookPath`, `narrationStamp`, `records` and `language` — the four
+   * answers that are read off the chain and would each be about the wrong row. Most
+   * sharply the stamp: an export of a promised cleanup that carried the ancestor's
+   * stamp (or none) would be the file BookForge narrates, saying the wrong thing
+   * about the one fact this whole feature was built for.
+   */
+  deferred?: DeferredPlan;
 }
 
 /**
@@ -1714,7 +1909,7 @@ export interface TranslationPlan {
    * the landing materialise a derived book in the target language with those same
    * ids (docs/RENDERER.md §4).
    */
-  bookPath: string;
+  bookPath?: string;
   /**
    * The per-block answers this run writes, and the whole of what it produces:
    * `readings/<key>.<tag>.records.jsonl` for the first translation into a
@@ -1783,6 +1978,21 @@ export interface TranslationPlan {
    * branch's answers and the sweep that finds one finds the other.
    */
   stampPath?: string;
+  /**
+   * THIS PLAN IS ABOUT A STEP THAT HAS NOT LANDED — and is therefore missing every
+   * field that had to be materialised. See `DeferredPlan`.
+   *
+   * WHAT SURVIVES IS EVERYTHING DETERMINISTIC: `key`, `sourcePath`, `recordsPath`,
+   * `stepId` and `stampPath` are composed from the project's catalogue and from the
+   * parent id, none of which needs a chain replayed. What goes is `bookPath`,
+   * `seedRecords`, `from` and `generation` — each of them an answer read off a book
+   * or a ledger walk that cannot be made yet — and each is filled in at spawn by
+   * asking this same function again with the real step in hand.
+   *
+   * Absent is every plan this app composed before this wave, and absent means the
+   * step the plan is about is one the ledger holds.
+   */
+  deferred?: DeferredPlan;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

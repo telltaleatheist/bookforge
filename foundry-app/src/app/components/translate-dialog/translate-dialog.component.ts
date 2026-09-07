@@ -501,9 +501,31 @@ export class TranslateDialogComponent {
    */
   protected readonly sourceLanguage = computed(() => {
     const project = this.projects.projectFor(this.stage.activeDocument()?.path ?? '');
-    const ledger = this.ledger.historyFor(project?.dir ?? null)?.ledger ?? null;
-    const said = ledger === null ? undefined : translationInEffect(ledger)?.params?.language;
+    /*
+     * ASKED OF THE LEDGER WITH THE PROMISES IN IT, so the walk goes THROUGH a
+     * cleanup that has not landed to the translation above it — which is the same
+     * answer main will compose when it re-plans, and the point of composing the
+     * ledger in one place on each side (`LedgerService.ledgerIn`).
+     */
+    const ledger = this.ledger.ledgerIn(project?.dir ?? null);
+    const standing = this.ledger.standingIn(project?.dir ?? null);
+    const said = ledger === null ? undefined : translationInEffect(ledger, standing)?.params?.language;
     return said !== undefined && said.trim().length > 0 ? said.trim() : null;
+  });
+
+  /**
+   * THE ROW THIS CARD IS AIMED AT, when it is not the position.
+   *
+   * Undefined for every press this dialog had before Owen's pending-node ruling,
+   * and a step id for the one shape where the pointer could not follow the click:
+   * somebody standing on a GRAYED card in the tree, whose step will not exist until
+   * a queued job lands. Main resolves it, refuses an id that is neither a step nor a
+   * live promise, and answers with a DEFERRED plan for the second case
+   * (`LedgerService.aimedAt`, and `aimedAt` in electron/ipc.ts).
+   */
+  private readonly aim = computed<string | undefined>(() => {
+    const project = this.projects.projectFor(this.stage.activeDocument()?.path ?? '');
+    return project === null ? undefined : this.ledger.aimedAt(project.dir);
   });
 
   /*
@@ -595,7 +617,7 @@ export class TranslateDialogComponent {
       // working tree, which is not a file any engine can read, so main exports
       // it and the job reads the export. Using `input` here instead would
       // translate the version from before every cut the user just made.
-      const plan = await api.workspace.planTranslation(input, to);
+      const plan = await api.workspace.planTranslation(input, to, this.aim());
       const request: TranslateRequest = {
         kind: 'translate',
         inputPath: plan.inputPath,
@@ -606,7 +628,8 @@ export class TranslateDialogComponent {
          * was made — which is why a book somebody has been editing can be
          * translated at all, and why this window has no opinion about it.
          */
-        bookPath: plan.bookPath,
+        // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
+        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
         model: this.model().trim() || DEFAULT_MODEL,
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
@@ -627,6 +650,9 @@ export class TranslateDialogComponent {
          * is still decided where the history lives.
          */
         ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
+        // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
+        // carried verbatim — the queue reads it, nothing here interprets it.
+        ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
         ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // The step the file is named after, minted by the plan and carried to the
         // landing so the row and the file agree about which translation this is.

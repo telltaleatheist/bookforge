@@ -116,6 +116,8 @@ import {
 } from '../shared/analysis-categories';
 import { cleanupInEffect } from '../shared/ledger';
 import type { ReadAsk } from '../shared/ledger';
+import { admitPending, deferralFor, pendingStepOf, rowMinting, withPending } from '../shared/pending';
+import type { Deferral } from '../shared/pending';
 import type { BookOp, PendingStack } from '../shared/ops';
 import { RE_READ_CANCEL, RE_READ_PROCEED } from '../shared/reread';
 import type { ReReadPrompt } from '../shared/reread';
@@ -130,7 +132,9 @@ import type {
   DeletionPrompt,
   DocumentDeletion,
   EnvInstallRequest,
+  Job,
   JobRequest,
+  LedgerStep,
   MetadataPatch,
   MetadataWriteOutcome,
   MintMeta,
@@ -273,8 +277,27 @@ async function cleanupAtNode(projectDir: string, nodeId: string): Promise<boolea
   try {
     const view = await readStepLedger(projectDir);
     if (view === null) return false;
-    const step = view.ledger.steps.find((row) => row.id === nodeId) ?? null;
-    return step === null ? false : cleanupInEffect(view.ledger, step);
+    /*
+     * ── THE PROMISES ARE IN THE WALK, AS OF 2026-09-07 ────────────────────────
+     *
+     * Owen's pending-node ruling makes a narration orderable from a cleanup that
+     * has not landed, which is exactly the shape this field exists to describe. So
+     * the ledger is composed with the live queue's promises in it and the ordinary
+     * `cleanupInEffect` answers through the chain unchanged (`withPending`,
+     * shared/pending.ts, argues why a composed ledger beats an extra parameter on
+     * five walks).
+     *
+     * TRUE HERE IS NOT A GUESS. The file the host will narrate is made by
+     * `exportEpubFromStep`, which is itself chained behind the same promise and
+     * cannot produce a book until it lands — so by the time there is anything to
+     * act on, either the words are cleaned or the whole chain was cancelled by
+     * name. Answering false instead would send the host to clean a book Foundry is
+     * already cleaning, which is the duplicated-hour failure `HostInvokeContext`
+     * was written to prevent.
+     */
+    const composed = withPending(view.ledger, promisedStepsIn(projectDir, view.ledger));
+    const step = composed.steps.find((row) => row.id === nodeId) ?? null;
+    return step === null ? false : cleanupInEffect(composed, step);
   } catch (err) {
     console.error(
       `[ipc] could not tell whether ${nodeId} in ${projectDir} stands under a cleanup `
@@ -282,6 +305,108 @@ async function cleanupAtNode(projectDir: string, nodeId: string): Promise<boolea
     );
     return false;
   }
+}
+
+/**
+ * EVERY QUEUE ROW ABOUT THIS BOOK, from whichever list is scheduling.
+ *
+ * `shelfJobs()` AND NOT `listJobs()`, which is the whole of what makes this work
+ * hosted: with a host queue registered the rows in this window are the HOST's, and
+ * the promises a person clicked in the tree were drawn from those. Asking Foundry's
+ * own list would answer empty for every chain there is.
+ *
+ * FILTERED BY THE PRODUCT'S PROJECT, whole path against whole path through
+ * `projectDirOf` — this codebase's oldest house rule, and it matters here because
+ * the shelf is one global list across every book on the machine.
+ */
+function rowsIn(projectDir: string): Job[] {
+  return queue.shelfJobsFor(projectDir);
+}
+
+/**
+ * THE PROMISES THIS BOOK'S QUEUE ROWS MAKE, as synthetic steps — the list every
+ * walk in main composes a ledger with.
+ *
+ * The orphan rule is `admitPending`'s and is applied here rather than at each
+ * caller: a row whose parent is neither a step nor another live promise is not
+ * drawn and is not walked, which is the derivation half of Owen's cascade and must
+ * be one rule rather than two implementations that can disagree about what the
+ * window is showing.
+ */
+function promisedStepsIn(projectDir: string, ledger: ProjectLedger): LedgerStep[] {
+  return admitPending(ledger, rowsIn(projectDir))
+    .map(pendingStepOf)
+    .filter((step): step is LedgerStep => step !== null);
+}
+
+/**
+ * WHAT A PLAN IS AIMED AT — a real row, a promised one, or a refusal naming the id.
+ *
+ * ── The one resolution, made once for four doors ────────────────────────────
+ *
+ * Every plan door now takes an optional step id, because a person can press an act
+ * on a card that is not the position: a landed row further up the tree, or — since
+ * Owen's ruling — a row that has not landed at all. The three outcomes are decided
+ * here so that the four doors cannot come to three answers about what an id means,
+ * and so that the REFUSAL is spelled once.
+ *
+ * A LEDGER STEP answers `{ at: step }`, and the plan is composed against it exactly
+ * as it would be against the position.
+ *
+ * A LIVE PROMISE answers `{ deferral }`, and the plan composes only what is
+ * deterministic (`WorkspacePlan.deferred`).
+ *
+ * NEITHER IS A REFUSAL, and it names both halves of what it looked in. That
+ * sentence is the one a person sees if they press an act on a card whose row left
+ * the queue in the same instant — the derivation would have taken the card off the
+ * screen a repaint later, and this is what happens if the press wins the race.
+ *
+ * NO `from` AT ALL IS THE POSITION, which is every press this app had before this
+ * wave and is what the dock still sends.
+ */
+async function aimedAt(
+  source: string,
+  from?: string,
+): Promise<{ at: LedgerStep | null; deferral?: Deferral }> {
+  if (from === undefined || from.length === 0) return { at: null };
+  const dir = projectDirOf(source);
+  if (dir === null) {
+    throw new Error(
+      `This document does not belong to a project in this app’s library, so “${from}” cannot be a `
+      + 'step of it.',
+    );
+  }
+  const view = await readStepLedger(dir);
+  if (view === null) {
+    throw new Error(`${dir} is no longer a project in this app’s library.`);
+  }
+  const step = view.ledger.steps.find((row) => row.id === from) ?? null;
+  if (step !== null) return { at: step };
+  const deferral = deferralFor(view.ledger, rowsIn(dir), from);
+  if (deferral === null) {
+    throw new Error(
+      `“${from}” is not a step of this book and no queued work will make it, so there is nothing to `
+      + 'make this from. Click a step that exists and press again.',
+    );
+  }
+  return { at: null, deferral };
+}
+
+/**
+ * THE ROW A HOST'S OWN WORK MUST WAIT BEHIND, when the act was ordered from
+ * something that has not happened yet — `HostInvokeContext.pendingRow`.
+ *
+ * ONE LOOKUP FOR BOTH SHAPES OF ID. A promised STEP and a promised EXPORT are told
+ * apart everywhere else in this feature (`exportOfNodeId`), and here they are not:
+ * `Job.mints` carries whichever id the row is going to land, so asking "which live
+ * row mints this" answers for a narration ordered from a grayed cleanup and for one
+ * ordered from a grayed EPUB with the same line.
+ *
+ * UNDEFINED FOR EVERY ORDINARY PRESS — a landed step, a file in the tray — which is
+ * every host act before this wave, and means "nothing to wait for".
+ */
+function pendingRowAt(projectDir: string, nodeId: string): string | undefined {
+  return rowMinting(rowsIn(projectDir), nodeId)?.id;
 }
 
 function sizeOnDisk(bytes: number): string {
@@ -408,13 +533,21 @@ export function registerIpc(): void {
       projectDir: string,
       nodeId: string,
       settings: Record<string, unknown> = {},
-    ) => invokeHostOperation(
-      operationId,
-      projectDir,
-      nodeId,
-      settings,
-      { cleaned: await cleanupAtNode(projectDir, nodeId) },
-    ),
+    ) => {
+      /*
+       * AND WHICH ROW THIS WORK IS DOWNSTREAM OF, when the act was ordered from
+       * something that has not happened yet (`HostInvokeContext.pendingRow`).
+       * Composed in main for `cleaned`'s reason exactly: it is a fact about the
+       * queue that is scheduling, and a renderer's mirror of that queue can be a
+       * repaint behind — which here would mean telling somebody else's scheduler to
+       * wait for a row that finished a moment ago, or not to wait at all.
+       */
+      const pendingRow = pendingRowAt(projectDir, nodeId);
+      return invokeHostOperation(operationId, projectDir, nodeId, settings, {
+        cleaned: await cleanupAtNode(projectDir, nodeId),
+        ...(pendingRow !== undefined ? { pendingRow } : {}),
+      });
+    },
   );
 
   /*
@@ -877,9 +1010,28 @@ export function registerIpc(): void {
    * bytes. The translation plan is the one that checks, because it is the one that
    * reads the input to export a working copy of it.
    */
+  /*
+   * ── AND THE THIRD ARGUMENT, WHICH IS OWEN'S PENDING-NODE RULING ARRIVING ───
+   *
+   * *"i click the grayed out row and hit the export epub tile."* The dialog aims at
+   * the POSITION unless the tree pressed from a card that is not it — a landed row
+   * further up, or a promise that has not landed at all — and `from` is how it says
+   * which. `aimedAt` resolves the three cases once for all four plan doors and
+   * refuses an id that is neither, by name.
+   *
+   * THE CHANNEL IS WIDENED RATHER THAN REPLACED, which is the standing rule for
+   * this seam: docs/IPC-CHANNELS.md is BookForge's collision audit, and a new name
+   * is a name to audit plus an old one to prove retired — paid for a door whose
+   * behaviour is unchanged for every caller that does not pass the argument. A
+   * renderer built against the older preload sends two arguments and gets exactly
+   * what it always got.
+   */
   ipcMain.handle(
     'workspace:plan-export',
-    (_event, inputPath: string, kind: ConversionKind) => planExport(inputPath, kind),
+    async (_event, inputPath: string, kind: ConversionKind, from?: string) => {
+      const aim = await aimedAt(inputPath, from);
+      return planExport(inputPath, kind, aim.deferral === undefined ? aim.at : aim.deferral.landed, aim.deferral);
+    },
   );
   /*
    * A translation is asked ABOUT a file the renderer already has open, so the
@@ -903,12 +1055,19 @@ export function registerIpc(): void {
    * The path that comes back is the one admitted here, so the queue's re-check of
    * `inputPath` against the same allow-list finds exactly what this admitted.
    */
-  ipcMain.handle('workspace:plan-translation', async (_event, inputPath: string, targetLanguage: string) => {
-    const source = admitted(inputPath);
-    if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
-    const plan = await planTranslation(source, targetLanguage);
-    return { ...plan, inputPath: plan.sourcePath };
-  });
+  ipcMain.handle(
+    'workspace:plan-translation',
+    async (_event, inputPath: string, targetLanguage: string, from?: string) => {
+      const source = admitted(inputPath);
+      if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
+      // THE ROW THIS IS AIMED AT — the position, a landed step the tree pressed on,
+      // or a promise. See `aimedAt` and the export door above, where the widening
+      // is argued in full.
+      const aim = await aimedAt(source, from);
+      const plan = await planTranslation(source, targetLanguage, aim.at, aim.deferral);
+      return { ...plan, inputPath: plan.sourcePath };
+    },
+  );
 
   /*
    * A SIMPLIFY IS A TRANSLATION AND IS ADMITTED THE SAME WAY. It is the same
@@ -918,12 +1077,16 @@ export function registerIpc(): void {
    * carries that the other does not, and it is not a path: `planSimplification`
    * takes it as one of three values and the engine refuses anything else.
    */
-  ipcMain.handle('workspace:plan-simplify', async (_event, inputPath: string, mode: RewriteMode) => {
-    const source = admitted(inputPath);
-    if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
-    const plan = await planSimplification(source, mode);
-    return { ...plan, inputPath: plan.sourcePath };
-  });
+  ipcMain.handle(
+    'workspace:plan-simplify',
+    async (_event, inputPath: string, mode: RewriteMode, from?: string) => {
+      const source = admitted(inputPath);
+      if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
+      const aim = await aimedAt(source, from);
+      const plan = await planSimplification(source, mode, aim.at, aim.deferral);
+      return { ...plan, inputPath: plan.sourcePath };
+    },
+  );
 
   /*
    * A CLEANUP IS ADMITTED THE SAME WAY, AND IT ASKS NOTHING AT ALL.
@@ -946,10 +1109,11 @@ export function registerIpc(): void {
    * reached this from the mount seam would meet a refusal about a window rather
    * than about a book.
    */
-  ipcMain.handle('workspace:plan-clean', async (_event, inputPath: string) => {
+  ipcMain.handle('workspace:plan-clean', async (_event, inputPath: string, from?: string) => {
     const source = admitted(inputPath);
     if (source === null) throw new Error(`${inputPath} was never opened in this app.`);
-    const plan = await planCleanup(source);
+    const aim = await aimedAt(source, from);
+    const plan = await planCleanup(source, aim.at, aim.deferral);
     return { ...plan, inputPath: plan.sourcePath };
   });
 
@@ -2493,6 +2657,34 @@ export function registerIpc(): void {
     return dir === null ? null : positionStepId(dir);
   };
 
+  /**
+   * WHAT THIS RUN IS RECORDED AS BEING MADE FROM — the position, unless the request
+   * already says otherwise.
+   *
+   * ── The one case where the pointer is the wrong answer ─────────────────────
+   *
+   * `Job.parentStep` is the position at the press, and the argument for that is
+   * unchanged and long: a pointer that moves while a row waits must not change what
+   * the run is filed under. A DEFERRED request breaks the premise rather than the
+   * rule — the person pressed on a card that is not the position and cannot be, because
+   * main refuses `ledger:go` to a step that does not exist (`LedgerService.
+   * standOnPromise`). Reading the pointer there would file an export of a promised
+   * cleanup against the row the cleanup was made FROM: the tree would draw it one
+   * card too high, and `ProjectFinal.stepId` would claim the finished book came from
+   * a position it does not carry the words of.
+   *
+   * SO THE DEFERRAL WINS WHERE THERE IS ONE, and it is still the position at the
+   * press: `deferred.from` was minted by the plan the moment the button went down,
+   * and it names exactly the card the person was standing on.
+   */
+  const madeFrom = async (
+    request: JobRequest | TextPassRequest,
+    target: string,
+  ): Promise<string | null> => {
+    const deferred = request.kind === 'read' ? undefined : request.deferred;
+    return deferred?.from ?? await parentStepFor(target);
+  };
+
   /*
    * ── WHAT THE SHELF DRAWS, WHICH IS NOT ALWAYS FOUNDRY'S OWN LIST ──────────
    *
@@ -2509,8 +2701,10 @@ export function registerIpc(): void {
     request,
     // The BANK for a reading, the rendering's output otherwise — the same
     // `outputPath` the queue dedupes on, and the only path in a request that is
-    // certainly inside the project the job is about.
-    await parentStepFor(request.kind === 'read' ? request.readingsPath : request.outputPath),
+    // certainly inside the project the job is about. `madeFrom` rather than
+    // `parentStepFor`: a deferred export names its own row, which is not the
+    // pointer and cannot be.
+    await madeFrom(request, request.kind === 'read' ? request.readingsPath : request.outputPath),
   ));
   /*
    * ── ONE DOOR FOR THREE TEXT PASSES, AND THE CHANNEL KEEPS ITS NAME ─────────
@@ -2539,7 +2733,7 @@ export function registerIpc(): void {
     // The RECORDS file, which is what every text pass writes: the position is
     // resolved from the project that file belongs to, exactly as it used to be
     // resolved from the project the output EPUB belonged to.
-    return queue.enqueueTextPass(request, await parentStepFor(request.recordsPath));
+    return queue.enqueueTextPass(request, await madeFrom(request, request.recordsPath));
   });
   /*
    * AN ANALYSIS IS QUEUED THE SAME WAY AND REFUSED HOSTED, which is the one place
@@ -2591,7 +2785,7 @@ export function registerIpc(): void {
    */
   ipcMain.handle('queue:run', async (_event, request: JobRequest) => queue.runNow(
     request,
-    await parentStepFor(request.kind === 'read' ? request.readingsPath : request.outputPath),
+    await madeFrom(request, request.kind === 'read' ? request.readingsPath : request.outputPath),
   ));
   ipcMain.handle('queue:start', () => queue.start());
   ipcMain.handle('queue:remove', (_event, id: string) => { queue.remove(id); });

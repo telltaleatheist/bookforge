@@ -404,6 +404,21 @@ export class SimplifyDialogComponent {
    * machine translated it, or that it is being read by a learner — and a person
    * who knows that will pick it.
    */
+  /**
+   * THE ROW THIS CARD IS AIMED AT, when it is not the position.
+   *
+   * Undefined for every press this dialog had before Owen's pending-node ruling,
+   * and a step id for the one shape where the pointer could not follow the click:
+   * somebody standing on a GRAYED card in the tree, whose step will not exist until
+   * a queued job lands. Main resolves it, refuses an id that is neither a step nor a
+   * live promise, and answers with a DEFERRED plan for the second case
+   * (`LedgerService.aimedAt`, and `aimedAt` in electron/ipc.ts).
+   */
+  private readonly aim = computed<string | undefined>(() => {
+    const project = this.projects.projectFor(this.stage.activeDocument()?.path ?? '');
+    return project === null ? undefined : this.ledger.aimedAt(project.dir);
+  });
+
   protected readonly mode = signal<RewriteMode>('dejargon');
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
@@ -437,7 +452,7 @@ export class SimplifyDialogComponent {
     this.problem.set(null);
     try {
       const rewrite = this.mode();
-      const plan = await api.workspace.planSimplification(input, rewrite);
+      const plan = await api.workspace.planSimplification(input, rewrite, this.aim());
       /*
        * BOTH ENDS OF A REWRITE ARE ONE FACT, AND IT IS MAIN'S. The language a book
        * is in is a thing the ledger holds — the translation the position stands
@@ -472,7 +487,8 @@ export class SimplifyDialogComponent {
         inputPath: plan.inputPath,
         // The position's own book file with every applied change replayed into it,
         // written by main when the plan was made. This window has no opinion about it.
-        bookPath: plan.bookPath,
+        // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
+        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         to,
         from: to,
         rewrite,
@@ -483,6 +499,9 @@ export class SimplifyDialogComponent {
         // easy-language one of one book are two files and two rows.
         recordsPath: plan.recordsPath,
         ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),
+        // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
+        // carried verbatim — the queue reads it, nothing here interprets it.
+        ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
         ...(plan.generation !== undefined ? { generation: plan.generation } : {}),
         // Minted by the plan and carried back to the landing, so the row and the
         // file agree about which rewrite this is. Never read here.

@@ -247,13 +247,26 @@ export function renderPipeline(
  * behind at worst. Absent fields stay absent — an export of an unedited,
  * untranslated, uncleaned reading is exactly the request it always was.
  */
+/*
+ * ── AND `deferred` IS THE FIFTH, WHICH IS THE ABSENCE OF THE OTHER FOUR ─────
+ *
+ * A plan about a step that has not landed carries none of the materialised fields
+ * and says why (`WorkspacePlan.deferred`). Carrying that admission is exactly the
+ * job this function exists to make unforgettable: a builder that copied the four
+ * and dropped the fifth would compose a request with no book, no stamp and no
+ * explanation — which the queue would spawn against the position, silently
+ * exporting the wrong state of the book. That is the same failure this docblock
+ * already describes, with the field that says "not yet" left behind instead of the
+ * field that says "cleaned".
+ */
 export function carriedFromPlan(
-  plan: Pick<WorkspacePlan, 'records' | 'language' | 'bookPath' | 'narrationStamp'>,
-): Pick<GenerateRequest, 'records' | 'language' | 'bookPath' | 'narrationStamp'> {
+  plan: Pick<WorkspacePlan, 'records' | 'language' | 'bookPath' | 'narrationStamp' | 'deferred'>,
+): Pick<GenerateRequest, 'records' | 'language' | 'bookPath' | 'narrationStamp' | 'deferred'> {
   return {
     ...(plan.records !== undefined ? { records: plan.records } : {}),
     ...(plan.language !== undefined ? { language: plan.language } : {}),
     ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
     ...(plan.narrationStamp !== undefined ? { narrationStamp: plan.narrationStamp } : {}),
+    ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
   };
 }

@@ -400,7 +400,24 @@ export interface FoundryApi {
      * That flag is what the queue's landing reads, and it is the renderer's to set
      * because the renderer is what knows which of the two buttons was pressed.
      */
-    planExport(inputPath: string, kind: ConversionKind): Promise<WorkspacePlan>;
+    /**
+     * ── AND THE LAST ARGUMENT OF ALL FOUR PLANS IS THE SAME ARGUMENT ──────────
+     *
+     * `from` NAMES THE ROW THIS IS AIMED AT, and absent means the position — which
+     * is what the dock has always sent and what every one of these doors meant by
+     * taking no such argument. The tree sends it, because a press there acts on the
+     * CARD rather than on the pointer, and since Owen's pending-node ruling
+     * (2026-09-07) that card may be a step that has not landed: *"i click the grayed
+     * out row and hit the export epub tile."*
+     *
+     * MAIN RESOLVES IT AND MAY REFUSE IT. A landed step is planned against directly;
+     * a live promise comes back as a DEFERRED plan, missing every field that had to
+     * be materialised and carrying `deferred` to say so; an id that is neither is a
+     * refusal naming it. The caller passes `deferred` through onto the request it
+     * builds — `carriedFromPlan` does it for a rendering — and the queue re-plans at
+     * spawn.
+     */
+    planExport(inputPath: string, kind: ConversionKind, from?: string): Promise<WorkspacePlan>;
     /**
      * Where a translation of this book goes — which is a RECORDS FILE beside the
      * reading it was taken of, `readings/<key>.<lang>[.<id8>].records.jsonl`, and
@@ -433,6 +450,8 @@ export interface FoundryApi {
     planTranslation(
       inputPath: string,
       targetLanguage: string,
+      /** The row this is aimed at. See `planExport` above, where the argument is argued. */
+      from?: string,
     ): Promise<TranslationPlan & { inputPath: string }>;
     /**
      * Where a SIMPLIFICATION of this book goes — the same answer as above, about a
@@ -456,6 +475,8 @@ export interface FoundryApi {
     planSimplification(
       inputPath: string,
       mode: RewriteMode,
+      /** The row this is aimed at. See `planExport` above, where the argument is argued. */
+      from?: string,
     ): Promise<TranslationPlan & { inputPath: string }>;
     /**
      * Where this book's NARRATION CLEANUP goes — the same answer again, about the
@@ -479,7 +500,11 @@ export interface FoundryApi {
      * regardless, because a feature half-built across two repositories is worse
      * than one built where the ledger lives.
      */
-    planCleanup(inputPath: string): Promise<TranslationPlan & { inputPath: string }>;
+    planCleanup(
+      inputPath: string,
+      /** The row this is aimed at. See `planExport` above, where the argument is argued. */
+      from?: string,
+    ): Promise<TranslationPlan & { inputPath: string }>;
     /**
      * Where this book's ANALYSIS goes — the report a run would write, and the step
      * it would be filed as (docs/ANALYSIS.md §7).

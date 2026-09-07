@@ -611,9 +611,32 @@ export class ExportDialogComponent {
    */
   protected readonly noFacsimile = computed(() => {
     if (this.arrivedAsBook()) return true;
-    const ledger = this.ledger.historyFor(this.project()?.dir ?? null)?.ledger ?? null;
-    return ledger !== null && translationInEffect(ledger) !== null;
+    /*
+     * ASKED OF THE LEDGER WITH THE PROMISES IN IT (`LedgerService.ledgerIn`), so a
+     * facsimile offered from a position under a translation that has not LANDED yet
+     * is refused for the same reason it is refused under a landed one: there is
+     * nowhere on the photographs to put those words. The card would otherwise offer
+     * a reprint that main will decline a moment later, which is the exact shape
+     * Owen's ruling forbids.
+     */
+    const ledger = this.ledger.ledgerIn(this.project()?.dir ?? null);
+    const standing = this.ledger.standingIn(this.project()?.dir ?? null);
+    return ledger !== null && translationInEffect(ledger, standing) !== null;
   });
+
+  /**
+   * THE ROW THIS CARD IS AIMED AT, when it is not the position.
+   *
+   * Undefined for every press this dialog had before Owen's pending-node ruling,
+   * and a step id for the one shape where the pointer could not follow the click:
+   * somebody standing on a GRAYED card in the tree — *"i click the grayed out row
+   * and hit the export epub tile"* — whose step will not exist until a queued job
+   * lands. Main resolves it and answers with a DEFERRED plan, which carries the
+   * four names this export will have and nothing that needed the chain.
+   */
+  private readonly aim = computed<string | undefined>(
+    () => this.ledger.aimedAt(this.project()?.dir ?? null),
+  );
 
   /** EPUB unless asked otherwise — it is the format this app can also read. */
   protected readonly kind = signal<ConversionKind>('epub');
@@ -742,7 +765,7 @@ export class ExportDialogComponent {
     this.problem.set(null);
     try {
       const kind = this.kind();
-      const plan = await api.workspace.planExport(input, kind);
+      const plan = await api.workspace.planExport(input, kind, this.aim());
       const request: JobRequest = {
         kind,
         // The pixels, as always: main resolves the archived original rather than
@@ -774,6 +797,40 @@ export class ExportDialogComponent {
          */
         ...carriedFromPlan(plan),
       };
+
+      /*
+       * ── A DEFERRED EXPORT IS QUEUED, WHERE EVERY OTHER ONE IS RUN ─────────────
+       *
+       * This card runs its export under itself and always has, for a reason it
+       * states at length: an export is seconds of offline arithmetic and the person
+       * who pressed the button is standing in front of the dialog waiting for the
+       * file. NEITHER HALF IS TRUE OF A PROMISED ONE. There is nothing to compute
+       * yet — the book it would compile has not been made, because the step it is of
+       * has not landed — so holding the card open would be a spinner over a wait of
+       * unknown length, and `runNow` refuses the request by name rather than spawn
+       * an engine against a chain that does not exist.
+       *
+       * SO IT GOES IN THE QUEUE, which is where Owen put it: *"i click the grayed
+       * out row and hit the export epub tile … then send narration and assembly to
+       * the queue."* The row waits behind the one it is made from (`Job.after`), the
+       * tree draws it as a grayed card under the promise it hangs off, and the
+       * person is told that rather than shown a proof sheet of nothing.
+       *
+       * THE DEDUPE ANSWER IS READ, on `QueueService.enqueue`'s own rule: pressing
+       * Export twice on one promise must say the second press changed nothing rather
+       * than announce a success over a row that was already there.
+       */
+      if (plan.deferred !== undefined) {
+        const added = await this.queue.enqueue(request);
+        this.notices.notice.set(
+          added === 'already'
+            ? `The ${this.labelFor(kind)} of ${this.nameFor(input)} is already queued.`
+            : `Queued the ${this.labelFor(kind)} — it will be made when the step it comes from `
+              + 'finishes.',
+        );
+        this.ui.closeExport();
+        return;
+      }
 
       const job = await this.queue.run(request);
       if (job === null) return; // no API — a browser tab, where the button cannot exist anyway

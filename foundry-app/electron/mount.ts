@@ -108,6 +108,7 @@ import * as vllm from './vllm-server';
 import { planExport } from './workspace';
 import { foundryWindow, isDev, openWindow, whenRendererReady } from './window';
 import { stepOf } from '../shared/ledger';
+import { deferralFor } from '../shared/pending';
 import { carriedFromPlan } from '../shared/pipeline';
 import { fold, originalOf } from '../shared/original';
 import type { ExportLanding, Job, JobRequest } from '../shared/types';
@@ -731,8 +732,41 @@ export async function exportEpubFromStep(
    * the same refusal every other door in this app gives for the same mistake.
    */
   const manifest = await readManifest(project.dir);
-  const step = stepOf(ledgerOf(manifest), stepId);
-  const plan = await planExport(original.path, 'epub', step);
+  /*
+   * ── AND THE ROW MAY BE A PROMISE, AS OF 2026-09-07 ────────────────────────
+   *
+   * Owen's ruling puts host acts on rows that have not landed — *"i can click the
+   * grayed out exported epub and click narrate"* — and a narration ordered from a
+   * promised STEP arrives here rather than at an export row, because the tree hands
+   * the host the step's own id and the host brings it straight back to this door for
+   * the file its work consumes.
+   *
+   * SO THE LEDGER IS ASKED FIRST AND THE QUEUE SECOND, and `stepOf`'s refusal is
+   * kept for the case it was written about: an id that is in neither. A host holding
+   * a step id from before somebody deleted the step still gets that sentence, by
+   * name, exactly as it always did.
+   *
+   * WHAT COMES BACK FOR A PROMISE IS A DEFERRED PLAN — the four deterministic names
+   * and nothing that needed a chain — and the request carries the admission through
+   * `carriedFromPlan`. `enqueueHere` composes `after` off it (`chainedBehind`), so
+   * this export waits for the cleanup rather than racing it, and the promise this
+   * function returns settles when the export finally lands or when the chain is
+   * cancelled by name. A host awaiting it is waiting for the right thing.
+   */
+  const ledger = ledgerOf(manifest);
+  const landed = ledger.steps.find((row) => row.id === stepId) ?? null;
+  const deferral = landed === null
+    ? deferralFor(ledger, queue.shelfJobsFor(project.dir), stepId)
+    : null;
+  // The refusal, unchanged and in the ledger's own words, for an id that is neither
+  // a step nor a promise.
+  const step = landed ?? (deferral === null ? stepOf(ledger, stepId) : null);
+  const plan = await planExport(
+    original.path,
+    'epub',
+    deferral !== null ? deferral.landed : step,
+    deferral ?? undefined,
+  );
   const request: JobRequest = {
     kind: 'epub',
     /*
@@ -835,7 +869,13 @@ export async function exportEpubFromStep(
      * same tray row, same landing, same announcement. A host cannot tell this
      * export from one somebody pressed for, and neither can the tray.
      */
-    queue.enqueueHere(request, step.id);
+    /*
+     * THE PARENT IS THE ROW THE ASK NAMED, promise or not. `stepId` rather than
+     * `step.id` because a promised export has no `step` to read an id off — and
+     * because the two were always the same string: the ask names its own row, and
+     * `stepOf` proved it above.
+     */
+    queue.enqueueHere(request, stepId);
   });
 }
 
@@ -858,7 +898,14 @@ function unfiled(row: Job): Error {
       : row.error);
   }
   if (row.state === 'cancelled') {
-    return new Error(`Making ${file} was cancelled before it finished.`);
+    /*
+     * THE ROW'S OWN REASON WHERE IT HAS ONE, which as of the pending-node wave it
+     * often does: a cancel that came from the cascade says which promise left the
+     * queue (`cascadeFrom`, electron/job-queue.ts), and that is a sentence a host
+     * can put in front of its own user. The plain wording stays for the ordinary
+     * cancel — somebody pressed the ✕ — where there is nothing more to say.
+     */
+    return new Error(row.error ?? `Making ${file} was cancelled before it finished.`);
   }
   if (row.state === 'done') {
     return new Error(

@@ -105,6 +105,10 @@ import {
   translationRecordsOf,
 } from '../shared/ledger';
 import type { ReadAsk } from '../shared/ledger';
+// A TYPE ONLY, deliberately: shared/pending.ts derives promises from QUEUE ROWS,
+// and this module must not learn about a queue. What it is handed is the answer
+// (`Deferral`), composed at the door by the side that holds both lists.
+import type { Deferral } from '../shared/pending';
 import { renderPipeline } from '../shared/pipeline';
 import type {
   AnalysisPlan,
@@ -328,8 +332,49 @@ export async function planExport(
    * and still lands on the book's own name in `final/`. See that function.
    */
   from: LedgerStep | null = null,
+  /**
+   * THE EXPORT IS OF A ROW THAT HAS NOT LANDED — Owen's *"i click the grayed out
+   * row and hit the export epub tile"*, arriving at the one plan that can be asked
+   * for it.
+   *
+   * ── What it changes, which is what it REMOVES ──────────────────────────────
+   *
+   * Everything about this export that a chain decides — the book with the changes
+   * replayed into it, the narration stamp, the translated words and the language
+   * they declare — is an answer about a row that does not exist, so none of them is
+   * composed. What is composed is the four deterministic facts (`WorkspacePlan.
+   * deferred` names them and says why they are the same at every row of one chain),
+   * and they are composed at `from`, which for this call is the nearest LANDED
+   * ancestor rather than the row the person pressed on.
+   *
+   * THE STAMP IS THE FIELD THIS EXISTS FOR. An export of a promised cleanup that
+   * carried the ancestor's stamp — or none — would be exactly the file BookForge
+   * narrates, saying the wrong thing about the one fact the cleanup was ordered to
+   * establish. Leaving it out and re-planning at spawn is the only shape that
+   * cannot get that wrong.
+   */
+  deferral?: Deferral,
 ): Promise<WorkspacePlan> {
   const planned = await planRendering(inputPath, kind, FINAL, from);
+  /*
+   * ── THE DEFERRED ANSWER, AND WHY IT RETURNS BEFORE THE MATERIALISE ─────────
+   *
+   * `planRendering` has already composed every path out of the project's own
+   * catalogue, which is all a deferred plan is allowed to claim. What comes next is
+   * `materializeBook`, which replays a chain from a step — and the step is a
+   * promise, so there is no chain and nothing to replay. Returning here rather than
+   * materialising at the landed ancestor and throwing the file away is the honest
+   * version: this plan is not a book, it is the four names the book will have.
+   */
+  if (deferral !== undefined) {
+    return {
+      key: planned.plan.key,
+      sourcePath: planned.plan.sourcePath,
+      outputPath: planned.plan.outputPath,
+      readingsPath: planned.plan.readingsPath,
+      deferred: { from: deferral.from },
+    };
+  }
   if (!planned.compiles) return planned.plan;
   /*
    * ── THE BOOK WITH THE CHANGES IN IT, WRITTEN OUT FOR THE ENGINE ────────────
@@ -979,10 +1024,68 @@ function translatedWords(
 export async function planTranslation(
   inputPath: string,
   targetLanguage: string,
+  /**
+   * THE ROW THIS PASS IS MADE FROM, when the press did not come from the pointer.
+   *
+   * Owen's pending-node ruling put acts on rows the position is not standing on:
+   * clicking a promised step makes it the renderer's STANDING without moving the
+   * ledger's pointer (main refuses `ledger:go` to a step that does not exist, and
+   * is right to). A person can also press an act on a landed row that is not the
+   * position, and this is what carries that. Null and absent both mean the
+   * position, which is every press this door had before.
+   *
+   * IT IS A STEP AND NOT AN ID, because everything it feeds takes a step —
+   * `translationInEffect`, `materializeBook` — and resolving an id here would be a
+   * second `stepOf` refusal beside the one the door already makes.
+   */
+  at: LedgerStep | null = null,
+  /**
+   * THE ROW THIS PASS IS MADE FROM HAS NOT LANDED — see `Deferral`
+   * (shared/pending.ts) and `WorkspacePlan.deferred` for the whole argument.
+   *
+   * Mutually exclusive with `at` in practice and not enforced here: the door
+   * composes exactly one of them (`deferralFor` answers null for a step the ledger
+   * holds), and a guard would be this function re-deriving a decision it was told
+   * about.
+   */
+  deferral?: Deferral,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
+  /*
+   * ── THE DEFERRED PLAN: THE NAMES, AND NOTHING THAT NEEDS A CHAIN ───────────
+   *
+   * `recordsForTextPass` is asked with the PROMISED step as the parent, which is
+   * the whole of what makes this file's name right: an id no existing step is
+   * parented to is a branch, and a translation of a book that has not been cleaned
+   * yet is exactly that. The step id it mints is the one the landing will append
+   * under, and it is also what the tree draws this row's own promise as.
+   *
+   * NO BOOK, NO SEED, NO GENERATION, NO `--from`. Every one of those is read off a
+   * chain or a file that will not exist until the parent lands, and every one is
+   * composed by this same function at spawn (`materializeDeferred`,
+   * electron/job-queue.ts).
+   *
+   * AND NO SAME-LANGUAGE REFUSAL, which is the one guard this branch loses. It
+   * compares the target against the language of the translation in effect, and the
+   * promised chain above this row may put a translation there that nothing can name
+   * yet (a promise carries no params). So the refusal is made at SPAWN instead,
+   * where this function runs again with the real row and every fact in hand — a
+   * failed job with main's own sentence on it rather than an hour of a model saying
+   * an English book in English.
+   */
+  if (deferral !== undefined) {
+    const promised = await recordsForTextPass(dir, 'translate', targetLanguage, undefined, deferral.from);
+    await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+    return {
+      key,
+      sourcePath: inputPath,
+      recordsPath: promised.recordsPath,
+      stepId: promised.stepId,
+      deferred: { from: deferral.from },
+    };
+  }
   /*
    * ── WHICH TRANSLATION THIS IS, AND THEREFORE WHAT ITS FILE IS CALLED ──────
    *
@@ -1019,7 +1122,9 @@ export async function planTranslation(
    * (`translate --book`). Nothing about a strike, an overlay or a curation
    * crosses the boundary; what crosses is a document.
    */
-  const planned = await recordsForTextPass(dir, 'translate', targetLanguage);
+  const planned = await recordsForTextPass(
+    dir, 'translate', targetLanguage, undefined, at === null ? undefined : at.id,
+  );
   /*
    * ── WHAT THIS RUN IS ASKED OF, WHICH IS TWO SEPARATE FACTS ────────────────
    *
@@ -1048,7 +1153,10 @@ export async function planTranslation(
    * is the re-ask precision above, because the words it consumed live inside an
    * EPUB rather than in rows a person can correct.
    */
-  const parent = translationInEffect(ledger);
+  // ASKED ABOUT THE ROW THIS PRESS NAMED, which is the position unless a card
+  // further up the tree was the thing clicked. `nearestUpward`'s own `from`
+  // argument, reached from this door for the first time.
+  const parent = translationInEffect(ledger, at);
   const parentLanguage = parent?.params?.language?.trim() ?? '';
   /*
    * ASKING FOR THE PARENT'S OWN LANGUAGE IS NOT A TRANSLATION AND IS REFUSED HERE
@@ -1166,7 +1274,7 @@ export async function planTranslation(
    * settles (`sweepDerivedBook`, electron/job-queue.ts). It is scratch: a pure
    * function of a file on disk and a chain in the ledger.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'));
+  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
   /*
    * A REFUSAL HERE IS THE PERSON'S OWN SENTENCE, `planExport`'s rule again:
    * `materializeBook` answers in words for everything somebody can be told about,
@@ -1246,10 +1354,85 @@ export async function planTranslation(
 export async function planSimplification(
   inputPath: string,
   mode: RewriteMode,
+  /** The row this pass is made from. `planTranslation`'s own argument, verbatim. */
+  at: LedgerStep | null = null,
+  /**
+   * THE ROW THIS REWRITE IS MADE FROM HAS NOT LANDED — and this is the one plan of
+   * the three that can refuse over it. See the branch below.
+   */
+  deferral?: Deferral,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
+
+  /*
+   * ── THE DEFERRED REWRITE, AND THE ONE SHAPE OF IT THIS REFUSES ────────────
+   *
+   * A rewrite happens IN a language and the file it writes is NAMED after that
+   * language, so the one fact this plan cannot leave for the re-plan is the
+   * language — the deferred plan's whole promise is that `recordsPath` and `stepId`
+   * are the paths the landed run will use, and a name composed from a guess would
+   * break it.
+   *
+   * A PROMISED CLEANUP CHANGES NO LANGUAGE, so a rewrite under one is planned
+   * exactly as a rewrite under its landed ancestor: the cleanup says the same book
+   * again with narratable punctuation, and the words stay in the language they were
+   * in. That is the ordinary case and it is Owen's own chain.
+   *
+   * A PROMISED TRANSLATION OR REWRITE DOES change it, and records the answer in
+   * `params.language` — which a promise does not carry (`pendingStepOf` argues why:
+   * the row's title is a SENTENCE and this codebase does not read facts back out of
+   * sentences). So this refuses by name rather than naming a German file after a
+   * book that is about to become Hungarian. The sentence tells the person the one
+   * thing that fixes it: wait for the row above to land.
+   *
+   * THE LANGUAGE IS READ AT THE LANDED ANCESTOR, and the book made to read it is
+   * thrown away. That is a real cost — one materialise for one header field — and
+   * it is the cheapest honest answer: `declaredLanguageOf` reads a book file, the
+   * only book file that can be made on this chain is the landed row's, and
+   * inventing a way to read a header without assembling the book would be a second
+   * implementation of the materialise.
+   */
+  if (deferral !== undefined) {
+    const moved = deferral.through.find((action) => action === 'translate' || action === 'simplify');
+    if (moved !== undefined) {
+      throw new ProjectError(
+        'This row is made from work that has not finished yet, and that work changes which language '
+        + 'the book is in — so there is nothing to tell the model to write in. Wait for it to land '
+        + 'and press Simplify again; the language will be recorded by then.',
+      );
+    }
+    const standing = translationInEffect(ledger, deferral.landed)?.params?.language?.trim() ?? '';
+    let language = standing;
+    if (language.length === 0) {
+      const read = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), deferral.landed);
+      if (!read.ok) throw new ProjectError(read.reason);
+      language = await declaredLanguageOf(read.path);
+      await fsp.rm(read.path, { force: true }).catch(() => undefined);
+    }
+    if (language.length === 0) {
+      throw new ProjectError(
+        'This book has never said what language it is in, and a rewrite happens IN a language — so '
+        + 'there is nothing to tell the model to write. Read the pages again with the language '
+        + 'declared, or translate the book into a language you name, and the rewrite has an answer '
+        + 'to work from.',
+      );
+    }
+    const promised = await recordsForTextPass(dir, 'simplify', language, mode, deferral.from);
+    await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+    return {
+      key,
+      sourcePath: inputPath,
+      recordsPath: promised.recordsPath,
+      stepId: promised.stepId,
+      // BOTH ENDS ARE THE SAME LANGUAGE and the dialog reads this field for the
+      // request's `to` — see the landed return below, where the same sentence is
+      // argued in full. It is deterministic, so it survives the deferral.
+      from: language,
+      deferred: { from: deferral.from },
+    };
+  }
 
   /*
    * THE BOOK COMES FIRST HERE, where a translation names its file first, and the
@@ -1263,10 +1446,10 @@ export async function planSimplification(
    * a pointer moved while the job waits cannot change which book was meant, into
    * the OS temp directory and swept by the hand that settles the job.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'));
+  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
   if (!derived.ok) throw new ProjectError(derived.reason);
 
-  const standing = translationInEffect(ledger)?.params?.language?.trim() ?? '';
+  const standing = translationInEffect(ledger, at)?.params?.language?.trim() ?? '';
   const language = standing.length > 0 ? standing : await declaredLanguageOf(derived.path);
   if (language.length === 0) {
     throw new ProjectError(
@@ -1277,7 +1460,9 @@ export async function planSimplification(
     );
   }
 
-  const planned = await recordsForTextPass(dir, 'simplify', language, mode);
+  const planned = await recordsForTextPass(
+    dir, 'simplify', language, mode, at === null ? undefined : at.id,
+  );
   /*
    * ── THE SEED, WHICH A REWRITE SPENDS WHERE A CHAIN WOULD NOT ───────────────
    *
@@ -1365,10 +1550,39 @@ export async function planSimplification(
  * seed is looked for among cleanups of the same book and nowhere wider
  * (`newestCleanRecords`).
  */
-export async function planCleanup(inputPath: string): Promise<TranslationPlan> {
+export async function planCleanup(
+  inputPath: string,
+  /** The row this pass is made from. `planTranslation`'s own argument, verbatim. */
+  at: LedgerStep | null = null,
+  /**
+   * THE ROW THIS CLEANUP IS MADE FROM HAS NOT LANDED.
+   *
+   * THE SIMPLEST OF THE THREE DEFERRED BRANCHES, and for the reason `PARAMS_OF.
+   * clean` gives: a cleanup is described by nothing at all. There is no language to
+   * resolve and no mode to name, so the records file's name depends on exactly one
+   * fact — the parent — and the parent is the id in hand. Nothing about this plan
+   * needs the chain except the book itself, and that is what the re-plan is for.
+   */
+  deferral?: Deferral,
+): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
+
+  if (deferral !== undefined) {
+    const promised = await recordsForTextPass(dir, 'clean', '', undefined, deferral.from);
+    await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+    return {
+      key,
+      sourcePath: inputPath,
+      recordsPath: promised.recordsPath,
+      // NAMED FROM THE RECORDS FILE, so it is as deterministic as the records are
+      // and survives the deferral with them (`narrationStampFileFor`).
+      stampPath: narrationStampFileFor(promised.recordsPath),
+      stepId: promised.stepId,
+      deferred: { from: deferral.from },
+    };
+  }
 
   /*
    * The position's own book file with every op on the way to it replayed in,
@@ -1376,10 +1590,12 @@ export async function planCleanup(inputPath: string): Promise<TranslationPlan> {
    * which book was meant, into the OS temp directory and swept by the hand that
    * settles the job. `planTranslation`'s rule, verbatim and for its reasons.
    */
-  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'));
+  const derived = await materializeBook(dir, path.join(os.tmpdir(), 'foundry'), at);
   if (!derived.ok) throw new ProjectError(derived.reason);
 
-  const planned = await recordsForTextPass(dir, 'clean', '');
+  const planned = await recordsForTextPass(
+    dir, 'clean', '', undefined, at === null ? undefined : at.id,
+  );
   const seed = newestCleanRecords(ledger, planned.records);
   const generation = readingGenerationOf(ledger, manifest);
   await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });

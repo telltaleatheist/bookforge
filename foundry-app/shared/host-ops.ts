@@ -547,8 +547,49 @@ export interface HostInvokeContext {
    * cannot resolve, and the honest answer there is the same word for a different
    * reason: nothing here says these words were cleaned. A host that needs the
    * distinction has the OPF meta on the file, which is the durable record.
+   *
+   * ── IT IS ANSWERED OVER THE PROMISES TOO, AS OF 2026-09-07 ────────────────
+   *
+   * Owen's pending-node ruling makes an act orderable from a step that has not
+   * landed, and a narration ordered from a promised cleanup is precisely the case
+   * this field exists for. So main composes the ledger with the live queue's
+   * promises in it before it walks (`withPending`, shared/pending.ts) and the
+   * ordinary `cleanupInEffect` answers through the chain unchanged. TRUE THERE IS
+   * A PROMISE AND NOT A LIE: the file the host will be handed is made by
+   * `exportEpubFromStep`, which is itself chained behind that cleanup and cannot
+   * produce a book until it lands — so by the time there is anything to narrate,
+   * the words are cleaned or the whole chain was cancelled.
    */
   cleaned: boolean;
+  /**
+   * THE QUEUE ROW THIS ACT'S OWN WORK MUST WAIT BEHIND, when it was ordered from
+   * something that has not happened yet.
+   *
+   * ── Owen's sentence, and the half of it that is the host's ────────────────
+   *
+   * *"i click the grayed out row and hit the export epub tile … i can click the
+   * grayed out exported epub and click narrate. then send narration and assembly
+   * to the queue."* The narration is the HOST's work, filed in the HOST's queue,
+   * so Foundry cannot schedule it — what it can do is say which row it is downstream
+   * of, and that is this field.
+   *
+   * IT IS A ROW ID IN WHICHEVER QUEUE IS SCHEDULING. Hosted that is the host's own
+   * id, off a row the host minted and pushed back, so the host can put its
+   * narration behind it with the machinery it already has. Standalone it is one of
+   * Foundry's, which no host is listening to — and standalone there are no host
+   * acts to order, so the case does not arise.
+   *
+   * ABSENT IS EVERY ACT ORDERED FROM SOMETHING THAT EXISTS, which is every host act
+   * before this wave: the export is on the disk (or `exportEpubFromStep` makes it
+   * on the spot), and there is nothing to wait for.
+   *
+   * A HOST MAY IGNORE IT, at a named cost rather than silently: the narration would
+   * start against an EPUB that does not exist yet and `exportEpubFromStep` would
+   * refuse by name, which is a failed row in the host's own queue rather than a
+   * wrong book. The field is offered so that the honest outcome — waiting — is
+   * available without the host having to invent it.
+   */
+  pendingRow?: string;
 }
 
 /**

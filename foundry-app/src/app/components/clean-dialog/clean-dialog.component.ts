@@ -282,6 +282,23 @@ export class CleanDialogComponent {
     return showing?.title ?? this.projects.nameFor(input);
   });
 
+  /**
+   * THE ROW THIS CARD IS AIMED AT, when it is not the position.
+   *
+   * Undefined for every press this dialog had before Owen's pending-node ruling,
+   * and a step id for the one shape where the pointer could not follow the click:
+   * somebody standing on a GRAYED card in the tree, whose step will not exist until
+   * a queued job lands. Main resolves it, refuses an id that is neither a step nor a
+   * live promise, and answers with a DEFERRED plan for the second case
+   * (`LedgerService.aimedAt`, and `aimedAt` in electron/ipc.ts).
+   */
+  private readonly aim = computed<string | undefined>(() => {
+    const tab = this.stage.activeDocument();
+    if (tab === null) return undefined;
+    const project = this.projects.projectFor(tab.path);
+    return project === null ? undefined : this.ledger.aimedAt(project.dir);
+  });
+
   protected readonly model = signal(DEFAULT_MODEL);
   protected readonly ollama = signal(DEFAULT_OLLAMA);
   protected readonly problem = signal<string | null>(null);
@@ -310,7 +327,7 @@ export class CleanDialogComponent {
     this.busy.set(true);
     this.problem.set(null);
     try {
-      const plan = await api.workspace.planCleanup(input);
+      const plan = await api.workspace.planCleanup(input, this.aim());
       /*
        * THE STAMP IS MAIN'S AND THIS WINDOW NEVER COMPOSES ONE. It is named from
        * the records file so the compile that later reads it and the plan that
@@ -330,9 +347,14 @@ export class CleanDialogComponent {
         inputPath: plan.inputPath,
         // The position's own book file with every applied change replayed into it,
         // written by main when the plan was made. This window has no opinion about it.
-        bookPath: plan.bookPath,
+        // ABSENT FOR A DEFERRED PLAN, and the queue materialises it at spawn by
+        // re-asking the same plan with the landed row (`materializeDeferred`).
+        ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
         recordsPath: plan.recordsPath,
         stampPath: plan.stampPath,
+        // THE ADMISSION THAT THIS IS MADE FROM SOMETHING THAT HAS NOT HAPPENED,
+        // carried verbatim — the queue reads it, nothing here interprets it.
+        ...(plan.deferred !== undefined ? { deferred: plan.deferred } : {}),
         model: this.model().trim() || DEFAULT_MODEL,
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,
         ...(plan.seedRecords !== undefined ? { seedRecords: plan.seedRecords } : {}),

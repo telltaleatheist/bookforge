@@ -4361,6 +4361,32 @@ export async function recordsForTextPass(
    * would change in one of the two.
    */
   rewrite?: RewriteMode,
+  /**
+   * THE ROW THIS PASS IS MADE FROM, when the ask did not come from the pointer.
+   *
+   * ── Why the position stopped being the only answer ─────────────────────────
+   *
+   * Owen, 2026-09-07: *"i click the grayed out row and hit the export epub tile."*
+   * A pending node is a place a person can stand and act from, and it is not the
+   * position — main refuses `ledger:go` to a step that does not exist, correctly,
+   * so the pointer stays wherever it was while the tiles answer for the promise.
+   * A plan that asked the position there would file the new pass under the row the
+   * person happened to be standing on and produce a second, unwanted branch.
+   *
+   * IT IS ALLOWED TO NAME A STEP THIS LEDGER DOES NOT HOLD, which is the whole
+   * point and is safe for a reason worth stating: `translationTarget` compares this
+   * against the parents of existing steps to decide replace-or-branch, and an id
+   * nothing matches is a branch — which is exactly right for a pass made from a row
+   * that has not landed. Nothing here resolves the id, so nothing here has to refuse
+   * it; the refusal belongs at the door that admitted the ask (`planTranslation`
+   * and its two siblings, electron/workspace.ts).
+   *
+   * ABSENT AND `undefined` BOTH MEAN THE POSITION, which is every ask this function
+   * had before this wave. `null` means the position too and is what the walk
+   * answers for a project with no history — kept distinguishable from `undefined`
+   * only so a caller passing a resolved-or-null id does not have to convert it.
+   */
+  parent?: string | null,
 ): Promise<PlannedTranslation> {
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
@@ -4381,7 +4407,11 @@ export async function recordsForTextPass(
     ledger,
     {
       action,
-      parent: positionOf(ledger)?.id ?? null,
+      // THE ARGUMENT WINS WHERE THERE IS ONE — see `parent` above. `undefined`
+      // rather than a null test, because null is a legal answer meaning "no
+      // history to point at" and must not fall back to a walk that answers the
+      // same thing more expensively.
+      parent: parent !== undefined ? parent : positionOf(ledger)?.id ?? null,
       // NOT SAID AT ALL FOR A CLEANUP, rather than said as an empty string: the ask
       // is what `translatedInto` composes the params from, and `{language: ''}`
       // would be a step claiming to have gone into a language spelled with no

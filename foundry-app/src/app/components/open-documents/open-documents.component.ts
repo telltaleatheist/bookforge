@@ -17,9 +17,11 @@ import {
 import type { HostNodeAction } from '@shared/host-ops';
 import { languageNameFor } from '@shared/languages';
 import { mintedFromPhotographs } from '@shared/ledger';
+import { pendingStepOf } from '@shared/pending';
 import type {
   HostNode,
   HostNodeProgress,
+  Job,
   LedgerParams,
   LedgerStep,
   MakeAct,
@@ -934,9 +936,17 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
                   <span class="lbl">from here</span>
                 }
                 @for (act of acts(); track act.id) {
+                  <!--
+                    DIMMED AND STILL PRESSABLE — Owen's two sentences at once:
+                    *"the export epub tile is grayed out until ai cleanup finishes"*
+                    and *"i click the grayed out row and hit the export epub tile."*
+                    See \`Act.deferred\`, which argues why a disabled button would
+                    have satisfied one of them by making the other impossible.
+                  -->
                   <button
                     class="op"
                     [class.audio-op]="act.audio"
+                    [class.deferred]="act.deferred"
                     [title]="act.hint"
                     (click)="run($event, row, act)"
                   >
@@ -1676,6 +1686,14 @@ import { ActionMenuComponent } from '../action-menu/action-menu.component';
     .ops.recovery { background: var(--error-soft); border-top-color: rgba(248, 113, 113, 0.35); }
     .ops.recovery .op:hover { color: var(--error); border-color: rgba(248, 113, 113, 0.55); }
     .op:hover { color: var(--text-primary); border-color: var(--accent-strong); }
+    /*
+      A DEFERRED TILE WEARS THE PENDING CARD'S OWN GRAMMAR — dashed and faint, the
+      same two marks that say "this has not happened" everywhere else in this panel.
+      It keeps its cursor and its hover, because it IS pressable: what the dim says
+      is that the work it starts will start later, not that the button is dead.
+    */
+    .op.deferred { border-style: dashed; opacity: 0.6; }
+    .op.deferred:hover { opacity: 1; }
     /* The host's acts wear the host's colour, here as well as on the cards they
        make, so pressing one is visibly ordering a different KIND of work. */
     .op.audio-op { color: var(--audio); border-color: rgba(240, 168, 96, 0.35); }
@@ -2072,6 +2090,37 @@ export class OpenDocumentsComponent {
       }
 
       /*
+       * ── WHAT THIS BOOK'S QUEUE HAS PROMISED, indexed by the node it hangs under ─
+       *
+       * Owen, 2026-09-07: *"if i queue cleanup, i want a grayed out step to appear
+       * where the item will be when it finishes."*
+       *
+       * A THIRD INDEX BESIDE THE LEDGER'S AND THE HOST'S, and it is DERIVED FROM
+       * QUEUE ROWS RATHER THAN READ FROM ANYWHERE. Nothing pending is ever written
+       * to `project.json` (shared/pending.ts carries the whole argument): the rows
+       * are the record, so a row that leaves the queue takes its card off the screen
+       * in this very repaint — which is the drawing half of Owen's cascade, and it
+       * needs no bookkeeping at all.
+       *
+       * KEYED BY THE PARENT, WHICH FOR A PROMISE'S CHILD IS ANOTHER PROMISE'S
+       * `mints`. A plan made under a promised cleanup names that cleanup's minted
+       * step id as its parent — the same id the landing will append under, and the
+       * same id this card is drawn as — so the chain in Owen's sentence (clean →
+       * export → narrate) is three lookups of one map.
+       *
+       * THE ORPHANS ARE ALREADY GONE. `LedgerService.promisesIn` admits a row only
+       * where its parent is a real step or another admitted promise, so a chain
+       * whose head left the queue is not in this list at all.
+       */
+      const pendingByParent = new Map<string, Job[]>();
+      for (const promise of this.ledger.promisesIn(project.dir)) {
+        const parent = promise.parentStep ?? '';
+        const already = pendingByParent.get(parent);
+        if (already === undefined) pendingByParent.set(parent, [promise]);
+        else already.push(promise);
+      }
+
+      /*
        * A STEP THE CHAIN DOES NOT REACH IS STILL DRAWN, hanging off the root.
        *
        * The ledger's rule is one parentless step and every other parent present
@@ -2440,6 +2489,112 @@ export class OpenDocumentsComponent {
        * made anything from. The promise is kept either way: an arrow appears
        * exactly when there is something to reveal.
        */
+      /**
+       * ONE PROMISED CARD, AND EVERYTHING PROMISED UNDER IT.
+       *
+       * ── The grammar is the one the tree already had ────────────────────────
+       *
+       * `.card.pending` — no fill, a dashed border, an untinted mark — is the shape
+       * a host's queued node has worn since this panel was redrawn, and its own
+       * style comment says why: *"the fill is what the eye reads as 'this is a
+       * thing'; a plan is the shape of one."* A promise of Foundry's own is exactly
+       * that claim about exactly that kind of thing, so it gets the same drawing
+       * rather than a second vocabulary for one idea. `drawLineage` reads `planned`
+       * and dashes the thread down to it for free.
+       *
+       * ── A STEP PROMISE AND A FILE PROMISE, told apart by the id ───────────
+       *
+       * `Job.mints` is the node this row will land and `exportOfNodeId` is the test
+       * (shared/host-ops.ts): `export:<file>` is a file in the tray, anything else
+       * is a step of the ledger. A step promise carries the synthetic `LedgerStep`,
+       * so every predicate in shared/stages.ts answers for it exactly as it will
+       * once it lands; a file promise carries the id a host act names — the SAME id
+       * the landed export row will carry, so a narration chained onto the promise
+       * comes back parented on a node that is still there afterwards and nothing
+       * has to be re-parented.
+       *
+       * ── AND A REAL STEP IS NEVER DRAWN UNDER ONE ──────────────────────────
+       *
+       * Which is why this recurses only into `pendingByParent` and never into
+       * `kids`. It is a fact about the world rather than a rule enforced here: a
+       * landing always happens before anything made from it can run, so by the time
+       * a real child exists its parent is a real step and `walk` draws the lot.
+       */
+      const walkPending = (promise: Job, depth: number): void => {
+        const id = promise.mints ?? '';
+        const key = `${project.key}:pending:${promise.id}`;
+        const under = pendingByParent.get(id) ?? [];
+        const shown = !collapsed.has(key);
+        const file = exportOfNodeId(id);
+        const node = pendingStepOf(promise);
+        /*
+         * WHAT THE CARD SAYS WHILE IT WAITS. The dot is the host row's own
+         * vocabulary — `hostRow` passes four states straight onto four of the dot's
+         * six — and a HELD row wears the queued one: standalone every text pass is
+         * born held, waiting on a person rather than on the machine, and that is a
+         * distinction the SHELF draws rather than the tree. The right-hand slot says
+         * the same word, with the count where the engine has given one.
+         */
+        const dot: DotState = promise.state === 'running'
+          ? 'running'
+          : promise.state === 'failed' ? 'failed' : 'queued';
+        const percent = promise.progress === null || promise.progress.total <= 0
+          ? null
+          : Math.round((promise.progress.page / promise.progress.total) * 100);
+        const state = promise.state === 'failed'
+          ? 'failed'
+          : promise.state === 'running'
+            ? (percent === null ? 'running' : `running ${percent}%`)
+            : 'queued';
+        rows.push({
+          ...blank,
+          key,
+          // A FILE PROMISE IS AN `export` ROW, on the facsimile's precedent: a
+          // `RowKind` per product would be four template branches to say one thing,
+          // and everything this card does — open nothing, take the selection, offer
+          // the host's acts — is what that kind already means.
+          kind: file !== null ? 'export' : 'step',
+          path: file !== null ? promise.outputPath : project.dir,
+          // WHAT `titleForStep` WILL SAY ONCE IT LANDS, out of the same function
+          // that will say it — so the card does not change its wording when the
+          // promise becomes a fact. A promise carries no params, so a translation
+          // reads "Translated" without the tag it will wear later; that is the
+          // honest amount for a promise to claim (`pendingStepOf`).
+          title: node !== null
+            ? titleForStep(node)
+            : exportLabel(EXPORT_LABEL_OF[promise.kind] ?? 'epub'),
+          state,
+          icon: node !== null ? iconForStep(node) : 'ft-out',
+          tint: node !== null ? 'text' : 'plain',
+          dot,
+          // THE ONE THING A PERSON HAS TO KNOW ABOUT THIS CARD, said where a card in
+          // this panel says everything else about itself. The engine's own sentence
+          // rides underneath when the run failed.
+          tooltip: `${state} — this is not a step of this book yet. It is here because the queue is `
+            + 'going to make it, and if that work leaves the queue this card and everything under '
+            + `it go with it.${promise.error === undefined ? '' : `\n${promise.error}`}`,
+          why: promise.state === 'failed' ? promise.error ?? null : null,
+          depth,
+          dir: project.dir,
+          step: node,
+          promise,
+          // WHAT CAN BE MADE FROM HERE — a promised step produces the words of a
+          // book exactly as the landed one will, and a promised EPUB is the file a
+          // host act consumes. `hasBook` is the test every real card in this book is
+          // drawn by: a promise cannot make a book out of a project that has none.
+          produces: node !== null
+            ? (hasBook ? 'book' : null)
+            : (promise.kind === 'epub' ? 'export' : null),
+          madeFrom: file !== null ? promise.parentStep ?? null : null,
+          nodeId: file !== null ? id : null,
+          current: id === standing,
+          planned: true,
+          expanded: under.length === 0 ? null : shown,
+        });
+        if (!shown) return;
+        for (const kid of under) walkPending(kid, depth + 1);
+      };
+
       const emitExport = (row: Row, depth: number): void => {
         const jobs = row.nodeId === null ? [] : hostedOnExports.get(row.nodeId) ?? [];
         const shown = !collapsed.has(row.key);
@@ -2472,8 +2627,10 @@ export class OpenDocumentsComponent {
        * which cannot happen, because a step with an export under it is itself a
        * child of the root.
        */
+      const rootPending = origin === null ? [] : pendingByParent.get(origin.id) ?? [];
       const rootHasChildren =
-        rootKids.length + rootHostNodes.length + orphanExports.length + extras.length > 0;
+        rootKids.length + rootHostNodes.length + orphanExports.length + extras.length
+        + rootPending.length > 0;
       const rootOpen = !collapsed.has(rootKey);
       const rows: Row[] = [{
         ...blank,
@@ -2548,6 +2705,18 @@ export class OpenDocumentsComponent {
            */
           for (const made of exportsByStep.get(step.id) ?? []) emitExport(made, depth + 1);
           /*
+           * AND WHAT THE QUEUE HAS PROMISED FROM THIS PLACE — after everything that
+           * has actually happened, and before the host's own work.
+           *
+           * THE ORDER IS THE ONE THE HOST'S NODES ALREADY ARGUE FOR: *"the ledger's
+           * children are things that HAVE happened to the words, and a host node is
+           * most often the thing that has not happened yet."* A promise is that same
+           * kind of claim about Foundry's own work, so it sits with the plans rather
+           * than with the record — and above the host's, because the host's work is
+           * usually made FROM one of these.
+           */
+          for (const promise of pendingByParent.get(step.id) ?? []) walkPending(promise, depth + 1);
+          /*
            * THE HOST'S OWN WORK, AFTER THE STEPS MADE FROM THE SAME PLACE.
            *
            * Last rather than first, and it is the honest order: the ledger's
@@ -2561,6 +2730,11 @@ export class OpenDocumentsComponent {
           }
         };
         for (const step of rootKids) walk(step, 1);
+        // The promises made from the IMPORT ROW itself — rare, because there is
+        // nothing to clean before a book has been read — and drawn for the reason
+        // the stranded steps are: a card that exists and is on nobody's screen
+        // cannot be clicked, selected or taken out of the queue.
+        for (const promise of rootPending) walkPending(promise, 1);
         for (const node of rootHostNodes) {
           rows.push(hostRow(project, node, parentNameOf(project, origin), 1));
         }
@@ -2666,6 +2840,25 @@ export class OpenDocumentsComponent {
     const dir = row.dir;
     const out: Act[] = [];
     /*
+     * ── IS THIS CARD A PROMISE — the one fact every tile below inherits ───────
+     *
+     * Owen: *"the export epub tile is grayed out until ai cleanup finishes."* Every
+     * act offered from a promised row is itself deferred: it is planned now, queued
+     * now, and cannot start until the row it is made from lands. So the answer is
+     * taken once, from the card, and spread onto each act rather than re-derived per
+     * tile — which is this file's own standing habit (`hasBook` two hundred lines
+     * up) and is what keeps a fourth act from arriving without it.
+     *
+     * THE HINT SAYS WHAT THE DIM MEANS, in the card's own words. A tile that were
+     * merely faint would read as broken; one that says "Runs after Cleaned for
+     * narration finishes" is describing a queue.
+     */
+    const waiting = row.promise !== null;
+    const after = (hint: string): Pick<Act, 'hint' | 'deferred'> => ({
+      hint: waiting ? `${hint} — runs after “${row.title}” finishes` : hint,
+      deferred: waiting,
+    });
+    /*
      * FOUNDRY'S OWN ACTS ARE OFFERED FROM A POSITION — a root or a step, never an
      * export row and never a host's node. An export is terminal in this app's own
      * pipeline (*"it wont go into the working files as a step because it isnt the
@@ -2704,7 +2897,7 @@ export class OpenDocumentsComponent {
         out.push({
           id: 'read', label: 'Read the pages', icon: 'ft-scan', audio: false, host: null,
           form: false,
-          hint: 'Read this book\u2019s pages with the vision model \u2014 everything else is made from it',
+          ...after('Read this book\u2019s pages with the vision model \u2014 everything else is made from it'),
         });
       }
       /*
@@ -2721,12 +2914,12 @@ export class OpenDocumentsComponent {
        */
       if (canTranslateFrom(project, at)) {
         out.push({ id: 'translate', label: 'Translate', icon: 'ft-globe', audio: false, host: null,
-          form: false, hint: 'Translate what this node holds into another language' });
+          form: false, ...after('Translate what this node holds into another language') });
       }
       if (canSimplifyFrom(project, at)) {
         out.push({ id: 'simplify', label: 'Simplify', icon: 'ft-spark', audio: false, host: null,
           form: false,
-          hint: 'Say this again in its own language: plainer, more natural, or for a learner' });
+          ...after('Say this again in its own language: plainer, more natural, or for a learner') });
       }
       /*
        * AND CLEAN TEXT, HOSTED ONLY — the tile's own rule, said again here because
@@ -2738,11 +2931,11 @@ export class OpenDocumentsComponent {
       if (hosted() && canCleanFrom(project, at)) {
         out.push({ id: 'clean', label: 'Clean text', icon: 'ft-wave', audio: false, host: null,
           form: false,
-          hint: 'Say this again with the punctuation and typography a narrator can read aloud' });
+          ...after('Say this again with the punctuation and typography a narrator can read aloud') });
       }
       if (canExportFrom(project, at)) {
         out.push({ id: 'export', label: 'Export', icon: 'ft-out', audio: false, host: null,
-          form: false, hint: 'Make the finished book from this node' });
+          form: false, ...after('Make the finished book from this node') });
       }
     }
     /*
@@ -2775,7 +2968,7 @@ export class OpenDocumentsComponent {
         audio: true,
         host: offer.id,
         form: offer.form !== undefined,
-        hint: `${offer.label} — handled by the app Foundry is running inside`,
+        ...after(`${offer.label} — handled by the app Foundry is running inside`),
       });
     }
     return out;
@@ -2866,6 +3059,27 @@ export class OpenDocumentsComponent {
     if (row.kind === 'root' || row.kind === 'step') {
       this.picked.set(row.key);
       void this.stand(row);
+      return;
+    }
+    /*
+     * A PROMISED FILE TAKES THE SELECTION AND OPENS NOTHING.
+     *
+     * Owen: *"i can click the grayed out exported epub and click narrate."* The
+     * selection is the whole of what that press needs — it unrolls the footer the
+     * host's acts live in, exactly as a landed export row's press does. What it must
+     * NOT do is the rest of an export row's press: the file is not on the disk yet,
+     * so `openExportView` would put a proof sheet over a path that does not exist and
+     * `reveal` would open a folder to show nothing.
+     *
+     * AND IT LETS GO OF THE POSITION, because a file is not a place to stand. If the
+     * person was standing on the promised cleanup this export hangs under, they have
+     * now clicked away from it — the same thing a click on a landed export means.
+     * What the press SENDS is unaffected: `nodeIdFor` reads the row's own
+     * `export:<file>` id, and main resolves which queue row is going to make it.
+     */
+    if (row.promise !== null) {
+      this.picked.set(row.key);
+      this.ledger.releasePromise();
       return;
     }
     /*
@@ -3225,6 +3439,30 @@ export class OpenDocumentsComponent {
    */
   private async stand(row: Row, asked = false): Promise<boolean> {
     if (row.dir === null || row.step === null) return true;
+    /*
+     * ── A PROMISE IS STOOD ON IN THIS WINDOW AND NOWHERE ELSE ────────────────
+     *
+     * Owen: *"i click the grayed out row and hit the export epub tile."* Clicking a
+     * promised card has to make the tiles and the dialogs answer for it, and it must
+     * not send `ledger:go`: main refuses a step that does not exist, and is right
+     * to — the pointer names a row of a file, and a promise is not in the file
+     * (`LedgerService.standOnPromise`).
+     *
+     * NO UNAPPLIED CARD, AND THAT IS THE DIFFERENCE THAT EARNS THE EARLY RETURN.
+     * The card below exists because moving the pointer LOSES the book pane's
+     * unapplied stack — the stack is a delta against the step it was made on, and it
+     * cannot travel. Standing on a promise moves no pointer and changes no pane:
+     * the viewer keeps whatever it was showing, because there is no book at a step
+     * nothing has made yet. Nothing is at risk, so nothing is asked — raising a card
+     * about losing work here would be the app inventing a cost to warn about.
+     */
+    if (row.promise !== null) {
+      // The workspace has to be on screen for a selection to mean anything — the
+      // same reason a document row navigates, one branch down.
+      void this.router.navigateByUrl('/');
+      this.ledger.standOnPromise(row.dir, row.step.id);
+      return true;
+    }
     if (!asked && this.ledger.standingIn(row.dir)?.id !== row.step.id
       && !await this.unapplied.cleared(row.dir, 'stand')) return false;
     // A position is a thing to LOOK at, so the workspace has to be on screen for
@@ -3804,6 +4042,22 @@ interface Act {
   form: boolean;
   /** The hover sentence — the only place a footer button explains itself. */
   hint: string;
+  /**
+   * TRUE WHEN THIS TILE ACTS ON A ROW THAT HAS NOT LANDED — dimmed, and still
+   * pressable.
+   *
+   * ── Owen's ruling is that both halves are true at once ────────────────────
+   *
+   * *"the export epub tile is grayed out until ai cleanup finishes"* AND *"i click
+   * the grayed out row and hit the export epub tile."* A tile that were merely
+   * disabled would satisfy the first sentence and make the second impossible, and
+   * this panel's standing rule is the opposite of a disabled button anyway: *"a
+   * button whose only possible outcome is a refusal is not drawn"* (shared/stages.ts).
+   * The press here has a possible outcome — the export is planned, queued and made
+   * the moment the cleanup lands — so the tile is drawn, is live, and says by being
+   * dim that what it starts will not start now.
+   */
+  deferred: boolean;
 }
 
 const NO_ACTS: readonly Act[] = [];
@@ -3924,6 +4178,26 @@ interface Row {
   stale: boolean;
   /** True for a node that has not happened yet: dashed line, hollow dot. */
   planned: boolean;
+  /**
+   * THE QUEUE ROW THAT IS GOING TO LAND THIS CARD, for a promise — null on every
+   * card that is a record of something that happened.
+   *
+   * ── Why the row and not just `planned` ─────────────────────────────────────
+   *
+   * `planned` is a DRAWING fact and has been since the host's queued nodes needed a
+   * dashed line; three surfaces need more than that. Standing on a promise names
+   * its step to `LedgerService.standOnPromise`, which needs the id the row will
+   * mint. The footer's tiles say what they are waiting for. And `stand` has to know
+   * not to send `ledger:go`, which main refuses for a step that does not exist —
+   * correctly, because the pointer names a row of a file.
+   *
+   * A HOST NODE IS NOT ONE OF THESE. It carries `planned` too and its work belongs
+   * to somebody else's queue entirely; what it has instead is `node`, which is the
+   * host's own record. Two fields because they are two different queues, and a card
+   * that could be either would be a card whose ✕, whose tiles and whose selection
+   * mean two things.
+   */
+  promise: Job | null;
   /** Null when the card can never have children; otherwise whether it is open. */
   expanded: boolean | null;
   /** File rows only: false for a missing file and for `.txt`. */
@@ -3989,6 +4263,7 @@ const blank = {
   onTheShelf: false,
   stale: false,
   planned: false,
+  promise: null,
   expanded: null,
   focused: false,
   lanes: [],
@@ -4365,6 +4640,23 @@ function titleForStep(step: LedgerStep): string {
      */
     case 'clean':
       return 'Cleaned for narration';
+    /*
+     * ── AND THE FIFTH, WHICH ONLY A PROMISE CAN REACH ────────────────────────
+     *
+     * The comment above is still right about every simplify that has LANDED: it
+     * carries `rewrite`, `translateSentence` says which of the three it was, and
+     * the default is where it belongs. A PROMISED one carries no params at all —
+     * a pending step is built from a queue row, and the row's mode lives in a
+     * sentence ("Simplify — plain terms"), which is the one thing this codebase
+     * never reads a fact back out of (`pendingStepOf`, shared/pending.ts).
+     *
+     * So a params-less simplify would fall to the default and draw as
+     * "Translated", which is the exact deception Owen named about the cleanup one
+     * wave ago. It says the act instead, without the mode it cannot yet claim, and
+     * gains the mode the moment the run lands and the card becomes real.
+     */
+    case 'simplify':
+      return step.params?.rewrite === undefined ? 'Simplified' : translateSentence(step.params);
     default:
       return translateSentence(step.params);
   }
@@ -4477,6 +4769,24 @@ function parentTitleOf(step: LedgerStep, steps: readonly LedgerStep[], bookTitle
  * AND IT IS THE ONLY PLACE IN THIS PANEL THE WORD "EPUB" APPEARS. The working
  * document is the Book; EPUB means finished (docs/WORKBENCH.md §6c, Naming).
  */
+/**
+ * A PROMISED EXPORT'S JOB KIND, AS THE CATALOGUE'S OWN KIND.
+ *
+ * The three members are the same three strings (`ConversionKind` and
+ * `ProjectDocumentKind` are spelled identically and always have been), and this
+ * table exists so that the identity is asserted once rather than cast at the call
+ * site: a `JobKind` also holds `read`, `mint`, `analysis` and `env-install`, none of
+ * which is ever a promised export, and a cast would have claimed otherwise silently.
+ * `undefined` for those is a promise the caller draws as an EPUB, which it cannot
+ * be — nothing but a rendering carries `mints` at all (`mintsOf`,
+ * electron/job-queue.ts).
+ */
+const EXPORT_LABEL_OF: Readonly<Partial<Record<Job['kind'], ProjectDocumentKind>>> = {
+  epub: 'epub',
+  txt: 'txt',
+  pdf: 'pdf',
+};
+
 function exportLabel(kind: ProjectDocumentKind): string {
   if (kind === 'epub') return 'EPUB';
   if (kind === 'txt') return 'Plain text';

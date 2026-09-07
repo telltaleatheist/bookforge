@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **c93004f** — *fix(app): every export carries the plan through one function, and a cleanup's card says so* |
-| Copied on | 2026-09-05 |
-| Copied by | `git -C <foundry> archive c93004f app | tar -x --strip-components=1` |
+| Source sha | **688c888** — *feat(app): a queued act draws where it will land — pending nodes, chains on them, and the cascade (Wave 56)* |
+| Copied on | 2026-09-07 |
+| Copied by | `git -C <foundry> archive 688c888 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -905,3 +905,16 @@ The compiled main-process code runs on **BookForge's** Electron. The subtree
 declares `electron ^33` as a devDependency (types at build time, plus a binary
 `npm install` fetches that nobody here runs) and BookForge is on Electron 33 —
 they match, so the devDep is left exactly as Foundry ships it.
+
+**688c888 (copied 2026-09-07) — PENDING NODES AND CHAINS (Wave 56), Owen's ruling of the
+same night:** a queued act draws a GREYED node where its output will land, derived FROM THE
+QUEUE ROW (nothing minted or stored: the row IS the node, `row.mints` is the ledger step id it
+will land under, `row.after` the row it waits on, `row.forStep` an export's step); acts pressed
+on a pending node chain onto it (`request.after` = the pending row id, `deferred: {from}` plans
+re-planned at spawn inside runJob); a removed/cancelled/failed row takes every node under it.
+Four plan doors gained a trailing optional `from` arg; NO IPC channel added or renamed (108
+handles). New `HostInvokeContext.pendingRow` when a narrate is ordered from a pending export
+node. Foundry's own standalone queue carries the same hold/cascade. The host half is BookForge
+bac5b3d1 (`FoundryJobRequest.after` → `appendStep` onto the followed row's run;
+`queue-engine.removeStep`; `clearFinished` holds a settled root over a pending subtree).
+17 files, 139 blobs hash-verified, no dep movement.

@@ -1,11 +1,13 @@
-import { Injectable, inject, signal } from '@angular/core';
+import { Injectable, computed, inject, signal } from '@angular/core';
 
 import { positionOf } from '@shared/ledger';
 import { fold } from '@shared/original';
-import type { LedgerStep, ProjectLedger, StepRow } from '@shared/types';
+import { admitPending, pendingStepOf, rowMinting, withPending } from '@shared/pending';
+import type { Job, LedgerStep, ProjectLedger, StepRow } from '@shared/types';
 
 import { ConfirmService } from './confirm.service';
 import { api } from './foundry';
+import { QueueService } from './queue.service';
 
 /**
  * One project's history, as this window holds it.
@@ -91,6 +93,97 @@ interface Holding {
 @Injectable({ providedIn: 'root' })
 export class LedgerService {
   private readonly confirm = inject(ConfirmService);
+  /**
+   * The queue, read for ONE question: which promises is this window standing among?
+   *
+   * ── Why a mirror of the ledger reads a mirror of the queue ─────────────────
+   *
+   * Owen, 2026-09-07: *"if i queue cleanup, i want a grayed out step to appear where
+   * the item will be when it finishes … i should be able to run jobs against the
+   * grayed out row."* A promised step is a POSITION — the tiles answer for it, the
+   * dialogs plan under it, the tree draws its children beneath it — and this class
+   * is where every surface in the window asks what the position is. Putting the
+   * promise anywhere else would have meant twenty callers of `standingIn` learning
+   * about a second kind of standing, and nineteen of them getting it right.
+   *
+   * IT IS STILL A MIRROR AND STILL STORES NOTHING. The queue rows are the record
+   * (shared/pending.ts holds that argument in full); this composes them into the
+   * shape a position question wants and keeps one signal of its own — WHICH promise
+   * the person clicked, which is a fact about a press and exists nowhere else.
+   *
+   * `QueueService` DEPENDS ON NOTHING, so the arrow does not run back: it is a
+   * signal set from `queue:changed` and a handful of computeds over it.
+   */
+  private readonly queue = inject(QueueService);
+
+  /**
+   * THE PROMISE THIS WINDOW IS STANDING ON, as the person asked for it.
+   *
+   * SESSION-ONLY, ONE AT A TIME, AND CLEARED BY STANDING ANYWHERE REAL — see `go`,
+   * which drops it, and `standing` below, which validates it. The project rides
+   * with the id on `StageService.second`'s reasoning exactly: an id alone cannot say
+   * whether the wish is still about the book in front of the person.
+   */
+  private readonly aim = signal<{ projectDir: string; stepId: string } | null>(null);
+
+  /**
+   * THE PROMISE, VALIDATED — null unless a live queue row is still going to land it.
+   *
+   * ── Three clearing rules, none of which anybody has to remember ────────────
+   *
+   * THE ROW LANDED. `rowMinting` answers only for a row that is still going to land
+   * something, so the moment the cleanup finishes this is null — and the ordinary
+   * position takes over, standing on that very step, because a text pass moves the
+   * pointer onto itself (`RETAINED_BESIDE_YOU`). The aim is discharged by being
+   * kept: the person does not move, the row under them merely becomes real.
+   *
+   * THE ROW LEFT THE QUEUE. Owen's cascade — the card goes from the tree in the same
+   * repaint, and this answers null rather than leaving the dialogs aimed at a step
+   * nothing will ever make.
+   *
+   * THE PERSON STOOD SOMEWHERE ELSE. `go` clears it, because standing on a real row
+   * is the gesture that means "not there any more".
+   *
+   * IT IS A COMPUTED FOR `StageService.secondColumn`'s REASON: a signal somebody has
+   * to clear has three call sites to keep true, and derived state has none.
+   */
+  private readonly promise = computed<{ projectDir: string; step: LedgerStep; row: Job } | null>(() => {
+    const wish = this.aim();
+    if (wish === null) return null;
+    const row = rowMinting(this.queue.jobs(), wish.stepId);
+    if (row === null) return null;
+    const step = pendingStepOf(row);
+    return step === null ? null : { projectDir: wish.projectDir, step, row };
+  });
+
+  /**
+   * Stand on a promise — the tree's press on a grayed card.
+   *
+   * NOTHING IS SENT TO MAIN, which is the whole difference from `go`. Main refuses
+   * `ledger:go` to a step that does not exist and is right to: the pointer names a
+   * row of a file, and a promise is not in the file. So the standing splits for as
+   * long as the promise lasts — the LEDGER goes on pointing at the last real row,
+   * and this window aims one step further down.
+   *
+   * AND THE DOCUMENT PANE DOES NOT MOVE. There is no book at a promised step —
+   * nothing has made one — so there is nothing to show, and clearing the pane would
+   * take away the page somebody was reading as the price of clicking a card. The
+   * viewer keeps whatever it had; the tree's card is where the selection shows.
+   */
+  standOnPromise(projectDir: string, stepId: string): void {
+    this.aim.set({ projectDir, stepId });
+  }
+
+  /**
+   * Let go of the promise — a press on any card that is not one.
+   *
+   * CALLED RATHER THAN DERIVED, unlike the three rules above, because this one is
+   * not a fact about the world: the promise is still live and still drawn, and what
+   * changed is that the person is looking at something else. Only a press knows.
+   */
+  releasePromise(): void {
+    this.aim.set(null);
+  }
 
   /** Keyed by the folded directory, because on Windows one path arrives spelled three ways. */
   private readonly held = signal<ReadonlyMap<string, Holding>>(new Map());
@@ -160,10 +253,117 @@ export class LedgerService {
     return this.holdingFor(projectDir)?.problem ?? null;
   }
 
-  /** The step the pointer stands on, for a surface that wants to name it. */
+  /**
+   * The step the window is standing on — THE PROMISE WHERE THERE IS ONE, and the
+   * ledger's own pointer otherwise.
+   *
+   * ── Why the promise wins here, at the one function everything asks ─────────
+   *
+   * Because "what can be done from here" is asked of this by the tiles
+   * (`canTranslateFrom` and its four siblings), by the four dialogs' own refusals,
+   * by the metadata gate and by the tree's own selection highlight — and Owen's
+   * ruling is that all of them must answer for the grayed card once it is clicked.
+   * Returning the pointer instead would light the tiles for the step BELOW the
+   * promise, which is the row the export would then be made from: the silent wrong
+   * book this whole wave exists to prevent.
+   *
+   * A SYNTHETIC STEP IS SAFE FOR EVERY READER OF THIS, and that is measured rather
+   * than assumed: the predicates read `action` and `parent` (shared/stages.ts), the
+   * gates compare `action` against `'import'`, the tree compares `id`, and the
+   * compare picker excludes it from a list of real rows — which it is not in, so it
+   * offers all of them, which is right. Nothing reads `payload`, which is the one
+   * field a promise cannot have.
+   *
+   * IT IS THE POSITION FOR EVERY PROJECT BUT THE ONE AIMED AT, so a window standing
+   * on a promise in one book answers ordinarily about every other.
+   */
   standingIn(projectDir: string | null): LedgerStep | null {
+    const promise = this.promise();
+    if (promise !== null && projectDir !== null && fold(promise.projectDir) === fold(projectDir)) {
+      return promise.step;
+    }
     const history = this.historyFor(projectDir);
     return history === null ? null : positionOf(history.ledger);
+  }
+
+  /**
+   * THE ROW BEHIND THE PROMISE the window is standing on in this project, or null.
+   *
+   * What a HOST ACT has to name to chain onto (`HostInvokeContext.pendingRow` is
+   * composed in main, but the tree needs the same fact to know it is ordering from a
+   * promise at all), and what the "Runs after …" wording on a dimmed tile is spelled
+   * from. Kept beside `standingIn` rather than folded into it because they are two
+   * questions — where am I, and what am I waiting for — and `Standing`
+   * (shared/pending.ts) argues why they must not be read apart.
+   */
+  promiseIn(projectDir: string | null): Job | null {
+    const promise = this.promise();
+    if (promise === null || projectDir === null) return null;
+    return fold(promise.projectDir) === fold(projectDir) ? promise.row : null;
+  }
+
+  /**
+   * WHAT A PLAN ORDERED IN THIS PROJECT SHOULD BE AIMED AT — the `from` argument of
+   * the four plan doors, and undefined for the ordinary press.
+   *
+   * ── It is sent for a promise and for nothing else ──────────────────────────
+   *
+   * A press on a LANDED card already moves the pointer (`stand`, the tree), so the
+   * position and the aim are the same row and a second mechanism saying so would be
+   * a second thing that can disagree. Every press this app had before this wave
+   * therefore reaches main exactly as it did, and `from` appears on the wire in one
+   * shape only: the one where the pointer could not follow.
+   */
+  aimedAt(projectDir: string | null): string | undefined {
+    return this.promiseIn(projectDir)?.mints;
+  }
+
+  /**
+   * EVERY LIVE PROMISE ABOUT THIS BOOK, in queue order, with the orphans dropped —
+   * the rows the tree draws grayed and the walks walk through.
+   *
+   * BY THE PRODUCT'S PATH, whole path against whole path with the separator
+   * appended: this codebase's oldest house rule, and it matters because the queue is
+   * one global list across every book on the machine.
+   */
+  promisesIn(projectDir: string | null): Job[] {
+    const history = this.historyFor(projectDir);
+    if (projectDir === null) return [];
+    const root = fold(projectDir);
+    const mine = this.queue.jobs().filter((job) => fold(job.outputPath).startsWith(`${root}/`));
+    return admitPending(history?.ledger ?? null, mine);
+  }
+
+  /**
+   * THE LEDGER WITH THIS BOOK'S PROMISES IN IT — what every `…InEffect` walk in the
+   * renderer should be asked of.
+   *
+   * ── Why the composition and not an extra parameter on five walks ───────────
+   *
+   * `withPending` carries the argument (shared/pending.ts): the walks resolve a
+   * parent by looking it up in `ledger.steps`, so a ledger that HOLDS the promises
+   * makes every one of them answer through a promised chain with no signature
+   * changed and no call site taught anything. The alternative was threading an
+   * `extra` argument through five exported functions and their callers, which is
+   * five chances to pass it in four places.
+   *
+   * WHAT IT FIXES ON THIS SIDE is small and sharp: the Export dialog asks whether a
+   * translation is in effect, and the Translate dialog asks which language the
+   * source is in. Standing on a promised cleanup, both walk THROUGH it to the
+   * translation above and answer as they would once it lands — which is the same
+   * answer main will give when it re-plans, and the point of composing the ledger in
+   * one place on each side.
+   *
+   * NULL WHILE THE HISTORY IS IN FLIGHT, exactly as `historyFor` is: a promise
+   * hanging off a ledger this window has not read is not drawn and not walked.
+   */
+  ledgerIn(projectDir: string | null): ProjectLedger | null {
+    const history = this.historyFor(projectDir);
+    if (history === null) return null;
+    const steps = this.promisesIn(projectDir)
+      .map(pendingStepOf)
+      .filter((step): step is LedgerStep => step !== null);
+    return withPending(history.ledger, steps);
   }
 
   /*
@@ -255,6 +455,14 @@ export class LedgerService {
    */
   async go(projectDir: string, stepId: string): Promise<void> {
     if (!api) return;
+    /*
+     * AND IT LETS GO OF THE PROMISE, because standing on a real row is the gesture
+     * that means "not there any more". Before the await rather than after: the
+     * pointer is what this window is about to be standing on, and leaving the aim up
+     * for a round trip would mean the tiles answering for the promise while the
+     * position moved out from under them.
+     */
+    this.releasePromise();
     this.paint(projectDir, await api.ledger.go(projectDir, stepId));
   }
 
