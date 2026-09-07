@@ -105,7 +105,19 @@ export type JobType =
    * Foundry still EXECUTES it. This engine decides when (see
    * electron/queue-steps/foundry-job.ts, and foundry-host-queue.ts for the seam).
    */
-  | 'foundry-job';
+  | 'foundry-job'
+  /**
+   * HAND A FOUNDRY EXPORT TO THE NARRATION WHEN IT LANDS.
+   *
+   * Owen, 2026-09-07: "i can click the grayed out exported epub and click
+   * narrate. then send narration and assembly to the queue." The export does not
+   * exist when Narrate is pressed, so the run cannot name the file it will read;
+   * this row sits UNDER the export's Foundry row and, once that lands, finds the
+   * version the library filed for it (`registerFoundryExportLanding`) and hands
+   * the narration an `epub` artifact — the same thing a pressed export row would
+   * have been. CPU, seconds, no engine: it waits and it looks up.
+   */
+  | 'foundry-export-landing';
 
 /** The job types that are processing passes, for a runtime membership test. */
 export const PASS_JOB_TYPES: ReadonlySet<JobType> = new Set<JobType>([

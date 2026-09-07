@@ -166,6 +166,7 @@ const SUITES = [
   'test-foundry-narrate-target',
   'test-foundry-landing',
   'test-foundry-adopt',
+  'test-foundry-export-landing',
   'test-legacy-migration',
   'test-legacy-bilingual-manifest',
   'test-retired-engine-settings',

@@ -171,6 +171,15 @@ export interface NarrationRunBook {
    * they are what the bridges resolve a session and an output folder from.
    */
   readonly isArticle: boolean;
+  /**
+   * THE VERSION IS MINTED BY A STEP THAT HAS NOT RUN — a narration ordered from a
+   * pending export (Owen, 2026-09-07). `variantId` is then '' by necessity, and
+   * the run is chained under this step (a `foundry-export-landing` row), whose
+   * artifact carries the file and the version when the export lands. The TTS
+   * step reads its parent's artifact, so `epubPath` here is the file the export
+   * will be, named for the row and never opened by this description.
+   */
+  readonly landing?: { readonly jobId: string; readonly stepId: string };
 }
 
 /** Everything the user chose about HOW it is read and assembled. */
@@ -511,12 +520,18 @@ export function requireNarrationRun(
       + 'nowhere to put the rendered sentences or the finished audiobook.'
     );
   }
-  if (!book.variantId) {
+  if (!book.variantId && book.landing === undefined) {
     throw new Error(
       `Cannot queue narration for ${book.epubPath}: it does not say which version of the book it `
       + 'is. The version comes from the Process button on that row, exactly as the file does — a '
       + 'run that could not name it would ask the project about "the book" and act on whichever '
       + 'version the code reached first.'
+    );
+  }
+  if (book.landing !== undefined && (!book.landing.jobId || !book.landing.stepId)) {
+    throw new Error(
+      `Cannot queue narration for ${book.epubPath}: it says its version is minted by a landing `
+      + 'step but does not name the step, so there is nothing to chain the run under.'
     );
   }
   if (!settings.voice) {

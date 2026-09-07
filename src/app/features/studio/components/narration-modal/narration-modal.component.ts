@@ -852,6 +852,12 @@ export class NarrationModalComponent {
   readonly outputFilename = input<string>('');
   readonly isArticle = input<boolean>(false);
   /**
+   * THE EXPORT THIS RUN READS HAS NOT LANDED — see `NarrateTarget.pending`. The
+   * run is chained under the named landing step, no file is probed, and the
+   * cleanup answer is Foundry's for the position.
+   */
+  readonly pending = input<{ jobId: string; stepId: string; cleaned: boolean } | undefined>(undefined);
+  /**
    * WHICH DOOR opened this — see `NarrationEntryContext`.
    *
    * `required` and never defaulted: it decides whether this run is allowed to
@@ -1644,6 +1650,9 @@ export class NarrationModalComponent {
         coverPath: this.coverPath(),
         outputFilename: this.outputFilename(),
         isArticle: this.isArticle(),
+        ...(this.pending() === undefined
+          ? {}
+          : { landing: { jobId: this.pending()!.jobId, stepId: this.pending()!.stepId } }),
       };
 
       /*
@@ -1682,7 +1691,27 @@ export class NarrationModalComponent {
        */
       let textCleanup: NarrationTextCleanupChoice = 'required';
       let runCleanupFirst = false;
-      if (this.narrate()) {
+      const pending = this.pending();
+      if (this.narrate() && pending !== undefined) {
+        /*
+         * THE FILE CANNOT BE ASKED — it does not exist yet. Foundry's answer for
+         * the POSITION (`cleaned`) is the only source, and it is decisive here
+         * rather than a hint: a pending export from a chain with no cleanup in
+         * front of it would reach the render door hours from now as an unstamped
+         * file with `textCleanup: 'required'` and be refused there, unattended.
+         * Refusing NOW, by name, is the same answer said while someone is
+         * looking. Offering to run the cleanup first is not possible: the pass
+         * would be asked to clean a file that is not there.
+         */
+        if (!pending.cleaned) {
+          throw new Error(
+            'This export is queued from a step with no narration text cleanup in front of it, so '
+            + 'the book it will produce would be read as printed. Nothing was queued. Run Clean '
+            + 'text on the step first and press Narrate on the export that follows it — or wait '
+            + 'for this export to land and press Narrate on it then, when the cleanup can be '
+            + 'offered.');
+        }
+      } else if (this.narrate()) {
         const readiness = await this.electron.narrationTextReadiness(
           book.projectDir, book.epubPath, undefined);
         if (!readiness.success) {
@@ -1853,6 +1882,8 @@ export class NarrationModalComponent {
         metadata: { title: book.title, author: book.author },
         config: { type: 'audiobook' },
         workflowId,
+        // Under the landing step of a pending export, when that is what was pressed.
+        ...(book.landing === undefined ? {} : { chainAfter: book.landing }),
       });
       for (const job of jobs) {
         await this.queue.addJob({ ...job, workflowId, parentJobId: master.id });

@@ -157,6 +157,7 @@ import { DialogService } from './creamsicle-desktop/services/dialog.service';
         [coverPath]="r.target.coverPath"
         [outputFilename]="r.target.outputFilename"
         [isArticle]="r.target.isArticle"
+        [pending]="r.target.pending"
         (cancelled)="narrationDialog.close()"
         (queued)="onNarrationQueued($event)"
       />

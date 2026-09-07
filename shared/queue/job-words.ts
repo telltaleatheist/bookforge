@@ -58,6 +58,7 @@ export const JOB_GERUND: Record<JobType, string> = {
   // engine is doing at that moment is making the book — the row's own title
   // carries which act it is.
   'foundry-job': 'Making',
+  'foundry-export-landing': 'Waiting for',
 };
 
 /** What a finished job of this type produced — the tray card's kicker. */
@@ -86,4 +87,5 @@ export const JOB_PRODUCT: Record<JobType, string> = {
   // read leaves the bank, a rendering leaves the file, a translate leaves the
   // records. Each is a page of the book the window is making.
   'foundry-job': 'Foundry work',
+  'foundry-export-landing': 'exported book',
 };

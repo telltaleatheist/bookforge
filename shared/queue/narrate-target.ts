@@ -46,4 +46,22 @@ export interface NarrateTarget {
    * folder from.
    */
   readonly isArticle: boolean;
+  /**
+   * THE EXPORT DOES NOT EXIST YET — Narrate was pressed on a PENDING export node
+   * (Owen, 2026-09-07: "i can click the grayed out exported epub and click
+   * narrate"). `epubPath` above is then the file the export WILL be (Foundry's
+   * deterministic output name) and `variantId` is '' — there is no version to
+   * name until the export lands. The run is chained under `stepId`, a
+   * `foundry-export-landing` row main appended beneath the export's queue row:
+   * it waits for the landing to be recorded and hands the narration the
+   * version's file, so the TTS step reads what that step produced rather than
+   * anything written here. `cleaned` is Foundry's own answer for the position
+   * (`HostInvokeContext.cleaned`), which is the only source there is when the
+   * file cannot be asked.
+   */
+  readonly pending?: {
+    readonly jobId: string;
+    readonly stepId: string;
+    readonly cleaned: boolean;
+  };
 }

@@ -68,6 +68,7 @@ import { addVariant, importAudiobookProject, promoteVariantToArchive, saveVarian
 // The export-landing act, shared with the tray sweep that files the exports no
 // announcement ever caught — see electron/foundry-export-sweep.ts.
 import { FOUNDRY_EXPORT_KINDS, fileFoundryExportAsVersion, sweepFoundryExportTrays } from './foundry-export-sweep';
+import { noteFoundryLandingAnnounced } from './foundry-landing-wait';
 // How a Foundry project becomes a book of ours — BOTH doors. The live import
 // announcement below is a three-line wrapper around the same act the manual
 // "Adopt a Foundry project" door performs, so the two cannot produce different
@@ -112,6 +113,7 @@ import {
 // it, preload carries it and the renderer opens on it.
 import type { NarrateTarget } from '../shared/queue/narrate-target';
 import type { QueueJob, QueueStep } from '../shared/queue/engine-types';
+import { TERMINAL_STEP_STATUSES } from '../shared/queue/engine-types';
 // Which engines' books are force-aligned after every render — the one table,
 // shared with the run description and the narration dialog. (The assembly spawns
 // no longer ask: they pass the report whenever the file exists.)
@@ -374,6 +376,13 @@ interface FoundryHostOperation {
 interface FoundryHostInvokeContext {
   /** See `FoundryHostOperation.invoke`, where what this does and does not mean is argued. */
   readonly cleaned: boolean;
+  /**
+   * THE QUEUE ROW THIS ACT MUST WAIT BEHIND — set by Foundry when Narrate was
+   * pressed on a PENDING export node (foundry@688c888, Owen's chains of
+   * 2026-09-07). It is OUR row id, off a row we minted and pushed back. Absent for
+   * every press on something that exists.
+   */
+  readonly pendingRow?: string;
 }
 
 /**
@@ -1388,10 +1397,8 @@ interface FoundryNarrationTarget {
   exportNodeId: string;
 }
 
-async function foundryNarrationTarget(
-  projectDir: string,
-  nodeId: string,
-): Promise<FoundryNarrationTarget> {
+/** The one book of this library that IS this Foundry project, or a refusal that says why not. */
+async function foundryBookDirFor(projectDir: string): Promise<{ key: string; bookDir: string }> {
   const key = foundryLandingKey(projectDir);
   const claims = await foundryProjectClaims();
   const matches = claims.filter((c) => c.key !== null && c.key === key);
@@ -1407,7 +1414,72 @@ async function foundryNarrationTarget(
       + `${matches.map((m) => path.basename(m.dir)).join(', ')}. A project belongs to exactly one `
       + 'book, so nothing was started; fix the duplicate mapping first.');
   }
-  const bookDir = matches[0]!.dir;
+  return { key, bookDir: matches[0]!.dir };
+}
+
+/**
+ * THE PENDING EXPORT a Narrate press was made on, or null when the press was on
+ * something that exists.
+ *
+ * Two shapes reach here (foundry@688c888): a press on a PENDING EXPORT NODE
+ * carries `context.pendingRow`, the export's row in our queue; a press on a
+ * PROMISED STEP — a clean-up whose row is queued but has not landed — carries
+ * the step id alone, and there is no export yet at all. For the second, the
+ * export is ASKED FOR exactly as a landed step's would be (`exportEpubFromStep`),
+ * which now plans it deferred: the row is minted in our queue under the promised
+ * step's row and the promise settles only when the export lands. THE PROMISE IS
+ * NOT AWAITED — that could be hours (Foundry's own caution) — the ROW is waited
+ * for, and the promise's rejection is raced against it so a plan Foundry refuses
+ * says so here instead of hanging.
+ */
+async function pendingExportRowFor(
+  projectDir: string,
+  nodeId: string,
+  context: FoundryHostInvokeContext,
+): Promise<FoundryJobRow | null> {
+  const rows = () => foundryHostQueue.rows(projectDir);
+  const live = (r: FoundryJobRow) => r.state !== 'done' && r.state !== 'failed' && r.state !== 'cancelled';
+  if (context.pendingRow !== undefined) {
+    const row = rows().find((r) => r.id === context.pendingRow);
+    if (!row) {
+      throw new Error(
+        `Narrate was pressed on a pending export whose queue row (${context.pendingRow}) is not `
+        + 'in the queue any more — it was removed, or landed and was cleared. Press Narrate on the '
+        + 'export row itself once it is listed.');
+    }
+    if (row.kind !== 'epub') {
+      throw new Error(
+        `Narrate was pressed on a pending row that is a ${row.kind}, not an EPUB export; a `
+        + 'narration reads a book. Press it on the export.');
+    }
+    if (!live(row)) return null;   // it landed meanwhile: the ordinary arm reads the file
+    return row;
+  }
+  const promised = rows().find((r) => r.mints === nodeId && live(r));
+  if (!promised) return null;
+  // Ask for the export as a landed step's press would; Foundry plans it deferred.
+  const landing = foundryMount.exportEpubFromStep(projectDir, nodeId);
+  landing.catch(() => undefined);   // observed below, in the race; never unhandled
+  const rowAppears = new Promise<FoundryJobRow>((resolve) => {
+    const find = () => rows().find((r) => r.kind === 'epub' && r.forStep === nodeId && live(r));
+    const now = find();
+    if (now) { resolve(now); return; }
+    const off = queueEngine.onQueueChanged(() => {
+      const row = find();
+      if (row) { off(); resolve(row); }
+    });
+  });
+  const refused = landing.then(
+    () => null as FoundryJobRow | null,   // landed already: nothing pending to chain under
+    (err: unknown) => { throw err; });    // Foundry would not plan it: its sentence, verbatim
+  return Promise.race([rowAppears, refused]);
+}
+
+async function foundryNarrationTarget(
+  projectDir: string,
+  nodeId: string,
+): Promise<FoundryNarrationTarget> {
+  const { key, bookDir } = await foundryBookDirFor(projectDir);
 
   const projectId = path.basename(bookDir);
 
@@ -1809,15 +1881,54 @@ async function invokeFoundryNarrate(
   }
 
   let target: FoundryNarrationTarget;
+  let pending: NarrateTarget['pending'] | undefined;
   try {
-    target = await foundryNarrationTarget(projectDir, nodeId);
+    const row = await pendingExportRowFor(projectDir, nodeId, context);
+    if (row !== null) {
+      /*
+       * THE EXPORT HAS NOT LANDED. A `foundry-export-landing` row goes under the
+       * export's row (one per export — a second press finds the first), the
+       * dialog opens on the file the export WILL be, and the run the dialog
+       * queues chains under that landing row. Nothing is read from disk here,
+       * because there is nothing on it yet; Foundry's `cleaned` is the answer
+       * for the position, and the dialog treats it as decisive.
+       */
+      const { key, bookDir } = await foundryBookDirFor(projectDir);
+      const fileName = path.basename(row.outputPath);
+      const owner = queueEngine.snapshot().jobs.find((j) => j.steps.some((st) => st.id === row.id));
+      if (!owner) {
+        throw new Error(`The queue holds row ${row.id} in no run, which cannot happen.`);
+      }
+      const existing = owner.steps.find((st) => st.type === 'foundry-export-landing'
+        && st.parentStepId === row.id && !TERMINAL_STEP_STATUSES.has(st.status)
+        && (st.config as { fileName?: string }).fileName === fileName);
+      const landingStep = existing ?? queueEngine.appendStep(owner.id, {
+        type: 'foundry-export-landing',
+        label: `Exported book — ${fileName}`,
+        parentStepId: row.id,
+        config: {
+          bookDir, projectKey: key, fileName,
+          ...(row.forStep === undefined ? {} : { forStep: row.forStep }),
+        },
+      }, { deferPump: true });
+      target = { bookDir, variantId: '', variantPath: row.outputPath, exportNodeId: nodeId };
+      pending = { jobId: owner.id, stepId: landingStep.id, cleaned: context.cleaned };
+      console.log(
+        `[foundry-host] narrate on ${nodeId}: the export (${fileName}) is pending as row ${row.id}; `
+        + `the run will chain under landing step ${landingStep.id}. Foundry says the cleanup is `
+        + `${context.cleaned ? 'in effect' : 'NOT in effect'} at that position.`);
+    } else {
+      target = await foundryNarrationTarget(projectDir, nodeId);
+    }
   } catch (err) {
     const message = (err as Error).message;
     sayToUser('Nothing was queued', 'This step cannot be narrated yet', message);
     throw err;
   }
 
-  await sayWhatEachSideThinksAboutTheCleanup(target.variantPath, nodeId, context);
+  if (pending === undefined) {
+    await sayWhatEachSideThinksAboutTheCleanup(target.variantPath, nodeId, context);
+  }
 
   const projectId = path.basename(target.bookDir);
   const got = await manifestService.getManifest(projectId);
@@ -1862,6 +1973,7 @@ async function invokeFoundryNarrate(
     // A Foundry project is a book. Articles are never made in that window, and
     // the manifest says which this is rather than this side assuming.
     isArticle: got.manifest.projectType === 'article',
+    ...(pending === undefined ? {} : { pending }),
   };
 
   /*
@@ -12103,7 +12215,14 @@ app.whenReady().then(async () => {
     // Fire-and-forget on purpose: the contract is synchronous, and everything
     // these do is file I/O. Each reports its own failures — the `void` is not
     // swallowing anything, because neither ever rejects.
-    onExport: (landing) => { void recordFoundryExportLanding(landing); },
+    onExport: (landing) => {
+      // Held by (project key, file name) so a narration chained under a pending
+      // export can wait for THIS recording to settle rather than poll the
+      // manifest — electron/queue-steps/foundry-export-landing.ts.
+      noteFoundryLandingAnnounced(
+        foundryLandingKey(landing.projectDir), path.basename(landing.path),
+        recordFoundryExportLanding(landing));
+    },
     onImport: (landing) => { void announceFoundryImportLanding(landing); },
     // The mint modal's inheritance (Owen, 2026-08-24): the book's own manifest
     // seeds the fields Foundry's stored block does not cover. Null means "no

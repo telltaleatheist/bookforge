@@ -988,4 +988,12 @@ export interface CreateJobRequest {
    * See {@link FoundryJobLineage}.
    */
   foundry?: FoundryJobLineage;
+  /**
+   * On an `audiobook` MASTER only: the whole run is appended UNDER this existing
+   * step of this existing run instead of opening a run of its own — a narration
+   * ordered from a pending export (Owen, 2026-09-07), chained beneath the
+   * `foundry-export-landing` row that will hand it the file. The first step then
+   * carries no `sourceRef`: its parent's artifact is what it reads.
+   */
+  chainAfter?: { jobId: string; stepId: string };
 }

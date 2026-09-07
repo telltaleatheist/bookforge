@@ -12,6 +12,7 @@ import { alignStep } from './align';
 import { bookAnalysisStep } from './book-analysis';
 import { finalDenoiseStep } from './final-denoise';
 import { generateSentencesStep } from './generate-sentences';
+import { foundryExportLandingStep } from './foundry-export-landing';
 import { foundryJobStep } from './foundry-job';
 import {
   footnoteRefsStep, narrationTextStep, simplifyStep, translatePassStep,
@@ -40,6 +41,7 @@ export function registerAllStepModules(): void {
     videoAssemblyStep,
     vlmConvertStep,
     foundryJobStep,
+    foundryExportLandingStep,
     simplifyStep,
     translatePassStep,
     footnoteRefsStep,

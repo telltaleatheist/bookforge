@@ -548,6 +548,7 @@ export class JobStepComponent {
       case 'narration-text': return 'Narration text cleanup';
       case 'vlm-convert': return 'Convert to EPUB';
       case 'foundry-job': return 'Foundry';
+      case 'foundry-export-landing': return 'Exported book';
     }
   }
 

@@ -480,6 +480,25 @@ export class QueueService {
     if (composition) {
       if (!composition.jobId) {
         const master = composition.spec;
+        /*
+         * CHAINED UNDER A STEP OF A RUN THAT ALREADY EXISTS: the master named
+         * the `foundry-export-landing` row a pending-export narrate hangs from
+         * (CreateJobRequest.chainAfter). No run of its own, no sourceRef — the
+         * landing step's artifact is the book, and the engine hands it over
+         * when that step lands. Everything after joins this same run as usual.
+         */
+        if (master.chainAfter !== undefined) {
+          const appended = await bridge.appendStep(master.chainAfter.jobId, {
+            type: request.type,
+            label,
+            config,
+            parentStepId: master.chainAfter.stepId,
+          });
+          QueueService.settle(appended, 'Queueing this run behind the export it waits for');
+          composition.jobId = master.chainAfter.jobId;
+          composition.lastStepId = appended.data!.id;
+          return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
+        }
         const created = await bridge.enqueue({
           title: master.metadata?.title ?? label,
           projectId: master.bfpPath ?? master.projectDir ?? request.bfpPath ?? request.projectDir,
