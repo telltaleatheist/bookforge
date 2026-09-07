@@ -448,7 +448,7 @@ test('the engine that has no clean-text is refused BY NAME, and nothing runs', (
   const said = host.foundryTooOldForCleanText('1.0.2');
   assert.ok(said.includes('1.0.2'), 'the refusal must name what IS installed');
   assert.ok(said.includes(host.FOUNDRY_VERSION_FOR_CLEAN_TEXT), 'and the version the command arrived in');
-  assert.match(said, /Settings → Add-ons/, 'and where to fix it');
+  assert.match(said, /Settings → General add-ons/, 'and where to fix it');
   assert.match(said, /Nothing was cleaned/, 'and that nothing ran — the readings-flag refusal\'s shape');
 });
 
