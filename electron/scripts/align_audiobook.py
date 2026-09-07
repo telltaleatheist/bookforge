@@ -1569,7 +1569,13 @@ def main():
             # reload is ~5-10 s against ~10-20 s of useful work per chunk).
             # mps: memory measured FLAT with per-chunk empty_cache, so never
             # recycle — the single worker would otherwise reload every 2 chunks.
-            mtpc = None if args.device == "mps" else 2
+            # cuda: same rule, found the expensive way 2026-09-07. A 21 h book ran
+            # 76 min on a 3090 Ti with the CPU rule in force: every second chunk
+            # paid a 7-8 s respawn (python + torch/CUDA init + wav2vec2 load) for
+            # 0.75 s of align work, i.e. ~11x realtime with the GPU at 1 %. With no
+            # recycling the same 30-min slice went 154 s -> 43 s (42x), identical
+            # cues; CUDA memory sat flat at the first chunk's peak (caching allocator).
+            mtpc = None if args.device in ("mps", "cuda") else 2
             require_worker_imports("align", "torch", "whisperx")
             with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang, args.device), maxtasksperchild=mtpc) as pool:
                 for ci, out in pool.imap_unordered(_align_chunk, pending):

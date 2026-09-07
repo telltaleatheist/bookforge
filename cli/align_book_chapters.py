@@ -207,6 +207,33 @@ def run(cmd, **kw):
     return subprocess.run(cmd, capture_output=True, text=True, errors="replace", **kw)
 
 
+def run_streaming(cmd, log_path):
+    """run(), but the child's stderr (the aligner's own log) and stdout (its
+    PROGRESS lines) are APPENDED TO log_path AS THEY ARRIVE, each line stamped
+    with the wall clock. run() captures both until exit, which for a 21 h book
+    meant 76 minutes of "aligning 9281 sentences" and nothing else on
+    2026-09-07 - the run was healthy, nobody could tell, and it was killed.
+    The returned object has the same stdout/stderr/returncode as run()."""
+    import threading
+    out_lines, err_lines = [], []
+    lock = threading.Lock()
+    with open(log_path, "a", encoding="utf-8") as lf:
+        def pump(pipe, sink, tag):
+            for line in iter(pipe.readline, ""):
+                sink.append(line)
+                with lock:
+                    lf.write(f"{time.strftime('%H:%M:%S')} {tag} {line}"); lf.flush()
+            pipe.close()
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                             text=True, errors="replace", bufsize=1)
+        ts = [threading.Thread(target=pump, args=(p.stdout, out_lines, "out"), daemon=True),
+              threading.Thread(target=pump, args=(p.stderr, err_lines, "err"), daemon=True)]
+        for t in ts: t.start()
+        rc = p.wait()
+        for t in ts: t.join()
+    return subprocess.CompletedProcess(cmd, rc, "".join(out_lines), "".join(err_lines))
+
+
 def main():
     ap = argparse.ArgumentParser()
     # A DIRECTORY of per-chapter audio, or a SINGLE whole-book master file. The
@@ -282,9 +309,12 @@ def main():
     old_vtt_dir = a.old_vtt_dir or a.audio_dir
 
     if a.device in ("cuda", "mps"):
-        # one GPU worker owns the device; anything else is a lie the aligner would
-        # override anyway (and it logs the override)
-        workers, cores, by_ram = (a.workers or 1), physical_cores(), None
+        # the aligner runs ONE worker per GPU and forces it; say so here rather
+        # than echo the flag ("workers=2 ... device=cuda" was printed for a run
+        # that had one worker, 2026-09-07)
+        if a.workers > 1:
+            log(f"--workers {a.workers} ignored on {a.device}: the aligner runs one GPU worker")
+        workers, cores, by_ram = 1, physical_cores(), None
     elif a.workers > 0:
         workers, cores, by_ram = a.workers, physical_cores(), None
     else:
@@ -390,8 +420,10 @@ def main():
                 cmd += ["--silence-map", sil_p]
             else:
                 cmd += ["--silence-source", "auto-editor"]
-            log(f"[{k}/{len(stems)}] {stem}: aligning {len(sents)} sentences …")
-            r = run(cmd)
+            live_p = os.path.join(a.out_dir, stem + ".align.log")
+            log(f"[{k}/{len(stems)}] {stem}: aligning {len(sents)} sentences … "
+                f"(live log: {os.path.basename(live_p)})")
+            r = run_streaming(cmd, live_p)
             res = None
             for line in r.stdout.splitlines():
                 if line.startswith("RESULT "):
