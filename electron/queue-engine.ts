@@ -728,7 +728,7 @@ export function enqueue(spec: JobSpec, opts?: EnqueueOptions): QueueJob {
  * why the reassembly row carried an empty `sessionId` and re-discovered it with a
  * four-attempt retry ladder at run time.
  */
-export function appendStep(jobId: string, spec: AppendStepSpec): QueueStep {
+export function appendStep(jobId: string, spec: AppendStepSpec, opts?: EnqueueOptions): QueueStep {
   const job = requireJob(jobId);
   const parentStepId = spec.parentStepId;
   let parent: QueueStep | null = null;
@@ -757,8 +757,76 @@ export function appendStep(jobId: string, spec: AppendStepSpec): QueueStep {
   job.steps.push(step);
   if (job.finishedAt) job.finishedAt = undefined;
   changed();
-  pump();
+  // Deferred on the same reasoning as `enqueue`'s: the Foundry host queue
+  // appends a CHAINED row from inside Foundry's own enqueue, and an inline pump
+  // could start some other queued row — re-entering Foundry through `runJob` —
+  // before this call has returned the row Foundry is waiting for.
+  if (opts?.deferPump === true) setImmediate(() => pump());
+  else pump();
   return step;
+}
+
+/** Every step under `stepId` in this run, transitively, by `parentStepId`. */
+function descendantsOf(job: QueueJob, stepId: string): QueueStep[] {
+  const under = new Set<string>([stepId]);
+  const out: QueueStep[] = [];
+  let grew = true;
+  while (grew) {
+    grew = false;
+    for (const step of job.steps) {
+      if (under.has(step.id) || !under.has(step.parentStepId)) continue;
+      under.add(step.id);
+      out.push(step);
+      grew = true;
+    }
+  }
+  return out;
+}
+
+/**
+ * Take ONE STEP out of the queue — AND EVERYTHING UNDER IT.
+ *
+ * Owen's ruling (2026-09-07), for the chains Foundry composes onto a row that
+ * has not landed yet: "if that item is removed from the queue, anything under
+ * it also disappears." A step under a removed one would wait forever on a
+ * parent that no longer exists, and `parentOf` answering null for it would
+ * let the pump claim it as if it had no parent at all — running a clean-up's
+ * export on a book that was never cleaned. So the subtree goes with the step,
+ * transitively, and anything of it that is running is stopped first, exactly
+ * as `remove` stops a run's steps. A run left with no steps is removed too.
+ *
+ * `remove(jobId)` stays for the Queue page, where the unit is the whole run.
+ */
+export async function removeStep(stepId: string): Promise<void> {
+  const found = findStep(stepId);
+  if (!found) throw new Error(`There is no step "${stepId}" in the queue.`);
+  const { job } = found;
+  const going = [found.step, ...descendantsOf(job, stepId)];
+  for (const step of going) {
+    if (step.status !== 'running') continue;
+    const live = runningSteps.get(step.id);
+    if (!live) continue;
+    live.stopRequested = true;
+    try {
+      await moduleFor(step.type).cancel(step.id, step);
+    } catch (err) {
+      console.error(`[QUEUE-ENGINE] ${step.label} did not stop cleanly on removal:`, err);
+    }
+    live.abort.abort();
+    runningSteps.delete(step.id);
+  }
+  const gone = new Set(going.map((s) => s.id));
+  job.steps = job.steps.filter((s) => !gone.has(s.id));
+  if (job.steps.length === 0) jobs = jobs.filter((j) => j.id !== job.id);
+  changed();
+  pump();
+}
+
+/** Is every step under `stepId` (transitively) already settled? */
+export function subtreeSettled(stepId: string): boolean {
+  const found = findStep(stepId);
+  if (!found) throw new Error(`There is no step "${stepId}" in the queue.`);
+  return descendantsOf(found.job, stepId).every((s) => TERMINAL_STEP_STATUSES.has(s.status));
 }
 
 function requireJob(jobId: string): QueueJob {

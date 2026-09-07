@@ -43,11 +43,13 @@
 import * as path from 'node:path';
 
 import {
+  appendStep as engineAppendStep,
   cancel as engineCancel,
   enqueue as engineEnqueue,
   onAfterPump,
   onQueueChanged,
-  remove as engineRemove,
+  removeStep as engineRemoveStep,
+  subtreeSettled as engineSubtreeSettled,
   snapshot,
   start as engineStart,
 } from './queue-engine';
@@ -189,6 +191,21 @@ export interface FoundryJobRequest {
    * product (their `CleanRequest`, foundry-app/shared/types.ts).
    */
   recordsPath?: string;
+  /**
+   * THE CHAIN, as Foundry composes it onto a row that has not landed yet
+   * (Owen's ruling, 2026-09-07: "a grayed out step ... I should be able to run
+   * jobs against the grayed out row ... if that item is removed from the queue,
+   * anything under it also disappears"). Foundry sets `after` to the ROW ID of
+   * the pending row this request follows; `enqueue` appends the step to THAT
+   * row's run, under it, so it waits on the row, runs when it lands, and is
+   * cancelled or removed with it — the engine's own lineage, nothing invented.
+   * `stepId` is the FUTURE ledger step id a text pass mints at press (its
+   * pending node wears it); `forStep` is an export's step. All three are copied
+   * onto the row verbatim, because Foundry's tree reads rows and nothing else.
+   */
+  after?: string;
+  stepId?: string;
+  forStep?: string;
   [field: string]: unknown;
 }
 
@@ -235,6 +252,16 @@ export interface FoundryJobRow {
    */
   note?: string | null;
   parentStep?: string | null;
+  /** Their field: an export that is one step's own book (`GenerateRequest.forStep`). */
+  forStep?: string;
+  /**
+   * THE CHAIN, read back off the row — see `FoundryJobRequest.after`. A pending
+   * node in Foundry's tree IS a row: `mints` is the ledger step id this row's
+   * work will land under (a text pass), `after` the row it waits on. Absent when
+   * the request carried neither; never derived here.
+   */
+  mints?: string;
+  after?: string;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -562,6 +589,9 @@ function rowOf(step: QueueStep): FoundryJobRow {
      */
     note: step.progress?.detail ?? null,
     parentStep: config?.parentStep ?? null,
+    ...(typeof request?.forStep === 'string' ? { forStep: request.forStep } : {}),
+    ...(typeof request?.stepId === 'string' ? { mints: request.stepId } : {}),
+    ...(typeof request?.after === 'string' ? { after: request.after } : {}),
     createdAt: Date.parse(step.addedAt),
     startedAt: step.startedAt ? Date.parse(step.startedAt) : undefined,
     finishedAt: step.finishedAt ? Date.parse(step.finishedAt) : undefined,
@@ -655,6 +685,53 @@ export const foundryHostQueue = {
       projectDir,
       label,
     };
+
+    /*
+     * A REQUEST THAT FOLLOWS A PENDING ROW JOINS THAT ROW'S RUN, under it.
+     *
+     * Owen, 2026-09-07: queue a clean-up, get a greyed row where its output will
+     * land, run an export against the greyed row, narrate against the greyed
+     * export — and if the clean-up is removed "or otherwise gets lost along the
+     * way, everything under that grayed out chain also gets removed."
+     *
+     * The engine already has all of that for steps of ONE run: `parentStepId`
+     * holds a step `waiting` until its parent is `done`, `cascadeCancel` takes a
+     * cancelled or failed parent's subtree with it, and `removeStep` (added for
+     * this) takes a removed one's. So a chained request is not a new kind of
+     * row; it is `appendStep` onto the run that owns the row it follows. The
+     * row id IS the step id (rowOf), which is why `after` can name it directly.
+     *
+     * REFUSED BY NAME when the row is gone: a request composed against a row
+     * that was removed before the press landed would otherwise be filed as a
+     * fresh run with no parent and RUN, exporting a book nobody cleaned. And
+     * refused when the row has already failed or been cancelled — appendStep
+     * says so itself, in the parent's own words.
+     */
+    if (request.after !== undefined) {
+      if (typeof request.after !== 'string' || request.after === '') {
+        throw new Error(
+          `This ${request.kind} request follows ${JSON.stringify(request.after)}, which is not a `
+          + 'row id. `after` names the pending row the request is chained onto, or is absent.',
+        );
+      }
+      const followed = foundrySteps().find(({ step }) => step.id === request.after);
+      if (!followed) {
+        throw new Error(
+          `This ${request.kind} request follows row ${request.after}, which is not in the queue — `
+          + 'it was removed, or finished and was cleared, before the press landed. Nothing was '
+          + 'queued: run it from the landed step instead of from a row that is gone.',
+        );
+      }
+      const step = engineAppendStep(followed.job.id, {
+        type: 'foundry-job',
+        label,
+        config: config as unknown as Record<string, unknown>,
+        sourceRef: { kind: 'none' },
+        parentStepId: followed.step.id,
+      }, { deferPump: true });
+      return rowOf(step);
+    }
+
     const job = engineEnqueue({
       title: label,
       documentPath: request.inputPath,
@@ -677,7 +754,14 @@ export const foundryHostQueue = {
 
   /** Their shelf's gestures, forwarded. The rows are ours to move. */
   async cancel(id: string): Promise<void> { await engineCancel({ stepId: id }); },
-  async remove(id: string): Promise<void> { await engineRemove(id); },
+  /*
+   * A ROW IS A STEP, and removing it removes everything chained under it —
+   * Owen's ruling (2026-09-07), and `removeStep`'s. This used to forward to
+   * `remove(jobId)` with a STEP id (every Foundry run was one job of one step,
+   * and nothing pressed it), which the engine refuses as "no run" — so the
+   * shelf's Remove has never removed anything through this door. Now it does.
+   */
+  async remove(id: string): Promise<void> { await engineRemoveStep(id); },
   start(): void { engineStart(); },
 
   /**
@@ -695,11 +779,20 @@ export const foundryHostQueue = {
    * a projectDir and nothing else changes.
    */
   async clearFinished(): Promise<void> {
-    for (const { job, step } of foundrySteps()) {
+    for (const { step } of foundrySteps()) {
       if (!TERMINAL_STEP_STATUSES.has(step.status)) continue;
-      // A Foundry run is one job of one step, so removing the job removes
-      // exactly the row their shelf is asking about.
-      await engineRemove(job.id);
+      /*
+       * NOT SWEPT WHILE SOMETHING PENDING STILL HANGS UNDER IT. A landed
+       * clean-up with an export waiting on it is the shape Owen's chains make
+       * (2026-09-07); sweeping the root would take the export with it
+       * (`removeStep`), turning "clear the finished rows" into "cancel my
+       * queued work". The root is swept once its whole chain has settled.
+       * Iterated over a snapshot, so a subtree already removed with its root
+       * is not asked about again.
+       */
+      const still = foundrySteps().some((s) => s.step.id === step.id);
+      if (!still || !engineSubtreeSettled(step.id)) continue;
+      await engineRemoveStep(step.id);
     }
   },
 

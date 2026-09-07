@@ -642,6 +642,163 @@ test('drain IS said when the queue keeps running non-Foundry work', async () => 
 
 // ── The runner ──────────────────────────────────────────────────────────────
 
+// ── Chains onto a PENDING row (Owen, 2026-09-07) ─────────────────────────────
+//
+// "if i queue cleanup, i want a grayed out step to appear where the item will
+// be when it finishes. i should be able to run jobs against the grayed out row.
+// everything under it that i run will also be grayed out. if that item is
+// removed from the queue, anything under it also disappears." Foundry derives
+// the greyed node FROM THE ROW; this side must make a request that follows a
+// row wait on it, land after it, and go with it.
+
+const cleanAfter = (afterId, key = 'c1', project = PROJ) => ({
+  kind: 'clean',
+  inputPath: `${project}\\archive\\book.pdf`,
+  recordsPath: `${project}\\text\\${key}.jsonl`,
+  stepId: `step_future_${key}`,
+  after: afterId,
+});
+const exportAfter = (afterId, forStep, project = PROJ) => ({
+  kind: 'epub',
+  inputPath: `${project}\\archive\\book.pdf`,
+  outputPath: `${project}\\final\\${forStep}.epub`,
+  forStep,
+  after: afterId,
+});
+
+test('a request that FOLLOWS a pending row joins that row\'s run, waits on it, and carries after / mints / forStep', async () => {
+  const mod = await fresh('chain-basic');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const clean = host.foundryHostQueue.enqueue(cleanAfter(root.id), 'step_root', PROJ);
+  const epub = host.foundryHostQueue.enqueue(exportAfter(clean.id, 'step_future_c1'), 'step_future_c1', PROJ);
+
+  assert.strictEqual(clean.after, root.id, 'the row says which row it follows');
+  assert.strictEqual(clean.mints, 'step_future_c1', 'and which ledger step it will land under');
+  assert.strictEqual(epub.after, clean.id);
+  assert.strictEqual(epub.forStep, 'step_future_c1', 'an export row carries forStep, their field');
+  assert.strictEqual(root.after, undefined, 'a root row carries no chain field');
+  assert.strictEqual(clean.state, 'queued', 'waiting on a parent is "queued" in their vocabulary');
+
+  const runs = engine.snapshot().jobs.filter((j) => j.steps.some((s) => s.id === root.id));
+  assert.strictEqual(runs.length, 1);
+  assert.deepStrictEqual(runs[0].steps.map((s) => s.id), [root.id, clean.id, epub.id],
+    'one run, three steps, in chain order');
+  assert.strictEqual(runs[0].steps[1].parentStepId, root.id, 'the engine\'s own lineage carries the chain');
+  assert.strictEqual(runs[0].steps[2].parentStepId, clean.id);
+
+  engine.start();
+  await settle();
+  assert.strictEqual(mod.runs.length, 1, 'only the root runs; the chain waits');
+  mod.runs[0].resolve();
+  await settle();
+  assert.strictEqual(mod.runs.length, 2, 'the root landed, so the clean-up runs');
+  assert.strictEqual(mod.runs[1].ctx.step.id, clean.id);
+  assert.strictEqual(host.foundryHostQueue.rows(PROJ).find((r) => r.id === epub.id).state, 'queued');
+  mod.runs[1].resolve();
+  await settle();
+  assert.strictEqual(mod.runs.length, 3, 'and then the export');
+  assert.strictEqual(mod.runs[2].ctx.step.id, epub.id);
+});
+
+test('a follow onto a row that is NOT in the queue is refused BY NAME, and nothing is queued', async () => {
+  await fresh('chain-lost');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  assert.throws(
+    () => host.foundryHostQueue.enqueue(cleanAfter('step_gone'), null, PROJ),
+    (err) => /step_gone/.test(err.message) && /not in the queue/.test(err.message)
+      && /Nothing was queued/.test(err.message),
+  );
+  assert.strictEqual(host.foundryHostQueue.rows(PROJ).length, 0, 'no fresh parentless run was filed');
+  assert.throws(
+    () => host.foundryHostQueue.enqueue({ ...cleanAfter(''), after: 7 }, null, PROJ),
+    /not a row id/,
+  );
+});
+
+test('a follow does not run anything on the enqueue stack — the pump is deferred there too', async () => {
+  const mod = await fresh('chain-defer');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  engine.start();
+  await settle();
+  assert.strictEqual(mod.runs.length, 1, 'the root (gpu) is running');
+  // A second, unrelated CPU row: its own pump is deferred, so it has not started.
+  host.foundryHostQueue.enqueue({
+    kind: 'render', inputPath: `${PROJ}\\archive\\other.pdf`, outputPath: `${PROJ}\\final\\other.epub`,
+  }, null, PROJ);
+  assert.strictEqual(mod.runs.length, 1);
+  // The follow's appendStep must not pump inline and start it from inside enqueue.
+  host.foundryHostQueue.enqueue(cleanAfter(root.id), null, PROJ);
+  assert.strictEqual(mod.runs.length, 1,
+    'an inline pump here would start the CPU row inside Foundry\'s own enqueue — re-entry');
+  await settle();
+  assert.strictEqual(mod.runs.length, 2, 'and once the stack unwinds it starts as usual');
+});
+
+test('cancelling the row a chain follows cancels the whole chain under it', async () => {
+  await fresh('chain-cancel');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const clean = host.foundryHostQueue.enqueue(cleanAfter(root.id), null, PROJ);
+  const epub = host.foundryHostQueue.enqueue(exportAfter(clean.id, 'step_future_c1'), null, PROJ);
+  await host.foundryHostQueue.cancel(root.id);
+  await settle();
+  const states = Object.fromEntries(host.foundryHostQueue.rows(PROJ).map((r) => [r.id, r.state]));
+  assert.deepStrictEqual(states, { [root.id]: 'cancelled', [clean.id]: 'cancelled', [epub.id]: 'cancelled' });
+});
+
+test('removing the row a chain follows removes EVERYTHING under it, and the shelf is told', async () => {
+  const mod = await fresh('chain-remove-root');
+  const pushes = [];
+  host.setFoundrySeam({ runJob: null, setQueueRows: (dir, rows) => pushes.push(rows.length), drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const clean = host.foundryHostQueue.enqueue(cleanAfter(root.id), null, PROJ);
+  host.foundryHostQueue.enqueue(exportAfter(clean.id, 'step_future_c1'), null, PROJ);
+  engine.start();
+  await settle();
+  assert.strictEqual(mod.runs.length, 1, 'the root is running when it is removed');
+  await host.foundryHostQueue.remove(root.id);
+  await settle();
+  assert.deepStrictEqual(host.foundryHostQueue.rows(PROJ), [], 'root, clean-up and export are all gone');
+  assert.strictEqual(engine.snapshot().jobs.length, 0, 'a run left with no steps is gone too');
+  assert.strictEqual(pushes[pushes.length - 1], 0, 'the falling edge reached the shelf');
+});
+
+test('removing a row in the MIDDLE of a chain takes only what is under it', async () => {
+  await fresh('chain-remove-mid');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const clean = host.foundryHostQueue.enqueue(cleanAfter(root.id), null, PROJ);
+  const epub = host.foundryHostQueue.enqueue(exportAfter(clean.id, 'step_future_c1'), null, PROJ);
+  await host.foundryHostQueue.remove(clean.id);
+  await settle();
+  const ids = host.foundryHostQueue.rows(PROJ).map((r) => r.id);
+  assert.deepStrictEqual(ids, [root.id], `the root stays; the export under the removed clean-up went (${epub.id})`);
+});
+
+test('clearFinished leaves a LANDED root whose chain is still pending, and sweeps it once the chain settles', async () => {
+  const mod = await fresh('chain-clear');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const clean = host.foundryHostQueue.enqueue(cleanAfter(root.id), null, PROJ);
+  engine.start();
+  await settle();
+  mod.runs[0].resolve();
+  await settle();
+  // The clean-up is now RUNNING under a done root. Sweep: nothing may go.
+  assert.strictEqual(mod.runs.length, 2);
+  await host.foundryHostQueue.clearFinished();
+  await settle();
+  assert.deepStrictEqual(host.foundryHostQueue.rows(PROJ).map((r) => r.id), [root.id, clean.id],
+    'sweeping the finished root would have removed the clean-up under it');
+  mod.runs[1].resolve();
+  await settle();
+  await host.foundryHostQueue.clearFinished();
+  await settle();
+  assert.deepStrictEqual(host.foundryHostQueue.rows(PROJ), [], 'settled end to end, both are swept');
+});
+
 test('with no runJob the row FAILS WITH A SENTENCE — it does not fall back to Foundry', async () => {
   engine.clearStepModules();
   const real = require(path.join(DIST, 'queue-steps', 'foundry-job.js'));
