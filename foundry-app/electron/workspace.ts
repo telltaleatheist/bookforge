@@ -90,6 +90,7 @@ import {
   ledgerOf,
   readManifest,
   narrationStampFileFor,
+  pendingRecordsForTextPass,
   readingBank,
   readingIsComplete,
   recordsForTextPass,
@@ -1049,6 +1050,17 @@ export async function planTranslation(
    * about.
    */
   deferral?: Deferral,
+  /**
+   * THE STEP ID THIS PLAN MUST SPEND RATHER THAN MINT — the id a press already
+   * promised, handed back by the re-plan at spawn.
+   *
+   * `recordsForTextPass`'s own parameter, carried through the three plan doors so
+   * that a deferred pass planned twice is planned about ONE step both times. See
+   * that function (electron/projects.ts) for the whole argument, and
+   * `materializeDeferred` (electron/job-queue.ts) for the only caller that passes
+   * it. Absent is every press.
+   */
+  minted?: string,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
@@ -1083,6 +1095,20 @@ export async function planTranslation(
       sourcePath: inputPath,
       recordsPath: promised.recordsPath,
       stepId: promised.stepId,
+      /*
+       * AND NO `namesAtSpawn`, WHICH IS THE ONE THING A TRANSLATION NEVER NEEDS.
+       * The fact this file is named after — the target language — was TYPED BY THE
+       * PERSON in the dialog that reached this function, so it is in hand however
+       * little the chain above can say. A rewrite's language is read off that chain
+       * and is the reason the field exists (`DeferredPlan.namesAtSpawn`).
+       *
+       * The re-plan at spawn may still move the name, and that is a different thing:
+       * a re-run target that could not match at press (nothing is parented to a
+       * promise) can match once the parent lands, and then this run aims at the step
+       * that already exists and takes ITS path. That is replace semantics arriving
+       * late rather than a placeholder being resolved, and `materializeDeferred`
+       * handles the two in one line.
+       */
       deferred: { from: deferral.from },
     };
   }
@@ -1123,7 +1149,7 @@ export async function planTranslation(
    * crosses the boundary; what crosses is a document.
    */
   const planned = await recordsForTextPass(
-    dir, 'translate', targetLanguage, undefined, at === null ? undefined : at.id,
+    dir, 'translate', targetLanguage, undefined, at === null ? undefined : at.id, minted,
   );
   /*
    * ── WHAT THIS RUN IS ASKED OF, WHICH IS TWO SEPARATE FACTS ────────────────
@@ -1358,50 +1384,71 @@ export async function planSimplification(
   at: LedgerStep | null = null,
   /**
    * THE ROW THIS REWRITE IS MADE FROM HAS NOT LANDED — and this is the one plan of
-   * the three that can refuse over it. See the branch below.
+   * the three that cannot always NAME its own file. See the branch below.
    */
   deferral?: Deferral,
+  /** The id a press already promised. `planTranslation`'s argument, verbatim. */
+  minted?: string,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
 
   /*
-   * ── THE DEFERRED REWRITE, AND THE ONE SHAPE OF IT THIS REFUSES ────────────
+   * ── THE DEFERRED REWRITE, AND THE ONE SHAPE OF IT THAT CANNOT NAME ITS FILE ─
    *
    * A rewrite happens IN a language and the file it writes is NAMED after that
-   * language, so the one fact this plan cannot leave for the re-plan is the
-   * language — the deferred plan's whole promise is that `recordsPath` and `stepId`
-   * are the paths the landed run will use, and a name composed from a guess would
-   * break it.
-   *
-   * A PROMISED CLEANUP CHANGES NO LANGUAGE, so a rewrite under one is planned
-   * exactly as a rewrite under its landed ancestor: the cleanup says the same book
-   * again with narratable punctuation, and the words stay in the language they were
-   * in. That is the ordinary case and it is Owen's own chain.
+   * language. Under a promised CLEANUP that is no obstacle at all — a cleanup says
+   * the same book again with narratable punctuation and the words stay in the
+   * language they were in — so the ordinary case, which is Owen's own chain, is
+   * planned exactly as a rewrite under its landed ancestor and names its file now.
    *
    * A PROMISED TRANSLATION OR REWRITE DOES change it, and records the answer in
    * `params.language` — which a promise does not carry (`pendingStepOf` argues why:
    * the row's title is a SENTENCE and this codebase does not read facts back out of
-   * sentences). So this refuses by name rather than naming a German file after a
-   * book that is about to become Hungarian. The sentence tells the person the one
-   * thing that fixes it: wait for the row above to land.
+   * sentences).
    *
-   * THE LANGUAGE IS READ AT THE LANDED ANCESTOR, and the book made to read it is
-   * thrown away. That is a real cost — one materialise for one header field — and
-   * it is the cheapest honest answer: `declaredLanguageOf` reads a book file, the
-   * only book file that can be made on this chain is the landed row's, and
-   * inventing a way to read a header without assembling the book would be a second
-   * implementation of the materialise.
+   * ── AND THAT USED TO BE A REFUSAL, WHICH OWEN OVERRULED ────────────────────
+   *
+   * Owen, 2026-09-07: *"I'd like to make it possible to chain anything and have it
+   * pick up required settings from the last step after it finishes. So I should be
+   * able to chain translate -> simplify -> tts -> assembly. Everything should come
+   * together logically and work."* Wave 56 threw here by name — *wait for the row
+   * above to land and press Simplify again* — which is a correct sentence about a
+   * feature whose whole purpose is not having to wait.
+   *
+   * WHAT WAS ACTUALLY IMPOSSIBLE WAS THE FILENAME AND NOTHING ELSE. The step id is
+   * mintable now (it is a uuid), the parent is in hand, the mode was chosen, the
+   * seed and the book were always going to be composed at spawn. So the plan admits
+   * the one thing it cannot say, wears a placeholder keyed to its own minted id
+   * (`pendingRecordsForTextPass`), and `materializeDeferred` asks THIS FUNCTION
+   * AGAIN at spawn with the landed row and that same id — where the language is a
+   * fact and the name composes itself.
+   *
+   * `from` IS ABSENT WITH IT, and it has to be: the dialog reads that field for the
+   * request's `to` (see the landed return below), and both ends of a rewrite are the
+   * one language this branch could not resolve. `SimplifyRequest.to` is optional for
+   * exactly this window, and the spawn fills both ends from the re-plan.
+   *
+   * THE LANGUAGE IS READ AT THE LANDED ANCESTOR when the chain declares none, and
+   * the book made to read it is thrown away. That is a real cost — one materialise
+   * for one header field — and it is the cheapest honest answer: `declaredLanguageOf`
+   * reads a book file, the only book file that can be made on this chain is the
+   * landed row's, and inventing a way to read a header without assembling the book
+   * would be a second implementation of the materialise.
    */
   if (deferral !== undefined) {
     const moved = deferral.through.find((action) => action === 'translate' || action === 'simplify');
     if (moved !== undefined) {
-      throw new ProjectError(
-        'This row is made from work that has not finished yet, and that work changes which language '
-        + 'the book is in — so there is nothing to tell the model to write in. Wait for it to land '
-        + 'and press Simplify again; the language will be recorded by then.',
-      );
+      const promised = await pendingRecordsForTextPass(dir, 'simplify', mode);
+      await fsp.mkdir(path.join(dir, 'readings'), { recursive: true });
+      return {
+        key,
+        sourcePath: inputPath,
+        recordsPath: promised.recordsPath,
+        stepId: promised.stepId,
+        deferred: { from: deferral.from, namesAtSpawn: true },
+      };
     }
     const standing = translationInEffect(ledger, deferral.landed)?.params?.language?.trim() ?? '';
     let language = standing;
@@ -1461,7 +1508,7 @@ export async function planSimplification(
   }
 
   const planned = await recordsForTextPass(
-    dir, 'simplify', language, mode, at === null ? undefined : at.id,
+    dir, 'simplify', language, mode, at === null ? undefined : at.id, minted,
   );
   /*
    * ── THE SEED, WHICH A REWRITE SPENDS WHERE A CHAIN WOULD NOT ───────────────
@@ -1564,6 +1611,8 @@ export async function planCleanup(
    * needs the chain except the book itself, and that is what the re-plan is for.
    */
   deferral?: Deferral,
+  /** The id a press already promised. `planTranslation`'s argument, verbatim. */
+  minted?: string,
 ): Promise<TranslationPlan> {
   const { dir, key } = await importDocument(inputPath, 'epub');
   const manifest = await readManifest(dir);
@@ -1594,7 +1643,7 @@ export async function planCleanup(
   if (!derived.ok) throw new ProjectError(derived.reason);
 
   const planned = await recordsForTextPass(
-    dir, 'clean', '', undefined, at === null ? undefined : at.id,
+    dir, 'clean', '', undefined, at === null ? undefined : at.id, minted,
   );
   const seed = newestCleanRecords(ledger, planned.records);
   const generation = readingGenerationOf(ledger, manifest);

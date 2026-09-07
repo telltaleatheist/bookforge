@@ -10,7 +10,7 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **688c888** — *feat(app): a queued act draws where it will land — pending nodes, chains on them, and the cascade (Wave 56)* |
+| Source sha | **88029f7** — *feat(app): chain anything — a deferred pass is named at spawn from the step it lands on* |
 | Copied on | 2026-09-07 |
 | Copied by | `git -C <foundry> archive 688c888 app | tar -x --strip-components=1` |
 
@@ -918,3 +918,18 @@ node. Foundry's own standalone queue carries the same hold/cascade. The host hal
 bac5b3d1 (`FoundryJobRequest.after` → `appendStep` onto the followed row's run;
 `queue-engine.removeStep`; `clearFinished` holds a settled root over a pending subtree).
 17 files, 139 blobs hash-verified, no dep movement.
+**88029f7 (copied 2026-09-07) — CHAIN ANYTHING, Owen's follow-up ruling the same night
+("I'd like to make it possible to chain anything and have it pick up required settings from the
+last step after it finishes ... translate -> simplify -> tts -> assembly"):** Wave 56's one refusal
+(a deferred simplify under a promised translate/simplify) is gone — the step id is minted at
+press and the records file is named at spawn from the landed ledger; a deferred pass is enqueued
+with a PLACEHOLDER records path (`readings/<key>.<action>[.<mode>].pending-<id8>.records.jsonl`,
+never written) that runJob rewrites to the real name once the parent lands. Two new optional row
+fields, copied verbatim off the request by the host: `row.into` (= `request.to`, a translation's
+target language) and `row.mode` (= `request.rewrite`), which only feed the promised card's
+wording. No IPC change. Documented gap (both sides): a deferred pass that resolves at spawn onto
+an EXISTING step lands as that step, its promised id never appears, and a child chained under the
+promised id fails at its own spawn with the cascade's sentence — re-parenting a live chain is not
+built. BookForge host side: 371244ef (Narrate on a pending export chains under a
+`foundry-export-landing` row) + the `into`/`mode` copy in this refresh. 7 files, 139 blobs
+hash-verified, no dep movement.

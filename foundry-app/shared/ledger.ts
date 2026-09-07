@@ -1926,6 +1926,67 @@ export function cleanRecordsFileFor(key: string, branch?: string): string {
 }
 
 /**
+ * THE NAME A DEFERRED PASS WEARS UNTIL IT CAN BE NAMED PROPERLY —
+ * `<key>.<action>[.<mode>].pending-<id8>.records.jsonl`.
+ *
+ * ── The ruling this exists to serve ─────────────────────────────────────────
+ *
+ * Owen, 2026-09-07: *"I'd like to make it possible to chain anything and have it
+ * pick up required settings from the last step after it finishes."* Wave 56 could
+ * not: a REWRITE's records file is named after the language the book is in at that
+ * position, and a promised translation on the way down changes that language while
+ * recording the answer nowhere this app can read (`pendingStepOf` — a promise
+ * carries no params, deliberately). So the plan refused by name, and a chain Owen
+ * had asked for in plain words was a dark button.
+ *
+ * ── THE STEP ID IS MINTED AT THE PRESS; THE FILE IS NAMED AT SPAWN ──────────
+ *
+ * The two used to be one decision (`translationTarget` answers both in a breath)
+ * and they are separable for a reason that matters: the STEP ID is the pending
+ * node's IDENTITY — the tree draws it, `Job.mints` carries it and a child ordered
+ * from the grayed card already names it as its `parentStep` — so it cannot wait.
+ * The FILE NAME is a fact about a language the chain will not state for hours, so
+ * it must. This composes the placeholder the row wears in between, and
+ * `materializeDeferred` (electron/job-queue.ts) re-asks the real namer with the
+ * SAME minted id the moment the parent lands.
+ *
+ * ── Deterministic and collision-free, which is the whole specification ──────
+ *
+ * `id8` of the step's own uuid, which is unique to this press by construction —
+ * two rewrites ordered from one promise are two ids and therefore two names, and
+ * the queue's dedupe (`pendingFor`) goes on telling them apart while they wait. It
+ * carries the ACTION and the MODE as well, which the id alone would not need,
+ * because a person who opens `readings/` mid-chain is owed a filename that says
+ * what is coming rather than a hex string.
+ *
+ * ── NO SUCH FILE IS EVER WRITTEN, and that is what makes the rename safe ────
+ *
+ * A plan creates the `readings/` directory and nothing in it; the engine writes the
+ * records at spawn, by which time the row carries the real name. So the placeholder
+ * lives only in a queue row and in a request — never on a disk, never as a step's
+ * payload, and never as something the sweep or `orphanedPayloads` could find.
+ *
+ * ── AND ONLY A REWRITE EVER NEEDS ONE ──────────────────────────────────────
+ *
+ * A translation is handed its target by the person pressing the button, and a
+ * cleanup goes into no language at all, so both compose their real name at the
+ * press exactly as they always have. The parameter is the family's rather than the
+ * rewrite's because the rule is *"a pass whose name needs a fact the promise cannot
+ * state"*, and the day a fourth pass has one it should not have to discover this
+ * function by rewriting it.
+ */
+export function pendingRecordsFileFor(
+  key: string,
+  action: 'translate' | 'simplify' | 'clean',
+  /** The step id minted at the press — `id8` of it is the tie-breaker. */
+  stepId: string,
+  mode?: RewriteMode,
+): string {
+  const rewrite = mode === undefined ? '' : `.${mode}`;
+  return `${key}.${action}${rewrite}.pending-${id8(stepId)}.records.jsonl`;
+}
+
+/**
  * THE RECORDS A TRANSLATE STEP MEANS — its own payload — or null for one made
  * before translations were records.
  *

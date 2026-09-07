@@ -701,6 +701,25 @@ test('a request that FOLLOWS a pending row joins that row\'s run, waits on it, a
   assert.strictEqual(mod.runs[2].ctx.step.id, epub.id);
 });
 
+test("a translation's target and a rewrite's mode ride on the row as into / mode — the promised card's words (foundry 88029f7)", async () => {
+  await fresh('chain-into-mode');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const tr = host.foundryHostQueue.enqueue({
+    kind: 'translate', inputPath: `${PROJ}\archive\book.pdf`, recordsPath: `${PROJ}\text\de.jsonl`,
+    to: 'de', stepId: 'step_future_de', after: root.id,
+  }, null, PROJ);
+  const si = host.foundryHostQueue.enqueue({
+    kind: 'simplify', inputPath: `${PROJ}\archive\book.pdf`, recordsPath: `${PROJ}\text\plain.jsonl`,
+    rewrite: 'plain', stepId: 'step_future_plain', after: tr.id,
+  }, null, PROJ);
+  assert.strictEqual(tr.into, 'de');
+  assert.strictEqual(tr.mode, undefined, 'a translate is not a rewrite');
+  assert.strictEqual(si.mode, 'plain');
+  assert.strictEqual(si.into, undefined);
+  assert.strictEqual(root.into, undefined);
+});
+
 test('a follow onto a row that is NOT in the queue is refused BY NAME, and nothing is queued', async () => {
   await fresh('chain-lost');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });

@@ -466,8 +466,25 @@ export class SimplifyDialogComponent {
        * that should not exist, and it is said rather than passed on as a blank
        * `--to`.
        */
+      /*
+       * ── AND A PROMISED CHAIN IS ALLOWED NOT TO KNOW IT YET ──────────────────
+       *
+       * Owen, 2026-09-07: *"I'd like to make it possible to chain anything and have
+       * it pick up required settings from the last step after it finishes."* A
+       * rewrite ordered from a promised translation happens in a language nothing
+       * can state until that translation lands, so the plan says so
+       * (`DeferredPlan.namesAtSpawn`) and the queue resolves both ends at spawn.
+       * The request goes out with no `to` and no `from`, which is the one window
+       * `SimplifyRequest` declares them optional for.
+       *
+       * THE REFUSAL BELOW IS UNTOUCHED FOR EVERY OTHER PRESS, and it is the same
+       * refusal it always was: main resolves the language for a landed position or
+       * throws, so a blank one arriving here is that failure by a route that should
+       * not exist and is said rather than passed on as an empty `--to`.
+       */
+      const deferred = plan.deferred;
       const to = plan.from ?? '';
-      if (to.length === 0) {
+      if (to.length === 0 && deferred?.namesAtSpawn !== true) {
         this.problem.set(
           'Foundry could not work out what language this book is in, so there is nothing to '
           + 'rewrite it in.',
@@ -489,8 +506,9 @@ export class SimplifyDialogComponent {
         // written by main when the plan was made. This window has no opinion about it.
         // ABSENT FOR A DEFERRED PLAN — the queue materialises it at spawn.
         ...(plan.bookPath !== undefined ? { bookPath: plan.bookPath } : {}),
-        to,
-        from: to,
+        // BOTH ENDS, OR NEITHER. They are one fact and the queue fills both in at
+        // spawn when the promised chain could not say it — see above.
+        ...(to.length === 0 ? {} : { to, from: to }),
         rewrite,
         model: this.model().trim() || DEFAULT_MODEL,
         ollama: this.ollama().trim() || DEFAULT_OLLAMA,

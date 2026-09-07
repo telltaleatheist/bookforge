@@ -199,8 +199,8 @@ import { fold } from '../shared/original';
 import { rowMinting } from '../shared/pending';
 import { JOB_RESOURCE, SLOTS, type JobResource } from '../shared/queue-board';
 import type {
-  AnalyzeRequest, ConversionKind, EnvInstallRequest, ExportLanding, ExportMintMetadata, FoundryJobRow, Job,
-  JobKind, JobRequest, TextPassRequest,
+  AnalyzeRequest, ConversionKind, DeferredPlan, EnvInstallRequest, ExportLanding, ExportMintMetadata,
+  FoundryJobRow, Job, JobKind, JobRequest, SimplifyRequest, TextPassRequest, TranslateRequest,
 } from '../shared/types';
 
 /**
@@ -338,7 +338,7 @@ function mintsOf(request: EngineRequest): string | undefined {
  * shapes that cannot carry one (a reading, an analysis) are narrowed away once
  * rather than at every reader.
  */
-function deferralOf(request: EngineRequest): { from: string } | undefined {
+function deferralOf(request: EngineRequest): DeferredPlan | undefined {
   if (request.kind === 'read' || request.kind === 'analysis') return undefined;
   return request.deferred;
 }
@@ -375,20 +375,34 @@ function chainedBehind(request: EngineRequest): string | undefined {
 }
 
 /**
- * The two promised-chain fields, spread onto a row by all three doors.
+ * The promised-chain fields, spread onto a row by all three doors.
  *
  * ONE SPREAD BECAUSE THREE DOORS MINT A ROW — `enqueueHere`, `enqueueTextPass` and
  * `runJob` — and `runJob`'s own docblock already names the hazard: *"a second way
  * of building one would be a second answer to what a job is."* The fields would be
  * copied correctly into all three today and into two of them the day a fourth
  * request shape arrives.
+ *
+ * ── AND TWO OF THEM ARE FOR THE CARD RATHER THAN THE SCHEDULER ──────────────
+ *
+ * `into` and `mode` say WHICH translation and WHICH rewrite this row is, so the
+ * grayed card the tree draws from it can read "Translated into German" instead of
+ * "Translated". They belong here rather than beside `titleForTextPass` because
+ * that function composes the SHELF's sentence and this one composes the promise —
+ * and `Job.into` exists precisely so that the tree never has to read a fact back
+ * out of a sentence. Both come off the request verbatim; a host copies them across
+ * the seam like the other two (docs/BOOKFORGE-HANDOFF.md §8b).
  */
-function promisedBy(request: EngineRequest): Pick<Job, 'mints' | 'after'> {
+function promisedBy(request: EngineRequest): Pick<Job, 'mints' | 'after' | 'into' | 'mode'> {
   const mints = mintsOf(request);
   const after = chainedBehind(request);
+  const into = request.kind === 'translate' ? request.to : undefined;
+  const mode = request.kind === 'simplify' ? request.rewrite : undefined;
   return {
     ...(mints !== undefined ? { mints } : {}),
     ...(after !== undefined ? { after } : {}),
+    ...(into !== undefined ? { into } : {}),
+    ...(mode !== undefined ? { mode } : {}),
   };
 }
 
@@ -402,10 +416,61 @@ function promisedBy(request: EngineRequest): Pick<Job, 'mints' | 'after'> {
  * whether `argsFor` is about to be handed a request that still thinks it is waiting
  * for something.
  */
-function withoutDeferral<T extends { deferred?: { from: string } }>(request: T): T {
+function withoutDeferral<T extends { deferred?: DeferredPlan }>(request: T): T {
   const copy = { ...request };
   delete copy.deferred;
   return copy;
+}
+
+/**
+ * THE ROW FOLLOWS ITS PRODUCT WHEN THE RE-PLAN MOVES IT — or the row is refused,
+ * because something else is already writing the file it just resolved onto.
+ *
+ * ── Why a row can be renamed at all, when nothing else in this queue is ─────
+ *
+ * `Job.outputPath` is settled at the enqueue for every job this app has ever run,
+ * and it should be: it is the identity `pendingFor` dedupes on and the thing a
+ * person is pointed at. A DEFERRED text pass is the one exception, and it is not a
+ * loophole — it is the consequence of Owen's ruling that a chain picks its settings
+ * up *"from the last step after it finishes"*. Some of what a records file is named
+ * after is not knowable until then: the language a rewrite happens in, and whether
+ * this ask turns out to be a re-run of a step that only exists once the parent
+ * lands. See `materializeDeferred`.
+ *
+ * ── THE DEDUPE IS ASKED AGAIN, AND IT IS THE WHOLE POINT OF THE FUNCTION ────
+ *
+ * The press dedupes on a name that was provisional, so two rewrites ordered from
+ * one promise are two rows that resolve to ONE file — and the queue's own rule is
+ * that a file has one live writer. Two engines appending answers to one records
+ * file is not a collision that shows up as a crash; it is six hours of a model and
+ * a file with two runs' answers interleaved in it. So the second row FAILS BY NAME,
+ * which is the shape every unmakeable plan in this app takes, and the sentence
+ * names the row that has the file.
+ *
+ * A ROW IN ANY OTHER STATE IS NOT A CLASH (`pendingFor` matches held, queued and
+ * running only): a run that finished an hour ago is history, and refusing a re-run
+ * because of it would make the shelf's own record the reason the work is impossible.
+ *
+ * ── AND IT ANNOUNCES, because the shelf is drawing the old path ─────────────
+ *
+ * The row's tooltip, its Reveal and the tree's project filter all read this field
+ * (`queue-view.service.ts`, `ledger.service.ts`), and a rename nobody was told
+ * about is a shelf pointing at a file that will never exist.
+ */
+function renameProduct(job: Job, resolved: EngineRequest): void {
+  const product = productOf(resolved);
+  if (samePath(product, job.outputPath)) return;
+  const clash = pendingFor(product);
+  if (clash !== undefined && clash.id !== job.id) {
+    throw new Error(
+      'This work was ordered from a step that had not finished yet, and now that it has, the answers '
+      + 'it would write belong in a file another job in the queue is already writing — so running it '
+      + 'would put two runs into one file. Nothing was written. Wait for that job to finish, then '
+      + 'order this again from the step it lands.',
+    );
+  }
+  job.outputPath = product;
+  changed();
 }
 
 /**
@@ -430,14 +495,50 @@ function withoutDeferral<T extends { deferred?: { from: string } }>(request: T):
  * the seeding rule, the stamp rule and the materialise rule have one implementation
  * and cannot drift between the two askings.
  *
- * ── WHAT IS MERGED IS ONLY WHAT WAS MISSING ─────────────────────────────────
+ * ── THE IDENTITY IS KEPT AND THE NAME IS TAKEN ──────────────────────────────
  *
- * The paths the promise already claimed — `recordsPath`, `stepId`, `outputPath`,
- * `readingsPath` — are KEPT, and that is deliberate rather than lazy. The tree drew
- * a card with `stepId` on it and a person chained work behind that id; taking the
- * re-plan's answer instead would let a run land under a step id nobody promised,
- * and every child in the chain would be orphaned at the moment its parent
- * succeeded. What is merged is the four or five fields the deferred plan left out,
+ * `stepId` is KEPT, always, and that is the one field this function must never
+ * take from the re-plan. The tree drew a card with that id on it and a person
+ * chained work behind it (`Job.mints`, `Job.parentStep`); landing under the id the
+ * second asking happened to mint would orphan every child in the chain at the
+ * moment its parent succeeded. So the press-time id is handed BACK INTO the plan
+ * (`recordsForTextPass`'s `minted`), which is what makes the two askings agree
+ * about one step rather than merely about one path.
+ *
+ * THE RECORDS PATH IS TAKEN, and Wave 56 kept it. That was right while the press
+ * could always name the file and is wrong now that it cannot always. Owen,
+ * 2026-09-07: *"I'd like to make it possible to chain anything and have it pick up
+ * required settings from the last step after it finishes."* Two things move it:
+ *
+ *   A PLACEHOLDER RESOLVING. A deferred rewrite under a promised translation could
+ *   not say which language it was happening in, so it wore
+ *   `<key>.simplify.<mode>.pending-<id8>.records.jsonl` and said so
+ *   (`DeferredPlan.namesAtSpawn`). Here the language is a fact and the real name
+ *   composes itself.
+ *
+ *   A RE-RUN RESOLVING LATE. `reRunTarget` compares the PARENT first, and at the
+ *   press no step is parented to a promise — so every deferred pass planned as a
+ *   branch, however exactly it repeated a pass that already existed under the row
+ *   about to land. With the parent landed the comparison can match, and Owen ruled
+ *   the landing should honour it: this run then aims at the step that already
+ *   exists and writes into ITS records, which is what makes a re-run nearly free.
+ *   `recordLanding` (shared/ledger.ts) already swaps rather than appends for exactly
+ *   this ask, so the two halves agree without either being told about the other.
+ *
+ * THE ROW'S `outputPath` MOVES WITH IT, because that path is three things at once
+ * (`productOf`): the file Reveal shows, the identity `pendingFor` dedupes on, and
+ * what `recordTextPass` files as the step's payload. A row left pointing at a
+ * placeholder would land a step whose payload is a file nobody ever wrote.
+ *
+ * AND THE DEDUPE IS ASKED AGAIN AGAINST THE REAL NAME, which is the check the
+ * press could not make: two rewrites ordered from one promise are two placeholders
+ * and dedupe apart, and may resolve to one file. The second fails by name rather
+ * than two engines appending to one records file for six hours.
+ *
+ * ── AND WHAT IS MERGED IS WHAT WAS MISSING ──────────────────────────────────
+ *
+ * `bookPath`, `seedRecords`, `generation` and the language — each of them an
+ * answer read off a book or a ledger walk that could not be made at the press, and
  * each named at its own plan.
  *
  * ── AND THE REFUSAL IS THE CASCADE'S LAST LINE ──────────────────────────────
@@ -451,7 +552,17 @@ function withoutDeferral<T extends { deferred?: { from: string } }>(request: T):
  * silent wrong answer this whole wave exists to prevent: an export of the book
  * WITHOUT the cleanup, filed under the name the cleaned one was going to have.
  */
-async function materializeDeferred(request: EngineRequest): Promise<EngineRequest> {
+async function materializeDeferred(
+  request: EngineRequest,
+  /**
+   * THE ROW THIS REQUEST BELONGS TO, because the name is not only a fact about a
+   * request. `Job.outputPath` is what the shelf reveals, what the dedupe compares
+   * and what the landing files as a payload, so a re-plan that moves the file has
+   * to move the row with it and say so (`changed()`). Both doors onto this function
+   * hold the row already.
+   */
+  job: Job,
+): Promise<EngineRequest> {
   const deferred = deferralOf(request);
   if (deferred === undefined) return request;
   const dir = projectDirOf(productOf(request));
@@ -479,18 +590,44 @@ async function materializeDeferred(request: EngineRequest): Promise<EngineReques
      * a run that could not be made.
      */
     const plan = request.kind === 'translate'
-      ? await planTranslation(request.inputPath, request.to, step)
+      ? await planTranslation(request.inputPath, request.to, step, undefined, request.stepId)
       : request.kind === 'simplify'
-        ? await planSimplification(request.inputPath, request.rewrite, step)
-        : await planCleanup(request.inputPath, step);
+        ? await planSimplification(request.inputPath, request.rewrite, step, undefined, request.stepId)
+        : await planCleanup(request.inputPath, step, undefined, request.stepId);
     const next = withoutDeferral(request);
     if (plan.bookPath !== undefined) next.bookPath = plan.bookPath;
     if (plan.seedRecords !== undefined) next.seedRecords = plan.seedRecords;
     if (plan.generation !== undefined) next.generation = plan.generation;
-    // `--from` is the chain's source language, and a cleanup has none to carry —
-    // `CleanRequest` does not declare the field, which is why this is asked of the
-    // two shapes that do rather than spread blindly.
+    /*
+     * ── THE NAME THE CHAIN CAN FINALLY SAY ────────────────────────────────────
+     *
+     * Taken whole, and the row moved with it — see this function's header for the
+     * two ways the re-plan legitimately moves a records file, and why keeping the
+     * press's answer instead would file a step pointing at nothing.
+     *
+     * THE STAMP TRAVELS WITH IT, because a cleanup's stamp is NAMED FROM the
+     * records file (`narrationStampFileFor`) and nothing else. Leaving it behind
+     * would put a `.stamp.json` beside a placeholder that never existed and hand
+     * the compile a receipt for the wrong file.
+     */
+    next.recordsPath = plan.recordsPath;
+    if (next.kind === 'clean' && plan.stampPath !== undefined) next.stampPath = plan.stampPath;
+    /*
+     * ── AND THE LANGUAGE, WHICH FOR A REWRITE IS BOTH ENDS ────────────────────
+     *
+     * `--from` is the chain's source language, and a cleanup has none to carry —
+     * `CleanRequest` does not declare the field, which is why this is asked of the
+     * two shapes that do rather than spread blindly.
+     *
+     * A REWRITE ALSO TAKES ITS `to` FROM HERE, and that is the half Owen's ruling
+     * added. Both ends of a rewrite are one fact (`SimplifyRequest.to`), the plan
+     * resolves it off the landed ledger exactly as an ordinary press would, and a
+     * deferred rewrite under a promised translation had no way to state it at the
+     * press. A translation's `to` was typed by a person and is never touched.
+     */
     if (next.kind !== 'clean' && plan.from !== undefined) next.from = plan.from;
+    if (next.kind === 'simplify' && plan.from !== undefined) next.to = plan.from;
+    renameProduct(job, next);
     return next;
   }
   if (request.kind === 'read' || request.kind === 'analysis') return request;
@@ -2129,6 +2266,30 @@ function bookOf(request: TextPassRequest): string {
   return request.bookPath;
 }
 
+/**
+ * THE LANGUAGE ON THE COMMAND LINE, or a refusal in main's own words —
+ * `bookOf`'s twin, for the field a rewrite can promise but not state.
+ *
+ * A translation's `--to` was typed by a person and is required on the shape. A
+ * REWRITE's is read off the chain (`SimplifyRequest.to`), and a rewrite ordered
+ * from a promised translation cannot read it until that translation lands — so
+ * `materializeDeferred` fills it in at spawn, and this is the guard that says so if
+ * it ever did not. A `--rewrite` with a blank `--to` is a run with nothing to tell
+ * the model to write in, which is six hours of a model being asked the wrong
+ * question rather than a crash.
+ */
+function languageOf(request: TranslateRequest | SimplifyRequest): string {
+  const said = request.to?.trim() ?? '';
+  if (said.length === 0) {
+    throw new Error(
+      'This rewrite was ordered from a step that had not finished yet, and the language it was to be '
+      + 'written in was never resolved — so there is nothing to tell the model to write. Order it '
+      + 'again from a step that exists.',
+    );
+  }
+  return said;
+}
+
 function argsFor(
   request: EngineRequest,
   /**
@@ -2293,7 +2454,7 @@ function argsFor(
        */
       '--book', bookOf(request),
       '--records', request.recordsPath,
-      '--to', request.to,
+      '--to', languageOf(request),
       '--model', request.model,
       '--ollama', request.ollama,
     ];
@@ -3027,7 +3188,7 @@ async function runInSlot(job: Job, slot: Slot): Promise<void> {
      */
     let request = held;
     try {
-      request = await materializeDeferred(held);
+      request = await materializeDeferred(held, job);
       if (request !== held) requests.set(job.id, request);
     } catch (err) {
       job.state = 'failed';
@@ -3804,7 +3965,14 @@ async function executeJob(next: Job, request: EngineRequest, wires: RunWires): P
       await recordTextPass(next.outputPath, {
         action: request.kind,
         parentStep: next.parentStep ?? null,
-        ...(request.kind === 'clean' ? {} : { language: request.to }),
+        /*
+         * A CLEANUP GOES INTO NO LANGUAGE, and a rewrite's is resolved at spawn
+         * (`SimplifyRequest.to`) — so this asks whether there is one rather than
+         * asserting there is. An absent one here is unreachable and not guarded
+         * against: `languageOf` refuses the command line without it, so a run that
+         * reached this landing was spawned with a language and carries it still.
+         */
+        ...(request.kind === 'clean' || request.to === undefined ? {} : { language: request.to }),
         ...(request.stepId !== undefined ? { stepId: request.stepId } : {}),
         ...(request.kind === 'simplify' ? { rewrite: request.rewrite } : {}),
       });
@@ -4255,7 +4423,7 @@ export async function runJob(
    */
   let spawning = request;
   try {
-    spawning = await materializeDeferred(request);
+    spawning = await materializeDeferred(request, job);
     if (spawning !== request) requests.set(job.id, spawning);
   } catch (err) {
     job.state = 'failed';

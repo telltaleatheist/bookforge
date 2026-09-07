@@ -147,6 +147,46 @@ export interface DeferredPlan {
    * by the plan of the row that is going to land it (`Job.mints`).
    */
   from: string;
+  /**
+   * THE RECORDS PATH ON THIS PLAN IS A PLACEHOLDER — the real one is composed at
+   * spawn, when the chain can finally say the fact the name depends on.
+   *
+   * ── Owen, 2026-09-07 ──────────────────────────────────────────────────────
+   *
+   * *"I'd like to make it possible to chain anything and have it pick up required
+   * settings from the last step after it finishes. So I should be able to chain
+   * translate -> simplify -> tts -> assembly. Everything should come together
+   * logically and work."*
+   *
+   * Wave 56 could not chain a REWRITE onto a promised translation or rewrite, and
+   * refused by name: a rewrite's file is named after the language the book is in at
+   * that position, and a promised pass that moves the book between languages
+   * records that answer nowhere this app can read. This field is the answer — the
+   * plan admits it could not name the file, composes a placeholder that is unique
+   * to this press (`pendingRecordsFileFor`, shared/ledger.ts), and the re-plan at
+   * spawn names it properly with the SAME step id.
+   *
+   * ── WHAT IS PROMISED IS THE ID, NOT THE PATH ───────────────────────────────
+   *
+   * `DeferredPlan`'s header says the plan composes everything DETERMINISTIC now,
+   * and the step id still is: it is minted at the press, it is what the tree draws,
+   * and a child ordered from the grayed card already names it as its parent. The
+   * PATH is the one thing on that list that was never deterministic for a rewrite,
+   * and pretending otherwise is what produced the refusal. So the two decisions —
+   * one identity, one filename — are separated, and only the second waits.
+   *
+   * ── ABSENT IS EVERY OTHER DEFERRAL ─────────────────────────────────────────
+   *
+   * A translation is handed its target language by the person, and a cleanup goes
+   * into no language at all: both compose their real name at the press. Absent
+   * means the path on this plan is the path the run will use — which is what every
+   * deferred plan before this claimed, and what the two of them still claim.
+   *
+   * `true` OR ABSENT, never `false`. This codebase reads absence as the answer
+   * (`identityOf`'s rule, shared/ledger.ts), and a `namesAtSpawn: false` would be a
+   * second spelling of the ordinary case for a reader to tell apart from the first.
+   */
+  namesAtSpawn?: true;
 }
 
 /**
@@ -801,8 +841,37 @@ export interface TranslateRequest {
  * matching pair by design, and telling the model what it is holding is worth a
  * flag even when it could see for itself.
  */
-export interface SimplifyRequest extends Omit<TranslateRequest, 'kind'> {
+export interface SimplifyRequest extends Omit<TranslateRequest, 'kind' | 'to' | 'from'> {
   kind: 'simplify';
+  /**
+   * THE BOOK'S OWN LANGUAGE, BOTH ENDS OF IT — and OPTIONAL here where a
+   * translation's `to` is required, which is the whole of what Owen's chain-anything
+   * ruling cost this shape.
+   *
+   * ── Why a translation can promise it and a rewrite cannot ──────────────────
+   *
+   * A translation's target is TYPED BY A PERSON: the dialog asks for it and the
+   * request carries it whatever else is unknown. A rewrite's language is READ OFF
+   * THE CHAIN — the translation in effect at the position, or the book's declared
+   * language — and under a promised translation or rewrite there is no chain to
+   * read yet (`pendingStepOf`: a promise carries no params, deliberately). Wave 56
+   * refused that press outright; Owen, 2026-09-07: *"Everything should come
+   * together logically and work."*
+   *
+   * SO IT IS ABSENT FOR EXACTLY AS LONG AS THE PROMISE IS A PROMISE, on
+   * `bookPath`'s own rule one shape up, and `materializeDeferred` fills BOTH ends
+   * in at spawn out of the re-plan's `from` — the same value, because a rewrite's
+   * two ends are one fact. `argsFor` refuses a rewrite that reaches the command
+   * line without it, by name, because a `--rewrite` with no `--to` is a run with
+   * nothing to tell the model to write in.
+   *
+   * A REQUEST WITH NO `deferred` ALWAYS CARRIES IT. Absence is not a state the
+   * Simplify dialog can produce on its own: it refuses in words when main could not
+   * resolve a language for a landed press (see the dialog's `add`).
+   */
+  to?: string;
+  /** The same fact as `to`, said to the engine as the other end. See above. */
+  from?: string;
   /**
    * `--rewrite`: SAY THE BOOK AGAIN IN ITS OWN LANGUAGE, this way.
    *
@@ -1298,6 +1367,52 @@ export interface Job {
    * means "start when the board has room", exactly as before.
    */
   after?: string;
+  /**
+   * WHICH LANGUAGE A PROMISED TRANSLATION IS GOING INTO — `TranslateRequest.to`,
+   * copied onto the row verbatim, and set on nothing else.
+   *
+   * ── Why the row carries a fact where it already carries a sentence ─────────
+   *
+   * The tree draws a promised card out of `pendingStepOf`, which composes a step
+   * with NO PARAMS on purpose — a promise records nothing, and `withPending` puts
+   * that step into the ledger every `…InEffect` walk reads. So the card said
+   * "Translated" with no language and "Simplified" with no mode, which Wave 56
+   * shipped as an honest limitation and Owen reopened: a person looking at three
+   * grayed cards cannot tell which is the German one.
+   *
+   * `Job.title` KNOWS BOTH ALREADY AND IS THE WRONG PLACE TO ASK. It is a SENTENCE
+   * ("Simplify — plain terms") and this codebase does not read facts back out of
+   * sentences — the rule `pendingStepOf` states and `labelFor` was written to keep.
+   * So the FACT goes on the row beside the sentence, and the tree composes the
+   * card's words from it with the same function that will say them once the step
+   * is real.
+   *
+   * IT IS NOT `params` ON THE PROMISE, and that is the line that keeps the ledger
+   * honest: a synthetic step carrying params would put a claim about a language
+   * into the composed ledger, and `translationInEffect` would answer a question
+   * about a run that has not happened. The card is display; the walk is fact.
+   *
+   * ── OPTIONAL, AND A HOST THAT HAS NOT RE-VENDORED DRAWS THE OLD CARD ───────
+   *
+   * A host mints its own row out of the request (`FoundryHostQueue.enqueue`) and
+   * must copy this across like `mints` and `after` — docs/BOOKFORGE-HANDOFF.md §8b
+   * names it required at the next re-vendor. Until then it is simply absent, and
+   * the card falls back to the wording Wave 56 shipped rather than failing to draw.
+   */
+  into?: string;
+  /**
+   * WHICH REWRITE A PROMISED SIMPLIFY IS — `SimplifyRequest.rewrite`, copied onto
+   * the row verbatim, and set on nothing else. `into` above carries the whole
+   * argument; this is the same argument for the other text pass whose promised card
+   * could not say which one it was.
+   *
+   * TWO FIELDS AND NOT ONE, because they are two facts of two types. A single
+   * `into` holding a language tag for one kind and a rewrite mode for another would
+   * be told apart by `Job.kind` at every reader and typed as `string` at all of
+   * them — which is a cast waiting to be got wrong, in exchange for one line of
+   * declaration.
+   */
+  mode?: RewriteMode;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -1318,7 +1433,14 @@ export interface Job {
  * ask whose job. This name says whose. Nothing is added and nothing is optional
  * that was not — a widening here would be a widening of the shelf.
  *
- * ── THE TWO FIELDS A HOST HAS TO COPY, AS OF 2026-09-07 ────────────────────
+ * ── THE FOUR FIELDS A HOST HAS TO COPY, AS OF 2026-09-07 ───────────────────
+ *
+ * `into` and `mode` joined the two below with Owen's chain-anything ruling. They
+ * are what a promised card says it is — the language a promised translation is
+ * going into, the rewrite a promised simplify is — and they come off the request
+ * verbatim (`request.to`, `request.rewrite`) exactly as the other two do. A row
+ * pushed back without them still draws: the card falls back to "Translated" and
+ * "Simplified" without the fact, which is what Wave 56 shipped.
  *
  * `Job` grew `mints` and `after` for the pending-node feature, and because this is
  * the same type they are on a host's rows by DECLARATION. That is not the same as

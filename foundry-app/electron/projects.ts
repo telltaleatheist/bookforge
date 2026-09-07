@@ -166,6 +166,7 @@ import {
   originStep,
   parseLedger,
   pendingBeside,
+  pendingRecordsFileFor,
   positionOf,
   positionView,
   reRunTarget,
@@ -4387,6 +4388,27 @@ export async function recordsForTextPass(
    * only so a caller passing a resolved-or-null id does not have to convert it.
    */
   parent?: string | null,
+  /**
+   * THE STEP ID TO SPEND ON A BRANCH, when one has already been minted and
+   * promised to somebody.
+   *
+   * ── Owen's chain-anything ruling, in one parameter ─────────────────────────
+   *
+   * A deferred pass is planned TWICE — once at the press, where the id is minted
+   * and the tree draws a card with it, and once at spawn, where the real name is
+   * composed off the landed ledger (`materializeDeferred`, electron/job-queue.ts).
+   * Left to itself the second asking would mint a SECOND uuid, and a branch named
+   * `<key>.<tag>.<id8>` would take its `id8` from an id nothing on screen ever
+   * carried. So the spawn hands back the id the press promised, and the file and
+   * the step agree again.
+   *
+   * IT IS SPENT ONLY ON A BRANCH, which is `translationTarget`'s own rule and is
+   * why this changes nothing about a replace: a re-run aims at the step that
+   * already exists and takes that step's paths and that step's id.
+   *
+   * ABSENT MINTS ONE, which is every ordinary press.
+   */
+  minted?: string,
 ): Promise<PlannedTranslation> {
   const manifest = await readManifest(dir);
   const ledger = ledgerOf(manifest);
@@ -4420,12 +4442,51 @@ export async function recordsForTextPass(
       key: manifest.key,
       ...(rewrite !== undefined ? { rewrite } : {}),
     },
-    randomUUID(),
+    minted ?? randomUUID(),
   );
   return {
     recordsPath: path.join(dir, ...target.records.split('/')),
     records: target.records,
     stepId: target.stepId,
+  };
+}
+
+/**
+ * THE PLACEHOLDER A DEFERRED PASS WEARS UNTIL THE CHAIN CAN NAME IT — the step id
+ * minted now, the file named later.
+ *
+ * ── Why this is not `recordsForTextPass` with a flag ────────────────────────
+ *
+ * Because it asks the ledger NOTHING, and that is the entire point. Every line of
+ * that function is about a question the ledger can answer — is this ask a re-run of
+ * a step that exists, is the plain name taken, which namer does this act use — and
+ * a pass whose LANGUAGE the chain cannot yet state has no business asking any of
+ * them: the answers would be composed from a fact that is not in yet. A `pending`
+ * flag threaded through it would be a branch bypassing the whole body, which is a
+ * second function wearing the first one's name.
+ *
+ * SO IT MINTS AN ID AND COMPOSES A NAME, and that is all it is. The id is what the
+ * tree draws, what `Job.mints` carries and what a child ordered from the grayed
+ * card names as its parent; the name is a unique string that no step will ever
+ * hold, thrown away at spawn when `recordsForTextPass` is asked properly with this
+ * same id (`pendingRecordsFileFor`, shared/ledger.ts, argues the spelling).
+ *
+ * NOTHING IS WRITTEN. The caller makes `readings/` and the engine writes the
+ * records at spawn, by which time the row carries the real path — so no placeholder
+ * ever exists on a disk to be swept, orphaned or mistaken for somebody's answers.
+ */
+export async function pendingRecordsForTextPass(
+  dir: string,
+  action: 'translate' | 'simplify' | 'clean',
+  rewrite?: RewriteMode,
+): Promise<PlannedTranslation> {
+  const manifest = await readManifest(dir);
+  const stepId = randomUUID();
+  const records = `${READINGS}/${pendingRecordsFileFor(manifest.key, action, stepId, rewrite)}`;
+  return {
+    recordsPath: path.join(dir, ...records.split('/')),
+    records,
+    stepId,
   };
 }
 

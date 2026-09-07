@@ -206,6 +206,14 @@ export interface FoundryJobRequest {
   after?: string;
   stepId?: string;
   forStep?: string;
+  /**
+   * The two facts a PROMISED card's wording needs (foundry@88029f7, "chain
+   * anything"): a translation's target language and a rewrite's mode. Copied
+   * onto the row as `into` / `mode`; a host that did not would draw the plainer
+   * Wave 56 card, and Foundry says so in its own declaration.
+   */
+  to?: string;
+  rewrite?: string;
   [field: string]: unknown;
 }
 
@@ -262,6 +270,10 @@ export interface FoundryJobRow {
    */
   mints?: string;
   after?: string;
+  /** Their fields (foundry@88029f7): the promised card says "Translated into
+   *  German" / "Simplified — plain terms" off these, never off the title. */
+  into?: string;
+  mode?: string;
   createdAt: number;
   startedAt?: number;
   finishedAt?: number;
@@ -592,6 +604,8 @@ function rowOf(step: QueueStep): FoundryJobRow {
     ...(typeof request?.forStep === 'string' ? { forStep: request.forStep } : {}),
     ...(typeof request?.stepId === 'string' ? { mints: request.stepId } : {}),
     ...(typeof request?.after === 'string' ? { after: request.after } : {}),
+    ...(typeof request?.to === 'string' ? { into: request.to } : {}),
+    ...(typeof request?.rewrite === 'string' ? { mode: request.rewrite } : {}),
     createdAt: Date.parse(step.addedAt),
     startedAt: step.startedAt ? Date.parse(step.startedAt) : undefined,
     finishedAt: step.finishedAt ? Date.parse(step.finishedAt) : undefined,

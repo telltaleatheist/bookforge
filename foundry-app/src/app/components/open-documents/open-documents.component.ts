@@ -2557,11 +2557,10 @@ export class OpenDocumentsComponent {
           path: file !== null ? promise.outputPath : project.dir,
           // WHAT `titleForStep` WILL SAY ONCE IT LANDS, out of the same function
           // that will say it — so the card does not change its wording when the
-          // promise becomes a fact. A promise carries no params, so a translation
-          // reads "Translated" without the tag it will wear later; that is the
-          // honest amount for a promise to claim (`pendingStepOf`).
+          // promise becomes a fact. See `promisedTitle` for the two facts that
+          // reach it off the ROW rather than off the params a promise has none of.
           title: node !== null
-            ? titleForStep(node)
+            ? promisedTitle(node, promise)
             : exportLabel(EXPORT_LABEL_OF[promise.kind] ?? 'epub'),
           state,
           icon: node !== null ? iconForStep(node) : 'ft-out',
@@ -4660,6 +4659,40 @@ function titleForStep(step: LedgerStep): string {
     default:
       return translateSentence(step.params);
   }
+}
+
+/**
+ * WHAT A GRAYED CARD SAYS IT IS GOING TO BE — the landed card's own sentence, with
+ * the one fact a promise can honestly claim read off the QUEUE ROW.
+ *
+ * ── The gap this closes, and why it was a gap at all ────────────────────────
+ *
+ * A pending step carries no `params`, deliberately and permanently: it is composed
+ * into the ledger every `…InEffect` walk reads (`withPending`), and a promise that
+ * recorded facts there would let those walks answer questions about a run that has
+ * not happened. So Wave 56's promised cards read "Translated" and "Simplified" —
+ * honest, and useless in front of three grayed rows where one is the German one.
+ *
+ * THE FACT IS ON THE ROW, WHICH IS WHERE THE QUEUE'S FACTS LIVE. `Job.into` is the
+ * language a translation was asked for and `Job.mode` is the rewrite a simplify was
+ * asked in, both copied off the request by main and neither read out of
+ * `Job.title` — that is a SENTENCE, and this codebase does not read facts back out
+ * of sentences (`pendingStepOf`, shared/pending.ts).
+ *
+ * THE WORDS ARE THE LANDED CARD'S, out of the same two tables, so the card does not
+ * change its wording the instant the promise becomes a step.
+ *
+ * AND A ROW WITHOUT THEM FALLS BACK, which is not a corner: a host mints its own
+ * rows and must copy the fields across (docs/BOOKFORGE-HANDOFF.md §8b), so a host
+ * that has not re-vendored draws exactly the card Wave 56 drew rather than nothing.
+ */
+function promisedTitle(node: LedgerStep, promise: Job): string {
+  if (node.action === 'simplify' && promise.mode !== undefined) return REWRITTEN_AS[promise.mode];
+  const into = promise.into?.trim() ?? '';
+  if (node.action === 'translate' && into.length > 0) {
+    return `Translated into ${languageNameFor(into)}`;
+  }
+  return titleForStep(node);
 }
 
 /**
