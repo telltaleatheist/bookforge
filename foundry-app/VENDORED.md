@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **be61db0** — *Merge remote-tracking branch 'origin/fix/export-path-separator'* (tip of e4987ca / 75236ab / ed4d218 / d463ad6) |
+| Source sha | **f761f8a** — *feat(mount): foundryWindow() is exported through the seam — a host tests the focused window against the fact, not a capture* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive be61db0 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive f761f8a app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -953,3 +953,8 @@ press). Also in `e4987ca`: the sweep has a third verdict BLOCK (strike the whole
 hover glance, and the cut/keep pill fills its column. `d463ad6`: a chained pass is deduped on what
 it is, not on the name it does not have yet. No IPC channel added or renamed (`IPC-CHANNELS.md`
 refreshed, byte-identical to `be61db0:docs/`). 9 files, 139 blobs hash-verified, no dep movement.
+**f761f8a (copied 2026-09-07) — `foundryWindow()` crosses the mount seam** (one line in mount.ts:
+`export { foundryWindow } from './window'`; null before the window opens and after it closes).
+BookForge's darwin Edit menu now tests `BrowserWindow.getFocusedWindow()` against it instead of
+against a `browser-window-created` capture that was right only while Foundry opens one window.
+1 file, 139 blobs hash-verified, no IPC change, no dep movement.

@@ -124,6 +124,18 @@ export type { FoundryHost, HostOperation };
 export type { ExportLanding };
 export { hostedLibraryDir } from './host';
 /*
+ * THE WINDOW ITSELF, for a host that has to know whether the focused window is
+ * this one. BookForge's Edit menu on a Mac routes Cmd+Z to `menu:action` when
+ * Foundry's window is focused and to the platform undo otherwise (2026-09-07,
+ * the hosted-Mac half of the undo chord), and it was recognising the window by
+ * capturing `browser-window-created` during `openFoundryWindow` — a capture
+ * that is right today because this app opens exactly one window, and would be
+ * silently wrong the day it opens two. An accessor is the fact; a capture is
+ * an inference about it. Null before the window is opened and after it closes,
+ * which every caller already has an answer for.
+ */
+export { foundryWindow } from './window';
+/*
  * THE HOST-OPERATIONS SOCKET, re-exported through the seam a host actually
  * imports. `setHostNodes` is the push door — see electron/host-ops.ts — and the
  * types are here so a host can declare its operations array without reaching
