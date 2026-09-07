@@ -266,6 +266,75 @@
       "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
     },
     {
+      "id": "owen",
+      "label": "Owen Morgan (Higgs v3 fine-tune)",
+      "kind": "checkpoint",
+      "_targetCharsNote": "THE CHUNK SIZE THE CODE PACKS TO, PER ARM (backends.served.targetChars / backends.mlx.targetChars), set by the trainer after training from the training clips' text lengths. Owen, 2026-09-05: 'maxChars is what the model was trained to do, and targetChars can be what the system actually uses. maxChars is informative, targetChars is used by the code directly.' The prep's cap AND merge floor: consecutive short paragraphs travel together until the next would overflow it, a paragraph already at it stands alone, walls stay walls. Never above the arm's maxChars - both sides refuse that by name. A fine-tune with no targetChars cannot be prepped. INTERIM VALUES (Owen, 2026-09-05 evening: 'set it to deathstalker's theoretical maximum of about 80 seconds'): each arm's certified maximum - served 1200 (~71 s at the measured 5.9 audio-s per 100 chars; the served sweep dropped text at 1500), MLX 900 (its sweep dropped text at 1200). MEASURED the same evening on both arms: this checkpoint ENDS ITSELF at ~1,980 frames (~79-82 s) whatever the server ceiling - a 2,173-char render on the Mac gave 79 s with the middle skipped (coverage 0.306) - so no target above ~1,350 chars can work on this checkpoint; the retrain that favours longer clips states its own numbers here, with the method in targetCharsSource.",
+      "engineVersion": "v3",
+      "voice": {
+        "checkpoint": {
+          "wsl": "/home/telltale/higgs_v3_merged/owen_gp2w_prod",
+          "darwin": "runtime/higgs-models/owen_gp2w_prod"
+        }
+      },
+      "source": {
+        "type": "hf",
+        "ref": "owenmorgan/owen-morgan-higgs-v3"
+      },
+      "_sourceNote": "WHERE A MACHINE DOWNLOADS THIS CHECKPOINT FROM (Settings -> Higgs -> Download): a PRIVATE HuggingFace repo under Owen's account, uploaded from the WSL directory on the 2026-09-07 promotion (see _promotionNote for the sha256 that a downloaded copy must match).",
+      "_checkpointArmNote": "TWO ARMS, TWO COPIES. wsl: /home/telltale/higgs_v3_merged/owen_gp2w_prod -- the merged HF directory the training session wrote on the PC (owen_gp2w train: God's People paragraphs as the long tier + God's People and WHAA sentences as the short tier, 411 rows / 7.8 h; early stop at step 475; ladder pick ckpt-425; 8.0 GB; generation_config.json T1.0/top_p 0.95/top_k 50 written at run creation, overridden per request by the engine-level 0.8/0.95/50). darwin: the SAME directory copied to the Mac under BookForge's app-support runtime (~/Library/Application Support/BookForge/runtime/higgs-models/owen_gp2w_prod) on 2026-09-07 -- rsync from WSL, sha256-verified against the WSL dir; until it lands the MLX arm refuses this voice by name, which is the honest state.",
+      "_checkpointDirNote": "wsl: /home/telltale/higgs_v3_merged/owen_gp2w_prod is what the served arm renders; darwin: runtime/higgs-models/owen_gp2w_prod (under the Mac app-support dir) is what the MLX arm renders once the copy lands. The served numbers and the mlx block bind to THESE directories; a re-merge under the same name is a different model and re-measures.",
+      "license": "boson-higgs-tts-3-research-noncommercial",
+      "commercialUse": false,
+      "sampleRate": 24000,
+      "addedAt": "2026-09-07",
+      "backends": {
+        "served": {
+          "maxChars": 1687,
+          "maxCharsSource": "catalog",
+          "_maxCharsSourceNote": "'catalog' = declared here from the training data, not measured by a length sweep. OWEN'S RULE (2026-09-07): 'max chunk is what we trained on' -- the served max is the LONGEST TRAINING ROW of this directory's own corpus. owen_gp2w mix (build.log): 411 train rows, chars p50 793 / p75 1080 / p90 1407 / MAX 1687; seconds p50 49 / p90 87 / max 100; the recipe's served cap was 900 (160 rows, 38.9%, at or above it). Ladder evidence on this directory at 0.8/0.95/50: shape bank PS 0.261 [0.14,0.38] (11 early stops + 1 run-on of 46; failing classes micro/target/long/emdash/names, the same shapes as deathstalker); served-shape prose bank (Fuhrer-49, 50 renders, 26-1190 chars) PS 0.180 [0.083,0.285]. The narrator accepts only catalog | placeholder | length-sweep in maxCharsSource.",
+          "targetChars": 1000,
+          "targetCharsSource": "Owen, 2026-09-07 ('target is 1000, same as deathstalker'): the packer's chunk size, below the corpus p75 (1080) so most chunks fall where the training distribution is dense; ~61 s of audio at the measured pace 16.32 chars/s.",
+          "_maxCharsNote": "1687 = the training ceiling, see _maxCharsSourceNote. No length-sweep certificate exists for this directory; if one is run (the deathstalker 2026-09-05 sweep is the model: babble==0 across seeds AND min per-seed coverage >= 0.90, contiguous from the shortest tested length, scored by ASR alignment and never by duration ratio), record it here with maxCharsSource 'length-sweep'.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        },
+        "mlx": {
+          "_comment": "THE MAC'S OWN BLOCK FOR THIS FINE-TUNE, UNMEASURED: 900 mirrors deathstalker's MLX certificate (its sweep dropped text at 1200 where the served arm held), borrowed for the same architecture until this voice is swept on the Mac. targetChars cannot exceed the arm's maxChars (both sides refuse it), so the served target 1000 does not apply here until the MLX cap is measured above it.",
+          "maxChars": 900,
+          "maxCharsSource": "placeholder",
+          "targetChars": 900,
+          "targetCharsSource": "interim (2026-09-07): deathstalker's MLX certificate maximum, borrowed for the same architecture until this voice is swept on the Mac",
+          "_maxCharsNote": "900, a PLACEHOLDER borrowed from deathstalker's MLX certificate; not measured on owen_gp2w_prod.",
+          "edgeFadeMs": {
+            "in": 10,
+            "out": 25
+          },
+          "referenceSecondsCap": 30,
+          "allowedControls": []
+        }
+      },
+      "pace": {
+        "median": 16.32,
+        "mean": 15.98,
+        "p05": 14.62,
+        "p95": 16.84,
+        "p99": 17.76,
+        "n": 23,
+        "method": "as deathstalker",
+        "source": "served arm at temperature 0.8 on owen_gp2w_prod: night3/gp/para (Fuhrer-49 bank, 50 renders, 23 clean by the pace rule; pace_owen_whaa_served.json carries p1 14.27 / p5 14.62 / median 16.32 / mean 15.98 / p95 16.84 / p99 17.76, n_clean, clean_rule, band_rule). Band by BookForge's rule: max = p99 x 1.15 = 20.42, min = p5 / 1.15 = 12.71. One pace per voice, both arms.",
+        "measuredOn": "2026-09-07"
+      },
+      "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S BAND IS DERIVED FROM IT WITH HEADROOM, never from the median (Owen: 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11'): maxCharsPerSec = p99 x 1.15 = 19.24 (above it a take is too SHORT - an early stop) and minCharsPerSec = p05 / 1.15 = 11.63 (below it a take RAN ON - a babble tail); the Orpheus p99 x 1.15 rule on both edges. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker). NOTE: mistborn paces 11 % slower than deathstalker (p05 13.38 sits UNDER the 14.5 default long edge), which is why the band is per voice.",
+      "_promotionNote": "2026-09-07 16:3x, Owen: 'promote the best one. we dont have a higgs owen morgan model yet so were just installing it on mac, local, and HF' and 'record the CPS, max chunk size, and target chunk size. target is 1000, same as deathstalker. this part should be a normal part of deployment'. Ladder over the 4 lowest-holdout checkpoints of owen_gp2w (400/475/450/425): pick ckpt-425 by primary score 0.261 (holdout 3.8598; the lowest-loss ckpt-400 scored 0.283 -- one render apart, resolved by the rule). Record: E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs/night3/gp/ (pick_ckpt.log, shape/, para/, pace_owen_whaa_served.json, merge_sha256.txt). model.safetensors sha256 ab2ed09bad55e3faa12f6c681048c07f0f01b0bd0e928a71322a3039b77a03c1 -- the value all three copies (WSL, Mac, HF) must match..",
+      "note": "The Owen Morgan narrator (God's People + Was Hitler an Atheist? sentences) as a merged Higgs v3 fine-tune -- the first Higgs Owen Morgan model; before it the only Higgs route for this voice was the zero-shot clip entry. Promoted 2026-09-07 on Owen's word to all three places: this PC (served arm), the Mac (MLX arm copy) and HuggingFace (source.ref).",
+      "_kindNote": "kind 'checkpoint' — a MERGED fine-tune directory the server is started on, prompted TEXT-ONLY. No clips key: the voice is in the weights. It was called 'adapter' until 2026-09-04, which described the artifact we trained rather than the artifact that SERVES: vllm-omni has no runtime LoRA path, so the LoRA is an archival input to a merge and never a catalog field."
+    },
+    {
       "id": "zeroshot-thirdreich",
       "label": "Zero-shot · Third Reich (reference clip on base Higgs v3)",
       "kind": "clips",
@@ -333,7 +402,7 @@
       "sampleRate": 24000,
       "addedAt": "2026-09-06",
       "_zeroShotNote": "ZERO-SHOT: the BASE Higgs v3 weights (bosonai/higgs-audio-v3-tts-4b, the HF-cache snapshot the launcher falls back to when HIGGS_MODEL_DIR is unset - the same server a `default` voice runs on) conditioned by ONE reference clip in every request. Asked for by Owen 2026-09-06 ('give me a zero shot option on the higgs/narration modal'). THE CLIP lives PERMANENTLY in the models area - <userData>/runtime/higgs-models/refs/<path> on every machine (Windows: %APPDATA%\\BookForge\\runtime\\higgs-models\\refs; Mac: ~/Library/Application Support/BookForge/runtime/higgs-models/refs), beside runtime/higgs-models/base and next to runtime/orpheus-models; a bare file name here resolves against that folder (higgsReferenceClipPath) and is refused by name if the file is not there. Owen, 2026-09-06: 'ref clips can be saved permanently in the same area where models are saved.' NOT in the repo - it is a voice artifact staged per machine like a checkpoint. Chosen by the training session from its TREATED corpus (denoised, bed-normalized: the clone copies whatever noise the clip carries), one clean ~15 s clip rather than two joined; its transcript is the corpus row's book-exact text (no digits, no quotes). Training's length guidance: 12-16 s (HIGH that it works - a 13.2 s clip drove a whole 37-chunk subset on SGLang; MEDIUM that it is optimal, length not swept). COST: ~25 placeholder positions per second of reference plus the transcript, charged to SGLang-Omni's hard 4096 context by narrator's sgl_served.reference_token_bound; at 600 chars the frame cap keeps its full 2.0x ceiling. HOW IT RIDES: on SGLang-Omni as `references: [{data: <base64 wav>, media_type, text}]` - the SpeechReference `data` branch, which never touches the server's filesystem (no --allowed-local-media-path); on vllm-omni as one data: URI; on the Mac's MLX arm encoded once at load. SAMPLING on the served arm is narrator's SERVER_DEFAULT_SAMPLING (T 1.0 / top_p 0.95 / top_k 50 - the numbers every training run used; the base snapshot ships NO generation_config.json, so there is nothing to read); the `sampling` block below is a MIRROR of that for the reader, not a source. Training's LOW-confidence preference for T 0.8 on base is recorded here and not applied - unmeasured. EXPECT the fine-tunes' ~1-in-10 retake rate or worse (run-ons and early stops are stochastic per render); chunk-to-chunk identity drift is UNMEASURED for zero-shot. Identity of a clone against the narrator: ~0.68 cosine one clip vs 0.766 self-ceiling (see _referenceComment), i.e. 92 % of the fine-tune's identity and none of its phrasing.",
-      "_relationNote": "no Higgs fine-tune exists for this voice; base + clip is its only Higgs route",
+      "_relationNote": "a DIFFERENT PRODUCT from the `owen` fine-tune (promoted 2026-09-07), not a second route to it: base weights + this clip. Until 2026-09-07 this read 'no Higgs fine-tune exists for this voice' and was the only Higgs route.",
       "backends": {
         "served": {
           "maxChars": 600,
