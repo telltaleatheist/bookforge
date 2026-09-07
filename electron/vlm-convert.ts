@@ -176,7 +176,8 @@ function renderPythonArgs(): string[] {
       'Converting a PDF needs a Python with PyMuPDF in it to turn each page into a picture — '
       + 'that happens on this machine even when a server reads the pages. None of these has it:',
       ...tried.map((t) => `  ${t}`),
-      'Install the bundled environment in Settings → Add-ons, or set FOUNDRY_VLM_PYTHON to an '
+      'Point the Tools Python environment at one in Settings → Advanced (BookForge installs its own '
+      + 'on first run; a packaged build re-downloads it from the same place), or set FOUNDRY_VLM_PYTHON to an '
       + 'interpreter that has PyMuPDF. Nothing was converted.',
     ].join('\n'));
   }
