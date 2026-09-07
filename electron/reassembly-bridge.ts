@@ -18,7 +18,7 @@ import * as manifestService from './manifest-service';
 import { enhanceSentences, rvcEnhancementReady } from './rvc-bridge';
 import { normalizeSentenceGaps } from './denoise-bridge';
 import { getRvcVoiceById, resolveRvcIndexRate } from './rvc-models';
-import { registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
+import { renderBesideRecordingFilename, registerRvcAudiobookVariant, resolveRvcVariantFiling } from './audiobook-variant-filing';
 import { sumFlacDurationsSeconds } from './flac-duration';
 import { resolveOrpheusPostRenderFilter, resolveOrpheusSentenceGap, resolveOrpheusMinChunkGap, DEFAULT_SENTENCE_GAP } from './orpheus-models';
 import { regenerateBoundSidecars } from './sidecar-migration';
@@ -2167,9 +2167,22 @@ export async function startReassembly(
         // A run filing a SECOND version uses the name that carries its voice, so
         // the two readings sit beside each other instead of one overwriting the
         // other on the way in.
+        // A RENDER BESIDE A HUMAN RECORDING IS NAMED AFTER ITS VOICE. The fold in
+        // manifest-service files it as a second version; this gives that version a
+        // filename of its own, which is what keeps it a separate download and a
+        // separate resume position on the phone (humanRecordingHoldsBaseSlot).
+        let besideRecordingName: string | undefined;
+        if (!variantFiling && config.outputDir && config.metadata?.outputFilename) {
+          const m = await manifestService.getManifest(path.basename(path.dirname(config.outputDir)));
+          if (m.success && m.manifest && manifestService.humanRecordingHoldsBaseSlot(m.manifest)) {
+            const voice = sessionState?.higgs_voice || sessionState?.voice || sessionState?.custom_model;
+            besideRecordingName = renderBesideRecordingFilename(config.metadata.outputFilename, voice);
+            console.log(`[REASSEMBLY] A human recording holds the base slot; filing this render beside it as: ${besideRecordingName}`);
+          }
+        }
         const wantedFilename = variantFiling
           ? variantFiling.outputFilename
-          : config.metadata?.outputFilename;
+          : (besideRecordingName ?? config.metadata?.outputFilename);
         if (outputPath && fs.existsSync(outputPath) && wantedFilename) {
           const customFilename = wantedFilename;
           // Ensure it has .m4b extension
