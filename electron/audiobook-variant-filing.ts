@@ -80,6 +80,24 @@ export function rvcVariantOutputFilename(baseFilename: string, voiceLabel: strin
 }
 
 /**
+ * The name of a RENDER filed beside a human recording: the book's audiobook
+ * filename with the narrating voice appended, the same composition an RVC
+ * version gets. It exists so the two versions never share a filename — see
+ * manifest-service.humanRecordingHoldsBaseSlot for why that matters to the
+ * phone. `voice` is the session's voice id (deathstalker, tara, ...); refused
+ * by name when the session records none, because a version nobody can name is
+ * a version nobody can tell from the recording.
+ */
+export function renderBesideRecordingFilename(baseFilename: string, voice: string | undefined): string {
+  if (!voice || !voice.trim()) {
+    throw new Error(
+      'This render is being filed beside a professionally-read audiobook and must carry its '
+      + "voice in its filename, but the session records no voice. Nothing was renamed.");
+  }
+  return rvcVariantOutputFilename(baseFilename, voice.trim());
+}
+
+/**
  * A variant's cover, in the shape a manifest stores: relative to the LIBRARY
  * root, forward slashes, e.g. `media/cover_ab12.png`.
  *

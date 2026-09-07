@@ -810,6 +810,31 @@ export function foundryProvenanceOf(v: ProjectVariant): FoundryVariantSource | u
  */
 export const OUTPUT_SLOT_VARIANT_ID = 'audiobook:output';
 
+/** Is this audiobook row a HUMAN recording (imported, flagged, or archived) rather than a render? */
+export function isHumanRecordingRow(v: { path: string; professionallyRead?: boolean }): boolean {
+  const p = (v.path || '').replace(/\\/g, '/').replace(/^\.?\//, '').toLowerCase();
+  return v.professionallyRead === true || p.startsWith('archive/');
+}
+
+/**
+ * Does a human recording hold this project's base audiobook slot?
+ *
+ * Asked BEFORE a render is filed, by the assembly, because the answer decides
+ * the render's NAME. When it is true, the render is folded in beside the
+ * recording as a second version (getVariants, below) — and a second version
+ * must not carry the recording's filename: the Bookshelf app identifies an
+ * audiobook by `<projectId>/<filename>` (projects/bookshelf/src/app/shared/
+ * audio-identity.ts, deliberately blind to archive/ vs output/), so a render
+ * named exactly like the recording IS the recording to the phone — one download
+ * slot, one resume position, one badge, and a tap that plays whichever file the
+ * cache held. Owen, 2026-09-07, Mutineers' Moon: the deathstalker render played
+ * where the professionally-read book was expected.
+ */
+export function humanRecordingHoldsBaseSlot(manifest: ProjectManifest): boolean {
+  const holder = (manifest.variants || []).find((v) => v.id === 'audiobook' && v.kind === 'audiobook');
+  return !!holder && isHumanRecordingRow(holder);
+}
+
 export function getVariants(manifest: ProjectManifest): { variants: ProjectVariant[]; primaryVariantId?: string } {
   const m = manifest.metadata;
   const baseMeta = (): VariantMetadata => ({
@@ -876,7 +901,7 @@ export function getVariants(manifest: ProjectManifest): { variants: ProjectVaria
     const holder = variants.find((v) => v.id === 'audiobook' && v.kind === 'audiobook');
     const holderIsHumanRecording = !!holder
       && normPath(holder.path) !== abNorm
-      && (holder.professionallyRead === true || normPath(holder.path).startsWith('archive/'));
+      && isHumanRecordingRow(holder);
     const slotId = holderIsHumanRecording ? OUTPUT_SLOT_VARIANT_ID : 'audiobook';
     const slotIdx = variants.findIndex((v) => v.id === slotId && v.kind === 'audiobook');
     if (slotIdx >= 0) {
