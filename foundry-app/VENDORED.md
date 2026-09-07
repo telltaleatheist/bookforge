@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **5a6f7d9** — *fix(app): a host that cannot say who a book is says so under the form, instead of a blank one* |
+| Source sha | **c8808f3** — *docs(seam): Job.outputPath is the row's identity, and a host's mirrored row must carry the product there* |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive 5a6f7d9 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive c8808f3 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -966,3 +966,10 @@ and logs by name, so an export never fails on a seed. Host counterpart: BookForg
 answering branch of `foundryMintMetaFor` logs key, projectDir, projectId and counts). IPC-CHANNELS.md
 wording for `meta:mint-host` changed; no channel added. 4 files, 139 blobs hash-verified, no dep
 movement.
+**c8808f3 (copied 2026-09-07) — docs only: `Job.outputPath` is the row's IDENTITY on Foundry's side,
+not a display field.** The Job docblock (shared/types.ts) and BOOKFORGE-HANDOFF §8b now say a host's
+mirrored row must carry the product there by `productOf`'s rule: rendering → file, reading →
+readingsPath, text pass incl. clean → recordsPath, analysis → report; `shelfJobsFor(projectDir)`
+files rows by `projectDirOf(job.outputPath)`. Host side: BookForge 1b91d85d (a text pass's row
+reports its records file — before it, every promised card was dead). 1 file, 139 blobs
+hash-verified, no IPC change, no dep movement.

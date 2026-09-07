@@ -1219,6 +1219,21 @@ export interface AnalysisFindingRow {
 export interface Job {
   id: string;
   inputPath: string;
+  /**
+   * THE ROW'S IDENTITY, NOT A DISPLAY FIELD — the PRODUCT of the job, which is
+   * the one file it exists to write: a rendering's output file, a reading's
+   * BANK (`readingsPath`), a text pass's RECORDS file (`recordsPath`), an
+   * analysis's report. `productOf` (electron/job-queue.ts) is the rule, and
+   * everything that files a row hangs off it: the dedupe of a second press,
+   * which PROJECT a row belongs to (`projectDirOf(job.outputPath)`), and
+   * therefore whether the tree draws the row's promised card at all.
+   *
+   * A HOST THAT MIRRORS ROWS MUST CARRY THE PRODUCT HERE. BookForge's row sent
+   * `readingsPath ?? outputPath` for one build, so a clean/translate/simplify
+   * row crossed with '' and was filed under no project — Owen pressed Clean
+   * text and no greyed step appeared (2026-09-07, fixed host-side). The seam
+   * contract now says so (docs/BOOKFORGE-HANDOFF.md §8b).
+   */
   outputPath: string;
   kind: JobKind;
   state: JobState;
