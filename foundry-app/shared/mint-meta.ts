@@ -23,6 +23,8 @@
  * import it and neither can drift.
  */
 
+import type { HostMintMeta } from './host-ops';
+
 /** One author, as BookForge's editor holds them. */
 export interface MintContributor {
   first: string;
@@ -188,4 +190,52 @@ export function metaSaysAnything(meta: MintMeta): boolean {
     || (meta.subtitle?.trim().length ?? 0) > 0
     || meta.contributors.some((one) => one.first || one.last)
     || (meta.year?.trim().length ?? 0) > 0;
+}
+
+/**
+ * WHO A BOOK SAYS IT IS WHEN NOBODY IS STANDING AT THE FORM — the project's
+ * stored block with the host's record underneath it, field by field.
+ *
+ * ── The one rule, in one place ──────────────────────────────────────────────
+ *
+ * Owen's inheritance ruling (2026-08-24): *"when i generate an epub in
+ * bookforge foundry, it should inherit the parent document's metadata. ill
+ * fill out whatever is missing."* The STORED block wins per field, because it
+ * is what the person last confirmed on this very project; the HOST's answer
+ * fills every field the stored block does not cover, which on a first hosted
+ * mint is all of them. Standalone the host answers null and the stored block
+ * is the whole answer.
+ *
+ * This used to live in the mint modal alone, so it held only when the modal
+ * opened. A host-ordered auto-export (narrate on a step with no file yet) never
+ * opened one, so a book BookForge asked for went out under the tray file's
+ * stem with no `dc:creator` in it, while the host's own shelf knew the author
+ * one process over (bookforge-pc-1, 2026-09-07, Mutineers' Moon). Now the
+ * settle asks the same question through the same function, and the modal and
+ * the unattended export cannot answer it differently.
+ *
+ * NULL WHEN NEITHER SIDE HAS A RECORD, which is the standalone first mint and is
+ * exactly the blank form it was before this existed. The language keeps
+ * following the step's own chain at the settle regardless; what comes back
+ * here is only the form's fallback for it.
+ */
+export function inheritMintMeta(
+  stored: MintMeta | null | undefined,
+  host: HostMintMeta | null | undefined,
+): MintMeta | null {
+  if (stored == null && host == null) return null;
+  const contributors = (stored?.contributors.length ?? 0) > 0
+    ? stored!.contributors
+    : host?.contributors ?? [];
+  const language = stored?.language ?? host?.language;
+  const year = stored?.year ?? host?.year;
+  const coverPath = stored?.coverPath ?? host?.coverPath;
+  return {
+    title: stored?.title || host?.title || '',
+    contributors: contributors.map((one) => ({ ...one })),
+    ...(stored?.subtitle !== undefined ? { subtitle: stored.subtitle } : {}),
+    ...(year !== undefined ? { year } : {}),
+    ...(language !== undefined ? { language } : {}),
+    ...(coverPath !== undefined ? { coverPath } : {}),
+  };
 }

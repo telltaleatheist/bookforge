@@ -2583,6 +2583,40 @@ const FOUNDRY_HOST_OPERATIONS: readonly FoundryHostOperation[] = [
  * the handler, and `once('closed')` on the same window twice would sweep twice
  * for one close.
  */
+/**
+ * THE WINDOWS FOUNDRY OWNS, as this host saw them come up. The mount seam has no
+ * window accessor (`foundryBusy` says only whether one is open), and the one
+ * moment the host can tell a Foundry window from its own is `browser-window-
+ * created` during `openFoundryWindow` — the same capture the close-handler
+ * below has always trusted. Read by the Edit menu on a Mac to route Cmd+Z to
+ * the book's undo instead of the focused text field's (see `routeUndoRedo`).
+ */
+const foundryWindows = new Set<BrowserWindow>();
+
+/**
+ * Cmd+Z / Cmd+Shift+Z ON A MAC, hosted.
+ *
+ * Owen, 2026-09-07: "ctrl/cmd+z only works for some things." Foundry's book undo
+ * listens for the chord on its own window keydown (foundry e4987ca), which on
+ * Windows and Linux arrives beside this host's `role: 'undo'` menu untouched.
+ * ON A MAC THE SYSTEM MENU CONSUMES THE KEY before the page sees it, so a role
+ * item here would undo the focused text field's typing and never a strike.
+ * Foundry's contract (docs/BOOKFORGE-HANDOFF.md, undo/redo amendment): when the
+ * focused window is Foundry's, send `menu:action` 'undo' / 'redo' to it — its
+ * renderer routes the caret-in-a-field case itself — and otherwise keep the
+ * role behaviour. Darwin only: elsewhere the role stays registered and the
+ * page's keydown is the road, so a click here too would be two undos a press.
+ */
+function routeUndoRedo(action: 'undo' | 'redo', focused: BrowserWindow | undefined): void {
+  if (focused === undefined) return;
+  if (foundryWindows.has(focused)) {
+    focused.webContents.send('menu:action', action);
+    return;
+  }
+  if (action === 'undo') focused.webContents.undo();
+  else focused.webContents.redo();
+}
+
 async function openFoundryWindowAndReconcileOnClose(
   projectDir?: string,
   opts?: { document?: string },
@@ -2617,7 +2651,9 @@ async function openFoundryWindowAndReconcileOnClose(
   }
   const win = created[0];
   if (win === undefined) return;
+  foundryWindows.add(win);
   win.once('closed', () => {
+    foundryWindows.delete(win);
     // The user has left Foundry. Anything it wrote while nobody was listening —
     // an export whose announcement failed, or one made before this pipeline
     // existed — becomes a version now, before they look at the versions page.
@@ -12523,8 +12559,20 @@ app.whenReady().then(async () => {
     {
       label: 'Edit',
       submenu: [
-        { role: 'undo' as const },
-        { role: 'redo' as const },
+        // A Mac's menu eats Cmd+Z before the page sees it, so the chord is
+        // routed by hand there (routeUndoRedo); everywhere else the platform
+        // role leaves the key to the page and Foundry's own keydown does the rest.
+        ...(process.platform === 'darwin'
+          ? [
+              { label: 'Undo', accelerator: 'CmdOrCtrl+Z',
+                click: (_item: unknown, focused: unknown) => routeUndoRedo('undo', focused instanceof BrowserWindow ? focused : undefined) },
+              { label: 'Redo', accelerator: 'Shift+CmdOrCtrl+Z',
+                click: (_item: unknown, focused: unknown) => routeUndoRedo('redo', focused instanceof BrowserWindow ? focused : undefined) },
+            ]
+          : [
+              { role: 'undo' as const },
+              { role: 'redo' as const },
+            ]),
         { type: 'separator' as const },
         { role: 'cut' as const },
         { role: 'copy' as const },

@@ -77,14 +77,24 @@ export type SweepCensus =
   | { ok: true; matches: readonly SweepMatch[] }
   | { ok: false; reason: string };
 
-/** One block's whole edit: the mended text, or null for a block cut to nothing. */
+/**
+ * The verdict a live match wears (§2.3, amended §7). `cut` takes the span out
+ * of its block; `block` strikes the WHOLE block the match sits in; `keep`
+ * leaves it be. Absent from the sitting's map means `cut`, which is the
+ * default posture and the reason the map starts empty.
+ */
+export type SweepVerdict = 'cut' | 'block' | 'keep';
+
+/** One block's whole edit: the mended text, or null for a block struck whole. */
 export interface SweepEdit {
   id: string;
   /**
    * NULL IS A STRIKE AND NEVER AN EMPTY `text` OP (§1). A block whose every
    * character was inside a chosen span still exists — it stays in the document,
    * cancelled and restorable — and writing it as an empty string would put a
-   * blank paragraph in the edition instead of taking one out of it.
+   * blank paragraph in the edition instead of taking one out of it. A block a
+   * person chose to strike WHOLE (§7) lands the same way, for the same reason:
+   * the sweep has one spelling for "this paragraph goes".
    */
   text: string | null;
 }
@@ -172,12 +182,13 @@ export function scan(rows: readonly ReplayedRow[], re: RegExp): SweepCensus {
 }
 
 /**
- * The block's fuller text around a match — the widening a hover asks for (§3).
+ * The block's fuller text around a match — the widening a click on the row's
+ * quotation asks for (§3, amended §7: it was a hover).
  *
  * COMPUTED ON DEMAND AND NOT CARRIED ON EVERY MATCH. A book can answer a pattern
  * with thousands of rows, and a second quotation three times the length of the
- * first, held for every one of them and drawn for one, is a megabyte of strings
- * kept so that a pointer can rest somewhere.
+ * first, held for every one of them and drawn for a few, is a megabyte of
+ * strings kept so that somebody can open one.
  */
 export function widen(rows: readonly ReplayedRow[], match: SweepMatch): SweepQuote | null {
   const row = rows.find((candidate) => candidate.id === match.id);
@@ -199,19 +210,33 @@ export function widen(rows: readonly ReplayedRow[], match: SweepMatch): SweepQuo
  * The chosen matches arrive in reading order and are cut RIGHT TO LEFT inside
  * each block, which is what keeps every offset in this list an offset into the
  * string it was measured against.
+ *
+ * ── A BLOCK STRUCK WHOLE OUTRANKS EVERY SPAN IN IT (§7) ─────────────────────
+ *
+ * `struck` names the blocks somebody chose to take out entirely. One is a strike
+ * and nothing else: a `text` op beside it would be a correction to a paragraph
+ * the same push cancels, two ops about one decision, and the second is the one
+ * undo would take back first. So the spans of a struck block are not cut, and
+ * the caller counts them out of what the landing verb says for the same reason.
  */
 export function plan(
   rows: readonly ReplayedRow[],
   chosen: readonly SweepMatch[],
+  struck: ReadonlySet<string> = NO_BLOCKS,
 ): readonly SweepEdit[] {
   const byBlock = new Map<string, SweepMatch[]>();
   for (const match of chosen) {
+    if (struck.has(match.id)) continue;
     const held = byBlock.get(match.id);
     if (held === undefined) byBlock.set(match.id, [match]);
     else held.push(match);
   }
   const out: SweepEdit[] = [];
   for (const row of rows) {
+    if (struck.has(row.id)) {
+      out.push({ id: row.id, text: null });
+      continue;
+    }
     const spans = byBlock.get(row.id);
     if (spans === undefined) continue;
     const left = cutSpans(row.text, spans);
@@ -219,6 +244,8 @@ export function plan(
   }
   return out;
 }
+
+const NO_BLOCKS: ReadonlySet<string> = new Set();
 
 /** The plan, as ops — the shape a source pass lands in one variadic push. */
 export function opsFor(edits: readonly SweepEdit[]): readonly BookOp[] {

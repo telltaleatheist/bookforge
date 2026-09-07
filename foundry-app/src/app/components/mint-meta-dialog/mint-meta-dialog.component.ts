@@ -2,7 +2,7 @@ import { ChangeDetectionStrategy, Component, computed, effect, inject, signal, u
 import { FormsModule } from '@angular/forms';
 
 import {
-  asciiFilename, contributorsFromString, generatedFilename, MINT_LANGUAGES,
+  asciiFilename, contributorsFromString, generatedFilename, inheritMintMeta, MINT_LANGUAGES,
 } from '@shared/mint-meta';
 import type { MintContributor, MintMeta } from '@shared/mint-meta';
 import { carriedFromPlan } from '@shared/pipeline';
@@ -414,6 +414,12 @@ export class MintMetaDialogComponent {
        * project, and the host answers only the gaps — which on a first
        * hosted mint is all of them. Standalone the call answers null and
        * nothing changes.
+       *
+       * THE MERGE IS `inheritMintMeta` (shared/mint-meta.ts) AND NOT THIS
+       * FILE'S, because the settle asks the same question for an export
+       * nobody confirmed at this form (a host's narrate-on-a-step), and two
+       * spellings of "whose title wins" is how a modal and an auto-export come
+       * to stamp two different books from one project.
        */
       const host = await api.meta.hostSeed(ask.projectDir).catch(() => null);
       let planLanguage: string | undefined;
@@ -421,17 +427,15 @@ export class MintMetaDialogComponent {
         this.plan = await api.workspace.planExport(ask.inputPath, 'epub');
         planLanguage = this.plan.language ?? undefined;
       }
-      if (stored !== null || host !== null) {
-        const contributors = (stored?.contributors.length ?? 0) > 0
-          ? stored!.contributors
-          : host?.contributors ?? [];
-        this.title.set(stored?.title || host?.title || '');
-        this.subtitle.set(stored?.subtitle ?? '');
-        this.authors.set(contributors.length > 0
-          ? contributors.map((one) => ({ ...one }))
+      const inherited = inheritMintMeta(stored, host);
+      if (inherited !== null) {
+        this.title.set(inherited.title);
+        this.subtitle.set(inherited.subtitle ?? '');
+        this.authors.set(inherited.contributors.length > 0
+          ? inherited.contributors
           : [{ first: '', last: '' }]);
-        this.year.set(stored?.year ?? host?.year ?? '');
-        this.language.set(planLanguage ?? stored?.language ?? host?.language ?? 'en');
+        this.year.set(inherited.year ?? '');
+        this.language.set(planLanguage ?? inherited.language ?? 'en');
         return;
       }
       /*
@@ -499,10 +503,18 @@ export class MintMetaDialogComponent {
        * own output name is the stem convention; this dialog's whole point is
        * that the person names the file.
        */
+      // THE PLAN'S OWN SEPARATOR, never a literal one. This joined with '\\'
+      // regardless of platform, so on a Mac the request carried
+      // "\Volumes\iO\...\final\<name>.epub" — not an absolute path there — and
+      // main wrote the book relative to its working directory: a complete EPUB
+      // named with backslashes, sitting untracked in the host app's repo (Owen,
+      // 2026-09-07, Mutineers' Moon). The renderer has no `path`; the plan's
+      // path already says which separator this machine uses.
+      const sep = plan.outputPath.includes('\\') ? '\\' : '/';
       const parts = plan.outputPath.split(/[\\/]/);
       parts.pop();
       const filed = asciiFilename(this.filenameShown()).replace(/\.epub$/i, '') + '.epub';
-      const outputPath = [...parts, filed].join('\\');
+      const outputPath = [...parts, filed].join(sep);
       const request: JobRequest = {
         kind: 'epub',
         inputPath: plan.sourcePath,

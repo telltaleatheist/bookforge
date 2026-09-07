@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **88029f7** — *feat(app): chain anything — a deferred pass is named at spawn from the step it lands on* |
+| Source sha | **be61db0** — *Merge remote-tracking branch 'origin/fix/export-path-separator'* (tip of e4987ca / 75236ab / ed4d218 / d463ad6) |
 | Copied on | 2026-09-07 |
-| Copied by | `git -C <foundry> archive 688c888 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive be61db0 app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -933,3 +933,23 @@ promised id fails at its own spawn with the cascade's sentence — re-parenting 
 built. BookForge host side: 371244ef (Narrate on a pending export chains under a
 `foundry-export-landing` row) + the `into`/`mode` copy in this refresh. 7 files, 139 blobs
 hash-verified, no dep movement.
+**be61db0 (copied 2026-09-07) — the Mac's stray-EPUB night: four fixes and Owen's app changes.**
+`ed4d218` (the Mac's branch, merged verbatim): the mint-meta dialog joined the export's outputPath
+with a LITERAL backslash, so on darwin a renamed export was written relative to cwd — an untracked
+file named `\Volumes\iO\...\Mutineer's Moon ... .epub` landed in Owen's BookForgeApp checkout; it
+now keeps the plan's own separator, and `enqueue` refuses BY NAME a product path that is not
+`path.isAbsolute` before either queue sees it. `75236ab`: an EPUB export nobody confirmed at the
+mint form (a host-ordered `exportEpubFromStep`, narrate on a step with no file) used to carry the
+project's stored mint block or NOTHING — a bare-document project has no block until a mint is
+confirmed, which is why foundry-exported books had no `dc:creator`; the settle now inherits the
+request's block, else the stored block with the host's `mintMetaFor` answer underneath per field
+(`inheritMintMeta`, shared/mint-meta.ts), stamps it via `epub-meta`, and announces it on
+`ExportLanding.metadata` (optional; the host does not read it yet). `e4987ca`: the book's undo
+listens for Ctrl/Cmd+Z and Shift+Z on its own window keydown, so a HOSTED window on Windows/Linux
+gets it beside the host's `role: 'undo'` menu; on a Mac the host's role menu eats the key, so
+BookForge's Edit menu now routes Cmd+Z / Cmd+Shift+Z to `menu:action` 'undo'/'redo' when the
+focused window is Foundry's (`routeUndoRedo`, electron/main.ts — darwin only, else two undos a
+press). Also in `e4987ca`: the sweep has a third verdict BLOCK (strike the whole paragraph), no
+hover glance, and the cut/keep pill fills its column. `d463ad6`: a chained pass is deduped on what
+it is, not on the name it does not have yet. No IPC channel added or renamed (`IPC-CHANNELS.md`
+refreshed, byte-identical to `be61db0:docs/`). 9 files, 139 blobs hash-verified, no dep movement.

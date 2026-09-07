@@ -23,6 +23,16 @@ standing rule it states is unchanged: regenerate this file in the same commit th
 touches `ipcMain.handle`, not on the next wave. The per-family tables below are
 the authority for the NAMES; where a total contradicts them, the tables win.
 
+NO REGENERATION WAS OWED ON 2026-09-07, and it is recorded here so that the next
+reader can tell a skipped regeneration from a deliberate one. Wave 56 (the promised
+chain — grayed steps you can act from) WIDENED four existing doors with one optional
+trailing argument each — `workspace:plan-export`, `workspace:plan-translation`,
+`workspace:plan-simplify` and `workspace:plan-clean` now take the step id the press was
+aimed at, and a caller that sends nothing gets exactly what it always got. No channel
+was added, renamed or removed, so the count is unchanged and the tables below are
+unchanged. This file's standing rule is about NAMES; arity is the API type's
+(`FoundryApi.workspace`, app/shared/api.ts), which is where a caller reads it.
+
 Before that, regenerated on 2026-08-25 for **Wave 50's hits-panel rework** —
 two doors: `analysis:read-categories` and `analysis:write-categories`, the
 categories a person writes themselves (name + the one sentence that becomes the

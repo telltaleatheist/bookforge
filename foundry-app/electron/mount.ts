@@ -770,14 +770,16 @@ export async function exportEpubFromStep(
   const request: JobRequest = {
     kind: 'epub',
     /*
-     * THE PROJECT'S STORED DECLARATION rides a host-ordered mint too, so a
-     * book BookForge asks for arrives stamped and announced like one a person
-     * minted through the dialog. No modal here — nobody is standing at one —
-     * and the language rule holds without help: the settle takes the chain's
-     * language over this block's (`JobRequest.mintMeta`), which is exactly
-     * what makes an auto-export of a German step say de.
+     * NO `mintMeta` HERE, ON PURPOSE. Nobody is standing at a form, so the
+     * settle inherits it (`inheritedMintMetaFor`, electron/job-queue.ts): the
+     * project's stored block with the host's own record (`mintMetaFor`)
+     * underneath, field by field — the modal's precedence exactly. This door
+     * used to spread the stored block alone, and a hosted project minted from
+     * a bare document has none until somebody confirms a mint, so the EPUB
+     * BookForge narrated went out with the file stem for a title and no
+     * author (2026-09-07). The language rule holds without help either way:
+     * the settle takes the chain's language over any block's.
      */
-    ...(manifest.meta !== undefined ? { mintMeta: manifest.meta } : {}),
     // The pixels, as always: the plan resolved the archived original rather than
     // trusting whatever document anybody was looking at.
     inputPath: plan.sourcePath,

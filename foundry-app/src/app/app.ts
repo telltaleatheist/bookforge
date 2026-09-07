@@ -615,6 +615,47 @@ export class App {
 
   @HostListener('window:keydown', ['$event'])
   protected onKeyDown(event: KeyboardEvent): void {
+    /*
+     * ── Ctrl/Cmd+Z AND Ctrl/Cmd+Shift+Z, HERE AS WELL AS ON THE MENU ────────
+     *
+     * Owen, 2026-09-07: *"the undo button works, but ctrl/cmd+z only works
+     * for some things."* The chord reached the book's stack by ONE road — the
+     * Edit menu's accelerator, arriving as `menu:action` — and that road does
+     * not exist wherever this window is hosted: BookForge's own Edit menu is
+     * the platform's `role: 'undo'`, which is `webContents.undo()`, the focused
+     * text field's history and nothing else. So hosted, the chord undid typing
+     * and never a strike; the button, which calls the pane directly, always
+     * did. "Some things" was the text boxes.
+     *
+     * THE KEYDOWN IS NOW THE ROAD ON WINDOWS AND LINUX, and the menu item is a
+     * label with a click. A menu accelerator does not swallow the keypress
+     * there (measured 2026-08-23 — the page receives the raw keydown beside
+     * the menu click), so listening here AND registering the accelerator would
+     * be two undos per press; the menu's Undo keeps its displayed chord and
+     * stops registering it (`registerAccelerator: false`, electron/main.ts),
+     * and a hosted window whose host registers the platform role still gets
+     * this keydown because that role does not swallow it either.
+     *
+     * ON MAC THE SYSTEM MENU CONSUMES THE KEY before the page sees it, so
+     * standalone this branch never fires there and the menu road stands as it
+     * was. Hosted on a Mac the HOST's role menu consumes it the same way, and
+     * the only fix is the host's: send `menu:action` `'undo'` to this window
+     * when it is the focused one (docs/BOOKFORGE-HANDOFF.md §8b).
+     *
+     * A CARET IN A TEXT BOX IS LEFT ALONE, and no `preventDefault` — the
+     * field's own history is the browser's default action for this very key,
+     * which is the whole of what `undo`'s editable arm protects.
+     */
+    if ((event.key === 'z' || event.key === 'Z') && (event.ctrlKey || event.metaKey) && !event.altKey) {
+      const focused = document.activeElement;
+      const editable = focused instanceof HTMLInputElement
+        || focused instanceof HTMLTextAreaElement
+        || (focused instanceof HTMLElement && focused.isContentEditable);
+      if (editable) return;
+      event.preventDefault();
+      this.undo(event.shiftKey);
+      return;
+    }
     if (event.key === 'Escape' && this.ui.ocrOpen()) {
       event.preventDefault();
       this.ui.closeOcr();

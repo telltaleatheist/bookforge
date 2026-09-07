@@ -143,12 +143,22 @@ function buildMenu(): void {
        * in a text box gets the box's own undo, a caret in a block gets the
        * frame's, and anything else gets the book's.
        *
-       * ON THE MENU RATHER THAN AS A RENDERER `keydown`, for the reason every
-       * other chord in this file is: a menu item with the accelerator on it and
-       * a keydown listener for the same chord BOTH fire, and only the menu is
-       * discoverable by somebody who has never used this app. The label is also
-       * the only place "undo" is promised, which matters more here than for
-       * Save — an editor whose undo does nothing is worse than one with none.
+       * ON THE MENU FOR THE LABEL, AND ON A RENDERER `keydown` FOR THE CHORD —
+       * which is not the arrangement every other chord in this file keeps, and
+       * the reason is where this window runs. A menu item with the accelerator
+       * on it and a keydown listener for the same chord BOTH fire on Windows
+       * and Linux, so the rule here was "the menu, never a listener". But a
+       * HOSTED window has no menu of ours at all (electron/mount.ts): the
+       * host's Edit menu is the platform's role, which undoes typing in a text
+       * field and never reaches the book's stack, and Owen found Ctrl+Z "only
+       * works for some things" (2026-09-07). The book's undo now lives on the
+       * window's own keydown (`onKeyDown`, src/app/app.ts), and these two items
+       * keep their DISPLAYED chords without REGISTERING them where the page
+       * would otherwise hear the key twice — `registerAccelerator: false` is
+       * Windows/Linux only by Electron's own contract, and on a Mac the system
+       * menu consumes the key before the page can, so the click is the road
+       * there exactly as it always was. The label is still the only place
+       * "undo" is promised to somebody who has never used this app.
        *
        * The clipboard roles below are kept verbatim from the role menu, because
        * they are the platform's and there is no reason for this app to have an
@@ -159,6 +169,7 @@ function buildMenu(): void {
         {
           label: 'Undo',
           accelerator: 'CmdOrCtrl+Z',
+          registerAccelerator: process.platform === 'darwin',
           click: () => sendMenuAction('undo'),
         },
         {
@@ -167,6 +178,7 @@ function buildMenu(): void {
           // one chord, said one way, and it is the one the editors this app
           // sits beside all take.
           accelerator: 'CmdOrCtrl+Shift+Z',
+          registerAccelerator: process.platform === 'darwin',
           click: () => sendMenuAction('redo'),
         },
         { type: 'separator' },

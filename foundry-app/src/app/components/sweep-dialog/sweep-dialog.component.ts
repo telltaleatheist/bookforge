@@ -8,7 +8,7 @@ import { StageService } from '../../core/stage.service';
 import { UiService } from '../../core/ui.service';
 import {
   BRACKETS, PARENTHESES, compile, opsFor, plan, scan, widen,
-  type SweepEdit, type SweepMatch, type SweepPreset, type SweepQuote,
+  type SweepEdit, type SweepMatch, type SweepPreset, type SweepQuote, type SweepVerdict,
 } from '../../core/sweep';
 
 /**
@@ -48,7 +48,7 @@ import {
  *
  * ── THE VERDICTS ARE A SITTING, NOT A DOCUMENT ──────────────────────────────
  *
- * `kept` below lives for as long as this component is mounted and no longer.
+ * `verdicts` below lives for as long as this component is mounted and no longer.
  * Nothing about a sweep is written down until the landing verb is pressed, which
  * is also the whole of why undo takes the result back ONE OP AT A TIME rather
  * than in a gesture: the modal itself is the retreat. Nothing lands until the
@@ -122,53 +122,56 @@ import {
           }
 
           <!--
-            ONE HOVER LISTENER FOR THE WHOLE LIST, and it is on the container
-            rather than on each row. A book can answer a pattern with thousands of
-            rows and there is no cap on them by ruling; a pair of bindings per row
-            is thousands of listeners for a widening only one row can be showing.
-            The row carries its own name in an attribute and the container reads it
-            back off whatever the pointer entered.
+            NOTHING HAPPENS ON HOVER IN THIS LIST — no tooltip, no floating
+            glance (user ruling, 2026-09-07: "there shouldnt be a tool tip that
+            pops up on hover in the sweep. i can see it already"). The fuller
+            context is a CLICK on the quotation, which swaps the block's wider
+            text into the row and swaps it back on the next click. The row
+            grows when it is opened, which is the one case the 2026-08-24
+            ruling about rows moving under the pointer does not cover: an
+            opened row is a row somebody asked to grow.
           -->
-          <div
-            class="list"
-            (mouseover)="hover($event)"
-            (mouseleave)="hovered.set(null)"
-            (scroll)="hovered.set(null)"
-          >
+          <div class="list">
             @for (found of matches(); track found.key) {
-              <div class="row" [class.ghost]="found.struck" [attr.data-key]="found.key">
-                <button
-                  class="at"
-                  title="Show this block on the page"
-                  (click)="travel(book, found.id)"
-                >
+              <div class="row" [class.ghost]="found.struck" [class.open]="opened().has(found.key)">
+                <button class="at" (click)="travel(book, found.id)">
                   <span class="at-id">{{ found.id }}</span>
                   @if (found.page > 0) {
                     <span class="at-page">≈ {{ found.page }}</span>
                   }
                 </button>
 
-                <!-- The row's quotation NEVER changes -- the fuller text floats
-                     in the glance below, so no row grows under the pointer and
-                     no verdict button moves (user ruling, 2026-08-24). -->
-                <p class="quote">
-                  <span class="q-before">{{ found.quote.before }}</span><span
+                @let quote = quoteFor(found);
+                @let verdict = verdictOf(found);
+                <p
+                  class="quote"
+                  [class.block]="verdict === 'block'"
+                  (click)="toggleContext(found.key)"
+                >
+                  <span class="q-before">{{ quote.before }}</span><span
                     class="q-hit"
-                    [class.cut]="!found.struck && !kept().has(found.key)"
-                  >{{ found.quote.hit }}</span><span class="q-after">{{ found.quote.after }}</span>
+                    [class.cut]="verdict === 'cut' || verdict === 'block'"
+                  >{{ quote.hit }}</span><span class="q-after">{{ quote.after }}</span>
                 </p>
 
                 @if (found.struck) {
-                  <span class="verdict gone" title="This block is already struck — nothing here to decide">gone</span>
+                  <span class="hit still"><span class="verdict gone">gone</span></span>
                 } @else {
-                  <button
-                    class="verdict"
-                    [class.keep]="kept().has(found.key)"
-                    [title]="kept().has(found.key)
-                      ? 'Kept — click to cut it instead'
-                      : 'Cut — click to keep it instead'"
-                    (click)="flip(found.key)"
-                  >{{ kept().has(found.key) ? 'KEEP' : 'CUT' }}</button>
+                  <!--
+                    THE WHOLE CELL IS THE BUTTON AND THE PILL IS ITS FACE — Owen,
+                    2026-09-07: "if i click anywhere near the cut/keep button it
+                    should register as a click. the button is small and hard to
+                    click, but i like it visually." The pill keeps its 22px; the
+                    press it answers to is the row's full height and the column
+                    out to the card's edge.
+                  -->
+                  <button class="hit" (click)="flip(found.key)">
+                    <span
+                      class="verdict"
+                      [class.keep]="verdict === 'keep'"
+                      [class.block]="verdict === 'block'"
+                    >{{ verdict === 'keep' ? 'KEEP' : verdict === 'block' ? 'BLOCK' : 'CUT' }}</span>
+                  </button>
                 }
               </div>
             } @empty {
@@ -176,40 +179,23 @@ import {
             }
           </div>
 
-          <!-- The surrounding context (SWEEP.md 0's own ask) as a GLANCE: fixed-positioned
-               over the page at the hovered row's edge, pointer-events none, so it
-               occupies no row and moves nothing while a hand aims at a verdict. -->
-          @if (wide(); as fuller) {
-            @if (glanceBox(); as box) {
-              <p
-                class="glance"
-                [class.above]="box.up"
-                [style.top.px]="box.top"
-                [style.left.px]="box.left"
-                [style.width.px]="box.width"
-              >
-                <span class="q-before">{{ fuller.before }}</span><span
-                  class="q-hit"
-                  [class.cut]="glanceTone() === 'cut'"
-                  [class.gone]="glanceTone() === 'gone'"
-                >{{ fuller.hit }}</span><span class="q-after">{{ fuller.after }}</span>
-              </p>
-            }
-          }
-
           <footer class="foot">
             <span class="counts">
               <span class="cut-count">{{ cutting().length }} cut</span>
+              @if (strikingBlocks().size > 0) {
+                <span class="block-count">{{ saidBlocks(strikingBlocks().size) }} struck</span>
+              }
               <span class="keep-count">{{ keeping() }} kept</span>
             </span>
             <button class="ghost" [disabled]="live().length === 0" (click)="keepAll()">Keep all</button>
             <button class="ghost" [disabled]="live().length === 0" (click)="cutAll()">Cut all</button>
+            <button class="ghost" [disabled]="live().length === 0" (click)="strikeAll()">Strike all blocks</button>
             <button
               class="primary"
-              [disabled]="cutting().length === 0"
+              [disabled]="cutting().length === 0 && strikingBlocks().size === 0"
               [title]="landingTitle()"
               (click)="land()"
-            >Cut {{ cutting().length }}</button>
+            >{{ landingLabel() }}</button>
           </footer>
         }
       } @else {
@@ -375,6 +361,9 @@ import {
       border-bottom: 1px solid var(--border-subtle);
     }
     .row:hover { background: var(--bg-hover); }
+    /* An opened row is one somebody asked to grow — the quotation is the
+       block's wider text until the next click puts the sentence back. */
+    .row.open .quote { color: var(--text-primary); }
     /* A struck block's matches are listed and take no verdict: seeing that the
        ones you already cancelled are gone is half of trusting the count. */
     .row.ghost { opacity: 0.45; }
@@ -397,8 +386,18 @@ import {
       margin: 0;
       font-size: 12px; line-height: 1.55;
       color: var(--text-secondary);
+      cursor: pointer;
     }
     .q-before, .q-after { color: var(--text-tertiary); }
+    /* A BLOCK VERDICT STRIKES THE WHOLE QUOTATION, not the span: what the row
+       shows cancelled is what the landed op cancels (§2.4), and the op is the
+       paragraph. */
+    .quote.block .q-before, .quote.block .q-after {
+      color: var(--sweep-cut);
+      text-decoration: line-through;
+      text-decoration-thickness: 1px;
+      opacity: 0.8;
+    }
 
     /*
       THE PREVIEW NEVER LIES (§2.4). The span wears the proofreader's cancel while
@@ -429,61 +428,49 @@ import {
     }
 
     /*
-      THE GLANCE TAKES NO ROOM IN THE LIST — Owen's ruling (2026-08-24): "lets
-      make it so the keep/cut lines dont change sizes when i hover. thats very
-      frustrating. the button keeps moving around." The widening used to swap
-      the fuller quotation INTO the row, and a taller row shoves every row
-      after it — so the verdict a hand was travelling toward moved with each
-      row the pointer crossed on the way. The fuller text still shows on hover
-      (SWEEP.md §0 asks for exactly that); it floats HERE instead, fixed to the
-      viewport at the hovered row's edge, pointer-events none so the pointer
-      reads the rows straight through it. 1250 sits over this card's chrome
-      and under the confirmation's 1300, the same ordering the host declares.
-      Positioned by \`hover\` off the row's own rect; the list's scroll clears
-      it rather than letting it drift from the row it quotes.
+      THE HIT CELL — the third column, stretched to the row's own edges. The
+      negative margins pull it out over the row's padding and the grid gap, so
+      a press anywhere from the quotation's right edge to the card's border,
+      top of the row to bottom, lands on the verdict. The pill inside is the
+      face and keeps its size; nothing about how the verdict LOOKS changed.
     */
-    .glance {
-      position: fixed;
-      z-index: 1250;
-      pointer-events: none;
-      margin: 0;
-      padding: 8px 10px;
-      font-size: 12px; line-height: 1.55;
-      color: var(--text-secondary);
-      background: var(--bg-elevated);
-      border: 1px solid var(--border-strong);
-      border-radius: var(--radius-sm);
-      box-shadow: 0 6px 16px rgba(0, 0, 0, 0.4);
+    .hit {
+      justify-self: stretch; align-self: stretch;
+      display: flex; align-items: flex-start; justify-content: flex-end;
+      margin: -7px -14px -7px -10px;
+      padding: 7px 14px 7px 10px;
+      background: transparent; border: none;
+      cursor: pointer;
     }
-    .glance.above { transform: translateY(-100%); }
-    .glance .q-hit.gone {
-      background: var(--bg-active);
-      color: var(--text-secondary);
-      text-decoration: none;
-    }
+    .hit.still { cursor: default; }
+    .hit:not(.still):hover .verdict { filter: brightness(1.15); }
 
     .verdict {
-      justify-self: end;
+      display: inline-flex; align-items: center; justify-content: center;
       height: 22px; min-width: 52px; padding: 0 8px;
       border-radius: var(--radius-sm);
       border: 1px solid color-mix(in srgb, var(--sweep-cut) 45%, transparent);
       background: color-mix(in srgb, var(--sweep-cut) 12%, transparent);
       color: var(--sweep-cut);
       font-size: 10px; font-weight: 600; letter-spacing: 0.06em; line-height: 1;
-      cursor: pointer;
     }
     .verdict.keep {
       border-color: color-mix(in srgb, var(--sweep-keep) 45%, transparent);
       background: color-mix(in srgb, var(--sweep-keep) 12%, transparent);
       color: var(--sweep-keep);
     }
+    /* The whole block goes: the pill fills in, because a filled red pill reads
+       as "more than the span" at a glance, which is exactly the difference. */
+    .verdict.block {
+      border-color: transparent;
+      background: color-mix(in srgb, var(--sweep-cut) 85%, transparent);
+      color: var(--text-inverse);
+    }
     .verdict.gone {
       border-color: var(--border-subtle);
       background: transparent;
       color: var(--text-tertiary);
       font-weight: 400; letter-spacing: 0;
-      cursor: default;
-      display: inline-flex; align-items: center; justify-content: center;
     }
 
     .body { padding: 16px; color: var(--text-secondary); font-size: 13px; line-height: 1.5; }
@@ -498,7 +485,7 @@ import {
       border-top: 1px solid var(--border-subtle);
     }
     .counts { flex: 1; display: flex; gap: 12px; font-size: 11px; font-variant-numeric: tabular-nums; }
-    .cut-count { color: var(--sweep-cut); }
+    .cut-count, .block-count { color: var(--sweep-cut); }
     .keep-count { color: var(--sweep-keep); }
 
     .primary, .ghost {
@@ -585,19 +572,30 @@ export class SweepDialogComponent {
   protected readonly matchCase = signal(false);
 
   /**
-   * THE MATCHES SOMEBODY SPARED — and the emptiness of it is the default posture.
+   * THE VERDICTS THAT ARE NOT THE DEFAULT ONE — and the emptiness of it is the
+   * default posture.
    *
    * §2.3: every fresh scan starts with every match CUT, which is Owen's first
-   * workflow (*"i can strike all and then selectively unstrike"*). Holding the
-   * KEPT ones rather than the cut ones makes that posture the empty set, so
+   * workflow (*"i can strike all and then selectively unstrike"*). Holding only
+   * the verdicts that DEPART from cut makes that posture the empty map, so
    * "reset the verdicts" and "start again from all-cut" are one operation and
-   * cannot drift apart. `Cut all` is this set emptied; `Keep all` is every live
-   * match in it.
+   * cannot drift apart. `Cut all` is this map emptied; `Keep all` and `Strike
+   * all blocks` are every live match in it under one word.
+   *
+   * THREE WORDS SINCE 2026-09-07 (§7): *"the sweep — it should give me the
+   * choice of deleting the whole block or just the text."* `block` strikes the
+   * paragraph the match sits in; a block with one `block` verdict anywhere in
+   * it is struck whole whatever its other matches say (`plan`, core/sweep.ts).
    */
-  protected readonly kept = signal<ReadonlySet<string>>(new Set());
+  protected readonly verdicts = signal<ReadonlyMap<string, SweepVerdict>>(new Map());
 
-  /** Which row the pointer is on, by match key — the widening, one row at a time. */
-  protected readonly hovered = signal<string | null>(null);
+  /**
+   * THE ROWS SOMEBODY OPENED for the block's wider text (§7). A click on the
+   * quotation, not a hover: the hover glance was a tooltip over a list a
+   * person is trying to read, and Owen asked for it gone. Reset with the
+   * verdicts, on their reason — the rows are new.
+   */
+  protected readonly opened = signal<ReadonlySet<string>>(new Set());
 
   /** The translated pass's serial run: how many blocks are written, and of how many. */
   protected readonly landing = signal(false);
@@ -648,13 +646,32 @@ export class SweepDialogComponent {
   protected readonly live = computed<readonly SweepMatch[]>(
     () => this.matches().filter((found) => !found.struck));
 
-  /** What the landing verb would actually cut. */
-  protected readonly cutting = computed<readonly SweepMatch[]>(() => {
-    const spared = this.kept();
-    return this.live().filter((found) => !spared.has(found.key));
+  /** The blocks the landing verb would strike whole — any live match in them said so. */
+  protected readonly strikingBlocks = computed<ReadonlySet<string>>(() => {
+    const said = this.verdicts();
+    const out = new Set<string>();
+    for (const found of this.live()) {
+      if (said.get(found.key) === 'block') out.add(found.id);
+    }
+    return out;
   });
 
-  protected readonly keeping = computed<number>(() => this.live().length - this.cutting().length);
+  /**
+   * What the landing verb would actually cut as SPANS — the cut verdicts outside
+   * the blocks that are going whole. A span in a struck block is not cut and is
+   * not counted: the paragraph is one op and the number on the button must be
+   * the number of things that op family takes out.
+   */
+  protected readonly cutting = computed<readonly SweepMatch[]>(() => {
+    const said = this.verdicts();
+    const whole = this.strikingBlocks();
+    return this.live().filter((found) => (said.get(found.key) ?? 'cut') === 'cut' && !whole.has(found.id));
+  });
+
+  protected readonly keeping = computed<number>(() => {
+    const said = this.verdicts();
+    return this.live().filter((found) => said.get(found.key) === 'keep').length;
+  });
 
   /** The bar's live count, including the ghosts said separately because they decide nothing. */
   protected readonly tally = computed<string>(() => {
@@ -673,42 +690,44 @@ export class SweepDialogComponent {
     return 'Nothing in this book matches that pattern.';
   });
 
-  /** The block's fuller text around the hovered match — computed for one row at a time. */
-  protected readonly wide = computed<SweepQuote | null>(() => {
-    const key = this.hovered();
-    if (key === null) return null;
-    const found = this.matches().find((candidate) => candidate.key === key);
-    return found === undefined ? null : widen(this.rows(), found);
-  });
-
   /**
-   * WHERE THE GLANCE STANDS — the hovered row's own rect, measured by `hover`.
-   * Viewport coordinates, because the glance is `position: fixed` and the host
-   * carries no transform to re-anchor it. `up` flips it above the row when the
-   * row sits low enough that a card below it would run off the screen.
+   * The quotation a row draws: its sentence, or the block's wider text while
+   * the row is opened. `widen` walks the rows for the one block, per opened
+   * row per repaint, which is a few finds against a list somebody is reading
+   * and not a map held for thousands of rows nobody opened.
    */
-  protected readonly glanceBox =
-    signal<{ top: number; left: number; width: number; up: boolean } | null>(null);
+  protected quoteFor(found: SweepMatch): SweepQuote {
+    if (!this.opened().has(found.key)) return found.quote;
+    return widen(this.rows(), found) ?? found.quote;
+  }
 
-  /**
-   * The ink the glance's span wears — the SAME verdict the row shows, asked
-   * once for the one hovered match: the cancel while it is cut, the amber flag
-   * while it is kept, neither for a match in a block already struck (`gone`,
-   * the ghost row's own refusal to wear a verdict nobody made).
-   */
-  protected readonly glanceTone = computed<'cut' | 'keep' | 'gone'>(() => {
-    const key = this.hovered();
-    if (key === null) return 'keep';
-    const found = this.matches().find((candidate) => candidate.key === key);
-    if (found === undefined || found.struck) return 'gone';
-    return this.kept().has(key) ? 'keep' : 'cut';
-  });
+  /** The verdict a row wears — `gone` is the ghost's, and it is not a verdict. */
+  protected verdictOf(found: SweepMatch): SweepVerdict | 'gone' {
+    if (found.struck) return 'gone';
+    return this.verdicts().get(found.key) ?? 'cut';
+  }
+
+  protected readonly saidBlocks = saidBlocks;
+
+  /** What the primary button says — its numbers, in the order the landing takes them. */
+  protected landingLabel(): string {
+    const spans = this.cutting().length;
+    const whole = this.strikingBlocks().size;
+    if (whole === 0) return `Cut ${spans}`;
+    if (spans === 0) return `Strike ${saidBlocks(whole)}`;
+    return `Cut ${spans}, strike ${saidBlocks(whole)}`;
+  }
 
   protected landingTitle(): string {
+    const whole = this.strikingBlocks().size;
     const blocks = new Set(this.cutting().map((found) => found.id)).size;
+    const spans = blocks === 0 ? '' : `cut the chosen spans out of ${saidBlocks(blocks)}`;
+    const strikes = whole === 0 ? '' : `strike ${saidBlocks(whole)} whole`;
+    const does = [spans, strikes].filter((one) => one.length > 0).join(' and ');
+    const said = does.charAt(0).toUpperCase() + does.slice(1);
     return this.pane()?.translated() === true
-      ? `Cut the chosen spans out of ${saidBlocks(blocks)} and record the corrections`
-      : `Cut the chosen spans out of ${saidBlocks(blocks)} and put the changes with your other edits`;
+      ? `${said} — the spans are recorded as corrections, the strikes wait with your other edits`
+      : `${said}, and put the changes with your other edits`;
   }
 
   // ── The pattern, and the verdicts ────────────────────────────────────────
@@ -719,69 +738,73 @@ export class SweepDialogComponent {
   // seen. The case toggle is in this list for exactly that reason — it changes
   // which spans exist as surely as retyping the pattern does.
 
+  private resetSitting(): void {
+    this.verdicts.set(NO_VERDICTS);
+    this.opened.set(NONE_OPEN);
+  }
+
   protected usePreset(which: SweepPreset): void {
     this.preset.set(which);
-    this.kept.set(NONE_KEPT);
+    this.resetSitting();
   }
 
   protected typed(said: string): void {
     this.custom.set(said);
     this.preset.set('custom');
-    this.kept.set(NONE_KEPT);
+    this.resetSitting();
   }
 
   protected useCase(on: boolean): void {
     this.matchCase.set(on);
-    this.kept.set(NONE_KEPT);
+    this.resetSitting();
   }
 
+  /**
+   * ONE PRESS, THE NEXT WORD: cut → keep → block → cut.
+   *
+   * KEEP COMES FIRST because it is the press Owen's first workflow makes a
+   * hundred times — strike all, then spare the ones that matter — and that
+   * press must stay one press. The whole-block verdict is the second press,
+   * which is the rarer decision and the one worth a beat more.
+   */
   protected flip(key: string): void {
-    this.kept.update((spared) => {
-      const next = new Set(spared);
+    this.verdicts.update((said) => {
+      const next = new Map(said);
+      const now = next.get(key) ?? 'cut';
+      if (now === 'cut') next.set(key, 'keep');
+      else if (now === 'keep') next.set(key, 'block');
+      else next.delete(key);
+      return next;
+    });
+  }
+
+  /** The quotation, clicked: the block's wider text in, or back out. */
+  protected toggleContext(key: string): void {
+    this.opened.update((held) => {
+      const next = new Set(held);
       if (!next.delete(key)) next.add(key);
       return next;
     });
   }
 
+  private sayAll(word: SweepVerdict): void {
+    if (word === 'cut') {
+      this.verdicts.set(NO_VERDICTS);
+      return;
+    }
+    this.verdicts.set(new Map(this.live().map((found) => [found.key, word] as const)));
+  }
+
   protected keepAll(): void {
-    this.kept.set(new Set(this.live().map((found) => found.key)));
+    this.sayAll('keep');
   }
 
   protected cutAll(): void {
-    this.kept.set(NONE_KEPT);
+    this.sayAll('cut');
   }
 
-  /**
-   * The pointer, over one row — read off the DOM rather than bound per row.
-   *
-   * `closest` walks up from whatever the pointer actually entered (a quotation, a
-   * chip, the verdict) to the row that carries the key. A pointer over the
-   * padding between rows finds nothing and the widening closes, which is the
-   * honest answer to "which row is this".
-   */
-  protected hover(event: Event): void {
-    const under = event.target instanceof HTMLElement ? event.target.closest('[data-key]') : null;
-    if (!(under instanceof HTMLElement)) {
-      this.hovered.set(null);
-      return;
-    }
-    this.hovered.set(under.dataset['key'] ?? null);
-    /*
-     * The glance is measured HERE, off the row the pointer just proved, rather
-     * than watched reactively: a rect is a fact about the DOM at a moment, and
-     * this is the one moment it is known fresh. The column offsets are the
-     * row's own grid — 14px padding + 120px name column + 10px gap on the
-     * left, 62px verdict + 10px gap + 14px padding on the right — so the
-     * floating quotation stands exactly over the one it widens.
-     */
-    const rect = under.getBoundingClientRect();
-    const up = rect.bottom > window.innerHeight - 170;
-    this.glanceBox.set({
-      top: up ? rect.top - 4 : rect.bottom + 4,
-      left: rect.left + 144,
-      width: rect.width - 144 - 86,
-      up,
-    });
+  protected strikeAll(): void {
+    this.sayAll('block');
   }
 
   /**
@@ -813,8 +836,9 @@ export class SweepDialogComponent {
     const book = pane.view();
     if (book === null) return;
     const chosen = this.cutting();
-    if (chosen.length === 0) return;
-    const edits = plan(book.rows, chosen);
+    const whole = this.strikingBlocks();
+    if (chosen.length === 0 && whole.size === 0) return;
+    const edits = plan(book.rows, chosen, whole);
     if (edits.length === 0) return;
     if (pane.translated()) {
       await this.record(pane, edits);
@@ -822,9 +846,12 @@ export class SweepDialogComponent {
     }
     pane.push(opsFor(edits));
     this.ui.closeSweep();
-    this.notices.notice.set(
-      `Cut ${chosen.length} across ${saidBlocks(edits.length)} — waiting with your other edits.`,
-    );
+    const said: string[] = [];
+    if (chosen.length > 0) {
+      said.push(`Cut ${chosen.length} across ${saidBlocks(edits.length - whole.size)}`);
+    }
+    if (whole.size > 0) said.push(`struck ${saidBlocks(whole.size)} whole`);
+    this.notices.notice.set(`${said.join(', ')} — waiting with your other edits.`);
   }
 
   /**
@@ -884,8 +911,8 @@ export class SweepDialogComponent {
         + 'translation.');
     }
     if (strikes.length > 0) {
-      said.push(`${saidBlocks(strikes.length)} emptied of everything but the matches `
-        + `${strikes.length === 1 ? 'is' : 'are'} struck and waiting with your other edits.`);
+      said.push(`${saidBlocks(strikes.length)} — struck whole, or emptied of everything but the `
+        + `matches — ${strikes.length === 1 ? 'is' : 'are'} struck and waiting with your other edits.`);
     }
     if (refused > 0) {
       said.push(`${saidBlocks(refused)} would not take the correction, and each one said why.`);
@@ -901,6 +928,7 @@ function saidBlocks(many: number): string {
 
 const NO_ROWS: readonly ReplayedRow[] = [];
 const NO_MATCHES: readonly SweepMatch[] = [];
-const NONE_KEPT: ReadonlySet<string> = new Set();
+const NO_VERDICTS: ReadonlyMap<string, SweepVerdict> = new Map();
+const NONE_OPEN: ReadonlySet<string> = new Set();
 /** No pane, no book, no pattern — three ways of having nothing to count. */
 const NOTHING = { ok: true, matches: NO_MATCHES } as const;

@@ -2350,8 +2350,13 @@ export interface ExportLanding {
    * a full tag arriving there would be a quiet mismatch.
    *
    * `filename` is the basename actually minted on disk. Absent `metadata`
-   * means "minted before this field existed", never "no metadata" — the same
-   * posture as `stepId` above, and for the same compatibility reason.
+   * means "minted before this field existed" or "nobody had a record to
+   * stamp" — a standalone first mint with no form confirmed — never "a host's
+   * fields were read and dropped"; the same posture as `stepId` above. A
+   * hosted export inherits the host's `mintMetaFor` answer under the project's
+   * stored block at the settle (`inheritMintMeta`, shared/mint-meta.ts), so a
+   * book BookForge asked for arrives with its own shelf's title and author
+   * whether or not anybody opened the modal on this project.
    */
   metadata?: ExportMintMetadata;
 }
