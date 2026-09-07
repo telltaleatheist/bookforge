@@ -301,12 +301,14 @@ check('the checkpoint dir is the PRODUCTION one, not the staging convention', ()
   // NOT /home/<user>/higgs-models/<voice>, and not its sibling. A certificate
   // binds (checkpoint dir, stage-processor patch sha, max_chars) together: a cap
   // is measured by rendering against ONE directory on ONE patched server, so two
-  // merges of the same run are two directories and two certificates. ckpt-1080
-  // (lowest loss, chosen by ear 2026-09-05) is production; ckpt-480 stays on
-  // disk as the alternate with its own certified 1200.
+  // merges of the same run are two directories and two certificates. Since the
+  // 2026-09-07 promotion (Owen: 'promote the deathstalker model we just trained
+  // as the definitive model locally ... delete the old one') the WSL arm is
+  // ds_v5_prod, the ds_v5 train's ladder pick (ckpt-1102); ds_ad4lm_prod_ckpt1080
+  // was deleted from the PC and survives on the Mac arm and on HF.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
   assert.strictEqual(m.voice.checkpoint.wsl,
-    '/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080');
+    '/home/telltale/higgs_v3_merged/ds_v5_prod');
   assert.ok(m._checkpointDirNote, 'nothing says why this is not the higgs-models convention');
 });
 
@@ -443,16 +445,24 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   }
 });
 
-check('deathstalker carries its OWN certified cap, 1200 from a length sweep', () => {
-  // Measured against ckpt-1080's own weights, not inherited from the sibling —
-  // which is the whole discipline: a cap is bound to (directory, patch sha,
-  // max_chars). Rule, quoted from the certificate: babble==0 across all seeds
-  // AND min per-seed coverage >= 0.90, contiguous from the shortest tested
-  // length. Ladder 150/300/600/900/1200; 1500 fails at 86.1 % coverage.
+check('deathstalker's served cap is its TRAINING CEILING, declared — and the old certificate stays on record', () => {
+  // THE RULE CHANGED WITH THE DIRECTORY. ds_v5_prod (promoted 2026-09-07) has
+  // no length-sweep certificate; Owen's rule that day: 'max chunk is what we
+  // trained on' — the served max is the LONGEST TRAINING ROW of the directory's
+  // own corpus (ds_v5 mix: max 1764 chars / 100 s; p75 1092), declared here as
+  // maxCharsSource 'catalog' (narrator's vocabulary has no 'training-ceiling').
+  // The ckpt-1080 certificate (150/300/600/900/1200; 1500 fails at 86.1 %) is
+  // kept inside _maxCharsNote as the record of how a certificate is made.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
-  assert.strictEqual(m.backends.served.maxChars, 1200);
-  assert.strictEqual(m.backends.served.maxCharsSource, 'length-sweep');
+  assert.strictEqual(m.backends.served.maxChars, 1764);
+  assert.strictEqual(m.backends.served.maxCharsSource, 'catalog');
+  const src = m.backends.served._maxCharsSourceNote;
+  assert.match(src, /max chunk is what we trained on/, 'the note does not quote the rule the number comes from');
+  assert.match(src, /MAX 1764/, 'the note does not give the training ceiling the number is');
+  assert.match(src, /ds_v5/, 'the note does not name the corpus the ceiling was read from');
+  assert.strictEqual(m.backends.served.targetChars, 1000, 'Owen 2026-09-07: target 1000');
   const note = m.backends.served._maxCharsNote;
+  assert.match(note, /SUPERSEDED DIRECTORY/, 'the old certificate is not marked as belonging to the deleted directory');
   assert.match(note, /97\.3/, 'the certified length\'s coverage is not recorded');
   assert.match(note, /86\.1/, 'the note does not say what stopped the ladder');
   assert.match(note, /0b36f6507dd11653/,
@@ -1014,13 +1024,17 @@ check('the shipped deathstalker is CERTIFIED PER ARM, each carrying its own evid
   // and MLX 900 (2026-09-05T13:19) — so the assertion is now the OTHER half of
   // the same rule: each arm states a MEASURED number, with its own method, and
   // the two are not required to agree.
+  // 2026-09-07: the served arm moved to ds_v5_prod, whose number is the
+  // declared training ceiling ('catalog'); the MLX arm still renders the
+  // ckpt-1080 copy under its own sweep. Each arm names ITS method.
   const m = higgs.listHiggsModels().find((v) => v.id === 'deathstalker');
+  const METHOD = { served: 'catalog', mlx: 'length-sweep' };
   for (const backend of ['served', 'mlx']) {
     const caps = m.backends[backend];
     assert.ok(Number.isInteger(caps.maxChars) && caps.maxChars > 0,
-      `${backend}: cap is ${JSON.stringify(caps.maxChars)}, not a measured number`);
-    assert.strictEqual(caps.maxCharsSource, 'length-sweep',
-      `${backend}: a measured cap must name the method that produced it`);
+      `${backend}: cap is ${JSON.stringify(caps.maxChars)}, not a stated number`);
+    assert.strictEqual(caps.maxCharsSource, METHOD[backend],
+      `${backend}: the cap must name the method that produced it`);
   }
 
   // A CERTIFICATE IS PER (DIRECTORY, BACKEND) — the whole reason the blocks are
@@ -2579,9 +2593,9 @@ if (skipWhy) {
     assert.strictEqual(got.name, 'deathstalker');
     assert.strictEqual(got.cls, 'DefaultVoice', 'a fine-tune is prompted TEXT-ONLY');
     assert.strictEqual(got.checkpoint,
-      '/home/telltale/higgs_v3_merged/ds_ad4lm_prod_ckpt1080');
-    assert.strictEqual(got.max_chars, 1200);
-    assert.strictEqual(got.source, 'length-sweep');
+      '/home/telltale/higgs_v3_merged/ds_v5_prod');
+    assert.strictEqual(got.max_chars, 1764);
+    assert.strictEqual(got.source, 'catalog');
 
     // AND THE MAC'S DOCUMENT IS A DIFFERENT DOCUMENT — the Mac's own copy of the
     // directory, and the MLX sweep's 900 rather than the served 1200. Driven
