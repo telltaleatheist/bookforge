@@ -567,9 +567,15 @@ function rowOf(step: QueueStep): FoundryJobRow {
   return {
     id: step.id,
     inputPath: String(request?.inputPath ?? ''),
-    // Their identity for a read IS the bank ("it points at what it actually
-    // makes"), so the same field carries the same fact here.
-    outputPath: String(request?.readingsPath ?? request?.outputPath ?? ''),
+    // WHAT THE ROW MAKES, in Foundry's own words (`productOf`, their job-queue):
+    // a read's bank, a text pass's RECORDS file, a rendering's file. Unfolded —
+    // this is the path they read back, and `projectDirOf` on their side files
+    // the row under its project by it. It used to be `readingsPath ?? outputPath`,
+    // and a clean carries neither: the row went over as outputPath '' and their
+    // `shelfJobsFor(projectDir)` dropped it before a promised card could be
+    // derived from it — Owen pressed Clean text on 2026-09-07 and no greyed step
+    // appeared, over a row that was running the whole time.
+    outputPath: request === undefined ? '' : productPathOf(request),
     kind: (request?.kind ?? 'read') as FoundryJobKind,
     state: stateOf(step),
     /*
@@ -856,6 +862,13 @@ function fold(p: string): string { return p.replace(/\\/g, '/').replace(/\/+$/, 
  * prevent. Empty for a request naming neither, which is deduped against nothing
  * rather than against everything.
  */
+function productPathOf(request: FoundryJobRequest): string {
+  const product = request.kind === 'read'
+    ? request.readingsPath
+    : isTextPass(request.kind) ? request.recordsPath : request.outputPath;
+  return typeof product === 'string' ? product : '';
+}
+
 function productOf(request: FoundryJobRequest): string {
   /*
    * KEYED OFF THE KIND, not off which field happens to be present, and the first
@@ -876,10 +889,8 @@ function productOf(request: FoundryJobRequest): string {
    * on one book would be two rows both writing the same records file, which is
    * precisely the collision this function exists to prevent.
    */
-  const product = request.kind === 'read'
-    ? request.readingsPath
-    : isTextPass(request.kind) ? request.recordsPath : request.outputPath;
-  return typeof product === 'string' && product !== '' ? fold(product) : '';
+  const product = productPathOf(request);
+  return product !== '' ? fold(product) : '';
 }
 
 /**

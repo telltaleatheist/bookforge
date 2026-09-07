@@ -396,6 +396,21 @@ test('a text pass is identified by its RECORDS file — a clean names no outputP
   assert.notStrictEqual(other.id, first.id, 'two different records files are two honest rows');
 });
 
+test('THE ROW REPORTS WHAT IT MAKES: a text pass names its RECORDS file as outputPath, so their per-project shelf keeps it (Owen, 2026-09-07: no greyed step for a running clean)', async () => {
+  await fresh('textpass-row-path');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const cleanReq = textPass('clean', 'k1');
+  const translateReq = textPass('translate', 'k2');
+  host.foundryHostQueue.enqueue(cleanReq, null, PROJ);
+  host.foundryHostQueue.enqueue(translateReq, null, PROJ);
+  const rows = host.foundryHostQueue.rows(PROJ);
+  const clean = rows.find((r) => r.kind === 'clean');
+  const translate = rows.find((r) => r.kind === 'translate');
+  assert.strictEqual(clean.outputPath, cleanReq.recordsPath,
+    "a clean carries no outputPath; the row's is its records file, unfolded, or their shelfJobsFor drops it");
+  assert.strictEqual(translate.outputPath, translateReq.recordsPath);
+});
+
 test('a simplify and a translate over one book are TWO rows — different records, different acts', async () => {
   await fresh('textpass-siblings');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
