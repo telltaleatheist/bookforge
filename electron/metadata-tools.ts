@@ -674,7 +674,16 @@ export async function embedVttInM4b(
     if (code !== 0) throw new Error(`ffmpeg failed to embed the transcript (${code}): ${stderr.slice(-400)}`);
     // Verify the candidate before replacing the original. A malformed subtitle
     // mux must never destroy a previously-good embedded transcript or audiobook.
-    if ((await extractVttFromM4b(tmpOut, opts?.timeoutMs ?? 120_000)) === null) {
+    //
+    // FROM THE MOOV, not by reading the audiobook back. The check is "is there a
+    // mov_text track, and does it carry at least a sample per non-empty cue" —
+    // which the header answers in 0.13 s where the extraction reads the whole
+    // multi-gigabyte file over the library's SMB mount. See
+    // `subtitleTrackCarries`; an inconclusive probe still reads it in full.
+    const expectedCues = countNonEmptyVttCues(fs.readFileSync(vttPath, 'utf-8'));
+    if (!await subtitleTrackCarries(
+      tmpOut, expectedCues, 'the freshly muxed audiobook', opts?.timeoutMs ?? 120_000,
+    )) {
       throw new Error('Embedded transcript verification failed');
     }
     // Replace the original. This is the step that lost the Nuremberg transcript
@@ -727,6 +736,91 @@ export async function extractVttFromM4b(m4bPath: string, timeoutMs = 120_000): P
 }
 
 /**
+ * COUNT THE CUES A VTT WOULD PUT IN A SUBTITLE TRACK — the non-empty ones.
+ *
+ * `mov_text` CANNOT REPRESENT AN EMPTY CUE and silently drops it, which is the
+ * off-by-one this codebase has already paid for once (a 133-cue book shipped as
+ * 132 and every later cue was off against the chunk list). So the number that
+ * can be checked against a track is the number of cues with text; a `NOTE`
+ * block is not a cue at all.
+ */
+export function countNonEmptyVttCues(vttText: string): number {
+  let cues = 0;
+  const blocks = vttText.replace(/\r\n/g, '\n').split(/\n\s*\n/);
+  for (const block of blocks) {
+    const lines = block.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+    if (lines.length === 0) continue;
+    if (lines[0].startsWith('WEBVTT') || lines[0].startsWith('NOTE')) continue;
+    const timingAt = lines.findIndex((l) => l.includes('-->'));
+    if (timingAt < 0) continue;                       // a NOTE body, a STYLE block
+    if (lines.length > timingAt + 1) cues++;          // has payload text
+  }
+  return cues;
+}
+
+/**
+ * The subtitle track of an m4b, read from the MOOV ALONE.
+ *
+ * `ffprobe -show_entries stream=…` reads the header and stops; `faststart` puts
+ * the moov at the front, so this costs one small read of a multi-gigabyte file
+ * where {@link extractVttFromM4b} costs the whole thing — 0.13 s against ~16 s
+ * over the library's SMB mount, and the tail did it TWICE per assembly.
+ *
+ * `nbFrames` is null when the build reports `N/A`: mov_text writes filler
+ * samples between cues, so the number is a floor on the cue count and never an
+ * equality, and a missing one is INCONCLUSIVE — the caller falls back to the
+ * full extraction and says so, rather than passing a file it did not verify.
+ */
+export async function probeSubtitleTrack(
+  m4bPath: string, timeoutMs = 60_000,
+): Promise<{ codecName: string | null; nbFrames: number | null }> {
+  const ffprobe = getFfprobePath();
+  const { code, stdout } = await runProc(ffprobe, [
+    '-v', 'error', '-select_streams', 's:0',
+    '-show_entries', 'stream=codec_name,nb_frames',
+    '-of', 'default=noprint_wrappers=1:nokey=0', m4bPath,
+  ], timeoutMs);
+  if (code !== 0) return { codecName: null, nbFrames: null };
+  let codecName: string | null = null;
+  let nbFrames: number | null = null;
+  for (const line of stdout.split(/\r?\n/)) {
+    const [key, value] = line.split('=');
+    if (key === 'codec_name' && value) codecName = value.trim();
+    if (key === 'nb_frames' && value && /^\d+$/.test(value.trim())) nbFrames = Number(value.trim());
+  }
+  return { codecName, nbFrames };
+}
+
+/**
+ * Did the embed land? Asked of the MOOV, with the full extraction as the answer
+ * to an inconclusive probe and to nothing else.
+ *
+ * `BOOKFORGE_VERIFY_VTT_FULL=1` forces the old whole-file extraction, for the
+ * day a track probes fine and reads back wrong.
+ */
+async function subtitleTrackCarries(
+  m4bPath: string, expectedCues: number, where: string, timeoutMs: number,
+): Promise<boolean> {
+  if (process.env.BOOKFORGE_VERIFY_VTT_FULL !== '1') {
+    const probe = await probeSubtitleTrack(m4bPath, Math.min(timeoutMs, 60_000));
+    if (probe.codecName === null) return false;       // no subtitle stream at all
+    if (probe.nbFrames !== null) {
+      if (probe.nbFrames >= Math.max(expectedCues, 1)) return true;
+      console.error(
+        `[metadata-tools] ${where}: the subtitle track carries ${probe.nbFrames} sample(s) for `
+        + `${expectedCues} non-empty cue(s) — the transcript did not survive the mux.`,
+      );
+      return false;
+    }
+    console.warn(
+      `[metadata-tools] ${where}: ffprobe reported no nb_frames for the subtitle track, so the `
+      + 'whole transcript is being read back to verify it.',
+    );
+  }
+  return (await extractVttFromM4b(m4bPath, timeoutMs)) !== null;
+}
+
+/**
  * Resolve a readable WebVTT for an audiobook, embed-only-safe: return the sidecar
  * file if it exists, else extract the transcript EMBEDDED in the m4b to a temp
  * file. Returns `{ path, viaTemp }` (viaTemp temps live in os.tmpdir — the caller
@@ -760,8 +854,11 @@ export async function embedAndVerifyVtt(
   vttPath: string,
   opts?: { language?: string; timeoutMs?: number },
 ): Promise<boolean> {
+  const expectedCues = countNonEmptyVttCues(fs.readFileSync(vttPath, 'utf-8'));
   await embedVttInM4b(m4bPath, vttPath, opts);
-  return (await extractVttFromM4b(m4bPath)) !== null;
+  // The second look, at the file that is now in place. Same reasoning as the
+  // one inside the embed: the moov answers it.
+  return subtitleTrackCarries(m4bPath, expectedCues, 'the finished audiobook', opts?.timeoutMs ?? 120_000);
 }
 
 /**

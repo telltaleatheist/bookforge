@@ -160,5 +160,58 @@ check('the sentence-transcript scan refuses by resolving, never by throwing', ()
   assert.ok(!block.includes('throw new Error'), 'the refusal still throws');
 });
 
+console.log('\nthe embed verifies from the MOOV, not by reading the book back');
+
+// The compiled module imports `electron`; the stub the CLI adapters use makes
+// that resolvable outside an Electron process.
+require(path.join(REPO, 'cli', 'electron-stub.js'));
+const { countNonEmptyVttCues } = require(path.join(REPO, 'dist', 'electron', 'metadata-tools.js'));
+
+check('cues with text are counted; WEBVTT, NOTE and empty cues are not', () => {
+  const vtt = [
+    'WEBVTT',
+    '',
+    '00:00:00.000 --> 00:00:02.000',
+    'Into the field of fire.',
+    '',
+    'NOTE estimated chunk 12',
+    '',
+    '00:00:02.000 --> 00:00:04.000',
+    'The tunnel seemed endless.',
+    '',
+    // mov_text cannot represent this one and drops it — the off-by-one that
+    // shipped a 133-cue book as 132.
+    '00:00:04.000 --> 00:00:05.000',
+    '',
+    '00:00:05.000 --> 00:00:07.000',
+    'He burst into the open.',
+    '',
+  ].join('\n');
+  assert.strictEqual(countNonEmptyVttCues(vtt), 3);
+});
+
+check('a cue identifier line before the timing does not become a cue of its own', () => {
+  const vtt = 'WEBVTT\n\ncue-1\n00:00:00.000 --> 00:00:01.000\nOne.\n\ncue-2\n00:00:01.000 --> 00:00:02.000\nTwo.\n';
+  assert.strictEqual(countNonEmptyVttCues(vtt), 2);
+});
+
+check('a transcript with no cues counts zero rather than throwing', () => {
+  assert.strictEqual(countNonEmptyVttCues('WEBVTT\n\n'), 0);
+});
+
+check('the embed checks the track with ffprobe and keeps the full read for the inconclusive case', () => {
+  const tools = fs.readFileSync(path.join(REPO, 'electron', 'metadata-tools.ts'), 'utf-8');
+  const at = tools.indexOf('async function subtitleTrackCarries(');
+  assert.ok(at > 0, 'the moov-only verification is gone');
+  const fn = tools.slice(at, at + 1600);
+  assert.ok(fn.includes('probeSubtitleTrack('), 'it no longer probes');
+  assert.ok(fn.includes('extractVttFromM4b('), 'an inconclusive probe must still read the file back');
+  assert.ok(fn.includes('BOOKFORGE_VERIFY_VTT_FULL'), 'the diagnostic escape hatch is gone');
+  assert.ok(
+    !/embedAndVerifyVtt[\s\S]{0,400}extractVttFromM4b\(m4bPath\)/.test(tools),
+    'embedAndVerifyVtt still reads the whole audiobook back to verify the track',
+  );
+});
+
 console.log(failures === 0 ? '\nAll green.\n' : `\n${failures} failure(s).\n`);
 process.exitCode = failures === 0 ? 0 : 1;

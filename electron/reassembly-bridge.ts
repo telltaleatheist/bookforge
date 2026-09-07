@@ -1286,6 +1286,54 @@ export async function startReassembly(
     ...STAGE_ALWAYS,
   ]);
 
+  /*
+   * ── WHERE THE TIME GOES, one line per stage ────────────────────────────────
+   *
+   * The log said `Reassembly started` and `Reassembly complete` and nothing in
+   * between, so a 4.6-minute assembly of a 10-hour book was 4.6 minutes of
+   * unattributed wall clock — and the tail (metadata, transcript embed,
+   * promotion, sha256 of a 700 MB file over SMB) is several full passes over the
+   * audiobook that nobody had ever timed. ONE line per stage TRANSITION, never
+   * per progress tick, plus a summary of every stage when the run completes.
+   *
+   * `mark()` is the same instrument inside the tail, where the stage name stays
+   * 'metadata' throughout and the interesting steps are the file passes.
+   */
+  const runStartedAt = Date.now();
+  const stageTimings: { stage: string; ms: number }[] = [];
+  let openStage: string | null = null;
+  let openStageAt = runStartedAt;
+  const closeStage = (): void => {
+    if (openStage === null) return;
+    const ms = Date.now() - openStageAt;
+    stageTimings.push({ stage: openStage, ms });
+    reassemblyLog.info('stage', { jobId, stage: openStage, elapsedMs: ms });
+    openStage = null;
+  };
+  const openStageAs = (name: string): void => {
+    if (openStage === name) return;
+    closeStage();
+    openStage = name;
+    openStageAt = Date.now();
+  };
+  /** One tail step, timed. The name is what the log line will call it. */
+  let lastMarkAt = 0;
+  const mark = (what: string): void => {
+    const now = Date.now();
+    if (lastMarkAt !== 0) {
+      const ms = now - lastMarkAt;
+      stageTimings.push({ stage: what, ms });
+      reassemblyLog.info('stage', { jobId, stage: what, elapsedMs: ms });
+    }
+    lastMarkAt = now;
+  };
+  const logStageSummary = (outcome: string): void => {
+    closeStage();
+    reassemblyLog.info('stage timings', {
+      jobId, outcome, totalMs: Date.now() - runStartedAt, stages: stageTimings,
+    });
+  };
+
   /**
    * Advance a stage and publish. `pct === null` marks the stage running without
    * claiming a fraction — for steps whose progress isn't measurable yet, where a
@@ -1297,6 +1345,7 @@ export async function startReassembly(
     message: string,
     extra?: { currentChapter?: number; totalChapters?: number },
   ): void => {
+    openStageAs(name);
     if (pct === null) stages.start(name);
     else stages.set(name, pct);
     sendProgress(mainWindow, jobId, {
@@ -2174,6 +2223,10 @@ export async function startReassembly(
       }
 
       if (code === 0) {
+        // The tail's own clock. Every `mark()` below closes the step before it,
+        // which is how "where do the four minutes go" gets an answer: these are
+        // all whole-file passes over an audiobook on a network share.
+        mark('tail start');
         // Find the output file if we don't have it yet
         if (!outputPath && stagingDir) {
           // Try to find the output file in the staging directory
@@ -2229,6 +2282,8 @@ export async function startReassembly(
           }
         }
 
+        mark('rename');
+
         /*
          * ── The join: the alignment, if one is running beside this assembly ──
          *
@@ -2263,6 +2318,8 @@ export async function startReassembly(
             );
           }
         }
+
+        mark('wait for alignment');
 
         // Locate the transcript produced in THIS reassembly run so we can SEAL it into
         // the m4b below.
@@ -2340,6 +2397,8 @@ export async function startReassembly(
           }
         }
 
+        mark('choose transcript');
+
         // ── Completeness gate: the m4b must be as long as its own transcript ──
         //
         // exit-0 from e2a and a playable file prove NOTHING about completeness:
@@ -2381,11 +2440,15 @@ export async function startReassembly(
           }
         }
 
-        // Apply extended metadata with m4b-tool if output file exists
+        mark('completeness gate');
+
+        // Write the book's tags and cover. IN PLACE, via mutagen — only the moov
+        // is rewritten, not the audio (see `applyM4bMetadata`).
         if (outputPath && fs.existsSync(outputPath)) {
           await applyM4bMetadata(outputPath, config.metadata, jobId,
             (pct, message) => emitStage('metadata', pct, message));
         }
+        mark('write tags');
 
         // Seal the transcript INTO the m4b as a subtitle track — the single source of
         // truth (embed-only). Runs AFTER metadata (that remux doesn't carry subtitles,
@@ -2427,6 +2490,8 @@ export async function startReassembly(
             console.error('[REASSEMBLY] Transcript NOT embedded; the staging .vtt will be bound as a sidecar instead:', sealVttSource);
           }
         }
+
+        mark('embed transcript');
 
         // ── Promote: staging → output dir ──
         // All post-processing happened in staging. Move the finished files to
@@ -2588,6 +2653,8 @@ export async function startReassembly(
           return;
         }
 
+        mark('promote');
+
         // Register the finished audiobook in the project manifest HERE in the main
         // process, so it's deterministic. The renderer-side link (queue.service →
         // audiobook:link-audio) silently skips when this reassembly job carries no
@@ -2619,6 +2686,8 @@ export async function startReassembly(
         } catch (regErr) {
           reassemblyLog.error('Manifest registration threw', { jobId, error: (regErr as Error).message });
         }
+
+        mark('register in manifest');
 
         // Re-bind the transcript/cover sidecars to the NEW m4b bytes.
         //
@@ -2671,6 +2740,8 @@ export async function startReassembly(
         } catch (bindErr) {
           reassemblyLog.warn('Sidecar rebind threw (non-fatal)', { jobId, error: (bindErr as Error).message });
         }
+
+        mark('bind sidecars');
 
         stages.completeAll();
         sendProgress(mainWindow, jobId, {
@@ -2731,7 +2802,9 @@ export async function startReassembly(
       finalized = true;
       try {
         await finalizeBody(code);
+        logStageSummary('settled');
       } catch (err) {
+        logStageSummary('threw');
         const detail = (err as Error)?.message || String(err);
         const message = 'The audiobook was assembled but BookForge failed while finishing it: '
           + `${detail} Nothing was promoted; everything this run built is preserved in: ${stagingDir}`;
@@ -3009,10 +3082,13 @@ async function applyM4bMetadata(
   activeMetadataAborts.set(jobId, controller);
 
   try {
-    // applyMetadata maps only the chosen cover (any existing/Calibre-generated
-    // cover is dropped) in a single lossless `-c copy` remux, so no separate
-    // cover-strip pass is needed. Timeout is generous — a remux rewrites the
-    // whole file, which is seconds for a normal book but longer for multi-GB ones.
+    // NOT A REMUX. This comment said "a single lossless `-c copy` remux" for long
+    // enough to be quoted in a plan to remove the pass: `applyMetadata` writes
+    // the tags and the cover IN PLACE with mutagen (electron/scripts/
+    // write_m4b_tags.py), touching the moov and never the audio or the chapters.
+    // It maps only the chosen cover, so no separate cover-strip pass is needed.
+    // The timeout stays generous because it is a network share, not because the
+    // file is re-encoded.
     await applyMetadata(m4bPath, metadataToApply, {
       timeoutMs: 300_000,
       signal: controller.signal
