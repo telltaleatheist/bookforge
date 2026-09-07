@@ -1706,10 +1706,10 @@ export class NarrationModalComponent {
         if (!pending.cleaned) {
           throw new Error(
             'This export is queued from a step with no narration text cleanup in front of it, so '
-            + 'the book it will produce would be read as printed. Nothing was queued. Run Clean '
-            + 'text on the step first and press Narrate on the export that follows it — or wait '
-            + 'for this export to land and press Narrate on it then, when the cleanup can be '
-            + 'offered.');
+            + 'the book it will produce would be read as printed. Nothing was queued. The cleanup '
+            + 'is one press away: press Clean text on the greyed step in Foundry, then Narrate on '
+            + 'the export that follows the cleanup — or wait for this export to land and press '
+            + 'Narrate on it then, when the yes / no / cancel offer can be made.');
         }
       } else if (this.narrate()) {
         const readiness = await this.electron.narrationTextReadiness(

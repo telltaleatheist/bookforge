@@ -683,6 +683,25 @@ export const foundryHostQueue = {
      * book whose read is done is a person asking for it to be done AGAIN — which
      * is a legitimate act and gets its own row.
      */
+    /*
+     * A PROMISED PASS IS IDENTIFIED BY WHAT IT FOLLOWS AND WHAT IT IS, not by
+     * its product: a deferred pass carries a PLACEHOLDER records path minted per
+     * press (foundry@88029f7 — `pending-<id8>`), so two presses of Simplify on
+     * one greyed row would be two products and two rows writing one file once
+     * the names resolve. Foundry's standalone queue answers a double press with
+     * one row by asking the rows for (after, kind, into-or-mode) before it asks
+     * the product path (`pendingChained`, their job-queue.ts); this is the same
+     * question, asked here, so both queues give one answer.
+     */
+    if (typeof request.after === 'string' && request.after !== '') {
+      for (const { step } of foundrySteps()) {
+        if (TERMINAL_STEP_STATUSES.has(step.status)) continue;
+        const held = configOf(step)!.request;
+        if (held.after !== request.after || held.kind !== request.kind) continue;
+        if (held.to !== request.to || held.rewrite !== request.rewrite) continue;
+        return rowOf(step);
+      }
+    }
     const identity = productOf(request);
     if (identity !== '') {
       for (const { step } of foundrySteps()) {

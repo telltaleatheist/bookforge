@@ -720,6 +720,23 @@ test("a translation's target and a rewrite's mode ride on the row as into / mode
   assert.strictEqual(root.into, undefined);
 });
 
+test('a DOUBLE press on a promised pass is ONE row — keyed on (after, kind, into-or-mode), not the placeholder product', async () => {
+  await fresh('chain-double-press');
+  host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
+  const root = host.foundryHostQueue.enqueue(readRequest('root'), null, PROJ);
+  const press = (id8, mode = 'plain') => host.foundryHostQueue.enqueue({
+    kind: 'simplify', inputPath: `${PROJ}\archive\book.pdf`,
+    recordsPath: `${PROJ}\readings\k.simplify.${mode}.pending-${id8}.records.jsonl`,
+    rewrite: mode, stepId: `step_future_${id8}`, after: root.id,
+  }, null, PROJ);
+  const first = press('aaaaaaaa');
+  const again = press('bbbbbbbb');
+  assert.strictEqual(again.id, first.id, 'the second press found the first row, though its placeholder path differs');
+  const other = press('cccccccc', 'terms');
+  assert.notStrictEqual(other.id, first.id, 'a different mode is a different act');
+  assert.strictEqual(host.foundryHostQueue.rows(PROJ).length, 3, 'root + two distinct promised passes');
+});
+
 test('a follow onto a row that is NOT in the queue is refused BY NAME, and nothing is queued', async () => {
   await fresh('chain-lost');
   host.setFoundrySeam({ runJob: null, setQueueRows: null, drained: null });
