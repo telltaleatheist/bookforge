@@ -9876,12 +9876,18 @@ ipcMain.handle('narration:text-readiness', async (
             : { parentIndex: steps.length - 1 }),
         });
       });
+      // THE FOLLOW-ON STEPS ARE NOT A STRAIGHT LINE. An align row is a leaf, and
+      // every other row waits on the nearest earlier non-align step — see
+      // narrationStepParentIndex, the one rule for it (Owen, 2026-09-07: align and
+      // assembly run concurrently in available CPU slots).
+      const { narrationStepParentIndex } = await import('../shared/queue/narration-run.js');
       for (const spec of followOn) {
+        const parentIndex = narrationStepParentIndex(steps.map((s) => s.type), steps.length);
         steps.push({
           ...spec,
-          ...(steps.length === 0
+          ...(parentIndex === null
             ? { sourceRef: spec.sourceRef ?? { kind: 'epub' as const, path: plan.bookEpubPath } }
-            : { parentIndex: steps.length - 1 }),
+            : { parentIndex }),
         });
       }
 

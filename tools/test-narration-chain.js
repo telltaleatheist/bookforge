@@ -341,6 +341,19 @@ test('the align row sits BEHIND the render and IN FRONT of every enhancement', (
   }
 });
 
+test('ALIGN IS A LEAF: assembly and every pass wait on the nearest non-align step (Owen, 2026-09-07)', () => {
+  const { narrationStepParentIndex } = require(MODULE);
+  const parents = (types) => types.map((_, i) => narrationStepParentIndex(types, i));
+  assert.deepStrictEqual(parents(['tts-conversion', 'align', 'reassembly']), [null, 0, 0],
+    'assembly hangs off the render, beside the align — two CPU slots at once');
+  assert.deepStrictEqual(
+    parents(['tts-conversion', 'align', 'final-denoise', 'rvc-enhancement', 'reassembly']),
+    [null, 0, 0, 2, 3],
+    'passes and the assembly chain through each other; none of them waits on the audit');
+  assert.deepStrictEqual(parents(['tts-conversion', 'reassembly']), [null, 0], 'an Orpheus run is the straight line it was');
+  assert.deepStrictEqual(parents(['simplify', 'tts-conversion', 'align', 'reassembly']), [null, 0, 1, 1],
+    'a text pass in front is still the render\'s parent');
+});
 test('AN ORPHEUS RUN IS UNCHANGED — no align row, in any shape', () => {
   for (const order of ['denoise-first', 'rvc-first']) {
     for (const finalDenoise of [false, true]) {

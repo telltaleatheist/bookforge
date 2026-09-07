@@ -1104,3 +1104,34 @@ export function buildNarrationSteps(
   }
   return steps;
 }
+
+/**
+ * WHICH EARLIER STEP A CHAINED STEP WAITS ON — Owen's ruling of 2026-09-07:
+ * "i would like them to run concurrently in available cpu slots, for sure."
+ *
+ * The chain used to be a straight line: every step's parent was the step before
+ * it, so a chained assembly sat behind the align row and the two never shared
+ * the bench even with a CPU slot free. But the align row is an AUDIT (Owen,
+ * 2026-09-05): it scores the render and writes a report; it changes no audio
+ * and nothing downstream consumes it automatically. So it is a LEAF — it hangs
+ * off the render like everything else, and NOTHING hangs off it. Every other
+ * step waits on the nearest earlier step that is not an align: the render, or
+ * the last enhancement pass, whichever came last. That is the true data
+ * dependency (an assembly reads the audio the passes left), and it is what lets
+ * align and assembly take two CPU slots at once.
+ *
+ * What the serial order bought, and is given up: the assembly's own log listed
+ * the audit's findings, because the report existed by the time it ran. Now the
+ * report may land after the file; the align row's summary still names the
+ * retakes, and a retake re-assembles anyway.
+ *
+ * `types` is the run's step types in order; the answer is the parent's index
+ * for step `index`, or null for the first step (which has no parent).
+ */
+export function narrationStepParentIndex(types: readonly string[], index: number): number | null {
+  if (index <= 0) return null;
+  for (let i = index - 1; i >= 0; i--) {
+    if (types[i] !== 'align') return i;
+  }
+  return 0;
+}
