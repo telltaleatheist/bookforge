@@ -7,7 +7,7 @@
     "topP": 0.95,
     "topK": 50
   },
-  "_samplingNote": "REASON: Boson's own Higgs TTS 3 model card example is temperature 0.8 / top_k 50 (its only stated sampling); top_p 0.95 / top_k 50 are also what vllm-omni's deploy profile ships (v3_served.SERVER_DEFAULT_SAMPLING). The shipped generation_config.json inside each merged checkpoint says 1.0 and was NOT chosen: Owen picked 0.8 as \"the boson default\" (2026-09-06), with 1.0 / 0.7 / 0.8 put to him in plain words. Mac's 54-render WER table (deathstalker ckpt1080): 0.3 truncates, 0.6 and 1.0 tie; nothing measured at 0.8 yet - the pace bands (deathstalker 17.11, mistborn 15.16 chars/s) were measured at 1.0 and the training side re-measures at 0.8.",
+  "_samplingNote": "REASON: Boson's own Higgs TTS 3 model card example is temperature 0.8 / top_k 50 (its only stated sampling); top_p 0.95 / top_k 50 are also what vllm-omni's deploy profile ships (v3_served.SERVER_DEFAULT_SAMPLING). The shipped generation_config.json inside each merged checkpoint says 1.0 and was NOT chosen: Owen picked 0.8 as \"the boson default\" (2026-09-06), with 1.0 / 0.7 / 0.8 put to him in plain words. Mac's 54-render WER table (deathstalker ckpt1080): 0.3 truncates, 0.6 and 1.0 tie; the pace bands were RE-MEASURED at 0.8 on 2026-09-07 (deathstalker 16.73, mistborn 15.01 chars/s; see each voice's pace.source); the training side's sweep found 0.6-0.9 flat on early-stop/run-on and babble beginning at 1.0, so 0.8 stays and 0.9 is the highest safe value.",
   "_comment": "Repo-tracked CURATED catalog for Higgs Audio v3 narration voices — the Higgs counterpart of orpheus-models.json, and deliberately NOT the same shape where the two engines differ. Orpheus's catalog OVERLAYS a per-machine runtime install manifest because Orpheus voices are folder-discovered. Higgs has no folder discovery: a Higgs voice is a row in THIS FILE, so there is no runtime manifest and no reconcile fallback — a voice that is not listed here does not exist, and higgs-models.ts refuses it BY NAME rather than falling through to the served model's own speaker (which measures at 12% of the narrator's ECAPA ceiling: a DIFFERENT person, not a weak clone). Every number in a backends block is MEASURED — provenance in E:\\training\\_campaigns\\2026-09-01-cod-full-rebuild\\higgs\\HIGGS_V3_LEVERS.md — or is an explicitly-marked placeholder that the loader REFUSES to render with. AND THERE IS ONE BLOCK PER BACKEND, not one per voice: `served` is vllm-omni behind WSL, `mlx` is the in-process mlx-audio sampler on the Mac, and the loader picks by ARM (wsl -> served, darwin -> mlx). They do not share numbers, because a cap is produced by RENDERING and the two arms sample through different implementations of top-k/top-p over different runtimes -- the same three sampling values make the configuration identical, not the draws (PORT_NOTES 13.11). So copying a merged directory to the other machine copies the WEIGHTS and not the CERTIFICATE; see _checkpointShapeComment and the deathstalker entry, whose mlx cap is null while its served cap is being measured.",
   "_wireFormatComment": "THIS FILE IS NOT THE WIRE FORMAT. narrator reads a VOICE DOCUMENT whose path arrives in NARRATOR_HIGGS_VOICES (see python/narrator/engine/higgs/config.py load_voices): `{ \"<voiceId>\": { \"clips\": [{path, transcript, seconds}], \"scene\"?, \"adapterDir\"?, \"allowedControls\"?, \"maxReferenceSeconds\"? } }`. In THAT format a Higgs voice is ALWAYS clips, and a fine-tune is an `checkpointDir` riding on the same object — there is no separate checkpoint kind. This catalog keeps an explicit `kind` anyway, because `kind` is what selects BOOKFORGE'S OWN RULES (above all: maxChars is REQUIRED and measured for an adapter, and may be the engine placeholder for a zero-shot voice) and because a picker has to tell a person which of the two they are choosing. `higgsVoicesDocument()` in higgs-models.ts translates one into the other; it is the only place the two shapes meet.",
   "_licenseComment": "Higgs Audio v3 (bosonai/higgs-audio-v3-tts-4b) ships under the Boson Higgs TTS 3 RESEARCH AND NON-COMMERCIAL license, and a fine-tune of those weights INHERITS it. That is why every entry carries an explicit `license` and `commercialUse: false`: this engine is enabled for Owen's personal evaluation and cannot ship in a commercial BookForge build without a separate licence from Boson AI. Higgs Audio v2 is the trainable-and-shippable family (Community licence: attribution plus 'Higgs Audio 2' in any fine-tune's name) and is NOT in this catalog — Owen dropped v2 on 2026-09-04 ('basically just Orpheus and we know Orpheus better').",
@@ -186,15 +186,15 @@
         }
       },
       "pace": {
-        "median": 17.11,
-        "mean": 16.91,
-        "p05": 14.66,
-        "p95": 18.11,
-        "p99": 18.27,
-        "n": 71,
-        "method": "chars = len(s1-normalized bank text, no markers); seconds = full wav duration as written, no trim; temperature 1.0, top-k 50, top-p 0.95",
-        "source": "served arm: ladder runs night3/sgl/f50_c16_par + f50_c1_par (Fuhrer-50 bank, 100 renders, 71 clean, chars median 882). MLX arm measured separately at median 17.05 / p05 14.39 / p99 18.34 (n 38, night3/mac/f50_1080) - the two arms pace the same on this voice, so the served numbers stand for both. Whole-book cross-check: the 49-chunk PC render of 2026-09-06 paced 17.2.",
-        "measuredOn": "2026-09-06"
+        "median": 16.73,
+        "mean": 16.69,
+        "p05": 15.21,
+        "p95": 17.85,
+        "p99": 18.21,
+        "n": 73,
+        "method": "chars = len(s1-normalized bank text, no markers); seconds = full wav duration as written, no trim; SAMPLING 0.8 / 0.95 / 50 (the engine-level catalog sampling since 5676002a); clean = the ladder verdict's fuhrer class minus early_stop/run_on/dropped_span, then WER <= 0.05",
+        "source": "served arm at temperature 0.8: night3/pace08/deathstalker/t08 (Fuhrer-49 bank x 2 seeds, 100 renders, 73 clean; verdict file deathstalker_served_T08.json in E:/training/_campaigns/2026-09-01-cod-full-rebuild/higgs/night3/pace08). median/mean/p05/p95/n are the training side's; p99 is BookForge's recomputation over the same 73 rows from scored.json (the verdict file carries no p99), reproducing their four numbers to the hundredth. Replaces the 1.0-era block (median 17.11, p99 18.27): pace rises ~0.15 chars/s per 0.1 of temperature (HIGGS_FIELD_NOTES 4n.31). One pace per voice, both arms.",
+        "measuredOn": "2026-09-07"
       },
       "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S BAND IS DERIVED FROM IT WITH HEADROOM, never from the median (Owen: 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11'): maxCharsPerSec = p99 x 1.15 = 21.01 (above it a take is too SHORT - an early stop) and minCharsPerSec = p05 / 1.15 = 12.75 (below it a take RAN ON - a babble tail); the Orpheus p99 x 1.15 rule on both edges. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker).",
       "note": "The deathstalker narrator as a merged Higgs v3 fine-tune. WHY A FINE-TUNE RATHER THAN REFERENCE CLIPS: zero-shot cloning already recovers 92% of the narrator's speaker-identity ceiling (cosine 0.7037 of 0.7656, from a 27.4 s two-clip same-book reference), so TIMBRE is largely solved without training. What cloning does NOT recover is PHRASING — the render places 2.01 pauses per 100 chars against the narrator's 1.39 and runs pitch std 5.17 st against his 4.36, i.e. it performs the text rather than reading it, and no reference, sampling setting or control token moved either number. Only a fine-tune on his phrasing closes that gap, which is what this entry is for — and it is also why Owen ruled on 2026-09-04 that production narration is fine-tuned voices ONLY.",
@@ -250,15 +250,15 @@
         }
       },
       "pace": {
-        "median": 15.16,
-        "mean": 15.0,
-        "p05": 13.38,
-        "p95": 16.48,
-        "p99": 16.73,
-        "n": 42,
+        "median": 15.01,
+        "mean": 14.95,
+        "p05": 13.6,
+        "p95": 16.15,
+        "p99": 16.78,
+        "n": 56,
         "method": "as deathstalker",
-        "source": "served arm: night3/prod/mb2/f50_c16 + night3/prod/mb2/shape (96 renders, 42 clean, chars median 884). No MLX renders exist yet (the Mac copy awaits Owen's go); the served numbers stand for both arms as they do for deathstalker.",
-        "measuredOn": "2026-09-06"
+        "source": "served arm at temperature 0.8: night3/pace08/mistborn/t08 (100 renders, 56 clean; mistborn_served_T08.json). median/mean/p05/p95/n are the training side's; p99 16.78 is BookForge's recomputation over the verdict-clean rows with WER <= 0.05 (57 rows here against their 56 - one render apart; p95 agrees to the hundredth, median within 0.03). Replaces the 1.0-era block (median 15.16, p99 16.73). No MLX renders yet; the served numbers stand for both arms as for deathstalker.",
+        "measuredOn": "2026-09-07"
       },
       "_paceNote": "THE VOICE'S MEASURED PACE, chars of text per second of audio, ONE PER VOICE for both arms (Owen 2026-09-06: 'it can be the same setting for both mac and windows since theyre the same voice and theyre pretty close'). From the training ladder's CLEAN renders (coverage >= 0.95, no early stop, no babble, 0.8 <= audio ratio <= 1.25, chars > 150). THE LENGTH GUARD'S BAND IS DERIVED FROM IT WITH HEADROOM, never from the median (Owen: 'if its set to 17.11 chars/s, and one book averages 17.6/s, it shouldnt split and re-render everything over 17.11'): maxCharsPerSec = p99 x 1.15 = 19.24 (above it a take is too SHORT - an early stop) and minCharsPerSec = p05 / 1.15 = 11.63 (below it a take RAN ON - a babble tail); the Orpheus p99 x 1.15 rule on both edges. Files: E:\\\\training\\\\_campaigns\\\\2026-09-01-cod-full-rebuild\\\\higgs\\\\night3\\\\pace\\\\*.json. A voice with no pace block renders at narrator's default band (20 / 14.5, the Fuhrer whole-book measurement on deathstalker). NOTE: mistborn paces 11 % slower than deathstalker (p05 13.38 sits UNDER the 14.5 default long edge), which is why the band is per voice.",
       "note": "The Mistborn narrator as a merged Higgs v3 fine-tune (mb_h2lm, the second mistborn train; dip checkpoint 920). Promoted 2026-09-06 on Owen's ruling ('promote the mistborn model to the catalog'): Owen judged all three mistborn renders flawless by ear; on paper mb2 is the best (damaged 6/50 vs 11 for the first train, run-ons 3 vs 8, 0 early stops, 0 gibberish on SGLang at 16 wide, the 50 Fuhrer chunks packed at 1200 chars). Served exactly like deathstalker ckpt-1080: same launcher, max_running_requests 16, max_new_tokens 7500. No eosFloor tuning.",
