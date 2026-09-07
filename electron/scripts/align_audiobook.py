@@ -70,6 +70,32 @@ speech, ends on the next onset, starts with no lead-in).
 """
 import argparse, bisect, hashlib, json, os, re, subprocess, sys, tempfile, threading, time
 import multiprocessing as mp
+import importlib
+
+
+def require_worker_imports(stage, *modules):
+    """REFUSE, IN THE PARENT, what a pool worker would die on in its initializer.
+
+    multiprocessing.Pool REPLACES a worker that dies before it has taken a task
+    - silently, forever. A worker whose initializer cannot `import whisperx`
+    (a system Python that has faster-whisper but not whisperx: the rough pass
+    succeeds, then every CTC worker dies at _winit) is respawned in a loop,
+    child stdout is captured until exit, the log says "aligning N sentences"
+    and nothing else, and the process looks alive for as long as anyone lets
+    it. Seven hours of one overnight run, 2026-09-07. The spawn context uses
+    THIS interpreter, so the parent can ask the exact question once, here,
+    and say the answer by name."""
+    for name in modules:
+        try:
+            importlib.import_module(name)
+        except Exception as e:  # ImportError, or a broken install raising anything
+            raise SystemExit(
+                f"{stage}: this interpreter ({sys.executable}) cannot import {name} ({e}). "
+                f"The {stage} workers would die in their initializer and the pool would replace "
+                "them forever with nothing in the log. Run this script with an interpreter that "
+                "has it - the app's whisperx-env (Settings -> Ebook Alignment add-on), or pass "
+                "--python <that env's python> to the whole-book driver.")
+
 
 DEVICE = "cpu"   # module default; the real device is resolved per-run and propagated to
                  # spawn workers via the ALIGN_DEVICE env (set by main after --device auto-
@@ -400,6 +426,7 @@ def rough_transcribe(audio_src, model_size, lang, total_dur=0.0):
     parts = {}; parts_s = {}; done = 0; failed = []; failed_idx = []
     ctx = mp.get_context("spawn")
     tw = 1 if _resolved_device() == "cuda" else min(TRANSCRIBE_WORKERS, n)
+    require_worker_imports("transcribe", "faster_whisper")
     with ctx.Pool(tw, initializer=_tinit, initargs=(audio_src, model_size)) as pool:
         for si, words, segs, err in pool.imap_unordered(_transcribe_slice, tasks):
             parts[si] = words; parts_s[si] = segs; done += 1
@@ -1543,6 +1570,7 @@ def main():
             # mps: memory measured FLAT with per-chunk empty_cache, so never
             # recycle — the single worker would otherwise reload every 2 chunks.
             mtpc = None if args.device == "mps" else 2
+            require_worker_imports("align", "torch", "whisperx")
             with ctx.Pool(workers, initializer=_winit, initargs=(wav, lang, args.device), maxtasksperchild=mtpc) as pool:
                 for ci, out in pool.imap_unordered(_align_chunk, pending):
                     completed.add(ci)

@@ -217,8 +217,15 @@ def main():
     ap.add_argument("audio_dir", metavar="AUDIO_DIR_OR_FILE")
     ap.add_argument("epub")
     ap.add_argument("out_dir")
-    ap.add_argument("--python", default=sys.executable,
-                    help="interpreter for align_audiobook.py (default: this one)")
+    # STATED, NOT DEFAULTED. It defaulted to this interpreter, and under a system
+    # Python the rough pass ran (faster-whisper present) while every CTC worker
+    # died on `import whisperx` and was respawned forever with nothing in the
+    # log - a 7 h overnight run lost (2026-09-07). The aligner now refuses that
+    # interpreter by name before any pool exists; this door names the one that
+    # was meant, which is the app's whisperx-env.
+    ap.add_argument("--python", required=True,
+                    help="interpreter for align_audiobook.py: the app's whisperx-env python "
+                         "(%APPDATA%/BookForge/components/whisperx-env/python.exe on Windows)")
     ap.add_argument("--node", default="node")
     ap.add_argument("--dist", default="")
     ap.add_argument("--old-vtt-dir", default="")
