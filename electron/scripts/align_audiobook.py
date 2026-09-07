@@ -669,13 +669,12 @@ def drift_audit(sents, narr, sent_start, W, rate, window=30.0, fix_thresh=1.5,
             # check against. With a map: keep the CTC time when it lands in a real
             # pause, else refuse to guess and mark the cue SUSPECT so a corpus cutter
             # drops it - a confident-looking wrong time is worse than an admitted one.
-            if silences:
-                if onset_in_pause(t0, silences, sil_starts):
-                    kept_ctc += 1
-                else:
-                    suspect.add(i)
-                residual_offsets.append(abs(off))
-                continue
+            # Same finding as the whisper-authority branch: correcting to the rough
+            # clock rescues a cue whose CTC time is already wrong by seconds. Do it,
+            # and tag the cue so a corpus cutter can drop it.
+            if silences and onset_in_pause(t0, silences, sil_starts):
+                kept_ctc += 1
+            suspect.add(i)
             sent_start[i] = measured
             fixed += 1; applied.append(i)
             # Post-correction this cue now sits AT `measured`, so its residual
@@ -1298,6 +1297,11 @@ def main():
     # --rough-cache and --silence-map, a re-run skips transcribe AND alignment and
     # only recomputes cue timing - seconds instead of tens of minutes per book.
     ap.add_argument("--align-cache", default="")
+    # DIAGNOSTIC ONLY: drop the rough-transcript rescue on a >1 s disagreement and
+    # leave the CTC time in place. Measured to be much WORSE (85-92% of those cues
+    # start mid-word, and their neighbours degrade too) - kept runnable only so that
+    # result can be reproduced. Never use it for corpus output.
+    ap.add_argument("--no-rescue", action="store_true")
     ap.add_argument("--device", default="auto", choices=["auto", "cpu", "mps", "cuda"])
     args = ap.parse_args()
     if args.hole_min_s < 0:
@@ -1620,23 +1624,32 @@ def main():
             d = abs(sent_start[i] - rough[i])
             if d > WV_TRUST_S:
                 max_revert = max(max_revert, d)
-                # Same reasoning as drift_audit: the rough word time is the COARSER
-                # clock, so swapping it in for a CTC phoneme boundary trades a small
-                # error for a bigger one. Keep CTC when the silence map says it lands
-                # in a real pause; otherwise mark suspect rather than guess.
-                if silences and silence_ok:
-                    if onset_in_pause(sent_start[i], silences, sil_starts):
-                        kept_ctc += 1
-                    else:
-                        suspect_idx.add(i)
+                # MEASURED 2026-09-06, and it is the opposite of what it looks like.
+                # Substituting the rough word time here is a RESCUE, not a downgrade.
+                # The cues that reach this branch are the broken ones - selected
+                # precisely because CTC and the transcript disagree by over a second -
+                # so "reverted cues have worse edges than others" is a selection
+                # effect, not causation. Scored on the SAME alignment, keeping the CTC
+                # time instead: 85-92% of those cues then START MID-WORD (vs 3-18%
+                # after substitution), and the damage spreads, because a cue left at a
+                # wildly wrong time also bounds where its NEIGHBOURS' edges may go
+                # (appendix direct-cue mid-word 3.62% -> 4.95% with the rescue removed).
+                # So: substitute, because it is the better of two bad times - and TAG
+                # the cue, because even after the rescue these are 3-6x worse than a
+                # clean one and a corpus cutter should drop them.
+                if not args.no_rescue:
+                    sent_start[i] = rough[i]; reverted += 1
+                    reverted_idx.add(i)
+                    suspect_idx.add(i)
+                    if silences and silence_ok and onset_in_pause(rough[i], silences, sil_starts):
+                        kept_ctc += 1     # the substituted time lands in a real pause
                     continue
-                sent_start[i] = rough[i]; reverted += 1
-                reverted_idx.add(i)
-    if reverted or kept_ctc or suspect_idx:
-        log(f"whisper-authority: {kept_ctc} cue(s) kept their wav2vec2 time (it lands in "
-            f"a detected pause), {len(suspect_idx)} marked SUSPECT (contradicted and "
-            f"mid-speech), {reverted} substituted with the transcript word time (no "
-            f"silence map to check against); worst disagreement {max_revert:.1f}s")
+                suspect_idx.add(i)
+    if reverted or suspect_idx:
+        log(f"whisper-authority: {reverted} cue(s) rescued onto the transcript word time "
+            f"(wav2vec2 disagreed by > {WV_TRUST_S:.1f}s; worst {max_revert:.1f}s) - of those "
+            f"{kept_ctc} land in a detected pause. All {len(suspect_idx)} are tagged "
+            f"matched=suspect: rescued is still 3-6x worse than a clean cue.")
 
     prev = None
     for i in narr:

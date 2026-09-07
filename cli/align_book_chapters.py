@@ -57,11 +57,23 @@ STUB = os.path.join(HERE, "electron-stub.js")
 _norm = lambda s: re.sub(r"[^a-z0-9]", "", (s or "").lower())
 
 
-def log(m): print(f"[book] {m}", flush=True)
+def _safe(s):
+    """Text that survives this console's encoding.
+
+    Windows consoles default to cp1252, and a book's own chapter titles routinely
+    are not encodable in it (curly quotes, an umlaut, a U+FFFD from a lossy source).
+    Printing one killed a 7 h alignment run at the split step - the pipeline was
+    fine, the PROGRESS REPORT crashed it. Never let logging be the thing that
+    fails."""
+    enc = (getattr(sys.stdout, "encoding", None) or "utf-8")
+    return s.encode(enc, errors="replace").decode(enc, errors="replace")
+
+
+def log(m): print(f"[book] {_safe(str(m))}", flush=True)
 
 
 def die(m):
-    print(f"[book] FATAL: {m}", file=sys.stderr, flush=True)
+    print(f"[book] FATAL: {_safe(str(m))}", file=sys.stderr, flush=True)
     sys.exit(1)
 
 
@@ -220,23 +232,26 @@ def main():
     # anchors epub sentences to audio time in coarse_align - but a sentence it
     # fails to anchor falls back to token-weighted INTERPOLATION between its
     # neighbours, and an interpolated cue's two edges inherit that guess. So this
-    # sets how much of the corpus a cutter that honours `matched=interpolated`
-    # has to throw away.
+    # sets how much of the corpus a cutter that honours matched=interpolated has to
+    # throw away.
     #
-    # DEFAULT medium.en, NOT align_audiobook.py's `base`. Measured on God's People
-    # chapter 10 (2590 s, GPU), same everything else:
+    # DEFAULT medium.en, but the case is MARGINAL - read this before believing it.
+    # A single-chapter sweep (God's People ch.10) looked decisive: interpolation
+    # 30.1% -> 10.8% and every edge metric better. It did NOT replicate. Book-wide,
+    # medium.en made the pooled edge metrics WORSE, and a later controlled replay
+    # (same alignment cache, same silence map, same rule, only the model differing)
+    # on two chapters came out a wash:
     #
-    #     model       interpolated   mid-word  endInSpeech  endAtNext  startNoLead  wall
-    #     base        149 (30.1%)      4.55%       7.68%       3.84%       5.05%    5.2m
-    #     small.en     69 (14.0%)      4.37%       7.32%       3.66%       4.47%    8.5m
-    #     medium.en    53 (10.8%)      3.76%       6.30%       3.25%       3.86%    8.8m
+    #                 direct cues   mid-word (direct)
+    #     base            523             1.91%
+    #     medium.en       556             1.89%
     #
-    # Cue TEXT is unchanged by this: small.en and medium.en emit byte-identical
-    # text, and differ from base only by dropping 3 cues base could not anchor and
-    # smeared over real audio (a photo caption the narrator never read). So a bigger
-    # rough model removes false cues and interpolated ones; it never rewrites prose.
-    # On a GPU it costs ~3.6 min per chapter, which is nothing against re-cutting a
-    # corpus. On CPU it is NOT nearly free - pass --rough-model base there.
+    # i.e. ~6% more usable cues at the same edge quality, for ~2.6x the transcribe
+    # cost. That is the whole of the honest case for it, and it is why the value is
+    # a default for CORPUS work (where a few percent more usable narration is worth
+    # GPU minutes) rather than a recommendation. align_audiobook.py still defaults
+    # to `base`; pass --rough-model base here on CPU, or whenever wall clock matters
+    # more than corpus yield.
     ap.add_argument("--rough-model", default="medium.en",
                     help="rough anchor model (default medium.en, tuned for corpus work; "
                          "use base on CPU)")
@@ -276,7 +291,7 @@ def main():
         if a.dist: cmd += ["--dist", a.dist]
         log("splitting the epub with the app's splitter …")
         r = run(cmd)
-        sys.stdout.write(r.stdout)
+        sys.stdout.write(_safe(r.stdout))
         if r.returncode != 0:
             die(f"splitter failed:\n{r.stderr[-2000:]}")
     book = json.load(open(chapters_json, encoding="utf-8"))

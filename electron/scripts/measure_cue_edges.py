@@ -284,7 +284,7 @@ def main():
             out[name]['byMatch'] = {
                 k: measure(cues, db, nframes, a.speech_db, a.onset_db, a.tol, a.tol_start,
                            keep=[i for i, f in enumerate(flags) if f == k])
-                for k in ('direct', 'interpolated')
+                for k in ('direct', 'interpolated', 'suspect')
                 if any(f == k for f in flags)
             }
 
