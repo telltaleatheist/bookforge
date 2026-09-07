@@ -445,7 +445,7 @@ check('the shape must match the kind — all six malformed pairings refused', ()
   }
 });
 
-check('deathstalker's served cap is its TRAINING CEILING, declared — and the old certificate stays on record', () => {
+check('the deathstalker served cap is its TRAINING CEILING, declared — and the old certificate stays on record', () => {
   // THE RULE CHANGED WITH THE DIRECTORY. ds_v5_prod (promoted 2026-09-07) has
   // no length-sweep certificate; Owen's rule that day: 'max chunk is what we
   // trained on' — the served max is the LONGEST TRAINING ROW of the directory's
