@@ -1144,7 +1144,14 @@ export async function startReassembly(
         sessionState = await parseSessionState(config.processDir);
       }
     } catch (err) {
-      console.error('[REASSEMBLY] Failed to seed session authorship:', err);
+      // The same refusal the align door raises: a session that cannot be seeded is
+      // one narrator refuses by name a moment later, and the refusal must carry
+      // THIS reason rather than "no author" over an author the app had all along.
+      const error = `Could not write the book's authorship into the session before assembling: ${
+        err instanceof Error ? err.message : String(err)}`;
+      console.error(`[REASSEMBLY] ${error}`);
+      reassemblyLog.error('Authorship seed failed', { jobId, error });
+      return { success: false, error };
     }
   }
 
