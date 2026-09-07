@@ -26,6 +26,7 @@ import { resolveClosedSession } from './chapter-closer';
 import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
+import { seedSessionAuthorship } from './session-authorship';
 
 /**
  * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
@@ -1132,56 +1133,18 @@ export async function startReassembly(
   // Find the epub path from session state
   let sessionState = await parseSessionState(config.processDir);
 
-  // Update session metadata with user-provided values before reassembly
-  // This allows user to override epub's built-in metadata
+  // The book's authorship goes into the session BEFORE the assembly door opens —
+  // the same writer the align step uses (session-authorship.ts), because narrator
+  // builds the manifest, author included, on the first line of either door.
   if (sessionState && config.metadata) {
-    const statePath = path.join(config.processDir, 'session-state.json');
-    let metadataUpdated = false;
-
-    if (!sessionState.metadata) {
-      sessionState.metadata = {};
-    }
-
-    // Initialize bookforge_metadata if not present
-    if (!sessionState.bookforge_metadata) {
-      sessionState.bookforge_metadata = {};
-    }
-
-    // Override with user-provided metadata (only if provided)
-    // Save to both standard metadata and bookforge_metadata for e2a compatibility
-    if (config.metadata.title) {
-      sessionState.metadata.title = config.metadata.title;
-      sessionState.bookforge_metadata.title = config.metadata.title;
-      metadataUpdated = true;
-    }
-    if (config.metadata.author) {
-      sessionState.metadata.creator = config.metadata.author;
-      sessionState.bookforge_metadata.author = config.metadata.author;
-      metadataUpdated = true;
-    }
-    if (config.metadata.year) {
-      // e2a expects 'published' in ISO format for year extraction
-      sessionState.metadata.published = `${config.metadata.year}-01-01T00:00:00.000Z`;
-      sessionState.bookforge_metadata.year = config.metadata.year;
-      metadataUpdated = true;
-    }
-    if (config.metadata.description) {
-      sessionState.metadata.description = config.metadata.description;
-      metadataUpdated = true;
-    }
-
-    // Write updated session state back if we made changes
-    if (metadataUpdated) {
-      try {
-        fs.writeFileSync(statePath, JSON.stringify(sessionState, null, 2), 'utf-8');
-        console.log('[REASSEMBLY] Updated session metadata with user values:', {
-          title: sessionState.metadata.title,
-          creator: sessionState.metadata.creator,
-          year: config.metadata.year
-        });
-      } catch (err) {
-        console.error('[REASSEMBLY] Failed to update session metadata:', err);
+    try {
+      const seeded = seedSessionAuthorship(config.processDir, config.metadata);
+      if (seeded) {
+        console.log('[REASSEMBLY] Seeded session authorship:', seeded);
+        sessionState = await parseSessionState(config.processDir);
       }
+    } catch (err) {
+      console.error('[REASSEMBLY] Failed to seed session authorship:', err);
     }
   }
 

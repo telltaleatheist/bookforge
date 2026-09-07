@@ -58,6 +58,8 @@ interface AlignStepConfig {
   processDir?: string;
   /** The language the aligner loads its checkpoint for. See the refusal below. */
   language?: string;
+  /** The chain's act metadata: `title` is the ACT label ("Align"); the book is `bookTitle`. */
+  metadata?: { title?: string; bookTitle?: string; author?: string; year?: string };
 }
 
 export const alignStep: StepModule = {
@@ -134,7 +136,18 @@ export const alignStep: StepModule = {
 
     try {
       const result = await runCoverageAlign(
-        ctx.stepId, { processDir, language }, queueMainWindow(),
+        ctx.stepId,
+        {
+          processDir,
+          language,
+          // The BOOK's title, never the act label the row also carries.
+          metadata: {
+            title: config.metadata?.bookTitle,
+            author: config.metadata?.author,
+            year: config.metadata?.year,
+          },
+        },
+        queueMainWindow(),
       );
       /*
        * THE ROW FAILS ONLY WHEN THE RUN COULD NOT HAPPEN — no session, no

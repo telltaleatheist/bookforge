@@ -63,6 +63,7 @@ import { publishBridgeEvent } from './bridge-events';
 import { buildNarratorSpawn } from './narrator-spawn';
 import { resolveWhisperxEnvRoot, whisperxEnvPython } from './whisperx-align-bridge';
 import { COVERAGE_REPORT_NAME } from '../shared/queue/coverage-policy';
+import { seedSessionAuthorship } from './session-authorship';
 
 export interface CoverageAlignConfig {
   /**
@@ -77,6 +78,14 @@ export interface CoverageAlignConfig {
   processDir: string;
   /** The language the wav2vec2 checkpoint is loaded for. Never defaulted here. */
   language: string;
+  /**
+   * The book's authorship, written into the session before the spawn — see
+   * session-authorship.ts. `narrator align` builds the session manifest, author
+   * included, before it aligns a single chunk, so a session whose EPUB named no
+   * `dc:creator` was refused HERE, not at assembly. Optional only for the CLI
+   * door, which has no queue row to read it from; the queue always passes it.
+   */
+  metadata?: { title?: string; author?: string; year?: string };
 }
 
 export interface CoverageAlignProgress {
@@ -251,6 +260,17 @@ export async function runCoverageAlign(
     return { success: false, error };
   }
 
+  if (config.metadata) {
+    try {
+      const seeded = seedSessionAuthorship(config.processDir, config.metadata);
+      if (seeded) console.log('[COVERAGE-ALIGN] Seeded session authorship:', seeded);
+    } catch (err) {
+      const error = `Could not write the book's authorship into the session before aligning: ${
+        err instanceof Error ? err.message : String(err)}`;
+      sendProgress(mainWindow, stepId, { phase: 'error', percentage: 0, error, message: error });
+      return { success: false, error };
+    }
+  }
   const python = coverageAlignPython();
   if (python === null) {
     // The same refusal the dialog raises at plan time, said again here because a
