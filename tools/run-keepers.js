@@ -127,6 +127,9 @@ const SUITES = [
   'test-queue-engine',
   'test-queue-bench',
   'test-derived-sentences',
+  // The assembly seals THIS RUN'S transcript, chosen by stem, and its finalize
+  // resolves whatever the body does. Both halves of the 2026-09-07 hang.
+  'test-assembly-transcript-seal',
   'test-narration-chain',
   'test-text-normalization',
   'test-narration-reading-law',

@@ -27,6 +27,7 @@ import { acquireGpu, releaseGpu } from './gpu-arbiter';
 import { StageTracker, type StageSpec, type JobStageProgress } from './job-stages';
 import { coverageReportPath, summarizeCoverageReport } from './coverage-align-job';
 import { seedSessionAuthorship } from './session-authorship';
+import { chooseSentenceTranscript, SENTENCE_VTT_SUFFIX } from '../shared/queue/sentence-transcript';
 
 /**
  * The end timestamp of the LAST cue in a VTT, in seconds — or null when the text
@@ -2205,82 +2206,75 @@ export async function startReassembly(
         // Locate the transcript produced in THIS reassembly run so we can SEAL it into
         // the m4b below.
         //
-        // e2a's export MOVES the VTT out of process_dir into its --output_dir (our
-        // staging dir) as its final act — lib/core.py `shutil.move(proc_vtt_path,
-        // final_vtt_path)`, in place since 2025-12-20. So scanning ONLY processDir
-        // found nothing on every standalone reassembly, and an empty scan is
-        // indistinguishable from "this book has no transcript": the embed below was
-        // skipped in total silence, the sidecar binder then had no embedded track to
-        // extract and recorded `vtt: skipped-none`, and e2a's raw-named VTT rode the
-        // promotion into output/ as an unbound stray no player looks for. Search
-        // staging FIRST (where a completed export leaves it), then processDir (where
-        // it remains if export never reached the move).
+        // THE RUN'S OWN STEM IS THE KEY, and it is written where only this run can
+        // have written it: narrator's assembly puts the chunk-level `<stem>.vtt`
+        // in its --output_dir, which is OUR STAGING DIR (assemble/run.py:
+        // `vtt_path = os.path.join(output_dir, stem + ".vtt")`). Staging holds
+        // exactly what this run built, so the stem there is this run's stem, and
+        // `<processDir>/<stem>.sentences.vtt` is this run's sentence transcript —
+        // written by `narrator align` from measured word timings, or by assembly
+        // itself (`write_estimated_sentence_vtt`) when no coverage report existed.
+        // Both use `assemble/run.final_name`, so both agree on the stem.
         let sealVttSource: string | undefined;
         if (outputPath) {
-          /*
-           * THE SENTENCE TRANSCRIPT IS THE ONE PLAYERS GET. Owen, 2026-09-06:
-           * "the VTT file shows chunk start position, but chunks are huge.
-           * theyre whole paragraphs now ... so we have a sentence-by-sentence
-           * VTT file." narrator already writes one: `<stem>.sentences.vtt` in
-           * the PROCESS dir — the Align row's, with measured word timings over
-           * the book-exact text (and proportional, NOTE-marked estimates for the
-           * chunks it could not place), or assembly's all-estimated one when no
-           * Align row ran. Every reader of the sidecar — the three players,
-           * the analysis canonical parser, training's slicer (which already
-           * assumes sentence cues) — skips NOTE blocks. So when that file
-           * exists it is what gets embedded and bound; the chunk-level
-           * `<stem>.vtt` still rides promotion into output as the loose file it
-           * always was, and the retake door keeps reading it from the process
-           * dir. Exactly one such file is expected; two is a session that was
-           * assembled under two stems, and that is refused by name rather than
-           * guessed between.
-           */
-          if (config.processDir) {
-            let sentenceVtts: string[] = [];
+          const listing = (dir: string | undefined): string[] => {
+            if (!dir) return [];
             try {
-              sentenceVtts = fs.readdirSync(config.processDir)
-                .filter(f => f.toLowerCase().endsWith('.sentences.vtt') && !f.startsWith('._'));
+              return fs.readdirSync(dir);
             } catch (scanErr) {
-              console.warn(`[REASSEMBLY] Could not scan ${config.processDir} for the sentence transcript:`, scanErr);
+              console.warn(`[REASSEMBLY] Could not scan ${dir} for transcripts:`, scanErr);
+              return [];
             }
-            if (sentenceVtts.length > 1) {
-              throw new Error(
-                `The session at ${config.processDir} holds ${sentenceVtts.length} sentence transcripts ` +
-                `(${sentenceVtts.join(', ')}); one book has one. Remove the stale one before assembling.`,
-              );
-            }
-            if (sentenceVtts.length === 1) {
-              sealVttSource = path.join(config.processDir, sentenceVtts[0]);
-              console.log('[REASSEMBLY] Binding the SENTENCE transcript to the audiobook:', sealVttSource);
-            } else {
-              console.warn(
-                '[REASSEMBLY] No sentence transcript (<stem>.sentences.vtt) in the process dir; ' +
-                'the chunk-level transcript will be bound instead. narrator writes the sentence file at ' +
-                'align or at assembly, so this is a session assembled by something else (e2a).',
-              );
-            }
-          }
-          const vttSearchDirs = sealVttSource ? [] : [stagingDir, config.processDir].filter((d): d is string => !!d);
-          for (const dir of vttSearchDirs) {
-            let found: string[];
-            try {
-              found = fs.readdirSync(dir).filter(f => f.toLowerCase().endsWith('.vtt') && !f.startsWith('._'));
-            } catch (vttErr) {
-              console.warn(`[REASSEMBLY] Could not scan ${dir} for the transcript:`, vttErr);
-              continue;
-            }
-            if (found.length > 0) {
-              sealVttSource = path.join(dir, found[0]);
-              break;
-            }
-          }
-          if (!sealVttSource) {
-            reassemblyLog.error('No transcript produced by this reassembly', {
-              jobId, outputPath, searched: vttSearchDirs,
+          };
+          const choice = chooseSentenceTranscript(listing(stagingDir), listing(config.processDir));
+          if (choice.kind === 'refuse') {
+            /*
+             * REPORTED AS A FAILED RUN, never thrown. A throw from in here
+             * rejected a promise nobody held and hung the row (see the finalize
+             * wrapper below); a refusal the caller can read is the same
+             * information with a queue that still works.
+             */
+            const error = `${choice.reason} The audiobook was NOT promoted; everything this run `
+              + `built is preserved in: ${stagingDir}`;
+            reassemblyLog.error('Could not identify this run\'s transcript', {
+              jobId, stagingDir, processDir: config.processDir, outputPath, reason: choice.reason,
             });
-            console.error(
-              '[REASSEMBLY] No transcript found — searched:', vttSearchDirs.join(', '),
-              '\n  The audiobook will have NO transcript and the sidecar binder will record vtt: skipped-none.'
+            console.error(`[REASSEMBLY] ${error}`);
+            resolve({ success: false, error });
+            return;
+          }
+          sealVttSource = path.join(
+            choice.inStaging ? stagingDir : config.processDir!, choice.file,
+          );
+          if (choice.source === 'own-stem') {
+            console.log('[REASSEMBLY] Binding the SENTENCE transcript written for this run:', sealVttSource);
+          } else if (choice.source === 'other-stem') {
+            reassemblyLog.warn('Sealing a sentence transcript written under a different title', {
+              jobId, stem: choice.stem, used: choice.file, processDir: config.processDir,
+            });
+            console.warn(
+              `[REASSEMBLY] No ${choice.stem}${SENTENCE_VTT_SUFFIX} beside the session; sealing `
+              + `${choice.file} instead — same session, same audio, so its timings are this book's. `
+              + 'It was written when the book carried a different title.',
+            );
+          } else {
+            console.warn(
+              `[REASSEMBLY] No sentence transcript (${choice.stem}${SENTENCE_VTT_SUFFIX}) beside the `
+              + 'session; the chunk-level transcript will be bound instead. narrator writes the '
+              + 'sentence file at align or at assembly, so this is a session assembled by something '
+              + 'else (e2a).',
+            );
+          }
+          if (choice.strays.length > 0) {
+            // Named, never deleted: a transcript is somebody's work and this code
+            // did not write it. Saying it is here is what makes a retitled
+            // session diagnosable.
+            reassemblyLog.info('Stale sentence transcripts beside the session (left alone)', {
+              jobId, processDir: config.processDir, stem: choice.stem, strays: choice.strays,
+            });
+            console.warn(
+              `[REASSEMBLY] ${choice.strays.length} sentence transcript(s) under other stems are `
+              + `beside this session and were left alone: ${choice.strays.join(', ')}`,
             );
           }
         }
