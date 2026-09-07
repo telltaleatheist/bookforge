@@ -523,7 +523,24 @@ export class QueueService {
         ...(composition.lastStepId ? {} : { sourceRef }),
       });
       QueueService.settle(appended, `Adding ${label} to this run`);
-      composition.lastStepId = appended.data!.id;
+      /*
+       * A SIDE BRANCH DOES NOT BECOME THE NEXT STEP'S PARENT.
+       *
+       * The composition is a straight line by default — each step waits on the
+       * one appended before it — and that put the assembly behind the align row
+       * with a CPU slot free (Owen, 2026-09-07: "i would like them to run
+       * concurrently in available cpu slots, for sure"). The align is an audit:
+       * it scores the render, changes no audio, and nothing downstream consumes
+       * it. So it hangs off the step in front of it and the NEXT step hangs off
+       * that same step, which is what `CreateJobRequest.sideBranch` says.
+       *
+       * Only when there IS a step in front of it. A side branch appended as the
+       * run's head has nothing to branch from and stays the head — the same
+       * answer `narrationStepParentIndex` gives with its `return 0`.
+       */
+      if (!(request.sideBranch === true && composition.lastStepId)) {
+        composition.lastStepId = appended.data!.id;
+      }
       return this.rowFor(appended.data!.id) ?? this.stubRow(appended.data!, request);
     }
 

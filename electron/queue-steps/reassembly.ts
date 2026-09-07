@@ -19,9 +19,88 @@
 import { onBridgeEvent } from '../bridge-events';
 import { coverageReportPath, summarizeCoverageReport } from '../coverage-align-job';
 import { getBfpCachedSession, startReassembly, stopReassembly } from '../reassembly-bridge';
+import { peekStep } from '../queue-engine';
 import type { StepModule, StepRunContext } from '../queue-engine';
 import type { ArtifactRef } from '../../shared/queue/engine-types';
 import { queueMainWindow } from './runtime';
+
+/** How often the tail asks the align row whether it has settled. */
+const ALIGN_POLL_MS = 2_000;
+
+/**
+ * How long the tail will wait for an align row that has not STARTED.
+ *
+ * The two rows are released together and the cpu pool has two slots, so in the
+ * ordinary run the align is already running when the assembly reaches its tail
+ * and this timer is never consulted. It exists because a waiting assembly HOLDS
+ * a cpu slot: if the pool were full of assemblies each waiting on an align that
+ * cannot get a slot, none of them would ever move. Giving up after five minutes
+ * of a never-started align is what makes that shape impossible — and it is said
+ * out loud on the row, because the book then ships the estimated cues.
+ */
+const ALIGN_START_GRACE_MS = 5 * 60_000;
+
+type CoverageWait = 'done' | 'failed' | 'cancelled' | 'none';
+
+function sleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(done, ms);
+    function done(): void {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', done);
+      resolve();
+    }
+    signal.addEventListener('abort', done, { once: true });
+  });
+}
+
+/**
+ * WAIT FOR THE SIBLING ALIGN TO SETTLE — the join that makes the side branch safe.
+ *
+ * The align row hangs off the narration and nothing hangs off it, so it and this
+ * assembly run at the same time (Owen, 2026-09-07). The audio work needs nothing
+ * from it. The TAIL does: `narrator align` rewrites `<stem>.sentences.vtt` with
+ * MEASURED word timings over the estimated one assembly wrote at its start, and
+ * whichever file is on disk when the tail seals is the one the audiobook carries
+ * forever. So the tail joins here, once, right after the rename.
+ *
+ * IT NEVER BLOCKS THE BOOK. Owen's ruling of 2026-09-05 — the align reports, it
+ * does not gate — so every terminal answer proceeds to seal whatever transcript
+ * exists; the only thing this decides is how long to wait first.
+ */
+async function awaitAlign(
+  ctx: StepRunContext,
+  alignStepId: string,
+  onWait: (message: string) => void,
+): Promise<CoverageWait> {
+  const openedAt = Date.now();
+  let everRan = false;
+  for (;;) {
+    if (ctx.signal.aborted) return 'cancelled';
+    const peek = peekStep(alignStepId);
+    // Gone from the queue entirely: there is nothing left to wait for, and a
+    // waiter that kept waiting on a removed row would never return.
+    if (peek === null) return 'none';
+    if (peek.status === 'done') return 'done';
+    if (peek.status === 'failed') return 'failed';
+    // 'held' is a user stop on a resumable row. It is terminal for THIS wait:
+    // the run has been paused by a person, and holding an assembly against a
+    // decision they made is not a thing to do quietly.
+    if (peek.status === 'cancelled' || peek.status === 'held') return 'cancelled';
+    if (peek.status === 'running') everRan = true;
+    else if (!everRan && Date.now() - openedAt > ALIGN_START_GRACE_MS) {
+      onWait(
+        'The alignment has not started; sealing the estimated transcript. Re-assemble once it '
+        + 'has run to get the measured one.',
+      );
+      return 'none';
+    }
+    onWait(peek.percent === undefined || !everRan
+      ? `Waiting for ${peek.label}…`
+      : `Waiting for ${peek.label}… ${Math.round(peek.percent)}%`);
+    await sleep(ALIGN_POLL_MS, ctx.signal);
+  }
+}
 
 interface ReassemblyProgressEvent {
   jobId: string;
@@ -128,6 +207,17 @@ export const reassemblyStep: StepModule = {
     // precedence over the inline pass, which then does not run at all.
     const enhanced = ctx.input.kind === 'sentences' ? ctx.input.path : config.sentencesDir;
 
+    /*
+     * THE ALIGN ROW OF THIS RUN, when it has one. Found by TYPE among the run's
+     * own steps: a run holds at most one (`chainCoverageAlign` is idempotent by
+     * inspection, and the run description queues exactly one).
+     *
+     * `ctx.job` is the live job object the engine launched this step with; the
+     * id is all that is taken from it, and the STATUS is read through the engine
+     * at every poll (`peekStep`), so nothing here can be reading a snapshot.
+     */
+    const alignStepId = ctx.job.steps.find((s) => s.type === 'align')?.id;
+
     const unsubscribe = onBridgeEvent<ReassemblyProgressEvent>('reassembly:progress', (event) => {
       if (event.jobId !== ctx.stepId) return;
       const p = event.progress;
@@ -170,6 +260,12 @@ export const reassemblyStep: StepModule = {
         sentenceGap: config.sentenceGap,
         registerAsNewVariant: config.registerAsNewVariant,
         rvcVoiceId: config.rvcVoiceId,
+        // The join. Handed over as a function rather than a step id so the
+        // bridge — which is also the CLI's assembly door, with no queue behind
+        // it — asks the queue nothing it cannot answer.
+        ...(alignStepId === undefined
+          ? {}
+          : { awaitCoverage: (onWait: (message: string) => void) => awaitAlign(ctx, alignStepId, onWait) }),
       }, queueMainWindow());
 
       if (!result.success || !result.outputPath) {

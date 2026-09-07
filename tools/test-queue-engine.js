@@ -282,6 +282,55 @@ test('the cpu pool takes two at once, beside a running GPU step', async () => {
   assert.strictEqual(cloud.runs.length, 2, 'two cpu slots, and only two');
 });
 
+test('AN ALIGN LEAF AND THE ASSEMBLY RUN AT THE SAME TIME, and the assembly can join on it', async () => {
+  /*
+   * Owen, 2026-09-07, watching a standalone assembly run beside the chain's
+   * align: "i would like them to run concurrently in available cpu slots, for
+   * sure." Both hang off the NARRATION — the align is a leaf, nothing waits on
+   * it — so they take the two cpu slots together instead of the assembly sitting
+   * behind twenty minutes of forced alignment.
+   *
+   * The tail still needs the alignment's answer, though: `narrator align`
+   * rewrites the sentence transcript with measured timings, and whichever file
+   * is on disk when the assembly seals is the one the book carries. `peekStep`
+   * is how it asks — live, through the engine, never off a snapshot.
+   */
+  const tts = fakeModule('tts-conversion', { produces: 'audio-session' });
+  const align = fakeModule('align', { consumes: 'audio-session', produces: 'report', resource: () => 'cpu' });
+  const asm = fakeModule('reassembly', { consumes: null, produces: 'm4b', resource: () => 'cpu' });
+  await fresh('align-leaf', [tts, align, asm]);
+  const job = engine.enqueue({
+    title: "Mutineer's Moon",
+    steps: [
+      { type: 'tts-conversion', label: 'Narrate', config: {}, sourceRef: { kind: 'epub', path: '/m.epub' } },
+      // BOTH parented to the narration. That is the whole change.
+      { type: 'align', label: 'Align', config: {}, parentIndex: 0 },
+      { type: 'reassembly', label: 'Assemble', config: {}, parentIndex: 0 },
+    ],
+  });
+  engine.start();
+  await settle();
+  assert.strictEqual(tts.runs.length, 1);
+
+  tts.runs[0].resolve({ kind: 'audio-session', path: '/session' });
+  await settle();
+  assert.strictEqual(align.runs.length, 1, 'the align took a cpu slot');
+  assert.strictEqual(asm.runs.length, 1, 'and so did the assembly, at the same time');
+
+  const alignStepId = stepsOf(job.id)[1].id;
+  assert.deepStrictEqual(engine.peekStep(alignStepId).status, 'running',
+    'the assembly asks the engine what the align is doing');
+  align.runs[0].resolve({ kind: 'report', path: '/coverage.json' });
+  await settle();
+  assert.strictEqual(engine.peekStep(alignStepId).status, 'done', 'and sees it settle');
+  assert.strictEqual(engine.peekStep('step_nobody'), null,
+    'a step that is not in any run is null — a waiter must stop, not wait longer');
+
+  asm.runs[0].resolve({ kind: 'm4b', path: '/book.m4b' });
+  await settle();
+  assert.strictEqual(engine.snapshot().jobs.find((j) => j.id === job.id).steps.every((s) => s.status === 'done'), true);
+});
+
 // ── Lineage ─────────────────────────────────────────────────────────────────
 
 test('a step waits for its parent and is handed the parent OUTPUT', async () => {

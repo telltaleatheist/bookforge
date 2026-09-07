@@ -976,6 +976,19 @@ export interface CreateJobRequest {
    * reads that run's last step and this is ignored.
    */
   sourceRef?: ArtifactRef;
+  /**
+   * THIS STEP HANGS OFF THE ONE BEFORE IT AND NOTHING HANGS OFF IT.
+   *
+   * A composition appends its steps one at a time and each waits on the last, so
+   * a run is a straight line unless a step says otherwise. An align row says
+   * otherwise: it is an audit of the render, nothing downstream consumes it, and
+   * the assembly behind it must not wait twenty CPU minutes for it. See
+   * `NarrationStepPlan.sideBranch`, which is where the rule is decided.
+   *
+   * Only meaningful on a step that HAS a parent in the composition; a side
+   * branch queued first becomes the run's head like any other first step.
+   */
+  sideBranch?: boolean;
   // Job grouping for multi-step workflows
   parentJobId?: string;
   workflowId?: string;

@@ -501,6 +501,27 @@ export interface NarrationStepPlan {
    * directory a later narration had already replaced.
    */
   readonly sourceRef?: ArtifactRef;
+  /**
+   * THIS STEP HANGS OFF THE ONE BEFORE IT AND NOTHING HANGS OFF IT.
+   *
+   * The same rule `narrationStepParentIndex` states for a composer that can see
+   * the whole list of steps at once (main's `processing:submit-chain`), said per
+   * step for the composer that cannot: `QueueService.addJob` is called once per
+   * step and only ever knows the run so far, so it needs the step itself to say
+   * that the NEXT one must not wait on it.
+   *
+   * Set on the align row and on nothing else. An align is an AUDIT (Owen,
+   * 2026-09-05): it scores the render, writes the coverage report, changes no
+   * audio, and nothing downstream consumes it automatically — so the assembly
+   * and the enhancement passes wait on the render, not on it, and align and
+   * assembly take two CPU slots at once (Owen, 2026-09-07: "i would like them to
+   * run concurrently in available cpu slots, for sure").
+   *
+   * It is only meaningful behind another step. A side branch that is FIRST has
+   * nothing to branch from, so it becomes the run's head and the next step waits
+   * on it — which is exactly what `narrationStepParentIndex`'s `return 0` says.
+   */
+  readonly sideBranch?: boolean;
 }
 
 /** Refuse a run that cannot be described, naming the field that is missing. */
@@ -698,6 +719,11 @@ export function narrationAlignStep(
     type: 'align',
     bfpPath: book.projectDir,
     variantId: book.variantId,
+    // A LEAF: it hangs off the render and nothing hangs off it, so the assembly
+    // behind it does not wait for twenty CPU minutes of forced alignment to
+    // finish. See `sideBranch` and `narrationStepParentIndex` — one rule, said
+    // twice for the two shapes of composer.
+    sideBranch: true,
     metadata: actMetadata(book, 'Align'),
     config: {
       type: 'align',
@@ -1127,6 +1153,11 @@ export function buildNarrationSteps(
  *
  * `types` is the run's step types in order; the answer is the parent's index
  * for step `index`, or null for the first step (which has no parent).
+ *
+ * THE SAME RULE AS `NarrationStepPlan.sideBranch`, for the composer that can
+ * see the whole list. A composer that appends one step at a time reads the flag
+ * instead; neither is a second answer, and a step type that gains the flag must
+ * be named here too.
  */
 export function narrationStepParentIndex(types: readonly string[], index: number): number | null {
   if (index <= 0) return null;

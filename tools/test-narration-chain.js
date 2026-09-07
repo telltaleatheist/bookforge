@@ -354,6 +354,32 @@ test('ALIGN IS A LEAF: assembly and every pass wait on the nearest non-align ste
   assert.deepStrictEqual(parents(['simplify', 'tts-conversion', 'align', 'reassembly']), [null, 0, 1, 1],
     'a text pass in front is still the render\'s parent');
 });
+test('THE ALIGN ROW SAYS IT IS A LEAF, for the composer that appends one step at a time', () => {
+  // `narrationStepParentIndex` is the same rule for a composer that can see the
+  // whole list (main's processing:submit-chain). QueueService.addJob cannot —
+  // it is called once per step and knows only the run so far — so the step
+  // itself carries the flag, and the two must never disagree about which type
+  // is a leaf.
+  const steps = buildNarrationSteps(BOOK, higgs(), stages());
+  for (const step of steps) {
+    const isLeaf = step.type === 'align';
+    assert.strictEqual(step.sideBranch === true, isLeaf,
+      `${step.type}: sideBranch must be set on the align row and on nothing else`);
+  }
+  const types = shapeOf(steps);
+  const { narrationStepParentIndex } = require(MODULE);
+  types.forEach((type, i) => {
+    if (i === 0) return;
+    const parent = narrationStepParentIndex(types, i);
+    // Nothing is ever parented to a step the plan marked as a side branch —
+    // unless that branch is the run's head, which has nothing to branch from.
+    if (parent !== 0 || types[0] !== 'align') {
+      assert.notStrictEqual(types[parent], 'align',
+        `${type} waits on an align row; the two rules disagree`);
+    }
+  });
+});
+
 test('AN ORPHEUS RUN IS UNCHANGED — no align row, in any shape', () => {
   for (const order of ['denoise-first', 'rvc-first']) {
     for (const finalDenoise of [false, true]) {
@@ -371,6 +397,14 @@ test('AN ORPHEUS RUN IS UNCHANGED — no align row, in any shape', () => {
         }
       }
     }
+  }
+});
+
+test('an ORPHEUS run marks nothing as a side branch', () => {
+  const steps = buildNarrationSteps(BOOK, settings(), stages());
+  for (const step of steps) {
+    assert.strictEqual(step.sideBranch, undefined,
+      `${step.type} carries sideBranch in a run that has no audit row`);
   }
 });
 

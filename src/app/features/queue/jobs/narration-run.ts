@@ -72,6 +72,9 @@ function asJobRequest(plan: NarrationStepPlan): CreateJobRequest {
     // starts by reading the document it names", which is what every other kind
     // of job in this app queues.
     ...(plan.sourceRef === undefined ? {} : { sourceRef: plan.sourceRef }),
+    // A leaf of the run: the step queued after this one waits on this one's
+    // PARENT, not on this one. Carried verbatim — the description owns the rule.
+    ...(plan.sideBranch === undefined ? {} : { sideBranch: plan.sideBranch }),
     metadata: { ...plan.metadata },
     config: plan.config as CreateJobRequest['config'],
   };

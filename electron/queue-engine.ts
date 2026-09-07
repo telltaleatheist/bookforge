@@ -1024,6 +1024,32 @@ export function noteStepStopped(stepId: string): void {
   if (live) live.stopRequested = true;
 }
 
+/**
+ * WHAT ANOTHER STEP OF THE SAME RUN IS DOING RIGHT NOW — read live, never held.
+ *
+ * For a step that has a SIBLING to join on. The assembly is the case this exists
+ * for: an align row is a leaf (nothing waits on it, so it and the assembly take
+ * a CPU slot each), but the assembly's TAIL wants the measured sentence cues the
+ * align writes, so it polls this until the align settles and seals whichever
+ * transcript is there by then.
+ *
+ * Read through the engine rather than off `ctx.job`, because the caller holds
+ * the job object it was handed when it launched and this always reads the one
+ * the engine has now. Null means there is no such step in any run — it was
+ * removed — which a waiter must treat as "stop waiting", never as "wait longer".
+ */
+export function peekStep(stepId: string): {
+  status: StepStatus; label: string; percent: number | undefined;
+} | null {
+  const found = findStep(stepId);
+  if (!found) return null;
+  return {
+    status: found.step.status,
+    label: found.step.label,
+    percent: found.step.progress.percent,
+  };
+}
+
 export function reorder(jobId: string, beforeJobId: string | null): void {
   const from = jobs.findIndex((j) => j.id === jobId);
   if (from < 0) throw new Error(`There is no run "${jobId}" in the queue.`);
