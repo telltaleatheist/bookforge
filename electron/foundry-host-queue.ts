@@ -125,7 +125,7 @@ export function foundryTooOldForCleanText(installed: string): string {
   return (
     'This is a Clean text run, which BookForge schedules and the foundry engine executes as '
     + `\`foundry clean-text\` — but the installed foundry is ${installed} and that command arrived `
-    + `in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Update foundry in Settings → Add-ons and press Clean `
+    + `in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Update foundry in Settings → General add-ons and press Clean `
     + 'text again. Nothing was cleaned and no model was loaded.'
   );
 }
@@ -154,7 +154,7 @@ export function foundryTooOldForCleanTextEpub(installed: string): string {
   return (
     'This is the Clean text FAILSAFE, which cleans a finished EPUB by running '
     + `\`foundry clean-text --epub\` — but the installed foundry is ${installed} and that door `
-    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB}. Update foundry in Settings → Add-ons `
+    + `arrived in ${FOUNDRY_VERSION_FOR_CLEAN_TEXT_EPUB}. Update foundry in Settings → General add-ons `
     + 'and press Clean text again, or run the Clean text step in the Foundry window, which is the '
     + 'standard method and works on any foundry from '
     + `${FOUNDRY_VERSION_FOR_CLEAN_TEXT}. Nothing was cleaned and no model was loaded.`

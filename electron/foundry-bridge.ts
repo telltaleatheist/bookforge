@@ -76,7 +76,7 @@ export class FoundryNotInstalledError extends Error {
     super(
       `The foundry CLI was not found. Checked:\n${checked.map((c) => `  ${c}`).join('\n')}\n`
       + `Set ${FOUNDRY_CLI_ENV_VAR} to the binary, or point the "Foundry CLI" `
-      + `component at it in Settings → Add-ons. PATH is deliberately not searched: `
+      + `component at it in Settings → General add-ons. PATH is deliberately not searched: `
       + `an unknown foundry build carries an unknown prompt format, and would `
       + `degrade a book rather than fail.`
     );
@@ -123,7 +123,7 @@ export function requireFoundryPath(): string {
   if (resolved) return resolved;
   throw new FoundryNotInstalledError([
     `$${FOUNDRY_CLI_ENV_VAR} (${process.env[FOUNDRY_CLI_ENV_VAR] || 'unset'})`,
-    `the "${FOUNDRY_CLI_COMPONENT_ID}" component (Settings → Add-ons)`,
+    `the "${FOUNDRY_CLI_COMPONENT_ID}" component (Settings → General add-ons)`,
   ]);
 }
 
@@ -150,7 +150,7 @@ let foundryInstall: {
 } | null = null;
 
 /**
- * Tell Settings → Add-ons about an install a RUN started.
+ * Tell Settings → General add-ons about an install a RUN started.
  *
  * `components:progress` is how the add-ons panel tracks a download, but the IPC
  * handler for a user-clicked install answers `event.sender` — the renderer that
@@ -212,7 +212,7 @@ async function downloadFoundry(
       throw new Error(
         `The "${FOUNDRY_CLI_COMPONENT_ID}" component points at ${status.installed.entryPath} `
         + `(recorded as an ${status.installed.source} install), but that is not a runnable file. `
-        + 'Point it somewhere else or remove it in Settings → Add-ons; BookForge will not download '
+        + 'Point it somewhere else or remove it in Settings → General add-ons; BookForge will not download '
         + 'over a location you chose.'
       );
     }

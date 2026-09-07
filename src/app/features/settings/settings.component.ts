@@ -2467,6 +2467,12 @@ export class SettingsComponent implements OnInit {
    * to install a model the pipeline then asks for.
    */
   readonly generalAddOnIds = computed(() => [
+    // foundry FIRST: it is the engine every document pass and every Clean text
+    // run spawns, its refusals send the user to this page ("Update foundry in
+    // Settings → General add-ons"), and until 2026-09-07 no page listed it at
+    // all — the startup check found 1.2.0, the queue refused 1.0.2 by name, and
+    // there was no row anywhere to press Update on.
+    'foundry-cli',
     'calibre', 'tesseract', 'llama-cuda',
     ...this.componentService.components()
       .filter((s) => s.component.kind === 'blocks-model')
