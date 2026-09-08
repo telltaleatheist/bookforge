@@ -10,9 +10,9 @@ two places.
 | --- | --- |
 | Source repo | `C:\Users\tellt\Projects\foundry` (branch `main`) |
 | Source path | `app/` — the whole folder, source only |
-| Source sha | **4d62293** — *feat(app): CleanRequest carries concurrency and keepModel; the clean argv passes them; argsFor exported* |
+| Source sha | **74f933c** — *fix(queue): a host’s push wakes the scheduler — a deferred export stopped waiting on nothing* |
 | Copied on | 2026-09-08 |
-| Copied by | `git -C <foundry> archive 4d62293 app | tar -x --strip-components=1` |
+| Copied by | `git -C <foundry> archive 74f933c app | tar -x --strip-components=1` |
 
 The go-signal named `48f3a59` ("Wave 7 is complete"); `7e0bf21` added the
 optional `onImport` half of the host contract, `c805bd6` added the
@@ -1094,3 +1094,15 @@ about a running job he cannot see or stop. 141 blobs hash-verified, no IPC chang
 for BookForge's headless Clean text door (`cli/clean-step.js`, `--clean`): the app's clean argv passes
 `--concurrency <n>` when set and `--keep-model` only when asked; `argsFor` is exported so a dry run prints
 the spawn without making it. 3 files, tree diff-verified, no IPC change, no dep movement.
+**74f933c (copied 2026-09-08) — a host’s push WAKES the scheduler.** The other half of what Owen
+watched: *“the epub generation step is supposed to be rapid. it happens in seconds. but its sitting
+in the cpu slot doing nothing for two minutes now”*. `setHostQueueRows` called `changed()` and never
+`pump()`, so when a host row went running → done and this side pushed the new list, Foundry’s mirror
+updated and its SCHEDULER never looked — a deferred export sat `queued` behind a row that had already
+finished, indefinitely, and only another press in the window could free it. It now pumps when the
+pushed rows hold anything queued (guarded: a push arrives on every progress tick and the reconcile
+reads a manifest per row it cannot decide from memory), and `hostQueueDrained` does the same for the
+sharper case. BookForge’s half of that same screenshot was its own bug, fixed in 2ca0222b: a step
+whose whole job is waiting no longer holds one of two CPU slots (`StepResource` gains `wait`). The
+two were compounding — a waiting narration was starving the very export it waited for. 141 blobs
+hash-verified, no IPC change, no dep movement.
