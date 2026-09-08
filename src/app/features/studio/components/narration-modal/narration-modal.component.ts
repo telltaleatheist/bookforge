@@ -584,9 +584,39 @@ function fileName(fullPath: string): string {
 
             <!-- ── Assembly ─────────────────────────────────────────────── -->
             @if (tab() === 'assembly') {
+              <!-- THE ALIGNMENT, FIRST AND TICKED (Owen, 2026-09-07): "that
+                   should be part of the assembly process, and should
+                   automatically happen... alignment and assembly should happen
+                   in tandem, each taking up one of the free cpu slots."
+
+                   NOT disabled by an unticked Assembly, unlike everything below
+                   it: the alignment measures the RENDER and writes its report
+                   beside the session, so a read-and-stop run can carry it too.
+                   What it needs is the add-on, and a box that says so before the
+                   press beats a refusal after it. -->
+              <div class="nm-field nm-pass">
+                <label class="nm-check">
+                  <input type="checkbox" [checked]="alignNarration()"
+                         [disabled]="!alignerInstalled()"
+                         [title]="alignerInstalled() ? '' : alignerUnavailableNote"
+                         (change)="alignNarration.set($any($event.target).checked)" />
+                  <span class="nm-pass-name">Align the narration to the text</span>
+                </label>
+                <span class="nm-hint">
+                  Force-aligns every rendered sentence against its own words, which is
+                  what puts a word-timed transcript in the finished audiobook instead of
+                  timings estimated from sentence length — and writes the report saying
+                  which sentences came out wrong. It runs BESIDE the assembly, in the
+                  other CPU slot, and the assembly waits for it only at the very end.
+                </span>
+                @if (!alignerInstalled()) {
+                  <span class="nm-hint warn">{{ alignerUnavailableNote }}</span>
+                }
+              </div>
+
               @if (!assemble()) {
                 <p class="nm-hint">
-                  This run does not assemble an audiobook, so nothing on this tab
+                  This run does not assemble an audiobook, so nothing else on this tab
                   affects it.
                 </p>
               }
@@ -873,6 +903,14 @@ export class NarrationModalComponent {
   readonly rvcUnavailableNote =
     'The voice-conversion engine is not installed, so this run cannot re-render the '
     + 'sentences through another voice. Install it under Settings → Add-ons.';
+  /**
+   * WHY THE ALIGN BOX IS GREYED OUT — the same fact `requireCoverageAligner`
+   * would refuse the run on, said before the press instead of after it.
+   */
+  readonly alignerUnavailableNote =
+    'The "Ebook Alignment (WhisperX)" add-on is not installed, so nothing on this machine '
+    + 'can align the narration. Install it under Settings → Add-ons; without it the '
+    + 'audiobook gets a transcript estimated from sentence length.';
 
   /**
    * The engines that can be chosen right now — the registry's own gate, so an
@@ -1062,6 +1100,14 @@ export class NarrationModalComponent {
   constructor() {
     // The catalog is the machine's, loaded once per app; asking again is free.
     void this.voices.load();
+    /*
+     * THE ADD-ON LIST, for the two boxes that are disabled without one — the
+     * conversion and the alignment. Deduped inside the service (`ensureLoaded`),
+     * so a dialog opened in a window that has already asked costs nothing, and a
+     * window that has NOT asked no longer draws Align greyed out on a machine
+     * that has the aligner.
+     */
+    void this.components.ensureLoaded();
     // Whether a Higgs run could start, asked once while the dialog is opening.
     // Cheap when the answer is "no Higgs on this build" and a single WSL round
     // trip otherwise, so it is not gated on the engine currently selected — the
@@ -1084,6 +1130,25 @@ export class NarrationModalComponent {
       this.finalDenoise.set(plan.denoise);
       this.rvcEnabled.set(plan.convert);
       this.assemble.set(plan.assemble);
+    });
+
+    /*
+     * THE ALIGN DEFAULT BOWS TO THE MACHINE — once the machine has answered.
+     *
+     * The box opens ticked (Owen's ruling), and a machine with no aligner cannot
+     * honour that: the run would be refused at the press for a choice the user
+     * never made. So the tick is dropped as soon as the add-on list SAYS the
+     * aligner is missing — with the reason printed under the disabled box, which
+     * is what makes it a statement rather than a silent downgrade.
+     *
+     * `components()` empty means the list has not answered yet (it loads
+     * asynchronously), and unticking on that would leave the box off on a
+     * machine that does have the aligner — the default undone by a race.
+     */
+    effect(() => {
+      if (this.components.components().length === 0) return;
+      if (this.alignerInstalled()) return;
+      this.alignNarration.set(false);
     });
 
     effect(() => {
@@ -1265,6 +1330,14 @@ export class NarrationModalComponent {
     })));
 
   readonly rvcInstalled = computed(() => this.components.isInstalled('rvc-env'));
+  /**
+   * The aligner add-on, asked the same way every other add-on is.
+   *
+   * A COMPUTED, not a constructor read: `ComponentService.components` fills in
+   * asynchronously (`ensureLoaded`), and a box that latched "missing" at open
+   * time would stay greyed out on a machine that has it.
+   */
+  readonly alignerInstalled = computed(() => this.components.isInstalled('whisperx-env'));
   readonly rvcVoiceOptions = computed<DesktopSelectItems>(() =>
     this.voices.rvcVoices().map((v) => ({ value: v.value, label: v.label })));
 
@@ -1410,6 +1483,19 @@ export class NarrationModalComponent {
     if (!this.narrate() && !this.enhance() && !this.assemble()) {
       return 'No tab is checked, so there is nothing to queue. Check at least one of the three '
         + 'above.';
+    }
+    /*
+     * TICKED, AND THE ADD-ON IS NOT HERE.
+     *
+     * Ordinarily unreachable: the effect in the constructor unticks the box the
+     * moment the add-on list has ANSWERED that the aligner is missing. What is
+     * left for this to catch is the list never answering at all — a failed probe
+     * leaves it empty, the box disabled, and the default still ticked — and in
+     * that state the sentence belongs on screen rather than in a refusal thrown
+     * after the press.
+     */
+    if (this.alignNarration() && !this.alignerInstalled()) {
+      return this.alignerUnavailableNote + ' Or untick Align on the Assembly tab.';
     }
     if (this.enhance() && !this.assemble()) {
       return 'Enhancing the sentences without assembling them would spend the whole pass on the '
